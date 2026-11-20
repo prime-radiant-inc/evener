@@ -3509,6 +3509,286 @@ test("a frame from a peer that omits bootGeneration degrades gracefully", async 
   expect(row?.drainHeldByJobs).toBe(true);
 });
 
+// The other half of the omission: a peer too old to stamp a generation still
+// numbers its samples in the activity source epoch the adopted generation names.
+// A page the same source served in that epoch names no generation either, so the
+// two must order against each other. Without the attribution the unstamped
+// frame's sample is comparable to nothing, and a page sampled before the drain
+// began overwrites the wait the frame published -- which nothing restores, since
+// an unchanged hold emits no update of its own.
+test("an unstamped peer's hold outranks an older page of the adopted source's epoch", async () => {
+  const client = pushClient();
+  const context = pushContext();
+  const olderPage = deferred<void>();
+  const pageIssued = deferred<void>();
+  let holdRefresh = false;
+  client.on("evener/thread/delegates/list", async ({ scope }) => {
+    if (holdRefresh) {
+      pageIssued.resolve();
+      await olderPage.promise;
+    }
+    return {
+      context,
+      scope: scope ?? "session",
+      page: { complete: true, issues: [] },
+      delegates: [
+        delegateRow({
+          projectionRevision: 4,
+          holdSequence: 1,
+          // The landing marker: a durable field only the page carries, so the
+          // test can prove the older page really arrived.
+          latestIntent: holdRefresh ? "Older page." : undefined,
+        }),
+      ],
+    };
+  });
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.complete);
+  // The transcript names the source that serves the thread -- a previous-build
+  // daemon, which stamps its reads but not its delegate frames.
+  store.adoptBootGeneration(BOOT_ONE);
+
+  // The drain begins: an unstamped frame publishes the wait.
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({
+        projectionRevision: 4,
+        holdSequence: 7,
+        drainHeldByJobs: true,
+        runningJobCount: 1,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ),
+  );
+  await activityState(store, () => store.getSnapshot().delegates.rows[0]?.drainHeldByJobs === true);
+
+  // A refresh sampled before the drain began lands after it: same source
+  // epoch, older sequence, and it must not erase the live wait.
+  holdRefresh = true;
+  activityChanged(client, ["delegates"]);
+  await pageIssued.promise;
+  olderPage.resolve();
+  await activityState(store, () => store.getSnapshot().delegates.rows[0]?.latestIntent === "Older page.");
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.drainHeldByJobs).toBe(true);
+  expect(row?.holdSequence).toBe(7);
+  expect(row?.runningJobCount).toBe(1);
+});
+
+// The release edge of the same ordering: an unstamped peer's cleared sample
+// must not be overwritten by a page the same source served while the wait was
+// still held, or the row displays a drain that already ended.
+test("an unstamped peer's release outranks an older page that still reports the wait", async () => {
+  const client = pushClient();
+  const context = pushContext();
+  const olderPage = deferred<void>();
+  const pageIssued = deferred<void>();
+  let holdRefresh = false;
+  client.on("evener/thread/delegates/list", async ({ scope }) => {
+    if (holdRefresh) {
+      pageIssued.resolve();
+      await olderPage.promise;
+    }
+    return {
+      context,
+      scope: scope ?? "session",
+      page: { complete: true, issues: [] },
+      delegates: [
+        delegateRow({
+          projectionRevision: 4,
+          holdSequence: 5,
+          drainHeldByJobs: true,
+          runningJobCount: 1,
+          oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+          // The landing marker: only the older page carries it.
+          latestIntent: holdRefresh ? "Older page." : undefined,
+        }),
+      ],
+    };
+  });
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.rows[0]?.drainHeldByJobs === true);
+  store.adoptBootGeneration(BOOT_ONE);
+
+  // The wait ends: an unstamped frame publishes the release at a later
+  // sequence than the hold the loaded page reports.
+  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 4, holdSequence: 6 })));
+  await activityState(store, () => store.getSnapshot().delegates.rows[0]?.holdSequence === 6);
+
+  // The older page lands after the release and still reports the wait.
+  holdRefresh = true;
+  activityChanged(client, ["delegates"]);
+  await pageIssued.promise;
+  olderPage.resolve();
+  await activityState(store, () => store.getSnapshot().delegates.rows[0]?.latestIntent === "Older page.");
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.drainHeldByJobs ?? false).toBe(false);
+  expect(row?.holdSequence).toBe(6);
+  expect(row?.runningJobCount ?? 0).toBe(0);
+});
+
+// A read issued against the daemon generation 1 can answer after a delegate
+// frame already adopted generation 2. Generation 1 is provably the older
+// counter of the same owner, so adopting it back would retire the live source's
+// own holds and judge its later frames retired; the adoption must be a no-op.
+test("a provably older same-owner generation is not adopted back over a newer one", async () => {
+  const client = pushClient();
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.complete);
+
+  // Generation 2's own frame adopts it, without any read naming it.
+  client.emitNotification(
+    pushedFrameFrom(
+      BOOT_TWO,
+      frameInfo({
+        projectionRevision: 4,
+        holdSequence: 9,
+        drainHeldByJobs: true,
+        runningJobCount: 1,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ),
+  );
+  expect(store.bootGeneration).toBe(BOOT_TWO);
+  expect(store.getSnapshot().delegates.rows[0]?.holdSequence).toBe(9);
+
+  // The late read names the daemon generation 2 replaced.
+  store.adoptBootGeneration(BOOT_ONE);
+  expect(store.bootGeneration).toBe(BOOT_TWO);
+  const kept = store.getSnapshot().delegates.rows[0];
+  expect(kept?.holdSequence).toBe(9);
+  expect(kept?.drainHeldByJobs).toBe(true);
+
+  // And generation 2's later frames are still the live source's news.
+  client.emitNotification(pushedFrameFrom(BOOT_TWO, frameInfo({ projectionRevision: 4, holdSequence: 10 })));
+  const released = store.getSnapshot().delegates.rows[0];
+  expect(released?.holdSequence).toBe(10);
+  expect(released?.drainHeldByJobs ?? false).toBe(false);
+});
+
+// The epoch attribution an unstamped frame's sample gets is a claim about the
+// source the store is reading, not about a generation. A replacement boot
+// establishes a new one, so the sample the previous epoch numbered is not the
+// replacement's to display: the store cannot tell whose it was, so it re-reads
+// rather than wiping it on a guess -- and the page the replacement serves is
+// what settles it.
+test("a replacement boot leaves an unstamped peer's hold unresolved and the replacement's page settles it", async () => {
+  const client = pushClient();
+  let context = pushContext({ epoch: "epoch-1" });
+  let delegates = [delegateRow({ projectionRevision: 4 })];
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context,
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates,
+  }));
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.complete);
+  store.adoptBootGeneration(BOOT_ONE);
+
+  // The previous-build daemon publishes the wait without a stamp.
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({
+        projectionRevision: 4,
+        holdSequence: 98,
+        drainHeldByJobs: true,
+        runningJobCount: 2,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ),
+  );
+  await activityState(store, () => store.getSnapshot().delegates.rows[0]?.holdSequence === 98);
+
+  // The source is replaced. The sample the old epoch numbered is not wiped on a
+  // guess -- nothing proved whose it was -- and the replacement's own page is
+  // what settles the row.
+  context = pushContext({ epoch: "epoch-2" });
+  delegates = [delegateRow({ projectionRevision: 4, holdSequence: 1 })];
+  store.adoptBootGeneration(BOOT_TWO);
+  await activityState(store, () => store.getSnapshot().delegates.rows[0]?.holdSequence === 1);
+  const settled = store.getSnapshot().delegates.rows[0];
+  expect(settled?.drainHeldByJobs ?? false).toBe(false);
+  expect(settled?.runningJobCount ?? 0).toBe(0);
+});
+
+// And the new epoch is a new ordering: an unstamped sample that arrives after
+// the replacement is first sight in it, so the retired epoch's larger sequence
+// cannot suppress the replacement's first wait.
+test("an unstamped sample in a new epoch is not judged by the retired epoch's sequence", async () => {
+  const client = pushClient();
+  let context = pushContext({ epoch: "epoch-1" });
+  let delegates = [
+    delegateRow({
+      projectionRevision: 4,
+      holdSequence: 98,
+      drainHeldByJobs: true,
+      runningJobCount: 2,
+      oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+    }),
+  ];
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context,
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates,
+  }));
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.rows[0]?.holdSequence === 98);
+  store.adoptBootGeneration(BOOT_ONE);
+
+  // The replacement restarts its own numbering. Its first unheld sample is
+  // smaller than the retired epoch's, and must not lose to it.
+  context = pushContext({ epoch: "epoch-2" });
+  delegates = [delegateRow({ projectionRevision: 4, holdSequence: 1 })];
+  store.adoptBootGeneration(BOOT_TWO);
+  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 4, holdSequence: 1 })));
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.holdSequence).toBe(1);
+  expect(row?.drainHeldByJobs ?? false).toBe(false);
+  expect(row?.runningJobCount ?? 0).toBe(0);
+});
+
+// The rejection is only for provably older counters of the SAME owner: a
+// different owner's token and `daemonless` attested absence are real
+// replacements, not a return to a departed boot.
+test("a different owner and attested daemonless absence are still adopted", async () => {
+  const client = pushClient();
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.complete);
+  client.emitNotification(
+    pushedFrameFrom(
+      BOOT_TWO,
+      frameInfo({
+        projectionRevision: 4,
+        holdSequence: 9,
+        drainHeldByJobs: true,
+        runningJobCount: 1,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ),
+  );
+  expect(store.bootGeneration).toBe(BOOT_TWO);
+
+  // Another owner's token names a replacement daemon even at a lower counter.
+  store.adoptBootGeneration("1@other");
+  expect(store.bootGeneration).toBe("1@other");
+  client.emitNotification(pushedFrameFrom("1@other", frameInfo({ projectionRevision: 4, holdSequence: 10 })));
+  expect(store.getSnapshot().delegates.rows[0]?.holdSequence).toBe(10);
+
+  // Attested absence is the hub's claim that nobody serves the thread: it is
+  // adopted, and nothing can be holding the run open.
+  store.adoptBootGeneration(DAEMONLESS_BOOT_GENERATION);
+  expect(store.bootGeneration).toBe(DAEMONLESS_BOOT_GENERATION);
+  expect(store.getSnapshot().delegates.rows[0]?.holdSequence).toBeUndefined();
+});
+
 // unknown-owner is the hub's refusal to name a daemon, not a claim that the
 // daemon is gone: adopting it must not retire a live source's hold, because
 // the hold is the live daemon's own and nothing here proved it was replaced.
