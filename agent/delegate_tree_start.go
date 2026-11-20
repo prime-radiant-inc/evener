@@ -1012,6 +1012,7 @@ func cloneDelegateStartDescriptor(descriptor delegatestore.Descriptor) delegates
 	clone := descriptor
 	clone.TaskTemplates = append([]task.TaskTemplate(nil), descriptor.TaskTemplates...)
 	clone.ToolNameCeiling = append([]string(nil), descriptor.ToolNameCeiling...)
+	clone.CeilingReachabilityExcluded = append([]string(nil), descriptor.CeilingReachabilityExcluded...)
 	clone.FrozenSkillNames = append([]string(nil), descriptor.FrozenSkillNames...)
 	clone.FrozenSkillBodies = append([]string(nil), descriptor.FrozenSkillBodies...)
 	// FrozenSkillPreload is all immutable string fields, so copying the

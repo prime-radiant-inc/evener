@@ -65,9 +65,9 @@ func validSavedSystemPrompt(p string) string {
 // rebuildPromptCache caches system prompt components that don't change between
 // renders. env is the execution environment to render against: callers that
 // already hold s.mu (e.g. SetModel) must pass s.env directly; callers that
-// don't must resolve it via currentEnv() first — renderSystemPrompt cannot
-// call currentEnv() itself since it is invoked from both locked and unlocked
-// contexts and s.mu is not reentrant.
+// don't must resolve it via currentEnv() first — renderSystemPrompt
+// cannot call currentEnv() itself since it is invoked from both locked and
+// unlocked contexts and s.mu is not reentrant.
 // It RETURNS the diagnostic for a failed render rather than emitting it, and
 // that is a lock-safety requirement, not a style choice. Five of its six
 // callers run under s.mu, and emit's first act is activeCausalProvenance(),
@@ -161,12 +161,12 @@ func (s *Session) commitProvenanceWarning() string {
 	return ""
 }
 
-// buildPromptData assembles a promptData from session state for template
-// rendering, plus the PROMPT_LOADED sources for the inputs it read: the role
-// and each append file. env is the ALREADY-RESOLVED execution environment
-// (passed by renderSystemPrompt, which runs under a held s.mu): it must not be
-// re-fetched via s.currentEnv(), which would re-lock the non-reentrant s.mu
-// and deadlock.
+// buildPromptData assembles a promptData from session state for
+// template rendering, plus the PROMPT_LOADED sources for the inputs it read:
+// the role and each append file. env is the ALREADY-RESOLVED execution
+// environment (passed by renderSystemPrompt, which runs under a held
+// s.mu): it must not be re-fetched via s.currentEnv(), which would re-lock the
+// non-reentrant s.mu and deadlock.
 func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData, []promptSource) {
 	agentName := s.cfg.AgentName
 	if agentName == "" {
@@ -277,8 +277,9 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 			data.unreadableAppends = append(data.unreadableAppends, p)
 			continue
 		}
-		data.CLIAppends = append(data.CLIAppends, string(b))
-		sources = append(sources, promptSource{Label: "append:" + p, Size: len(strings.TrimRight(string(b), "\n"))})
+		text := string(b)
+		data.CLIAppends = append(data.CLIAppends, text)
+		sources = append(sources, promptSource{Label: "append:" + p, Size: len(strings.TrimRight(text, "\n"))})
 	}
 
 	return data, sources
@@ -350,11 +351,11 @@ func sandboxPromptBoundary(rp *sandbox.ResolvedPolicy) string {
 	return fmt.Sprintf("%s (network %s) — fixed for this session", rp.Mode, netStr)
 }
 
-// renderSystemPrompt renders the system prompt from the embedded template. It
-// returns the prompt, the diagnostic its caller must report, and whether the
-// render failed (in which case the prompt is diagnostic text, not a prompt);
-// see refreshSystemPromptCache for why the diagnostic is returned rather than
-// emitted here, and for the env-locking contract.
+// renderSystemPrompt renders the system prompt from the embedded
+// template. It returns the prompt, the diagnostic its caller must report, and
+// whether the render failed (in which case the prompt is diagnostic text, not a
+// prompt); see refreshSystemPromptCache for why the diagnostic is returned
+// rather than emitted here, and for the env-locking contract.
 func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) (string, string, bool) {
 	data, inputSources := s.buildPromptData(env)
 	result, err := executeSystemPromptTemplate(data)
