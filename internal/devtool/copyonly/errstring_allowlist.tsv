@@ -166,7 +166,7 @@ agent/transcript_lookup_covtest_test.go	3
 agent/transcript_lookup_test.go	4
 agent/transcript_test.go	3
 agent/transcript_tools_test.go	2
-agent/watch_pure_covtest_test.go	5
+agent/watch_pure_covtest_test.go	1
 agent/worktree_scripted_failures_test.go	3
 appwire/errors_test.go	1
 appwire/paging_test.go	1
