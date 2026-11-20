@@ -48,6 +48,7 @@ import {
   canonicalSkillNames,
   collectAuthoritativeMutationIds,
   compareBootGeneration,
+  DAEMONLESS_BOOT_GENERATION,
   ErrorTranscriptHistoryFailed,
   errorText,
   frontierFromCursor,
@@ -4448,14 +4449,23 @@ function hydrationAttemptOwnsRef(ref: string, pending: PendingThreadHydration, t
   return pendingThreadHydrations.get(ref) === pending && canonicalThreadOwnerActive(ref);
 }
 
-// A history-read rejection can attest the source that failed while naming no
-// snapshot: a forwarded hub error carries the generation it holds for the
-// thread. Reading the field is all this does — `adoptBootGeneration` decides
-// what a token means, so `unknown-owner` and an omission stay no-ops.
+// `daemonless` is the one token that needs the hub's word too. A peer too old
+// to attest stamps it on every failed saved read, whether or not a daemon still
+// runs the thread, and a forwarding layer passes that error through unchanged
+// (`appwire.NormalizeForwardedHistoryError` demotes it where the forwarding is
+// known, which is not here). Only `absenceAttested` turns the token into
+// positive evidence that nobody owns the thread; an unqualified one names no
+// source, so it adopts nothing and retires nothing. A numeric live-owner stamp
+// ("2", "3@root") is evidence of a serving daemon on its own and still adopts;
+// `unknown-owner` and an omission stay no-ops in `adoptBootGeneration`.
 function readErrorBootGeneration(err: unknown): string | undefined {
-  return wireRejectionPayload(err, ErrorTranscriptHistoryFailed, "bootGeneration", (value) =>
-    typeof value === "string" ? value : undefined,
-  );
+  const attested =
+    wireRejectionPayload(err, ErrorTranscriptHistoryFailed, "absenceAttested", (value) => value === true) === true;
+  return wireRejectionPayload(err, ErrorTranscriptHistoryFailed, "bootGeneration", (value) => {
+    if (typeof value !== "string") return undefined;
+    if (value === DAEMONLESS_BOOT_GENERATION && !attested) return undefined;
+    return value;
+  });
 }
 
 async function readThreadHydration(
@@ -6218,12 +6228,14 @@ function publishThreadHydration(
   // held rows leave in the same step the replacement's history lands - and a
   // superseded read's late response, which returned null above, adopts
   // nothing and retires nothing.
-  adoptThreadSourceBootGeneration(
-    pending.client,
-    ref,
-    sourceBootGeneration,
-    pending.baseModel?.history?.bootGeneration,
-  );
+  if (hydrationAttemptOwnsRef(ref, pending, true)) {
+    adoptThreadSourceBootGeneration(
+      pending.client,
+      ref,
+      sourceBootGeneration,
+      pending.baseModel?.history?.bootGeneration,
+    );
+  }
 
   const live = threadsStore.getState().threads.get(ref);
   const entry = existingEntryRoute(ref);
@@ -6701,12 +6713,22 @@ function publishWatchedHydration(
   if (getReadyEpoch() !== pending.epoch) return null;
   // Same gate on the adoption, for the same reason as publishThreadHydration:
   // a watched read superseded by a newer one may not name the source.
-  adoptThreadSourceBootGeneration(
-    pending.client,
-    ref,
-    sourceBootGeneration,
-    pending.baseModel?.history?.bootGeneration,
-  );
+  //
+  // A watched attempt and a tracked attempt hold separate pending entries, so
+  // the entry check above does not prove this read is the ref's newest. A late
+  // watched read from the daemon a tracked read has already replaced would
+  // otherwise adopt that older generation back and retire the replacement's
+  // hold - which nothing corrects, because an unchanged hold emits no update of
+  // its own. `hydrationAttemptOwnsRef` spans both maps through `readSequence`,
+  // so a tracked read issued since does retire this attempt's say.
+  if (hydrationAttemptOwnsRef(ref, pending, false)) {
+    adoptThreadSourceBootGeneration(
+      pending.client,
+      ref,
+      sourceBootGeneration,
+      pending.baseModel?.history?.bootGeneration,
+    );
+  }
 
   const live = threadsStore.getState().watchedThreads.get(ref);
   const replayed = replayHydrationNotifications(preserveLiveActiveTurn(model, live), pending.notifications);

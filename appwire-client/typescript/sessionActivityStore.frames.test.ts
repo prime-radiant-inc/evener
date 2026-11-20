@@ -98,7 +98,7 @@ test("a buffered hold older than the release does not reinstate the wait", async
 
 // @vitest-environment node
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { UNKNOWN_OWNER_BOOT_GENERATION } from "./bootGeneration";
+import { DAEMONLESS_BOOT_GENERATION, UNKNOWN_OWNER_BOOT_GENERATION } from "./bootGeneration";
 import { WireError } from "./errors";
 import { MAX_INTENT_CODE_POINTS } from "./sessionActivity";
 import { type SessionActivitySnapshot, SessionActivityStore } from "./sessionActivityStore";
@@ -112,6 +112,7 @@ import {
   jobFixture,
   jobsFixture,
   summaryFixture,
+  threadFixture,
 } from "./sessionActivityTestUtils";
 import { deferred } from "./testing/deferred";
 import { callsTo } from "./testing/fakeClient";
@@ -3545,6 +3546,127 @@ test("unknown-owner does not retire a live source's hold", async () => {
   const row = store.getSnapshot().delegates.rows[0];
   expect(row?.holdSequence).toBe(98);
   expect(row?.drainHeldByJobs).toBe(true);
+});
+
+// Relay recovery can hand the same connected client a replacement daemon, and
+// the resync's lean thread read is the first response that names it. The store's
+// adopted generation is what decides whether a page and a frame from that one
+// daemon may order against each other: the replacement numbers its holds from
+// its own boot, so a page sampled before its newer hold frame is recognized as
+// older only once the store has adopted the generation the frame is stamped
+// with. Without that adoption the page is not comparable, and it overwrites a
+// newer wait the replacement itself published -- which nothing restores, since
+// an unchanged hold emits no update of its own.
+test("a replacement's lean resync read lets its newer hold frame outrank its older page", async () => {
+  const client = pushClient();
+  // The daemon serving the thread, and the switch that makes the resync's own
+  // delegates refresh an older snapshot than the frame below.
+  let bootGeneration = BOOT_ONE;
+  let holdRefresh = false;
+  const olderPage = deferred<SessionDelegatesResponse>();
+  const refreshIssued = deferred<void>();
+  const context = pushContext();
+  client.on("thread/read", () => ({ ...threadFixture(), bootGeneration }));
+  client.on("evener/thread/delegates/list", ({ scope }) => {
+    if (holdRefresh) {
+      refreshIssued.resolve();
+      return olderPage.promise;
+    }
+    return {
+      context,
+      scope: scope ?? "session",
+      page: { complete: true, issues: [] },
+      delegates: [delegateRow({ projectionRevision: 2 })],
+    };
+  });
+  const store = owner(client);
+  store.start();
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().summary !== null && store.getSnapshot().delegates.complete);
+  store.adoptBootGeneration(BOOT_ONE);
+
+  // Relay recovery on the same connection: the replacement daemon answers the
+  // resync's lean thread read with its own generation, while the delegates
+  // refresh it also issues stays in flight.
+  bootGeneration = BOOT_TWO;
+  holdRefresh = true;
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "session" },
+  });
+  await refreshIssued.promise;
+  // The refreshed live context is what re-enables the pushed-frame merge.
+  await activityState(store, () => !store.getSnapshot().summaryState.loading);
+
+  // The replacement's own newer hold edge lands while its refresh page is out.
+  client.emitNotification(
+    pushedFrameFrom(
+      BOOT_TWO,
+      frameInfo({
+        projectionRevision: 2,
+        holdSequence: 9,
+        drainHeldByJobs: true,
+        runningJobCount: 1,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ),
+  );
+  expect(store.getSnapshot().delegates.rows[0]?.holdSequence).toBe(9);
+
+  // The refresh page was sampled before that edge. It is the same replacement
+  // daemon's, so the two order against each other; it must not win.
+  olderPage.resolve({
+    context,
+    scope: "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ projectionRevision: 2, holdSequence: 1 })],
+  });
+  await activityState(store, () => !store.getSnapshot().delegates.loading);
+
+  expect(store.getSnapshot().delegates.rows[0]?.holdSequence).toBe(9);
+  expect(store.bootGeneration).toBe(BOOT_TWO);
+});
+
+// The resync adoption reads a SUCCESS, so it takes `liveBootGeneration`'s rule
+// with it: a `daemonless` success is saved-history provenance — the hub fell
+// back to recorded history, which says nothing about whether a daemon still
+// serves the thread — so the live source stays adopted and keeps its hold.
+test("a daemonless resync read does not displace the live source or its hold", async () => {
+  const client = pushClient();
+  let bootGeneration = BOOT_ONE;
+  client.on("thread/read", () => ({ ...threadFixture(), bootGeneration }));
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [
+      delegateRow({
+        projectionRevision: 2,
+        drainHeldByJobs: true,
+        holdSequence: 7,
+        runningJobCount: 1,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ],
+  }));
+  const store = owner(client);
+  store.start();
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().summary !== null && store.getSnapshot().delegates.complete);
+  store.adoptBootGeneration(BOOT_ONE);
+  expect(store.getSnapshot().delegates.rows[0]?.holdSequence).toBe(7);
+
+  // A relay outage makes the resync's lean thread read answer from saved
+  // history while the daemon generation 1 is still running.
+  bootGeneration = DAEMONLESS_BOOT_GENERATION;
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "session" },
+  });
+  await activityState(store, () => !store.getSnapshot().summaryState.loading);
+
+  expect(store.bootGeneration).toBe(BOOT_ONE);
+  expect(store.getSnapshot().delegates.rows[0]?.holdSequence).toBe(7);
 });
 
 // --- Page epoch provenance ---

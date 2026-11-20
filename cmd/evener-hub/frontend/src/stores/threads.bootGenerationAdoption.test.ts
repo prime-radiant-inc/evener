@@ -265,7 +265,7 @@ describe("adopting a source identity reaches the ref's activity store", () => {
     }
   });
 
-  test("a failed daemonless read attests absence and retires the live hold", async () => {
+  test("an attested daemonless rejection retires the live hold", async () => {
     const client = connectReadyFakeClient((fake) => {
       fake.on("thread/read", () => read("1"));
       fake.on("evener/thread/delegates/list", () => delegates());
@@ -284,6 +284,7 @@ describe("adopting a source identity reaches the ref's activity store", () => {
         throw new WireError("thread history failed at entry 3", -32000, {
           evenerErrorInfo: "transcriptHistoryFailed",
           bootGeneration: DAEMONLESS_BOOT_GENERATION,
+          absenceAttested: true,
         });
       });
       await threadsStore
@@ -292,6 +293,83 @@ describe("adopting a source identity reaches the ref's activity store", () => {
         .catch(() => undefined);
 
       expect(heldSequence(activity.store)).toBeUndefined();
+    } finally {
+      stop();
+      activity.release();
+    }
+  });
+
+  // A peer too old to attest stamps `daemonless` on every failed saved read,
+  // whether or not a daemon still serves the thread (appwire.NormalizeForwardedHistoryError
+  // exists to demote it, but the browser must not trust a token a forwarding
+  // layer may have passed through). An unchanged hold emits no update of its
+  // own, so clearing one on a token that may lie loses a live wait for its whole
+  // duration, while keeping one that really ended is corrected by the next
+  // successful read.
+  test("an unqualified daemonless rejection keeps the live hold", async () => {
+    const client = connectReadyFakeClient((fake) => {
+      fake.on("thread/read", () => read("1"));
+      fake.on("evener/thread/delegates/list", () => delegates());
+      fake.on("thread/unsubscribe", () => ({}));
+    });
+    const activity = acquireSessionActivity(client, REF);
+    const stop = activity.store.observe("delegates");
+    try {
+      await threadsStore.getState().ensureThread(REF);
+      await waitFor(() => expect(heldSequence(activity.store)).toBe(7));
+
+      client.on("thread/read", () => {
+        throw new WireError("thread history failed at entry 3", -32000, {
+          evenerErrorInfo: "transcriptHistoryFailed",
+          bootGeneration: DAEMONLESS_BOOT_GENERATION,
+        });
+      });
+      await threadsStore
+        .getState()
+        .refreshThread(REF)
+        .catch(() => undefined);
+
+      expect(activity.store.bootGeneration).toBe("1");
+      expect(heldSequence(activity.store)).toBe(7);
+      expect(activity.store.getSnapshot().delegates.rows[0]?.runningJobCount).toBe(0);
+    } finally {
+      stop();
+      activity.release();
+    }
+  });
+
+  // Only `daemonless` is ambiguous. A numeric live-owner stamp is positive
+  // evidence of a serving daemon, so a rejection naming one still adopts it --
+  // retiring the generation it replaced, exactly as a success naming one does.
+  test.each(["2", "3@root"])("a rejection's live-owner stamp %s is still adopted", async (stamp) => {
+    const client = connectReadyFakeClient((fake) => {
+      fake.on("thread/read", () => read("1"));
+      fake.on("evener/thread/delegates/list", () => delegates());
+      fake.on("thread/unsubscribe", () => ({}));
+    });
+    const activity = acquireSessionActivity(client, REF);
+    const stop = activity.store.observe("delegates");
+    try {
+      await threadsStore.getState().ensureThread(REF);
+      await waitFor(() => expect(heldSequence(activity.store)).toBe(7));
+
+      client.on("thread/read", () => {
+        throw new WireError("thread history failed at entry 3", -32000, {
+          evenerErrorInfo: "transcriptHistoryFailed",
+          bootGeneration: stamp,
+        });
+      });
+      await threadsStore
+        .getState()
+        .refreshThread(REF)
+        .catch(() => undefined);
+
+      await waitFor(() => expect(activity.store.bootGeneration).toBe(stamp));
+      // The stamp is evidence of a serving daemon, so it is adopted as a
+      // successful read's would be. The row's sample is a page's, which an
+      // adoption reconciles rather than wipes: the page is re-served and the
+      // wait it reports stands.
+      expect(heldSequence(activity.store)).toBe(7);
     } finally {
       stop();
       activity.release();
@@ -401,6 +479,133 @@ describe("adopting a source identity reaches the ref's activity store", () => {
         }),
       );
       await upgrading.catch(() => undefined);
+
+      expect(activity.store.bootGeneration).toBe("2");
+      expect(heldSequence(activity.store)).toBe(8);
+    } finally {
+      stop();
+      activity.release();
+    }
+  });
+
+  // The success-side twin of the case above. A watched read and a tracked read
+  // keep SEPARATE pending entries, so a watched attempt still holds its base
+  // model after a tracked read has published over it -- and a watched read does
+  // not retire the tracked one either. When that late watched success names the
+  // outgoing daemon, adopting it would move the ref's source back a generation
+  // and retire the replacement's hold, which nothing restores: an unchanged hold
+  // emits no update of its own.
+  test("a late watched success from the outgoing daemon does not re-adopt it or clear the replacement's hold", async () => {
+    const lateWatched = deferred<ThreadReadResponse>();
+    let readsServed = 0;
+    const client = connectReadyFakeClient((fake) => {
+      fake.on("thread/read", () => {
+        readsServed += 1;
+        if (readsServed === 1) return Promise.resolve(read("1"));
+        // The rich watched re-read of the same ref is the attempt that answers
+        // late, with the daemon it was issued against.
+        if (readsServed === 2) return lateWatched.promise;
+        return Promise.resolve(read("2"));
+      });
+      fake.on("evener/thread/delegates/list", () => delegates());
+      fake.on("thread/unsubscribe", () => ({}));
+    });
+    const activity = acquireSessionActivity(client, REF);
+    const stop = activity.store.observe("delegates");
+    try {
+      await threadsStore.getState().watchThread(REF);
+      await waitFor(() => expect(heldSequence(activity.store)).toBe(7));
+      // A rich watched re-read inherits the watched model's generation 1 as its
+      // base model and stays pending while the tracked read below runs.
+      const upgrading = threadsStore.getState().watchThread(REF, { includeTurns: true });
+      await waitFor(() => expect(readsServed).toBe(2));
+
+      // A pane opens the ref and reads the daemon that replaced generation 1.
+      await threadsStore.getState().ensureThread(REF);
+      await waitFor(() => expect(activity.store.bootGeneration).toBe("2"));
+      client.emitNotification(holdFrame("2"));
+      await waitFor(() => expect(heldSequence(activity.store)).toBe(8));
+
+      // The superseded watched attempt answers with the outgoing daemon.
+      lateWatched.resolve(read("1"));
+      await upgrading;
+
+      expect(activity.store.bootGeneration).toBe("2");
+      expect(heldSequence(activity.store)).toBe(8);
+    } finally {
+      stop();
+      activity.release();
+    }
+  });
+
+  // The tracked twin of the case above, where the attempt that answers late
+  // still owns its own map: neither map's entry proves which read is newest
+  // across the two, and only `readSequence` does. A watched rich read issued
+  // since the tracked attempt began is a later read of the same ref, so the
+  // tracked attempt's older generation may not name the source when it lands.
+  test("a tracked read a later watched read superseded does not re-adopt the outgoing daemon", async () => {
+    // Its own ref: earlier tests in this file leave hydration retries armed for
+    // REF, and one firing mid-test would begin a newer read of REF and retire
+    // this attempt's say for a reason the case is not about.
+    const otherRef = "remote:owner-2";
+    const otherRead = (bootGeneration: string): ThreadReadResponse => {
+      const base = read(bootGeneration);
+      return { ...base, thread: { ...base.thread, evener: { ...base.thread.evener, ref: otherRef } } };
+    };
+    const otherDelegates = (): SessionDelegatesResponse => ({
+      // Push-eligible, so the replacement's frame merges rather than re-reads.
+      context: { ...activityContext(otherRef), reportPreview: true },
+      scope: "session",
+      delegates: [activityDelegate({ ownerRef: otherRef, rootRef: otherRef, holdSequence: 7, runningJobCount: 0 })],
+      page: { complete: true, issues: [] },
+    });
+    const otherHoldFrame = (bootGeneration: string): AnyNotification => {
+      const frame = holdFrame(bootGeneration);
+      return {
+        ...frame,
+        params: { ...(frame.params as { ref: string }), ref: otherRef },
+      } as AnyNotification;
+    };
+    const lateTracked = deferred<ThreadReadResponse>();
+    let generation = "1";
+    let holdTracked = false;
+    let trackedIssued = false;
+    const client = connectReadyFakeClient((fake) => {
+      fake.on("thread/read", () => {
+        if (holdTracked && !trackedIssued) {
+          trackedIssued = true;
+          return lateTracked.promise;
+        }
+        return otherRead(generation);
+      });
+      fake.on("evener/thread/delegates/list", () => otherDelegates());
+      fake.on("thread/unsubscribe", () => ({}));
+    });
+    const activity = acquireSessionActivity(client, otherRef);
+    const stop = activity.store.observe("delegates");
+    try {
+      // The ref is open under generation 1, so the tracked attempt below
+      // inherits generation 1's history as its base model.
+      await threadsStore.getState().ensureThread(otherRef);
+      await waitFor(() => expect(heldSequence(activity.store)).toBe(7));
+      await waitFor(() => expect(activity.store.bootGeneration).toBe("1"));
+
+      generation = "2";
+      holdTracked = true;
+      const refreshing = threadsStore.getState().refreshThread(otherRef);
+      await waitFor(() => expect(trackedIssued).toBe(true));
+
+      // A rich watched read of the same ref is issued after it, and it reads the
+      // daemon that replaced generation 1. Its own generation is adopted.
+      await threadsStore.getState().watchThread(otherRef, { includeTurns: true });
+      await waitFor(() => expect(activity.store.bootGeneration).toBe("2"));
+      client.emitNotification(otherHoldFrame("2"));
+      await waitFor(() => expect(heldSequence(activity.store)).toBe(8));
+
+      // The tracked attempt, still current in ITS map, answers with the daemon
+      // it was issued against.
+      lateTracked.resolve(otherRead("1"));
+      await refreshing;
 
       expect(activity.store.bootGeneration).toBe("2");
       expect(heldSequence(activity.store)).toBe(8);

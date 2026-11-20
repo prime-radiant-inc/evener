@@ -1,4 +1,9 @@
-import { adoptableBootGeneration, DAEMONLESS_BOOT_GENERATION, retiresBootGeneration } from "./bootGeneration";
+import {
+  adoptableBootGeneration,
+  DAEMONLESS_BOOT_GENERATION,
+  liveBootGeneration,
+  retiresBootGeneration,
+} from "./bootGeneration";
 import type { AppwireClientLike } from "./clientLike";
 import { mutationErrorData, WireError } from "./errors";
 import { sameJsonValue } from "./plainObject";
@@ -1728,7 +1733,7 @@ export class SessionActivityStore {
     }
     void lease
       .read({ includeTurns: false })
-      .then(() => {
+      .then((response) => {
         if (this.disposed || this.lease !== lease) return;
         if (generation !== this.generation) {
           const next = this.generation;
@@ -1739,6 +1744,16 @@ export class SessionActivityStore {
         if (!metadata) return;
         if (this.state.context && this.state.context.sessionId !== metadata.sessionId) return;
         if (this.runtimeThreadId !== null && metadata.threadId !== this.runtimeThreadId) return;
+        // Relay recovery can hand this same connected client a replacement
+        // daemon, and this lean read is the first response that names it. The
+        // adopted generation is what lets a page the replacement served and a
+        // frame it stamped order against each other: without it the page is
+        // not comparable to the frame, and an older page sample overwrites a
+        // newer wait the replacement published -- which nothing restores,
+        // since an unchanged hold emits no update of its own. `liveBootGeneration`
+        // keeps a saved-history `daemonless` success from displacing the live
+        // source this store already holds.
+        this.adoptBootGeneration(liveBootGeneration(response.bootGeneration));
         this.publish({ runtime: this.seedEscalations(metadata) });
       })
       .catch((error: unknown) => {
