@@ -7807,7 +7807,7 @@ async function handleReady(
         ...mutationPinnedRefs(),
       ]);
   // The count map is the watch-holder authority: it holds a ref whose first
-  // read failed before publishing a model, with no pending attempt left (#7001).
+  // read failed before publishing a model, with no pending attempt left.
   const watchRefs = targetRef ? new Set([targetRef]) : new Set(watchRefCounts.keys());
   const authoritativePublishedRefs = options?.authoritativePublishedRefs ?? new Set<string>();
   await Promise.all([

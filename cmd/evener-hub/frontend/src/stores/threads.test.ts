@@ -981,7 +981,7 @@ describe("reconnect resubscribe", () => {
     expect(forB?.params).toEqual(expectedParams("ref_b"));
   });
 
-  // Issue #7001: a watched ref whose first read failed before publishing a
+  // A watched ref whose first read failed before publishing a
   // model is held only by its watch count, with no pending attempt left.
   test("a ready fan-out refreshes a watched ref whose only holder is its watch count", async () => {
     const fake = connectFakeClient();
