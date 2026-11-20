@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>markdown-table-column-floor layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  body { margin: 0; background: var(--surface-0); font-family: var(--font-sans); }
+  .fixtures { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 8px; }
+  .fixture { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+  .fixtureLabel { color: var(--ink-low); font: var(--font-size-caption) var(--font-mono); }
+  /* The transcript column's content box at a narrow and a normal pane width
+     (the live failure was measured in a 422px-wide transcript column). */
+  .pane { box-sizing: border-box; background: var(--surface-1); }
+</style>
+</head>
+<body data-font-size="m" data-transcript-measure="reading">
+<!-- Reproduces the Markdown widget's DOM for one GFM table (marked emits
+     <table><thead><tr><th align="left">... against a real agent report's
+     content: short header labels, one long-evidence column whose cells carry
+     the wide max-content lines that trigger the collapse). The geometry under
+     test: whether any column narrows below a readable floor while the table
+     stays inside its pane. -->
+<main class="fixtures"></main>
+
+<template id="fixture-template">
+  <section class="fixture">
+    <div class="fixtureLabel"></div>
+    <div class="pane" data-pane>
+      <div class="root" data-root>
+        <table>
+          <thead>
+            <tr>
+              <th align="left">#</th>
+              <th align="left">Title</th>
+              <th align="left">GH Status</th>
+              <th align="left">once the whole stack lands</th>
+              <th align="left">Evidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>6882</td>
+              <td>Chat tool continuations lose the arguments spelling when a follow-up call re-uses a cached id</td>
+              <td>OPEN</td>
+              <td>in #6986</td>
+              <td>go test ./agent/ -run TestArgumentsSpellingRoundTrip passes RED then GREEN; roborev combined review round 2 names the exact head</td>
+            </tr>
+            <tr>
+              <td>6883</td>
+              <td>Responses replay re-bills cached tool-call items on every turn</td>
+              <td>OPEN</td>
+              <td>in #6986</td>
+              <td>billed 100 want 0 -&gt; 0 after the fix; replayed items = 2 -&gt; 1</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</template>
+
+<!-- The entity chip as EntityText renders it into a table cell: the host
+     span, the entityref group (inline-flex, nowrap in prose), HoverCard's
+     inline-block wrapper, the mono trigger text, and OpenButton's inline
+     shell. The button stands in for IconButton's 28px sm hit target with a
+     plain 28px button: the chip's width is driven by the ID text, not the
+     button's internals. -->
+<template id="entity-chip-template">
+  <table>
+    <thead>
+      <tr>
+        <th align="left">Delegate</th>
+        <th align="left">Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>
+          <span data-entity-host
+            ><span class="group"
+              ><span class="wrapper"
+                ><span class="trigger" tabindex="0">dlg_034zr72gvjghwwewx2pn2z</span
+                ><span class="inline" data-open-shell
+                  ><button type="button" aria-label="Open delegate transcript" style="width: 28px; height: 28px"></button></span
+              ></span></span></span
+          >
+        </td>
+        <td>queued the qualification lane and waited once on the settle detector</td>
+      </tr>
+    </tbody>
+  </table>
+</template>
+
+<script>
+const fixtures = __LAYOUTGUARD_WIDTH_MATRIX__;
+const template = document.querySelector("#fixture-template");
+const entityChipTemplate = document.querySelector("#entity-chip-template");
+const fixtureRoot = document.querySelector(".fixtures");
+for (const spec of fixtures) {
+  const fragment = template.content.cloneNode(true);
+  const fixture = fragment.querySelector(".fixture");
+  fixture.dataset.width = String(spec.width);
+  fixture.querySelector(".fixtureLabel").textContent = `${spec.width}px transcript column`;
+  fixture.querySelector("[data-pane]").style.width = `${spec.width}px`;
+  fixture
+    .querySelector("[data-root]")
+    .append(entityChipTemplate.content.cloneNode(true));
+  fixtureRoot.append(fragment);
+}
+
+// 1ch in the table cell's own font context: a probe span sized to it, appended
+// inside the first header cell so the cascade (family, size, density ramp)
+// that sizes the cell's text also sizes the probe.
+function chOf(cell) {
+  const probe = document.createElement("span");
+  probe.style.cssText = "display:inline-block;width:1ch";
+  cell.appendChild(probe);
+  const w = probe.getBoundingClientRect().width;
+  probe.remove();
+  return w;
+}
+
+window.measure = () =>
+  [...document.querySelectorAll(".fixture")].map((fixture) => {
+    const pane = fixture.querySelector("[data-pane]").getBoundingClientRect();
+    const [table, entityTable] = [...fixture.querySelectorAll("table")];
+    const tableBox = table.getBoundingClientRect();
+    const headerCells = [...table.querySelectorAll("thead th")];
+    const ch = chOf(headerCells[0]);
+    const entityCells = [...entityTable.querySelectorAll("thead th")];
+    const chipHost = fixture.querySelector("[data-entity-host]");
+    const chipCell = chipHost.closest("td");
+    const chip = chipHost.getBoundingClientRect();
+    const chipCellBox = chipCell.getBoundingClientRect();
+    return {
+      width: Number(fixture.dataset.width),
+      paneWidth: pane.width,
+      tableWidth: tableBox.width,
+      ch,
+      colWidths: headerCells.map((c) => c.getBoundingClientRect().width),
+      entityTableWidth: entityTable.getBoundingClientRect().width,
+      entityColWidths: entityCells.map((c) => c.getBoundingClientRect().width),
+      chipWidth: chip.width,
+      chipRight: chip.right,
+      chipCellRight: chipCellBox.right,
+    };
+  });
+</script>
+</body>
+</html>

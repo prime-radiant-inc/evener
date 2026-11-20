@@ -45,8 +45,10 @@ import {
   captureRecoverySendIntent,
   pushRecoveryRefusal,
   pushSelectionRefusal,
+  pushUnbackedImageRefusal,
   selectionRefusal,
   submitDraftToStore,
+  unbackedImageMarkersIn,
   withRecoveryDestinationClaim,
 } from "./submitProtocol";
 
@@ -92,6 +94,8 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     skillNames,
     commandNames,
     mentions,
+    adoptedImageMarkers,
+    adoptedImageRanges,
     activeRecoveryId,
     recoveryActivating,
     recoveryOperationBusy,
@@ -100,7 +104,6 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
   } = useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
   const {
     draftEditRevisionRef,
-    ownedDraftRevisionRef,
     textRef,
     skillNamesRef,
     selectionMetaRef,
@@ -113,6 +116,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     editSkillNames,
     updateSelectionMeta,
     setActiveRecoveryId,
+    setAdoptedImageRanges,
     markRestore,
     queueRecoveryPersistence,
     clearIfUnchanged,
@@ -209,6 +213,9 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
       skillNames,
       selectionMeta.commandNames,
       selectionMeta.mentions,
+      undefined,
+      adoptedImageMarkers,
+      adoptedImageRanges,
     );
   }, [
     activeRecoveryId,
@@ -218,6 +225,8 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     text,
     skillNames,
     selectionMeta,
+    adoptedImageMarkers,
+    adoptedImageRanges,
   ]);
 
   useEffect(() => {
@@ -269,6 +278,9 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     updateText(recovered.text);
     updateSkillNames(restoredSkillNames(recovered));
     updateSelectionMeta(recovered);
+    // A bounced composition keeps its missing-reference provenance across the
+    // reload that mounts this pane, so Send stays refused until it is repaired.
+    setAdoptedImageRanges(recovered.adoptedImageRanges ?? [], recovered.adoptedImageMarkers ?? []);
     attachments.replaceWithSettled(recovered.attachments);
     clearPersistedDraft(ref);
   }, [
@@ -281,6 +293,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     recoveryEntries,
     recoveryOwnsLocalDraftRef,
     ref,
+    setAdoptedImageRanges,
     setActiveRecoveryId,
     skillNamesRef,
     selectionMetaRef,
@@ -338,11 +351,18 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
       current.skillNames,
       current.commandNames,
       skillAtomMentions(parseSkillDocument(current)),
+      // What THIS composer already adopted. The shared merge scopes provenance
+      // to the side that supplied each occurrence, so passing it is what stops
+      // a dormant adoption from claiming a literal "[image N]" the edited entry
+      // happens to spell - and what keeps an adoption the person still means.
+      source.getSnapshot().adoptedImageMarkers,
+      source.getSnapshot().adoptedImageRanges,
     );
     const value = serializeSkillDocument(parseSkillDocument(merged));
     const text = value.text;
     editSkillNames(value.skillNames);
     updateSelectionMeta(value);
+    setAdoptedImageRanges(merged.adoptedImageRanges ?? [], merged.adoptedImageMarkers ?? []);
     // A queued entry's selections are named, not spelled out, so the value that
     // carries them is authoritative here exactly as a recovery activation's is:
     // without this the merge is a partial append, the references land as plain
@@ -430,9 +450,25 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     const submittedSkillNames = [...skillNamesRef.current];
     const submittedCommandNames = [...selectionMetaRef.current.commandNames];
     const submittedMentions = selectionMetaRef.current.mentions;
+    // Press-time adoption: the row this press persists must name the same
+    // occurrences its own `submittedText` spells, not whatever the editor
+    // marks by the time the write lands.
+    const submittedAdoptedImageMarkers = source.getSnapshot().adoptedImageMarkers;
+    const submittedAdoptedImageRanges = source.getSnapshot().adoptedImageRanges;
     const submittedRevision = draftEditRevisionRef.current;
     const submittedDraftRevision = readDraftRevision(ref);
     const payload = attachments.toInputAttachments();
+    // Every route passes here - Send and Queue from the composer, Steer and
+    // drain from its own control, and a typed /queue or /steer which supplies
+    // its own text - so the refusal lives at this one seam. An adopted anchor
+    // with no image behind it would reach the model as literal text (#4826),
+    // and the draft is kept because nothing below this point runs.
+    const unbacked = unbackedImageMarkersIn(submittedText, source.getSnapshot().adoptedImageMarkers);
+    if (unbacked.length > 0) {
+      pushUnbackedImageRefusal("unbacked-image");
+      releaseRecoveryOperation();
+      return;
+    }
     const submittedLease = recoveryOwnerLeaseRef.current;
     const submittedRecoveryId = submittedLease?.clientMutationId ?? null;
     let releaseRecoveryInFlight: (() => void) | null = null;
@@ -503,6 +539,8 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
                 submittedCommandNames,
                 submittedMentions,
                 clearDraftText,
+                submittedAdoptedImageMarkers,
+                submittedAdoptedImageRanges,
               );
               if (!persisted) {
                 throw recoveryWriteRefusal;
@@ -601,9 +639,13 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
         options.text !== options.clearDraftText &&
         submittedEditorMatches
       ) {
-        if (ownedDraftRevisionRef.current === readDraftRevision(ref)) {
+        // Only the tab that still owns the persisted record may delete it: a
+        // peer's newer write is that peer's draft, not this submission's leavings.
+        if (source.ownsDraftRevision()) {
           clearDraft(ref);
-          ownedDraftRevisionRef.current = readDraftRevision(ref);
+          // clearDraft bumped the tab-local counter, so the source has to
+          // re-claim the record it now owns.
+          source.claimDraftRevision();
         }
       }
       clearSubmittedAttachments(submittedAttachments);
@@ -645,6 +687,9 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
             skillNamesRef.current,
             selectionMetaRef.current.commandNames,
             selectionMetaRef.current.mentions,
+            undefined,
+            source.getSnapshot().adoptedImageMarkers,
+            source.getSnapshot().adoptedImageRanges,
           );
         }
       }

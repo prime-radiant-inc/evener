@@ -214,7 +214,7 @@ func TestBuildForJourneysProvesRedBeforeRegisteringTarget(t *testing.T) {
 	}
 	record := filepath.Join(dir, "calls")
 	xcode := `#!/bin/sh
-printf 'xcodebuild %s\n' "$1" >> "$CALLS"
+printf 'xcodebuild %s\n' "$*" >> "$CALLS"
 if [ "$1" = "test" ]; then exit "${XCODE_TEST_EXIT:-65}"; fi
 exit 0
 `
@@ -230,7 +230,10 @@ exit 0
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("CALLS", record)
 
-	r := &runner{native: dir, output: dir}
+	// The workflow restores the build cache into an external stable root, so
+	// both xcodebuild invocations and the product validation must use it.
+	derived := t.TempDir()
+	r := &runner{native: dir, output: dir, derived: derived}
 	r.identity.SimulatorUDID = journeyFixtureUDID
 	if err := r.buildForJourneys(context.Background()); err != nil {
 		t.Fatalf("red-then-target build: %v", err)
@@ -240,12 +243,24 @@ exit 0
 		t.Fatal(err)
 	}
 	want := []string{
-		"xcodebuild test",
+		"xcodebuild test ",
 		"bundle exec ruby ../scripts/native/ios/add-ui-test-target.rb ios/Evener.xcodeproj",
-		"xcodebuild build-for-testing",
+		"xcodebuild build-for-testing ",
 	}
-	if got := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n"); !slices.Equal(got, want) {
-		t.Fatalf("build-for-journeys order = %v, want %v", got, want)
+	calls := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	if len(calls) != len(want) {
+		t.Fatalf("build-for-journeys calls = %v, want %d", calls, len(want))
+	}
+	for i := range want {
+		if !strings.HasPrefix(calls[i], want[i]) {
+			t.Fatalf("build-for-journeys call %d = %q, want prefix %q", i, calls[i], want[i])
+		}
+	}
+	if !strings.Contains(calls[0], "-derivedDataPath "+derived) {
+		t.Errorf("red pass does not build in the external DerivedData root:\n%s", calls[0])
+	}
+	if !strings.Contains(calls[2], "-derivedDataPath "+derived) {
+		t.Errorf("build-for-testing does not build in the external DerivedData root:\n%s", calls[2])
 	}
 	exitData, err := os.ReadFile(filepath.Join(dir, "absent-target-red.exit"))
 	if err != nil {
@@ -253,6 +268,25 @@ exit 0
 	}
 	if got := strings.TrimSpace(string(exitData)); got != "65" {
 		t.Fatalf("red pass exit evidence = %q, want the failing exit 65", got)
+	}
+
+	simulator := filepath.Join(derived, "Build", "Products", "Release-iphonesimulator")
+	for _, sub := range []string{
+		filepath.Join(simulator, "Evener.app", "PlugIns", "EvenerShareExtension.appex"),
+		filepath.Join(simulator, "EvenerQualificationUITests-Runner.app"),
+		filepath.Join(simulator, "EvenerQualificationUITests.xctest"),
+	} {
+		if err := os.MkdirAll(sub, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTestFile(t, filepath.Join(derived, "Build", "Products", "Evener_iphonesimulator26.6-arm64.xctestrun"), []byte("fixture"))
+	layout, err := journeyProducts(r.derivedDataDir())
+	if err != nil {
+		t.Fatalf("external products: %v", err)
+	}
+	if want := filepath.Join(derived, "Build", "Products"); layout.ProductsRoot != want {
+		t.Fatalf("product validation root = %q, want %q", layout.ProductsRoot, want)
 	}
 }
 
