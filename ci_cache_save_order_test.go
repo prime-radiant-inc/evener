@@ -129,13 +129,21 @@ func expandMatrix(text string, cell map[string]string) string {
 	})
 }
 
-var matrixCondition = regexp.MustCompile(`matrix\.(\w+)\s*==\s*'([^']*)'`)
+var (
+	matrixCondition    = regexp.MustCompile(`matrix\.(\w+)\s*==\s*'([^']*)'`)
+	matrixNegCondition = regexp.MustCompile(`matrix\.(\w+)\s*!=\s*'([^']*)'`)
+)
 
 // stepRunsInCell reports whether a step's matrix conditions, if any, hold in
 // the cell. Other conditions are runtime facts the cell cannot decide.
 func stepRunsInCell(step cacheWorkflowStep, cell map[string]string) bool {
 	for _, match := range matrixCondition.FindAllStringSubmatch(step.If, -1) {
 		if cell[match[1]] != match[2] {
+			return false
+		}
+	}
+	for _, match := range matrixNegCondition.FindAllStringSubmatch(step.If, -1) {
+		if cell[match[1]] == match[2] {
 			return false
 		}
 	}
@@ -167,11 +175,14 @@ func TestEveryRestoredGoCacheKindIsSaved(t *testing.T) {
 			for _, cell := range matrixCells(job) {
 				kind := ""
 				for _, step := range job.Steps {
+					if !stepRunsInCell(step, cell) {
+						continue
+					}
 					if k := restoredKind(step); k != "" {
 						kind = expandMatrix(k, cell)
 						restored[kind] = path + " " + name
 					}
-					if step.Uses != "./.github/actions/go-cache-save" || !stepRunsInCell(step, cell) {
+					if step.Uses != "./.github/actions/go-cache-save" {
 						continue
 					}
 					if kind == "" {
@@ -196,6 +207,175 @@ func TestEveryRestoredGoCacheKindIsSaved(t *testing.T) {
 	}
 	if len(moduleSavers) != 1 {
 		t.Errorf("the shared Go module cache is saved by %d jobs (%v), want exactly one", len(moduleSavers), moduleSavers)
+	}
+}
+
+// agent-1 and agent-2 build the same agent -race test binary and the same
+// evener-dev runner; they differ only in which shards run, and only agent-2
+// also compiles the module's subpackages (run-module-tests.sh sends them to
+// the last part). One kind saved by agent-2 therefore holds every entry
+// agent-1 compiles. Two kinds duplicate that build per main push, and the
+// duplicate is what pushes the fleet past the budget and gets a small
+// never-restored kind evicted.
+func TestAgentRaceLanesShareOneCacheKind(t *testing.T) {
+	jobs := readCacheWorkflow(t, ".github/workflows/ci.yml")
+	job, ok := jobs["race-module-shards"]
+	if !ok {
+		t.Fatal("ci.yml has no race-module-shards job")
+	}
+	restored := map[string]map[string]bool{}
+	saved := map[string]map[string]bool{}
+	for _, cell := range matrixCells(job) {
+		scope := cell["scope"]
+		restored[scope] = map[string]bool{}
+		saved[scope] = map[string]bool{}
+		kind := ""
+		for _, step := range job.Steps {
+			if !stepRunsInCell(step, cell) {
+				continue
+			}
+			if k := restoredKind(step); k != "" {
+				kind = expandMatrix(k, cell)
+				restored[scope][kind] = true
+			}
+			if step.Uses == "./.github/actions/go-cache-save" {
+				if kind == "" {
+					t.Errorf("race-module-shards %s: go-cache-save runs with no go-cache-restore before it", scope)
+					continue
+				}
+				saved[scope][kind] = true
+			}
+		}
+	}
+	for _, scope := range []string{"agent-1", "agent-2"} {
+		if got := restored[scope]; len(got) != 1 || !got["race-agent"] {
+			t.Errorf("race-module-shards %s restores %v, want the one shared kind race-agent", scope, got)
+		}
+	}
+	if saved["agent-1"]["race-agent"] {
+		t.Error("agent-1 saves race-agent; agent-2 holds the superset of agent-1's build, so only agent-2 should save it")
+	}
+	if !saved["agent-2"]["race-agent"] {
+		t.Error("agent-2 does not save race-agent, the only kind the agent shards restore")
+	}
+	if got := restored["nonagent"]; len(got) != 1 || !got["race-nonagent"] {
+		t.Errorf("race-module-shards nonagent restores %v, want race-nonagent", got)
+	}
+	if !saved["nonagent"]["race-nonagent"] {
+		t.Error("nonagent does not save race-nonagent, the only kind it restores")
+	}
+}
+
+// jqSub is jq's sub/2: replace the first match of re in s with repl.
+func jqSub(re *regexp.Regexp, repl, s string) string {
+	if loc := re.FindStringIndex(s); loc != nil {
+		return s[:loc[0]] + repl + s[loc[1]:]
+	}
+	return s
+}
+
+// A generation transition changes more of a key than the commit: a Go version
+// bump rewrites the Go component of every go-* and gomod-* key, and a lint
+// config bump rewrites the config hash of a golangci-lint key. cache-prune
+// must group those keys by kind so a transition still leaves one generation,
+// or the two generations ride the budget for 7 days. The iOS DerivedData kind
+// keeps its per-lock grouping: a lock change is a different build, and two
+// such entries are not generations of one key. The test reads the sub()
+// expressions the job runs, not a copy of them.
+func TestCachePruneKeepsOneGenerationPerKind(t *testing.T) {
+	jobs := readCacheWorkflow(t, ".github/workflows/ci.yml")
+	prune, ok := jobs["cache-prune"]
+	if !ok {
+		t.Fatal("ci.yml has no cache-prune job")
+	}
+	var script strings.Builder
+	for _, step := range prune.Steps {
+		script.WriteString(step.Run)
+		script.WriteString("\n")
+	}
+	matches := regexp.MustCompile(`sub\("([^"]*)";\s*"([^"]*)"\)`).FindAllStringSubmatch(script.String(), -1)
+	if len(matches) == 0 {
+		t.Fatalf("cache-prune has no key grouping:\n%s", script.String())
+	}
+	type rewrite struct {
+		re   *regexp.Regexp
+		repl string
+	}
+	var subs []rewrite
+	for _, match := range matches {
+		re, err := regexp.Compile(match[1])
+		if err != nil {
+			t.Fatalf("cache-prune sub %q does not compile: %v", match[1], err)
+		}
+		subs = append(subs, rewrite{re, match[2]})
+	}
+	kindOf := func(key string) string {
+		for _, sub := range subs {
+			key = jqSub(sub.re, sub.repl, key)
+		}
+		return key
+	}
+	hash := func(c byte) string { return strings.Repeat(string(c), 40) }
+	config := func(c byte) string { return strings.Repeat(string(c), 64) }
+	derivedData := func(pod, pkg, sha byte) string {
+		return "ios-deriveddata-macos26-xcode-26.6-" + hash(pod) + "-" + hash(pkg) + "-" + hash(sha)
+	}
+	cases := []struct {
+		name string
+		a, b string
+		same bool
+	}{
+		{
+			name: "go build cache across a Go version bump",
+			a:    "go-tests-root-ubuntu24-amd64-go1.27.4-" + hash('a'),
+			b:    "go-tests-root-ubuntu24-amd64-go1.28.0-" + hash('b'),
+			same: true,
+		},
+		{
+			name: "module cache across a Go version bump",
+			a:    "gomod-ubuntu24-amd64-go1.27.4-" + hash('a'),
+			b:    "gomod-ubuntu24-amd64-go1.28.0-" + hash('b'),
+			same: true,
+		},
+		{
+			name: "lint cache across a Go version and config bump",
+			a:    "golangci-lint-ubuntu24-go1.27.4-" + config('a') + "-" + hash('b'),
+			b:    "golangci-lint-ubuntu24-go1.28.0-" + config('c') + "-" + hash('d'),
+			same: true,
+		},
+		{
+			name: "tagged lint cache across a Go version and config bump",
+			a:    "golangci-lint-tagged-ubuntu24-go1.27.4-" + config('a') + "-" + hash('b'),
+			b:    "golangci-lint-tagged-ubuntu24-go1.28.0-" + config('c') + "-" + hash('d'),
+			same: true,
+		},
+		{
+			name: "retired race-agent shard kinds",
+			a:    "go-race-agent-1-ubuntu24-amd64-go1.27.4-" + hash('a'),
+			b:    "go-race-agent-ubuntu24-amd64-go1.28.0-" + hash('b'),
+			same: true,
+		},
+		{
+			name: "derived data across a commit",
+			a:    derivedData('a', 'b', 'c'),
+			b:    derivedData('a', 'b', 'd'),
+			same: true,
+		},
+		{
+			name: "derived data across a lock change",
+			a:    derivedData('a', 'b', 'c'),
+			b:    derivedData('d', 'e', 'f'),
+			same: false,
+		},
+	}
+	for _, tc := range cases {
+		ga, gb := kindOf(tc.a), kindOf(tc.b)
+		if tc.same && ga != gb {
+			t.Errorf("%s: cache-prune groups %q as %q and %q as %q, want one generation", tc.name, tc.a, ga, tc.b, gb)
+		}
+		if !tc.same && ga == gb {
+			t.Errorf("%s: cache-prune groups %q and %q as %q, want separate generations", tc.name, tc.a, tc.b, ga)
+		}
 	}
 }
 
@@ -335,10 +515,11 @@ func TestCachePruneCoversTheDerivedDataKind(t *testing.T) {
 	sha := strings.Repeat("a", 40)
 	podHash := strings.Repeat("b", 40)
 	packageHash := strings.Repeat("c", 40)
+	configHash := strings.Repeat("d", 64)
 	for _, key := range []string{
 		"go-tests-root-ubuntu24-amd64-go1.27.4-" + sha,
 		"gomod-ubuntu24-amd64-go1.27.4-" + sha,
-		"golangci-lint-tagged-ubuntu24-amd64-go1.27.4-" + sha,
+		"golangci-lint-tagged-ubuntu24-go1.27.4-" + configHash + "-" + sha,
 		"ios-deriveddata-macos26-xcode-26.6-" + podHash + "-" + packageHash + "-" + sha,
 	} {
 		if !filter.MatchString(key) {
