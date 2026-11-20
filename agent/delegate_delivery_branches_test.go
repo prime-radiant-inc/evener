@@ -630,52 +630,6 @@ func TestDeliveryReceiptIsInlineWrongToken(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// struct type verification
-// ---------------------------------------------------------------------------
-
-func TestDelegateDeliveryAdmissionStruct(t *testing.T) {
-	t.Parallel()
-	a := delegateDeliveryAdmission{
-		token:      delegateDeliveryToken{processID: 1, deliveryID: "del_1"},
-		delegateID: "dlg_1",
-		ownerID:    "dlg_owner",
-		cold:       true,
-		inline:     false,
-		retryable:  true,
-	}
-	if a.delegateID != "dlg_1" || !a.cold || !a.retryable {
-		t.Fatalf("struct wrong: %+v", a)
-	}
-}
-
-func TestDelegateDeliveryClaimStruct(t *testing.T) {
-	t.Parallel()
-	c := delegateDeliveryClaim{
-		token:      delegateDeliveryClaimToken{processID: 1, deliveryID: "del_1"},
-		delegateID: "dlg_1",
-		ownerID:    "dlg_owner",
-		cold:       false,
-	}
-	if c.delegateID != "dlg_1" || c.cold {
-		t.Fatalf("struct wrong: %+v", c)
-	}
-}
-
-func TestDelegateDeliveryPlanStruct(t *testing.T) {
-	t.Parallel()
-	p := delegateDeliveryPlan{
-		delegateID:      "dlg_1",
-		deliveryID:      "del_1",
-		ownerDelegateID: "dlg_owner",
-		packet:          delegatestore.TerminalPacket{Kind: delegatestore.PacketReported},
-		callerCommitted: true,
-	}
-	if p.delegateID != "dlg_1" || !p.callerCommitted {
-		t.Fatalf("struct wrong: %+v", p)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // helper: contains
 // ---------------------------------------------------------------------------
 
