@@ -1363,6 +1363,15 @@ func spawnRetainedDelegateLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 	return fixture, root, lanePath
 }
 
+// captureDue reports whether a polling wait has reached the last second of its
+// testwait budget, when the failure testwait is about to print is fixed. A cond
+// whose failure text shells out to git, or reads the whole adapter script, runs
+// that capture only then rather than on every poll.
+func captureDue(t *testing.T, start time.Time) bool {
+	t.Helper()
+	return testwait.Budget(t)-time.Since(start) <= time.Second
+}
+
 // A delegate turn that outlasts the operator's inactivity threshold keeps its
 // marker parent idle — the parent runs no turn of its own while it waits — so
 // the activity evidence the orphan reclaim reads goes stale mid-task even
@@ -4575,19 +4584,19 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileWokenDescendantWorks(t *testing.T
 	}
 	// Both generations settle cleanly now: the descendant's quick turn is
 	// done and nothing of the coordinator's holds the drain open.
-	settled := false
-	for deadline := time.Now().Add(30 * time.Second); !settled && time.Now().Before(deadline); {
+	settleStart := time.Now()
+	testwait.UntilSeen(t, "the coordinator to settle after its report", func() (bool, string) {
 		delegateSub.mu.Lock()
 		running, driving, finalizing := delegateSub.running, delegateSub.driving, delegateSub.finalizing
 		delegateSub.mu.Unlock()
-		settled = !running && !driving && !finalizing
-		if !settled {
-			time.Sleep(100 * time.Millisecond)
+		if !running && !driving && !finalizing {
+			return true, ""
 		}
-	}
-	if !settled {
-		t.Fatalf("the coordinator never settled after its report; %s", dumpState())
-	}
+		if captureDue(t, settleStart) {
+			return false, dumpState()
+		}
+		return false, ""
+	})
 	// The descendant's tree row and runtime, found the way the tree's own
 	// tests do.
 	var descendantID, descendantChildID string
@@ -4638,20 +4647,18 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileWokenDescendantWorks(t *testing.T
 
 	// The wake: the tree's own attention drive, the consumer the root's
 	// armed retry timer serves. A drive that cannot launch yet is
-	// retryable — the timer re-fires — so mirror it within a bound. The
-	// woken turn blocks inside a silent foreground shell, its activity the
-	// tree's only life now.
-	shellStarted := false
-	for driveDeadline := time.Now().Add(30 * time.Second); !shellStarted && time.Now().Before(driveDeadline); {
+	// retryable — the timer re-fires — so the wait re-drives until the
+	// woken turn's shell appears. The woken turn blocks inside a silent
+	// foreground shell, its activity the tree's only life now.
+	shellStart := time.Now()
+	testwait.UntilSeen(t, "the woken descendant's shell to start", func() (bool, string) {
 		root.drivePendingDelegateAttention()
-		for pollDeadline := time.Now().Add(2 * time.Second); !shellStarted && time.Now().Before(pollDeadline); {
-			if _, err := os.Stat(enteredB); err == nil {
-				shellStarted = true
-			}
-			time.Sleep(50 * time.Millisecond)
+		if _, err := os.Stat(enteredB); err == nil {
+			return true, ""
 		}
-	}
-	if !shellStarted {
+		if !captureDue(t, shellStart) {
+			return false, ""
+		}
 		descendantSub.mu.Lock()
 		dRunning, dDriving, dFinalizing, dClosed := descendantSub.running, descendantSub.driving, descendantSub.finalizing, descendantSub.closed
 		descendantSub.mu.Unlock()
@@ -4659,9 +4666,9 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileWokenDescendantWorks(t *testing.T
 		requestCount, cursor := len(fixture.adapter.requests), fixture.adapter.cursor()
 		fixture.adapter.mu.Unlock()
 		_, subLocked, subReason := r.laneLocked(t, lanePath)
-		t.Fatalf("the woken descendant's shell never started (sub running=%v driving=%v finalizing=%v closed=%v, adapter requests=%d cursor=%d, coordinator lane locked=%v reason=%q)",
+		return false, fmt.Sprintf("sub running=%v driving=%v finalizing=%v closed=%v, adapter requests=%d cursor=%d, coordinator lane locked=%v reason=%q",
 			dRunning, dDriving, dFinalizing, dClosed, requestCount, cursor, subLocked, subReason)
-	}
+	})
 
 	// The launch already recorded this wake in the ancestors' evidence;
 	// the silence it must outlast is the rest of the turn, so the ongoing
@@ -4732,19 +4739,20 @@ func TestDelegateWakeReLocksUnlockedInheritedLaneAndRecordsOwnerActivity(t *test
 
 	// A not-launched drive is a retryable result in production — the caller
 	// re-drives at the next loop boundary — and a loaded shard can decline a
-	// launch for a reason that clears on its own. Mirror the caller within a
-	// bound: the outcome assertions below cannot be satisfied without a real
-	// launch, and a decline that never clears fails with the state that
-	// caused it.
-	launched := false
-	for deadline := time.Now().Add(10 * time.Second); !launched && time.Now().Before(deadline); {
+	// launch for a reason that clears on its own. The wait re-drives until
+	// the launch takes: the outcome assertions below cannot be satisfied
+	// without one, and a decline that never clears fails with the state that
+	// caused it. The lane-validation probe is not replayed for that report:
+	// it refreshes the parent's evidence, the very signal asserted below.
+	launchStart := time.Now()
+	testwait.UntilSeen(t, "the shared child's notification drive to launch", func() (bool, string) {
 		lane.fixture.adapter.setSteps([]func(llm.Request) llm.Response{lane.finish})
-		launched = lane.delegateSess.driveSubagentNotificationTurn(lane.sharedSub)
-		if !launched {
-			time.Sleep(200 * time.Millisecond)
+		if lane.delegateSess.driveSubagentNotificationTurn(lane.sharedSub) {
+			return true, ""
 		}
-	}
-	if !launched {
+		if !captureDue(t, launchStart) {
+			return false, ""
+		}
 		shared := lane.sharedSub
 		shared.mu.Lock()
 		closed, running, driving := shared.closed, shared.running, shared.driving
@@ -4756,7 +4764,6 @@ func TestDelegateWakeReLocksUnlockedInheritedLaneAndRecordsOwnerActivity(t *test
 		if mutErr == nil {
 			mutRelease()
 		}
-		revalErr := lane.delegateSess.revalidateLaneForLaunch(lane.sharedDelegateID)
 		driveSlot, driveSlotOK := lane.delegateSess.reserveDriveSlot()
 		if driveSlotOK {
 			driveSlot.release()
@@ -4764,9 +4771,9 @@ func TestDelegateWakeReLocksUnlockedInheritedLaneAndRecordsOwnerActivity(t *test
 		lane.delegateSess.mu.Lock()
 		driverClosing := lane.delegateSess.closingOrClosedLocked()
 		lane.delegateSess.mu.Unlock()
-		t.Fatalf("notification drive never launched the shared child (lane locked=%v reason=%q, sub closed=%v running=%v driving=%v; retirement mutation=%v, lane validation=%v, drive slot=%v, driver closing=%v)",
-			locked, reason, closed, running, driving, mutErr, revalErr, driveSlotOK, driverClosing)
-	}
+		return false, fmt.Sprintf("lane locked=%v reason=%q, sub closed=%v running=%v driving=%v; retirement mutation=%v, drive slot=%v, driver closing=%v",
+			locked, reason, closed, running, driving, mutErr, driveSlotOK, driverClosing)
+	})
 
 	_, locked, reason := r.laneLocked(t, lane.lanePath)
 	if !locked {
