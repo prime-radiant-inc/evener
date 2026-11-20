@@ -143,9 +143,11 @@ except where a line says so itself.
   image for, Send and Steer both refuse and the draft is kept. The refusal is
   live against the text rather than remembered: deleting the reference clears
   it, and any edit that restores the occurrence brings it back. The composer
-  offers the repair in place beside the draft - remove the reference, or select
-  it and attach the image again at that spot, since staging at a normal caret
-  numbers past a marker already spelled.
+  offers the repair in place beside the draft - attach the replacement beside
+  the missing reference first, wait for its preview, then use Remove the
+  reference, before sending. Removing first drops the original reference and
+  the refusal that guards it, so a replacement that then fails to decode would
+  leave nothing to catch it.
 - Recovery updates retain stored mention locations when composer text is omitted.
   Replacing composer text replaces its locations too; omitted locations then
   clear the old set, and an explicit empty set clears all selections.
