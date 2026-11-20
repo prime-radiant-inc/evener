@@ -1077,7 +1077,7 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 			// AND the enclosing repository's .git are both gone, the directory still
 			// sits where the worktree was. Its leaf is a lane name, so the marker
 			// fallback answers instead, exactly as it does for the same path when the
-			// record reaches step 3.
+			// record reaches step 4.
 			//
 			// Only the LABEL changes here. The canonical directory stays the project
 			// identity for sibling eligibility, because a hash of the surviving
@@ -1161,7 +1161,8 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 	// a deleted ordinary path, and recordedOrdinaryProject still hashes the recorded
 	// path itself, so sibling and parent comparisons are unchanged. A legacy or
 	// shared bucket records no project, so nothing verifies the ancestor there and
-	// the recorded basename stays.
+	// this step stays out of the answer: the marker fallback in step 4 and the
+	// basename in step 5 answer as they did before.
 	if !wdExists {
 		if bucketID, known := r.bucketProjectID(bucketDir); known {
 			// A row that records a project of its own contradicts the bucket when the
