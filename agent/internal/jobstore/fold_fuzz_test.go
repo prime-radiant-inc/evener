@@ -188,12 +188,12 @@ func assertReloadMatchesFold(t *testing.T, s *Store, sorted []Event) {
 		t.Fatalf("Fold/Load persist→reload diverged:\n fold=%s\n load=%s", a, b)
 	}
 
-	loadOrdered, err := s.LoadOrdered()
+	loadOrdered, err := loadOrderedForTest(s)
 	if err != nil {
-		t.Fatalf("LoadOrdered: %v", err)
+		t.Fatalf("loadOrderedForTest: %v", err)
 	}
 	if eq, a, b := jsonEq(t, FoldOrdered(sorted), loadOrdered); !eq {
-		t.Fatalf("FoldOrdered/LoadOrdered persist→reload diverged:\n fold=%s\n load=%s", a, b)
+		t.Fatalf("FoldOrdered/loadOrderedForTest persist→reload diverged:\n fold=%s\n load=%s", a, b)
 	}
 
 	loadWatches, err := s.LoadWatches()
