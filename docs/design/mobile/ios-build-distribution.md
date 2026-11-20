@@ -107,8 +107,9 @@ build-runtime` so the embedded frontend is the one this tree builds, compiles
 the `evener` and `fixture-provider` binaries, and uploads them with the commit
 they were built from and a checksum manifest. `ui-journeys` needs both jobs,
 restores the products layout and the runtime pair into fresh directories,
-verifies the pair's commit and checksums against the checked-out tree before
-running either binary, and creates and later deletes its own simulator.
+compares the pair's recorded commit with the build identity's `sourceRevision`
+and its binaries' bytes with the manifest shipped with the pair before running
+either binary, and creates and later deletes its own simulator.
 `scripts/native/ios/run-ui-tests.sh` then starts the scripted loopback provider
 and an isolated hub under private XDG directories with `HOME` inherited, and
 injects the fixture-only connection data into the restored test-run

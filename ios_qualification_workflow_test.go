@@ -333,6 +333,18 @@ func TestIOSQualificationOverlapsTheRuntimeSetupWithTheBuild(t *testing.T) {
 			t.Errorf("ui-journeys needs %v, want it to wait for %s", journeys.Needs, want)
 		}
 	}
+	// A head whose run-ui-tests.sh predates the handoff builds its own pair in
+	// this job, which embeds the frontend: the toolchain pin must survive the
+	// move of the pair build to journey-setup.
+	nodePinned := false
+	for _, step := range journeys.Steps {
+		if strings.HasPrefix(step.Uses, "actions/setup-node@") && fmt.Sprint(step.With["node-version"]) == "22.13.1" {
+			nodePinned = true
+		}
+	}
+	if !nodePinned {
+		t.Error("ui-journeys does not pin Node 22.13.1, which the harness that builds its own pair needs")
+	}
 
 	// runStep normalizes the command of the first step that contains needle,
 	// so two jobs' copies of one recipe compare verbatim.

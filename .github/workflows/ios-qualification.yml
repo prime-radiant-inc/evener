@@ -370,6 +370,14 @@ jobs:
           # serves only that ref (see "CI Caches" in
           # docs/developing-evener/testing.md).
           cache: false
+      # A head whose run-ui-tests.sh predates the pair handoff ignores the
+      # variable below and runs `make build-runtime` here, which embeds the
+      # frontend and needs the build job's Node. Keep the pin so that fallback
+      # fails for no version reason; a harness that reads the pair never uses it.
+      - name: Set up Node 22.13.1 for a harness that builds its own pair
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "22.13.1"
       - name: Download the build products
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -392,8 +400,9 @@ jobs:
           tar -xzf "$RUNNER_TEMP/ios-runtime-pair-download/ios-runtime-pair.tar.gz" -C "$JOURNEY_RUNTIME_PAIR"
       - name: Run the installed-app journeys
         env:
-          # run-ui-tests.sh uses this pair instead of building one, and checks
-          # its revision and checksums against the checked-out tree.
+          # run-ui-tests.sh uses this pair instead of building one: it compares
+          # the pair's recorded commit with the build identity's sourceRevision
+          # and its binaries' bytes with the manifest shipped beside them.
           EVENER_QUALIFICATION_RUNTIME_BINARIES: ${{ env.JOURNEY_RUNTIME_PAIR }}
         run: bash scripts/native/ios/run-ui-journeys.sh --products "$JOURNEY_PRODUCTS" --output "$JOURNEY_OUTPUT"
       - name: Upload journey diagnostics
