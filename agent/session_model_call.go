@@ -343,14 +343,14 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	history = projectToolResultMediaFor(profile, history)
 
 	req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort, toolDefsJSONBytes)
-	s.setRoundFallbackSource(sys, untrimmedHistory, presentedTurns, scope)
 	req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
 	// The round's route is priced here, once: the tool list the builder emits is
 	// the same list for this request at every admission and estimate below, so
 	// initial admission, the continuation shadow, continuation planning, the
-	// skill rebuild, and final admission all reuse one measurement.
+	// skill rebuild, and final admission all reuse one measurement. It rides the
+	// round's one handoff to the model call.
 	route := s.priceRoundRoute(profile, req)
-	s.setRoundRoute(route)
+	s.setRoundFallbackSource(sys, untrimmedHistory, presentedTurns, scope, route)
 	var budget llm.TokenBudget
 	if req, budget, err = route.admit(req); err != nil {
 		return profile, sys, history, req, nil, reasoningEffort, err
@@ -415,7 +415,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		}
 		presentedTurns = append(slices.Clip(presentedTurns), appended...)
 		req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort, toolDefsJSONBytes)
-		s.setRoundFallbackSource(sys, untrimmedHistory, presentedTurns, scope)
+		s.setRoundFallbackSource(sys, untrimmedHistory, presentedTurns, scope, route)
 		req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
 		budgetedReq, budgeted, budgetErr := route.admit(req)
 		if budgetErr != nil {
@@ -684,24 +684,6 @@ func (s *Session) priceRoundRoute(profile *provider.Profile, req llm.Request) ro
 		}
 	}
 	return routeForRow(res, req, s.servesAnOverride(profile))
-}
-
-// setRoundRoute records the route the round was priced for. prepareModelRequest
-// writes it and callModelWithFallback takes and clears it on the same turn
-// goroutine, so a later round cannot inherit this one's measurement.
-func (s *Session) setRoundRoute(route roundRoute) {
-	s.mu.Lock()
-	s.roundRoute, s.roundRouteSet = route, true
-	s.mu.Unlock()
-}
-
-// takeRoundRoute returns and clears the round's priced route.
-func (s *Session) takeRoundRoute() (roundRoute, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	route, set := s.roundRoute, s.roundRouteSet
-	s.roundRoute, s.roundRouteSet = roundRoute{}, false
-	return route, set
 }
 
 // planResponsesContinuation returns the request to dispatch and, when it planned
@@ -1188,20 +1170,25 @@ func isProviderTerminalError(err error) bool {
 // prompt and expanded history before the primary's projection, kept unbuilt so
 // a round that never falls back pays for no slice (#6442). Its turns and scope
 // re-expand under the fallback's own policy.
+//
+// It carries the round's priced route as well, so the round has one handoff
+// rather than two: route is the resolved row admission decides against with the
+// byte count of the tool list it emits, measured once during preparation.
 type roundFallbackSource struct {
 	system  string
 	history []llm.Message
 	turns   []schema.Turn
 	scope   replayScope
+	route   roundRoute
 }
 
 // setRoundFallbackSource records the source the fallback chain lays its own
 // messages out from. The history is this round's own unprojected expansion;
 // the primary's projections replace the slice they return rather than the
 // messages it holds, so this remains the unprojected input either way.
-func (s *Session) setRoundFallbackSource(system string, history []llm.Message, turns []schema.Turn, scope replayScope) {
+func (s *Session) setRoundFallbackSource(system string, history []llm.Message, turns []schema.Turn, scope replayScope, route roundRoute) {
 	s.mu.Lock()
-	s.roundFallbackSource = roundFallbackSource{system: system, history: history, turns: turns, scope: scope}
+	s.roundFallbackSource = roundFallbackSource{system: system, history: history, turns: turns, scope: scope, route: route}
 	s.roundFallbackSourceSet = true
 	s.mu.Unlock()
 }
@@ -1692,11 +1679,12 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	// round cannot inherit this one's input. Its layout waits for the chain
 	// below: a round with no fallback target pays nothing for it (#6442).
 	fallbackSource, hasFallbackSource := s.takeRoundFallbackSource()
-	// The round's route was priced once during preparation; its tool-byte count
-	// is the one every admission in this call reuses. A direct caller that
-	// prepared no round prices the primary request here instead.
-	primaryRoute, priced := s.takeRoundRoute()
-	if !priced {
+	// The round's route rode that same handoff: it was priced once during
+	// preparation, and its tool-byte count is the one every admission in this
+	// call reuses. A direct caller that prepared no round prices the primary
+	// request here instead.
+	primaryRoute := fallbackSource.route
+	if !hasFallbackSource {
 		primaryRoute = s.priceRoundRoute(profile, req)
 	}
 	// The round's fallback chain is fixed here, at the round's model-call
@@ -1824,20 +1812,11 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 				scope.canonicalModel = func(model string) string { return s.canonicalModelID(fbProfile.ID(), model) }
 				fallbackHistory = s.requestMessages(fallbackSource.system, expandHistory(fallbackSource.turns, scope))
 			}
-			fbReq, ok := s.responsesContinuationFallbackRequest(fbProfile, req, fallbackHistory)
+			fbReq, fallbackRoute, ok := s.responsesContinuationFallbackRequest(fbProfile, req, fallbackHistory, origEffort)
 			if !ok {
 				break
 			}
-			// The same rule as the primary path, against the FALLBACK model's
-			// own facts: fbProfile is resolved from the fallback reference, so
-			// its ladder and stated default are the fallback model's, not the
-			// primary's.
-			fbReq.ReasoningEffort = resolveRequestEffort(origEffort, fbProfile.SupportsReasoning(), fbProfile.ReasoningEffortLevels(), fbProfile.DefaultReasoningEffort())
-			fbReq.WebSearch = s.providerWebSearchEnabled(fbProfile)
-			fbReq.ProviderOptions = fbProfile.ProviderOptions()
-			s.applyModelRequestMetadata(&fbReq)
 			var budget llm.TokenBudget
-			fallbackRoute := s.priceRoundRoute(fbProfile, fbReq)
 			fbReq, budget, budgetErr := fallbackRoute.admit(fbReq)
 			if budgetErr == nil {
 				s.warnOutputReduction(fbProfile, budget)
@@ -1990,34 +1969,40 @@ func responsesContinuationModelFallbackRequest(res registry.Resolved, req llm.Re
 }
 
 // responsesContinuationFallbackRequest builds the request one fallback model
-// receives, priced for that model's own builder.
+// receives, fully configured and priced for that model's own builder. It
+// returns the route it was priced for, so admission bills the same measurement.
 //
-// The order is the point. A fallback reuses the primary's built messages, so it
-// applies its own thinking and media projections here and prices the result
-// once, after them. The request arrived carrying the PRIMARY's tool count, which
-// describes the schemas the primary's builder emits; a fallback that leaves the
-// catalog alone — a same-surface, non-strict Chat route, for instance — emits a
-// different list, so pricing before the projections leaves both estimates
-// describing a catalog this route never sends. Admission takes the maximum of the
-// local estimate, the delta estimate and the full-history one, so an input cap
-// between the primary's price and this route's refuses a fallback that fits.
+// The order is the point. A fallback reuses the primary's built messages but
+// speaks with its own effort, web search, provider options and metadata, and
+// applies its own thinking and media projections, so every one of those is
+// configured first and the result priced once, after them. The request arrived
+// carrying the PRIMARY's tool count and provider options, both of which describe
+// what the primary's builder emits; a fallback that replaces either — a
+// same-surface, non-strict Chat route replies with a different list — sends
+// something else. Pricing before the configuration leaves both estimates
+// describing a catalog this route never sends, and admission takes the maximum
+// of the local estimate and both history stamps, so an input cap between the
+// primary's price and this route's refuses a fallback that fits.
 //
 // An override route is priced from the catalog it marshals: priceRoundRoute asks
 // the route which list it puts on the wire, and for an override that is the list
 // it is handed.
-func (s *Session) responsesContinuationFallbackRequest(profile *provider.Profile, req llm.Request, fullHistory []llm.Message) (llm.Request, bool) {
+func (s *Session) responsesContinuationFallbackRequest(profile *provider.Profile, req llm.Request, fullHistory []llm.Message, requestedEffort string) (llm.Request, roundRoute, bool) {
 	fbReq, ok := responsesContinuationModelFallbackRequest(profile.Resolved(), req, fullHistory)
 	if !ok {
-		return llm.Request{}, false
+		return llm.Request{}, roundRoute{}, false
 	}
 	fbReq.Messages = projectThinkingForTarget(profile, fbReq.Messages)
 	fbReq.Messages = projectToolResultMediaFor(profile, fbReq.Messages)
-	// The projections above removed thinking and media this target does not
-	// replay or receive, so both estimates are taken once, here, over the
-	// messages that dispatch. The route is priced over those messages, so both
-	// readings describe the tool list this route emits and the primary's count
-	// cannot leak in.
-	return s.priceRoundRoute(profile, fbReq).withFullHistoryInputEstimate(fbReq), true
+	// The same effort rule as the primary path, against the FALLBACK model's own
+	// facts: profile was resolved from the fallback reference, so its ladder and
+	// stated default are the fallback model's, not the primary's.
+	fbReq.ReasoningEffort = resolveRequestEffort(requestedEffort, profile.SupportsReasoning(), profile.ReasoningEffortLevels(), profile.DefaultReasoningEffort())
+	fbReq.WebSearch = s.providerWebSearchEnabled(profile)
+	fbReq.ProviderOptions = profile.ProviderOptions()
+	s.applyModelRequestMetadata(&fbReq)
+	route := s.priceRoundRoute(profile, fbReq)
+	return route.withFullHistoryInputEstimate(fbReq), route, true
 }
 
 func (s *Session) warnOutputReduction(profile *provider.Profile, budget llm.TokenBudget) {

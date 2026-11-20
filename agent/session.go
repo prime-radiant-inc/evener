@@ -156,15 +156,11 @@ type Session struct {
 	// input rather than a built message slice because only Messages depends on
 	// that input: the fallback lays out its own messages when it runs, so a
 	// round that never falls back builds one request instead of two (#6442).
+	// It carries the round's priced route too, because a round has one handoff,
+	// not two: every admission the round takes bills the tool list that handoff
+	// measured, and a later round cannot inherit this one's.
 	roundFallbackSource    roundFallbackSource
 	roundFallbackSourceSet bool
-	// roundRoute is the route the round's request was priced for: the resolved
-	// row admission decides against, with the byte count of the tool list it
-	// emits measured once during preparation. callModelWithFallback takes and
-	// clears it on the same turn goroutine, so every admission the round takes
-	// bills one measurement and a later round cannot inherit this one's.
-	roundRoute    roundRoute
-	roundRouteSet bool
 	// rejectedToolResultDocuments holds tool-call IDs whose document payload a
 	// provider rejected. Request assembly omits those bytes for the rest of the
 	// session (the transcript keeps them); the rejection recovery adds the IDs

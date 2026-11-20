@@ -51,7 +51,7 @@ func TestTheFallbackToAnOverridePricesItsOwnCatalog(t *testing.T) {
 		t.Fatalf("fixture does not distinguish the routes: override=%d primary=%d", overridePrice, primaryPrice)
 	}
 
-	built, ok := sess.responsesContinuationFallbackRequest(fallback, primaryReq, msgs)
+	built, _, ok := sess.responsesContinuationFallbackRequest(fallback, primaryReq, msgs, "")
 	if !ok {
 		t.Fatal("responsesContinuationFallbackRequest refused a request that carries full history")
 	}

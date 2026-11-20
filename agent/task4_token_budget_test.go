@@ -210,7 +210,7 @@ func TestContinuationFallbackRebuildEstimatesAgainstItsResolvedRow(t *testing.T)
 	profile := testOpenAICompatProfile(res.Instance, res.ModelID, 0).WithResolved(res)
 	sess := newSession(t, withProfile(profile), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
-	got, ok := sess.responsesContinuationFallbackRequest(profile, req, nil)
+	got, _, ok := sess.responsesContinuationFallbackRequest(profile, req, nil, "")
 	if !ok {
 		t.Fatal("model fallback rebuild refused a full-history request")
 	}
@@ -659,7 +659,7 @@ func TestTheFallbackRequestStampsTheFallbacksIdentity(t *testing.T) {
 	sess := newSession(t, withProfile(profile), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 
-	got, ok := sess.responsesContinuationFallbackRequest(profile, primary, fullHistory)
+	got, _, ok := sess.responsesContinuationFallbackRequest(profile, primary, fullHistory, "")
 	if !ok {
 		t.Fatal("the round retained its full history, so the fallback request is constructible")
 	}

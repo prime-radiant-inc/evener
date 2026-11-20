@@ -362,7 +362,7 @@ func TestTheFallbackPricesItsOwnCatalogBeforeItsHistoryEstimates(t *testing.T) {
 	sess := newSession(t, withProfile(uncapped), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 
-	built, ok := sess.responsesContinuationFallbackRequest(uncapped, req, msgs)
+	built, _, ok := sess.responsesContinuationFallbackRequest(uncapped, req, msgs, "")
 	if !ok {
 		t.Fatal("responsesContinuationFallbackRequest refused a request that carries full history")
 	}
