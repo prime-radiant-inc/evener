@@ -1615,6 +1615,86 @@ func TestFind_ProjectName_SavedLaneOutranksTheEnclosingCheckout(t *testing.T) {
 	}
 }
 
+// TestFind_ProjectName_RecordedSubdirOfSurvivingCheckoutLabelsTheLane covers a
+// session that entered a managed lane from a subdirectory of a surviving
+// checkout: the subdirectory and the lane are both gone, and the surviving
+// checkout's canonical project ID is the one the lane path records. The row's
+// own lane evidence cannot hash the dead subdirectory to that ID, so the
+// verified surviving checkout is what names the lane.
+func TestFind_ProjectName_RecordedSubdirOfSurvivingCheckoutLabelsTheLane(t *testing.T) {
+	stateHome := pinStateHome(t)
+
+	outer := newNamedCheckout(t, "surviving-root-repo")
+	outerProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(outer))
+	bucket, err := RuntimeDirForProjectWithStateHome(outerProject, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+	recorded := filepath.Join(outer, "pkg")
+	if err := os.MkdirAll(recorded, 0o755); err != nil {
+		t.Fatalf("mkdir recorded subdirectory: %v", err)
+	}
+	lane := filepath.Join(bucket, "worktrees", outerProject.ID, "dlg_sub")
+	gittest.Run(t, outer, "worktree", "add", "-q", lane, "-b", "lane-sub")
+	if err := os.RemoveAll(recorded); err != nil {
+		t.Fatalf("remove recorded subdirectory: %v", err)
+	}
+	if err := os.RemoveAll(lane); err != nil {
+		t.Fatalf("remove lane: %v", err)
+	}
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID(), WorktreePath: lane, WorktreeRestoreRoot: recorded}
+	row.EnvInfo.WorkingDir = recorded
+
+	if got, want := newProjectNameResolver().projectName(row, bucket), filepath.Base(outer); got != want {
+		t.Fatalf("projectName(lane %q entered from %q, both gone) = %q, want the surviving checkout %q", lane, recorded, got, want)
+	}
+}
+
+// TestFind_ProjectName_RecordedCheckoutAnswersBeforeTheEnclosingWalk covers a
+// lane in the bucket of an independent nested checkout: the lane and the
+// checkout are both gone, and hashing the recorded checkout names the lane's
+// project. Reading the enclosing repository's Git metadata must not happen to
+// reach that answer.
+func TestFind_ProjectName_RecordedCheckoutAnswersBeforeTheEnclosingWalk(t *testing.T) {
+	stateHome := pinStateHome(t)
+
+	outer := newNamedCheckout(t, "enclosing-walk-repo")
+	inner := filepath.Join(outer, "vendor", "nested")
+	gittest.Run(t, outer, "init", "-q", filepath.Join("vendor", "nested"))
+	gittest.Run(t, inner, "commit", "-q", "--allow-empty", "-m", "init")
+	innerProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(inner))
+	bucket, err := RuntimeDirForProjectWithStateHome(innerProject, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+	lane := filepath.Join(bucket, "worktrees", innerProject.ID, "dlg_walk")
+	gittest.Run(t, inner, "worktree", "add", "-q", lane, "-b", "lane-walk")
+	if err := os.RemoveAll(inner); err != nil {
+		t.Fatalf("remove nested checkout: %v", err)
+	}
+	if err := os.RemoveAll(lane); err != nil {
+		t.Fatalf("remove lane: %v", err)
+	}
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID(), WorktreePath: lane, WorktreeRestoreRoot: inner}
+	row.EnvInfo.WorkingDir = inner
+
+	r := newProjectNameResolver()
+	if got, want := r.projectName(row, bucket), filepath.Base(inner); got != want {
+		t.Fatalf("projectName(lane of gone checkout %q inside %q's bucket) = %q, want the recorded checkout's project %q", inner, outer, got, want)
+	}
+	if r.mainRootLookups != 0 {
+		t.Fatalf("labelling a lane whose own recorded checkout named the project took %d structural lookups, want 0: the row's own recorded checkout named the project, so the enclosing repository's Git metadata must not be read", r.mainRootLookups)
+	}
+}
+
 // TestFind_ProjectName_RecordedPathBecameAFile covers a recorded subdirectory that
 // a branch switch replaced with a regular file. Probing ".git" beneath the file
 // is ENOTDIR, not "no repository here", so the walk starts at the closest

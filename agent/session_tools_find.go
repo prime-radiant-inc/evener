@@ -965,7 +965,9 @@ func newProjectNameResolver(bucketMetas ...map[string][]schema.SessionMeta) *pro
 // each site below is an instance of it rather than a rule of its own:
 //
 //  1. What the ROW itself states: its own saved origin, then its own record's
-//     project ID (a managed lane's path), then a live checkout it names.
+//     project ID (a managed lane's path), then a live checkout it names. A
+//     surviving checkout whose canonical ID is that recorded project ID names
+//     it, and belongs to this item rather than item 3.
 //  2. What a record the row is TIED TO states: its owner, then its verified
 //     parent. Row-specific evidence must name the lane's project when the lane
 //     records one.
@@ -1044,11 +1046,9 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 	laneSeen := false
 	lanePath := ""
 	laneProjectID := ""
-	// prefixRoot is an ordinary checkout that a GONE recorded path survives in. It
-	// is remembered rather than answered: the row's own lane evidence is asked
-	// first, because a lane path records the project it belongs to while an
-	// enclosing checkout that merely accepts the bucket's ID is weaker evidence.
-	prefixRoot := ""
+	// prefixCandidates are the directories gone recorded paths survive in. They
+	// are remembered, not walked: the row's own evidence is asked first.
+	var prefixCandidates []string
 	for _, recorded := range recordPaths(m) {
 		if !filepath.IsAbs(recorded) {
 			continue
@@ -1140,16 +1140,8 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 			}
 			continue
 		}
-		// No recorded project ID can accept an ordinary walk's answer, so the walk
-		// can only be thrown away — and reading a relocated .git can stall on an
-		// unavailable mount. The marker and the recorded basename still answer.
-		// No recorded project ID can accept an ordinary walk's answer, so the walk
-		// can only be thrown away — and reading a relocated .git can stall on an
-		// unavailable mount. The marker and the recorded basename still answer.
-		if prefixRoot == "" && (ownProject != "" || bucketKnown) {
-			if root := r.resolveMainRoot(nearestSurvivingDir(resolved)); root != "" && r.checkoutIsRows(root, ownProject, bucketProject, bucketKnown) {
-				prefixRoot = root
-			}
+		if ownProject != "" || bucketKnown {
+			prefixCandidates = append(prefixCandidates, nearestSurvivingDir(resolved))
 		}
 	}
 	if laneSeen {
@@ -1177,6 +1169,9 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 			if gone, projectID := r.recordedOrdinaryProject(m, bucketDir); projectID != "" && projectID == laneProjectID {
 				return filepath.Base(gone)
 			}
+			if root := r.verifiedPrefixRoot(prefixCandidates, laneProjectID, bucketProject, bucketKnown); root != "" {
+				return filepath.Base(root)
+			}
 		}
 		// Only now, with every field of the row's own record asked and none of
 		// them answering, does bucket-wide inference run. It is the weakest
@@ -1184,7 +1179,7 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 		laneFallback, _ := r.worktreePathFallback(lanePath, bucketDir, m.ParentSessionID)
 		return laneFallback
 	}
-	if prefixRoot != "" {
+	if prefixRoot := r.verifiedPrefixRoot(prefixCandidates, ownProject, bucketProject, bucketKnown); prefixRoot != "" {
 		return filepath.Base(prefixRoot)
 	}
 
@@ -1241,6 +1236,21 @@ func (r *projectNameResolver) checkoutIsRows(root, ownProject, bucketProject str
 		return id == ownProject
 	}
 	return bucketKnown && id == bucketProject
+}
+
+// verifiedPrefixRoot walks the directories that gone recorded paths survive in,
+// in the order recorded, and returns the first surviving checkout that
+// checkoutIsRows accepts for requiredProject: the lane's recorded project for a
+// lane row, the row's own saved project otherwise. The walk is deferred to the
+// point of use because reading a relocated .git can stall on an unavailable
+// mount.
+func (r *projectNameResolver) verifiedPrefixRoot(candidates []string, requiredProject, bucketProject string, bucketKnown bool) string {
+	for _, candidate := range candidates {
+		if root := r.resolveMainRoot(candidate); root != "" && r.checkoutIsRows(root, requiredProject, bucketProject, bucketKnown) {
+			return root
+		}
+	}
+	return ""
 }
 
 // inRepoWorktreeProjectPath answers what an IN-REPOSITORY worktree path spells:
