@@ -1164,14 +1164,19 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 	// the recorded basename stays.
 	if !wdExists {
 		if bucketID, known := r.bucketProjectID(bucketDir); known {
-			resolved := resolveExistingPrefix(wd)
-			// A state-managed lane keeps its boundary: its identity is recorded in
-			// the state directory, and a walk past a pruned lane would answer with
-			// whichever checkout encloses the state dir.
-			if _, _, _, _, isLane := r.stateWorktreeOwner(resolved, bucketDir); !isLane {
-				if root := r.resolveMainRoot(resolved); root != "" &&
-					identifier.ProjectFromCanonicalPath(identifier.ResolveClean(root)).ID == bucketID {
-					return filepath.Base(root)
+			// A row that records a project of its own contradicts the bucket when the
+			// two differ, which --state-dir aimed at the wrong bucket produces: the
+			// ancestor describes that bucket's project, not this row's.
+			if own := strings.TrimSpace(m.Config.MemoryProjectID); own == "" || own == bucketID {
+				resolved := resolveExistingPrefix(wd)
+				// A state-managed lane keeps its boundary: its identity is recorded
+				// in the state directory, and a walk past a pruned lane would answer
+				// with whichever checkout encloses the state dir.
+				if _, _, _, _, isLane := r.stateWorktreeOwner(resolved, bucketDir); !isLane {
+					if root := r.resolveMainRoot(resolved); root != "" &&
+						identifier.ProjectFromCanonicalPath(identifier.ResolveClean(root)).ID == bucketID {
+						return filepath.Base(root)
+					}
 				}
 			}
 		}

@@ -1194,6 +1194,44 @@ func TestFind_ProjectName_DeletedSubdirInsideNestedCheckoutUnderWorktrees(t *tes
 	}
 }
 
+// TestFind_ProjectName_DeletedForeignProjectInMismatchedBucket covers a session
+// whose own record names a different project than the bucket it is stored in,
+// which --state-dir pointing at the wrong bucket produces. The surviving
+// ancestor is the BUCKET's project, not the row's, so the recorded basename is
+// the only evidence about the row.
+func TestFind_ProjectName_DeletedForeignProjectInMismatchedBucket(t *testing.T) {
+	stateHome := pinStateHome(t)
+
+	outer := newNamedCheckout(t, "bucket-owner-repo")
+	inner := filepath.Join(outer, "vendor", "inner")
+	gittest.Run(t, outer, "init", "-q", filepath.Join("vendor", "inner"))
+	gittest.Run(t, inner, "commit", "-q", "--allow-empty", "-m", "init")
+
+	outerProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(outer))
+	innerProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(inner))
+	if innerProject.ID == outerProject.ID {
+		t.Fatalf("fixture projects collided at %q", innerProject.ID)
+	}
+	bucket, err := RuntimeDirForProjectWithStateHome(outerProject, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+	if err := os.RemoveAll(inner); err != nil {
+		t.Fatalf("remove inner checkout: %v", err)
+	}
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.Config.MemoryProjectID = innerProject.ID
+	row.EnvInfo.WorkingDir = inner
+
+	if got, want := newProjectNameResolver().projectName(row, bucket), "inner"; got != want {
+		t.Fatalf("projectName(row of project %q stored in %q's bucket) = %q, want the recorded basename %q", innerProject.ID, outerProject.ID, got, want)
+	}
+}
+
 // TestFind_ProjectName_StateLaneStopsGitWalkAtLaneRoot covers a shared --state-dir
 // that lives inside checkout A while holding a managed delegate lane for
 // checkout B. Deleting the originless lane leaves nothing at the lane path, so a
