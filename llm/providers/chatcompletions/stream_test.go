@@ -28,8 +28,13 @@ func TestStreamMixedReasoningMatchesNonStreaming(t *testing.T) {
 		{"structured-then-scalar", mixed, "step one", "step one|scalar reasoning", `{"reasoning_details":` + details + `}` + "\x00" + `{"reasoning_content":"scalar reasoning"}`},
 		{"indexed-fragments", `{"reasoning_details":` + i0 + `}`, "step one", "step |one", `{"reasoning_details":` + ifrag + `}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"one","index":0}]}`},
 		{"distinct-items-one-chunk", `{"reasoning_details":[{"type":"reasoning.text","text":"plan","index":0},{"type":"reasoning.text","text":"forecast","index":1}]}`, "plan\nforecast", "plan\nfore|cast", plan + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"cast","index":1}]}`},
+		// A distinct index that arrives in its own frame still starts a new
+		// preview item, so the separator is not lost at the frame boundary.
+		{"distinct-index-separator-across-frames", `{"reasoning_details":[{"type":"reasoning.text","text":"plan","index":0},{"type":"reasoning.text","text":"forecast","index":1}]}`, "plan\nforecast", "plan|\nforecast", `{"reasoning_details":[{"type":"reasoning.text","text":"plan","index":0}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"forecast","index":1}]}`},
 		{"unindexed-thought-split", unindexedMsg, "step one", "step |one", unindexedSplit},
-		{"out-of-order-index", `{"reasoning_details":[{"type":"reasoning.text","text":"ac","index":0},{"type":"reasoning.text","text":"b","index":1}]}`, "ac\nb", "a|b|c", `{"reasoning_details":[{"type":"reasoning.text","text":"a","index":0}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"b","index":1}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"c","index":0}]}`},
+		// A newline starts each preview item, including when an earlier
+		// index resumes after another index appeared.
+		{"out-of-order-index", `{"reasoning_details":[{"type":"reasoning.text","text":"ac","index":0},{"type":"reasoning.text","text":"b","index":1}]}`, "ac\nb", "a|\nb|\nc", `{"reasoning_details":[{"type":"reasoning.text","text":"a","index":0}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"b","index":1}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"c","index":0}]}`},
 		{"mirror-scalar-first", mirrorMsg, "hello world", "hello world", mirrorScalar + "\x00" + mirrorStructured},
 		{"mirror-structured-first", mirrorMsg, "hello world", "hello |world", mirrorStructured + "\x00" + mirrorScalar},
 		// A multi-item structured preview shows its items joined by a newline;
@@ -38,6 +43,10 @@ func TestStreamMixedReasoningMatchesNonStreaming(t *testing.T) {
 		// Differing text is not a mirror: the live pane keeps both, and the
 		// settled text comes from the structured item.
 		{"near-miss-sends-unseen-suffix", `{"reasoning_content":"hello world","reasoning_details":[{"type":"reasoning.text","text":"hello world!"}]}`, "hello world!", "hello world|!", `{"reasoning_content":"hello world"}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"hello world!"}]}`},
+		// The mixed frame's scalar bytes are displayed through the structured
+		// candidate, so a later scalar repeat of the same item must not
+		// repeat them on the live pane.
+		{"mixed-frame-mirror-then-scalar-repeat", `{"reasoning_content":"ab","reasoning_details":[{"type":"reasoning.text","text":"a","index":0},{"type":"reasoning.text","text":"b","index":0}]}`, "ab", "a|b", `{"reasoning_content":"a","reasoning_details":[{"type":"reasoning.text","text":"a","index":0}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"b","index":0}]}` + "\x00" + `{"reasoning_content":"b"}`},
 		// Fragments of one explicit index concatenate whether they share a
 		// frame or not: the frame boundary is not an item boundary.
 		{"adjacent-same-index-one-chunk", `{"reasoning_details":[{"type":"reasoning.text","text":"recheck","index":0}]}`, "recheck", "recheck", `{"reasoning_details":[{"type":"reasoning.text","text":"re","index":0},{"type":"reasoning.text","text":"check","index":0}]}`},

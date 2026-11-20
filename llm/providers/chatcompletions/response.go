@@ -201,13 +201,6 @@ type chatDelta struct {
 // exactly one is read per chunk.
 var reasoningFieldNames = llm.OpenAICompatReasoningFields()
 
-// reasoningFromDelta returns the chunk's reasoning text and the field it
-// arrived on. Both response paths use the same precedence and detail joining
-// so a provider payload decodes identically in stream and non-stream mode.
-func reasoningFromDelta(d chatDelta) (text, field string) {
-	return extractReasoningFields(d.ReasoningContent, d.Reasoning, d.ReasoningText, d.ReasoningDetails)
-}
-
 type chatChunkToolCall struct {
 	Index        int               `json:"index"`
 	ID           string            `json:"id,omitempty"`

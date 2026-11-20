@@ -40,14 +40,13 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 	var reasoningStarted bool
 	// Scalar text and structured reasoning_details accumulate separately so any
 	// chunk order matches the non-stream fields: the settled thinking part keeps
-	// both, while the live preview emits one copy (see converge).
+	// both, while the live preview emits one copy into a single pane buffer.
 	var scalarBuf strings.Builder
 	var scalarField string
 	details := &detailAssembly{byKey: map[detailKey]*strings.Builder{}}
-	// scalarShown and structuredShown hold what each representation already put
-	// on the live pane; the offsets track how much of the other one's shown text
-	// the current representation has accounted for.
-	var scalarShown, structuredShown strings.Builder
+	// shown is the live pane text; each source's offset tracks how much of it
+	// that source has already accounted for, so a mirror does not repeat bytes.
+	var shown strings.Builder
 	var scalarOffset, structuredOffset int
 	// encryptedDetails accumulates opaque reasoning.encrypted items (OpenRouter
 	// Gemini/o-series) in arrival order; they ride the thinking part's
@@ -240,29 +239,41 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 			}
 
 			// Accumulate opaque encrypted reasoning items (they carry no text,
-			// so reasoningFromDelta skips them).
+			// so the live preview skips them).
 			encryptedDetails = append(encryptedDetails, collectEncryptedDetails(choice.Delta.ReasoningDetails)...)
 
 			// Reasoning delta — providers vary the field name; take the first
 			// non-empty variant per chunk (duplicated identical fields must
 			// not double the text) and remember the field for replay.
-			if scalar, field := extractScalarReasoning(choice.Delta.ReasoningContent, choice.Delta.Reasoning, choice.Delta.ReasoningText); scalar != "" {
+			scalar, field := extractScalarReasoning(choice.Delta.ReasoningContent, choice.Delta.Reasoning, choice.Delta.ReasoningText)
+			if scalar != "" {
 				if scalarField == "" {
 					scalarField = field
 				}
 				scalarBuf.WriteString(scalar)
 			}
-			if delta, field := reasoningFromDelta(choice.Delta); delta != "" {
+			structured := details.appendChunk(choice.Delta.ReasoningDetails)
+			delta := structured
+			if delta == "" {
+				delta = scalar
+			}
+			if delta != "" {
 				var send string
-				if field == "" {
-					send = converge(details.appendChunk(choice.Delta.ReasoningDetails), scalarShown.String(), &structuredOffset)
+				if structured != "" {
+					send, structuredOffset = unseen(delta, shown.String(), structuredOffset)
 					if send != "" {
-						structuredShown.WriteString(send)
+						shown.WriteString(send)
+					}
+					// The structured candidate may include this frame's scalar
+					// bytes too, so account for them before a later scalar
+					// mirror arrives.
+					if s, next := unseen(scalar, shown.String(), scalarOffset); s == "" {
+						scalarOffset = next
 					}
 				} else {
-					send = converge(delta, structuredShown.String(), &scalarOffset)
+					send, scalarOffset = unseen(delta, shown.String(), scalarOffset)
 					if send != "" {
-						scalarShown.WriteString(send)
+						shown.WriteString(send)
 					}
 				}
 				if send != "" {
@@ -377,16 +388,22 @@ func detailKeyOf(d reasoningDetailItem) detailKey {
 type detailAssembly struct {
 	order []detailKey
 	byKey map[detailKey]*strings.Builder
+	// last is the item of the most recent text-bearing piece, across chunks;
+	// a different item in a later frame still starts a new preview line.
+	last    detailKey
+	lastSet bool
 }
 
 // appendChunk folds one chunk's pieces into the assembly and returns the text
 // that chunk contributes to the live preview. Pieces of one explicit index
 // concatenate whether or not a frame boundary separates them; unindexed pieces
 // inside a single array keep the provider's newline, matching the non-stream
-// join. Distinct items are separated by one newline in the preview.
+// join. Distinct items are separated by one newline in the preview, including
+// across a frame boundary.
 func (a *detailAssembly) appendChunk(details []reasoningDetailItem) string {
 	var out strings.Builder
 	var prev detailKey
+	first := true
 	for _, d := range details {
 		text := detailItemText(d)
 		if text == "" {
@@ -400,7 +417,12 @@ func (a *detailAssembly) appendChunk(details []reasoningDetailItem) string {
 			a.order = append(a.order, key)
 		}
 		sameItem := out.Len() > 0 && key == prev
-		if out.Len() > 0 && !(sameItem && key.indexed) {
+		switch {
+		case first:
+			if a.lastSet && key != a.last {
+				out.WriteString("\n")
+			}
+		case !sameItem || !key.indexed:
 			out.WriteString("\n")
 		}
 		out.WriteString(text)
@@ -409,6 +431,8 @@ func (a *detailAssembly) appendChunk(details []reasoningDetailItem) string {
 		}
 		b.WriteString(text)
 		prev = key
+		first = false
+		a.last, a.lastSet = key, true
 	}
 	return out.String()
 }
@@ -423,27 +447,24 @@ func (a *detailAssembly) display() string {
 	return joinDetailTexts(texts)
 }
 
-// converge returns the part of candidate the live pane has not shown yet from
-// the other representation's emitted preview, and advances offset past the bytes
-// of that preview the candidate accounts for. A mirror contributes nothing; a
-// candidate that extends the other preview contributes only its unseen suffix.
-func converge(candidate, otherShown string, offset *int) string {
+// unseen returns the part of candidate the pane has not displayed yet, and the
+// offset this source has accounted for afterwards: past the bytes the pane
+// already shows, or past the candidate once it is appended.
+func unseen(candidate, shown string, offset int) (send string, next int) {
 	if candidate == "" {
-		return ""
+		return "", offset
 	}
-	if *offset > len(otherShown) {
-		*offset = len(otherShown)
+	if offset > len(shown) {
+		offset = len(shown)
 	}
-	remaining := otherShown[*offset:]
+	remaining := shown[offset:]
 	switch {
-	case strings.HasPrefix(remaining, candidate):
-		*offset += len(candidate)
-		return ""
 	case strings.HasPrefix(candidate, remaining):
-		*offset = len(otherShown)
-		return candidate[len(remaining):]
+		send = candidate[len(remaining):]
+		return send, len(shown) + len(send)
+	case strings.HasPrefix(remaining, candidate):
+		return "", offset + len(candidate)
 	default:
-		*offset = len(otherShown)
-		return candidate
+		return candidate, len(shown) + len(candidate)
 	}
 }
