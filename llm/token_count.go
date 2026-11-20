@@ -672,16 +672,18 @@ func responsesReasoningChars(t *ThinkingData) int {
 		return 0
 	}
 	chars := len(t.EncryptedContent)
-	if encrypted {
+	if len(t.ResponsesSummaryParts) > 0 {
+		for _, part := range t.ResponsesSummaryParts {
+			chars += len(part.Text)
+		}
+	} else if encrypted {
 		for _, s := range t.Summary {
 			if s = strings.TrimSpace(s); s != "" {
 				chars += len(s)
 			}
 		}
-	} else {
-		for _, part := range t.ResponsesSummaryParts {
-			chars += len(part.Text)
-		}
+	}
+	if !encrypted {
 		for _, part := range t.ResponsesContentParts {
 			chars += len(part.Text)
 		}

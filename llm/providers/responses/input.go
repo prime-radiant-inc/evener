@@ -411,9 +411,16 @@ func reasoningItem(t *llm.ThinkingData) (map[string]any, bool) {
 	if !encrypted && !t.ReplayableResponsesPlaintext() {
 		return nil, false
 	}
-	item := map[string]any{"type": "reasoning", "summary": reasoningTypedInput(t.ResponsesSummaryParts)}
+	var summary []any
+	if len(t.ResponsesSummaryParts) > 0 {
+		summary = reasoningTypedInput(t.ResponsesSummaryParts) // display deduplication empties Summary, not this
+	} else if encrypted {
+		summary = reasoningSummaryInput(t.Summary)
+	} else {
+		summary = []any{}
+	}
+	item := map[string]any{"type": "reasoning", "summary": summary}
 	if encrypted {
-		item["summary"] = reasoningSummaryInput(t.Summary)
 		item["encrypted_content"] = t.EncryptedContent
 	} else if len(t.ResponsesContentParts) > 0 {
 		item["content"] = reasoningTypedInput(t.ResponsesContentParts)
