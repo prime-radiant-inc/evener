@@ -209,23 +209,51 @@ function normalizedSnapshot(snapshot: ModelControlSnapshot): ModelControlSnapsho
   return { ...snapshot, active: { ...snapshot.active, reasoningEffortLevels: [] } };
 }
 
+// Sets or clears the provider instance named beside a model id, keeping the
+// key's established shape: present only when some carrier named one, so a
+// thread that never carried the key does not gain it with an undefined value
+// (hydrateThread and the thread/model/changed branch keep the same rule).
+function modelProfilePatch(
+  previous: string | undefined,
+  next: string | undefined,
+): Partial<Pick<ThreadModel, "modelProfile">> {
+  if (next !== undefined) return { modelProfile: next };
+  if (previous === undefined) return {};
+  return { modelProfile: undefined };
+}
+
 function projectModelControlSnapshot(model: ThreadModel, snapshot: ModelControlSnapshot): ThreadModel {
+  // The snapshot names the running model the way a read does: the provider
+  // instance in active.modelProvider with the bare id beside it, or one whole
+  // identity in both fields when no instance is named apart. modelProfile is
+  // the client's name for that instance (hydrateThread's Thread.evener.profile),
+  // and qualifiedModelIdentity prefers it when qualifying the id, so it must
+  // follow the snapshot: a cross-provider switch that left the previous read's
+  // instance in place would qualify the new provider's model as the old one's.
+  const profile = snapshot.active.modelProvider === snapshot.active.model ? undefined : snapshot.active.modelProvider;
   return {
     ...model,
     modelControlState: { kind: "ready", snapshot },
     modelProvider: snapshot.active.modelProvider,
     model: snapshot.active.model,
+    ...modelProfilePatch(model.modelProfile, profile),
     reasoningEffortLevels: [...(snapshot.active.reasoningEffortLevels ?? [])],
     supportsReasoning: snapshot.active.supportsReasoning,
   };
 }
 
 export function restoreHeldModelControl(next: ThreadModel, held: ThreadModel): ThreadModel {
+  // The held model's identity is a triple: the two fields above and the
+  // provider instance named beside them. Restoring the first two without the
+  // third would pair the held id with the fresh body's stale instance, so the
+  // instance rides with the other held fields - and one the held model does
+  // name cannot survive beside an id it does not qualify.
   return {
     ...next,
     modelControlState: held.modelControlState,
     modelProvider: held.modelProvider,
     model: held.model,
+    ...modelProfilePatch(next.modelProfile, held.modelProfile),
     reasoningEffortLevels: held.reasoningEffortLevels,
     supportsReasoning: held.supportsReasoning,
   };
