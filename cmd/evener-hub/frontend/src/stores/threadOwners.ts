@@ -26,11 +26,6 @@ export interface ForegroundHold {
 }
 const paneForegroundHolds = new Map<string, ForegroundHold[]>();
 const routingForegroundHolds = new Map<string, ForegroundHold[]>();
-// A foreground holder that also owns the live transcript bodies - a mounted
-// pane. Its own count, not foregroundHolds: a routing holder keeps the model
-// alive without becoming the reader a later pane finds and defers to, and
-// without attaching a repository reader of its own.
-const bodyOwnerCounts = new Map<string, number>();
 // Background claims keep canonical thread hydration/routing alive without
 // borrowing a pane's cache or ensure-generation lifetime.
 const backgroundCounts = new Map<string, number>();
@@ -147,18 +142,10 @@ export function releaseForeground(ref: string, routing = false): number {
   return releaseForegroundHold(newest);
 }
 
-/** Foreground holders that own the live transcript bodies. */
+/** Foreground holders that own the live transcript bodies: the mounted panes,
+ * derived from the pane handle array (see the module invariant). */
 export function bodyOwners(ref: string): number {
-  return bodyOwnerCounts.get(ref) ?? 0;
-}
-
-export function holdBodyOwnership(ref: string): void {
-  hold(bodyOwnerCounts, ref);
-}
-
-/** Drops one body-owning hold and returns how many remain. */
-export function releaseBodyOwnership(ref: string): number {
-  return release(bodyOwnerCounts, ref);
+  return paneForegroundHolds.get(ref)?.length ?? 0;
 }
 
 export function backgroundHolds(ref: string): number {
@@ -223,11 +210,8 @@ export function heldCountsAtStore(ref: string): boolean {
 }
 
 // The one answer to "is this thread body-owned": a mounted pane, a history
-// hold or a mutation pin owns the live transcript bodies. A routing hold is
-// excluded by construction, not by each caller remembering to exclude it - it
-// takes its own handle array alone and never holdBodyOwnership. Every site that
-// asks whether someone is already showing what a body read would restore calls
-// this.
+// hold or a mutation pin owns the live transcript bodies. Every site that asks
+// whether someone is already showing what a body read would restore calls this.
 export function threadBodyOwned(ref: string): boolean {
   return bodyOwners(ref) > 0 || historyHolds(ref) > 0 || isMutationPinned(ref);
 }
@@ -270,7 +254,6 @@ export function nextBackgroundLeaseSequence(ref: string): number {
 export function resetThreadOwnersForTests(): void {
   paneForegroundHolds.clear();
   routingForegroundHolds.clear();
-  bodyOwnerCounts.clear();
   backgroundCounts.clear();
   historyHoldCounts.clear();
   mutationPins.clear();

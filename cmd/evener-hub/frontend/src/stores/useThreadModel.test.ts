@@ -321,9 +321,9 @@ test("a failed read after a replacement does not verify a routing claim from the
   lease.release();
 }, 20_000);
 
-// A retry that no pane opened behind must register as a routing read. If it
-// registers as pane-backed, the first pane to open skips its cached lookup and
-// paints loading over a usable cached transcript.
+// A retry that no pane opened behind must not stand in for a pane's cached
+// lookup. If the first pane to open skipped that lookup it would paint loading
+// over a usable cached transcript.
 test("a pane opening over a retry still restores its cached transcript", async () => {
   const ref = "local:cached-pane";
   const cache = new SessionEntryCache({
@@ -332,8 +332,8 @@ test("a pane opening over a retry still restores its cached transcript", async (
     databaseName: `cached-pane-${crypto.randomUUID()}`,
   });
   setProductionEntryCacheForTests(cache);
-  // The one question M4 asks: did the pane spend its own bounded local
-  // lookup? A retry registered as pane-backed makes the pane skip it.
+  // The one question M4 asks: did the pane spend its own bounded local lookup?
+  // A read that stood in for the pane's would make the pane skip it.
   const lookup = vi.spyOn(cache, "getSessionForRequestedRef");
   const fake = connectMutationClient();
   let failReads = true;

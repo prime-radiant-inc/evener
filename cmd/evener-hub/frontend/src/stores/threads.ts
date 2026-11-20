@@ -176,7 +176,6 @@ import {
   hasFinalReleaseOwner,
   heldCountsAtStore,
   holdBackground,
-  holdBodyOwnership,
   holdForeground,
   holdHistory,
   isFinalReleaseOwner,
@@ -187,7 +186,6 @@ import {
   ownerGeneration,
   pinMutation,
   releaseBackground,
-  releaseBodyOwnership,
   releaseForeground,
   releaseForegroundHold,
   releaseHistory,
@@ -732,13 +730,7 @@ function isFallbackInvalidatingPush(method: string): boolean {
 class InflightHydrations {
   readonly #entries = new Map<
     string,
-    {
-      promise: Promise<ThreadModel | null>;
-      client: AppwireClientLike;
-      epoch: number;
-      includeTurns: boolean;
-      routing: boolean;
-    }
+    { promise: Promise<ThreadModel | null>; client: AppwireClientLike; epoch: number; includeTurns: boolean }
   >();
 
   get(ref: string): Promise<ThreadModel | null> | undefined {
@@ -756,30 +748,6 @@ class InflightHydrations {
   includeTurns(ref: string): boolean {
     return this.#entries.get(ref)?.includeTurns ?? false;
   }
-  // Whether the read in flight for this ref exists to verify routing state for
-  // a caller that routes, rather than to open a pane. A routing read publishes
-  // authoritative routing state but no pane bodies, so a pane opening over it
-  // still owes its own bounded local lookup; a pane's read owns that lookup and
-  // the pane joins it instead.
-  routing(ref: string): boolean {
-    return this.#entries.get(ref)?.routing ?? false;
-  }
-  // A read is pane-backed once any explicit pane open of the ref stands behind
-  // it. A routing claim's retry is registered by machinery that never opened
-  // the cache, so it carries no pane and must not stand in for one: the pane
-  // opening over it still owes the lookup, and adopts the same read for its
-  // source answer rather than spending a second read beside it.
-  markPaneBacked(ref: string): void {
-    const entry = this.#entries.get(ref);
-    if (entry) entry.routing = false;
-  }
-  // A pane that leaves before the lookup it marked can publish never spent that
-  // lookup, so the registration goes back to meaning what it did before the
-  // pane arrived: a read that verifies routing state and owes no cached open.
-  clearPaneBacked(ref: string, registration: Promise<ThreadModel | null> | undefined): void {
-    const entry = this.#entries.get(ref);
-    if (entry && entry.promise === registration) entry.routing = true;
-  }
   // The entry leaves when its own read settles, unless a newer read has
   // replaced it since.
   start(
@@ -788,9 +756,8 @@ class InflightHydrations {
     client: AppwireClientLike,
     epoch: number,
     includeTurns = false,
-    routing = false,
   ): void {
-    this.#entries.set(ref, { promise, client, epoch, includeTurns, routing });
+    this.#entries.set(ref, { promise, client, epoch, includeTurns });
     void promise
       .finally(() => {
         if (this.#entries.get(ref)?.promise === promise) this.#entries.delete(ref);
@@ -4566,15 +4533,18 @@ async function readThreadHydration(
     // A structured "history failed" response is not a transport hiccup: the
     // spec says the client shows one visible diagnostic and waits for a later
     // read to succeed, never auto-retrying in a loop. What the answer is worth
-    // depends on who is left to show it. A held model carries the diagnostic
-    // (applied below), so the attempt is terminal as before, and so is an
-    // unopened destination: a routing claim has no diagnostic surface, and
-    // pacing a retry over the hub's answer only repeats it while that claim
-    // stays busy. A mounted pane or a watched card whose FIRST read failed is
-    // the exception: it has a surface but no model yet, so the diagnostic has
-    // nowhere to ride and rolling the attempt back would drop the only thing
-    // keeping the view open. Those keep the paced first-read recovery, and a
-    // later read that succeeds hydrates the view that never unmounted.
+    // for a TRACKED attempt depends on who is left to show it. A held model
+    // carries the diagnostic (applied below), so the attempt is terminal as
+    // before, and so is an unopened destination: a routing claim has no
+    // diagnostic surface, and pacing a retry over the hub's answer only
+    // repeats it while that claim stays busy. A mounted pane whose FIRST read
+    // failed is the exception: it has a surface but no model yet, so the
+    // diagnostic has nowhere to ride and rolling the attempt back would drop
+    // the only thing keeping the view open. It keeps the paced first-read
+    // recovery, and a later read that succeeds hydrates the view that never
+    // unmounted. A WATCHED attempt keeps the watched lifecycle's own
+    // settlement and paced retry, which never learn a typed failure: a
+    // routing claim reads tracked models only.
     if (isTranscriptHistoryFailedError(err)) {
       // The diagnostic rides a held model: applied against this hydration's own
       // base model, and only there (superseded generations are ignored by
@@ -4595,13 +4565,20 @@ async function readThreadHydration(
           putThreadModel(ref, failedModel);
         }
       }
-      // The hub's terminal answer settles this attempt's lifecycle (see
-      // failOwnedHydration). With no model held, only a mounted pane or a
-      // watched card has a surface the recovery can repair, so it keeps the
-      // paced first-read recovery and re-arms against the record the retry
-      // opens.
+      if (!tracked) {
+        // The watched lifecycle's own settlement and paced recovery (above):
+        // only a card with no model to show re-reads.
+        if (!pending.baseModel) scheduleOwnedHydrationRetry(read.kind, ref, pending);
+        throw err;
+      }
+      // The hub's terminal answer settles the TRACKED attempt's lifecycle (see
+      // failOwnedHydration), so a claim waiting on it learns the answer. With
+      // no model held, only a mounted pane has a surface the recovery can
+      // repair; it keeps the paced first-read recovery and re-arms against the
+      // record the retry opens. An unopened destination arms nothing: repeating
+      // the hub's answer while a claim stays busy decides nothing.
       const failed = failOwnedHydration(read.kind, ref, pending, err);
-      if (pending.baseModel === undefined && (read.kind === "watched" || bodyOwners(ref) > 0)) {
+      if (pending.baseModel === undefined && bodyOwners(ref) > 0) {
         scheduleOwnedHydrationRetry(read.kind, ref, pending, failed);
       }
     } else {
@@ -7456,16 +7433,18 @@ function retireOwnedHydration(kind: HydrationOwnerKind, ref: string): void {
   closeOwnedHydration(kind, ref, { kind: "retired" });
 }
 
+// The connection half of the attempt fence: the client and ready epoch the read
+// was issued under are still the live ones.
+function attemptConnectionIsCurrent(pending: PendingThreadHydration): boolean {
+  return getWiredClient() === pending.client && getReadyEpoch() === pending.epoch;
+}
+
 // True while this attempt still owns the ref's pending read, on the client and
 // ready epoch it was issued under. Every terminal answer an attempt records is
 // fenced by this: a read a newer attempt superseded, or one whose connection
 // was replaced under it, has no standing to settle anything.
 function hydrationAttemptIsCurrent(kind: HydrationOwnerKind, ref: string, pending: PendingThreadHydration): boolean {
-  return (
-    pendingHydrationsFor(kind).get(ref) === pending &&
-    getWiredClient() === pending.client &&
-    getReadyEpoch() === pending.epoch
-  );
+  return pendingHydrationsFor(kind).get(ref) === pending && attemptConnectionIsCurrent(pending);
 }
 
 // The hub's terminal answer for the attempt: nothing will publish for this
@@ -7554,18 +7533,12 @@ function scheduleOwnedHydrationRetry(
   failed?: OwnedHydration,
 ): void {
   const pendingHydrations = pendingHydrationsFor(kind);
-  const current = hydrationAttemptIsCurrent(kind, ref, pending);
   // A rejection removes only this attempt's own response-cut buffer, and it
   // removes it now rather than a microtask later: the retry scheduled below
   // must be able to see that no attempt is in flight for this ref. A newer
   // attempt already owns the entry, so leave that one — and its retry — alone.
-  //
-  // The buffer is retired even when the connection fence below refuses the
-  // retry: the attempt is over either way, and only its own entry may be
-  // dropped here.
   if (pendingHydrations.get(ref) !== pending) return;
   retirePendingHydration(ref, pending, pendingHydrations);
-  if (!current) return;
   // A durably deleted target is terminal (see the `deletedRefs` field doc):
   // retire the lifecycle — cancelling its retry and settling any owner — and
   // arm nothing. markThreadDeletedIfFenced recorded the flag on the way here.
@@ -7575,6 +7548,7 @@ function scheduleOwnedHydrationRetry(
   }
   const client = pending.client;
   const epoch = pending.epoch;
+  if (!attemptConnectionIsCurrent(pending)) return;
   if (!hydrationOwnerActive(kind, ref)) return;
   // The failed attempt closed this record by settling it (failOwnedHydration),
   // so the recovery always opens a fresh one: its waiter learns the hub's
@@ -7778,16 +7752,11 @@ async function refreshTrackedThreadNow(
     (!hasPublishedModel || shelteringUnverifiedShell) &&
     (previous !== undefined || targetedResync || routingOnlyForegroundHolds(ref) > 0);
   if (trackForActiveLifecycle) {
-    // This registration is machinery's, not a pane's: a retry or a reconnect
-    // re-read that began for a ref with no pane behind it (a routing claim's
-    // retry is the routing case). It never opened the cache, so it must not
-    // stand in for a pane's open: registered as pane-backed, the first pane to
-    // open over it skips its own lookup and paints loading over a usable
-    // cached transcript. Body owners are the pane signal - every pane
-    // acquisition takes one - so a ref with none registers as a routing read,
-    // and the pane that arrives still restores its cache while joining this
-    // same source read.
-    inflightHydrates.start(ref, hydration, client, epoch, false, bodyOwners(ref) === 0);
+    // This registration is machinery's, not a pane's, and a pane that opens
+    // over it still restores its cache first: the route's own lookup is the
+    // dedup, so the pane awaits that open - not this read - and then joins
+    // this same registration for its source answer.
+    inflightHydrates.start(ref, hydration, client, epoch);
   }
   try {
     const model = await hydration;
@@ -8512,12 +8481,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       throw new Error(DELETED_DESTINATION_REJECTION);
     }
     const count = foregroundHolds(ref);
-    // The pane-only count, also read before this call's own hold: a history
-    // hold or a mutation pin keeps the ref alive after a Clear but is not the
-    // first pane open, and must not stop that pane from beginning the fresh
-    // lifetime its read needs to resume cached writes. A routing hold never
-    // takes the bodies, so it never asks.
-    const paneBodyOwners = routingOnly ? 0 : bodyOwners(ref);
+    // The mounted panes as they stand BEFORE this call's own hold: a routing
+    // lease, a history hold and a mutation pin keep the ref alive without being
+    // panes, so none of them may count as one here.
+    const bodyOwnersBefore = bodyOwners(ref);
     if (count === 0) {
       ensureGenerations.set(ref, (ensureGenerations.get(ref) ?? 0) + 1);
       beginCanonicalThreadClaim(ref, true);
@@ -8542,16 +8509,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // or gives up before then still owns this handle, and releasing a ref later
     // would name whichever hold is newest by that point instead of this one.
     opts?.onHold?.(hold);
-    if (!routingOnly) holdBodyOwnership(ref);
     syncTranscriptResidencyOwners(ref);
     // Retention alone grants no write permission: only an explicit pane open
     // begins the fresh foreground lifetime that lifts a Clear's suppression.
-    // The pane-only count as it stood BEFORE this call's own hold, not the
-    // total foreground count: a routing hold already standing here must not be
-    // what decides this pane's lifetime is not the fresh one, and neither must
-    // a history hold or mutation pin, which keep the ref alive after a Clear
-    // without being a pane.
-    if (paneBodyOwners === 0 && !routingOnly) acquireCacheLifetimeForeground(ref);
+    if (bodyOwnersBefore === 0 && !routingOnly) acquireCacheLifetimeForeground(ref);
     syncThreadSubscription(ref, client);
     // A routing hold needs verified routing state and nothing else: identity,
     // status and capabilities from a model whose read has landed. A resident
@@ -8579,7 +8540,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // whose new explicit foreground lifetime owes an authoritative hydration
     // even while its stale display model is still resident.
     if (threadsStore.getState().threads.has(ref) && !routingOnly && !needsClearLifetimeReconciliation(ref)) {
-      if (bodyOwners(ref) > 1) return; // Another mounted pane already owns the live bodies.
+      if (bodyOwnersBefore > 0) return; // Another mounted pane already owns the live bodies.
       if (await openEntryTranscript(ref)) return;
       if (!claimStanding()) return;
       // Missing or unwritten backing rows cannot establish the captured view.
@@ -8598,41 +8559,25 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // still fenced; only the stale stamp is gone.
     // The cached-shell lookup (spec, "The load seam"): serial by necessity —
     // the held identity must exist before issueLatestWindowRead runs — and
-    // bounded by its own 250 ms deadline. The creator alone publishes and
-    // arms; a joiner sees the shell (threads.has) or the hydration
-    // (inflightHydrates) and joins that instead.
+    // bounded by its own 250 ms deadline. The ROUTE deduplicates it: a lookup
+    // already in flight is the one awaited, and a route that already holds a
+    // repository opens nothing. Every pane therefore performs the lookup
+    // before it joins a source read, and a pane opening over a read that
+    // machinery registered - a retry or a reconnect with no pane behind it -
+    // still restores the cache it may hold, then joins that same read for its
+    // source answer.
     // A routing claim skips the cached-transcript open: it routes on identity,
     // status and capabilities, and that open attaches a reader and can spend a
     // body-restoring read in front of its outbox write. The shell the open
     // would publish is for a pane, so a claim reads directly instead.
-    //
-    // A PANE opening over a claim's read still owes that lookup. The claim's
-    // read verifies routing state and publishes no pane bodies, so `has(ref)`
-    // being true here says a model exists, not that a pane may show what the
-    // cache holds: skipping the lookup for the claim's registration is what
-    // left the opening pane blank over a usable cached copy. A pane's own read
-    // is a different registration and still owns its lookup - the pane joins it
-    // rather than spending a second local open beside it.
-    const routedByClaim = inflightHydrates.has(ref) && inflightHydrates.routing(ref);
-    if (!routingOnly && !threadsStore.getState().threads.has(ref) && (!inflightHydrates.has(ref) || routedByClaim)) {
-      // A pane opening over a routing claim's read owns the local lookup that
-      // read never performed. From here the registration has a pane behind it,
-      // so a second pane opening joins it instead of opening the cache again.
-      if (routedByClaim) inflightHydrates.markPaneBacked(ref);
-      const backedRegistration = inflightHydrates.get(ref);
-      if (!claimStanding()) {
-        inflightHydrates.clearPaneBacked(ref, backedRegistration);
-        return;
-      }
+    if (!routingOnly && !threadsStore.getState().threads.has(ref)) {
+      if (!claimStanding()) return;
       await openCachedEntryTranscript(ref, generation);
       if (deletionFenceExit(ref, routingOnly)) return;
       // Again after the await: the attachment and the publication above run
       // inside the lookup, so a departure during it must not arm the recovery
       // or the hydration that follows.
-      if (!claimStanding()) {
-        inflightHydrates.clearPaneBacked(ref, backedRegistration);
-        return;
-      }
+      if (!claimStanding()) return;
     }
     let cachedBase: ThreadModel | undefined = threadsStore.getState().threads.get(ref);
 
@@ -8682,7 +8627,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // excludes this registration from its wait (see exceptRegistration), so
       // the certification still promotes rather than self-certifying.
       registerHydrationSettlement(ref, hydration);
-      inflightHydrates.start(ref, hydration, hydrationClient, hydrationEpoch, false, routingOnly);
+      inflightHydrates.start(ref, hydration, hydrationClient, hydrationEpoch);
       return hydration;
     };
 
@@ -8897,12 +8842,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     releaseForeground(ref);
     const count = foregroundHolds(ref);
     if (count === before) return; // nothing of this kind to drop
-    releaseBodyOwnership(ref);
     return threadsStore.getState().releaseThreadAfterHoldDrop(ref, count);
   },
 
   releaseThreadHold(hold) {
-    const { ref, routing } = hold;
+    const { ref } = hold;
     // The handle-shaped release. A hold this handle no longer has standing was
     // already dropped by the other exit that owns it - its pane released on
     // unmount, or this same rollback ran once - so there is nothing of its own
@@ -8913,7 +8857,6 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     releaseForegroundHold(hold);
     const count = foregroundHolds(ref);
     if (count === before) return; // this handle's hold was already gone
-    if (!routing) releaseBodyOwnership(ref);
     return threadsStore.getState().releaseThreadAfterHoldDrop(ref, count);
   },
 
@@ -9059,11 +9002,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         // its own lifecycle reads again. Same contract as ensureThread above.
         const owned = ownedWatchedHydrations.get(ref);
         if (owned?.generation !== generation) throw err;
-        const settlement = await owned.firstHydration;
-        // Same terminal answer as ensureThread: the hub refused this watcher's
-        // history, and re-reading would loop on a failure it has already told
-        // this caller about.
-        if (settlement.kind === "historyFailed") throw settlement.error;
+        await owned.firstHydration;
         // Fall through to the shared re-arm below, which re-checks the
         // rich/lean requirement a published model has to satisfy.
       }
@@ -9982,7 +9921,7 @@ export function markCacheSessionsDeleted(refs: string[]): void {
     return { deletedRefs };
   });
   for (const ref of refs) {
-    // The fence is terminal for the ref's hydration lifecycle, and it is
+    // The fence is terminal for both kinds of hydration lifecycle, and it is
     // recorded above before this runs, so every owner waiting on a first model
     // must be woken here rather than left parked on a lifecycle the deletion is
     // about to revoke. `residencyIfCreated.revoke` below aborts the ref's issued
@@ -9991,9 +9930,10 @@ export function markCacheSessionsDeleted(refs: string[]): void {
     // rejection handler that would settle this lifecycle. Settling first is
     // what makes the revoke's cancellation invisible to a waiting claim: it
     // wakes on the settled promise, re-checks the fence, and rejects instead of
-    // holding its destination forever.
-    retireOwnedHydration("thread", ref);
-    retireOwnedHydration("watched", ref);
+    // holding its destination forever. A watched card parked on
+    // `firstHydration` is woken the same way, so it re-checks the fence instead
+    // of hanging on a lifecycle nothing else would settle.
+    for (const kind of ["thread", "watched"] as const) retireOwnedHydration(kind, ref);
     residencyIfCreated?.revoke(ref, "deleted");
     noteEntryRouteRetirement(ref);
   }

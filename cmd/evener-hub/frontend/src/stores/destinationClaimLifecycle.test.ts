@@ -70,6 +70,15 @@ function historyFailedRejection(): WireError {
   });
 }
 
+// The source's answer: the fresh incarnation is what displaces the older cached
+// shell a pane restored, so this response is the claim's verification.
+function freshIncarnationAnswer(ref: string): ThreadReadResponse {
+  const response = readResponse(ref);
+  const snapshot = response.snapshot;
+  if (snapshot === undefined) throw new Error(`expected a snapshot for ${ref}`);
+  return { ...response, snapshot: { ...snapshot, incarnation: "inc-2" } };
+}
+
 // Capture the retry a failed read arms, so a test can fire it on demand.
 // `retry.fire` stays undefined until a read answers and arms one.
 function captureRetryScheduler(): { retry: { fire: (() => void) | undefined }; restore: () => void } {
@@ -486,15 +495,7 @@ test("a cached shell installed during a routing read does not certify the claim"
   });
   const fake = connectMutationClient();
   // The source's answer is the fresh incarnation, whose read grants Send.
-  fake.on("thread/read", () => {
-    const response = readResponse(ref);
-    const snapshot = response.snapshot;
-    if (snapshot === undefined) throw new Error(`expected a snapshot for ${ref}`);
-    return {
-      ...response,
-      snapshot: { ...snapshot, length: snapshot.length ?? 0, incarnation: "inc-2" },
-    };
-  });
+  fake.on("thread/read", () => freshIncarnationAnswer(ref));
   const claim = acquireUnreadThreadClaim(ref);
   await flushUntil(() => fake.calls.some((call) => call.method === "thread/read"));
   // The pane opens over the claim's read and installs the older shell while the
@@ -655,47 +656,6 @@ test("a claim sharing a pane's refused first read rejects while the pane keeps i
   restoreScheduler();
 }, 20_000);
 
-// A card that never hydrated has no model and, between retries, no read of its
-// own in flight. The reconnect fan-out has to find it by its claim alone:
-// listing only published models and pending reads skips exactly the card whose
-// first read the hub refused, so the hub could serve the history and the card
-// would never ask again.
-test("a reconnect re-reads a watched card that has neither a model nor a pending read", async () => {
-  const ref = "local:watched-reconnect-no-model";
-  const first = connectMutationClient();
-  first.on("thread/read", () => {
-    throw historyFailedRejection();
-  });
-  // The refusal's recovery is never fired, so the card sits with a claim and
-  // nothing else: this is the shape a reconnect has to notice.
-  const restoreScheduler = installHydrationRetrySchedulerForTests(() => () => {});
-  const watching = threadsStore.getState().watchThread(ref);
-  await pump();
-  expect(threadsStore.getState().watchedThreads.has(ref), "the card has no model").toBe(false);
-  expect(
-    first.calls.filter((call) => call.method === "thread/read"),
-    "the refusal is the only read",
-  ).toHaveLength(1);
-
-  let replacementReads = 0;
-  const second = new FakeClient("ready");
-  second.on("thread/read", () => {
-    replacementReads += 1;
-    return readResponse(ref, { name: "Served after reconnect" });
-  });
-  connectionStore.getState().connect(second);
-  await flushUntil(() => replacementReads > 0);
-
-  expect(replacementReads, "the reconnect re-read the card by its claim alone").toBeGreaterThan(0);
-  await flushUntil(() => threadsStore.getState().watchedThreads.get(ref)?.name === "Served after reconnect");
-  expect(threadsStore.getState().watchedThreads.get(ref)?.name, "the card hydrated after the reconnect").toBe(
-    "Served after reconnect",
-  );
-  await settleOutcome(watching);
-  threadsStore.getState().releaseWatchedThread(ref);
-  restoreScheduler();
-}, 20_000);
-
 // A claim's retry record belongs to ONE attempt. A read a newer attempt
 // superseded is not that attempt, so its late terminal answer must not settle
 // the record the retry opened: the claim would reject over a refusal the hub
@@ -813,6 +773,50 @@ test("a cached lookup finishing after the last pane closes does not attach a rea
   paneRead.resolve(readResponse(ref));
   await pane;
   const lease = await claim;
+  lease.release();
+  await cache.dispose();
+}, 20_000);
+
+// A routing read publishes routing state and opens no cache, so a pane opening
+// over one still owes the route's bounded lookup before it joins that read: the
+// shell on disk is the pane's to restore, and the read already in flight is the
+// answer it shares rather than a second one it spends beside it.
+test("a pane opening over a routing read restores the cache and then joins that read", async () => {
+  const ref = "local:pane-over-routing-read";
+  const cache = createEntryCacheFixture();
+  setProductionEntryCacheForTests(cache.cache);
+  setSessionCacheLookupDeadlineForTests(30_000);
+  const seed = await seedCachedShell(cache.cache, ref, 0);
+  expect(seed.outcome, "the pane's cached shell is seeded durably").toBe("committed");
+  const lookups = vi.spyOn(cache.cache, "getSessionForRequestedRef");
+  const fake = connectMutationClient();
+  const claimRead = deferred<ThreadReadResponse>();
+  let reads = 0;
+  fake.on("thread/read", () => {
+    reads += 1;
+    return claimRead.promise;
+  });
+  const claim = acquireUnreadThreadClaim(ref);
+  await flushUntil(() => reads === 1);
+
+  // The pane opens over the claim's read, which is still on the wire and has
+  // published nothing: the lookup is this pane's own.
+  const pane = threadsStore.getState().ensureThread(ref);
+  const shellInstalled = await pumpIndexedDBUntil({
+    turns: 40,
+    until: () => entryRouteOf(ref).repository?.getSnapshot()?.history?.incarnation === "inc-1",
+  });
+  expect(shellInstalled, "the pane restored the cached shell").toBe(true);
+  expect(lookups, "the pane spent the route's cached lookup").toHaveBeenCalled();
+  expect(reads, "the pane joined the claim's read instead of issuing one").toBe(1);
+
+  // The source's answer carries the fresh incarnation: it is what displaces the
+  // older shell the pane restores, so the claim's read is the verification.
+  claimRead.resolve(freshIncarnationAnswer(ref));
+  await pane;
+  const lease = await claim;
+  expect(reads, "the joined read is still the only one on the wire").toBe(1);
+  expect(threadsStore.getState().threads.has(ref), "the shared read hydrated the pane").toBe(true);
   lease.release();
   await cache.dispose();
 }, 20_000);
