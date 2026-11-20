@@ -130,11 +130,12 @@ it("keeps a refused /model as an unconfirmed send rather than restoring its text
 		const repository = new DraftRepository(port);
 		const document = new DraftDocument(() => repository, destination);
 		const sent: string[] = [];
+		const refusal = new Error("refused-by-test-service");
 		const service = {
 			models: async () => ({ data: [{ provider: "scripted", model: "alternate" }] }),
 			changeModel: async () => {
 				sent.push("changeModel");
-				throw new Error("The provider is not available to this session.");
+				throw refusal;
 			},
 		} as unknown as Parameters<typeof submitComposerCommand>[1];
 		document.edit("/model alternate");
@@ -151,7 +152,7 @@ it("keeps a refused /model as an unconfirmed send rather than restoring its text
 				stop: async () => {},
 				reasoning: () => null,
 			}),
-		).rejects.toThrow("The provider is not available to this session.");
+		).rejects.toBe(refusal);
 		expect(sent).toEqual(["changeModel"]);
 		// The frame left the phone and the daemon refused it: the text is NOT
 		// restored to the composer. It stands as the send it became.
