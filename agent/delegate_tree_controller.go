@@ -21,16 +21,6 @@ var (
 	errDelegateNotControllable = errors.New("not_controllable: delegate")
 	errDelegateStaleLease      = errors.New("stale_delegate_lease")
 	errDelegateTargetBusy      = errors.New("target_busy")
-	// errDelegateStableModelTurnUnleased is model and tool admission's refusal
-	// of an unleased turn on a stable delegate child that is carrying a watch
-	// notice (LIFE-01, #2340). Such a child reaches its provider or a tool
-	// inside an exact generation held under a lease, which is what makes the
-	// controller's accounting, stop admission, and result settlement cover the
-	// turn. A watch notice is the one payload whose ingress is meant to make it
-	// durable attention, so a turn that finds one queued is the legacy path
-	// this issue closes: no lease in context is a refusal, not the ordinary
-	// non-delegate path.
-	errDelegateStableModelTurnUnleased = errors.New("unleased_stable_delegate_model_turn")
 )
 
 type delegateLifecycle string

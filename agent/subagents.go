@@ -1685,23 +1685,6 @@ func (s *Session) redriveChildIfAttentionRemains(driveCtx context.Context, sub *
 		case <-driveCtx.Done():
 			return
 		}
-		// LIFE-01 (#2340): the same admission decision the wake edge makes. A
-		// watch notice that arrived after the drive's final queue check would
-		// otherwise be re-driven here and refused at acceptance, taking a drive
-		// slot every interval while draining nothing. Ordinary completions and
-		// settlement-only sends still re-drive -- that is what the check returns
-		// false for.
-		if s.driveWouldStrandOnAdmission(childSess) {
-			// Skipping the drive is only half the answer, and this site is where
-			// the other half matters most: a ONE-SHOT timer whose only fire
-			// landed while an unleased request was in flight retires after this
-			// tick, so a retry that just returns strands the fire forever. The
-			// conversion is the same one the wake edge and the sweep make, from
-			// the same helper, so it leaves durable attention behind and the
-			// drain finishes.
-			childSess.deferQueuedWatchNoticesToAttention()
-			return
-		}
 		if s.driveSubagentNotificationTurn(sub) {
 			s.settleDrivenChildForwardedPendings(childSess.id)
 		}

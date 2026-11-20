@@ -1598,15 +1598,13 @@ func (s *Session) drainJobNotifications() []jobNotification {
 	return drained
 }
 
-// stableChildTurnNeedsLease reports whether THIS turn is the unleased
-// stable-delegate model turn the issue closes: a stable child, with no lease in
-// context, whose turn is carrying a watch notice (LIFE-01, #2340).
+// stableChildTurnNeedsLease reports whether this turn is running on a stable
+// delegate child without a run lease in context.
 //
-// It is the ONE statement of that predicate. Model admission, tool admission
-// and the notification accept all ask it, so a rule that must agree in three
-// places cannot drift between them. A lease in context is not this predicate's
-// business: admission validates the lease itself against the controller,
-// because a lease can be stale or fenced while still being present.
+// Both notification deferral and the unleased projection filter ask it so they
+// cannot drift. A lease in context is not this predicate's business: admission
+// validates the lease itself against the controller, because a lease can be
+// stale or fenced while still being present.
 //
 // The delegate identity is the structural test, not a flag: owningDelegateID is
 // set exactly on a stable delegate's child session, and an ephemeral subagent
@@ -1623,59 +1621,16 @@ func (s *Session) stableChildTurnNeedsLease(ctx context.Context) bool {
 	return true
 }
 
-// hasPendingNotificationMatching reports whether any notification the session
-// still owes on its ordinary rail satisfies match. Both the queued notices and
-// the ones awaiting the request are consulted, because either is work the
-// session will present.
-func (s *Session) hasPendingNotificationMatching(match func(jobNotification) bool) bool {
-	if s == nil {
-		return false
-	}
-	s.pendingJobNotifsMu.Lock()
-	defer s.pendingJobNotifsMu.Unlock()
-	if slices.ContainsFunc(s.pendingJobNotifs, match) {
-		return true
-	}
-	return slices.ContainsFunc(s.jobNotifsAwaitingRequest, func(a awaitedJobNotification) bool {
-		return match(a.deliverable.notification)
-	})
-}
-
-// hasPendingWatchNotification reports whether the model notifications this
-// session still owes include a watch notice. A watch notice's ingress turns it
-// into durable attention precisely so a governed generation presents it; a turn
-// that finds one queued instead is the legacy rail admission refuses.
-//
-// The kind is the whole test. Nothing here reads reason or body text, so a
-// caller cannot be refused for what a notice says -- only for what it is.
-func (s *Session) hasPendingWatchNotification() bool {
-	return s.hasPendingNotificationMatching(jobNotification.isWatch)
-}
-
-// hasPendingOrdinaryNotification reports whether the session's ordinary
-// notification rail holds anything that is NOT a watch notice: a terminal shell
-// completion, a forwarded nested report, steering owed to the model.
-//
-// It exists so the parent drain can tell the two kinds of queued work apart on a
-// stable child. Watch work is refused an unleased turn, so driving it would
-// launch a turn that stands straight back down; an ordinary notification is
-// drained only by an EntryNotification turn, and skipping that retry would
-// strand a recovered completion once a drive slot frees.
-func (s *Session) hasPendingOrdinaryNotification() bool {
-	return s.hasPendingNotificationMatching(func(n jobNotification) bool { return !n.isWatch() })
-}
-
-// THE RULE (LIFE-01, #2340). A watch notice becomes model-visible only at a
-// LEASED presentation. Every path that would write one into a turn's reminder
-// must therefore either carry a lease or persist durable delegate attention and
-// defer the notice, and it must do so BEFORE the write.
+// THE RULE. A watch notice becomes model-visible only at a LEASED presentation.
+// Every path that would write one into a turn's reminder must therefore either
+// carry a lease or persist durable delegate attention and defer the notice, and
+// it must do so BEFORE the write.
 //
 // The rule is about the WRITE, not the queue. Admission that reads the queue is
 // blind by construction: a watch notice has no terminal generation, so
-// awaitRequestForJobNotifications settles it before the request is prepared and
-// the queue is empty by the time a request-time check could look. Three writers
-// were reaching the model that way -- the opening accept, the round-boundary
-// inject, and a later-arrival drain -- so each one asks here instead.
+// awaitRequestForJobNotifications settles it before the request is prepared.
+// Both writers -- the opening accept and the round-boundary inject -- ask here
+// instead, so the split lives in exactly one place.
 //
 // A refusal that stops the whole turn is wrong even when it is right about the
 // watch notice: a batch can hold a recovered shell completion beside a watch
@@ -1688,20 +1643,34 @@ func (s *Session) hasPendingOrdinaryNotification() bool {
 // predicate is the child's ownership (stableChildTurnNeedsLease) plus the
 // notice's kind (jobNotification.isWatch).
 
-// deferUnleasedWatchNotices removes from jobNotifs every watch notice this turn
-// may not carry, persisting each as durable delegate attention first so a leased
-// generation still presents it. It returns the notices the turn may carry and
-// reports whether it deferred anything.
+// deferUnleasedWatchNotices is THE RULE's one split point. On a leased turn it
+// does nothing: the lease is the presentation a watch notice waits for, so the
+// whole batch rides the turn. On an unleased stable-delegate turn it partitions
+// the batch three ways:
+//
+//   - An ordinary notice stays in kept and proceeds normally. It has no lease to
+//     inherit but is perfectly deliverable, and it is the only half some turns
+//     own.
+//   - A caller-targeted watch frame the model ALREADY has stays in kept: only
+//     its delivered record is outstanding, so settling it presents nothing and
+//     needs no lease (the zero-model drain).
+//   - Everything else watch-shaped goes to durable leased attention: an
+//     untranscribed caller frame under its delivery identity
+//     (deferWatchSendFrameToAttention), and any other watch notice under the
+//     deferral identity (persistDeferredWatchNotice). A leased generation then
+//     presents it.
 //
 // Order is persist-then-suppress. Suppressing first and persisting after leaves
 // a window in which the notice is neither queued nor durable, which loses it.
-// A notice whose persist fails is NOT left in the deliverable set: the writer
-// would put it into this unleased reminder and settle it before admission could
-// see it, which is the leak this split exists to close. It goes back on the
-// queue instead, so admission finds it owed and refuses the turn while the next
-// attempt retries the persist. An error the child can see beats a silently
-// swallowed failure report, and the ordinary completions beside it still ride
-// this turn.
+// A notice whose append fails is NOT left in the deliverable set: the writer
+// would put it into this unleased reminder and settle it before a leased
+// generation could present it, which is the leak this split exists to close. It
+// goes back on the queue instead, owed and untouched, while the next attempt
+// retries the append. An error the child can see beats a silently swallowed
+// failure report, and the ordinary completions beside it still ride this turn.
+//
+// It returns the notices the turn may carry and reports whether it deferred
+// anything.
 func (s *Session) deferUnleasedWatchNotices(ctx context.Context, jobNotifs []deliverableJobNotification) ([]deliverableJobNotification, bool) {
 	if !s.stableChildTurnNeedsLease(ctx) {
 		return jobNotifs, false
@@ -1732,8 +1701,8 @@ func (s *Session) deferUnleasedWatchNotices(ctx context.Context, jobNotifs []del
 			s.emit(warningDataFromError("persist deferred watch notice", err))
 			if !appended {
 				// Not durable, so it must not ride this reminder. Back on the
-				// queue: admission then refuses the turn with the notice still
-				// owed. A notice that IS durable is not re-offered here: that
+				// queue, owed and untouched, for the next attempt to make it
+				// durable. A notice that IS durable is not re-offered here: that
 				// would present it unleased as well as to the leased run that
 				// row already waits for.
 				retry = append(retry, d.notification)

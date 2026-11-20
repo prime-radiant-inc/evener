@@ -404,18 +404,19 @@ func TestDelegateResourceSupervision_EarlyCommittedSendStartRefusesASecondTurn(t
 	}
 }
 
-// TestDelegateResourceSupervision_StableChildRefusesOnlyUnleasedModelWork pins
-// BOTH directions of the admission half of LIFE-01 (#2340). A stable delegate's
-// model-bearing turn requires an exact generation, so a turn that would present
-// a watch notice with no lease in context is refused. A zero-model maintenance
-// drain is not that turn and must keep running, because it is the mechanism that
-// settles watch sends without spending a provider call at all.
+// TestDelegateResourceSupervision_UnleasedTurnWithholdsWatchAttentionOnly pins
+// both directions of a stable delegate's unleased admission.
 //
-// The two halves are one test on purpose: a guard that refuses every unleased
-// child turn passes the refusal half and is WORSE than the bug, because it
-// strands the drain paths the audit says to preserve. Only both together
-// describe the invariant.
-func TestDelegateResourceSupervision_StableChildRefusesOnlyUnleasedModelWork(t *testing.T) {
+// Withholding: a pending watch row is durable attention a leased generation
+// presents, and the unleased projection keeps it out of the request the child
+// prepares. Carrying: ordinary work the child owns is not watch work and still
+// runs, because a guard that suppressed the whole unleased turn is WORSE than
+// the bug it would fix -- it strands the completion drives and restored-delegate
+// tasks the same code path serves.
+//
+// The two directions are one test on purpose. Only both together describe the
+// invariant: withholding the watch row may not cost the child its ordinary work.
+func TestDelegateResourceSupervision_UnleasedTurnWithholdsWatchAttentionOnly(t *testing.T) {
 	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
@@ -424,38 +425,24 @@ func TestDelegateResourceSupervision_StableChildRefusesOnlyUnleasedModelWork(t *
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
 
-	// The refusal must come BEFORE request preparation, not after it. Preparation
-	// is not a pure builder: its context-management phase elicits a compaction
-	// note and summarizes history, and both are provider calls. So the child is
-	// put under enough pressure to make that phase call the model if it runs at
-	// all, and the assertion is the PROVIDER CALL COUNT -- a refusal that arrives
-	// after a spent request still left an unleased provider call, which is the
-	// whole finding.
+	// Preparation is not a pure builder: its context-management phase elicits a
+	// compaction note and summarizes history, both provider calls. The child is
+	// put under enough pressure that the phase runs, so the assertions below are
+	// about a request that really was prepared rather than one short-circuited
+	// before the history was built.
 	seedSessionHistory(t, sub.sess, 10)
 	forcePressureAbove(t, sub.sess, sub.sess.contextMgr.CheckpointThreshold)
-	elicited := 0
-	sub.sess.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) {
-		elicited++
-		resp, err := sub.sess.client.Complete(context.Background(), llm.Request{
-			Model:    sub.sess.profile.Model(),
-			Messages: []llm.Message{llm.User("elicit a note")},
-		})
-		if err != nil {
-			return "", err
-		}
-		return resp.Text(), nil
-	}
 
 	// DIRECTION ONE -- the notice never reaches an unleased request. The case is
 	// the issue's own: a watch notice on the child's queue while an unleased turn
 	// prepares. Asserted structurally -- the notice is ABSENT from the request
 	// history and PRESENT as pending durable attention -- never by message text.
 	//
-	// Both halves matter and pin different bugs. Asking only for a refusal pins
-	// the queue, and the queue is the wrong surface: a deferred notice has been
-	// APPENDED to resident history, so the queue reads empty while the request
-	// expands exactly the turn the gate exists to withhold. Asking only for the
-	// durable row pins the write and misses the presentation.
+	// Both surfaces matter and pin different bugs. Asking only about the queue is
+	// the wrong surface: a deferred notice has been APPENDED to resident history,
+	// so the queue reads empty while the request expands exactly the turn the
+	// projection exists to withhold. Asking only about the durable row pins the
+	// write and misses the presentation.
 	// The notice is made durable attention WITHOUT arming its wake, so this proof
 	// cannot race the leased generation the arm would start: the row is still
 	// pending when the unleased request is prepared, which is precisely the
@@ -495,44 +482,9 @@ func TestDelegateResourceSupervision_StableChildRefusesOnlyUnleasedModelWork(t *
 	}); len(dropped) != 0 || len(kept) != 1 {
 		t.Fatalf("the unleased projection dropped %d settled row(s), want it to preserve conversation the child already holds", len(dropped))
 	}
-	// DIRECTION TWO -- the hard refusal. When the notice CANNOT be made durable
-	// (a session with no attached transcript writer), deferring is not an option
-	// and the unleased turn must not run: accepting it would write the notice
-	// into an unleased reminder. This is the typed sentinel, and no provider call
-	// may be spent getting to it.
-	sub.sess.drainJobNotifications()
-	// Direction one ran a real preparation, and this child is under enough
-	// pressure that preparation compacts -- a provider call. The refusal's
-	// baseline is taken AFTER that, so the count below measures only the refused
-	// round.
-	refusedBase := supervisionRequestCount(fixture.adapter)
-	elicited = 0
-	sub.sess.mu.Lock()
-	ready := sub.sess.transcriptReady
-	sub.sess.transcriptReady = false
-	sub.sess.mu.Unlock()
-	sub.sess.enqueueJobNotification(jobNotification{
-		Kind:   jobNotificationKindWatch,
-		JobID:  "job:unpersistable",
-		Status: jobNotificationEventWatch,
-		Reason: "watch send failed",
-	})
-	_, _, _, _, _, _, err = sub.sess.prepareModelRequestWithError(context.Background(), 0, new(events.RoundTimings))
-	if !errors.Is(err, errDelegateStableModelTurnUnleased) {
-		t.Fatalf("unleased request with an unpersistable watch notice = %v, want the unleased-turn refusal", err)
-	}
-	if got := supervisionRequestCount(fixture.adapter); got != refusedBase {
-		t.Fatalf("provider requests after the refused round = %d, want %d: the refusal came after a provider call", got, refusedBase)
-	}
-	if elicited != 0 {
-		t.Fatalf("note elicitation ran %d time(s) for a refused round, want 0: the refusal came after request preparation", elicited)
-	}
-	sub.sess.mu.Lock()
-	sub.sess.transcriptReady = ready
-	sub.sess.mu.Unlock()
 	sub.sess.drainJobNotifications()
 
-	// DIRECTION THREE -- unleased work that is NOT watch work still runs. This is
+	// DIRECTION TWO -- unleased work that is NOT watch work still runs. This is
 	// the assertion a "refuse everything without a lease" guard fails, and that
 	// guard is worse than the bug: it strands every legitimate unleased path the
 	// audit says to preserve (a restored delegate's first task, a completion
@@ -544,7 +496,7 @@ func TestDelegateResourceSupervision_StableChildRefusesOnlyUnleasedModelWork(t *
 		JobType: "shell",
 		Status:  "completed",
 	})
-	if sub.sess.hasPendingWatchNotification() {
+	if queuedWatchNotices(t, sub.sess) != 0 {
 		t.Fatal("an ordinary completion is being read as a watch notice")
 	}
 	markProcessing(sub.sess)
@@ -554,13 +506,13 @@ func TestDelegateResourceSupervision_StableChildRefusesOnlyUnleasedModelWork(t *
 }
 
 // TestDelegateResourceSupervision_LateWatchNoticeNeverReachesAnUnleasedRequest
-// pins the HIGH finding of the LIFE-01 (#2340) review: the round-boundary write.
+// pins the round-boundary write.
 //
 // A watch notice can arrive AFTER a stable child's unleased turn has accepted its
 // opening batch and BEFORE the next request is prepared. injectLaterJobNotifications
-// writes and settles such a notice, so the request-time admission check -- which
-// reads the queue -- finds nothing left to refuse and the provider receives the
-// notice outside a leased generation. That defeats the whole gate.
+// is the write that sees it there, so the deferral has to be that same shared
+// code: a check that only looked at opening acceptance would leave this arrival
+// on the queue, and the request that follows would present it outside a lease.
 //
 // The assertion is the DURABLE ATTENTION ROW plus the emptied queue, not the
 // message text: the notice must be owed to a leased generation and absent from
@@ -578,13 +530,28 @@ func TestDelegateResourceSupervision_LateWatchNoticeNeverReachesAnUnleasedReques
 	if !sub.sess.stableChildTurnNeedsLease(context.Background()) {
 		t.Fatal("the child is not the unleased stable-turn case this test needs")
 	}
+	// Hold the wake the deferral arms. The wake drives a leased generation
+	// synchronously, and that generation presents the row: running it here would
+	// measure the leased presentation instead of the unleased request this test
+	// is about. Held, the row stays pending across that request, which is
+	// exactly the window the projection has to cover.
+	sub.sess.mu.Lock()
+	previousNotify := sub.sess.notifyFunc
+	sub.sess.mu.Unlock()
+	var wakes atomic.Int64
+	sub.sess.SetNotifyFunc(func() { wakes.Add(1) })
+	t.Cleanup(func() { sub.sess.SetNotifyFunc(previousNotify) })
+
 	// The round boundary: this is exactly what the round loop calls before each
 	// request, and it is where the late notice would otherwise be written.
 	sub.sess.enqueueJobNotification(late)
 	sub.sess.injectLaterJobNotifications(context.Background())
+	if wakes.Load() == 0 {
+		t.Fatal("the deferral armed no wake: no leased generation would ever present the row")
+	}
 
 	// The notice is not on the queue (it cannot ride an unleased turn)...
-	if sub.sess.hasPendingWatchNotification() {
+	if got := queuedWatchNotices(t, sub.sess); got != 0 {
 		t.Fatal("the late watch notice is still on the ordinary queue after the round-boundary write")
 	}
 	// ...and it is DURABLE, so a leased generation still presents it.
@@ -602,19 +569,25 @@ func TestDelegateResourceSupervision_LateWatchNoticeNeverReachesAnUnleasedReques
 	if !found {
 		t.Fatalf("child attention rows = %v, want the late notice under %q: it was neither carried nor deferred", fold.order, wantID)
 	}
-	// And the unleased request that follows carries no watch reminder. Admission
-	// reports the refusal structurally, which is the same fact from the other
-	// side: with nothing queued there is no unleased watch turn to admit.
-	if _, _, _, _, _, _, err := sub.sess.prepareModelRequestWithError(context.Background(), 0, new(events.RoundTimings)); errors.Is(err, errDelegateStableModelTurnUnleased) {
-		t.Fatal("the unleased request was refused for a queued watch notice: the boundary write left it on the queue")
+	// And the unleased request that follows is admitted without the notice: with
+	// nothing queued there is no unleased watch turn to prepare, so the request
+	// proceeds and its history carries no watch reminder.
+	_, _, history, _, _, _, err := sub.sess.prepareModelRequestWithError(context.Background(), 0, new(events.RoundTimings))
+	if err != nil {
+		t.Fatalf("unleased request after the round-boundary write = %v, want it admitted", err)
+	}
+	for _, msg := range history {
+		if strings.Contains(msg.Text(), wantID) || strings.Contains(msg.Text(), "job:late") {
+			t.Fatal("the unleased request presents the late watch notice: the boundary write left it deliverable")
+		}
 	}
 }
 
 // TestDelegateResourceSupervision_MixedBatchCarriesTheCompletionAndDefersTheWatch
-// pins the MIXED batch (LIFE-01, #2340). A recovered shell completion and a
-// deliverable watch notice can share a stable child's queue. The completion has no
-// lease to inherit but is perfectly deliverable, so the turn must carry it; the
-// watch notice must not ride along, and must not be dropped either.
+// pins the MIXED batch. A recovered shell completion and a deliverable watch
+// notice can share a stable child's queue. The completion has no lease to inherit
+// but is perfectly deliverable, so the turn must carry it; the watch notice must
+// not ride along, and must not be dropped either.
 //
 // A gate that refuses the whole batch passes the watch half and fails here: every
 // retry sees the same pair, so the completion is never delivered until some
@@ -636,7 +609,7 @@ func TestDelegateResourceSupervision_MixedBatchCarriesTheCompletionAndDefersTheW
 		Status:  "completed",
 	})
 	sub.sess.enqueueJobNotification(watchSendDiagnosticNotification("watch:mixed", "job:mixed", "watch send failed: delivery_id=mixed"))
-	if !sub.sess.hasPendingWatchNotification() || !sub.sess.hasPendingOrdinaryNotification() {
+	if queuedWatchNotices(t, sub.sess) != 1 || queuedOrdinaryNotices(t, sub.sess) != 1 {
 		t.Fatal("the mixed batch did not land as one watch notice plus one ordinary completion")
 	}
 	foldBefore, err := readDelegateAttentionFold(transcriptPath(sub.sess.stateDir, sub.sess.id), sub.sess.id)
@@ -652,7 +625,7 @@ func TestDelegateResourceSupervision_MixedBatchCarriesTheCompletionAndDefersTheW
 
 	// The watch notice left the ordinary queue: it can no longer ride an unleased
 	// turn.
-	if sub.sess.hasPendingWatchNotification() {
+	if got := queuedWatchNotices(t, sub.sess); got != 0 {
 		t.Fatal("the watch notice is still on the ordinary queue after the mixed turn")
 	}
 	// And it is DURABLE, not dropped: the child's own attention fold holds a row
@@ -5359,7 +5332,7 @@ func TestDelegateResourceSupervision_FailedWatchDeferralStaysOwedForTheLeasedRun
 		Status:  "completed",
 	})
 	sub.sess.enqueueJobNotification(watchSendDiagnosticNotification("watch:failed-deferral", "job:failed-deferral", "watch send failed: delivery_id=failed"))
-	if !sub.sess.hasPendingWatchNotification() || !sub.sess.hasPendingOrdinaryNotification() {
+	if queuedWatchNotices(t, sub.sess) != 1 || queuedOrdinaryNotices(t, sub.sess) != 1 {
 		t.Fatal("the mixed batch did not land as one watch notice plus one ordinary completion")
 	}
 
@@ -5370,7 +5343,7 @@ func TestDelegateResourceSupervision_FailedWatchDeferralStaysOwedForTheLeasedRun
 
 	// The notice could not be made durable, so it stays OWED on the queue: a
 	// writer that settled it here would have lost it.
-	if !sub.sess.hasPendingWatchNotification() {
+	if queuedWatchNotices(t, sub.sess) != 1 {
 		t.Fatal("a watch notice whose durable append failed left the queue: an unleased turn settled a notice nothing made durable")
 	}
 	// The ordinary completion beside it was carried by the turn: it waits for
@@ -5386,22 +5359,21 @@ func TestDelegateResourceSupervision_FailedWatchDeferralStaysOwedForTheLeasedRun
 		t.Fatalf("notifications awaiting the request = %#v, want the ordinary completion", carried)
 	}
 
-	// While the append is still refused, the retried deferral keeps the notice
-	// owed rather than dropping it, and reports that it could not be made
-	// durable -- the count admission refuses work on.
-	if moved, failed := sub.sess.deferQueuedWatchNoticesToAttention(); moved != 0 || failed != 1 {
-		t.Fatalf("deferred/failed notices with the append refused = %d/%d, want 0/1", moved, failed)
-	}
-	if !sub.sess.hasPendingWatchNotification() {
+	// While the append is still refused, a second split keeps the notice owed
+	// rather than dropping it.
+	applyUnleasedWatchSplit(t, sub.sess)
+	if queuedWatchNotices(t, sub.sess) != 1 {
 		t.Fatal("a failed deferral consumed the notice: nothing would ever present it")
 	}
 
-	// With the append working again the notice becomes durable attention and
-	// the queue lets go of it.
+	// With the append working again the split makes the notice durable attention
+	// and the queue lets go of it.
 	setFoldFault(nil)
-	sub.sess.deferQueuedWatchNoticesToAttention()
-	if sub.sess.hasPendingWatchNotification() {
-		t.Fatal("the watch notice is still queued after its append succeeded")
+	if kept := applyUnleasedWatchSplit(t, sub.sess); len(kept) != 0 {
+		t.Fatalf("notices carried by the recovered split = %v, want the watch notice deferred and nothing else", carriedNotificationJobIDs(kept))
+	}
+	if got := queuedWatchNotices(t, sub.sess); got != 0 {
+		t.Fatalf("watch notices still queued = %d, want 0 after the append succeeded", got)
 	}
 	fold, err := readDelegateAttentionFold(transcriptPath(sub.sess.stateDir, sub.sess.id), sub.sess.id)
 	if err != nil {
@@ -5415,15 +5387,14 @@ func TestDelegateResourceSupervision_FailedWatchDeferralStaysOwedForTheLeasedRun
 }
 
 // TestDelegateResourceSupervision_WatchArrivingDuringDeferralDoesNotRefuseTheRequest
-// pins the admission decision to the batch the deferral actually took.
+// pins the deferral decision to the batch it actually took.
 //
-// Admission moves the queued watch notices to durable attention and then asks
-// what remains. Asking the QUEUE what remains makes a notice that arrives while
-// that move is running look like a deferral that failed: every write this call
-// attempted succeeded, yet the fresh arrival is on the queue and the ordinary
-// completion turn beside it is refused. The parent treats that refusal as
-// fatal, so the delegate is gated and the completion it legitimately owned is
-// never delivered.
+// The split walks the batch it drained. A notice that arrives WHILE that walk is
+// running is not in the batch, so the turn cannot answer for it: it stays on the
+// queue for its own delivery pass, and the ordinary completion beside it rides
+// this turn. Reading the queue back to decide instead would make the fresh
+// arrival look like a deferral that failed and cost the child the completion it
+// legitimately owned.
 //
 // The arrival is made deterministic through the attention fold-read seam, which
 // runs inside the deferral's own append. The later notice stays queued for its
@@ -5449,7 +5420,7 @@ func TestDelegateResourceSupervision_WatchArrivingDuringDeferralDoesNotRefuseThe
 		Status:  "completed",
 	})
 	sub.sess.enqueueJobNotification(watchSendDiagnosticNotification("watch:defer-arrival", "job:defer-arrival", "watch send failed: delivery_id=defer"))
-	if !sub.sess.hasPendingWatchNotification() || !sub.sess.hasPendingOrdinaryNotification() {
+	if queuedWatchNotices(t, sub.sess) != 1 || queuedOrdinaryNotices(t, sub.sess) != 1 {
 		t.Fatal("the mixed batch did not land as one watch notice plus one ordinary completion")
 	}
 
@@ -5474,9 +5445,16 @@ func TestDelegateResourceSupervision_WatchArrivingDuringDeferralDoesNotRefuseThe
 	if _, _, _, _, _, _, err := sub.sess.prepareModelRequestWithError(context.Background(), 0, new(events.RoundTimings)); err != nil {
 		t.Fatalf("unleased model request with a watch arriving during the deferral = %v, want the ordinary completion carried", err)
 	}
-	// The later arrival is still owed on the queue for its own delivery pass.
-	if !sub.sess.hasPendingWatchNotification() {
-		t.Fatal("the notice that arrived during the deferral was consumed: its own delivery pass lost it")
+	// The later arrival is still OWED: either queued for its own delivery pass,
+	// or already durable attention under its own identity. What it must never be
+	// is gone.
+	arrivalID := deferredWatchAttentionID(arrival)
+	fold, err := readDelegateAttentionFold(transcriptPath(sub.sess.stateDir, sub.sess.id), sub.sess.id)
+	if err != nil {
+		t.Fatalf("read the child's attention fold: %v", err)
+	}
+	if queuedWatchNotices(t, sub.sess) == 0 && !slices.Contains(fold.order, arrivalID) {
+		t.Fatalf("the notice that arrived during the deferral is neither queued nor durable: child attention rows = %v, want %q", fold.order, arrivalID)
 	}
 }
 
@@ -5529,7 +5507,7 @@ func TestDelegateResourceSupervision_DeferredWatchFrameIsTranscribedBeforeTheArm
 		updateSessionTestConfig(sub.sess, func(cfg *testConfig) { cfg.delegateAttentionArmFault = nil })
 	})
 
-	sub.sess.deferQueuedWatchNoticesToAttention()
+	applyUnleasedWatchSplit(t, sub.sess)
 
 	// The whole claim. A successful settle clears the mark along with the
 	// pending frame (that is what a settled send is), so the mark can only be
@@ -5694,6 +5672,61 @@ func stableChildCallerFrame(t *testing.T, message string) (*subagent, *fakeAdapt
 	return sub, fixture.adapter, tokens[0]
 }
 
+// queuedJobNotifications snapshots the session's own notification queue without
+// draining it, so a test can assert what a turn would actually be offered
+// rather than what it did with a batch it already took.
+func queuedJobNotifications(t *testing.T, sess *Session) []jobNotification {
+	t.Helper()
+	sess.pendingJobNotifsMu.Lock()
+	defer sess.pendingJobNotifsMu.Unlock()
+	return append([]jobNotification(nil), sess.pendingJobNotifs...)
+}
+
+// queuedWatchNotices counts the watch-typed notices still queued on the
+// session's own rail.
+func queuedWatchNotices(t *testing.T, sess *Session) int {
+	t.Helper()
+	var queued int
+	for _, n := range queuedJobNotifications(t, sess) {
+		if n.isWatch() {
+			queued++
+		}
+	}
+	return queued
+}
+
+// queuedOrdinaryNotices counts the non-watch notices still queued on the
+// session's own rail.
+func queuedOrdinaryNotices(t *testing.T, sess *Session) int {
+	t.Helper()
+	return len(queuedJobNotifications(t, sess)) - queuedWatchNotices(t, sess)
+}
+
+// applyUnleasedWatchSplit runs THE RULE's split over the session's current
+// queue exactly as a notification turn does at its opening write, and returns
+// the notices the turn would carry. It mirrors acceptNotificationInput's
+// filter → awaiting-request → split sequence, so a test drives the same code
+// the turn drives.
+func applyUnleasedWatchSplit(t *testing.T, sess *Session) []deliverableJobNotification {
+	t.Helper()
+	jobNotifs, retryJobNotifs, injectedJobNotifs := sess.filterDeliverableJobNotifications(sess.drainJobNotifications())
+	jobNotifs, injectedJobNotifs = sess.withoutAwaitingRequest(jobNotifs), sess.withoutAwaitingRequest(injectedJobNotifs)
+	sess.requeueJobNotifications(retryJobNotifs)
+	sess.requeueJobNotifications(sess.markJobNotificationsDelivered(injectedJobNotifs))
+	kept, _ := sess.deferUnleasedWatchNotices(context.Background(), jobNotifs)
+	return kept
+}
+
+// carriedNotificationJobIDs reports which notices in kept the turn would write
+// into its reminder.
+func carriedNotificationJobIDs(kept []deliverableJobNotification) []string {
+	out := make([]string, 0, len(kept))
+	for _, d := range kept {
+		out = append(out, d.notification.JobID)
+	}
+	return out
+}
+
 // frameDeliveryID resolves the delivery id of the token's pending frame.
 func frameDeliveryID(t *testing.T, sub *subagent) string {
 	t.Helper()
@@ -5705,10 +5738,10 @@ func frameDeliveryID(t *testing.T, sub *subagent) string {
 }
 
 // TestDelegateResourceSupervision_StaleWatchSendTokenIsDiscarded pins the stale
-// half of the token resolution (LIFE-01, #2340). A token names a frame by key
-// and sequence, and a watch cleared after the token was built leaves that name
-// pointing at nothing. The token then reads as live work to the one-shot drain,
-// which neither quiesces nor reaches its stall timeout.
+// half of the token resolution. A token names a frame by key and sequence, and a
+// watch cleared after the token was built leaves that name pointing at nothing.
+// The token then reads as live work to the one-shot drain, which neither
+// quiesces nor reaches its stall timeout.
 func TestDelegateResourceSupervision_StaleWatchSendTokenIsDiscarded(t *testing.T) {
 	sub, _, _ := stableChildCallerFrame(t, "stale-frame")
 	jm := sub.sess.jobManager
@@ -5729,23 +5762,32 @@ func TestDelegateResourceSupervision_StaleWatchSendTokenIsDiscarded(t *testing.T
 		t.Fatalf("pending caller frames after the clear = %d, want 0", got)
 	}
 
-	if !sub.sess.driveWouldStrandOnAdmission(sub.sess) {
-		t.Fatal("a stale watch-send token made the child look drivable: the drain would drive a frame that no longer exists")
+	// The split resolves the stale token and drops it, which leaves the queue
+	// empty: that is what lets the no-op drain run instead of counting work no
+	// turn can drain.
+	rowsBefore, err := readDelegateAttentionFold(transcriptPath(sub.sess.stateDir, sub.sess.id), sub.sess.id)
+	if err != nil {
+		t.Fatalf("read the child's attention fold before the split: %v", err)
 	}
-	// Resolving the stale token leaves the queue empty, which is what lets the
-	// no-op drain run instead of counting work no turn can drain.
-	if moved, failed := sub.sess.deferQueuedWatchNoticesToAttention(); moved != 0 || failed != 0 {
-		t.Fatalf("deferred/failed notices = %d/%d, want 0/0 for a stale token", moved, failed)
+	if kept := applyUnleasedWatchSplit(t, sub.sess); len(kept) != 0 {
+		t.Fatalf("notices carried for a stale token = %v, want none", carriedNotificationJobIDs(kept))
 	}
 	if got := sub.sess.peekNotifications(); got != 0 {
 		t.Fatalf("queued notifications after resolving the stale token = %d, want 0", got)
 	}
+	fold, err := readDelegateAttentionFold(transcriptPath(sub.sess.stateDir, sub.sess.id), sub.sess.id)
+	if err != nil {
+		t.Fatalf("read the child's attention fold: %v", err)
+	}
+	if !slices.Equal(fold.order, rowsBefore.order) {
+		t.Fatalf("child attention rows = %v, want %v unchanged: a stale token names no frame to make durable", fold.order, rowsBefore.order)
+	}
 }
 
 // TestDelegateResourceSupervision_TranscribedWatchSendSettlesWithoutALease
-// pins the transcribed half of the token resolution (LIFE-01, #2340). The model
-// already has the frame, so only the delivered record is outstanding: settling
-// it presents nothing and needs no lease.
+// pins the transcribed half of the token resolution. The model already has the
+// frame, so only the delivered record is outstanding: settling it presents
+// nothing and needs no lease.
 func TestDelegateResourceSupervision_TranscribedWatchSendSettlesWithoutALease(t *testing.T) {
 	sub, adapter, _ := stableChildCallerFrame(t, "transcribed-frame")
 	jm := sub.sess.jobManager
@@ -5753,9 +5795,13 @@ func TestDelegateResourceSupervision_TranscribedWatchSendSettlesWithoutALease(t 
 	jm.noteWatchSendTranscribed(deliveryID)
 	requestsBefore := len(adapter.Requests())
 
-	// The frame is already in the transcript, so resolving the token settles it
-	// with no model turn: nothing is presented, so nothing needs a lease.
-	sub.sess.deferQueuedWatchNoticesToAttention()
+	// The frame is already in the transcript, so the token needs no deferral: the
+	// split's own filter settles the delivered record and carries nothing
+	// forward. Nothing is presented, so nothing needs a lease.
+	kept := applyUnleasedWatchSplit(t, sub.sess)
+	if got := carriedNotificationJobIDs(kept); len(got) != 0 {
+		t.Fatalf("notices carried by the split = %v, want none: the transcribed token settles without being presented", got)
+	}
 	if got := len(jm.pendingWatchSendDeliveries(nil)); got != 0 {
 		t.Fatalf("pending caller frames after settling = %d, want 0", got)
 	}
@@ -5765,16 +5811,16 @@ func TestDelegateResourceSupervision_TranscribedWatchSendSettlesWithoutALease(t 
 	if got := len(adapter.Requests()); got != requestsBefore {
 		t.Fatalf("model requests = %d, want %d: settling a transcribed frame must not present it again", got, requestsBefore)
 	}
-	if sub.sess.hasPendingWatchNotification() {
+	if queuedWatchNotices(t, sub.sess) != 0 {
 		t.Fatal("a settled watch-send token is still counted as a pending watch notice")
 	}
 }
 
 // TestDelegateResourceSupervision_UntranscribedWatchSendGoesToLeasedAttention
-// pins the untranscribed half of the token resolution (LIFE-01, #2340). Nobody
-// has presented this frame, so the unleased turn must not: it goes to durable
-// attention under the delivery's own identity, where a leased generation
-// presents it, and the send settles once the row is durable.
+// pins the untranscribed half of the token resolution. Nobody has presented this
+// frame, so the unleased turn must not: it goes to durable attention under the
+// delivery's own identity, where a leased generation presents it, and the send
+// settles once the row is durable.
 func TestDelegateResourceSupervision_UntranscribedWatchSendGoesToLeasedAttention(t *testing.T) {
 	sub, _, _ := stableChildCallerFrame(t, "untranscribed-frame")
 	jm := sub.sess.jobManager
@@ -5784,11 +5830,17 @@ func TestDelegateResourceSupervision_UntranscribedWatchSendGoesToLeasedAttention
 	}
 	wantID := stableWatchAttentionID(pending[0].state)
 
-	if !sub.sess.driveWouldStrandOnAdmission(sub.sess) {
-		t.Fatal("an untranscribed watch-send token alone was driven unleased")
+	if kept := applyUnleasedWatchSplit(t, sub.sess); len(kept) != 0 {
+		t.Fatalf("notices carried by the split = %v, want none: the frame is not presented outside a lease", carriedNotificationJobIDs(kept))
 	}
-	if got := sub.sess.peekNotifications(); got != 0 {
-		t.Fatalf("queued notifications after the decision = %d, want 0", got)
+	// The arm's wake may leave a token naming the frame it just settled. That
+	// token resolves stale and the next pass drops it, which is what keeps it
+	// from opening a turn of its own.
+	if kept := applyUnleasedWatchSplit(t, sub.sess); len(kept) != 0 {
+		t.Fatalf("notices carried by the follow-up split = %v, want none", carriedNotificationJobIDs(kept))
+	}
+	if got := queuedJobNotifications(t, sub.sess); len(got) != 0 {
+		t.Fatalf("notices still queued after the follow-up split = %d, want 0", len(got))
 	}
 	fold, err := readDelegateAttentionFold(transcriptPath(sub.sess.stateDir, sub.sess.id), sub.sess.id)
 	if err != nil {
@@ -5803,10 +5855,10 @@ func TestDelegateResourceSupervision_UntranscribedWatchSendGoesToLeasedAttention
 }
 
 // TestDelegateResourceSupervision_OrdinaryCompletionCarriesPastAnUntranscribedWatchSend
-// pins the mixed case (LIFE-01, #2340): an ordinary completion and an
-// untranscribed caller frame share the child's queue. The completion is real
-// work the turn owns, so the drive must run, and the frame must go to durable
-// attention rather than into the unleased reminder.
+// pins the mixed case: an ordinary completion and an untranscribed caller frame
+// share the child's queue. The completion is real work the turn owns, so the
+// turn must carry it, and the frame must go to durable attention rather than
+// into the unleased reminder.
 func TestDelegateResourceSupervision_OrdinaryCompletionCarriesPastAnUntranscribedWatchSend(t *testing.T) {
 	sub, _, _ := stableChildCallerFrame(t, "mixed-frame")
 	jm := sub.sess.jobManager
@@ -5819,22 +5871,26 @@ func TestDelegateResourceSupervision_OrdinaryCompletionCarriesPastAnUntranscribe
 
 	seedOwnedDurablePending(t, jm, "job_with_frame", jobstore.JobShell)
 	sub.sess.enqueueJobNotification(jobNotification{JobID: "job_with_frame", JobType: "shell", Status: "completed"})
-	if !sub.sess.hasPendingOrdinaryNotification() {
+	if queuedOrdinaryNotices(t, sub.sess) != 1 {
 		t.Fatal("the ordinary completion did not land beside the watch-send token")
 	}
 
-	// The completion is deliverable, so the drive runs...
-	if sub.sess.driveWouldStrandOnAdmission(sub.sess) {
-		t.Fatal("an ordinary completion beside an untranscribed frame was skipped: its retry would never deliver")
+	// The completion is deliverable, so the turn carries it...
+	kept := applyUnleasedWatchSplit(t, sub.sess)
+	if got := carriedNotificationJobIDs(kept); len(got) != 1 || got[0] != "job_with_frame" {
+		t.Fatalf("notices carried by the split = %v, want just the ordinary completion", got)
 	}
 	// ...and the frame leaves the queue for durable attention, untouched by the
 	// unleased writer.
-	sub.sess.deferQueuedWatchNoticesToAttention()
-	if got := sub.sess.peekNotifications(); got != 1 {
-		t.Fatalf("queued notifications = %d, want only the ordinary completion left", got)
+	//
+	// The arm's wake leaves a token naming the frame it settled. A second pass
+	// resolves that token stale and drops it, so the queue drains instead of
+	// holding a frame nothing will present.
+	if kept := applyUnleasedWatchSplit(t, sub.sess); len(kept) != 0 {
+		t.Fatalf("notices carried by the follow-up split = %v, want none", carriedNotificationJobIDs(kept))
 	}
-	if sub.sess.hasPendingWatchNotification() {
-		t.Fatal("the untranscribed frame is still queued after the deferral")
+	if got := queuedJobNotifications(t, sub.sess); len(got) != 0 {
+		t.Fatalf("notices still queued after the follow-up split = %d, want 0", len(got))
 	}
 	fold, err := readDelegateAttentionFold(transcriptPath(sub.sess.stateDir, sub.sess.id), sub.sess.id)
 	if err != nil {
@@ -5936,56 +5992,6 @@ func TestDelegateResourceSupervision_RestartCancelledCallbackWatchBecomesLeasedA
 	}
 	if sub.sess.hasPendingSteering() {
 		t.Fatal("the cancellation landed in the child's steering queue, where an unleased turn would present it")
-	}
-}
-
-// TestDelegateResourceSupervision_StrandCheckKeepsRunnableSteeringDrivable pins
-// the steering exemption in the strand check. A stable child's steering is run
-// only by a turn a drive launches, and the strand check is the only gate between
-// the drive and that turn, so suppressing the drive for a queued steer would
-// strand it with nothing to run it.
-//
-// A PARK is the exception the check must keep: a steer parked by an unanswered
-// Stop is not carried by an unleased turn, so it buys no drive.
-func TestDelegateResourceSupervision_StrandCheckKeepsRunnableSteeringDrivable(t *testing.T) {
-	fixture := newColdDelegateFixture(t, "")
-	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
-	})
-	root := restoreSupervisionRoot(t, fixture, nil)
-	sub := warmDelegateUnservedRoot(t, root, fixture)
-	waitForStableSupervisionRun(t, root, fixture.childID)
-
-	// The premise: nothing but steering is queued, so the decision below is the
-	// empty-queue branch and not the watch-notice one.
-	if got := sub.sess.peekNotifications(); got != 0 {
-		t.Fatalf("queued notifications = %d, want 0 for the empty-queue premise", got)
-	}
-	if sub.sess.hasPendingWatchNotification() {
-		t.Fatal("a watch notice is pending: the steering branch would not be the one under test")
-	}
-	if !stableDelegateChild(sub.sess) {
-		t.Fatal("the child is not a stable delegate, so the strand check does not apply to it")
-	}
-
-	if ok, err := sub.sess.trySteerEnqueue("carry this to the model", nil, nil, events.SteeringSourceUser, ""); err != nil || !ok {
-		t.Fatalf("queue runnable steering (ok=%t): %v", ok, err)
-	}
-	if !sub.sess.hasPendingSteering() || sub.sess.steeringParkedNow() {
-		t.Fatal("the queue is not holding one runnable steer, so the decision below would prove nothing")
-	}
-	if sub.sess.driveWouldStrandOnAdmission(sub.sess) {
-		t.Fatal("a runnable steer was not driven: its turn is the only thing that runs it, so it stays queued forever")
-	}
-
-	// A park still suppresses the drive: an unleased turn lets goIdle win ahead
-	// of the steering rung, so the wake would settle nothing.
-	sub.sess.parkSteering()
-	if !sub.sess.steeringParkedNow() {
-		t.Fatal("the steer did not read as parked, so the premise of the second assertion is broken")
-	}
-	if !sub.sess.driveWouldStrandOnAdmission(sub.sess) {
-		t.Fatal("a parked steer drove the child: the turn would stand straight back down and leave it queued")
 	}
 }
 
@@ -6148,5 +6154,80 @@ func TestLongRunningReminderAfterRestoreAppendsBesideThePreRestoreRow(t *testing
 	}
 	if rows != 1 {
 		t.Fatalf("rows for the retried reminder = %d, want 1: the retry must deduplicate against its own row", rows)
+	}
+}
+
+// TestDelegateResourceSupervision_LiveWatchedCommandNoticeReachesTheFinalizingDrain pins the notice
+// a finalizing stable delegate must still receive: an output_match match on a
+// background command the delegate itself owns, fired while that command is
+// still running.
+//
+// The delegate has ended its own turn and is parked in its owned-job drain
+// waiting for that command. The parent's loop-boundary sweep reads the child's
+// queue and tries to drive it; the child is finalizing, so the drive is
+// refused. Refusing the DRIVE must not consume the NOTICE: the drain the child
+// is already parked in runs under the run's lease, and that turn is the reader
+// that presents the notice. A sweep that moved the notice off the queue on its
+// way past would hand it to the one reader that cannot present it -- no new
+// generation can start while this one is finalizing -- and the run would wait
+// for a readiness line the model never sees.
+//
+// The fire and the sweep are placed inside the child's own park, so no drain
+// pass can run between them and the ordering under test is exact.
+//
+// The assertion is the provider request the drain makes: it carries the watch's
+// own note while the watched command is still alive. That is the notice arriving
+// at the leased generation, not merely still being queued somewhere.
+func TestDelegateResourceSupervision_LiveWatchedCommandNoticeReachesTheFinalizingDrain(t *testing.T) {
+	t.Parallel()
+
+	const note = "watch delivery under test"
+	var fired sync.Once
+	var fixture *ownedJobDrainFixture
+	parked := func(s *Session) {
+		if s == nil || s.owningDelegateID == "" {
+			return
+		}
+		fired.Do(func() {
+			// The command the delegate owns is still alive and prints the
+			// readiness line now, which is the fire.
+			line := []byte("server ready\n")
+			s.jobManager.feedJobOutput(fixture.shellJobID, line, int64(len(line)))
+			// The parent's sweep, with the notice queued and the child
+			// finalizing.
+			fixture.parent.driveChildrenWithUndeliveredAttention()
+		})
+	}
+	fixture = newOwnedJobDrainFixtureWithParkedHook(t, parked)
+
+	// A watch on the delegate's OWN live background command, waiting for the
+	// readiness line the command prints from inside the park below.
+	if _, err := fixture.child.sess.jobManager.configureWatch(watchArgs{
+		Operation:   "create",
+		Target:      fixture.shellJobID,
+		OutputMatch: "server ready",
+		Note:        note,
+	}); err != nil {
+		t.Fatalf("configure the output_match watch: %v", err)
+	}
+
+	// The drain's next turn reaches the model with the notice: no other
+	// notification in this fixture carries the note, and the leased drain is the
+	// only turn that can present it.
+	testwait.UntilSeen(t, "the drain's provider request carrying the watch notice", func() (bool, string) {
+		requests := fixture.adapter.Requests()
+		if requestsContain(requests, note) {
+			return true, ""
+		}
+		return false, fmt.Sprintf("%d provider request(s), %d watch notice(s) queued", len(requests), queuedWatchNotices(t, fixture.child.sess))
+	})
+
+	// And it arrived while the watched command was still running: that is the
+	// live-command window the finding is about.
+	fixture.child.sess.jobManager.mu.Lock()
+	_, alive := fixture.child.sess.jobManager.running[fixture.shellJobID]
+	fixture.child.sess.jobManager.mu.Unlock()
+	if !alive {
+		t.Fatal("the watched command had already exited: this proof needs the notice delivered while it was still running")
 	}
 }

@@ -167,13 +167,10 @@ func (s *Session) injectLaterJobNotifications(ctx context.Context) {
 	jobNotifs, injectedJobNotifs = s.withoutAwaitingRequest(jobNotifs), s.withoutAwaitingRequest(injectedJobNotifs)
 	s.requeueJobNotifications(retryJobNotifs)
 	s.requeueJobNotifications(s.markJobNotificationsDelivered(injectedJobNotifs))
-	// THE RULE (LIFE-01, #2340), at the ROUND BOUNDARY. A watch notice can arrive
-	// after the opening drain and before this round's request is prepared. This
-	// write would put it into history and settle it, and the request-time
-	// admission check -- which reads the queue -- would then find nothing to
-	// refuse, so the provider would receive the notice outside a leased
-	// generation. It is deferred to durable attention here instead, and the
-	// ordinary completions in the same batch still ride this round.
+	// A watch notice can arrive after the opening drain and before this round's
+	// request is prepared. Writing it here would put it into history outside a
+	// leased generation, so defer it to durable attention while letting ordinary
+	// completions in the same batch ride this round.
 	jobNotifs, _ = s.deferUnleasedWatchNotices(ctx, jobNotifs)
 	if len(jobNotifs) == 0 {
 		return

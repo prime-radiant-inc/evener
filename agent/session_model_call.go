@@ -118,9 +118,9 @@ func effectiveReasoningEffort(cfg, override string, escalated bool) string {
 // compaction would still let a summarizer request out.
 //
 // A session with no controller, or a turn with no lease, is not this gate's
-// business: it is the unleased-turn refusal's (see the top of
-// prepareModelRequestWithError), and duplicating it here would refuse
-// maintenance work that never reaches a provider.
+// business: an unleased turn's provider calls are the ordinary non-delegate
+// path, and duplicating the lease check here would refuse maintenance work
+// that never reaches a provider.
 func (s *Session) admitCompactionAuxiliaryCall(ctx context.Context) error {
 	lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
 	if !ok || s.delegateController == nil {
@@ -130,17 +130,16 @@ func (s *Session) admitCompactionAuxiliaryCall(ctx context.Context) error {
 }
 
 func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t *events.RoundTimings) (profile *provider.Profile, sys string, history []llm.Message, req llm.Request, fullHistory []llm.Message, reasoningEffort string, err error) {
-	// Admission comes FIRST, before any phase that can reach a provider
-	// (LIFE-01, #2340). This function is not only a request builder: the
+	// A lease's admission comes FIRST, before any phase that can reach a
+	// provider. This function is not only a request builder: the
 	// context-management phase below elicits a compaction note
 	// (maybeElicitNoteBeforeCompaction) and summarizes history inside
 	// ManageContext, both of which are provider calls. A check placed after
-	// those phases would refuse the round only after the unleased turn had
-	// already spent one, which is the very thing it exists to prevent.
+	// those phases would refuse the round only after the turn had already
+	// spent one, which is the very thing it exists to prevent.
 	//
 	// A root session is not a delegate and has no generation to hold, so it
-	// keeps the ordinary path: the refusal applies only to a stable delegate
-	// child, and zero-model maintenance drains never reach this function at all.
+	// keeps the ordinary path.
 	if _, leased := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); leased {
 		// A lease in context is not enough: it must still be the child's live
 		// generation, and no stop may be pending. The fold's provider calls are
@@ -149,47 +148,6 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		// fenced turn spend a summarizer request.
 		if err := s.admitCompactionAuxiliaryCall(ctx); err != nil {
 			return nil, "", nil, llm.Request{}, nil, "", err
-		}
-	} else if s.stableChildTurnNeedsLease(ctx) {
-		// Several legitimate paths run a stable child's turn with no lease in
-		// context -- a restored delegate's first task, an unserved session's
-		// framed entry, a completion drive -- and refusing those would break
-		// work the product permits. The watch notice is the one payload that
-		// must never arrive this way, because its ingress made it durable
-		// attention whose whole point is a governed generation.
-		//
-		// Admission asks what THIS REQUEST WILL PRESENT, not what the queue
-		// happens to hold (LIFE-01, #2340). The queue is the wrong surface for
-		// two opposite reasons, and both are findings against the first cut of
-		// this gate:
-		//
-		//   - A watch notice can land after the round-boundary drain and before
-		//     here. Refusing on sight killed an ordinary completion turn whose
-		//     request would never have carried that notice -- and the parent
-		//     treats this error as fatal, so it gated the delegate and stopped
-		//     the work the turn legitimately owned.
-		//   - Deferring a notice appends it to resident history, so the queue
-		//     reads EMPTY while the history the request expands holds it. A
-		//     queue check is blind to exactly the presentation it was added to
-		//     prevent.
-		//
-		// So the notices still on the queue are moved to durable attention
-		// first, and the refusal is what remains: a watch notice that could NOT
-		// be made durable. That one must not run unleased, because accepting it
-		// would write it straight into an unleased reminder.
-		//
-		// The refusal reads the result of the batch THIS call took, not the
-		// queue afterwards. A notice that arrives while the deferral runs is
-		// not part of that batch and must not be refused here: it was never
-		// offered to this request, no attempted deferral failed, and its own
-		// delivery pass will take it. Reading the queue again made a fresh
-		// arrival look like a failed deferral and aborted an ordinary
-		// completion turn whose writes all succeeded.
-		if s.hasPendingWatchNotification() {
-			_, failed := s.deferQueuedWatchNoticesToAttention()
-			if failed > 0 {
-				return nil, "", nil, llm.Request{}, nil, "", errDelegateStableModelTurnUnleased
-			}
 		}
 	}
 	if err := s.flushPendingDelegateDeliveries(); err != nil {

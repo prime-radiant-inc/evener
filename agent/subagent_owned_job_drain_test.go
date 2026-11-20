@@ -119,7 +119,16 @@ type ownedJobDrainFixture struct {
 
 func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 	t.Helper()
+	return newOwnedJobDrainFixtureWithParkedHook(t, nil)
+}
 
+// newOwnedJobDrainFixtureWithParkedHook builds the same fixture with a
+// jobTreeDrainParked hook installed on the parent at creation, so the hook is
+// inherited by the child's own drain. A test uses it to place work at an exact
+// point inside the child's drain instead of racing its recheck ticker; a nil
+// hook is the plain fixture.
+func newOwnedJobDrainFixtureWithParkedHook(t *testing.T, parked func(*Session)) *ownedJobDrainFixture {
+	t.Helper()
 	idleReported := make(chan struct{})
 	shellHandled := make(chan struct{})
 	freshHandled := make(chan struct{})
@@ -152,6 +161,7 @@ func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
 			noSyncJobStore:      true,
+			jobTreeDrainParked:  parked,
 		},
 	})
 	if err != nil {
