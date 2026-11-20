@@ -5824,6 +5824,7 @@ func TestDelegateResourceSupervision_IdleStableDelegateTimerRoutesThroughLeasedA
 	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("leased timer handled") },
 	})
 	clockAt := time.Date(2026, 3, 4, 9, 0, 0, 0, time.UTC)
 	clk := agenttest.NewFakeClockAt(clockAt)
@@ -5837,7 +5838,8 @@ func TestDelegateResourceSupervision_IdleStableDelegateTimerRoutesThroughLeasedA
 	// The timer is installed through the production create path on the child's
 	// own manager, so its fire is the cadence's own work.
 	jm := sub.sess.jobManager
-	if _, err := jm.configureWatch(watchArgs{Operation: "create", Source: "self", Target: runtimeMessageAliasCaller, RepeatSeconds: 60}); err != nil {
+	const timerNote = "timer-note-sentinel"
+	if _, err := jm.configureWatch(watchArgs{Operation: "create", Source: "self", Target: runtimeMessageAliasCaller, RepeatSeconds: 60, Note: timerNote}); err != nil {
 		t.Fatalf("create the child's timer watch: %v", err)
 	}
 
@@ -5860,14 +5862,14 @@ func TestDelegateResourceSupervision_IdleStableDelegateTimerRoutesThroughLeasedA
 
 	// Fire the timer the way its own ticker does, on the fixture clock.
 	clk.Advance(60 * time.Second)
-	testwait.Until(t, "the timer tick to deliver its notice on the idle child", func() bool {
-		return queuedWatchNotices(t, sub.sess) > 0
+	// Wait for the wake callback itself before inspecting the queue: the
+	// producer releases the queue lock before invoking notify, so observing
+	// the queued notice first can race ahead of the wake increment.
+	testwait.Until(t, "the timer fire to arm the child's wake", func() bool {
+		return wakes.Load() > wakesBeforeFire
 	})
 	if got := queuedWatchNotices(t, sub.sess); got != 1 {
 		t.Fatalf("queued watch notices = %d, want the one the timer fired", got)
-	}
-	if wakes.Load() <= wakesBeforeFire {
-		t.Fatal("the timer fire armed no wake: a leased generation would never be driven for the row")
 	}
 
 	// The timer notice is on the queue and the child is unleased, so the split is
@@ -5916,7 +5918,7 @@ func TestDelegateResourceSupervision_IdleStableDelegateTimerRoutesThroughLeasedA
 		t.Fatal("the unleased request built an empty history: this proof needs the request the row was withheld from")
 	}
 	for _, msg := range unleasedHistory {
-		if strings.Contains(msg.Text(), rowID) {
+		if strings.Contains(msg.Text(), timerNote) {
 			t.Fatal("the unleased request presents the deferred timer notice: the row rode outside a lease")
 		}
 	}
@@ -5943,8 +5945,15 @@ func TestDelegateResourceSupervision_IdleStableDelegateTimerRoutesThroughLeasedA
 	// Release the hold: the wake the fire armed now reaches the child, and the
 	// generation it drives is the one that must present and settle the row. A row
 	// left pending here would be attention no turn ever collects.
+	requestsBeforeRelease := supervisionRequestCount(fixture.adapter)
 	releaseWake()
-	testwait.Until(t, "the leased generation to settle the deferred timer row", func() bool {
+	testwait.Until(t, "the leased generation to present and settle the deferred timer row", func() bool {
+		if supervisionRequestCount(fixture.adapter) <= requestsBeforeRelease {
+			return false
+		}
+		if !requestsContain(fixture.adapter.Requests()[requestsBeforeRelease:], timerNote) {
+			return false
+		}
 		return !sub.sess.pendingDeferredWatchAttention()[rowID]
 	})
 }
