@@ -1,50 +1,46 @@
 # frozen_string_literal: true
 
-# E16 lab scaffolding (never leaves the lab branch): hoist the Metro bundle out
-# of the app target's serial tail.
+# E16b lab scaffolding (never leaves the lab branch): hoist the Metro bundle out
+# of the app target's serial tail, with a start time the lane controls.
 #
-# The app target's "Bundle React Native code and images" phase (42.56 s in the
-# E15 timeline, 716.2 s -> 758.8 s of a 777.9 s build) runs only after every pod
-# target has finished, so its whole cost lands in the serial tail. This patch
-# moves the identical script text onto a pod target that finishes early
-# (ZXingObjC, 343.2 s in the same timeline) and rewrites the app phase into a
-# wait-then-copy step. The bundle therefore runs while the pod compile wave is
-# still building, and the app target's own copy costs milliseconds.
+# E16 put the phase on an early pod target; the pod target's compiles ended at
+# 45.9 s but xcodebuild did not start the phase until 724.5 s (script phases are
+# batched), so the hit came from scheduler luck rather than design. This version
+# takes the scheduler out of it: the qualification tool runs the same script
+# itself, at the start of the build, and the app target keeps the wait-then-copy
+# phase E16 measured at 0.262 s.
 #
-# Equivalence by construction: the hoisted phase runs the *same* phase script
-# text with the same Xcode-supplied environment, except that SRCROOT is pinned
-# to the app's ios directory (a pod target's SRCROOT is ios/Pods) and the
-# destination is a staging directory instead of the built .app. The app phase's
-# copy is byte-preserving (rsync -a), so the bundle the app ships is the bundle
-# this script produced.
-#
-# The patch verifies itself by reopening both projects and checking the phase
-# text, and it fails loudly when it cannot find the app bundle phase or the
-# carrier target: a silent no-op would measure nothing.
+# This script does two things and verifies both:
+#   1. extract the app target's Metro phase script into --emit, wrapped with the
+#      begin/done markers and a completion marker the app phase waits for;
+#   2. rewrite that phase into the wait-then-copy step.
+# The environment for the emitted script is supplied by the caller from the app
+# target's own resolved build settings, so the script text sees the same values
+# Xcode gave it.
 
 require "xcodeproj"
 require "optparse"
+require "fileutils"
 
 options = {}
 OptionParser.new do |parser|
   parser.on("--app-project PATH") { |value| options[:app_project] = value }
-  parser.on("--pods-project PATH") { |value| options[:pods_project] = value }
   parser.on("--host-target NAME") { |value| options[:host_target] = value }
-  parser.on("--carrier-target NAME") { |value| options[:carrier_target] = value }
   parser.on("--staging PATH") { |value| options[:staging] = value }
+  parser.on("--emit PATH") { |value| options[:emit] = value }
 end.parse!
 
-%i[app_project pods_project host_target carrier_target staging].each do |key|
+%i[app_project host_target staging emit].each do |key|
   abort("metro_hoist: missing --#{key.to_s.tr('_', '-')}") unless options[key]
 end
 
 STAGING = options[:staging].freeze
+EMIT = options[:emit].freeze
 abort("metro_hoist: --staging must be absolute") unless STAGING.start_with?("/")
+abort("metro_hoist: --emit must be absolute") unless EMIT.start_with?("/")
 abort("metro_hoist: #{options[:app_project]} does not exist") unless File.exist?(options[:app_project])
-abort("metro_hoist: #{options[:pods_project]} does not exist") unless File.exist?(options[:pods_project])
 
 BUNDLE_SCRIPT_MARKER = "react-native-xcode.sh"
-HOIST_PHASE_NAME = "[E16] Metro hoist"
 COPY_PHASE_MARKER = "E16 metro-copy"
 HOIST_PHASE_MARKER = "E16 metro-hoist"
 
@@ -63,30 +59,24 @@ end
 
 bundle_phase = bundle_phases.first
 original_script = bundle_phase.shell_script.to_s
-ios_dir = File.expand_path(File.dirname(options[:app_project]))
-abort("metro_hoist: #{ios_dir} does not exist") unless File.directory?(ios_dir)
 
 hoist_script = <<~SHELL
-  # #{HOIST_PHASE_MARKER} (E16 lab): the app target's Metro phase, run on a pod
-  # target that finishes early so the bundle overlaps the compile wave.
+  #!/bin/bash
+  # #{HOIST_PHASE_MARKER}: the app target's Metro phase, run by the
+  # qualification tool at the start of the build instead of inside the app
+  # target's serial tail. The environment is the app target's own build
+  # settings, and this script's outputs are copied into the app by the phase
+  # rewritten below.
   set -e
-  export SRCROOT="#{ios_dir}"
-  export PROJECT_DIR="$SRCROOT"
-  export TARGET_NAME="#{options[:host_target]}"
-  export PRODUCT_NAME="#{options[:host_target]}"
-  export CONFIGURATION_BUILD_DIR="#{STAGING}"
-  export UNLOCALIZED_RESOURCES_FOLDER_PATH=""
   echo "#{HOIST_PHASE_MARKER}: begin $(date -u +%H:%M:%S)"
-  rm -rf "#{STAGING}"
-  mkdir -p "#{STAGING}"
   #{original_script}
   touch "#{STAGING}/.complete"
   echo "#{HOIST_PHASE_MARKER}: done $(date -u +%H:%M:%S)"
 SHELL
 
 copy_script = <<~SHELL
-  # #{COPY_PHASE_MARKER} (E16 lab): the bundle was produced during the compile
-  # wave; this phase waits for its completion marker and copies it into place.
+  # #{COPY_PHASE_MARKER}: the bundle was produced before the build began; this
+  # phase waits for its completion marker and copies it into place.
   set -e
   STAGING="#{STAGING}"
   DEST="$CONFIGURATION_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH"
@@ -105,44 +95,30 @@ copy_script = <<~SHELL
   echo "#{COPY_PHASE_MARKER}: copied $(ls -1 "$DEST" | wc -l | tr -d ' ') entries"
 SHELL
 
-pods_project = Xcodeproj::Project.open(options[:pods_project])
-carrier = pods_project.targets.find { |target| target.name == options[:carrier_target] }
-if carrier.nil?
-  available = pods_project.targets.map(&:name).sort
-  abort("metro_hoist: no carrier target #{options[:carrier_target]} in " \
-        "#{options[:pods_project]}; targets: #{available.inspect}")
-end
-if carrier.shell_script_build_phases.any? { |phase| phase.name.to_s.include?(HOIST_PHASE_MARKER) }
-  abort("metro_hoist: #{carrier.name} already carries #{HOIST_PHASE_NAME}")
-end
+FileUtils.mkdir_p(File.dirname(EMIT))
+abort("metro_hoist: #{EMIT} already exists") if File.exist?(EMIT)
+File.write(EMIT, hoist_script)
+FileUtils.chmod(0o755, EMIT)
 
-hoist_phase = carrier.new_shell_script_build_phase(HOIST_PHASE_NAME)
-hoist_phase.shell_script = hoist_script
 bundle_phase.shell_script = copy_script
-pods_project.save
 app_project.save
 
-# Reopen both projects: the patch is only real if the saved files carry it.
-reopened_app = Xcodeproj::Project.open(options[:app_project])
-reopened_host = reopened_app.targets.find { |target| target.name == options[:host_target] }
-reopened_phase = reopened_host.shell_script_build_phases.find do |phase|
-  phase.shell_script.to_s.include?(COPY_PHASE_MARKER)
+# Reopen: the patch is only real if the saved project carries it. The emitted
+# script must carry the original text, or the copy phase would move an empty
+# directory while the build looked green.
+reopened = Xcodeproj::Project.open(options[:app_project])
+reopened_host = reopened.targets.find { |target| target.name == options[:host_target] }
+unless reopened_host.shell_script_build_phases.any? { |phase| phase.shell_script.to_s.include?(COPY_PHASE_MARKER) }
+  abort("metro_hoist: verification failed, #{options[:app_project]} has no copy phase")
 end
-abort("metro_hoist: verification failed, #{options[:app_project]} has no copy phase") unless reopened_phase
 if reopened_host.shell_script_build_phases.any? { |phase| phase.shell_script.to_s.include?(BUNDLE_SCRIPT_MARKER) }
   abort("metro_hoist: verification failed, bundle script still referenced in #{options[:app_project]}")
 end
-
-reopened_pods = Xcodeproj::Project.open(options[:pods_project])
-reopened_carrier = reopened_pods.targets.find { |target| target.name == options[:carrier_target] }
-hoisted = reopened_carrier.shell_script_build_phases.select do |phase|
-  phase.shell_script.to_s.include?(HOIST_PHASE_MARKER)
-end
-if hoisted.length != 1
-  abort("metro_hoist: verification failed, #{options[:carrier_target]} carries #{hoisted.length} hoist phases")
+written = File.read(EMIT)
+unless written.include?(BUNDLE_SCRIPT_MARKER) && written.include?(HOIST_PHASE_MARKER) && written.include?("#{STAGING}/.complete")
+  abort("metro_hoist: verification failed, #{EMIT} does not carry the hoist script")
 end
 
-puts "E16 metro_hoist: patched #{options[:app_project]} (#{host.name} bundle phase -> copy) " \
-     "and #{options[:pods_project]} (#{carrier.name} -> #{HOIST_PHASE_NAME})"
+puts "E16 metro_hoist: #{options[:app_project]} #{host.name} bundle phase -> copy"
+puts "E16 metro_hoist: emitted #{EMIT} (#{written.bytesize} bytes)"
 puts "E16 metro_hoist: staging #{STAGING}"
-puts "E16 metro_hoist: hoisted script bytes #{original_script.bytesize}"

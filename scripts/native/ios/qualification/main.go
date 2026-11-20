@@ -52,6 +52,12 @@ type runner struct {
 	identity    buildIdentity
 	statusReads int
 	unlockLogs  int
+	// hostSettings is the app target's resolved build settings, captured by
+	// generatedMetadata for the E16b Metro hoist: the hoisted script runs
+	// outside xcodebuild and must see the values Xcode would have supplied.
+	hostSettings map[string]string
+	// hoist is the background Metro bundle started before the release build.
+	hoist *metroHoistRun
 }
 
 func main() {
@@ -160,11 +166,14 @@ func qualify(ctx context.Context, output, derivedData string) (result error) {
 	if err := r.generatedMetadata(ctx); err != nil {
 		return err
 	}
-	// E16 lab: move the Metro phase off the app target's serial tail and onto a
-	// pod target that finishes early, so the bundle overlaps the compile wave.
+	// E16b lab: run the Metro phase's own script here, before the build, so the
+	// bundle overlaps the whole compile wave; the app phase copies it in.
 	if err := r.hoistMetroBundle(ctx); err != nil {
 		return err
 	}
+	// Every exit path joins the bundle: a failed simulator or build must not
+	// leave a node process writing into the run output after the run ended.
+	defer func() { result = errors.Join(result, r.waitMetroHoist(ctx)) }()
 	return r.withOwnedSimulator(ctx, simulatorName(output), func(udid string) error {
 		derived := r.derivedDataDir()
 		resultBundle := filepath.Join(r.output, "build-timing.xcresult")
@@ -175,8 +184,12 @@ func qualify(ctx context.Context, output, derivedData string) (result error) {
 		// The report runs after a failed build too: a red build still has a
 		// timeline, and that timeline is what decides the next experiment.
 		r.buildTimingReport(ctx, filepath.Join(r.output, "xcodebuild-release.log"), resultBundle)
+		hoistErr := r.waitMetroHoist(ctx)
 		if buildErr != nil {
 			return buildErr
+		}
+		if hoistErr != nil {
+			return hoistErr
 		}
 		r.identity.AppPath = filepath.Join(derived, "Build", "Products", "Release-iphonesimulator", "Evener.app")
 		if err := r.verifyApp(ctx, r.identity.AppPath, "built"); err != nil {
@@ -764,6 +777,9 @@ func (r *runner) generatedMetadata(ctx context.Context) error {
 			return fmt.Errorf("%w: missing generated target %s", errIdentity, target)
 		}
 		settings := targets[0].BuildSettings
+		if target == "Evener" {
+			r.hostSettings = settings
+		}
 		info, err := r.plist(ctx, "generated-info-"+target, filepath.Join(r.native, "ios", settings["INFOPLIST_FILE"]))
 		if err != nil {
 			return err
