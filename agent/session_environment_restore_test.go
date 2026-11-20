@@ -78,7 +78,10 @@ func TestRestoreFailureEnvironmentIsSeededWithoutLiveReplay(t *testing.T) {
 func TestColdRestoreReusesSavedSystemPromptVerbatim(t *testing.T) {
 	t.Parallel()
 	stateDir, promptPath := t.TempDir(), filepath.Join(t.TempDir(), "launch-prompt.md")
-	writeTestFile(t, promptPath, "LAUNCH_PROMPT_SENTINEL_4f2a")
+	// The prompt opens with the render-failure diagnostic's words, so the
+	// restore path proves it keeps a custom prompt that merely starts like the
+	// diagnostic instead of discarding it as prose.
+	writeTestFile(t, promptPath, "Template rendering failed: a custom launch prompt. LAUNCH_PROMPT_SENTINEL_4f2a")
 	fresh := newSession(t, withStateDir(stateDir), withConfig(SessionConfig{SystemPromptFile: promptPath, testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true}}))
 	launch := fresh.cachedSystemPrompt
 	fresh.Close()
