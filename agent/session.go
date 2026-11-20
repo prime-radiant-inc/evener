@@ -315,6 +315,7 @@ type Session struct {
 	// tracker.
 	envContextState *envctx.State
 
+	launchEnvBaseline envctx.Snapshot // the runtime facts the launch prompt printed
 	// notesLastProjected is the last shared-notes block
 	// maybeAppendNotesContext appended as a NOTES_CONTEXT turn. The
 	// projection appends only when the rendered block differs from this
@@ -2902,6 +2903,29 @@ func (s *Session) maybeAppendEnvironmentContext() error {
 	return s.appendEnvironmentContext(true)
 }
 
+// envRuntimeDrifted reports whether a runtime fact the launch prompt stated has moved.
+func (s *Session) envRuntimeDrifted() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.envTracker != nil && s.envTracker.RuntimeDrifted(s.envRuntimeSnapshot(envctx.Snapshot{}))
+}
+
+// envRuntimeSnapshot fills the runtime facts the launch prompt states once. Callers hold s.mu.
+func (s *Session) envRuntimeSnapshot(snap envctx.Snapshot) envctx.Snapshot {
+	var skills []string
+	for _, d := range s.skills.ModelEntries() {
+		if s.skillAvailableToSession(d.CatalogName) {
+			skills = append(skills, d.CatalogName)
+		}
+	}
+	snap.Model, snap.KnowledgeCutoff, snap.CommitTrailer = s.profile.Model(), s.envInfo.KnowledgeCutoff, s.commitTrailerPrompt()
+	if le, ok := s.env.(*execenv.LocalExecutionEnvironment); ok {
+		snap.ScratchDir = le.SessionScratchDir()
+	}
+	snap.CallableTools, snap.AvailableSkills = envctx.JoinNames(toolNamesFromDefinitions(s.cachedToolDefs)), envctx.JoinNames(skills)
+	return snap
+}
+
 // appendEnvironmentContext can persist recovery context without publishing a
 // live event: restore seeds its projection from the completed transcript.
 func (s *Session) appendEnvironmentContext(publishEvent bool) error {
@@ -2928,7 +2952,8 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 		s.attentionMu.Unlock()
 		return nil
 	}
-	before := tracker.State()
+	snap = s.envRuntimeSnapshot(snap)
+	before := *tracker
 	block := tracker.RenderDiff(snap)
 	var st envctx.State
 	if block != "" {
@@ -2970,7 +2995,7 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	committed := err == nil
 	if !committed {
 		s.mu.Lock()
-		s.envTracker = envctx.NewTracker(before)
+		s.envTracker = &before
 		s.mu.Unlock()
 	}
 	if committed {
@@ -3031,6 +3056,13 @@ func (s *Session) resetEnvContextTrackerLocked() bool {
 		return false
 	}
 	s.envTracker = envctx.NewTracker(envctx.State{})
+	s.envTracker.SeedRuntime(s.launchEnvBaseline)
+	for _, turn := range s.history {
+		if turn.Kind == schema.TurnEnvironment {
+			s.envTracker.ReplayBlock(turn.Message.Text())
+		}
+	}
+	s.envTracker.ResetState()
 	state := envctx.State{}
 	s.envContextState = &state
 	return true

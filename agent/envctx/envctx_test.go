@@ -138,3 +138,38 @@ func TestReplayBlockFollowsRenderedChanges(t *testing.T) {
 		t.Fatalf("replayed state = %+v, want %+v with HasSent", got, changed)
 	}
 }
+func TestRenderDiffRuntimeFactsAndReplay(t *testing.T) {
+	t.Parallel()
+	launch := fullSnap()
+	launch.Model, launch.KnowledgeCutoff, launch.ScratchDir, launch.CommitTrailer, launch.CallableTools, launch.AvailableSkills = "openai/gpt-5.2", "2025-01-01", "/tmp/scratch-1", "Co-authored-by: A <s1@host>", "apply_patch, memory_write", "gardening, systemverilog"
+	tr := NewTracker(State{})
+	tr.SeedRuntime(launch)
+	if first := tr.RenderDiff(launch); strings.Contains(first, "model: ") || strings.Contains(first, "cutoff: ") || strings.Contains(first, "trailer: ") || strings.Contains(first, "dir: ") || strings.Contains(first, "tools: ") || strings.Contains(first, "skills: ") {
+		t.Fatalf("the first block restated what the launch prompt stated: %q", first)
+	}
+	cur := launch
+	cur.Model, cur.KnowledgeCutoff, cur.ScratchDir, cur.CommitTrailer, cur.CallableTools, cur.AvailableSkills = "anthropic/claude-opus-4-6", "2025-06-01", "/tmp/evener-scratch-2", "", "apply_patch, web_search", "systemverilog"
+	want := "<environment_context>\nmodel: anthropic/claude-opus-4-6\nknowledge cutoff: 2025-06-01\nscratch dir: /tmp/evener-scratch-2\n" +
+		"commit trailer: (disabled)\nadded tools: web_search\nremoved tools: memory_write\nremoved skills: gardening\n</environment_context>"
+	if got := tr.RenderDiff(cur); got != want {
+		t.Fatalf("runtime change:\ngot  %q\nwant %q", got, want)
+	}
+	restored := NewTracker(State{Last: launch, HasSent: true})
+	restored.SeedRuntime(launch)
+	if restored.ReplayBlock(want); restored.RenderDiff(cur) != "" {
+		t.Fatal("replayed facts re-rendered")
+	}
+	grown, reseeding := launch, NewTracker(State{})
+	grown.CallableTools = "apply_patch, memory_write, update_goal"
+	reseeding.SeedRuntime(launch)
+	reseeding.ReplayBlock("<environment_context>\nadded tools: update_goal\n</environment_context>")
+	if d := reseeding.RenderDiff(grown); strings.Contains(d, "tools: ") {
+		t.Fatalf("retained delta lost the launch tools: %q", d)
+	}
+	cleared := cur
+	cleared.KnowledgeCutoff, cleared.ScratchDir = "", ""
+	if b := restored.RenderDiff(cleared); !restored.ReplayBlock(b) || restored.RenderDiff(cleared) != "" ||
+		!strings.Contains(b, "knowledge cutoff: (none)") || !strings.Contains(b, "scratch dir: (none)") {
+		t.Fatalf("cleared facts do not replay quietly:\n%s", b)
+	}
+}
