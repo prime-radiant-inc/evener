@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/execsupport/shellquote"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // seedStrandedShellRepairStore seeds the crash window the shell repair exists
@@ -89,7 +90,7 @@ func requireStrandedStopWarningAndRepairShareOneReconcile(t *testing.T) {
 	t.Helper()
 	f, _ := newSeededStrandedStop(t)
 
-	for pass := 0; pass < 4; pass++ {
+	for pass := range 4 {
 		requirements, current := f.controller.stopReconcileRequirements(f.controller.stopForResult(f.stop))
 		if !current {
 			t.Fatalf("pass %d: the fixture's stop reconcile requirements are not current", pass)
@@ -145,7 +146,9 @@ func requireStrandedStopWarningAndRepairShareOneReconcile(t *testing.T) {
 //
 // The old order is observable from the hook itself: it records the store size it
 // sees. Published before the repair, the hook sees the pre-drain size; published
-// after the plans run, it sees the repair's appended events.
+// after the plans run, it sees the repair's appended events. The hook then
+// blocks until the test releases it, so the test can also check that the stop
+// is complete while a synchronous hook is still running.
 func TestOrdinaryStopPublishesLostResultWarningAfterShellRepairs(t *testing.T) {
 	requireStrandedStopWarningAndRepairShareOneReconcile(t)
 
@@ -156,11 +159,15 @@ func TestOrdinaryStopPublishesLostResultWarningAfterShellRepairs(t *testing.T) {
 	// drain, so a size above the pre-drain size means the repair had already
 	// appended its events when the warning went out.
 	observationPath := filepath.Join(t.TempDir(), "observed-shell-store-size")
+	startedPath := filepath.Join(t.TempDir(), "hook-started")
+	proceedPath := filepath.Join(t.TempDir(), "hook-proceed")
 	runner := hooks.NewRunner(nil, "test-model")
 	runner.Add(plugin.HookNotification, plugin.RegisteredHook{
 		Matcher: "*",
 		Type:    "command",
-		Command: `size=$(wc -c < ` + shellquote.Literal(shellPath) + `); printf '%s\n' "$size" > ` + shellquote.Literal(observationPath),
+		Command: `size=$(wc -c < ` + shellquote.Literal(shellPath) + `); printf '%s\n' "$size" > ` + shellquote.Literal(observationPath) +
+			`; : > ` + shellquote.Literal(startedPath) +
+			`; i=0; while [ ! -f ` + shellquote.Literal(proceedPath) + ` ] && [ "$i" -lt 600 ]; do sleep 0.05; i=$((i+1)); done`,
 		Timeout: 30,
 	})
 	f.root.hookRunner = runner
@@ -171,8 +178,34 @@ func TestOrdinaryStopPublishesLostResultWarningAfterShellRepairs(t *testing.T) {
 		t.Fatalf("stat seeded shell store: %v", err)
 	}
 
-	if err := f.controller.drainStopAbandonable(tripwireCtx(t), f.controller.stopForResult(f.stop), f.root, nil, false); err != nil {
-		t.Fatalf("ordinary stop drain: %v", err)
+	drainResult := make(chan error, 1)
+	go func() {
+		drainResult <- f.controller.drainStopAbandonable(tripwireCtx(t), f.controller.stopForResult(f.stop), f.root, nil, false)
+	}()
+	testwait.Until(t, "the lost-result warning's Notification hook to start", func() bool {
+		_, statErr := os.Stat(startedPath)
+		return statErr == nil
+	})
+	// The hook is now running inside the drain and blocking it. The stop must
+	// already be complete: a synchronous Notification hook may not hold the
+	// completion clients see behind its command (#6939).
+	if !channelClosed(f.stop.done) {
+		if writeErr := os.WriteFile(proceedPath, []byte("go\n"), 0o644); writeErr != nil {
+			t.Fatalf("release the blocked hook: %v", writeErr)
+		}
+		t.Fatal("the stop was not complete while the Notification hook was still running: the ordinary " +
+			"stop dispatched the lost-result warning before its final pass recorded completion (#6939)")
+	}
+	if err := os.WriteFile(proceedPath, []byte("go\n"), 0o644); err != nil {
+		t.Fatalf("release the blocked hook: %v", err)
+	}
+	select {
+	case err := <-drainResult:
+		if err != nil {
+			t.Fatalf("ordinary stop drain: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the ordinary stop drain did not return after the Notification hook was released")
 	}
 	if !channelClosed(f.stop.done) {
 		t.Fatal("the ordinary stop drain did not complete the stop")

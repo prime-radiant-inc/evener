@@ -821,10 +821,11 @@ func (c *delegateTreeController) drainStopForClose(ctx context.Context, stop *de
 // publishDrainWarnings publishes the warnings a stop pass settled, on the path
 // that caller owns.
 //
-// On a successful ordinary stop the warnings travel inside the plans the drain
-// executes, so they are emitted after the delegate updates; this helper
-// publishes on the ordinary path only when a pass returns before those plans
-// run.
+// The ordinary stop publishes the warnings its passes settled once the drain
+// has finished, so the completion update reaches clients before a synchronous
+// Notification hook can delay it. This helper is therefore the close drain's
+// publisher; the ordinary stop's reconcile-error exit rides the same deferred
+// publication as its successful passes.
 //
 // The two callers have different obligations and must not share one publisher:
 //
@@ -914,6 +915,20 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 		defer cancelCapped()
 		pubCtx = capped
 	}
+	// A warning an ordinary pass settled names a receipt that is already gone
+	// from the store, so it must be published exactly once, and only after the
+	// drain has recorded completion: emit dispatches the configured
+	// Notification hook synchronously, so publishing earlier would hold the
+	// state clients see behind the hook's command (#6939). Every exit, including
+	// an error or an abandoned drain, runs this publication.
+	var settledWarnings []events.WarningData
+	if !warningsOnly {
+		defer func() {
+			if root != nil {
+				root.publishDrainWarnings(pubCtx, false, settledWarnings)
+			}
+		}()
+	}
 	for {
 		select {
 		case <-stop.done:
@@ -955,7 +970,11 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 			// A warning the pass settled is published even when the pass
 			// failed: the receipt that produced it is gone from the store,
 			// so no later pass can settle it again.
-			publishPlansWarnings()
+			if warningsOnly {
+				publishPlansWarnings()
+			} else {
+				settledWarnings = append(settledWarnings, plans.warnings...)
+			}
 			return err
 		}
 		// A warning this pass settled names a receipt that was abandoned during
@@ -963,29 +982,25 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 		// of the drain unpublished. The two callers publish it at different
 		// points, though:
 		//
-		//   - The close drain (warningsOnly true) runs no plans, so it publishes
-		//     here, bounded by pubCtx, and clears the warnings before withholding
-		//     the plans below.
-		//   - The ordinary stop (warningsOnly false) keeps the update-then-warning
-		//     order its delivery path always had. Its warnings ride the plans
-		//     into executeDelegateMutationPlans, which emits the delegate updates
-		//     first and the warnings after them. Publishing here would run emit --
-		//     and with it the configured Notification hook, synchronously --
-		//     before the shell repairs and attention cleanup below, delaying that
-		//     work and leaving clients on a stale stop state (#6939).
-		//
-		// A repair or cleanup failure below still publishes the settled warnings
-		// on the ordinary path, because that return skips the plan execution that
-		// would otherwise have emitted them.
+		//   - The close drain (warningsOnly true) withholds the delegate updates
+		//     and delivery replay, but still executes the shell repairs and
+		//     attention cleanup below, so it publishes here, bounded by pubCtx,
+		//     and clears the warnings before those plans run.
+		//   - The ordinary stop (warningsOnly false) collects them and publishes
+		//     them when the drain returns, after the completion update. Publishing
+		//     here would run emit -- and with it the configured Notification
+		//     hook, synchronously -- before the shell repairs and attention
+		//     cleanup below, and before the pass that records completion,
+		//     delaying that work and leaving clients on a stale stop state
+		//     (#6939).
 		if warningsOnly {
 			publishPlansWarnings()
-			plans.warnings = nil
+		} else {
+			settledWarnings = append(settledWarnings, plans.warnings...)
 		}
+		plans.warnings = nil
 		for _, plan := range plans.shellRepairs {
 			if err := executeDelegateShellRepair(plan, c.now()); err != nil {
-				if !warningsOnly {
-					publishPlansWarnings()
-				}
 				return err
 			}
 		}
@@ -993,9 +1008,6 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 			if err := c.executeDelegateAttentionCleanup(plan); err != nil {
 				if errors.Is(err, errDelegateStaleLease) {
 					continue
-				}
-				if !warningsOnly {
-					publishPlansWarnings()
 				}
 				return err
 			}
