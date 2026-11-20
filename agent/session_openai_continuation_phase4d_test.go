@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -196,87 +197,145 @@ func TestSession_OpenAIResponsesContinuationPhase4DIIConsumesStoredAnchorAsDelta
 	}
 }
 
-func TestSession_OpenAIResponsesContinuationRegistryClientUsesFullHistoryWhenAnchorFingerprintMismatches(t *testing.T) {
+// TestSession_OpenAIResponsesContinuationRegistryClientV2AnchorCutover drives
+// the real registry client and planner over loopback SSE: the first turn
+// creates a genuine v3 anchor, and a stored anchor whose only change is the v2
+// request-fingerprint prefix then cannot continue the session. The next turn
+// resends full history and re-anchors on the new v3 response, and the following
+// turn continues from that fresh anchor. The v3 control keeps the created
+// anchor and continues immediately, so the prefix alone is what the cut-over
+// rejects.
+func TestSession_OpenAIResponsesContinuationRegistryClientV2AnchorCutover(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	var mu sync.Mutex
-	var requestBodies [][]byte
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/responses" {
-			http.NotFound(w, r)
-			return
-		}
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("read request body: %v", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		mu.Lock()
-		requestBodies = append(requestBodies, append([]byte(nil), body...))
-		mu.Unlock()
+	for _, tc := range []struct {
+		name             string
+		storedPrefixIsV2 bool
+	}{
+		{"v2 stored prefix resends full history then re-anchors", true},
+		{"v3 control continues from the created anchor", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			var mu sync.Mutex
+			var requestBodies [][]byte
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/responses" {
+					http.NotFound(w, r)
+					return
+				}
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read request body: %v", err)
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				mu.Lock()
+				requestBodies = append(requestBodies, append([]byte(nil), body...))
+				n := len(requestBodies)
+				mu.Unlock()
 
-		w.Header().Set("Content-Type", "text/event-stream")
-		flusher, _ := w.(http.Flusher)
-		args := mustJSON(t, map[string]any{
-			"message":  "real openai stayed full history",
-			"end_turn": true,
-			"output": map[string]any{
-				"message":   "",
-				"data":      map[string]any{},
-				"artifacts": []string{},
-			},
+				w.Header().Set("Content-Type", "text/event-stream")
+				flusher, _ := w.(http.Flusher)
+				args := mustJSON(t, map[string]any{
+					"message":  "real openai turn done",
+					"end_turn": true,
+					"output": map[string]any{
+						"message":   "",
+						"data":      map[string]any{},
+						"artifacts": []string{},
+					},
+				})
+				writeResponsesFunctionCall(t, w, flusher, fmt.Sprintf("resp_v3_%d", n), fmt.Sprintf("call_done_%d", n), "communicate", args)
+			}))
+			t.Cleanup(srv.Close)
+
+			client := registryClientAt(t, dir, map[string]registry.Provider{"openai": openaiInstance(srv.URL)}, []string{"openai"})
+
+			sess, err := NewSession(client, withTestSessionNamer(client, resolveClientProfile(t, client, "openai/gpt-5.4")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+				StateDir:                    dir,
+				OpenAIResponsesContinuation: "auto",
+				testOnly: testConfig{
+					metaFS: afero.NewMemMapFs(),
+					responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
+						llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
+					},
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewSession: %v", err)
+			}
+			defer sess.Close()
+			drainSessionEvents(sess)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: in-process httptest server with a scripted response, no real network I/O; only fires on a genuine hang.
+			defer cancel()
+			if _, err := sess.ProcessInput(ctx, "real openai first user marker", nil); err != nil {
+				t.Fatalf("first ProcessInput: %v", err)
+			}
+
+			anchor := latestAssistantTurn(t, sess)
+			if !strings.HasPrefix(anchor.ResponseRequestFingerprint, "cont-req-v3:") || anchor.ResponseID != "resp_v3_1" {
+				t.Fatalf("created anchor = %+v, want the real v3 fingerprint and resp_v3_1", anchor)
+			}
+			if tc.storedPrefixIsV2 {
+				sess.mu.Lock()
+				for i := range slices.Backward(sess.history) {
+					if sess.history[i].Kind == schema.TurnAssistant {
+						sess.history[i].ResponseRequestFingerprint = "cont-req-v2:" + strings.TrimPrefix(sess.history[i].ResponseRequestFingerprint, "cont-req-v3:")
+						break
+					}
+				}
+				sess.mu.Unlock()
+			}
+
+			if _, err := sess.ProcessInput(ctx, "real openai second user marker", nil); err != nil {
+				t.Fatalf("second ProcessInput: %v", err)
+			}
+			if tc.storedPrefixIsV2 {
+				if _, err := sess.ProcessInput(ctx, "real openai third user marker", nil); err != nil {
+					t.Fatalf("third ProcessInput: %v", err)
+				}
+			}
+
+			mu.Lock()
+			bodies := append([][]byte(nil), requestBodies...)
+			mu.Unlock()
+			wantRequests := 2
+			if tc.storedPrefixIsV2 {
+				wantRequests = 3
+			}
+			if len(bodies) != wantRequests {
+				t.Fatalf("OpenAI Responses request count = %d, want %d", len(bodies), wantRequests)
+			}
+
+			second := decodeResponsesRequest(t, bodies[1])
+			secondInput := responsesInputItems(t, second)
+			if tc.storedPrefixIsV2 {
+				if _, ok := second["previous_response_id"]; ok {
+					t.Fatalf("v2-prefixed anchor must not send previous_response_id: %s", string(bodies[1]))
+				}
+				if gotStore, ok := second["store"].(bool); !ok || !gotStore {
+					t.Fatalf("fallback-capable full-history request store = %#v, want continuation-owned true: %s", second["store"], string(bodies[1]))
+				}
+				for _, marker := range []string{"real openai first user marker", "real openai second user marker"} {
+					if !responsesInputContainsText(secondInput, marker) {
+						t.Fatalf("full-history request missing %q in input: %#v", marker, secondInput)
+					}
+				}
+				third := decodeResponsesRequest(t, bodies[2])
+				if third["previous_response_id"] != "resp_v3_2" {
+					t.Fatalf("third request previous_response_id = %#v, want resp_v3_2 re-anchored on the fresh response: %s", third["previous_response_id"], string(bodies[2]))
+				}
+				return
+			}
+			if second["previous_response_id"] != "resp_v3_1" {
+				t.Fatalf("v3 control previous_response_id = %#v, want resp_v3_1: %s", second["previous_response_id"], string(bodies[1]))
+			}
+			if responsesInputContainsText(secondInput, "real openai first user marker") {
+				t.Fatalf("v3 control delta replayed pre-anchor text: %#v", secondInput)
+			}
 		})
-		writeResponsesFunctionCall(t, w, flusher, "resp_new", "call_done", "communicate", args)
-	}))
-	t.Cleanup(srv.Close)
-
-	client := registryClientAt(t, dir, map[string]registry.Provider{"openai": openaiInstance(srv.URL)}, []string{"openai"})
-
-	sess, err := NewSession(client, withTestSessionNamer(client, resolveClientProfile(t, client, "openai/gpt-5.4")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		StateDir:                    dir,
-		OpenAIResponsesContinuation: "auto",
-		testOnly: testConfig{
-			metaFS: afero.NewMemMapFs(),
-			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
-				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
-	drainSessionEvents(sess)
-	sess.history = append(sess.history,
-		schema.NewTurn(schema.TurnUserInput, llm.User("real openai prior user marker")),
-		responsesContinuationEligibleAssistantTurn("resp_existing_anchor"),
-	)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: in-process httptest server with a scripted response, no real network I/O; only fires on a genuine hang.
-	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "real openai current user marker", nil); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-
-	mu.Lock()
-	bodies := append([][]byte(nil), requestBodies...)
-	mu.Unlock()
-	if len(bodies) != 1 {
-		t.Fatalf("OpenAI Responses request count = %d, want 1", len(bodies))
-	}
-	req := decodeResponsesRequest(t, bodies[0])
-	if _, ok := req["previous_response_id"]; ok {
-		t.Fatalf("fingerprint-mismatched real OpenAI path must not send previous_response_id: %s", string(bodies[0]))
-	}
-	if gotStore, ok := req["store"].(bool); !ok || !gotStore {
-		t.Fatalf("fallback-capable real OpenAI request store = %#v, want continuation-owned true", req["store"])
-	}
-	input := responsesInputItems(t, req)
-	for _, marker := range []string{"real openai prior user marker", "real openai current user marker"} {
-		if !responsesInputContainsText(input, marker) {
-			t.Fatalf("full-history request missing %q in input: %#v", marker, input)
-		}
 	}
 }
 
