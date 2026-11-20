@@ -3751,7 +3751,7 @@ func TestDelegateAttentionUserStopHoldSurvivesIdleReleaseRestore(t *testing.T) {
 
 	// The drive loop's flush idiom pumps a delivery the spawn deferred past
 	// its last drain cut before each pass.
-	flushErr := lane.driveUntil(entered)
+	flushErr, setupDone := lane.startDrive(entered)
 	select {
 	case <-entered:
 	// TRIPWIRE: the first drive presents within a couple of loop passes of
@@ -3763,6 +3763,12 @@ func TestDelegateAttentionUserStopHoldSurvivesIdleReleaseRestore(t *testing.T) {
 		t.Fatalf("the presentation never reached its model request (pending attention=%d (%v); flush=%v)",
 			len(pending), pendErr, lastFlushErr)
 	}
+
+	// Join the setup worker before the stop below: a buffered wake would
+	// otherwise resume after the stop and consume the second row on the
+	// resident runtime before the release can reclaim it, which is the
+	// cold-restore failure this test must not read as its own.
+	waitForTestSignal(t, setupDone, "the setup drive worker to exit after the parked request entered")
 
 	// The scenario's premise is a stale armed wake for the second row: the
 	// first drive's accept captured the pending rows, and the second row was
