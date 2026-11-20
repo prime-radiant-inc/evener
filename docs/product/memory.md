@@ -499,11 +499,12 @@ deletion. Reopening the same project identity sees its surviving files.
 ## Per-session opt-out
 
 `--disable-memory` defaults to false on `evener` and `evener serve`. Disabled
-sessions expose no native memory tools, add no automatic memory guidance or
-index context, and perform no native wiki I/O. Ordinary tools, skills and
-session notes remain available; `gardening-memory` is not among them, because a
-disabled session cannot save memory and so neither sees it in its catalog nor
-loads it, exactly like a delegate or a root whose profile denies a save tool.
+sessions expose no native memory tools, add no `MEMORY_CONTEXT` index context,
+and perform no native wiki I/O. Sessions started with `--disable-memory` also
+omit memory guidance and `gardening-memory` from their launch system prompt and
+skill catalog. Ordinary tools, skills and session notes remain available;
+`gardening-memory` is excluded because a disabled session cannot save memory,
+exactly like a delegate or a root whose profile denies a save tool.
 
 The same opt-out is the launch layers' `memory_enabled` option: settable per
 launch and savable as the global and project launch defaults. The launch
@@ -522,10 +523,13 @@ resolved launch too, so the composer never offers a skill the started session
 cannot load.
 
 The choice is sticky across resume and compaction. Omitting the flag on resume
-preserves it; passing the flag can additionally disable an enabled session.
-Disabled parents dominate fresh and restored children. There is no live
-toggle: the option shapes new sessions, and a resumed session keeps the
-state it was created with.
+preserves it; passing `--disable-memory` when resuming an enabled session keeps
+the recorded launch system prompt immutable while revoking the native memory
+tools and `gardening-memory` skill (reported via `<environment_context>` as
+`removed tools:` and `removed skills: gardening-memory`) and suppressing
+`MEMORY_CONTEXT` index injection and native wiki I/O. Disabled parents dominate
+fresh and restored children. There is no live toggle: the option cannot be
+changed mid-session, and a resumed session can only add opt-out, never clear it.
 
 Opt-out does not remove stored files, prior conversation or other sessions'
 access. It does not revoke general filesystem permissions: unrestricted file
