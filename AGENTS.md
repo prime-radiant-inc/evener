@@ -267,7 +267,7 @@ loading them, since each opens a socket the moment its body runs.
 - **Shepherd-PR**
   You should use the /shepherd-pr skill if it is installed.
 - **One push, one CI run, one review, one wait.** Make the whole round's edits
-  (fixes for every finding), then push once, then wait once with the
+  (the round's fixes under the triage and proportion rules below), then push once, then wait once with the
   shepherd-pr settle detector. The detector exits when the head stops moving,
   no check is outstanding, and roborev's combined review names your exact
   head. Run it as its own background job: a `&` inside a job orphans it, and
@@ -303,13 +303,25 @@ loading them, since each opens a socket the moment its body runs.
   reconciliation usually is that both are right about different cases; pin
   both cases.
 - **Keep fixes in proportion, and file what you do not fix.** Do not design
-  for rare or future cases nobody reported. Fix a low finding in the same
-  round when the change is small and local. Before enqueuing, file every other
-  real finding you are leaving unfixed as a GitHub issue in this repo, after
+  for rare or future cases nobody reported. A valid medium-or-above finding
+  blocks the merge until it is fixed; a wrong one is refuted with evidence
+  instead. The filing default governs only the findings that remain, the
+  non-blocking ones: fix such a finding in the PR only when it invalidates
+  the change's own behavior, even when the fix would be small and local, and
+  file every other one. The filing default holds only while the PR is inside
+  the size budget Jesse set for it (default: a couple hundred production
+  lines); a PR that has outgrown its budget or its rounds escalates to Jesse
+  instead of absorbing findings. A finding whose fix requires new machinery
+  is a scope decision for Jesse, not for the review round, at any severity.
+  Before enqueuing, file every real
+  finding you are leaving unfixed as a GitHub issue in this repo, after
   searching for an existing one: location, trigger, impact, why it was not
   fixed, and a link to the PR. Refuted findings get the refutation and no
   issue. This repo is public, so never file the details of an exploitable
-  security problem; raise those with the developer directly.
+  security problem; raise those with the developer directly. At round five
+  with findings still arriving, re-verify the diagnosis against current main
+  and bring the scope to Jesse; a growing round count on a large diff is a
+  design signal, not a polish problem.
 - **Merge through the merge queue.** Main requires one approving review, and
   RoboRev supplies it: a few minutes after its combined review names the PR's
   head, the roborev-primeradiant app approves when nothing is medium or above
