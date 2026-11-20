@@ -298,6 +298,9 @@ type ThinkingData struct {
 	ResponsesContentParts []ResponsesReasoningPart `json:"responses_content_parts,omitempty"`
 	ResponsesSummaryParts []ResponsesReasoningPart `json:"responses_summary_parts,omitempty"`
 	// ResponsesIncomplete marks a reasoning item the provider cut off.
+	// Older transcripts can carry typed ResponsesContentParts and
+	// ResponsesSummaryParts without this flag; those items decode as complete
+	// and replay as finished.
 	ResponsesIncomplete bool `json:"responses_incomplete,omitempty"`
 }
 
@@ -635,6 +638,12 @@ type Request struct {
 	// treat Tools and every element's Parameters as immutable: the stamp
 	// describes the bytes at stamping time, so a schema edited in place would
 	// drift the estimate silently. Rebuild the list and re-measure instead.
+	//
+	// The stamp is the catalog's own count and nothing else: a route whose
+	// builder rewrites a schema prices that emission in the estimator
+	// (EffectiveToolsJSONBytes, EstimateInputTokensForRoute) without writing
+	// the answer back here, so a request priced for one route and then served
+	// by another cannot carry the first route's charge.
 	ToolsJSONBytes int `json:"-"`
 
 	AdapterTimeout *AdapterTimeout `json:"adapter_timeout,omitempty"`

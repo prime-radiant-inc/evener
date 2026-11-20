@@ -111,8 +111,10 @@ func TestCompletedRoundLeavesNoFallbackSource(t *testing.T) {
 func TestRoundWithoutFallbackRecordsNoSource(t *testing.T) {
 	t.Parallel()
 	s, _ := newRequestBuildBenchSession(t)
-	s.setRoundFallbackSource("system prompt", []llm.Message{llm.User("first")}, nil, replayScope{})
-	if source, ok := s.takeRoundFallbackSource(); !ok || source.system != "system prompt" || len(source.history) != 1 {
+	route := s.priceRoundRoute(s.currentProfile(), llm.Request{})
+	s.setRoundFallbackSource("system prompt", []llm.Message{llm.User("first")}, nil, replayScope{}, route)
+	if source, ok := s.takeRoundFallbackSource(); !ok || source.system != "system prompt" || len(source.history) != 1 ||
+		source.route.toolBytes != route.toolBytes || source.route.resolved.Instance != route.resolved.Instance {
 		t.Fatalf("round source did not hold the recorded input: %#v", source)
 	}
 	if source, ok := s.takeRoundFallbackSource(); ok {

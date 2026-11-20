@@ -213,6 +213,9 @@ type Session struct {
 	// input rather than a built message slice because only Messages depends on
 	// that input: the fallback lays out its own messages when it runs, so a
 	// round that never falls back builds one request instead of two (#6442).
+	// It carries the round's priced route too, because a round has one handoff,
+	// not two: every admission the round takes bills the tool list that handoff
+	// measured, and a later round cannot inherit this one's.
 	roundFallbackSource    roundFallbackSource
 	roundFallbackSourceSet bool
 	// rejectedToolResultDocuments holds tool-call IDs whose document payload a
@@ -941,9 +944,11 @@ type Session struct {
 	// quotaWait is the model call waiting out a provider usage limit, nil
 	// while none waits (session_quota_wait.go). quotaWakes counts the asks
 	// (a user message, a model switch) for such a wait to retry now.
-	// quotaWaitStamps is the last wait identity the session issued, so a
-	// later wait of the same turn always compares greater than an earlier
-	// one even when wall-clock instants collide or step back.
+	// quotaWaitStamps counts the wait identities this runtime issued. Its
+	// value is the sequence part of the next stamp, minted inside the durable
+	// boot generation's range (session_quota_wait.go), so a wait always
+	// compares greater than an earlier one even when wall-clock instants
+	// collide or step back.
 	// steerArrivals counts accepted user steering and steerArrivalsDrained is
 	// its value as the latest steering drain began, so a wait can tell a
 	// steer that may not be in its request. Guarded by mu.
