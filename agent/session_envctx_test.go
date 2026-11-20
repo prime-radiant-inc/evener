@@ -29,6 +29,13 @@ import (
 // test (the unchanged-environment fast path depends on that).
 var envctxFixedTime = time.Date(2026, 8, 6, 14, 0, 0, 0, time.UTC)
 
+// fixedEnvProbes returns the deterministic probe set a test needs when it
+// asserts that no environment delta re-emits the block: the host clock may
+// cross a local-hour boundary between two turns.
+func fixedEnvProbes() *envctx.Probes {
+	return &envctx.Probes{Now: func() time.Time { return envctxFixedTime }}
+}
+
 // repeatFinalResponse builds n identical scripted "turn ends via communicate"
 // steps, since fakeAdapter falls back to a bare-text (non-communicate)
 // response once its steps list is exhausted, which the round loop rejects.
@@ -1071,7 +1078,7 @@ func TestCompactedGitSessionResumedOutsideGitReportsNoRepo(t *testing.T) {
 			client.Register(newFakeAdapter("openai", repeatFinalResponse(4, "ok")...))
 			s, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(gitDir), SessionConfig{
 				StateDir: stateDir,
-				testOnly: testConfig{noSyncJobStore: true},
+				testOnly: testConfig{noSyncJobStore: true, envProbes: fixedEnvProbes()},
 			})
 			if err != nil {
 				t.Fatalf("NewSession: %v", err)
@@ -1098,7 +1105,7 @@ func TestCompactedGitSessionResumedOutsideGitReportsNoRepo(t *testing.T) {
 			rClient.Register(newFakeAdapter("openai", repeatFinalResponse(16, "resumed")...))
 			r, err := RestoreSessionFromMetaWithConfig(rClient, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(nonGitDir), meta, RestoreSessionConfig{
 				StateDir: stateDir,
-				testOnly: testConfig{noSyncJobStore: true},
+				testOnly: testConfig{noSyncJobStore: true, envProbes: fixedEnvProbes()},
 			})
 			if err != nil {
 				t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
