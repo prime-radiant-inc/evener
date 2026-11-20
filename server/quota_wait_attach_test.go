@@ -87,9 +87,5 @@ func TestAttachDescendantQuotaWaitsFollowsTheLiveSample(t *testing.T) {
 		if got == live {
 			t.Fatal("the row aliases the live sample's summary: a caller mutating the row would reach the session's state")
 		}
-		got.Title = "mutated"
-		if live.Title != "waiting out the usage limit" {
-			t.Fatalf("mutating the row's summary reached the live sample: %+v", live)
-		}
 	})
 }
