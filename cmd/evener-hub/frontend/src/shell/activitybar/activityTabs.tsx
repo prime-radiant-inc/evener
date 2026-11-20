@@ -19,7 +19,7 @@ const WATCH_GLYPH_CLASS = requireClass(styles.watchGlyph, "activitybar.module.cs
 export interface ActivityTabBodyProps {
   scope: ActivityScope;
   now: number;
-  onDrill?: (sub: SessionDelegate) => void;
+  onDrill?: (sub: SessionDelegate, chain: readonly SessionDelegate[]) => void;
 }
 
 export interface ActivityTabSpec {

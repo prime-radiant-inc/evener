@@ -25,6 +25,56 @@ export interface SessionActivityPresentation {
   issues: readonly SessionActivityIssue[];
 }
 
+export interface DelegateLineage {
+  parentOf: ReadonlyMap<SessionDelegate, SessionDelegate | undefined>;
+  cyclic: ReadonlySet<SessionDelegate>;
+  byChildRef: ReadonlyMap<string, readonly SessionDelegate[]>;
+}
+
+/** Resolves parent delegate links and cycle membership over loaded delegate rows,
+ * stopping parent matching at declared root refs so root-owned delegates never
+ * attach to a delegate row. */
+export function resolveDelegateParents(rows: readonly SessionDelegate[], rootRefs?: Iterable<string>): DelegateLineage {
+  const rootRefSet = rootRefs ? new Set(rootRefs) : undefined;
+  const byChildRef = new Map<string, SessionDelegate[]>();
+  for (const row of rows) {
+    const candidates = byChildRef.get(row.childRef) ?? [];
+    candidates.push(row);
+    byChildRef.set(row.childRef, candidates);
+  }
+  const parentOf = new Map<SessionDelegate, SessionDelegate | undefined>();
+  for (const row of rows) {
+    if (rootRefSet?.has(row.ownerRef)) {
+      parentOf.set(row, undefined);
+      continue;
+    }
+    parentOf.set(
+      row,
+      byChildRef
+        .get(row.ownerRef)
+        ?.find(
+          (candidate) =>
+            candidate.rootRef === row.rootRef &&
+            (!row.parentDelegateId || candidate.delegateId === row.parentDelegateId),
+        ),
+    );
+  }
+  const cyclic = new Set<SessionDelegate>();
+  for (const row of rows) {
+    const seen = new Set<SessionDelegate>([row]);
+    let ancestor = parentOf.get(row);
+    while (ancestor) {
+      if (seen.has(ancestor)) {
+        cyclic.add(row);
+        break;
+      }
+      seen.add(ancestor);
+      ancestor = parentOf.get(ancestor);
+    }
+  }
+  return { parentOf, cyclic, byChildRef };
+}
+
 /** Projects already loaded evidence. Logical session IDs remain absent when
  * only an opaque routing ref is supplied; summary counts stay independent of
  * this tree's loaded-row counts. It owns no reads or response ordering. */
@@ -62,39 +112,15 @@ export function projectSessionActivity(snapshot: SessionActivitySnapshot): Sessi
   root.sessionId = context.sessionId;
   const projected = new Map<SessionDelegate, ActivityDelegate>();
   for (const row of delegates.rows) projected.set(row, { ...row, branch: {} });
-  const byChildRef = new Map<string, SessionDelegate[]>();
-  for (const row of delegates.rows) {
-    const candidates = byChildRef.get(row.childRef) ?? [];
-    candidates.push(row);
-    byChildRef.set(row.childRef, candidates);
-  }
-  const parent = (row: SessionDelegate): SessionDelegate | undefined =>
-    byChildRef
-      .get(row.ownerRef)
-      ?.find(
-        (candidate) =>
-          candidate.childRef === row.ownerRef &&
-          candidate.rootRef === row.rootRef &&
-          (!row.parentDelegateId || candidate.delegateId === row.parentDelegateId),
-      );
-  const cyclic = (row: SessionDelegate): boolean => {
-    const seen = new Set<SessionDelegate>([row]);
-    let ancestor = parent(row);
-    while (ancestor) {
-      if (seen.has(ancestor)) return true;
-      seen.add(ancestor);
-      ancestor = parent(ancestor);
-    }
-    return false;
-  };
+  const { parentOf, cyclic, byChildRef } = resolveDelegateParents(delegates.rows, [context.ref]);
   let orphaned = false;
   for (const row of delegates.rows) {
     const delegate = projected.get(row);
     if (!delegate) continue;
     const entry: ActivityEntry = { kind: "delegate", delegate };
-    if (cyclic(row)) orphaned = true;
+    if (cyclic.has(row)) orphaned = true;
     if (row.ownerRef === context.ref) root.entries.push(entry);
-    else if (parent(row) && !cyclic(row)) session(row.ownerRef).entries.push(entry);
+    else if (parentOf.get(row) && !cyclic.has(row)) session(row.ownerRef).entries.push(entry);
     else {
       root.entries.push(entry);
       orphaned = true;
@@ -104,7 +130,7 @@ export function projectSessionActivity(snapshot: SessionActivitySnapshot): Sessi
     const owner =
       row.ownerRef === context.ref
         ? root
-        : byChildRef.get(row.ownerRef)?.some((candidate) => !cyclic(candidate))
+        : byChildRef.get(row.ownerRef)?.some((candidate) => !cyclic.has(candidate))
           ? session(row.ownerRef)
           : root;
     if (owner === root && row.ownerRef !== context.ref) orphaned = true;
@@ -118,7 +144,7 @@ export function projectSessionActivity(snapshot: SessionActivitySnapshot): Sessi
     if (ownerSessionId) delegate.ownerSessionId = ownerSessionId;
     if (row.rootRef === context.ref) delegate.rootSessionId = context.sessionId;
     const child = nodes.get(row.childRef);
-    if (child && child !== root && child.entries.length > 0 && !cyclic(row)) {
+    if (child && child !== root && child.entries.length > 0 && !cyclic.has(row)) {
       delegate.child = child;
       if (child.sessionId) delegate.childSessionId = child.sessionId;
     }

@@ -1637,4 +1637,30 @@ describe("reconcileActivityState with previous tree", () => {
     const result = reconcileActivityState(prevState, nextTree);
     expect(result.selectedID).toBe("session:ref_root");
   });
+
+  it("preserves optional drain-hold fields on ActivityDelegate", () => {
+    const tree = parseActivityTree(
+      treeFixture([
+        {
+          kind: "delegate",
+          delegate: delegateFixture({
+            drainHeldByJobs: true,
+            runningJobCount: 2,
+            oldestRunningJobStartedAt: "2026-10-04T23:55:00Z",
+            drainHeldBySubagents: true,
+            runningSubagentCount: 1,
+            holdSequence: 7,
+          }),
+        },
+      ]),
+    );
+    const entry = tree?.root.entries[0];
+    if (entry?.kind !== "delegate") throw new Error("expected delegate entry");
+    expect(entry.delegate.drainHeldByJobs).toBe(true);
+    expect(entry.delegate.runningJobCount).toBe(2);
+    expect(entry.delegate.oldestRunningJobStartedAt).toBe("2026-10-04T23:55:00Z");
+    expect(entry.delegate.drainHeldBySubagents).toBe(true);
+    expect(entry.delegate.runningSubagentCount).toBe(1);
+    expect(entry.delegate.holdSequence).toBe(7);
+  });
 });
