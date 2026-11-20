@@ -3,6 +3,7 @@ package evener_test
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -10,30 +11,21 @@ import (
 // A pull_request run takes the qualification workflow from the merge ref, so
 // checking out the PR head alone runs new steps against a tree that may lack
 // the scripts they call (#5993). These tests pin the same-tree checkout: the
-// merge ref with full history, the selector that falls back to it when the
-// head predates the harness, and the switch to the chosen commit.
+// merge ref fetched deep enough for both of its parents and for the snapshot
+// window the lane budgets should a session open at this checkout, the selector
+// that falls back to it when the head predates the harness, and the switch to
+// the chosen commit.
 func TestIOSQualificationChecksOutTheWorkflowTree(t *testing.T) {
 	workflow := readWorkflow(t, ".github/workflows/ios-qualification.yml")
 	job, ok := workflow.Jobs["simulator-build"]
 	if !ok {
 		t.Fatal("ios-qualification is missing the simulator-build job")
 	}
-	var checkout *githubActionStep
-	for i := range job.Steps {
-		if strings.HasPrefix(job.Steps[i].Uses, "actions/checkout@") {
-			checkout = &job.Steps[i]
-			break
-		}
-	}
-	if checkout == nil {
-		t.Fatal("simulator-build does not check out the repository")
-	}
+	checkout := checkoutStep(t, "simulator-build", job.Steps)
 	if got := fmt.Sprint(checkout.With["ref"]); got != "${{ github.sha }}" {
 		t.Errorf("checkout ref = %q, want the merge ref ${{ github.sha }}", got)
 	}
-	if got := fmt.Sprint(checkout.With["fetch-depth"]); got != "0" {
-		t.Errorf("checkout fetch-depth = %q, want 0 so the PR head is in history", got)
-	}
+	checkHistoryFloor(t, "simulator-build", checkout)
 	if !workflowRuns(job.Steps, "scripts/native/ios/qualification/checkout-ref.sh") {
 		t.Error("simulator-build does not run the checkout selector")
 	}
@@ -48,6 +40,54 @@ func TestIOSQualificationChecksOutTheWorkflowTree(t *testing.T) {
 	}
 	if !chosen {
 		t.Error("simulator-build does not check out the selector's chosen tree")
+	}
+
+	// Every other job that checks the repository out runs the same selector and
+	// needs its own floor: journey-setup builds the runtime pair from its tree,
+	// and ui-journeys tests it.
+	for _, name := range []string{"journey-setup", "ui-journeys"} {
+		other, ok := workflow.Jobs[name]
+		if !ok {
+			t.Fatalf("ios-qualification is missing the %s job", name)
+		}
+		checkHistoryFloor(t, name, checkoutStep(t, name, other.Steps))
+	}
+}
+
+// checkoutStep returns the checkout action step in a job, failing the test when
+// the job does not check the repository out.
+func checkoutStep(t *testing.T, job string, steps []githubActionStep) *githubActionStep {
+	t.Helper()
+	for i := range steps {
+		if strings.HasPrefix(steps[i].Uses, "actions/checkout@") {
+			return &steps[i]
+		}
+	}
+	t.Fatalf("%s does not check out the repository", job)
+	return nil
+}
+
+// snapshotHistoryDepth is the launch git snapshot's title count:
+// agent/git_snapshot.go runs `git log -n 5`.
+const snapshotHistoryDepth = 5
+
+// checkHistoryFloor requires the depth the lane budgets: five ancestry levels
+// from the merge ref, which resolves the checkout selector's two parents (depth
+// >= 2). The launch git snapshot reads `git log -n 5`
+// (agent/git_snapshot.go); switching to the PR head can truncate it (four
+// titles for a linear head, more when the head is itself a merge), and today's
+// journeys open their session in a TMPDIR workspace outside this checkout, so
+// the selector is the only live consumer. Depth 1 leaves the selector nothing
+// to check; depths 0 and 5 or more pass.
+func checkHistoryFloor(t *testing.T, job string, checkout *githubActionStep) {
+	t.Helper()
+	depth := fmt.Sprint(checkout.With["fetch-depth"])
+	if depth == "0" {
+		return
+	}
+	n, err := strconv.Atoi(depth)
+	if err != nil || n < snapshotHistoryDepth {
+		t.Errorf("%s checkout fetch-depth = %q, want 0 or at least %d: both merge parents for the selector, and the launch snapshot's %d-title window", job, depth, snapshotHistoryDepth, snapshotHistoryDepth)
 	}
 }
 

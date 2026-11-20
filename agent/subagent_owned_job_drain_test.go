@@ -115,11 +115,33 @@ type ownedJobDrainFixture struct {
 	result       delegateResult
 	shellJobID   string
 	runDone      <-chan struct{}
+	// releaseParked unblocks a park hook built by
+	// newOwnedJobDrainFixtureWithParkedHook. The caller runs it once the
+	// fixture and any watch the hook needs are in place.
+	releaseParked func()
 }
 
 func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 	t.Helper()
+	return newOwnedJobDrainFixtureWithParkedHook(t, nil)
+}
 
+// newOwnedJobDrainFixtureWithParkedHook builds the same fixture with a
+// jobTreeDrainParked hook installed on the parent at creation, so the hook is
+// inherited by the child's own drain. A test uses it to place work at an exact
+// point inside the child's drain instead of racing its recheck ticker; a nil
+// hook is the plain fixture.
+//
+// The child reaches its drain's park before this function returns, so a hook
+// that needs the fixture or a watch installed afterwards would fire too early.
+// Such a hook selects on ready and cancelled (t.Context().Done()): ready closes
+// once the fixture and watch are in place, and cancelled closes before any
+// t.Cleanup (including parent.Close) runs so a setup failure unblocks the hook
+// without firing into a nil fixture.
+func newOwnedJobDrainFixtureWithParkedHook(t *testing.T, parked func(*Session, <-chan struct{}, <-chan struct{})) *ownedJobDrainFixture {
+	t.Helper()
+	ready := make(chan struct{})
+	var readyOnce sync.Once
 	idleReported := make(chan struct{})
 	shellHandled := make(chan struct{})
 	freshHandled := make(chan struct{})
@@ -144,6 +166,12 @@ func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 	client := llm.NewClient()
 	client.Register(adapter)
 	env := newHeldJobEnvironment(t.TempDir())
+	var parkedHook func(*Session)
+	if parked != nil {
+		parkedHook = func(s *Session) {
+			parked(s, ready, t.Context().Done())
+		}
+	}
 	parent, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
@@ -152,6 +180,7 @@ func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
 			noSyncJobStore:      true,
+			jobTreeDrainParked:  parkedHook,
 		},
 	})
 	if err != nil {
@@ -197,16 +226,17 @@ func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 	child.mu.Unlock()
 
 	return &ownedJobDrainFixture{
-		parent:       parent,
-		child:        child,
-		env:          env,
-		adapter:      adapter,
-		shellHandled: shellHandled,
-		freshHandled: freshHandled,
-		drainClock:   drainClock,
-		result:       result,
-		shellJobID:   shellJobID,
-		runDone:      runDone,
+		parent:        parent,
+		child:         child,
+		env:           env,
+		adapter:       adapter,
+		shellHandled:  shellHandled,
+		freshHandled:  freshHandled,
+		drainClock:    drainClock,
+		result:        result,
+		shellJobID:    shellJobID,
+		runDone:       runDone,
+		releaseParked: func() { readyOnce.Do(func() { close(ready) }) },
 	}
 }
 

@@ -165,6 +165,13 @@ type jobManager struct {
 	// that held a callback watch. It uses the durable steering queue rather than
 	// the lost callback closure, so the notice survives the restore boundary.
 	notifySystem func(receiverSessionID, message string) bool
+	// watchAttention routes a restart-owned notice to a STABLE delegate receiver
+	// as durable typed watch attention instead of steering: it appends the notice
+	// under attentionID and arms its wake, reporting whether the receiver was a
+	// stable delegate and took the row. A stable delegate presents a watch notice
+	// only on a leased generation, and its steering queue cannot carry one.
+	// nil for managers with no live session tree, which keep notifySystem.
+	watchAttention func(receiverSessionID, attentionID, content string) bool
 	// currentProvenance reports the owning session's active causal provenance at
 	// call time. A job records this at creation so its detached lifecycle events
 	// and terminal notification carry the origin of whatever input launched it.
@@ -622,8 +629,16 @@ type jobNotification struct {
 	// Note is the watch's own prose payload and rides every fire, timer or not.
 	// Only the timer fire path stamps WatchID, and the session drops a
 	// non-terminal entry whose watch key no longer resolves (an orphaned tick).
-	WatchID         string
-	Fires           int
+	WatchID string
+	Fires   int
+	// DeliveryOrdinal is this watch's own model-facing delivery count at the
+	// instant this fire was built, and it is the identity of THIS fire: the
+	// next fire of the same watch carries a larger one. It exists because a
+	// repeating timer delivers the same watch, job and reason again and again,
+	// so those three cannot name a delivery -- while a durable attention row
+	// is keyed by delivery (LIFE-01, #2340). Zero means the notice carries no
+	// per-fire ordinal: a diagnostic, a send token, a non-watch notice.
+	DeliveryOrdinal int
 	Note            string
 	IntervalSeconds int
 	Terminal        bool

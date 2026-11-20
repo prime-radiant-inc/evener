@@ -338,6 +338,7 @@ func (s *Session) wireJobManager(jm *jobManager) {
 	jm.consume = s.consumeJobNotification
 	jm.holdWake = s.holdJobNotificationWake
 	jm.notifySystem = s.routeSystemNotification
+	jm.watchAttention = s.routeStableWatchAttention
 	jm.wake = s.notify
 	jm.emit = s.emitWithJobTreeRevision
 	jm.currentProvenance = s.activeCausalProvenance

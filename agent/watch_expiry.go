@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -211,7 +213,7 @@ func (jm *jobManager) noticeUnrestoredWatchEnds() error {
 }
 
 func (jm *jobManager) notifyRestartCancelledCallbackWatches() error {
-	receivers := make(map[string]struct{})
+	receivers := make(map[string][]*jobstore.WatchRecord)
 	for _, watch := range jm.watchesLostAtRestore {
 		if watch == nil || watch.SendTo != "" {
 			continue
@@ -220,7 +222,7 @@ func (jm *jobManager) notifyRestartCancelledCallbackWatches() error {
 		if receiver == "" {
 			receiver = jm.sessionID
 		}
-		receivers[receiver] = struct{}{}
+		receivers[receiver] = append(receivers[receiver], watch)
 	}
 	if len(receivers) == 0 {
 		return nil
@@ -237,6 +239,18 @@ func (jm *jobManager) notifyRestartCancelledCallbackWatches() error {
 	// another.
 	var errs []error
 	for _, receiver := range ids {
+		attentionID := restartCancelledCallbackWatchAttentionID(receiver, receivers[receiver])
+		// A STABLE delegate receiver takes the notice as durable typed watch
+		// attention. Its steering queue cannot carry it: only a leased
+		// generation presents a watch notice, and the notice names a watch, so
+		// presenting it unleased would both misreport it and leave the row
+		// pending. The attention row is a watch row, so an unleased projection
+		// withholds it and the arm wakes the generation that may present it.
+		// Every other receiver keeps the steering fallback: its wake carries
+		// ordinary steering just fine and it holds no leased generation to arm.
+		if jm.watchAttention != nil && jm.watchAttention(receiver, attentionID, callbackWatchesCancelledAtRestartMessage) {
+			continue
+		}
 		if jm.notifySystem != nil {
 			if !jm.notifySystem(receiver, callbackWatchesCancelledAtRestartMessage) {
 				errs = append(errs, fmt.Errorf("route callback cancellation notification to session %q: session unavailable", receiver))
@@ -253,6 +267,33 @@ func (jm *jobManager) notifyRestartCancelledCallbackWatches() error {
 		jm.enqueue(jobNotification{Kind: jobNotificationKindWatch, Status: jobNotificationEventWatch, Reason: callbackWatchesCancelledAtRestartMessage})
 	}
 	return errors.Join(errs...)
+}
+
+// restartCancelledCallbackWatchAttentionID is the durable attention identity of
+// the restart-cancelled callback notice one receiver takes. The notice is
+// per-receiver, not per-watch -- cancellation is coalesced once per receiver --
+// so the receiver and the CANCELLED GENERATIONS together name it.
+//
+// The generations are what tell two batches apart. A receiver that already took
+// the notice has a resolved row under the old identity, and the append would
+// deduplicate a new batch against it: no row, no wake, and the delegate never
+// hears that the watches it registered since then are gone. Keying on the batch
+// makes a later restart's cancellations a new item while a retry of the SAME
+// batch still derives the identity its row already holds.
+//
+// The identity is sorted and hashed so it is stable however the batch was
+// ordered, and it stays one row however many watches one restart cancels.
+func restartCancelledCallbackWatchAttentionID(receiverSessionID string, cancelled []*jobstore.WatchRecord) string {
+	origins := make([]string, 0, len(cancelled))
+	for _, watch := range cancelled {
+		if watch == nil {
+			continue
+		}
+		origins = append(origins, watch.WatchID+"@"+watch.Generation)
+	}
+	sort.Strings(origins)
+	sum := sha256.Sum256([]byte(strings.Join(origins, "\n")))
+	return watchSendAttentionPrefix + "restart_cancelled_callback_watches:" + receiverSessionID + ":" + hex.EncodeToString(sum[:8])
 }
 
 // watchFrameOrigin identifies the watch config a durable watch-send frame came
