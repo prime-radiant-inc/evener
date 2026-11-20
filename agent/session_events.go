@@ -302,9 +302,13 @@ func (s *Session) emitWarningDeferringHook(data events.EventData) {
 // goroutine unless the close's hook join already closed that gate. After the
 // join, an abandoned stop driver's late publication starts no hook the close
 // did not see: its warning event still reaches the stream through the caller,
-// but the user's command is dropped rather than racing teardown. A hook that
-// started before the join is waited for by joinStopWarningHooks, so the
-// transcript cannot close under it.
+// but the user's command is dropped rather than racing teardown.
+//
+// The hook outlives the stop driver that published the warning, so it holds a
+// retirement lease for its whole run: retirement must not take the session's
+// transcript down while the user's command reports to it. Taking the lease
+// before the goroutine starts means a retirement that already claimed refuses
+// the hook instead of racing it, and joinStopWarningHooks waits for the release.
 func (s *Session) goStopWarningHook(fn func()) {
 	s.stopWarningHooksMu.Lock()
 	if s.stopWarningHooksClosed {
@@ -313,8 +317,14 @@ func (s *Session) goStopWarningHook(fn func()) {
 	}
 	s.stopWarningHooks.Add(1)
 	s.stopWarningHooksMu.Unlock()
+	release, err := s.beginRetirementMutation("notification")
+	if err != nil {
+		s.stopWarningHooks.Done()
+		return
+	}
 	go func() {
 		defer s.stopWarningHooks.Done()
+		defer release()
 		fn()
 	}()
 }

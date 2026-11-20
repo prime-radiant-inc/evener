@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -12,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
@@ -191,6 +193,52 @@ func TestCloseDrainHookJoinRefusesLateOrdinaryWarningHooks(t *testing.T) {
 		t.Fatalf("a stop warning hook started before the close's hook join ran %d time(s), want 1: "+
 			"the join waits for the hooks already dispatched", got)
 	}
+}
+
+// An ordinary stop's warning hook outlives the stop driver that published the
+// warning: the driver returns while the user's command still reports to the
+// session. Retirement must therefore see the hook as a blocker, or it can cancel
+// the command and close the transcript before its completion is recorded
+// (#6939).
+func TestStopWarningHookHoldsRetirementLease(t *testing.T) {
+	root := newQueuePersistTestSession(t, t.TempDir())
+	controller, err := NewRetirementController(0, clock.Real())
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+	if err := controller.AttachRoot(root); err != nil {
+		t.Fatalf("AttachRoot: %v", err)
+	}
+	root.retirementController.Store(controller)
+
+	started := make(chan struct{})
+	resume := make(chan struct{})
+	finished := make(chan struct{})
+	root.goStopWarningHook(func() {
+		close(started)
+		<-resume
+		close(finished)
+	})
+	<-started
+
+	claim, snapshot, err := controller.TryClaim(true)
+	if err != nil {
+		close(resume)
+		t.Fatalf("TryClaim: %v", err)
+	}
+	if claim != nil {
+		close(resume)
+		t.Fatal("retirement claimed the session while a stop warning hook was still running: " +
+			"the hook would be cancelled and the transcript closed under its command")
+	}
+	if !slices.ContainsFunc(snapshot.Blockers, func(b RetirementBlocker) bool { return b.Category == "notification" }) {
+		close(resume)
+		t.Fatalf("retirement's blockers omit the running stop warning hook: %+v", snapshot)
+	}
+	close(resume)
+	<-finished
+	root.waitStopWarningHooks()
+	root.Close()
 }
 
 // The incomplete-close warning that follows a failed delegate-tree stop must not

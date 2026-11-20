@@ -961,17 +961,23 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 			return err
 		}
 		// A warning this pass settled names a receipt that was abandoned during
-		// the pass and cannot be settled again, so it is published on this pass,
-		// AFTER the shell repairs and attention cleanup below. Publishing before
-		// them let a synchronous Notification hook delay that cleanup and leave
-		// clients on a stale stop state (#6939). The cleanup loops publish it on
-		// their own error exits, because those return before this point.
+		// the pass and cannot be settled again, so it is published on this pass.
+		// The cleanup loops publish it on their own error exits, because those
+		// return before the loop's end.
 		//
-		// The ordinary path dispatches the warning's hook on the session's
-		// tracked hook goroutine, so even here the hook cannot hold the next pass
-		// that records stop completion, new stop admission, or a close join. The
-		// close path publishes on its bounded publication context and withholds
-		// the delegate updates and delivery replay below.
+		// The close path publishes it BEFORE the repairs and cleanup: its send is
+		// bounded by the cascade's shared publication cutoff, and a repair that
+		// crosses that cutoff would otherwise spend the only attempt the warning
+		// gets. The ordinary path publishes it AFTER them, because publishing
+		// before a synchronous Notification hook -- the shape the close path
+		// retains nothing for -- let the hook delay that cleanup and leave clients
+		// on a stale stop state (#6939). Its hook dispatches on the session's
+		// tracked goroutine, so the hook cannot hold the next pass that records
+		// stop completion, new stop admission, or a close join.
+		if warningsOnly {
+			publishPlansWarnings()
+			plans.warnings = nil
+		}
 		for _, plan := range plans.shellRepairs {
 			if err := executeDelegateShellRepair(plan, c.now()); err != nil {
 				publishPlansWarnings()

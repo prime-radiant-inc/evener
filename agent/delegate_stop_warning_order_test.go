@@ -176,6 +176,10 @@ func TestOrdinaryStopPublishesLostResultWarningAfterShellRepairs(t *testing.T) {
 	})
 	f.root.hookRunner = runner
 	f.root.env = execenv.NewLocalExecutionEnvironment(t.TempDir())
+	// A failed wait would otherwise leave the command looping until its bound
+	// while the temp directory is removed under it; the cleanup runs before the
+	// directory does, because t.TempDir registered its removal first.
+	t.Cleanup(func() { _ = os.WriteFile(proceedPath, []byte("go\n"), 0o644) })
 
 	before, err := os.Stat(shellPath)
 	if err != nil {
@@ -218,6 +222,7 @@ func TestOrdinaryStopPublishesLostResultWarningAfterShellRepairs(t *testing.T) {
 			"the lost-result warning's hook held the completion clients see behind its command (#6939)")
 	}
 	release()
+	f.root.waitStopWarningHooks()
 
 	raw, err := os.ReadFile(observationPath)
 	if err != nil {
