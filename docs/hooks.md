@@ -48,8 +48,11 @@ To build your own, create `.claude-plugin/plugin.json` containing
 Pass that directory to `--plugin-dir`. After editing the declaration, start a
 new session to load it. To remove the hook, omit the directory on the next launch
 (or disable its installed plugin). End an existing session before removing files
-its hooks may still need. A running hook is synchronous, bounded by its timeout
-and session cancellation; deleting its declaration is not a stop command.
+its hooks may still need. Most hooks run synchronously, bounded by their timeout
+and session cancellation. The one exception is a lost-result Notification hook
+from an ordinary delegate stop: the stop can finish while that hook's command is
+still running, and Close waits for it before tearing the session down. Deleting
+a hook's declaration is not a stop command.
 
 If the warning is absent, inspect startup diagnostics, confirm the manifest
 loaded, and check the matcher. For tool hooks, [use `Bash`, not

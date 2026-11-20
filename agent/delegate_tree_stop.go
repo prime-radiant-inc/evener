@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"primeradiant.com/evener/agent/events"
@@ -697,6 +698,7 @@ func (c *delegateTreeController) closeRuntimeTree(ctx context.Context) error {
 		err := c.joinOrDrainStopForClose(stopCtx, pending)
 		cancelStop()
 		if err != nil {
+			c.publishAbandonedStopWarnings(ctx)
 			return err
 		}
 	}
@@ -731,6 +733,7 @@ func (c *delegateTreeController) closeRuntimeTree(ctx context.Context) error {
 		err = c.drainStopForClose(stopCtx, c.stopForResult(result))
 		cancelStop()
 		if err != nil {
+			c.publishAbandonedStopWarnings(ctx)
 			return err
 		}
 	}
@@ -746,6 +749,7 @@ func (c *delegateTreeController) closeRuntimeTree(ctx context.Context) error {
 		teardownChildSession(ctx, child)
 	}
 	if _, err := c.joinStopReconcileDriver(ctx); err != nil {
+		c.publishAbandonedStopWarnings(ctx)
 		return err
 	}
 	return nil
@@ -855,6 +859,32 @@ func (s *Session) publishDrainWarnings(ctx context.Context, warningsOnly bool, w
 	}
 }
 
+// stopWarningPublication is one ordinary stop pass's settled warnings. The pass
+// publishes it when its cleanup finishes; a close that abandons the pass's driver
+// publishes it instead, so the receipt it names -- already gone from the store --
+// still reaches the stream. once makes exactly one of the two attempts deliver
+// it, whether the driver gets there after the close or never gets there at all.
+type stopWarningPublication struct {
+	once     sync.Once
+	root     *Session
+	warnings []events.WarningData
+}
+
+func (p *stopWarningPublication) publish(ctx context.Context) {
+	if p == nil {
+		return
+	}
+	p.once.Do(func() {
+		p.root.publishDrainWarnings(ctx, false, p.warnings)
+	})
+}
+
+// ObserveStopPassWarningsSettled, when non-nil, runs after a driver-driven stop
+// pass has registered its settled warnings and before it starts the cleanup that
+// precedes their publication. Tests use it to hold a pass mid-cleanup while a
+// close gives up on its driver.
+var ObserveStopPassWarningsSettled func()
+
 // drainStopAbandonable is drainStop plus an optional abandon signal. The stop
 // driver passes its own cancellable context's Done channel, so a close join
 // timeout -- which cancels that context -- can break the drain out of a busy
@@ -942,7 +972,24 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 		if plans.retirementRelease != nil {
 			retirementReleases = append(retirementReleases, plans.retirementRelease)
 		}
+		// The driver's pass registers its settled warnings before it starts the
+		// cleanup that precedes their publication, so a close that gives up on a
+		// pass stalled in that cleanup can publish them in the driver's place
+		// (publishAbandonedStopWarnings). The close's own drains run inline and
+		// register nothing.
+		var publication *stopWarningPublication
+		if abandon != nil && root != nil && len(plans.warnings) > 0 {
+			publication = &stopWarningPublication{root: root, warnings: plans.warnings}
+			c.registerStopWarningPublication(publication)
+			if ObserveStopPassWarningsSettled != nil {
+				ObserveStopPassWarningsSettled()
+			}
+		}
 		publishPlansWarnings := func() {
+			if publication != nil {
+				publication.publish(pubCtx)
+				return
+			}
 			if root != nil {
 				root.publishDrainWarnings(pubCtx, warningsOnly, plans.warnings)
 			}
@@ -1066,6 +1113,34 @@ func (c *delegateTreeController) joinStopReconcileDriver(ctx context.Context) (b
 	return c.joinExactStopReconcileDriver(ctx, driver)
 }
 
+func (c *delegateTreeController) registerStopWarningPublication(p *stopWarningPublication) {
+	c.mu.Lock()
+	c.stopWarningPublication = p
+	c.mu.Unlock()
+}
+
+func (c *delegateTreeController) takeStopWarningPublication() *stopWarningPublication {
+	c.mu.Lock()
+	p := c.stopWarningPublication
+	c.stopWarningPublication = nil
+	c.mu.Unlock()
+	return p
+}
+
+// publishAbandonedStopWarnings publishes the pass an abandoned ordinary stop
+// driver had settled but not yet published. The abandon cancels that driver's
+// drain and the event stream closes once the close returns, so the pass's own
+// publication would arrive after the stream was gone. The close publishes the
+// same publication in the driver's place: its once makes exactly one of the two
+// attempts deliver the warning, never both and never neither.
+func (c *delegateTreeController) publishAbandonedStopWarnings(ctx context.Context) {
+	p := c.takeStopWarningPublication()
+	if p == nil {
+		return
+	}
+	p.publish(ctx)
+}
+
 func (c *delegateTreeController) closeStoreAfterStopReconcileDriver(ctx context.Context) error {
 	c.mu.Lock()
 	var idleTimers []idleReleaseTimerHandle
@@ -1081,6 +1156,7 @@ func (c *delegateTreeController) closeStoreAfterStopReconcileDriver(ctx context.
 	}
 	joined, driverErr := c.joinExactStopReconcileDriver(ctx, driver)
 	if !joined {
+		c.publishAbandonedStopWarnings(ctx)
 		return driverErr
 	}
 	return errors.Join(driverErr, c.store.Close())

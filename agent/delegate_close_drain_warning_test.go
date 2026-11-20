@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/execsupport/shellquote"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // closeDrainCascadeBudget is the close-cascade budget these tests mint with
@@ -239,6 +240,108 @@ func TestStopWarningHookHoldsRetirementLease(t *testing.T) {
 	<-finished
 	root.waitStopWarningHooks()
 	root.Close()
+}
+
+// A close that gives up on a stalled ordinary stop driver must still deliver the
+// lost-result warning that pass settled. The warning names a receipt already gone
+// from the store, so that pass holds its only copy: the abandon cancels the
+// drain, and the close's caller closes the event stream when close returns, so
+// the pass's own later publication would land nowhere. The close publishes the
+// pass's registered warning in its place, and the publication claim keeps it to
+// exactly one delivery.
+func TestClosePublishesAbandonedStopPassWarningsOnce(t *testing.T) {
+	f, _ := newSeededStrandedStop(t)
+
+	hookDispatchLog := filepath.Join(t.TempDir(), "hook-dispatches")
+	runner := hooks.NewRunner(nil, "test-model")
+	runner.Add(plugin.HookNotification, plugin.RegisteredHook{
+		Matcher: "*",
+		Type:    "command",
+		Command: `printf 'hit\n' >> ` + shellquote.Literal(hookDispatchLog),
+		Timeout: 30,
+	})
+	f.root.hookRunner = runner
+	f.root.env = execenv.NewLocalExecutionEnvironment(t.TempDir())
+
+	settled := make(chan struct{})
+	release := make(chan struct{})
+	var stalled atomic.Bool
+	ObserveStopPassWarningsSettled = func() {
+		if stalled.CompareAndSwap(false, true) {
+			close(settled)
+			<-release
+		}
+	}
+	defer func() { ObserveStopPassWarningsSettled = nil }()
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+
+	driver := newDelegateStopDriver()
+	f.controller.mu.Lock()
+	stop := f.controller.stop
+	if stop == nil {
+		f.controller.mu.Unlock()
+		t.Fatal("fixture has no pending stop for a close to join")
+	}
+	stop.driver = driver
+	f.controller.stopDriver = driver
+	f.controller.mu.Unlock()
+	driven := make(chan struct{})
+	go func() {
+		f.controller.runStopReconcileDriver(stop, driver, f.root)
+		close(driven)
+	}()
+	testwait.Until(t, "the stop pass to register its settled warning", func() bool {
+		select {
+		case <-settled:
+			return true
+		default:
+			return false
+		}
+	})
+
+	// The close gives up on the driver: its stop join runs on a context that is
+	// already done, so the driver is abandoned mid-cleanup.
+	closeCtx, cancelClose := context.WithCancel(t.Context())
+	cancelClose()
+	if err := f.controller.closeRuntimeTree(closeCtx); err == nil {
+		t.Fatal("closeRuntimeTree returned nil while the stop driver was stalled mid-cleanup: " +
+			"this guard did not exercise an abandoned driver")
+	}
+	// The close returns from here and its caller closes the stream, so the
+	// abandoned pass's warning must already be on it.
+	if got := len(drainSessionWarnings(f.root)); got != 1 {
+		t.Fatalf("the close delivered %d lost-result warning(s) from the abandoned pass, want exactly 1: "+
+			"the warning named a receipt already gone from the store, and the pass's own publication "+
+			"would run after the event stream was closed", got)
+	}
+
+	close(release)
+	testwait.Until(t, "the abandoned stop driver to finish", func() bool {
+		select {
+		case <-driven:
+			return true
+		default:
+			return false
+		}
+	})
+	f.root.waitStopWarningHooks()
+	if got := len(drainSessionWarnings(f.root)); got != 0 {
+		t.Fatalf("the abandoned stop driver published its pass's warning again after the close delivered "+
+			"it: %d duplicate warning event(s), want 0", got)
+	}
+	data, readErr := os.ReadFile(hookDispatchLog)
+	if readErr != nil {
+		t.Fatalf("the delivered warning never dispatched its Notification hook: %v", readErr)
+	}
+	if got := strings.Count(string(data), "hit"); got != 1 {
+		t.Fatalf("the delivered warning dispatched its Notification hook %d time(s), want exactly 1", got)
+	}
 }
 
 // The incomplete-close warning that follows a failed delegate-tree stop must not

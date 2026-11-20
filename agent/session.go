@@ -557,12 +557,12 @@ type Session struct {
 	// after the worktree removals, and this is the only place they survive.
 	closeDrainWarnings atomic.Pointer[[]events.WarningData]
 	// closeDrainHooksWG tracks the Notification hooks published asynchronously
-	// (session_events.go): the close drain's bounded publications on the live
-	// cascade, and an ordinary stop drain's settled warnings. The hook's command
-	// may run for as long as its own timeout, so it must not hold the worktree
-	// removals or the reconcile driver that published it; Close joins it here
-	// after those removals and before the retries and teardown it can still
-	// publish through.
+	// by the close drain's bounded publications on the live cascade
+	// (session_events.go). An ordinary stop's settled warnings dispatch theirs on
+	// stopWarningHooks instead. A hook's command may run for as long as its own
+	// timeout, so it must not hold the worktree removals or the reconcile driver
+	// that published it; Close joins this group after those removals and before
+	// the retries and teardown it can still publish through.
 	closeDrainHooksWG sync.WaitGroup
 	// stopWarningHooks tracks the Notification hooks an ordinary stop drain
 	// published asynchronously (session_events.go). Close joins them with the
