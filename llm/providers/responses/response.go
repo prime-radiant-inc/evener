@@ -383,6 +383,7 @@ func (acc *responsesOutputAccumulator) fillTerminalArguments(r *llm.Response) {
 	if acc == nil || r == nil {
 		return
 	}
+	filled := map[*responsesToolState]bool{}
 	for i := range r.Message.Content {
 		part := &r.Message.Content[i]
 		tc := part.ToolCall
@@ -391,11 +392,16 @@ func (acc *responsesOutputAccumulator) fillTerminalArguments(r *llm.Response) {
 		}
 		st := acc.toolStates[tc.ID]
 		if st == nil && tc.ItemID != "" {
-			st = acc.toolStates[tc.ItemID]
+			// The item's owner may be another call; only a state that never learned
+			// a different call ID may stand in for this one.
+			if alt := acc.toolStates[tc.ItemID]; alt != nil && (alt.issuedCallID == "" || alt.issuedCallID == tc.ID) {
+				st = alt
+			}
 		}
-		if st == nil || st.args.Len() == 0 {
+		if st == nil || st.args.Len() == 0 || filled[st] {
 			continue
 		}
+		filled[st] = true
 		tc.Arguments, tc.ArgumentsSpelling = llm.NormalizeToolArguments(st.args.Bytes())
 	}
 }

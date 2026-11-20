@@ -269,3 +269,14 @@ func TestResponsesLateCallIDKeepsAppendingFrames(t *testing.T) {
 	want := []call{{"fc_first", "fc_first", "f", goodArgs}}
 	testResponsesDisputedCallSettles(t, []string{added, first, second, itemEnd, noOutput}, starts, want)
 }
+
+// A terminal call that shares an item ID with another issued call must not be
+// filled with that call's bytes: the item's owner is not this call.
+func TestResponsesTerminalCallDoesNotBorrowOwnerBytes(t *testing.T) {
+	t.Parallel()
+	terminal := terminalWith(terminalCall("fc_first", "c1", "write_file", goodArgs), terminalCall("fc_first", "c2", "f", ""))
+	frames := []string{addedFirst, firstDelta, firstDone, terminal}
+	starts := []call{{"c1", "fc_first", "write_file", ""}, {"c2", "fc_first", "f", ""}}
+	want := []call{{"c1", "fc_first", "write_file", goodArgs}, {"c2", "fc_first", "f", ""}}
+	testResponsesDisputedCallSettles(t, frames, starts, want)
+}
