@@ -68,10 +68,8 @@ func TestTheDeriverMatchesTheBuiltInputSchemas(t *testing.T) {
 // assertSameInputSchema fails unless the schema the builder emitted and the
 // schema the deriver prices are the same schema.
 //
-// When both sides are present the comparison is for serialized length rather than
-// for a deep equality: the deriver reports a byte-identical schema as unchanged
-// (SameSerializedLength), so a value comparison would fail a case the price
-// handles correctly. Absence cannot happen for Anthropic, which rejects a tool
+// When both sides are present the comparison is for serialized length, because
+// length is what the price bills. Absence cannot happen for Anthropic, which rejects a tool
 // without input_schema, but the check states it so a builder that started
 // omitting one would fail here rather than silently price zero bytes.
 func assertSameInputSchema(t *testing.T, name string, wire, priced map[string]any) {

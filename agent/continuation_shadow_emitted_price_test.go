@@ -225,6 +225,12 @@ func TestTheSessionBudgetLeavesAnOverrideServedRouteUnpriced(t *testing.T) {
 // to be billed over the emitted list here, or the full-history figure describes a
 // catalog the builder has already replaced and the smaller reading is the one
 // that governs.
+//
+// The estimator override is deliberately not installed: this test runs the
+// production path, so a shadow that charged the declared catalog would fail
+// here. The fixture is a catalog the builder really does grow, and the two
+// readings are checked to differ before the assertion so a route that started
+// emitting the catalog unchanged cannot make this pass for the wrong reason.
 func TestContinuationShadowBillsTheSchemasTheRouteEmits(t *testing.T) {
 	t.Parallel()
 	row := responsesRouteOn("budget-emitted", false)
@@ -240,27 +246,21 @@ func TestContinuationShadowBillsTheSchemasTheRouteEmits(t *testing.T) {
 		Tools:       tools,
 		HistoryMode: llm.HistoryModeResponsesDelta,
 	}
-	advertised := llm.ToolsJSONBytes(tools)
 
-	var observed []llm.Request
-	sess.cfg.testOnly.responsesContinuationShadowEstimateFunc = func(r llm.Request) (int, bool) {
-		observed = append(observed, r)
-		return llm.EstimateInputTokensForRoute(profile.Resolved(), r, false).Tokens, true
+	// The route's price and the catalog's are different numbers, which is what
+	// makes the assertion below able to tell the two paths apart.
+	emittedPrice := llm.EstimateInputTokensForRoute(profile.Resolved(), req, false).Tokens
+	catalogPrice := llm.EstimateInputTokensForResolved(profile.Resolved(), req).Tokens
+	if emittedPrice <= catalogPrice {
+		t.Fatalf("fixture does not distinguish the readings: the route's price %d is not above the catalog's %d",
+			emittedPrice, catalogPrice)
 	}
+
 	got := sess.applyResponsesContinuationShadowEstimate(profile, req)
-
-	if len(observed) != 1 {
-		t.Fatalf("shadow estimate ran %d times, want once", len(observed))
-	}
-	// The reading actually reaches the field admission takes the maximum of,
-	// and it describes the route's emitted list rather than the catalog.
-	want := llm.EstimateInputTokensForRoute(profile.Resolved(), req, false).Tokens
-	if want <= llm.EstimateInputTokensForResolved(profile.Resolved(), req).Tokens {
-		t.Fatalf("fixture does not distinguish the readings: the route's price %d is not above the catalog's", want)
-	}
-	if got.FullHistoryInputTokensEstimate != want {
-		t.Fatalf("FullHistoryInputTokensEstimate = %d, want the emitted-list price %d (the catalog reads %d)",
-			got.FullHistoryInputTokensEstimate, want, advertised)
+	if got.FullHistoryInputTokensEstimate != emittedPrice {
+		t.Fatalf("FullHistoryInputTokensEstimate = %d, want the emitted-list price %d (the catalog reads %d): "+
+			"the shadow has to bill the schemas the serving builder emits",
+			got.FullHistoryInputTokensEstimate, emittedPrice, catalogPrice)
 	}
 }
 
@@ -271,6 +271,10 @@ func TestContinuationShadowBillsTheSchemasTheRouteEmits(t *testing.T) {
 // wire list. Pricing it through a built-in deriver bills an emitted list the
 // override never sends, and an input cap between that figure and the override's
 // own estimate rejects a request the override could dispatch.
+//
+// The production path decides this, with no estimator override installed: the
+// route's own builder would grow this catalog, and the assertion is that the
+// override's reading does not.
 func TestContinuationShadowLeavesAnOverrideServedRouteUnpriced(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
@@ -301,16 +305,8 @@ func TestContinuationShadowLeavesAnOverrideServedRouteUnpriced(t *testing.T) {
 		t.Fatal("fixture does not distinguish the prices: the deriver left the count unchanged")
 	}
 
-	var observed []llm.Request
-	sess.cfg.testOnly.responsesContinuationShadowEstimateFunc = func(r llm.Request) (int, bool) {
-		observed = append(observed, r)
-		return llm.EstimateInputTokensForRoute(row, r, true).Tokens, true
-	}
 	got := sess.applyResponsesContinuationShadowEstimate(profile, req)
 
-	if len(observed) != 1 {
-		t.Fatalf("shadow estimate ran %d times, want once", len(observed))
-	}
 	if got.FullHistoryInputTokensEstimate != llm.EstimateInputTokensForRoute(row, req, true).Tokens {
 		t.Fatalf("override-served shadow reading = %d, want the catalog's own %d: an override marshals the "+
 			"definition it was handed", got.FullHistoryInputTokensEstimate,

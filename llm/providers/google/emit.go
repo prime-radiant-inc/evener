@@ -4,7 +4,6 @@ import (
 	"slices"
 
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providers/internal/openaichat"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -36,31 +35,18 @@ func wireFunctionParameters(t llm.ToolDefinition) map[string]any {
 // fields sanitizeGeminiSchema drops — additionalProperties, the $-prefixed
 // document metadata, a nullable type list — make the emitted schema smaller.
 //
-// A schema the builder emits byte-identically is reported unchanged, and a list
-// with none of them returns nil and false: the count it already holds is exact,
-// and re-marshaling the catalog on every dispatch is the cost that count exists
-// to avoid. SameSerializedLength answers that question without marshaling
-// anything, and it answers a schema that contains itself without walking into it,
-// which is the finite answer for a value the encoder rejects.
+// The sanitizer rebuilds every schema, so this route always reports a change and
+// the caller measures the emitted list with the encoder the wire uses. A
+// schema nothing was dropped from still measures the bytes the catalog
+// measures, so the price is the same either way; skipping that marshal is a
+// separate cost to take up on its own.
 func (*Protocol) EmitToolSchemas(baseline []llm.ToolDefinition, res registry.Resolved) ([]llm.ToolDefinition, bool) {
 	if len(baseline) == 0 {
 		return nil, false
 	}
-	var sent []llm.ToolDefinition
-	changed := false
-	for i := range baseline {
-		params := wireFunctionParameters(baseline[i])
-		if openaichat.SameSerializedLength(baseline[i].Parameters, params) {
-			continue
-		}
-		if sent == nil {
-			sent = slices.Clone(baseline)
-		}
-		sent[i].Parameters = params
-		changed = true
-	}
-	if !changed {
-		return nil, false
+	sent := slices.Clone(baseline)
+	for i := range sent {
+		sent[i].Parameters = wireFunctionParameters(baseline[i])
 	}
 	return sent, true
 }

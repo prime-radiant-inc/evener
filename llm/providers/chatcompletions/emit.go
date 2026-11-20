@@ -75,7 +75,8 @@ func toolSchema(req llm.Request, i int, strictCaps bool) (params map[string]any,
 		return params, false, false, true
 	}
 	if !openaichat.StrictExpressible(params) {
-		return openaichat.SupplyDerivedTypes(params), false, false, false
+		supplied, rewritten := openaichat.SupplyDerivedTypes(params)
+		return supplied, false, false, !rewritten
 	}
 	return openaichat.StrictifyJSONSchema(params), true, false, false
 }
@@ -89,10 +90,11 @@ func toolSchema(req llm.Request, i int, strictCaps bool) (params map[string]any,
 // closed object and a stated required list that the advertised schema does not
 // carry, or the type a refused closed value set implies.
 //
-// A tool whose schema the decision leaves byte-identical is reported unchanged,
-// and a list with none of them returns nil and false: the count it already holds
-// is exact, and re-marshaling the catalog on every dispatch is the cost the
-// cached count exists to avoid.
+// A tool the decision leaves alone — the caller's own map, or no parameters key
+// at all — is reported unchanged, and a list with none of them returns nil and
+// false: the count the request already holds describes those bytes. Any tool the
+// decision rewrites makes the list a change, and the caller measures the emitted
+// list with the encoder the wire uses.
 func (*Protocol) EmitToolSchemas(baseline []llm.ToolDefinition, res registry.Resolved) ([]llm.ToolDefinition, bool) {
 	if len(baseline) == 0 {
 		return nil, false
@@ -100,37 +102,19 @@ func (*Protocol) EmitToolSchemas(baseline []llm.ToolDefinition, res registry.Res
 	strictCaps := registry.BoolValue(res.Caps.StrictTools)
 	req := llm.Request{Tools: baseline}
 	var sent []llm.ToolDefinition
-	changed := false
-	for i, t := range baseline {
+	for i := range baseline {
 		params, _, omit, untouched := toolSchema(req, i, strictCaps)
 		if omit || untouched {
-			// The builder omits the parameters key, so the definition as written
-			// already describes the wire: there are no bytes to price and
-			// nothing to report as changed.
-			//
-			// An untouched schema is the same statement about bytes, and a
-			// stronger one about cost: the builder sends the caller's own map,
-			// so the count it arrived with already describes it and there is
-			// nothing to compare.
-			continue
-		}
-		// A byte count needs a byte oracle. Strict projection sorts each object's
-		// required list, which reorders a schema without changing what it
-		// serializes to, so an already strictly shaped catalog differs
-		// structurally from its projection while emitting exactly the bytes the
-		// cached count already describes. SameSerializedLength answers that
-		// question without marshaling the catalog, which turns the reorder into
-		// a reuse rather than a second marshal on every dispatch.
-		if openaichat.SameSerializedLength(t.Parameters, params) {
+			// The builder omits the key or sends the caller's own map, so the
+			// count the request arrived with already describes the wire.
 			continue
 		}
 		if sent == nil {
 			sent = slices.Clone(baseline)
 		}
 		sent[i].Parameters = params
-		changed = true
 	}
-	if !changed {
+	if sent == nil {
 		return nil, false
 	}
 	return sent, true

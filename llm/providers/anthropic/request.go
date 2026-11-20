@@ -227,10 +227,11 @@ func betaHeaderFromProviderOptions(opts map[string]any) string {
 func toAnthropicTools(tools []llm.ToolDefinition) []map[string]any {
 	out := make([]map[string]any, 0, len(tools))
 	for _, t := range tools {
+		schema, _ := wireInputSchema(t)
 		out = append(out, map[string]any{
 			"name":         t.Name,
 			"description":  t.Description,
-			"input_schema": wireInputSchema(t),
+			"input_schema": schema,
 		})
 	}
 	return out

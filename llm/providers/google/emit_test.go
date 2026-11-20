@@ -71,10 +71,8 @@ func TestTheDeriverMatchesTheBuiltFunctionDeclarations(t *testing.T) {
 // assertSameFunctionParameters fails unless the schema the builder emitted and
 // the schema the deriver prices are the same schema.
 //
-// When both sides are present the comparison is for serialized length rather
-// than for a deep equality: the deriver reports a byte-identical schema as
-// unchanged (SameSerializedLength), so a value comparison would fail a case the
-// price handles correctly. Absence cannot happen for Gemini here, since the
+// When both sides are present the comparison is for serialized length, because
+// length is what the price bills. Absence cannot happen for Gemini here, since the
 // builder supplies the open empty object for a parameterless tool, but the check
 // states it so a builder that started omitting one would fail here rather than
 // silently price zero bytes.
@@ -98,13 +96,17 @@ func assertSameFunctionParameters(t *testing.T, name string, wire, priced map[st
 	}
 }
 
-// A catalog the sanitizer leaves byte-identically must be reported unchanged.
+// A sanitized catalog is reported as a change, and a schema the sanitizer keeps
+// whole measures the bytes the catalog measures.
 //
-// Reporting a change would re-marshal the whole catalog on every dispatch
-// against the cached count that exists to avoid exactly that marshal.
-func TestASanitizedCatalogIsReportedUnchanged(t *testing.T) {
+// The sanitizer rebuilds every schema, so the deriver always reports the emitted
+// list and the caller measures it with the encoder the wire uses. A schema with
+// nothing to strip then measures the same either way, which is the price; a
+// schema whose metadata the sanitizer drops measures less, and a count carried
+// over from the catalog would overcharge it.
+func TestASanitizedCatalogIsMeasuredFromTheEmittedList(t *testing.T) {
 	t.Parallel()
-	defs := []llm.ToolDefinition{{
+	plain := []llm.ToolDefinition{{
 		Name: "write_file",
 		Parameters: map[string]any{
 			"type":       "object",
@@ -112,12 +114,15 @@ func TestASanitizedCatalogIsReportedUnchanged(t *testing.T) {
 			"required":   []string{"path"},
 		},
 	}}
-	if emitted, changed := (&Protocol{}).EmitToolSchemas(defs, registry.Resolved{}); changed {
-		t.Fatalf("deriver reported a change for a schema the sanitizer keeps whole (emitted %v)", emitted)
+	sent, changed := (&Protocol{}).EmitToolSchemas(plain, registry.Resolved{})
+	if !changed {
+		t.Fatal("deriver reported no change for a list it sanitized")
 	}
-	// The control: the same list with the document metadata is reported, so a
-	// comparator that answered "same" for everything cannot pass above.
-	control := []llm.ToolDefinition{{
+	if got, want := llm.ToolsJSONBytes(sent), llm.ToolsJSONBytes(plain); got != want {
+		t.Fatalf("sanitized list measures %d bytes, want the catalog's %d: nothing in this schema was dropped", got, want)
+	}
+
+	stripped := []llm.ToolDefinition{{
 		Name: "write_file",
 		Parameters: map[string]any{
 			"$schema":    "https://json-schema.org/draft/2020-12/schema",
@@ -126,8 +131,13 @@ func TestASanitizedCatalogIsReportedUnchanged(t *testing.T) {
 			"required":   []string{"path"},
 		},
 	}}
-	if _, changed := (&Protocol{}).EmitToolSchemas(control, registry.Resolved{}); !changed {
+	sent, changed = (&Protocol{}).EmitToolSchemas(stripped, registry.Resolved{})
+	if !changed {
 		t.Fatal("deriver reported no change for a schema whose document metadata the sanitizer drops")
+	}
+	if got, want := llm.ToolsJSONBytes(sent), llm.ToolsJSONBytes(stripped); got >= want {
+		t.Fatalf("sanitized list measures %d bytes, want less than the catalog's %d: the document metadata is "+
+			"dropped from the wire", got, want)
 	}
 }
 

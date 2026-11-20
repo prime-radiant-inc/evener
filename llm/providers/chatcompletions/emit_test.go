@@ -106,11 +106,9 @@ func TestTheDeriverMatchesTheBuiltWireSchemas(t *testing.T) {
 //
 // Absence matches absence, because the builder omits the parameters key for a
 // parameterless tool and that omission is zero bytes. When both sides are
-// present the comparison is for serialized length rather than for a deep
-// equality: the projection sorts a required list, so a catalog whose list is
-// already complete is emitted as a permutation of itself, and the deriver
-// deliberately reports that as unchanged (SameSerializedLength). Comparing the
-// values would fail a case the price handles correctly.
+// present the comparison is for serialized length, because length is what the
+// price bills: the projection sorts a required list, so the emitted schema can
+// be a permutation of the advertised one and still cost the same.
 func assertSameWireSchema(t *testing.T, strict bool, name string, wire, priced map[string]any) {
 	t.Helper()
 	if (wire != nil) != (priced != nil) {
@@ -134,42 +132,16 @@ func assertSameWireSchema(t *testing.T, strict bool, name string, wire, priced m
 	}
 }
 
-// A tool whose only projection difference is the order of its required list must
-// be reported unchanged.
+// A schema the strict gate certifies is projected, so the deriver reports the
+// list as changed and the caller measures it.
 //
-// The projection sorts each object's required list, so an already complete list
-// is emitted as a permutation of itself and the bytes are the same. Reporting a
-// change would re-marshal the whole catalog on every dispatch against the cached
-// count that exists to avoid exactly that marshal.
-func TestAReorderOnlyProjectionIsReportedUnchanged(t *testing.T) {
+// The projection rewrites each object's required list and states the type a
+// closed value set implies. The emitted bytes are the ones the wire carries, so
+// a route that projects must not leave the caller's catalog count standing.
+func TestAStrictProjectionIsReportedAsAChange(t *testing.T) {
 	t.Parallel()
 	res := chatRouteOn(true)
 	defs := []llm.ToolDefinition{{
-		Name: "write_file",
-		Parameters: map[string]any{
-			"type":                 "object",
-			"additionalProperties": false,
-			"properties": map[string]any{
-				"path":    map[string]any{"type": "string"},
-				"content": map[string]any{"type": "string"},
-			},
-			// Out of order: the projection sorts it, and the two serialize to
-			// the same length.
-			"required": []string{"path", "content"},
-		},
-		Strict: new(true),
-	}}
-	emitted, changed := (&Protocol{}).EmitToolSchemas(defs, res)
-	if changed {
-		t.Fatalf("deriver reported a change for a reorder-only projection (emitted %v)", emitted)
-	}
-	// The control: a catalog the projection really does grow is reported, so a
-	// comparator that answered "same" for everything cannot pass above.
-	// The schema is certified for strict mode — already closed, with every
-	// property required — and the enum is a closed value set with no stated type,
-	// so the projection states the type it implies. That is the byte growth this
-	// control needs; a schema the gate refuses keeps its advertised bytes.
-	growing := []llm.ToolDefinition{{
 		Name: "write_file",
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -179,7 +151,7 @@ func TestAReorderOnlyProjectionIsReportedUnchanged(t *testing.T) {
 		},
 		Strict: new(true),
 	}}
-	if _, changed := (&Protocol{}).EmitToolSchemas(growing, res); !changed {
+	if _, changed := (&Protocol{}).EmitToolSchemas(defs, res); !changed {
 		t.Fatal("deriver reported no change for a catalog the projection closes")
 	}
 }

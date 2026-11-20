@@ -11,7 +11,6 @@ import (
 	"slices"
 
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providers/internal/openaichat"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -73,40 +72,20 @@ func (*Protocol) EmitToolSchemas(baseline []llm.ToolDefinition, res registry.Res
 	strict := registry.BoolValue(res.Caps.StrictTools)
 	lite := registry.BoolValue(res.Caps.ResponsesLite)
 	var sent []llm.ToolDefinition
-	changed := false
 	for i, t := range baseline {
 		params, _, untouched := toolSchema(t, strict, lite)
 		if untouched {
-			// The decision left this definition byte-identical, so the count the
+			// The decision returned the caller's own map, so the count the
 			// request arrived with already describes it and there is nothing to
-			// compare. That answer is never inferred from "nothing to state": a
-			// copy that decoded a json.RawMessage subschema is a different
-			// length from the raw form it replaced, and toolSchema reports that
-			// copy as a change for exactly this reason.
-			//
-			// It is also what keeps a cyclic map from being walked. A cyclic
-			// catalog always takes the copy path, and a walk over it is
-			// unbounded; pricing the list the builder hands back unchanged is
-			// the finite answer.
-			continue
-		}
-		// A byte count needs a byte oracle. The projection sorts each object's
-		// required list, which reorders a schema without changing what it
-		// serializes to: a catalog whose tools are already strictly shaped
-		// would then be re-measured on every dispatch even though the count it
-		// already holds is exact. SameSerializedLength answers that question
-		// without marshaling the catalog, and only a schema whose projection
-		// really costs bytes is reported as changed.
-		if openaichat.SameSerializedLength(t.Parameters, params) {
+			// measure.
 			continue
 		}
 		if sent == nil {
 			sent = slices.Clone(baseline)
 		}
 		sent[i].Parameters = params
-		changed = true
 	}
-	if !changed {
+	if sent == nil {
 		return nil, false
 	}
 	return sent, true

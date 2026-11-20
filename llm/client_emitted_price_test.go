@@ -6,22 +6,10 @@ import (
 	"errors"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 
 	"primeradiant.com/evener/llm/registry"
 )
-
-// countedSchemaValue counts how often the encoder marshals it. A tool catalog
-// that contains one can be measured twice without the second measurement
-// changing the number, so a test that compares counts cannot tell reuse from
-// re-measurement. Counting the marshals themselves can.
-type countedSchemaValue struct{ calls *int32 }
-
-func (c countedSchemaValue) MarshalJSON() ([]byte, error) {
-	atomic.AddInt32(c.calls, 1)
-	return []byte(`"counted"`), nil
-}
 
 // responsesRowOn returns a resolved row for the Responses protocol with the
 // strict-tools capability as given. The row is built here rather than resolved
@@ -230,117 +218,6 @@ func TestARetargetedRequestPricesTheSecondRoutesSchemas(t *testing.T) {
 	// with its stated required list.
 	if relaxed >= strict {
 		t.Fatalf("relaxed price = %d, want less than the strict %d", relaxed, strict)
-	}
-}
-
-// A projection that only reorders a required list must not re-marshal the
-// catalog.
-//
-// The projection sorts every object's required list, so a schema that already
-// names exactly those properties is emitted as a permutation of itself: the
-// bytes are reordered, not resized. The counter is on the encoder rather than on
-// the price, because both the right answer and the wrong one are the same
-// number: only the number of marshals tells the two apart.
-func TestAByteNeutralProjectionDoesNotMarshalTheCatalog(t *testing.T) {
-	t.Parallel()
-	var calls int32
-	res := responsesRowOn(true)
-	for _, tc := range []struct {
-		name   string
-		params map[string]any
-	}{
-		{
-			name: "reordered required list",
-			params: map[string]any{
-				"type":                 "object",
-				"additionalProperties": false,
-				"properties": map[string]any{
-					"path":    map[string]any{"type": "string"},
-					"content": map[string]any{"type": "string"},
-					"note":    map[string]any{"type": "string", "description": countedSchemaValue{calls: &calls}},
-				},
-				// Deliberately unsorted: the projection sorts it, so the emitted
-				// schema differs structurally from this one while serializing to the
-				// same length. A sorted list here would make DeepEqual short-circuit
-				// and the comparison under test would never run.
-				"required": []string{"path", "note", "content"},
-			},
-		},
-		{
-			// A property whose name collides with the keyword the comparator
-			// reads as a name list. Its value is a schema, so the name-set
-			// reading cannot account for it, and refusing it there reported a
-			// byte-neutral projection as a change.
-			name: "property named required",
-			params: map[string]any{
-				"type":                 "object",
-				"additionalProperties": false,
-				"properties": map[string]any{
-					"path":     map[string]any{"type": "string"},
-					"required": map[string]any{"type": "boolean"},
-					"note":     map[string]any{"type": "string", "description": countedSchemaValue{calls: &calls}},
-				},
-				"required": []string{"path", "required", "note"},
-			},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			defs := []ToolDefinition{{Name: "write_file", Parameters: tc.params}}
-			req := Request{
-				Provider:       "emitted-price",
-				Model:          "model",
-				Messages:       []Message{User("x")},
-				Tools:          defs,
-				ToolsJSONBytes: ToolsJSONBytes(defs),
-			}
-			before := atomic.LoadInt32(&calls)
-			got := EffectiveToolsJSONBytes(req, res, false)
-			marshals := atomic.LoadInt32(&calls) - before
-
-			if got != req.ToolsJSONBytes {
-				t.Fatalf("priced count = %d, want the count it arrived with, %d: the projection only reorders a "+
-					"required list here, so the bytes are the same", got, req.ToolsJSONBytes)
-			}
-			if marshals != 0 {
-				t.Fatalf("pricing the catalog marshaled it %d time(s), want 0: the projection answers the "+
-					"byte-length question itself, and a destination that re-encodes to confirm a reorder costs "+
-					"the whole catalog on every pricing call", marshals)
-			}
-		})
-	}
-
-	// The control: a projection that really does change the bytes is still
-	// measured, so a comparator that answered "same" for everything cannot pass
-	// above. This catalog is certified for strict mode and gains the type its
-	// closed value set implies, which is a byte the projection adds, and it keeps
-	// the counter.
-	changing := []ToolDefinition{{
-		Name: "write_file",
-		Parameters: map[string]any{
-			"type":                 "object",
-			"additionalProperties": false,
-			"properties": map[string]any{
-				"note": map[string]any{
-					"description": countedSchemaValue{calls: &calls},
-					"enum":        []any{"read", "write"},
-				},
-			},
-			"required": []string{"note"},
-		},
-	}}
-	advertisedChanging := ToolsJSONBytes(changing)
-	changingBefore := atomic.LoadInt32(&calls)
-	if priced := EffectiveToolsJSONBytes(Request{
-		Provider:       "emitted-price",
-		Model:          "model",
-		Messages:       []Message{User("x")},
-		Tools:          changing,
-		ToolsJSONBytes: advertisedChanging,
-	}, res, false); priced == advertisedChanging {
-		t.Fatal("a catalog whose projection closes the object was priced as unchanged")
-	}
-	if atomic.LoadInt32(&calls) == changingBefore {
-		t.Fatal("a catalog whose projection changes its bytes was never measured")
 	}
 }
 

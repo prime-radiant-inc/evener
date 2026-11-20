@@ -4,22 +4,23 @@ import (
 	"slices"
 
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providers/internal/openaichat"
 	"primeradiant.com/evener/llm/registry"
 )
 
 // wireInputSchema returns the input_schema the builder sends for t: the open
 // empty object when the tool declares no parameters, else the caller's schema
-// with any top-level combinator removed.
+// with any top-level combinator removed. untouched reports that the returned
+// map is the caller's own: the builder then sends the schema it was handed, and
+// the bytes a caller measured over the catalog still describe it.
 //
 // This is the per-tool decision toAnthropicTools makes, written once so the local
 // estimate reaches the same answer. Anthropic rejects a tool that omits
 // input_schema, and it rejects anyOf, oneOf, and allOf at the root of one, so the
 // builder supplies the first and drops the second.
-func wireInputSchema(t llm.ToolDefinition) map[string]any {
-	params := t.Parameters
+func wireInputSchema(t llm.ToolDefinition) (params map[string]any, untouched bool) {
+	params = t.Parameters
 	if params == nil {
-		params = map[string]any{"type": "object", "properties": map[string]any{}}
+		return map[string]any{"type": "object", "properties": map[string]any{}}, false
 	}
 	// Copy-on-write: only allocate if we need to strip keys.
 	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
@@ -30,9 +31,9 @@ func wireInputSchema(t llm.ToolDefinition) map[string]any {
 		delete(params, "anyOf")
 		delete(params, "oneOf")
 		delete(params, "allOf")
-		break
+		return params, false
 	}
-	return params
+	return params, true
 }
 
 // EmitToolSchemas implements llm.ToolSchemaDeriver.
@@ -44,31 +45,26 @@ func wireInputSchema(t llm.ToolDefinition) map[string]any {
 // declares no parameters, and the root combinator it strips, which can only make
 // the emitted schema smaller than the advertised one.
 //
-// A schema the builder emits byte-identically is reported unchanged, and a list
-// with none of them returns nil and false: the count it already holds is exact,
-// and re-marshaling the catalog on every dispatch is the cost that count exists
-// to avoid. SameSerializedLength answers that question without marshaling
-// anything, and it answers the two shapes this decision produces — the caller's
-// own map, compared with itself, and a copy that dropped keys — without walking
-// into a schema that contains itself.
+// A tool the builder leaves untouched keeps the caller's own map, so the count
+// the request already holds describes it and the list is reported unchanged. A
+// rewritten tool makes the list a change, and the caller measures the emitted
+// list with the encoder the wire uses.
 func (*Protocol) EmitToolSchemas(baseline []llm.ToolDefinition, res registry.Resolved) ([]llm.ToolDefinition, bool) {
 	if len(baseline) == 0 {
 		return nil, false
 	}
 	var sent []llm.ToolDefinition
-	changed := false
 	for i := range baseline {
-		params := wireInputSchema(baseline[i])
-		if openaichat.SameSerializedLength(baseline[i].Parameters, params) {
+		params, untouched := wireInputSchema(baseline[i])
+		if untouched {
 			continue
 		}
 		if sent == nil {
 			sent = slices.Clone(baseline)
 		}
 		sent[i].Parameters = params
-		changed = true
 	}
-	if !changed {
+	if sent == nil {
 		return nil, false
 	}
 	return sent, true
