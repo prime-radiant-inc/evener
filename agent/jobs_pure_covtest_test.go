@@ -412,8 +412,19 @@ func TestCovFormatJobStop(t *testing.T) {
 	// Shell job.
 	reason := "done"
 	got := formatJobStop(jobStopResult{ID: "job1", Type: "shell", Status: "completed", Outcome: "completed_during_stop", Reason: &reason})
-	if !strings.Contains(got, "shell") || !strings.Contains(got, "job1") || !strings.Contains(got, "completed") || !strings.Contains(got, "completed_during_stop") || !strings.Contains(got, "done") {
+	if !strings.Contains(got, "shell") || !strings.Contains(got, "job1") {
 		t.Fatalf("shell stop = %q", got)
+	}
+	// Status is its own field; the delimiters stop the outcome substring
+	// "completed_during_stop" from satisfying it.
+	if !strings.Contains(got, " · completed · ") {
+		t.Fatalf("shell stop status = %q", got)
+	}
+	if !strings.Contains(got, "completed_during_stop") {
+		t.Fatalf("shell stop outcome = %q", got)
+	}
+	if !strings.Contains(got, "done") {
+		t.Fatalf("shell stop reason = %q", got)
 	}
 
 	// Shell job with JobID when ID empty.
