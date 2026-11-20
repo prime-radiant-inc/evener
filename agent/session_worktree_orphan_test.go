@@ -1202,27 +1202,22 @@ func TestSharedDescendantLaneRefusesUnheldScriptedPresentation(t *testing.T) {
 // until the foreign lock is the one that holds.
 func adoptForeignLane(t *testing.T, r *wtRepo, lanePath, foreignSID string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	// The adoption is a state, not a command's success: a background wake
+	// re-takes any gap, so retry until the lock that reads back is the foreign
+	// one.
+	testwait.UntilSeen(t, "the lane's foreign lock to hold", func() (bool, string) {
 		if _, locked, _ := r.laneLocked(t, lanePath); locked {
 			_, _ = runWorktreeGit(r.mainRoot, "worktree", "unlock", lanePath)
 		}
-		if _, lockErr := runWorktreeGit(r.mainRoot, "worktree", "lock", "--reason", worktree.FormatSessionMarker(foreignSID), lanePath); lockErr == nil {
-			// git took the lock, but require the lock that reads back to be
-			// the foreign one: a background wake re-takes any gap, and only
-			// the state, not the command's success, is the adoption.
-			if _, locked, reason := r.laneLocked(t, lanePath); locked {
-				if m, ok := worktree.ParseMarker(reason); ok && m.SessionID == foreignSID {
-					return
-				}
+		_, lockErr := runWorktreeGit(r.mainRoot, "worktree", "lock", "--reason", worktree.FormatSessionMarker(foreignSID), lanePath)
+		_, locked, reason := r.laneLocked(t, lanePath)
+		if lockErr == nil && locked {
+			if m, ok := worktree.ParseMarker(reason); ok && m.SessionID == foreignSID {
+				return true, ""
 			}
 		}
-		if time.Now().After(deadline) {
-			_, _, reason := r.laneLocked(t, lanePath)
-			t.Fatalf("adopting the lane for a foreign session kept losing to the tree's own wake: lane lock = %q", reason)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		return false, reason
+	})
 }
 
 // A shared descendant's wake must not launch into an ancestor lane another
@@ -1363,6 +1358,25 @@ func spawnRetainedDelegateLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 	return fixture, root, lanePath
 }
 
+// awaitActivityPublishFloor waits out the activity coalescer's window on the
+// delegate's row: a report inside it advances the activity clock but publishes
+// nothing, so its lane-evidence refresh rides the next publication. A test that
+// injects one report as the lane owner's ongoing evidence waits here first, so
+// the freshness it then observes is that report's and not a ticker's.
+func awaitActivityPublishFloor(t *testing.T, controller *delegateTreeController, delegateID string) {
+	t.Helper()
+	testwait.UntilSeen(t, "the delegate's activity publication floor to clear", func() (bool, string) {
+		controller.mu.Lock()
+		var published time.Time
+		if live := controller.live[delegateID]; live != nil {
+			published = live.activityPublishedAt
+		}
+		elapsed := controller.now().Sub(published)
+		controller.mu.Unlock()
+		return elapsed >= delegateActivityPublishInterval, elapsed.Round(time.Millisecond).String()
+	})
+}
+
 // A delegate turn that outlasts the operator's inactivity threshold keeps its
 // marker parent idle — the parent runs no turn of its own while it waits — so
 // the activity evidence the orphan reclaim reads goes stale mid-task even
@@ -1425,7 +1439,7 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileDelegateReportsActivity(t *testin
 	if delegateSub == nil || delegateSub.sess == nil {
 		t.Fatalf("delegate %s is not retained after its run", fixture.childID)
 	}
-	time.Sleep(delegateActivityPublishInterval + 200*time.Millisecond)
+	awaitActivityPublishFloor(t, root.delegateController, fixture.delegateID)
 	delegateSub.sess.mu.Lock()
 	activity := delegateSub.sess.cfg.spawn.parentJobActivity
 	delegateSub.sess.mu.Unlock()
@@ -1538,43 +1552,17 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 	// until the owner's quiet-watch, past the tripwire.
 	// The report can be classified while the root is processing and deferred
 	// to the root's delivery queue, where only the background retry would
-	// pump it. Flush the queue before each drive so a deferred report is
-	// appended deterministically; an empty queue makes it a no-op.
-	turnStartDeadline := time.Now().Add(30 * time.Second)
-	var flushMu sync.Mutex
-	var flushErr error
-	flush := func() {
-		lane.delegateSub.mu.Lock()
-		busy := lane.delegateSub.running || lane.delegateSub.driving || lane.delegateSub.finalizing
-		lane.delegateSub.mu.Unlock()
-		if busy {
-			return
-		}
-		if err := lane.delegateSess.flushPendingDelegateDeliveries(); err != nil {
-			flushMu.Lock()
-			flushErr = err
-			flushMu.Unlock()
-		}
-	}
-	go func() {
-		for time.Now().Before(turnStartDeadline) {
-			flush()
-			lane.root.driveDelegateAttention(lane.delegateSub)
-			time.Sleep(200 * time.Millisecond)
-			select {
-			case <-entered:
-				return
-			default:
-			}
-		}
-	}()
+	// pump it. driveUntil flushes the queue before each of its wake-edge
+	// passes, so a deferred report is appended deterministically; an empty
+	// queue makes it a no-op.
+	flushErr := lane.driveUntil(entered)
 	select {
 	case <-entered:
 	// TRIPWIRE: the armed attention turns over within seconds of the send
 	// settling; the shared deadline only fires on a genuine hang. It covers a
 	// shard loaded with the rest of this package's parallel tests, where spawn
 	// and the arm both stretch.
-	case <-time.After(time.Until(turnStartDeadline)):
+	case <-time.After(30 * time.Second):
 		// Reproduce the drive's own preconditions, in its order, so the
 		// failure names the one that declined: the drive's boolean cannot.
 		// All of them green names the other failure mode — the wake-edge
@@ -1604,9 +1592,7 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 		// attention never armed, or a gate held the launch. Name which.
 		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
 		childPending, childPendErr := lane.sharedSub.sess.pendingDelegateAttentionIDs()
-		flushMu.Lock()
-		lastFlushErr := flushErr
-		flushMu.Unlock()
+		lastFlushErr := flushErr()
 		deferred := lane.delegateSess.hasPendingDelegateDeliveries()
 		lane.sharedSub.mu.Lock()
 		childRunning, childClosed, childFinalizing := lane.sharedSub.running, lane.sharedSub.closed, lane.sharedSub.finalizing
@@ -1656,7 +1642,7 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 	// backdate and the assertion, where a turn-ticker refresh would satisfy the
 	// stat without the injected report doing anything), the same way the
 	// running-delegate test does.
-	time.Sleep(delegateActivityPublishInterval + 200*time.Millisecond)
+	awaitActivityPublishFloor(t, lane.root.delegateController, lane.sharedDelegateID)
 
 	// The parent has now been idle past the operator's threshold: the wake
 	// refreshed its evidence once at launch, and nothing since.
@@ -4381,9 +4367,17 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileCoordinatorDrainsForDescendant(t 
 		}
 		return coordinatorRequests >= 2
 	})
-	// Let the coordinator's turn ticker's last moment pass, so only the
-	// drain can keep the evidence fresh from here.
-	time.Sleep(delegateActivityPublishInterval + 500*time.Millisecond)
+	// The coordinator's own turn has ended, and with it its evidence ticker:
+	// only the finalization drain can keep the evidence fresh from here.
+	coordinatorSub := root.subagents.get(fixture.childID)
+	if coordinatorSub == nil {
+		t.Fatalf("the coordinator %s is not retained", fixture.childID)
+	}
+	testwait.Until(t, "the coordinator's finalization drain to take over", func() bool {
+		coordinatorSub.mu.Lock()
+		defer coordinatorSub.mu.Unlock()
+		return coordinatorSub.finalizing
+	})
 
 	// The lane's marker parent — the root — has now been idle past the
 	// operator's threshold: nothing of its own runs while the tree waits on

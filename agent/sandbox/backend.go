@@ -428,8 +428,8 @@ func mergeChildEnvAssignments(env []string, childEnv ChildEnvDelta) []string {
 }
 
 // withNetworkAllowed returns a Wrapper identical to w except its policy's
-// Network is forced true, so Wrap/Confine on the copy never emit a network
-// denial regardless of the session's real net=off/on setting. A nil receiver
+// Network is forced true, so Wrap/Confine on the copy run under the mode's
+// net=on policy even when the session's real setting is off. A nil receiver
 // stays nil, so ConfineTrustedInfra on an unsandboxed (nil) wrapper is still a
 // no-op, matching Confine's nil behavior.
 func (w *Wrapper) withNetworkAllowed() *Wrapper {

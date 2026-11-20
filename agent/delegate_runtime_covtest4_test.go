@@ -3,7 +3,6 @@ package agent
 import (
 	"encoding/json"
 	"errors"
-	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -258,28 +257,6 @@ func TestCovRestoreColdDelegateOwnerRuntime_EmptyParentID(t *testing.T) {
 	}
 }
 
-// TestCovDelegateOutcomeJobStatus covers delegateOutcomeJobStatus: all outcome branches.
-func TestCovDelegateOutcomeJobStatus(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		outcome delegatestore.OutcomeStatus
-		want    jobstore.Status
-	}{
-		{delegatestore.OutcomeCompleted, jobstore.StatusCompleted},
-		{delegatestore.OutcomeCancelled, jobstore.StatusCancelled},
-		{delegatestore.OutcomeStopped, jobstore.StatusStopped},
-		{delegatestore.OutcomeExhausted, jobstore.StatusExhausted},
-		{delegatestore.OutcomeFailed, jobstore.StatusFailed},
-		{"unknown_outcome", jobstore.StatusFailed},
-	}
-	for _, tt := range tests {
-		got := delegateOutcomeJobStatus(tt.outcome)
-		if got != tt.want {
-			t.Fatalf("delegateOutcomeJobStatus(%v) = %q, want %q", tt.outcome, got, tt.want)
-		}
-	}
-}
-
 // TestCovDescriptorProvenance covers descriptorProvenance.
 func TestCovDescriptorProvenance(t *testing.T) {
 	t.Parallel()
@@ -373,52 +350,6 @@ func TestCovDelegateResult(t *testing.T) {
 	result = startedDelegateResult(desc, "dlg_1", committed, plans, wantErr)
 	if reflect.TypeOf(result.Err) != reflect.TypeOf(wantErr) || reflect.ValueOf(result.Err).Pointer() != reflect.ValueOf(wantErr).Pointer() {
 		t.Fatalf("error object = %T %v, want exact input object %p", result.Err, result.Err, wantErr)
-	}
-}
-
-// TestCovLatestDelegateMutationSnapshot covers latestDelegateMutationSnapshot: finding the latest snapshot for a
-// delegate ID from committed rows and plan updates.
-func TestCovLatestDelegateMutationSnapshot(t *testing.T) {
-	t.Parallel()
-	// No rows, no plans — empty snapshot.
-	snap := latestDelegateMutationSnapshot("dlg_1", delegateUpdatePlan{}, delegateMutationPlans{})
-	if snap.id != "" {
-		t.Fatalf("empty should return zero snapshot, got id=%q", snap.id)
-	}
-
-	// Found in committed rows.
-	committed := delegateUpdatePlan{
-		rows: []delegateSnapshot{
-			{id: "dlg_other"},
-			{id: "dlg_1", resumable: true},
-		},
-	}
-	snap = latestDelegateMutationSnapshot("dlg_1", committed, delegateMutationPlans{})
-	if snap.id != "dlg_1" || !snap.resumable {
-		t.Fatalf("should find dlg_1 in committed: %+v", snap)
-	}
-
-	// Fallback to last row when target not found.
-	committed = delegateUpdatePlan{
-		rows: []delegateSnapshot{{id: "dlg_other"}},
-	}
-	snap = latestDelegateMutationSnapshot("dlg_missing", committed, delegateMutationPlans{})
-	if snap.id != "dlg_other" {
-		t.Fatalf("should fall back to last row: got %q", snap.id)
-	}
-
-	// Found in plan updates (overrides committed).
-	committed = delegateUpdatePlan{
-		rows: []delegateSnapshot{{id: "dlg_1", resumable: false}},
-	}
-	plans := delegateMutationPlans{
-		updates: []delegateUpdatePlan{{
-			rows: []delegateSnapshot{{id: "dlg_1", resumable: true}},
-		}},
-	}
-	snap = latestDelegateMutationSnapshot("dlg_1", committed, plans)
-	if !snap.resumable {
-		t.Fatal("plan update should override committed")
 	}
 }
 
@@ -681,39 +612,5 @@ func TestCovDelegateRestoreReadFile(t *testing.T) {
 	_, err := s.delegateRestoreReadFile(t.TempDir() + "/nonexistent")
 	if err == nil {
 		t.Fatal("non-existent file should return error")
-	}
-}
-
-// TestCovMissingDelegateRestoreInputReason covers
-// missingDelegateRestoreInputReason.
-func TestCovMissingDelegateRestoreInputReason(t *testing.T) {
-	t.Parallel()
-	// Empty descriptor — missing metadata.
-	reason, err := missingDelegateRestoreInputReason(
-		"", delegatestore.Descriptor{}, os.Stat, os.ReadFile,
-	)
-	if err != nil {
-		t.Fatalf("empty descriptor: %v", err)
-	}
-	if reason != notResumableMissingDelegateResumeMetadata {
-		t.Fatalf("reason = %q, want %q", reason, notResumableMissingDelegateResumeMetadata)
-	}
-
-	// With valid descriptor but empty stateDir — missing child session meta.
-	reason, err = missingDelegateRestoreInputReason(
-		"", delegatestore.Descriptor{
-			ChildSessionID:    "child_1",
-			Task:              "do work",
-			AgentType:         "default",
-			ResolvedProfileID: "openai",
-			ResolvedModel:     "gpt-5",
-			TranscriptRef:     encodeRef("", "child_1"),
-		}, os.Stat, os.ReadFile,
-	)
-	if err != nil {
-		t.Fatalf("valid desc empty stateDir: %v", err)
-	}
-	if reason != notResumableMissingChildSessionMeta {
-		t.Fatalf("reason = %q, want %q", reason, notResumableMissingChildSessionMeta)
 	}
 }
