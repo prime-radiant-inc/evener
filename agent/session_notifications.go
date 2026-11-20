@@ -101,6 +101,12 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	// finishNotificationNoop's sessionEndEmitted then suppresses the close for.
 	var reminder string
 	if len(jobNotifs) > 0 {
+		s.mu.Lock()
+		hasSent := s.envTracker != nil && s.envTracker.State().HasSent
+		s.mu.Unlock()
+		if hasSent && s.envContextDue() {
+			_ = s.maybeAppendEnvironmentContext()
+		}
 		reminder = s.formatJobNotificationReminder(jobNotifs)
 		if err := errors.Join(s.appendSteeringTurnDurablyForOwner(reminder, events.SteeringKindNotification, turnID), sessionLifecycleFault(ctx, "append_notification")); err != nil {
 			s.requeueJobNotifications(jobNotifications(jobNotifs))
