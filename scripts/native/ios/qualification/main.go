@@ -52,6 +52,12 @@ type runner struct {
 	identity    buildIdentity
 	statusReads int
 	unlockLogs  int
+	// hostSettings is the app target's resolved build settings, captured by
+	// generatedMetadata for the hoisted Metro bundle: the bundle runs outside
+	// xcodebuild and must see the values Xcode would have supplied.
+	hostSettings map[string]string
+	// hoist is the background Metro bundle started before the release build.
+	hoist *metroHoistRun
 }
 
 func main() {
@@ -160,9 +166,22 @@ func qualify(ctx context.Context, output, derivedData string) (result error) {
 	if err := r.generatedMetadata(ctx); err != nil {
 		return err
 	}
+	// Run the Metro phase's own script here, before the build, so the bundle
+	// overlaps the whole compile wave; the app phase copies it in.
+	if err := r.hoistMetroBundle(ctx); err != nil {
+		return err
+	}
+	// Every exit path joins the bundle: a failed simulator or build must not
+	// leave a node process writing into the run output after the run ended.
+	defer func() { result = errors.Join(result, r.waitMetroHoist(ctx)) }()
 	return r.withOwnedSimulator(ctx, simulatorName(output), func(udid string) error {
 		derived := r.derivedDataDir()
 		if _, err := r.commandOutput(ctx, "xcodebuild-release", false, releaseBuildCommand(udid, derived)...); err != nil {
+			return err
+		}
+		// The build only succeeded if its copy phase found a complete bundle, but
+		// join here too so a failed bundle fails the run before verifyApp.
+		if err := r.waitMetroHoist(ctx); err != nil {
 			return err
 		}
 		r.identity.AppPath = filepath.Join(derived, "Build", "Products", "Release-iphonesimulator", "Evener.app")
@@ -751,6 +770,9 @@ func (r *runner) generatedMetadata(ctx context.Context) error {
 			return fmt.Errorf("%w: missing generated target %s", errIdentity, target)
 		}
 		settings := targets[0].BuildSettings
+		if target == "Evener" {
+			r.hostSettings = settings
+		}
 		info, err := r.plist(ctx, "generated-info-"+target, filepath.Join(r.native, "ios", settings["INFOPLIST_FILE"]))
 		if err != nil {
 			return err
