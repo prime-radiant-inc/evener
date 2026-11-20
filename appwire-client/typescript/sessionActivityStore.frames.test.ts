@@ -3546,3 +3546,114 @@ test("unknown-owner does not retire a live source's hold", async () => {
   expect(row?.holdSequence).toBe(98);
   expect(row?.drainHeldByJobs).toBe(true);
 });
+
+// --- Page epoch provenance ---
+//
+// A read carries no boot generation; the collection's own source epoch is the
+// only identity it names. The transcript side learns a replacement separately,
+// so when relay recovery switches daemons the refreshed page can land before
+// the transcript read adopts the daemon that served it. Labelling that page
+// with the transcript's previous token made adoption retire the replacement's
+// own hold, and an unchanged wait publishes no frame to restore it
+// (docs/product/session-activity.md, "Delegate membership is append-only
+// within a source epoch").
+
+test("a replacement page's hold survives the transcript adopting its boot", async () => {
+  const client = pushClient();
+  // The first daemon's page, served while the transcript held generation 1.
+  let context = pushContext({ epoch: "epoch-1" });
+  let delegates = [delegateRow({ projectionRevision: 4 })];
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context,
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates,
+  }));
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.complete);
+  store.adoptBootGeneration(BOOT_ONE);
+  expect(store.getSnapshot().delegates.rows[0]?.holdSequence ?? 0).toBe(0);
+
+  // Relay recovery switches to the replacement daemon. Its refreshed page lands
+  // first, carrying a live hold sampled by the daemon that now serves the
+  // thread -- before the transcript read below has adopted it.
+  context = pushContext({ epoch: "epoch-2" });
+  delegates = [
+    delegateRow({
+      projectionRevision: 4,
+      drainHeldByJobs: true,
+      holdSequence: 1,
+      runningJobCount: 1,
+      oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+    }),
+  ];
+  activityChanged(client, ["delegates"]);
+  await activityState(store, () => store.getSnapshot().delegates.rows[0]?.holdSequence === 1);
+
+  // The transcript read now adopts the replacement. It must not wipe the hold
+  // the replacement's own page published.
+  store.adoptBootGeneration(BOOT_TWO);
+  const adopted = store.getSnapshot().delegates.rows[0];
+  expect(adopted?.holdSequence).toBe(1);
+  expect(adopted?.drainHeldByJobs).toBe(true);
+  expect(adopted?.runningJobCount).toBe(1);
+
+  // Any reconciliation refresh re-serves the same page, and the hold it
+  // published is still what the row wears.
+  await store.refresh("delegates");
+  await activityState(store, () => !store.getSnapshot().delegates.loading);
+  const refreshed = store.getSnapshot().delegates.rows[0];
+  expect(refreshed?.holdSequence).toBe(1);
+  expect(refreshed?.drainHeldByJobs).toBe(true);
+
+  // The replacement's own end of the wait still lands: its frames are not
+  // judged retired by the tokens the transcript adopted.
+  client.emitNotification(pushedFrameFrom(BOOT_TWO, frameInfo({ projectionRevision: 4, holdSequence: 2 })));
+  const released = store.getSnapshot().delegates.rows[0];
+  expect(released?.holdSequence).toBe(2);
+  expect(released?.drainHeldByJobs ?? false).toBe(false);
+});
+
+test("a page the replaced daemon served is reconciled, not wiped, when the boot changes", async () => {
+  const client = pushClient();
+  let context = pushContext({ epoch: "epoch-1" });
+  let delegates = [
+    delegateRow({
+      projectionRevision: 4,
+      drainHeldByJobs: true,
+      holdSequence: 98,
+      runningJobCount: 2,
+      oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+    }),
+  ];
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context,
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates,
+  }));
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.rows[0]?.holdSequence === 98);
+  store.adoptBootGeneration(BOOT_ONE);
+
+  // The daemon is replaced. The replacement's page carries no hold, but it has
+  // not been read yet when the transcript adopts the new generation: the store
+  // cannot tell whether the page it displays came from either daemon, so it
+  // keeps the sample and re-reads instead of clearing a wait on a guess.
+  context = pushContext({ epoch: "epoch-2" });
+  delegates = [delegateRow({ projectionRevision: 4, holdSequence: 1 })];
+  store.adoptBootGeneration(BOOT_TWO);
+  const inTransition = store.getSnapshot().delegates.rows[0];
+  expect(inTransition?.holdSequence).toBe(98);
+  expect(inTransition?.drainHeldByJobs).toBe(true);
+
+  // The reconciliation walk re-serves the collection from the daemon serving
+  // the thread now, and that page settles the sample the store kept.
+  await activityState(store, () => store.getSnapshot().delegates.rows[0]?.holdSequence === 1);
+  const settled = store.getSnapshot().delegates.rows[0];
+  expect(settled?.holdSequence).toBe(1);
+  expect(settled?.drainHeldByJobs ?? false).toBe(false);
+  expect(settled?.runningJobCount ?? 0).toBe(0);
+});

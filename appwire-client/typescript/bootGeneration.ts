@@ -58,6 +58,24 @@ export function adoptableBootGeneration(token: string | undefined): string | und
 }
 
 /**
+ * The generation a *successful* read, history update or subscription read lets
+ * a client adopt, or undefined when a success must adopt nothing. A success
+ * carrying `daemonless` is saved-history fallback provenance: the hub served
+ * recorded history, which says nothing about whether a daemon still serves the
+ * thread (docs/product/history-content.md, "A successful saved fallback"), so
+ * it may neither displace the live source a client already holds nor retire
+ * what that source published. A live daemon never stamps it on its own frames.
+ *
+ * A *failed* read is the other case, and it is not this function's: there the
+ * hub stamps `daemonless` only on attested absence, so a caller reading a
+ * rejection keeps using `adoptableBootGeneration`.
+ */
+export function liveBootGeneration(token: string | undefined): string | undefined {
+  const adopted = adoptableBootGeneration(token);
+  return adopted === DAEMONLESS_BOOT_GENERATION ? undefined : adopted;
+}
+
+/**
  * Whether adopting `adopted` retires a sample stamped `candidate`. Only a
  * generation the adopted one ignores retires: a lower counter of the same
  * owner, published by a daemon boot that owner has moved past. A sample from a

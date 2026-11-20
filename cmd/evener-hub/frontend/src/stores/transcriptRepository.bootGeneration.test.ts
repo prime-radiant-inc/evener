@@ -3,9 +3,11 @@
 // Once a read has adopted a newer boot generation, a frame stamped with a
 // generation that read retired must not enrich the replacement's cut, while the
 // replacement's own pre-history frames and an older peer's unstamped frames
-// still do.
+// still do. A successful `daemonless` read is saved-history provenance, so it
+// must not erase the live generation this cut is comparing against.
 import "fake-indexeddb/auto";
 import type { AnyNotification, ThreadItem, ThreadReadResponse } from "@evener/appwire-client";
+import { DAEMONLESS_BOOT_GENERATION } from "@evener/appwire-client";
 import { afterEach, expect, test } from "vitest";
 import { ALL_CAPABILITIES } from "../threadTestUtils";
 import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
@@ -149,5 +151,29 @@ test("a post-cut overlay is admitted whatever generation it names", () => {
   // ordering; this filter exists only for the buffered pre-cut window, so the
   // repository's ordinary `accept` keeps its existing contract.
   expect(owner.accept(upserted("live", "1"), { lifetime: 1 })).toBe(true);
+  expect(overlayKeys(owner)).toEqual(["live"]);
+});
+
+test("a successful daemonless read keeps the live generation the cut compares against", () => {
+  const fixture = createEntryCacheFixture("boot-generation-daemonless");
+  fixtures.push(fixture);
+  const owner = repository(fixture);
+  expect(owner.acceptRead(read("1"), { lifetime: 1, readId: "read-1", boundary: "boundary-1" })).toBe(true);
+  // The relay drops, and the transcript refresh answers from saved history. That
+  // is provenance for the recorded history, not proof the daemon exited, so the
+  // cut keeps generation 1 as the source its buffered frames are judged against.
+  expect(
+    owner.acceptRead(read(DAEMONLESS_BOOT_GENERATION), { lifetime: 1, readId: "read-2", boundary: "boundary-2" }),
+  ).toBe(true);
+
+  // A buffered frame the live generation provably predates is still retired: it
+  // belongs to a daemon boot the source moved past. Had the daemonless token
+  // replaced the baseline, nothing would retire it and the stale overlay would
+  // enrich the cut.
+  owner.acceptBeforeReadCut([upserted("departed", "0"), upserted("live", "1")], {
+    lifetime: 1,
+    adoptedRead: true,
+  });
+
   expect(overlayKeys(owner)).toEqual(["live"]);
 });

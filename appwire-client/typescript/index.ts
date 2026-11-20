@@ -109,6 +109,7 @@ export {
   adoptableBootGeneration,
   compareBootGeneration,
   DAEMONLESS_BOOT_GENERATION,
+  liveBootGeneration,
   retiresBootGeneration,
   UNKNOWN_OWNER_BOOT_GENERATION,
 } from "./bootGeneration";

@@ -3,6 +3,7 @@ import {
   canWriteSharedNotes,
   type ImageMarkerRange,
   isTurnError,
+  liveBootGeneration,
   retiresBootGeneration,
   retryEligibility,
   TURN_CONTINUATION_TEXT,
@@ -4392,12 +4393,19 @@ interface ThreadHydration {
 // asks), has no signal, and records a history failure on the watched model.
 type HydrationRead = { kind: "thread"; signal?: AbortSignal } | { kind: "watched"; includeTurns: boolean };
 
-// The source identity a frame or read establishes reaches this tab's activity
-// store for the ref: the store that holds a delegate row must
-// know whose daemon numbered its hold, or a replacement inherits a wait
-// nothing can release. A token naming no owner adopts nothing, so an older
-// peer's omission and the hub's `unknown-owner` refusal leave an established
-// source's hold standing.
+// The source identity a successful read, a live frame or a confirmed-absence
+// failure establishes reaches this tab's activity store for the ref: the store
+// that holds a delegate row must know whose daemon numbered its hold, or a
+// replacement inherits a wait nothing can release. A token naming no owner
+// adopts nothing, so an older peer's omission and the hub's `unknown-owner`
+// refusal leave an established source's hold standing.
+//
+// A success carrying `daemonless` is saved-history provenance, not proof the
+// daemon exited (docs/product/history-content.md): the hub fell back to
+// recorded history, so the still-running source keeps its holds and the frames
+// it publishes are not judged retired. `liveBootGeneration` is what reads that
+// token; a *failed* read is the case that attests absence and calls here with
+// the raw token.
 //
 // `heldBootGeneration` is what the ref's history already adopted. A token that
 // generation IGNORES is a departed daemon's late frame — the reducer discards
@@ -4541,8 +4549,14 @@ async function readThreadHydration(
   const frontier = includeTurns ? frontierFromCursor(response) : "unknown";
   // The read names the source that served it. Adopt it before any model this
   // attempt builds can be published, so a replaced daemon's held rows leave in
-  // the same step the replacement's history lands.
-  adoptThreadSourceBootGeneration(client, ref, response.bootGeneration, pending.baseModel?.history?.bootGeneration);
+  // the same step the replacement's history lands. A `daemonless` answer is
+  // saved-history provenance instead, and must leave the live source standing.
+  adoptThreadSourceBootGeneration(
+    client,
+    ref,
+    liveBootGeneration(response.bootGeneration),
+    pending.baseModel?.history?.bootGeneration,
+  );
   const model =
     !discardHeldHistory && pending.baseModel?.history !== undefined
       ? tracked
@@ -6947,12 +6961,15 @@ function handleNotification(n: AnyNotification): void {
     // activity store this tab holds for the routed refs adopts it, and adopts
     // nothing from a frame naming no owner (an older peer, or a hub-synthesized
     // notice). Adoption precedes this frame's own fold: a replacement's first
-    // frame is what retires the daemon it replaced.
+    // frame is what retires the daemon it replaced. A `history/updated` from the
+    // hub's saved fallback carries `daemonless`, which is provenance for the
+    // recorded history rather than a claim the daemon exited.
     if (n.method === "evener/delegate/updated" || n.method === "history/updated" || n.method === "overlay/upserted") {
       const stamped = (n.params as { bootGeneration?: string }).bootGeneration;
+      const live = liveBootGeneration(stamped);
       if (wiredClient) {
         for (const ref of refs) {
-          adoptThreadSourceBootGeneration(wiredClient, ref, stamped, trackedThreadModel(ref)?.history?.bootGeneration);
+          adoptThreadSourceBootGeneration(wiredClient, ref, live, trackedThreadModel(ref)?.history?.bootGeneration);
         }
       }
     }

@@ -5,6 +5,7 @@ import {
   type BootGenerationAction,
   compareBootGeneration,
   DAEMONLESS_BOOT_GENERATION,
+  liveBootGeneration,
   retiresBootGeneration,
   UNKNOWN_OWNER_BOOT_GENERATION,
 } from "./bootGeneration";
@@ -102,4 +103,17 @@ test("only a provably older sample is retired", () => {
   // Nothing adopted retires nothing: a caller holding no source can ask
   // without guarding the question.
   expect(retiresBootGeneration(undefined, "3")).toBe(false);
+});
+
+// A *success* carrying daemonless is saved-history provenance, not proof the
+// daemon exited (docs/product/history-content.md: "A successful saved fallback
+// carries daemonless ... a client must not retire a standing hold on it"). Only
+// a failed read attests absence, and that caller keeps adoptableBootGeneration.
+test("a successful read adopts a live generation but never daemonless", () => {
+  expect(liveBootGeneration("4")).toBe("4");
+  expect(liveBootGeneration("4@root1")).toBe("4@root1");
+  expect(liveBootGeneration(DAEMONLESS_BOOT_GENERATION)).toBeUndefined();
+  expect(liveBootGeneration(UNKNOWN_OWNER_BOOT_GENERATION)).toBeUndefined();
+  expect(liveBootGeneration(undefined)).toBeUndefined();
+  expect(liveBootGeneration("")).toBeUndefined();
 });

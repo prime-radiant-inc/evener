@@ -1,4 +1,4 @@
-import { adoptableBootGeneration, retiresBootGeneration } from "./bootGeneration";
+import { adoptableBootGeneration, DAEMONLESS_BOOT_GENERATION, retiresBootGeneration } from "./bootGeneration";
 import type { AppwireClientLike } from "./clientLike";
 import { mutationErrorData, WireError } from "./errors";
 import { sameJsonValue } from "./plainObject";
@@ -212,6 +212,23 @@ export class SessionActivityStore {
    * source that named no generation (an older peer), and such a sample orders
    * only against another of its own kind. */
   private readonly delegateHoldBootGenerations = new Map<string, string>();
+  /** The activity page each loaded row's hold sample was served by, keyed by
+   * row identity. A read carries no boot generation -- the collection's own
+   * source epoch is the only identity it names, and the epoch alone cannot tell
+   * a page the replacement served from one the daemon it replaced did, because
+   * any response refreshes it and the two sides learn a replacement
+   * independently. So a page's sample is attributed to the reading source: the
+   * ordering's boot transition count when it was served. A sample served
+   * before the latest transition predates the adopted generation without
+   * anything being guessed about it. At most one of this map and
+   * `delegateHoldBootGenerations` holds an identity: each records the sample
+   * the row wears now. */
+  private readonly delegatePageHolds = new Map<string, number>();
+  /** How many boot generations this store's delegate ordering has moved
+   * through. A page's hold sample cannot name its publisher, so this is what
+   * distinguishes a page the replacement served from one the daemon it
+   * replaced did. */
+  private bootTransitions = 0;
   /** Boot generations the delegate ordering has moved past. A hold or buffered
    * frame stamped with one of these was numbered by a daemon that no longer
    * serves the thread, so its sequence can never order a sample the
@@ -875,6 +892,8 @@ export class SessionActivityStore {
   private resetDelegateBootGenerations(): void {
     this.delegateBootGeneration = undefined;
     this.delegateHoldBootGenerations.clear();
+    this.delegatePageHolds.clear();
+    this.bootTransitions = 0;
     this.retiredDelegateBootGenerations.clear();
   }
   private retireDelegates(): void {
@@ -895,19 +914,32 @@ export class SessionActivityStore {
     if (adopted === undefined || adopted === this.delegateBootGeneration) return;
     const previous = this.delegateBootGeneration;
     this.delegateBootGeneration = adopted;
+    this.bootTransitions += 1;
     // A generation the ordering has returned to is current again: a late frame
     // that named it must not be judged retired.
     this.retiredDelegateBootGenerations.delete(adopted);
     if (previous === undefined) {
       // The first adoption names the source the rows already displayed were
-      // read from: the store reads one source at a time, so their samples are
-      // that source's. Attributing them here is what lets a later replacement
-      // retire exactly those samples and no others.
+      // read from: the store reads one source at a time, so the samples that
+      // named no source are that source's. Attributing them here is what lets a
+      // later replacement retire exactly those samples and no others.
+      //
+      // A row a page served is not one of them. Its sample is the activity
+      // collection's, and the transcript's token names the history this read
+      // model found -- the two can already disagree when relay recovery
+      // switched daemons, so labelling a page with this token is exactly the
+      // mislabel that wiped a replacement's own hold.
       for (const row of this.state.delegates.rows) {
         const identity = rowIdentity("delegates", row);
-        if (!this.delegateHoldBootGenerations.has(identity) && hasDelegateHoldSample(row)) {
-          this.delegateHoldBootGenerations.set(identity, adopted);
-        }
+        if (this.delegateHoldBootGenerations.has(identity) || this.delegatePageHolds.has(identity)) continue;
+        if (hasDelegateHoldSample(row)) this.delegateHoldBootGenerations.set(identity, adopted);
+      }
+      // A page served before this first adoption was served by the source this
+      // adoption names: no replacement has been reported yet, so nothing says
+      // otherwise. Recording it under the transition this adoption opened is
+      // what lets the source's own frames order against it.
+      for (const [identity, transitions] of this.delegatePageHolds) {
+        if (transitions < this.bootTransitions) this.delegatePageHolds.set(identity, this.bootTransitions);
       }
     }
     // The source being replaced takes the samples it numbered with it.
@@ -923,6 +955,30 @@ export class SessionActivityStore {
       this.seenUnknownDelegates.delete(identity);
     }
     if (this.bufferedUnknownDelegates.size === 0) this.followUpDelegateRead = false;
+    if (adopted === DAEMONLESS_BOOT_GENERATION) {
+      // Attested absence: the hub stamps this token on a *successful* read as
+      // saved-history provenance, which every caller gates out (`live`,
+      // docs/product/history-content.md), so reaching this method with it means
+      // a failed read established that nobody owns the thread. Nothing can be
+      // holding it open, so no wait may be displayed -- including a page's
+      // sample, which a live replacement's transition must not wipe.
+      this.retireAllHolds();
+      return;
+    }
+    // A page's sample cannot be attributed to the replaced daemon or to its
+    // replacement: reads carry no boot generation, and no frame re-publishes an
+    // unchanged wait to restore one that was cleared. So the samples the
+    // transition leaves unresolved are not wiped but re-read: the
+    // reconciliation walk re-serves the collection from the daemon serving the
+    // thread now, and that page settles every one of them.
+    if (previous !== undefined && this.unresolvedPageHolds()) this.reconcileDelegates();
+  }
+  /** The boot generation the delegate ordering is under, or undefined while no
+   * source has named itself. A binding that reuses rows a retired store
+   * retained reads this to tell a store that must be told whose samples those
+   * rows wear from one that has already learned a source of its own. */
+  get bootGeneration(): string | undefined {
+    return this.delegateBootGeneration;
   }
   /** Retire one generation's holds: every loaded row whose sample it numbered
    * stops wearing that sample, and the generation joins the set a late frame
@@ -931,20 +987,7 @@ export class SessionActivityStore {
    * nothing can now release. */
   private retireDelegateBootGeneration(previous: string): void {
     this.retiredDelegateBootGenerations.add(previous);
-    const rows = this.state.delegates.rows;
-    let next: SessionDelegate[] | null = null;
-    for (let at = 0; at < rows.length; at += 1) {
-      const row = rows[at];
-      if (!row) continue;
-      const identity = rowIdentity("delegates", row);
-      if (this.delegateHoldBootGenerations.get(identity) !== previous) continue;
-      this.delegateHoldBootGenerations.delete(identity);
-      const cleared = withoutDelegateHold(row);
-      if (cleared === row) continue;
-      if (!next) next = rows.slice();
-      next[at] = cleared;
-    }
-    if (next) this.publish({ delegates: { ...this.state.delegates, rows: next } });
+    this.clearHoldSamples((identity) => this.delegateHoldBootGenerations.get(identity) === previous);
   }
   /** Whether a generation is one the ordering has left: a sample it stamped
    * cannot order against the adopted source's. An absent stamp names no
@@ -955,6 +998,47 @@ export class SessionActivityStore {
     if (this.retiredDelegateBootGenerations.has(bootGeneration)) return true;
     return retiresBootGeneration(this.delegateBootGeneration, bootGeneration);
   }
+  /** Whether a loaded row still wears a hold sample a page served before the
+   * latest boot transition: the store cannot tell whether that page came from
+   * the daemon the transition replaced or from the one that replaced it. */
+  private unresolvedPageHolds(): boolean {
+    if (this.delegatePageHolds.size === 0) return false;
+    for (const row of this.state.delegates.rows) {
+      if (!hasDelegateHoldSample(row)) continue;
+      const transitions = this.delegatePageHolds.get(rowIdentity("delegates", row));
+      if (transitions !== undefined && transitions < this.bootTransitions) return true;
+    }
+    return false;
+  }
+  /** Clear every loaded row's hold sample. Only a token that attests nobody
+   * serves the thread any more earns this: no daemon is left whose wait the
+   * row could be reporting, so nothing may keep displaying one. */
+  private retireAllHolds(): void {
+    this.clearHoldSamples(() => true);
+  }
+  /** Clear the hold sample of every loaded row `shouldClear` selects, and the
+   * attribution each of those rows wears. Rows the predicate does not admit are
+   * left alone: nothing proved whose samples they wear, so nothing may be
+   * cleared on a guess. At most one of the two attribution maps holds an
+   * identity -- each records the sample the row wears now -- so clearing both
+   * here is what keeps that invariant without either caller repeating it. */
+  private clearHoldSamples(shouldClear: (identity: string) => boolean): void {
+    const rows = this.state.delegates.rows;
+    let next: SessionDelegate[] | null = null;
+    for (let at = 0; at < rows.length; at += 1) {
+      const row = rows[at];
+      if (!row) continue;
+      const identity = rowIdentity("delegates", row);
+      if (!shouldClear(identity)) continue;
+      this.delegateHoldBootGenerations.delete(identity);
+      this.delegatePageHolds.delete(identity);
+      const cleared = withoutDelegateHold(row);
+      if (cleared === row) continue;
+      if (!next) next = rows.slice();
+      next[at] = cleared;
+    }
+    if (next) this.publish({ delegates: { ...this.state.delegates, rows: next } });
+  }
   /** Whether a loaded row's held sample orders against a sample stamped
    * `sampleBootGeneration`: both must name the same generation. A sample the
    * row cannot attribute to the incoming one is not comparable -- a replaced
@@ -964,14 +1048,27 @@ export class SessionActivityStore {
    * identity, so it compares with whatever the row holds, which keeps an
    * older peer's ordering working as it did. */
   private holdsComparable(identity: string, sampleBootGeneration: string | undefined): boolean {
-    return (
-      sampleBootGeneration === undefined || this.delegateHoldBootGenerations.get(identity) === sampleBootGeneration
-    );
+    if (sampleBootGeneration === undefined) return true;
+    const page = this.delegatePageHolds.get(identity);
+    if (page !== undefined) {
+      // A page names no boot generation of its own. It is the adopted source's
+      // only when it was served after the latest transition, and then only the
+      // generation the store holds for that source orders against it.
+      return page === this.bootTransitions && this.delegateBootGeneration === sampleBootGeneration;
+    }
+    return this.delegateHoldBootGenerations.get(identity) === sampleBootGeneration;
   }
   /** Attribute a row's hold sample to the generation that published it. */
   private recordHoldBootGeneration(identity: string, bootGeneration: string | undefined): void {
+    this.delegatePageHolds.delete(identity);
     if (bootGeneration === undefined) this.delegateHoldBootGenerations.delete(identity);
     else this.delegateHoldBootGenerations.set(identity, bootGeneration);
+  }
+  /** Attribute a row's hold sample to the activity page that served it, under
+   * the boot transition the ordering is in now. */
+  private recordPageHold(identity: string): void {
+    this.delegateHoldBootGenerations.delete(identity);
+    this.delegatePageHolds.set(identity, this.bootTransitions);
   }
   /** Reconcile the observed delegates after a source or gate change. A
    * permanent read refusal stops the ordinary automatic reads, but a changed
@@ -1304,6 +1401,10 @@ export class SessionActivityStore {
       const existing = previousById.get(identity);
       const applied = this.appliedRevision(identity);
       let merged: SessionDelegate;
+      // Whether the row ends up wearing the sample it already carried. A sample
+      // the row already wore can win the ordering below, and then the row keeps
+      // that sample's own attribution.
+      let keptHold = false;
       if (applied === undefined) {
         // First sight in this epoch -- or the first read after a replacement
         // cleared the map: the served row seeds the order and wins, so an old
@@ -1330,13 +1431,12 @@ export class SessionActivityStore {
         // wait forward — or suppress a real one. A row the ordering no longer
         // covers contributes no sample.
         const comparable = this.holdsComparable(identity, this.delegateBootGeneration);
-        const resolved =
+        keptHold =
           existing !== undefined &&
           comparable &&
           currentOrdering &&
-          (existing.holdSequence ?? 0) > (candidate.holdSequence ?? 0)
-            ? keepDelegateHold(candidate, existing)
-            : candidate;
+          (existing.holdSequence ?? 0) > (candidate.holdSequence ?? 0);
+        const resolved = keptHold && existing ? keepDelegateHold(candidate, existing) : candidate;
         merged = existing && delegateRowsEqual(resolved, existing) ? existing : resolved;
       }
       // Only a row this response served carries this response's journal: a row
@@ -1347,11 +1447,13 @@ export class SessionActivityStore {
       // records would belong to an epoch the ordering has already left.
       if (served.has(identity) && currentOrdering) {
         this.recordAppliedDelegate(merged, this.reads.delegates.epoch);
-        // A row this response served was produced by the source the store is
-        // reading, so its hold sample is that source's: the store can now
-        // attribute it, and a replacement retires it with the source.
-        // A late response is not that source's news and attributes nothing.
-        this.recordHoldBootGeneration(identity, this.delegateBootGeneration);
+        // A row this response served wears this page's hold sample unless the
+        // one it already wore won, and a page is attributed to the reading
+        // source -- the ordering's transition count -- rather than to the
+        // transcript's boot generation: only one of the two sides knows a
+        // replacement happened, and it need not be the transcript's. A late
+        // response is not the source's news and attributes nothing.
+        if (!keptHold && hasDelegateHoldSample(merged)) this.recordPageHold(identity);
       }
       return merged;
     });

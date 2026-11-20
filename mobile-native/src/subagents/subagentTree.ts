@@ -7,8 +7,8 @@ import {
 	type SessionActivitySnapshot,
 	SessionActivityStore,
 	projectSessionActivity,
-	adoptableBootGeneration,
 	acquireThreadSubscription,
+	liveBootGeneration,
 	retiresBootGeneration,
 	type ThreadSubscriptionLease,
 } from "@evener/appwire-client";
@@ -126,20 +126,31 @@ export class SubagentTree {
 	 * daemon's holds, and a row that keeps a retired generation's wait would
 	 * show one nothing can release.
 	 *
+	 * A success carrying `daemonless` is saved-history provenance, not proof the
+	 * coordinator's daemon exited (docs/product/history-content.md), so it
+	 * adopts nothing and the standing holds of the still-running daemon stay.
+	 *
 	 * The remembered generation outlives the store, because a client swap
 	 * reuses the rows the retired store retained. A fresh store does not know
 	 * whose samples those rows wear, so it is told that first — ordering the
 	 * rows under the generation that published them — and only then the
-	 * replacement, which is what retires them. A read naming no generation (an
-	 * older peer) and one the tree has already moved past both change nothing. */
+	 * replacement, which is what retires them. Only a store that has learned no
+	 * source of its own is told: fresh pages or frames may already be the
+	 * replacement's, and walking such a store back to the generation it replaced
+	 * would retire exactly the samples the replacement published. A read naming
+	 * no generation (an older peer) and one the tree has already moved past both
+	 * change nothing. */
 	private adoptFollowedBootGeneration(bootGeneration: string | undefined): void {
-		const adopted = adoptableBootGeneration(bootGeneration);
+		const adopted = liveBootGeneration(bootGeneration);
 		if (adopted === undefined) return;
 		const previous = this.followedBootGeneration;
 		if (previous === adopted) return;
 		if (retiresBootGeneration(previous, adopted)) return;
-		if (previous !== undefined) this.store?.adoptBootGeneration(previous);
-		this.store?.adoptBootGeneration(adopted);
+		const store = this.store;
+		if (store) {
+			if (previous !== undefined && store.bootGeneration === undefined) store.adoptBootGeneration(previous);
+			store.adoptBootGeneration(adopted);
+		}
 		this.followedBootGeneration = adopted;
 	}
 	async follow(): Promise<void> {

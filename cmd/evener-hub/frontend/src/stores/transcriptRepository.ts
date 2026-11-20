@@ -1,6 +1,5 @@
 import {
   type AnyNotification,
-  adoptableBootGeneration,
   applyHistoryReadFailure,
   applyNotification,
   applyOverlayEndForTranscriptHandoff,
@@ -17,6 +16,7 @@ import {
   invalidateHistory,
   itemIsIdentityOnly,
   itemTextPresence,
+  liveBootGeneration,
   mergeOlderItemPage,
   mergeSavedViewPage,
   mergeTranscriptItemVersioned,
@@ -950,8 +950,13 @@ export class TranscriptRepository {
     this.#boundary = Math.max(this.#boundary + 1, response.snapshot?.length ?? 0);
     // The buffered pre-cut window is judged against the source this read
     // adopted: a token naming no owner leaves the previous ordering standing,
-    // exactly as the activity store's own adoption does.
-    this.#cutBootGeneration = adoptableBootGeneration(response.bootGeneration) ?? this.#cutBootGeneration;
+    // exactly as the activity store's own adoption does. A success carrying
+    // `daemonless` is saved-history provenance, not proof the daemon exited, so
+    // it must not erase a live generation this cut is already comparing
+    // against: the still-running daemon's buffered frames would stop being
+    // filtered. With no baseline held the cut stays unnamed, which retires
+    // nothing rather than judging on a fallback token.
+    this.#cutBootGeneration = liveBootGeneration(response.bootGeneration) ?? this.#cutBootGeneration;
     this.#coverageBoundary = request.boundary;
     this.#suffixBoundaryBase = request.boundary;
     this.#coverageReadId = request.readId;
