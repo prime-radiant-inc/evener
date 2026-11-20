@@ -1497,7 +1497,12 @@ frontend defect is structurally invisible to `vitest`. The guards in
   reducer and asserts nothing inside it scrolls sideways, at four widths.
 - **`npm run shellguard`** renders the production AppShell (rail + workspace) with
   a scripted tall sidebar tree and asserts the PAGE never grows taller than the
-  viewport: the rail's own body is the scroll container, not the document. The
+  viewport: the rail's own body is the scroll container, not the document. A
+  live insertion that pushes a rail row's menu trigger out of the rail body
+  dismisses that menu, and the dismissal must return focus to the trigger
+  without moving the rail body's scroll offset; the fixture holds that row's
+  actions reveal so the row's hover-quiet fade cannot take focus away first.
+  The
   Overview sweep also opens the Tasks tab over a scripted task list taller than any
   swept viewport and asserts the tab's own scroller owns that list while the
   document stays at the viewport height. The floating fixture waits for the

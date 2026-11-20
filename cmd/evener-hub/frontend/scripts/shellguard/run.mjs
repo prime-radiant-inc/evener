@@ -16,7 +16,6 @@ import { fileURLToPath } from "node:url";
 import {
   applyViewport,
   clearViewportOverride,
-  closePage,
   connectBrowser,
   connectPage,
   createStartupDeadline,
@@ -84,10 +83,7 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
     await navigateTo(page, `http://127.0.0.1:${vitePort}/shellguard.html`, BOOT);
     await evaluate(send, "window.settledShell");
     await waitForFonts(send);
-    await evaluate(
-      send,
-      "Promise.all(document.getAnimations().filter(a => a.effect.getTiming().iterations !== Infinity).map(a => a.finished))",
-    );
+    await settleFiniteAnimations(send);
     const header = JSON.parse(
       await evaluate(
         send,
@@ -412,6 +408,91 @@ function assertTouchRailMinimum(result) {
   return failures;
 }
 
+// The rail row menu dismisses itself when a live insertion above its trigger
+// pushes the trigger out of the rail body's client area, and the dismissal
+// returns focus to that trigger. With preventScroll the rail keeps the offset
+// it had; without it the browser scrolls the rail to reveal a trigger the
+// reader could not see. That second half is what makes this a guard rather
+// than a snapshot of today's call site (#6838).
+async function measureFocusScroll(page) {
+  const { send } = page;
+  const prepared = await evaluate(send, "window.focusScrollFixture.scrollRailToEnd()");
+  const requireFixture = (ok, message) => {
+    if (!ok) throw new Error(message);
+  };
+  requireFixture(
+    prepared.nearMax,
+    `focus-scroll fixture: the rail did not reach its maximum (scrollTop ${prepared.scrollTop} of ` +
+      `${prepared.maxScrollTop}, scrollHeight ${prepared.scrollHeight} in clientHeight ${prepared.clientHeight})`,
+  );
+  requireFixture(
+    prepared.actionsRevealed,
+    `focus-scroll fixture: rail row ${prepared.triggerRef}'s actions wrapper was not found to hold its reveal`,
+  );
+  requireFixture(
+    prepared.triggerVisible,
+    `focus-scroll fixture: rail row ${prepared.triggerRef}'s menu trigger is outside the rail body's client area at maximum scroll`,
+  );
+  // The fixture holds this row's actions revealed (the state the row's own
+  // focus or hover puts them in); wait for that render before focusing the
+  // trigger itself.
+  await waitForDom(send, "window.focusScrollFixture.triggerRevealed()", "rail row actions revealed by row focus");
+  const focused = await evaluate(send, "window.focusScrollFixture.focusTrigger()");
+  requireFixture(
+    focused.triggerFocused,
+    `focus-scroll fixture: focus did not land on rail row ${prepared.triggerRef}'s menu trigger`,
+  );
+  await clickControl(send, "[data-focus-scroll-trigger]");
+  await waitForDom(
+    send,
+    "window.focusScrollFixture.trigger()?.getAttribute('aria-expanded') === 'true'",
+    "rail row menu opened",
+  );
+  // The insertion IS the dismissal: the menu's own layout observer names the
+  // now-hidden trigger and closes through its no-scroll path.
+  const pushed = await evaluate(send, "window.focusScrollFixture.pushTriggerOut()");
+  await waitForDom(
+    send,
+    "window.focusScrollFixture.trigger()?.getAttribute('aria-expanded') === 'false'",
+    "layout dismissal of the rail row menu",
+  );
+  await settleFiniteAnimations(send);
+  const after = await evaluate(send, "window.focusScrollFixture.readAfter()");
+  return { triggerRef: prepared.triggerRef, pushed, after };
+}
+
+function assertFocusScroll(result) {
+  const failures = [];
+  const beforeScrollTop = result.pushed.scrollTopBefore;
+  if (!result.pushed.triggerHidden) {
+    failures.push(
+      `focus scroll: the live insertion did not push rail row ${result.triggerRef}'s trigger out of the rail body's client area`,
+    );
+  }
+  if (Math.abs(result.pushed.scrollTopAfterInsertion - beforeScrollTop) > 1) {
+    failures.push(
+      `focus scroll: the insertion itself moved the rail body's scrollTop from ${beforeScrollTop} ` +
+        `to ${result.pushed.scrollTopAfterInsertion}, before any focus changed`,
+    );
+  }
+  if (!result.after.triggerFocused) {
+    failures.push(
+      `focus scroll: after the layout dismissal document.activeElement is ${result.after.activeElement}, ` +
+        `not rail row ${result.triggerRef}'s menu trigger ` +
+        `(trigger connected ${result.after.triggerConnected}, visibility ${result.after.triggerVisibility})`,
+    );
+  }
+  const moved = result.after.scrollTop - beforeScrollTop;
+  if (Math.abs(moved) > 1) {
+    failures.push(
+      `focus scroll: the rail body's scrollTop moved from ${beforeScrollTop} to ${result.after.scrollTop} ` +
+        `(${moved > 0 ? "+" : ""}${moved.toFixed(1)}px, the fixture inserted ${result.pushed.insertedHeight}px ` +
+        `above the trigger) when the dismissal returned focus to the trigger`,
+    );
+  }
+  return failures;
+}
+
 function assertResult(result) {
   const failures = [];
   if (result.errors.length > 0) failures.push(`page errors: ${result.errors.join("; ")}`);
@@ -637,8 +718,10 @@ async function waitForValue(send, expression, label) {
   );
 }
 
-async function settleOverview(send) {
-  await waitForFonts(send);
+// The guard's settle signal for animated surfaces (the menu popup fades out
+// through usePresence): the browser's own animation-finished promises, never a
+// fixed sleep.
+async function settleFiniteAnimations(send) {
   await evaluate(
     send,
     `(async () => {
@@ -656,6 +739,11 @@ async function settleOverview(send) {
     }
   })()`,
   );
+}
+
+async function settleOverview(send) {
+  await waitForFonts(send);
+  await settleFiniteAnimations(send);
   await waitForDom(
     send,
     `(() => {
@@ -720,7 +808,7 @@ export async function clickControl(send, selector) {
         visibility: element && getComputedStyle(element).visibility, state: window.overviewGuardState() };
     })()`,
     );
-    throw new Error(error.message + " witness: " + JSON.stringify(witness));
+    throw new Error(`${error.message} witness: ${JSON.stringify(witness)}`);
   }
   await send("Input.dispatchMouseEvent", { type: "mousePressed", ...point, button: "left", clickCount: 1 });
   await send("Input.dispatchMouseEvent", { type: "mouseReleased", ...point, button: "left", clickCount: 1 });
@@ -1322,7 +1410,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
         return { ...state, calls: state.calls.slice(-12), errors: window.__shellGuardErrors || [] };
       })()`,
       );
-      throw new Error(error.message + " child-open witness: " + JSON.stringify(witness));
+      throw new Error(`${error.message} child-open witness: ${JSON.stringify(witness)}`);
     }
     await settleOverview(send);
     await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
@@ -1446,7 +1534,7 @@ async function measureActivityRowPadding(send, viewport) {
       ) {
         failures.push(`${row.kind} row must have 8px glyph inset and 4px/8px padding: ${JSON.stringify(row)}`);
       }
-      if (row.nestedPadding && row.nestedPadding.some((padding) => padding !== "0px"))
+      if (row.nestedPadding?.some((padding) => padding !== "0px"))
         failures.push(`watch nested row adds padding: ${JSON.stringify(row.nestedPadding)}`);
       const { time } = row;
       const centerDelta = Math.abs((time.top + time.bottom) / 2 - (time.titleTop + time.titleBottom) / 2);
@@ -1648,6 +1736,18 @@ async function main() {
         };
       })())`,
     );
+    // The focus-scroll guard (#6838): its own page load, because the fixture
+    // scrolls the rail and inserts a block above the trigger - neither belongs
+    // in the page the page-height measurement above reads.
+    const focusScroll = await measureOnPage(cdpEndpoint, sharedTab.id, vitePort, VIEWPORT, measureFocusScroll);
+    const focusScrollFailures = assertFocusScroll(focusScroll);
+    if (focusScrollFailures.length === 0) {
+      console.log(
+        `shellguard focus scroll: PASS - dismissed to rail row ${focusScroll.triggerRef}'s menu trigger ` +
+          `with the row's actions reveal held by the fixture and the rail body's scrollTop unchanged at ` +
+          `${focusScroll.pushed.scrollTopBefore}`,
+      );
+    }
     const failures = [
       ...assertResult(result),
       ...assertDeltaRenders(result),
@@ -1657,6 +1757,7 @@ async function main() {
       ...assertMobileResult(mobile.sidebar),
       ...assertTapTargets(mobile.tap),
       ...assertTouchRailMinimum(touchMin),
+      ...focusScrollFailures,
     ];
     for (const viewport of OVERVIEW_VIEWPORTS) {
       for (const theme of OVERVIEW_THEMES) {

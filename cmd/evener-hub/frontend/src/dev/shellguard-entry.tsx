@@ -34,6 +34,7 @@ import { AgentRow, JobRow, WatchRow } from "../shell/activitybar/activityRows";
 import { activitySidebarStore } from "../shell/activitybar/activitySidebarStore";
 import { ClientProvider } from "../shell/clientContext";
 import railStyles from "../shell/rail/Rail.module.css";
+import railRowStyles from "../shell/rail/RailRow.module.css";
 import { RailRenderObserver } from "../shell/rail/railRenderObserver";
 import { StatusBar } from "../shell/statusbar/StatusBar";
 import { workspaceStore } from "../shell/workspace";
@@ -51,6 +52,7 @@ import buttonStyles from "../widgets/button/button.module.css";
 import "../styles/tokens.css";
 import "../styles/global.css";
 import { PaneScaffold } from "../widgets/panescaffold";
+import { isElementVisible } from "./guardVisibility";
 
 window.addEventListener("error", (event) => {
   const target = window as typeof window & { __shellGuardErrors?: string[] };
@@ -778,7 +780,7 @@ function mobileRailPanel(): Element | null {
 
 function measureMobileSidebar() {
   const rail = document.querySelector(`.${railStyles.rail}`);
-  const railBody = rail?.querySelector(`.${railStyles.body}`) ?? null;
+  const railBody = findRailBody();
   const panelBody = rail?.parentElement ?? null;
   const panel = mobileRailPanel();
   const panelText = panel?.textContent ?? "";
@@ -847,6 +849,34 @@ const target = window as typeof window & {
     changedRowID: string | null;
     visibleRowIDs: string[];
     document: { scrollHeight: number; viewportHeight: number };
+  };
+  focusScrollFixture: {
+    scrollRailToEnd: () => {
+      triggerRef: string | null;
+      actionsRevealed: boolean;
+      scrollTop: number;
+      maxScrollTop: number;
+      scrollHeight: number;
+      clientHeight: number;
+      triggerVisible: boolean;
+      nearMax: boolean;
+    };
+    focusTrigger: () => { triggerFocused: boolean };
+    trigger: () => HTMLButtonElement | null;
+    triggerRevealed: () => boolean;
+    readAfter: () => {
+      scrollTop: number;
+      triggerFocused: boolean;
+      activeElement: string;
+      triggerConnected: boolean;
+      triggerVisibility: string;
+    };
+    pushTriggerOut: () => {
+      scrollTopBefore: number;
+      scrollTopAfterInsertion: number;
+      insertedHeight: number;
+      triggerHidden: boolean;
+    };
   };
 };
 let stopActivityRowFixture: (() => void) | null = null;
@@ -980,6 +1010,158 @@ target.measureRailRenderCounts = () => ({
   visibleRowIDs,
   document: { scrollHeight: document.documentElement.scrollHeight, viewportHeight: window.innerHeight },
 });
+
+// --- focus-scroll fixture (issue #6838) -----------------------------------
+//
+// A rail row's menu dismisses itself when a live insertion above the trigger
+// pushes the trigger out of the rail body's client area, and that dismissal
+// hands focus back to the trigger. With `preventScroll` the rail keeps the
+// offset the reader was reading at; without it the browser scrolls the rail
+// to reveal a trigger nobody could see. No other guard suite measures either
+// fact, so this fixture supplies the journey:
+//
+//   scrollRailToEnd -> focusTrigger -> (the runner's trusted click opens the
+//   menu) -> pushTriggerOut -> the layout dismissal settles.
+//
+// It touches only fixture state: the row's focus and its reveal (the real
+// reveal paths for its hover-quiet actions), the scroll offset, and one
+// inserted block. The block
+// opts this scroller out of Chrome's scroll anchoring because anchoring would
+// raise scrollTop by the inserted height to keep the visible rows still -
+// exactly the movement the guard has to attribute to the dismissal's focus()
+// alone.
+let focusScrollMarker: HTMLElement | null = null;
+let focusScrollTriggerNode: HTMLButtonElement | null = null;
+
+// RailRow.module.css's .actions holds a row's menu trigger quiet: visibility
+// hidden until the row is hovered, its treeitem is focused, or its own menu is
+// open. A live insertion that pushes the trigger out of the rail dismisses the
+// menu, and that ends all three at once - the trigger stays in the document,
+// the fade raises it to visibility: hidden a moment later, and Chrome blurs a
+// focused element it can no longer show. The dismissal's own focus restore
+// lands (the trigger is the active element at the aria-expanded flip), but the
+// reveal would take it away again, so the guard would measure the hover-quiet
+// styling instead of the dismissal. Hold this one row's reveal for the length
+// of the measurement: the trigger is visible at the dismissal, as it is for
+// the reader who just opened it, and the assertion can observe where focus
+// went and whether the rail moved.
+function revealFocusScrollActions(trigger: HTMLElement | null): boolean {
+  const actions = trigger?.closest<HTMLElement>(`.${railRowStyles.actions}`) ?? null;
+  if (actions === null) return false;
+  actions.style.visibility = "visible";
+  actions.style.opacity = "1";
+  return true;
+}
+
+// The rail's own scroll container, by class: shared by the mobile Sheet
+// measurement and the focus-scroll fixture so the lookup lives in one place.
+function findRailBody(): HTMLElement | null {
+  const body = document.querySelector(`.${railStyles.rail}`)?.querySelector(`.${railStyles.body}`) ?? null;
+  return body instanceof HTMLElement ? body : null;
+}
+
+function focusScrollBody(): HTMLElement {
+  const body = findRailBody();
+  if (!(body instanceof HTMLElement)) throw new Error("focus-scroll fixture: the rail's scroll body is missing");
+  return body;
+}
+
+function focusScrollTrigger(): HTMLButtonElement {
+  if (focusScrollTriggerNode === null) throw new Error("focus-scroll fixture: run scrollRailToEnd first");
+  return focusScrollTriggerNode;
+}
+
+// The client area of a scroll container, in viewport coordinates: the box
+// minus its border, exactly the region the menu's own hidden test intersects.
+function clientArea(el: HTMLElement): { top: number; bottom: number } {
+  const box = el.getBoundingClientRect();
+  const top = box.top + el.clientTop;
+  return { top, bottom: top + el.clientHeight };
+}
+
+target.focusScrollFixture = {
+  scrollRailToEnd() {
+    const body = focusScrollBody();
+    body.scrollTop = body.scrollHeight;
+    const markers = [...body.querySelectorAll<HTMLElement>("[data-session-actions-ref]")];
+    const marker = markers[markers.length - 1] ?? null;
+    if (marker === null) throw new Error("focus-scroll fixture: the rail has no session menu trigger");
+    focusScrollMarker?.removeAttribute("data-focus-scroll-trigger");
+    focusScrollMarker = marker;
+    marker.dataset.focusScrollTrigger = "";
+    focusScrollTriggerNode = marker.closest<HTMLButtonElement>("button");
+    const actionsRevealed = revealFocusScrollActions(focusScrollTriggerNode);
+    // Focus the row first: its treeitem focus is what reveals the row's
+    // hover-quiet actions, making the trigger focusable and hit-testable next.
+    // preventScroll keeps the fixture at the maximum it just set.
+    marker.closest<HTMLElement>('[role="treeitem"]')?.focus({ preventScroll: true });
+    const area = clientArea(body);
+    const triggerBox = focusScrollTriggerNode?.getBoundingClientRect() ?? null;
+    const maxScrollTop = body.scrollHeight - body.clientHeight;
+    return {
+      triggerRef: marker.dataset.sessionActionsRef ?? null,
+      actionsRevealed,
+      scrollTop: body.scrollTop,
+      maxScrollTop,
+      scrollHeight: body.scrollHeight,
+      clientHeight: body.clientHeight,
+      triggerVisible: triggerBox !== null && triggerBox.top >= area.top && triggerBox.bottom <= area.bottom,
+      nearMax: body.scrollTop >= maxScrollTop - 1,
+    };
+  },
+  focusTrigger() {
+    const trigger = focusScrollTrigger();
+    trigger.focus();
+    return { triggerFocused: document.activeElement === trigger };
+  },
+  trigger() {
+    return focusScrollTriggerNode;
+  },
+  triggerRevealed() {
+    return isElementVisible(focusScrollTriggerNode);
+  },
+  readAfter() {
+    const trigger = focusScrollTrigger();
+    const body = focusScrollBody();
+    const active = document.activeElement;
+    let activeElement = "null";
+    if (active === document.body) {
+      activeElement = "body";
+    } else if (active !== null) {
+      const label = active.getAttribute("aria-label");
+      const tag = active.tagName.toLowerCase();
+      activeElement = label === null ? tag : `${tag}[${JSON.stringify(label)}]`;
+    }
+    return {
+      scrollTop: body.scrollTop,
+      triggerFocused: active === trigger,
+      activeElement,
+      triggerConnected: trigger.isConnected,
+      triggerVisibility: getComputedStyle(trigger).visibility,
+    };
+  },
+  pushTriggerOut() {
+    const body = focusScrollBody();
+    const trigger = focusScrollTrigger();
+    const before = body.scrollTop;
+    body.style.overflowAnchor = "none";
+    const spacer = document.createElement("div");
+    spacer.dataset.focusScrollSpacer = "";
+    spacer.setAttribute("aria-hidden", "true");
+    // Taller than the scrollport, so the trigger leaves through the BOTTOM
+    // however near the top of the client area it started.
+    spacer.style.height = `${Math.ceil(body.clientHeight + 40)}px`;
+    body.prepend(spacer);
+    const after = clientArea(body);
+    return {
+      scrollTopBefore: before,
+      scrollTopAfterInsertion: body.scrollTop,
+      insertedHeight: spacer.offsetHeight,
+      triggerHidden: trigger.getBoundingClientRect().top >= after.bottom,
+    };
+  },
+};
+
 target.applyShellNavigationDelta = async (title = "project-0 session 0 changed") => {
   if (!shellClient) throw new Error("shellguard client is not ready");
   visibleRowIDs = [...renderCounts.keys()];
