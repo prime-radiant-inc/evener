@@ -1793,6 +1793,58 @@ func TestFind_ProjectName_BucketDecodedOnceAcrossRows(t *testing.T) {
 	}
 }
 
+// TestFind_ProjectName_ReusesOneStructuralLookupPerDirectory covers the cost a
+// search pays for several results from one checkout: every row resolves its
+// recorded working directory through the same Git-layout walk, and the walk is
+// identical. The resolver keeps one complete answer per directory for the life
+// of one search, so the second row reuses the first row's lookup. The label
+// cannot tell one walk from two; the diagnostic counter can.
+func TestFind_ProjectName_ReusesOneStructuralLookupPerDirectory(t *testing.T) {
+	t.Run("live checkout", func(t *testing.T) {
+		checkout := newNamedCheckout(t, "same-checkout")
+		bucket := t.TempDir()
+		rowA := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+		rowA.EnvInfo.WorkingDir = checkout
+		rowB := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+		rowB.EnvInfo.WorkingDir = checkout
+
+		// One resolver per search: find labels every result row through it.
+		r := newProjectNameResolver()
+		if got := r.projectName(rowA, bucket); got != "same-checkout" {
+			t.Fatalf("projectName(first row recording %q) = %q, want same-checkout", checkout, got)
+		}
+		if got := r.projectName(rowB, bucket); got != "same-checkout" {
+			t.Fatalf("projectName(second row recording %q) = %q, want same-checkout", checkout, got)
+		}
+		if r.mainRootLookups != 1 {
+			t.Fatalf("two rows recording one directory took %d structural lookups, want 1: the second row repeated the first row's walk", r.mainRootLookups)
+		}
+	})
+
+	t.Run("refused entry is preserved", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "refused-checkout")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		// A .git entry that exists and cannot be used: a symlink to nothing. That
+		// is a refusal, not the absence of a repository.
+		if err := os.Symlink(filepath.Join(dir, "gone-git"), filepath.Join(dir, ".git")); err != nil {
+			t.Fatalf("symlink .git: %v", err)
+		}
+
+		r := newProjectNameResolver()
+		for i := range 2 {
+			root, refused := r.mainRootOutcome(dir)
+			if root != "" || !refused {
+				t.Fatalf("mainRootOutcome(refused checkout), call %d = (%q, %v), want (\"\", true): the memo must keep refusal as its own answer, not collapse it to absence", i+1, root, refused)
+			}
+		}
+		if r.mainRootLookups != 1 {
+			t.Fatalf("two lookups of one refused directory took %d structural lookups, want 1", r.mainRootLookups)
+		}
+	})
+}
+
 func TestFind_CatalogTrimmedAndOrdered(t *testing.T) {
 	t.Parallel()
 	dir := newBucket(t)
