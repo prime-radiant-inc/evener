@@ -12,6 +12,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { beforeEach, expect, test, vi } from "vitest";
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
+import { ALL_CAPABILITIES } from "../threadTestUtils";
 import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import {
   type EntryTranscriptRoute,
@@ -30,6 +31,7 @@ import {
   markCacheSessionsDeleted,
   putThreadModel,
   resetThreadsStoreForTests,
+  settleEntryTranscriptForTests,
   threadsStore,
 } from "./threads";
 import { connectMutationClient, readResponse, resumeOnlySnapshot } from "./threadsSessionActionsTestUtils";
@@ -794,4 +796,145 @@ test("a pane opening over a routing read restores the cache and then joins that 
   expect(threadsStore.getState().threads.has(ref), "the shared read hydrated the pane").toBe(true);
   lease.release();
   await cache.dispose();
+}, 20_000);
+
+// A saved-index fallback for the same owner is the continuation of the history
+// the pane's cached shell restored, not a new history identity: the reducer
+// merges it into that history (docs/product/history-content.md, "Saved fallback
+// windows accumulate without erasing held history"). Replacing the shell's
+// repository for it hydrates a fresh baseline from the fallback's own bounded
+// window, dropping every restored turn outside that window, and the
+// replacement's cache write pairs the fallback incarnation in the header with
+// the live incarnation in the record - a pairing the next cached open refuses.
+test("a saved-index fallback into a restored shell keeps its turns and its cache record", async () => {
+  const ref = "local:saved-fallback-shell";
+  const fixture = createEntryCacheFixture();
+  setProductionEntryCacheForTests(fixture.cache);
+  setSessionCacheLookupDeadlineForTests(30_000);
+  try {
+    // Nine recorded turns, each with one positioned body, so the record is a
+    // real history the reopened shell can restore.
+    const recordedTurns = Array.from({ length: 9 }, (_, index) => ({
+      id: `turn_${index + 1}`,
+      status: "completed",
+      itemsView: "full",
+      version: 1,
+      items: [
+        {
+          id: `item-${index + 1}`,
+          transcriptKey: `item-${index + 1}`,
+          turnId: `turn_${index + 1}`,
+          version: 1,
+          type: "agentMessage" as const,
+          text: `body-${index + 1}`,
+          position: { entry: index + 1, item: 0 },
+        },
+      ],
+    }));
+    const keys = () =>
+      threadsStore
+        .getState()
+        .threads.get(ref)
+        ?.turns.flatMap((turn) => turn.items.map((item) => item.transcriptKey));
+    const fake = connectMutationClient();
+    fake.on("thread/read", () => readResponse(ref, { turns: recordedTurns }));
+    await threadsStore.getState().ensureThread(ref);
+    await settleEntryTranscriptForTests(ref);
+    expect(keys(), "the first open restored every recorded body").toEqual(
+      recordedTurns.map((turn) => turn.items[0]?.transcriptKey),
+    );
+
+    // The pane closes and reopens. The lookup restores the shell from disk, and
+    // the hub's live read fails, so the same session is served from the saved
+    // index: a one-entry window naming its own incarnation, with the
+    // destination's Send revoked.
+    threadsStore.getState().releaseThread(ref);
+    await vi.waitFor(() => expect(threadsStore.getState().threads.has(ref)).toBe(false));
+    const savedFallback = {
+      ...readResponse(ref, {
+        turns: [recordedTurns[8]!],
+        evener: { ref, capabilities: { ...ALL_CAPABILITIES, send: false }, queue: { revision: 0 } },
+      }),
+      servedFrom: "saved-index",
+      fallbackReason: "live-read-failed",
+      authoritative: false,
+      bootGeneration: "99",
+      epoch: 99,
+      snapshot: { incarnation: "saved-inc", length: 9 },
+      olderCursor: "saved-older",
+    };
+    // The live read is held so the shell lands first, as it does over a real
+    // storage lookup; its answer is the fallback the hub substituted.
+    const answer = deferred<void>();
+    fake.on("thread/read", (params) =>
+      answer.promise.then(() => ({ ...savedFallback, requestGeneration: params.requestGeneration })),
+    );
+    const opened = threadsStore.getState().ensureThread(ref);
+    const shellInstalled = await pumpIndexedDBUntil({
+      turns: 60,
+      until: () => entryRouteOf(ref).repository?.getSnapshot()?.history?.incarnation === "inc-1",
+    });
+    expect(shellInstalled, "the reopen restored the cached shell").toBe(true);
+    const shellRepository = entryRouteOf(ref).repository;
+    expect(shellRepository, "the shell installed a repository").toBeDefined();
+    answer.resolve();
+    await opened;
+    await settleEntryTranscriptForTests(ref);
+
+    const route = entryRouteOf(ref);
+    expect(route.repository, "the fallback applied to the shell's own repository").toBe(shellRepository);
+    expect(keys(), "the turns outside the fallback's window survive").toEqual(
+      recordedTurns.map((turn) => turn.items[0]?.transcriptKey),
+    );
+    expect(
+      threadsStore.getState().threads.get(ref)?.capabilities.send,
+      "the fallback's routing fields are applied",
+    ).toBe(false);
+    const metadata = await fixture.cache.getSessionMetadata(route.historyKey ?? "");
+    expect(
+      metadata?.cachedHeader?.history.incarnation,
+      "the record's header names the incarnation its identity names, so a cached open accepts it",
+    ).toBe(metadata?.resolvedIdentity.incarnation);
+
+    // The same reopen, but the hub answers with a snapshot naming another
+    // SESSION: that is a new history identity, not a continuation of the
+    // restored one, so the shell must be replaced by a fresh baseline of the
+    // response's own window rather than merged into it.
+    threadsStore.getState().releaseThread(ref);
+    await vi.waitFor(() => expect(threadsStore.getState().threads.has(ref)).toBe(false));
+    const replacement = {
+      ...readResponse(ref, {
+        turns: [recordedTurns[0]!],
+        sessionId: "sess_replacement",
+        evener: { ref, capabilities: ALL_CAPABILITIES, queue: { revision: 0 } },
+      }),
+      servedFrom: "live-daemon",
+      bootGeneration: "99",
+      epoch: 99,
+      snapshot: { incarnation: "replacement-inc", length: 1 },
+    };
+    const replacementAnswer = deferred<void>();
+    fake.on("thread/read", (params) =>
+      replacementAnswer.promise.then(() => ({ ...replacement, requestGeneration: params.requestGeneration })),
+    );
+    const reopened = threadsStore.getState().ensureThread(ref);
+    const shellAgain = await pumpIndexedDBUntil({
+      turns: 60,
+      until: () => entryRouteOf(ref).repository?.getSnapshot()?.history?.incarnation === "inc-1",
+    });
+    expect(shellAgain, "the reopen restored the shell the fallback left behind").toBe(true);
+    const previousRepository = entryRouteOf(ref).repository;
+    replacementAnswer.resolve();
+    await reopened;
+    await settleEntryTranscriptForTests(ref);
+
+    expect(
+      entryRouteOf(ref).repository,
+      "a response naming another session replaces the shell with a fresh baseline",
+    ).not.toBe(previousRepository);
+    expect(keys(), "only the replacement's own window is served").toEqual(["item-1"]);
+    expect(threadsStore.getState().threads.get(ref)?.history?.incarnation).toBe("replacement-inc");
+  } finally {
+    await fixture.dispose();
+  }
 }, 20_000);

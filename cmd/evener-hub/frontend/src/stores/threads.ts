@@ -1062,9 +1062,21 @@ async function acceptEntryTranscriptHydration(
   const provisionalShell = fixture.cachedUnverified === true;
   const installedSnapshot = fixture.repository?.getSnapshot();
   const threadChanged = installedSnapshot?.threadId !== response.thread.id;
+  // A saved-index fallback that names the SAME owner and thread is not a new
+  // history identity: it is the continuation the shell's own record came from,
+  // and the reducer merges it into the held live history (see
+  // accumulatesHeldHistory). Replacing the shell's repository for it would
+  // hydrate a fresh baseline from the fallback's own bounded window, dropping
+  // every restored turn outside that window, and the replacement's cache write
+  // would pair the fallback incarnation in the header with the live incarnation
+  // in the record - a pairing the next cached open refuses. So the provisional
+  // shell keeps its repository for exactly this response, and the ordinary
+  // merge below applies it. A response that establishes a new history identity
+  // still replaces, shell or not.
+  const displacesProvisionalShell = provisionalShell && !accumulatesHeldHistory;
   if (
     !fixture.repository ||
-    provisionalShell ||
+    displacesProvisionalShell ||
     (hydration.discardHeldHistory && !accumulatesHeldHistory) ||
     threadChanged ||
     historyChanged ||
@@ -1074,10 +1086,11 @@ async function acceptEntryTranscriptHydration(
     // Only rebuild the route this acquisition owns; a concurrent replacement is
     // not this response's to replace. A PROVISIONAL SHELL is not a concurrent
     // replacement: a pane's bounded lookup installs it and marks it unverified,
-    // precisely so a source read can displace it, and this response is the read
-    // that lookup's acquisition asked for. Refusing it on the claim mismatch
-    // leaves the route serving an older incarnation's capabilities forever.
-    if (fixture.repository !== claimedRepository && !provisionalShell) return;
+    // precisely so a source read establishing a new history identity can
+    // displace it, and this response is the read that lookup's acquisition asked
+    // for. Refusing it on the claim mismatch leaves the route serving an older
+    // incarnation's capabilities forever.
+    if (fixture.repository !== claimedRepository && !displacesProvisionalShell) return;
     // The pending recorded-range work is the route's fact, not the repository
     // instance's: identities the display restored but no current-baseline
     // statement validated yet survive the replacement the stale-cursor
@@ -8589,6 +8602,16 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // status and capabilities, and that open attaches a reader and can spend a
     // body-restoring read in front of its outbox write. The shell the open
     // would publish is for a pane, so a claim reads directly instead.
+    //
+    // The read this acquisition would join is captured BEFORE the lookup, and
+    // the map is only asked again when this acquisition had none. The lookup
+    // spans real storage work, and the read it joins can fail while it runs:
+    // the failure removes that read from the map and arms the lifecycle's one
+    // shared retry. Asking the map only afterwards would find nothing, and this
+    // acquisition would start a duplicate read instead of waiting on that
+    // retry - and the duplicate's publication settles the lifecycle, cancelling
+    // the retry the owners of the failure are about to share.
+    let inflight = inflightHydrates.get(ref);
     if (!routingOnly && !threadsStore.getState().threads.has(ref)) {
       if (!claimStanding()) return;
       await openCachedEntryTranscript(ref, generation);
@@ -8650,7 +8673,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       return hydration;
     };
 
-    let inflight = inflightHydrates.get(ref);
+    inflight ??= inflightHydrates.get(ref);
     if (!inflight) inflight = startHydration(client, getReadyEpoch());
     cachedBase = undefined; // the claim's arming consumed the shell; every re-arm reads the current model
     try {
