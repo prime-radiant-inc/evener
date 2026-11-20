@@ -216,12 +216,12 @@ func (tc *ToolCallData) WireArguments() string {
 	return string(tc.Arguments)
 }
 
-// SentArguments returns the argument bytes the model actually sent: the
-// preserved raw bytes for a call whose arguments were not valid JSON
-// (Arguments holds the replay-safe {} placeholder there), else the recorded
-// arguments. Byte-faithful in both branches; callers wanting tidy edges trim
-// presentation-side. Arguments is the canonical form; WireArguments returns
-// the provider's spelling while it still normalizes to Arguments.
+// SentArguments returns the argument bytes recorded for a sent call:
+// RawArguments for a call whose arguments were not valid JSON (Arguments
+// holds the replay-safe {} placeholder there), else the recorded Arguments.
+// Both branches return the stored bytes unchanged; Arguments is canonical, so
+// callers needing the provider's original spelling of valid JSON use
+// WireArguments.
 func (tc *ToolCallData) SentArguments() string {
 	if tc.RawArguments != "" {
 		return tc.RawArguments
@@ -229,15 +229,14 @@ func (tc *ToolCallData) SentArguments() string {
 	return string(tc.Arguments)
 }
 
-// SentArgumentsBytes returns the argument bytes the model actually sent as a
-// []byte, avoiding the string copy SentArguments performs in the common case.
-// Same precedence and byte-faithful content as SentArguments: RawArguments
-// wins when set (copying the string), else the recorded Arguments are returned
-// directly (no copy). Callers that immediately feed the result to a []byte
-// consumer — json.RawMessage, a hash, json.Unmarshal — use this to elide the
-// []byte(SentArguments()) round trip; callers that need a string use
-// SentArguments. The returned slice aliases tc.Arguments when RawArguments is
-// empty, so callers must not mutate it.
+// SentArgumentsBytes returns SentArguments' bytes as a []byte, avoiding the
+// string copy SentArguments performs in the common case. Same precedence as
+// SentArguments: RawArguments wins when set (copying the string), else the
+// recorded Arguments are returned directly (no copy). Callers that immediately
+// feed the result to a []byte consumer — json.RawMessage, a hash, json.Unmarshal
+// — use this to elide the []byte(SentArguments()) round trip; callers that need
+// a string use SentArguments. The returned slice aliases tc.Arguments when
+// RawArguments is empty, so callers must not mutate it.
 func (tc *ToolCallData) SentArgumentsBytes() []byte {
 	if tc.RawArguments != "" {
 		return []byte(tc.RawArguments)
