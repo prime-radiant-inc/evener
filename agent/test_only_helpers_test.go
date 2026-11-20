@@ -394,6 +394,15 @@ func (s *Session) readMemoryIndex(scope string) memoryProjection {
 	return p
 }
 
+// cliMCPToolNamesSnapshot returns the excluded CLI-only tool names under the
+// same lock the ceiling build uses, so a caller can assert that a swap kept the
+// classification rather than reading a half-cleared one.
+func (s *Session) cliMCPToolNamesSnapshot() map[string]bool {
+	s.delegateExclusionsMu.RLock()
+	defer s.delegateExclusionsMu.RUnlock()
+	return s.cliMCPToolNames
+}
+
 func (s *Session) defaultToolSummaryForAgent(agent plugin.Agent) string {
 	return formatToolNamesForPrompt(s.defaultToolNamesForAgent(agent))
 }

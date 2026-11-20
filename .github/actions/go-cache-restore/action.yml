@@ -11,6 +11,13 @@ inputs:
       non-race tests, lint, vet) must use different kinds so each restores a
       cache full of the entries it actually uses.
     required: true
+  fallback-kind:
+    description: >-
+      A kind this job used before it moved to `kind`, tried only when no entry
+      of `kind` matches the restore prefix. Lets a reshaped kind restore the
+      entries it just stopped saving instead of building cold until the first
+      save of the new kind lands.
+    required: false
 runs:
   using: composite
   steps:
@@ -25,9 +32,11 @@ runs:
       shell: bash
       env:
         KIND: ${{ inputs.kind }}
+        FALLBACK_KIND: ${{ inputs.fallback-kind }}
       run: |
         suffix="${ImageOS}-$(go env GOARCH)-$(go env GOVERSION)-"
         prefix="go-${KIND}-${suffix}"
+        fallback_prefix="go-${FALLBACK_KIND}-${suffix}"
         modules_prefix="gomod-${suffix}"
         {
           echo "build-dir=$(go env GOCACHE)"
@@ -35,6 +44,16 @@ runs:
           echo "prefix=$prefix"
           echo "modules-prefix=$modules_prefix"
         } >> "$GITHUB_OUTPUT"
+        if [ -n "$FALLBACK_KIND" ]; then
+          {
+            echo "restore-keys<<EOF"
+            echo "$prefix"
+            echo "$fallback_prefix"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+        else
+          echo "restore-keys=$prefix" >> "$GITHUB_OUTPUT"
+        fi
         {
           echo "GO_BUILD_CACHE_DIR=$(go env GOCACHE)"
           echo "GO_MOD_CACHE_DIR=$(go env GOMODCACHE)"
@@ -49,7 +68,7 @@ runs:
       with:
         path: ${{ steps.keys.outputs.build-dir }}
         key: ${{ steps.keys.outputs.prefix }}${{ github.sha }}
-        restore-keys: ${{ steps.keys.outputs.prefix }}
+        restore-keys: ${{ steps.keys.outputs.restore-keys }}
 
     - name: Restore Go module cache
       id: restore-modules

@@ -123,12 +123,13 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	if selection.warning != nil {
 		s.emitDiagnosticWarning(*selection.warning)
 	}
-	toolNameCeiling := s.delegateEffectiveToolNameCeiling(selection, args, isolationName)
+	toolNameCeiling, ceilingReachabilityExcluded := s.delegateEffectiveToolNameCeiling(ctx, selection, args, isolationName)
 	requestedSandbox, err := s.requestedDelegateSandbox(args, toolNameCeiling)
 	if err != nil {
 		return delegateStartFailed(err)
 	}
 	descriptor, worktreeProject, err := runtime.describe(ctx, args, task, isolationName, requestedSandbox, selection, toolNameCeiling)
+	descriptor.CeilingReachabilityExcluded = append([]string(nil), ceilingReachabilityExcluded...)
 	if err != nil {
 		return delegateStartFailed(err)
 	}
@@ -301,8 +302,23 @@ func (s *Session) delegateActor(ctx context.Context) (delegateActor, error) {
 	return rootDelegateActor(s.delegateRootSessionID), nil
 }
 
-func (s *Session) delegateEffectiveToolNameCeiling(selection subagentModelSelection, args delegateArgs, isolationName string) []string {
-	return s.subagentToolNameCeiling(selection.agent, args.grantsDelegation(), isolationName)
+// delegateEffectiveToolNameCeiling returns the child's ceiling and, separately,
+// the names REACHABILITY removed from it. Both are recorded: the ceiling keeps
+// authorization and recovery on one bound, and the removed names let a cold
+// resume tell a role denial (permanent) from a reachability denial, which is a
+// fact about the workspace the ceiling was computed in.
+//
+// The reachability half is decided HERE, from a bounded probe of this session's
+// current workspace, and the outcome is used locally: it reaches the descriptor
+// this spawn records and nothing else. A worktree lane skips the probe entirely,
+// because its ceiling ignores the MCP half whatever the answer says.
+//
+// ctx is the CALLER's, because the probe waits on I/O. That wait must end when
+// the caller does: a delegate tool call stalled on a dead mount would otherwise
+// wait past Stop cancelling the turn. An expired probe answers "unknown", which
+// keeps the names eligible and lets the spawn proceed.
+func (s *Session) delegateEffectiveToolNameCeiling(ctx context.Context, selection subagentModelSelection, args delegateArgs, isolationName string) (ceiling, reachabilityExcluded []string) {
+	return s.subagentToolNameCeilingAndExcluded(ctx, selection.agent, args.grantsDelegation(), isolationName)
 }
 
 func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, brief, isolationName string, requestedSandbox *sandbox.SandboxPolicy, selection subagentModelSelection, toolNameCeiling []string) (delegatestore.Descriptor, identifier.Project, error) {

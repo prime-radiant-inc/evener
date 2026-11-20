@@ -28,10 +28,11 @@ func Fold(events []Event) map[string]*JobRecord {
 // ErrIncompleteLifecycle reports a job history whose events do not describe a
 // whole job: a terminal or notification event with no preceding start, a start
 // with no type, a start whose OwnerSessionID contradicts the owner the job ID
-// encodes, or a job event carrying no job ID at all. Fold accepts these
-// fragments by design — it reconstructs the best record the log supports, and
-// the live runtime repairs what it can — so a reader that must report whether a
-// history is COMPLETE checks this sentinel from FoldCheckedOrdered instead.
+// encodes, a terminal notification with no preceding finish, or a job event
+// carrying no job ID at all. Fold accepts these fragments by design — it
+// reconstructs the best record the log supports, and the live runtime repairs
+// what it can — so a reader that must report whether a history is COMPLETE
+// checks this sentinel from FoldCheckedOrdered instead.
 var ErrIncompleteLifecycle = errors.New("jobstore: incomplete job lifecycle")
 
 // foldOrderedEvents applies already-ordered events to a record map.
@@ -48,7 +49,11 @@ func foldOrderedEvents(sorted []Event) map[string]*JobRecord {
 // what a reader can prove from the journal alone: every job event carries a
 // job ID, a start exists before any terminal or notification event for that
 // job, a start names the type it started, and a start's declared owner agrees
-// with the owner its job ID encodes.
+// with the owner its job ID encodes. A terminal notification must also follow
+// the finish for its job: it carries the terminal generation of the finish that
+// armed it, so one without a finish is evidence the job ended and the end was
+// lost. A start with no terminal event is still accepted — the job may be
+// running.
 //
 // A finish must also STATE a terminal status. The fold copies a finish's status
 // onto the record, so a finish carrying "running" produces a row that reads as
@@ -60,7 +65,8 @@ func foldOrderedEvents(sorted []Event) map[string]*JobRecord {
 // with it unset, and rejecting them would make every pre-owner journal
 // unreadable rather than merely old.
 func checkJobLifecycles(sorted []Event) error {
-	started := make(map[string]bool, len(sorted))
+	started := make(map[string]bool)
+	finished := make(map[string]bool)
 	for _, e := range sorted {
 		if !IsJobRecordEvent(e.Kind) {
 			continue
@@ -84,9 +90,20 @@ func checkJobLifecycles(sorted []Event) error {
 			return fmt.Errorf("%w: job %q has a %s event (seq %d) with no preceding start",
 				ErrIncompleteLifecycle, e.JobID, e.Kind, e.Seq)
 		}
-		if e.Kind == EventJobFinished && !e.Status.IsTerminal() {
-			return fmt.Errorf("%w: job %q finishes (seq %d) with status %q, which is not terminal",
-				ErrIncompleteLifecycle, e.JobID, e.Seq, e.Status)
+		if e.Kind == EventJobFinished {
+			if !e.Status.IsTerminal() {
+				return fmt.Errorf("%w: job %q finishes (seq %d) with status %q, which is not terminal",
+					ErrIncompleteLifecycle, e.JobID, e.Seq, e.Status)
+			}
+			finished[e.JobID] = true
+			continue
+		}
+		switch e.Kind {
+		case EventJobNotificationPending, EventJobNotificationDelivered, EventJobNotificationConsumed:
+			if !finished[e.JobID] {
+				return fmt.Errorf("%w: job %q has a %s event (seq %d) with no preceding finish",
+					ErrIncompleteLifecycle, e.JobID, e.Kind, e.Seq)
+			}
 		}
 	}
 	return nil
