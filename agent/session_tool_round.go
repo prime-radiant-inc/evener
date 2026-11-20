@@ -625,6 +625,9 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 	// renders nothing when the store is empty.
 	if abortErr := s.withResponseSideEffects(ctx, func() {
 		s.maybeAppendNotesContext()
+		if s.envRuntimeDrifted() {
+			_ = s.maybeAppendEnvironmentContext()
+		}
 	}); abortErr != nil {
 		return false, abortErr
 	}

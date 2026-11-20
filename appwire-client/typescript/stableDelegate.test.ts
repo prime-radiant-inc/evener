@@ -132,7 +132,9 @@ test("omitting subagents leaves a subagent-only wait blank instead of the frozen
   });
   expect(both).not.toBe("");
   expect(both).toContain("1");
-  expect(both).not.toContain("subagent");
+  // Omitting the subagent half leaves exactly the job-only wait, whatever
+  // words that wait is phrased with.
+  expect(both).toBe(delegateWaitText({ terminal: false, drainHeldByJobs: true, runningJobCount: 1 }));
 
   // Nothing to omit when the drain holds no subagent: the intent stands.
   expect(

@@ -137,7 +137,9 @@ function AgentBranch({
   const expanded = isDisclosureOpen(foldKey, defaultExpanded);
   const visibleChildren = visibleChildrenOf(node, mode);
   const hasChildren = visibleChildren.length > 0;
-  const showsChildren = mode === "active" && hasChildren && expanded;
+  // Group headers fold their children into a disclosure of their own, so only a
+  // row path needs the visible-row count behind omitSubagentWait.
+  const showsChildren = mode === "active" && hasChildren && expanded && !node.sub.terminal;
   const visibleActiveRows = useDisclosureSnapshot((state) =>
     showsChildren
       ? countVisibleActiveRows(node, foldPrefix, defaultExpanded, (id, fallback) =>
@@ -166,6 +168,17 @@ function AgentBranch({
         id={`${foldPrefix}\0settled-under\0${node.id}`}
         summary={<span>{`${name} (${node.settledCount})`}</span>}
       >
+        <div className={indentClass ?? CLASS.stack}>{renderedChildren}</div>
+      </Disclosure>
+    );
+  }
+  // A settled run that still holds open descendants stays in the active tree as
+  // a group header only: its one selectable row and scroll anchor live in the
+  // inactive history fold, so no settled run is selectable in two places.
+  if (mode === "active" && node.sub.terminal) {
+    if (!hasChildren) return null;
+    return (
+      <Disclosure id={foldKey} defaultOpen={defaultExpanded} summary={<span>{name}</span>}>
         <div className={indentClass ?? CLASS.stack}>{renderedChildren}</div>
       </Disclosure>
     );
