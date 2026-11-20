@@ -1802,19 +1802,26 @@ func TestFind_ProjectName_BucketDecodedOnceAcrossRows(t *testing.T) {
 func TestFind_ProjectName_ReusesOneStructuralLookupPerDirectory(t *testing.T) {
 	t.Run("live checkout", func(t *testing.T) {
 		checkout := newNamedCheckout(t, "same-checkout")
+		// Records point at a subdirectory, so the label cannot pass by echoing the
+		// recorded directory's own basename: only the checkout's root names the
+		// project, and the walk has to climb to it.
+		recorded := filepath.Join(checkout, "sub")
+		if err := os.MkdirAll(recorded, 0o755); err != nil {
+			t.Fatalf("mkdir sub: %v", err)
+		}
 		bucket := t.TempDir()
 		rowA := schema.SessionMeta{ID: identifier.MustNewSessionID()}
-		rowA.EnvInfo.WorkingDir = checkout
+		rowA.EnvInfo.WorkingDir = recorded
 		rowB := schema.SessionMeta{ID: identifier.MustNewSessionID()}
-		rowB.EnvInfo.WorkingDir = checkout
+		rowB.EnvInfo.WorkingDir = recorded
 
 		// One resolver per search: find labels every result row through it.
 		r := newProjectNameResolver()
 		if got := r.projectName(rowA, bucket); got != "same-checkout" {
-			t.Fatalf("projectName(first row recording %q) = %q, want same-checkout", checkout, got)
+			t.Fatalf("projectName(first row recording %q) = %q, want same-checkout", recorded, got)
 		}
 		if got := r.projectName(rowB, bucket); got != "same-checkout" {
-			t.Fatalf("projectName(second row recording %q) = %q, want same-checkout", checkout, got)
+			t.Fatalf("projectName(second row recording %q) = %q, want same-checkout", recorded, got)
 		}
 		if r.mainRootLookups != 1 {
 			t.Fatalf("two rows recording one directory took %d structural lookups, want 1: the second row repeated the first row's walk", r.mainRootLookups)
