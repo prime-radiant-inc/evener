@@ -23,16 +23,13 @@ func TestDrainHoldSampleSkipsDrainAbandonedDescendant(t *testing.T) {
 		aggregate := tallyAggregate(id, "", true)
 		aggregate.Generation = 1
 		aggregate.Descriptor.ParentDelegateID = "hold-parent"
+		aggregate.Descriptor.ChildSessionID = "child-" + id[len("hold-"):]
 		c.durable[id] = aggregate
 	}
 	c.durable["hold-parent"] = tallyAggregate("hold-parent", "", true)
-	s := &Session{id: "hold-parent-session", owningDelegateID: "hold-parent", delegateController: c}
+	s := &Session{delegateController: c}
 	s.drainHeld.Store(true)
 	c.live["hold-parent"] = &delegateLiveState{runtime: s}
-	var published []delegateUpdatePlan
-	c.emitUpdate = func(plan delegateUpdatePlan) {
-		published = append(published, plan)
-	}
 
 	if got := c.sampleDrainHoldLocked("hold-parent"); !got.heldSubagents || got.subagentCount != 2 {
 		t.Fatalf("hold sample before any abandonment = %+v, want both descendants", got)
@@ -44,17 +41,15 @@ func TestDrainHoldSampleSkipsDrainAbandonedDescendant(t *testing.T) {
 	if got := c.sampleDrainHoldLocked("hold-parent"); !got.heldSubagents || got.subagentCount != 1 {
 		t.Fatalf("hold sample after abandoning one descendant = %+v, want only the sibling", got)
 	}
-	// The count the row shows changed and the abandonment appends no delegate
-	// event, so the parked parent's own row is republished.
-	if len(published) != 1 || len(published[0].rows) != 1 || published[0].rows[0].id != "hold-parent" {
-		t.Fatalf("abandonment published %+v, want one plan carrying the parked parent row", published)
+	// The stamp is generation-scoped: once the delegate starts a newer run, the
+	// old stamp no longer speaks for it and its branch counts again.
+	s.recordDrainAbandonedChild("child-two", "hold-two", 1, "test")
+	if got := c.sampleDrainHoldLocked("hold-parent"); got.subagentCount != 0 || got.heldSubagents {
+		t.Fatalf("hold sample after abandoning both descendants = %+v, want no subagent wait", got)
 	}
-
-	// The stamp names a generation. A newer generation under the same delegate
-	// is not the abandoned one, so its branch still counts.
-	s.recordDrainAbandonedChild("child-two", "hold-two", 2, "test")
+	c.durable["hold-one"].Generation = 2
 	if got := c.sampleDrainHoldLocked("hold-parent"); !got.heldSubagents || got.subagentCount != 1 {
-		t.Fatalf("hold sample after stamping a newer generation = %+v, want the abandoned branch still skipped", got)
+		t.Fatalf("hold sample after a newer run under the abandoned delegate = %+v, want that branch back", got)
 	}
 
 	// A revive clears the stamp and both branches count again.
@@ -62,5 +57,53 @@ func TestDrainHoldSampleSkipsDrainAbandonedDescendant(t *testing.T) {
 	s.clearDrainAbandonedDelegate("hold-two")
 	if got := c.sampleDrainHoldLocked("hold-parent"); !got.heldSubagents || got.subagentCount != 2 {
 		t.Fatalf("hold sample after the revive cleared the stamps = %+v, want both descendants", got)
+	}
+}
+
+// The abandonment's publication must seed the ancestor join from the abandoned
+// row itself: its immediate parent may be mid-turn with no hold of its own, and
+// the parked grandparent's count would otherwise keep the stale branch until
+// some unrelated frame corrected it.
+func TestDrainAbandonmentPublishesTheAbandonedRowForTheAncestorJoin(t *testing.T) {
+	t.Parallel()
+	c := &delegateTreeController{
+		durable: delegatestore.State{},
+		delegateChildren: map[string]map[string]struct{}{
+			"hold-grandparent": {"hold-parent": {}},
+			"hold-parent":      {"hold-child": {}},
+		},
+		live: map[string]*delegateLiveState{},
+	}
+	for _, id := range []string{"hold-parent", "hold-child"} {
+		aggregate := tallyAggregate(id, "", true)
+		aggregate.Generation = 1
+		c.durable[id] = aggregate
+	}
+	c.durable["hold-parent"].Descriptor.ParentDelegateID = "hold-grandparent"
+	c.durable["hold-parent"].Descriptor.ChildSessionID = "parent-session"
+	c.durable["hold-child"].Descriptor.ParentDelegateID = "hold-parent"
+	c.durable["hold-child"].Descriptor.ChildSessionID = "child-session"
+	c.durable["hold-grandparent"] = tallyAggregate("hold-grandparent", "", true)
+
+	grandparent := &Session{id: "grandparent-session"}
+	grandparent.drainHeld.Store(true)
+	c.live["hold-grandparent"] = &delegateLiveState{runtime: grandparent}
+	// The immediate parent is mid-turn: no hold of its own to publish.
+	parent := &Session{id: "parent-session", owningDelegateID: "hold-parent", delegateController: c}
+	c.live["hold-parent"] = &delegateLiveState{runtime: parent}
+	var published []delegateUpdatePlan
+	c.emitUpdate = func(plan delegateUpdatePlan) {
+		published = append(published, plan)
+	}
+
+	if got := c.sampleDrainHoldLocked("hold-grandparent"); !got.heldSubagents || got.subagentCount != 2 {
+		t.Fatalf("hold sample before the abandonment = %+v, want both descendants", got)
+	}
+	parent.recordDrainAbandonedChild("child-session", "hold-child", 1, "test")
+	if got := c.sampleDrainHoldLocked("hold-grandparent"); !got.heldSubagents || got.subagentCount != 1 {
+		t.Fatalf("hold sample after the abandonment = %+v, want only the parent branch", got)
+	}
+	if len(published) != 1 || len(published[0].rows) != 1 || published[0].rows[0].id != "hold-child" {
+		t.Fatalf("abandonment published %+v, want one plan seeded from the abandoned row", published)
 	}
 }

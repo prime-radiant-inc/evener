@@ -885,27 +885,14 @@ func (s *Session) recordDrainAbandonedChild(childSessionID, delegateID string, g
 		return
 	}
 	if s.delegateController != nil {
-		s.delegateController.markDrainAbandoned(delegateID, generation)
+		s.delegateController.publishAncestorHoldsAfterAbandonment(delegateID)
 	}
-	s.publishHoldAfterAbandoningChild()
 	s.emit(events.WarningData{
 		Message:    fmt.Sprintf("no longer waiting on delegate %s: %s", delegateID, reason),
 		Source:     "drain",
 		Code:       events.WarningCodeDelegateAbandonedByDrain,
 		DelegateID: delegateID,
 	})
-}
-
-// publishHoldAfterAbandoningChild republishes this delegate's row hold after
-// its drain gave up on one of its direct children. The abandonment drops that
-// branch from the count the row shows and moves no durable field, so without
-// this an already loaded row keeps the count it last saw until some unrelated
-// frame corrects it.
-func (s *Session) publishHoldAfterAbandoningChild() {
-	if s == nil || s.delegateController == nil || s.owningDelegateID == "" {
-		return
-	}
-	s.delegateController.publishDelegateHold(s.ID(), s.owningDelegateID)
 }
 
 // recordDrainAbandonedChildOnLaneRefusal marks the child whose lane failed
@@ -950,6 +937,19 @@ func (s *Session) childDrainAbandoned(childSessionID string) bool {
 	return exists && abandoned.generation == row.generation
 }
 
+// drainAbandonedAtGeneration reports whether childSessionID's row was given up
+// on at exactly this generation. drainAbandonedMu is a leaf, so the
+// controller's hold sampler may call this under its own lock.
+func (s *Session) drainAbandonedAtGeneration(childSessionID string, generation uint64) bool {
+	if s == nil || childSessionID == "" {
+		return false
+	}
+	s.drainAbandonedMu.Lock()
+	defer s.drainAbandonedMu.Unlock()
+	abandoned, exists := s.drainAbandonedChildren[childSessionID]
+	return exists && abandoned.generation == generation
+}
+
 // clearDrainAbandonedDelegate clears every drain-abandonment stamp recorded
 // for delegateID, so a child given up on because its lane failed
 // revalidation is driven and waited on again the moment a later revive path
@@ -959,17 +959,12 @@ func (s *Session) clearDrainAbandonedDelegate(delegateID string) {
 		return
 	}
 	s.drainAbandonedMu.Lock()
-	cleared := false
 	for childSessionID, abandoned := range s.drainAbandonedChildren {
 		if abandoned.delegateID == delegateID {
 			delete(s.drainAbandonedChildren, childSessionID)
-			cleared = true
 		}
 	}
 	s.drainAbandonedMu.Unlock()
-	if cleared && s.delegateController != nil {
-		s.delegateController.clearDrainAbandoned(delegateID)
-	}
 }
 
 // subtreeUndisposableStoppedDelegates names the delegates this session and its
