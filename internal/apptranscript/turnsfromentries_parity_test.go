@@ -63,9 +63,9 @@ func TestItemTurnsFromEntriesLargeFixtureParity(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	entryTurns, err := ItemTurnsFromEntries(header, entries, largeEntryProjector)
+	entryTurns, err := itemTurnsFromEntries(header, entries, largeEntryProjector)
 	if err != nil {
-		t.Fatalf("ItemTurnsFromEntries: %v", err)
+		t.Fatalf("itemTurnsFromEntries: %v", err)
 	}
 	if len(entryTurns) != len(entries)+1 {
 		t.Fatalf("got %d turns for %d entries and system prelude", len(entryTurns), len(entries))
@@ -90,7 +90,7 @@ func BenchmarkItemTurnsLargeFixture(b *testing.B) {
 	b.Run("entries", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			if _, err := ItemTurnsFromEntries(header, entries, largeEntryProjector); err != nil {
+			if _, err := itemTurnsFromEntries(header, entries, largeEntryProjector); err != nil {
 				b.Fatal(err)
 			}
 		}

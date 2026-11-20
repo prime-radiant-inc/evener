@@ -126,7 +126,8 @@ losing the conversation that made the evidence relevant.
   counts. A count click focuses the owning pane before opening the matching Overview category.
   The shared sidebar retains its scope breadcrumb and an accessible, visually hidden
   “Overview kind” label. About is the fifth category and has no footer counter.
-  Phones keep one bottom surface: the pane renders no separate footer strip below the
+  At the narrow shell breakpoint (899px and below), phones keep one bottom surface:
+  the pane renders no separate footer strip below the
   composer, so the composer's own control row carries Attach, the model and reasoning
   chrome line, and Send or Stop. The activity counts sit on a quiet line below the card,
   where the desktop status bar puts them, and that line is the pane's bottom edge: on
@@ -134,9 +135,10 @@ losing the conversation that made the evidence relevant.
   space below them. The composer dock owns the home-indicator band, and that band is one
   token: `--dock-clearance` in `tokens.css` (`max(0px, env(safe-area-inset-bottom) -
   var(--keyboard-inset, 0px))`). Every dock reads that one value, and it yields when the
-  on-screen keyboard covers the band. The working-directory strip stays desktop-only: a phone
-  reads the session's working directory and branch through the session menu's Overview
-  (About) and never stacks a second strip below the composer. A phone chip shows its
+  on-screen keyboard covers the band. The working-directory strip follows that shell breakpoint:
+  the narrow phone reads the session's working directory and branch through the session menu's
+  Overview (About), while a primary-touch phone whose wider landscape viewport uses the desktop
+  shell retains the separate status footer. A phone chip shows its
   glyph and a single active count (settled for Tasks); its category name and the full
   active/total fraction stay in its accessible name and tooltip. While the card rests —
   empty, unfocused, no send in flight — a composer
@@ -155,8 +157,10 @@ losing the conversation that made the evidence relevant.
   was. A phone's
   resting composer is one line too, but it keeps only the session menu and Send
   there; engaging the editor restores the full row, including Attach and the model
-  picker. A desktop card under 620px keeps the stacked control row and the folded
-  one-line field. The phone's resting card sheds Attach, the model chrome and the
+  picker. This phone treatment also holds on a primary-touch landscape viewport up
+  to 1000px wide and 700px tall, including the Duo's 951×669pt inner display, even
+  though that width uses the desktop shell. A fine-pointer desktop card under 620px keeps the stacked
+  control row and the folded one-line field. The phone's resting card sheds Attach, the model chrome and the
   activity line: the folded card is the phone's smallest surface, and the counts come
   back with the expanded card. At the 466px Duo cover width the control row
   tightens; focus, drafts, attachments, and question/approval docks keep their writing
@@ -171,6 +175,11 @@ losing the conversation that made the evidence relevant.
   `--space-2` gap, with the matching dock gap in
   `composer.module.css`), while the activity count line keeps the 44px `--tap-min` floor
   (`composer.module.css` `.activityRow`).
+- **Let the lowest footer own the safe area.** A pane with a flush `edgeFooter`
+  below its padded composer footer gives that edge footer the home-indicator band
+  at every width. The composer footer keeps only its ordinary `--space-3` gap, so a
+  wide landscape phone cannot reserve the same band once above the status bar and
+  again inside it.
 - **Keep the loading face honest and seat-scoped.** A loading session pane shows a `Loader`
   status over a static four-line `Skeleton` and delays its force-stop recovery copy by
   eight seconds (`RECOVERY_HINT_DELAY_MS` in

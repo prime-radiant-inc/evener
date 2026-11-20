@@ -119,10 +119,10 @@ func TestItemTurnsFromEntriesAvoidsFileScanAndDecode(t *testing.T) {
 	var entryTurns []appwire.Turn
 	var entriesErr error
 	entriesAllocs, entriesElapsed, entriesBytes := allocsPerProjection(func() {
-		entryTurns, entriesErr = ItemTurnsFromEntries(rw.Header(), entries, project)
+		entryTurns, entriesErr = itemTurnsFromEntries(rw.Header(), entries, project)
 	})
 	if entriesErr != nil {
-		t.Fatalf("ItemTurnsFromEntries: %v", entriesErr)
+		t.Fatalf("itemTurnsFromEntries: %v", entriesErr)
 	}
 
 	filePerEntry := fileAllocs / float64(entryCount)
