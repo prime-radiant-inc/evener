@@ -1273,7 +1273,7 @@ func TestFind_ProjectName_ForeignProjectMarkerKeepsBasename(t *testing.T) {
 func TestFind_ProjectName_DeletedSubdirThroughSymlinkToLiveLane(t *testing.T) {
 	stateHome := pinStateHome(t)
 
-	main, _ := gittest.NewLinkedWorktree(t)
+	main := newNamedCheckout(t, "deferred-owner-repo")
 	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(main))
 	bucket, err := RuntimeDirForProjectWithStateHome(project, stateHome)
 	if err != nil {
@@ -1363,6 +1363,77 @@ func TestFind_ProjectName_LegacyBucketKeepsWorktreeMarker(t *testing.T) {
 
 	if got, want := projectName(row, stateDir), filepath.Base(repo); got != want {
 		t.Fatalf("projectName(removed worktree %q in a state dir that records no project) = %q, want the marker's checkout %q", feature, got, want)
+	}
+}
+
+// TestFind_ProjectName_AliasedLaneKeepsItsDeferredOrder covers a lane reached
+// only through a symlinked working directory after its checkout was pruned: the
+// alias is the only lane record, and the row's recorded restore root names the
+// lane's project. That root is the row's own evidence and must answer before a
+// sibling's saved origin, which is bucket-wide inference.
+func TestFind_ProjectName_AliasedLaneKeepsItsDeferredOrder(t *testing.T) {
+	stateHome := pinStateHome(t)
+
+	main, _ := gittest.NewLinkedWorktree(t)
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(main))
+	bucket, err := RuntimeDirForProjectWithStateHome(project, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+	lane := filepath.Join(bucket, "worktrees", project.ID, "dlg_aliased")
+	gittest.Run(t, main, "worktree", "add", "-q", lane, "-b", "lane-aliased")
+	// The lane's pointer goes, so the bounded walk cannot name the checkout.
+	if err := os.Remove(filepath.Join(lane, ".git")); err != nil {
+		t.Fatalf("remove lane pointer: %v", err)
+	}
+	// A sibling of another repository, saved in the same bucket, is admissible
+	// bucket-wide evidence and must not outrank the row's own restore root.
+	sibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	sibling.EnvInfo.GitOriginURL = "https://example.com/sibling-origin.git"
+	if err := schema.SaveSessionMeta(bucket, sibling); err != nil {
+		t.Fatal(err)
+	}
+	// The owner checkout goes too, so its recorded path is the row's only
+	// surviving statement about the project.
+	if err := os.RemoveAll(main); err != nil {
+		t.Fatalf("remove owner checkout: %v", err)
+	}
+
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(lane, alias); err != nil {
+		t.Fatalf("symlink alias: %v", err)
+	}
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID(), WorktreeRestoreRoot: main}
+	row.EnvInfo.WorkingDir = filepath.Join(alias, "pkg")
+
+	if got, want := newProjectNameResolver().projectName(row, bucket), filepath.Base(main); got != want {
+		t.Fatalf("projectName(aliased pruned lane with restore root %q) = %q, want the row's own %q, not the sibling's origin", main, got, want)
+	}
+}
+
+// TestFind_ProjectName_LegacyBucketSkipsTheOrdinaryWalk covers an originless row
+// in a state dir that records no project. No walk can be accepted without a
+// project ID to check it against, so none is made: the diagnostic counter stays
+// at zero and the recorded basename answers.
+func TestFind_ProjectName_LegacyBucketSkipsTheOrdinaryWalk(t *testing.T) {
+	stateDir := canonicalStateDir(t.TempDir())
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+	checkout := newNamedCheckout(t, "unwalked-repo")
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.EnvInfo.WorkingDir = filepath.Join(checkout, "gone")
+
+	r := newProjectNameResolver()
+	if got, want := r.projectName(row, stateDir), "gone"; got != want {
+		t.Fatalf("projectName(deleted subdirectory of %q in a state dir that records no project) = %q, want %q", checkout, got, want)
+	}
+	if r.mainRootLookups != 0 {
+		t.Fatalf("labelling a row that records no project and sits in a state dir that records none took %d structural lookups, want 0: the walk cannot be accepted", r.mainRootLookups)
 	}
 }
 

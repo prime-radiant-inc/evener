@@ -1097,26 +1097,40 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 		// both read the whole path, so neither can answer here; the prefix is asked
 		// instead, with the same two questions in the same order.
 		//
-		// A prefix that is a lane keeps its boundary and goes through the bounded
-		// walk and metadata fallback step 1 uses. An ordinary one answers only when
-		// the checkout it resolves to is this row's project: the space a removed
+		// A prefix that is a lane keeps its boundary and is deferred exactly as a
+		// lane the record names directly is: the bounded walk answers while the
+		// lane's pointer resolves, and otherwise the row's own record is asked
+		// before bucket-wide inference. An ordinary prefix answers only when the
+		// checkout it resolves to is this row's project: the space a removed
 		// directory occupied belongs to whatever survives above it, and that is an
-		// affiliation the row has only when its own recording says so. A legacy or
-		// shared bucket records no project, so a row with none of its own is not
-		// given that affiliation there.
+		// affiliation the row has only when its own recording says so.
 		//
 		// It is asked before the marker below because that marker names whatever
 		// precedes ".worktrees", which can be an enclosing checkout while a
 		// surviving nested one is the row's project.
 		resolved := resolveExistingPrefix(recorded)
-		if _, laneRoot, _, _, isLane := r.stateWorktreeOwner(resolved, bucketDir); isLane {
+		if _, laneRoot, _, managedProjectID, isLane := r.stateWorktreeOwner(resolved, bucketDir); isLane {
 			if root := resolveMainRootWithin(resolved, laneRoot); root != "" {
 				return filepath.Base(root)
 			}
-			if name, _ := r.worktreePathFallback(resolved, bucketDir, m.ParentSessionID); name != "" {
-				return name
+			// A lane whose checkout is gone is the same deferred case the branch
+			// above defers: the row's own record is asked before bucket-wide
+			// inference, and a lane with no usable evidence keeps an empty label
+			// instead of falling through to the removed leaf's basename.
+			if !laneSeen {
+				laneSeen = true
+				laneProjectID = managedProjectID
+				lanePath = resolved
 			}
-		} else if root := r.resolveMainRoot(resolved); root != "" && r.checkoutIsRows(root, ownProject, bucketProject, bucketKnown) {
+			continue
+		}
+		// No recorded project ID can accept an ordinary walk's answer, so the walk
+		// can only be thrown away — and reading a relocated .git can stall on an
+		// unavailable mount. The marker and the recorded basename still answer.
+		if ownProject == "" && !bucketKnown {
+			continue
+		}
+		if root := r.resolveMainRoot(resolved); root != "" && r.checkoutIsRows(root, ownProject, bucketProject, bucketKnown) {
 			return filepath.Base(root)
 		}
 	}
