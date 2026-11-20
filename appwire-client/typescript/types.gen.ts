@@ -743,6 +743,14 @@ export interface EvenerDelegateInfo {
   runningJobCount?: number;
   oldestRunningJobStartedAt?: string;
   /**
+   * DrainHeldBySubagents and RunningSubagentCount are the same hold for open
+   * descendant subagents: a coordinator parked in its finalization drain while
+   * its children run, so its stated intent is frozen. Carried on the frame for
+   * the same reason as the job hold, so a pushed frame and a read row agree.
+   */
+  drainHeldBySubagents?: boolean;
+  runningSubagentCount?: number;
+  /**
    * HoldSequence orders DrainHeldByJobs against every other sample of the same
    * delegate's hold. The source bumps it under the controller lock when the
    * sampled hold changes, so a consumer applies the highest sequence and
@@ -4033,6 +4041,21 @@ export interface SessionDelegate {
    */
   oldestRunningJobStartedAt?: string;
   /**
+   * DrainHeldBySubagents is the same hold for descendant open subagents: this
+   * delegate's finalization drain is holding its run open on the delegates
+   * counted below, so its stated intent is frozen for the whole wait. A
+   * coordinator mid-turn with the same running children is NOT held. Like
+   * DrainHeldByJobs only the live read produces it, so an omission never
+   * reads as "known free".
+   */
+  drainHeldBySubagents?: boolean;
+  /**
+   * RunningSubagentCount is how many descendant delegates are open while that
+   * hold is set: the whole subtree the drain waits on, not just direct
+   * children. Absent whenever the hold is, so it never reports a count alone.
+   */
+  runningSubagentCount?: number;
+  /**
    * HoldSequence orders DrainHeldByJobs against the other samples of the same
    * delegate's hold. The hold is a per-row fact whose samples can reach a
    * client out of order — a publisher that sampled before another can send
@@ -6675,7 +6698,7 @@ export const WIRE_FIELD_KEYS = {
   OutputImage: ["source", "name", "mediaType", "size", "url", "sha", "path"],
   QueueState: ["depth", "revision", "preview", "ids", "clientMutationIds", "texts", "skillNames", "commandNames", "mentions", "imageCounts"],
   EvenerUsage: ["inputTokens", "outputTokens", "cacheReadTokens", "totalTokens"],
-  EvenerDelegateInfo: ["runGeneration", "delegateId", "ownerSessionId", "logicalOwnerSessionId", "rootSessionId", "childSessionId", "childRef", "transcriptRef", "parentDelegateId", "type", "lifecycle", "phase", "status", "outcome", "reason", "error", "terminal", "resumable", "needsAttention", "notResumableReason", "projectionRevision", "reportPreview", "reportPreviewTruncated", "task", "description", "agentType", "requestedModel", "resolvedProfileId", "resolvedModel", "model", "reasoningEffort", "originTurnId", "originToolCallId", "originItemId", "runStartedAt", "runEndedAt", "latestActivityAt", "drainHeldByJobs", "runningJobCount", "oldestRunningJobStartedAt", "holdSequence", "latestIntent", "runningForMs", "quietForMs", "durationMs", "packetKind", "message", "structuredResult", "structuredResultValid", "structuredResultReason", "warnings", "diagnostics", "exhaustionBudget", "exhaustionLimit", "exhaustionResumable", "delegationAllowance", "parentWatchGranted", "usage", "worktree"],
+  EvenerDelegateInfo: ["runGeneration", "delegateId", "ownerSessionId", "logicalOwnerSessionId", "rootSessionId", "childSessionId", "childRef", "transcriptRef", "parentDelegateId", "type", "lifecycle", "phase", "status", "outcome", "reason", "error", "terminal", "resumable", "needsAttention", "notResumableReason", "projectionRevision", "reportPreview", "reportPreviewTruncated", "task", "description", "agentType", "requestedModel", "resolvedProfileId", "resolvedModel", "model", "reasoningEffort", "originTurnId", "originToolCallId", "originItemId", "runStartedAt", "runEndedAt", "latestActivityAt", "drainHeldByJobs", "runningJobCount", "oldestRunningJobStartedAt", "drainHeldBySubagents", "runningSubagentCount", "holdSequence", "latestIntent", "runningForMs", "quietForMs", "durationMs", "packetKind", "message", "structuredResult", "structuredResultValid", "structuredResultReason", "warnings", "diagnostics", "exhaustionBudget", "exhaustionLimit", "exhaustionResumable", "delegationAllowance", "parentWatchGranted", "usage", "worktree"],
   JobActivityWorktree: ["path", "branch", "headSha", "ahead", "dirty"],
   CommandDescriptor: ["name", "pluginName", "description", "argumentHint", "source"],
   EvenerSkillInfo: ["name", "description", "disableModelInvocation", "userInvocable", "available", "allowedTools"],
