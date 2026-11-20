@@ -1047,7 +1047,8 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 	lanePath := ""
 	laneProjectID := ""
 	// prefixCandidates are the directories gone recorded paths survive in. They
-	// are remembered, not walked: the row's own evidence is asked first.
+	// are remembered, not walked, and collected even when the row records no
+	// project: a managed lane's recorded project ID can authorize the walk.
 	var prefixCandidates []string
 	for _, recorded := range recordPaths(m) {
 		if !filepath.IsAbs(recorded) {
@@ -1140,9 +1141,7 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 			}
 			continue
 		}
-		if ownProject != "" || bucketKnown {
-			prefixCandidates = append(prefixCandidates, nearestSurvivingDir(resolved))
-		}
+		prefixCandidates = append(prefixCandidates, nearestSurvivingDir(resolved))
 	}
 	if laneSeen {
 		// The lane answered nothing on disk, but the record also carries the root
@@ -1200,13 +1199,15 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 	// row and a bucket that record no project ID at all: with nothing to contradict
 	// the spelling, the marker answers as it always has.
 	//
-	// The spelling read is the one with the SURVIVING PREFIX resolved. A recorded
-	// path that reaches a worktree through a symlinked ancestor and names a
-	// subdirectory of it cannot be resolved as a whole once the subdirectory is
-	// gone, and the alias itself spells no marker. The recorded spelling is read
-	// when the resolved one no longer spells one, which a ".worktrees" directory
-	// that is itself a symlink to external storage produces.
-	for _, spelling := range []string{resolveExistingPrefix(wd), identifier.ResolveClean(wd)} {
+	// The first spelling read is the one with the SURVIVING PREFIX resolved, because
+	// that is where the path really is: a recorded path that reaches a worktree
+	// through a symlinked ancestor and names a subdirectory of it cannot be resolved
+	// as a whole once the subdirectory is gone, and the alias itself spells no
+	// marker. The recorded LEXICAL spelling is read second, when the resolved one
+	// answers nothing: a ".worktrees" directory that is itself a symlink to external
+	// storage erases the marker from the resolved spelling, and so does a recorded
+	// component that now exists as a regular file.
+	for _, spelling := range []string{resolveExistingPrefix(wd), filepath.Clean(wd)} {
 		if name, repoDir, isWorktree := inRepoWorktreeProjectPath(spelling); isWorktree {
 			if !directoryExists(repoDir) || (ownProject == "" && !bucketKnown) || r.checkoutIsRows(repoDir, ownProject, bucketProject, bucketKnown) {
 				return name
@@ -1243,8 +1244,14 @@ func (r *projectNameResolver) checkoutIsRows(root, ownProject, bucketProject str
 // checkoutIsRows accepts for requiredProject: the lane's recorded project for a
 // lane row, the row's own saved project otherwise. The walk is deferred to the
 // point of use because reading a relocated .git can stall on an unavailable
-// mount.
+// mount. The walk needs a project to match against: the row's own, else the
+// bucket's. When neither records one, nothing can accept the walk, so it does not
+// run, and a checkout no recorded project names is not adopted on the bucket's
+// behalf.
 func (r *projectNameResolver) verifiedPrefixRoot(candidates []string, requiredProject, bucketProject string, bucketKnown bool) string {
+	if requiredProject == "" && !bucketKnown {
+		return ""
+	}
 	for _, candidate := range candidates {
 		if root := r.resolveMainRoot(candidate); root != "" && r.checkoutIsRows(root, requiredProject, bucketProject, bucketKnown) {
 			return root

@@ -1533,6 +1533,39 @@ func TestFind_ProjectName_SymlinkedWorktreesDirKeepsTheMarker(t *testing.T) {
 	}
 }
 
+// TestFind_ProjectName_LexicalMarkerUnderASymlinkedWorktreesDir covers a
+// checkout whose ".worktrees" directory is a symlink to external storage, where
+// the recorded subdirectory has been replaced by a regular file. Neither
+// spelling resolves to anything containing a marker, because both go through the
+// link; the recorded lexical spelling still spells one, and the checkout it
+// names is the row's own project.
+func TestFind_ProjectName_LexicalMarkerUnderASymlinkedWorktreesDir(t *testing.T) {
+	repo := newNamedCheckout(t, "lexical-marker-repo")
+	external := t.TempDir()
+	if err := os.Symlink(external, filepath.Join(repo, ".worktrees")); err != nil {
+		t.Fatalf("symlink .worktrees: %v", err)
+	}
+	feature := filepath.Join(external, "feature")
+	gittest.Run(t, repo, "worktree", "add", "-q", feature, "-b", "feature")
+	// The worktree's own pointer goes, so no Git walk can name the checkout.
+	if err := os.Remove(filepath.Join(feature, ".git")); err != nil {
+		t.Fatalf("remove worktree pointer: %v", err)
+	}
+	// The recorded leaf becomes a regular file, so the recorded spelling no
+	// longer ends in a directory that could be resolved as one.
+	if err := os.WriteFile(filepath.Join(repo, ".worktrees", "feature", "pkg"), []byte("not a directory\n"), 0o644); err != nil {
+		t.Fatalf("write recorded leaf as a file: %v", err)
+	}
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.Config.MemoryProjectID = identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repo)).ID
+	row.EnvInfo.WorkingDir = filepath.Join(repo, ".worktrees", "feature", "pkg")
+
+	if got, want := newProjectNameResolver().projectName(row, filepath.Join(t.TempDir(), "unrelated-bucket")), filepath.Base(repo); got != want {
+		t.Fatalf("projectName(%q, a file under a symlinked .worktrees directory) = %q, want the lexical spelling's checkout %q", row.EnvInfo.WorkingDir, got, want)
+	}
+}
+
 // TestFind_ProjectName_SymlinkInsideOneLaneIntoAnother covers a recorded path
 // that starts in one managed lane and continues through a symlink into a second,
 // live lane, naming a directory of the second that was removed. The recorded
@@ -1800,6 +1833,40 @@ func TestFind_ProjectName_StateLaneStopsGitWalkAtLaneRoot(t *testing.T) {
 	liveLane.EnvInfo.WorkingDir = lanePath
 	if got, gotWant := projectName(liveLane, stateDir), wantB; got != gotWant {
 		t.Fatalf("projectName(live lane for checkout B) = %q, want %q", got, gotWant)
+	}
+}
+
+// TestFind_ProjectName_LaneIDAuthorizesTheSurvivingCheckout covers an older
+// session in a flat --state-dir that records no project of its own and no bucket
+// project: its restore root is a gone subdirectory of a surviving checkout, and
+// its managed lane is gone too. The lane's own path still records the project ID
+// that the surviving checkout has, and that recorded ID authorizes the walk to
+// it.
+func TestFind_ProjectName_LaneIDAuthorizesTheSurvivingCheckout(t *testing.T) {
+	outer := newNamedCheckout(t, "authorized-repo")
+	outerProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(outer))
+	stateDir := filepath.Join(outer, "flat-state")
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+	subdir := filepath.Join(outer, "pkg")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatalf("mkdir recorded subdirectory: %v", err)
+	}
+	lane := filepath.Join(stateDir, "worktrees", outerProject.ID, "dlg_auth")
+	gittest.Run(t, outer, "worktree", "add", "-q", lane, "-b", "lane-auth")
+	if err := os.RemoveAll(subdir); err != nil {
+		t.Fatalf("remove recorded subdirectory: %v", err)
+	}
+	if err := os.RemoveAll(lane); err != nil {
+		t.Fatalf("remove lane: %v", err)
+	}
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID(), WorktreePath: lane, WorktreeRestoreRoot: subdir}
+	row.EnvInfo.WorkingDir = subdir
+
+	if got, want := newProjectNameResolver().projectName(row, stateDir), filepath.Base(outer); got != want {
+		t.Fatalf("projectName(lane %q of the surviving checkout %q, recorded in %q) = %q, want the lane's recorded project's checkout %q", lane, outer, stateDir, got, want)
 	}
 }
 
