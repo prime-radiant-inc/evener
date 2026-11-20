@@ -648,11 +648,18 @@ export async function openEntryTranscript(
     // before disposing the fenced one — a sole-reader disposal synchronously
     // reclaims the recorded bodies behind a display that may still hold a
     // usable live tail — mirroring the backstop's held-pane swap ordering.
+    // A reader is owed to a body owner and nobody else: a routing lease keeps
+    // the ref alive without reading bodies, so it must neither attach one nor
+    // have the local read run behind the closed pane. The open below is the
+    // pane's work, and with no pane left there is nothing here to restore - the
+    // "nothing to do" answer, as when the route has no repository at all.
+    const bodyOwned = threadBodyOwned(ref);
     if (recovery && fixture.reader) {
       const fenced = fixture.reader;
-      fixture.reader = heldCountsAtStore(ref) ? fixture.repository.attachReader() : undefined;
+      fixture.reader = bodyOwned ? fixture.repository.attachReader() : undefined;
       fenced.dispose();
     }
+    if (!bodyOwned) return true;
     fixture.reader ??= fixture.repository.attachReader();
     // Ongoing repository publication: every accepted recorded update republishes
     // the repository model, so continued UI changes are repository-owned rather
@@ -702,7 +709,7 @@ export async function openEntryTranscript(
               // has none, and the next publication would then replace that
               // display with the body-suppressed model.
               if (fixture.reader === reader) {
-                fixture.reader = heldCountsAtStore(ref) ? repository.attachReader() : undefined;
+                fixture.reader = threadBodyOwned(ref) ? repository.attachReader() : undefined;
               }
               reader.dispose();
               resolve(undefined);
@@ -953,7 +960,11 @@ export async function openCachedEntryTranscript(ref: string, generation: number)
     return (
       active &&
       productionEntryRoutes.get(ref) === route &&
-      foregroundHolds(ref) > 0 &&
+      // The bodies, not the keep-alive count: a lookup belongs to the pane it
+      // was opened for. A routing lease that outlives that pane keeps the
+      // model and the subscription alive, and it must not be what installs a
+      // repository and attaches a reader behind the closed pane.
+      threadBodyOwned(ref) &&
       routeHost().ensureGeneration(ref) === generation &&
       (entryRouteRetirements.get(ref) ?? 0) === retirement &&
       !state.deletedRefs.has(ref) &&

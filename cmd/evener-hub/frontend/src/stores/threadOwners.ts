@@ -1,31 +1,23 @@
 // Who holds a thread ref open. A ref is owned while a pane (foreground), a
-// background lease, a history hold or a mutation pin holds it. The counters,
+// background lease, a history hold or a mutation pin holds it. The handles,
 // generations and the final-release marker live here; threads.ts reads them
 // through these accessors and keeps the work each ownership change triggers.
 // This module never imports threads.ts.
 
-const foregroundCounts = new Map<string, number>();
-// Routing holds, counted separately from every other foreground hold: a routing
-// claim is the one caller that must be able to ask "is a routing hold standing"
-// without mistaking a pane's own hold for it. The total answers "is this ref
-// kept alive"; it cannot answer "is the hold I am releasing the one I took".
-// A rollback undoing its own failed acquisition would otherwise spend whichever
-// hold is standing - and once a pane closes during its own read, the only hold
-// left can be a resend's routing lease, which that rollback then retires the
-// model out from under. A release drops a hold of its own kind, or nothing.
-const routingForegroundCounts = new Map<string, number>();
-// Each individual hold, newest last, per kind. A count answers "is this ref kept
-// alive" and a kind answers "is the hold I am releasing of my kind", but neither
-// answers "is the hold I am releasing the one THIS owner took".
+// Each individual hold, newest last, per kind. The count of a kind IS the array
+// of handles of that kind: a holder that will outlive its call - a pane across
+// its own hydration, a resend across its verification - keeps the handle it was
+// given and releases that.
 //
 // The invariant: releasing a hold requires the handle minted for that hold, and
-// no other lifecycle can drop it. A holder that will outlive its call - a pane
-// across its own hydration, a resend across its verification - keeps the handle
-// it was given and releases that. Arrival order, ensure generation and "newest
+// no other lifecycle can drop it. Arrival order, ensure generation and "newest
 // of my kind" were three ways of guessing whose hold was standing, and each
 // guess spent a neighbour's hold once two lifecycles overlapped: a pane closing
 // while a second pane's lookup was pending removed the second pane's id, and the
 // first pane's rollback then removed its own, retiring a mounted pane's model.
+// A routing claim's hold is its own array for the same reason: the one caller
+// that must ask "is a routing hold standing" cannot answer that from a total
+// that also counts a pane's own hold.
 export interface ForegroundHold {
   readonly ref: string;
   readonly routing: boolean;
@@ -35,7 +27,7 @@ export interface ForegroundHold {
 const paneForegroundHolds = new Map<string, ForegroundHold[]>();
 const routingForegroundHolds = new Map<string, ForegroundHold[]>();
 // A foreground holder that also owns the live transcript bodies - a mounted
-// pane. Its own count, not foregroundCounts: a routing holder keeps the model
+// pane. Its own count, not foregroundHolds: a routing holder keeps the model
 // alive without becoming the reader a later pane finds and defers to, and
 // without attaching a repository reader of its own.
 const bodyOwnerCounts = new Map<string, number>();
@@ -65,16 +57,23 @@ function hold(counts: Map<string, number>, ref: string): void {
   counts.set(ref, (counts.get(ref) ?? 0) + 1);
 }
 
+function holdsOfKind(ref: string, routing: boolean): ForegroundHold[] | undefined {
+  return (routing ? routingForegroundHolds : paneForegroundHolds).get(ref);
+}
+
 export function foregroundHolds(ref: string): number {
-  return foregroundCounts.get(ref) ?? 0;
+  return (paneForegroundHolds.get(ref)?.length ?? 0) + (routingForegroundHolds.get(ref)?.length ?? 0);
 }
 
 /** Refs a mounted holder keeps open, whether or not a model ever arrived. A
  * pane whose first read was refused by the hub's history diagnostic holds its
  * ref with no model to show for it, and a later read is what repairs it - so
- * the reconnect fan-out has to see these, not only the refs that published. */
-export function foregroundHeldRefs(): IterableIterator<string> {
-  return foregroundCounts.keys();
+ * the reconnect fan-out has to see these, not only the refs that published.
+ * A ref held by both kinds is yielded twice, so a caller that needs each ref
+ * once collapses it (the fan-out collects into a Set). */
+export function* foregroundHeldRefs(): IterableIterator<string> {
+  yield* paneForegroundHolds.keys();
+  yield* routingForegroundHolds.keys();
 }
 
 /** Foreground holds taken by a caller that routes and opens no pane. A routing
@@ -82,7 +81,7 @@ export function foregroundHeldRefs(): IterableIterator<string> {
  * reconnect read that would answer it has to be joinable: the total count
  * cannot say whether the holder waiting is a pane, which opens its own lookup. */
 export function routingOnlyForegroundHolds(ref: string): number {
-  return routingForegroundCounts.get(ref) ?? 0;
+  return routingForegroundHolds.get(ref)?.length ?? 0;
 }
 
 /** Mints the handle for one foreground hold. Minting takes no count, so an
@@ -97,8 +96,6 @@ export function mintForegroundHold(ref: string, routing = false): ForegroundHold
 export function attachForegroundHold(h: ForegroundHold): void {
   if (h.attached) throw new Error("a foreground hold attaches once");
   h.attached = true;
-  hold(foregroundCounts, h.ref);
-  if (h.routing) hold(routingForegroundCounts, h.ref);
   const holds = h.routing ? routingForegroundHolds : paneForegroundHolds;
   const standing = holds.get(h.ref) ?? [];
   standing.push(h);
@@ -120,8 +117,7 @@ export function releaseForegroundHold(h: ForegroundHold): number {
     if (at >= 0) standing.splice(at, 1);
     if (standing.length === 0) holds.delete(h.ref);
   }
-  if (h.routing) release(routingForegroundCounts, h.ref);
-  return release(foregroundCounts, h.ref);
+  return foregroundHolds(h.ref);
 }
 
 /** True while this handle's count is still standing. */
@@ -146,10 +142,8 @@ export function releaseForeground(ref: string, routing = false): number {
   // The standing handles of this kind are the count: with none left there is
   // nothing of this kind to drop, and the release must not spend another kind's
   // hold from the total.
-  const standing = (routing ? routingForegroundHolds : paneForegroundHolds).get(ref);
-  if (standing === undefined || standing.length === 0) return foregroundHolds(ref);
-  const newest = standing[standing.length - 1];
-  if (newest === undefined) return foregroundHolds(ref);
+  const newest = holdsOfKind(ref, routing)?.at(-1);
+  if (!newest) return foregroundHolds(ref);
   return releaseForegroundHold(newest);
 }
 
@@ -231,7 +225,7 @@ export function heldCountsAtStore(ref: string): boolean {
 // The one answer to "is this thread body-owned": a mounted pane, a history
 // hold or a mutation pin owns the live transcript bodies. A routing hold is
 // excluded by construction, not by each caller remembering to exclude it - it
-// takes foregroundCounts alone and never holdBodyOwnership. Every site that
+// takes its own handle array alone and never holdBodyOwnership. Every site that
 // asks whether someone is already showing what a body read would restore calls
 // this.
 export function threadBodyOwned(ref: string): boolean {
@@ -274,8 +268,6 @@ export function nextBackgroundLeaseSequence(ref: string): number {
 }
 
 export function resetThreadOwnersForTests(): void {
-  foregroundCounts.clear();
-  routingForegroundCounts.clear();
   paneForegroundHolds.clear();
   routingForegroundHolds.clear();
   bodyOwnerCounts.clear();

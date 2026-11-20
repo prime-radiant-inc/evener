@@ -770,8 +770,12 @@ test("Send follows the returned identity through transcript and new sends", asyn
   expect(window.location.pathname).toBe("/s/local%3Acurrent-b");
   expect(screen.queryByText("Saved transcript before clear")).toBeNull();
   expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
-  expect(hydration).toHaveBeenCalledWith(stableRef);
-  expect(hydration).toHaveBeenCalledWith(currentRef);
+  // Each claim carries its own hold handle, so only the ref it claimed is the
+  // assertion's business: both identities were acquired before the send
+  // followed the resumed one.
+  const claimedRefs = hydration.mock.calls.map(([ref]) => ref);
+  expect(claimedRefs).toContain(stableRef);
+  expect(claimedRefs).toContain(currentRef);
   expect(refresh).toHaveBeenCalledWith(currentRef, expect.any(Function));
   await act(async () => {
     await Promise.all(hydration.mock.results.map((result) => result.value));

@@ -695,3 +695,124 @@ test("a reconnect re-reads a watched card that has neither a model nor a pending
   threadsStore.getState().releaseWatchedThread(ref);
   restoreScheduler();
 }, 20_000);
+
+// A claim's retry record belongs to ONE attempt. A read a newer attempt
+// superseded is not that attempt, so its late terminal answer must not settle
+// the record the retry opened: the claim would reject over a refusal the hub
+// gave a read nobody is waiting on any more, while the retry it is parked on
+// was still going to answer.
+test("a superseded read's late history failure does not settle the retry record a claim waits on", async () => {
+  const ref = "local:superseded-late-refusal";
+  const fake = connectMutationClient();
+  // The delegate card's own read establishes the shared subscription first, so
+  // the reads below are plain thread/reads that can overlap on the wire.
+  fake.on("thread/read", () => readResponse(ref, { name: "Card" }));
+  await threadsStore.getState().watchThread(ref);
+  const supersededRead = deferred<ThreadReadResponse>();
+  const retryRead = deferred<ThreadReadResponse>();
+  let reads = 0;
+  fake.on("thread/read", () => {
+    reads += 1;
+    // The claim's first read fails in transport and arms the retry record.
+    if (reads === 1) throw new Error("transport died");
+    // The pane's own read stays on the wire until the test answers it late.
+    if (reads === 2) return supersededRead.promise;
+    // The refresh that supersedes it fails in transport too, so the retry the
+    // claim is parked on is still the one that will answer it.
+    if (reads === 3) throw new Error("transport died");
+    // The retry's own read is what finally answers the claim.
+    return retryRead.promise;
+  });
+  const { retry, restore: restoreScheduler } = captureRetryScheduler();
+  const claim = acquireUnreadThreadClaim(ref);
+  await flushUntil(() => retry.fire !== undefined);
+  expect(reads, "the claim's read armed the retry record").toBe(1);
+  // The claim is parked on that record's first model.
+  await pump();
+
+  // A pane opens and issues its own read, and a targeted refresh supersedes it
+  // while that read is still on the wire.
+  const pane = threadsStore.getState().ensureThread(ref);
+  await flushUntil(() => reads === 2);
+  void threadsStore
+    .getState()
+    .refreshThread(ref)
+    .catch(() => undefined);
+  await pump();
+  expect(reads, "the refresh superseded the pane's read").toBe(3);
+  // The pane closes, so its superseded read answers with no pane behind it and
+  // the claim's routing hold is all that is left.
+  threadsStore.getState().releaseThread(ref);
+  expect(bodyOwners(ref), "the closed pane owns no bodies").toBe(0);
+  expect(foregroundHolds(ref), "only the claim's routing hold keeps the ref").toBe(1);
+
+  const claimOutcome = settleOutcome(claim);
+  // The superseded read's late terminal answer: the hub refused a read whose
+  // attempt a newer one replaced, so it says nothing about the retry record.
+  supersededRead.reject(historyFailedRejection());
+  expect(await claimOutcome, "the retry record survives a superseded read's refusal").toBe("pending");
+
+  // The retry's own read succeeds and answers the claim.
+  retry.fire?.();
+  await flushUntil(() => reads === 4);
+  retryRead.resolve(readResponse(ref, { name: "After retry" }));
+  const lease = await claim;
+  expect(threadsStore.getState().threads.get(ref)?.name, "the retry's read is the claim's answer").toBe("After retry");
+  await pane;
+  lease.release();
+  threadsStore.getState().releaseWatchedThread(ref);
+  restoreScheduler();
+}, 20_000);
+
+// A cached pane lookup belongs to the pane that opened it. A routing lease
+// outlives the last pane during a resend, and it never reads bodies: a lookup
+// that lands after that pane closed must not install a repository or attach a
+// reader behind it.
+test("a cached lookup finishing after the last pane closes does not attach a reader for the routing lease", async () => {
+  const ref = "local:cached-lookup-after-close";
+  const cache = createEntryCacheFixture();
+  setProductionEntryCacheForTests(cache.cache);
+  setSessionCacheLookupDeadlineForTests(30_000);
+  const seed = await seedCachedShell(cache.cache, ref, 0);
+  expect(seed.outcome, "the pane's cached shell is seeded durably").toBe("committed");
+  // Hold the lookup open so the pane can close before it answers.
+  const metadata = deferred<void>();
+  const lookup = cache.cache.getSessionForRequestedRef.bind(cache.cache);
+  let lookups = 0;
+  vi.spyOn(cache.cache, "getSessionForRequestedRef").mockImplementation(async (clientId, requestedRef) => {
+    lookups += 1;
+    if (lookups === 1) await metadata.promise;
+    return lookup(clientId, requestedRef);
+  });
+  const fake = connectMutationClient();
+  const paneRead = deferred<ThreadReadResponse>();
+  fake.on("thread/read", () => paneRead.promise);
+
+  const pane = threadsStore.getState().ensureThread(ref);
+  await flushUntil(() => lookups === 1);
+  // A resend claims the same destination while the pane's lookup is pending.
+  const claim = acquireUnreadThreadClaim(ref);
+  await pump();
+  expect(bodyOwners(ref), "the pane owns the live bodies").toBe(1);
+
+  // The pane closes: its body ownership and its hold are gone, and only the
+  // resend's routing lease keeps the ref alive.
+  threadsStore.getState().releaseThread(ref);
+  expect(bodyOwners(ref), "the pane's body ownership is gone").toBe(0);
+  expect(foregroundHolds(ref), "the routing lease is all that holds the ref").toBe(1);
+
+  // The held lookup answers now, after the pane it was opened for has closed.
+  metadata.resolve();
+  await pump(40);
+
+  const route = entryRouteOf(ref);
+  expect(route.identity, "the closed pane's lookup installs no identity").toBeUndefined();
+  expect(route.repository, "the closed pane's lookup installs no repository").toBeUndefined();
+  expect(route.reader, "the routing lease gets no reader behind the closed pane").toBeUndefined();
+
+  paneRead.resolve(readResponse(ref));
+  await pane;
+  const lease = await claim;
+  lease.release();
+  await cache.dispose();
+}, 20_000);
