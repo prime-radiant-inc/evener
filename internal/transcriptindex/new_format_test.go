@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appitempaging"
+	"primeradiant.com/evener/internal/apptranscript"
 )
 
 func newFormatFixture(t testing.TB, name string) fixture {
@@ -374,5 +375,35 @@ func TestCallWithoutResultsIsInterruptedAtCompletion(t *testing.T) {
 		if c.Item.CallID == "ic2" && c.Item.Status == appwire.TurnStatusInterrupted {
 			t.Fatalf("the call that got results = %s, want it completed", dump(c.Item))
 		}
+	}
+}
+
+// An interrupted completion is transcript-only, so it joins no group, but it
+// still belongs to its turn: the full read must fold it into the stamped
+// turn's status exactly as the index does, or a crashed execution renders
+// completed while the index reports it interrupted.
+func TestFullReadFoldsInterruptedCompletionIntoTurnStatus(t *testing.T) {
+	fx := newFormatFixture(t, "interrupted call")
+	turns, err := apptranscript.ItemTurnsFromFile(writeFixture(t, fx), testMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		return apptranscript.ProjectTurn(turnID, entryIndex, turn, apptranscript.NewToolCallRegistry(), nil, nil)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var full *appwire.Turn
+	for i := range turns {
+		if turns[i].ID == "turn_m22" {
+			full = &turns[i]
+			break
+		}
+	}
+	if full == nil {
+		t.Fatalf("no turn_m22 in the full read: %s", dump(turns))
+	}
+	if full.Status != appwire.TurnStatusInterrupted {
+		t.Fatalf("full read turn_m22 = %s, want interrupted", dump(*full))
+	}
+	if indexed := turnOf(t, indexedCandidates(t, fx, -1), "turn_m22"); indexed.Status != appwire.TurnStatusInterrupted {
+		t.Fatalf("indexed turn_m22 = %s, want interrupted", dump(indexed))
 	}
 }

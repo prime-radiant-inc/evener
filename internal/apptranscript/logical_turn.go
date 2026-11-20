@@ -88,6 +88,26 @@ type groupedTurn struct {
 type logicalTurnAccumulator struct {
 	turns   []groupedTurn
 	grouper TurnGrouper
+	// interruptedCompletions holds, per stamped turn id, the file recording the
+	// execution ending interrupted. The completion is transcript-only, so it
+	// joins no group, but its status belongs to the turn it names.
+	interruptedCompletions map[string]bool
+}
+
+// markInterruptedCompletion records a TURN_COMPLETION that ends its stamped
+// turn interrupted. Only an identity-format completion carries a turn id to
+// fold the status into.
+func (a *logicalTurnAccumulator) markInterruptedCompletion(turn *schema.Turn) {
+	if turn.Kind != schema.TurnCompletion || turn.Completion == nil || turn.Completion.Status != schema.TurnInterrupted {
+		return
+	}
+	if turn.Format != schema.TurnFormatIdentity || turn.TurnID == "" {
+		return
+	}
+	if a.interruptedCompletions == nil {
+		a.interruptedCompletions = map[string]bool{}
+	}
+	a.interruptedCompletions[turn.TurnID] = true
 }
 
 // TurnGrouper applies the logical-turn grouping rule to entries in file order.
@@ -175,8 +195,10 @@ func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, 
 func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, turn schema.Turn, entryIndex int) {
 	if turn.Kind.TranscriptOnly() {
 		// Written for the history projection phase 3 introduces. Today's
-		// projection passes over it: it joins no group, closes none, and
-		// projects nothing, though its line still takes an entry index.
+		// projection passes over it as an item: it joins no group, closes
+		// none, and projects nothing, though its line still takes an entry
+		// index. An interrupted completion still names its turn's status.
+		acc.markInterruptedCompletion(&turn)
 		return
 	}
 	if turn.OriginalOrdinal != nil {
@@ -293,6 +315,11 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 			// later fragment's partial total, and the saved turn underreported
 			// tokens and cost against the index (#1166 review).
 			runStamps[group.turnID].apply(&turn)
+			// The recorded completion applies to every visible fragment of
+			// the turn.
+			if acc.interruptedCompletions[group.turnID] && turn.Status != appwire.TurnStatusFailed {
+				turn.Status = appwire.TurnStatusInterrupted
+			}
 		}
 		if prelude != nil && !preludeEmitted {
 			// The header's items and a LEADING prelude run are ONE turn: the
