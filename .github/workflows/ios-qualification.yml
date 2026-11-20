@@ -186,9 +186,13 @@ jobs:
       - name: Upload the build products for the journeys job
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ios-build-products-${{ github.run_id }}-${{ github.run_attempt }}
+          # Run-scoped, not attempt-scoped: re-running the failed jobs retains
+          # this job's artifact from the earlier attempt, and the journeys job
+          # of the new attempt must find it under the name it asks for.
+          name: ios-build-products-${{ github.run_id }}
           path: ${{ env.QUALIFICATION_OUTPUT }}/ios-build-products.tar.gz
           if-no-files-found: error
+          overwrite: true
       # Save only on a push to main. A pull request's save is readable only by
       # that ref, so it would crowd main's entry out without serving the next
       # PR. The exact-key guard mirrors the Go caches: a re-run whose restore
@@ -226,16 +230,113 @@ jobs:
             ${{ env.QUALIFICATION_OUTPUT }}/Podfile.lock.diff
           if-no-files-found: warn
 
+  # The journeys job's build-independent work: the runtime pair (make
+  # build-runtime, the evener binary and the fixture provider). It needs
+  # nothing from the build job, so it runs on its own runner while
+  # simulator-build compiles, and the journeys job starts when the products
+  # land instead of after both. The pair travels with the revision that built
+  # it; run-ui-tests.sh refuses a pair whose revision is not the tested tree's.
+  journey-setup:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - name: Set the run-owned runtime pair path
+        run: |
+          printf 'RUNTIME_PAIR_OUTPUT=%s/ios-runtime-pair-%s-%s\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+      - name: Check out the merge ref with the PR head in its history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Choose the tested tree
+        id: tree
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          MERGE: ${{ github.sha }}
+        run: |
+          bash scripts/native/ios/qualification/checkout-ref.sh \
+            "$PR_HEAD" "$MERGE" \
+            scripts/native/ios/build-simulator.sh \
+            scripts/native/ios/qualification \
+            scripts/native/ios/run-ui-tests.sh \
+            scripts/native/ios/run-ui-journeys.sh >> "$GITHUB_OUTPUT"
+      - name: Check out the chosen tree
+        env:
+          CHOSEN_REF: ${{ steps.tree.outputs.ref }}
+        run: git checkout --force "$CHOSEN_REF"
+      # The recipe below invokes no Xcode tool, but the Go binaries compile
+      # cgo (net, os/user), so their clang comes from the selected Xcode; this
+      # keeps the pair's toolchain the one the journeys job used before the
+      # split.
+      - name: Select Xcode ${{ env.XCODE_VERSION }}
+        run: sudo xcode-select --switch "/Applications/Xcode_${XCODE_VERSION}.app"
+      - name: Set up Go from repository policy
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.work
+          # No built-in toolchain cache: setup-go's saves from whichever ref
+          # first misses its key, pull requests included, and such an entry
+          # serves only that ref (see "CI Caches" in
+          # docs/developing-evener/testing.md).
+          cache: false
+      - name: Set up Node 22.13.1
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          # The runtime pair embeds the frontend SPA, so this job pins the same
+          # Node version the build job uses. No built-in Actions cache, for the
+          # same ref-scoped reason.
+          node-version: "22.13.1"
+      - name: Build the runtime pair
+        run: make build-runtime
+      - name: Package the runtime pair the journeys job runs
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNTIME_PAIR_OUTPUT"
+          # The same two builds run-ui-tests.sh used to run itself, against
+          # the frontend dist make build-runtime just produced.
+          go build -o "$RUNTIME_PAIR_OUTPUT/evener" ./cmd/evener
+          go build -o "$RUNTIME_PAIR_OUTPUT/fixture-provider" ./scripts/native/ios/fixture-provider
+          git rev-parse HEAD > "$RUNTIME_PAIR_OUTPUT/revision"
+          # The revision names the tree the pair was built from, and the
+          # checksums catch a pair whose bytes changed after it was built;
+          # run-ui-tests.sh verifies both before running either binary.
+          ( cd "$RUNTIME_PAIR_OUTPUT" && shasum -a 256 evener fixture-provider > SHA256SUMS )
+          tar -czf "$RUNTIME_PAIR_OUTPUT/ios-runtime-pair.tar.gz" -C "$RUNTIME_PAIR_OUTPUT" evener fixture-provider revision SHA256SUMS
+          du -sh "$RUNTIME_PAIR_OUTPUT/ios-runtime-pair.tar.gz"
+      - name: Upload the runtime pair for the journeys job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-runtime-pair-${{ github.run_id }}
+          path: ${{ env.RUNTIME_PAIR_OUTPUT }}/ios-runtime-pair.tar.gz
+          if-no-files-found: error
+          overwrite: true
+
   ui-journeys:
     name: UI journeys
-    needs: [simulator-build]
+    needs: [simulator-build, journey-setup]
+    # !cancelled() keeps this job's red signal: when the build or the setup
+    # fails, the first step below fails so the check that chains the lane is
+    # red instead of silently skipped.
+    if: ${{ !cancelled() }}
     runs-on: macos-26
     timeout-minutes: 60
     steps:
+      # Fail before the prologue rather than downloading artifacts a failed
+      # producer may or may not have left.
+      - name: Fail when a prerequisite job did not succeed
+        if: ${{ needs.simulator-build.result != 'success' || needs.journey-setup.result != 'success' }}
+        env:
+          BUILD_RESULT: ${{ needs.simulator-build.result }}
+          SETUP_RESULT: ${{ needs.journey-setup.result }}
+        run: |
+          echo "simulator-build=$BUILD_RESULT journey-setup=$SETUP_RESULT" >&2
+          exit 1
       - name: Set the run-owned journey output path
         run: |
           printf 'JOURNEY_OUTPUT=%s/ios-journeys-%s-%s\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
           printf 'JOURNEY_PRODUCTS=%s/ios-journeys-products-%s-%s\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+          printf 'JOURNEY_RUNTIME_PAIR=%s/ios-journeys-runtime-%s-%s\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
       - name: Check out the merge ref with the PR head in its history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -269,27 +370,45 @@ jobs:
           # serves only that ref (see "CI Caches" in
           # docs/developing-evener/testing.md).
           cache: false
-      - name: Set up Node 22.13.1
+      # A head whose run-ui-tests.sh predates the pair handoff ignores the
+      # variable below and runs `make build-runtime` here, which embeds the
+      # frontend and needs the build job's Node. Keep the pin so that fallback
+      # fails for no version reason; a harness that reads the pair never uses it.
+      - name: Set up Node 22.13.1 for a harness that builds its own pair
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          # The runtime pair embeds the frontend SPA, so this job pins the same
-          # Node version the build job uses. No built-in Actions cache, for the
-          # same ref-scoped reason.
           node-version: "22.13.1"
       - name: Download the build products
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: ios-build-products-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ios-build-products-${{ github.run_id }}
           path: ${{ runner.temp }}/ios-build-products
+      - name: Download the runtime pair
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ios-runtime-pair-${{ github.run_id }}
+          path: ${{ runner.temp }}/ios-runtime-pair-download
       - name: Restore the products layout
         run: |
           set -euo pipefail
           mkdir -p "$JOURNEY_PRODUCTS"
           tar -xzf "$RUNNER_TEMP/ios-build-products/ios-build-products.tar.gz" -C "$JOURNEY_PRODUCTS"
+      - name: Restore the runtime pair layout
+        run: |
+          set -euo pipefail
+          mkdir -p "$JOURNEY_RUNTIME_PAIR"
+          tar -xzf "$RUNNER_TEMP/ios-runtime-pair-download/ios-runtime-pair.tar.gz" -C "$JOURNEY_RUNTIME_PAIR"
       - name: Run the installed-app journeys
+        env:
+          # run-ui-tests.sh uses this pair instead of building one: it compares
+          # the pair's recorded commit with the build identity's sourceRevision
+          # and its binaries' bytes with the manifest shipped beside them.
+          EVENER_QUALIFICATION_RUNTIME_BINARIES: ${{ env.JOURNEY_RUNTIME_PAIR }}
         run: bash scripts/native/ios/run-ui-journeys.sh --products "$JOURNEY_PRODUCTS" --output "$JOURNEY_OUTPUT"
       - name: Upload journey diagnostics
-        if: always()
+        # The prerequisite gate fails before the output path exists; without
+        # this condition the paths below would glob from the filesystem root.
+        if: ${{ always() && env.JOURNEY_OUTPUT != '' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ios-journeys-${{ github.run_id }}-${{ github.run_attempt }}

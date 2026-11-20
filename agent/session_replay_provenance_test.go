@@ -2617,25 +2617,34 @@ func TestAnthropicPrimaryToResponsesFallbackKeepsPlaintextWithoutSignature(t *te
 	}
 }
 
-// TestCrossInstanceResponsesStripsOpaqueBlobKeepsNativePlaintext pins #6891: a
-// Responses item replayed to another deployment keeps its native plaintext and no
-// foreign blob, so it cannot 400 with "Encrypted content is not supported".
+// TestCrossInstanceResponsesStripsOpaqueBlobKeepsNativePlaintext pins #6891 and
+// #6970: a Responses item replayed to another deployment keeps its native
+// plaintext and no foreign blob or provider-issued item id, so it cannot 400
+// with "Encrypted content is not supported" or name an item the target never
+// issued, while the issuer still sends its own id.
 func TestCrossInstanceResponsesStripsOpaqueBlobKeepsNativePlaintext(t *testing.T) {
 	t.Parallel()
 	turns := []schema.Turn{{Kind: schema.TurnAssistant, ResponseProvider: "openai-a", ResponseProtocol: registry.ProtocolOpenAIResponses,
 		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{EncryptedContent: "enc_A", ResponsesContentParts: reasoningNative("plain")}},
+			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{ID: "rs_foreign", EncryptedContent: "enc_A", ResponsesContentParts: reasoningNative("plain")}},
 			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{EncryptedContent: "enc_only"}}, {Kind: llm.ContentText, Text: "answer"}}}}}
 	wire, out := responsesWire(t, turns, "openai-b", len(turns))
 	if wire != wireNativePlain {
 		t.Fatalf("wire reasoning = %s, want %s: the plaintext replays verbatim and no blob rides", wire, wireNativePlain)
 	}
+	if strings.Contains(wire, "rs_foreign") {
+		t.Fatalf("the fallback wire names the source instance's reasoning item id: %s", wire)
+	}
 	if !hasContentKind(out, llm.ContentText) {
 		t.Fatal("answer text must survive the strip")
 	}
 	// The issuer keeps its own blobs, so the strip is bound to provenance.
-	if issuer, _ := responsesWire(t, turns, "openai-a", len(turns)); issuer == wireNativePlain {
+	issuer, _ := responsesWire(t, turns, "openai-a", len(turns))
+	if issuer == wireNativePlain {
 		t.Fatalf("the issuer must keep its own blobs, not the bare plaintext: %s", issuer)
+	}
+	if !strings.Contains(issuer, `"id":"rs_foreign"`) || !strings.Contains(issuer, `"encrypted_content":"enc_A"`) {
+		t.Fatalf("the issuer must keep its own item id and blob: %s", issuer)
 	}
 }
 

@@ -95,17 +95,27 @@ separate from TestFlight and has no release secrets
 or publishing step. Existing Linux native/API gates remain required. Its policy
 step also proves the bundle verification is real: a copied build whose share
 extension was removed fails verification while the untouched build still passes.
-The lane's green path always includes the installed-app journeys, in a second
-job. `simulator-build` builds Release and verifies the host and share
-extension, proves the red side before the generated
+The lane's green path always includes the installed-app journeys, in a setup
+job that runs beside the simulator build and a journeys job that waits for
+both. `simulator-build` builds Release and verifies the
+host and share extension, proves the red side before the generated
 `EvenerQualificationUITests` target exists, registers that target, and compiles
 the test products against the same DerivedData; it uploads those products as a
-tarball and deletes its own simulator. `ui-journeys` needs that job, restores
-the products layout into a fresh directory, and creates and later deletes its
-own simulator. `scripts/native/ios/run-ui-tests.sh` then builds the runtime
-pair, starts the scripted loopback provider and an isolated hub under private
-XDG directories with `HOME` inherited, and injects the fixture-only connection
-data into the restored test-run configuration in place. The result bundle must
+tarball and deletes its own simulator. `journey-setup` has no dependency on the
+build: it checks out the same tested tree, selects the same Xcode, runs `make
+build-runtime` so the embedded frontend is the one this tree builds, compiles
+the `evener` and `fixture-provider` binaries, and uploads them with the commit
+they were built from and a checksum manifest. `ui-journeys` needs both jobs,
+restores the products layout and the runtime pair into fresh directories,
+compares the pair's recorded commit with the build identity's `sourceRevision`
+and its binaries' bytes with the manifest shipped with the pair before running
+either binary, and creates and later deletes its own simulator.
+`scripts/native/ios/run-ui-tests.sh` then starts the scripted loopback provider
+and an isolated hub under private XDG directories with `HOME` inherited, and
+injects the fixture-only connection data into the restored test-run
+configuration in place; when the variable carrying the pair is unset (a local
+run) or the selected harness does not read it (a head older than the
+handoff), it builds the pair itself. The result bundle must
 show all three intended journeys executed with zero failures and none skipped;
 a partial, unreadable or absent result fails, and the child's exit is the job's
 own result. Each job is the sole owner of its own simulator, and cleanup runs
