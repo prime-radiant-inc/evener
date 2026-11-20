@@ -306,15 +306,25 @@ func TestSweepRebuildDoesNotWaitBehindASlowRefresh(t *testing.T) {
 	before := sweep.rebuildCount()
 	ticks <- time.Now()
 
+	// Wait on the rebuild's published result, not on the rebuild counter: the
+	// counter increments before Rebuild swaps the new index in, so polling it
+	// returns as soon as the scan starts and can read the pre-rename index.
 	deadline := time.Now().Add(10 * time.Second)
-	for sweep.rebuildCount() == before {
+	var (
+		entry hubcore.PastEntry
+		ok    bool
+	)
+	for {
+		entry, ok = f.past.Lookup(f.sessionID)
+		if ok && entry.Meta.Name == "Renamed while the refresh was stuck" {
+			break
+		}
 		if time.Now().After(deadline) {
-			t.Fatal("a tick's rebuild never ran while a refresh pass was held open; the refresh is blocking the past index")
+			t.Fatalf("a tick's rebuild never published the rename while a refresh pass was held open; the refresh is blocking the past index: name=%q found=%v", entry.Meta.Name, ok)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	entry, ok := f.past.Lookup(f.sessionID)
-	if !ok || entry.Meta.Name != "Renamed while the refresh was stuck" {
-		t.Fatalf("the rename is not in the index: name=%q found=%v", entry.Meta.Name, ok)
+	if sweep.rebuildCount() == before {
+		t.Fatalf("the tick ran %d rebuilds, want at least one: the held refresh blocked the rebuild", sweep.rebuildCount()-before)
 	}
 }
