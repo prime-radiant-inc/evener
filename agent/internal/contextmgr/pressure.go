@@ -389,14 +389,11 @@ func estimateTokenPartsFor(res registry.Resolved, turns []schema.Turn) llm.Token
 	return parts
 }
 
-// foreignReasoningTurn reports a turn the Responses request path will not replay
-// opaquely; only ReplayableResponsesPlaintext bills for such a turn.
+// foreignReasoningTurn reports a turn whose reasoning another deployment issued:
+// its blob never replays, so only ReplayableResponsesPlaintext bills.
 func foreignReasoningTurn(res registry.Resolved, t schema.Turn) bool {
-	if res.Protocol != registry.ProtocolOpenAIResponses {
-		return false
-	}
-	return t.ResponseProvider != "" && t.ResponseProvider != res.Instance ||
-		t.ResponseProtocol != "" && t.ResponseProtocol != registry.ProtocolOpenAIResponses
+	return res.Protocol == registry.ProtocolOpenAIResponses &&
+		t.ResponseProvider != "" && t.ResponseProvider != res.Instance
 }
 
 func attentionTransparentTurnCount(history []schema.Turn) int {
