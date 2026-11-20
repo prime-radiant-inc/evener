@@ -441,33 +441,6 @@ test("a pane acquiring across a deletion still resolves and shows the deleted st
   expect(threadsStore.getState().deletedRefs.has(ref), "the fence is recorded for the pane").toBe(true);
 }, 20_000);
 
-// The typed history failure is the hub's terminal answer for the attempt, and
-// a destination nobody has opened has no held model to answer it against. The
-// claim waiting on that attempt must learn the answer and stop: pacing a retry
-// over a terminal response repeats it forever while the composer behind the
-// claim stays busy waiting for a decision that never comes.
-test("a history-failed first read on an unopened destination rejects its claim without arming a retry", async () => {
-  const ref = "local:unopened-history-failed";
-  const fake = connectMutationClient();
-  let reads = 0;
-  fake.on("thread/read", () => {
-    reads += 1;
-    throw historyFailedRejection();
-  });
-  let scheduled = 0;
-  const restoreScheduler = installHydrationRetrySchedulerForTests(() => {
-    scheduled += 1;
-    return () => {};
-  });
-  const claim = acquireUnreadThreadClaim(ref);
-
-  expect(await settleOutcome(claim), "the terminal answer rejects the claim").toBe("rejected");
-  expect(reads, "the terminal answer is the only read").toBe(1);
-  expect(scheduled, "a terminal answer arms no retry").toBe(0);
-  expect(bodyOwners(ref), "a rejected acquisition leaves no body hold behind").toBe(0);
-  restoreScheduler();
-}, 20_000);
-
 // The composer's resend gate reads the destination's capabilities. A routing
 // claim's read must not resolve on a cached shell a pane installed while that
 // read awaited its durable authorities: the shell's incarnation is older, so
@@ -576,11 +549,13 @@ test("an uncached delegate watch retries a history-failed first read and hydrate
   restoreScheduler();
 }, 20_000);
 
-// A resend's claim has no surface at all. A refusal on a destination no pane
-// has opened must still reject it at once: a pane-shaped recovery would hold
-// the resend busy over an answer the hub has already given, and no read may
-// follow a refusal the claim has been told about.
-test("a routing-only claim on an unopened destination still rejects at once and arms no read of its own", async () => {
+// The typed history failure is the hub's terminal answer for the attempt, and a
+// destination nobody has opened has no held model to answer it against. A
+// resend's claim has no surface at all, so it must learn the answer and stop:
+// pacing a retry over a terminal response repeats it forever while the composer
+// behind the claim stays busy waiting for a decision that never comes. No read
+// may follow a refusal the claim has been told about.
+test("a routing-only claim on an unopened destination rejects at once, arms no retry, and leaves no read behind", async () => {
   const ref = "local:routing-first-read-failed";
   const fake = connectMutationClient();
   let reads = 0;

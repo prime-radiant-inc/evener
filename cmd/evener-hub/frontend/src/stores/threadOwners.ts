@@ -9,7 +9,7 @@
 // its own hydration, a resend across its verification - keeps the handle it was
 // given and releases that.
 //
-// The invariant: releasing a hold requires the handle minted for that hold, and
+// The invariant: releasing a hold requires the handle created for that hold, and
 // no other lifecycle can drop it. Arrival order, ensure generation and "newest
 // of my kind" were three ways of guessing whose hold was standing, and each
 // guess spent a neighbour's hold once two lifecycles overlapped: a pane closing
@@ -21,7 +21,6 @@
 export interface ForegroundHold {
   readonly ref: string;
   readonly routing: boolean;
-  attached: boolean;
   released: boolean;
 }
 const paneForegroundHolds = new Map<string, ForegroundHold[]>();
@@ -52,10 +51,6 @@ function hold(counts: Map<string, number>, ref: string): void {
   counts.set(ref, (counts.get(ref) ?? 0) + 1);
 }
 
-function holdsOfKind(ref: string, routing: boolean): ForegroundHold[] | undefined {
-  return (routing ? routingForegroundHolds : paneForegroundHolds).get(ref);
-}
-
 export function foregroundHolds(ref: string): number {
   return (paneForegroundHolds.get(ref)?.length ?? 0) + (routingForegroundHolds.get(ref)?.length ?? 0);
 }
@@ -79,24 +74,6 @@ export function routingOnlyForegroundHolds(ref: string): number {
   return routingForegroundHolds.get(ref)?.length ?? 0;
 }
 
-/** Mints the handle for one foreground hold. Minting takes no count, so an
- * acquisition that throws before it owns anything has moved nothing, and a
- * holder can be handed its handle before the work that makes it live. */
-export function mintForegroundHold(ref: string, routing = false): ForegroundHold {
-  return { ref, routing, attached: false, released: false };
-}
-
-/** Takes one foreground count for this handle. Attaching twice is a caller bug
- * rather than a second hold: one handle names one hold and one release. */
-export function attachForegroundHold(h: ForegroundHold): void {
-  if (h.attached) throw new Error("a foreground hold attaches once");
-  h.attached = true;
-  const holds = h.routing ? routingForegroundHolds : paneForegroundHolds;
-  const standing = holds.get(h.ref) ?? [];
-  standing.push(h);
-  holds.set(h.ref, standing);
-}
-
 /** Drops the hold this handle names and returns how many foreground holds
  * remain. A handle releases once: a holder that already released on unmount
  * leaves its rollback with nothing to drop, which is what makes the two exits
@@ -104,7 +81,6 @@ export function attachForegroundHold(h: ForegroundHold): void {
 export function releaseForegroundHold(h: ForegroundHold): number {
   if (h.released) return foregroundHolds(h.ref);
   h.released = true;
-  if (!h.attached) return foregroundHolds(h.ref);
   const holds = h.routing ? routingForegroundHolds : paneForegroundHolds;
   const standing = holds.get(h.ref);
   if (standing) {
@@ -117,27 +93,29 @@ export function releaseForegroundHold(h: ForegroundHold): number {
 
 /** True while this handle's count is still standing. */
 export function foregroundHoldStanding(h: ForegroundHold): boolean {
-  return h.attached && !h.released;
+  return !h.released;
 }
 
-/** Takes a foreground hold and returns the handle that names it. It is the one
- * way a foreground count is minted and attached, so no caller can attach a
- * hold it cannot later release by handle. */
+/** Takes a foreground hold and returns the handle that names it: the count and
+ * the handle are created together, so no caller can hold a count it cannot
+ * later release by handle. */
 export function holdForeground(ref: string, routing = false): ForegroundHold {
-  const handle = mintForegroundHold(ref, routing);
-  attachForegroundHold(handle);
+  const handle: ForegroundHold = { ref, routing, released: false };
+  const holds = routing ? routingForegroundHolds : paneForegroundHolds;
+  const standing = holds.get(ref) ?? [];
+  standing.push(handle);
+  holds.set(ref, standing);
   return handle;
 }
 
-/** Drops the newest handle of this kind and returns how many remain. This is a
- * shorthand for paired same-frame holders, not a way to name whose hold is
- * released: a holder that outlives its frame must carry its own handle and call
- * releaseForegroundHold, or it drops a neighbour's hold. */
-export function releaseForeground(ref: string, routing = false): number {
-  // The standing handles of this kind are the count: with none left there is
-  // nothing of this kind to drop, and the release must not spend another kind's
-  // hold from the total.
-  const newest = holdsOfKind(ref, routing)?.at(-1);
+/** Drops the newest PANE hold and returns how many foreground holds remain.
+ * This is a shorthand for paired same-frame pane holders, not a way to name
+ * whose hold is released: a holder that outlives its frame must carry its own
+ * handle and call releaseForegroundHold, or it drops a neighbour's hold. A
+ * routing hold is never this shape's to drop: spending one here would retire
+ * the model out from under the resend whose claim took it. */
+export function releaseForeground(ref: string): number {
+  const newest = paneForegroundHolds.get(ref)?.at(-1);
   if (!newest) return foregroundHolds(ref);
   return releaseForegroundHold(newest);
 }

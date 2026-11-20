@@ -1309,8 +1309,45 @@ describe("ordinary entry transcript route", () => {
 
       const opening = threadsStore.getState().ensureThread(selected);
       await vi.waitFor(() => expect(releases.length).toBeGreaterThanOrEqual(2));
-      const historyKey = fixture.inspect().historyKey;
-      if (!historyKey) throw new Error("expected the fixture's resolved history key");
+      // The route installs its history key with the repository that carries
+      // it, so a hydration parked on its authorities has not published one
+      // yet. The delete heals disk-only histories by requested-ref metadata,
+      // so give it a real record to find: the key is the identity's own.
+      const historyKey = entryHistoryKey({
+        clientId: location.origin,
+        hostId: "local",
+        sessionId: `sess_${selected}`,
+        incarnation: "inc-1",
+      });
+      // Written after the pane's bounded lookup already missed (the read is
+      // parked past it), so this record cannot turn into a cached shell.
+      const seeded = turnFixture("entry-delete-held-seed").items[0]!;
+      await entryCache.commitBatch({
+        historyKey,
+        clearEpoch: 0,
+        items: [
+          {
+            historyKey,
+            transcriptKey: "entry-delete-held-seed",
+            position: { entry: 1, item: 0 },
+            version: 1,
+            item: seeded,
+          },
+        ],
+        sessionMetadata: {
+          historyKey,
+          requestedRefs: [{ clientId: location.origin, ref: selected }],
+          resolvedIdentity: {
+            clientId: location.origin,
+            hostId: "local",
+            sessionId: `sess_${selected}`,
+            incarnation: "inc-1",
+          },
+          savedAt: Date.now(),
+          accessedAt: Date.now(),
+          formatVersion: 3,
+        },
+      });
 
       // Delete while the authority read is in flight, then let it read the new
       // generation. The old response must not be relabelled fresh. A queued

@@ -945,7 +945,6 @@ async function acceptEntryTranscriptHydration(
     const resolvedRef = response.thread.evener.ref;
     const separator = resolvedRef.indexOf(":");
     identity.hostId = separator < 0 ? "local" : resolvedRef.slice(0, separator);
-    fixture.hostId = identity.hostId;
   }
   // Saved fallback provenance can name a different snapshot without replacing
   // the held live history. Keep its binding only within the same resolved owner,
@@ -960,9 +959,13 @@ async function acceptEntryTranscriptHydration(
     heldIdentity.sessionId === identity.sessionId;
   if (accumulatesHeldHistory) identity.incarnation = heldIdentity.incarnation;
   const historyKey = entryHistoryKey(identity);
-  fixture.identity = identity;
+  // The route's binding is installed with the repository that carries it, in
+  // the replacement below and under the ownership fences that follow. Writing
+  // it here would let a pane's bounded lookup, which can install a provisional
+  // shell WHILE this response awaits its durable authorities, leave the route
+  // naming that shell's identity and history key beside the source snapshot's
+  // replacement repository.
   const historyChanged = fixture.historyKey !== undefined && fixture.historyKey !== historyKey;
-  fixture.historyKey = historyKey;
   // The source response was issued before this point. Capture the acquisition's
   // retirement claim AND the route it currently owns, then read the durable
   // authorities with the lookup deadline: a delete or same-tab Clear that
@@ -1046,28 +1049,25 @@ async function acceptEntryTranscriptHydration(
       : (authorities?.clearEpoch ?? fixture.clearEpoch ?? 0);
   const historyGeneration = authorities?.historyGeneration ?? fixture.historyGeneration ?? 0;
   // A pane's bounded cache lookup can install a provisional shell WHILE this
-  // response awaited its durable authorities, and the comparisons below were
-  // captured before it landed: `historyChanged` still describes the route this
-  // response inherited, the shell's thread id, clear epoch and history
-  // generation all agree with the source, and only the incarnation it bound
-  // (an older one) tells the two apart. Left unreplaced, the repository refuses
-  // this response on that incarnation while the route goes on serving the shell
-  // - a model announcing neither Send nor Queue where the source's fresh
-  // snapshot says both are available. The shell marks itself provisional
-  // (`cachedUnverified`), so a current source read is exactly what displaces it,
-  // under the retirement fences already asked above.
+  // response awaited its durable authorities, after every comparison above was
+  // captured. The shell's thread id, clear epoch and history generation can all
+  // agree with the source and only the incarnation it bound (an older one)
+  // tell the two apart, so no per-field comparison identifies it - but it marks
+  // itself (`cachedUnverified`), and a current source read is exactly what
+  // displaces it with a fresh baseline, under the retirement fences already
+  // asked above. Left in place, the repository refuses this response on that
+  // incarnation while the route goes on serving the shell - a model announcing
+  // neither Send nor Queue where the source's fresh snapshot says both are
+  // available.
   const provisionalShell = fixture.cachedUnverified === true;
   const installedSnapshot = fixture.repository?.getSnapshot();
-  const installedIncarnation = provisionalShell ? installedSnapshot?.history?.incarnation : undefined;
-  const supersededShell =
-    provisionalShell && installedIncarnation !== undefined && installedIncarnation !== identity.incarnation;
   const threadChanged = installedSnapshot?.threadId !== response.thread.id;
   if (
     !fixture.repository ||
+    provisionalShell ||
     (hydration.discardHeldHistory && !accumulatesHeldHistory) ||
     threadChanged ||
     historyChanged ||
-    supersededShell ||
     fixture.clearEpoch !== clearEpoch ||
     fixture.historyGeneration !== historyGeneration
   ) {
@@ -1077,7 +1077,7 @@ async function acceptEntryTranscriptHydration(
     // precisely so a source read can displace it, and this response is the read
     // that lookup's acquisition asked for. Refusing it on the claim mismatch
     // leaves the route serving an older incarnation's capabilities forever.
-    if (fixture.repository !== claimedRepository && !supersededShell) return;
+    if (fixture.repository !== claimedRepository && !provisionalShell) return;
     // The pending recorded-range work is the route's fact, not the repository
     // instance's: identities the display restored but no current-baseline
     // statement validated yet survive the replacement the stale-cursor
@@ -1086,6 +1086,13 @@ async function acceptEntryTranscriptHydration(
     const pendingUnreconciled = fixture.repository?.unreconciledRecorded();
     retireEntryTranscriptRoute(fixture);
     fixture.lifetime += 1;
+    // Installed together, after every ownership fence above: the route names
+    // the binding its repository was created from, so the next hydration reads
+    // the key this replacement installed rather than the one belonging to the
+    // repository it retired.
+    fixture.hostId = identity.hostId;
+    fixture.identity = identity;
+    fixture.historyKey = historyKey;
     fixture.clearEpoch = clearEpoch;
     fixture.historyGeneration = historyGeneration;
     fixture.repository = createEntryTranscriptRepository(fixture, {
@@ -1151,22 +1158,7 @@ async function acceptEntryTranscriptHydration(
     if (params.waitStartedAt !== undefined && params.waitStartedAt > 0 && params.delayMs > 0)
       postCutWaitStamps.add(params.waitStartedAt);
   }
-  // A generation restored from the disk is not a fence this tab's read has to
-  // clear. A provisional shell's counters belong to the session that saved
-  // them, and a read issued before the shell landed names none at all (there
-  // was no held model to issue one), so the repository discards the source
-  // response on a number no live read ever carried - leaving the route serving
-  // a shell whose empty capabilities never change. Re-stamp this response with
-  // the generation a read issued NOW against the shell would carry. A LIVE read
-  // - one issued against this shell or a base model that preceded it - always
-  // carries more than the model's own issuedGeneration, so the fence of a live
-  // read is untouched; anything at or below it was restored from the disk.
-  const installedGeneration = provisionalShell ? (repository.getSnapshot()?.history?.issuedGeneration ?? 0) : 0;
-  const acceptedResponse =
-    installedGeneration > 0 && (response.requestGeneration ?? 0) <= installedGeneration
-      ? { ...response, requestGeneration: installedGeneration + 1 }
-      : response;
-  const adoptedRead = repository.acceptRead(acceptedResponse, {
+  const adoptedRead = repository.acceptRead(response, {
     lifetime: fixture.lifetime,
     ...nextTranscriptReadIdentity(),
     ...(postCutWaitStamps.size > 0 ? { postCutWaitStamps } : {}),
