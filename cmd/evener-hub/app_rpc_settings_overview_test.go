@@ -859,12 +859,13 @@ func TestHubRPCSettingsOverviewReportsOperationStoreQuarantine(t *testing.T) {
 		t.Fatal("the fixture store took no quarantine, so the overview has no signal to carry")
 	}
 
-	resp := requestSettingsOverview(t, hubcore.WebConfig{
+	hubCfg := hubcore.WebConfig{
 		StateDir:           t.TempDir(),
 		RemoteHostOpsStore: store,
 		MCPConfigPath:      filepath.Join(t.TempDir(), "no-mcp.json"),
 		MCPDiscoveryDir:    t.TempDir(),
-	})
+	}
+	resp := requestSettingsOverview(t, hubCfg)
 
 	if resp.Hub == nil {
 		t.Fatal("Hub = nil, want populated")
@@ -904,6 +905,32 @@ func TestHubRPCSettingsOverviewReportsOperationStoreQuarantine(t *testing.T) {
 	}
 	if got.QuarantineEpoch != 1 {
 		t.Errorf("QuarantineEpoch = %d, want 1", got.QuarantineEpoch)
+	}
+
+	// The aside file is the operator's to archive: once it is gone while the
+	// custody file remains, a later overview must not keep sending the operator
+	// to the vanished path — it reports the custody path and epoch alone.
+	firstCustodyFile := got.CustodyFile
+	firstEpoch := got.QuarantineEpoch
+	if err := os.Remove(got.AsideFile); err != nil {
+		t.Fatalf("remove aside file %s: %v", got.AsideFile, err)
+	}
+	resp = requestSettingsOverview(t, hubCfg)
+	if resp.Hub == nil {
+		t.Fatal("Hub = nil on the second overview, want populated")
+	}
+	got = resp.Hub.OperationStoreQuarantine
+	if got == nil {
+		t.Fatal("Hub.OperationStoreQuarantine = nil after the aside file was archived, want the signal with the custody file and epoch")
+	}
+	if got.AsideFile != "" {
+		t.Errorf("AsideFile = %q after the file was removed, want empty rather than a path that no longer exists", got.AsideFile)
+	}
+	if got.CustodyFile != firstCustodyFile {
+		t.Errorf("CustodyFile = %q, want the first overview's custody path %q", got.CustodyFile, firstCustodyFile)
+	}
+	if got.QuarantineEpoch != firstEpoch {
+		t.Errorf("QuarantineEpoch = %d after the aside file was archived, want the first overview's %d", got.QuarantineEpoch, firstEpoch)
 	}
 }
 

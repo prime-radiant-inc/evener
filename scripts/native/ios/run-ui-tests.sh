@@ -11,16 +11,19 @@
 # private hub, provider and connection state; the simulator is created and
 # deleted by the qualification binary that starts this child, never here.
 #
-# WHAT IT DOES: builds the runtime pair and the evener binary, starts the
-# fixture provider and an isolated hub under private XDG directories with
-# HOME inherited, reads the fixture-only connection data from a mode-0600
-# private file, injects it into the generated test-run configuration in
-# place, runs the three journeys against the downloaded Release app, and
-# validates the xcresult: every intended test identity executed, none
-# skipped, zero failures. The private state never reaches the output
-# directory or any uploaded artifact, with two deliberate exceptions: this
-# run's own daemon logs, whose round diagnostics (steers, turn completions,
-# the reason a round stopped) are copied out before the state goes, and
+# WHAT IT DOES: installs the runtime pair the workflow's setup job built
+# beside the app build (revision and checksums verified first), or builds the
+# pair itself when none is supplied or the selected harness does not read the
+# variable — then starts the fixture provider and an isolated hub under
+# private XDG directories with HOME inherited, reads the fixture-only
+# connection data from a mode-0600 private file, injects it into the generated
+# test-run configuration in place, runs the three journeys against the
+# downloaded Release app, and validates the xcresult: every intended test
+# identity executed, none skipped, zero failures. The private state never
+# reaches the output directory or any uploaded artifact, with two deliberate
+# exceptions: this run's own daemon logs, whose round diagnostics (steers,
+# turn completions, the reason a round stopped) are copied out before the
+# state goes, and
 # XCTest's own activity record of the onboarding typing, which lands in the
 # uploaded test log and result bundle. Both carry only fixture-only data —
 # the connection data guards a throwaway loopback hub that dies with the run —
@@ -234,19 +237,35 @@ ln -sfn "$workspace" "$workspace_link"
 
 provider_binary="$run_dir/fixture-provider"
 evener_binary="$run_dir/evener"
+# The workflow's setup job builds this tree's runtime pair on its own runner
+# while the app build runs, and hands the directory over here. A pair built
+# from another revision must never run: the revision file is compared with
+# this tree before either binary is copied into the run directory.
+runtime_pair="${EVENER_QUALIFICATION_RUNTIME_BINARIES:-}"
 
 cd "$repo_root"
 
-log "building the runtime pair (make build-runtime)"
-make build-runtime >"$output/build-runtime.log" 2>&1 || {
-	echo "build-runtime failed; see $output/build-runtime.log" >&2
-	tail -30 "$output/build-runtime.log" >&2
-	exit 1
-}
+if [ -n "$runtime_pair" ]; then
+	# The hub's daemons are exec'd from $evener_binary and carry the run
+	# directory's basename in argv, which is how cleanup proves it owns them;
+	# the installer copies instead of running from the pair so that ownership
+	# tag stays. It refuses a pair from another revision, a pair without a
+	# manifest entry for either binary, and a pair whose bytes no longer match
+	# its manifest.
+	bash "$repo_root/scripts/native/ios/qualification/install-runtime-pair.sh" "$runtime_pair" "$identity" "$run_dir"
+	log "using the runtime pair built by the setup job at $runtime_pair"
+else
+	log "building the runtime pair (make build-runtime)"
+	make build-runtime >"$output/build-runtime.log" 2>&1 || {
+		echo "build-runtime failed; see $output/build-runtime.log" >&2
+		tail -30 "$output/build-runtime.log" >&2
+		exit 1
+	}
 
-log "building the evener and fixture-provider binaries"
-go build -o "$evener_binary" ./cmd/evener >"$output/build-evener.log" 2>&1
-go build -o "$provider_binary" ./scripts/native/ios/fixture-provider >>"$output/build-evener.log" 2>&1
+	log "building the evener and fixture-provider binaries"
+	go build -o "$evener_binary" ./cmd/evener >"$output/build-evener.log" 2>&1
+	go build -o "$provider_binary" ./scripts/native/ios/fixture-provider >>"$output/build-evener.log" 2>&1
+fi
 
 # The operator's shell can carry EVENER_* overrides — an Evener agent session
 # exports them — and EVENER_STATE_DIR or EVENER_CREDENTIALS_CONFIG outrank the
