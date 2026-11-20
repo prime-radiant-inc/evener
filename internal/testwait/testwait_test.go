@@ -5,6 +5,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -28,6 +29,30 @@ func (r *recorder) Deadline() (time.Time, bool) { return r.deadline, true }
 
 // noDeadline is a test that carries no deadline, as under `go test -timeout 0`.
 type noDeadline struct{ testing.TB }
+
+// panickingDeadline is a test whose deadline read panics with something other
+// than the bubble refusal, so BudgetOrCeiling must not swallow it.
+type panickingDeadline struct{ testing.TB }
+
+func (panickingDeadline) Deadline() (time.Time, bool) { panic("sentinel-deadline-panic") }
+
+func TestBudgetOrCeilingAnswersTheCeilingInsideASynctestBubble(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		if got := BudgetOrCeiling(t); got != waitCeiling {
+			t.Fatalf("BudgetOrCeiling inside a bubble = %s, want the %s ceiling: testing forbids the deadline read there", got, waitCeiling)
+		}
+	})
+}
+
+func TestBudgetOrCeilingPropagatesOtherPanics(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if p := recover(); p != "sentinel-deadline-panic" {
+			t.Fatalf("recovered %v, want the original panic", p)
+		}
+	}()
+	BudgetOrCeiling(panickingDeadline{})
+}
 
 // runToEnd runs wait on its own goroutine, since a failing wait ends it.
 func runToEnd(wait func()) {

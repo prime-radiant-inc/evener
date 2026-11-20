@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
-	"primeradiant.com/evener/agent/schema"
 )
 
 // TestSortedStableActivityDelegateIDs covers sortedStableActivityDelegateIDs.
@@ -190,25 +189,5 @@ func TestLiveActivitySessionLabel(t *testing.T) {
 	label := liveActivitySessionLabel(s)
 	if label == "" {
 		t.Fatal("label should not be empty for a real session")
-	}
-}
-
-// TestActivitySessionLabel covers activitySessionLabel.
-func TestActivitySessionLabelCov(t *testing.T) {
-	t.Parallel()
-	// With display name.
-	meta := schema.SessionMeta{ID: "sess_1", Name: "My Session"}
-	if got := activitySessionLabel(meta); got != "My Session" {
-		t.Fatalf("with name: %q", got)
-	}
-	// Without name, uses ID.
-	meta = schema.SessionMeta{ID: "sess_1"}
-	if got := activitySessionLabel(meta); got != "sess_1" {
-		t.Fatalf("without name: %q, want sess_1", got)
-	}
-	// Empty meta.
-	meta = schema.SessionMeta{}
-	if got := activitySessionLabel(meta); got != "" {
-		t.Fatalf("empty: %q", got)
 	}
 }

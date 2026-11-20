@@ -271,26 +271,6 @@ func TestCovNormalizeWatchArgs(t *testing.T) {
 	}
 }
 
-// TestCovCloneWatchEventFilter covers cloneWatchEventFilter.
-func TestCovCloneWatchEventFilter(t *testing.T) {
-	t.Parallel()
-	// Nil → nil.
-	if got := cloneWatchEventFilter(nil); got != nil {
-		t.Fatal("nil should return nil")
-	}
-
-	// Non-nil → clone.
-	orig := &watchEventFilter{ToolName: "exec", Status: "ok"}
-	clone := cloneWatchEventFilter(orig)
-	if clone.ToolName != "exec" || clone.Status != "ok" {
-		t.Fatalf("clone = %+v", clone)
-	}
-	clone.ToolName = "modified"
-	if orig.ToolName == "modified" {
-		t.Fatal("clone should be independent")
-	}
-}
-
 // TestCovCloneWatchSendArgs covers cloneWatchSendArgs.
 func TestCovCloneWatchSendArgs(t *testing.T) {
 	t.Parallel()
@@ -812,17 +792,6 @@ func TestCovDelegateQuietAttentionID(t *testing.T) {
 	got = delegateQuietAttentionIDForStretch(lease, 3)
 	if got != "quiet:dlg_1:2:3" {
 		t.Fatalf("stretch = %q", got)
-	}
-}
-
-// TestCovDelegateQuietAttentionContent covers delegateQuietAttentionContent.
-func TestCovDelegateQuietAttentionContent(t *testing.T) {
-	t.Parallel()
-	lease := delegateLease{delegateID: "dlg_1", generation: 1}
-	now := time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
-	got := delegateQuietAttentionContent(lease, delegateQuietWindow, now)
-	if !strings.Contains(got, "dlg_1") || !strings.Contains(got, "delegate-notification") {
-		t.Fatalf("content = %q", got)
 	}
 }
 

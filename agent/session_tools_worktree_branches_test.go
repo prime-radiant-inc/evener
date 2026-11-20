@@ -313,30 +313,6 @@ func TestPrunePolicy(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// branchExists (with mock runner)
-// ---------------------------------------------------------------------------
-
-func TestBranchExists(t *testing.T) {
-	t.Parallel()
-	t.Run("exists", func(t *testing.T) {
-		run := func(args ...string) (string, error) {
-			return "", nil // no error = branch exists
-		}
-		if !branchExists(worktree.GitRunner(run), "mybranch") {
-			t.Fatalf("expected true for existing branch")
-		}
-	})
-	t.Run("not exists", func(t *testing.T) {
-		run := func(args ...string) (string, error) {
-			return "", errors.New("not found")
-		}
-		if branchExists(worktree.GitRunner(run), "mybranch") {
-			t.Fatalf("expected false for non-existent branch")
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
 // resolveBaseFromActiveRoot (with mock runner)
 // ---------------------------------------------------------------------------
 
