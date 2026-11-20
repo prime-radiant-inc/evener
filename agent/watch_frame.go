@@ -6,7 +6,6 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/lineend"
-	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/provenance"
 )
 
@@ -72,13 +71,14 @@ func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger st
 
 	var b strings.Builder
 	// The message and note are the model's own words about why it armed the
-	// watch, so both are escaped by the field writers below. The identity lines
+	// watch; the field writers below normalize their line endings and leave them
+	// otherwise raw, for the delivering rail to encode. The identity lines
 	// (watch_id, delivery_id, job_id) are the harness's own, and the notices a
 	// fire leads with are prepended outside this function, so those keep every
 	// byte.
 	message := limitWatchText(strings.TrimSpace(cfg.send.Message), watchMessageMaxChars)
 	if message != "" {
-		b.WriteString(watchFrameProse(message))
+		b.WriteString(watchFrameFieldText(message))
 		b.WriteString("\n\n")
 	}
 	b.WriteString("Watch frame\n")
@@ -100,7 +100,7 @@ func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger st
 	// note has to ride here or a stable receiver never sees why the watch was
 	// armed. Bounded where the note is stored, as watchConditionSummary bounds it.
 	if cfg.note != "" {
-		writeWatchFrameTopField(&b, "note", watchFrameProse(limitWatchText(cfg.note, watchMessageMaxChars)))
+		writeWatchFrameTopField(&b, "note", watchFrameFieldText(limitWatchText(cfg.note, watchMessageMaxChars)))
 	}
 	writeWatchFrameProvenance(&b, p)
 	writeWatchFrameEvent(&b, ev)
@@ -135,7 +135,7 @@ func appendWatchFrameJobRead(frame, jobID string) string {
 }
 
 func writeWatchFrameIndentedBlock(b *strings.Builder, text string) {
-	text = watchFrameProse(text)
+	text = watchFrameFieldText(text)
 	for line := range strings.SplitSeq(text, "\n") {
 		b.WriteString("  ")
 		b.WriteString(line)
@@ -143,17 +143,19 @@ func writeWatchFrameIndentedBlock(b *strings.Builder, text string) {
 	}
 }
 
-// watchFrameProse renders one free-form field of a watch frame: the line
-// endings are normalized, then the text is escaped, so a frame opener in it
-// arrives without the spelling the harness's own framing opens with.
+// watchFrameFieldText renders one free-form field of a watch frame, normalized
+// to LF line endings.
 //
-// Every such field is text the frame's reader must be able to tell from that
-// framing — the model's message and note, the event payload it watches, and the
-// excerpt of a job it reads. The escape is applied before the field is
-// re-indented onto its continuation lines, so an opener at a continuation's
-// start is read as the line start it is.
-func watchFrameProse(text string) string {
-	return sysmsg.EscapeModelAuthoredFrames(lineend.Normalize(text))
+// This is the text the frame's reader must be able to tell from the harness's
+// own framing — the model's message and note, the event payload it watches, and
+// the excerpt of a job it reads. The field is stored raw: each rail that
+// delivers a frame applies its own codec, because the two rails reach the model
+// by different routes. A frame wrapped in a <job-notification> block is
+// body-encoded for the client's single decode, and a frame handed bare to a
+// stable receiver is frame-escaped. Escaping here as well would encode the
+// model's text twice on the wrapped rail.
+func watchFrameFieldText(text string) string {
+	return lineend.Normalize(text)
 }
 
 func writeWatchFrameTopField(b *strings.Builder, name, value string) {
@@ -308,7 +310,7 @@ func writeWatchFrameOptionalField(b *strings.Builder, name, value string) {
 }
 
 func writeWatchFrameTextField(b *strings.Builder, name, value string) {
-	value = watchFrameProse(value)
+	value = watchFrameFieldText(value)
 	b.WriteString("  ")
 	b.WriteString(name)
 	b.WriteString(": ")

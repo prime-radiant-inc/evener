@@ -259,9 +259,12 @@ func formatJobNotificationBody(n jobNotification, excerpt notificationExcerpt, c
 			notificationAttr("delivery_id", n.WatchSend.DeliveryID),
 			notificationAttr("trigger", n.Reason),
 		}
-		// n.watchSendFrame was already escaped by buildWatchFrame (watchFrameProse),
-		// so encode only remaining "<" bytes without double-encoding "&lt;" or "&#91;".
-		frameBody := strings.ReplaceAll(strings.ToValidUTF8(n.watchSendFrame, "\uFFFD"), "<", "&lt;")
+		// The frame is raw text from buildWatchFrame, so it gets the same body
+		// codec every other notification body gets: "&" first, then "<", and then
+		// the line-start frame escape. A literal "&lt;" in the watched output
+		// survives the client's single decode as "&lt;", and a literal "<" comes
+		// back as "<", so the two never collapse onto each other.
+		frameBody := escapeNotificationProse(n.watchSendFrame)
 		return fmt.Sprintf("<job-notification %s>\n%s\n</job-notification>",
 			strings.Join(attrs, " "), frameBody)
 	}

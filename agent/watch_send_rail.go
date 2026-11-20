@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/provenance"
 )
 
@@ -43,6 +44,16 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 		SessionID: jm.sessionID,
 		Data:      d.eventData,
 	}, d.triggerProvenance)
+	// A non-caller target receives this frame bare through the attention rail,
+	// with no <job-notification> wrapper and no client decode to invert, so the
+	// frame escape is applied here. A caller-targeted frame is wrapped instead
+	// and body-encoded at render time. Either way the frame is escaped exactly
+	// once; escaping here as well would encode the caller's text twice. The
+	// harness's own notices are prepended below, after this point, so they keep
+	// every byte.
+	if d.send.To != runtimeMessageAliasCaller {
+		d.frame = sysmsg.EscapeModelAuthoredFrames(d.frame)
+	}
 	if d.rosterPayload != "" {
 		d.frame += d.rosterPayload
 	} else {
