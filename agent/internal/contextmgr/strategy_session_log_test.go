@@ -18,9 +18,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-func TestSessionLogStrategy_SatisfiesInterface(t *testing.T) {
-	var _ Strategy = (*SessionLogStrategy)(nil)
-}
+var _ Strategy = (*SessionLogStrategy)(nil)
 
 func TestSessionLogStrategy_Name(t *testing.T) {
 	s := &SessionLogStrategy{}
