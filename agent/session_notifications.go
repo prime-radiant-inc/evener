@@ -32,15 +32,12 @@ import (
 // every wake that gets this far can address its own turn.
 func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (proceed bool) {
 	s.drivePendingDelegateAttention()
-	// A repeating timer's tick waits on this session's ordinary queue, and only
-	// an unleased EntryNotification turn would carry it -- which admission
-	// refuses, leaving the tick queued and every later wake spinning on the same
-	// refusal. Take it off the queue now: while this turn cannot present it, the
-	// leased drive it arms can. Under a lease this is a no-op, because the
-	// drained batch below is presented as one reminder by the turn itself.
-	if s.stableChildTurnNeedsLease(ctx) {
-		s.handOffQueuedWatchTicks()
-	}
+	// A repeating timer's tick waits on this session's ordinary queue. This turn
+	// cannot present it, and taking it off the queue here would freeze it before
+	// any generation could reserve it, so the batch stays put: the refusal below
+	// hands it back untouched and the leased drive claims it once its
+	// reservation succeeds.
+	//
 	// Drive signal (b) (spec §3): a child driven on its pending caller-targeted
 	// watch sends may have no token queued yet (the drive was launched on the
 	// hasPendingWatchSends signal, not a token enqueue). Enqueue the OWN session's

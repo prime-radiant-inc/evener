@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"slices"
@@ -127,19 +126,6 @@ func isStableWatchReminderAttentionID(attentionID string) bool {
 	return strings.HasPrefix(attentionID, stableWatchReminderAttentionIDPrefix)
 }
 
-// isStableWatchSendAttentionID reports whether attentionID names the durable
-// row of a caller watch send rather than a notice the model could decline.
-//
-// A caller send's occurrence is "send:" plus its delivery id
-// (resolveStableWatchSend); timer ticks carry "tick:", reminder snapshots
-// "reminder:", runaway stops "runaway:", and no-send condition fires
-// "delivery:". Checking the ":send:" occurrence marker rather than splitting on
-// a fixed colon count keeps colon-bearing targets (such as hub:roster) from
-// misclassifying a caller send as declinable news.
-func isStableWatchSendAttentionID(attentionID string) bool {
-	return isStableWatchAttentionID(attentionID) && strings.Contains(attentionID, ":send:")
-}
-
 // discardTerminalStableWatchPending resolves the durable watch attention a
 // terminal communicate leaves pending, so the drain does not run a model turn
 // for news the model already declined to wait for.
@@ -152,9 +138,10 @@ func isStableWatchSendAttentionID(attentionID string) bool {
 // on its own work, or a send-rail diagnostic -- reopens a paid turn after the
 // run declared itself over.
 //
-// A caller send is kept: it is the caller's pending obligation, not news about
-// one, and the model still owes it an answer. The cutoff runs once at drain
-// entry, so a notice a drain turn arms later is untouched.
+// Every pending watch row is discarded: a caller's watch send reaches a stable
+// delegate through the observer rail, which writes no watch row here, so a
+// pending row is always news the model declined to wait for. The cutoff runs
+// once at drain entry, so a notice a drain turn arms later is untouched.
 func (s *Session) discardTerminalStableWatchPending() {
 	if s == nil || s.owningDelegateID == "" {
 		return
@@ -165,7 +152,7 @@ func (s *Session) discardTerminalStableWatchPending() {
 	}
 	discard := make([]string, 0, len(pending))
 	for _, attentionID := range pending {
-		if !isStableWatchAttentionID(attentionID) || isStableWatchSendAttentionID(attentionID) {
+		if !isStableWatchAttentionID(attentionID) {
 			continue
 		}
 		discard = append(discard, attentionID)
@@ -306,20 +293,13 @@ type retainedStableWatchNotice struct {
 	notification jobNotification
 	attentionID  string
 	content      string
-	// delivery, when set, is the resolved watch-send this notice carries. Its
-	// durable append IS that delivery reaching the model, so the send is
-	// acknowledged the moment a retry lands and never before.
-	delivery *deliverableJobNotification
 }
 
 // retainStableWatchPending records a notice whose durable append failed and
 // schedules the session's existing notification retry wake. The notice is NOT
 // put back on the ordinary queue: that queue is the unleased route this ingress
 // exists to close (LIFE-01, #2340 review M4).
-//
-// delivery carries the resolved watch-send the notice acknowledges once it is
-// durable, or nil for a notice that owes no acknowledgement.
-func (s *Session) retainStableWatchPending(n jobNotification, attentionID, content string, delivery *deliverableJobNotification) {
+func (s *Session) retainStableWatchPending(n jobNotification, attentionID, content string) {
 	if s == nil || attentionID == "" {
 		return
 	}
@@ -329,7 +309,7 @@ func (s *Session) retainStableWatchPending(n jobNotification, attentionID, conte
 	}
 	// Last write wins for one identity: the same occurrence retried describes
 	// the same statement, and a newer statement carries its own identity.
-	s.stableWatchRetained[attentionID] = retainedStableWatchNotice{notification: n, attentionID: attentionID, content: content, delivery: delivery}
+	s.stableWatchRetained[attentionID] = retainedStableWatchNotice{notification: n, attentionID: attentionID, content: content}
 	s.scheduleJobNotificationRetryLocked()
 	s.pendingJobNotifsMu.Unlock()
 }
@@ -367,13 +347,6 @@ func (s *Session) retryRetainedStableWatchPending() {
 		}
 		delete(s.stableWatchRetained, r.attentionID)
 		s.pendingJobNotifsMu.Unlock()
-		if r.delivery != nil {
-			// The row is durable, so the caller frame has reached the model: a
-			// settle that fails from here on is retried without rendering the
-			// frame again (settleTranscribedWatchSend).
-			r.delivery.watchJM.noteWatchSendTranscribed(r.delivery.watchState.DeliveryID)
-			s.settleDeliveredWatchNotification(context.Background(), *r.delivery)
-		}
 		if err := s.armDelegateAttention(r.attentionID); err != nil {
 			s.emit(warningDataFromError("arm stable watch attention", err))
 		}
@@ -449,41 +422,45 @@ func (jm *jobManager) persistStableWatchPending(n jobNotification) bool {
 
 // persistStableWatchNotice is persistStableWatchPending without the repeating-
 // tick gate: it writes ONE durable attention row for the notice and arms it.
-//
-// handOffQueuedWatchTicks is its second caller. A repeating timer's folded batch
-// is taken off the ordinary queue when an idle child is about to be driven, and
-// this is what turns that whole batch into the one row the leased generation
-// presents.
 func (jm *jobManager) persistStableWatchNotice(n jobNotification) bool {
-	owner, controller := jm.stableWatchOwner()
-	if owner == nil || owner.owningDelegateID == "" {
+	attentionID, owner, durable := jm.appendStableWatchNotice(n)
+	if attentionID == "" {
 		return false
 	}
-	// A watch-send token names a pending send rather than carrying its frame,
-	// so the frame and the delivery identity must be loaded here, before the
-	// row is built and before the attention identity is minted.
-	var delivery *deliverableJobNotification
-	if n.WatchSend != nil {
-		resolved, ok := owner.resolveStableWatchSend(&n)
-		if !ok {
-			// The token no longer names a current pending send: replaced,
-			// cleared, dropped, or already settled. There is no frame to
-			// persist and no delivery to acknowledge.
-			return true
-		}
-		// The frame is already in the receiver's transcript and only the
-		// delivered marker is owed: retrying that marker — bounded, and settling
-		// in memory after the limit — is the whole job. Appending the row again
-		// would render a frame the model already read.
-		if resolved.watchJM.watchSendTranscribed(resolved.watchState.DeliveryID) {
-			if err := resolved.watchJM.settleTranscribedWatchSend(resolved.watchCfg, resolved.watchState); err != nil {
-				owner.emit(events.WarningData{Message: "watch send settle failed: " + err.Error()})
-			}
-			return true
-		}
-		delivery = &resolved
+	if !durable {
+		// Retained under its own identity: the paced retry arms it once the row
+		// lands, so there is nothing to arm here.
+		return true
 	}
-	attentionID := stableWatchNoticeAttentionID(n)
+	if owner == nil {
+		return true
+	}
+	if err := owner.armDelegateAttention(attentionID); err != nil {
+		// The row IS durable; only its wake failed. armDelegateAttention
+		// already retains the id for its own paced re-arm, so the notice is
+		// not lost.
+		owner.emit(warningDataFromError("arm stable watch attention", err))
+	}
+	return true
+}
+
+// appendStableWatchNotice writes the durable attention row for n and reports
+// the identity it was written under, WITHOUT arming the wake.
+//
+// The split exists because a drive may already hold a reservation for this row
+// when the row is written: arming blocks until that reservation closes, so a
+// caller that will accept and commit the row itself appends first and lets its
+// own generation publish the wake.
+//
+// A second return of false means the append failed and the notice is retained
+// under the same identity for the paced retry. An empty identity means this
+// manager has no stable delegate owner and appended nothing.
+func (jm *jobManager) appendStableWatchNotice(n jobNotification) (attentionID string, owner *Session, durable bool) {
+	owner, controller := jm.stableWatchOwner()
+	if owner == nil || owner.owningDelegateID == "" {
+		return "", nil, false
+	}
+	attentionID = stableWatchNoticeAttentionID(n)
 	content := owner.formatJobNotificationReminder([]deliverableJobNotification{{notification: n}})
 	if controller != nil {
 		// Register the notice's own cause BEFORE the item can be presented: a
@@ -501,8 +478,6 @@ func (jm *jobManager) persistStableWatchNotice(n jobNotification) bool {
 	} else {
 		owner.jobStatusPolls.forget(n.JobID)
 	}
-	// Persist, THEN arm. The order is the guarantee: a wake that pointed at an
-	// item nothing had written would be an attention record naming no row.
 	appended, err := owner.appendDelegateNotificationDurably(attentionID, content)
 	if err != nil {
 		// The append failed, so the notice is NOT durable. Queueing it would
@@ -513,9 +488,9 @@ func (jm *jobManager) persistStableWatchNotice(n jobNotification) bool {
 		// SAME identity through the session's existing notification retry
 		// wake; a retry reproduces stableWatchNoticeAttentionID, so the second
 		// attempt is a replay rather than a second item.
-		owner.retainStableWatchPending(n, attentionID, content, delivery)
+		owner.retainStableWatchPending(n, attentionID, content)
 		owner.emit(warningDataFromError("persist stable watch attention", err))
-		return true
+		return attentionID, owner, false
 	}
 	if appended {
 		// A newer long-running-jobs reminder replaces an older undelivered one
@@ -525,110 +500,109 @@ func (jm *jobManager) persistStableWatchNotice(n jobNotification) bool {
 		// superseded identities.
 		owner.retireSupersededStableWatchPending(n, attentionID)
 	}
-	// The row is durable, so a watch-send it carries has reached the model:
-	// acknowledge that exact delivery. A replay of an already-present row
-	// settles too -- the earlier attempt's ack is what may have been lost.
-	if delivery != nil {
-		// Mark it transcribed first: from here on the frame must never be
-		// rendered again, so a rejected marker is a bounded settle retry
-		// (settleTranscribedWatchSend) rather than a second row.
-		delivery.watchJM.noteWatchSendTranscribed(delivery.watchState.DeliveryID)
-		owner.settleDeliveredWatchNotification(context.Background(), *delivery)
-	}
-	if err := owner.armDelegateAttention(attentionID); err != nil {
-		// The row IS durable; only its wake failed. armDelegateAttention
-		// already retains the id for its own paced re-arm, so the notice is
-		// not lost.
-		owner.emit(warningDataFromError("arm stable watch attention", err))
-	}
-	return true
+	return attentionID, owner, true
 }
 
-// handOffQueuedWatchTicks turns the repeating timer ticks waiting on s's
-// ordinary notification queue into ONE durable attention row, so an idle stable
-// delegate presents them inside a leased generation instead of through an
-// unleased EntryNotification turn.
+// queuedWatchTickAttentionID reports the durable attention identity the folded
+// repeating-timer batch on s's ordinary notification queue would be written
+// under, or "" when the queue holds no such batch.
 //
-// The queue is where a repeating tick lives (see persistStableWatchPending): it
-// folds every missed tick of one timer into a single entry carrying the combined
-// fires and lineage, and it drops a tick whose timer was cleared. What the queue
-// cannot do is present that entry on a stable child, because the only turn that
-// drains the queue there is unleased and admission refuses a watch notice on it.
-// This is the handoff: the folded entries are claimed off the queue in one
-// critical section and turned into durable attention, exactly like any other
-// watch notice bound for this child.
-//
-// Claiming before persisting is what keeps a tick that arrives DURING the
-// append: it folds into a fresh queue entry of its own, so it is neither lost
-// nor merged into a row that has already been frozen. A failed append is not a
-// loss either -- the notice is retained under its own identity and re-attempted
-// by the paced retry.
-//
-// A tick whose timer has since been cleared is dropped without a write, the
-// same verdict filterDeliverableJobNotifications gives it. It reports whether
-// any entry was taken.
-func (s *Session) handOffQueuedWatchTicks() bool {
-	if s == nil || s.jobManager == nil || !stableDelegateChild(s) {
-		return false
-	}
-	// Nothing below can persist without a bound owner, and claiming the entries
-	// first would then drop them. Refuse before touching the queue.
-	if owner, _ := s.jobManager.stableWatchOwner(); owner == nil || owner.owningDelegateID == "" {
-		return false
+// A repeating tick waits on that queue (see persistStableWatchPending) so the
+// queue's fold rule can state any number of missed ticks as one entry, and its
+// cleared-timer check can drop a cadence nobody owes. The identity is readable
+// without taking the entry, which is what lets a drive reserve its generation
+// FIRST and claim the batch only once the reservation is in hand: ticks that
+// arrive while the drive waits for capacity keep folding in place instead of
+// being frozen into one row per missed tick.
+func (s *Session) queuedWatchTickAttentionID() string {
+	if s == nil {
+		return ""
 	}
 	s.pendingJobNotifsMu.Lock()
-	var ticks []jobNotification
-	if len(s.pendingJobNotifs) > 0 {
-		kept := s.pendingJobNotifs[:0]
-		for _, n := range s.pendingJobNotifs {
-			if n.WatchID != "" && !n.Terminal {
-				ticks = append(ticks, n)
-				continue
-			}
-			kept = append(kept, n)
-		}
-		s.pendingJobNotifs = kept
-	}
-	s.pendingJobNotifsMu.Unlock()
-	if len(ticks) == 0 {
-		return false
-	}
-	handedOff := false
-	for _, n := range ticks {
-		if !s.timerWatchIsLive(n.WatchID) {
-			// The timer was cleared while the batch waited: nobody owes it, so no
-			// row is written for news the model can no longer act on.
-			continue
-		}
-		if s.jobManager.persistStableWatchNotice(n) {
-			handedOff = true
+	defer s.pendingJobNotifsMu.Unlock()
+	for _, n := range s.pendingJobNotifs {
+		if n.WatchID != "" && !n.Terminal {
+			return stableWatchNoticeAttentionID(n)
 		}
 	}
-	return handedOff
+	return ""
 }
 
-// resolveStableWatchSend loads the CURRENT frame a watch-send token names and
-// stamps the fields its durable row renders from. It reports false for a stale
-// token, which is the same answer filterDeliverableJobNotifications gives one:
-// the pending send was replaced, cleared, dropped, or already settled, so
-// neither a frame nor an acknowledgement is owed.
+// claimQueuedWatchTicks takes the folded repeating-timer batch off the queue
+// under the identity the caller reserved, reporting false when the queue no
+// longer holds it.
 //
-// The occurrence is the delivery id: the same watch fires again under a fresh
-// delivery, and a retry of one delivery reproduces its own id.
-func (s *Session) resolveStableWatchSend(n *jobNotification) (deliverableJobNotification, bool) {
-	jm, cfg, state, ok := s.resolveWatchSendToken(n.WatchSend)
-	if !ok {
-		return deliverableJobNotification{}, false
+// The queue folds every tick of one timer into a single entry, so a successful
+// claim takes exactly that entry. A tick that arrives after the claim starts a
+// fresh entry of its own and folds there, so it is neither lost nor merged into
+// a row whose content is already frozen.
+func (s *Session) claimQueuedWatchTicks(attentionID string) (jobNotification, bool) {
+	if s == nil || attentionID == "" {
+		return jobNotification{}, false
 	}
-	n.watchSendFrame = state.Frame
-	if n.backstopFires = jm.watchSendBackstopFires(cfg, state); n.backstopFires > 0 && n.OriginWatchID == "" {
-		n.OriginWatchID = cfg.watchID
+	s.pendingJobNotifsMu.Lock()
+	defer s.pendingJobNotifsMu.Unlock()
+	for i, n := range s.pendingJobNotifs {
+		if n.WatchID == "" || n.Terminal || stableWatchNoticeAttentionID(n) != attentionID {
+			continue
+		}
+		s.pendingJobNotifs = append(s.pendingJobNotifs[:i], s.pendingJobNotifs[i+1:]...)
+		return n, true
 	}
-	n.Provenance = provenance.Union(n.Provenance, state.Provenance)
-	if state.DeliveryID != "" {
-		n.Occurrence = "send:" + state.DeliveryID
+	return jobNotification{}, false
+}
+
+// presentQueuedWatchTicks turns the folded repeating-timer batch this drive has
+// already reserved into its ONE durable attention row, reporting whether the
+// generation may go on to present it.
+//
+// The reservation comes first: while the tree is at its drive budget the batch
+// waits on the queue and keeps folding, so however long capacity takes, the
+// transcript gains one row stating the whole wait rather than one row per
+// missed tick. The claim happens only now that the reservation holds, and a
+// tick arriving after it folds into a fresh queue entry of its own.
+//
+// Every refusal releases the reservation it was given: the caller's retry then
+// drives the same work once more, from the queue (a claim that lost a race) or
+// from the durable row a failed append retained. A cleared timer writes
+// nothing and owes nothing, so its reservation is released without a retry.
+func (s *Session) presentQueuedWatchTicks(sub *subagent, reservation *delegateStartReservation, attentionID string) bool {
+	abort := func(retry bool) bool {
+		if err := s.delegateController.AbortStart(reservation); err != nil {
+			s.emit(warningDataFromError("abort queued timer reservation", err))
+		}
+		if retry {
+			s.delegateController.retryDelegateAttentionLater()
+		}
+		return false
 	}
-	return deliverableJobNotification{notification: *n, watchJM: jm, watchCfg: cfg, watchState: state}, true
+	if s == nil || sub == nil || sub.sess == nil || sub.sess.jobManager == nil || attentionID == "" {
+		return false
+	}
+	// Nothing below can persist without a bound owner, and claiming the batch
+	// first would then drop it.
+	if owner, _ := sub.sess.jobManager.stableWatchOwner(); owner == nil || owner.owningDelegateID == "" {
+		return abort(false)
+	}
+	batch, claimed := sub.sess.claimQueuedWatchTicks(attentionID)
+	if !claimed {
+		// The batch left the queue under another claim, or the timer's ticks were
+		// already folded into a row. Either way this reservation has nothing to
+		// add, and the retry re-reads whatever is really owed.
+		return abort(true)
+	}
+	if !sub.sess.timerWatchIsLive(batch.WatchID) {
+		// The timer was cleared while the batch waited: nobody owes it, so no
+		// row is written for news the model can no longer act on.
+		return abort(false)
+	}
+	appended, _, durable := sub.sess.jobManager.appendStableWatchNotice(batch)
+	if appended != attentionID || !durable {
+		// A failed append retained the batch under the identity the paced retry
+		// re-attempts, so the row is owed but not yet presentable.
+		return abort(appended != attentionID)
+	}
+	return true
 }
 
 func (jm *jobManager) watchNotificationFromWatch(cfg *watchConfig, jobID, reason string, root *provenance.Causal) jobNotification {

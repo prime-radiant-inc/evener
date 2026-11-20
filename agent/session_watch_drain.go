@@ -90,10 +90,11 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 			// by an EntryNotification turn, and skipping the retry strands it
 			// once a slot frees.
 			if stableDelegateChild(child) && !child.hasPendingOrdinaryNotification() {
-				// What is left is watch work, and a repeating timer's tick is
-				// promoted here so its own leased drive can take it: the skip
-				// below is what keeps it off an unleased turn.
-				s.handOffStableChildTicks(sub)
+				// What is left is watch work. A repeating timer's folded batch
+				// is presented by the attention drive below, which reserves its
+				// generation before taking the batch off the queue: the skip
+				// here is what keeps the batch off an unleased turn.
+				s.driveDelegateAttention(sub)
 				continue
 			}
 			if s.driveSubagentNotificationTurn(sub) {
@@ -160,13 +161,6 @@ func (s *Session) driveChildIfNotStopGated(sub *subagent) {
 	if s.childDriveGated(sub.sess.id) {
 		return
 	}
-	// A repeating timer's folded tick batch never reaches the durable rail on
-	// ingress; it waits on this child's ordinary queue, which only an UNLEASED
-	// EntryNotification turn can drain there. Take it now that the child is idle
-	// and about to be driven, so the drive below presents it under a lease and
-	// the whole batch is written as ONE durable row rather than once per missed
-	// tick.
-	s.handOffStableChildTicks(sub)
 	if s.driveDelegateAttention(sub) {
 		return
 	}
@@ -191,26 +185,6 @@ func (s *Session) driveChildIfNotStopGated(sub *subagent) {
 	if s.driveSubagentNotificationTurn(sub) {
 		s.settleDrivenChildForwardedPendings(sub.sess.id)
 	}
-}
-
-// handOffStableChildTicks promotes a stable delegate child's folded repeating
-// timer ticks to durable attention while the child is IDLE.
-//
-// The idle gate is what bounds the transcript: a tick that arrives during a run
-// folds into the queue's single entry instead of being promoted, so a delegate
-// too busy to read its timer writes nothing per missed tick and states the whole
-// batch once when it comes back.
-func (s *Session) handOffStableChildTicks(sub *subagent) {
-	if !stableDelegateChild(sub.sess) {
-		return
-	}
-	sub.mu.Lock()
-	idle := !sub.startBlockedLocked()
-	sub.mu.Unlock()
-	if !idle {
-		return
-	}
-	sub.sess.handOffQueuedWatchTicks()
 }
 
 // stableDelegateChild reports whether sess belongs to a STABLE delegate child: a

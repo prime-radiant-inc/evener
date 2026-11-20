@@ -2,14 +2,13 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/contextmgr"
-	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -17,10 +16,9 @@ import (
 
 // An unleased stable-child turn must never present a repeating timer's tick: it
 // has no generation to consume what it presents, and admission refuses a watch
-// notice on it. Neither may it stand down and leave the tick queued for the next
-// wake to refuse again -- that is a spin, not a deferral. The accept hands the
-// batch to the leased rail instead, and an ordinary notification on the same
-// queue still moves.
+// notice on it. The refusal must also leave the batch untouched on the queue,
+// because the queue is where missed ticks keep folding until a leased drive
+// reserves the generation that presents them.
 func TestUnleasedTurnNeitherPresentsNorSpinsOnARepeatingTick(t *testing.T) {
 	t.Parallel()
 	child, jm, _ := stableWatchSendChild(t)
@@ -42,35 +40,41 @@ func TestUnleasedTurnNeitherPresentsNorSpinsOnARepeatingTick(t *testing.T) {
 	if child.acceptNotificationInput(context.Background(), "unleased-tick") {
 		t.Fatal("an unleased turn was admitted for a repeating tick it cannot present")
 	}
-	// It must have handed the batch to the leased rail rather than left it queued
-	// for the next wake to refuse again.
-	if queued := child.peekNotifications(); queued != 0 {
-		t.Fatalf("peekNotifications = %d after an unleased accept, want 0: the tick stayed queued, so every later wake refuses it again", queued)
+	// The batch is still the queue's, with its fold and its fire count intact:
+	// a leased drive reserves the generation that claims it, so an unleased
+	// refusal that consumed it would either write a row no generation presents
+	// or drop the ticks outright.
+	if queued := child.peekNotifications(); queued != 1 {
+		t.Fatalf("peekNotifications = %d after an unleased accept, want 1: the refusal must hand the batch back untouched", queued)
 	}
-	if got := attentionRowCount(t, child); got != rowsBefore+1 {
-		t.Fatalf("attention rows went %d -> %d for one handed-off tick, want one row", rowsBefore, got)
+	child.pendingJobNotifsMu.Lock()
+	folded := slices.Clone(child.pendingJobNotifs)
+	child.pendingJobNotifsMu.Unlock()
+	if len(folded) != 1 || folded[0].Fires != 1 {
+		t.Fatalf("queued notifications after an unleased accept = %#v, want the one folded tick", folded)
 	}
-	if !child.hasPendingStableWatchAttention() {
-		t.Fatal("the handed-off tick does not read as pending watch attention, so no leased generation will present it")
+	if got := attentionRowCount(t, child); got != rowsBefore {
+		t.Fatalf("attention rows went %d -> %d for an unleased refusal, want no growth: the batch is not durable yet", rowsBefore, got)
 	}
-	// A second unleased accept must find nothing to refuse: a wake that meets
-	// the same tick again and again is a spin, not a deferral.
+	// A second unleased accept stands down the same way.
 	if child.acceptNotificationInput(context.Background(), "unleased-tick-again") {
 		t.Fatal("a second unleased turn was admitted with no deliverable work")
 	}
-	if got := attentionRowCount(t, child); got != rowsBefore+1 {
-		t.Fatalf("attention rows went %d -> %d across two unleased accepts, want one row: the batch must not be written again", rowsBefore+1, got)
+	if queued := child.peekNotifications(); queued != 1 {
+		t.Fatalf("peekNotifications = %d across two unleased accepts, want 1", queued)
+	}
+	if got := attentionRowCount(t, child); got != rowsBefore {
+		t.Fatalf("attention rows went %d -> %d across two unleased accepts, want no growth", rowsBefore, got)
 	}
 
-	// An ordinary notification on the same rail still moves: the handoff is
-	// scoped to repeating ticks.
+	// An ordinary notification on the same rail is untouched by the refusal.
 	ordinary := jobNotification{Kind: jobNotificationKindTerminal, JobID: "job:ordinary", Status: "completed"}
 	child.enqueueJobNotificationAndNotify(ordinary)
 	if !child.hasPendingOrdinaryNotification() {
-		t.Fatal("the ordinary notification is gone after the handoff: the tick handoff must not take ordinary work off the rail")
+		t.Fatal("the ordinary notification is gone after the refusal: the tick refusal must not take ordinary work off the rail")
 	}
-	if got := attentionRowCount(t, child); got != rowsBefore+1 {
-		t.Fatalf("attention rows went %d -> %d after an ordinary notification, want no durable row: only a repeating tick is promoted", rowsBefore+1, got)
+	if got := attentionRowCount(t, child); got != rowsBefore {
+		t.Fatalf("attention rows went %d -> %d after an ordinary notification, want no durable row", rowsBefore, got)
 	}
 }
 
@@ -93,7 +97,7 @@ func TestPeekNotificationsExcludesRetainedWatchNotice(t *testing.T) {
 	notice.Fires = 1
 	notice.IntervalSeconds = 30
 	attentionID := stableWatchNoticeAttentionID(notice)
-	child.retainStableWatchPending(notice, attentionID, "retained row", nil)
+	child.retainStableWatchPending(notice, attentionID, "retained row")
 
 	if peek := child.peekNotifications(); peek != 0 {
 		t.Fatalf("peekNotifications = %d, want 0: a retained notice has nothing a notification turn can deliver, so counting it starts empty turns", peek)
@@ -180,13 +184,13 @@ func TestRepeatingTimerTicksFoldOnTheQueueWithoutTranscriptRows(t *testing.T) {
 		t.Fatalf("folded watch keys = %v, want %v", got, expected)
 	}
 
-	// The handoff is what makes the batch durable, and it writes ONE row stating
-	// the whole batch.
-	if !child.handOffQueuedWatchTicks() {
-		t.Fatal("the folded timer batch was not handed off")
+	// A drive that reserves the batch is what makes it durable, and it writes
+	// ONE row stating the whole batch.
+	if !presentQueuedTicksForTest(t, child) {
+		t.Fatal("the folded timer batch was not presented under a reservation")
 	}
 	if got := attentionRowCount(t, child); got != rowsBefore+1 {
-		t.Fatalf("attention rows after the handoff = %d, want %d: the whole batch is one row", got, rowsBefore+1)
+		t.Fatalf("attention rows after the reservation = %d, want %d: the whole batch is one row", got, rowsBefore+1)
 	}
 	pending, err := child.pendingDelegateAttentionIDs()
 	if err != nil {
@@ -242,7 +246,7 @@ func TestClearedRepeatingTimerDropsItsFoldedBatchWithoutRows(t *testing.T) {
 	if _, err := jm.clearWatchByID(watchID); err != nil {
 		t.Fatalf("clear the repeating timer: %v", err)
 	}
-	if child.handOffQueuedWatchTicks() {
+	if presentQueuedTicksForTest(t, child) {
 		t.Fatal("a cleared timer's folded batch was handed off, so its ticks became durable news nobody owes")
 	}
 	if got := attentionRowCount(t, child); got != rowsBefore {
@@ -286,6 +290,136 @@ func attentionRowCount(t *testing.T, sess *Session) int {
 		t.Fatalf("read the attention fold: %v", err)
 	}
 	return len(fold.order)
+}
+
+// presentQueuedTicksForTest runs the drive's own reserve-then-present sequence
+// for the child's folded repeating-timer batch, registering the child with its
+// controller as an idle delegate first so the reservation has a candidate.
+func presentQueuedTicksForTest(t *testing.T, child *Session) bool {
+	t.Helper()
+	controller := child.delegateController
+	seedDelegateControllerIdle(t, controller, child.owningDelegateID, "")
+	controller.mu.Lock()
+	controller.live[child.owningDelegateID] = &delegateLiveState{runtime: child}
+	controller.mu.Unlock()
+	owner := &Session{id: "root-session", stateDir: child.stateDir, delegateController: controller}
+	sub := &subagent{sess: child}
+	attentionID := child.queuedWatchTickAttentionID()
+	if attentionID == "" {
+		return false
+	}
+	reservation, err := controller.ReserveAttention(child, attentionID)
+	if err != nil {
+		return false
+	}
+	presented := owner.presentQueuedWatchTicks(sub, reservation, attentionID)
+	if presented {
+		if err := controller.AbortStart(reservation); err != nil {
+			t.Fatalf("release the presented batch's reservation: %v", err)
+		}
+	}
+	return presented
+}
+
+// A repeating timer's missed ticks are one statement, and the drive budget must
+// not turn them into one statement per tick. While every attention-drive slot is
+// taken the batch has to stay on the notification queue, where the next tick
+// folds into it, and only a reservation that actually holds may claim it and
+// write the single row stating the whole wait.
+func TestRepeatingTicksWaitForDriveCapacityAsOneFoldedBatch(t *testing.T) {
+	t.Parallel()
+	child, jm, controller := stableWatchSendChild(t)
+	seedDelegateControllerIdle(t, controller, child.owningDelegateID, "")
+	seedDelegateControllerIdle(t, controller, "dlg_other", "")
+	holder := &Session{id: "holder-session", stateDir: child.stateDir, delegateController: controller}
+	controller.mu.Lock()
+	controller.live[child.owningDelegateID] = &delegateLiveState{runtime: child}
+	controller.live["dlg_other"] = &delegateLiveState{runtime: holder}
+	controller.mu.Unlock()
+	sub := &subagent{sess: child}
+	root := &Session{id: "root-session", stateDir: child.stateDir, delegateController: controller}
+
+	res, err := jm.configureWatch(watchArgs{Operation: "create", Source: "self", Target: "self", RepeatSeconds: 60, Note: "poll"})
+	if err != nil {
+		t.Fatalf("configure the repeating timer: %v", err)
+	}
+	watchID := res.WatchID
+	rowsBefore := attentionRowCount(t, child)
+
+	// Another delegate takes the tree's only attention-drive slot, so every
+	// reservation the batch needs is refused for capacity.
+	held, err := controller.ReserveAttention(holder, "attention:capacity-holder")
+	if err != nil {
+		t.Fatalf("hold the drive slot: %v", err)
+	}
+	// Each tick arrives on its own wake, as a repeating timer's do, and each wake
+	// drives the child. The batch must stay on the queue through all three: a
+	// wake that claimed it first would freeze one row per missed tick and leave
+	// the folding with nothing to fold into.
+	occurrences := []string{"tick:capacity:1", "tick:capacity:2", "tick:capacity:3"}
+	for i, occurrence := range occurrences {
+		child.enqueueJobNotificationAndNotify(timerTickNotification("", watchID, occurrence, 1, nil))
+		root.driveChildIfNotStopGated(sub)
+		if got := attentionRowCount(t, child); got != rowsBefore {
+			t.Fatalf("attention rows went %d -> %d after %d missed tick(s) while the drive budget was full, want no growth: the batch must not become durable before a reservation holds", rowsBefore, got, i+1)
+		}
+		if queued := child.peekNotifications(); queued != 1 {
+			t.Fatalf("peekNotifications = %d after %d missed tick(s), want 1 folded entry", queued, i+1)
+		}
+		child.pendingJobNotifsMu.Lock()
+		fires := 0
+		if len(child.pendingJobNotifs) == 1 {
+			fires = child.pendingJobNotifs[0].Fires
+		}
+		child.pendingJobNotifsMu.Unlock()
+		if fires != i+1 {
+			t.Fatalf("folded fires after %d missed tick(s) = %d, want %d", i+1, fires, i+1)
+		}
+	}
+
+	// A slot opens. Reserving the batch and then presenting it is the drive's own
+	// sequence, so this is the write the freed capacity enables.
+	if err := controller.AbortStart(held); err != nil {
+		t.Fatalf("release the drive slot: %v", err)
+	}
+	attentionID := child.queuedWatchTickAttentionID()
+	if attentionID == "" {
+		t.Fatal("the queued batch reports no attention identity")
+	}
+	reservation, err := controller.ReserveAttention(child, attentionID)
+	if err != nil {
+		t.Fatalf("reserve the folded batch: %v", err)
+	}
+	if !root.presentQueuedWatchTicks(sub, reservation, attentionID) {
+		t.Fatal("the reserved generation did not present the folded batch")
+	}
+	// The row the presentation wrote is the one this generation reserved: the
+	// accept resolves exactly that identity, so a batch written under any other
+	// one would leave the generation nothing to consume.
+	if err := child.acceptDelegateAttention(reservation); err != nil {
+		t.Fatalf("accept the presented batch: %v", err)
+	}
+	if err := controller.AbortStart(reservation); err != nil {
+		t.Fatalf("release the batch reservation: %v", err)
+	}
+
+	if got := attentionRowCount(t, child); got != rowsBefore+1 {
+		t.Fatalf("attention rows after the reservation = %d, want %d: three missed ticks are one statement", got, rowsBefore+1)
+	}
+	if queued := child.peekNotifications(); queued != 0 {
+		t.Fatalf("peekNotifications = %d after the reservation, want 0", queued)
+	}
+	fold, err := readDelegateAttentionFold(child.TranscriptPath(), child.id)
+	if err != nil {
+		t.Fatalf("read the attention fold after the reservation: %v", err)
+	}
+	content, ok := fold.content[attentionID]
+	if !ok {
+		t.Fatalf("the batch's row %q is not in the fold: %v", attentionID, fold.pendingIDs())
+	}
+	if !strings.Contains(content.Text(), "3 times") {
+		t.Fatalf("the row states %q, want it to state the batch's three fires", content.Text())
+	}
 }
 
 // A fold is a request input in disguise: what it keeps can reach the model
@@ -396,65 +530,6 @@ func TestFoldWithForceCompactFiltersUnresolvedWatchRows(t *testing.T) {
 		if n := countTurnText(published, text); n != 1 {
 			t.Fatalf("published history holds %d copies of %q, want 1: the merge boundary was taken from the filtered input", n, text)
 		}
-	}
-}
-
-// makeWatchJournalRefuse makes the manager's watch journal reject every append.
-func makeWatchJournalRefuse(jm *jobManager) {
-	jm.mu.Lock()
-	jm.appendEvent = func(jobstore.Event) error { return errWatchJournalRefused }
-	jm.mu.Unlock()
-}
-
-var errWatchJournalRefused = errors.New("watch journal refused")
-
-// A caller frame that already reached the receiver's transcript must never be
-// rendered again: only its delivered marker is owed. The marker write is retried
-// a bounded number of times, and after the limit the frame is settled in memory
-// so the pending entry cannot drive empty notification turns forever.
-func TestStableDelegateTranscribedWatchSendSettlesWithoutRerendering(t *testing.T) {
-	t.Parallel()
-	child, jm, _ := stableWatchSendChild(t)
-
-	cfg, key, deliveryID := installCallerSendWatchWithCurrentFrame(t, jm, "already-transcribed frame")
-	makeWatchJournalRefuse(jm)
-	jm.mu.Lock()
-	state := *cfg.pending[key]
-	jm.mu.Unlock()
-	token := watchSendTokenNotification("", state)
-
-	// The transcript append lands; the journal refuses the delivered marker.
-	child.enqueueJobNotificationAndNotify(token)
-	if !jm.watchSendTranscribed(deliveryID) {
-		t.Fatal("the durable append did not mark the frame transcribed, so a rejected marker would re-render it instead of retrying the settle")
-	}
-	if jm.watchSendDelivered(deliveryID) {
-		t.Fatal("the journal refused the marker but the send reads as delivered")
-	}
-
-	child.mu.Lock()
-	historyBefore := len(child.history)
-	child.mu.Unlock()
-
-	// Repeats of the same token must reuse settleTranscribedWatchSend and never
-	// append the frame a second time.
-	for attempt := range transcribedWatchSendSettleRetries + 1 {
-		child.enqueueJobNotificationAndNotify(watchSendTokenNotification("", state))
-		child.mu.Lock()
-		historyNow := len(child.history)
-		child.mu.Unlock()
-		if historyNow != historyBefore {
-			t.Fatalf("attempt %d appended the already-transcribed frame again: history %d -> %d", attempt+1, historyBefore, historyNow)
-		}
-	}
-
-	// After the bounded retries the frame is settled in memory, so the pending
-	// entry is gone and no further empty turn is owed for it.
-	if pending := jm.hasPendingWatchSends(); pending {
-		t.Fatal("the frame is still pending after the bounded settle retries, so every later pass re-enqueues it")
-	}
-	if peek := child.peekNotifications(); peek != 0 {
-		t.Fatalf("peekNotifications = %d after the frame settled, want 0", peek)
 	}
 }
 

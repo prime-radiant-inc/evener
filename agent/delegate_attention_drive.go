@@ -56,6 +56,11 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 			s.emit(warningDataFromError("inspect delegate attention", err))
 			return true
 		}
+		if len(ids) == 0 {
+			if queued := sub.sess.queuedWatchTickAttentionID(); queued != "" {
+				ids = []string{queued}
+			}
+		}
 	}
 	if len(ids) == 0 {
 		// The transcript holds no unresolved attention, but the controller may
@@ -147,6 +152,11 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 	// finish that attention generation before this drive takes the claim, so
 	// select again while the claim fences every competing drive. A reservation
 	// already held for this runtime must still retry its exact accepted marker.
+	//
+	// tickID is re-decided here: a reservation already held for this runtime
+	// has already taken its batch off the queue, so presenting one again from
+	// the queue would claim a second batch under a committed identity.
+	tickID := ""
 	if retryID := s.delegateController.reservedAttentionID(sub.sess); retryID != "" {
 		ids = []string{retryID}
 	} else {
@@ -156,10 +166,14 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 			return true
 		}
 		if len(pending) == 0 {
-			if err := s.delegateController.clearResolvedDelegateAttention(sub.sess.owningDelegateID); err != nil {
-				s.emit(warningDataFromError("clear resolved delegate attention", err))
+			if queued := sub.sess.queuedWatchTickAttentionID(); queued != "" {
+				pending, tickID = []string{queued}, queued
+			} else {
+				if err := s.delegateController.clearResolvedDelegateAttention(sub.sess.owningDelegateID); err != nil {
+					s.emit(warningDataFromError("clear resolved delegate attention", err))
+				}
+				return false
 			}
-			return false
 		}
 		ids = pending
 	}
@@ -168,8 +182,15 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 		if !errors.Is(err, errDelegateTargetBusy) && !errors.Is(err, errTreeAtCapacity) {
 			s.emit(warningDataFromError("reserve delegate attention", err))
 		}
+		// At capacity the folded batch stays on the queue, where further ticks
+		// keep folding into it: nothing is written and nothing is lost.
 		s.delegateController.retryDelegateAttentionLater()
 		return true
+	}
+	if tickID != "" {
+		if !s.presentQueuedWatchTicks(sub, reservation, tickID) {
+			return true
+		}
 	}
 	if err := sub.sess.acceptDelegateAttention(reservation); err != nil {
 		s.emit(warningDataFromError("accept delegate attention", err))

@@ -5133,12 +5133,12 @@ func TestDelegateResourceSupervision_ClearedRepeatingTickDoesNotPrompt(t *testin
 	if !child.jobManager.persistStableWatchPending(terminal) {
 		t.Fatal("a one-shot's terminal fire was not handled by the durable ingress")
 	}
-	pending, err = child.pendingDelegateAttentionIDs()
+	fold, err := readDelegateAttentionFold(child.TranscriptPath(), child.ID())
 	if err != nil {
-		t.Fatalf("read pending attention: %v", err)
+		t.Fatalf("read attention fold: %v", err)
 	}
-	if !slices.Contains(pending, terminalID) {
-		t.Fatal("the terminal one-shot fire is not pending, so the clear retracted a fact that already happened")
+	if !slices.Contains(fold.order, terminalID) || fold.resolutions[terminalID] == delegateAttentionDiscarded {
+		t.Fatalf("the terminal one-shot fire was lost or discarded (resolution=%q), so the clear retracted a fact that already happened", fold.resolutions[terminalID])
 	}
 }
 
@@ -5226,138 +5226,6 @@ func stableWatchSendChild(t *testing.T) (*Session, *jobManager, *delegateTreeCon
 	child.delegateController = controller
 	jm.bindDelegateParent(controller, delegateLease{delegateID: child.owningDelegateID, generation: 1}, nil, child)
 	return child, jm, controller
-}
-
-// TestStableDelegateCallerWatchSendRendersItsFrameAndSettles pins the
-// caller-targeted watch-send branch of the durable ingress.
-//
-// A watch-send token names a pending send and carries no frame, so the ingress
-// must load the CURRENT frame before building the row; without that the model
-// receives an empty watch frame. It must also acknowledge that exact send once
-// the row is durable, or the send stays pending forever and re-renders on the
-// next pass.
-func TestStableDelegateCallerWatchSendRendersItsFrameAndSettles(t *testing.T) {
-	t.Parallel()
-	child, jm, _ := stableWatchSendChild(t)
-
-	const frame = "sentinel frame: the watched job finished"
-	cfg, key, deliveryID := installCallerSendWatchWithCurrentFrame(t, jm, frame)
-	jm.mu.Lock()
-	state := *cfg.pending[key]
-	jm.mu.Unlock()
-	token := watchSendTokenNotification("", state)
-
-	child.enqueueJobNotificationAndNotify(token)
-
-	if !jm.watchSendDelivered(deliveryID) {
-		t.Fatal("the watch send is not settled delivered: the model has the row, but the send stays pending and re-renders on the next pass")
-	}
-	jm.mu.Lock()
-	pending := len(cfg.pending)
-	jm.mu.Unlock()
-	if pending != 0 {
-		t.Fatalf("%d watch send(s) still pending after the durable append, want 0", pending)
-	}
-
-	// The row itself must carry the loaded frame, under an identity naming this
-	// delivery, so a second delivery of the same watch is a new row.
-	fold, err := readDelegateAttentionFold(transcriptPath(child.stateDir, child.id), child.id)
-	if err != nil {
-		t.Fatalf("read attention fold: %v", err)
-	}
-	var content, attentionID string
-	for id, message := range fold.content {
-		if strings.HasPrefix(id, stableWatchAttentionIDPrefix) {
-			attentionID = id
-			content = message.Text()
-		}
-	}
-	if content == "" {
-		t.Fatalf("no watch row was appended: %v", fold.pendingIDs())
-	}
-	if want := "send:" + deliveryID; !strings.HasSuffix(attentionID, want) {
-		t.Fatalf("appended row identity = %q, want the occurrence %q so each delivery has its own durable identity", attentionID, want)
-	}
-	if !strings.Contains(content, frame) {
-		t.Fatalf("the appended row does not carry the pending send's frame %q, so the model received an empty watch frame: %q", frame, content)
-	}
-}
-
-// TestStableDelegateCallerWatchSendStaleTokenPersistsNothing pins the stale
-// branch: a token whose pending send was replaced must neither persist a row nor
-// acknowledge anything.
-func TestStableDelegateCallerWatchSendStaleTokenPersistsNothing(t *testing.T) {
-	t.Parallel()
-	child, jm, _ := stableWatchSendChild(t)
-
-	cfg, key, _ := installCallerSendWatchWithCurrentFrame(t, jm, "stale frame")
-	stale := watchSendTokenNotification("", *cfg.pending[key])
-	// A newer fire coalesces over the same pending entry: the token's
-	// updateSeq no longer names the current state.
-	onSessionEventKD(jm, events.EventCommunicate, nil)
-
-	before, err := child.pendingDelegateAttentionIDs()
-	if err != nil {
-		t.Fatalf("read pending attention: %v", err)
-	}
-	child.jobManager.enqueueWatchNotifications([]jobNotification{stale})
-
-	after, err := child.pendingDelegateAttentionIDs()
-	if err != nil {
-		t.Fatalf("read pending attention after the stale token: %v", err)
-	}
-	if len(after) != len(before) {
-		t.Fatalf("a stale watch-send token appended a durable row: %v -> %v", before, after)
-	}
-	jm.mu.Lock()
-	pending := len(cfg.pending)
-	jm.mu.Unlock()
-	if pending == 0 {
-		t.Fatal("a stale token settled the newer pending send, which the model has not been given")
-	}
-}
-
-// TestStableDelegateCallerWatchSendRetrySettlesOnlyAfterDurableAppend pins the
-// ordering between durability and acknowledgement: a failed append must leave
-// the send pending, and the retry that lands it must settle.
-func TestStableDelegateCallerWatchSendRetrySettlesOnlyAfterDurableAppend(t *testing.T) {
-	t.Parallel()
-	child, jm, _ := stableWatchSendChild(t)
-
-	cfg, key, deliveryID := installCallerSendWatchWithCurrentFrame(t, jm, "retry frame")
-	token := watchSendTokenNotification("", *cfg.pending[key])
-
-	child.mu.Lock()
-	writer, ready := child.transcript, child.transcriptReady
-	child.transcript, child.transcriptReady = nil, false
-	child.mu.Unlock()
-
-	child.enqueueJobNotificationAndNotify(token)
-
-	if jm.watchSendDelivered(deliveryID) {
-		t.Fatal("a failed durable append acknowledged the watch send, so the frame is marked delivered without ever reaching the model")
-	}
-	child.pendingJobNotifsMu.Lock()
-	retained := len(child.stableWatchRetained)
-	child.pendingJobNotifsMu.Unlock()
-	if retained != 1 {
-		t.Fatalf("a failed durable append left %d notice(s) retained, want 1", retained)
-	}
-
-	child.mu.Lock()
-	child.transcript, child.transcriptReady = writer, ready
-	child.mu.Unlock()
-	child.retryRetainedStableWatchPending()
-
-	if !jm.watchSendDelivered(deliveryID) {
-		t.Fatal("the retry appended the row but never acknowledged the send: it stays pending and re-renders")
-	}
-	child.pendingJobNotifsMu.Lock()
-	remaining := len(child.stableWatchRetained)
-	child.pendingJobNotifsMu.Unlock()
-	if remaining != 0 {
-		t.Fatalf("the retry left %d notice(s) retained, want 0", remaining)
-	}
 }
 
 // TestStableDelegateConditionFireDeliveryIDsAreDistinctOccurrences pins the
@@ -5483,7 +5351,7 @@ func TestJobNotificationRetryRearmsForRetainedWatchNotice(t *testing.T) {
 	})
 
 	notice := watchSendDiagnosticNotification("watch:retry", "job:retry", "watch send failed")
-	child.retainStableWatchPending(notice, stableWatchNoticeAttentionID(notice), "retained row", nil)
+	child.retainStableWatchPending(notice, stableWatchNoticeAttentionID(notice), "retained row")
 	child.pendingJobNotifsMu.Lock()
 	armed := child.jobNotifyRetry.active
 	child.pendingJobNotifsMu.Unlock()
