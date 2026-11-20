@@ -69,10 +69,11 @@ func TestStaleProbeCannotEraseANewerWorkspaceDecision(t *testing.T) {
 	s.setCLIMCPServers(map[string]bool{"svc": true}, evidenceB)
 	s.setRosterExclusion(true)
 	// Hold B's first probe after its check has answered, before its caller
-	// collects the answer. That is the window the merge-group flake lives in: the
-	// check is over, so nothing is outstanding, but the request path below can
-	// still run. It must ask the workspace again rather than read the probe's
-	// bookkeeping as "unknown" and clear the standing decision.
+	// collects the answer. The claim covers the check, not the delivery: a
+	// completed check must release it before publishing, because the request
+	// path below can ask the workspace again in this window. It must ask the
+	// workspace again rather than read the probe's bookkeeping as "unknown" and
+	// clear the standing decision.
 	checked := make(chan struct{})
 	release := make(chan struct{})
 	var held atomic.Bool
