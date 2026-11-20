@@ -34,16 +34,7 @@ func TestInstallRuntimePairRefusesUnsafePairs(t *testing.T) {
 
 	writePair := func(t *testing.T, dir, revision string) {
 		t.Helper()
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		for _, name := range []string{"evener", "fixture-provider"} {
-			if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
-				t.Fatal(err)
-			}
-		}
-		writeManifest(t, dir)
-		writeFile(t, filepath.Join(dir, "revision"), revision+"\n")
+		writePairFixture(t, dir, revision, "#!/bin/sh\nexit 0\n")
 	}
 	writeIdentity := func(t *testing.T, revision string) string {
 		t.Helper()
@@ -189,29 +180,231 @@ func TestInstallRuntimePairRefusesUnsafePairs(t *testing.T) {
 	})
 }
 
-// TestRunUITestsInstallsThePairBeforeBuilding pins the runner's side of the
-// handoff: it must install a supplied pair through the script that verifies it
-// before the local build, and it must not copy from the pair itself.
-func TestRunUITestsInstallsThePairBeforeBuilding(t *testing.T) {
+// Marker names deliberately do not start with EVENER_: the runner clears its
+// own list of EVENER_* overrides before it starts the pair, and a fixture's
+// bookkeeping must survive that.
+const (
+	providerMarkerEnv = "QUALIFICATION_TEST_PROVIDER_MARKER"
+	makeMarkerEnv     = "QUALIFICATION_TEST_MAKE_MARKER"
+	goMarkerEnv       = "QUALIFICATION_TEST_GO_MARKER"
+)
+
+// providerStub is the pair's fixture-provider: it records that the run started
+// it and exits, which ends the runner at provider readiness in every case.
+const providerStub = `#!/bin/sh
+printf 'started\n' >> "$QUALIFICATION_TEST_PROVIDER_MARKER"
+exit 1
+`
+
+// makeStub stands in for the local build; reaching it means the runner chose
+// to rebuild instead of using the supplied pair.
+const makeStub = `#!/bin/sh
+printf '%s\n' "$*" >> "$QUALIFICATION_TEST_MAKE_MARKER"
+exit 0
+`
+
+// goStub stands in for the local Go builds and writes the provider the runner
+// starts, so the no-pair case reaches the same readiness failure.
+const goStub = `#!/bin/sh
+out=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-o) out="$2"; shift 2 ;;
+	*) shift ;;
+	esac
+done
+printf '%s\n' "$*" >> "$QUALIFICATION_TEST_GO_MARKER"
+[ -n "$out" ] || exit 1
+cat >"$out" <<'STUB'
+#!/bin/sh
+printf 'started\n' >> "$QUALIFICATION_TEST_PROVIDER_MARKER"
+exit 1
+STUB
+chmod +x "$out"
+`
+
+// TestRunUITestsStartsTheSuppliedPairInsteadOfBuilding drives run-ui-tests.sh
+// itself with a stub toolchain. A verified pair supplied through
+// EVENER_QUALIFICATION_RUNTIME_BINARIES must be what the run starts, with
+// neither make nor go invoked. A pair from another revision must be refused by
+// the installer before anything starts. With no pair the runner must still
+// build locally.
+func TestRunUITestsStartsTheSuppliedPairInsteadOfBuilding(t *testing.T) {
 	t.Parallel()
-	source, err := os.ReadFile(filepath.Join("..", "run-ui-tests.sh"))
+	for _, tool := range []string{"bash", "jq", "shasum"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not installed", tool)
+		}
+	}
+	runner, err := filepath.Abs(filepath.Join("..", "run-ui-tests.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(source)
-	installed := strings.Index(text, "qualification/install-runtime-pair.sh")
-	built := strings.Index(text, "make build-runtime")
-	if installed == -1 || built == -1 || installed > built {
-		t.Fatalf("run-ui-tests.sh install call at %d, local build at %d; want the pair installed before the build", installed, built)
+	stubs := t.TempDir()
+	writeExecutable(t, filepath.Join(stubs, "make"), makeStub)
+	writeExecutable(t, filepath.Join(stubs, "go"), goStub)
+
+	type fixture struct {
+		identity                             string
+		output                               string
+		providerMarker, makeMarker, goMarker string
 	}
-	if strings.Contains(text, `cp "$runtime_pair/`) {
-		t.Error("run-ui-tests.sh copies from the pair itself instead of the installer that verified it")
+	newFixture := func(t *testing.T, identityRevision string) *fixture {
+		t.Helper()
+		root := t.TempDir()
+		products := filepath.Join(root, "DerivedData", "Build", "Products", "Release-iphonesimulator")
+		app := filepath.Join(products, "Evener.app")
+		if err := os.MkdirAll(app, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		for _, dir := range []string{"home", "tmp", "output"} {
+			if err := os.MkdirAll(filepath.Join(root, dir), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		f := &fixture{
+			identity:       filepath.Join(root, "identity.json"),
+			output:         filepath.Join(root, "output"),
+			providerMarker: filepath.Join(root, "provider-ran"),
+			makeMarker:     filepath.Join(root, "make-ran"),
+			goMarker:       filepath.Join(root, "go-ran"),
+		}
+		writeFile(t, f.identity, fmt.Sprintf(
+			"{\"sourceRevision\":%q,\"appPath\":%q,\"simulatorUDID\":\"QUALIFICATION-TEST-SIM\"}\n",
+			identityRevision, filepath.Join(app, "Evener")))
+		return f
 	}
+	run := func(t *testing.T, f *fixture, pair string) (string, error) {
+		t.Helper()
+		env := []string{
+			"HOME=" + filepath.Join(filepath.Dir(f.identity), "home"),
+			"TMPDIR=" + filepath.Join(filepath.Dir(f.identity), "tmp"),
+			"PATH=" + stubs + string(os.PathListSeparator) + os.Getenv("PATH"),
+			providerMarkerEnv + "=" + f.providerMarker,
+			makeMarkerEnv + "=" + f.makeMarker,
+			goMarkerEnv + "=" + f.goMarker,
+		}
+		if pair != "" {
+			env = append(env, "EVENER_QUALIFICATION_RUNTIME_BINARIES="+pair)
+		}
+		for _, entry := range os.Environ() {
+			name, _, _ := strings.Cut(entry, "=")
+			switch {
+			case name == "HOME", name == "TMPDIR", name == "PATH",
+				name == "EVENER_QUALIFICATION_RUNTIME_BINARIES",
+				strings.HasPrefix(name, "QUALIFICATION_TEST_"):
+				continue
+			}
+			env = append(env, entry)
+		}
+		cmd := exec.Command("bash", runner, "--build-identity", f.identity, "--output", f.output)
+		cmd.Dir = filepath.Dir(f.identity)
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	startedPair := func(t *testing.T, f *fixture) bool {
+		t.Helper()
+		_, err := os.Stat(f.providerMarker)
+		return err == nil
+	}
+	notRun := func(t *testing.T, path, what string) {
+		t.Helper()
+		if _, err := os.Stat(path); err == nil {
+			t.Errorf("%s ran even though a verified pair was supplied", what)
+		}
+	}
+	reachedProvider := func(t *testing.T, out string, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("run-ui-tests.sh exited 0 with a fixture provider that exits 1; output:\n%s", out)
+		}
+		// Whether the shell reaps the exited stub before the loop's liveness
+		// check decides only how the same failure is worded.
+		if !strings.Contains(out, "fixture provider exited before readiness") &&
+			!strings.Contains(out, "fixture provider never became ready") {
+			t.Fatalf("run-ui-tests.sh did not reach provider startup; output:\n%s", out)
+		}
+	}
+
+	t.Run("a supplied pair is what the run starts", func(t *testing.T) {
+		t.Parallel()
+		f := newFixture(t, pairRevision)
+		pair := t.TempDir()
+		writePairFixture(t, pair, pairRevision, providerStub)
+		out, err := run(t, f, pair)
+		reachedProvider(t, out, err)
+		if !startedPair(t, f) {
+			t.Errorf("the supplied pair's fixture-provider was not started; output:\n%s", out)
+		}
+		if !strings.Contains(out, "using the runtime pair built by the setup job") {
+			t.Errorf("run-ui-tests.sh did not take the pair branch; output:\n%s", out)
+		}
+		notRun(t, f.makeMarker, "make build-runtime")
+		notRun(t, f.goMarker, "go build")
+	})
+	t.Run("a pair from another revision is refused before anything starts", func(t *testing.T) {
+		t.Parallel()
+		f := newFixture(t, strings.Repeat("f", 40))
+		pair := t.TempDir()
+		writePairFixture(t, pair, pairRevision, providerStub)
+		out, err := run(t, f, pair)
+		if err == nil {
+			t.Fatalf("run-ui-tests.sh accepted a pair from another revision; output:\n%s", out)
+		}
+		if !strings.Contains(out, "the runtime pair was built from") {
+			t.Errorf("run-ui-tests.sh did not refuse the pair through the installer; output:\n%s", out)
+		}
+		if startedPair(t, f) {
+			t.Error("the fixture-provider from a refused pair was started")
+		}
+		notRun(t, f.makeMarker, "make build-runtime")
+		notRun(t, f.goMarker, "go build")
+	})
+	t.Run("no pair still builds locally", func(t *testing.T) {
+		t.Parallel()
+		f := newFixture(t, pairRevision)
+		out, err := run(t, f, "")
+		reachedProvider(t, out, err)
+		if !startedPair(t, f) {
+			t.Errorf("the locally built fixture-provider was not started; output:\n%s", out)
+		}
+		for path, what := range map[string]string{f.makeMarker: "make build-runtime", f.goMarker: "go build"} {
+			if _, err := os.Stat(path); err != nil {
+				t.Errorf("%s did not run without a supplied pair; output:\n%s", what, out)
+			}
+		}
+		if strings.Contains(out, "using the runtime pair built by the setup job") {
+			t.Errorf("run-ui-tests.sh took the pair branch with no pair supplied; output:\n%s", out)
+		}
+	})
 }
 
 func writeFile(t *testing.T, path, data string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writePairFixture writes the pair the setup job uploads: the two binaries,
+// the checksum manifest, and the revision file. providerBody is the
+// fixture-provider's contents, so the runner test can install a stub it can
+// observe.
+func writePairFixture(t *testing.T, dir, revision, providerBody string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(dir, "evener"), "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, filepath.Join(dir, "fixture-provider"), providerBody)
+	writeManifest(t, dir)
+	writeFile(t, filepath.Join(dir, "revision"), revision+"\n")
+}
+
+func writeExecutable(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
 		t.Fatal(err)
 	}
 }
