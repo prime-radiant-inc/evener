@@ -16,11 +16,10 @@ import {
 export function activityActionLabel(
   summary: SessionActivitySummary | null | undefined,
   subagents: SessionActivitySummary["delegates"] | null,
-  label: "Activity" | "Overview" = "Activity",
 ): string {
   return subagents?.known && summary?.jobs.known
-    ? `${label} · ${subagents.active + summary.jobs.active} active`
-    : label;
+    ? `Overview · ${subagents.active + summary.jobs.active} active`
+    : "Overview";
 }
 
 // formatUsagePair renders a delegate row's token cluster ("↑41.2K ↓6.1K"), or null

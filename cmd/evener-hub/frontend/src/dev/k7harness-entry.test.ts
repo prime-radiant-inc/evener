@@ -1,4 +1,4 @@
-import { act } from "@testing-library/react";
+import { act, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 // The standalone harness mounts the chrome outside the app shell.
@@ -15,6 +15,6 @@ describe("k7harness entry", () => {
     await act(async () => {
       await import("./k7harness-entry");
     });
-    expect(document.getElementById("root")?.childElementCount).toBeGreaterThan(0);
+    await waitFor(() => expect(document.querySelector('[data-testid^="session-chrome"]')).toBeTruthy());
   }, 30_000);
 });

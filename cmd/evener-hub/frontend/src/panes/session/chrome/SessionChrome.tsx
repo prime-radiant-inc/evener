@@ -208,7 +208,7 @@ export function SessionChrome({
       activitySidebarStore.getState().openFor(sessionRef, undefined, undefined, paneId);
     }
   };
-  const overviewLabel = activityActionLabel(activitySummary, subagents, "Overview");
+  const overviewLabel = activityActionLabel(activitySummary, subagents);
 
   // The menu's action adapters, shared by the composer and menu-only
   // placements so the failure convention (SessionMenu.tsx's header comment:

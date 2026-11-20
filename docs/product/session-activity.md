@@ -381,8 +381,8 @@ never dropped.
 Clients show the line in place of the status word only while the row is
 non-terminal and the line is non-empty; every other row state keeps today's
 status text on the web, and the status word stays reachable — the sidebar
-row's dot label and title, the activity tree's row description, and the
-phone's accessibility label keep reading it. The merge rides the existing bounded
+row's dot label and title, and the phone's accessibility label keep reading
+it. The merge rides the existing bounded
 preview gate: a client that has not advertised it keeps the read path alone,
 and an absent, over-long or malformed value applies as omitted rather than
 dropping the row. Older daemons never send the field, and their rows keep
@@ -1177,8 +1177,8 @@ session's own running jobs, only when both are known; watches and completed work
 are not part of that number. The sidebar's Jobs, Watches and Tasks tabs use
 session-scoped reads on both viewports, while About uses the shared session
 model. The Agents tab and all Agents counts (the pane's activity chip, the
-sidebar's Agents tab label, each cascade scope's Agents chip, the Overview and
-Activity action counts, and the conversation's liveness line) read the same
+sidebar's Agents tab label, each cascade scope's Agents chip, the Overview
+action count, and the conversation's liveness line) read the same
 subtree store
 ([`useSubagentCounts`](../../cmd/evener-hub/frontend/src/stores/sessionActivity.ts)
 and `AgentsTab`): the tab renders the subtree's active branches nested beneath

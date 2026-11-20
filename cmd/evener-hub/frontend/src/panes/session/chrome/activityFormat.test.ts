@@ -10,10 +10,9 @@ import {
 
 test("Overview labels retain unknown activity instead of inventing a zero count", () => {
   const subagents = { known: true, total: 4, active: 3, failed: 0, completed: 1 };
-  const label = "Overview";
-  expect(activityActionLabel(undefined, subagents, label)).toBe(label);
-  expect(activityActionLabel(activitySummary(), null, label)).toBe(label);
-  expect(activityActionLabel(activitySummary(), { ...subagents, known: false }, label)).toBe(label);
+  expect(activityActionLabel(undefined, subagents)).toBe("Overview");
+  expect(activityActionLabel(activitySummary(), null)).toBe("Overview");
+  expect(activityActionLabel(activitySummary(), { ...subagents, known: false })).toBe("Overview");
 });
 
 // Subagents count at every depth (the subtree count, useSubagentCounts); jobs
@@ -24,17 +23,14 @@ test("Overview labels count subagents at every depth and the session's jobs", ()
   const subagents = { known: true, total: 4, active: 3, failed: 0, completed: 1 };
   // 3 subagents at every depth plus the session's 2 running jobs; the
   // session's own delegate is not counted again.
-  const overview = activityActionLabel(summary, subagents, "Overview");
+  const overview = activityActionLabel(summary, subagents);
   expect(overview.startsWith("Overview")).toBe(true);
   expect(overview.match(/\d+/g)).toEqual(["5"]);
-  const activity = activityActionLabel(summary, subagents);
-  expect(activity.startsWith("Activity")).toBe(true);
-  expect(activity.match(/\d+/g)).toEqual(["5"]);
   subagents.active = 0;
   summary.jobs.active = 0;
-  expect(activityActionLabel(summary, subagents, "Overview").match(/\d+/g)).toEqual(["0"]);
+  expect(activityActionLabel(summary, subagents).match(/\d+/g)).toEqual(["0"]);
   summary.jobs.known = false;
-  expect(activityActionLabel(summary, subagents, "Overview")).toBe("Overview");
+  expect(activityActionLabel(summary, subagents)).toBe("Overview");
 });
 
 test("formatUsagePair renders arrows with compact counts", () => {

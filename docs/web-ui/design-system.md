@@ -210,8 +210,8 @@ losing the conversation that made the evidence relevant.
 - **Preserve useful saved placements.** Workspace restore omits retired Activity
   panes through its unknown-pane handling. Registered panes keep their bodies and
   reachable tabs; valid session routes win before Welcome. Overview restores its
-  own open/category choice independently. The retained recursive Activity Sheet
-  and inline discovery keep their existing scope and renderer.
+  own open/category choice independently. Inline discovery keeps its existing
+  scope and renderer.
 
 The provenance corrections and nested navigation/focus repairs change behavior. Folding,
 disclosure persistence, keyboard rules, preferences and semantic hue roles are retained
