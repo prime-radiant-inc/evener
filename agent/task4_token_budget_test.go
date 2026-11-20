@@ -186,6 +186,10 @@ func TestSessionAnchorTokenBudgetRecoveryClearsPrimaryAllocation(t *testing.T) {
 // produces is the one the fallback model dispatches, so billing it by the names
 // it carries would undercount exactly the rows whose adapter replays unsigned
 // thinking while their names say nothing.
+//
+// The estimate is taken once, by the session, after it projects the messages for
+// the fallback's row; the rebuild itself carries the identity and the history and
+// clears the primary's shadows.
 func TestContinuationFallbackRebuildEstimatesAgainstItsResolvedRow(t *testing.T) {
 	t.Parallel()
 	res := registry.Resolved{
@@ -200,7 +204,10 @@ func TestContinuationFallbackRebuildEstimatesAgainstItsResolvedRow(t *testing.T)
 			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: strings.Repeat("unsigned reasoning text ", 40)}},
 		}}},
 	}
-	got, ok := responsesContinuationModelFallbackRequest(res, req, nil, false)
+	profile := testOpenAICompatProfile(res.Instance, res.ModelID, 0).WithResolved(res)
+	sess := newSession(t, withProfile(profile), withDir(t.TempDir()), withConfig(SessionConfig{}))
+	defer sess.Close()
+	got, ok := sess.responsesContinuationFallbackRequest(profile, req, nil)
 	if !ok {
 		t.Fatal("model fallback rebuild refused a full-history request")
 	}
@@ -635,7 +642,7 @@ func TestSessionFallbackRecomputesProviderSensitiveFullHistoryEstimate(t *testin
 // together with the names the request carries, and the primary's names would
 // claim a media family (here Google's 1032-token tile rule) the fallback never
 // speaks and the generic fallback (258) does not.
-func TestResponsesContinuationModelFallbackRequestStampsTheFallbacksIdentity(t *testing.T) {
+func TestTheFallbackRequestStampsTheFallbacksIdentity(t *testing.T) {
 	t.Parallel()
 	fullHistory := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
 		{Kind: llm.ContentImage, Image: &llm.ImageData{Data: task4LargePNG(), MediaType: "image/png"}},
@@ -645,8 +652,11 @@ func TestResponsesContinuationModelFallbackRequestStampsTheFallbacksIdentity(t *
 		HistoryMode: llm.HistoryModeResponsesDelta,
 	}
 	fallback := registry.Resolved{Instance: "gateway", ModelID: "gateway-zz"}
+	profile := testOpenAICompatProfile(fallback.Instance, fallback.ModelID, 0).WithResolved(fallback)
+	sess := newSession(t, withProfile(profile), withDir(t.TempDir()), withConfig(SessionConfig{}))
+	defer sess.Close()
 
-	got, ok := responsesContinuationModelFallbackRequest(fallback, primary, fullHistory, false)
+	got, ok := sess.responsesContinuationFallbackRequest(profile, primary, fullHistory)
 	if !ok {
 		t.Fatal("the round retained its full history, so the fallback request is constructible")
 	}

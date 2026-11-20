@@ -27,6 +27,18 @@ func budgetTestRegistry(t *testing.T, instance string, provider registry.Provide
 	return r
 }
 
+// closedEmptyParameters is the closed empty object schema strict-capable
+// built-in OpenAI adapters emit for a parameterless tool that has not opted out
+// of strict mode.
+func closedEmptyParameters() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{},
+		"required":             []string{},
+	}
+}
+
 // wireCatalog returns the tool definitions with the parameter schema the target
 // adapter puts on the wire: the closed empty object when closeStrict is true
 // and the parameterless tool has not opted out, otherwise the open empty object.
@@ -36,14 +48,9 @@ func wireCatalog(defs []ToolDefinition, closeStrict bool) []ToolDefinition {
 	for i := range out {
 		if out[i].DeclaresNoParameters() || out[i].Parameters == nil {
 			if closeStrict && (out[i].Strict == nil || *out[i].Strict) {
-				out[i].Parameters = map[string]any{
-					"type":                 "object",
-					"additionalProperties": false,
-					"properties":           map[string]any{},
-					"required":             []string{},
-				}
+				out[i].Parameters = closedEmptyParameters()
 			} else {
-				out[i].Parameters = map[string]any{"type": "object", "properties": map[string]any{}}
+				out[i].Parameters = defaultToolParameters()
 			}
 		}
 	}
@@ -209,7 +216,7 @@ func TestParameterlessToolIsPricedByTheSchemaTheAdapterSends(t *testing.T) {
 		t.Parallel()
 		nilDef := []ToolDefinition{{Name: "current_time"}}
 		openDef := []ToolDefinition{{Name: "current_time", Parameters: defaultToolParameters()}}
-		closedDef := []ToolDefinition{{Name: "current_time", Parameters: closedEmptyToolParameters()}}
+		closedDef := []ToolDefinition{{Name: "current_time", Parameters: closedEmptyParameters()}}
 
 		protoCases := []struct {
 			name     string
@@ -337,7 +344,7 @@ func TestParameterlessToolIsPricedByTheSchemaTheAdapterSends(t *testing.T) {
 		if res.Credential.Value != "secret-token" {
 			t.Fatalf("resolved credential = %q, want secret-token", res.Credential.Value)
 		}
-		wantClosed := ToolsJSONBytes([]ToolDefinition{{Name: "current_time", Parameters: closedEmptyToolParameters()}})
+		wantClosed := ToolsJSONBytes([]ToolDefinition{{Name: "current_time", Parameters: closedEmptyParameters()}})
 		if got := EffectiveToolsJSONBytes(gs.request(opts, gs.history), res, false); got != wantClosed {
 			t.Fatalf("EffectiveToolsJSONBytes = %d, want closed schema size %d", got, wantClosed)
 		}

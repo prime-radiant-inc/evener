@@ -147,8 +147,8 @@ func declaredToolJSONBytes(req Request) int {
 // catalog's own count is the wire count and neither a deriver nor a replacement
 // applies.
 //
-// A protocol with no deriver still substitutes an open empty object for a
-// parameterless tool, so its answer is the catalog plus that delta.
+// A protocol that implements no deriver sends the definitions it is handed, so
+// its answer is the catalog's own count.
 func EffectiveToolsJSONBytes(req Request, res registry.Resolved, override bool) int {
 	if override {
 		return declaredToolJSONBytes(req)
@@ -169,12 +169,9 @@ func EffectiveToolsJSONBytes(req Request, res registry.Resolved, override bool) 
 			if emitted, changed := deriver.EmitToolSchemas(req.Tools, res); changed {
 				return ToolsJSONBytes(emitted)
 			}
-			// The builder emits the list it was handed, so the catalog's own
-			// count describes those bytes.
-			return declaredToolJSONBytes(req)
 		}
 	}
-	return declaredToolJSONBytes(req) + parameterlessToolsJSONDelta(req.Tools, res)
+	return declaredToolJSONBytes(req)
 }
 
 // providerToolsReplacement returns the tool list res's route writes over the
@@ -239,72 +236,6 @@ func ToolsJSONBytes(defs []ToolDefinition) int {
 	}
 	b, _ := json.Marshal(defs)
 	return len(b)
-}
-
-// closedEmptyToolParameters is the closed empty object schema emitted by
-// strict-capable built-in OpenAI adapters for a parameterless tool that has not
-// opted out of strict mode.
-func closedEmptyToolParameters() map[string]any {
-	return map[string]any{
-		"type":                 "object",
-		"additionalProperties": false,
-		"properties":           map[string]any{},
-		"required":             []string{},
-	}
-}
-
-// protocolClosesStrictParameterlessTools reports whether the built-in adapter
-// for res emits closedEmptyToolParameters for non-opted-out parameterless tools.
-func protocolClosesStrictParameterlessTools(res registry.Resolved) bool {
-	if !registry.BoolValue(res.Caps.StrictTools) {
-		return false
-	}
-	switch res.Protocol {
-	case registry.ProtocolOpenAIResponses, registry.ProtocolOpenAIChat:
-		return true
-	default:
-		return false
-	}
-}
-
-// emittedParameterlessParameters returns the schema a built-in adapter emits
-// for a tool with no declared parameters, or nil when the adapter leaves
-// t.Parameters unchanged (including omitting a direct caller's nil).
-func emittedParameterlessParameters(t ToolDefinition, res registry.Resolved) map[string]any {
-	if !t.DeclaresNoParameters() && t.Parameters != nil {
-		return nil
-	}
-	if protocolClosesStrictParameterlessTools(res) && (t.Strict == nil || *t.Strict) {
-		return closedEmptyToolParameters()
-	}
-	if t.Parameters == nil {
-		switch res.Protocol {
-		case registry.ProtocolOpenAIResponses, registry.ProtocolAnthropic, registry.ProtocolGoogle:
-			return defaultToolParameters()
-		}
-	}
-	return nil
-}
-
-// parameterlessToolsJSONDelta returns the net serialized byte delta introduced
-// by the resolved built-in adapter substituting closed or open empty schemas for
-// parameterless tools in defs.
-func parameterlessToolsJSONDelta(defs []ToolDefinition, res registry.Resolved) int {
-	delta := 0
-	for i := range defs {
-		emitted := emittedParameterlessParameters(defs[i], res)
-		if emitted == nil {
-			continue
-		}
-		declaredBytes := ToolsJSONBytes(defs[i : i+1])
-		adjusted := defs[i]
-		adjusted.Parameters = emitted
-		emittedBytes := ToolsJSONBytes([]ToolDefinition{adjusted})
-		if declaredBytes > 0 && emittedBytes > 0 {
-			delta += emittedBytes - declaredBytes
-		}
-	}
-	return delta
 }
 
 // EstimateInputTokensForRoute returns the local estimate for req as res's route
