@@ -1963,7 +1963,10 @@ func (r *projectNameResolver) projectAt(recorded, bucketDir string) (checkout, p
 	// surviving directory is then canonicalized as if it were a project of its
 	// own. Walking where the path really points keeps a sibling's saved origin from
 	// being rejected as conflicting evidence.
-	clean := identifier.ResolveClean(recorded)
+	//
+	// A path that cannot be resolved as a whole falls back to its lexical Clean,
+	// which can still name a link; resolveFullyClean resolves that spelling too.
+	clean := resolveFullyClean(recorded)
 	if _, laneRoot, _, managedProjectID, isLane := r.stateWorktreeOwner(clean, bucketDir); isLane {
 		if root := resolveMainRootWithin(clean, laneRoot); root != "" {
 			return root, identifier.ProjectFromCanonicalPath(identifier.ResolveClean(root)).ID, true, true, true
@@ -2241,16 +2244,34 @@ func (r *projectNameResolver) resolveMainRoot(dir string) string {
 	return root
 }
 
-// mainRootOutcome answers dir's main checkout, resolving the spelling first so a
-// caller may pass the recorded path as it was written.
-func (r *projectNameResolver) mainRootOutcome(dir string) (root string, refused bool) {
-	return r.mainRootOutcomeClean(identifier.ResolveClean(dir))
+// resolveFullyClean resolves path through its symlinks, including the spelling
+// identifier.ResolveClean falls back to when the whole path cannot be resolved.
+// That fallback is a plain Clean, and it can still name a symlink itself: a
+// recorded path ending in a removed component followed by ".." cleans to the
+// link, and a walk started there climbs the link's lexical parents instead of
+// the checkout the link points into. A path that resolves on the first attempt
+// is returned unchanged.
+func resolveFullyClean(path string) string {
+	for {
+		clean, resolved := identifier.ResolveCleanOK(path)
+		if resolved || clean == path {
+			return clean
+		}
+		path = clean
+	}
 }
 
-// mainRootOutcomeClean answers a resolved directory's main checkout through this
-// search's per-directory reuse, walking from clean upward on a miss. The key is
-// the resolved spelling because a walk over a symlink's own parents describes
-// the link, not the checkout: two spellings of one directory share one entry.
+// mainRootOutcome answers dir's main checkout, resolving the spelling fully
+// first so a caller may pass the recorded path as it was written.
+func (r *projectNameResolver) mainRootOutcome(dir string) (root string, refused bool) {
+	return r.mainRootOutcomeClean(resolveFullyClean(dir))
+}
+
+// mainRootOutcomeClean answers a fully resolved directory's main checkout through
+// this search's per-directory reuse, walking from clean upward on a miss. clean
+// must be resolveFullyClean output: a spelling that only resolved lexically can
+// still name a link. The key is the resolved spelling, so two spellings of one
+// directory share one entry.
 //
 // The walk resolves the main checkout from the .git layout alone, never by
 // running Git. Transcript search is read-only and its inputs are

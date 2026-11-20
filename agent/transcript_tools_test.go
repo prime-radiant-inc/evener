@@ -1845,6 +1845,36 @@ func TestFind_ProjectName_ReusesOneStructuralLookupPerDirectory(t *testing.T) {
 	})
 }
 
+// TestFind_ProjectName_ResolvesFallbackSpellingBeforeTheWalk covers a recorded
+// path that cannot be resolved as a whole because a component in it was removed
+// after the record was written. identifier.ResolveClean then falls back to a
+// lexical Clean, and that spelling can still name a symlink: "alias/build/.."
+// cleans to "alias". A walk started from the alias climbs its lexical parents
+// and misses the checkout the link points into, so the fallback spelling must be
+// resolved once more before it becomes the memo key and the walk's start.
+func TestFind_ProjectName_ResolvesFallbackSpellingBeforeTheWalk(t *testing.T) {
+	base := t.TempDir()
+	checkout := filepath.Join(base, "real-checkout")
+	if err := os.MkdirAll(filepath.Join(checkout, "sub"), 0o755); err != nil {
+		t.Fatalf("mkdir checkout: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(checkout, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	alias := filepath.Join(base, "alias")
+	if err := os.Symlink(filepath.Join(checkout, "sub"), alias); err != nil {
+		t.Fatalf("symlink alias: %v", err)
+	}
+	// "build" never existed, so the whole path cannot resolve; Clean cancels
+	// "build/.." and leaves the alias's own spelling.
+	recorded := alias + string(filepath.Separator) + "build" + string(filepath.Separator) + ".."
+
+	got, _, ok, _, _ := newProjectNameResolver().projectAt(recorded, t.TempDir())
+	if !ok || got != identifier.ResolveClean(checkout) {
+		t.Fatalf("projectAt(recorded %q) = %q, ok=%v, want %q: the fallback spelling names a symlink and must be resolved before the walk", recorded, got, ok, identifier.ResolveClean(checkout))
+	}
+}
+
 func TestFind_CatalogTrimmedAndOrdered(t *testing.T) {
 	t.Parallel()
 	dir := newBucket(t)
