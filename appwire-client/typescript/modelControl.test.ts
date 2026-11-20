@@ -541,6 +541,31 @@ describe("whole-snapshot reconciliation", () => {
     });
   });
 
+  // The bundled kimi-for-coding target resolves with the instance name equal to
+  // the bare model id, so the daemon's snapshot carries "kimi-for-coding" in
+  // both active fields. The equal pair is not "no provider named apart" here —
+  // it is the instance named beside an id that happens to equal it — and the
+  // phone's identity rule needs the instance preserved to qualify the id: the
+  // catalog's key is "kimi-for-coding/kimi-for-coding", while the bare id alone
+  // matches nothing. Dropping the instance leaves the running row unchecked and
+  // a tap on it sends a second setter.
+  test("an equal-fields snapshot preserves the provider instance so the qualified identity matches", () => {
+    const initial = model();
+    const result = reduceModelControl(initial, {
+      kind: "readAccepted",
+      version: 1,
+      snapshot: snapshot(1, { provider: "kimi-for-coding", model: "kimi-for-coding" }),
+      authority: AUTHORITY,
+    });
+
+    expect(result).toMatchObject({ decision: "applied", replacementReadRequired: false });
+    expect(result.model).toMatchObject({
+      modelProvider: "kimi-for-coding",
+      model: "kimi-for-coding",
+      modelProfile: "kimi-for-coding",
+    });
+  });
+
   // A snapshot whose two active fields agree names no provider apart from the
   // id: the identity is already whole, so the instance a previous read left
   // beside it must not survive to double-qualify it.

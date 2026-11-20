@@ -239,21 +239,35 @@ function modelProfilePatch(
   return { modelProfile: undefined };
 }
 
+// The provider instance a snapshot's active names for the model it runs.
+// modelControlActive always writes the instance (profile.ID(), which is
+// lowercase and never carries a slash) into active.modelProvider and the bare
+// model id into active.model, so BOTH shapes the wire supports name an
+// instance: a split pair names it beside a different id, and an equal
+// slash-free pair is the bundled target whose instance name equals the bare id
+// (kimi-for-coding/kimi-for-coding) - dropping it there would leave the phone
+// comparing the bare id against the catalog's qualified key. The identity is
+// already whole only when the equal pair carries a slash: instance names
+// cannot, so that is a saved view's single prequalified field, and the instance
+// a previous read left beside it would double-qualify it.
+function snapshotProfile(active: ModelControlSnapshot["active"]): string | undefined {
+  return active.modelProvider === active.model && active.modelProvider.includes("/") ? undefined : active.modelProvider;
+}
+
 function projectModelControlSnapshot(model: ThreadModel, snapshot: ModelControlSnapshot): ThreadModel {
   // The snapshot names the running model the way a read does: the provider
-  // instance in active.modelProvider with the bare id beside it, or one whole
-  // identity in both fields when no instance is named apart. modelProfile is
-  // the client's name for that instance (hydrateThread's Thread.evener.profile),
-  // and qualifiedModelIdentity prefers it when qualifying the id, so it must
+  // instance in active.modelProvider with the bare id beside it, or the
+  // bundled instance beside an id that equals it. modelProfile is the client's
+  // name for that instance (hydrateThread's Thread.evener.profile), and
+  // qualifiedModelIdentity prefers it when qualifying the id, so it must
   // follow the snapshot: a cross-provider switch that left the previous read's
   // instance in place would qualify the new provider's model as the old one's.
-  const profile = snapshot.active.modelProvider === snapshot.active.model ? undefined : snapshot.active.modelProvider;
   return {
     ...model,
     modelControlState: { kind: "ready", snapshot },
     modelProvider: snapshot.active.modelProvider,
     model: snapshot.active.model,
-    ...modelProfilePatch(model.modelProfile, profile),
+    ...modelProfilePatch(model.modelProfile, snapshotProfile(snapshot.active)),
     reasoningEffortLevels: [...(snapshot.active.reasoningEffortLevels ?? [])],
     supportsReasoning: snapshot.active.supportsReasoning,
   };
