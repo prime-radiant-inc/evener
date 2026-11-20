@@ -149,8 +149,9 @@ func FuzzResponsesStreamMetamorphic(f *testing.F) {
 			`data: {"type":"response.output_item.done","item":{"type":"function_call","id":"fc_m","arguments":"{\"m\":1}"}}` + "\n\n",
 		// A done function_call with no resolvable id passes through raw.
 		`data: {"type":"response.output_item.done","item":{"type":"function_call","id":"fc_unknown","name":"f"}}` + "\n\n",
-		// A delta naming a different call_id than its item's mapping falls
-		// back to the state filed under the item id.
+		// A delta naming a different call_id than its item's issued owner is
+		// disputed and buffered until its own call is issued, so the owner
+		// keeps its own arguments.
 		`data: {"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_n","id":"fc_n","name":"orig"}}` + "\n\n" +
 			`data: {"type":"response.function_call_arguments.delta","call_id":"call_other","item_id":"fc_n","delta":"{\"x\":"}` + "\n\n" +
 			`data: {"type":"response.function_call_arguments.delta","call_id":"call_other","item_id":"fc_n","delta":"1}"}` + "\n\n" +

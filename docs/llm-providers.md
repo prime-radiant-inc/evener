@@ -105,7 +105,11 @@ always wins; otherwise the item's state stands in only while it has not learned
 a different call ID. A finished terminal call that supplied no arguments takes
 the bytes held for it under that rule, except for a filtered response, which
 never borrows retracted bytes. Live decoding and API-log recomputation apply
-the same rule.
+the same rule. Only an output record establishes which call owns an item slot;
+an argument frame's item mapping is a lookup hint until one does. A live start's
+ID and item ID stay fixed for that call's deltas and end, and the end's name
+comes from the live stream rather than the terminal, while the settled response
+keeps the provider's call ID, name and arguments.
 
 An explicit incomplete response settles the output, including an empty result.
 If the adapter supplies no settled tool calls, streamed argument deltas remain partial.

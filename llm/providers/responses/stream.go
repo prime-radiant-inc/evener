@@ -24,7 +24,8 @@ type responsesToolState struct {
 	issuedCallID string
 	// provisional marks arguments the stream observed before it issued the call:
 	// bytes held under the call's own ID while the frame's item belonged to
-	// another. An added, done or terminal record that issues the call clears it.
+	// another. Once a disputed frame sets it, every later frame for the unissued
+	// call waits. An added or done record that issues the call clears it.
 	provisional bool
 	// issued marks a call an output record announced, under either its call ID or
 	// its item ID, so a later disputed-looking frame still routes to it.
@@ -57,7 +58,11 @@ const (
 type responsesOutputAccumulator struct {
 	toolStates   map[string]*responsesToolState
 	itemToCallID map[string]string
-	entries      []responsesAccumEntry
+	// itemHints resolves an item-only argument frame to the call an earlier
+	// argument frame named for that item. It is not ownership: an output
+	// record's itemToCallID entry wins, and a hint only matters until one does.
+	itemHints map[string]string
+	entries   []responsesAccumEntry
 	// reasoningTextSeen records that some reasoning item has already emitted text, so a
 	// later item's first part still needs the blank line the live preview renders.
 	reasoningTextSeen bool
@@ -131,6 +136,7 @@ func newResponsesOutputAccumulator() *responsesOutputAccumulator {
 	return &responsesOutputAccumulator{
 		toolStates:   map[string]*responsesToolState{},
 		itemToCallID: map[string]string{},
+		itemHints:    map[string]string{},
 	}
 }
 
@@ -313,16 +319,31 @@ func (acc *responsesOutputAccumulator) frameState(callID, itemID, name string) (
 	disputed := itemID != "" && owner != "" && owner != callID
 	st := acc.lookupState(callID, itemID)
 	if st == nil {
-		st = &responsesToolState{id: callID, name: name, provisional: disputed}
+		st = &responsesToolState{id: callID, name: name}
 		acc.toolStates[callID] = st
 	}
 	if st.name == "" && name != "" {
 		st.name = name
 	}
-	if st.provisional || (disputed && !st.issued) {
+	if disputed && !st.issued {
+		// The frame names a call the item's issuer did not. Hold this call's
+		// bytes, and every later frame for it, until an output record issues it.
+		st.provisional = true
+	}
+	if st.provisional {
 		return st, responsesFrameBuffered
 	}
 	return st, responsesFrameEmitted
+}
+
+// noteItemHint remembers the call an argument frame named for an item, so later
+// item-only frames reach the same state. It never overrides an item an output
+// record owns.
+func (acc *responsesOutputAccumulator) noteItemHint(itemID, callID string) {
+	if itemID == "" || callID == "" || acc.itemToCallID[itemID] != "" {
+		return
+	}
+	acc.itemHints[itemID] = callID
 }
 
 // noteIssuedCallID records a call_id the provider itself sent for this call,
@@ -350,7 +371,7 @@ func (acc *responsesOutputAccumulator) argumentCallID(payload map[string]any) (i
 	issuedCallID, _ = payload["call_id"].(string)
 	itemID, _ = payload["item_id"].(string)
 	if callID = issuedCallID; callID == "" && itemID != "" {
-		callID = acc.itemToCallID[itemID]
+		callID = cmp.Or(acc.itemToCallID[itemID], acc.itemHints[itemID])
 	}
 	if callID == "" {
 		callID = itemID
@@ -386,25 +407,29 @@ func (acc *responsesOutputAccumulator) HandleOutputItemAdded(payload, item map[s
 	}
 	st := acc.toolStates[stateID]
 	if st == nil {
+		st = acc.lookupState(callID, itemID)
+	}
+	if st == nil {
 		st = &responsesToolState{id: stateID}
 	}
 	if callID != "" {
-		st.id = callID
 		acc.noteIssuedCallID(st, callID, itemID)
-		acc.toolStates[callID] = st
 	}
-	if itemID != "" && (acc.itemToCallID[itemID] == "" || acc.itemToCallID[itemID] == st.id) {
-		st.itemID = itemID
-		acc.itemToCallID[itemID] = st.id
+	if itemID != "" && (acc.itemToCallID[itemID] == "" || acc.itemToCallID[itemID] == stateID) {
+		if !st.started {
+			st.itemID = itemID
+		}
+		acc.itemToCallID[itemID] = stateID
 		acc.toolStates[itemID] = st
 	}
 	if st.name == "" && name != "" {
 		st.name = name
 	}
-	st.issued = true
-	if callID != "" {
-		st.provisional = false
+	if !st.started {
+		st.id = stateID // the ID every live event will announce
 	}
+	st.issued = true
+	st.provisional = false
 	acc.toolStates[stateID] = st
 }
 
@@ -438,6 +463,7 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload 
 	if disposition == responsesFramePassthrough {
 		return nil, "", disposition
 	}
+	acc.noteItemHint(itemID, issuedCallID)
 	if delta != "" {
 		st.args.WriteString(fragment)
 		delta = fragment
@@ -479,15 +505,11 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload m
 		st.args.Reset()
 		st.args.WriteString(fragment)
 	}
+	acc.noteItemHint(itemID, issuedCallID)
 	if disposition == responsesFrameBuffered {
 		return nil, disposition
 	}
 	acc.noteIssuedCallID(st, issuedCallID, itemID)
-	if itemID != "" && (acc.itemToCallID[itemID] == "" || acc.itemToCallID[itemID] == st.id) {
-		st.itemID = itemID
-		acc.itemToCallID[itemID] = st.id
-		acc.toolStates[itemID] = st
-	}
 	return st, responsesFrameEmitted
 }
 
@@ -551,7 +573,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 		}
 	}
 	if callID == "" && itemID != "" {
-		callID = acc.itemToCallID[itemID]
+		callID = cmp.Or(acc.itemToCallID[itemID], acc.itemHints[itemID])
 	}
 	if callID == "" {
 		return item, nil, "", false
@@ -560,9 +582,12 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 	st.provisional = false
 	st.issued = true
 	acc.noteIssuedCallID(st, issuedCallID, itemID)
-	if itemID != "" && (acc.itemToCallID[itemID] == "" || acc.itemToCallID[itemID] == st.id) {
-		st.itemID = itemID
-		acc.itemToCallID[itemID] = st.id
+	identity := cmp.Or(issuedCallID, callID)
+	if itemID != "" && (acc.itemToCallID[itemID] == "" || acc.itemToCallID[itemID] == identity) {
+		if !st.started {
+			st.itemID = itemID
+		}
+		acc.itemToCallID[itemID] = identity
 		acc.toolStates[itemID] = st
 	}
 	if st.name == "" && name != "" {
@@ -935,7 +960,9 @@ func emitSettledToolCalls(s *llm.ChanStream, r *llm.Response, acc *responsesOutp
 		}
 		end := call
 		if st != nil && st.started && st.id != "" {
-			end.ID = st.id // the ID the live start announced, so consumers see a closed call
+			// The start announced this identity; close under it, while the
+			// settled response keeps the provider's values for dispatch.
+			end.ID, end.ItemID, end.Name = st.id, st.itemID, st.name
 		}
 		s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &end})
 	}

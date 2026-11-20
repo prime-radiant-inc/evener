@@ -377,3 +377,102 @@ func TestResponsesCallIDOnlyDoneDoesNotIssueDisputedCall(t *testing.T) {
 	want := []call{{"c1", "fc_first", "write_file", goodArgs}, {"c2", "fc_second", "f", badArgs + "!"}}
 	assertSettledCalls(t, live, recorded, want)
 }
+
+// An argument frame's item mapping is not ownership: the first output record to
+// issue a call for the item claims it, and a later item-only completion settles
+// that issued call without inheriting the bytes addressed to the other one.
+func TestResponsesFirstIssuedCallClaimsItemOverArgumentMapping(t *testing.T) {
+	t.Parallel()
+	argumentOnlyDone := `{"type":"response.function_call_arguments.done","item_id":"fc_first","call_id":"c2","arguments":` + strconv.Quote(badArgs) + `}`
+	itemOnlyEnd := `{"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_first","name":"write_file"}}`
+	frames := []string{argumentOnlyDone, addedFirst, itemOnlyEnd, noOutput}
+	events, live, recorded := decodeBoth(t, frames...)
+	starts := []call{{"c1", "fc_first", "write_file", ""}}
+	if got := callEvents(events, llm.StreamEventToolCallStart); !slices.Equal(got, starts) {
+		t.Errorf("live starts = %+v, want the issued call only %+v", got, starts)
+	}
+	ends := []call{{"c1", "fc_first", "write_file", ""}}
+	if got := callEvents(events, llm.StreamEventToolCallEnd); !slices.Equal(got, ends) {
+		t.Errorf("live ends = %+v, want the issued call only %+v", got, ends)
+	}
+	assertSettledCalls(t, live, recorded, ends)
+}
+
+// A call started under its item ID keeps that announced ID for every later
+// delta and its end, while the settled call keeps the provider's call ID and
+// the terminal's arguments.
+func TestResponsesLateCallIDKeepsAnnouncedID(t *testing.T) {
+	t.Parallel()
+	itemDelta := `{"type":"response.function_call_arguments.delta","item_id":"fc_first","delta":"{ \"a\""}`
+	callDelta := `{"type":"response.function_call_arguments.delta","item_id":"fc_first","call_id":"c9","delta":" : 1 }"}`
+	added := `{"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_first","call_id":"c9","name":"f"}}`
+	trailing := `{"type":"response.function_call_arguments.delta","item_id":"fc_first","delta":"!"}`
+	frames := []string{itemDelta, callDelta, added, trailing, terminalWith(terminalCall("fc_first", "c9", "f", goodArgs))}
+	events, live, recorded := decodeBoth(t, frames...)
+	for _, typ := range []llm.StreamEventType{llm.StreamEventToolCallStart, llm.StreamEventToolCallDelta, llm.StreamEventToolCallEnd} {
+		for _, c := range callEvents(events, typ) {
+			if c.id != "fc_first" {
+				t.Errorf("%v event under %q, want the announced ID fc_first", typ, c.id)
+			}
+		}
+	}
+	if starts := callEvents(events, llm.StreamEventToolCallStart); len(starts) != 1 {
+		t.Errorf("live starts = %+v, want exactly one", starts)
+	}
+	if ends := callEvents(events, llm.StreamEventToolCallEnd); len(ends) != 1 {
+		t.Errorf("live ends = %+v, want exactly one", ends)
+	}
+	want := []call{{"c9", "fc_first", "f", goodArgs}}
+	assertSettledCalls(t, live, recorded, want)
+}
+
+// A disputed frame for an unissued call makes its hold persistent: a later
+// frame naming only that call waits too, and the call settles with every byte
+// once an output record issues it.
+func TestResponsesDisputedHoldPersistsForLaterFrames(t *testing.T) {
+	t.Parallel()
+	callIDOnlyDone := `{"type":"response.function_call_arguments.done","call_id":"c2","arguments":` + strconv.Quote(badArgs) + `}`
+	frames := []string{addedFirst, firstDelta, firstDone, firstEnd, callIDOnlyDone,
+		disputedDelta("!"), deltaFor("c2", "?"), addedOwned, secondEnd, noOutput}
+	events, live, recorded := decodeBoth(t, frames...)
+	starts := []call{{"c1", "fc_first", "write_file", ""}, {"c2", "fc_second", "f", ""}}
+	if got := callEvents(events, llm.StreamEventToolCallStart); !slices.Equal(got, starts) {
+		t.Errorf("live starts = %+v, want %+v", got, starts)
+	}
+	if got := callEvents(events, llm.StreamEventToolCallDelta); !slices.Equal(got, []call{{"c1", "fc_first", "write_file", "{"}}) {
+		t.Errorf("live deltas = %+v, want only the issued c1 fragment", got)
+	}
+	want := []call{{"c1", "fc_first", "write_file", goodArgs}, {"c2", "fc_second", "f", badArgs + "!?"}}
+	if got := callEvents(events, llm.StreamEventToolCallEnd); !slices.Equal(got, want) {
+		t.Errorf("live ends = %+v, want %+v", got, want)
+	}
+	assertSettledCalls(t, live, recorded, want)
+}
+
+// A content-filtered terminal must not teach the live end a name the stream
+// never announced, so prior delta bytes cannot be previewed under it. The
+// settled response keeps the provider's name and the arguments it supplied.
+func TestResponsesFilteredTerminalKeepsAnnouncedName(t *testing.T) {
+	t.Parallel()
+	delta := `{"type":"response.function_call_arguments.delta","call_id":"c1","delta":"secret bytes"}`
+	filtered := `{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"content_filter"},"output":[{"type":"function_call","id":"fc_first","call_id":"c1","name":"communicate","arguments":""}]}}`
+	events, live, recorded := decodeBoth(t, delta, filtered)
+	start := toolEvent(t, events, llm.StreamEventToolCallStart)
+	if start.ID != "c1" || start.Name != "" {
+		t.Errorf("live start = %+v, want the announced c1 with no name", start)
+	}
+	ends := callEvents(events, llm.StreamEventToolCallEnd)
+	if len(ends) != 1 {
+		t.Fatalf("live ends = %+v, want exactly one", ends)
+	}
+	if ends[0].name != "" {
+		t.Errorf("live end name = %q, want the announced empty name", ends[0].name)
+	}
+	if ends[0].id != "c1" {
+		t.Errorf("live end ID = %q, want the announced c1", ends[0].id)
+	}
+	if ends[0].args != "" {
+		t.Errorf("live end args = %q, want the terminal's empty arguments", ends[0].args)
+	}
+	assertSettledCalls(t, live, recorded, []call{{"c1", "fc_first", "communicate", ""}})
+}

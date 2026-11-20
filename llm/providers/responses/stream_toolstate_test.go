@@ -132,7 +132,7 @@ func TestResponsesStreamToolStateMapping(t *testing.T) {
 		})
 	})
 
-	t.Run("delta keyed by a foreign call id falls back to item state", func(t *testing.T) {
+	t.Run("delta keyed by a foreign call id is buffered until the owner completes", func(t *testing.T) {
 		events, final := responsesEvents(t,
 			`{"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_a","id":"fc_a","name":"orig"}}`,
 			`{"type":"response.function_call_arguments.delta","call_id":"call_other","item_id":"fc_a","delta":"{\"x\":"}`,
@@ -140,6 +140,9 @@ func TestResponsesStreamToolStateMapping(t *testing.T) {
 			`{"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_a","arguments":"{\"x\":1}"}}`,
 			completed,
 		)
+		if hasEventType(events, llm.StreamEventToolCallDelta) {
+			t.Fatalf("disputed deltas must stay buffered, got %+v", events)
+		}
 		start := toolEvent(t, events, llm.StreamEventToolCallStart)
 		if start.ID != "call_a" || start.Name != "orig" {
 			t.Fatalf("start = %+v, want the state filed under fc_a (id call_a, name orig)", start)
