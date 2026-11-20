@@ -419,8 +419,7 @@ func TestSetModel_MarkerWarnsOnDroppedFallbacks(t *testing.T) {
 }
 
 // TestSetModel_RecomputesKnowledgeCutoffBeforePromptRefresh verifies (e) and
-// G15: after a switch, the cached system prompt reflects the NEW model's
-// knowledge cutoff, not the launch model's.
+// G15 under the immutable launch prompt: envInfo carries the NEW cutoff.
 func TestSetModel_RecomputesKnowledgeCutoffBeforePromptRefresh(t *testing.T) {
 	t.Parallel()
 	launch := NewOpenAIProfile("gpt-5.4")
@@ -442,8 +441,9 @@ func TestSetModel_RecomputesKnowledgeCutoffBeforePromptRefresh(t *testing.T) {
 	if got := sess.envInfo.KnowledgeCutoff; got != launchCutoff {
 		t.Fatalf("launch KnowledgeCutoff = %q, want %q", got, launchCutoff)
 	}
-	if !strings.Contains(sess.cachedSystemPrompt, launchCutoff) {
-		t.Fatalf("launch cachedSystemPrompt does not mention %s:\n%s", launchCutoff, sess.cachedSystemPrompt)
+	launchPrompt := sess.cachedSystemPrompt
+	if !strings.Contains(launchPrompt, launchCutoff) {
+		t.Fatalf("launch cachedSystemPrompt does not mention %s:\n%s", launchCutoff, launchPrompt)
 	}
 
 	if err := setModel(sess, "anthropic/claude-opus-4-6"); err != nil {
@@ -453,10 +453,11 @@ func TestSetModel_RecomputesKnowledgeCutoffBeforePromptRefresh(t *testing.T) {
 	if got := sess.envInfo.KnowledgeCutoff; got != switchedCutoff {
 		t.Fatalf("post-switch KnowledgeCutoff = %q, want %q", got, switchedCutoff)
 	}
-	if !strings.Contains(sess.cachedSystemPrompt, switchedCutoff) {
-		t.Fatalf("post-switch cachedSystemPrompt does not mention the new cutoff %s:\n%s", switchedCutoff, sess.cachedSystemPrompt)
-	}
-	if strings.Contains(sess.cachedSystemPrompt, launchCutoff) {
-		t.Fatalf("post-switch cachedSystemPrompt still mentions the launch model's cutoff %s:\n%s", launchCutoff, sess.cachedSystemPrompt)
+	if sess.cachedSystemPrompt != launchPrompt {
+		t.Fatalf("a switch rewrote the launch system prompt:\n%s", sess.cachedSystemPrompt)
+	} else if err := sess.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	} else if b := lastTurnOfKind(t, sess, schema.TurnEnvironment).Message.Text(); !strings.Contains(b, "model: "+switched.Model()) || !strings.Contains(b, "knowledge cutoff: "+switchedCutoff) {
+		t.Fatalf("the environment diff does not report the new model and cutoff:\n%s", b)
 	}
 }

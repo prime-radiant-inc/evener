@@ -255,6 +255,19 @@ func TestModelSwitchWhileWaitingForQuotaRetriesOnTheNewModel(t *testing.T) {
 		}
 		t.Fatalf("requests ran on %v, want the limited one then one retry on gpt-5.4", models)
 	}
+	if len(reqs[0].Messages) == 0 || reqs[0].Messages[0].Role != llm.RoleSystem ||
+		len(reqs[1].Messages) == 0 || reqs[1].Messages[0].Role != llm.RoleSystem {
+		t.Fatalf("expected system message at index 0 in both requests: req0=%+v req1=%+v", reqs[0].Messages, reqs[1].Messages)
+	}
+	if reqs[1].Messages[0].Text() != reqs[0].Messages[0].Text() {
+		t.Fatalf("model switch during quota wait mutated launch SystemPrompt:\nfirst:\n%s\nretry:\n%s", reqs[0].Messages[0].Text(), reqs[1].Messages[0].Text())
+	}
+	if !slices.ContainsFunc(reqs[1].Messages, func(m llm.Message) bool {
+		txt := m.Text()
+		return strings.Contains(txt, "<environment_context>") && strings.Contains(txt, "model: gpt-5.4")
+	}) {
+		t.Fatalf("retry request to new model missing <environment_context> with model: gpt-5.4; messages=%+v", reqs[1].Messages)
+	}
 	// The switch is recorded inside the turn, before the answer the new
 	// model gave.
 	s.mu.Lock()
@@ -276,6 +289,53 @@ func TestModelSwitchWhileWaitingForQuotaRetriesOnTheNewModel(t *testing.T) {
 	snapshot := s.ModelControlSnapshot()
 	if snapshot.Active.Model != "gpt-5.4" || snapshot.Desired == nil || snapshot.Desired.Model != "gpt-5.4" || snapshot.Desired.Lifecycle != appwire.ModelControlLifecycleApplied {
 		t.Fatalf("model control after quota-wait switch = %+v, want gpt-5.4 applied", snapshot)
+	}
+}
+
+func TestModelSwitchWhileWaitingForGoalContinuationQuotaKeepsGoalPromptLast(t *testing.T) {
+	s, _, _, adapter := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
+	serveSession(t, s)
+	trip := tripwireCtx(t).Done()
+	const goalPrompt = "GOAL_QUOTA_CONTINUATION_MARKER_4e7b"
+	run := startInput(context.Background(), s, goalPrompt, EntryContinuation)
+	run.awaitQuotaWait(t, s)
+
+	recoverProvider(adapter)
+	if err := s.SetModel("gpt-5.4"); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+	run.awaitEnd(t, trip, "the switch resumes the goal continuation call")
+	if run.err != nil {
+		t.Fatalf("the continuation after the switch: %v", run.err)
+	}
+	reqs := adapterRequests(adapter)
+	if len(reqs) != 2 || reqs[1].Model != "gpt-5.4" {
+		t.Fatalf("requests = %d (retry model=%q), want 2 with retry on gpt-5.4", len(reqs), reqs[len(reqs)-1].Model)
+	}
+	msgs := reqs[1].Messages
+	if len(msgs) < 2 || !strings.Contains(msgs[len(msgs)-1].Text(), goalPrompt) || strings.Contains(msgs[len(msgs)-1].Text(), "<environment_context>") {
+		t.Fatalf("retry Messages[len-1] displaced driving goal prompt:\n%s", msgs[len(msgs)-1].Text())
+	}
+	envIdx, goalIdx := -1, -1
+	for i, m := range msgs {
+		txt := m.Text()
+		if strings.Contains(txt, "<environment_context>") && strings.Contains(txt, "model: gpt-5.4") {
+			envIdx = i
+		}
+		if strings.Contains(txt, goalPrompt) {
+			goalIdx = i
+		}
+	}
+	if envIdx < 0 || goalIdx < 0 || envIdx >= goalIdx {
+		t.Fatalf("expected <environment_context> with model: gpt-5.4 before goal prompt (envIdx=%d goalIdx=%d); messages=%+v", envIdx, goalIdx, msgs)
+	}
+	s.mu.Lock()
+	hasModelSwitch := slices.ContainsFunc(s.history, func(tn schema.Turn) bool {
+		return tn.Kind == schema.TurnModelSwitch && tn.ModelSwitch != nil && tn.ModelSwitch.NewModel == "gpt-5.4"
+	})
+	s.mu.Unlock()
+	if !hasModelSwitch {
+		t.Fatal("TurnModelSwitch marker missing from history")
 	}
 }
 

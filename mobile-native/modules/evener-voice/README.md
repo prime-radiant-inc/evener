@@ -55,8 +55,10 @@ a truncated output from an earlier install does not prevent recovery.
 - `wake-models.custom.json` is the default installer manifest. It pins the custom classifier and the trainer's paired mel/embedding models, including their modified FP16 weight storage with FP32 operators. Do not substitute the upstream feature assets for these. Streaming feature semantics follow openWakeWord v0.6.0, and the runtime verifies all three hashes. The first-party classifier and Apache-2.0 feature models retain their training-data notices in `resources/wake-word/NOTICE.md`.
 - `wake-models.pretrained.json` retains the upstream Alexa option and its original feature assets. That classifier is CC BY-NC-SA 4.0, personal-use preview only. Notices and license texts are bundled.
 
-`Podfile.lock` records the module and both ONNX pods. Update it only through the
-normal [full-app prebuild and pod installation flow](../../../docs/design/mobile/ios-build-distribution.md).
+`Podfile.lock` records the module and both ONNX pods when the app builds the
+module. The app build excludes `evener-voice` through `mobile-native/package.json`,
+so the committed lock lists neither; remove that exclusion and update the lock
+through the normal [full-app prebuild and pod installation flow](../../../docs/design/mobile/ios-build-distribution.md).
 
 ### Swapping the wake model
 

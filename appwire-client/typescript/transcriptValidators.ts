@@ -498,6 +498,7 @@ function validStableDelegate(value: unknown): boolean {
     "exhaustionResumable",
     "parentWatchGranted",
     "drainHeldByJobs",
+    "drainHeldBySubagents",
   ];
   const numberFields = ["runningForMs", "quietForMs", "durationMs", "exhaustionLimit", "delegationAllowance"];
   return (
@@ -521,6 +522,7 @@ function validStableDelegate(value: unknown): boolean {
     booleanFields.every((key) => value[key] === undefined || typeof value[key] === "boolean") &&
     numberFields.every((key) => value[key] === undefined || isFiniteNumber(value[key])) &&
     (value.runningJobCount === undefined || isNonNegativeInteger(value.runningJobCount)) &&
+    (value.runningSubagentCount === undefined || isNonNegativeInteger(value.runningSubagentCount)) &&
     (value.holdSequence === undefined || isNonNegativeInteger(value.holdSequence)) &&
     (value.oldestRunningJobStartedAt === undefined || typeof value.oldestRunningJobStartedAt === "string") &&
     (value.warnings === undefined || validStringArray(value.warnings)) &&

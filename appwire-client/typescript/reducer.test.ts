@@ -5144,3 +5144,55 @@ test("Manager reads follow the session start flag across Clear and new session i
   const reconnected = applyReadModel(before, testHydrate({ evener: { manager: true, instanceId: "new-runtime" } }));
   expect(reconnected).toMatchObject({ ref: before.ref, instanceId: "new-runtime", manager: true });
 });
+
+// The subagent hold rides the same facet: one hold sequence orders both waits,
+// so a coordinator parked on open descendants must reach the model at a
+// same revision, and a late sample captured before the clear cannot bring the
+// wait back.
+test("delegate/updated carries a subagent hold and clears it by hold sequence", () => {
+  const model = testHydrate();
+  const held = delegateInfo({
+    delegateId: "dlg_1",
+    projectionRevision: 3,
+    drainHeldBySubagents: true,
+    holdSequence: 7,
+    runningSubagentCount: 2,
+  });
+  let result = applyNotification(model, delegateNotification("ref_t", held), 2000);
+  expect(result.delegates?.[0]).toMatchObject({
+    drainHeldBySubagents: true,
+    runningSubagentCount: 2,
+    holdSequence: 7,
+  });
+
+  // One descendant finished: same revision, later sequence, smaller count.
+  const reduced = delegateInfo({
+    delegateId: "dlg_1",
+    projectionRevision: 3,
+    drainHeldBySubagents: true,
+    holdSequence: 8,
+    runningSubagentCount: 1,
+  });
+  result = applyNotification(result, delegateNotification("ref_t", reduced), 2500);
+  expect(result.delegates?.[0]).toMatchObject({
+    drainHeldBySubagents: true,
+    runningSubagentCount: 1,
+    holdSequence: 8,
+  });
+
+  // The wait ended at a later sequence.
+  const cleared = delegateInfo({
+    delegateId: "dlg_1",
+    projectionRevision: 3,
+    holdSequence: 9,
+  });
+  result = applyNotification(result, delegateNotification("ref_t", cleared), 3000);
+  expect(result.delegates?.[0]?.drainHeldBySubagents ?? false).toBe(false);
+  expect(result.delegates?.[0]?.runningSubagentCount ?? 0).toBe(0);
+  expect(result.delegates?.[0]?.holdSequence).toBe(9);
+
+  // A delayed frame carrying the older hold sample must not reinstate it.
+  result = applyNotification(result, delegateNotification("ref_t", held), 4000);
+  expect(result.delegates?.[0]?.drainHeldBySubagents ?? false).toBe(false);
+  expect(result.delegates?.[0]?.holdSequence).toBe(9);
+});

@@ -108,7 +108,7 @@ const askDock = client.createAskDockStore(); askDock.reconcile("ref1", client.li
 const askReply = { id: "u1", turnId: "t1", type: "userMessage", text: '[answers]\\n1. [DB] \u2192 "SQLite"' };
 assert.equal(client.answeredAskUserSuffix({ turns: [{ items: [askItem, askReply] }] }, askItem), ' \u2014 answered: "SQLite"');
 assert.equal(client.rejectionReason({ type: "image/png", size: client.MAX_ATTACHMENT_BYTES + 1, name: "big.png" }, 0), "big.png (maximum 8 MB)");
-assert.deepEqual(client.stripMarker(client.insertMarker("go", 0, 0, client.markerText(1)).value, 9, 1), { value: "go", cursor: 0 });
+assert.deepEqual(client.stripMarker(client.insertMarker("go", 0, 0, client.markerText(1)).value, 9, 1), { value: "go", cursor: 0, splice: { start: 0, end: 9, insertedLength: 0 } });
 assert.equal(client.translateAttachmentMarkers("[image 1]go", [{ marker: 1, name: "shot.png" }]), "(attached image 1: shot.png)go");
 assert.deepEqual(client.buildInput("hi"), [{ type: "text", text: "hi" }]);
 assert.deepEqual(client.buildComposerInput("[image 1]go", [{ marker: 1, mediaType: "image/png", data: "AA", name: "shot.png" }]), [

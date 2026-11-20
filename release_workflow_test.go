@@ -114,12 +114,18 @@ func TestBinariesWorkflowSignsDarwinBeforePublishing(t *testing.T) {
 }
 
 type githubActionsWorkflow struct {
-	On   githubActionsTriggers       `yaml:"on"`
+	Env         map[string]string     `yaml:"env"`
+	On          githubActionsTriggers `yaml:"on"`
+	Concurrency struct {
+		Group            string `yaml:"group"`
+		CancelInProgress string `yaml:"cancel-in-progress"`
+	} `yaml:"concurrency"`
 	Jobs map[string]githubActionsJob `yaml:"jobs"`
 }
 
 type githubActionsTriggers struct {
-	Push githubActionsPushTrigger `yaml:"push"`
+	Push        githubActionsPushTrigger `yaml:"push"`
+	PullRequest githubActionsPushTrigger `yaml:"pull_request"`
 }
 
 type githubActionsPushTrigger struct {
@@ -138,7 +144,9 @@ type githubActionsJob struct {
 
 type githubActionStep struct {
 	Name string            `yaml:"name"`
+	ID   string            `yaml:"id"`
 	Uses string            `yaml:"uses"`
+	If   string            `yaml:"if"`
 	Env  map[string]string `yaml:"env"`
 	Run  string            `yaml:"run"`
 	With map[string]any    `yaml:"with"`

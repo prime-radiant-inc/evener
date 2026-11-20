@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,18 +15,23 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/gittest"
+	"primeradiant.com/evener/llm"
 )
 
 // TestSwapEnvAndRefresh_UpdatesEnvInfoAndPromptCache proves swapEnvAndRefresh
 // (a) installs the new env, (b) recomputes envInfo (working dir, git branch,
 // etc.) against the NEW root rather than leaving it frozen at the old one,
-// and (c) the eagerly-rendered system prompt cache reflects the new
-// directory — the exact staleness spec §7 exists to prevent (before this
-// fix the model would believe it's still in the old directory).
+// and (c) the launch prompt stays byte-identical, the move arriving as an appended diff.
 func TestSwapEnvAndRefresh_UpdatesEnvInfoAndPromptCache(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t, withEnvironmentSnapshot())
+	launchPrompt := sess.cachedSystemPrompt
+	if !sess.systemPromptFrozen || launchPrompt == "" {
+		t.Fatal("launch prompt is not frozen after construction")
+	}
 
 	oldWD := sess.currentEnv().WorkingDirectory()
 
@@ -67,12 +73,198 @@ func TestSwapEnvAndRefresh_UpdatesEnvInfoAndPromptCache(t *testing.T) {
 	if ei.GitBranch != "feature-branch" {
 		t.Errorf("envInfo.GitBranch = %q, want %q", ei.GitBranch, "feature-branch")
 	}
-
-	if !strings.Contains(prompt, repoDir) {
-		t.Errorf("cachedSystemPrompt does not mention the new working dir %q:\n%s", repoDir, prompt)
+	if prompt != launchPrompt {
+		t.Errorf("cachedSystemPrompt does not stay byte-identical across the swap:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "feature-branch") {
-		t.Errorf("cachedSystemPrompt does not mention the new git branch %q:\n%s", "feature-branch", prompt)
+	// The next round of this same turn is where the move has to reach the model.
+	var toolSigs []string
+	var toolSigFailed []bool
+	if _, err := sess.injectPostToolSteering(t.Context(), nil, nil, &toolSigs, &toolSigFailed); err != nil {
+		t.Fatalf("injectPostToolSteering: %v", err)
+	}
+	if block := lastTurnOfKind(t, sess, schema.TurnEnvironment).Message.Text(); !strings.Contains(block, repoDir) || !strings.Contains(block, "feature-branch") {
+		t.Fatalf("this turn's environment context does not name the swapped cwd and branch:\n%s", block)
+	}
+}
+
+// TestFoldedRequestRestatesSwappedEnvironment pins the post-fold delivery. A
+// fold drops the <environment_context> block that named the root the session
+// launched in, and the swap that moved the session has already been acked, so
+// nothing else would ever restate it: the next request would point the model at
+// the checkout the session left. The restatement must reach the projected
+// history, not just the durable one, or the round still dispatches stale context.
+func TestFoldedRequestRestatesSwappedEnvironment(t *testing.T) {
+	t.Parallel()
+	s := newTestSessionForEnvctx(t, withProfile(millionWindowProfile()))
+	sendOneUserInput(t, s, "hello")
+	if countEnvironmentTurns(s) != 1 {
+		t.Fatalf("setup: want one ENVIRONMENT turn before the fold, got %d", countEnvironmentTurns(s))
+	}
+	swapTo := t.TempDir()
+	next := s.currentEnv().(*execenv.LocalExecutionEnvironment).WithWorkingDirectory(swapTo)
+	if err := s.swapEnvAndRefresh(next, nil); err != nil {
+		t.Fatalf("swapEnvAndRefresh: %v", err)
+	}
+	// Fold the tail-preserving share away so the pre-swap ENVIRONMENT turn goes
+	// with the rest of the history it sits in.
+	muteNoteElicitation(s)
+	s.contextMgr.CheckpointThreshold, s.contextMgr.SummarizeThreshold = 0.5, 2.0
+	s.contextMgr.PreserveRecentTurns = 0
+	forcePressureAbove(t, s, 0.85)
+	var rt events.RoundTimings
+	_, _, projected, _, _, _, err := s.prepareModelRequestWithError(t.Context(), 1, &rt)
+	if err != nil {
+		t.Fatalf("prepareModelRequestWithError: %v", err)
+	}
+	if !hasCheckpoint(currentHistory(t, s)) {
+		t.Fatal("the request did not fold: the post-fold delivery is what is under test")
+	}
+	if got := countEnvironmentTurns(s); got != 1 {
+		t.Fatalf("folded request left %d ENVIRONMENT turns, want exactly the restated one", got)
+	}
+	if !slices.ContainsFunc(projected, func(msg llm.Message) bool { return strings.Contains(msg.Text(), swapTo) }) {
+		t.Fatalf("the request to the model does not name the swapped root %q", swapTo)
+	}
+	// Deduplication survives the fold: a request that owes nothing restates nothing.
+	var rt2 events.RoundTimings
+	if _, _, _, _, _, _, err := s.prepareModelRequestWithError(t.Context(), 2, &rt2); err != nil {
+		t.Fatalf("second prepareModelRequestWithError: %v", err)
+	}
+	if got := countEnvironmentTurns(s); got != 1 {
+		t.Fatalf("unchanged environment re-emitted: %d ENVIRONMENT turns, want 1", got)
+	}
+}
+
+func TestFoldedGoalContinuationRestatesEnvironmentBeforeGoalPrompt(t *testing.T) {
+	t.Parallel()
+	const goalMarker = "GOAL_CONTINUATION_PROMPT_MARKER_8e41"
+	for _, tc := range []struct {
+		name                string
+		activeGoal          string
+		preserveRecentTurns int
+		wantEnvTurnsBefore  int
+	}{
+		{name: "continuation-turn-only", preserveRecentTurns: 1, wantEnvTurnsBefore: 1},
+		{name: "active-goal-with-precompact-steering", activeGoal: goalMarker, preserveRecentTurns: 0, wantEnvTurnsBefore: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := newTestSessionForEnvctx(t, withProfile(millionWindowProfile()))
+			swapTo := t.TempDir()
+			next := s.currentEnv().(*execenv.LocalExecutionEnvironment).WithWorkingDirectory(swapTo)
+			if err := s.swapEnvAndRefresh(next, nil); err != nil {
+				t.Fatalf("swapEnvAndRefresh: %v", err)
+			}
+			sendOneUserInput(t, s, "hello")
+			if tc.activeGoal != "" {
+				if _, err := s.SetGoal(t.Context(), tc.activeGoal); err != nil {
+					t.Fatalf("SetGoal: %v", err)
+				}
+			}
+			s.acceptContinuationInput(t.Context(), goalMarker, "turn_goal_cont_1")
+			if countEnvironmentTurns(s) != tc.wantEnvTurnsBefore {
+				t.Fatalf("setup: want %d ENVIRONMENT turn(s) before the fold, got %d", tc.wantEnvTurnsBefore, countEnvironmentTurns(s))
+			}
+
+			muteNoteElicitation(s)
+			s.contextMgr.CheckpointThreshold, s.contextMgr.SummarizeThreshold = 0.5, 2.0
+			s.contextMgr.PreserveRecentTurns = tc.preserveRecentTurns
+			forcePressureAbove(t, s, 0.85)
+
+			var rt events.RoundTimings
+			_, _, projected, _, _, _, err := s.prepareModelRequestWithError(t.Context(), 0, &rt)
+			if err != nil {
+				t.Fatalf("prepareModelRequestWithError: %v", err)
+			}
+			if !hasCheckpoint(currentHistory(t, s)) {
+				t.Fatal("the request did not fold: the post-fold delivery is what is under test")
+			}
+			if got := countEnvironmentTurns(s); got != 1 {
+				t.Fatalf("folded request left %d ENVIRONMENT turns, want exactly the restated one", got)
+			}
+			if !slices.ContainsFunc(projected, func(msg llm.Message) bool {
+				txt := msg.Text()
+				return strings.Contains(txt, "<environment_context>") && strings.Contains(txt, swapTo)
+			}) {
+				t.Fatalf("the request to the model does not restate the swapped root %q", swapTo)
+			}
+			last := projected[len(projected)-1].Text()
+			if strings.Contains(last, "<environment_context>") || !strings.Contains(last, goalMarker) {
+				t.Fatalf("Messages[len-1] displaced the driving goal continuation prompt:\n%s", last)
+			}
+			hist := currentHistory(t, s)
+			if hist[len(hist)-1].Kind != schema.TurnSteering || !isTrailingSteeringTurn(hist[len(hist)-1]) {
+				t.Fatalf("trailing session history turn = %s (GoalContinuation=%v SteeringKind=%q), want trailing goal steering",
+					hist[len(hist)-1].Kind, hist[len(hist)-1].GoalContinuation, hist[len(hist)-1].SteeringKind)
+			}
+		})
+	}
+}
+
+func TestInjectPostToolSteeringPlacesEnvironmentBeforeDrainedSteering(t *testing.T) {
+	t.Parallel()
+	swapTo := t.TempDir()
+	var s *Session
+	var round2Req llm.Request
+	s = newTestSessionForEnvctx(t, withSteps(
+		func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "t1", Name: "swap_and_steer", Arguments: []byte(`{}`)})
+		},
+		func(req llm.Request) llm.Response {
+			round2Req = req
+			return agenttest.FinalResponse("done")
+		},
+	))
+	s.registerTool("swap_and_steer", "test-only", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+		next := s.currentEnv().(*execenv.LocalExecutionEnvironment).WithWorkingDirectory(swapTo)
+		if err := s.swapEnvAndRefresh(next, nil); err != nil {
+			return nil, err
+		}
+		if err := s.Steer("POST_TOOL_USER_STEER_5d1a"); err != nil {
+			return nil, err
+		}
+		return "swapped", nil
+	})
+	sendOneUserInput(t, s, "hello")
+	hist := currentHistory(t, s)
+	envIdx, steerIdx := -1, -1
+	for i, tn := range hist {
+		if tn.Kind == schema.TurnEnvironment && strings.Contains(tn.Message.Text(), swapTo) {
+			envIdx = i
+		}
+		if tn.Kind == schema.TurnSteering && strings.Contains(tn.Message.Text(), "POST_TOOL_USER_STEER_5d1a") {
+			steerIdx = i
+		}
+	}
+	if envIdx < 0 || steerIdx < 0 || envIdx >= steerIdx || len(round2Req.Messages) < 2 ||
+		!strings.Contains(round2Req.Messages[len(round2Req.Messages)-1].Text(), "POST_TOOL_USER_STEER_5d1a") {
+		t.Fatalf("expected TurnEnvironment(%s) before TurnSteering in history (%d vs %d) and round 2 messages", swapTo, envIdx, steerIdx)
+	}
+}
+
+func TestFoldedRequestPlacesEnvironmentBeforeTrailingSteering(t *testing.T) {
+	t.Parallel()
+	s := newTestSessionForEnvctx(t, withProfile(millionWindowProfile()))
+	swapTo := t.TempDir()
+	next := s.currentEnv().(*execenv.LocalExecutionEnvironment).WithWorkingDirectory(swapTo)
+	if err := s.swapEnvAndRefresh(next, nil); err != nil {
+		t.Fatalf("swapEnvAndRefresh: %v", err)
+	}
+	sendOneUserInput(t, s, "hello")
+	s.appendSteeringTurn("TRAILING_REMINDER_STEER_6b2c", events.SteeringKindNotification)
+
+	muteNoteElicitation(s)
+	s.contextMgr.CheckpointThreshold, s.contextMgr.SummarizeThreshold = 0.5, 2.0
+	s.contextMgr.PreserveRecentTurns = 1
+	forcePressureAbove(t, s, 0.85)
+
+	var rt events.RoundTimings
+	_, _, projected, _, _, _, err := s.prepareModelRequestWithError(t.Context(), 0, &rt)
+	if err != nil {
+		t.Fatalf("prepareModelRequestWithError: %v", err)
+	}
+	if last := projected[len(projected)-1].Text(); strings.Contains(last, "<environment_context>") || !strings.Contains(last, "TRAILING_REMINDER_STEER_6b2c") {
+		t.Fatalf("Messages[len-1] displaced trailing steering:\n%s", last)
 	}
 }
 

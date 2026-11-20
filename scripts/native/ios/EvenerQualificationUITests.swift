@@ -21,11 +21,6 @@ final class EvenerQualificationUITests: XCTestCase {
 	/// long a genuinely stuck journey may hold the run. It is never a
 	/// pacing mechanism.
 	private let tripwire = TimeInterval(120)
-	/// How long a negative wait may look before concluding the app did the
-	/// right thing by NOT showing a surface (a credential prompt after a
-	/// cold launch). Short because absence is proven by the app settling,
-	/// not by waiting out a long window.
-	private let absenceBound = TimeInterval(10)
 
 	private var hubOrigin: String {
 		ProcessInfo.processInfo.environment["EVENER_QUALIFICATION_HUB_ORIGIN"] ?? ""
@@ -78,10 +73,20 @@ final class EvenerQualificationUITests: XCTestCase {
 		// conversation carries the composer with the exact unsent draft.
 		app.terminate()
 		app.launch()
-		XCTAssertFalse(
-			app.buttons["add-hub:address"].waitForExistence(timeout: absenceBound),
-			"cold launch asked for credentials again"
+		// The cold launch lands in the restored conversation, or — when the
+		// credentials did not survive — on the first-run pairing way. Waiting
+		// positively for either resolves as soon as one is on screen; a
+		// negative wait for the pairing way alone can only ever burn its
+		// whole window on the run that is supposed to pass. The verdict is
+		// still which surface the app reached: the pairing way is a failure.
+		let coldSurface = app.descendants(matching: .any)
+			.matching(NSPredicate(format: "identifier IN %@", ["composer-message", "add-hub:address"]))
+			.firstMatch
+		XCTAssertTrue(
+			coldSurface.waitForExistence(timeout: tripwire),
+			"cold launch reached neither the conversation nor the first-run pairing"
 		)
+		XCTAssertNotEqual(coldSurface.identifier, "add-hub:address", "cold launch asked for credentials again")
 		let recovered = composerField(app)
 		// The composer mounts before its restored draft loads from SQLite, so
 		// the draft's arrival is its own bounded wait; a single read could
@@ -167,9 +172,17 @@ final class EvenerQualificationUITests: XCTestCase {
 			app.wait(for: .runningForeground, timeout: tripwire),
 			"cold scheme activation left the app in the background"
 		)
-		let way = app.buttons["add-hub:address"]
-		if way.waitForExistence(timeout: absenceBound) {
-			tap(way, "the first-run address way disappeared before its tap")
+		// Whichever surface the app restores to proves the activation: the
+		// saved install's board or the first-run pairing way. Waiting for the
+		// pairing way first can only burn its whole window on the saved
+		// install the suite is in.
+		let surface = mainSurface(app)
+		XCTAssertTrue(
+			surface.waitForExistence(timeout: tripwire),
+			"ordinary controls did not survive scheme activation"
+		)
+		if surface.identifier == "add-hub:address" {
+			tap(surface, "the first-run address way disappeared before its tap")
 			XCTAssertTrue(
 				app.textFields["hub-address"].waitForExistence(timeout: tripwire),
 				"ordinary controls stopped working after scheme activation"

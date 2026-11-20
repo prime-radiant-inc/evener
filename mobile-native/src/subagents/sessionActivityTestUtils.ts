@@ -68,6 +68,8 @@ type UncopiedDelegateField = Exclude<
 	| "holdSequence"
 	| "runningJobCount"
 	| "oldestRunningJobStartedAt"
+	| "drainHeldBySubagents"
+	| "runningSubagentCount"
 >;
 const everyDelegateFieldCarried: [UncopiedDelegateField] extends [never] ? true : UncopiedDelegateField = true;
 void everyDelegateFieldCarried;

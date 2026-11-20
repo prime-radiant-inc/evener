@@ -377,53 +377,56 @@ and an absent, over-long or malformed value applies as omitted rather than
 dropping the row. Older daemons never send the field, and their rows keep
 today's status word everywhere.
 
-A delegate whose run is held open while it waits on its own background shell
-says so on its row. The run genuinely continues — that hold is the documented
-contract, not a stall — but during it `latestIntent` and `latestActivityAt`
+A delegate whose run is held open while it waits on its own background shell or
+open descendant subagents says so on its row. The run genuinely continues (that
+hold is the documented contract, not a stall), but during it `latestIntent` and `latestActivityAt`
 both stop moving, so the row used to be indistinguishable from a delegate
-still working on a model turn. The row carries `drainHeldByJobs`: this
-delegate's finalization drain is holding its run open on a managed shell still
-in its own child session's running map, matched with the drain's own ownership
-predicate. `runningJobCount` and `oldestRunningJobStartedAt` come from the same
-join and only phrase that wait. The hold decides whether the row reads as
-waiting; the count never does, because a delegate that starts a background
-shell and keeps working has the same count and is not held.
+still working on a model turn. The row carries `drainHeldByJobs` and
+`drainHeldBySubagents`: this delegate's finalization drain is holding its run
+open on managed shells still in its own child session's running map or on open
+descendant subagents below it, matched with the drain's own ownership
+predicates. `runningJobCount`, `oldestRunningJobStartedAt`, and
+`runningSubagentCount` come from the same join and only phrase that wait. The
+hold decides whether the row reads as waiting; the count never does, because a
+delegate that starts a background shell or child delegate and keeps working has
+the same count and is not held. When a parent's drain holds while descendants
+start or settle, the controller publishes updated hold counts to live ancestors
+up the tree.
 
-Each edge of the hold publishes an `evener/delegate/updated` frame. That frame
-is the only carrier: entering or leaving the drain appends no durable delegate
-event and moves no durable field, so a row a client loaded before the shell
-started would otherwise never learn the wait for its whole duration. The
-client applies the hold facet outside its projection-revision ladder for the
-same reason, while every other delegate field keeps that ordering. The frame
-carries the same fields the read does, so the two surfaces cannot disagree. A
-delegate with no hold omits all three, and a client must read that omission as
-"no such fact" rather than "known idle" — retained reads and older daemons
-never send them. The phone does not render them yet; its delegate row keeps
-showing the stale `latestActivityAt` and thereby nothing new about the wait.
+Each edge of the hold (and each change in held counts) publishes an
+`evener/delegate/updated` frame sharing one monotonic `holdSequence` across both
+hold kinds. That frame is the only carrier: entering or leaving the drain
+appends no durable delegate event and moves no durable field, so a row a client
+loaded before the shell or descendant started would otherwise never learn the
+wait for its whole duration. The client applies the hold facet by
+`holdSequence` outside its projection-revision ladder for the same reason, while
+every other delegate field keeps that ordering. The frame carries the same
+fields the read does, so the two surfaces cannot disagree. A delegate with no
+hold omits those fields, and a client must read that omission as "no such fact"
+rather than "known idle", since retained reads and older daemons never send
+them. When an expanded parent in the Overview Agents tab is held open solely by
+visible active child subagents beneath it, the row omits the redundant subagent
+wait copy to stay a single-line header (still suppressing any frozen pre-drain
+`latestIntent`) and reveals `Waiting on N subagents` when collapsed.
 
 The hold states the wait, not the drain's whole span. The drain also runs turns
-to handle a job completion or its own announcement, and during one the delegate
+to handle a job completion, child update, or its own announcement, and during one the delegate
 is working: the hold is suspended for that turn and restored as the drain parks
 again, so a read in that window reports the work the delegate is doing instead
 of a wait it is not in.
 
-A subagent row's leading mark is the session status dot on every surface, with
-one state the session vocabulary does not have: quiet. An open run shows the
-alive dot while fresh, dims it to quiet ink once its latest activity passes
-the shared twenty-second threshold, reads amber for attention and red for
-failure (a diamond on the web, so failure never depends on hue alone), and
-shows no mark once settled, a settled failure excepted: its red mark is its
-outcome. One shared client rule computes the state and the
-threshold, so the web sidebar, the web activity tree's delegate rows and the
-phone's list read the same dot and flip at the same instant: the sidebar times
-one threshold wake per running row, the tree's live tick covers its rows, and
-the phone reuses its existing quiet wake. Quiet stays truthful, moving from
-the word to the dot: the phone's why line shows the intent, else the running
-command, else the subagents it waits on, and otherwise stays empty while the
-dot alone speaks, its failed xmark and done checkmark retired beside the band
-headers that already carry those states. Shell-job rows keep their own marks
-and status words everywhere; the timeline, tray and board keep their own
-quiet-word contracts.
+A subagent row's leading mark is the session status dot on every surface. On the
+web, `SubagentDot` keeps `StatusDot`'s turning alive ring on every open run
+until terminal settlement (attention amber dot and failure red diamond excepted,
+so failure never depends on hue alone), and shows no mark once settled unless
+the run failed. On the phone, open runs show the alive circle while fresh and
+dim to quiet ink once `latestActivityAt` passes the shared twenty-second
+threshold, reusing the phone's existing quiet wake while its why line shows the
+drain wait, else `latestIntent`, else the running command, else the subagents it
+waits on, and otherwise stays empty while the dot alone speaks (with failed
+xmarks and done checkmarks retired beside the band headers that already carry
+those states). Shell-job rows keep their own marks and status words everywhere;
+the timeline, tray and board keep their own quiet-word contracts.
 The delegate, job and turn states those marks read, and which of them are
 terminal, are catalogued in [lifecycles](lifecycles.md).
 
@@ -520,9 +523,19 @@ The web Overview's Agents, Jobs and Watches lists request their next bounded
 page when the existing page boundary approaches the visible viewport. Closed
 inactive-agent or completed-job history does not suppress that demand. The
 boundary presents a static Skeleton while rows remain to be read; it offers no
-manual Load more action. Inactive-agent and completed-job folds use the
-direct-session summary's `total - active` when known, independently of the
-rows downloaded so far. Unknown totals keep an unnumbered history label. Tasks
+manual Load more action. Agents observes the `subtree` scope (sharing the
+`SessionActivityStore` with `useSubagentCounts`), renders active descendants
+nested beneath their parent (expanded by default, collapsible, with visual
+indentation capped at depth 3; an expanded parent held open solely by visible
+child subagents omits redundant wait text and shows it when collapsed), and
+drills the cascade along the row's loaded parent-to-child chain when a nested
+row is activated. Loaded descendants whose parent row arrives on a later page
+render at top level until that parent lands and nests them automatically. All
+settled runs in the subtree fold into one bottom `total - active` inactive
+disclosure from the subtree summary (independently of the rows downloaded so
+far), grouping settled runs by parent inside the fold. Jobs uses the
+direct-session summary's `total - active` when known. Unknown totals keep an
+unnumbered history label. Tasks
 continues to use its complete task-list read and sizes its initial Skeleton
 from the authoritative task total. These lists share the Overview's outer
 padding and one compact row gap.
@@ -1001,8 +1014,9 @@ strip. A folded resting composer hides that line but keeps observing through
 the session menu's hidden discovery owner, so a pane's counts are current the
 moment its card expands. Side-by-side panes retain independent counts while duplicate consumers of one
 ref and scope share
-the same owner. Agents, Jobs and Watches tabs observe their own
-session-scoped collection. A visible page boundary supplies further demand,
+the same owner. The Agents tab shares the `subtree` delegate collection on the
+same subtree store that supplies the count, while Jobs and Watches tabs observe
+their own session-scoped collection. A visible page boundary supplies further demand,
 while the shared store retains and retries an interrupted continuation. The
 boundary control reports only a page it asked for: a background refresh of the
 collection changes neither its label nor its disabled state, so a refresh the
@@ -1141,15 +1155,19 @@ action menus. On the phone, that action opens the full-screen shared activity
 sidebar, preserving the last selected category for the focused session. Its
 optional active count sums the subagents running at every depth and the
 session's own running jobs, only when both are known; watches and completed work
-are not part of that number. The sidebar's Agents, Jobs, Watches and Tasks tabs use session-scoped
-reads on both viewports; About uses the shared session model. The Agents count
-is the exception: the pane's activity chip, the sidebar's Agents tab label, each
-cascade scope's Agents chip, the Overview and Activity action counts and the
-conversation's liveness line all count subagents at every depth, from the subtree
-summary
-([`useSubagentCounts`](../../cmd/evener-hub/frontend/src/stores/sessionActivity.ts)),
-while the Agents tab lists the session's own. The count and an open Activity
-sheet share one subtree store (see [Client lifetimes](#client-lifetimes)).
+are not part of that number. The sidebar's Jobs, Watches and Tasks tabs use
+session-scoped reads on both viewports, while About uses the shared session
+model. The Agents tab and all Agents counts (the pane's activity chip, the
+sidebar's Agents tab label, each cascade scope's Agents chip, the Overview and
+Activity action counts, and the conversation's liveness line) read the same
+subtree store
+([`useSubagentCounts`](../../cmd/evener-hub/frontend/src/stores/sessionActivity.ts)
+and `AgentsTab`): the tab renders the subtree's active branches nested beneath
+their parents (collapsible, expanded by default, with nested-row activation
+drilling along the loaded chain) above one bottom `total - active` inactive fold
+that groups settled runs by parent, reconciling the `active/total` header and
+footer counts with the visible list. An open Activity sheet shares that same
+subtree store (see [Client lifetimes](#client-lifetimes)).
 The workspace registers only Tasks and Details session panels. Saved Activity
 placements are unknown panes: the existing workspace restore omits them,
 preserves registered panes and selects useful surviving focus. A valid primary

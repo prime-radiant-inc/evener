@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>result-table-key-floor layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  body { margin: 0; background: var(--surface-0); font-family: var(--font-sans); }
+  .fixtures { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 8px; }
+  .fixture { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+  .fixtureLabel { color: var(--ink-low); font: var(--font-size-caption) var(--font-mono); }
+  /* The expanded card body's width: the live failure was measured in a
+     456px-wide notification card body. */
+  .pane { box-sizing: border-box; background: var(--surface-1); }
+</style>
+</head>
+<body data-font-size="m" data-transcript-measure="reading">
+<!-- Reproduces NotificationCard's structured-result table DOM
+     (StructuredResult: table.resultTable > tbody > tr > th.resultKey +
+     td.resultValue) against a real delegate report's payload: the Data value
+     is one ~550-character JSON.stringify line, the exact max-content shape
+     that collapses the key column under auto layout. The geometry under
+     test: the key column's readable floor, and the table never widening
+     past its card. -->
+<main class="fixtures"></main>
+
+<template id="fixture-template">
+  <section class="fixture">
+    <div class="fixtureLabel"></div>
+    <div class="pane" data-pane>
+      <div class="root">
+        <table class="resultTable" data-testid="notification-structured-result">
+          <tbody>
+            <tr data-key="artifacts">
+              <th scope="row" class="resultKey">Artifacts</th>
+              <td class="resultValue">["/tmp/evener-scratch-03507HVKeWCiXCzGHXBqyK/03507HVKeWCiXCzGHXBqyK/sdd/task-C2-report.md"]</td>
+            </tr>
+            <tr data-key="data">
+              <th scope="row" class="resultKey">Data</th>
+              <td class="resultValue">{"branch":"pr-c2-immutable-launch-prompt","gates":{"agent_race":"ok 9.196s","docs_check":"passed","gofmt":"clean","golangci_lint":"0 issues.","hubcore_meta_fields":"ok","lint_repo_audit":"PASS (16s)","server_frontier":"ok 3.061s","vet":"exit 0"},"head":"c6417847aa","parent":"709d485f81d7e2b696e68bcaa22dcf3521e334bb","red_green":{"green":"with envContextDue() -&gt; ok","red":"revert tool-round site to envRuntimeDrifted -&gt; TestSwapEnvAndRefresh_UpdatesEnvInfoAndPromptCache fails: no ENVIRONMENT turn in history"},"shortstat":"17 files changed, 223 insertions(+), 38 deletions(-)","status":"DONE"}</td>
+            </tr>
+            <tr data-key="message">
+              <th scope="row" class="resultKey">Message</th>
+              <td class="resultValue">C2 rebased onto 709d485f81 as c6417847aa: envContextDue at the two owned boundaries, prepareModelRequestWithError untouched, all foreground gates green.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</template>
+
+<script>
+const fixtures = __LAYOUTGUARD_WIDTH_MATRIX__;
+const template = document.querySelector("#fixture-template");
+const fixtureRoot = document.querySelector(".fixtures");
+for (const spec of fixtures) {
+  const fragment = template.content.cloneNode(true);
+  const fixture = fragment.querySelector(".fixture");
+  fixture.dataset.width = String(spec.width);
+  fixture.querySelector(".fixtureLabel").textContent = `${spec.width}px card body`;
+  fixture.querySelector("[data-pane]").style.width = `${spec.width}px`;
+  fixtureRoot.append(fragment);
+}
+
+// 1ch in the key cell's own font context (see the markdown-table-column-floor
+// case for the probe technique).
+function chOf(cell) {
+  const probe = document.createElement("span");
+  probe.style.cssText = "display:inline-block;width:1ch";
+  cell.appendChild(probe);
+  const w = probe.getBoundingClientRect().width;
+  probe.remove();
+  return w;
+}
+
+window.measure = () =>
+  [...document.querySelectorAll(".fixture")].map((fixture) => {
+    const pane = fixture.querySelector("[data-pane]").getBoundingClientRect();
+    const table = fixture.querySelector(".resultTable").getBoundingClientRect();
+    const key = fixture.querySelector(".resultKey");
+    const value = fixture.querySelector(".resultValue");
+    return {
+      width: Number(fixture.dataset.width),
+      paneWidth: pane.width,
+      tableWidth: table.width,
+      keyWidth: key.getBoundingClientRect().width,
+      valueWidth: value.getBoundingClientRect().width,
+      ch: chOf(key),
+    };
+  });
+</script>
+</body>
+</html>

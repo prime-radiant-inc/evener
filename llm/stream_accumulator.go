@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"cmp"
 	"slices"
 	"strings"
 	"sync"
@@ -165,7 +166,7 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 				cp = *a.buildResponseLocked()
 				copyResponseMetadata(&cp, ev.Response)
 				if len(ev.Response.FallbackContent) > 0 && (cp.Text() != "" || len(cp.ToolCalls()) != 0) {
-					cp.Message.Content = mergeFallbackReasoning(cp.Message.Content, ev.Response.FallbackContent)
+					cp.Message.Content = MergeFallbackReasoning(cp.Message.Content, ev.Response.FallbackContent)
 				}
 			}
 			a.final = &cp
@@ -182,23 +183,81 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 	}
 }
 
-func mergeFallbackReasoning(content, reasoning []ContentPart) []ContentPart {
-	if content[0].Kind == ContentThinking {
-		const separator = "\n\n"
-		streamed := separator + content[0].Thinking.Text + separator
-		reasoning = slices.Clone(reasoning)
-		for i, part := range reasoning {
-			thinking := *part.Thinking
-			thinking.Summary = slices.DeleteFunc(slices.Clone(thinking.Summary), func(summary string) bool {
-				remaining := strings.Replace(streamed, separator+summary+separator, separator, 1)
-				overlap := remaining != streamed
-				streamed = remaining
-				return overlap
-			})
-			reasoning[i].Thinking = &thinking
+// MergeFallbackReasoning merges reasoning from fallback into content. Only thinking parts are taken,
+// in fallback order, and the result is a fresh slice: content already holds everything else and the
+// caller's slices are never written. A reasoning item stated twice by non-empty ID merges at the
+// existing item's position, keeping fields a summary-only repeat omitted; anonymous items stay
+// distinct.
+func MergeFallbackReasoning(content, fallback []ContentPart) []ContentPart {
+	out := slices.Clone(content)
+	var fresh []ContentPart
+	shownCounts := displayedPartCounts(displayedText(out)) // a repeat's summary need not restate text content already shows
+	for _, part := range fallback {
+		if part.Kind != ContentThinking || part.Thinking == nil {
+			continue
+		}
+		mine := *part.Thinking
+		if mine.ID != "" {
+			if j := slices.IndexFunc(out, func(p ContentPart) bool { return p.Thinking != nil && p.Thinking.ID == mine.ID }); j >= 0 {
+				keep := out[j].Thinking
+				mine.Text = cmp.Or(mine.Text, keep.Text)
+				mine.EncryptedContent = cmp.Or(mine.EncryptedContent, keep.EncryptedContent)
+				if len(mine.ResponsesContentParts) == 0 {
+					mine.ResponsesContentParts = keep.ResponsesContentParts
+				}
+				if len(mine.ResponsesSummaryParts) == 0 {
+					mine.ResponsesSummaryParts = keep.ResponsesSummaryParts
+				}
+				mine.ResponsesIncomplete = keep.ResponsesIncomplete
+				mine.Summary = dropRepeatedSummaries(mine.Summary, shownCounts)
+				if keep.Text == "" {
+					mine.Summary = dropRepeatedSummaries(mine.Summary, displayedPartCounts(mine.Text))
+				}
+				out[j] = ContentPart{Kind: ContentThinking, Thinking: &mine}
+				continue
+			}
+		}
+		// A summary the text already states is not repeated, whether the text streamed or was merged.
+		mine.Summary = dropRepeatedSummaries(mine.Summary, shownCounts)
+		mine.Summary = dropRepeatedSummaries(mine.Summary, displayedPartCounts(mine.Text))
+		fresh = append(fresh, ContentPart{Kind: ContentThinking, Thinking: &mine})
+	}
+	return slices.Insert(out, 0, fresh...)
+}
+
+// displayedText joins the thought text content already shows, which a repeat's summary need not restate.
+func displayedText(out []ContentPart) string {
+	var texts []string
+	for _, p := range out {
+		if p.Thinking != nil && p.Thinking.Text != "" {
+			texts = append(texts, p.Thinking.Text)
 		}
 	}
-	return slices.Insert(content, 0, reasoning...)
+	return strings.Join(texts, "\n\n")
+}
+
+func displayedPartCounts(text string) map[string]int {
+	if text == "" {
+		return nil
+	}
+	remaining := map[string]int{}
+	for part := range strings.SplitSeq(text, "\n\n") {
+		remaining[part]++
+	}
+	return remaining
+}
+
+func dropRepeatedSummaries(summary []string, remaining map[string]int) []string {
+	if len(remaining) == 0 || len(summary) == 0 {
+		return slices.Clone(summary)
+	}
+	return slices.DeleteFunc(slices.Clone(summary), func(s string) bool {
+		if remaining[s] == 0 {
+			return false
+		}
+		remaining[s]--
+		return true
+	})
 }
 
 // Response returns the final accumulated response after FINISH, or nil if the stream

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
@@ -103,6 +104,12 @@ func waitForTestSignal(t *testing.T, ch <-chan struct{}, label string) {
 // the fix the guard outlived the deadline, so the child died in the timeout
 // panic and printed no label; after it the guard gives up halfway there, at
 // 2.5s, and the child reports the label through t.Fatalf.
+//
+// The child's exit status says how it ended, so the diagnosis never rests on
+// the runtime's own wording. A test binary exits 1 when a test fails through
+// the framework, which is the guard's t.Fatalf; a panic, the deadline's
+// included, exits 2, and so does a TestMain that cannot set up. An error that
+// carries no exit status at all means no test binary ran.
 func TestWaitForTestSignalReportsBeforeTheBinaryDeadline(t *testing.T) {
 	t.Parallel()
 	if os.Getenv(waitSignalDeadlineHelperEnv) == "1" {
@@ -115,14 +122,15 @@ func TestWaitForTestSignalReportsBeforeTheBinaryDeadline(t *testing.T) {
 	if err == nil {
 		t.Fatalf("a guard that never sees its signal passed its test\n%s", out)
 	}
-	if !strings.Contains(string(out), waitSignalLabel) {
-		t.Fatalf("the guard did not report %q before the binary's deadline, so the failure is the runtime's dump rather than the helper's label\n%s", waitSignalLabel, out)
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		t.Fatalf("the child test binary did not run: %v\n%s", err, out)
 	}
-	// Name the shape that made this fail before the fix, so a future regression
-	// says which of the two it is: the guard lost to the deadline, or the label
-	// went missing some other way.
-	if strings.Contains(string(out), "panic: test timed out") {
-		t.Fatalf("the guard lost to the binary's deadline instead of reporting %q first\n%s", waitSignalLabel, out)
+	if code := exit.ExitCode(); code != 1 {
+		t.Fatalf("the child ended with exit status %d, not a failed test: the guard lost to the binary's deadline, or the binary never reached the test\n%s", code, out)
+	}
+	if !strings.Contains(string(out), waitSignalLabel) {
+		t.Fatalf("the child failed its test without reporting the guard's label %q\n%s", waitSignalLabel, out)
 	}
 }
 

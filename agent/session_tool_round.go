@@ -595,6 +595,9 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 	// here would mark it incorporated in a result that ends the turn without a
 	// model request that can act on it.
 	if abortErr := s.withResponseSideEffects(ctx, func() {
+		if s.envContextDue() {
+			_ = s.maybeAppendEnvironmentContext()
+		}
 		if !s.communicated() {
 			if s.hasPendingSteering() {
 				yieldToObserverCallback = false

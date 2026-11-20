@@ -1,4 +1,4 @@
-import type { ComposerMention, InputItem } from "@evener/appwire-client";
+import type { ComposerMention, ImageMarkerRange, InputItem } from "@evener/appwire-client";
 import {
   canEditQueuedMessage,
   canRemoveQueuedMessage,
@@ -107,11 +107,21 @@ function sameRecoveryComposition(
   composerText: string,
   composerMentions: readonly ComposerMention[] | undefined,
   attachments: readonly MutationAttachment[],
+  adoptedImageMarkers: readonly number[] | undefined,
+  adoptedImageRanges: readonly ImageMarkerRange[] | undefined,
 ): boolean {
   return (
     record.composerText === composerText &&
     JSON.stringify(record.payload.input ?? []) === JSON.stringify(input) &&
     JSON.stringify(record.composerMentions ?? []) === JSON.stringify(composerMentions ?? []) &&
+    // Adoption is part of the composition: an identical text whose adoption a
+    // later repair retired is NOT the same work, and reusing that row would
+    // resurrect the refusal.
+    JSON.stringify(record.adoptedImageMarkers ?? []) === JSON.stringify(adoptedImageMarkers ?? []) &&
+    // ...and WHERE those anchors are: the same numbers at different spellings
+    // are different work, and reusing the row would let a repair delete the
+    // other occurrence.
+    JSON.stringify(record.adoptedImageRanges ?? []) === JSON.stringify(adoptedImageRanges ?? []) &&
     // Markers pair an image with its "[image N]" anchor, so two rows with the
     // same bytes and text but different associations are not the same
     // composition. Presentation IDs name a staging of those bytes, not the
@@ -1920,6 +1930,8 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
     expectedCompositionRevision?: number,
     expectedRecoveryRevisions?: Readonly<Record<string, number>>,
     compositionOwnerId?: string,
+    adoptedImageMarkers?: readonly number[],
+    adoptedImageRanges?: readonly ImageMarkerRange[],
   ): Promise<MutationRecoveryRecord | undefined> {
     const outcome = await this.#write([RECOVERY_STORE, OUTBOX_STORE], "updateRecoveryInput", async (transaction) => {
       const store = transaction.objectStore(RECOVERY_STORE);
@@ -1965,6 +1977,16 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         // Locations belong to composerText. A full replacement can omit them
         // to clear old atoms, while a partial update preserves the pair.
         composerMentions: composerText === undefined ? (composerMentions ?? record.composerMentions) : composerMentions,
+        // Provenance belongs to composerText for the same reason its locations
+        // do, and it is written explicitly (never defaulted from the record) so
+        // an edit that repairs the missing reference can retire it: the marker
+        // is no longer an adoption once the person deletes it or attaches the
+        // bytes, and a stale set would refuse a send the text no longer needs.
+        adoptedImageMarkers: adoptedImageMarkers as readonly number[] | undefined,
+        // Positions belong to composerText exactly as the numbers do, and are
+        // written explicitly for the same reason: a repair has to be able to
+        // retire one occurrence without retiring an identical literal.
+        adoptedImageRanges: adoptedImageRanges as readonly ImageMarkerRange[] | undefined,
       };
       await requestResult(store.put(next));
       // Round-9 Medium: consuming a recovery row ends its wire's life in this
@@ -2012,13 +2034,28 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
     composerMentions?: readonly ComposerMention[],
     compositionOwnerId?: string,
     localDraftRevisionId?: string,
+    adoptedImageMarkers?: readonly number[],
+    adoptedImageRanges?: readonly ImageMarkerRange[],
   ): Promise<MutationRecoveryRecord | undefined> {
     return this.#write(ENQUEUE_STORES, "preserveRecoveryComposition", async (transaction) => {
       const recoveryStore = transaction.objectStore(RECOVERY_STORE);
       const stale = await requestResult<VersionedMutationRecoveryRecord | undefined>(
         recoveryStore.get(base.clientMutationId),
       );
-      if (stale && sameRecoveryComposition(stale, input, composerText, composerMentions, attachments)) return stale;
+      // A stale row already holding this exact composition preserves it.
+      if (
+        stale &&
+        sameRecoveryComposition(
+          stale,
+          input,
+          composerText,
+          composerMentions,
+          attachments,
+          adoptedImageMarkers,
+          adoptedImageRanges,
+        )
+      )
+        return stale;
       const intentSequence = await this.#allocateSequence(transaction, base.targetRef);
       const clientMutationId = this.#createMutationId();
       await this.#assertMutationIdAvailable(transaction, clientMutationId);
@@ -2042,6 +2079,8 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         optimisticDisplay: { method: base.method, input },
         composerText,
         composerMentions,
+        adoptedImageMarkers: adoptedImageMarkers as readonly number[] | undefined,
+        adoptedImageRanges: adoptedImageRanges as readonly ImageMarkerRange[] | undefined,
         recoveryKind: "rejected",
         recoveryReason: base.recoveryReason,
         compositionRevision: 0,
