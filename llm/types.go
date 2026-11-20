@@ -290,6 +290,9 @@ type ThinkingData struct {
 	Redacted         bool     `json:"redacted,omitempty"`
 	EncryptedContent string   `json:"encrypted_content,omitempty"`
 	Summary          []string `json:"summary,omitempty"`
+	// GoogleInteraction marks a Gemini Interactions thought step. A step that
+	// carries only a Signature is replay metadata with nothing to display.
+	GoogleInteraction bool `json:"google_interaction,omitempty"`
 	// Chat Completions scalar replay when Text includes structured reasoning.
 	ScalarReasoningField string `json:"scalar_reasoning_field,omitempty"`
 	ScalarReasoningText  string `json:"scalar_reasoning_text,omitempty"`
@@ -487,10 +490,18 @@ func StripOpaqueThinkingForCrossProvider(p ContentPart) (ContentPart, bool) {
 	return p, false
 }
 
-// WebSearchData holds a web-search content part, including the query and the raw provider payload.
+// WebSearchSource is one citation source of a web-search content part.
+type WebSearchSource struct {
+	Title string `json:"title,omitempty"`
+	URL   string `json:"url,omitempty"`
+}
+
+// WebSearchData holds a web-search content part, including the query, its
+// citation sources, and the raw provider payload.
 type WebSearchData struct {
-	Query string          `json:"query,omitempty"`
-	Raw   json.RawMessage `json:"raw"`
+	Query   string            `json:"query,omitempty"`
+	Sources []WebSearchSource `json:"sources,omitempty"`
+	Raw     json.RawMessage   `json:"raw"`
 }
 
 // ToolDefinition describes a tool the model may call, including its JSON Schema parameters.
