@@ -6,10 +6,10 @@ It is written to be implemented from scratch against `origin/main`.
 
 ## Problem
 
-When a provider quota cap pauses a session, the session pane showed nothing:
-no wait state, and nothing in the sidebar row. On reset the pre-existing
-countdown in the pane and sidebar disappeared instead of becoming a visible
-wait. A user sees a silent, apparently-wedged session for up to hours while
+When a provider quota cap pauses a session, the pane and sidebar showed only a
+countdown to the reset: neither said the session was waiting on quota, and the
+sidebar row otherwise showed nothing. On reset the countdown disappeared
+instead of becoming a visible wait. A user sees a silent, apparently-wedged session for up to hours while
 the daemon is knowingly waiting out a reset, and a delegate pane opened or
 reloaded mid-wait showed no wait at all.
 
@@ -395,6 +395,7 @@ Dependency order — each stage's acceptance gates the next:
    reconciliation acceptance lives here, against synthetic stamped fixtures
    Stage 0 makes possible.
 4. **Stage 3, rendering:** pane liveness line, sidebar row, the evergreen
-   docs (`docs/product/subsystems.md` S09 row + friction punchlist R05) in
+   docs (`docs/product/subsystems.md` S09 row, `docs/product/session-activity.md`,
+   friction punchlist R05) in
    the same change as the code they describe. The pane-vs-sidebar agreement
    acceptance lives here.
