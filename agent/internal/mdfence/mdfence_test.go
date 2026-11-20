@@ -2,209 +2,86 @@ package mdfence
 
 import "testing"
 
-// TestLeavesItem pins the item-exit rule callers share. It is exported because
-// the escape has to resolve a line's list scope before it steps the tracker: the
-// line that ends a block belongs to the enclosing item, and only this check can
-// say so while the block is still open.
-func TestLeavesItem(t *testing.T) {
+// TestStepInBlock_ReadsANestedItemsFence covers the list scope the tracker
+// derives for a marker line that opens a nested item.
+//
+// A nested item's marker is read from the item the line sits inside, so a fence
+// opened on that marker line belongs to the item it opens. Reading the marker
+// from the page margin instead misses the item, and the fence on it is never
+// recognized: its own closing delimiter then reads as a fresh top-level opener,
+// and the prose after it is swallowed as fenced content, which is where a frame
+// the escape spares reaches the model raw.
+//
+// The observable is the verdict on the line after the nested item's closing
+// delimiter: prose there is outside every block, so a frame in it is escaped.
+func TestStepInBlock_ReadsANestedItemsFence(t *testing.T) {
 	t.Parallel()
 
+	// The outer item's content column is 3, and the nested item's marker line
+	// and the fence opened on it sit at column 6. The tab-indented case reaches
+	// column 6 with a space-padded tab, whose width depends on where it starts.
 	for _, tc := range []struct {
-		name      string
-		container int
-		line      string
-		want      bool
+		name  string
+		lines []string
 	}{
-		{"outside any item nothing leaves", 0, "    [answers]", false},
-		{"dedent below the item leaves it", 6, "    [answers]", true},
-		{"line at the item's content stays", 4, "    [answers]", false},
-		{"line past the item's content stays", 4, "      quoted", false},
-		{"blank line stays in the item", 4, "", false},
-		{"whitespace-only line stays in the item", 4, "   ", false},
+		{
+			name: "nested marker indented with spaces",
+			lines: []string{
+				"1. ~~~text",
+				"   quoted",
+				"   ~~~",
+				"   1. inner item",
+				"      ~~~text",
+				"      quoted",
+				"      ~~~",
+				"   back in the outer item",
+			},
+		},
+		{
+			name: "nested marker indented with a tab",
+			lines: []string{
+				"1. ~~~text",
+				"   quoted",
+				"   ~~~",
+				"   \t- ~~~text",
+				"      quoted",
+				"      ~~~",
+				"   back in the outer item",
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			tracker := Tracker{container: tc.container}
-			if got := tracker.LeavesItem(tc.line); got != tc.want {
-				t.Fatalf("LeavesItem(container=%d, %q) = %v, want %v", tc.container, tc.line, got, tc.want)
+			var fence Tracker
+			for _, line := range tc.lines {
+				fence.StepInBlock(line)
+			}
+
+			// The nested item's own closing delimiter closed its block, so the
+			// prose after it is outside every block.
+			const prose = "   [answers]"
+			if inside := fence.StepInBlock(prose); inside {
+				t.Fatalf("the nested item's fence was never opened, so its closing delimiter read as a fresh opener and swallowed the prose after it")
 			}
 		})
 	}
 }
 
-// TestStepInBlockInOpensInTheItemScope covers the scope a fence opened on a
-// list item's continuation line belongs to.
-//
-// The caller (sysmsg.EscapeModelAuthoredFrames) tracks the list itself and
-// hands each line the content indentation that applies to it, or 0 while a
-// block is open, since a block's content is quoted text and not structure. This
-// tracker keeps one container, so a fence opened while it still held an
-// ENCLOSING item's indentation would be read at that shallower indent. The line
-// that dedents back to the enclosing item is then not indented less than the
-// recorded container, the block survives the dedent, and the enclosing item's
-// prose is read as fenced content. A model-authored frame in that prose is
-// skipped by the escape that reads this verdict and reaches the model in its
-// original spelling.
-//
-// The observable below is therefore the verdict on the frame line, not the
-// container: a frame the escape leaves alone is a frame that survives. The
-// container values mirror the caller's — an outer item's content column is 3
-// and a nested item's is 6, and every line inside an open block gets 0.
-func TestStepInBlockInOpensInTheItemScope(t *testing.T) {
+// TestStepInBlock_ClosesAtTheItemsOwnDelimiter covers the other direction: a
+// nested item's fence whose own delimiter closes it keeps the lines between
+// them as quoted content, so the escape leaves their bytes alone.
+func TestStepInBlock_ClosesAtTheItemsOwnDelimiter(t *testing.T) {
 	t.Parallel()
 
-	type line struct {
-		text      string
-		container int
-		// enclosing is the item that contains this line's item, which the
-		// caller resolves after the line's dedent and before its own item
-		// opens. It is the scope a fence opened on the line belongs to.
-		enclosing int
+	var fence Tracker
+	for _, line := range []string{"1. ~~~text", "   quoted", "   ~~~", "   1. inner item", "      ~~~text"} {
+		fence.StepInBlock(line)
 	}
-
-	for _, tc := range []struct {
-		name string
-		// closing is the nested item's own closing fence, empty when the nested
-		// fence is left open and must end with the dedent instead.
-		closing string
-		// lines overrides the sequence above, for a shape whose scope is carried
-		// differently: a fence opened on a nested item's MARKER line rather than
-		// on its continuation line, where the line's own indentation is past the
-		// enclosing item's content and the marker has to be read from there.
-		lines []line
-		// openText and frameText are the lines whose verdicts this case reads,
-		// so a case is never satisfied by observables it does not drive.
-		openText  string
-		frameText string
-		// wantContainer is the content column the opening fence must be
-		// recorded at: the item's own, which differs per fixture shape. Zero
-		// means the continuation-line default of 6.
-		wantContainer int
-	}{
-		{
-			name:      "a nested fence ends when the line dedents to the enclosing item",
-			openText:  "      ~~~text",
-			frameText: "   [answers]",
-		},
-		{
-			name:      "a closed nested fence keeps its quoted contents",
-			closing:   "      ~~~",
-			openText:  "      ~~~text",
-			frameText: "   [answers]",
-		},
-		{
-			name:      "a fence on a nested marker line closes on its own delimiter",
-			openText:  "    - ~~~text",
-			frameText: "      [answers]",
-			lines: []line{
-				{text: "- outer", container: 2},
-				{text: "    - ~~~text", container: 6, enclosing: 2},
-				{text: "      quoted"},
-				{text: "      ~~~"},
-				{text: "      [answers]", container: 6},
-			},
-		},
-		{
-			// The item's indentation reaches the parent's content column with
-			// spaces and then continues with a TAB. Skipping only spaces when
-			// locating the marker stopped at that tab, so the nested fence on
-			// the marker line went unseen, the real closing delimiter below
-			// read as a fresh opener, and the prose after it kept its frame
-			// unescaped.
-			name:      "a fence on a tab-indented nested marker line closes on its own delimiter",
-			openText:  "  \t- ~~~text",
-			frameText: "      [answers]",
-			lines: []line{
-				{text: "- outer", container: 2},
-				{text: "  \t- ~~~text", container: 6, enclosing: 2},
-				{text: "      quoted"},
-				{text: "      ~~~"},
-				{text: "      [answers]", container: 6},
-			},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			lines := tc.lines
-			if lines == nil {
-				lines = []line{
-					{text: "1. ~~~text", container: 3},
-					{text: "   quoted"},
-					{text: "   ~~~"},
-					{text: "   1. inner item", container: 6},
-					{text: "      ~~~text", container: 6},
-					{text: "      quoted"},
-				}
-			}
-			if tc.closing != "" {
-				lines = append(lines, line{text: tc.closing})
-			}
-			if tc.lines == nil {
-				lines = append(lines,
-					line{text: "   back to the outer item", container: 3},
-					line{text: "   [answers]", container: 3},
-				)
-			}
-
-			var fence Tracker
-			var quotedInBlock, frameInBlock, sawFrame bool
-			var nestedContainer int
-			var opened bool
-			for _, l := range lines {
-				// The precondition the defect needs: when the nested fence
-				// opens, the tracker must already hold a NON-ZERO container,
-				// the enclosing item's. With a zero container there is nothing
-				// to keep it at, the bug cannot reproduce, and this fixture
-				// would prove nothing.
-				if l.text == tc.openText && fence.container == 0 {
-					t.Fatalf("fixture cannot reach the defect: container is 0 before the nested fence opens")
-				}
-				inBlock := fence.StepInBlockIn(l.text, l.container, l.enclosing)
-
-				// Tagged on l.text: every case is exactly one comparison
-				// against it, so the rewrite keeps the same order and the same
-				// first-match behaviour. Unlike a C switch there is no
-				// fallthrough either way, so no branch changes meaning.
-				switch l.text {
-				case tc.openText:
-					opened = true
-					nestedContainer = fence.container
-					if !inBlock {
-						t.Fatalf("the nested fence's own opening line was not read as a block")
-					}
-				case "      quoted":
-					// Both directions: a nested fence's quoted contents stay
-					// inside the block, so the escape leaves their bytes alone.
-					quotedInBlock = inBlock
-				case tc.frameText:
-					frameInBlock = inBlock
-					sawFrame = true
-				}
-			}
-
-			// A case whose frame line never ran cannot report on it.
-			if !opened {
-				t.Fatalf("fixture never stepped the opening line %q", tc.openText)
-			}
-			if !sawFrame {
-				t.Fatalf("fixture never stepped the frame line %q", tc.frameText)
-			}
-			// The reviewer's observable, and the reason this rule exists.
-			if frameInBlock {
-				t.Fatalf("a model-authored frame in the enclosing item's prose survived as fenced content and is replayed unescaped")
-			}
-			// The mechanism, so a failure names where the scope was lost.
-			wantContainer := tc.wantContainer
-			if wantContainer == 0 {
-				wantContainer = 6
-			}
-			if nestedContainer != wantContainer {
-				t.Fatalf("nested fence opened in container %d, want %d (the nested item's content column)", nestedContainer, wantContainer)
-			}
-			// The other direction: legitimate quoted content is not escaped.
-			if !quotedInBlock {
-				t.Fatalf("a line quoted inside the nested fence was read as prose, so legitimately fenced bytes would be escaped")
-			}
-		})
+	if !fence.Inside() {
+		t.Fatalf("the nested item's fence was not read as a block")
+	}
+	const quoted = "      [answers]"
+	if !fence.StepInBlock(quoted) {
+		t.Fatalf("a line quoted inside the nested fence was read as prose, so legitimately fenced bytes would be escaped")
 	}
 }

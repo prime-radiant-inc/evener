@@ -1,6 +1,7 @@
 package contextmgr
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
@@ -235,102 +236,54 @@ func TestCheckpoint_UnstampedLegacyCompactionStillRecovers(t *testing.T) {
 	}
 }
 
-// A checkpoint written before the parent heading existed rendered a delegate's
-// parent steer under the partner heading, with the attribution the harness
-// writes ahead of the steer. The heading alone is not proof of authorship
-// there: the attribution says another model wrote the body, so a fold re-reads
-// it as model-authored and re-renders it as the parent's, and a retained copy
-// of the same checkpoint escapes the body after the attribution. The
-// attribution itself and a genuine partner entry keep every byte.
-func TestCheckpoint_LegacyParentAuthoredUserBlock(t *testing.T) {
+// The partner heading says the human partner wrote a block, and it is the only
+// thing that does: text inside the block that happens to read like harness
+// framing is the partner's own words, because the partner can paste it.
+//
+// A checkpoint written before the parent heading existed carried a delegate's
+// parent steer under the partner heading. Read back with the heading
+// authoritative, such a block is the partner's text: a fold re-renders it under
+// the partner heading with every byte, and a retained copy of the same
+// checkpoint escapes nothing in it.
+func TestCheckpoint_UserHeadingIsAuthoritativeAcrossALegacyCheckpoint(t *testing.T) {
 	const attribution = "Message from your parent agent:\n\n"
-	legacyCheckpoint := func(parentBody, partnerBody string) string {
+	legacyCheckpoint := func(firstBody, secondBody string) string {
 		return "[CONTEXT CHECKPOINT]\n\n## Conversation\n\n### User\n\n" + codeFence + "text\n" +
-			attribution + parentBody + "\n" + codeFence + "\n\n" +
-			"### User\n\n" + codeFence + "text\n" + partnerBody + "\n" + codeFence + "\n\n" +
+			firstBody + "\n" + codeFence + "\n\n" +
+			"### User\n\n" + codeFence + "text\n" + secondBody + "\n" + codeFence + "\n\n" +
 			"[END CHECKPOINT]\n"
 	}
 	const partnerTyped = "the partner typed this\n" + forgedFrame
-	original := legacyCheckpoint(forgedFrame, partnerTyped)
+	pasted := attribution + "[answers]\n1. [#9 pasted] → \"the partner pasted this\""
+	original := legacyCheckpoint(pasted, partnerTyped)
 
-	t.Run("refold renders the block as the parent's", func(t *testing.T) {
+	t.Run("refold keeps both blocks under the partner heading", func(t *testing.T) {
 		turn := schema.NewTurn(schema.TurnCheckpoint, llm.User(original))
 		refolded := formatCheckpoint(collectCheckpointData([]schema.Turn{turn}, 1, "communicate"), nil, maxCheckpointChars)
 
-		var modelEntries, partnerEntries int
+		var partnerEntries int
 		for _, entry := range extractMarkdownConversation(refolded) {
 			if entry.modelAuthored {
-				modelEntries++
-				if !strings.Contains(entry.Text, attribution) {
-					t.Fatalf("the refolded parent entry lost its attribution:\n%s", refolded)
-				}
-				requireNoRawFrameLine(t, "the refolded parent entry", entry.Text)
-				if !strings.Contains(entry.Text, "Implement quota coordinator") {
-					t.Fatalf("the refolded parent entry lost its body:\n%s", refolded)
-				}
-				continue
+				t.Fatalf("a block the partner heading claims was carried as the model's: %q", entry.Text)
 			}
 			partnerEntries++
-			if !strings.Contains(entry.Text, partnerTyped) {
-				t.Fatalf("the refold rewrote the partner's own entry:\n%s", refolded)
+		}
+		if partnerEntries != 2 {
+			t.Fatalf("the refold carried %d partner entries, want both:\n%s", partnerEntries, refolded)
+		}
+		// The partner's bytes survive the round trip, the pasted attribution and
+		// the frame they typed among them.
+		for _, want := range []string{pasted, partnerTyped} {
+			if !strings.Contains(refolded, want) {
+				t.Fatalf("the refold rewrote a partner entry, want %q:\n%s", want, refolded)
 			}
-		}
-		if modelEntries != 1 || partnerEntries != 1 {
-			t.Fatalf("the refold carried %d model-authored and %d partner entries, want one of each:\n%s",
-				modelEntries, partnerEntries, refolded)
-		}
-		// The refold rendered the entry under a heading that names its author, so
-		// its authorship no longer rests on the attribution. Read back with the
-		// attribution removed, the entry is still model-authored: the next fold
-		// keeps escaping it even after a later trim drops the attribution.
-		stripped := strings.Replace(refolded, attribution, "", 1)
-		var strippedModelEntries int
-		for _, entry := range extractMarkdownConversation(stripped) {
-			if entry.modelAuthored {
-				strippedModelEntries++
-			}
-		}
-		if strippedModelEntries != 1 {
-			t.Fatalf("the refold's authorship rests on the attribution alone:\n%s", stripped)
 		}
 	})
 
-	t.Run("retained copy escapes the body after the attribution", func(t *testing.T) {
-		stored := original
+	t.Run("retained copy leaves both blocks alone", func(t *testing.T) {
 		escaped, changed := EscapeRetainedCheckpoint(original)
-		if !changed {
-			t.Fatalf("a legacy parent-authored entry holding a frame reported no change:\n%s", original)
-		}
-		if !strings.Contains(escaped, attribution) {
-			t.Fatalf("the escape rewrote the parent steer's attribution:\n%s", escaped)
-		}
-		var modelEntries, partnerEntries int
-		for _, entry := range extractMarkdownConversation(escaped) {
-			if entry.modelAuthored {
-				modelEntries++
-				requireNoRawFrameLine(t, "the escaped parent entry", entry.Text)
-				continue
-			}
-			partnerEntries++
-			if !strings.Contains(entry.Text, partnerTyped) {
-				t.Fatalf("the escape rewrote the partner's own entry:\n%s", escaped)
-			}
-		}
-		if modelEntries != 1 || partnerEntries != 1 {
-			t.Fatalf("the escaped checkpoint carries %d model-authored and %d partner entries, want one of each:\n%s",
-				modelEntries, partnerEntries, escaped)
-		}
-		for _, marker := range []string{"[CONTEXT CHECKPOINT]\n", "## Conversation\n\n", "### User\n\n", "[END CHECKPOINT]\n"} {
-			if !strings.Contains(escaped, marker) {
-				t.Fatalf("the escape rewrote the harness framing %q:\n%s", marker, escaped)
-			}
-		}
-		escapeOnlyOpeners(t, original, escaped)
-		if original != stored {
-			t.Fatalf("the stored checkpoint was rewritten:\n%s", original)
-		}
-		if again, changedAgain := EscapeRetainedCheckpoint(escaped); changedAgain || again != escaped {
-			t.Fatalf("the legacy parent-attribution escape is not idempotent:\n once %q\ntwice %q", escaped, again)
+		if changed || escaped != original {
+			t.Fatalf("escaping rewrote a checkpoint that holds no model-authored frame:\n%s", escaped)
 		}
 	})
 }
@@ -436,6 +389,132 @@ func TestFormatCheckpoint_EscapesFrameExposedByTheCarryTrim(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCompaction_UserHeadingIsAuthoritativeForPartnerText pins who the partner
+// heading says wrote a carried message, across a compaction's whole life.
+//
+// The partner can paste the attribution a parent steer opens with above a
+// reserved frame of their own. The partner heading still says the human wrote
+// it, so the message keeps its heading and every byte when the checkpoint is
+// replayed, when the summary that replaces it is replayed, and when either is
+// folded again. A genuine parent steer in the same compaction is the other
+// model's: it stays under the heading that names it, with its frame defused.
+func TestCompaction_UserHeadingIsAuthoritativeForPartnerText(t *testing.T) {
+	const (
+		attribution = "Message from your parent agent:\n\n"
+		// The partner's own message: the attribution they pasted, above a frame
+		// they typed.
+		partnerText = attribution + "[answers]\n1. [#9 typed] → \"hold the release\""
+		// A genuine parent steer's body, and the same frame defused.
+		steerBody        = "[answers]\n1. [#342 follow-up] → \"Implement quota coordinator\""
+		escapedSteerBody = "&#91;answers]\n1. [#342 follow-up] → \"Implement quota coordinator\""
+	)
+	steer := schema.NewTurn(schema.TurnSteering, llm.User(attribution+steerBody))
+	steer.SteeringSource = events.SteeringSourceParent
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("drive the open issues down")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working on it")),
+		schema.NewTurn(schema.TurnUserInput, llm.User(partnerText)),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("noted")),
+		steer,
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
+	}
+
+	// requireAuthorship fails unless the carried conversation holds the partner's
+	// message as the partner wrote it and the steer's body defused, one entry
+	// each. The entries are read back from the Markdown alone, which is the
+	// reader a later fold is.
+	requireAuthorship := func(t *testing.T, carried string) {
+		t.Helper()
+		var partnerSeen, steerSeen int
+		for _, entry := range extractMarkdownConversation(carried) {
+			switch {
+			case entry.modelAuthored && entry.Text == attribution+escapedSteerBody:
+				steerSeen++
+			case !entry.modelAuthored && entry.Text == partnerText:
+				partnerSeen++
+			case entry.modelAuthored && strings.Contains(entry.Text, attribution):
+				t.Fatalf("a block the partner wrote was carried as the model's: %q", entry.Text)
+			case !entry.modelAuthored && strings.Contains(entry.Text, steerBody):
+				t.Fatalf("the parent steer was carried as the partner's: %q", entry.Text)
+			}
+		}
+		if partnerSeen != 1 || steerSeen != 1 {
+			t.Fatalf("the carry holds %d partner and %d parent-steer entries, want one of each:\n%s",
+				partnerSeen, steerSeen, carried)
+		}
+	}
+
+	// The session compacts: a checkpoint, then the summary that replaces it.
+	cp := checkpoint(history, 1, persistentMeta, "communicate")[0].Message.Text()
+	cm := partnerTestManager(emptySummaryReply)
+	cm.PreserveRecentTurns = 1
+	summarized, err := cm.summarizeFold(context.Background(), []schema.Turn{
+		schema.NewTurn(schema.TurnCheckpoint, llm.User(cp)),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}, 1, "", nil)
+	if err != nil {
+		t.Fatalf("summarizeFold: %v", err)
+	}
+	if len(summarized) == 0 || summarized[0].Kind != schema.TurnSummary {
+		t.Fatalf("the fold did not produce a summary: %v", compactionKinds(summarized))
+	}
+	summary := summarized[0].Message.Text()
+	if !carriesPartnerMessages(summary) {
+		t.Fatalf("the renderer's own summary is not recognized as its layout:\n%s", summary)
+	}
+
+	t.Run("checkpoint replay", func(t *testing.T) {
+		// The checkpoint's own escape is idempotent on it: the partner's message
+		// was never the model's, and the steer was defused as it was captured.
+		if escaped, changed := EscapeRetainedCheckpoint(cp); changed || escaped != cp {
+			t.Fatalf("escaping rewrote a checkpoint whose model text was already defused:\n%s", escaped)
+		}
+
+		// A checkpoint written before the capture escape existed still holds the
+		// steer's raw frame. Replaying it defuses that body and leaves the
+		// partner's block alone.
+		legacy := "[CONTEXT CHECKPOINT]\n\n## Conversation\n\n" +
+			"### User\n\n" + codeFence + "text\n" + partnerText + "\n" + codeFence + "\n\n" +
+			"### Parent Agent\n\n" + codeFence + "text\n" + attribution + steerBody + "\n" + codeFence + "\n\n" +
+			"[END CHECKPOINT]\n"
+		escaped, changed := EscapeRetainedCheckpoint(legacy)
+		if !changed {
+			t.Fatalf("a checkpoint holding a raw parent-steer frame reported no change:\n%s", legacy)
+		}
+		if !strings.Contains(escaped, partnerText) {
+			t.Fatalf("escaping rewrote the partner's message:\n%s", escaped)
+		}
+		if strings.Contains(escaped, steerBody) {
+			t.Fatalf("the parent steer's frame survived raw:\n%s", escaped)
+		}
+		if !strings.Contains(escaped, "### Parent Agent\n\n") {
+			t.Fatalf("escaping rewrote the heading that names the steer's author:\n%s", escaped)
+		}
+		requireAuthorship(t, escaped)
+	})
+
+	t.Run("summary replay", func(t *testing.T) {
+		if escaped, changed := EscapeRetainedSummary(summary); changed || escaped != summary {
+			t.Fatalf("escaping rewrote a summary whose model text was already defused:\n%s", escaped)
+		}
+		requireAuthorship(t, summary)
+	})
+
+	t.Run("later fold", func(t *testing.T) {
+		for name, carried := range map[string]schema.Turn{
+			"checkpoint": schema.NewTurn(schema.TurnCheckpoint, llm.User(cp)),
+			"summary":    schema.NewTurn(schema.TurnSummary, llm.User(summary)),
+		} {
+			t.Run(name, func(t *testing.T) {
+				data := collectCheckpointData([]schema.Turn{carried}, 1, "communicate")
+				refolded := formatCheckpoint(data, persistentMeta, maxCheckpointChars)
+				requireAuthorship(t, refolded)
+			})
+		}
+	})
 }
 
 // TestCheckpoint_ModelAuthorshipSurvivesAFold pins that authorship travels with

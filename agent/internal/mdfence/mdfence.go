@@ -52,72 +52,11 @@ func (t *Tracker) StepInBlock(line string) bool {
 	return t.Step(line) || t.Inside()
 }
 
-// StepInBlockIn advances over line within the list item whose content
-// indentation is container, and reports whether the line belongs to a block.
-//
-// It is StepInBlock for a caller that already tracks list scope, and it exists
-// because that caller knows something this tracker cannot infer from the line
-// alone: the line is a continuation of an item rather than top-level text. A
-// fence opened there belongs to the item exactly as one opened on the marker
-// line does, and Markdown ends it when the item ends. Without the scope the
-// fence reads as a document-level block that nothing closes, so every later
-// top-level line is swallowed as its content (#6493 review).
-//
-// container is the scope for this line, 0 outside any item, so a caller must
-// reset it on the line that leaves the item. It is adopted whenever no block is
-// open: a block's own content may look like a list, and what it holds is quoted
-// text rather than structure, so the scope is not changed while one is open.
-//
-// enclosing is the content indentation of the item that CONTAINS this line's
-// item, resolved by the caller after the line's dedent and before the line's own
-// item opens. It is what a fence opened on the line belongs to, and it cannot be
-// read off this tracker: a marker line for a sibling item has already left the
-// previous one, so the column recorded last is neither the line's own item nor
-// the item above it. A nested item starting a fence on its marker line after a
-// sibling was missed for exactly that reason, and its closing delimiter then read
-// as a fresh opener (#6493).
-//
-// The supplied scope is the CURRENT item's, which may be nested inside the one
-// already recorded, so adopting it is not the same as filling an empty slot. A
-// fence opened on a nested item's continuation line belongs to that item, and
-// keeping the enclosing item's indentation instead would leave the line that
-// dedents back to the enclosing item at or past the recorded indent, so the
-// block would survive the dedent and swallow that item's prose.
-func (t *Tracker) StepInBlockIn(line string, container, enclosing int) bool {
-	if t.length == 0 {
-		// The caller resolved this line's scope, so it applies as given: a fence
-		// opened here belongs to the current item, which may be nested inside
-		// the one recorded, and the line has not left anything.
-		t.container = container
-		return t.stepResolved(line, enclosing) || t.Inside()
-	} else if leavesItem(line, t.container) {
-		// A block ends with the item that holds it, and the line that ends it
-		// belongs to the enclosing scope the caller reports rather than to the
-		// top level. Process it in that scope, so a fence it opens is read as
-		// the enclosing item's.
-		t.length, t.container = 0, container
-		return t.stepResolved(line, enclosing) || t.Inside()
-	}
-	return t.stepOpen(line) || t.Inside()
-}
-
 // leavesItem reports whether line is non-blank and indented less than the
 // content indentation of the item the tracker is inside. A blank line stays
 // inside the item: it neither ends one nor opens code.
 func leavesItem(line string, container int) bool {
 	return container > 0 && strings.TrimSpace(line) != "" && LeadingColumns(line) < container
-}
-
-// LeavesItem reports whether line leaves the list item the tracker is inside,
-// and so ends any block that item holds.
-//
-// It is StepInBlockIn's own item-exit test, exported for a caller that must
-// classify the same line and cannot wait for the step to be taken: the line
-// that ends a block belongs to the enclosing item, so a caller deciding
-// whether that line is indented code has to resolve its list scope before it
-// steps, not go on using the empty scope an open block imposes.
-func (t *Tracker) LeavesItem(line string) bool {
-	return leavesItem(line, t.container)
 }
 
 // Step advances over line and reports whether it opened or closed a block.
@@ -128,18 +67,6 @@ func (t *Tracker) Step(line string) bool {
 	if leavesItem(line, t.container) {
 		t.length, t.container = 0, 0
 	}
-	return t.stepResolved(line, base)
-}
-
-// stepResolved advances over line in the recorded scope, without deriving a
-// dedent from it: the caller of StepInBlockIn has already resolved the line's
-// scope and recorded it.
-//
-// base is the item the line sits inside as recorded before this line, which is
-// the indentation a nested item's marker line is read from. It differs from
-// t.container when the caller has already moved the tracker into the item the
-// line opens.
-func (t *Tracker) stepResolved(line string, base int) bool {
 	if t.length == 0 {
 		// A fence at the item's content indentation while the item holds (a
 		// top-level fence is the container-0 case), else a fence on a new list
@@ -290,23 +217,6 @@ func LeadingSpaces(line string) int {
 	return len(line) - len(strings.TrimLeft(line, " "))
 }
 
-// LeadingIndentEnd returns the byte offset at which line's leading whitespace
-// ends: where the first non-whitespace byte sits, or len(line) when the line is
-// all whitespace.
-//
-// It is the byte counterpart of LeadingColumns, and a list marker has to be
-// read at this offset rather than at the space count. Indentation is measured in
-// columns because a tab reaches the next four-column stop, so a marker line
-// indented with a tab has ZERO leading spaces and a marker that is not at byte
-// zero. Reading the marker from the space count therefore missed every
-// tab-indented nested item, and its continuation prose was then measured
-// against the parent item's column, read as indented code, and left its
-// model-authored frame unescaped (#6493 review).
-func LeadingIndentEnd(line string) int {
-	_, rest := indentColumns(line, 0)
-	return len(line) - len(rest)
-}
-
 // ListMarker returns the length in bytes of the list marker line starts with:
 // "-", "+" or "*", or one to nine digits followed by "." or ")". The space that
 // must follow the marker is not part of it.
@@ -325,26 +235,19 @@ func ListMarker(line string) (int, bool) {
 	return i + 1, true
 }
 
-// ListItemContent returns the column a list item's content starts at, for a line
-// whose marker begins at line[at:], and whether the line is a list item at all.
+// listItemContentAt returns the column a list item's content starts at, and the
+// byte offset it starts at, for a line whose marker begins at line[at:]. ok is
+// false when the line is not a list item at all.
 //
 // It is the one place that says where an item's text begins, so the scope walker
 // and the fence tracker cannot disagree about it. The separator after the marker
 // is Markdown whitespace, which is a space OR a tab, and it is measured in
 // columns because a tab reaches the next four-column stop: one tab after a
 // two-digit marker starts the content at column four, and counting only literal
-// spaces put it at three, so the item's own four-column continuation prose read
-// as indented code and a frame in it survived (#6493).
+// spaces put it at three.
 //
 // The column is absolute (counted from the page), so a caller that knows the
 // enclosing item's content column can compare directly.
-func ListItemContent(line string, at int) (content int, ok bool) {
-	content, _, ok = listItemContentAt(line, at)
-	return content, ok
-}
-
-// listItemContentAt is ListItemContent plus the byte offset the content starts
-// at, for a caller that has to read the line from there.
 func listItemContentAt(line string, at int) (content, contentAt int, ok bool) {
 	if at < 0 || at >= len(line) {
 		return 0, 0, false
