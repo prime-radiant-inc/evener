@@ -5424,6 +5424,16 @@ export interface ThreadReasoningEffortSetParams {
 export interface ThreadResumeParams {
   ref?: string;
   sessionId?: string;
+  /**
+   * Model, with ModelProvider naming its provider instance, starts the
+   * resumed session on that model: the daemon applies it at session start,
+   * so the session never comes up on the model the pick replaces. An
+   * invalid model refuses the whole resume and the session stays down. The
+   * pair is set together or not at all; resume callers that are not user
+   * picks leave both empty and keep the model the session persisted.
+   */
+  modelProvider?: string;
+  model?: string;
 }
 
 export interface ThreadResumeResponse {

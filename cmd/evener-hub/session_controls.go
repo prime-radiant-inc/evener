@@ -296,7 +296,9 @@ func setReasoningEffortControl(ctx context.Context, cfg hubcore.WebConfig, sourc
 
 // ensureEffortRelay attaches the live relay before an effort set against an
 // already-running session. A prior mutation may have resumed the session
-// without attaching one (thread/model/set's resume does not), and the change
+// without attaching one (thread/model/set routes through relayWithResumeAfter,
+// whose afterResume attaches one, but a bare withSessionResume caller does
+// not), and the change
 // frame reaches a subscriber only if a relay is listening when the daemon
 // emits it. A cold session's read fails here; afterResume attaches the relay
 // after the resume instead, and both paths are harmless when it already

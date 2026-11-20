@@ -468,6 +468,19 @@ var errResumeOwnerExitUnconfirmed = errors.New("resume owner exit is unconfirmed
 // errSpawnerNotConfigured refuses a local launch on a hub with no spawner.
 var errSpawnerNotConfigured = errors.New("spawner not configured")
 
+// modelPickNeedsStartError refuses a model-carrying resume that finds the
+// session already served by a live daemon. The pick is a start-time property:
+// a resume that starts no session has no session start to apply the model at,
+// and silently resuming on the old model is exactly the cold-pick failure the
+// pick-is-the-resume contract exists to remove. The live session takes the
+// pick through thread/model/set instead.
+func modelPickNeedsStartError(params appwire.ThreadResumeParams, sessionID string) error {
+	if params.Model == "" {
+		return nil
+	}
+	return appwire.Conflict("session " + localAppRef(sessionID) + " is already running; pick the model on the live session")
+}
+
 func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
 	return resumeThread(ctx, cfg, sources, params, false)
 }
@@ -479,6 +492,13 @@ func hubThreadAutoResume(ctx context.Context, cfg hubcore.WebConfig, sources *ap
 func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadResumeParams, automatic bool) (response appwire.ThreadResumeResponse, resumeErr error) {
 	var cleanupErr error
 	var activeResume *hubcore.ActiveResume
+	// A request that cannot be carried out however it is routed is answered
+	// first, ahead of every fence, lookup and lock below: a model named
+	// without its provider instance names no unambiguous model identity, so
+	// it must never resume a session onto a guess.
+	if (params.Model == "") != (params.ModelProvider == "") {
+		return appwire.ThreadResumeResponse{}, appwire.InvalidParams("model and modelProvider are named together: a resumed model names its provider instance")
+	}
 	requestedRefID := ""
 	if params.Ref != "" {
 		ref, err := appwire.ParseRef(params.Ref)
@@ -675,6 +695,9 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 			if err := cfg.Roster.RefreshEntry(ctx, owner.Entry); err != nil {
 				return appwire.ThreadResumeResponse{}, appwire.Unavailable(errors.Join(discoveryErr, err).Error())
 			}
+			if err := modelPickNeedsStartError(params, owner.SessionID); err != nil {
+				return appwire.ThreadResumeResponse{}, err
+			}
 			return hubResumedThreadResponse(ctx, cfg, sources, owner.SessionID, owner.ThreadID)
 		}
 		return appwire.ThreadResumeResponse{}, appwire.Unavailable(discoveryErr.Error())
@@ -694,6 +717,15 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 	resumeReq, err := resumeRequestForConfig(cfg, sessionID)
 	if err != nil {
 		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(err.Error())
+	}
+	if params.Model != "" {
+		// The pick is the resume: the launch names the chosen model, so the
+		// credential gate in the spawner judges exactly the model the resumed
+		// session runs and an invalid pick refuses the whole resume before any
+		// child starts.
+		resumeReq.Provider = params.ModelProvider
+		resumeReq.ModelOverride = params.ModelProvider + "/" + params.Model
+		resumeReq.Resolved.Effective.Model = resumeReq.ModelOverride
 	}
 	// supersededOwner is the exact roster entry whose read failed and which this
 	// resume replaced. Its rendezvous record is retired only after the
@@ -723,6 +755,9 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 		if cfg.Roster != nil {
 			if le, ok := liveDaemonForThread(cfg.Roster, sessionID); ok &&
 				le.Protocol == appwire.ProtocolVersion {
+				if err := modelPickNeedsStartError(params, le.SessionID); err != nil {
+					return appwire.ThreadResumeResponse{}, err
+				}
 				response, readErr := hubResumedThreadResponse(ctx, cfg, sources, le.SessionID, le.ThreadID)
 				if readErr == nil {
 					completeSupersededRetirement(ctx, cfg, sources, sessionID, nil)

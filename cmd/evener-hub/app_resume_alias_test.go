@@ -55,6 +55,9 @@ func TestResumeUsesRetainedCurrentSessionAndReservesAliases(t *testing.T) {
 				if req.SessionID != "z-current" {
 					t.Errorf("launched superseded alias %q", req.SessionID)
 				}
+				if req.Provider != "work" || req.ModelOverride != "work/house-model" || req.Resolved.Effective.Model != "work/house-model" {
+					t.Errorf("alias resume lost the model pick: provider=%q override=%q effective=%q", req.Provider, req.ModelOverride, req.Resolved.Effective.Model)
+				}
 				for _, id := range aliases {
 					lock := locks.For(id)
 					if lock.TryLock() {
@@ -68,7 +71,7 @@ func TestResumeUsesRetainedCurrentSessionAndReservesAliases(t *testing.T) {
 			var wg sync.WaitGroup
 			for _, id := range aliases {
 				wg.Go(func() {
-					_, err := hubThreadResume(t.Context(), cfg, nil, appwire.ThreadResumeParams{Ref: "local:" + id})
+					_, err := hubThreadResume(t.Context(), cfg, nil, appwire.ThreadResumeParams{Ref: "local:" + id, ModelProvider: "work", Model: "house-model"})
 					if err == nil {
 						t.Error("launcher failure lost")
 					}

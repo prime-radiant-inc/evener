@@ -934,6 +934,22 @@ describe("ConversationService", () => {
 			});
 		});
 
+		it("changeModel on a stopped session is the resume: it sends thread/resume with the model and no model/set", async () => {
+			const { client, service } = setup({
+				thread: makeThread({ status: { type: "notLoaded" } }),
+			});
+			client.on("thread/resume", () => ({ thread: makeThread() }));
+			await service.open("ref-1");
+			await service.changeModel("openai", "gpt-4");
+			const resumeCall = client.calls.find((call) => call.method === "thread/resume");
+			expect(resumeCall?.params).toMatchObject({
+				ref: "ref-1",
+				modelProvider: "openai",
+				model: "gpt-4",
+			});
+			expect(client.calls.some((call) => call.method === "thread/model/set")).toBe(false);
+		});
+
 		it("setReasoningEffort calls thread/reasoning-effort/set", async () => {
 			const { client, service } = setup();
 			client.on("thread/reasoning-effort/set", () => EMPTY_RESPONSE);

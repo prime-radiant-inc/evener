@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
@@ -163,6 +164,105 @@ func TestE2E_ModelSwitchOnColdSessionReachesTheResumedSubscriber(t *testing.T) {
 	}
 	if read.Thread.ModelProvider != fakellm.SwitchTargetID {
 		t.Fatalf("thread/read ModelProvider after the cold-session switch = %q, want %q", read.Thread.ModelProvider, fakellm.SwitchTargetID)
+	}
+}
+
+// TestE2E_ResumeWithModelStartsTheSessionOnIt pins the pick-is-the-resume
+// contract end to end against a real daemon: a stopped session resumed with a
+// model comes up already on it at session start, with no post-resume
+// thread/model/set to race the fresh service (issue #6696's shape). An invalid
+// model refuses the whole resume, so the session stays down rather than
+// silently starting on its old model.
+func TestE2E_ResumeWithModelStartsTheSessionOnIt(t *testing.T) {
+	stack, provider := startE2EHubStack(t)
+	provider.AdvertiseModels(fakellm.ModelID, fakellm.SwitchTargetID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	client := stack.dialRPC(ctx, t)
+
+	const openingPrompt = "EVENER-E2E-RESUME-WITH-MODEL-OPENING"
+	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
+		Harness:         "evener",
+		CWD:             stack.workDir,
+		Input:           []appwire.InputItem{{Type: "text", Text: openingPrompt}},
+		Model:           stack.model,
+		LaunchOverrides: &appwire.LaunchConfigLayer{Sandbox: "off"},
+	})
+	if err != nil {
+		t.Fatalf("thread/start: %v", err)
+	}
+	ref := started.Thread.Evener.Ref
+	if ref == "" {
+		t.Fatalf("thread/start returned no evener ref: %+v", started.Thread)
+	}
+	t.Cleanup(func() {
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancelShutdown()
+		_, _ = clientRequest[appwire.EmptyResponse](shutdownCtx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: ref})
+	})
+
+	// One real turn, so the session has a settled turn and its meta on disk.
+	round1, err := provider.Next(ctx.Done())
+	if err != nil {
+		t.Fatalf("waiting for the opening model request: %v", err)
+	}
+	if !round1.Contains(openingPrompt) {
+		t.Fatalf("the opening prompt never reached the model")
+	}
+	round1.RespondToolCall("communicate", communicateArgs("opening turn done"))
+	awaitThread(ctx, t, client, ref, "the opening turn to finish", func(thread appwire.Thread) bool {
+		return thread.Status.Type != "active"
+	})
+
+	// Retire the daemon and wait until the roster no longer lists it: the
+	// pick below happens in the cold, exited state.
+	retireDaemonUntilAccepted(ctx, t, client, ref)
+	testwait.Until(t, "the retired daemon to leave the roster", func() bool {
+		list, err := clientRequest[appwire.DaemonListResponse](ctx, client, appwire.MethodEvenerDaemonList, appwire.DaemonListParams{})
+		if err != nil {
+			return false
+		}
+		_, still := residentIdentityForRef(list, ref)
+		return !still
+	})
+
+	// An invalid model refuses the whole resume: the session stays down and
+	// the refusal names the pick, not a silent start on the old model.
+	if _, err := clientRequest[appwire.ThreadResumeResponse](ctx, client, appwire.MethodThreadResume, appwire.ThreadResumeParams{
+		Ref:           ref,
+		ModelProvider: "fake",
+		Model:         "no-such-model",
+	}); err == nil {
+		t.Fatal("resume with an unlisted model succeeded, want the whole resume refused")
+	}
+	read, err := clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref})
+	if err != nil {
+		t.Fatalf("thread/read after the refused pick: %v", err)
+	}
+	if read.Thread.Status.Type != appwire.ThreadStatusNotLoaded {
+		t.Fatalf("after the refused pick the session is %q, want it still down", read.Thread.Status.Type)
+	}
+
+	// The pick IS the resume: the session comes up already on the new model,
+	// and no thread/model/set follows it.
+	resumed, err := clientRequest[appwire.ThreadResumeResponse](ctx, client, appwire.MethodThreadResume, appwire.ThreadResumeParams{
+		Ref:           ref,
+		ModelProvider: "fake",
+		Model:         fakellm.SwitchTargetID,
+	})
+	if err != nil {
+		t.Fatalf("thread/resume with the picked model: %v", err)
+	}
+	if resumed.Thread.ModelProvider != fakellm.SwitchTargetID {
+		t.Fatalf("resumed thread model=%q, want %q at session start", resumed.Thread.ModelProvider, fakellm.SwitchTargetID)
+	}
+	read, err = clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref})
+	if err != nil {
+		t.Fatalf("thread/read after the resume-with-model: %v", err)
+	}
+	if read.Thread.ModelProvider != fakellm.SwitchTargetID {
+		t.Fatalf("thread/read after the resume-with-model model=%q, want %q", read.Thread.ModelProvider, fakellm.SwitchTargetID)
 	}
 }
 

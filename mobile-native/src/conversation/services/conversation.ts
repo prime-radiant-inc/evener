@@ -529,6 +529,11 @@ export function createConversationService<ReadLease = unknown>(
 		pushed: { threadId: string; caps: ThreadCapabilities } | null;
 	} | null = null;
 	let capabilities: ThreadCapabilities | null = null;
+	// Whether the session this service last read is stopped (no daemon is
+	// loaded for it). A model pick on a stopped session is its resume, so the
+	// pick's routing reads this; it is installed with the ref+capabilities
+	// pair, so it is exactly as current as they are.
+	let stoppedSession = false;
 	let notificationUnsub: (() => void) | null = null;
 	type PendingProjection = {
 		ref: string;
@@ -575,6 +580,7 @@ export function createConversationService<ReadLease = unknown>(
 		instanceId = null;
 		threadId = null;
 		capabilities = null;
+		stoppedSession = false;
 		return epoch;
 	}
 
@@ -651,6 +657,7 @@ export function createConversationService<ReadLease = unknown>(
 				threadId = response.thread.id;
 				ref = threadRef;
 				capabilities = caps;
+				stoppedSession = thread.status.type === "notLoaded";
 				opening = null;
 			}
 			// Reconcile the host's durable dispatch gate only for a read whose
@@ -723,6 +730,7 @@ export function createConversationService<ReadLease = unknown>(
 					threadId = response.thread.id;
 					ref = threadRef;
 					capabilities = caps;
+					stoppedSession = thread.status.type === "notLoaded";
 					opening = null;
 				}
 				// Reconcile the host's durable dispatch gate only after the projection
@@ -912,6 +920,7 @@ export function createConversationService<ReadLease = unknown>(
 			threadId = thread.id;
 			ref = response.ref;
 			capabilities = caps;
+			stoppedSession = false;
 			opening = null;
 			return { conversation, olderCursor: null };
 		},
@@ -981,6 +990,17 @@ export function createConversationService<ReadLease = unknown>(
 		async changeModel(modelProvider, model) {
 			requireCap("changeModel", "changeModel");
 			const threadRef = requireRef();
+			if (stoppedSession) {
+				// A pick on a stopped session IS its resume: one request
+				// starts the session on the chosen model, so no model/set
+				// runs against a service the resume already replaced.
+				await client.request("thread/resume", {
+					ref: threadRef,
+					modelProvider,
+					model,
+				});
+				return;
+			}
 			await client.request("thread/model/set", {
 				ref: threadRef,
 				modelProvider,

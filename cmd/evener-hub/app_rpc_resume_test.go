@@ -271,6 +271,99 @@ func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
 	}
 }
 
+// TestHubRPCThreadResumePassesModelPickToLaunch pins the pick-is-the-resume
+// contract: the model a cold pick names reaches the launch as the model the
+// resumed daemon starts on, so the session never comes up on the model the
+// pick was replacing.
+func TestHubRPCThreadResumePassesModelPickToLaunch(t *testing.T) {
+	resumed := appwire.Thread{ID: "th_resumed", SessionID: "th_resumed", Evener: appwire.EvenerThread{Ref: "local:th_resumed"}}
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+		return appwire.ThreadListResponse{Data: []appwire.Thread{resumed}}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: resumed}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	var launched *hubcore.ResumeRequest
+	runDir := t.TempDir()
+	spawner := &fakeRPCSpawner{
+		resume: func(ctx context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			captured := req
+			launched = &captured
+			entry := rendezvous.Entry{
+				PID:       os.Getpid(),
+				Protocol:  appwire.ProtocolVersion,
+				Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+				SourceID:  "local",
+				ThreadID:  "th_resumed",
+				SessionID: "th_resumed",
+			}
+			writeRendezvous(t, runDir, entry)
+			return entry, nil
+		},
+	}
+
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner}))
+	defer hub.Close()
+	client := dialHubRPCInitialized(t, hub)
+	if _, err := appwiretest.ThreadResume(context.Background(), client, appwire.ThreadResumeParams{
+		Session:       "sess_old",
+		ModelProvider: "fake",
+		Model:         "fake-switch-target",
+	}); err != nil {
+		t.Fatalf("ThreadResume with a model pick: %v", err)
+	}
+	if launched == nil {
+		t.Fatal("the resume never launched")
+	}
+	if launched.Provider != "fake" {
+		t.Errorf("launch provider=%q, want the pick's instance fake", launched.Provider)
+	}
+	if launched.ModelOverride != "fake/fake-switch-target" {
+		t.Errorf("launch model override=%q, want fake/fake-switch-target", launched.ModelOverride)
+	}
+	if launched.Resolved.Effective.Model != "fake/fake-switch-target" {
+		t.Errorf("launch effective model=%q, want the credential gate to judge fake/fake-switch-target", launched.Resolved.Effective.Model)
+	}
+}
+
+// TestHubRPCThreadResumeValidatesModelPick pins the wire contract that the
+// model pair is named together: a half-specified pick is refused before any
+// lock is taken or a child is launched, so a malformed pick can never resume
+// a session onto an ambiguous model identity.
+func TestHubRPCThreadResumeValidatesModelPick(t *testing.T) {
+	for name, params := range map[string]appwire.ThreadResumeParams{
+		"model without provider": {Session: "sess_old", Model: "fake-switch-target"},
+		"provider without model": {Session: "sess_old", ModelProvider: "fake"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			launched := false
+			runDir := t.TempDir()
+			spawner := &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+				launched = true
+				return rendezvous.Entry{}, errors.New("malformed pick reached the launcher")
+			}}
+			hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, ResumeLocks: hubcore.NewResumeLocks()}))
+			defer hub.Close()
+			client := dialHubRPCInitialized(t, hub)
+			_, err := appwiretest.ThreadResume(context.Background(), client, params)
+			if err == nil {
+				t.Fatal("malformed model pick resumed, want a refusal")
+			}
+			var wire appwire.WireError
+			if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+				t.Fatalf("malformed pick error=%v, want an invalid-params refusal", err)
+			}
+			if launched {
+				t.Fatal("malformed pick launched a child")
+			}
+		})
+	}
+}
+
 func TestHubRPCThreadResumeConfirmsSpawnAfterDiscoveryFailure(t *testing.T) {
 	for _, fault := range []string{"status", "listing", "confirmed", "read", "identity"} {
 		t.Run(fault, func(t *testing.T) {
@@ -436,6 +529,22 @@ func TestHubRPCThreadResumeVerifiesExistingOwnerWhenDiscoveryFails(t *testing.T)
 				}
 				if response.Thread.ID != sessionID {
 					t.Fatalf("thread=%+v", response.Thread)
+				}
+				// A model pick rides only a resume that starts the session: a
+				// resume that finds a live owner has no session start to apply
+				// the model at, so the pick is refused rather than silently
+				// dropped.
+				_, pickErr := appwiretest.ThreadResume(context.Background(), client, appwire.ThreadResumeParams{
+					Session:       sessionID,
+					ModelProvider: "fake",
+					Model:         "fake-switch-target",
+				})
+				if pickErr == nil {
+					t.Fatal("model pick over a live owner resumed, want a conflict refusal")
+				}
+				var pickWire appwire.WireError
+				if !errors.As(pickErr, &pickWire) || pickWire.Code != appwire.CodeConflict {
+					t.Fatalf("model pick over a live owner error=%v, want a conflict refusal", pickErr)
 				}
 			} else if err == nil {
 				t.Fatal("resume succeeded without a verified owner")
