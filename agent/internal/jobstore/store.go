@@ -208,11 +208,9 @@ type fileCursor struct {
 type foldCache struct {
 	gen       uint64
 	jobs      map[string]*JobRecord
-	ordered   []*JobRecord
 	watches   map[string]*WatchRecord
 	sends     WatchSendRecord
 	jobsOK    bool
-	orderedOK bool
 	watchesOK bool
 	sendsOK   bool
 }
@@ -413,29 +411,6 @@ func (s *Store) Load() (map[string]*JobRecord, error) {
 		return nil, err
 	}
 	return s.noteFoldedJobsLocked(Fold(events)), nil
-}
-
-// LoadOrdered reads every event and folds them to the current records, returning
-// them in durable APPEND ORDER — sorted by the seq of each job's FIRST event.
-// Append order is the total order the append-only log defines; callers that must
-// resolve "the latest record" (the one appended last) read it here rather than
-// from a wall-clock field, which can skew across restore.
-func (s *Store) LoadOrdered() ([]*JobRecord, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.ensureOpenLocked(); err != nil {
-		return nil, err
-	}
-	if folded, ok, err := s.foldOrderedHitLocked(); err != nil {
-		return nil, err
-	} else if ok {
-		return folded, nil
-	}
-	events, err := s.readAllLocked()
-	if err != nil {
-		return nil, err
-	}
-	return s.noteFoldedOrderedLocked(FoldOrdered(events)), nil
 }
 
 // CommittedJournalState is one snapshot of a store's committed journal.
@@ -1319,12 +1294,13 @@ func (s *Store) noteUnresolvableTimestampLocked(startOffset, endOffset int64, ve
 //
 // It is a variable for the same reason openScanEventsFile beside it is: a
 // caller measuring what a read COSTS has to be able to count the records
-// actually decoded, and a returned slice cannot say that. Store.LoadOrdered
-// serves its cached fold without decoding anything, so counting the records it
-// RETURNS prices a refresh of an unchanged journal as a full decode of the
-// history — the very cost the incremental path is compared against. Replacing
-// this is a measurement seam, not a policy one: the store decodes by unmarshalling,
-// exactly as below, and a replacement must do the same.
+// actually decoded, and a returned slice cannot say that. A cached
+// whole-history read (Store.Load) serves its fold without decoding anything,
+// so counting the records it RETURNS prices a refresh of an unchanged journal
+// as a full decode of the history — the very cost the incremental path is
+// compared against. Replacing this is a measurement seam, not a policy one:
+// the store decodes by unmarshalling, exactly as below, and a replacement must
+// do the same.
 var DecodeJournalEvent = json.Unmarshal
 
 // advanceCursorLocked decodes the log from the cursor's offset to the file's real
@@ -1865,17 +1841,6 @@ func (s *Store) foldJobsHitLocked() (map[string]*JobRecord, bool, error) {
 	return cloneFoldJobs(s.folds.jobs), true, nil
 }
 
-func (s *Store) foldOrderedHitLocked() ([]*JobRecord, bool, error) {
-	if !s.folds.orderedOK || s.folds.gen != s.foldGen {
-		return nil, false, nil
-	}
-	ok, err := s.foldCurrentLocked()
-	if err != nil || !ok {
-		return nil, false, err
-	}
-	return cloneFoldOrdered(s.folds.ordered), true, nil
-}
-
 func (s *Store) foldWatchesHitLocked() (map[string]*WatchRecord, bool, error) {
 	if !s.folds.watchesOK || s.folds.gen != s.foldGen {
 		return nil, false, nil
@@ -1910,13 +1875,6 @@ func (s *Store) noteFoldedJobsLocked(folded map[string]*JobRecord) map[string]*J
 	return cloneFoldJobs(folded)
 }
 
-func (s *Store) noteFoldedOrderedLocked(folded []*JobRecord) []*JobRecord {
-	s.folds.gen = s.foldGen
-	s.folds.ordered = cloneFoldOrdered(folded)
-	s.folds.orderedOK = true
-	return cloneFoldOrdered(folded)
-}
-
 func (s *Store) noteFoldedWatchesLocked(folded map[string]*WatchRecord) map[string]*WatchRecord {
 	s.folds.gen = s.foldGen
 	s.folds.watches = cloneFoldWatches(folded)
@@ -1944,17 +1902,6 @@ func cloneFoldJobs(in map[string]*JobRecord) map[string]*JobRecord {
 	out := make(map[string]*JobRecord, len(in))
 	for k, r := range in {
 		out[k] = r.Clone()
-	}
-	return out
-}
-
-func cloneFoldOrdered(in []*JobRecord) []*JobRecord {
-	if in == nil {
-		return nil
-	}
-	out := make([]*JobRecord, len(in))
-	for i, r := range in {
-		out[i] = r.Clone()
 	}
 	return out
 }

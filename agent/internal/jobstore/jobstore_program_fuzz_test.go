@@ -149,9 +149,9 @@ func jcpStoreLifecycle(t *testing.T, root string, r *jcpReader) {
 		t.Fatalf("Status.IsTerminal contract regressed")
 	}
 
-	ordered, err := s.LoadOrdered()
+	ordered, err := loadOrderedForTest(s)
 	if err != nil || len(ordered) != 1 || ordered[0].JobID != started.JobID {
-		t.Fatalf("LoadOrdered = %#v, %v", ordered, err)
+		t.Fatalf("loadOrderedForTest = %#v, %v", ordered, err)
 	}
 	watches, err := s.LoadWatches()
 	if err != nil || watches["watch-primary"] == nil || watches["watch-primary"].Active {
@@ -185,7 +185,7 @@ func jcpStoreLifecycle(t *testing.T, root string, r *jcpReader) {
 		func() error { return s.Append(Event{}) },
 		func() error { return s.AppendBatch([]Event{{}}) },
 		func() error { _, err := s.Load(); return err },
-		func() error { _, err := s.LoadOrdered(); return err },
+		func() error { _, err := loadOrderedForTest(s); return err },
 		func() error { _, err := s.LoadWatches(); return err },
 		func() error { _, err := s.LoadWatchSends(); return err },
 		func() error { _, err := s.LoadEvents(); return err },
@@ -859,7 +859,7 @@ func jcpStoreErrorPaths(t *testing.T, root string, r *jcpReader) {
 		call  func(*Store) error
 	}{
 		{"Load", func(s *Store) error { _, err := s.Load(); return err }},
-		{"LoadOrdered", func(s *Store) error { _, err := s.LoadOrdered(); return err }},
+		{"loadOrderedForTest", func(s *Store) error { _, err := loadOrderedForTest(s); return err }},
 		{"LoadWatches", func(s *Store) error { _, err := s.LoadWatches(); return err }},
 		{"LoadWatchSends", func(s *Store) error { _, err := s.LoadWatchSends(); return err }},
 		{"readAll", func(s *Store) error { _, err := s.readAll(); return err }},
