@@ -1063,7 +1063,11 @@ export function applyReadResponse<M extends ThreadModel>(
   // verdict may drop the held chip: the equal-stamp refresh keeps the chip
   // and its receipt time, an ordinary retry is not this reconciliation's to
   // retire, and the wait-free clear below keeps its own long-standing rule.
-  const quotaWait = reconcileQuotaWait(model, { ...fields, bootGeneration: resp.bootGeneration }, postCutWaitStamps);
+  const quotaWait = reconcileQuotaWait(
+    model,
+    { ...fields, bootGeneration: resp.bootGeneration, runningTurnId: resp.thread.evener.activeTurnId },
+    postCutWaitStamps,
+  );
   const retireQuotaRetry = quotaWait.retireChip === true;
   const { modelRetry: _retainedRetry, ...baseWithoutRetry } = base;
   const carried = retireQuotaRetry ? baseWithoutRetry : base;
@@ -1159,7 +1163,13 @@ interface QuotaWaitFields {
 }
 function reconcileQuotaWait(
   held: ThreadModel,
-  fresh: { instanceId?: string; bootGeneration?: string; quotaResumesAt?: string; quotaWaitStartedAt?: number },
+  fresh: {
+    instanceId?: string;
+    bootGeneration?: string;
+    quotaResumesAt?: string;
+    quotaWaitStartedAt?: number;
+    runningTurnId?: string;
+  },
   postCutWaitStamps?: ReadonlySet<number>,
 ): QuotaWaitFields {
   // A start the POST-CUT tail already installed: the read's cut predates it,
@@ -1264,17 +1274,24 @@ function reconcileQuotaWait(
     };
   }
   // The wait is gone from the model — the wake ended it and left its ended
-  // stamp behind — and the read names none. A leftover quota chip (the wake's
-  // own zero-delay progress state) is the last artifact of that ended wait:
-  // the read is the authority on presence, and keeping the chip would show
-  // stale retry progress with nothing behind it. An ordinary provider retry
-  // (no quota state anywhere) keeps its chip: this reconciliation never
-  // retires what is not quota.
+  // stamp behind — and the read names none. A leftover quota chip is the last
+  // artifact of that ended wait, and the read is the authority on presence:
+  // keeping it would show stale wait metadata with nothing behind it. The
+  // exception is the wake's own zero-delay chip, which is the retry's
+  // PROGRESS rather than the wait's metadata: when the read still names that
+  // retrying call's turn running (same runtime — runtimeChanged above zeroed
+  // endedStamp), the read is not news about the call and the chip stands. An
+  // ordinary provider retry (no quota state anywhere) keeps its chip too:
+  // this reconciliation never retires what is not quota.
+  const retryingTurn = held.modelRetry?.turnId ?? held.runningTurnId;
+  const liveZeroDelayRetry =
+    held.modelRetry?.delayMs === 0 && retryingTurn !== undefined && fresh.runningTurnId === retryingTurn;
   const endedQuotaChip =
     heldStamp === 0 &&
     endedStamp > 0 &&
     held.modelRetry !== undefined &&
-    held.modelRetry.errorClass === "quota_exceeded";
+    held.modelRetry.errorClass === "quota_exceeded" &&
+    !liveZeroDelayRetry;
   return {
     // The held model's wait fields (a stamped daemon's ordinary read): a
     // read naming no wait and no held stamp has nothing to change here.
