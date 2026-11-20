@@ -1,10 +1,16 @@
 package evener_test
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -50,6 +56,7 @@ type cacheWorkflowStep struct {
 	If   string            `yaml:"if"`
 	Run  string            `yaml:"run"`
 	With map[string]string `yaml:"with"`
+	Env  map[string]string `yaml:"env"`
 }
 
 type cacheWorkflowJob struct {
@@ -129,13 +136,21 @@ func expandMatrix(text string, cell map[string]string) string {
 	})
 }
 
-var matrixCondition = regexp.MustCompile(`matrix\.(\w+)\s*==\s*'([^']*)'`)
+var (
+	matrixCondition    = regexp.MustCompile(`matrix\.(\w+)\s*==\s*'([^']*)'`)
+	matrixNegCondition = regexp.MustCompile(`matrix\.(\w+)\s*!=\s*'([^']*)'`)
+)
 
 // stepRunsInCell reports whether a step's matrix conditions, if any, hold in
 // the cell. Other conditions are runtime facts the cell cannot decide.
 func stepRunsInCell(step cacheWorkflowStep, cell map[string]string) bool {
 	for _, match := range matrixCondition.FindAllStringSubmatch(step.If, -1) {
 		if cell[match[1]] != match[2] {
+			return false
+		}
+	}
+	for _, match := range matrixNegCondition.FindAllStringSubmatch(step.If, -1) {
+		if cell[match[1]] == match[2] {
 			return false
 		}
 	}
@@ -154,6 +169,15 @@ func restoredKind(step cacheWorkflowStep) string {
 	return ""
 }
 
+// fallbackKind is the retired kind a setup-toolchain step also restores when
+// its own kind has no entry, or "" when it restores no fallback.
+func fallbackKind(step cacheWorkflowStep) string {
+	if step.Uses == "./.github/actions/setup-toolchain" {
+		return step.With["go-cache-fallback-kind"]
+	}
+	return ""
+}
+
 // Every Go cache kind a job restores must be saved on main by some job that
 // restores it, and the shared module cache by exactly one job. A kind nobody
 // saves restores nothing, so its lanes build cold on every run while looking
@@ -167,11 +191,14 @@ func TestEveryRestoredGoCacheKindIsSaved(t *testing.T) {
 			for _, cell := range matrixCells(job) {
 				kind := ""
 				for _, step := range job.Steps {
+					if !stepRunsInCell(step, cell) {
+						continue
+					}
 					if k := restoredKind(step); k != "" {
 						kind = expandMatrix(k, cell)
 						restored[kind] = path + " " + name
 					}
-					if step.Uses != "./.github/actions/go-cache-save" || !stepRunsInCell(step, cell) {
+					if step.Uses != "./.github/actions/go-cache-save" {
 						continue
 					}
 					if kind == "" {
@@ -196,6 +223,251 @@ func TestEveryRestoredGoCacheKindIsSaved(t *testing.T) {
 	}
 	if len(moduleSavers) != 1 {
 		t.Errorf("the shared Go module cache is saved by %d jobs (%v), want exactly one", len(moduleSavers), moduleSavers)
+	}
+}
+
+// agent-1 and agent-2 build the same agent -race test binary and the same
+// evener-dev runner; they differ only in which shards run, and only agent-2
+// also compiles the module's subpackages (run-module-tests.sh sends them to
+// the last part). One kind saved by agent-2 therefore holds every entry
+// agent-1 compiles. Two kinds duplicate that build per main push: the
+// duplicate added about 0.75GB to a two-generation peak that already exceeds
+// the 10GB budget, so dropping it lowers the pressure that evicts small
+// never-restored kinds.
+func TestAgentRaceLanesShareOneCacheKind(t *testing.T) {
+	jobs := readCacheWorkflow(t, ".github/workflows/ci.yml")
+	job, ok := jobs["race-module-shards"]
+	if !ok {
+		t.Fatal("ci.yml has no race-module-shards job")
+	}
+	restored := map[string]map[string]bool{}
+	saved := map[string]map[string]bool{}
+	fallback := map[string]string{}
+	for _, cell := range matrixCells(job) {
+		scope := cell["scope"]
+		restored[scope] = map[string]bool{}
+		saved[scope] = map[string]bool{}
+		kind := ""
+		for _, step := range job.Steps {
+			if !stepRunsInCell(step, cell) {
+				continue
+			}
+			if k := fallbackKind(step); k != "" {
+				fallback[scope] = expandMatrix(k, cell)
+			}
+			if k := restoredKind(step); k != "" {
+				kind = expandMatrix(k, cell)
+				restored[scope][kind] = true
+			}
+			if step.Uses == "./.github/actions/go-cache-save" {
+				if kind == "" {
+					t.Errorf("race-module-shards %s: go-cache-save runs with no go-cache-restore before it", scope)
+					continue
+				}
+				saved[scope][kind] = true
+			}
+		}
+	}
+	for _, scope := range []string{"agent-1", "agent-2"} {
+		if got := restored[scope]; len(got) != 1 || !got["race-agent"] {
+			t.Errorf("race-module-shards %s restores %v, want the one shared kind race-agent", scope, got)
+		}
+	}
+	if saved["agent-1"]["race-agent"] {
+		t.Error("agent-1 saves race-agent; agent-2 holds the superset of agent-1's build, so only agent-2 should save it")
+	}
+	if !saved["agent-2"]["race-agent"] {
+		t.Error("agent-2 does not save race-agent, the only kind the agent shards restore")
+	}
+	// The old race-agent-2 entry is the only warm cache either shard can use
+	// until agent-2 saves the shared kind on main, so both agent cells restore
+	// it as a fallback; otherwise every run between the change and that save
+	// builds the whole race binary cold.
+	for _, scope := range []string{"agent-1", "agent-2"} {
+		if fallback[scope] != "race-agent-2" {
+			t.Errorf("race-module-shards %s restores fallback %q, want the retired kind race-agent-2", scope, fallback[scope])
+		}
+	}
+	if fallback["nonagent"] != "" {
+		t.Errorf("race-module-shards nonagent restores fallback %q, want none", fallback["nonagent"])
+	}
+	if got := restored["nonagent"]; len(got) != 1 || !got["race-nonagent"] {
+		t.Errorf("race-module-shards nonagent restores %v, want race-nonagent", got)
+	}
+	if !saved["nonagent"]["race-nonagent"] {
+		t.Error("nonagent does not save race-nonagent, the only kind it restores")
+	}
+}
+
+// The shared race-agent kind has no main entry until agent-2 saves one, so
+// go-cache-restore must also try the retired kind's prefix. The test runs the
+// action's own key-resolution script with the input the shards pass, so a
+// restore-keys expression that ignores the fallback fails it.
+func TestGoCacheRestoreTriesTheFallbackKind(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skipf("bash not installed: %v", err)
+	}
+	steps := readActionSteps(t, ".github/actions/go-cache-restore/action.yml")
+	var resolve, restore cacheWorkflowStep
+	for _, step := range steps {
+		switch step.Name {
+		case "Resolve Go cache keys":
+			resolve = step
+		case "Restore Go build cache":
+			restore = step
+		}
+	}
+	if resolve.Run == "" || restore.Uses == "" {
+		t.Fatal("go-cache-restore has no key-resolution or restore step")
+	}
+	if got := resolve.Env["FALLBACK_KIND"]; got != "${{ inputs.fallback-kind }}" {
+		t.Errorf("key resolution reads FALLBACK_KIND %q, want the fallback-kind input", got)
+	}
+	if got := restore.With["restore-keys"]; got != "${{ steps.keys.outputs.restore-keys }}" {
+		t.Errorf("Restore Go build cache restore-keys %q, want the resolved keys", got)
+	}
+	goEnv := func(name string) string {
+		t.Helper()
+		out, err := exec.Command("go", "env", name).Output()
+		if err != nil {
+			t.Fatalf("go env %s: %v", name, err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	suffix := "ubuntu24-" + goEnv("GOARCH") + "-" + goEnv("GOVERSION") + "-"
+	resolved := func(fallback string) string {
+		t.Helper()
+		dir := t.TempDir()
+		outputPath := filepath.Join(dir, "output")
+		cmd := exec.Command("bash", "-c", resolve.Run)
+		cmd.Env = append(os.Environ(),
+			"KIND=race-agent",
+			"FALLBACK_KIND="+fallback,
+			"ImageOS=ubuntu24",
+			"GITHUB_OUTPUT="+outputPath,
+			"GITHUB_ENV="+filepath.Join(dir, "env"),
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("key resolution with fallback %q: %v\n%s", fallback, err, out)
+		}
+		data, err := os.ReadFile(outputPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	shared, fallback := "go-race-agent-"+suffix, "go-race-agent-2-"+suffix
+	if got, want := resolved("race-agent-2"), "restore-keys<<EOF\n"+shared+"\n"+fallback+"\nEOF\n"; !strings.Contains(got, want) {
+		t.Errorf("keys with a fallback:\n%s\nwant a restore-keys block\n%s", got, want)
+	}
+	if got, want := resolved(""), "restore-keys="+shared+"\n"; !strings.Contains(got, want) {
+		t.Errorf("keys without a fallback:\n%s\nwant %q", got, want)
+	}
+}
+
+// A generation transition changes more of a key than the commit: a Go version
+// bump rewrites the Go component of every go-* and gomod-* key, and a lint
+// config bump rewrites the config hash of a golangci-lint key. cache-prune
+// must group those keys by kind so a transition still leaves one generation,
+// or the two generations ride the budget for 7 days. The iOS DerivedData kind
+// keeps its per-lock grouping: a lock change is a different build, and two
+// such entries are not generations of one key. The test feeds a fixed cache
+// listing through the job's own jq and awk programs, so a pipeline that keeps
+// an older entry or selects the wrong ids fails it.
+func TestCachePruneKeepsOneGenerationPerKind(t *testing.T) {
+	jqPath, err := exec.LookPath("jq")
+	if err != nil {
+		t.Skipf("jq not installed: %v", err)
+	}
+	awkPath, err := exec.LookPath("awk")
+	if err != nil {
+		t.Skipf("awk not installed: %v", err)
+	}
+	jobs := readCacheWorkflow(t, ".github/workflows/ci.yml")
+	prune, ok := jobs["cache-prune"]
+	if !ok {
+		t.Fatal("ci.yml has no cache-prune job")
+	}
+	var script strings.Builder
+	for _, step := range prune.Steps {
+		script.WriteString(step.Run)
+		script.WriteString("\n")
+	}
+	var jqProgram string
+	for _, match := range regexp.MustCompile(`--jq '([^']*)'`).FindAllStringSubmatch(script.String(), -1) {
+		if strings.Contains(match[1], "select(") {
+			jqProgram = match[1]
+		}
+	}
+	if jqProgram == "" {
+		t.Fatalf("cache-prune has no jq key filter:\n%s", script.String())
+	}
+	awkMatch := regexp.MustCompile(`awk '([^']*)'`).FindStringSubmatch(script.String())
+	if awkMatch == nil {
+		t.Fatalf("cache-prune has no awk superseded filter:\n%s", script.String())
+	}
+
+	// Real hashes are hex, so the job's filters must see hex.
+	hash := func(n int) string { return strings.Repeat("0", 38) + fmt.Sprintf("%02x", n) }
+	config := func(n int) string { return strings.Repeat("0", 62) + fmt.Sprintf("%02x", n) }
+	derivedData := func(pod, pkg, commit int) string {
+		return "ios-deriveddata-macos26-xcode-26.6-" + hash(pod) + "-" + hash(pkg) + "-" + hash(commit)
+	}
+	type cacheEntry struct {
+		ID  int64  `json:"id"`
+		Key string `json:"key"`
+	}
+	// Newest first, as the job lists them, so the first entry of each kind is
+	// the one it keeps.
+	listing := []cacheEntry{
+		{101, "go-tests-root-ubuntu24-amd64-go1.27.4-" + hash(1)},
+		{100, "go-tests-root-ubuntu24-amd64-go1.27.4-" + hash(2)},
+		{99, "go-tests-root-ubuntu24-amd64-go1.28.0-" + hash(3)},
+		{98, "gomod-ubuntu24-amd64-go1.28.0-" + hash(4)},
+		{97, "gomod-ubuntu24-amd64-go1.27.4-" + hash(5)},
+		{96, "golangci-lint-ubuntu24-go1.28.0-" + config(6) + "-" + hash(7)},
+		{95, "golangci-lint-ubuntu24-go1.27.4-" + config(8) + "-" + hash(9)},
+		{94, "golangci-lint-tagged-ubuntu24-go1.27.4-" + config(10) + "-" + hash(11)},
+		{93, "go-race-agent-ubuntu24-amd64-go1.27.4-" + hash(12)},
+		{92, "go-race-agent-2-ubuntu24-amd64-go1.27.4-" + hash(13)},
+		{91, "go-race-agent-1-ubuntu24-amd64-go1.27.4-" + hash(14)},
+		{90, "go-race-nonagent-ubuntu24-amd64-go1.27.4-" + hash(15)},
+		{89, "go-static-build-ubuntu24-amd64-go1.27.4-" + hash(16)},
+		{88, derivedData(17, 18, 19)},
+		{87, derivedData(17, 18, 20)},
+		{86, derivedData(21, 22, 23)},
+		{85, "setup-ruby-bundler-cache-v6-macos-16-arm64-ruby-3.3.6-" + hash(24)},
+	}
+	payload, err := json.Marshal(listing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := exec.Command(jqPath, "-r", jqProgram)
+	listed.Stdin = bytes.NewReader(payload)
+	entries, err := listed.CombinedOutput()
+	if err != nil {
+		t.Fatalf("jq %s: %v\n%s", jqProgram, err, entries)
+	}
+	superseded := exec.Command(awkPath, awkMatch[1])
+	superseded.Stdin = bytes.NewReader(entries)
+	out, err := superseded.CombinedOutput()
+	if err != nil {
+		t.Fatalf("awk %s: %v\n%s", awkMatch[1], err, out)
+	}
+	var deleted []int64
+	for field := range strings.FieldsSeq(string(out)) {
+		id, err := strconv.ParseInt(field, 10, 64)
+		if err != nil {
+			t.Fatalf("prune printed %q, not a cache id: %v", field, err)
+		}
+		deleted = append(deleted, id)
+	}
+	// The newest entry of each kind survives, including one derived-data entry
+	// per lock pair; older entries of a kind go, whether the commit, the Go
+	// version, the lint config, or the retired race shard kind differs.
+	want := []int64{100, 99, 97, 95, 92, 91, 87}
+	if !slices.Equal(deleted, want) {
+		t.Errorf("cache-prune deletes %v, want %v", deleted, want)
 	}
 }
 
@@ -335,10 +607,11 @@ func TestCachePruneCoversTheDerivedDataKind(t *testing.T) {
 	sha := strings.Repeat("a", 40)
 	podHash := strings.Repeat("b", 40)
 	packageHash := strings.Repeat("c", 40)
+	configHash := strings.Repeat("d", 64)
 	for _, key := range []string{
 		"go-tests-root-ubuntu24-amd64-go1.27.4-" + sha,
 		"gomod-ubuntu24-amd64-go1.27.4-" + sha,
-		"golangci-lint-tagged-ubuntu24-amd64-go1.27.4-" + sha,
+		"golangci-lint-tagged-ubuntu24-go1.27.4-" + configHash + "-" + sha,
 		"ios-deriveddata-macos26-xcode-26.6-" + podHash + "-" + packageHash + "-" + sha,
 	} {
 		if !filter.MatchString(key) {
