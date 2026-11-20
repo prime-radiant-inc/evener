@@ -437,7 +437,12 @@ func geminiDocumentPart(doc *llm.DocumentData) map[string]any {
 	return nil
 }
 
-func toGeminiContents(model string, msgs []llm.Message, multimodalToolResults bool) (system string, contents []map[string]any, _ error) {
+// toGeminiContents converts the request messages to Gemini contents. escape,
+// when non-nil, is applied to each assistant text part the adapter emits, after
+// the whitespace-only parts it drops. It is never applied to a user, system or
+// tool payload, nor to a function call. The caller's messages keep their own
+// bytes.
+func toGeminiContents(model string, msgs []llm.Message, multimodalToolResults bool, escape func(string) string) (system string, contents []map[string]any, _ error) {
 	var sysParts []string
 	appendContent := func(role string, parts []map[string]any) {
 		if len(parts) == 0 {
@@ -505,7 +510,11 @@ func toGeminiContents(model string, msgs []llm.Message, multimodalToolResults bo
 				switch p.Kind {
 				case llm.ContentText:
 					if strings.TrimSpace(p.Text) != "" {
-						parts = append(parts, map[string]any{"text": p.Text})
+						text := p.Text
+						if escape != nil {
+							text = escape(text)
+						}
+						parts = append(parts, map[string]any{"text": text})
 					}
 				case llm.ContentImage:
 					if p.Image == nil {

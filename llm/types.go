@@ -632,6 +632,18 @@ type Request struct {
 	// drift the estimate silently. Rebuild the list and re-measure instead.
 	ToolsJSONBytes int `json:"-"`
 
+	// EscapeAssistantText, when non-nil, transforms each assembled assistant
+	// text payload right before a provider serializer emits it on the wire.
+	// Stored messages are never mutated.
+	//
+	// It is called with the text the serializer has already assembled for an
+	// assistant-role message — joined parts, promoted reasoning, phase runs and
+	// all — and only on such text: a user, system or tool payload, a tool call
+	// and a tool result are never passed to it. Because the serializer runs it
+	// on the assembled payload, the escape sees the same document and the same
+	// block boundaries the provider will read.
+	EscapeAssistantText func(string) string `json:"-"`
+
 	AdapterTimeout *AdapterTimeout `json:"adapter_timeout,omitempty"`
 }
 

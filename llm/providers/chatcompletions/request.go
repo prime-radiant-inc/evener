@@ -46,7 +46,7 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 	if _, ok := options["reasoning"]; ok && !reasoningOff {
 		optionCarriesReasoning, useReasoningDetails = true, true
 	}
-	msgs, err := toChatMessages(req.Messages, caps, useReasoningDetails)
+	msgs, err := toChatMessages(req.Messages, caps, useReasoningDetails, req.EscapeAssistantText)
 	if err != nil {
 		return nil, err
 	}

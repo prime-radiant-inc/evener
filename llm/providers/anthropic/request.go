@@ -369,7 +369,12 @@ func anthropicDocumentBlock(p llm.ContentPart) map[string]any {
 // the protocol accepts it, but a row that does not declare pdf input cannot
 // see it, and the agent's side-channel describes the document instead — so
 // sending it here too would deliver the same bytes twice.
-func toAnthropicMessages(msgs []llm.Message, seesToolResultDocuments bool) (system string, messages []map[string]any, _ error) {
+//
+// escape, when non-nil, is applied to each assistant text block the adapter
+// emits, after the whitespace-only parts it drops. It is never applied to a
+// user, system or tool payload, nor to a tool call. The caller's messages keep
+// their own bytes.
+func toAnthropicMessages(msgs []llm.Message, seesToolResultDocuments bool, escape func(string) string) (system string, messages []map[string]any, _ error) {
 	var sysParts []string
 	appendMessage := func(role string, content []map[string]any) {
 		if len(content) == 0 {
@@ -433,7 +438,11 @@ func toAnthropicMessages(msgs []llm.Message, seesToolResultDocuments bool) (syst
 				switch p.Kind {
 				case llm.ContentText:
 					if strings.TrimSpace(p.Text) != "" {
-						blocks = append(blocks, map[string]any{"type": "text", "text": p.Text})
+						text := p.Text
+						if escape != nil {
+							text = escape(text)
+						}
+						blocks = append(blocks, map[string]any{"type": "text", "text": text})
 					}
 				case llm.ContentImage:
 					if p.Image == nil {

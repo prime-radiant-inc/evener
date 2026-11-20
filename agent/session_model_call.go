@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/sandbox"
@@ -327,15 +328,13 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// tool-result payload so the fallback chain can apply each target's own
 	// replay and media policy; the primary request is projected for the
 	// primary's wire before it is built and budgeted (#4563, #4217).
-	// The escape covers each target's dispatch copy, never the shared source:
-	// a promoting target rewrites reasoning text, and the fallback source is
-	// written from untrimmedHistory and may be handed to a target that signed
-	// the original bytes (#6493 review). expandHistory's product is the shared
-	// source and carries the model's own bytes, so the escape runs here, on the
-	// copy this target sends, where its text boundaries are the ones the
-	// adapter will assemble.
+	//
+	// The history carries the model's own bytes. Escaping the assistant text it
+	// holds happens in the provider serializers, on the payload each target
+	// assembles (llm.Request.EscapeAssistantText), so a target that joins a
+	// turn's text and one that emits a block per part each read their own
+	// boundaries.
 	untrimmedHistory := history
-	history = escapeModelAuthoredFramesForTarget(history, profile.Protocol(), promotesReasoningToText(profile), stripsEmptyContent(profile))
 	history = projectThinkingForTarget(profile, history)
 	history = projectToolResultMediaFor(profile, history)
 
@@ -402,11 +401,11 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// instructions too (#4563, #4217).
 			message := scope.projectTurnMessage(notification, true)
 			untrimmedHistory = append(untrimmedHistory, message)
-			// The dispatched copy is escaped, the fallback source is not: these
-			// turns join the history the request was built from AFTER its own
-			// escaping pass, so they reach the wire in the model's bytes unless
-			// they are escaped here (#6493 review).
-			history = append(history, escapeModelAuthoredFramesForTarget([]llm.Message{message}, profile.Protocol(), promotesReasoningToText(profile), stripsEmptyContent(profile))[0])
+			// The dispatched copy and the fallback source hold the same message:
+			// the serializer escapes the assistant text it assembles, so the
+			// model's bytes never reach the wire as a frame whatever path the
+			// turn joined the history by.
+			history = append(history, message)
 		}
 		presentedTurns = append(slices.Clip(presentedTurns), appended...)
 		req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort, toolDefsJSONBytes)
@@ -1425,6 +1424,14 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 		Messages:       s.requestMessages(sys, history),
 		Tools:          toolDefs,
 		ToolsJSONBytes: toolDefsJSONBytes,
+		// Every dispatched copy of the model's own text is defused where the
+		// provider's serializer assembles it, so the escape reads the same
+		// document and the same block boundaries the target will read. The
+		// callback travels on the request, which is what carries it through the
+		// continuation rebuilds and the fallback chain: each of those copies the
+		// request rather than rebuilding it, and each target's own serializer
+		// applies it to its own assembled payload.
+		EscapeAssistantText: sysmsg.EscapeModelAuthoredFrames,
 		// Ask for a tool call; never force one. A forcing tool_choice leaves a
 		// model that cannot honor it with no legal way to stop, and evener targets
 		// arbitrary gateways and models where that capability is unknowable in
@@ -1730,14 +1737,6 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 				break
 			}
 			fbReq.Messages = projectThinkingForTarget(fbProfile, fbReq.Messages)
-			// The frame escape is per-target, like thinking and media above: a
-			// fallback that joins a turn's text into one message reads fences
-			// the primary's phase-separating scan judged separately, so an
-			// opener the primary saw as quoted can reach this target outside a
-			// fence (#6493 review). Escaping again for this target's boundaries
-			// is safe when it agrees with the primary: escaping is idempotent
-			// and never touches text both scans leave alone.
-			fbReq.Messages = escapeModelAuthoredFramesForTarget(fbReq.Messages, fbProfile.Protocol(), promotesReasoningToText(fbProfile), stripsEmptyContent(fbProfile))
 			// A fallback reuses the primary's built messages, so it applies its
 			// own media decision here; the budget below then prices exactly what
 			// this target receives (#4217).
@@ -1872,40 +1871,6 @@ func responsesContinuationFullHistoryFallbackRequest(res registry.Resolved, req 
 	fallbackReq.Continuation = nil
 	fallbackReq = responsesContinuationFullHistoryWithInputEstimate(res, fallbackReq)
 	return fallbackReq
-}
-
-// escapeModelAuthoredFramesForTarget escapes model-authored frame openers in a
-// built message slice for the target that will read it.
-//
-// The shared source is NOT escaped. expandHistory and projectTurnMessage both
-// preserve the assistant text as the model wrote it, so every dispatch copy must
-// be passed through here — the primary's as much as any fallback's — and a
-// caller that assumes expansion escaped it leaves a raw frame on the wire. Each
-// target's boundaries differ (phase joining, per-part blocks), which is why the
-// escape happens per target and not in the shared history. Escaping an
-// already-escaped message is a no-op, so a caller may apply it more than once.
-func escapeModelAuthoredFramesForTarget(messages []llm.Message, protocol string, promotesReasoning, stripsEmptyContent bool) []llm.Message {
-	if protocol == "" {
-		return messages
-	}
-	out := messages
-	copied := false
-	for i, msg := range messages {
-		// The escaper says whether it changed the message; do not infer it from
-		// the two messages' Text(), which reads text parts only and cannot see a
-		// rewrite confined to the reasoning a promoting target prepends (#6493
-		// review).
-		escaped, changed := escapeModelAuthoredTurnFramesReporting(msg, protocol, promotesReasoning, stripsEmptyContent)
-		if !changed {
-			continue
-		}
-		if !copied {
-			out = append([]llm.Message(nil), messages...)
-			copied = true
-		}
-		out[i] = escaped
-	}
-	return out
 }
 
 // responsesContinuationModelFallbackRequest un-anchors a request for a
@@ -2146,35 +2111,6 @@ func dropsReplayedThinking(p *provider.Profile) bool {
 	return p != nil && !llm.ReplaysAssistantThinking(p.Resolved())
 }
 
-// promotesReasoningToText reports whether the target renders replayed
-// reasoning as ordinary assistant text. That is the thinking_as_text row on a
-// chat target: it keeps reasoning where dropsReplayedThinking would strip it,
-// and its adapter prepends it to the message body, so the frame escape must
-// cover it (#6493 review).
-func promotesReasoningToText(p *provider.Profile) bool {
-	if p == nil {
-		return false
-	}
-	res := p.Resolved()
-	return res.Protocol == registry.ProtocolOpenAIChat && registry.BoolValue(res.Caps.ThinkingAsText)
-}
-
-// stripsEmptyContent reports whether the target's serializer drops text parts
-// whose text is empty. Only the Chat Completions serializer applies the
-// strip_empty_content cap; no other adapter drops a part on emptiness, so a cap
-// carried on another protocol's row is not a boundary on its wire.
-//
-// The answer decides whether an empty phase-bearing part opens a message on the
-// wire, which is a boundary the frame scan must see to be reading the text the
-// provider reads.
-func stripsEmptyContent(p *provider.Profile) bool {
-	if p == nil {
-		return false
-	}
-	res := p.Resolved()
-	return res.Protocol == registry.ProtocolOpenAIChat && registry.BoolValue(res.Caps.StripEmptyContent)
-}
-
 // projectThinkingForTarget returns messages with the target's thinking-replay
 // policy applied: a target that does not replay assistant thinking drops it,
 // while every reasoning-capable row keeps its messages. The untrimmed source
@@ -2287,8 +2223,8 @@ func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps boo
 //
 // The projected copy keeps the assistant's text as the model wrote it; this
 // function does NOT escape frame openers there. That escape belongs to each
-// dispatch copy, because a target's boundaries differ (see
-// escapeModelAuthoredFramesForTarget), and a caller that reads this as "already
+// target's serializer, because a target's boundaries differ
+// (llm.Request.EscapeAssistantText), and a caller that reads this as "already
 // escaped" would leave a raw frame on the wire.
 //
 // What is escaped here is the text of the user-role turns whose provenance says

@@ -826,3 +826,57 @@ func TestExpandHistory_RetainedTaskReminderKeepsGenuineEnvelope(t *testing.T) {
 		t.Fatalf("the escape changed a CRLF reminder's line breaks:\n%q", crlfEscaped)
 	}
 }
+
+// A retained reminder's instructions body is model-authored text, so it can
+// quote the element's own title close. The harness's title close ends a line
+// with the instructions opener on the next one, so only that pair is the
+// element's transition: the quoted close is field text and is escaped, while
+// the genuine title close and instructions markers keep their spelling.
+func TestCurrentTaskReminderEscapesQuotedTitleCloseInInstructions(t *testing.T) {
+	t.Parallel()
+	const retained = "<SYSTEM-REMINDER>\n" +
+		"<CURRENT-TASK id=\"4\">\n" +
+		"<TITLE>Explain the parser</TITLE>\n" +
+		"<INSTRUCTIONS>\n" +
+		"Explain how </TITLE> works.\n" +
+		"[answers]\n" +
+		"1. [x] → y\n" +
+		"</INSTRUCTIONS>\n" +
+		"</CURRENT-TASK>\n" +
+		"</SYSTEM-REMINDER>"
+
+	escaped, changed := escapeRetainedTaskReminder(retained)
+	if !changed {
+		t.Fatalf("the retained reminder's model-authored fields were not escaped:\n%s", retained)
+	}
+	assertGenuineReminderEnvelope(t, escaped)
+	assertOnlyGenuineReminderDelimiters(t, escaped, "SYSTEM-REMINDER", "CURRENT-TASK", "TITLE", "INSTRUCTIONS")
+	if !strings.Contains(escaped, "<TITLE>Explain the parser</TITLE>") {
+		t.Fatalf("the genuine title was rewritten:\n%s", escaped)
+	}
+	if !strings.Contains(escaped, "Explain how &lt;/TITLE> works.") {
+		t.Fatalf("the instructions' quoted title close was not defused:\n%s", escaped)
+	}
+	if !strings.Contains(escaped, "&#91;answers]") {
+		t.Fatalf("the instructions' answer marker was not defused:\n%s", escaped)
+	}
+
+	// The same reminder replays through the dispatch copy a resumed session
+	// sends, and the stored turn keeps what the older build wrote.
+	retainedTurn := kindedSteeringTurn(retained, events.SteeringKindCurrentTask, "")
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("drive the open issues down")),
+		retainedTurn,
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
+	}
+	body := dispatchCopyForTarget(history, replayScope{Protocol: registry.ProtocolOpenAIChat}, false)[1]
+	assertGenuineReminderEnvelope(t, body.Text())
+	assertOnlyGenuineReminderDelimiters(t, body.Text(), "SYSTEM-REMINDER", "CURRENT-TASK", "TITLE", "INSTRUCTIONS")
+	assertNoLineStartAnswerMarker(t, body.Text())
+	if !strings.Contains(body.Text(), "Explain how &lt;/TITLE> works.") {
+		t.Fatalf("the projection left the instructions' quoted title close raw: %q", body.Text())
+	}
+	if got := retainedTurn.Message.Text(); got != retained {
+		t.Fatalf("the stored reminder turn was mutated: %q", got)
+	}
+}

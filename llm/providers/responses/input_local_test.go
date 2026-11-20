@@ -60,7 +60,7 @@ func TestToResponsesInput_LocalPathImageBecomesDataURI(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, items, err := toResponsesInput([]llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
 				{Kind: llm.ContentImage, Image: &llm.ImageData{URL: path, MediaType: tc.claimed}},
-			}}}, "")
+			}}}, "", nil)
 			if err != nil {
 				t.Fatalf("toResponsesInput: %v", err)
 			}
@@ -83,7 +83,7 @@ func TestToResponsesInput_LocalPathImageReadFailure(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing.png")
 	_, _, err := toResponsesInput([]llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
 		{Kind: llm.ContentImage, Image: &llm.ImageData{URL: missing}},
-	}}}, "")
+	}}}, "", nil)
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("err = %v, want the raw read failure (os.ErrNotExist)", err)
 	}
@@ -99,7 +99,7 @@ func TestToResponsesInput_LocalPathImageDecodeFailure(t *testing.T) {
 	}
 	_, _, err := toResponsesInput([]llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
 		{Kind: llm.ContentImage, Image: &llm.ImageData{URL: junkPath}},
-	}}}, "")
+	}}}, "", nil)
 	if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok {
 		t.Fatalf("err = %v, want a configuration error wrapping the decode failure", err)
 	}
@@ -117,7 +117,7 @@ func TestToResponsesInput_ToolResultErrorContentFallbackSerialize(t *testing.T) 
 			IsError:    true,
 			Content:    math.NaN(),
 		}},
-	}}}, "")
+	}}}, "", nil)
 	if err != nil {
 		t.Fatalf("toResponsesInput: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestToResponsesInput_ToolResultNonStringContentMarshals(t *testing.T) {
 			ToolCallID: "call_2",
 			Content:    map[string]any{"rows": 2},
 		}},
-	}}}, "")
+	}}}, "", nil)
 	if err != nil {
 		t.Fatalf("toResponsesInput: %v", err)
 	}

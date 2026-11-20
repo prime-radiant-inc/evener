@@ -34,7 +34,9 @@ func TestToGeminiContents_UserDocuments(t *testing.T) {
 				{Kind: llm.ContentDocument, Document: tc.doc},
 				{Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte{1}, MediaType: "image/png"}},
 				{Kind: llm.ContentText, Text: "sentinel-after"},
-			}}}, false)
+			}}}, false,
+				nil,
+			)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -55,7 +57,9 @@ func TestToGeminiContents_AssistantDocumentsRemainUnsupported(t *testing.T) {
 	t.Parallel()
 	_, contents, err := toGeminiContents("gemini", []llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 		{Kind: llm.ContentDocument, Document: &llm.DocumentData{Data: []byte("%PDF-1.4")}},
-	}}}, false)
+	}}}, false,
+		nil,
+	)
 	if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok || contents != nil {
 		t.Fatalf("assistant document: contents=%v err=%v, want configuration refusal", contents, err)
 	}
@@ -64,7 +68,7 @@ func TestToGeminiContents_AssistantDocumentsRemainUnsupported(t *testing.T) {
 func TestToGeminiContents_AudioRemainsUnsupported(t *testing.T) {
 	t.Parallel()
 	for _, role := range []llm.Role{llm.RoleUser, llm.RoleAssistant} {
-		_, _, err := toGeminiContents("gemini", []llm.Message{{Role: role, Content: []llm.ContentPart{{Kind: llm.ContentAudio, Audio: &llm.AudioData{Data: []byte{1}}}}}}, false)
+		_, _, err := toGeminiContents("gemini", []llm.Message{{Role: role, Content: []llm.ContentPart{{Kind: llm.ContentAudio, Audio: &llm.AudioData{Data: []byte{1}}}}}}, false, nil)
 		if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok {
 			t.Fatalf("%s audio: %v, want configuration refusal", role, err)
 		}
@@ -76,7 +80,7 @@ func TestToGeminiContents_ToolDocumentsStayOffTheWire(t *testing.T) {
 	for _, capable := range []bool{false, true} {
 		for _, mediaType := range []string{"application/pdf", " APPLICATION/PDF ", "text/plain"} {
 			result := &llm.ToolResultData{ToolCallID: "call-4463", Name: "read_file", Content: "result-4463", ImageData: []byte("%PDF-1.4"), ImageMediaType: mediaType}
-			_, contents, err := toGeminiContents("gemini", []llm.Message{{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: result}}}}, capable)
+			_, contents, err := toGeminiContents("gemini", []llm.Message{{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: result}}}}, capable, nil)
 			if err != nil {
 				t.Errorf("cap=%v media=%q: %v", capable, mediaType, err)
 				continue
@@ -99,7 +103,9 @@ func TestToGeminiContents_ToolImagesKeepTheirDelivery(t *testing.T) {
 	for _, mediaType := range []string{"", " \t", "image/png"} {
 		_, contents, err := toGeminiContents("gemini", []llm.Message{{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
 			ToolCallID: "call-4463", Name: "read_file", Content: "result-4463", ImageData: png, ImageMediaType: mediaType,
-		}}}}}, true)
+		}}}}}, true,
+			nil,
+		)
 		if err != nil {
 			t.Fatal(err)
 		}

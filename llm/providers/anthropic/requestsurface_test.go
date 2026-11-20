@@ -270,7 +270,7 @@ func TestToAnthropicMessagesDroppedAndRefusedParts(t *testing.T) {
 				{Kind: llm.ContentDocument, Document: nil},
 				{Kind: llm.ContentDocument, Document: &llm.DocumentData{}},
 			},
-		}}, false)
+		}}, false, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -285,7 +285,7 @@ func TestToAnthropicMessagesDroppedAndRefusedParts(t *testing.T) {
 			Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
 				ToolCallID: "c1", Content: "ok", ImageData: []byte("junk"), ImageMediaType: "image/bmp",
 			}}},
-		}}, false)
+		}}, false, nil)
 		if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok {
 			t.Fatalf("a tool-result image that cannot be normalized must be a configuration error, got %T %v", err, err)
 		}

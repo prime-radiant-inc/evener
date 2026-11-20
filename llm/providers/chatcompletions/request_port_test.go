@@ -352,7 +352,7 @@ func TestToChatMessages_MergesTextIntoSignatureItem(t *testing.T) {
 		}, {Kind: llm.ContentText, Text: "hi"}},
 	}}
 	caps := registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}
-	out, err := toChatMessages(msgs, caps, false)
+	out, err := toChatMessages(msgs, caps, false, nil)
 	if err != nil {
 		t.Fatalf("toChatMessages: %v", err)
 	}
@@ -368,7 +368,7 @@ func TestToChatMessages_MergesTextIntoSignatureItem(t *testing.T) {
 		t.Fatalf("merged item = %#v, want text+signature+format together", d)
 	}
 	msgs[0].Content[0].Thinking.Text = ""
-	if out, err = toChatMessages(msgs, caps, false); err != nil || reasoningDetailMaps(t, out[0]["reasoning_details"])[0]["text"] != nil {
+	if out, err = toChatMessages(msgs, caps, false, nil); err != nil || reasoningDetailMaps(t, out[0]["reasoning_details"])[0]["text"] != nil {
 		t.Fatalf("empty text must leave the provider item untouched: %+v", out)
 	}
 }

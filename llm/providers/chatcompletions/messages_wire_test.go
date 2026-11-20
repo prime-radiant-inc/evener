@@ -18,7 +18,7 @@ func TestToChatMessages_ThinkingAsTextReasoningOnly(t *testing.T) {
 	turn := []llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 		{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "just thinking"}},
 	}}}
-	out, err := toChatMessages(turn, registry.Caps{ThinkingAsText: new(true), Fields: registry.Baseline(registry.ProtocolOpenAIChat)}, false)
+	out, err := toChatMessages(turn, registry.Caps{ThinkingAsText: new(true), Fields: registry.Baseline(registry.ProtocolOpenAIChat)}, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestToChatMessages_AssistantTextWithToolCall(t *testing.T) {
 		{Kind: llm.ContentText, Text: "let me check"},
 		{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c1", Name: "f", Arguments: json.RawMessage(`{"a":1}`)}},
 	}}}
-	out, err := toChatMessages(turn, registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}, false)
+	out, err := toChatMessages(turn, registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestToChatMessages_ToolCallThoughtSignature(t *testing.T) {
 			ID: "call_gemini", Name: "read_file", Arguments: json.RawMessage(`{"path":"x"}`), ThoughtSignature: "sig-1",
 		}},
 	}}}
-	out, err := toChatMessages(turn, registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}, false)
+	out, err := toChatMessages(turn, registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestToChatMessages_ToolCallThoughtSignature(t *testing.T) {
 	}
 
 	turn[0].Content[0].ToolCall.ThoughtSignature = ""
-	out, err = toChatMessages(turn, registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}, false)
+	out, err = toChatMessages(turn, registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestToChatMessages_ToolResultNonStringContent(t *testing.T) {
 	turn := []llm.Message{{Role: llm.RoleTool, Content: []llm.ContentPart{
 		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "c1", Content: map[string]any{"rows": 2}}},
 	}}}
-	out, err := toChatMessages(turn, registry.Caps{}, false)
+	out, err := toChatMessages(turn, registry.Caps{}, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestToChatMessages_TextPartsJoinWithNewline(t *testing.T) {
 		{Kind: llm.ContentText, Text: "line one"},
 		{Kind: llm.ContentText, Text: "line two"},
 	}}}
-	out, err := toChatMessages(twoText, registry.Caps{}, false)
+	out, err := toChatMessages(twoText, registry.Caps{}, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestToChatMessages_TextPartsJoinWithNewline(t *testing.T) {
 		{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "step one"}},
 		{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "step two"}},
 	}}}
-	out, err = toChatMessages(twoThinking, registry.Caps{}, false)
+	out, err = toChatMessages(twoThinking, registry.Caps{}, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestToChatMessages_ImagePartShapes(t *testing.T) {
 		{Kind: llm.ContentImage, Image: &llm.ImageData{Data: png}},
 		{Kind: llm.ContentImage, Image: &llm.ImageData{}},
 	}}}
-	out, err := toChatMessages(msg, registry.Caps{}, false)
+	out, err := toChatMessages(msg, registry.Caps{}, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

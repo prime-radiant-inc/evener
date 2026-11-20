@@ -28,7 +28,12 @@ func isReasoningControlKey(k string) bool {
 
 // toChatMessages converts messages to the Chat Completions wire array (spec
 // §8.4). Every per-model quirk it applies reads off caps.
-func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDetails bool) ([]map[string]any, error) {
+//
+// escape, when non-nil, is applied to each assistant message's assembled
+// content: the joined text parts, with any promoted reasoning already in front
+// of them. It is never applied to a user, system or tool payload, nor to a tool
+// call. The caller's messages keep their own bytes.
+func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDetails bool, escape func(string) string) ([]map[string]any, error) {
 	reasoningOff := caps.Reasoning != nil && !*caps.Reasoning
 	systemRole := "system"
 	if caps.Fields[registry.FieldDeveloperRole] {
@@ -148,6 +153,12 @@ func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDeta
 				}
 			} else if registry.BoolValue(caps.EmptyReasoningContent) && !useReasoningDetails && !reasoningOff {
 				msg["reasoning_content"] = ""
+			}
+			// The escape runs on the assembled body: the joined text parts with
+			// any promoted reasoning already prepended, which is exactly what the
+			// provider reads as one message.
+			if escape != nil {
+				text = escape(text)
 			}
 			if len(calls) > 0 {
 				msg["tool_calls"] = calls

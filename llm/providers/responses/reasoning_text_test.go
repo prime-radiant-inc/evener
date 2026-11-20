@@ -113,7 +113,7 @@ func TestResponsesIncompleteReasoningDoesNotReplay(t *testing.T) {
 		map[string]any{"type": "reasoning", "id": "rs_blob", "encrypted_content": "opaque"},
 	}
 	msg := fromResponses(map[string]any{"id": "r", "status": "incomplete", "output": out}, "m", nil).Message
-	_, items, _ := toResponsesInput([]llm.Message{msg}, "")
+	_, items, _ := toResponsesInput([]llm.Message{msg}, "", nil)
 	if len(items) != 1 || items[0].(map[string]any)["id"] != "rs_done" {
 		t.Fatalf("replayed items = %s, want only the completed reasoning item", jsonOf(t, items))
 	}

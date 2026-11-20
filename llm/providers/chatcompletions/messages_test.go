@@ -35,7 +35,7 @@ func TestChatReplayPreservesReasoningDetailsKeyOrder(t *testing.T) {
 		{`[{"signature":"sig-3","type":"reasoning\u002etext"}]`, `[{"signature":"sig-3","type":"reasoning\u002etext","text":"thought"}]`},
 	} {
 		resp, err := ExtractRecordedResponse([]byte(`{"choices":[{"message":{"reasoning_text":"thought","reasoning_details":`+tc[0]+`}}]}`), "m")
-		msgs, merr := toChatMessages([]llm.Message{resp.Message}, caps, true)
+		msgs, merr := toChatMessages([]llm.Message{resp.Message}, caps, true, nil)
 		if err != nil || merr != nil {
 			t.Fatal(err, merr)
 		}
@@ -59,7 +59,7 @@ func TestToChatMessages_RoleAndContentCaps(t *testing.T) {
 	caps.ToolResultName = new(true)
 	caps.StripEmptyContent = new(true)
 	caps.AssistantAfterToolResult = new(true)
-	out, err := toChatMessages(msgs, caps, false)
+	out, err := toChatMessages(msgs, caps, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,21 +82,21 @@ func TestToChatMessages_ReasoningReplay(t *testing.T) {
 	base := registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}
 	turn := []llm.Message{assistantTurn("thought", "reasoning", "answer")}
 
-	out, _ := toChatMessages(turn, base, false)
+	out, _ := toChatMessages(turn, base, false, nil)
 	if out[0]["reasoning"] != "thought" {
 		t.Fatalf("Signature names the field the text arrived on: %v", out[0])
 	}
 
 	field := base
 	field.ReasoningField = new("reasoning_content")
-	out, _ = toChatMessages(turn, field, false)
+	out, _ = toChatMessages(turn, field, false, nil)
 	if out[0]["reasoning_content"] != "thought" || out[0]["reasoning"] != nil {
 		t.Fatalf("ReasoningField wins over the signature: %v", out[0])
 	}
 
 	details := base
 	details.ReasoningField = new("reasoning_details")
-	out, _ = toChatMessages(turn, details, true)
+	out, _ = toChatMessages(turn, details, true, nil)
 	items := reasoningDetailMaps(t, out[0]["reasoning_details"])
 	if len(items) != 1 || items[0]["text"] != "thought" || items[0]["type"] != "reasoning.text" {
 		t.Fatalf("reasoning_details replay: %v", out[0])
@@ -106,7 +106,7 @@ func TestToChatMessages_ReasoningReplay(t *testing.T) {
 		{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "thought", Signature: "reasoning_details", EncryptedContent: `[{"type":"reasoning.text","text":"","signature":"sig-1","format":"anthropic-claude-v1","index":0}]`}},
 		{Kind: llm.ContentText, Text: "answer"},
 	}}}
-	out, _ = toChatMessages(signed, base, false)
+	out, _ = toChatMessages(signed, base, false, nil)
 	items = reasoningDetailMaps(t, out[0]["reasoning_details"])
 	if len(items) != 1 || items[0]["text"] != "thought" || items[0]["signature"] != "sig-1" {
 		t.Fatalf("signed item must absorb the text: %v", items)
@@ -114,21 +114,21 @@ func TestToChatMessages_ReasoningReplay(t *testing.T) {
 
 	asText := base
 	asText.ThinkingAsText = new(true)
-	out, _ = toChatMessages(turn, asText, false)
+	out, _ = toChatMessages(turn, asText, false, nil)
 	if out[0]["content"] != "thought\n\nanswer" || out[0]["reasoning"] != nil {
 		t.Fatalf("thinking as text: %v", out[0])
 	}
 
 	off := base
 	off.Reasoning = new(false)
-	out, _ = toChatMessages(turn, off, false)
+	out, _ = toChatMessages(turn, off, false, nil)
 	if out[0]["reasoning"] != nil || out[0]["reasoning_content"] != nil || out[0]["reasoning_details"] != nil {
 		t.Fatalf("Reasoning=false drops replayed thinking: %v", out[0])
 	}
 
 	empty := base
 	empty.EmptyReasoningContent = new(true)
-	out, _ = toChatMessages([]llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "plain"}}}}, empty, false)
+	out, _ = toChatMessages([]llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "plain"}}}}, empty, false, nil)
 	if v, has := out[0]["reasoning_content"]; !has || v != "" {
 		t.Fatalf("empty reasoning_content on assistant turns: %v", out[0])
 	}
@@ -138,7 +138,7 @@ func TestToChatMessages_ReasoningReplay(t *testing.T) {
 func TestToChatMessages_ReplaysReasoningAcrossFullHistory(t *testing.T) {
 	t.Parallel()
 	msgs := []llm.Message{assistantTurn("one", "reasoning", "a1"), llm.User("q"), assistantTurn("two", "reasoning", "a2")}
-	out, err := toChatMessages(msgs, registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}, false)
+	out, err := toChatMessages(msgs, registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}, false, nil)
 	if err != nil || out[0]["reasoning"] != "one" || out[2]["reasoning"] != "two" {
 		t.Fatalf("full-history reasoning replay = %v, err %v, want both prior turns", out, err)
 	}
@@ -165,7 +165,7 @@ func imageCaps(detail string) registry.Caps {
 // of msg under caps, or nil when the field is absent.
 func imageWireDetail(t *testing.T, caps registry.Caps, msg llm.Message) any {
 	t.Helper()
-	out, err := toChatMessages([]llm.Message{msg}, caps, false)
+	out, err := toChatMessages([]llm.Message{msg}, caps, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ func TestToChatMessages_DocumentBecomesFilePart(t *testing.T) {
 				{Kind: llm.ContentText, Text: "describe this"},
 			}}}
 			caps := registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}
-			out, err := toChatMessages(msgs, caps, false)
+			out, err := toChatMessages(msgs, caps, false, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -293,7 +293,7 @@ func TestToChatMessages_UncarriableDocumentDoesNotHideLaterMedia(t *testing.T) {
 				{Kind: llm.ContentText, Text: "describe this"},
 			}}}
 			caps := registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}
-			out, err := toChatMessages(msgs, caps, false)
+			out, err := toChatMessages(msgs, caps, false, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -336,7 +336,7 @@ func TestToChatMessages_DocumentWithoutBytesStaysPlain(t *testing.T) {
 				{Kind: llm.ContentText, Text: "hi"},
 			}}}
 			caps := registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}
-			out, err := toChatMessages(msgs, caps, false)
+			out, err := toChatMessages(msgs, caps, false, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

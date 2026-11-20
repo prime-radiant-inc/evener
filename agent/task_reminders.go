@@ -278,43 +278,25 @@ func skipRetainedNoteFence(lines []string, i int) int {
 // escapeRetainedCurrentTaskLines escapes the model-authored fields of the
 // CURRENT-TASK element a retained reminder carries.
 //
-// The renderer writes one TITLE opening tag, one title closing tag, one
-// INSTRUCTIONS opening line and one closing line. A field's own spelling of one
-// always sits inside the harness's markup, so the outermost spelling on each
-// side is the harness's: the first opening tag and the last closing tag.
+// The harness closes the title at the end of a line and opens the instructions
+// on the line right after it, so only that pair ends the title. A close a field
+// quotes under the instructions is text: the instructions body keeps the
+// harness's markers and its own quoted spellings are escaped with it. A title
+// the element closes with no instructions after it is the whole element, ended
+// by its last close.
 func escapeRetainedCurrentTaskLines(body []string, open, closeIdx int) bool {
 	titleLine := open + 1
 	titleOpen := strings.Index(body[titleLine], "<TITLE>")
 	if titleOpen < 0 {
 		return false
 	}
-	changed := false
 	titleStartCol := titleOpen + len("<TITLE>")
-	titleEndLine, titleEndCol := -1, -1
-	for i := titleLine; i < closeIdx; i++ {
-		if at := strings.LastIndex(body[i], "</TITLE>"); at >= 0 {
-			titleEndLine, titleEndCol = i, at
-		}
-	}
-	// The harness writes the element's opening line right after the title's
-	// close, so the first one there is its own and the last close before the
-	// element's end is too. A field's spelling of either sits between them and
-	// is escaped with the text around it.
-	instrOpen := -1
-	after := titleLine
-	if titleEndLine >= 0 {
-		after = titleEndLine + 1
-	}
-	for i := after; i < closeIdx; i++ {
-		if body[i] == "<INSTRUCTIONS>" {
-			instrOpen = i
-			break
-		}
-	}
+	titleEndLine, titleEndCol, instrOpen := retainedTitleTransition(body, titleLine, closeIdx)
 	titleStop := closeIdx
 	if instrOpen >= 0 {
 		titleStop = instrOpen
 	}
+	changed := false
 	switch {
 	case titleEndLine >= 0 && titleEndLine < titleStop:
 		changed = escapeRetainedReminderRegion(body, titleLine, titleStartCol, titleEndLine, titleEndCol) || changed
@@ -344,6 +326,40 @@ func escapeRetainedCurrentTaskLines(body []string, open, closeIdx int) bool {
 		changed = escapeRetainedWholeLines(body, instrClose+1, closeIdx-1) || changed
 	}
 	return changed
+}
+
+// retainedTitleTransition returns the line and column where the element's title
+// closes and the line index of its instructions opener, or -1 for a shape that
+// carries no instructions.
+//
+// The harness writes the title's close at the end of a line and the
+// instructions opener on the next one, so only that pair marks the end of the
+// title; a close a field quotes under the instructions is text and is not the
+// transition. A body with no such pair is read the way it was before: the last
+// close before the element's end ends the title, and the first instructions
+// opener after it opens the element.
+func retainedTitleTransition(body []string, titleLine, closeIdx int) (int, int, int) {
+	for i := titleLine; i+1 < closeIdx; i++ {
+		if strings.HasSuffix(body[i], "</TITLE>") && body[i+1] == "<INSTRUCTIONS>" {
+			return i, len(body[i]) - len("</TITLE>"), i + 1
+		}
+	}
+	titleEndLine, titleEndCol := -1, -1
+	for i := titleLine; i < closeIdx; i++ {
+		if at := strings.LastIndex(body[i], "</TITLE>"); at >= 0 {
+			titleEndLine, titleEndCol = i, at
+		}
+	}
+	after := titleLine
+	if titleEndLine >= 0 {
+		after = titleEndLine + 1
+	}
+	for i := after; i < closeIdx; i++ {
+		if body[i] == "<INSTRUCTIONS>" {
+			return titleEndLine, titleEndCol, i
+		}
+	}
+	return titleEndLine, titleEndCol, -1
 }
 
 // escapeRetainedReminderRegion escapes the text between the columns of the line

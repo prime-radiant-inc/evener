@@ -17,7 +17,9 @@ func TestToAnthropicMessages_UserDocumentBlock(t *testing.T) {
 	_, msgs, err := toAnthropicMessages([]llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
 		{Kind: llm.ContentText, Text: "describe this"},
 		{Kind: llm.ContentDocument, Document: &llm.DocumentData{Data: []byte("%PDF-1.4 body"), MediaType: "application/pdf", FileName: "document.pdf"}},
-	}}}, false)
+	}}}, false,
+		nil,
+	)
 	if err != nil {
 		t.Fatalf("user document: %v", err)
 	}
@@ -44,7 +46,9 @@ func TestToAnthropicMessages_UserDocumentDefaultsToPDF(t *testing.T) {
 	t.Parallel()
 	_, msgs, err := toAnthropicMessages([]llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
 		{Kind: llm.ContentDocument, Document: &llm.DocumentData{Data: []byte("%PDF-1.4")}},
-	}}}, false)
+	}}}, false,
+		nil,
+	)
 	if err != nil {
 		t.Fatalf("user document: %v", err)
 	}
@@ -60,7 +64,9 @@ func TestToAnthropicMessages_UserDocumentURLBlock(t *testing.T) {
 	t.Parallel()
 	_, msgs, err := toAnthropicMessages([]llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
 		{Kind: llm.ContentDocument, Document: &llm.DocumentData{URL: "https://example.com/a.pdf", MediaType: "application/pdf"}},
-	}}}, false)
+	}}}, false,
+		nil,
+	)
 	if err != nil {
 		t.Fatalf("user document url: %v", err)
 	}
@@ -80,7 +86,9 @@ func TestToAnthropicMessages_UserDocumentPrefersInlineData(t *testing.T) {
 		{Kind: llm.ContentDocument, Document: &llm.DocumentData{
 			Data: []byte("%PDF-1.4"), MediaType: "application/pdf", URL: "https://example.com/a.pdf",
 		}},
-	}}}, false)
+	}}}, false,
+		nil,
+	)
 	if err != nil {
 		t.Fatalf("user document: %v", err)
 	}
@@ -97,7 +105,9 @@ func TestToAnthropicMessages_AssistantDocumentRejected(t *testing.T) {
 	t.Parallel()
 	_, _, err := toAnthropicMessages([]llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 		{Kind: llm.ContentDocument, Document: &llm.DocumentData{Data: []byte("%PDF-1.4"), MediaType: "application/pdf"}},
-	}}}, false)
+	}}}, false,
+		nil,
+	)
 	if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok {
 		t.Fatalf("assistant document error = %v, want ConfigurationError", err)
 	}
@@ -114,7 +124,9 @@ func TestToAnthropicMessages_ToolResultDocumentBlock(t *testing.T) {
 			ToolCallID: "c1", Name: "read_file", Content: "[document: a.pdf]",
 			ImageData: []byte("%PDF-1.4"), ImageMediaType: "application/pdf",
 		}},
-	}}}, true)
+	}}}, true,
+		nil,
+	)
 	if err != nil {
 		t.Fatalf("tool-result document: %v", err)
 	}
@@ -149,7 +161,9 @@ func TestToAnthropicMessages_ToolResultDocumentStaysTextWithoutPDFInput(t *testi
 			ToolCallID: "c1", Name: "read_file", Content: "[document: a.pdf]",
 			ImageData: []byte("%PDF-1.4"), ImageMediaType: "application/pdf",
 		}},
-	}}}, false)
+	}}}, false,
+		nil,
+	)
 	if err != nil {
 		t.Fatalf("tool-result document: %v", err)
 	}
@@ -199,7 +213,9 @@ func TestToAnthropicMessages_ToolResultImageBlock(t *testing.T) {
 			ToolCallID: "c1", Name: "read_file", Content: "[image: a.png]",
 			ImageData: []byte("png-bytes"), ImageMediaType: "image/png",
 		}},
-	}}}, false)
+	}}}, false,
+		nil,
+	)
 	if err != nil {
 		t.Fatalf("tool-result image: %v", err)
 	}
@@ -219,7 +235,9 @@ func TestToAnthropicMessages_ToolResultEmptyMediaIsAnImage(t *testing.T) {
 			ToolCallID: "c1", Name: "read_file", Content: "[image]",
 			ImageData: []byte("bytes"),
 		}},
-	}}}, false)
+	}}}, false,
+		nil,
+	)
 	if err != nil {
 		t.Fatalf("tool-result empty media: %v", err)
 	}

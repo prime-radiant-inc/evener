@@ -53,7 +53,7 @@ func imageURLFromChatParts(t *testing.T, parts []map[string]any) string {
 // PNG data URI, never as image/bmp (#4584).
 func TestToChatMessagesNormalizesUnsupportedImageMediaType(t *testing.T) {
 	t.Parallel()
-	out, err := toChatMessages([]llm.Message{chatImageMessageWith(testBMP(t), "image/bmp")}, registry.Caps{}, false)
+	out, err := toChatMessages([]llm.Message{chatImageMessageWith(testBMP(t), "image/bmp")}, registry.Caps{}, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestToChatMessagesKeepsAcceptedImageMediaType(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			data := []byte("claimed " + tc.name)
-			out, err := toChatMessages([]llm.Message{chatImageMessageWith(data, tc.claimed)}, registry.Caps{}, false)
+			out, err := toChatMessages([]llm.Message{chatImageMessageWith(data, tc.claimed)}, registry.Caps{}, false, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -111,7 +111,7 @@ func TestToChatMessagesDerivesImageMediaTypeFromBytes(t *testing.T) {
 		"bmp": {data: testBMP(t)},
 	} {
 		t.Run(name, func(t *testing.T) {
-			out, err := toChatMessages([]llm.Message{chatImageMessageWith(tc.data, "")}, registry.Caps{}, false)
+			out, err := toChatMessages([]llm.Message{chatImageMessageWith(tc.data, "")}, registry.Caps{}, false, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -141,7 +141,7 @@ func TestToChatMessagesDerivesImageMediaTypeFromBytes(t *testing.T) {
 // bytes that cannot be normalized into an accepted media type.
 func TestToChatMessagesRefusesUndecodableClaimedRaster(t *testing.T) {
 	t.Parallel()
-	_, err := toChatMessages([]llm.Message{chatImageMessageWith([]byte("not an image"), "image/bmp")}, registry.Caps{}, false)
+	_, err := toChatMessages([]llm.Message{chatImageMessageWith([]byte("not an image"), "image/bmp")}, registry.Caps{}, false, nil)
 	if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok {
 		t.Fatalf("undecodable claimed raster error = %T %v, want *llm.ConfigurationError", err, err)
 	}

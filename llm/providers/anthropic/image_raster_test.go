@@ -113,7 +113,9 @@ func TestToAnthropicMessages_LocalPathBitmapIsConverted(t *testing.T) {
 	}
 	_, msgs, err := toAnthropicMessages([]llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
 		{Kind: llm.ContentImage, Image: &llm.ImageData{URL: path}},
-	}}}, false)
+	}}}, false,
+		nil,
+	)
 	if err != nil {
 		t.Fatalf("local-path bmp: %v", err)
 	}
@@ -155,7 +157,7 @@ func TestToAnthropicMessages_UserRasterConvertedToAcceptedMediaType(t *testing.T
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			data := rasterFixture(t, tc.format)
-			_, msgs, err := toAnthropicMessages(userImageMessage(data, tc.claimed), false)
+			_, msgs, err := toAnthropicMessages(userImageMessage(data, tc.claimed), false, nil)
 			if err != nil {
 				t.Fatalf("user %s image: %v", tc.name, err)
 			}
@@ -185,7 +187,7 @@ func TestToAnthropicMessages_ToolResultRasterConvertedToAcceptedMediaType(t *tes
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			data := rasterFixture(t, tc.format)
-			_, msgs, err := toAnthropicMessages(toolResultMessage(data, tc.claimed), false)
+			_, msgs, err := toAnthropicMessages(toolResultMessage(data, tc.claimed), false, nil)
 			if err != nil {
 				t.Fatalf("tool-result %s image: %v", tc.name, err)
 			}
@@ -227,7 +229,7 @@ func TestToAnthropicMessages_SupportedRastersRideUnchanged(t *testing.T) {
 				if kind == "tool" {
 					messages = toolResultMessage(data, tc.mediaType)
 				}
-				_, msgs, err := toAnthropicMessages(messages, false)
+				_, msgs, err := toAnthropicMessages(messages, false, nil)
 				if err != nil {
 					t.Fatalf("%s %s: %v", kind, tc.name, err)
 				}
@@ -250,7 +252,7 @@ func TestToAnthropicMessages_SupportedRastersRideUnchanged(t *testing.T) {
 // document block tool_result content accepts instead (#4465).
 func TestToAnthropicMessages_ToolResultPDFBecomesDocumentNotImage(t *testing.T) {
 	t.Parallel()
-	_, msgs, err := toAnthropicMessages(toolResultMessage([]byte("%PDF-1.4"), "application/pdf"), true)
+	_, msgs, err := toAnthropicMessages(toolResultMessage([]byte("%PDF-1.4"), "application/pdf"), true, nil)
 	if err != nil {
 		t.Fatalf("pdf tool result: %v", err)
 	}

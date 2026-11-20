@@ -158,7 +158,14 @@ func toResponsesToolChoice(tc llm.ToolChoice) (any, error) {
 	}
 }
 
-func toResponsesInput(msgs []llm.Message, imageCap string, reasoningDisabled ...bool) (instructions string, items []any, _ error) {
+// toResponsesInput converts request messages to the Responses input array.
+//
+// escape, when non-nil, is applied to each assistant message item the adapter
+// emits, after the phase run it belongs to has been assembled and after the
+// replayed output items that flush that run have been placed. It is never
+// applied to a user, system or tool payload, nor to a tool call or result. The
+// caller's messages keep their own bytes.
+func toResponsesInput(msgs []llm.Message, imageCap string, escape func(string) string, reasoningDisabled ...bool) (instructions string, items []any, _ error) {
 	off := len(reasoningDisabled) > 0 && reasoningDisabled[0]
 	var instrParts []string
 	for _, m := range msgs {
@@ -184,6 +191,9 @@ func toResponsesInput(msgs []llm.Message, imageCap string, reasoningDisabled ...
 				flushText := func() {
 					if len(content) == 0 {
 						return
+					}
+					if escape != nil {
+						escapeOutputTextBlocks(content, escape)
 					}
 					item := map[string]any{"type": "message", "role": "assistant", "content": content}
 					if phase != "" {
@@ -463,4 +473,84 @@ func parseReasoningSummary(raw any) []string {
 		out = append(out, text)
 	}
 	return out
+}
+
+// escapeOutputTextBlocks escapes the output_text payloads of one assembled
+// message item.
+//
+// The adapter emits one message per phase run, and the run's blocks are one
+// document to it: a fence a block leaves open shelters the text of the block
+// after it. The escape therefore reads the run as one text and each block is
+// written back with its own lines, so a block keeps the payload it came in with
+// wherever the run's reading left it alone.
+//
+// The escape is required to preserve line structure — it rewrites an opener's
+// first character and nothing else — so the pieces are the join read backwards
+// by each block's line count. A callback that does not have that property falls
+// back to per-block escapes rather than inventing boundaries the run never had.
+func escapeOutputTextBlocks(content []any, escape func(string) string) {
+	var texts []string
+	at := make([]int, 0, len(content))
+	for i, entry := range content {
+		block, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		text, ok := block["text"].(string)
+		if !ok {
+			continue
+		}
+		at = append(at, i)
+		texts = append(texts, text)
+	}
+	if len(texts) == 0 {
+		return
+	}
+	if len(texts) == 1 {
+		if text := escape(texts[0]); text != texts[0] {
+			content[at[0]].(map[string]any)["text"] = text
+		}
+		return
+	}
+	joined := strings.Join(texts, "\n")
+	escaped := escape(joined)
+	if escaped == joined {
+		return
+	}
+	pieces, ok := splitJoinedEscape(escaped, texts)
+	if !ok {
+		for k, orig := range texts {
+			if text := escape(orig); text != orig {
+				content[at[k]].(map[string]any)["text"] = text
+			}
+		}
+		return
+	}
+	for k, text := range pieces {
+		if text == texts[k] {
+			continue
+		}
+		content[at[k]].(map[string]any)["text"] = text
+	}
+}
+
+// splitJoinedEscape splits escaped, the escape of strings.Join(originals, "\n"),
+// back into one piece per original by each original's line count, reporting false
+// when the line structure no longer matches.
+func splitJoinedEscape(escaped string, originals []string) ([]string, bool) {
+	lines := strings.Split(escaped, "\n")
+	pieces := make([]string, 0, len(originals))
+	next := 0
+	for _, original := range originals {
+		n := strings.Count(original, "\n") + 1
+		if next+n > len(lines) {
+			return nil, false
+		}
+		pieces = append(pieces, strings.Join(lines[next:next+n], "\n"))
+		next += n
+	}
+	if next != len(lines) {
+		return nil, false
+	}
+	return pieces, true
 }

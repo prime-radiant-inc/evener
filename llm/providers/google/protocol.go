@@ -41,7 +41,7 @@ func (*Protocol) BuildBody(req llm.Request, res registry.Resolved) (out map[stri
 	// attribution alone.
 	defer func() { err = llm.RewriteErrorProvider(err, res.Instance) }()
 	caps := res.Caps
-	system, contents, err := toGeminiContents(res.WireID, req.Messages, registry.BoolValue(caps.MultimodalToolResults))
+	system, contents, err := toGeminiContents(res.WireID, req.Messages, registry.BoolValue(caps.MultimodalToolResults), req.EscapeAssistantText)
 	if err != nil {
 		return nil, err
 	}
