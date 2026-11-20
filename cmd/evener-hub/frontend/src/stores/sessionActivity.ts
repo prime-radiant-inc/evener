@@ -67,6 +67,23 @@ export function sessionActivitySnapshot(
   return ownedStore(client, ref, scope)?.getSnapshot() ?? null;
 }
 
+/** Tell every activity store this tab already holds for `ref` which source now
+ * serves it, so a replaced daemon's held delegate row leaves with it. Adoption
+ * is the transcript owner's fact, not a view's: it reaches a
+ * store that a view happens to hold and mints none, because the store that
+ * would need it learns the same identity from the frame's own stamp. A token
+ * that names no owner — an older peer's omission, an empty string, or the
+ * hub's `unknown-owner` refusal — adopts nothing and retires nothing. */
+export function adoptSessionActivityBootGeneration(
+  client: AppwireClientLike,
+  ref: string,
+  bootGeneration: string | undefined,
+): void {
+  for (const scope of ["session", "subtree"] as const) {
+    ownedStore(client, ref, scope)?.adoptBootGeneration(bootGeneration);
+  }
+}
+
 /** Awaits the owned store's registered read span for one resource — a paced
  * refresh walk included — without adding holders or demand, so a suite that
  * drives an invalidation converges on the walk's actual completion rather

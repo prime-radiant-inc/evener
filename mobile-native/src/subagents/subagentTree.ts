@@ -8,6 +8,8 @@ import {
 	SessionActivityStore,
 	projectSessionActivity,
 	acquireThreadSubscription,
+	liveBootGeneration,
+	retiresBootGeneration,
 	type ThreadSubscriptionLease,
 } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../conversation/services/conversation";
@@ -36,6 +38,7 @@ export class SubagentTree {
 	private coordinatorModel: string | null = null;
 	private modelGeneration = 0;
 	private observedSessionID: string | null = null;
+	private followedBootGeneration: string | undefined;
 	private activityObservers = 0;
 	private stopActivity: (() => void)[] = [];
 	private snapshot: SubagentTreeSnapshot;
@@ -62,6 +65,13 @@ export class SubagentTree {
 		this.stopActivity.forEach((stop) => stop());
 		this.stopActivity = [];
 		this.retained = this.store?.getSnapshot() ?? this.retained;
+		// The rows the new store retains wear samples the outgoing store
+		// attributed to the generation it adopted -- which can be a replacement
+		// relay recovery announced to the store directly, one no follow read ever
+		// named. The remembered follow generation cannot stand in for it: telling
+		// the fresh store that older generation would make the follow read's
+		// naming of the replacement retire the very samples it published.
+		const retainedBootGeneration = this.store?.bootGeneration ?? this.followedBootGeneration;
 		this.store?.dispose();
 		this.store = null;
 		this.followLease?.release();
@@ -77,6 +87,10 @@ export class SubagentTree {
 		});
 		this.store = store;
 		this.retained = null;
+		// Before the store's own first page can land: the retained rows are
+		// ordered under the generation that published them, so the replacement's
+		// live sample is the one the follow read then leaves standing.
+		store.adoptBootGeneration(retainedBootGeneration);
 		this.detachStore = store.subscribe(() => {
 			const state = store.getSnapshot();
 			const next = projectSessionActivity(state);
@@ -118,6 +132,38 @@ export class SubagentTree {
 		if (this.store && this.activityObservers > 0 && this.stopActivity.length === 0)
 			this.stopActivity = [this.store.observe("delegates"), this.store.observe("jobs")];
 	}
+	/** The follow read names the daemon serving the coordinator, and the store
+	 * must hold that identity: a rebooted coordinator retires the replaced
+	 * daemon's holds, and a row that keeps a retired generation's wait would
+	 * show one nothing can release.
+	 *
+	 * A success carrying `daemonless` is saved-history provenance, not proof the
+	 * coordinator's daemon exited (docs/product/history-content.md), so it
+	 * adopts nothing and the standing holds of the still-running daemon stay.
+	 *
+	 * The remembered generation outlives the store, because a client swap
+	 * reuses the rows the retired store retained. A fresh store does not know
+	 * whose samples those rows wear, so it is told that first — ordering the
+	 * rows under the generation that published them — and only then the
+	 * replacement, which is what retires them. Only a store that has learned no
+	 * source of its own is told: fresh pages or frames may already be the
+	 * replacement's, and walking such a store back to the generation it replaced
+	 * would retire exactly the samples the replacement published. A read naming
+	 * no generation (an older peer) and one the tree has already moved past both
+	 * change nothing. */
+	private adoptFollowedBootGeneration(bootGeneration: string | undefined): void {
+		const adopted = liveBootGeneration(bootGeneration);
+		if (adopted === undefined) return;
+		const previous = this.followedBootGeneration;
+		if (previous === adopted) return;
+		if (retiresBootGeneration(previous, adopted)) return;
+		const store = this.store;
+		if (store) {
+			if (previous !== undefined && store.bootGeneration === undefined) store.adoptBootGeneration(previous);
+			store.adoptBootGeneration(adopted);
+		}
+		this.followedBootGeneration = adopted;
+	}
 	async follow(): Promise<void> {
 		const client = this.client;
 		const modelGeneration = this.modelGeneration;
@@ -130,6 +176,7 @@ export class SubagentTree {
 				modelGeneration === this.modelGeneration &&
 				(!this.observedSessionID || response.thread.id === this.observedSessionID)
 			) {
+				this.adoptFollowedBootGeneration(response.bootGeneration);
 				this.coordinatorModel = response.thread.modelProvider || null;
 				this.publish();
 			}
