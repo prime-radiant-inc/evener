@@ -94,6 +94,11 @@ type logicalTurnAccumulator struct {
 	// clears it to in progress, and the last record wins. They join no group,
 	// but the status belongs to the turn they name.
 	stampedStatus map[string]string
+	// stampedFailure holds, per stamped turn id, the file's latest
+	// TURN_FAILURE entry. The index keeps one diagnostic per execution, so a
+	// failed stamped turn reports it on every visible fragment, not only on
+	// the fragment whose entries carry it.
+	stampedFailure map[string]schema.Turn
 }
 
 // foldStampedStatus folds a transcript-only TURN_COMPLETION or TURN_REOPEN
@@ -124,6 +129,20 @@ func (a *logicalTurnAccumulator) foldStampedStatus(turn *schema.Turn) {
 		a.stampedStatus = map[string]string{}
 	}
 	a.stampedStatus[turn.TurnID] = status
+}
+
+// foldStampedFailure records the file's latest TURN_FAILURE for a stamped
+// turn. The index overwrites one diagnostic per execution in entry order
+// (build.go's stampFold), and window.go surfaces it only while the folded
+// status is failed.
+func (a *logicalTurnAccumulator) foldStampedFailure(turn *schema.Turn) {
+	if turn.Kind != schema.TurnFailure || turn.Format != schema.TurnFormatIdentity || turn.TurnID == "" {
+		return
+	}
+	if a.stampedFailure == nil {
+		a.stampedFailure = map[string]schema.Turn{}
+	}
+	a.stampedFailure[turn.TurnID] = *turn
 }
 
 // TurnGrouper applies the logical-turn grouping rule to entries in file order.
@@ -209,6 +228,7 @@ func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, 
 // in the same logical turn, so the healed-communicate echo check scopes
 // correctly on the full read (where per-entry IDs differ within a group).
 func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, turn schema.Turn, entryIndex int) {
+	acc.foldStampedFailure(&turn)
 	if turn.Kind.TranscriptOnly() {
 		// Written for the history projection phase 3 introduces. Today's
 		// projection passes over it as an item: it joins no group, closes
@@ -336,7 +356,11 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 			// diagnostic only while that status is failed.
 			if status, ok := acc.stampedStatus[group.turnID]; ok {
 				turn.Status = status
-				if status != appwire.TurnStatusFailed {
+				if status == appwire.TurnStatusFailed {
+					if failure, ok := acc.stampedFailure[group.turnID]; ok {
+						StampTurnFailure(&turn, failure)
+					}
+				} else {
 					turn.Error = nil
 				}
 			}

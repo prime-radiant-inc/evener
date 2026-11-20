@@ -428,6 +428,37 @@ func TestFullReadFoldsReopenAndCompletionInOrder(t *testing.T) {
 	}
 }
 
+// A stamped execution's failure diagnostic is whole-turn like its status: a
+// standalone delivery can split the execution so a fragment that carries no
+// TURN_FAILURE of its own still has to report the failure the file records.
+func TestFullReadSharesTheStampedFailureDiagnostic(t *testing.T) {
+	fx := newFormatFixture(t, "delivery inside an execution")
+	fx.lines = []fixtureLine{
+		entryLine(opens("turn_d1", schema.TurnSpanExecution, user("start"))),
+		entryLine(inTurn("turn_d1", assistant(text("working")))),
+		entryLine(opens("t_delivery_d1", schema.TurnSpanDelivery, steering("a note"))),
+		entryLine(inTurn("turn_d1", standalone(schema.TurnFailure, "run failed"))),
+		entryLine(completion("turn_d1", schema.TurnFailed, 20, 700)),
+	}
+	turns := fullReadTurns(t, fx)
+	fragments := 0
+	for i := range turns {
+		if turns[i].ID != "turn_d1" {
+			continue
+		}
+		fragments++
+		if turns[i].Status != appwire.TurnStatusFailed || turns[i].Error == nil || turns[i].Error.Message != "run failed" {
+			t.Fatalf("full read turn_d1 fragment %d = %s, want failed with the file's diagnostic", i, dump(turns[i]))
+		}
+	}
+	if fragments == 0 {
+		t.Fatalf("full read has no turn_d1: %s", dump(turns))
+	}
+	if indexed := turnOf(t, indexedCandidates(t, fx, -1), "turn_d1"); indexed.Status != appwire.TurnStatusFailed || indexed.Error == nil || indexed.Error.Message != "run failed" {
+		t.Fatalf("indexed turn_d1 = %s, want failed with the file's diagnostic", dump(indexed))
+	}
+}
+
 // fullReadTurns projects a fixture through the whole-file reader with one
 // tool-call registry, the way the hub's past-turn merge projects a saved
 // session.
