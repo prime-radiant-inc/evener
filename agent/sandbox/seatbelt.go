@@ -423,11 +423,11 @@ func buildAllowRule(action string, rootKeys []string) string {
 
 // networkSection is the network allow, appended only when egress is on.
 //
-// Restricted mode gets a closed outbound set instead of the blanket allow
-// (#4180): TCP/UDP, the mDNSResponder resolver socket, and a unix-socket grant
+// Restricted mode gets a closed outbound set instead of the blanket allow:
+// TCP/UDP, the mDNSResponder resolver socket, and a unix-socket grant
 // per read root (the params the file-read allow already defines, so no read-root
 // path text enters the policy). Read-only and workspace-write keep the blanket
-// allow byte-for-byte (#4224); the ruling is documented in docs/sandboxing.md.
+// allow byte-for-byte; the ruling is documented in docs/sandboxing.md.
 // net=off returns "" — the base's (deny default) then blocks all egress with no
 // explicit deny.
 func networkSection(rp ResolvedPolicy, readKeys []string) string {

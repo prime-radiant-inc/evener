@@ -201,7 +201,7 @@ func TestSeatbeltPlatformDefaultsGating(t *testing.T) {
 			t.Errorf("%v net=%v: platform-defaults present=%v, want %v", tc.mode, tc.net, got, tc.wantDefaults)
 		}
 		wantNet := tc.net
-		// Restricted mode is the one mode that narrows outbound (#4180): it emits
+		// Restricted mode is the one mode that narrows outbound: it emits
 		// the closed TCP/UDP + mDNSResponder block instead of the bare allow.
 		wantBare := wantNet && tc.mode != ModeRestricted
 		if got := slices.Contains(strings.Split(text, "\n"), "(allow network-outbound)"); got != wantBare {
@@ -214,12 +214,12 @@ func TestSeatbeltPlatformDefaultsGating(t *testing.T) {
 	}
 }
 
-// TestSeatbeltNetworkRestrictedNarrowsOutbound pins #4180: restricted mode with
-// egress on must not emit the blanket (allow network-outbound) that reaches every
-// AF_UNIX socket on the host (tmux, ssh-agent). It permits TCP/UDP, the
-// mDNSResponder resolver socket, and one unix-socket grant per granted read root.
-// Read-only and workspace-write keep the blanket allow byte-for-byte (the #4224
-// permissive-with-warnings posture).
+// TestSeatbeltNetworkRestrictedNarrowsOutbound pins the closed outbound set:
+// restricted mode with egress on must not emit the blanket
+// (allow network-outbound) that reaches every AF_UNIX socket on the host (tmux,
+// ssh-agent). It permits TCP/UDP, the mDNSResponder resolver socket, and one
+// unix-socket grant per granted read root. Read-only and workspace-write keep
+// the blanket allow byte-for-byte (the permissive-with-warnings posture).
 func TestSeatbeltNetworkRestrictedNarrowsOutbound(t *testing.T) {
 	t.Parallel()
 	const (

@@ -964,8 +964,9 @@ func liveDNSProbe(t *testing.T) (resolver string, args []string, marker string) 
 	return "/usr/bin/dscacheutil", []string{"-q", "host", "-a", "name", "example.com"}, "ip_address:"
 }
 
-// TestSeatbeltLiveRestrictedNetworkUnixSockets proves #4180's ruling against the
-// real kernel, one case per subtest: restricted net=on connects to a unix socket
+// TestSeatbeltLiveRestrictedNetworkUnixSockets proves the closed outbound
+// policy against the real kernel, one case per subtest: restricted net=on
+// connects to a unix socket
 // under a granted read root, denies one outside every granted root, and still
 // resolves hostnames (the mDNSResponder exception); workspace-write net=on keeps
 // the permissive socket policy; restricted net=off denies even the granted
