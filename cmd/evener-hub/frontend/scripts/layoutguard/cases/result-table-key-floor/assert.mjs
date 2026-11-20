@@ -17,15 +17,33 @@ export default function assert(measurements) {
   for (const m of measurements) {
     const label = `${m.width}px card body`;
     const keyCh = m.keyWidth / m.ch;
-    if (keyCh < MIN_KEY_CH) {
+    // Bounds are two-sided and NaN-safe: a hidden or unrendered table
+    // yields all-zero boxes, so ch is 0 and the ratio divides 0/0 into
+    // NaN, and every NaN comparison is false - a one-sided `< floor`
+    // check would pass that vacuously. Gating on a usable ch and writing
+    // the floor as !(x >= floor) turns every degenerate measurement into
+    // a failure instead.
+    if (!Number.isFinite(m.ch) || m.ch <= 0) {
+      failures.push(
+        `${label}: ch calibration is ${m.ch}px - the measurements are unusable, the table is likely hidden or unrendered`,
+      );
+    } else if (!(keyCh >= MIN_KEY_CH)) {
       failures.push(
         `${label}: key column is ${m.keyWidth.toFixed(1)}px (${keyCh.toFixed(1)}ch) - below the ${MIN_KEY_CH}ch floor; a long max-content value (the JSON.stringify'd data row) is collapsing the label column (auto layout + wrap-anywhere keys)`,
+      );
+    }
+    if (m.tableWidth < m.paneWidth - 1) {
+      failures.push(
+        `${label}: table is ${m.tableWidth.toFixed(1)}px in a ${m.paneWidth.toFixed(1)}px card - a width:100% table must fill its card, the table is likely hidden or unrendered`,
       );
     }
     if (m.tableWidth > m.paneWidth + 1) {
       failures.push(
         `${label}: table is ${m.tableWidth.toFixed(1)}px in a ${m.paneWidth.toFixed(1)}px card - the fix must not widen the table past its card`,
       );
+    }
+    if (Math.max(m.keyWidth, m.valueWidth) > m.tableWidth + 1) {
+      failures.push(`${label}: a measured column is wider than its table - the measurements are inconsistent`);
     }
     reasons.push(
       `${label}: key column ${m.keyWidth.toFixed(1)}px (${keyCh.toFixed(1)}ch), value column ${m.valueWidth.toFixed(0)}px, table ${m.tableWidth.toFixed(0)}px in a ${m.paneWidth.toFixed(0)}px card`,
