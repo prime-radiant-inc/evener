@@ -996,11 +996,15 @@ func TestACommittedSwitchPublishesEvenWhenANewerQueuedPickLaterFails(t *testing.
 
 	var last events.ModelChangedData
 	sawModelChanged := false
+	var nextModel []events.NextModelChangedData
 	evMu.Lock()
 	for _, ev := range evs {
 		if d, ok := ev.Data.(events.ModelChangedData); ok {
 			last = d
 			sawModelChanged = true
+		}
+		if d, ok := ev.Data.(events.NextModelChangedData); ok {
+			nextModel = append(nextModel, d)
 		}
 	}
 	evMu.Unlock()
@@ -1009,6 +1013,24 @@ func TestACommittedSwitchPublishesEvenWhenANewerQueuedPickLaterFails(t *testing.
 	}
 	if got := s.Profile().Model(); got != "gpt-5.4" {
 		t.Fatalf("profile model = %q, want the committed switch's model %q; the failed queued pick must not swap", got, "gpt-5.4")
+	}
+	// The acceptance publications must keep a subscriber's label truthful
+	// throughout: A's pick is announced when it queues, B's pick is announced
+	// when it queues, and B's deferred rejection must retract its announcement
+	// back to the model the session actually runs — the last acceptance names
+	// A again, never B, so no surface keeps showing a pick that failed.
+	wantNext := []struct{ provider, model string }{
+		{"openai", "gpt-5.4"},
+		{"glm", "glm-test"},
+		{"openai", "gpt-5.4"},
+	}
+	if len(nextModel) != len(wantNext) {
+		t.Fatalf("next-model announcements = %+v, want %d: A accepted, B accepted, B's failed deferred check reverting to A", nextModel, len(wantNext))
+	}
+	for i, want := range wantNext {
+		if nextModel[i].Provider != want.provider || nextModel[i].Model != want.model {
+			t.Fatalf("next-model announcement %d = %s/%s, want %s/%s", i, nextModel[i].Provider, nextModel[i].Model, want.provider, want.model)
+		}
 	}
 }
 

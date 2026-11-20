@@ -70,6 +70,7 @@ func eventDataProgramCases(text string, n int, flag bool) []eventDataProgramCase
 		{TaskUpdatedData{Total: n, Done: n, Cancelled: n, Remaining: n, Current: &TaskSummaryData{ID: n, Description: text}, TaskStoreOwnerSessionID: text}, EventTaskUpdated},
 		{SessionNameChangedData{Name: text, Source: text}, EventSessionNameChanged},
 		{ModelChangedData{OldProvider: text, OldModel: text, NewProvider: text, NewModel: text, ReasoningEffortLevels: []string{text}, SupportsReasoning: flag}, EventModelChanged},
+		{NextModelChangedData{Provider: text, Model: text, ReasoningEffortLevels: []string{text}, SupportsReasoning: flag, DefaultReasoningEffort: text, ContextUsed: n, ContextWindow: n, ContextPressure: float64(n), ContextAssumed: flag, CompactionThreshold: n}, EventNextModelChanged},
 		{ReasoningEffortChangedData{ReasoningEffort: text}, EventReasoningEffortChanged},
 		{VisionModelChangedData{OldVisionModel: text, NewVisionModel: text}, EventVisionModelChanged},
 		{TurnLimitData{MaxTurns: n, MaxToolRoundsPerInput: n}, EventTurnLimit},

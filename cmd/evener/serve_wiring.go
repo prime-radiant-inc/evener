@@ -130,14 +130,14 @@ func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, l
 		// Refresh the daemon's cached session info for the RPC's own reply
 		// window (G2): the bridge's EventModelChanged effect refreshes it on
 		// its drain goroutine, so a switch that committed at RPC time would
-		// read stale from thread/read until that drain runs. The sampled form
-		// reads the profile inside the write's critical section: a queued
-		// pick's boundary commit racing this refresh cannot have a stale
-		// snapshot installed after the projection already installed the new
-		// model.
+		// read stale from thread/read until that drain runs. ReportedModelRef
+		// reads inside the write's critical section and is queue-aware: a
+		// pick accepted mid-turn samples as the queued pair, so thread/read
+		// reflects the acceptance now rather than first at its boundary, and
+		// the boundary commit racing this refresh cannot install a stale
+		// snapshot after the projection already installed the model.
 		srv.UpdateSessionInfoFrom(sess.ID(), func() (string, string) {
-			p := sess.Profile()
-			return p.Model(), p.ID()
+			return sess.ReportedModelRef()
 		})
 		return nil
 	})

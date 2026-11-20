@@ -242,6 +242,20 @@ func sessionEventStatusEffect(ev events.SessionEvent) func(*Server) {
 		return func(s *Server) {
 			s.updateSessionInfoLocked(ev.SessionID, d.NewModel, d.NewProvider)
 		}
+	case events.EventNextModelChanged:
+		// A queued pick's acceptance - or its retraction after a deferred
+		// failure - rewrites the cached session info the same way, so
+		// thread/read agrees with the acceptance frame at the instant it is
+		// published. The model/set hook installs an RPC-time acceptance
+		// itself for its own reply window; this effect covers the paths with
+		// no RPC in flight (the retraction, a compact-at switch).
+		d, ok := ev.Data.(events.NextModelChangedData)
+		if !ok {
+			return nil
+		}
+		return func(s *Server) {
+			s.updateSessionInfoLocked(ev.SessionID, d.Model, d.Provider)
+		}
 	case events.EventStatusSettled:
 		// Only a resting state settles outside a turn; anything else would
 		// store a state the projector maps differently.

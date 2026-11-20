@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -110,6 +111,33 @@ func TestHandleAppThreadModelSet_ThreadReadReflectsNewModelWithNoInterveningTurn
 	}
 	if thread.Thread.ModelProvider != "claude-opus-4-6" || thread.Thread.Evener.Profile != "anthropic" {
 		t.Fatalf("thread/read = %q on profile %q, want claude-opus-4-6 on anthropic with no intervening turn",
+			thread.Thread.ModelProvider, thread.Thread.Evener.Profile)
+	}
+}
+
+// A queued pick's acceptance must reach the status cache the same way a
+// committed switch does: the model/set hook installs the pick synchronously
+// for its own reply window, but a pick queued outside an RPC in flight (the
+// deferred-failure retraction, a compact-at switch) has only the bridge's
+// event effect. Without it, thread/read keeps naming the previous model with
+// no corrective event behind it, which reads to a subscriber as the pick
+// silently flipping back.
+func TestSessionEventStatus_NextModelChangedRefreshesSessionInfo(t *testing.T) {
+	s := NewServer(ServerConfig{})
+	seedStatus(s, StatusInfo{SessionID: "s1", Model: "gpt-initial", Profile: "openai"})
+
+	s.applySessionEventStatus(events.SessionEvent{
+		Kind:      events.EventNextModelChanged,
+		SessionID: "s1",
+		Data:      events.NextModelChangedData{Provider: "openai", Model: "gpt-queued"},
+	})
+
+	thread, err := s.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{})
+	if err != nil {
+		t.Fatalf("handleAppThreadRead: %v", err)
+	}
+	if thread.Thread.ModelProvider != "gpt-queued" || thread.Thread.Evener.Profile != "openai" {
+		t.Fatalf("thread/read = %q on profile %q, want the accepted pick gpt-queued on openai",
 			thread.Thread.ModelProvider, thread.Thread.Evener.Profile)
 	}
 }

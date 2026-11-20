@@ -316,6 +316,25 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			ContextAssumed:         data.ContextAssumed,
 			CompactionThreshold:    data.CompactionThreshold,
 		})}
+	case events.EventNextModelChanged:
+		// An accepted pick folds into the same frame a committed switch does:
+		// the client reducer cannot tell them apart, so the composer's label
+		// moves at pick time exactly as it moves at the boundary.
+		data := eventData[events.NextModelChangedData](event.Data)
+		return []AppNotification{p.notification(appwire.NotifyThreadModelChanged, appwire.ThreadModelChangedParams{
+			ThreadID:               p.threadID,
+			Ref:                    p.ref,
+			ModelProvider:          data.Provider,
+			Model:                  data.Model,
+			ReasoningEffortLevels:  data.ReasoningEffortLevels,
+			SupportsReasoning:      data.SupportsReasoning,
+			DefaultReasoningEffort: data.DefaultReasoningEffort,
+			ContextUsed:            data.ContextUsed,
+			ContextWindow:          data.ContextWindow,
+			ContextPressure:        data.ContextPressure,
+			ContextAssumed:         data.ContextAssumed,
+			CompactionThreshold:    data.CompactionThreshold,
+		})}
 	case events.EventReasoningEffortChanged:
 		data := eventData[events.ReasoningEffortChangedData](event.Data)
 		return []AppNotification{p.notification(appwire.NotifyThreadReasoningEffortChanged, appwire.ThreadReasoningEffortChangedParams{
