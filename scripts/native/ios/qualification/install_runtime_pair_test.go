@@ -180,11 +180,13 @@ const (
 	providerMarkerEnv = "QUALIFICATION_TEST_PROVIDER_MARKER"
 	makeMarkerEnv     = "QUALIFICATION_TEST_MAKE_MARKER"
 	goMarkerEnv       = "QUALIFICATION_TEST_GO_MARKER"
+	runLogEnv         = "QUALIFICATION_TEST_RUN_LOG"
 )
 
 // providerStub is the pair's fixture-provider: it records that the run started
 // it and exits, which ends the runner at provider readiness in every case.
 const providerStub = `#!/bin/sh
+printf 'provider\n' >> "$QUALIFICATION_TEST_RUN_LOG"
 printf 'started\n' >> "$QUALIFICATION_TEST_PROVIDER_MARKER"
 exit 1
 `
@@ -219,8 +221,10 @@ chmod +x "$out"
 // xcrunStub answers the simulator work the runner does before it starts the
 // journeys. The warmup's call order is held by
 // TestRunnerWarmsTheSimulatorBeforeTheJourneys; here the stub only has to let
-// the runner reach the pair decision.
+// the runner reach the pair decision, and it shares the run log with the
+// provider stub so the fixture can prove the warmup ran before the provider.
 const xcrunStub = `#!/bin/sh
+printf 'xcrun %s\n' "$*" >> "$QUALIFICATION_TEST_RUN_LOG"
 exit 0
 `
 
@@ -262,9 +266,9 @@ func TestRunUITestsStartsTheSuppliedPairInsteadOfBuilding(t *testing.T) {
 	writeExecutable(t, filepath.Join(stubs, "sleep"), sleepStub)
 
 	type fixture struct {
-		identity                             string
-		output                               string
-		providerMarker, makeMarker, goMarker string
+		identity                                              string
+		output                                                string
+		providerMarker, makeMarker, goMarker, runLog, appPath string
 	}
 	newFixture := func(t *testing.T, identityRevision string) *fixture {
 		t.Helper()
@@ -285,6 +289,8 @@ func TestRunUITestsStartsTheSuppliedPairInsteadOfBuilding(t *testing.T) {
 			providerMarker: filepath.Join(root, "provider-ran"),
 			makeMarker:     filepath.Join(root, "make-ran"),
 			goMarker:       filepath.Join(root, "go-ran"),
+			runLog:         filepath.Join(root, "run-log"),
+			appPath:        filepath.Join(app, "Evener"),
 		}
 		writeFile(t, f.identity, fmt.Sprintf(
 			"{\"sourceRevision\":%q,\"appPath\":%q,\"simulatorUDID\":\"QUALIFICATION-TEST-SIM\"}\n",
@@ -300,6 +306,7 @@ func TestRunUITestsStartsTheSuppliedPairInsteadOfBuilding(t *testing.T) {
 			providerMarkerEnv + "=" + f.providerMarker,
 			makeMarkerEnv + "=" + f.makeMarker,
 			goMarkerEnv + "=" + f.goMarker,
+			runLogEnv + "=" + f.runLog,
 		}
 		if pair != "" {
 			env = append(env, "EVENER_QUALIFICATION_RUNTIME_BINARIES="+pair)
@@ -353,6 +360,31 @@ func TestRunUITestsStartsTheSuppliedPairInsteadOfBuilding(t *testing.T) {
 		}
 		notRun(t, f.makeMarker, "make build-runtime")
 		notRun(t, f.goMarker, "go build")
+		// The runner must warm the device before the measured journeys, and
+		// the warmup must precede the provider it shares the device with. The
+		// source audit holds the order; this holds that the block runs.
+		warmup := []string{
+			"xcrun simctl boot QUALIFICATION-TEST-SIM",
+			"xcrun simctl bootstatus QUALIFICATION-TEST-SIM -b",
+			"xcrun simctl install QUALIFICATION-TEST-SIM " + f.appPath,
+			"xcrun simctl launch QUALIFICATION-TEST-SIM com.example.evener",
+			"xcrun simctl terminate QUALIFICATION-TEST-SIM com.example.evener",
+			"provider",
+		}
+		data, readErr := os.ReadFile(f.runLog)
+		if readErr != nil {
+			t.Fatalf("the run recorded no simulator or provider calls: %v", readErr)
+		}
+		calls := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+		next := 0
+		for _, call := range calls {
+			if next < len(warmup) && call == warmup[next] {
+				next++
+			}
+		}
+		if next != len(warmup) {
+			t.Fatalf("the run did not warm the simulator in order before the provider started; calls = %v, want %v", calls, warmup)
+		}
 	})
 	t.Run("a pair from another revision is refused before anything starts", func(t *testing.T) {
 		t.Parallel()

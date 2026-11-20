@@ -255,12 +255,11 @@ cd "$repo_root"
 # and the warmup's own app instance is terminated before the measured run
 # starts.
 warmup_start="$(date +%s)"
-bundle_id="$(plutil -extract CFBundleIdentifier raw -o - "$app_path/Info.plist" 2>/dev/null)"
-if [ -z "$bundle_id" ]; then
-	echo "$SCRIPT_NAME: $app_path carries no CFBundleIdentifier" >&2
+if ! bundle_id="$(plutil -extract CFBundleIdentifier raw -o - "$app_path/Info.plist" 2>"$output/simulator-warmup.log")" || [ -z "$bundle_id" ]; then
+	echo "$SCRIPT_NAME: cannot read CFBundleIdentifier from $app_path/Info.plist, see $output/simulator-warmup.log" >&2
 	exit 1
 fi
-if ! xcrun simctl boot "$sim_udid" >"$output/simulator-warmup.log" 2>&1; then
+if ! xcrun simctl boot "$sim_udid" >>"$output/simulator-warmup.log" 2>&1; then
 	echo "$SCRIPT_NAME: simctl boot failed, inspect $output/simulator-warmup.log" >&2
 	exit 1
 fi
@@ -298,7 +297,8 @@ install_start="$(date +%s)"
 xcrun simctl install "$sim_udid" "$app_path" >>"$output/simulator-warmup.log" 2>&1
 xcrun simctl launch "$sim_udid" "$bundle_id" >>"$output/simulator-warmup.log" 2>&1
 sleep 15
-xcrun simctl terminate "$sim_udid" "$bundle_id" >>"$output/simulator-warmup.log" 2>&1
+xcrun simctl terminate "$sim_udid" "$bundle_id" >>"$output/simulator-warmup.log" 2>&1 ||
+	log "$(date -u +%FT%TZ) warmup: the warm app was already gone"
 log "$(date -u +%FT%TZ) warmup: install, first launch and settle took $(( $(date +%s) - install_start ))s"
 
 # The operator's shell can carry EVENER_* overrides — an Evener agent session
