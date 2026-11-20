@@ -325,3 +325,55 @@ func TestResponsesFilteredTerminalDoesNotBorrowBytes(t *testing.T) {
 	}
 	assertSettledCalls(t, live, recorded, ends)
 }
+
+// An added record that issues the disputed call under the item ID another call
+// already owns must not take that item's mapping: the original call still
+// completes from its item-only record.
+func TestResponsesAddedDisputedCallKeepsItemOwner(t *testing.T) {
+	t.Parallel()
+	addedSameItem := `{"type":"response.output_item.added","output_index":3,"item":{"type":"function_call","id":"fc_first","call_id":"c2","name":"f"}}`
+	itemOnlyEnd := `{"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_first","name":"write_file"}}`
+	frames := []string{addedFirst, firstDelta, firstDone, disputedDone(badArgs), addedSameItem, itemOnlyEnd, noOutput}
+	ends := []call{{"c1", "fc_first", "write_file", goodArgs}}
+	events, live, recorded := decodeBoth(t, frames...)
+	if got := callEvents(events, llm.StreamEventToolCallEnd); !slices.Equal(got, ends) {
+		t.Errorf("live ends = %+v, want %+v", got, ends)
+	}
+	assertSettledCalls(t, live, recorded, ends)
+}
+
+// A call the stream started under its item ID keeps that ID for its end, while
+// the settled response keeps the provider's real call ID for dispatch.
+func TestResponsesTerminalCallEndUsesAnnouncedID(t *testing.T) {
+	t.Parallel()
+	added := `{"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_first","name":"f"}}`
+	delta := `{"type":"response.function_call_arguments.delta","item_id":"fc_first","delta":"{ \"a\""}`
+	frames := []string{added, delta, terminalWith(terminalCall("fc_first", "c9", "f", goodArgs))}
+	events, live, recorded := decodeBoth(t, frames...)
+	starts := callEvents(events, llm.StreamEventToolCallStart)
+	if len(starts) != 1 || starts[0].id != "fc_first" {
+		t.Errorf("live starts = %+v, want one fc_first start", starts)
+	}
+	ends := callEvents(events, llm.StreamEventToolCallEnd)
+	if len(ends) != 1 || ends[0].id != "fc_first" {
+		t.Errorf("live ends = %+v, want one fc_first end", ends)
+	}
+	want := []call{{"c9", "fc_first", "f", goodArgs}}
+	assertSettledCalls(t, live, recorded, want)
+}
+
+// A call-ID-only done record does not issue its call: a later delta whose item
+// belongs to another call must wait, not commit a delta for an unissued call.
+func TestResponsesCallIDOnlyDoneDoesNotIssueDisputedCall(t *testing.T) {
+	t.Parallel()
+	callIDOnlyDone := `{"type":"response.function_call_arguments.done","call_id":"c2","arguments":"{ \"b\" : 2 }"}`
+	frames := []string{addedFirst, firstDelta, firstDone, callIDOnlyDone, disputedDelta("!"), firstEnd, addedOwned, secondEnd, noOutput}
+	events, live, recorded := decodeBoth(t, frames...)
+	for _, d := range callEvents(events, llm.StreamEventToolCallDelta) {
+		if d.id == "c2" {
+			t.Errorf("c2 delta emitted before its call was issued: %+v", d)
+		}
+	}
+	want := []call{{"c1", "fc_first", "write_file", goodArgs}, {"c2", "fc_second", "f", badArgs + "!"}}
+	assertSettledCalls(t, live, recorded, want)
+}

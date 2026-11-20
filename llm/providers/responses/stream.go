@@ -26,9 +26,12 @@ type responsesToolState struct {
 	// bytes held under the call's own ID while the frame's item belonged to
 	// another. An added, done or terminal record that issues the call clears it.
 	provisional bool
-	started     bool
-	ended       bool
-	args        bytes.Buffer
+	// issued marks a call an output record announced, under either its call ID or
+	// its item ID, so a later disputed-looking frame still routes to it.
+	issued  bool
+	started bool
+	ended   bool
+	args    bytes.Buffer
 }
 
 // responsesFrameDisposition says what the live decoder should emit for one
@@ -306,20 +309,17 @@ func (acc *responsesOutputAccumulator) frameState(callID, itemID, name string) (
 	if callID == "" {
 		return nil, responsesFramePassthrough
 	}
+	owner := acc.itemToCallID[itemID]
+	disputed := itemID != "" && owner != "" && owner != callID
 	st := acc.lookupState(callID, itemID)
 	if st == nil {
-		owner := acc.itemToCallID[itemID]
-		disputed := itemID != "" && owner != "" && owner != callID
 		st = &responsesToolState{id: callID, name: name, provisional: disputed}
 		acc.toolStates[callID] = st
-		if disputed {
-			return st, responsesFrameBuffered
-		}
 	}
 	if st.name == "" && name != "" {
 		st.name = name
 	}
-	if st.provisional {
+	if st.provisional || (disputed && !st.issued) {
 		return st, responsesFrameBuffered
 	}
 	return st, responsesFrameEmitted
@@ -393,7 +393,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemAdded(payload, item map[s
 		acc.noteIssuedCallID(st, callID, itemID)
 		acc.toolStates[callID] = st
 	}
-	if itemID != "" {
+	if itemID != "" && (acc.itemToCallID[itemID] == "" || acc.itemToCallID[itemID] == st.id) {
 		st.itemID = itemID
 		acc.itemToCallID[itemID] = st.id
 		acc.toolStates[itemID] = st
@@ -401,6 +401,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemAdded(payload, item map[s
 	if st.name == "" && name != "" {
 		st.name = name
 	}
+	st.issued = true
 	if callID != "" {
 		st.provisional = false
 	}
@@ -557,6 +558,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 	}
 	st, _ := acc.frameState(callID, itemID, name)
 	st.provisional = false
+	st.issued = true
 	acc.noteIssuedCallID(st, issuedCallID, itemID)
 	if itemID != "" && (acc.itemToCallID[itemID] == "" || acc.itemToCallID[itemID] == st.id) {
 		st.itemID = itemID
@@ -931,7 +933,11 @@ func emitSettledToolCalls(s *llm.ChanStream, r *llm.Response, acc *responsesOutp
 			start := llm.ToolCallData{ID: call.ID, ItemID: call.ItemID, Name: call.Name, Type: "function"}
 			s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &start})
 		}
-		s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
+		end := call
+		if st != nil && st.started && st.id != "" {
+			end.ID = st.id // the ID the live start announced, so consumers see a closed call
+		}
+		s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &end})
 	}
 }
 
