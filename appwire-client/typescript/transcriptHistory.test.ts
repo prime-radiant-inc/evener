@@ -1199,7 +1199,11 @@ test("a read carrying a newer stamped wait retires the older wait's retry", () =
 
 // A read whose failure names no wait clears the held wait's whole record and
 // records the ended stamp from the wait it dropped, so a later buffered frame
-// or read that still captured the ended wait cannot restamp it.
+// or read that still captured the ended wait cannot restamp it. The wait's own
+// positive-delay chip retires with it even though the read still names the
+// retrying turn running: this read discovered the wait had ended before its
+// wake reached this client, so the chip is the ended wait's metadata, not the
+// retry's progress.
 test("a wait-free read clears the held stamped wait and records its ended stamp", () => {
   const deadline = Date.parse("2026-11-07T14:30:00Z");
   let model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
@@ -1225,11 +1229,12 @@ test("a wait-free read clears the held stamped wait and records its ended stamp"
   );
   expect(model.quotaWaitStartedAt).toBe(4);
 
-  const resumed = testThread({ status: { type: "active" } });
+  const resumed = testThread({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
   const after = applyReadResponse(model, { thread: resumed }, 2000);
   expect(after.quotaResumesAt).toBeUndefined();
   expect(after.quotaWaitStartedAt).toBeUndefined();
   expect(after.quotaWaitEndedStamp).toBe(4);
+  expect(after.modelRetry).toBeUndefined();
 });
 
 // A read that captured the wait while it still stood must be refused by the
@@ -1510,74 +1515,6 @@ test("a wait-free read of the same running turn keeps the wake's zero-delay chip
   expect(after.quotaWaitStartedAt).toBeUndefined();
   expect(after.quotaWaitEndedStamp).toBe(4);
   expect(after.quotaResumesAt).toBeUndefined();
-});
-
-// Rule pin for the wait's own positive-delay chip: this is the guard the fix
-// keeps. A positive delay is the wait's metadata, so once that wait has ended
-// and the read names none, the leftover chip retires — even though the read
-// still names the turn running. The shape is constructed directly because the
-// wake itself always leaves a ZERO-delay chip; only an ended wait can leave a
-// positive delay behind.
-test("a wait-free read retires a positive-delay quota chip whose wait has ended", () => {
-  const deadline = Date.parse("2026-11-07T14:30:00Z");
-  let model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
-  model = applyNotification(
-    model,
-    {
-      method: "evener/thread/modelRetry",
-      params: {
-        threadId: "thr_t",
-        ref: "ref_t",
-        turnId: "turn_1",
-        attempt: 1,
-        maxAttempts: 0,
-        delayMs: 21_600_000,
-        errorClass: "quota_exceeded",
-        groupElapsedMs: 5_000,
-        attemptCap: 0,
-        waitStartedAt: 4,
-        resumesAt: deadline,
-      },
-    },
-    1500,
-  );
-  model = applyNotification(
-    model,
-    {
-      method: "evener/thread/modelRetry",
-      params: {
-        threadId: "thr_t",
-        ref: "ref_t",
-        turnId: "turn_1",
-        attempt: 1,
-        maxAttempts: 0,
-        delayMs: 0,
-        errorClass: "quota_exceeded",
-        groupElapsedMs: 5_000,
-        attemptCap: 0,
-        waitStartedAt: 4,
-      },
-    },
-    1600,
-  );
-  const chip = model.modelRetry as NonNullable<ThreadModel["modelRetry"]>;
-  expect(chip.errorClass).toBe("quota_exceeded");
-  expect(chip.turnId).toBe("turn_1");
-  // The ended wait's own positive delay, with no held wait and its ended
-  // stamp recorded: exactly what a wait's leftover metadata looks like.
-  const held: ThreadModel = {
-    ...model,
-    modelRetry: { ...chip, delayMs: 24_000 },
-    quotaWaitStartedAt: undefined,
-    quotaResumesAt: undefined,
-    quotaWaitEndedStamp: 4,
-  };
-
-  const read = testThread({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
-  const after = applyReadResponse(held, { thread: read }, 2000);
-
-  expect(after.modelRetry).toBeUndefined();
-  expect(after.quotaWaitEndedStamp).toBe(4);
 });
 
 // The daemon's retired-input list is the only durable evidence that a canceled
