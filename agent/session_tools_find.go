@@ -1166,10 +1166,11 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 	// project before that marker. The name is a claim about a checkout the row can
 	// check: a checkout that survives answers only when it is this row's project,
 	// so a marker naming the conflicting bucket's project keeps the recorded
-	// basename. A checkout that is gone contradicts nothing and answers as it
-	// always has.
+	// basename. A checkout that is gone contradicts nothing, and neither does a
+	// row and a bucket that record no project ID at all: with nothing to contradict
+	// the spelling, the marker answers as it always has.
 	if name, repoDir, isWorktree := inRepoWorktreeProjectPath(identifier.ResolveClean(wd)); isWorktree {
-		if !directoryExists(repoDir) || r.checkoutIsRows(repoDir, ownProject, bucketProject, bucketKnown) {
+		if !directoryExists(repoDir) || (ownProject == "" && !bucketKnown) || r.checkoutIsRows(repoDir, ownProject, bucketProject, bucketKnown) {
 			return name
 		}
 	}

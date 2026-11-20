@@ -1335,6 +1335,31 @@ func TestFind_ProjectName_ForeignBucketKeepsRowsOwnMarker(t *testing.T) {
 	}
 }
 
+// TestFind_ProjectName_LegacyBucketKeepsWorktreeMarker covers the same removed
+// worktree as above in a legacy or shared state dir, which records no project,
+// and a row that saved none either. Nothing records an ID, so nothing contradicts
+// the marker's spelling and its checkout must still answer.
+func TestFind_ProjectName_LegacyBucketKeepsWorktreeMarker(t *testing.T) {
+	stateDir := canonicalStateDir(t.TempDir())
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+
+	repo := newNamedCheckout(t, "legacy-bucket-repo")
+	feature := filepath.Join(repo, ".worktrees", "feature")
+	gittest.Run(t, repo, "worktree", "add", "-q", feature, "-b", "feature")
+	if err := os.RemoveAll(feature); err != nil {
+		t.Fatalf("remove worktree: %v", err)
+	}
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.EnvInfo.WorkingDir = feature
+
+	if got, want := projectName(row, stateDir), filepath.Base(repo); got != want {
+		t.Fatalf("projectName(removed worktree %q in a state dir that records no project) = %q, want the marker's checkout %q", feature, got, want)
+	}
+}
+
 // TestFind_ProjectName_StateLaneStopsGitWalkAtLaneRoot covers a shared --state-dir
 // that lives inside checkout A while holding a managed delegate lane for
 // checkout B. Deleting the originless lane leaves nothing at the lane path, so a
