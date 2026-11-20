@@ -91,11 +91,12 @@ func TestCallModelRetryResetsReusedPreviewCallIDGeneration(t *testing.T) {
 	}})
 	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-test")), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	recorder := startPreviewEventRecorder(sess)
-	resp, callErr := sess.callModel(context.Background(), llm.RetryPolicy{MaxRetries: 1}, NewOpenAIProfile("gpt-test"), llm.Request{
+	req := llm.Request{
 		Provider: "openai",
 		Model:    "gpt-test",
 		Messages: []llm.Message{llm.User("run")},
-	}, &groupRecord{})
+	}
+	resp, callErr := sess.callModel(context.Background(), llm.RetryPolicy{MaxRetries: 1}, sess.priceRoundRoute(NewOpenAIProfile("gpt-test"), req), req, &groupRecord{})
 	evs := recorder.stop(sess)
 	if callErr != nil {
 		t.Fatalf("callModel: %v", callErr)
@@ -241,7 +242,8 @@ func TestCallModelPanicAfterConsumeResetsTransferredPreview(t *testing.T) {
 	panicked := false
 	func() {
 		defer func() { panicked = recover() != nil }()
-		_, _ = sess.callModel(context.Background(), llm.RetryPolicy{}, NewOpenAIProfile("gpt-test"), llm.Request{Provider: "openai", Model: "gpt-test", Messages: []llm.Message{llm.User("run")}}, &groupRecord{})
+		req := llm.Request{Provider: "openai", Model: "gpt-test", Messages: []llm.Message{llm.User("run")}}
+		_, _ = sess.callModel(context.Background(), llm.RetryPolicy{}, sess.priceRoundRoute(NewOpenAIProfile("gpt-test"), req), req, &groupRecord{})
 	}()
 	sess.Close()
 	<-done

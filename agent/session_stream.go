@@ -10,7 +10,6 @@ import (
 	"unicode/utf16"
 
 	"primeradiant.com/evener/agent/events"
-	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
 )
 
@@ -137,7 +136,10 @@ func (s *Session) emitModelRetry(policy llm.RetryPolicy, req llm.Request, group 
 
 // callModel runs one retry group against req's model and records what every
 // attempt did into group, which the caller owns (one group per invocation).
-func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile *provider.Profile, req llm.Request, group *groupRecord) (sessionModelResponse, error) {
+// route is the one the round priced when it was prepared, so each attempt's
+// final admission bills that measurement instead of re-marshalling the tool
+// list the route emits.
+func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, route roundRoute, req llm.Request, group *groupRecord) (sessionModelResponse, error) {
 	groupStart := s.sclock().Now()
 	defer func() { group.Elapsed = s.sclock().Now().Sub(groupStart) }()
 	previewCalls := map[string]struct{}{}
@@ -195,7 +197,7 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 		FailFastAfter: modelRetryFailFastAfter,
 	}, func(ctx context.Context) (llm.AttemptReport, error) {
 		attemptStart := time.Now()
-		dispatchReq, _, budgetErr := s.budgetModelDispatchRequestForSession(profile, req)
+		dispatchReq, _, budgetErr := route.admit(req)
 		if budgetErr != nil {
 			group.observe(attemptRecord{Phase: llm.PhaseOpen, Err: budgetErr, Duration: time.Since(attemptStart)}, nil)
 			return llm.AttemptReport{Phase: llm.PhaseOpen}, budgetErr
@@ -261,7 +263,7 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 
 	var conversation *conversationRequest
 	resp, err := llm.Retry(ctx, policy, s.cfg.LLMSleep, nil, func() (llm.Response, error) {
-		dispatchReq, _, budgetErr := s.budgetModelDispatchRequestForSession(profile, req)
+		dispatchReq, _, budgetErr := route.admit(req)
 		if budgetErr != nil {
 			return llm.Response{}, budgetErr
 		}

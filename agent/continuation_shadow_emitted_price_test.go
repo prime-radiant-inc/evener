@@ -99,7 +99,7 @@ func TestTheSessionBudgetPricesTheEmittedToolSchema(t *testing.T) {
 		t.Fatalf("fixture does not distinguish the readings: the route's price %d is not above the catalog's",
 			want)
 	}
-	budgeted, budget, err := sess.budgetModelDispatchRequestForSession(profile, req)
+	budgeted, budget, err := sess.priceRoundRoute(profile, req).admit(req)
 	if err != nil {
 		t.Fatalf("budgetModelDispatchRequestForSession: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestTheSessionBudgetPricesTheStrictProjectionOnlyOnACapableRoute(t *testing
 		t.Fatalf("fixture does not distinguish the readings: the projected price %d is not above the catalog's",
 			strictWant)
 	}
-	_, strictBudget, err := strictSess.budgetModelDispatchRequestForSession(strictProfile, req)
+	_, strictBudget, err := strictSess.priceRoundRoute(strictProfile, req).admit(req)
 	if err != nil {
 		t.Fatalf("budgetModelDispatchRequestForSession: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestTheSessionBudgetPricesTheStrictProjectionOnlyOnACapableRoute(t *testing
 	if relaxedWant >= strictWant {
 		t.Fatalf("fixture does not separate the routes: relaxed=%d strict=%d", relaxedWant, strictWant)
 	}
-	_, relaxedBudget, err := relaxedSess.budgetModelDispatchRequestForSession(relaxedProfile, req)
+	_, relaxedBudget, err := relaxedSess.priceRoundRoute(relaxedProfile, req).admit(req)
 	if err != nil {
 		t.Fatalf("budgetModelDispatchRequestForSession: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestTheSessionBudgetLeavesAnOverrideServedRouteUnpriced(t *testing.T) {
 		t.Fatal("fixture does not distinguish the routes: the deriver left the count unchanged")
 	}
 
-	_, budget, err := sess.budgetModelDispatchRequestForSession(profile, req)
+	budgeted, budget, err := sess.priceRoundRoute(profile, req).admit(req)
 	if err != nil {
 		t.Fatalf("budgetModelDispatchRequestForSession: %v", err)
 	}
@@ -216,6 +216,10 @@ func TestTheSessionBudgetLeavesAnOverrideServedRouteUnpriced(t *testing.T) {
 		t.Fatalf("override-served budget priced the input at %d, want the catalog's %d plus the %d reserve = %d: "+
 			"an override marshals the definition it was handed, so a built-in deriver bills a list the wire never "+
 			"carries", got, overrideWant, budget.SafetyTokens, wantTotal)
+	}
+	// Admission is a measurement: the caller's catalog stamp survives it.
+	if budgeted.ToolsJSONBytes != advertised {
+		t.Fatalf("budgeted request carries ToolsJSONBytes = %d, want the catalog's %d", budgeted.ToolsJSONBytes, advertised)
 	}
 }
 
@@ -256,7 +260,7 @@ func TestContinuationShadowBillsTheSchemasTheRouteEmits(t *testing.T) {
 			emittedPrice, catalogPrice)
 	}
 
-	got := sess.applyResponsesContinuationShadowEstimate(profile, req)
+	got := sess.applyResponsesContinuationShadowEstimate(sess.priceRoundRoute(profile, req), req)
 	if got.FullHistoryInputTokensEstimate != emittedPrice {
 		t.Fatalf("FullHistoryInputTokensEstimate = %d, want the emitted-list price %d (the catalog reads %d): "+
 			"the shadow has to bill the schemas the serving builder emits",
@@ -305,7 +309,7 @@ func TestContinuationShadowLeavesAnOverrideServedRouteUnpriced(t *testing.T) {
 		t.Fatal("fixture does not distinguish the prices: the deriver left the count unchanged")
 	}
 
-	got := sess.applyResponsesContinuationShadowEstimate(profile, req)
+	got := sess.applyResponsesContinuationShadowEstimate(sess.priceRoundRoute(profile, req), req)
 
 	if got.FullHistoryInputTokensEstimate != llm.EstimateInputTokensForRoute(row, req, true).Tokens {
 		t.Fatalf("override-served shadow reading = %d, want the catalog's own %d: an override marshals the "+
@@ -387,12 +391,12 @@ func TestTheFallbackPricesItsOwnCatalogBeforeItsHistoryEstimates(t *testing.T) {
 		return p.WithResolved(res)
 	}
 	limit := budgetCapBetween(t, fallbackPrice, primaryPrice)
-	if _, _, err := sess.budgetModelDispatchRequestForSession(applyCap(fallback, limit), built); err != nil {
+	if _, _, err := sess.priceRoundRoute(applyCap(fallback, limit), built).admit(built); err != nil {
 		t.Fatalf("fallback refused under a cap between the two prices (%d): %v", limit, err)
 	}
 	// The fallback's own limit is still enforced: the same request under a cap
 	// below its price is refused rather than dispatched.
-	if _, _, err := sess.budgetModelDispatchRequestForSession(applyCap(fallback, fallbackPrice-1), built); err == nil {
+	if _, _, err := sess.priceRoundRoute(applyCap(fallback, fallbackPrice-1), built).admit(built); err == nil {
 		t.Fatalf("fallback admitted under a cap of %d below its own price %d: the estimate stopped pricing the "+
 			"catalog", fallbackPrice-1, fallbackPrice)
 	}

@@ -345,8 +345,14 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort, toolDefsJSONBytes)
 	s.setRoundFallbackSource(sys, untrimmedHistory, presentedTurns, scope)
 	req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
+	// The round's route is priced here, once: the tool list the builder emits is
+	// the same list for this request at every admission and estimate below, so
+	// initial admission, the continuation shadow, continuation planning, the
+	// skill rebuild, and final admission all reuse one measurement.
+	route := s.priceRoundRoute(profile, req)
+	s.setRoundRoute(route)
 	var budget llm.TokenBudget
-	if req, budget, err = s.budgetModelDispatchRequestForSession(profile, req); err != nil {
+	if req, budget, err = route.admit(req); err != nil {
 		return profile, sys, history, req, nil, reasoningEffort, err
 	}
 	initialBudget := budget
@@ -361,8 +367,8 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// The turns the delta carries come back with it: staging must credit only
 	// the inline deliveries this call actually presents.
 	var deltaTurns []schema.Turn
-	req, fullHistory, deltaTurns = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, presentedTurns, true, heldDropped)
-	if req, budget, err = s.budgetModelDispatchRequestForSession(profile, req); err != nil {
+	req, fullHistory, deltaTurns = s.planResponsesContinuation(ctx, profile, route, req, presentedTurns, true, heldDropped)
+	if req, budget, err = route.admit(req); err != nil {
 		return profile, sys, history, req, fullHistory, reasoningEffort, err
 	}
 	// Admission runs before and after continuation planning because the latter
@@ -411,13 +417,13 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort, toolDefsJSONBytes)
 		s.setRoundFallbackSource(sys, untrimmedHistory, presentedTurns, scope)
 		req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
-		budgetedReq, budgeted, budgetErr := s.budgetModelDispatchRequestForSession(profile, req)
+		budgetedReq, budgeted, budgetErr := route.admit(req)
 		if budgetErr != nil {
 			return true, budgetErr
 		}
 		req, budget = budgetedReq, budgeted
-		req, fullHistory, deltaTurns = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, historyTurns, true, heldDropped)
-		budgetedReq, budgeted, budgetErr = s.budgetModelDispatchRequestForSession(profile, req)
+		req, fullHistory, deltaTurns = s.planResponsesContinuation(ctx, profile, route, req, historyTurns, true, heldDropped)
+		budgetedReq, budgeted, budgetErr = route.admit(req)
 		if budgetErr != nil {
 			return true, budgetErr
 		}
@@ -618,17 +624,99 @@ func (s *Session) growTurnHistoryBaseline(restoredAt []int) {
 	}
 }
 
-// applyResponsesContinuationAnchorPlanning returns the request to dispatch and,
-// when it planned a continuation delta, the full-history message list the delta
-// was cut from, for the retry a rejected anchor forces, plus the exact turns
-// the delta carries. heldDropped reports that the request's projection kept a
-// held row out.
+// roundRoute is one configured route with the byte count of the tool list it
+// puts on the wire for this round, measured once when the round was prepared
+// (priceRoundRoute). Every admission and estimate the round takes bills that one
+// measurement: a builder rewrites a tool schema before sending it, so pricing a
+// route's emission at each site re-marshals the same emitted list for the same
+// request.
+//
+// resolved carries the round's effective context window, which the profile's
+// own row need not: an instance window override reaches admission through the
+// profile, not the registry.
+type roundRoute struct {
+	resolved  registry.Resolved
+	toolBytes int
+}
+
+// estimate returns the local input estimate for req over this route's measured
+// tool list.
+func (r roundRoute) estimate(req llm.Request) llm.InputTokenCount {
+	return llm.EstimateInputTokensWithToolBytes(r.resolved, req, r.toolBytes)
+}
+
+// admit constrains req to this route's input, output, and total-context limits,
+// pricing the tool list measured when the route was priced.
+func (r roundRoute) admit(req llm.Request) (llm.Request, llm.TokenBudget, error) {
+	return llm.ApplyTokenBudgetWithToolBytes(req, r.resolved, r.toolBytes)
+}
+
+// withInputEstimate stamps req with its local estimate over this route.
+func (r roundRoute) withInputEstimate(req llm.Request) llm.Request {
+	req.InputTokensEstimate = r.estimate(req).Tokens
+	return req
+}
+
+// withFullHistoryInputEstimate stamps both estimates. A request priced for one
+// route bills one conversation under either history mode, so the two readings
+// are the same number.
+func (r roundRoute) withFullHistoryInputEstimate(req llm.Request) llm.Request {
+	req = r.withInputEstimate(req)
+	req.FullHistoryInputTokensEstimate = req.InputTokensEstimate
+	return req
+}
+
+// routeForRow prices req for a row a caller already resolved, with no profile
+// to read an effective window from. priceRoundRoute is the session's entry
+// point; this is its last step.
+func routeForRow(res registry.Resolved, req llm.Request, override bool) roundRoute {
+	return roundRoute{resolved: res, toolBytes: llm.EffectiveToolsJSONBytes(req, res, override)}
+}
+
+// priceRoundRoute resolves profile's row for this round and measures, once, the
+// byte count of the tool list that route emits for req. Every admission and
+// estimate taken for the same route request reuses the answer.
+func (s *Session) priceRoundRoute(profile *provider.Profile, req llm.Request) roundRoute {
+	res := resolvedTargetOf(profile)
+	if profile != nil {
+		if window := profile.ContextWindowSize(); window > 0 {
+			res.Caps.ContextWindow = new(window)
+		}
+	}
+	return routeForRow(res, req, s.servesAnOverride(profile))
+}
+
+// setRoundRoute records the route the round was priced for. prepareModelRequest
+// writes it and callModelWithFallback takes and clears it on the same turn
+// goroutine, so a later round cannot inherit this one's measurement.
+func (s *Session) setRoundRoute(route roundRoute) {
+	s.mu.Lock()
+	s.roundRoute, s.roundRouteSet = route, true
+	s.mu.Unlock()
+}
+
+// takeRoundRoute returns and clears the round's priced route.
+func (s *Session) takeRoundRoute() (roundRoute, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	route, set := s.roundRoute, s.roundRouteSet
+	s.roundRoute, s.roundRouteSet = roundRoute{}, false
+	return route, set
+}
+
+// planResponsesContinuation returns the request to dispatch and, when it planned
+// a continuation delta, the full-history message list the delta was cut from, for
+// the retry a rejected anchor forces, plus the exact turns the delta carries.
+// heldDropped reports that the request's projection kept a held row out.
+//
+// route is the round's priced route, so the shadow estimate and every stamp this
+// call takes bill the same tool list as the admission around it.
 //
 // The delta's turn set is returned because it is the only record of which items
 // this call presents: staging attention coverage must not credit an inline
 // delivery whose tool-results turn sits before the anchor, since the delta never
 // carried it.
-func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, profile *provider.Profile, req llm.Request, historyTurns []schema.Turn, stream bool, heldDropped bool) (llm.Request, []llm.Message, []schema.Turn) {
+func (s *Session) planResponsesContinuation(ctx context.Context, profile *provider.Profile, route roundRoute, req llm.Request, historyTurns []schema.Turn, stream bool, heldDropped bool) (llm.Request, []llm.Message, []schema.Turn) {
 	if heldDropped {
 		// A projection that kept a held row out is a nonstandard view of the
 		// resident history: no stored exchange matches its prefix, and the
@@ -656,21 +744,19 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 		}
 		return req, nil, nil
 	}
-	target := resolvedTargetOf(profile)
-	override := s.servesAnOverride(profile)
-	req = s.applyResponsesContinuationShadowEstimate(profile, req)
+	req = s.applyResponsesContinuationShadowEstimate(route, req)
 	if req.ContinuationDiagnostic == "continuation_shadow_estimate_unavailable" {
 		req.HistoryMode = llm.HistoryModeFullHistory
 		req.PreviousResponseID = ""
 		req.ConversationID = ""
 		req.Continuation = nil
-		return responsesContinuationWithInputEstimate(target, req, override), nil, nil
+		return route.withInputEstimate(req), nil, nil
 	}
 
 	plan, err := s.client.PlanResponsesContinuation(ctx, req)
 	if err != nil {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return responsesContinuationWithInputEstimate(target, req, override), nil, nil
+		return route.withInputEstimate(req), nil, nil
 	}
 	support := llm.ResponsesContinuationSupportFor(registry, plan.EndpointFamily)
 	decision := llm.DecideResponsesContinuationForRequest(
@@ -680,7 +766,7 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 	)
 	if decision.HistoryMode != llm.HistoryModeResponsesDelta {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return responsesContinuationWithInputEstimate(target, req, override), nil, nil
+		return route.withInputEstimate(req), nil, nil
 	}
 	if !plan.ContinuationStorageAllowed &&
 		support.StorageShapeProven &&
@@ -694,10 +780,10 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 	}
 	if !plan.ContinuationStorageAllowed {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return responsesContinuationWithInputEstimate(target, req, override), nil, nil
+		return route.withInputEstimate(req), nil, nil
 	}
 	if s.responsesContinuationDisabledForPlan(req, plan, stream) {
-		return responsesContinuationFullHistoryRequestForPlan(target, req, plan, override), nil, nil
+		return responsesContinuationFullHistoryRequestForPlan(route, req, plan), nil, nil
 	}
 
 	reservation := reserveResponsesContinuationHistoryBase(historyTurns)
@@ -707,7 +793,7 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 	}
 	if !historyCurrent {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return responsesContinuationWithInputEstimate(target, req, override), nil, nil
+		return route.withInputEstimate(req), nil, nil
 	}
 
 	candidate, anchorDecision := selectResponsesContinuationAnchorCandidate(s.cfg, historyTurns)
@@ -731,13 +817,13 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 			StoragePolicyLabel:      plan.StoragePolicyLabel,
 			StorageScopeFingerprint: plan.StorageScopeFingerprint,
 		}
-		return responsesContinuationWithInputEstimate(target, req, override), fullHistory, candidate.Delta
+		return route.withInputEstimate(req), fullHistory, candidate.Delta
 	}
 
-	return responsesContinuationFullHistoryRequestForPlan(target, req, plan, override), nil, nil
+	return responsesContinuationFullHistoryRequestForPlan(route, req, plan), nil, nil
 }
 
-func responsesContinuationFullHistoryRequestForPlan(res registry.Resolved, req llm.Request, plan llm.ResponsesContinuationPlan, override bool) llm.Request {
+func responsesContinuationFullHistoryRequestForPlan(route roundRoute, req llm.Request, plan llm.ResponsesContinuationPlan) llm.Request {
 	req, _ = llm.ApplyResponsesContinuationStoreOverride(req, plan.StoragePolicyLabel)
 	req.HistoryMode = llm.HistoryModeFullHistory
 	req.Continuation = &llm.ContinuationMetadata{
@@ -747,30 +833,24 @@ func responsesContinuationFullHistoryRequestForPlan(res registry.Resolved, req l
 		StoragePolicyLabel:      plan.StoragePolicyLabel,
 		StorageScopeFingerprint: plan.StorageScopeFingerprint,
 	}
-	return responsesContinuationWithInputEstimate(res, req, override)
+	return route.withInputEstimate(req)
 }
 
-func (s *Session) applyResponsesContinuationShadowEstimate(profile *provider.Profile, req llm.Request) llm.Request {
+func (s *Session) applyResponsesContinuationShadowEstimate(route roundRoute, req llm.Request) llm.Request {
 	shadowReq := req
 	shadowReq.HistoryMode = llm.HistoryModeFullHistory
 	shadowReq.PreviousResponseID = ""
 	shadowReq.ConversationID = ""
 	shadowReq.Continuation = nil
-	// The shadow bills the whole conversation, so it has to bill the tool list
-	// the serving adapter will send with it. This runs before the delta is built,
-	// and the estimate it produces is carried past that build: pricing the
-	// advertised catalog here would leave the full-history figure describing
-	// schemas the builder has already replaced, and admission takes the larger of
-	// the two.
-	//
-	// Only a built-in route has a builder that rewrites schemas. An override
-	// marshals the definition it was handed, so pricing it through a protocol's
-	// deriver would bill an emitted list the override never sends, and an input
-	// cap between that figure and the override's own estimate would reject a
-	// request the override could dispatch. The inflated reading would also
-	// outlive the case that produced it: it is recorded on a request that falls
-	// back to full history when the override has no continuation planner.
-	tokens, ok := s.estimateResponsesContinuationShadow(profile, shadowReq)
+	// The shadow bills the whole conversation, so it bills the same tool list
+	// admission does. This runs before the delta is built, and the estimate it
+	// produces is carried past that build: pricing the advertised catalog here
+	// would leave the full-history figure describing schemas the builder has
+	// already replaced, and admission takes the larger of the two. The list is
+	// the route's, measured once when the round was priced, so an override bills
+	// the definition it marshals and no protocol's emission describes bytes it
+	// never sends.
+	tokens, ok := s.estimateResponsesContinuationShadow(route, shadowReq)
 	if !ok {
 		req.HistoryMode = llm.HistoryModeFullHistory
 		req.ContinuationDiagnostic = "continuation_shadow_estimate_unavailable"
@@ -779,7 +859,7 @@ func (s *Session) applyResponsesContinuationShadowEstimate(profile *provider.Pro
 	if tokens > req.FullHistoryInputTokensEstimate {
 		req.FullHistoryInputTokensEstimate = tokens
 	}
-	return responsesContinuationWithInputEstimate(resolvedTargetOf(profile), req, s.servesAnOverride(profile))
+	return route.withInputEstimate(req)
 }
 
 // servesAnOverride reports whether an adapter override, rather than a built-in
@@ -792,21 +872,12 @@ func (s *Session) servesAnOverride(profile *provider.Profile) bool {
 	return s.client.ServesOverride(profile.ID())
 }
 
-func (s *Session) estimateResponsesContinuationShadow(profile *provider.Profile, req llm.Request) (int, bool) {
+func (s *Session) estimateResponsesContinuationShadow(route roundRoute, req llm.Request) (int, bool) {
 	if s.cfg.testOnly.responsesContinuationShadowEstimateFunc != nil {
 		return s.cfg.testOnly.responsesContinuationShadowEstimateFunc(req)
 	}
-	count := s.estimateInputTokensForRoute(profile, req)
+	count := route.estimate(req)
 	return count.Tokens, count.Tokens > 0
-}
-
-// estimateInputTokensForRoute is the local estimate for req as profile's route
-// serves it: a protocol route prices the list its builder emits, and an override
-// prices the catalog it is handed. Callers that know the serving route use this
-// rather than llm.EstimateInputTokensForResolved, which prices the stamp the
-// request carries.
-func (s *Session) estimateInputTokensForRoute(profile *provider.Profile, req llm.Request) llm.InputTokenCount {
-	return llm.EstimateInputTokensForRoute(resolvedTargetOf(profile), req, s.servesAnOverride(profile))
 }
 
 // resolvedTargetOf returns a profile's resolved registry row, or the zero row
@@ -821,20 +892,6 @@ func resolvedTargetOf(prof *provider.Profile) registry.Resolved {
 		return registry.Resolved{}
 	}
 	return prof.Resolved()
-}
-
-// responsesContinuationWithInputEstimate stamps req with its local estimate as
-// res's route serves it, pricing the tool list that route emits.
-func responsesContinuationWithInputEstimate(res registry.Resolved, req llm.Request, override bool) llm.Request {
-	req.InputTokensEstimate = llm.EstimateInputTokensForRoute(res, req, override).Tokens
-	return req
-}
-
-func responsesContinuationFullHistoryWithInputEstimate(res registry.Resolved, req llm.Request, override bool) llm.Request {
-	req.FullHistoryInputTokensEstimate = 0
-	req = responsesContinuationWithInputEstimate(res, req, override)
-	req.FullHistoryInputTokensEstimate = req.InputTokensEstimate
-	return req
 }
 
 // attachFullHistoryInputEstimate carries the context manager's conservative
@@ -1635,6 +1692,13 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	// round cannot inherit this one's input. Its layout waits for the chain
 	// below: a round with no fallback target pays nothing for it (#6442).
 	fallbackSource, hasFallbackSource := s.takeRoundFallbackSource()
+	// The round's route was priced once during preparation; its tool-byte count
+	// is the one every admission in this call reuses. A direct caller that
+	// prepared no round prices the primary request here instead.
+	primaryRoute, priced := s.takeRoundRoute()
+	if !priced {
+		primaryRoute = s.priceRoundRoute(profile, req)
+	}
 	// The round's fallback chain is fixed here, at the round's model-call
 	// boundary, from a copy taken under s.mu. SetModel revalidates and may
 	// rewrite s.cfg.ModelFallbacks while this round's primary call is
@@ -1665,7 +1729,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	// request's model — the context window, compaction pressure, the usage
 	// warning — must describe that same model.
 	usedProfile := profile
-	modelResp, err := s.callModel(callCtx, policy, profile, req, &primaryRecord)
+	modelResp, err := s.callModel(callCtx, policy, primaryRoute, req, &primaryRecord)
 	rememberPreviews(modelResp)
 	recorder.Groups = append(recorder.Groups, primaryRecord)
 	// Context disagreement belongs to the outer lifecycle, which owns the one
@@ -1681,9 +1745,9 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	// one would dispatch a message-less round instead of declining.
 	if err != nil && len(fullHistory) > 0 && shouldRetryResponsesContinuationAsFullHistory(req, err) {
 		s.disableResponsesContinuationForRequest(req, true)
-		retryReq := responsesContinuationFullHistoryFallbackRequest(profile.Resolved(), req, fullHistory, s.servesAnOverride(profile))
+		retryReq := responsesContinuationFullHistoryFallbackRequest(primaryRoute, req, fullHistory)
 		var budget llm.TokenBudget
-		retryReq, budget, budgetErr := s.budgetModelDispatchRequestForSession(profile, retryReq)
+		retryReq, budget, budgetErr := primaryRoute.admit(retryReq)
 		if budgetErr == nil {
 			s.warnOutputReduction(profile, budget)
 		}
@@ -1701,7 +1765,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		if budgetErr != nil {
 			err = budgetErr
 		} else {
-			modelResp, err = s.callModel(callCtx, policy, profile, retryReq, &recoveryRecord)
+			modelResp, err = s.callModel(callCtx, policy, primaryRoute, retryReq, &recoveryRecord)
 		}
 		rememberPreviews(modelResp)
 		recorder.Groups = append(recorder.Groups, recoveryRecord)
@@ -1773,7 +1837,8 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			fbReq.ProviderOptions = fbProfile.ProviderOptions()
 			s.applyModelRequestMetadata(&fbReq)
 			var budget llm.TokenBudget
-			fbReq, budget, budgetErr := s.budgetModelDispatchRequestForSession(fbProfile, fbReq)
+			fallbackRoute := s.priceRoundRoute(fbProfile, fbReq)
+			fbReq, budget, budgetErr := fallbackRoute.admit(fbReq)
 			if budgetErr == nil {
 				s.warnOutputReduction(fbProfile, budget)
 			}
@@ -1792,7 +1857,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			if budgetErr != nil {
 				err = budgetErr
 			} else {
-				modelResp, err = s.callModel(callCtx, policy, fbProfile, fbReq, &fallbackRecord)
+				modelResp, err = s.callModel(callCtx, policy, fallbackRoute, fbReq, &fallbackRecord)
 			}
 			rememberPreviews(modelResp)
 			recorder.Groups = append(recorder.Groups, fallbackRecord)
@@ -1877,8 +1942,9 @@ func shouldRetryResponsesContinuationAsFullHistory(req llm.Request, err error) b
 
 // responsesContinuationFullHistoryFallbackRequest rebuilds the delta request as
 // the full history the round kept for it, for the one retry a rejected anchor
-// earns.
-func responsesContinuationFullHistoryFallbackRequest(res registry.Resolved, req llm.Request, fullHistory []llm.Message, override bool) llm.Request {
+// earns. route is priced for the request it builds: both its history and its
+// tool list change with the rebuild.
+func responsesContinuationFullHistoryFallbackRequest(route roundRoute, req llm.Request, fullHistory []llm.Message) llm.Request {
 	fallbackReq := req
 	fallbackReq.HistoryMode = llm.HistoryModeFullHistoryFallback
 	fallbackReq.Messages = append([]llm.Message(nil), fullHistory...)
@@ -1887,8 +1953,7 @@ func responsesContinuationFullHistoryFallbackRequest(res registry.Resolved, req 
 	fallbackReq.PreviousResponseID = ""
 	fallbackReq.ConversationID = ""
 	fallbackReq.Continuation = nil
-	fallbackReq = responsesContinuationFullHistoryWithInputEstimate(res, fallbackReq, override)
-	return fallbackReq
+	return route.withFullHistoryInputEstimate(fallbackReq)
 }
 
 // responsesContinuationModelFallbackRequest un-anchors a request for a
@@ -1937,12 +2002,11 @@ func responsesContinuationModelFallbackRequest(res registry.Resolved, req llm.Re
 // local estimate, the delta estimate and the full-history one, so an input cap
 // between the primary's price and this route's refuses a fallback that fits.
 //
-// An override route is left alone: it marshals the definitions it is handed, so
-// its own count is its wire count.
+// An override route is priced from the catalog it marshals: priceRoundRoute asks
+// the route which list it puts on the wire, and for an override that is the list
+// it is handed.
 func (s *Session) responsesContinuationFallbackRequest(profile *provider.Profile, req llm.Request, fullHistory []llm.Message) (llm.Request, bool) {
-	res := profile.Resolved()
-	override := s.servesAnOverride(profile)
-	fbReq, ok := responsesContinuationModelFallbackRequest(res, req, fullHistory)
+	fbReq, ok := responsesContinuationModelFallbackRequest(profile.Resolved(), req, fullHistory)
 	if !ok {
 		return llm.Request{}, false
 	}
@@ -1950,35 +2014,10 @@ func (s *Session) responsesContinuationFallbackRequest(profile *provider.Profile
 	fbReq.Messages = projectToolResultMediaFor(profile, fbReq.Messages)
 	// The projections above removed thinking and media this target does not
 	// replay or receive, so both estimates are taken once, here, over the
-	// messages that dispatch. Both price the tool list this route emits, so the
-	// primary's count cannot leak in.
-	return responsesContinuationFullHistoryWithInputEstimate(res, fbReq, override), true
-}
-
-// budgetModelDispatchRequestForSession shapes and admits req for a session's
-// dispatch, pricing the tool list the serving route will actually emit.
-//
-// The session budgets the request to decide its output allocation, and that
-// allocation drives the warning a user sees. Budgeting the advertised catalog
-// answers with fewer input tokens than the dispatch carries whenever the
-// route's builder projects a schema, so the admitted output comes out larger
-// here than the client later admits, and the warning either never fires or
-// reports an allocation the wire never had. A route an override serves prices
-// the catalog it was handed instead: the override marshals the definition it
-// receives, so no protocol's emission describes its wire list.
-func (s *Session) budgetModelDispatchRequestForSession(profile *provider.Profile, req llm.Request) (llm.Request, llm.TokenBudget, error) {
-	return budgetModelDispatchRequestWithBudget(profile, req, s.servesAnOverride(profile))
-}
-
-// budgetModelDispatchRequestWithBudget admits req against profile's row, pricing
-// the tool list its route emits. override says an adapter override serves the
-// route, so the catalog it is handed is its wire list.
-func budgetModelDispatchRequestWithBudget(profile *provider.Profile, req llm.Request, override bool) (llm.Request, llm.TokenBudget, error) {
-	resolved := profile.Resolved()
-	if window := profile.ContextWindowSize(); window > 0 {
-		resolved.Caps.ContextWindow = new(window)
-	}
-	return llm.ApplyTokenBudgetForRoute(req, resolved, override)
+	// messages that dispatch. The route is priced over those messages, so both
+	// readings describe the tool list this route emits and the primary's count
+	// cannot leak in.
+	return s.priceRoundRoute(profile, fbReq).withFullHistoryInputEstimate(fbReq), true
 }
 
 func (s *Session) warnOutputReduction(profile *provider.Profile, budget llm.TokenBudget) {

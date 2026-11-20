@@ -238,6 +238,19 @@ func ToolsJSONBytes(defs []ToolDefinition) int {
 	return len(b)
 }
 
+// EstimateInputTokensWithToolBytes returns the local estimate for req over a
+// tool-list byte count the caller already measured, either with
+// EffectiveToolsJSONBytes for the serving route or with ToolsJSONBytes over a
+// list that route sends unchanged.
+//
+// A caller that prices many requests over one configured route request measures
+// the list once and passes the count here, so initial admission, the
+// continuation shadow, and final admission bill one measurement instead of
+// re-deriving and re-marshalling the emitted schemas each time.
+func EstimateInputTokensWithToolBytes(res registry.Resolved, req Request, toolBytes int) InputTokenCount {
+	return estimateInputTokensWithToolBytes(targetFromResolved(res, req.Provider, req.Model), req, toolBytes)
+}
+
 // EstimateInputTokensForRoute returns the local estimate for req as res's route
 // serves it, billing the tool list that route puts on the wire
 // (EffectiveToolsJSONBytes). override says an adapter override serves the
@@ -246,8 +259,7 @@ func ToolsJSONBytes(defs []ToolDefinition) int {
 // It is the estimate for callers that know the serving route: a request priced
 // here and dispatched through the same route prices one list.
 func EstimateInputTokensForRoute(res registry.Resolved, req Request, override bool) InputTokenCount {
-	return estimateInputTokensWithToolBytes(targetFromResolved(res, req.Provider, req.Model), req,
-		EffectiveToolsJSONBytes(req, res, override))
+	return EstimateInputTokensWithToolBytes(res, req, EffectiveToolsJSONBytes(req, res, override))
 }
 
 // EstimateMessagesInputTokens estimates only a message list. It is useful for

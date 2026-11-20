@@ -439,7 +439,7 @@ func shapeAndApplyTokenBudget(req Request, res registry.Resolved, override bool)
 // override says an adapter override serves the request, so the catalog it is
 // handed is the list it dispatches.
 func ApplyTokenBudgetForRoute(req Request, res registry.Resolved, override bool) (Request, TokenBudget, error) {
-	return applyTokenBudgetWithToolBytes(req, res, EffectiveToolsJSONBytes(req, res, override))
+	return ApplyTokenBudgetWithToolBytes(req, res, EffectiveToolsJSONBytes(req, res, override))
 }
 
 // ModelListing is what Models returns: the instance's visible live-authoritative

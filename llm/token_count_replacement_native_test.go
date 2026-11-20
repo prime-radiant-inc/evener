@@ -126,7 +126,7 @@ func TestANativeRoutePricesTheToolsItWritesFromItsOptions(t *testing.T) {
 				t.Fatalf("fixture does not distinguish the readings: without tools=%d with the option=%d", lower, upper)
 			}
 			limit := capBetweenPrices(t, lower, upper)
-			c, _, bodies := declaredEmissionRoute(t, limit, protocol)
+			c, _, bodies := emittedPriceRoute(t, limit, protocol, false)
 			_, err = c.Complete(context.Background(), req)
 			if _, ok := errors.AsType[*ContextBudgetError](err); !ok {
 				t.Fatalf("error = %v, want *ContextBudgetError: the request dispatches tools under a cap of %d, "+
@@ -138,7 +138,7 @@ func TestANativeRoutePricesTheToolsItWritesFromItsOptions(t *testing.T) {
 
 			// Under an ample cap the option is what the wire carries, which is
 			// the premise every count above rests on.
-			open, _, openBodies := declaredEmissionRoute(t, 1_000_000, protocol)
+			open, _, openBodies := emittedPriceRoute(t, 1_000_000, protocol, false)
 			if _, err := open.Complete(context.Background(), req); err != nil {
 				t.Fatalf("Complete under an ample cap: %v", err)
 			}
@@ -208,7 +208,7 @@ func TestANativeRoutePrefersTheTransportToolsConstant(t *testing.T) {
 			lower := EstimateInputTokensForRoute(res, req, false).Tokens
 			upper := EstimateInputTokensForRoute(nativeRow(protocol), req, false).Tokens
 			limit := capBetweenPrices(t, lower, upper)
-			c, _, bodies := declaredEmissionRouteWithBody(t, limit, protocol, map[string]any{"tools": pinned})
+			c, _, bodies := emittedPriceRouteWithTransportBody(t, limit, protocol, false, map[string]any{"tools": pinned})
 			if _, err := c.Complete(context.Background(), req); err != nil {
 				if _, budget := errors.AsType[*ContextBudgetError](err); budget {
 					t.Fatalf("Complete under a cap of %d refused a request whose wire list is the %d-byte pinned "+

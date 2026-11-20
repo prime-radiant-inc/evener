@@ -20,15 +20,19 @@ type TokenBudget struct {
 
 // ApplyTokenBudget constrains a shaped request to every known input, output,
 // and total-context limit. Unknown and non-positive limits add no constraint.
+// It bills the tool catalog the request carries; a caller that knows the serving
+// route bills that route's emitted list with ApplyTokenBudgetWithToolBytes.
 func ApplyTokenBudget(req Request, res registry.Resolved) (Request, TokenBudget, error) {
-	return applyTokenBudgetWithToolBytes(req, res, declaredToolJSONBytes(req))
+	return ApplyTokenBudgetWithToolBytes(req, res, declaredToolJSONBytes(req))
 }
 
-// applyTokenBudgetWithToolBytes is ApplyTokenBudget over a caller-supplied byte
+// ApplyTokenBudgetWithToolBytes is ApplyTokenBudget over a caller-supplied byte
 // count for the tool list that dispatches. Where a route serves the request that
 // list is the route's emission rather than the catalog the request carries
-// (EffectiveToolsJSONBytes), and only the caller knows which route that is.
-func applyTokenBudgetWithToolBytes(req Request, res registry.Resolved, toolBytes int) (Request, TokenBudget, error) {
+// (EffectiveToolsJSONBytes), and only the caller knows which route that is: a
+// caller that admits many requests over one configured route request measures
+// the list once and passes it here.
+func ApplyTokenBudgetWithToolBytes(req Request, res registry.Resolved, toolBytes int) (Request, TokenBudget, error) {
 	estimate := estimateInputTokensWithToolBytes(targetFromResolved(res, req.Provider, req.Model), req, toolBytes)
 	input := max(0, estimate.Tokens, req.InputTokensEstimate, req.FullHistoryInputTokensEstimate)
 	safety := tokenSafetyReserve(res.Caps)

@@ -102,7 +102,7 @@ func TestThePriceIsTheSchemaTheProtocolEmits(t *testing.T) {
 			}
 
 			// The emitted list, read from the wire, is what the request costs.
-			ample, ampleRes, ampleBodies := declaredEmissionRoute(t, 1_000_000, tc.protocol)
+			ample, ampleRes, ampleBodies := emittedPriceRoute(t, 1_000_000, tc.protocol, false)
 			if _, err := ample.Complete(context.Background(), req); err != nil {
 				t.Fatalf("Complete under an ample cap: %v", err)
 			}
@@ -138,7 +138,7 @@ func TestThePriceIsTheSchemaTheProtocolEmits(t *testing.T) {
 				t.Fatalf("fixture does not distinguish the readings: wire=%d catalog=%d", lower, upper)
 			}
 			limit := capBetweenPrices(t, lower, upper)
-			c, _, bodies := declaredEmissionRoute(t, limit, tc.protocol)
+			c, _, bodies := emittedPriceRoute(t, limit, tc.protocol, false)
 			if _, err := c.Complete(context.Background(), req); err != nil {
 				if _, budget := errors.AsType[*ContextBudgetError](err); budget {
 					t.Fatalf("Complete under a cap of %d refused a request that dispatches %d input tokens: the "+

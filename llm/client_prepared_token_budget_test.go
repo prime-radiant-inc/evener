@@ -13,10 +13,10 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-// wireToolParams is the parameter schema of each tool as the server received
-// it. The wire body is the oracle for what the builder emitted: a price written
-// here would be a second opinion about the same question, which is the defect
-// this file exists to catch.
+// wireToolParams reads the parameter schema of every tool the server received.
+// The wire body is the oracle for what the builder emitted: a price written here
+// would be a second opinion about the same question, which is the defect these
+// cases exist to catch.
 func wireToolParams(t *testing.T, body map[string]any) []map[string]any {
 	t.Helper()
 	raw, ok := body["tools"].([]any)
@@ -32,9 +32,41 @@ func wireToolParams(t *testing.T, body map[string]any) []map[string]any {
 	return out
 }
 
-// emittedPriceServer answers the Responses and Chat endpoints with one assistant
-// message, records every body, and reports token counting as unsupported so a
-// caller's reading is the local estimate.
+// wireToolDefs reads the tool list a route put on the wire, as the definitions
+// ToolsJSONBytes measures: the name, the description, and the parameter schema
+// the builder emitted.
+func wireToolDefs(t *testing.T, body map[string]any, schemaKey string) []ToolDefinition {
+	t.Helper()
+	entries, ok := body["tools"].([]any)
+	if !ok {
+		t.Fatalf("wire tools = %#v, want the tool list", body["tools"])
+	}
+	if len(entries) == 1 {
+		// Google nests its declarations one level down.
+		if nested, ok := entries[0].(map[string]any); ok {
+			if decls, ok := nested["functionDeclarations"].([]any); ok {
+				entries = decls
+			}
+		}
+	}
+	out := make([]ToolDefinition, len(entries))
+	for i, entry := range entries {
+		e, _ := entry.(map[string]any)
+		params, ok := e[schemaKey].(map[string]any)
+		if !ok {
+			t.Fatalf("wire tool %d carries no %q schema: %#v", i, schemaKey, e)
+		}
+		name, _ := e["name"].(string)
+		description, _ := e["description"].(string)
+		out[i] = ToolDefinition{Name: name, Description: description, Parameters: params}
+	}
+	return out
+}
+
+// emittedPriceServer answers one message per protocol and records every request
+// body, so a case can read the tool list that actually dispatched. Every
+// protocol answers here because the price under test is the one each route's own
+// builder emits.
 func emittedPriceServer(t *testing.T) (*httptest.Server, func() []map[string]any) {
 	t.Helper()
 	var mu sync.Mutex
@@ -51,6 +83,10 @@ func emittedPriceServer(t *testing.T) (*httptest.Server, func() []map[string]any
 			_, _ = w.Write([]byte(`{"id":"resp_1","model":"m","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
 		case "/chat/completions":
 			_, _ = w.Write([]byte(`{"id":"chatcmpl-1","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+		case "/messages":
+			_, _ = w.Write([]byte(`{"id":"msg_1","model":"model","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+		case "/models/model:generateContent":
+			_, _ = w.Write([]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2},"modelVersion":"model"}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -66,26 +102,31 @@ func emittedPriceServer(t *testing.T) (*httptest.Server, func() []map[string]any
 // emittedPriceRoute builds a client dispatching to an instance of the given
 // protocol that carries maxInput, has no registered override, and reaches the
 // test server. No override is registered because an override route marshals the
-// definitions it is handed; the case under test is the built-in builder.
+// definitions it is handed; the cases under test are the built-in builders.
 func emittedPriceRoute(t *testing.T, maxInput int, protocol string, strict bool) (*Client, registry.Resolved, func() []map[string]any) {
 	return emittedPriceRouteWithTransportBody(t, maxInput, protocol, strict, nil)
 }
 
 // emittedPriceRouteWithTransportBody is emittedPriceRoute with the row's
-// transport body constants set, so a test can put a value on the wire that the
+// transport body constants set, so a case can put a value on the wire that the
 // builder does not write. The count-tokens endpoint is pinned unsupported: the
 // reading these cases compare is the local estimate, which is the fallback a
 // caller actually sizes a request with on a route that has no counter.
 func emittedPriceRouteWithTransportBody(t *testing.T, maxInput int, protocol string, strict bool, body map[string]any) (*Client, registry.Resolved, func() []map[string]any) {
 	t.Helper()
 	srv, bodies := emittedPriceServer(t)
+	base := "openai"
+	switch protocol {
+	case registry.ProtocolAnthropic, registry.ProtocolGoogle:
+		base = protocol
+	}
 	r, err := registry.Load(
 		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
 		registry.WithStateRoot(t.TempDir()),
 		registry.WithEnv(func(string) (string, bool) { return "", false }),
 		registry.WithInstances(map[string]registry.Provider{
 			"emitted-price": {
-				Base:      "openai",
+				Base:      base,
 				Protocol:  protocol,
 				Surface:   registry.SurfaceGeneric,
 				APIKey:    "unused",
@@ -109,6 +150,9 @@ func emittedPriceRouteWithTransportBody(t *testing.T, maxInput int, protocol str
 	}
 	if res.Caps.MaxInputTokens == nil || *res.Caps.MaxInputTokens != maxInput {
 		t.Fatalf("resolved max_input = %v, want %d", res.Caps.MaxInputTokens, maxInput)
+	}
+	if res.Protocol != protocol {
+		t.Fatalf("resolved protocol = %q, want %q: the fixture must dispatch the route under test", res.Protocol, protocol)
 	}
 	return c, res, bodies
 }
@@ -202,6 +246,133 @@ func TestAdmissionRefusesARequestBilledBeforeTheSubstitution(t *testing.T) {
 	}
 }
 
+// A route that substitutes a schema for a parameterless tool has to price that
+// substitution before dispatch, on every protocol that does it.
+//
+// The Anthropic and Google builders write an open empty object where the caller
+// declared none, and the price is taken over the list the builder emits. The
+// catalog's own count omits them: an input cap between the two readings admits
+// the request in preflight and then refuses the dispatch, which is the
+// disagreement this pins. Both entry points are covered because both admit
+// through the same budget.
+func TestAParameterlessToolIsPricedByTheEmittedSchema(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		protocol  string
+		schemaKey string
+	}{
+		{name: "anthropic", protocol: registry.ProtocolAnthropic, schemaKey: "input_schema"},
+		{name: "google", protocol: registry.ProtocolGoogle, schemaKey: "parameters"},
+	} {
+		for _, entry := range []struct {
+			name string
+			call func(*testing.T, *Client, Request) error
+		}{
+			{
+				name: "complete",
+				call: func(t *testing.T, c *Client, req Request) error {
+					t.Helper()
+					_, err := c.Complete(context.Background(), req)
+					return err
+				},
+			},
+			{
+				name: "stream",
+				call: func(t *testing.T, c *Client, req Request) error {
+					t.Helper()
+					st, err := c.Stream(context.Background(), req)
+					if err != nil {
+						return err
+					}
+					for range st.Events() {
+					}
+					return st.Close()
+				},
+			},
+		} {
+			t.Run(tc.name+"/"+entry.name, func(t *testing.T) {
+				t.Parallel()
+				defs := substitutedParameterlessCatalog(8)
+				advertised := ToolsJSONBytes(defs)
+				req := Request{
+					Provider:       "emitted-price",
+					Model:          "model",
+					Messages:       []Message{User("x")},
+					Tools:          defs,
+					ToolsJSONBytes: advertised,
+				}
+
+				// The emitted list, read from the wire, is what the request costs.
+				ample, ampleRes, ampleBodies := emittedPriceRoute(t, 1_000_000, tc.protocol, false)
+				if _, err := ample.Complete(context.Background(), req); err != nil {
+					t.Fatalf("Complete under an ample cap: %v", err)
+				}
+				dispatched := ampleBodies()
+				if len(dispatched) != 1 {
+					t.Fatalf("requests on the wire = %d, want 1", len(dispatched))
+				}
+				wire := ToolsJSONBytes(wireToolDefs(t, dispatched[0], tc.schemaKey))
+				admittedReading := EstimateInputTokensForResolved(ampleRes, req).Tokens
+				wireReading := EstimateInputTokensForRoute(ampleRes, req, false).Tokens
+				if wireReading <= admittedReading {
+					t.Fatalf("fixture does not distinguish the two readings: catalog=%d wire=%d",
+						admittedReading, wireReading)
+				}
+
+				// A cap between the catalog's reading and the emitted one. Preflight
+				// has to refuse the request the dispatch refuses.
+				limit := capBetweenPrices(t, admittedReading, wireReading)
+				c, _, bodies := emittedPriceRoute(t, limit, tc.protocol, false)
+				if _, ok := errors.AsType[*ContextBudgetError](entry.call(t, c, req)); !ok {
+					t.Fatalf("dispatch admitted the request under a cap of %d, want the budget rejection "+
+						"preflight reported: %d request(s) reached the wire", limit, len(bodies()))
+				}
+				if got := len(bodies()); got != 0 {
+					t.Fatalf("requests on the wire = %d, want 0: a refused request must not dispatch", got)
+				}
+
+				// The price itself is the emitted list's, measured against the wire
+				// rather than restated here.
+				if got := EffectiveToolsJSONBytes(req, ampleRes, false); got != wire {
+					t.Fatalf("preflight price = %d bytes, want the wire list's %d: the builder writes a schema "+
+						"for a parameterless tool, and a price that omits it is smaller than the request that "+
+						"dispatches", got, wire)
+				}
+				// And the price leaves the request alone: the stamp is still the
+				// catalog's count.
+				if req.ToolsJSONBytes != advertised {
+					t.Fatalf("pricing moved the request's stamp to %d, want the catalog's %d",
+						req.ToolsJSONBytes, advertised)
+				}
+			})
+		}
+	}
+}
+
+// preparedParameterlessCatalog is tools prepared the way Generate prepares them:
+// a no-argument declaration carrying the open empty object, so the strict
+// decision is the only thing that can replace it.
+func preparedParameterlessCatalog(n int) []ToolDefinition {
+	defs := parameterlessCatalog(n)
+	for i := range defs {
+		defs[i] = defs[i].WithNoParametersDeclared()
+	}
+	return defs
+}
+
+// substitutedParameterlessCatalog is a catalog whose tools declare no parameters
+// and carry a description, so the wire list a route emits and the list
+// ToolsJSONBytes measures describe the same tool objects. Every route must
+// synthesize a schema for each of them.
+func substitutedParameterlessCatalog(n int) []ToolDefinition {
+	defs := parameterlessCatalog(n)
+	for i := range defs {
+		defs[i].Description = "probe tool " + string(rune('a'+i%26))
+	}
+	return defs
+}
+
 // A strict route's schema has to reach admission the same way the substitution
 // does.
 //
@@ -265,17 +436,6 @@ func TestAdmissionPricesTheStrictProjectionAndOnlyOnACapableRoute(t *testing.T) 
 				"compare a projected route against an unprojected one", i)
 		}
 	}
-}
-
-// preparedParameterlessCatalog is tools prepared the way Generate prepares them:
-// a no-argument declaration carrying the open empty object, so the strict
-// decision is the only thing that can replace it.
-func preparedParameterlessCatalog(n int) []ToolDefinition {
-	defs := parameterlessCatalog(n)
-	for i := range defs {
-		defs[i] = defs[i].WithNoParametersDeclared()
-	}
-	return defs
 }
 
 // The dispatcher hands the wire the list the price describes.
@@ -440,75 +600,6 @@ func TestCountInputTokensPricesWhatTheRouteEmits(t *testing.T) {
 	}
 }
 
-// An unsubstituted request must still price exactly as it did before.
-//
-// A catalog that carries every schema its builder will send has nothing to
-// substitute and nothing to project on a route without the capability, so the
-// price must be the advertised count. A fix that shifted every price would show
-// here as a count that moved when the wire did not.
-func TestAnUnsubstitutedRequestPricesAsBefore(t *testing.T) {
-	t.Parallel()
-	defs := unstructuredCatalog()
-	advertised := ToolsJSONBytes(defs)
-	req := Request{
-		Provider:       "emitted-price",
-		Model:          "model",
-		Messages:       []Message{User("x")},
-		Tools:          defs,
-		ToolsJSONBytes: advertised,
-	}
-
-	// A route without strict enforcement sends every schema as advertised.
-	if got := EffectiveToolsJSONBytes(req, responsesRowOn(false), false); got != advertised {
-		t.Fatalf("unsubstituted count = %d, want the advertised %d: this catalog carries every schema its "+
-			"builder sends", got, advertised)
-	}
-	// A strict route must not report a change either: these required lists are
-	// already complete, so the projection only reorders them and the bytes are
-	// the same.
-	if got := EffectiveToolsJSONBytes(req, responsesRowOn(true), false); got != advertised {
-		t.Fatalf("strict count = %d, want the advertised %d: the projection only reorders an already complete "+
-			"required list, so the emitted bytes are the same", got, advertised)
-	}
-	// And the estimate over the priced request equals the estimate over the
-	// original, which is the reading every caller already had.
-	res := responsesRowOn(true)
-	if a, b := EstimateInputTokensForResolved(res, req).Tokens,
-		EstimateInputTokensForRoute(res, req, false).Tokens; a != b {
-		t.Fatalf("estimate moved from %d to %d for a catalog whose emitted bytes are unchanged", a, b)
-	}
-}
-
-// unstructuredCatalog is every tool with parameters and no strict projection
-// work left to do.
-func unstructuredCatalog() []ToolDefinition {
-	return []ToolDefinition{
-		{
-			Name:        "write_file",
-			Description: "write a file",
-			Parameters: map[string]any{
-				"type":                 "object",
-				"additionalProperties": false,
-				"properties": map[string]any{
-					"path":    map[string]any{"type": "string"},
-					"content": map[string]any{"type": "string"},
-				},
-				"required": []string{"content", "path"},
-			},
-		},
-		{
-			Name:        "read_file",
-			Description: "read a file",
-			Parameters: map[string]any{
-				"type":                 "object",
-				"additionalProperties": false,
-				"properties":           map[string]any{"path": map[string]any{"type": "string"}},
-				"required":             []string{"path"},
-			},
-		},
-	}
-}
-
 // strictGrowthCatalog is tools whose parameters gain bytes under a strict
 // projection: a closed scalar value set gains the explicit type it implies, and
 // the object is closed with its required list stated.
@@ -538,55 +629,4 @@ func strictGrowthCatalog(n int) []ToolDefinition {
 		}
 	}
 	return defs
-}
-
-// The emitted count is the whole charge: the parameterless substitution is part
-// of the list, so it cannot also be added on top of it.
-//
-// Admission prices the list the builder emits, which already carries the
-// substituted schemas for a parameterless tool. Applying the adapter's
-// parameterless byte adjustment over that answer would charge those bytes twice:
-// an input cap between the two counts refuses a request that fits, and the count
-// a caller sizes with is larger than the request that dispatches. Each route
-// reaches the one number its own builder answers with.
-func TestTheParameterlessDeltaIsChargedOnceOverAnEmittedPrice(t *testing.T) {
-	t.Parallel()
-	defs := preparedParameterlessCatalog(4)
-	strict, relaxed := responsesRowOn(true), responsesRowOn(false)
-	advertised := ToolsJSONBytes(defs)
-
-	p, ok := ProtocolFor(strict.Protocol)
-	if !ok {
-		t.Fatalf("no protocol for %q", strict.Protocol)
-	}
-	sent, changed := p.(ToolSchemaDeriver).EmitToolSchemas(defs, strict)
-	if !changed {
-		t.Fatal("fixture does not make the builder change anything")
-	}
-	emitted := ToolsJSONBytes(sent)
-	if emitted == advertised {
-		t.Fatalf("fixture does not distinguish the two counts: both %d", advertised)
-	}
-
-	// A stamped request and an unstamped one price the same list, once.
-	for _, req := range []Request{
-		{Tools: defs},
-		{Tools: defs, ToolsJSONBytes: advertised},
-	} {
-		if got := EffectiveToolsJSONBytes(req, strict, false); got != emitted {
-			t.Fatalf("admitted input prices the catalog at %d, want the emitted %d: the parameterless delta is "+
-				"charged a second time over a count that already includes it", got, emitted)
-		}
-	}
-	// The relaxed route sends these definitions unchanged, so its own count is
-	// the charge, not the strict one.
-	if got := EffectiveToolsJSONBytes(Request{Tools: defs, ToolsJSONBytes: advertised}, relaxed, false); got != advertised {
-		t.Fatalf("relaxed admission prices the catalog at %d, want the catalog's %d: this route sends the "+
-			"definitions it was handed", got, advertised)
-	}
-	// An override marshals the definitions it is handed, so the catalog's count
-	// is its wire count.
-	if got := EffectiveToolsJSONBytes(Request{Tools: defs, ToolsJSONBytes: advertised}, strict, true); got != advertised {
-		t.Fatalf("override admission prices the catalog at %d, want the catalog's %d", got, advertised)
-	}
 }
