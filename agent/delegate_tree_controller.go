@@ -94,8 +94,9 @@ type delegateTreeController struct {
 	// delegate's sampled hold changes, so a receiver can apply the highest
 	// sequence it has seen and reject a sample that arrived late. See
 	// holdSequenceForLocked.
-	holdSequences uint64
-	holdSamples   map[string]delegateHoldEntry
+	holdSequences        uint64
+	holdSamples          map[string]delegateHoldEntry
+	publishedHoldSamples map[string]delegateHoldSample
 
 	rootSessionID       string
 	stateDir            string
@@ -1000,17 +1001,24 @@ func (c *delegateTreeController) delegateOwnerOfSessionLocked(sessionID string) 
 //
 // An unstated start time counts as neither the oldest nor zero: a job whose
 // record has no start cannot claim to be the oldest wait.
+func (c *delegateTreeController) liveRuntimeLocked(delegateID string) *Session {
+	if live := c.live[delegateID]; live != nil {
+		return live.runtime
+	}
+	return nil
+}
+
 func (c *delegateTreeController) sampleDrainHoldLocked(delegateID string) delegateHoldSample {
 	if c == nil || delegateID == "" {
 		return delegateHoldSample{}
 	}
-	live := c.live[delegateID]
-	if live == nil || live.runtime == nil || !live.runtime.drainHeld.Load() {
+	runtime := c.liveRuntimeLocked(delegateID)
+	if runtime == nil || !runtime.drainHeld.Load() {
 		return delegateHoldSample{}
 	}
 	var sample delegateHoldSample
-	if live.runtime.jobManager != nil {
-		if count, oldest := live.runtime.jobManager.runningOwnedShellJobs(); count > 0 {
+	if runtime.jobManager != nil {
+		if count, oldest := runtime.jobManager.runningOwnedShellJobs(); count > 0 {
 			sample.heldJobs, sample.jobCount, sample.oldestJob = true, count, oldest
 		}
 	}
@@ -1034,6 +1042,9 @@ func (c *delegateTreeController) sampleDrainHoldLocked(delegateID string) delega
 // sequence that orders it. The caller holds c.mu.
 func (c *delegateTreeController) drainHoldForDelegateLocked(delegateID string) (delegateHoldSample, uint64) {
 	if c == nil || delegateID == "" {
+		return delegateHoldSample{}, 0
+	}
+	if c.liveRuntimeLocked(delegateID) == nil {
 		return delegateHoldSample{}, 0
 	}
 	sample := c.sampleDrainHoldLocked(delegateID)
@@ -1075,13 +1086,13 @@ func (c *delegateTreeController) changedDrainHoldAncestorsLocked(rows []delegate
 				break
 			}
 			if _, dup := already[current]; !dup {
-				if live := c.live[current]; live != nil && live.runtime != nil {
+				if c.liveRuntimeLocked(current) != nil {
 					sample := c.sampleDrainHoldLocked(current)
-					prior, known := c.holdSamples[current]
-					// Never sampled: a nonzero sample is news, the zero one is not.
+					prior, known := c.publishedHoldSamples[current]
+					// Never published: a nonzero sample is news, the zero one is not.
 					moved := sample != (delegateHoldSample{})
 					if known {
-						moved = prior.sample != sample
+						moved = prior != sample
 					}
 					if moved {
 						changed = append(changed, current)
@@ -1113,8 +1124,12 @@ func (c *delegateTreeController) changedDrainHoldAncestorsLocked(rows []delegate
 // The bump is keyed on the sampled value, so re-reading an unchanged hold
 // returns the same sequence and publishes nothing. The caller holds c.mu.
 func (c *delegateTreeController) holdSequenceForLocked(delegateID string, sample delegateHoldSample) uint64 {
-	if prior, ok := c.holdSamples[delegateID]; ok && prior.sample == sample {
+	prior, ok := c.holdSamples[delegateID]
+	if ok && prior.sample == sample {
 		return prior.sequence
+	}
+	if !ok && sample == (delegateHoldSample{}) {
+		return 0
 	}
 	c.holdSequences++
 	if c.holdSamples == nil {
@@ -1122,6 +1137,22 @@ func (c *delegateTreeController) holdSequenceForLocked(delegateID string, sample
 	}
 	c.holdSamples[delegateID] = delegateHoldEntry{sample: sample, sequence: c.holdSequences}
 	return c.holdSequences
+}
+
+// recordPublishedHoldSampleLocked records the last hold sample emitted in a
+// delegate/updated frame so ancestor change detection ignores read-only samples.
+// The caller holds c.mu.
+func (c *delegateTreeController) recordPublishedHoldSampleLocked(delegateID string, sample delegateHoldSample) {
+	if c == nil || delegateID == "" {
+		return
+	}
+	if _, ok := c.publishedHoldSamples[delegateID]; !ok && sample == (delegateHoldSample{}) {
+		return
+	}
+	if c.publishedHoldSamples == nil {
+		c.publishedHoldSamples = make(map[string]delegateHoldSample, len(c.live))
+	}
+	c.publishedHoldSamples[delegateID] = sample
 }
 
 // watchClearAuthority reports whether the calling session may clear a

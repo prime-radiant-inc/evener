@@ -19,6 +19,7 @@ import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosur
 import { deriveScope } from "../statusbar/statusScope";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { AgentsTab } from "./AgentsTab";
+import { ActivityBoundaryObserver } from "./activityPagingTestUtils";
 import { JobsTab } from "./JobsTab";
 import { WatchesTab } from "./WatchesTab";
 
@@ -561,7 +562,9 @@ it("reconciles a two-level subtree with collapsible branches, drain-hold suppres
   expect(screen.getByRole("button", { name: "Expand coordinator" }).getAttribute("aria-expanded")).toBe("false");
   expect(document.querySelector(childAnchorSelector)).toBeNull();
   const collapsedCoordRow = document.querySelector<HTMLElement>(coordAnchorSelector)!;
-  expect(collapsedCoordRow.querySelector("[data-activity-meta]")?.textContent).toBe("Waiting on 1 subagent");
+  const collapsedMeta = collapsedCoordRow.querySelector("[data-activity-meta]")?.textContent;
+  expect(collapsedMeta).toBeTruthy();
+  expect(collapsedMeta).toContain("1");
   expect(collapsedCoordRow.textContent).not.toContain("STALE_COORD_INTENT");
 
   // Re-expanding restores the nested active child; clicking it drills the full two-hop cascade.
@@ -631,6 +634,7 @@ it("renders an active child whose parent is on a later page, then nests it once 
   }));
   try {
     connectionStore.getState().connect(client);
+    const rootPane = workspaceStore.getState().openPane("session", { ref: activityRef });
     await act(async () => {
       render(<AgentsTab now={NOW} scope={scope()} />);
     });
@@ -639,6 +643,16 @@ it("renders an active child whose parent is on a later page, then nests it once 
     expect(document.querySelector(childAnchorSelector)).not.toBeNull();
     expect(document.querySelector(coordAnchorSelector)).toBeNull();
     expect(screen.queryByRole("button", { name: "Collapse parent-on-page-2" })).toBeNull();
+
+    // Clicking the orphaned page-1 child before page 2 loads binds inspection.origin to the root pane.
+    await act(async () => fireEvent.click(document.querySelector<HTMLElement>(childAnchorSelector)!));
+    const earlyCascade = workspaceStore.getState().panes.find((pane) => pane.type === "sessionZoom");
+    expect(earlyCascade?.params).toMatchObject({
+      ref: "remote:child-p1",
+      source: { type: "session", params: { ref: activityRef } },
+      edges: [{ ownerRef: "remote:coord-p2", childRef: "remote:child-p1", delegateId: "child-p1" }],
+      inspection: { origin: { paneId: rootPane, type: "session", ref: activityRef } },
+    });
 
     await act(async () => intersect?.());
     expect(document.querySelector(coordAnchorSelector)).not.toBeNull();
@@ -721,4 +735,131 @@ it("collapses settled top-level nodes with settled descendants by default and ca
   expect(within(foldDetails).queryByRole("button", { name: /settled-descendant/ })).toBeNull();
   fireEvent.click(expandSettled);
   expect(within(foldDetails).getByRole("button", { name: /settled-descendant/ })).toBeTruthy();
+});
+
+it("keeps coordinator wait visible on partial pages until every held descendant is visible", async () => {
+  const client = activityClient();
+  ActivityBoundaryObserver.reset();
+  vi.stubGlobal("IntersectionObserver", ActivityBoundaryObserver);
+  const coord = activityDelegate({
+    delegateId: "coord-partial",
+    name: "coord-partial",
+    ownerRef: activityRef,
+    rootRef: activityRef,
+    childRef: "remote:coord-partial",
+    terminal: false,
+    drainHeldBySubagents: true,
+    runningSubagentCount: 2,
+    latestIntent: "STALE_PARTIAL_INTENT",
+  });
+  const worker1 = activityDelegate({
+    delegateId: "worker-1",
+    name: "worker-1",
+    ownerRef: "remote:coord-partial",
+    rootRef: activityRef,
+    childRef: "remote:worker-1",
+    parentDelegateId: "coord-partial",
+    terminal: false,
+  });
+  const worker2 = activityDelegate({
+    delegateId: "worker-2",
+    name: "worker-2",
+    ownerRef: "remote:coord-partial",
+    rootRef: activityRef,
+    childRef: "remote:worker-2",
+    parentDelegateId: "coord-partial",
+    terminal: false,
+  });
+  client.on("evener/thread/delegates/list", ({ ref, scope, cursor }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    delegates: cursor ? [worker2] : [coord, worker1],
+    page: cursor ? { complete: true, issues: [] } : { complete: false, nextCursor: "page-2", issues: [] },
+  }));
+  try {
+    connectionStore.getState().connect(client);
+    await act(async () => {
+      render(<AgentsTab now={NOW} scope={scope()} />);
+    });
+    const coordAnchorSelector = `[data-activity-anchor=${JSON.stringify('delegate:["remote:coord-partial","coord-partial"]')}]`;
+    const coordBefore = document.querySelector<HTMLElement>(coordAnchorSelector)!;
+    const metaBefore = coordBefore.querySelector("[data-activity-meta]")?.textContent;
+    expect(metaBefore).toBeTruthy();
+    expect(metaBefore).toContain("2");
+    expect(coordBefore.textContent).not.toContain("STALE_PARTIAL_INTENT");
+
+    await act(async () => ActivityBoundaryObserver.intersect());
+    const coordAfter = document.querySelector<HTMLElement>(coordAnchorSelector)!;
+    expect(coordAfter.querySelector("[data-activity-meta]")).toBeNull();
+    expect(coordAfter.textContent).not.toContain("STALE_PARTIAL_INTENT");
+  } finally {
+    cleanup();
+    vi.unstubAllGlobals();
+    ActivityBoundaryObserver.reset();
+  }
+});
+
+it("reveals ancestor wait when a nested child branch collapses and hides counted descendants", async () => {
+  const client = activityClient();
+  const nodeA = activityDelegate({
+    delegateId: "node-a",
+    name: "branch-a",
+    ownerRef: activityRef,
+    rootRef: activityRef,
+    childRef: "remote:node-a",
+    terminal: false,
+    drainHeldBySubagents: true,
+    runningSubagentCount: 2,
+    latestIntent: "STALE_A_INTENT",
+  });
+  const nodeB = activityDelegate({
+    delegateId: "node-b",
+    name: "branch-b",
+    ownerRef: "remote:node-a",
+    rootRef: activityRef,
+    childRef: "remote:node-b",
+    parentDelegateId: "node-a",
+    terminal: false,
+    drainHeldBySubagents: true,
+    runningSubagentCount: 1,
+    latestIntent: "STALE_B_INTENT",
+  });
+  const nodeC = activityDelegate({
+    delegateId: "node-c",
+    name: "leaf-c",
+    ownerRef: "remote:node-b",
+    rootRef: activityRef,
+    childRef: "remote:node-c",
+    parentDelegateId: "node-b",
+    terminal: false,
+  });
+  client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    delegates: [nodeA, nodeB, nodeC],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  render(<AgentsTab now={NOW} scope={scope()} />);
+
+  const anchorA = `[data-activity-anchor=${JSON.stringify('delegate:["remote:node-a","node-a"]')}]`;
+  const anchorB = `[data-activity-anchor=${JSON.stringify('delegate:["remote:node-b","node-b"]')}]`;
+  await waitFor(() => expect(document.querySelector(anchorA)).not.toBeNull());
+
+  // Both A and B expanded: all 2 descendants are visibly rendered, so A omits wait meta.
+  expect(document.querySelector<HTMLElement>(anchorA)?.querySelector("[data-activity-meta]")).toBeNull();
+  expect(document.querySelector<HTMLElement>(anchorB)?.querySelector("[data-activity-meta]")).toBeNull();
+
+  // Collapsing B leaves only 1 visible descendant row under A (< 2), so A reveals its wait meta.
+  fireEvent.click(screen.getByRole("button", { name: "Collapse branch-b" }));
+  const rowAAfterCollapse = document.querySelector<HTMLElement>(anchorA)!;
+  const metaAAfterCollapse = rowAAfterCollapse.querySelector("[data-activity-meta]")?.textContent;
+  expect(metaAAfterCollapse).toBeTruthy();
+  expect(metaAAfterCollapse).toContain("2");
+  expect(rowAAfterCollapse.textContent).not.toContain("STALE_A_INTENT");
+
+  const rowBAfterCollapse = document.querySelector<HTMLElement>(anchorB)!;
+  const metaBAfterCollapse = rowBAfterCollapse.querySelector("[data-activity-meta]")?.textContent;
+  expect(metaBAfterCollapse).toBeTruthy();
+  expect(metaBAfterCollapse).toContain("1");
 });

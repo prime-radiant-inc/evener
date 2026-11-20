@@ -55,7 +55,7 @@ export function ActivityPeek({
                   scope={scope}
                   now={now}
                   onDrill={(_sub, chain) => {
-                    enterAgentCascade(chain, paneId);
+                    enterAgentCascade(chain, paneId, scope.leaf.ref);
                     onClose();
                   }}
                 />

@@ -325,21 +325,10 @@ function runningCommand(session: ActivitySessionNode | undefined): string | unde
 	return undefined;
 }
 
-/**
- * The drain hold a delegate read carries. The activity tree does not carry it
- * yet, so it is read structurally: a producer that supplies the fields makes a
- * parked coordinator say what it waits on, and one that omits them leaves the
- * branch inert.
- */
-type DrainHeldDelegate = ActivityDelegate & {
-	drainHeldBySubagents?: boolean;
-	runningSubagentCount?: number;
-};
-
 /** The latest activity or outcome (spec 9) from what the tree carries
  * (ruling 6). */
 export function subagentWhy(row: SubagentRow, now: number): SubagentWhy {
-	const delegate: DrainHeldDelegate = row.delegate;
+	const delegate = row.delegate;
 	if (row.state === "failed") return { kind: "failed", word: "Failed", text: delegateEndingText(delegate) ?? "" };
 	if (row.state === "done") {
 		if (row.stopped) return { kind: "stopped", text: "Stopped" };

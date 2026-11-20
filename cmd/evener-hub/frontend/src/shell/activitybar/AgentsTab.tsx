@@ -4,13 +4,18 @@ import { ActivityPageBoundary } from "./ActivityPageBoundary";
 // disclosure grouped by parent. Visible page boundaries add demand to the
 // shared owner without acquiring another reader or retry loop.
 
-import { activityNodeID, type SessionDelegate } from "@evener/appwire-client";
+import {
+  activityNodeID,
+  isDisclosureOpenIn,
+  resolveDelegateParents,
+  type SessionDelegate,
+} from "@evener/appwire-client";
 import { Fragment, type ReactNode, useMemo } from "react";
 import { openTranscript } from "../../panes/session/transcript/openTranscript";
 import { enterAgentCascade } from "../../panes/zoom/actions";
 import { useSessionActivity } from "../../stores/sessionActivity";
 import { Chevron, Disclosure, EmptyState, IconButton, InlineNotice, Skeleton } from "../../widgets";
-import { isDisclosureOpen, setDisclosureOpen } from "../../widgets/disclosure/disclosureStore";
+import { isDisclosureOpen, setDisclosureOpen, useDisclosureSnapshot } from "../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { isMobileViewport } from "../useIsMobile";
 import { useActivityScrollProgress } from "./ActivityViewport";
@@ -38,13 +43,9 @@ interface DelegateTreeNode {
 }
 
 function buildDelegateTree(rows: readonly SessionDelegate[], rootRefs: readonly string[]): DelegateTreeNode[] {
-  const rootRefSet = new Set(rootRefs);
-  const byChildRef = new Map<string, SessionDelegate[]>();
+  const { parentOf, cyclic } = resolveDelegateParents(rows, rootRefs);
   const nodeByRow = new Map<SessionDelegate, DelegateTreeNode>();
   for (const row of rows) {
-    const candidates = byChildRef.get(row.childRef) ?? [];
-    candidates.push(row);
-    byChildRef.set(row.childRef, candidates);
     nodeByRow.set(row, {
       id: activityNodeID({ ...row, kind: "delegate" }),
       sub: row,
@@ -55,34 +56,9 @@ function buildDelegateTree(rows: readonly SessionDelegate[], rootRefs: readonly 
       settledCount: 0,
     });
   }
-  const parentOf = new Map<SessionDelegate, SessionDelegate | undefined>();
-  for (const row of rows) {
-    if (rootRefSet.has(row.ownerRef)) continue;
-    parentOf.set(
-      row,
-      byChildRef
-        .get(row.ownerRef)
-        ?.find(
-          (candidate) =>
-            candidate !== row &&
-            candidate.rootRef === row.rootRef &&
-            (!row.parentDelegateId || candidate.delegateId === row.parentDelegateId),
-        ),
-    );
-  }
-  const cyclic = (row: SessionDelegate): boolean => {
-    const seen = new Set<SessionDelegate>([row]);
-    let ancestor = parentOf.get(row);
-    while (ancestor) {
-      if (seen.has(ancestor)) return true;
-      seen.add(ancestor);
-      ancestor = parentOf.get(ancestor);
-    }
-    return false;
-  };
   const roots: DelegateTreeNode[] = [];
   for (const node of nodeByRow.values()) {
-    const parent = !cyclic(node.sub) ? parentOf.get(node.sub) : undefined;
+    const parent = !cyclic.has(node.sub) ? parentOf.get(node.sub) : undefined;
     const parentNode = parent ? nodeByRow.get(parent) : undefined;
     if (parentNode) parentNode.children.push(node);
     else roots.push(node);
@@ -98,6 +74,29 @@ function buildDelegateTree(rows: readonly SessionDelegate[], rootRefs: readonly 
   };
   for (const root of roots) finalize(root, []);
   return roots;
+}
+
+function branchFoldID(foldPrefix: string, node: DelegateTreeNode): string {
+  return `${foldPrefix}\0branch\0${node.id}`;
+}
+
+function visibleChildrenOf(node: DelegateTreeNode, mode: "active" | "inactive"): DelegateTreeNode[] {
+  return node.children.filter((child) => (mode === "active" ? child.hasActive : child.hasSettled));
+}
+
+function countVisibleActiveRows(
+  node: DelegateTreeNode,
+  foldPrefix: string,
+  defaultExpanded: boolean,
+  isOpen: (id: string, fallback: boolean) => boolean,
+): number {
+  if (!isOpen(branchFoldID(foldPrefix, node), defaultExpanded)) return 0;
+  let count = 0;
+  for (const child of visibleChildrenOf(node, "active")) {
+    if (!child.sub.terminal) count += 1;
+    count += countVisibleActiveRows(child, foldPrefix, defaultExpanded, isOpen);
+  }
+  return count;
 }
 
 function branchClass(depth: number): string | undefined {
@@ -134,10 +133,18 @@ function AgentBranch({
   now: number;
   onDrill: (sub: SessionDelegate, chain: readonly SessionDelegate[]) => void;
 }) {
-  const branchFoldID = `${foldPrefix}\0branch\0${node.id}`;
-  const expanded = isDisclosureOpen(branchFoldID, defaultExpanded);
-  const visibleChildren = node.children.filter((child) => (mode === "active" ? child.hasActive : child.hasSettled));
+  const foldKey = branchFoldID(foldPrefix, node);
+  const expanded = isDisclosureOpen(foldKey, defaultExpanded);
+  const visibleChildren = visibleChildrenOf(node, mode);
   const hasChildren = visibleChildren.length > 0;
+  const showsChildren = mode === "active" && hasChildren && expanded;
+  const visibleActiveRows = useDisclosureSnapshot((state) =>
+    showsChildren
+      ? countVisibleActiveRows(node, foldPrefix, defaultExpanded, (id, fallback) =>
+          isDisclosureOpenIn(state, id, fallback),
+        )
+      : 0,
+  );
   const name = delegateRowName(node.sub);
   const renderedChildren = visibleChildren.map((child) => (
     <AgentBranch
@@ -169,9 +176,9 @@ function AgentBranch({
         sub={node.sub}
         anchorId={node.id}
         now={now}
-        omitSubagentWait={mode === "active" && hasChildren && expanded}
+        omitSubagentWait={showsChildren && visibleActiveRows >= (node.sub.runningSubagentCount ?? 0)}
         trailingAction={
-          hasChildren ? branchToggle(name, expanded, () => setDisclosureOpen(branchFoldID, !expanded)) : undefined
+          hasChildren ? branchToggle(name, expanded, () => setDisclosureOpen(foldKey, !expanded)) : undefined
         }
         onDrill={() => onDrill(node.sub, node.chain)}
       />
@@ -186,12 +193,17 @@ function AgentBranch({
   );
 }
 
-function drill(sub: SessionDelegate, chain: readonly SessionDelegate[] = [sub]): void {
+function drill(sub: SessionDelegate, chain: readonly SessionDelegate[] = [sub], scopeRef?: string): void {
   if (isMobileViewport()) openTranscript(sub.childRef, sub.ownerRef);
-  else enterAgentCascade(chain);
+  else enterAgentCascade(chain, undefined, scopeRef);
 }
 
-export function AgentsTab({ scope, now, onDrill = drill }: ActivityTabBodyProps) {
+function drillInto(scopeRef: string): (sub: SessionDelegate, chain?: readonly SessionDelegate[]) => void {
+  return (sub, chain) => drill(sub, chain, scopeRef);
+}
+
+export function AgentsTab({ scope, now, onDrill }: ActivityTabBodyProps) {
+  const handleDrill = onDrill ?? drillInto(scope.leaf.ref);
   const foldID = `${scope.leaf.ref}\0inactive-delegates`;
   const activeBranchPrefix = `${scope.leaf.ref}\0active`;
   const { snapshot, loadMore } = useSessionActivity(scope.leaf.ref, "subtree", "delegates");
@@ -227,7 +239,7 @@ export function AgentsTab({ scope, now, onDrill = drill }: ActivityTabBodyProps)
           mode="active"
           depth={0}
           now={now}
-          onDrill={onDrill}
+          onDrill={handleDrill}
         />
       ))}
       {settledRoots.length > 0 ? (
@@ -251,7 +263,7 @@ export function AgentsTab({ scope, now, onDrill = drill }: ActivityTabBodyProps)
                 mode="inactive"
                 depth={0}
                 now={now}
-                onDrill={onDrill}
+                onDrill={handleDrill}
               />
             ))}
           </div>

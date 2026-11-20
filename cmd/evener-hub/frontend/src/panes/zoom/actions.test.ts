@@ -631,3 +631,41 @@ test("a resume of an ancestor recorded only by authoritative ancestry follows th
     lease.release();
   }
 });
+
+test("an orphaned nested child entered from a session scope preserves its origin pane and unloaded parent edge", () => {
+  const source = pane(workspaceStore.getState().openPane("session", { ref: "root" }));
+  const orphan = activityDelegate({ ownerRef: "missing-parent", childRef: "leaf", delegateId: "d2" });
+  const cascadeId = enterAgentCascade([orphan], source.id, "root");
+  expect(cascadeId).not.toBe(source.id);
+  expect(pane(cascadeId)).toMatchObject({ type: "sessionZoom", slot: "secondary" });
+  expect(pane(cascadeId).params).toMatchObject({
+    ref: "leaf",
+    source: { type: "session", params: { ref: "root" } },
+    edges: [{ ownerRef: "missing-parent", childRef: "leaf", delegateId: "d2" }],
+    inspection: { origin: { paneId: source.id, type: "session", ref: "root" } },
+  });
+  expect(cascadeOrigin(pane(cascadeId))).toBe(source);
+
+  // Re-entering another orphaned child from the same session reuses the associated inspector.
+  const secondOrphan = activityDelegate({ ownerRef: "other-missing", childRef: "leaf-2", delegateId: "d3" });
+  expect(enterAgentCascade([secondOrphan], source.id, "root")).toBe(cascadeId);
+  expect(pane(cascadeId).params).toMatchObject({
+    ref: "leaf-2",
+    source: { type: "session", params: { ref: "root" } },
+    edges: [{ ownerRef: "other-missing", childRef: "leaf-2", delegateId: "d3" }],
+    inspection: { origin: { paneId: source.id, type: "session", ref: "root" } },
+  });
+});
+
+test("an orphaned nested child entered from a cascade column scope reuses that cascade pane", () => {
+  const source = pane(workspaceStore.getState().openPane("session", { ref: "root" }));
+  const cascadeId = enterAgentCascade(rootChild(), source.id);
+  const orphan = activityDelegate({ ownerRef: "missing-grandchild-parent", childRef: "deep-leaf", delegateId: "d3" });
+  expect(enterAgentCascade([orphan], cascadeId, "child")).toBe(cascadeId);
+  expect(pane(cascadeId).params).toMatchObject({
+    ref: "deep-leaf",
+    source: { type: "session", params: { ref: "root" } },
+    edges: [{ ownerRef: "missing-grandchild-parent", childRef: "deep-leaf", delegateId: "d3" }],
+    inspection: { origin: { paneId: source.id, type: "session", ref: "root" } },
+  });
+});
