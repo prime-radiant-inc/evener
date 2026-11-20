@@ -717,28 +717,8 @@ func TestRawArgs_Stream_ToolCallEndNormalizesArgumentsAndKeepsSpelling(t *testin
 	t.Parallel()
 	const spelled = `{ "a" : "<x&y>" }`
 	const canonical = `{"a":"\u003cx\u0026y\u003e"}`
-	argsToken := string(jsonStringToken(spelled))
-	body := "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"write_file\"}}\n\n" +
-		"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"write_file\",\"arguments\":" + argsToken + "}}\n\n" +
-		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"model\":\"gpt-5.5\",\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n"
-	srv, _ := server(t, http.StatusOK, body)
-	res := liveRes(srv, nil)
-	s, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), llm.ShapeRequest(userReq("hi"), res), res)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var end *llm.ToolCallData
-	for ev := range s.Events() {
-		switch ev.Type {
-		case llm.StreamEventError:
-			t.Fatalf("stream error: %v", ev.Err)
-		case llm.StreamEventToolCallEnd:
-			end = ev.ToolCall
-		}
-	}
-	if end == nil {
-		t.Fatal("stream produced no ToolCallEnd event")
-	}
+	events, _ := responsesEventsFromSSE(t, rawArgsResponsesSSE(spelled))
+	end := toolEvent(t, events, llm.StreamEventToolCallEnd)
 	if got := string(end.Arguments); got != canonical {
 		t.Fatalf("ToolCallEnd Arguments = %q, want the canonical %q", got, canonical)
 	}

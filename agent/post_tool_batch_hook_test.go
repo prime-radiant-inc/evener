@@ -556,6 +556,12 @@ func TestPostToolBatch_DeniedCallKeepsSpelledToolInput(t *testing.T) {
 	if len(batch) != 1 {
 		t.Fatalf("batchToolCalls = %+v, want one entry", batch)
 	}
+	f.sess.mu.Lock()
+	_, dispatched := f.sess.dispatchedToolArgs[call.ID]
+	f.sess.mu.Unlock()
+	if dispatched {
+		t.Fatalf("denied call %q has a dispatch record, so the batch input did not come from the fallback", call.ID)
+	}
 	hi := f.sess.hookInput(plugin.HookPostToolBatch)
 	hi.ToolCalls = batch
 	batchRes := f.sess.hookRunner.RunPostToolBatch(context.Background(), hi)

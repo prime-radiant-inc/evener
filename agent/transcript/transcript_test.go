@@ -377,9 +377,15 @@ func TestTranscriptPreservesToolArgumentsSpellingAndHTMLChars(t *testing.T) {
 	if !ok {
 		t.Fatalf("responses input = %T, want []any", responsesBody["input"])
 	}
-	responsesArgs := firstToolArguments(items)
+	var responsesArgs any
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		if item["type"] == "function_call" && item["call_id"] == spell.ID {
+			responsesArgs = item["arguments"]
+		}
+	}
 	if responsesArgs != spelled {
-		t.Fatalf("responses wire arguments = %q, want the preserved spelling %q", responsesArgs, spelled)
+		t.Fatalf("responses function_call arguments = %v, want the preserved spelling %q", responsesArgs, spelled)
 	}
 
 	chatRes := registry.Resolved{Instance: "openai", Protocol: registry.ProtocolOpenAIChat, ModelID: "gpt-5.5", WireID: "gpt-5.5",
@@ -392,38 +398,19 @@ func TestTranscriptPreservesToolArgumentsSpellingAndHTMLChars(t *testing.T) {
 	if !ok {
 		t.Fatalf("chat messages = %T, want []map[string]any", chatBody["messages"])
 	}
-	chatArgs := firstToolArguments(msgs)
+	var chatArgs any
+	for _, msg := range msgs {
+		if msg["role"] != "assistant" {
+			continue
+		}
+		calls, _ := msg["tool_calls"].([]map[string]any)
+		for _, call := range calls {
+			if fn, _ := call["function"].(map[string]any); call["id"] == spell.ID {
+				chatArgs = fn["arguments"]
+			}
+		}
+	}
 	if chatArgs != spelled {
-		t.Fatalf("chat wire arguments = %q, want the preserved spelling %q", chatArgs, spelled)
+		t.Fatalf("chat assistant tool call arguments = %v, want the preserved spelling %q", chatArgs, spelled)
 	}
-}
-
-// firstToolArguments returns the first "arguments" string in a decoded request
-// body, walking maps and slices. The transcript fixture carries exactly one
-// tool call, on either wire shape.
-func firstToolArguments(v any) string {
-	switch x := v.(type) {
-	case map[string]any:
-		if args, ok := x["arguments"].(string); ok {
-			return args
-		}
-		for _, child := range x {
-			if args := firstToolArguments(child); args != "" {
-				return args
-			}
-		}
-	case []any:
-		for _, child := range x {
-			if args := firstToolArguments(child); args != "" {
-				return args
-			}
-		}
-	case []map[string]any:
-		for _, child := range x {
-			if args := firstToolArguments(child); args != "" {
-				return args
-			}
-		}
-	}
-	return ""
 }
