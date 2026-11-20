@@ -9,41 +9,6 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// delegateWatchSourceBinding struct
-// ---------------------------------------------------------------------------
-
-func TestDelegateWatchSourceBindingStruct(t *testing.T) {
-	t.Parallel()
-	lease := delegateLease{delegateID: "dlg_1", generation: 1}
-	b := delegateWatchSourceBinding{lease: &lease, runtime: nil}
-	if b.lease == nil || b.lease.delegateID != "dlg_1" {
-		t.Fatalf("struct wrong: %+v", b)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// delegateWatchReceipt struct
-// ---------------------------------------------------------------------------
-
-func TestDelegateWatchReceiptStruct(t *testing.T) {
-	t.Parallel()
-	r := delegateWatchReceipt{
-		token:              42,
-		sourceDelegateID:   "dlg_src",
-		sourceGeneration:   3,
-		receiverDelegateID: "dlg_recv",
-		deliveryID:         "del_1",
-		updateSeq:          10,
-	}
-	if r.token != 42 || r.sourceDelegateID != "dlg_src" {
-		t.Fatalf("struct wrong: %+v", r)
-	}
-	if r.sourceGeneration != 3 || r.receiverDelegateID != "dlg_recv" {
-		t.Fatalf("struct wrong: %+v", r)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // validateWatchReceiptLocked
 // ---------------------------------------------------------------------------
 
@@ -324,47 +289,6 @@ func TestWatchSourceSessionsWithRoot(t *testing.T) {
 	sessions := c.watchSourceSessions()
 	if len(sessions) != 0 {
 		t.Fatalf("expected 0 sessions (rootRuntime is nil), got %d", len(sessions))
-	}
-}
-
-// ---------------------------------------------------------------------------
-// stableWatchDeliveryIdentity struct
-// ---------------------------------------------------------------------------
-
-func TestStableWatchDeliveryIdentityStruct(t *testing.T) {
-	t.Parallel()
-	id := stableWatchDeliveryIdentity{deliveryID: "del_1", updateSeq: 5}
-	if id.deliveryID != "del_1" || id.updateSeq != 5 {
-		t.Fatalf("struct wrong: %+v", id)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// stableWatchBootstrapSnapshot struct
-// ---------------------------------------------------------------------------
-
-func TestStableWatchBootstrapSnapshotStruct(t *testing.T) {
-	t.Parallel()
-	s := stableWatchBootstrapSnapshot{
-		stateDir:   "/state",
-		storePaths: []string{"/path1", "/path2"},
-		receiverByID: map[string]stableWatchReceiverSnapshot{
-			"dlg_1": {sessionID: "sess_1", transcriptRef: "local:sess_1"},
-		},
-	}
-	if s.stateDir != "/state" || len(s.storePaths) != 2 {
-		t.Fatalf("struct wrong: %+v", s)
-	}
-}
-
-func TestStableWatchReceiverSnapshotStruct(t *testing.T) {
-	t.Parallel()
-	s := stableWatchReceiverSnapshot{
-		sessionID:     "sess_1",
-		transcriptRef: "local:sess_1",
-	}
-	if s.sessionID != "sess_1" || s.transcriptRef != "local:sess_1" {
-		t.Fatalf("struct wrong: %+v", s)
 	}
 }
 
