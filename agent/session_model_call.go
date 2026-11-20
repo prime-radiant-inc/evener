@@ -2281,18 +2281,6 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 	// authorship names the agent that wrote it. Its provenance is likewise the
 	// only thing that separates it from the partner's own words.
 	t.Message = escapeAgentAuthoredUserInputBody(t, t.Message)
-	// A delegate's report or progress update and a watch's fire reach the owner
-	// inside a notification envelope the harness wrote around model-authored
-	// prose. The role alone reads that text as the partner speaking, so the
-	// envelope's framing is kept and the prose inside it is escaped.
-	t.Message = escapeNotificationCopyBody(t, t.Message)
-	// A retained task reminder's title, prompt, and notes were interpolated when
-	// it was written. A reminder recorded before the render-time escape existed
-	// still carries them raw, and replays as stored; its own steering kind is
-	// what says the fields inside it are model-authored.
-	if t.Kind == schema.TurnSteering && taskReminderSteeringKind(t.SteeringKind) {
-		t.Message = escapeMessageText(t.Message, escapeRetainedTaskReminder)
-	}
 	// The voice presentation reference rides its own text part, appended to the
 	// provider-bound copy. Appending it after the escapes keeps that seam: the
 	// escapes preserve line structure, so a reference appended first would sit

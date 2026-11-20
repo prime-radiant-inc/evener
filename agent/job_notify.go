@@ -7,6 +7,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/envvars"
 )
@@ -199,14 +200,27 @@ func escapeNotificationBody(s string) string {
 	return s
 }
 
+// escapeNotificationProse applies the notification body codec first (so "&" is
+// not double-escaped) and then defuses any remaining line-start frame openers
+// such as bracketed answer markers.
+func escapeNotificationProse(s string) string {
+	return sysmsg.EscapeModelAuthoredFrames(escapeNotificationBody(s))
+}
+
 // withNotificationNote appends a watch's note to a rendered notification body.
 // The note is the watch's own prose payload — the reason the model armed it —
 // so every fire shows it back, whatever the watch triggers on.
+//
+// A note is model-authored text riding a user-role notification, so it is
+// defused here where it is written into the harness's frame. The body codec
+// runs first and encodes the note's "<" and "&" for the wire; the model-frame
+// escape then denies the note the line-start openers the codec leaves alone, a
+// bracketed marker among them.
 func withNotificationNote(body, note string) string {
 	if note == "" {
 		return body
 	}
-	return body + "\nNote: " + escapeNotificationBody(note)
+	return body + "\nNote: " + escapeNotificationProse(note)
 }
 
 // notificationAttr renders one key="value" wrapper attribute with value
@@ -245,8 +259,11 @@ func formatJobNotificationBody(n jobNotification, excerpt notificationExcerpt, c
 			notificationAttr("delivery_id", n.WatchSend.DeliveryID),
 			notificationAttr("trigger", n.Reason),
 		}
+		// n.watchSendFrame was already escaped by buildWatchFrame (watchFrameProse),
+		// so encode only remaining "<" bytes without double-encoding "&lt;" or "&#91;".
+		frameBody := strings.ReplaceAll(strings.ToValidUTF8(n.watchSendFrame, "\uFFFD"), "<", "&lt;")
 		return fmt.Sprintf("<job-notification %s>\n%s\n</job-notification>",
-			strings.Join(attrs, " "), escapeNotificationBody(n.watchSendFrame))
+			strings.Join(attrs, " "), frameBody)
 	}
 
 	event := n.Status
@@ -307,9 +324,9 @@ func formatJobNotificationBody(n jobNotification, excerpt notificationExcerpt, c
 			return fmt.Sprintf("<job-notification %s>\n%s\n</job-notification>", strings.Join(attrs, " "), withNotificationNote(sentence, n.Note))
 		}
 		if n.isLongRunningJobsReminder() {
-			return fmt.Sprintf("<job-notification %s>\n%s\n</job-notification>", strings.Join(attrs, " "), escapeNotificationBody(n.Note))
+			return fmt.Sprintf("<job-notification %s>\n%s\n</job-notification>", strings.Join(attrs, " "), escapeNotificationProse(n.Note))
 		}
-		body := fmt.Sprintf("Watch event triggered: %s.", escapeNotificationBody(n.Reason))
+		body := fmt.Sprintf("Watch event triggered: %s.", escapeNotificationProse(n.Reason))
 		return fmt.Sprintf("<job-notification %s>\n%s\n</job-notification>", strings.Join(attrs, " "), withNotificationNote(body, n.Note))
 	}
 
@@ -337,7 +354,7 @@ func formatJobNotificationBody(n jobNotification, excerpt notificationExcerpt, c
 	}
 	body := withNotificationNote(strings.TrimSpace(fmt.Sprintf("Job %s %s. %s", n.JobID, event, instruction)), n.Note)
 	if excerpt.text != "" {
-		body += "\nexcerpt:\n" + escapeNotificationBody(excerpt.text)
+		body += "\nexcerpt:\n" + escapeNotificationProse(excerpt.text)
 	}
 	return fmt.Sprintf(
 		"<job-notification %s>\n%s\n</job-notification>",

@@ -1545,14 +1545,20 @@ func delegateNotificationContent(plan delegateDeliveryPlan) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		// The shared body codec preserves literal entities and escapes "<"
-		// so the delegate's own words cannot close or forge a frame.
-		kind, body = "update", escapeNotificationBody(message)
+		// The shared body codec preserves literal entities and escapes "<" so
+		// the delegate's own words cannot close or forge a frame. The model-frame
+		// escape then defuses the line-start openers the codec leaves alone — a
+		// bracketed answer marker among them — so an update's prose cannot arrive
+		// looking like input the harness wrote.
+		kind, body = "update", escapeNotificationProse(message)
 	} else {
 		packet, err := json.Marshal(plan.packet)
 		if err != nil {
 			return "", fmt.Errorf("marshal delegate delivery packet: %w", err)
 		}
+		// A report's body is the packet JSON, where the delegate's own prose is
+		// a JSON string: its line breaks are written as \n, so no line of it
+		// starts where the harness's framing does and the packet rides whole.
 		body = string(packet)
 	}
 	attrs = append(attrs, notificationAttr("kind", kind))
