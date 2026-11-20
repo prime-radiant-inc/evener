@@ -46,7 +46,7 @@ func TestLiveGenerationOwesSteering(t *testing.T) {
 func TestProjectDelegatePendingSteers(t *testing.T) {
 	t.Parallel()
 	// Empty history and no pending -> empty projected, empty bound.
-	projected, bound := projectDelegatePendingSteers(nil, nil, nil)
+	projected, bound, _ := projectDelegatePendingSteers(nil, nil, nil)
 	if len(projected) != 0 || len(bound) != 0 {
 		t.Fatalf("empty: projected=%d bound=%d", len(projected), len(bound))
 	}
@@ -56,7 +56,7 @@ func TestProjectDelegatePendingSteers(t *testing.T) {
 		schema.NewTurn(schema.TurnUserInput, llm.User("hello")),
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("hi")),
 	}
-	projected, _ = projectDelegatePendingSteers(history, nil, nil)
+	projected, _, _ = projectDelegatePendingSteers(history, nil, nil)
 	if len(projected) != 2 {
 		t.Fatalf("no pending: projected=%d, want 2", len(projected))
 	}
@@ -69,7 +69,7 @@ func TestProjectDelegatePendingSteers(t *testing.T) {
 		steerTurn,
 	}
 	pending := []delegateSteeringAdmission{{entryID: "turn_steer_1"}}
-	projected, bound = projectDelegatePendingSteers(history, pending, nil)
+	projected, bound, removedAt := projectDelegatePendingSteers(history, pending, nil)
 	// The steer should be removed from its position and appended at the end.
 	if len(projected) != 2 {
 		t.Fatalf("found: projected=%d, want 2", len(projected))
@@ -83,13 +83,16 @@ func TestProjectDelegatePendingSteers(t *testing.T) {
 	if _, ok := bound["turn_steer_1"]; !ok {
 		t.Fatal("bound should contain turn_steer_1")
 	}
+	if len(removedAt) != 1 || removedAt[0] != 1 {
+		t.Fatalf("found: removedAt=%v, want [1]: lifting the steer shifts the turns after it", removedAt)
+	}
 
 	// Pending steer NOT found in history -> not projected, not bound.
 	history = []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("hello")),
 	}
 	pending = []delegateSteeringAdmission{{entryID: "turn_missing"}}
-	projected, bound = projectDelegatePendingSteers(history, pending, nil)
+	projected, bound, _ = projectDelegatePendingSteers(history, pending, nil)
 	if len(projected) != 1 {
 		t.Fatalf("not found: projected=%d, want 1", len(projected))
 	}
@@ -104,11 +107,14 @@ func TestProjectDelegatePendingSteers(t *testing.T) {
 		schema.NewTurn(schema.TurnUserInput, llm.User("hello")),
 		excludedSteer,
 	}
-	projected, _ = projectDelegatePendingSteers(history, nil, map[string]struct{}{"turn_excluded": {}})
+	projected, _, droppedAt := projectDelegatePendingSteers(history, nil, map[string]struct{}{"turn_excluded": {}})
 	if len(projected) != 1 {
 		t.Fatalf("excluded: projected=%d, want 1", len(projected))
 	}
 	if projected[0].Kind != schema.TurnUserInput {
 		t.Fatal("excluded steer should be removed from projection")
+	}
+	if len(droppedAt) != 1 || droppedAt[0] != 1 {
+		t.Fatalf("excluded: droppedAt=%v, want [1]", droppedAt)
 	}
 }

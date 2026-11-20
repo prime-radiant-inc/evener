@@ -366,12 +366,12 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		// path below measures what was appended since this capture against it,
 		// and a filtered projection must not reopen that window.
 		presentedBoundary = len(snapshot) + len(droppedAt)
-		presentedTurns = snapshot
-		history, claimErr = s.delegateController.CompleteModelRequest(claim, snapshot, scope)
+		presentedTurns, scope, claimErr = s.delegateController.CompleteModelRequest(claim, snapshot, scope)
 		if claimErr != nil {
 			_ = s.delegateController.AbortModelRequest(claim)
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
 		}
+		history = expandHistory(presentedTurns, scope)
 	} else {
 		// THE RULE's other reach (LIFE-01, #2340): an unleased turn expands the
 		// resident history, and that history is where a deferred watch notice
@@ -515,7 +515,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			return true, budgetErr
 		}
 		req, budget = budgetedReq, budgeted
-		req, fullHistory, deltaTurns = s.planResponsesContinuation(ctx, profile, route, req, historyTurns, true, heldDropped)
+		req, fullHistory, deltaTurns = s.planResponsesContinuation(ctx, profile, route, req, presentedTurns, true, heldDropped)
 		budgetedReq, budgeted, budgetErr = route.admit(req)
 		if budgetErr != nil {
 			return true, budgetErr
