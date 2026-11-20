@@ -243,16 +243,13 @@ runtime_pair="${EVENER_QUALIFICATION_RUNTIME_BINARIES:-}"
 cd "$repo_root"
 
 if [ -n "$runtime_pair" ]; then
-	# The identity the qualification runner wrote for this run names the tree it
-	# checked out; the verifier refuses a pair from another revision, a pair
-	# without a manifest entry for either binary, and a pair whose bytes no
-	# longer match its manifest.
-	bash "$repo_root/scripts/native/ios/qualification/verify-runtime-pair.sh" "$runtime_pair" "$identity"
 	# The hub's daemons are exec'd from $evener_binary and carry the run
 	# directory's basename in argv, which is how cleanup proves it owns them;
-	# copy instead of running from the pair so that ownership tag stays.
-	cp "$runtime_pair/evener" "$evener_binary"
-	cp "$runtime_pair/fixture-provider" "$provider_binary"
+	# the installer copies instead of running from the pair so that ownership
+	# tag stays. It refuses a pair from another revision, a pair without a
+	# manifest entry for either binary, and a pair whose bytes no longer match
+	# its manifest.
+	bash "$repo_root/scripts/native/ios/qualification/install-runtime-pair.sh" "$runtime_pair" "$identity" "$run_dir"
 	log "using the runtime pair built by the setup job at $runtime_pair"
 else
 	log "building the runtime pair (make build-runtime)"
