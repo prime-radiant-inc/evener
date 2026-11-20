@@ -185,6 +185,17 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		}
 		s.mu.Unlock()
 	}
+	// A fold that took the environment block out of history owes the model a
+	// restatement of it. Only such a fold sets the flag, so a fold that kept the
+	// block still deduplicates, and every other entry kind owns its own append
+	// site — the turn's last message stays what that path left it.
+	foldRemoved := s.envContextFoldRemoved.Swap(false)
+	mcpRecovered := s.envContextMCPConnected.Swap(false)
+	if foldRemoved || (mcpRecovered && s.envContextDue()) {
+		if err := s.maybeAppendEnvironmentContextBeforeTrailingSteering(); err != nil {
+			return nil, "", nil, llm.Request{}, nil, "", err
+		}
+	}
 
 	// Shared-notes refresh AFTER any compaction above: a fold drops the
 	// previously projected NOTES_CONTEXT turns from what the model sees, so

@@ -1779,3 +1779,132 @@ func TestUserTurnWhoseDrainFailedDoesNotReclaimTheSteerInline(t *testing.T) {
 		t.Fatalf("delivered=%v owner=%q, want the steer delivered under its receipt's %q", delivered, owner, accepted.Receipt.TurnID)
 	}
 }
+
+func TestSteeringCarrierAfterIdleSetModelCarriesEnvironmentDiff(t *testing.T) {
+	t.Parallel()
+	launch := NewOpenAIProfile("gpt-5.4")
+	switched := newAnthropicProfile("claude-opus-4-6")
+	if launch.KnowledgeCutoff() == "" || switched.KnowledgeCutoff() == "" || launch.KnowledgeCutoff() == switched.KnowledgeCutoff() {
+		t.Fatalf("fixture profiles need distinct cutoffs: %q vs %q", launch.KnowledgeCutoff(), switched.KnowledgeCutoff())
+	}
+	openaiAdapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("turn 1 done") })
+	anthropicAdapter := newFakeAdapter("anthropic", func(llm.Request) llm.Response { return agenttest.FinalResponse("carrier done") })
+	client := llm.NewClient()
+	client.Register(openaiAdapter)
+	client.Register(anthropicAdapter)
+	sess := newSession(t,
+		withClient(client),
+		withProfile(launch),
+		withDir(t.TempDir()),
+		withConfig(SessionConfig{
+			ResolveProfile: testResolver,
+			testOnly:       testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+		}),
+	)
+	launchPrompt := sess.cachedSystemPrompt
+	if err := sess.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+
+	ctx := context.Background()
+	if _, err := sess.ProcessInput(ctx, "turn 1", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if err := sess.SetModel("anthropic/claude-opus-4-6"); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+	if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-idle-switch",
+		Input:            []appwire.InputItem{{Type: "text", Text: "STEER_AFTER_IDLE_SET_MODEL_3f8a"}},
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationSteer: %v", err)
+	}
+	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v", ran, err)
+	}
+
+	reqs := anthropicAdapter.Requests()
+	if len(reqs) != 1 || reqs[0].Messages[0].Text() != launchPrompt {
+		t.Fatalf("unexpected requests (%d) or mutated launch prompt", len(reqs))
+	}
+	envIdx, steerIdx := -1, -1
+	for i, msg := range reqs[0].Messages {
+		txt := msg.Text()
+		if strings.Contains(txt, "<environment_context>") && strings.Contains(txt, "model: claude-opus-4-6") && strings.Contains(txt, "knowledge cutoff: "+switched.KnowledgeCutoff()) {
+			envIdx = i
+		}
+		if strings.Contains(txt, "STEER_AFTER_IDLE_SET_MODEL_3f8a") {
+			steerIdx = i
+		}
+	}
+	if envIdx < 0 || steerIdx < 0 || envIdx >= steerIdx {
+		t.Fatalf("expected <environment_context> with new model/cutoff before drained steering (envIdx=%d steerIdx=%d); messages=%+v", envIdx, steerIdx, reqs[0].Messages)
+	}
+}
+
+func TestSteeringCarrierAfterRestoreIntoMovedDirCarriesCwdDiff(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+
+	client := llm.NewClient()
+	client.Register(newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("turn 1") }))
+	s := newSession(t,
+		withClient(client),
+		withDir(dirA),
+		withConfig(SessionConfig{
+			StateDir: stateDir,
+			testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+		}),
+	)
+	launchPrompt := s.cachedSystemPrompt
+	if _, err := s.ProcessInput(context.Background(), "turn 1", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	id := s.ID()
+	s.Close()
+
+	meta, err := schema.LoadSessionMeta(stateDir, id)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	adapterB := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("carrier done") })
+	clientB := llm.NewClient()
+	clientB.Register(adapterB)
+	restored, err := RestoreSessionFromMetaWithConfig(clientB, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dirB), meta, RestoreSessionConfig{
+		StateDir: stateDir,
+		testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+	})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	defer restored.Close()
+
+	if _, err := restored.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-moved-dir",
+		Input:            []appwire.InputItem{{Type: "text", Text: "STEER_AFTER_MOVED_DIR_9c4d"}},
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationSteer: %v", err)
+	}
+	if _, ran, err := restored.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v", ran, err)
+	}
+	reqs := adapterB.Requests()
+	if len(reqs) != 1 || reqs[0].Messages[0].Text() != launchPrompt {
+		t.Fatalf("unexpected requests (%d) or mutated launch prompt", len(reqs))
+	}
+	envIdx, steerIdx := -1, -1
+	for i, msg := range reqs[0].Messages {
+		txt := msg.Text()
+		if strings.Contains(txt, "<environment_context>") && strings.Contains(txt, dirB) {
+			envIdx = i
+		}
+		if strings.Contains(txt, "STEER_AFTER_MOVED_DIR_9c4d") {
+			steerIdx = i
+		}
+	}
+	if envIdx < 0 || steerIdx < 0 || envIdx >= steerIdx {
+		t.Fatalf("expected <environment_context> with cwd %q before drained steering (envIdx=%d steerIdx=%d); messages=%+v", dirB, envIdx, steerIdx, reqs[0].Messages)
+	}
+}

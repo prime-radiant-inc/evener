@@ -5,7 +5,12 @@
 // unmounting the pane tree) inflict (yt2q). Tests that need a clean slate call
 // resetDisclosureStoreForTests; Vitest file isolation keeps this instance from
 // crossing files.
-import { createDisclosureStore, type DisclosureReadOptions, isDisclosureOpenIn } from "@evener/appwire-client";
+import {
+  createDisclosureStore,
+  type DisclosureReadOptions,
+  type DisclosureState,
+  isDisclosureOpenIn,
+} from "@evener/appwire-client";
 import { createContext, useContext, useLayoutEffect } from "react";
 import { useStore } from "zustand";
 
@@ -82,10 +87,13 @@ function useDisclosurePersistence(id: string): void {
 export function isDisclosureOpen(id: string, fallback: boolean, options?: DisclosureReadOptions): boolean {
   // biome-ignore lint/correctness/useHookAtTopLevel: this predicate is a custom hook, as explained below
   useDisclosurePersistence(id);
-  // biome-ignore lint/correctness/useHookAtTopLevel: custom hook wrapping useStore; called unconditionally at the top of Disclosure's render, only the non-use- name defeats the heuristic
-  return useStore(store, (s) => isDisclosureOpenIn(s, id, fallback, options));
+  // biome-ignore lint/correctness/useHookAtTopLevel: custom hook wrapping useDisclosureSnapshot; called unconditionally at the top of Disclosure's render, only the non-use- name defeats the heuristic
+  return useDisclosureSnapshot((s) => isDisclosureOpenIn(s, id, fallback, options));
 }
 
+export function useDisclosureSnapshot<T>(selector: (state: DisclosureState) => T): T {
+  return useStore(store, selector);
+}
 export const setDisclosureOpen = store.setOpen;
 export const toggleDisclosure = store.toggle;
 export const beginDisclosureBaseline = store.beginBaseline;

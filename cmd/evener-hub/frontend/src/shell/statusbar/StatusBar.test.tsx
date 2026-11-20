@@ -271,9 +271,9 @@ test("unknown counts remain unknown and pending ancestry is explicit", async () 
     context: { ...activityContext(ref), ancestryKnown: false },
     delegates: { known: false, active: 17, total: 99, completed: 0, failed: 0 },
   }));
-  client.on("evener/thread/delegates/list", () => ({
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
     context: { ...activityContext(ref), ancestryKnown: false },
-    scope: "session",
+    scope: scope ?? "session",
     delegates: [],
     page: { complete: true, issues: [] },
   }));
