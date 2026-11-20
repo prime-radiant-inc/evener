@@ -188,10 +188,12 @@ func qualify(ctx context.Context, output, derivedData string) (result error) {
 		// than letting the copy phase wait out its deadline before the run fails.
 		buildCtx, cancelBuild := context.WithCancel(ctx)
 		defer cancelBuild()
+		hoistStoppedBuild := make(chan struct{})
 		if hoist != nil {
 			go func() {
 				select {
 				case <-hoist.failed:
+					close(hoistStoppedBuild)
 					cancelBuild()
 				case <-buildCtx.Done():
 				}
@@ -201,12 +203,14 @@ func qualify(ctx context.Context, output, derivedData string) (result error) {
 			// When the bundle is what stopped the build, report its error now. An
 			// independent build failure keeps its own error, and the bounded
 			// cleanup above reaps the bundle.
-			if hoist != nil && hoistFailed(hoist) {
+			select {
+			case <-hoistStoppedBuild:
 				joinCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 				defer cancel()
 				if hoistErr := r.waitMetroHoist(joinCtx); hoistErr != nil {
 					return hoistErr
 				}
+			default:
 			}
 			return err
 		}

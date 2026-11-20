@@ -160,18 +160,17 @@ func (r *runner) hoistMetroBundle(ctx context.Context) error {
 		return closeErr
 	case <-time.After(2 * time.Second):
 	}
+	// The run's own cancellation stops the bundle here, not only at the join:
+	// simulator setup and the build both run after this point, and a canceled
+	// run must not keep a node process writing into the run output through it.
+	go func() {
+		select {
+		case <-ctx.Done():
+			procgroup.Stop(run.pid, run.reaped, 5*time.Second)
+		case <-run.reaped:
+		}
+	}()
 	return nil
-}
-
-// hoistFailed reports whether the bundle process has already exited non-zero.
-// The channel is closed on that exit, so the probe never blocks.
-func hoistFailed(run *metroHoistRun) bool {
-	select {
-	case <-run.failed:
-		return true
-	default:
-		return false
-	}
 }
 
 // waitMetroHoist joins the hoisted bundle. A failure here fails the run even
