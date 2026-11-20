@@ -52,17 +52,16 @@ func renderCheckpointConversation(entries []checkpointConversationEntry) string 
 		default:
 			// A partner-role entry another model wrote is headed as the model's,
 			// so a later fold reconstructs its authorship instead of reading it as
-			// the partner's words. The escape that runs on this copy already
-			// defuses its frames; the heading is what carries the fact past a
+			// the partner's words. The heading is what carries the fact past a
 			// fold, where the entry is read back from Markdown alone.
 			b.WriteString(modelAuthoredConversationHeading(entry) + "\n\n")
 		}
 		text := entry.Text
-		if entry.modelAuthored {
+		if entry.Role == "agent" || entry.modelAuthored {
 			// This is the copy the reader gets, after the fitting the entry's
 			// text went through (fitCheckpointConversation): the escape runs
-			// here so a middle trim that dropped an opening delimiter exposes
-			// no frame in the tail it kept.
+			// here, once, on the entry as collected, so a middle trim that
+			// dropped an opening delimiter exposes no frame in the tail it kept.
 			text = sysmsg.EscapeModelAuthoredFrames(text)
 		}
 		writeMarkdownFence(&b, text)
@@ -122,7 +121,11 @@ func renderCheckpointWorkingNotes(notes []string) string {
 	b.WriteString("## Working Notes\n\n")
 	for _, note := range clean {
 		b.WriteString("### Note\n\n")
-		writeMarkdownFence(&b, note)
+		// A working note is the model's own text, so a frame it opens at line
+		// start is defused on the copy the reader gets. The escape runs here,
+		// once, on the note as collected: the collection cut the note before
+		// this point, so no cut splits an escaped opener.
+		writeMarkdownFence(&b, sysmsg.EscapeModelAuthoredFrames(note))
 	}
 	return b.String()
 }
@@ -408,23 +411,12 @@ func extractCheckpointWorkingNotes(text string) []string {
 		for _, block := range blocks {
 			note := trimBlockEdges(block.Text)
 			if note != "" {
-				// A working note is the model's own analytical text. This
-				// function is one of the two seams a fold re-reads an older
-				// checkpoint through, so a raw frame captured by a build that
-				// predates the capture escape would otherwise be carried
-				// forward and sent again in a user-role message (#6493
-				// review). Escaping here is idempotent, so a note this build
-				// already escaped is unchanged.
-				notes = append(notes, sysmsg.EscapeModelAuthoredFrames(note))
+				notes = append(notes, note)
 			}
 		}
 		return notes
 	}
-	carried := extractCheckpointJSON(withoutFencedBlocks(text), "working_notes")
-	for i, note := range carried {
-		carried[i] = sysmsg.EscapeModelAuthoredFrames(note)
-	}
-	return carried
+	return extractCheckpointJSON(withoutFencedBlocks(text), "working_notes")
 }
 
 func markdownSection(text, heading string) string {
@@ -444,43 +436,42 @@ type textSpan struct {
 // and reports whether any byte changed. The spans are the ranges a turn's own
 // layout names as the model's; every byte outside them keeps its own.
 func escapeModelSpans(text string, spans []textSpan) (string, bool) {
-	escaped, _ := escapeModelRanges(text, spans)
+	escaped := escapeSpansInSlice(text, 0, spans)
 	return escaped, escaped != text
 }
 
-// escapeModelRanges returns text with each span escaped as model-authored prose,
-// and returns the same ranges in the escaped text's coordinates. A caller that
-// keeps only part of the result can then tell which ranges survived and escape
-// an exposed remainder without touching text the model did not write.
-func escapeModelRanges(text string, spans []textSpan) (string, []textSpan) {
-	if len(spans) == 0 {
-		return text, nil
-	}
+// escapeSpansInSlice returns slice with the parts of spans that fall inside it
+// escaped as model-authored prose. sliceStart is where slice begins in the
+// coordinates spans are given in, so a caller that kept only part of a rendered
+// turn escapes the part it kept, once, without touching text the model did not
+// write or re-deriving coordinates in escaped text.
+func escapeSpansInSlice(slice string, sliceStart int, spans []textSpan) string {
+	end := sliceStart + len(slice)
 	sorted := make([]textSpan, 0, len(spans))
 	for _, span := range spans {
-		if span.start < 0 || span.end < span.start || span.end > len(text) {
+		start, stop := max(span.start, sliceStart), min(span.end, end)
+		if start >= stop {
 			continue
 		}
-		sorted = append(sorted, span)
+		sorted = append(sorted, textSpan{start: start, end: stop})
+	}
+	if len(sorted) == 0 {
+		return slice
 	}
 	slices.SortFunc(sorted, func(a, b textSpan) int { return a.start - b.start })
 	var b strings.Builder
-	b.Grow(len(text))
-	moved := make([]textSpan, 0, len(sorted))
-	pos := 0
+	b.Grow(len(slice))
+	pos := sliceStart
 	for _, span := range sorted {
 		if span.start < pos {
 			continue
 		}
-		escaped := sysmsg.EscapeModelAuthoredFrames(text[span.start:span.end])
-		b.WriteString(text[pos:span.start])
-		start := b.Len()
-		b.WriteString(escaped)
-		moved = append(moved, textSpan{start: start, end: b.Len()})
+		b.WriteString(slice[pos-sliceStart : span.start-sliceStart])
+		b.WriteString(sysmsg.EscapeModelAuthoredFrames(slice[span.start-sliceStart : span.end-sliceStart]))
 		pos = span.end
 	}
-	b.WriteString(text[pos:])
-	return b.String(), moved
+	b.WriteString(slice[pos-sliceStart:])
+	return b.String()
 }
 
 // conversationRoleForHeading reports which channel a conversation block's
@@ -974,16 +965,11 @@ func cleanCheckpointConversation(entries []checkpointConversationEntry) []checkp
 		if text == "" {
 			continue
 		}
-		// An agent entry is the model's own reply, and this function is also
-		// the seam a fold re-reads an older checkpoint through. A checkpoint
-		// written before the capture escape existed carries the raw frame, so
-		// escaping only at capture would re-inject it in a user-role message on
-		// the next fold (#6493 review). The partner's entry is the authority
-		// and keeps its bytes; the transcript's own record is untouched
-		// because this returns the carried copy.
-		if role == "agent" {
-			text = sysmsg.EscapeModelAuthoredFrames(text)
-		}
+		// The text stays as written here and in the collected copy; the escape
+		// runs once, at render time (renderCheckpointConversation), on the copy
+		// the reader finally gets. Escaping earlier would escape a text the
+		// fitting can still cut, and a cut can drop the delimiter that made a
+		// frame a quotation.
 		out = append(out, checkpointConversationEntry{Role: role, Text: text, modelAuthored: entry.modelAuthored})
 	}
 	return out

@@ -25,15 +25,7 @@ import (
 // model-authored frame the cut exposed is still defused and the partner's
 // messages keep every byte.
 func escapeRetainedCompaction(text, stored string, kind schema.TurnKind) string {
-	var spans []textSpan
-	for _, span := range retainedCompactionModelSpans(stored, kind) {
-		if span.start >= len(text) {
-			continue
-		}
-		spans = append(spans, textSpan{start: span.start, end: min(span.end, len(text))})
-	}
-	escaped, _ := escapeModelSpans(text, spans)
-	return escaped
+	return escapeSpansInSlice(text, 0, retainedCompactionModelSpans(stored, kind))
 }
 
 // retainedCompactionModelSpans returns the ranges of a previous compaction the

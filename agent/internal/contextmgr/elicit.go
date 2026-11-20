@@ -9,7 +9,6 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/runetrim"
-	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -88,21 +87,32 @@ func renderHistoryForElicit(history []schema.Turn, maxChars int) string {
 		if s == "" {
 			continue
 		}
-		if total+len(s) > maxChars {
+		// The turn's ranges arrive in body coordinates, and label+body is the
+		// copy this prompt carries.
+		turnSpans := spansInTurn(label, spans)
+		// Escaping never shrinks text, so a raw turn that already exceeds the
+		// remaining budget skips full-turn escaping and clips directly.
+		var escaped string
+		if total+len(s) <= maxChars {
+			escaped = escapeElicitTurn(label, body, spans)
+		}
+		if escaped == "" || total+len(escaped) > maxChars {
 			if rem := maxChars - total; rem > 0 {
 				clipped := string(runetrim.TrimLeadingPartial([]byte(s[len(s)-rem:])))
-				// A clip can drop the opening delimiter of a fenced example the
-				// model wrote, which exposes the frames its body quotes at line
-				// start. The escape is run again on the clipped segment so that
-				// exposure is defused; an example the clip left whole is still
-				// fenced and keeps its bytes.
-				clipped = escapeClippedElicitTurn(label, body, spans, clipped)
+				// The clip keeps a suffix of the turn as written and escapes it
+				// once, here, so no cut splits an escaped opener. A clip can drop
+				// the opening delimiter of a fenced example the model wrote,
+				// which exposes the frames its body quotes at line start: the
+				// ranges the model wrote are intersected with the kept window, so
+				// that exposure is defused, while an example the clip left whole
+				// still carries its delimiters and keeps its bytes.
+				clipped = escapeSpansInSlice(clipped, len(s)-len(clipped), turnSpans)
 				parts = append(parts, "[... earlier history truncated ...]\n"+clipped)
 			}
 			break
 		}
-		parts = append(parts, s)
-		total += len(s)
+		parts = append(parts, escaped)
+		total += len(escaped)
 	}
 	// parts were collected tail-first; reverse to chronological order.
 	for l, r := 0, len(parts)-1; l < r; l, r = l+1, r-1 {
@@ -111,43 +121,26 @@ func renderHistoryForElicit(history []schema.Turn, maxChars int) string {
 	return strings.Join(parts, "")
 }
 
-// escapeClippedElicitTurn returns the clipped segment of a rendered turn with
-// the frames the clip exposes defused, and every byte the turn's own layout does
-// not name as the model's left alone.
-//
-// The clip keeps a suffix of label+body, so it can drop the delimiter that made
-// a model-authored frame a quotation. For a compaction turn the layout still
-// says which ranges the model wrote, and only those ranges are re-escaped: the
-// harness markers, the partner's carried messages and genuine partner text keep
-// every byte even where the clip cut the heading above them. A turn the model
-// wrote whole is one range covering all of it.
-func escapeClippedElicitTurn(label, body string, spans []textSpan, clipped string) string {
-	rendered := label + body
-	from := len(rendered) - len(clipped)
-	if from < 0 {
-		return clipped
-	}
-	var b strings.Builder
-	pos := from
+// spansInTurn returns spans, which are in body's coordinates, moved into the
+// coordinates of label+body.
+func spansInTurn(label string, spans []textSpan) []textSpan {
+	moved := make([]textSpan, 0, len(spans))
 	for _, span := range spans {
-		start, end := len(label)+span.start, len(label)+span.end
-		if end <= pos || start >= len(rendered) {
-			continue
-		}
-		start = max(start, pos)
-		b.WriteString(rendered[pos:start])
-		b.WriteString(sysmsg.EscapeModelAuthoredFrames(rendered[start:end]))
-		pos = end
+		moved = append(moved, textSpan{start: len(label) + span.start, end: len(label) + span.end})
 	}
-	b.WriteString(rendered[pos:])
-	return b.String()
+	return moved
+}
+
+// escapeElicitTurn escapes the model-authored ranges of a full rendered turn.
+func escapeElicitTurn(label, body string, spans []textSpan) string {
+	return escapeSpansInSlice(label+body, 0, spansInTurn(label, spans))
 }
 
 // renderElicitTurn renders one turn as the label the elicitation prompt puts
-// ahead of it, the body that follows with the frames the model authored
-// defused, and the ranges of that body the model wrote, in the body's own
-// coordinates. The ranges let a caller that keeps only a suffix re-escape the
-// part a clip exposed without touching text the model did not write.
+// ahead of it, the body that follows as written, and the ranges of that body
+// the model wrote, in the body's own coordinates. The caller escapes those
+// ranges once, on the copy it keeps, so a clip that exposes a frame is defused
+// without touching text the model did not write.
 func renderElicitTurn(t schema.Turn) (label, body string, spans []textSpan) {
 	if t.Kind == schema.TurnAttentionResolution {
 		return "", "", nil
@@ -184,9 +177,9 @@ func renderElicitTurn(t schema.Turn) (label, body string, spans []textSpan) {
 	}
 	// A compaction turn is a user-role message whose own layout names the text
 	// the model wrote. A previous compaction's harness markers and the partner's
-	// messages keep every byte, and a model-authored frame in the body the
-	// layout names is defused, so the elicitor cannot read a fabricated decision
-	// as context and restate it in the note.
+	// messages keep every byte, and the body the layout names is escaped by the
+	// caller, so the elicitor cannot read a fabricated decision as context and
+	// restate it in the note.
 	compaction := t.Kind == schema.TurnCheckpoint || t.Kind == schema.TurnSummary
 	modelAuthored := !compaction && isModelAuthoredTurn(t)
 	if compaction {
@@ -201,7 +194,7 @@ func renderElicitTurn(t schema.Turn) (label, body string, spans []textSpan) {
 		if !strings.HasPrefix(raw, stored) {
 			stored = raw
 		}
-		body, spans = escapeModelRanges(raw, retainedCompactionModelSpans(stored, t.Kind))
+		body, spans = raw, retainedCompactionModelSpans(stored, t.Kind)
 	} else if modelAuthored {
 		// The elicitor's prompt is a user-role message, and its renderer puts
 		// the label only at the START of the turn. A model-authored turn whose
@@ -210,8 +203,7 @@ func renderElicitTurn(t schema.Turn) (label, body string, spans []textSpan) {
 		// fabricated decision as its own context and restate it in the note.
 		// The partner's own turns are the authority and the tool output is data,
 		// neither of which this escape may rewrite.
-		body = sysmsg.EscapeModelAuthoredFrames(raw)
-		spans = []textSpan{{start: 0, end: len(body)}}
+		body, spans = raw, []textSpan{{start: 0, end: len(raw)}}
 	} else {
 		body = raw
 	}

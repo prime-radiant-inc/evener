@@ -9,9 +9,11 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+// renderTurnForElicit returns the copy of one turn the elicitation prompt
+// carries: the turn's layout with the ranges the model wrote escaped.
 func renderTurnForElicit(t schema.Turn) string {
-	label, body, _ := renderElicitTurn(t)
-	return label + body
+	label, body, spans := renderElicitTurn(t)
+	return escapeElicitTurn(label, body, spans)
 }
 
 // TestRenderHistoryForElicit_IncludesToolContent is the regression test for the

@@ -596,10 +596,18 @@ function compactStringArray(value: unknown): string[] {
   return value.map((v) => String(v ?? "").trim()).filter(Boolean);
 }
 
-// Body entities pair with agent/job_notify.go's escapeNotificationBody.
-// A single pass never re-decodes sender text, so &amp;lt; becomes literal &lt;.
+const BODY_ENTITY_DECODE: Record<string, string> = {
+  "&lt;": "<",
+  "&amp;": "&",
+  "&#91;": "[",
+};
+
+// Body entities pair with agent/job_notify.go's escapeNotificationBody, plus
+// the "&#91;" the frame escape writes over a bracketed marker's opening bracket
+// (agent/internal/sysmsg). A single pass never re-decodes sender text, so
+// &amp;lt; becomes literal &lt; and &amp;#91; becomes literal &#91;.
 export function decodeNotificationEntities(text: string): string {
-  return text.replace(/&lt;|&amp;/g, (entity) => (entity === "&lt;" ? "<" : "&"));
+  return text.replace(/&lt;|&amp;|&#91;/g, (entity) => BODY_ENTITY_DECODE[entity] ?? entity);
 }
 
 // Attributes retain the full codec paired with escapeNotificationText.

@@ -7,21 +7,9 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/runetrim"
-	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
-
-// escapeWorkingNote returns the text a working note carries for msg: the
-// model's own text with line-start harness frames defused.
-//
-// The note is read by a summarizer as one flat block, so the escape reads it
-// the same way rather than through any dispatch target's wire shape: a frame a
-// model wrote is defused exactly where that reader would see it open. The
-// stored message keeps its own bytes.
-func escapeWorkingNote(msg llm.Message) string {
-	return sysmsg.EscapeModelAuthoredFrames(msg.Text())
-}
 
 // maxCheckpointChars caps a checkpoint to avoid ballooning the context. The
 // checkpoint either feeds into the LLM summarizer (which replaces it) or — if
@@ -187,14 +175,10 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 			if text := t.Message.Text(); (isPartnerSteering(t) || isParentSteering(t)) && text != "" {
 				// A parent's steer is another agent speaking, so its body is
 				// model-authored even though the turn is carried as the
-				// partner's. Only the framing this turn was built with is
-				// spared, and that framing opens no frame. A human partner's
-				// steer is the authority and keeps its bytes.
-				modelAuthored := isModelAuthoredTurn(t)
-				if modelAuthored {
-					text = sysmsg.EscapeModelAuthoredFrames(text)
-				}
-				data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text, modelAuthored: modelAuthored})
+				// partner's. The text stays as written; renderCheckpointConversation
+				// escapes it on the copy the reader gets. A human partner's steer
+				// is the authority and keeps its bytes.
+				data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text, modelAuthored: isModelAuthoredTurn(t)})
 			}
 
 		case schema.TurnUserInput:
@@ -210,15 +194,14 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 			// wrote is task text whatever its first line spells, and mining it as
 			// a stored compaction would lose the task and carry its body outside
 			// the escape.
-			if isModelAuthoredTurn(t) {
-				text = sysmsg.EscapeModelAuthoredFrames(text)
-			} else if strings.HasPrefix(text, "[CONTEXT CHECKPOINT]") || strings.HasPrefix(text, summaryMarkerStart) {
+			modelAuthored := isModelAuthoredTurn(t)
+			if !modelAuthored && (strings.HasPrefix(text, "[CONTEXT CHECKPOINT]") || strings.HasPrefix(text, summaryMarkerStart)) {
 				// Old-format checkpoint/summary stored as TurnUserInput — carry it
 				// just like a typed compaction turn.
 				data.collectCompaction(text, strings.HasPrefix(text, summaryMarkerStart))
 				continue
 			}
-			data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text, modelAuthored: isModelAuthoredTurn(t)})
+			data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text, modelAuthored: modelAuthored})
 
 		case schema.TurnTool, schema.TurnToolResults:
 			// Extract terminal communicate results (agent responses to the user).
@@ -232,13 +215,13 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 					endTurn, msg := checkpointReplyText(history[:i+1], p.ToolResult.ToolCallID)
 					if endTurn && msg != "" && !p.ToolResult.IsError {
 						// The reply is the model's own words, and the checkpoint
-						// is a user-role message: a frame it invented survives
-						// the rollover as input it can cite (#6493). The
-						// partner's entries stay verbatim — they are the
-						// authority, the model is not.
+						// is a user-role message, so the renderer defuses a frame
+						// it invented on the copy the reader gets. The partner's
+						// entries stay verbatim — they are the authority, the
+						// model is not.
 						data.conversation = append(data.conversation, checkpointConversationEntry{
 							Role:          "agent",
-							Text:          sysmsg.EscapeModelAuthoredFrames(msg),
+							Text:          msg,
 							modelAuthored: true,
 						})
 					}
@@ -247,25 +230,12 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 			}
 
 		case schema.TurnAssistant:
-			// Capture assistant analytical text as working notes.
-			//
+			// Capture assistant analytical text as working notes, as written.
 			// The checkpoint is a user-role message, so model-authored text
-			// placed in it speaks in the user's channel. A frame the model
-			// invented on its own turn (<delegate-notification>,
-			// <system-notification>, [answers]) must not survive into the
-			// checkpoint with the spelling a harness-written frame opens with,
-			// or the rollover hands the model its own fabrication back as
-			// input it can cite as a decision (#6493).
+			// placed in it speaks in the user's channel; the renderer escapes
+			// the note on the copy the reader gets.
 			if text := t.Message.Text(); len(text) > 50 {
-				note := escapeWorkingNote(t.Message)
-				if len(note) > 500 {
-					// Escaping replaces one character with several, so a byte
-					// cap that landed inside a rune before can land outside it
-					// now, or the reverse. Cut on a rune boundary so the note
-					// is always valid UTF-8.
-					note = runetrim.Cut(note, 500) + "..."
-				}
-				data.workingNotes = append(data.workingNotes, note)
+				data.workingNotes = append(data.workingNotes, truncate(text, 500))
 			}
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentWebSearch {

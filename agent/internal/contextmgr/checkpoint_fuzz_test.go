@@ -1,7 +1,6 @@
 package contextmgr
 
 import (
-	"reflect"
 	"testing"
 )
 
@@ -9,9 +8,11 @@ import (
 // (extractCheckpointConversation + extractCheckpointWorkingNotes), which spans
 // markdown-section parsing and the JSON-tag fallback (json.Unmarshal of the
 // <conversation>/<user_messages>/… payloads). Input is arbitrary checkpoint
-// text. Beyond no-panic it asserts a render→extract→render fixed point: the
-// cleaned conversation, rendered with this package's own renderer and re-parsed,
-// recovers the same entries — proving the writer and reader agree.
+// text. Beyond no-panic it asserts that a rendered conversation re-renders to
+// the same bytes after one extract/render round trip: the renderer defuses the
+// model-authored frames it writes, so the entries it reads back hold those
+// escapes and rendering them again must reproduce them rather than defuse a
+// second time. That is what proves the writer and reader agree.
 func FuzzCheckpointExtract(f *testing.F) {
 	seeds := []string{
 		"## Conversation\n\n### User\n\n```text\nhello\n```\n\n### Agent\n\n```text\nhi there\n```\n",
@@ -31,20 +32,13 @@ func FuzzCheckpointExtract(f *testing.F) {
 		entries := extractCheckpointConversation(text)
 		_ = extractCheckpointWorkingNotes(text)
 
-		// Render the cleaned entries back to markdown and re-extract: the
-		// renderer + markdown parser must form a fixed point.
+		// Render the cleaned entries back to markdown, re-extract, and render
+		// again: the second render must reproduce the first byte for byte.
 		rendered := renderCheckpointConversation(entries)
-		roundTripped := extractCheckpointConversation(rendered)
-
-		// renderCheckpointConversation re-cleans, so compare against the same
-		// cleaning applied to the original extraction.
-		want := cleanCheckpointConversation(entries)
-		if len(want) == 0 && len(roundTripped) == 0 {
-			return
-		}
-		if !reflect.DeepEqual(want, roundTripped) {
-			t.Fatalf("checkpoint conversation render/extract not a fixed point:\n want=%#v\n got =%#v\n rendered=%q",
-				want, roundTripped, rendered)
+		again := renderCheckpointConversation(extractCheckpointConversation(rendered))
+		if again != rendered {
+			t.Fatalf("checkpoint conversation render/extract/render not a fixed point:\n first  =%q\n second =%q",
+				rendered, again)
 		}
 	})
 }

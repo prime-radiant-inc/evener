@@ -1723,8 +1723,9 @@ terminal packet:
 A mid-work update (`communicate(end_turn=false)`) is
 `<delegate-notification delegate_id="dlg_..." name="..." kind="update">` with
 the delegate's message as the body, escaping `&` first, then `<`. Clients
-decode exactly `&lt;` and `&amp;` once, preserving literal sender text such as
-`&lt;`; job output excerpts use the same body contract. Accepted breakage:
+decode `&lt;`, `&amp;`, and `&#91;` (used by the model-authored frame escape)
+once in a single pass, preserving literal sender text such as `&lt;` and
+`&#91;`; job output excerpts use the same body contract. Accepted breakage:
 pre-`6adc500868` frames render `&quot;`/`&gt;` literally and their entity-escaped
 JSON-envelope extraction fails. No migration or legacy fallback is applied.
 Attribute values are a separate codec — `escapeNotificationText` paired with

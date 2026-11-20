@@ -56,6 +56,17 @@ test("body decoder decodes only lt and amp once", () => {
   );
 });
 
+// The producer's body codec runs before the frame escape, so a defused bracket
+// marker reaches the wire as "&#91;" (restored to "[") while a literal "&#91;"
+// the sender typed reaches the wire as "&amp;#91;" (restored to literal "&#91;").
+test("body decoder restores an escaped bracket marker and keeps a typed one literal", () => {
+  expect(decodeNotificationEntities("&#91;answers]")).toBe("[answers]");
+  expect(decodeNotificationEntities("&amp;#91;answers]")).toBe("&#91;answers]");
+  expect(decodeNotificationEntities("&lt;delegate-notification&amp;#91;answers]")).toBe(
+    "<delegate-notification&#91;answers]",
+  );
+});
+
 test("two-entity bodies preserve sender text in job excerpts and delegate updates", () => {
   const sender = `& < &lt; &amp; &amp;lt; " > ' &quot; &gt; &#39;`;
   const wire = `&amp; &lt; &amp;lt; &amp;amp; &amp;amp;lt; " > ' &amp;quot; &amp;gt; &amp;#39;`;
