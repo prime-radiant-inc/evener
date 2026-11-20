@@ -147,6 +147,16 @@ func (r *runner) hoistMetroBundle(ctx context.Context) error {
 		close(run.reaped)
 		run.done <- err
 	}()
+	// The run's own cancellation stops the bundle from launch: simulator setup
+	// and the build both follow this point, and a canceled run must not keep a
+	// node process writing into the run output through either of them.
+	go func() {
+		select {
+		case <-ctx.Done():
+			procgroup.Stop(run.pid, run.reaped, 5*time.Second)
+		case <-run.reaped:
+		}
+	}()
 	// A bundle that dies in its first moment (a missing module, a bad flag) must
 	// fail the run now, not after the app phase has waited out its marker
 	// deadline.
@@ -160,16 +170,6 @@ func (r *runner) hoistMetroBundle(ctx context.Context) error {
 		return closeErr
 	case <-time.After(2 * time.Second):
 	}
-	// The run's own cancellation stops the bundle here, not only at the join:
-	// simulator setup and the build both run after this point, and a canceled
-	// run must not keep a node process writing into the run output through it.
-	go func() {
-		select {
-		case <-ctx.Done():
-			procgroup.Stop(run.pid, run.reaped, 5*time.Second)
-		case <-run.reaped:
-		}
-	}()
 	return nil
 }
 

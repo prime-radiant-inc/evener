@@ -188,29 +188,26 @@ func qualify(ctx context.Context, output, derivedData string) (result error) {
 		// than letting the copy phase wait out its deadline before the run fails.
 		buildCtx, cancelBuild := context.WithCancel(ctx)
 		defer cancelBuild()
-		hoistStoppedBuild := make(chan struct{})
 		if hoist != nil {
 			go func() {
 				select {
 				case <-hoist.failed:
-					close(hoistStoppedBuild)
 					cancelBuild()
 				case <-buildCtx.Done():
 				}
 			}()
 		}
 		if _, err := r.commandOutput(buildCtx, "xcodebuild-release", false, releaseBuildCommand(udid, derived)...); err != nil {
-			// When the bundle is what stopped the build, report its error now. An
-			// independent build failure keeps its own error, and the bounded
-			// cleanup above reaps the bundle.
-			select {
-			case <-hoistStoppedBuild:
+			// A build stopped by the bundle's own failure reports the bundle, not
+			// the cancellation it caused. A build that failed on its own keeps its
+			// error and an interrupted run keeps the interruption; the bounded
+			// cleanup above carries the bundle diagnostic in both cases.
+			if hoist != nil && ctx.Err() == nil && errors.Is(err, context.Canceled) {
 				joinCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 				defer cancel()
 				if hoistErr := r.waitMetroHoist(joinCtx); hoistErr != nil {
 					return hoistErr
 				}
-			default:
 			}
 			return err
 		}
