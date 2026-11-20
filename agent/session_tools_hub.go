@@ -741,7 +741,7 @@ type managerControlFailure struct {
 // intent it is, and Manager never hands protocol identity to the model
 // (issue #6914).
 type projectedModelDesired struct {
-	ModelProvider string                        `json:"modelProvider"`
+	ModelProvider string                        `json:"model_provider"`
 	Model         string                        `json:"model"`
 	Lifecycle     appwire.ModelControlLifecycle `json:"lifecycle"`
 }
