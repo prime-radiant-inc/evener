@@ -92,8 +92,8 @@ func TestDescendantFrontierAddressedSpawn(t *testing.T) {
 // It drives the served root's own execution, whose first execution record
 // carries no conversation provenance or frontier delta here, so it pins the
 // hook's announcement. Deferred records are announced from the publication
-// handoff (publishTranscriptLocked), and a spawned child's first record is
-// released by the startup publication instead; neither path is pinned here.
+// handoff (publishTranscriptLocked) instead; that path and the descendant
+// announcement are not pinned here.
 func TestDescendantFrontierAnnouncementFollowsPublication(t *testing.T) {
 	t.Parallel()
 	p := &parityProvider{childRelease: make(chan struct{})}

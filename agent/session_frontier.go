@@ -70,29 +70,42 @@ func (s *Session) installTranscriptRecordedLocked() {
 	external := s.transcriptRecorded
 	s.transcript.OnRecorded(func(rec transcript.Record) {
 		execution := rec.Recorded && rec.Turn.OriginalOrdinal == nil && rec.Turn.TurnKind == schema.TurnSpanExecution
-		announce := false
+		deferred := false
 		if execution {
 			// Once the history has paired, a record that carries conversation
 			// provenance or a frontier delta is fenced behind the producer's
 			// publication handoff, which advances the readable boundary only
 			// when the complete snapshot arrives. Such a record is announced
 			// from that handoff (publishTranscriptLocked), never from here.
-			deferred := rec.Turn.ConversationFrontier != nil || rec.Turn.ConversationProvenance != nil
+			deferred = rec.Turn.ConversationFrontier != nil || rec.Turn.ConversationProvenance != nil
+			// The commit-time stamp is visible to LatestExecutionTurnID and to
+			// descendant install before the record is readable.
 			s.executionFrontierMu.Lock()
 			s.executionFrontier = events.ExecutionFrontier{TurnID: rec.Turn.TurnID, Sequence: s.executionFrontier.Sequence + 1}
-			if !s.frontierStopped && wake != nil {
-				s.frontierPending = append(s.frontierPending, rec.Turn.TurnID)
-				announce = !deferred
-			}
 			s.executionFrontierMu.Unlock()
 		}
 		if external != nil {
 			external(rec)
 		}
-		// external staged the record; a record the history can already read may
-		// be announced now. Deferred records wait for their publication.
-		if announce {
-			s.announceFrontier(wake, rec.Turn.TurnID)
+		// external staged the record. Only now may the emitter announce it: a
+		// buffered earlier wake drains frontierPending, so an ID queued before
+		// staging could be emitted for a turn the history cannot read yet.
+		// Deferred records wait for their publication handoff.
+		if execution {
+			announce := false
+			s.executionFrontierMu.Lock()
+			if !s.frontierStopped && wake != nil {
+				if deferred {
+					s.frontierDeferred = append(s.frontierDeferred, rec.Turn.TurnID)
+				} else {
+					s.frontierPending = append(s.frontierPending, rec.Turn.TurnID)
+					announce = true
+				}
+			}
+			s.executionFrontierMu.Unlock()
+			if announce {
+				s.announceFrontier(wake, rec.Turn.TurnID)
+			}
 		}
 	})
 }
@@ -110,12 +123,16 @@ func (s *Session) announceFrontier(wake chan struct{}, turnID string) {
 	}
 }
 
-// wakeFrontierPending wakes the recorded-execution emitter once the publication
-// handoff has made the newest pending execution readable. For a deferred record
-// this is the only announcement; for one the hook already announced it is a
+// wakeFrontierPending moves the executions the publication handoff just made
+// readable into the pending queue and wakes the emitter. For a deferred record
+// this is its only announcement; for one the hook already announced it is a
 // redundant re-wake that the emitter's pending drain absorbs (#6816).
 func (s *Session) wakeFrontierPending() {
 	s.executionFrontierMu.Lock()
+	if len(s.frontierDeferred) > 0 {
+		s.frontierPending = append(s.frontierPending, s.frontierDeferred...)
+		s.frontierDeferred = nil
+	}
 	pending, stopped, wake := s.frontierPending, s.frontierStopped, s.frontierWake
 	s.executionFrontierMu.Unlock()
 	if stopped || len(pending) == 0 || wake == nil {
@@ -170,6 +187,7 @@ func (s *Session) publishFrontierStartup(published bool) {
 	if !published || s.sessionContext().Err() != nil {
 		s.frontierStopped = true
 		s.frontierPending = nil
+		s.frontierDeferred = nil
 	} else {
 		s.frontierStartupPending = false
 	}
@@ -195,7 +213,10 @@ func (s *Session) stopFrontierEmitter() {
 	s.frontierStopped = true
 	if s.frontierStartupPending {
 		s.frontierPending = nil
+	} else {
+		s.frontierPending = append(s.frontierPending, s.frontierDeferred...)
 	}
+	s.frontierDeferred = nil
 	if s.frontierWake != nil {
 		select {
 		case s.frontierWake <- struct{}{}:
