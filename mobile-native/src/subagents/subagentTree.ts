@@ -65,6 +65,13 @@ export class SubagentTree {
 		this.stopActivity.forEach((stop) => stop());
 		this.stopActivity = [];
 		this.retained = this.store?.getSnapshot() ?? this.retained;
+		// The rows the new store retains wear samples the outgoing store
+		// attributed to the generation it adopted -- which can be a replacement
+		// relay recovery announced to the store directly, one no follow read ever
+		// named. The remembered follow generation cannot stand in for it: telling
+		// the fresh store that older generation would make the follow read's
+		// naming of the replacement retire the very samples it published.
+		const retainedBootGeneration = this.store?.bootGeneration ?? this.followedBootGeneration;
 		this.store?.dispose();
 		this.store = null;
 		this.followLease?.release();
@@ -80,6 +87,10 @@ export class SubagentTree {
 		});
 		this.store = store;
 		this.retained = null;
+		// Before the store's own first page can land: the retained rows are
+		// ordered under the generation that published them, so the replacement's
+		// live sample is the one the follow read then leaves standing.
+		store.adoptBootGeneration(retainedBootGeneration);
 		this.detachStore = store.subscribe(() => {
 			const state = store.getSnapshot();
 			const next = projectSessionActivity(state);

@@ -15,29 +15,15 @@ import { installActivityFixture } from "./sessionActivityTestUtils";
  * an unheld row otherwise. `gate` holds the delegates response until the caller
  * releases it, so a test can observe what a follow read adopts before any fresh
  * page lands. */
-function hub({
-	held = true,
-	replacement = false,
-	gate,
-}: {
+interface HubOptions {
 	held?: boolean;
 	replacement?: boolean;
 	gate?: Promise<void>;
-} = {}): FakeClient {
-	const client = new FakeClient("ready");
-	installActivityFixture(client, () => ({
-		revision: 1,
-		root: {
-			kind: "session",
-			sessionId: "coord",
-			ref: "local:coord",
-			label: "Coordinator",
-			aggregate: "working",
-			counts: { active: 1, failed: 0, completed: 0, complete: true },
-			branch: {},
-			entries: [],
-		},
-	}));
+}
+
+/** Scripts the delegates page. Re-calling it re-scripts the same client, which
+ * is how a test hands one connection a replacement daemon. */
+function serveDelegates(client: FakeClient, { held = true, replacement = false, gate }: HubOptions = {}): void {
 	// The hub joins the drain hold from the delegate's own session, so it rides
 	// the delegate read rather than the retained activity tree.
 	client.on("evener/thread/delegates/list", async ({ ref, scope }) => {
@@ -83,6 +69,24 @@ function hub({
 			page: { complete: true, issues: [] },
 		};
 	});
+}
+
+function hub(options: HubOptions = {}): FakeClient {
+	const client = new FakeClient("ready");
+	installActivityFixture(client, () => ({
+		revision: 1,
+		root: {
+			kind: "session",
+			sessionId: "coord",
+			ref: "local:coord",
+			label: "Coordinator",
+			aggregate: "working",
+			counts: { active: 1, failed: 0, completed: 0, complete: true },
+			branch: {},
+			entries: [],
+		},
+	}));
+	serveDelegates(client, options);
 	return client;
 }
 
@@ -143,6 +147,44 @@ test("a follow read naming no generation keeps the hold the hub already publishe
 	await subject.follow();
 
 	expect(heldSequence(subject)).toBe(7);
+});
+
+test("a relay resync's replacement generation outlives the client swap that follows it", async () => {
+	const subject = new SubagentTree("local:coord", "coord");
+	subject.observeActivity();
+	const focused = hub();
+	answerReads(focused, "1");
+	await subject.setClient(focused);
+	await subject.follow();
+	expect(heldSequence(subject)).toBe(7);
+
+	// Relay recovery hands this same connection a replacement daemon: the
+	// resync's lean thread read names generation 2 while the replacement's
+	// refreshed page -- carrying the live hold that daemon sampled as 9 -- is
+	// still in flight. Activity therefore learns the replacement generation
+	// itself, without the follow read that used to be the only source of it.
+	const landing = deferred<void>();
+	serveDelegates(focused, { replacement: true, gate: landing.promise });
+	answerReads(focused, "2");
+	focused.emitNotification({ method: "evener/thread/resync", params: { ref: "local:coord", threadId: "coord" } });
+	landing.resolve();
+	await vi.waitFor(() => expect(heldSequence(subject)).toBe(9));
+	expect(heldSequence(subject)).toBe(9);
+
+	// The client is swapped. The new store is handed the retained rows, whose
+	// samples generation 2 published -- not generation 1, which is the last
+	// generation the follow read named. Its own page is held back, so the follow
+	// read naming generation 2 is what tells it whose rows these are.
+	const page = deferred<void>();
+	const client = hub({ held: false, gate: page.promise });
+	answerReads(client, "2");
+	void subject.setClient(client);
+	await subject.follow();
+
+	// The retained wait is 2's own sample: naming 2 again retires nothing, so
+	// the hold survives. Had the swap walked the rows back to 1, adopting 2
+	// would have retired exactly this still-live wait.
+	expect(heldSequence(subject)).toBe(9);
 });
 
 test("a follow read answered from saved history keeps the live hold", async () => {

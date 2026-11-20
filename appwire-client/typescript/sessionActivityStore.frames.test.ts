@@ -4233,3 +4233,129 @@ test("a subagent hold reaches a loaded row, shrinks, and clears in sequence orde
   expect(row?.runningSubagentCount ?? 0).toBe(0);
   expect(row?.holdSequence ?? 0).toBe(7);
 });
+
+// --- Stamped provenance on a repeated sample ---
+//
+// A stamped frame's generation is what lets a later adoption retire exactly the
+// samples the replaced daemon numbered. Two paths could lose it while changing
+// no displayed field: a page repeating the same sequence, which re-attributed
+// the row to the page; and a frame whose sample the row already wore, whose
+// early return skipped the attribution entirely. Both leave the hold looking
+// like an unresolved page sample -- kept through the adoption and re-read
+// instead of retired -- or like a sample of no known generation at all.
+
+test("a page repeating a stamped frame's sequence keeps the frame's provenance, so the replacement retires it at once", async () => {
+  const client = pushClient();
+  let served = 0;
+  const context = pushContext();
+  // The reconciliation read re-serves the very sample the frame published: a
+  // comparable page repeating the frame's own sequence.
+  const repeated = delegateRow({
+    projectionRevision: 2,
+    drainHeldByJobs: true,
+    holdSequence: 8,
+    runningJobCount: 1,
+    oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+  });
+  client.on("evener/thread/delegates/list", ({ scope }) => {
+    served += 1;
+    return {
+      context,
+      scope: scope ?? "session",
+      page: { complete: true, issues: [] },
+      delegates: [repeated],
+    };
+  });
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.complete);
+  store.adoptBootGeneration(BOOT_ONE);
+
+  // Generation 2 publishes the wait, and its stamp is the only identity the
+  // store has for the sample.
+  client.emitNotification(
+    pushedFrameFrom(
+      BOOT_TWO,
+      frameInfo({
+        projectionRevision: 2,
+        drainHeldByJobs: true,
+        holdSequence: 8,
+        runningJobCount: 1,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ),
+  );
+  expect(store.bootGeneration).toBe(BOOT_TWO);
+  expect(store.getSnapshot().delegates.rows[0]?.holdSequence).toBe(8);
+
+  // The reconciliation read repeats that sample, changing nothing displayed. The
+  // sample keeps the generation that published it rather than becoming an
+  // unresolved page sample.
+  await store.refresh("delegates");
+  await activityState(store, () => !store.getSnapshot().delegates.loading);
+  expect(served).toBe(2);
+  expect(store.getSnapshot().delegates.rows[0]?.holdSequence).toBe(8);
+
+  // The daemon is replaced. Had the repeat re-attributed the sample to the
+  // page, the adoption would keep it and reconcile; stamped, it is retired at
+  // once, because nothing proves the replacement still holds that wait.
+  store.adoptBootGeneration("3");
+  expect(store.getSnapshot().delegates.rows[0]?.holdSequence).toBeUndefined();
+});
+
+test("an identical stamped frame upgrades a page-loaded hold's provenance even though the row is unchanged", async () => {
+  const client = pushClient();
+  const context = pushContext();
+  // The page loads the same wait the frame below repeats, and every other
+  // displayed field the frame carries, so the frame changes nothing.
+  const loaded = delegateRow({
+    projectionRevision: 2,
+    description: "",
+    task: "",
+    lifecycle: "running",
+    phase: "running",
+    status: "running",
+    terminal: false,
+    resumable: true,
+    drainHeldByJobs: true,
+    holdSequence: 8,
+    runningJobCount: 1,
+    oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+  });
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context,
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [loaded],
+  }));
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.complete);
+  store.adoptBootGeneration(BOOT_ONE);
+  expect(store.getSnapshot().delegates.rows[0]?.holdSequence).toBe(8);
+
+  // Generation 2's frame repeats the very sample the page loaded: no displayed
+  // field moves, so the row is left exactly as it was -- the same object. The
+  // frame's own stamp is what names the publisher, and it must be recorded
+  // anyway -- the page's attribution can never say "generation 2".
+  client.emitNotification(
+    pushedFrameFrom(
+      BOOT_TWO,
+      frameInfo({
+        projectionRevision: 2,
+        drainHeldByJobs: true,
+        holdSequence: 8,
+        runningJobCount: 1,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ),
+  );
+  expect(store.getSnapshot().delegates.rows[0]).toBe(loaded);
+  expect(store.bootGeneration).toBe(BOOT_TWO);
+  expect(store.getSnapshot().delegates.rows[0]?.holdSequence).toBe(8);
+
+  // Now the replacement: the sample the frame stamped is retired at once. A
+  // page attribution left on it would have been kept and reconciled instead.
+  store.adoptBootGeneration("3");
+  expect(store.getSnapshot().delegates.rows[0]?.holdSequence).toBeUndefined();
+});

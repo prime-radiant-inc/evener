@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import { ALL_CAPABILITIES } from "../threadTestUtils";
 import { resetConnectionStoreForTests } from "./connection";
+import { productionEntryTranscriptForTests } from "./entryTranscriptRoutes";
 import { acquireSessionActivity } from "./sessionActivity";
 import { activityContext, activityDelegate } from "./sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "./threads";
@@ -613,6 +614,90 @@ describe("adopting a source identity reaches the ref's activity store", () => {
     } finally {
       stop();
       activity.release();
+    }
+  });
+
+  // The ref's OPEN TRACKED TRANSCRIPT keeps its own fence for the failure it
+  // actually observed. A rich watch of the same ref (a delegate card's expanded
+  // read) advances the shared read sequence, which retires a superseded
+  // attempt's say over the ref's SOURCE identity and its repair status -- but
+  // the tracked repository must still record the `transcriptHistoryFailed` this
+  // read received, or the open pane shows no diagnostic at all until some later
+  // read succeeds.
+  test("a rich watch advancing the read sequence does not suppress a tracked refresh's read failure", async () => {
+    // Its own ref: hydration retries armed by earlier tests are for REF, and
+    // one firing mid-test would begin a newer read of this ref for a reason the
+    // case is not about.
+    const otherRef = "remote:owner-3";
+    const otherRead = (bootGeneration: string): ThreadReadResponse => {
+      const base = read(bootGeneration);
+      return { ...base, thread: { ...base.thread, evener: { ...base.thread.evener, ref: otherRef } } };
+    };
+    const otherDelegates = (): SessionDelegatesResponse => ({
+      context: activityContext(otherRef),
+      scope: "session",
+      delegates: [activityDelegate({ ownerRef: otherRef, rootRef: otherRef })],
+      page: { complete: true, issues: [] },
+    });
+    const lateTracked = deferred<ThreadReadResponse>();
+    let holdTracked = false;
+    let trackedIssued = false;
+    const client = connectReadyFakeClient((fake) => {
+      fake.on("thread/read", (params) => {
+        // Only a history-requesting read is the pane's own tracked refresh; the
+        // activity store's lean metadata reads share this method and must not
+        // consume the case.
+        if (holdTracked && params.includeTurns === true && !trackedIssued) {
+          trackedIssued = true;
+          return lateTracked.promise;
+        }
+        return otherRead("1");
+      });
+      fake.on("evener/thread/delegates/list", () => otherDelegates());
+      fake.on("thread/unsubscribe", () => ({}));
+    });
+    const activity = acquireSessionActivity(client, otherRef);
+    const stop = activity.store.observe("delegates");
+    try {
+      // The ref is open under generation 1, with the entry-route repository the
+      // pane reads from.
+      await threadsStore.getState().ensureThread(otherRef);
+      await waitFor(() => expect(activity.store.bootGeneration).toBe("1"));
+      expect(productionEntryTranscriptForTests(otherRef).repository).toBeDefined();
+
+      // A tracked refresh is in flight when a rich watched read of the same ref
+      // is issued. The watch advances the shared read sequence past the tracked
+      // attempt -- deliberately, so a late watched read cannot name the ref's
+      // source.
+      holdTracked = true;
+      const refreshing = threadsStore.getState().refreshThread(otherRef);
+      await waitFor(() => expect(trackedIssued).toBe(true));
+      await threadsStore.getState().watchThread(otherRef, { includeTurns: true });
+
+      // The tracked attempt answers the structured history failure, naming a
+      // generation it was issued against.
+      lateTracked.reject(
+        new WireError("thread history failed at entry 3", -32000, {
+          evenerErrorInfo: "transcriptHistoryFailed",
+          bootGeneration: "2",
+        }),
+      );
+      await refreshing.catch(() => undefined);
+
+      // Boot adoption stays fenced by `hydrationAttemptOwnsRef`: the superseded
+      // attempt may not name the ref's source.
+      expect(activity.store.bootGeneration).toBe("1");
+      // The tracked repository still records the failure the open transcript
+      // actually saw.
+      await waitFor(() =>
+        expect(productionEntryTranscriptForTests(otherRef).model?.history?.failed).toBe(
+          "thread history failed at entry 3",
+        ),
+      );
+    } finally {
+      stop();
+      activity.release();
+      threadsStore.getState().releaseWatchedThread(otherRef);
     }
   });
 });

@@ -4552,7 +4552,20 @@ async function readThreadHydration(
       if (!tracked) {
         putWatchedThreadModel(ref, failedModel);
       } else if (entry?.repository) {
-        if (ownsAttempt) {
+        // The tracked repository's own fence, not `ownsAttempt`'s: the attempt
+        // that owns this ref's tracked hydration on the wired client and ready
+        // epoch is the one whose rejection may record the failure. The shared
+        // read sequence is deliberately absent here. A concurrent rich watch
+        // (a delegate card's expanded read) advances it, which retires this
+        // attempt's say over the ref's SOURCE identity and its repair status --
+        // but the open transcript's repository must still record the failure
+        // this read actually observed, or the pane shows no diagnostic at all
+        // until some later read succeeds.
+        if (
+          pending.client === getWiredClient() &&
+          pending.epoch === getReadyEpoch() &&
+          pendingThreadHydrations.get(ref) === pending
+        ) {
           entry.repository.acceptReadFailure(errorText(err), pending.requestGeneration ?? 0, {
             lifetime: entry.lifetime,
           });

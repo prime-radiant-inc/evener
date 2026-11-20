@@ -1091,6 +1091,7 @@ export class SessionActivityStore {
       this.recordPageHold(identity);
       return;
     }
+    if (this.delegateHoldBootGenerations.get(identity) === bootGeneration) return;
     this.delegatePageHolds.delete(identity);
     this.delegateHoldBootGenerations.set(identity, bootGeneration);
   }
@@ -1223,16 +1224,22 @@ export class SessionActivityStore {
     const current = rows[index];
     if (!current) return;
     const { row: merged, holdFromFrame } = this.mergeDelegateFrame(current, frame, bootGeneration);
-    if (merged === current) return;
-    const next = rows.slice();
-    next[index] = merged;
     // The attribution names the sample the joined row wears now, not the frame:
     // a row sample that outranked this frame's keeps the attribution it was
     // loaded under -- the frame's generation for a stamped frame, which is the
     // one the row's own sample named for it to have been comparable at all, and
     // for an unstamped one the activity epoch both sides belong to.
+    //
+    // Recorded before the unchanged-row return below: a frame whose sample is
+    // already displayed still names the generation that published it, which is
+    // what the next adoption retires. An unchanged wait emits no update of its
+    // own, so skipping the attribution here would leave a page's attribution on
+    // a frame's sample forever.
     const identity = delegateIdentityKey(current.delegateId, current.childRef);
     if (holdFromFrame) this.recordHoldBootGeneration(identity, bootGeneration);
+    if (merged === current) return;
+    const next = rows.slice();
+    next[index] = merged;
     this.recordAppliedDelegate(merged, this.delegateEpoch());
     this.publish({ delegates: { ...this.state.delegates, rows: next } });
   }
@@ -1452,6 +1459,9 @@ export class SessionActivityStore {
       // the row already wore can win the ordering below, and then the row keeps
       // that sample's own attribution.
       let keptHold = false;
+      let comparable = false;
+      const existingSequence = existing?.holdSequence ?? 0;
+      const servedSequence = row.holdSequence ?? 0;
       if (applied === undefined) {
         // First sight in this epoch -- or the first read after a replacement
         // cleared the map: the served row seeds the order and wins, so an old
@@ -1477,7 +1487,7 @@ export class SessionActivityStore {
         // restart at 1, so comparing across the boundary would carry a finished
         // wait forward — or suppress a real one. A row the ordering no longer
         // covers contributes no sample.
-        const comparable = this.holdsComparable(identity, this.delegateBootGeneration);
+        comparable = this.holdsComparable(identity, this.delegateBootGeneration);
         keptHold =
           existing !== undefined &&
           comparable &&
@@ -1500,7 +1510,19 @@ export class SessionActivityStore {
         // transcript's boot generation: only one of the two sides knows a
         // replacement happened, and it need not be the transcript's. A late
         // response is not the source's news and attributes nothing.
-        if (!keptHold && hasDelegateHoldSample(merged)) this.recordPageHold(identity);
+        //
+        // One page re-attributes nothing, though: a page repeating the very
+        // sample the row already wears changes no fact about whose sample it
+        // is. When a frame stamped that sample, the stamp survives the repeat,
+        // because re-attributing it to the page would turn it into an
+        // unresolved page sample -- kept through the next generation adoption
+        // and re-read instead of retired with the daemon that published it.
+        const repeatedStampedHold =
+          existing !== undefined &&
+          comparable &&
+          existingSequence === servedSequence &&
+          this.delegateHoldBootGenerations.has(identity);
+        if (!keptHold && !repeatedStampedHold && hasDelegateHoldSample(merged)) this.recordPageHold(identity);
       }
       return merged;
     });
@@ -1534,10 +1556,15 @@ export class SessionActivityStore {
       const current = rows[index];
       if (!current) continue;
       const { row: merged, holdFromFrame } = this.mergeDelegateFrame(current, buffered.frame, buffered.bootGeneration);
+      // Same rule as the pushed-frame merge: the winning sample's attribution
+      // is recorded even when the displayed row is unchanged. A buffered frame
+      // repeats what a page already showed often -- it waited for a read to
+      // admit its row -- and that is exactly the case where the frame's stamp
+      // is the only evidence of which daemon published what is displayed.
+      if (holdFromFrame) this.recordHoldBootGeneration(identity, buffered.bootGeneration);
       if (merged === current) continue;
       if (!settledRows) settledRows = rows.slice();
       settledRows[index] = merged;
-      if (holdFromFrame) this.recordHoldBootGeneration(identity, buffered.bootGeneration);
       this.recordAppliedDelegate(merged, this.delegateEpoch());
     }
     if (!settledRows) return;
