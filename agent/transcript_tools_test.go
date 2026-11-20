@@ -1194,6 +1194,84 @@ func TestFind_ProjectName_DeletedSubdirInsideNestedCheckoutUnderWorktrees(t *tes
 	}
 }
 
+// TestFind_ProjectName_GoneNestedCheckoutKeepsItsOwnLeafName covers a session in
+// an independent checkout under another checkout's ".worktrees" directory,
+// stored in the enclosing checkout's bucket but saved to the nested checkout's
+// project. Both checkouts are then removed. The marker refuses because its path
+// derives the ENCLOSING checkout's project ID and the row saved the nested
+// checkout's, so the recorded leaf is the answer.
+func TestFind_ProjectName_GoneNestedCheckoutKeepsItsOwnLeafName(t *testing.T) {
+	stateHome := pinStateHome(t)
+
+	outer := newNamedCheckout(t, "outer-repo")
+	inner := filepath.Join(outer, ".worktrees", "inner")
+	gittest.Run(t, outer, "init", "-q", filepath.Join(".worktrees", "inner"))
+	gittest.Run(t, inner, "commit", "-q", "--allow-empty", "-m", "init")
+
+	outerProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(outer))
+	innerProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(inner))
+	bucket, err := RuntimeDirForProjectWithStateHome(outerProject, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.Config.MemoryProjectID = innerProject.ID
+	row.EnvInfo.WorkingDir = inner
+
+	if err := os.RemoveAll(inner); err != nil {
+		t.Fatalf("remove inner checkout: %v", err)
+	}
+	if err := os.RemoveAll(outer); err != nil {
+		t.Fatalf("remove outer checkout: %v", err)
+	}
+
+	if got, want := newProjectNameResolver().projectName(row, bucket), "inner"; got != want {
+		t.Fatalf("projectName(gone nested checkout %q saved to project %q in %q's bucket) = %q, want the nested checkout's %q", inner, innerProject.ID, outerProject.ID, got, want)
+	}
+}
+
+// TestFind_ProjectName_GoneNestedCheckoutWithMatchingProjectKeepsTheMarkerName
+// covers the same gone nested checkout stored in the enclosing checkout's
+// bucket, but with the row saved to the ENCLOSING checkout's project. The
+// marker's path derives that project, so the marker answers with the enclosing
+// checkout's name rather than the recorded leaf.
+func TestFind_ProjectName_GoneNestedCheckoutWithMatchingProjectKeepsTheMarkerName(t *testing.T) {
+	stateHome := pinStateHome(t)
+
+	outer := newNamedCheckout(t, "outer-repo")
+	inner := filepath.Join(outer, ".worktrees", "inner")
+	gittest.Run(t, outer, "init", "-q", filepath.Join(".worktrees", "inner"))
+	gittest.Run(t, inner, "commit", "-q", "--allow-empty", "-m", "init")
+
+	outerProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(outer))
+	bucket, err := RuntimeDirForProjectWithStateHome(outerProject, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.Config.MemoryProjectID = outerProject.ID
+	row.EnvInfo.WorkingDir = inner
+
+	if err := os.RemoveAll(inner); err != nil {
+		t.Fatalf("remove inner checkout: %v", err)
+	}
+	if err := os.RemoveAll(outer); err != nil {
+		t.Fatalf("remove outer checkout: %v", err)
+	}
+
+	if got, want := newProjectNameResolver().projectName(row, bucket), filepath.Base(outer); got != want {
+		t.Fatalf("projectName(gone nested checkout %q saved to the enclosing checkout's project %q) = %q, want the marker's %q", inner, outerProject.ID, got, want)
+	}
+}
+
 // TestFind_ProjectName_DeletedForeignProjectInMismatchedBucket covers a session
 // whose own record names a different project than the bucket it is stored in,
 // which --state-dir pointing at the wrong bucket produces. The surviving
@@ -1754,6 +1832,82 @@ func TestFind_ProjectName_RecordedPathBecameAFile(t *testing.T) {
 
 	if got, want := newProjectNameResolver().projectName(row, bucket), filepath.Base(checkout); got != want {
 		t.Fatalf("projectName(recorded subdirectory %q that is now a file) = %q, want the surviving checkout %q", recorded, got, want)
+	}
+}
+
+// TestFind_ProjectName_RecordedSymlinkToAFileInAnotherCheckout covers a recorded
+// subdirectory that a branch switch replaced with a symlink to a regular file in
+// another checkout. A file is not a directory to walk from, so the link belongs
+// to the recorded directory's missing tail and the checkout above the recorded
+// path — the row's own saved project — must answer, not the other checkout.
+func TestFind_ProjectName_RecordedSymlinkToAFileInAnotherCheckout(t *testing.T) {
+	stateHome := pinStateHome(t)
+
+	repo := newNamedCheckout(t, "link-to-file-repo")
+	other := newNamedCheckout(t, "link-to-file-other")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repo))
+	bucket, err := RuntimeDirForProjectWithStateHome(project, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	data := filepath.Join(other, "data")
+	if err := os.WriteFile(data, []byte("not a directory\n"), 0o644); err != nil {
+		t.Fatalf("write file in the other checkout: %v", err)
+	}
+	recorded := filepath.Join(repo, "pkg")
+	if err := os.Symlink(data, recorded); err != nil {
+		t.Fatalf("symlink the recorded subdirectory to a file in the other checkout: %v", err)
+	}
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.Config.MemoryProjectID = project.ID
+	row.EnvInfo.WorkingDir = recorded
+
+	if got, want := newProjectNameResolver().projectName(row, bucket), filepath.Base(repo); got != want {
+		t.Fatalf("projectName(recorded %q symlinked to a file in %q) = %q, want the recorded path's own checkout %q", recorded, other, got, want)
+	}
+}
+
+// TestFind_ProjectName_RecordedLaneSymlinkToANonGitDirectory covers a recorded
+// working directory that still SPELLS a managed lane but has been replaced by a
+// symlink to an ordinary, non-Git directory outside the state tree. The lane
+// classification describes a lane that is really there; here the path resolves
+// to the ordinary directory, so that directory is its own project and its
+// basename is the label.
+func TestFind_ProjectName_RecordedLaneSymlinkToANonGitDirectory(t *testing.T) {
+	stateHome := pinStateHome(t)
+
+	repo := newNamedCheckout(t, "lane-link-repo")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repo))
+	bucket, err := RuntimeDirForProjectWithStateHome(project, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+	lane := filepath.Join(bucket, "worktrees", project.ID, "dlg_link")
+	gittest.Run(t, repo, "worktree", "add", "-q", lane, "-b", "lane-link")
+	if err := os.RemoveAll(lane); err != nil {
+		t.Fatalf("remove lane: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	if err := os.Symlink(outside, lane); err != nil {
+		t.Fatalf("replace the lane with a symlink: %v", err)
+	}
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.EnvInfo.WorkingDir = lane
+
+	if got, want := newProjectNameResolver().projectName(row, bucket), "outside"; got != want {
+		t.Fatalf("projectName(recorded lane %q symlinked to the non-Git directory %q) = %q, want that directory's %q", lane, outside, got, want)
 	}
 }
 

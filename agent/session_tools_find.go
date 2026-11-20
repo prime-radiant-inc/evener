@@ -1054,15 +1054,21 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 		if !filepath.IsAbs(recorded) {
 			continue
 		}
-		recorded = identifier.ResolveClean(recorded)
+		// The recorded SPELLING is kept, not resolved as a whole: resolving it
+		// moves a symlink to a regular file into the checkout that file lives in,
+		// and the checkout above the recorded path is then never seen. The prefix
+		// walk below resolves only the part that really is a surviving directory.
+		spelling := filepath.Clean(recorded)
 		// A lane is classified where the path really is first. A symlink inside one
 		// lane can point into another, and the recorded spelling's boundary would
-		// then refuse the very checkout the path sits in. A pruned lane resolves to
-		// nothing, so its own spelling is still classified second.
-		resolved := resolveExistingPrefix(recorded)
+		// then refuse the very checkout the path sits in. The second try resolves
+		// the path as a whole: a pruned lane keeps its own spelling, while a
+		// recorded path that is itself a symlink to an ordinary directory outside
+		// the state tree resolves to that directory and is no lane.
+		resolved := resolveExistingPrefix(spelling)
 		laneCandidate := resolved
 		if _, _, _, _, isLane := r.stateWorktreeOwner(laneCandidate, bucketDir); !isLane {
-			laneCandidate = recorded
+			laneCandidate = identifier.ResolveClean(recorded)
 		}
 		if _, laneRoot, _, managedProjectID, isLane := r.stateWorktreeOwner(laneCandidate, bucketDir); isLane {
 			if root := resolveMainRootWithin(laneCandidate, laneRoot); root != "" {
@@ -1092,7 +1098,7 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 		// ancestry, and projectAt is where that rule lives. A path that is gone has
 		// nothing here to answer for it: a walk from it would describe the space it
 		// occupied, not the directory itself. Its surviving prefix is asked below.
-		if checkout, _, ok, _, hasGitRoot := r.projectAt(recorded, bucketDir); ok && checkout != "" {
+		if checkout, _, ok, _, hasGitRoot := r.projectAt(spelling, bucketDir); ok && checkout != "" {
 			// A surviving directory that resolves to no Git root is its own project,
 			// and its basename is that project's name — unless the path spells an
 			// in-repository worktree. The Git metadata that named the repository is
@@ -1207,12 +1213,14 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 		return ""
 	}
 	// 2. A path whose spelling contains an in-repository worktree marker names the
-	// project before that marker. The name is a claim about a checkout the row can
-	// check: a checkout that survives answers only when it is this row's project,
-	// so a marker naming the conflicting bucket's project keeps the recorded
-	// basename. A checkout that is gone contradicts nothing, and neither does a
-	// row and a bucket that record no project ID at all: with nothing to contradict
-	// the spelling, the marker answers as it always has.
+	// project before that marker. The marker's path names a project whether or not
+	// that checkout survives: a deleted checkout still resolves to its lexically
+	// cleaned spelling, which hashes to the project ID it had before removal. So
+	// the marker answers only when the row's saved project, or the bucket's, agrees
+	// with the ID its path derives; a marker naming the conflicting bucket's
+	// project keeps the recorded basename. Only when neither the row nor the bucket
+	// records a project ID at all is there nothing to contradict the spelling, and
+	// then the marker answers.
 	//
 	// The first spelling read is the one with the SURVIVING PREFIX resolved, because
 	// that is where the path really is: a recorded path that reaches a worktree
@@ -1222,9 +1230,17 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 	// answers nothing: a ".worktrees" directory that is itself a symlink to external
 	// storage erases the marker from the resolved spelling, and so does a recorded
 	// component that now exists as a regular file.
-	for _, spelling := range []string{resolveExistingPrefix(wd), filepath.Clean(wd)} {
+	first := resolveExistingPrefix(wd)
+	spellings := []string{first}
+	if second := filepath.Clean(wd); second != first {
+		spellings = append(spellings, second)
+	}
+	for _, spelling := range spellings {
 		if name, repoDir, isWorktree := inRepoWorktreeProjectPath(spelling); isWorktree {
-			if !directoryExists(repoDir) || (ownProject == "" && !bucketKnown) || r.checkoutIsRows(repoDir, ownProject, bucketProject, bucketKnown) {
+			if ownProject == "" && !bucketKnown {
+				return name
+			}
+			if r.checkoutIsRows(repoDir, ownProject, bucketProject, bucketKnown) {
 				return name
 			}
 		}
@@ -1247,7 +1263,15 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 // repository, but nothing in the bucket says which, so a checkout no recorded
 // project names is not adopted on the bucket's behalf.
 func (r *projectNameResolver) checkoutIsRows(root, ownProject, bucketProject string, bucketKnown bool) bool {
-	id := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(root)).ID
+	// A checkout that is gone keeps the ID it had before removal: ResolveClean
+	// falls back to the lexical spelling as soon as any component is missing, so
+	// the walk below would only be paid for that same answer. A surviving path is
+	// still resolved, so one checkout reached through a symlink keeps one identity.
+	resolved := filepath.Clean(root)
+	if _, err := os.Stat(root); err == nil {
+		resolved = identifier.ResolveClean(root)
+	}
+	id := identifier.ProjectFromCanonicalPath(resolved).ID
 	if ownProject != "" {
 		return id == ownProject
 	}
@@ -2294,9 +2318,10 @@ func nearestSurvivingDir(path string) string {
 	}
 }
 
-// resolveExistingPrefix resolves every component of path that exists and keeps
-// the missing tail in its lexical spelling, so two paths that name the same
-// place get the same answer even when their last components are gone.
+// resolveExistingPrefix resolves every component of path that exists as a
+// DIRECTORY and keeps the missing tail in its lexical spelling, so two paths
+// that name the same place get the same answer even when their last components
+// are gone.
 //
 // existingPrefix alone cannot do this: EvalSymlinks fails for the whole path as
 // soon as one component is missing, so passing the joined result through
@@ -2304,17 +2329,18 @@ func nearestSurvivingDir(path string) string {
 // two gives the ancestor the resolution it deserves. A component that exists but
 // does not resolve is treated as part of the tail, so the alias above it still
 // resolves.
+//
+// Only a surviving directory is a stopping point. os.Stat follows a symlink, so
+// a link to a directory still resolves and stops as before, while a regular file
+// and a symlink to one are not directories to walk from: they belong to the
+// missing tail exactly like a dangling link. Resolving such a component would
+// replace the recorded spelling with the file's real path in another checkout,
+// and the checkout above the recorded path would then never be seen.
 func resolveExistingPrefix(path string) string {
 	clean := filepath.Clean(path)
 	var missing []string
 	for {
-		if _, err := os.Lstat(clean); err == nil {
-			// Only a prefix that really RESOLVES is a stopping point. A dangling
-			// symlink exists, so Lstat finds it, but ResolveClean would fall back
-			// to its lexical spelling and keep the alias above it unresolved. The
-			// lane classification then misses the lane the alias points into. Such
-			// a component belongs to the missing tail, exactly like one that does
-			// not exist, so the walk continues upward and resolves the alias.
+		if directoryExists(clean) {
 			if resolved, ok := identifier.ResolveCleanOK(clean); ok {
 				if len(missing) == 0 {
 					return resolved
@@ -2322,6 +2348,7 @@ func resolveExistingPrefix(path string) string {
 				return filepath.Join(append([]string{resolved}, missing...)...)
 			}
 		}
+		// Not a directory, or does not resolve: part of the missing tail.
 		parent := filepath.Dir(clean)
 		if parent == clean {
 			if len(missing) == 0 {
@@ -2537,12 +2564,12 @@ func mainRootAt(dir string) (root string, found bool) {
 	gitPath := filepath.Join(dir, ".git")
 	info, err := os.Lstat(gitPath)
 	switch {
+	case errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR):
+		// ENOTDIR or absence: no directory to ask, and nothing was found.
+		return "", false
 	case err != nil:
-		// ENOTDIR proves a component of dir is not a directory, so there is no
-		// directory to ask and no checkout that was found and refused.
-		// os.ErrNotExist likewise says nothing is there. Every other error is a
-		// read that failed without establishing absence, so it stays a refusal.
-		return "", !(errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR))
+		// A read that failed establishes no absence, so it is a refusal.
+		return "", true
 	case info.IsDir():
 		return identifier.ResolveClean(dir), true
 	case info.Mode()&os.ModeSymlink != 0:
