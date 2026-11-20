@@ -274,6 +274,29 @@ func (w *Wrapper) ConfineTrustedInfra(cmd *exec.Cmd, dir string) {
 // process's PATH is the session's, not the launcher's.
 const childEnvBinary = "/usr/bin/env"
 
+// ChildEnvDelta is the difference between the sandbox LAUNCHER's environment
+// (cmd.Env) and the environment the CONFINED child must observe: Set carries
+// every assignment the child gains, and Unset names every variable the child
+// must not inherit from the launcher. Unset is sorted by name so the generated
+// argv is deterministic.
+//
+// The delta is a difference rather than an overlay because the two environments
+// are not related by one. The floor DERIVES assignments from the environment it
+// judges — an npm_config_cache redirect is computed from npm's effective config,
+// which a configured npm_config_userconfig can move — so merging a server's
+// cfg.Env can change names cfg.Env never mentions. And it REMOVES names a config
+// supplied, which an overlay of assignments alone cannot express: bwrap starts
+// the child from the launcher's environment, so a variable the floor dropped
+// from the child's environment would reach it anyway.
+type ChildEnvDelta struct {
+	Set   map[string]string
+	Unset []string
+}
+
+// empty reports whether the delta changes nothing, so a backend pays for no
+// helper and no flag when there is nothing to apply.
+func (d ChildEnvDelta) empty() bool { return len(d.Set) == 0 && len(d.Unset) == 0 }
+
 // ConfineWithChildEnv confines cmd exactly like Confine and delivers childEnv to
 // the CONFINED process instead of to the backend launcher.
 //
@@ -282,28 +305,28 @@ const childEnvBinary = "/usr/bin/env"
 // LD_LIBRARY_PATH, DYLD_INSERT_LIBRARIES and friends BEFORE any namespace,
 // mount, or Seatbelt policy exists. A configured environment whose contents come
 // from a config layer a repository can write therefore must not ride there.
-// bwrap's --setenv pairs and an /usr/bin/env prefix after the backend's "--"
-// separator give the child the same variables on the far side of the
-// confinement: the namespaces and mounts are in place before the assignment is
-// applied, and the loader that reads it is the child's own.
+// bwrap's --setenv/--unsetenv pairs and an /usr/bin/env prefix after the
+// backend's "--" separator give the child the same environment on the far side
+// of the confinement: the namespaces and mounts are in place before the
+// assignment is applied, and the loader that reads it is the child's own.
 //
 // Assignments are ordered by name so the generated argv is deterministic. A nil
 // wrapper has no backend to apply them behind, so they join cmd.Env: an
 // unconfined spawn's own environment IS the child's.
-func (w *Wrapper) ConfineWithChildEnv(cmd *exec.Cmd, dir string, childEnv map[string]string) {
+func (w *Wrapper) ConfineWithChildEnv(cmd *exec.Cmd, dir string, childEnv ChildEnvDelta) {
 	w.confineWithChildEnv(cmd, dir, childEnv, false)
 }
 
 // ConfineTrustedInfraWithChildEnv is ConfineWithChildEnv with
 // ConfineTrustedInfra's network carve-out: identical confinement except that
 // egress is never severed, for trusted-infrastructure spawns.
-func (w *Wrapper) ConfineTrustedInfraWithChildEnv(cmd *exec.Cmd, dir string, childEnv map[string]string) {
+func (w *Wrapper) ConfineTrustedInfraWithChildEnv(cmd *exec.Cmd, dir string, childEnv ChildEnvDelta) {
 	w.confineWithChildEnv(cmd, dir, childEnv, true)
 }
 
 // confineWithChildEnv is the shared body: it wraps cmd.Args and splices
 // childEnv into the wrapped argv on the child's side of the separator.
-func (w *Wrapper) confineWithChildEnv(cmd *exec.Cmd, dir string, childEnv map[string]string, trustedInfra bool) {
+func (w *Wrapper) confineWithChildEnv(cmd *exec.Cmd, dir string, childEnv ChildEnvDelta, trustedInfra bool) {
 	if w == nil {
 		cmd.Env = mergeChildEnvAssignments(cmd.Env, childEnv)
 		return
@@ -334,31 +357,42 @@ func childEnvNames(childEnv map[string]string) []string {
 // search: bwrap's "--setenv" pairs go just before the "--", and Seatbelt's
 // /usr/bin/env prefix just after it.
 //
+// The unset names go first, so on both backends a name that somehow appeared in
+// both halves would end up set rather than unset — the direction the merged
+// environment, which cannot contain an unset name, actually assigns.
+//
 // A wrapped argv that does not end in the original argv behind a separator would
 // put the assignments on the wrong side of the confinement, so it panics rather
 // than deliver them to the launcher's loader — the same fail-closed posture Wrap
 // takes for an unconfirmed policy.
-func childEnvArgv(backend Backend, argv []string, n int, childEnv map[string]string) []string {
-	if len(childEnv) == 0 {
+func childEnvArgv(backend Backend, argv []string, n int, childEnv ChildEnvDelta) []string {
+	if childEnv.empty() {
 		return argv
 	}
 	split := len(argv) - n
 	if split < 1 || argv[split-1] != "--" {
 		panic("sandbox: wrapped argv does not end in the original argv behind the backend separator")
 	}
-	names := childEnvNames(childEnv)
+	names := childEnvNames(childEnv.Set)
+	unset := slices.Sorted(slices.Values(childEnv.Unset))
 	var insert []string
 	at := split
 	switch backend {
 	case BackendBwrap:
 		at = split - 1
+		for _, name := range unset {
+			insert = append(insert, "--unsetenv", name)
+		}
 		for _, name := range names {
-			insert = append(insert, "--setenv", name, childEnv[name])
+			insert = append(insert, "--setenv", name, childEnv.Set[name])
 		}
 	case BackendSeatbelt:
 		insert = append(insert, childEnvBinary)
+		for _, name := range unset {
+			insert = append(insert, "-u", name)
+		}
 		for _, name := range names {
-			insert = append(insert, name+"="+childEnv[name])
+			insert = append(insert, name+"="+childEnv.Set[name])
 		}
 	}
 	out := make([]string, 0, len(argv)+len(insert))
@@ -368,23 +402,27 @@ func childEnvArgv(backend Backend, argv []string, n int, childEnv map[string]str
 	return out
 }
 
-// mergeChildEnvAssignments layers childEnv over env by NAME, dropping an entry
-// childEnv overrides. It never mutates env.
-func mergeChildEnvAssignments(env []string, childEnv map[string]string) []string {
-	if len(childEnv) == 0 {
+// mergeChildEnvAssignments applies childEnv to env by NAME: an unset name loses
+// its entry, then a set name replaces any entry it had. It never mutates env.
+func mergeChildEnvAssignments(env []string, childEnv ChildEnvDelta) []string {
+	if childEnv.empty() {
 		return env
 	}
-	out := make([]string, 0, len(env)+len(childEnv))
+	unset := make(map[string]bool, len(childEnv.Unset))
+	for _, name := range childEnv.Unset {
+		unset[name] = true
+	}
+	out := make([]string, 0, len(env)+len(childEnv.Set))
 	for _, kv := range env {
 		if name, _, ok := strings.Cut(kv, "="); ok {
-			if _, overridden := childEnv[name]; overridden {
+			if _, overridden := childEnv.Set[name]; overridden || unset[name] {
 				continue
 			}
 		}
 		out = append(out, kv)
 	}
-	for _, name := range childEnvNames(childEnv) {
-		out = append(out, name+"="+childEnv[name])
+	for _, name := range childEnvNames(childEnv.Set) {
+		out = append(out, name+"="+childEnv.Set[name])
 	}
 	return out
 }

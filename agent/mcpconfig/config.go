@@ -1119,6 +1119,30 @@ func discoverLayers(o discoverOptions) ([]ServerConfig, CLIReachability, ConfigE
 			if err != nil {
 				if !errors.Is(err, os.ErrNotExist) {
 					warnings = append(warnings, fmt.Sprintf("MCP config %s: %v", globalPath, err))
+					// A global layer that failed to parse or expand is
+					// INCONCLUSIVE, not established, exactly like the project
+					// layer below. Discovery dropped it, so the classification
+					// derived from the layers it did read (a CLI-only server
+					// whose name the global layer also declares) does not
+					// describe what a child discovers: the child re-reads the
+					// file, and a credential command that failed here — its
+					// exit status, its timeout — can succeed there without a
+					// byte of the file changing. Keeping the digest would let a
+					// fingerprint of unchanged bytes vouch for a layer whose
+					// contents discovery never established, so a recovering
+					// command would leave the owner excluding a tool the
+					// delegate registers.
+					//
+					// Clearing the recorded path is what says so: the evidence
+					// can no longer verify, every reader treats that as unknown
+					// reachability, and the CLI-only names stay ELIGIBLE. The
+					// digest and per-server digests stay, because they are true
+					// statements about the bytes that were read.
+					//
+					// Absence is the other arm and stays recorded: a file that
+					// is not there is a fact discovery established, while one it
+					// could not read is not.
+					evidence.Global.Path = ""
 				}
 				// Missing global file is not an error.
 			} else {

@@ -1828,6 +1828,109 @@ func warnedAbout(warnings []string, server string) bool {
 	return false
 }
 
+// TestDiscover_GlobalExpansionFailureIsInconclusive is the global layer's half
+// of the rule the project layer already followed.
+//
+// A global mcp.json whose credential command fails at launch (an expired
+// session, a timeout) is dropped by discovery with a warning, and the
+// classification derived from the layers that DID load then says a same-named
+// CLI server is unreachable. Keeping the failed layer's digest as
+// evidence.Global let a fingerprint of unchanged bytes vouch for a layer whose
+// contents discovery never established — so when the command recovered on its
+// own, with no file edit, the delegate's discovery registered the fallback tool
+// while the owner's roster still omitted it.
+//
+// Failed expansion must therefore be INCONCLUSIVE: EvidenceCurrent answers
+// false, and every reader leaves the CLI-only names ELIGIBLE. Absence is the
+// other arm and stays confirmed, because a file that is not there is a fact
+// discovery established.
+func TestDiscover_GlobalExpansionFailureIsInconclusive(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	// The command fails at launch and later succeeds, WITHOUT the file changing.
+	recovered := false
+	valueexpr.RunCommand = func(string, []string) (string, error) {
+		if !recovered {
+			return "", errors.New("command exited with status 1: session expired")
+		}
+		return "recovered-token", nil
+	}
+
+	globalDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", globalDir)
+	globalPath := filepath.Join(globalDir, "evener", "mcp.json")
+	if err := os.MkdirAll(filepath.Dir(globalPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	globalBody := []byte(`{"mcpServers":{"shared":{"command":"x","env":{"TOKEN":"$(mint-credential)"}}}}`)
+	if err := os.WriteFile(globalPath, globalBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	root := symlinkedWorkspace(t)
+	env := &agenttest.FakeEnv{WorkDir: root, GitRoot: root}
+	cliPath := filepath.Join(t.TempDir(), "cli-mcp.json")
+	if err := os.WriteFile(cliPath, []byte(`{"mcpServers":{"shared":{"command":"shared-from-cli"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	configs, reach, evidence, warnings, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, []string{cliPath}, nil, nil, false, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The premises, so the assertion below is about the defect and not an
+	// accident of the fixture.
+	if !warnedAbout(warnings, globalPath) {
+		t.Fatalf("warnings = %v; want the failed global expansion named, or the layer was not actually dropped", warnings)
+	}
+	if evidence.Global.Digest == "" {
+		t.Fatalf("evidence.Global = %+v; the bytes were read, so the digest records the premise this test is about", evidence.Global)
+	}
+	if got := serverConfigByName(configs)["shared"]; got.Command != "shared-from-cli" {
+		t.Fatalf("configs = %+v; want the CLI entry to win, since the failed global layer was dropped", configs)
+	}
+	if !slices.Equal(reach.CLIServers, []string{"shared"}) {
+		t.Fatalf("CLIServers = %v; want the CLI server recorded as the exclusion this evidence guards", reach.CLIServers)
+	}
+
+	// The defect: expansion FAILED, so the recorded digest of the unchanged file
+	// cannot say what the child will find there, and the exclusion above must not
+	// survive.
+	if evidence.EvidenceCurrent(env) {
+		t.Fatalf("evidence = %+v verified as CURRENT for a global layer whose expansion failed; a command that recovers without an edit then lets a child register a tool the owner still excludes", evidence.Global)
+	}
+
+	// The other half of the claim, checked rather than asserted in prose: once the
+	// command recovers, the same unchanged file does yield the global server, so a
+	// delegate's fresh discovery and the owner's stale classification really would
+	// disagree about "shared".
+	recovered = true
+	childConfigs, _, _, _, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, nil, true, false)
+	if err != nil {
+		t.Fatalf("child discovery: %v", err)
+	}
+	if got := serverConfigByName(childConfigs)["shared"]; got.Command != "x" || got.Env["TOKEN"] != "recovered-token" {
+		t.Fatalf("child configs = %+v; want the recovered global layer to supply \"shared\" from the unchanged file", childConfigs)
+	}
+
+	// And an ABSENT global layer keeps its evidence: absence is a fact discovery
+	// established, unlike a failed expansion. Without this half, a change that
+	// cleared every non-parsed layer would disable the exclusion for most
+	// workspaces and nothing here would notice.
+	absentDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", absentDir)
+	_, _, absentEvidence, _, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, nil, false, false)
+	if err != nil {
+		t.Fatalf("absent discovery: %v", err)
+	}
+	if wantPath := filepath.Join(absentDir, "evener", "mcp.json"); absentEvidence.Global.Path != wantPath {
+		t.Fatalf("an absent global layer recorded path %q, want the resolved %q", absentEvidence.Global.Path, wantPath)
+	}
+	if !absentEvidence.EvidenceCurrent(env) {
+		t.Fatalf("evidence for an ABSENT global layer = %+v did not verify; absence is established, so it must stay current", absentEvidence.Global)
+	}
+}
+
 // TestDiscoverForProjectEnv_ParseFailedProjectLayerIsInconclusive is Finding 3's
 // proof.
 //

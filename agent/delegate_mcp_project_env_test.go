@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/mcpconfig"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -724,12 +726,11 @@ func TestNestedSandboxedDelegateDoesNotEscalateFallbackProjectLayer(t *testing.T
 // background, so a level's first dial can trail the create call that started it.
 func waitForDials(t *testing.T, r *mcpHeaderRecorder, n int) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		if len(r.authorizations()) >= n {
-			return
+	testwait.UntilSeen(t, fmt.Sprintf("%d Authorization header(s) presented", n), func() (bool, string) {
+		auths := r.authorizations()
+		if len(auths) >= n {
+			return true, ""
 		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("only %d Authorization header(s) were presented within the bound, want at least %d: %q", len(r.authorizations()), n, r.authorizations())
+		return false, fmt.Sprintf("%d header(s): %q", len(auths), auths)
+	})
 }

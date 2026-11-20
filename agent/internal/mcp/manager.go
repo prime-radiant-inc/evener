@@ -9,7 +9,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -382,14 +381,19 @@ func confineCommandUnderSandbox(cmd *exec.Cmd, cfg mcpconfig.ServerConfig, w *sa
 	scrubbed := sandbox.ScrubSecretEnv(environ())
 	// The launcher's environment holds only the scrubbed parent environment and
 	// the floor. cfg.Env never joins it (see the doc comment above).
-	cmd.Env = sandbox.ApplyEnvFloorInDir(scrubbed, w.Policy(), w.SessionTmp(), workingDir)
-	// The child's configured environment is cfg.Env as the FLOOR leaves it, so
-	// applying it behind the confinement changes nothing the server observes: a
+	launcherEnv := sandbox.ApplyEnvFloorInDir(scrubbed, w.Policy(), w.SessionTmp(), workingDir)
+	cmd.Env = launcherEnv
+	// The child's environment is cfg.Env as the FLOOR leaves it behind the
+	// confinement, so applying it there changes nothing the server observes: a
 	// floor-dropped credential (the ssh-agent handle) is still dropped from it,
-	// and a floor-redirected cache still carries the floor's value.
-	var childEnv map[string]string
+	// and a floor-redirected cache still carries the floor's value. It is
+	// expressed as the DELTA from the launcher's own environment because the two
+	// are not related by one: the floor derives assignments from the environment
+	// it judges, so a configured npm_config_userconfig can move npm_config_cache
+	// to a different scratch path, and it removes names a config supplied.
+	var childEnv sandbox.ChildEnvDelta
 	if len(cfg.Env) > 0 {
-		childEnv = floorChildEnv(cfg.Env, sandbox.ApplyEnvFloorInDir(
+		childEnv = floorChildEnv(launcherEnv, sandbox.ApplyEnvFloorInDir(
 			mergeEnvInto(scrubbed, cfg.Env), w.Policy(), w.SessionTmp(), workingDir))
 	}
 	// Confinement wraps the argv and, for Seatbelt, sets cmd.Dir to the worktree
@@ -403,35 +407,44 @@ func confineCommandUnderSandbox(cmd *exec.Cmd, cfg mcpconfig.ServerConfig, w *sa
 	cmd.ExtraFiles = nil
 }
 
-// floorChildEnv narrows a server's configured environment to the assignments
-// the floor actually leaves for those NAMES, taken from env after the floor ran
-// over the configured environment. A name the floor dropped is absent from the
-// result, and a name the floor redirected carries the floor's value, so
-// delivering these assignments inside the sandbox reproduces the environment
-// the server received when they were merged into the launcher env instead.
-func floorChildEnv(configured map[string]string, env []string) map[string]string {
-	if len(configured) == 0 {
-		return nil
+// floorChildEnv is the delta that turns the launcher's environment into the
+// environment the floor gives a server configured with cfg.Env: every name the
+// floored merge assigns differently from the floored base, plus every name the
+// merge REMOVES and the base still carries.
+//
+// The comparison is by NAME over both environments rather than over cfg.Env's
+// keys, because the floor does not merely pass names through. It derives some
+// from the environment it judges — a configured npm_config_userconfig moves
+// npm's effective cache, so the floor's npm_config_cache redirect lands at a
+// different scratch path — and those derived names are exactly the ones a
+// cfg.Env-keyed overlay dropped. A name whose floored value equals the
+// launcher's is not in the delta: the launcher already carries it, and bwrap
+// starts the child from the launcher's environment.
+func floorChildEnv(launcherEnv, flooredMerged []string) sandbox.ChildEnvDelta {
+	base, merged := envMap(launcherEnv), envMap(flooredMerged)
+	delta := sandbox.ChildEnvDelta{Set: map[string]string{}}
+	for name, value := range merged {
+		if b, present := base[name]; !present || b != value {
+			delta.Set[name] = value
+		}
 	}
-	out := make(map[string]string, len(configured))
-	for name := range configured {
-		if value, ok := envValue(env, name); ok {
+	for name := range base {
+		if _, present := merged[name]; !present {
+			delta.Unset = append(delta.Unset, name)
+		}
+	}
+	return delta
+}
+
+// envMap indexes env by name, last occurrence wins, matching exec.
+func envMap(env []string) map[string]string {
+	out := make(map[string]string, len(env))
+	for _, entry := range env {
+		if name, value, ok := strings.Cut(entry, "="); ok {
 			out[name] = value
 		}
 	}
 	return out
-}
-
-// envValue returns the value env assigns name. It reads the LAST occurrence,
-// matching exec's own rule for a duplicated name. An assigned-but-empty value
-// is present, not absent.
-func envValue(env []string, name string) (string, bool) {
-	for _, entry := range slices.Backward(env) {
-		if n, value, ok := strings.Cut(entry, "="); ok && n == name {
-			return value, true
-		}
-	}
-	return "", false
 }
 
 // ToolDefinitions returns namespaced tool definitions from servers whose

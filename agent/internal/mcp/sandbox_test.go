@@ -14,6 +14,138 @@ import (
 	"primeradiant.com/evener/agent/sandbox"
 )
 
+// bwrapUnsetenvNames returns the names the wrapped argv REMOVES inside the
+// sandbox, via bwrap's own --unsetenv NAME. Like bwrapSetenvValue it searches
+// only the flags before the "--" separator.
+func bwrapUnsetenvNames(args []string) []string {
+	sep := slices.Index(args, "--")
+	if sep < 0 {
+		return nil
+	}
+	var out []string
+	for i := 0; i+1 < len(args[:sep]); i++ {
+		if args[i] == "--unsetenv" {
+			out = append(out, args[i+1])
+		}
+	}
+	return out
+}
+
+// confinedNpmFixture is a writable directory OUTSIDE /tmp, because bwrap gives
+// every spawn a private /tmp: an npm config file reached through one there is
+// hidden from the confined child, which would make a "config names an unserved
+// cache" fixture actually test an unreadable config instead.
+func confinedNpmFixture(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/var/tmp", "evener-mcp-delta-")
+	if err != nil {
+		t.Skipf("needs a writable directory outside /tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
+// TestMCPStdioServerDeliversTheFlooredConfigDelta is Medium #2's proof at the
+// spawn site.
+//
+// A sandboxed stdio MCP server configured with npm_config_userconfig pointing at
+// a config whose cache the session's overlays do not serve gets an
+// npm_config_cache redirect to the session scratch — but the floor DERIVES that
+// assignment from the environment it judges, so cfg.Env never names it. A child
+// environment built by copying cfg.Env's own keys therefore dropped it, and the
+// confined server (an npx-based server is exactly this shape) wrote its cache
+// into read-only storage.
+//
+// The delta is by NAME over the floored launcher environment and the floored
+// configured one, so a derived assignment rides it like a surviving cfg.Env
+// entry, and a name the floor REMOVES from the configured environment (an
+// worktree-external KUBECONFIG here) is emitted as --unsetenv rather than
+// inherited from the launcher. cfg.Env itself still never joins cmd.Env.
+func TestMCPStdioServerDeliversTheFlooredConfigDelta(t *testing.T) {
+	worktree := sandbox.MaterializeWorkspace(t, sandbox.MainCheckout)
+	sessionTmp := t.TempDir()
+	fixture := confinedNpmFixture(t)
+	// HOME lives beside the fixture, outside /tmp: a home under /tmp would have
+	// its ~/.npm cache root hidden by bwrap's private mount, so the launcher's
+	// own floor would already redirect npm_config_cache and the assignment under
+	// test would not be the DERIVED one.
+	home := filepath.Join(fixture, "home")
+	if err := os.MkdirAll(filepath.Join(home, ".npm"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	unservedCache := filepath.Join(fixture, "custom-npm-cache")
+	if err := os.MkdirAll(unservedCache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	userConfig := filepath.Join(fixture, "spawn-user-npmrc")
+	if err := os.WriteFile(userConfig, []byte("cache="+unservedCache+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	internalKubeconfig := filepath.Join(worktree, "kubeconfig")
+	externalKubeconfig := filepath.Join(fixture, "external-kubeconfig")
+
+	rp, w := resolveWrapper(t, sandbox.HostFacts{
+		OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true,
+		OverlaySupported: true,
+	}, worktree, sessionTmp, true)
+	if rp.CacheStrategy != sandbox.CacheOverlay {
+		t.Fatalf("test premise: cache strategy = %v, want overlay", rp.CacheStrategy)
+	}
+	// The premise that makes the redirect DERIVED: the launcher's own
+	// environment resolves npm's cache to the served ~/.npm, so nothing asks the
+	// floor to redirect it until cfg.Env's userconfig moves npm's effective
+	// cache to the unserved directory.
+	launcherFloor := sandbox.ApplyEnvFloorInDir([]string{"HOME=" + home}, rp, sessionTmp, worktree)
+	for _, kv := range launcherFloor {
+		if strings.HasPrefix(kv, "npm_config_cache=") {
+			t.Fatalf("test premise: the launcher's floor already redirects npm_config_cache, so the assignment under test is not derived from cfg.Env: %v", launcherFloor)
+		}
+	}
+
+	cfg := stdioCfg()
+	cfg.Env = map[string]string{
+		"npm_config_userconfig": userConfig,
+		"KUBECONFIG":            externalKubeconfig,
+	}
+	dial := productionDialWithEnv(cfg, w, func() []string {
+		return []string{"HOME=" + home, "KUBECONFIG=" + internalKubeconfig}
+	})
+	tr, err := dial(context.Background())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	ct, ok := tr.(*mcpsdk.CommandTransport)
+	if !ok || ct.Command == nil {
+		t.Fatalf("expected a *CommandTransport with a command, got %T", tr)
+	}
+
+	// The defect: the derived redirect must reach the CONFINED server, because
+	// the launcher's own value points elsewhere and the child inherits it unless
+	// the argv says otherwise.
+	if got, ok := bwrapSetenvValue(ct.Command.Args, "npm_config_cache"); !ok || got != filepath.Join(sessionTmp, "npm") {
+		t.Errorf("npm_config_cache reached the confined server as %q (present=%v), want the derived session-scratch redirect %q: %v", got, ok, filepath.Join(sessionTmp, "npm"), ct.Command.Args)
+	}
+	// A surviving cfg.Env entry still rides the same channel.
+	if got, ok := bwrapSetenvValue(ct.Command.Args, "npm_config_userconfig"); !ok || got != userConfig {
+		t.Errorf("--setenv npm_config_userconfig = %q (present=%v), want the configured path %q: %v", got, ok, userConfig, ct.Command.Args)
+	}
+	// The floor refuses the external KUBECONFIG the config asked for, so the
+	// child must not inherit the launcher's in-worktree one either: the floored
+	// configured environment has none.
+	if got := bwrapUnsetenvNames(ct.Command.Args); !slices.Contains(got, "KUBECONFIG") {
+		t.Errorf("--unsetenv names = %v, want KUBECONFIG: the floor removed it from the configured environment, so the child must not inherit the launcher's value: %v", got, ct.Command.Args)
+	}
+	// The whole point of the child-env channel: cfg.Env never rides cmd.Env. The
+	// launcher keeps the PARENT's KUBECONFIG (the parent environment is its own),
+	// but not the configured one, and not the configured userconfig at all.
+	for _, kv := range ct.Command.Env {
+		name, value, _ := strings.Cut(kv, "=")
+		if name == "npm_config_userconfig" || (name == "KUBECONFIG" && value == externalKubeconfig) {
+			t.Errorf("cfg.Env entry %q is in the sandbox LAUNCHER's environment: %v", kv, ct.Command.Env)
+		}
+	}
+}
+
 // resolveWrapper resolves a workspace-write policy at cwd and wraps it, so a
 // test can inspect both the policy the env floor judges and the command the
 // wrapper confines.
