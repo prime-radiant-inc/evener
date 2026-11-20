@@ -1943,7 +1943,13 @@ func reconcileAndEnrichPastThread(entry hubcore.PastEntry, thread appwire.Thread
 }
 
 func appItemsFromReplayTurn(turnID string, turnIndex int, turn schema.Turn, reg *apptranscript.ToolCallRegistry) []appwire.ThreadItem {
-	return apptranscript.ProjectTurn(turnID, turnIndex, turn, reg, apptranscript.AddressedImageProjector, apptranscript.ToolResultOutputImages)
+	// The replay must list the same items as the index, so it projects under
+	// the transcript read model's entry rules: a new-format entry shows its
+	// COMMUNICATE delivery and NOTICE, hides its status records, and a fold copy
+	// projects nothing. ProjectTurn is the legacy projector and renders none of
+	// those (#6819).
+	items, _ := apptranscript.ProjectEntryParts(turnID, turnIndex, turn, reg, apptranscript.AddressedImageProjector, apptranscript.ToolResultOutputImages)
+	return items
 }
 
 func enrichThreadFileBackedOutputImages(thread appwire.Thread) appwire.Thread {

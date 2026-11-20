@@ -195,6 +195,25 @@ func TestNewFormatCommunicateProjectsTheDeliveredMessage(t *testing.T) {
 	if _, ok := CommunicateItem("t_1", 7, schema.Turn{Kind: schema.TurnCommunicate, Format: schema.TurnFormatIdentity}); ok {
 		t.Fatal("a COMMUNICATE entry with no payload projected an item")
 	}
+	// A delivery whose message repeats the assistant text shown in this turn
+	// renders once: the index suppresses the same echo (build.go's
+	// echoesAwaiting), so the delivery projects nothing.
+	reg := NewToolCallRegistry()
+	echoed := schema.Turn{
+		Format: schema.TurnFormatIdentity, TurnID: "t_1", Kind: schema.TurnAssistant,
+		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "Done."}}},
+	}
+	ProjectEntryParts("t_1", 1, echoed, reg, nil, nil)
+	echoDelivery := entry
+	echoDelivery.Communicate = &schema.CommunicateInfo{CallID: "c1", EndTurn: true, Message: "Done."}
+	if items, parts := ProjectEntryParts("t_1", 8, echoDelivery, reg, nil, nil); len(items) != 0 || len(parts) != 0 {
+		t.Fatalf("echoing delivery projected %+v at parts %v, want nothing", items, parts)
+	}
+	otherDelivery := entry
+	otherDelivery.Communicate = &schema.CommunicateInfo{CallID: "c1", EndTurn: true, Message: "All set."}
+	if items, _ := ProjectEntryParts("t_1", 9, otherDelivery, reg, nil, nil); len(items) != 1 {
+		t.Fatalf("distinct delivery projected %+v, want its message", items)
+	}
 }
 
 func TestNewFormatNoticeProjectsItsAnnouncement(t *testing.T) {
