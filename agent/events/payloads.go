@@ -714,11 +714,6 @@ const WarningCodeLegacyDelegateState = "legacy_delegate_state"
 // it as quiet detail; the retried tool call reports its own outcome separately.
 const WarningCodeMCPReconnected = "mcp_reconnected"
 
-// WarningCodeSessionMetaSaveFailed identifies a warning that the session's
-// metadata could not be persisted. The quota wait publishes an unstamped wait
-// in that case, so the warning is diagnostic rather than model-facing.
-const WarningCodeSessionMetaSaveFailed = "session_meta_save_failed"
-
 // WarningCodeDelegateAttentionRestore identifies a failed attempt to get a
 // delegate's owed attention where it belongs: restoring its cold runtime to
 // deliver it, or escalating it to the root when a closed ancestor fences it

@@ -1,12 +1,9 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -15,17 +12,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spf13/afero"
-
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/goal"
-	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/jobstore"
-	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
@@ -1465,12 +1458,6 @@ func TestQuotaWaitAnnouncementsCarryTheWaitIdentity(t *testing.T) {
 	if err := s.ensureClientMutationStore(); err != nil {
 		t.Fatalf("ensureClientMutationStore: %v", err)
 	}
-	// Name the session up front: the background prompt namer otherwise runs a
-	// concurrent meta save, and a try-save that meets it publishes the wait
-	// unstamped, which this test's recorder drops.
-	if err := s.Rename("quota wait announcements test"); err != nil {
-		t.Fatalf("Rename: %v", err)
-	}
 	trip := tripwireCtx(t).Done()
 	run := startInput(context.Background(), s, "start the work", EntryUserInput)
 	run.awaitQuotaWait(t, s)
@@ -1489,15 +1476,6 @@ func TestQuotaWaitAnnouncementsCarryTheWaitIdentity(t *testing.T) {
 	}
 	if failure.WaitStartedAt != started[0].WaitStartedAt {
 		t.Fatalf("read summary stamp %d, want the start announcement's %d", failure.WaitStartedAt, started[0].WaitStartedAt)
-	}
-	// The stamp the wait is published and announced with is the one on disk:
-	// the save lands before the announcement, so a pane's stamp is durable.
-	meta, err := schema.LoadSessionMeta(s.stateDir, s.ID())
-	if err != nil {
-		t.Fatalf("LoadSessionMeta: %v", err)
-	}
-	if meta.QuotaWaitStamps != started[0].WaitStartedAt {
-		t.Fatalf("persisted QuotaWaitStamps = %d, want the visible wait's %d", meta.QuotaWaitStamps, started[0].WaitStartedAt)
 	}
 
 	// A steer wakes the first wait; the provider still meets the limit, so
@@ -1545,461 +1523,73 @@ func TestQuotaWaitAnnouncementsCarryTheWaitIdentity(t *testing.T) {
 	run.awaitEnd(t, trip, "the call resumes at the reset")
 }
 
-// A delegate that completes a quota wait, releases its idle runtime and hits
-// quota again after a cold restore must not start its wait identity sequence
-// over: an open pane still holds the previous runtime's ended stamp, and the
-// client's stamp ordering would read the fresh wait as stale and refuse it.
-// The persisted counter is seeded back into the restored session;
-// TestQuotaWaitStampDurableBeforeAnnouncement pins the write side.
-func TestQuotaWaitStampSurvivesRestore(t *testing.T) {
-	meta := schema.SessionMeta{
-		ID:              "01QUOTAWAITSTAMP000001",
-		ProfileID:       "openai",
-		Model:           "gpt-5.2",
-		Config:          (SessionConfig{}).toSnapshot(),
-		QuotaWaitStamps: 5,
-	}
-	restored := restoreAskSession(t, meta, t.TempDir())
-	if got := restored.quotaWaitStamps; got != 5 {
-		t.Fatalf("restored quotaWaitStamps = %d, want 5: the wait identity sequence must carry across a cold restore", got)
-	}
-}
-
-// A wait's stamp is announced to clients, so it must be durable before the
-// announcement goes out: a process death mid-wait must not leave a pane
-// holding a stamp the next runtime could mint again for a different wait.
-// The test reads the persisted meta while the wait is still in flight, and
-// then drives a second wait of the same turn to pin that it mints
-// previous+1 — one strictly increasing sequence per session.
-func TestQuotaWaitStampDurableBeforeAnnouncement(t *testing.T) {
+// A runtime restore mints a later durable boot generation, so the next wait's
+// stamp must compare greater than a wait an earlier runtime issued: a pane
+// still holding the earlier runtime's ended stamp admits the fresh wait
+// instead of reading it as stale. Nothing is written to session metadata
+// between the usage limit and the wait, so the ordering rests on the counter
+// minted before each runtime serves input.
+func TestQuotaWaitStampIncreasesAcrossARestore(t *testing.T) {
 	s, clk, _, adapter := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
-	var announcements quotaWaitAnnouncements
-	s.ConsumeEventsLossless(announcements.consume, func() {})
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
+	if err := s.mintBootGeneration(); err != nil {
+		t.Fatalf("mintBootGeneration: %v", err)
 	}
-	// Name the session up front: the background prompt namer otherwise runs a
-	// concurrent meta save, and this test's point is that the wait's own mint
-	// is what reaches the disk before its announcement.
-	if err := s.Rename("quota wait stamp test"); err != nil {
-		t.Fatalf("Rename: %v", err)
-	}
+	firstGeneration := s.BootGeneration()
 	trip := tripwireCtx(t).Done()
 	run := startInput(context.Background(), s, "start the work", EntryUserInput)
 	run.awaitQuotaWait(t, s)
-	// The start announcement is emitted after the durable save, so waiting for
-	// it also waits for the save.
-	announcements.awaitLen(t, 1)
-
-	s.mu.Lock()
-	stamp := s.quotaWait.stamp
-	s.mu.Unlock()
-	if stamp == 0 {
-		t.Fatal("fixture: the in-flight wait carries no stamp")
+	first := s.RestingFailure()
+	if first == nil || first.WaitStartedAt == 0 {
+		t.Fatalf("first wait's summary = %+v, want a stamped wait", first)
 	}
+	recoverProvider(adapter)
+	reachReset(clk)
+	run.awaitEnd(t, trip, "the call resumes at the reset")
+	if err := s.autoSaveMeta(); err != nil {
+		t.Fatalf("autoSaveMeta: %v", err)
+	}
+	s.Close()
 	meta, err := schema.LoadSessionMeta(s.stateDir, s.ID())
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
-	if meta.QuotaWaitStamps != stamp {
-		t.Fatalf("persisted QuotaWaitStamps = %d, want the in-flight wait's %d: the stamp is saved before it is announced", meta.QuotaWaitStamps, stamp)
+
+	// The restored runtime keeps a real clock (a fake one is test state, not
+	// session state), so its usage limit must name a reset still ahead.
+	limit := usageLimitError(t, "openai", time.Unix(time.Now().Unix(), 0).Add(2*time.Hour))
+	restoredAdapter := &streamingAdapter{name: "openai", streamErr: limit}
+	restoredClient := llm.NewClient()
+	restoredClient.Register(restoredAdapter)
+	restored, err := RestoreSessionFromMeta(restoredClient, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(s.stateDir), meta, s.stateDir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	t.Cleanup(restored.Close)
+	if err := restored.mintBootGeneration(); err != nil {
+		t.Fatalf("mintBootGeneration after restore: %v", err)
+	}
+	if restored.BootGeneration() == firstGeneration {
+		t.Fatalf("restored boot generation is still %q: the fixture minted no later generation", firstGeneration)
 	}
 
-	// A steer wakes the first wait; the provider still meets the limit, so
-	// the call waits again within the same turn, minting the next stamp.
-	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
-		ClientMutationID: "steer-next-stamp",
+	secondTrip := tripwireCtx(t).Done()
+	secondRun := startInput(context.Background(), restored, "start the work again", EntryUserInput)
+	secondRun.awaitQuotaWait(t, restored)
+	second := restored.RestingFailure()
+	if second == nil || second.WaitStartedAt == 0 {
+		t.Fatalf("restored wait's summary = %+v, want a stamped wait", second)
+	}
+	if second.WaitStartedAt <= first.WaitStartedAt {
+		t.Fatalf("restored wait's stamp %d does not compare greater than the previous runtime's %d", second.WaitStartedAt, first.WaitStartedAt)
+	}
+	recoverProvider(restoredAdapter)
+	if _, err := restored.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-restored",
 		Input:            []appwire.InputItem{{Type: "text", Text: "is the quota back"}},
 	}); err != nil {
-		t.Fatalf("steer: %v", err)
+		t.Fatalf("steer the restored wait: %v", err)
 	}
-	testwait.Until(t, "the steer retries the call", func() bool { return streamCalls(adapter) == 2 })
-	announcements.awaitLen(t, 3)
-	s.mu.Lock()
-	next := s.quotaWait.stamp
-	s.mu.Unlock()
-	if next != stamp+1 {
-		t.Fatalf("the second wait's stamp = %d, want %d: one strictly increasing sequence per session", next, stamp+1)
-	}
-	meta, err = schema.LoadSessionMeta(s.stateDir, s.ID())
-	if err != nil {
-		t.Fatalf("LoadSessionMeta after the second wait: %v", err)
-	}
-	if meta.QuotaWaitStamps != next {
-		t.Fatalf("persisted QuotaWaitStamps after the second wait = %d, want %d", meta.QuotaWaitStamps, next)
-	}
-
-	recoverProvider(adapter)
-	reachReset(clk)
-	run.awaitEnd(t, trip, "the call resumes at the reset")
-}
-
-// A read or an event bridge can sample the session while its wait's stamp is
-// being saved. The wait must not be published until the minted stamp is
-// durable: a read that served the wait before the write committed would hand a
-// pane a stamp that a process death could let the next runtime mint again.
-func TestQuotaWaitIsNotVisibleBeforeItsStampIsSaved(t *testing.T) {
-	s, clk, _, adapter := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
-	var announcements quotaWaitAnnouncements
-	s.ConsumeEventsLossless(announcements.consume, func() {})
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
-	// Name the session up front: the background prompt namer otherwise runs a
-	// concurrent meta save, and this test's point is which write the gate holds.
-	if err := s.Rename("quota wait publish gate test"); err != nil {
-		t.Fatalf("Rename: %v", err)
-	}
-	// The gate holds the rename of the staged metadata whose payload carries the
-	// wait stamp: the save writes that payload before it renames, so reading the
-	// temp file inside before reads exactly what the blocked rename would
-	// publish.
-	stagedPath := schema.SessionMetaPath(s.stateDir, s.ID()) + ".tmp"
-	gate := &notesRenameFailureFS{Fs: afero.NewOsFs()}
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	var held atomic.Bool
-	var enterOnce, releaseOnce sync.Once
-	gate.before = func() {
-		data, err := os.ReadFile(stagedPath)
-		if err != nil || !bytes.Contains(data, []byte(`"quota_wait_stamps"`)) {
-			return
-		}
-		if !held.CompareAndSwap(false, true) {
-			return
-		}
-		enterOnce.Do(func() { close(entered) })
-		<-release
-	}
-	closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
-	defer closeRelease()
-	s.cfg.testOnly.metaFS = gate
-
-	trip := tripwireCtx(t).Done()
-	run := startInput(context.Background(), s, "start the work", EntryUserInput)
-	testwait.Until(t, "the wait's metadata save begins", func() bool {
-		select {
-		case <-entered:
-			return true
-		default:
-			return false
-		}
-	})
-
-	// Sample the summary the way a read does, while the write is blocked
-	// inside the save.
-	during := s.RestingFailure()
-	closeRelease()
-
-	testwait.Until(t, "the wait becomes visible after its stamp is saved", func() bool {
-		failure := s.RestingFailure()
-		return failure != nil && failure.WaitStartedAt != 0
-	})
-	visible := s.RestingFailure()
-	if during != nil && during.WaitStartedAt == visible.WaitStartedAt {
-		t.Fatalf("a read served the wait's stamp %d while its save was still in flight", during.WaitStartedAt)
-	}
-	meta, err := schema.LoadSessionMeta(s.stateDir, s.ID())
-	if err != nil {
-		t.Fatalf("LoadSessionMeta: %v", err)
-	}
-	if meta.QuotaWaitStamps != visible.WaitStartedAt {
-		t.Fatalf("persisted QuotaWaitStamps = %d, want the visible wait's %d", meta.QuotaWaitStamps, visible.WaitStartedAt)
-	}
-	announcements.awaitLen(t, 1)
-	started := announcements.snapshot()
-	if started[0].WaitStartedAt != visible.WaitStartedAt {
-		t.Fatalf("start announcement carries stamp %d, want the read summary's %d", started[0].WaitStartedAt, visible.WaitStartedAt)
-	}
-
-	// The wait proceeds: the retry goes out at the reset on the recovered
-	// provider.
-	recoverProvider(adapter)
-	reachReset(clk)
-	run.awaitEnd(t, trip, "the call resumes at the reset")
-	if got := streamCalls(adapter); got != 2 {
-		t.Fatalf("model calls = %d, want 2: the wait must retry once", got)
-	}
-}
-
-// A Close that starts while the stamp save is in flight ends the turn as a
-// cancellation, not as the provider's quota error: a turn that ends on a
-// cancellation lets its goal resume, while the quota error leaves it blocked.
-func TestCloseDuringTheStampSaveCancelsTheWait(t *testing.T) {
-	s, _, _, _ := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
-	if err := s.Rename("quota wait close test"); err != nil {
-		t.Fatalf("Rename: %v", err)
-	}
-	stagedPath := schema.SessionMetaPath(s.stateDir, s.ID()) + ".tmp"
-	gate := &notesRenameFailureFS{Fs: afero.NewOsFs()}
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	var held atomic.Bool
-	var enterOnce, releaseOnce sync.Once
-	gate.before = func() {
-		data, err := os.ReadFile(stagedPath)
-		if err != nil || !bytes.Contains(data, []byte(`"quota_wait_stamps"`)) {
-			return
-		}
-		if !held.CompareAndSwap(false, true) {
-			return
-		}
-		enterOnce.Do(func() { close(entered) })
-		<-release
-	}
-	closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
-	defer closeRelease()
-	s.cfg.testOnly.metaFS = gate
-
-	trip := tripwireCtx(t).Done()
-	run := startInput(context.Background(), s, "start the work", EntryUserInput)
-	testwait.Until(t, "the wait's metadata save begins", func() bool {
-		select {
-		case <-entered:
-			return true
-		default:
-			return false
-		}
-	})
-	// Close waits for the turn, which is held inside the save, so run it in
-	// the background and release the save once it has marked the session
-	// closing.
-	closed := make(chan struct{})
-	go func() {
-		s.Close()
-		close(closed)
-	}()
-	testwait.Until(t, "the session is closing", func() bool {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		return s.closing
-	})
-	closeRelease()
-	run.awaitEnd(t, trip, "Close ends the waiting turn")
-	if !errors.Is(run.err, context.Canceled) {
-		t.Fatalf("turn ended with %v, want a cancellation: a close under the wait must not leave the provider's quota error", run.err)
-	}
-	select {
-	case <-closed:
-	case <-trip:
-		t.Fatal("Close never returned")
-	}
-}
-
-// A failed stamp save must not publish a stamp: the counter never reached disk,
-// so a restore can mint the same number again, and a pane that saw it would
-// reject the next runtime's wait. The wait itself still runs and still retries.
-func TestQuotaWaitPublishesUnstampedWhenItsStampCannotBeSaved(t *testing.T) {
-	s, clk, _, adapter := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
-	var announcements quotaWaitAnnouncements
-	s.ConsumeEventsLossless(announcements.consume, func() {})
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
-	if err := s.Rename("quota wait save failure test"); err != nil {
-		t.Fatalf("Rename: %v", err)
-	}
-	// Fail only the rename whose staged payload carries the wait stamp: the
-	// save writes that payload before it renames, so the temp file names the
-	// save a read must not see a stamp from.
-	stagedPath := schema.SessionMetaPath(s.stateDir, s.ID()) + ".tmp"
-	fail := &notesRenameFailureFS{Fs: afero.NewOsFs(), err: errors.New("injected metadata write failure")}
-	failed := make(chan struct{})
-	var failedOnce sync.Once
-	fail.before = func() {
-		data, err := os.ReadFile(stagedPath)
-		fail.fail = err == nil && bytes.Contains(data, []byte(`"quota_wait_stamps"`))
-		if fail.fail {
-			failedOnce.Do(func() { close(failed) })
-		}
-	}
-	s.cfg.testOnly.metaFS = fail
-
-	trip := tripwireCtx(t).Done()
-	run := startInput(context.Background(), s, "start the work", EntryUserInput)
-	testwait.Until(t, "the wait's metadata write fails", func() bool {
-		select {
-		case <-failed:
-			return true
-		default:
-			return false
-		}
-	})
-	testwait.Until(t, "the wait becomes visible", func() bool {
-		return s.RestingFailure() != nil
-	})
-	visible := s.RestingFailure()
-	if visible.WaitStartedAt != 0 {
-		t.Fatalf("published WaitStartedAt = %d after a failed save, want unstamped", visible.WaitStartedAt)
-	}
-
-	recoverProvider(adapter)
-	reachReset(clk)
-	run.awaitEnd(t, trip, "the call resumes at the reset")
-	if got := streamCalls(adapter); got != 2 {
-		t.Fatalf("model calls = %d, want 2: the wait must retry once", got)
-	}
-}
-
-// gatedStreamingAdapter holds the first model call behind gate, so a test can
-// arrange state at the call boundary and still drive the same adapter fixture.
-type gatedStreamingAdapter struct {
-	*streamingAdapter
-	gate func()
-}
-
-func (a *gatedStreamingAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
-	a.gate()
-	return a.streamingAdapter.Stream(ctx, req)
-}
-
-// A metadata writer holding the save lock must not stall the turn before its
-// wait loop: the wait is published unstamped instead, and the user's retry is
-// not held up behind the writer.
-func TestQuotaWaitPublishesUnstampedWhileAMetaWriterHoldsTheLock(t *testing.T) {
-	callStarted := make(chan struct{})
-	releaseCall := make(chan struct{})
-	var startOnce sync.Once
-	dir := t.TempDir()
-	adapter := &streamingAdapter{name: "openai", streamErr: usageLimitError(t, "openai", quotaResetAt)}
-	c := llm.NewClient()
-	c.Register(&gatedStreamingAdapter{streamingAdapter: adapter, gate: func() {
-		startOnce.Do(func() { close(callStarted) })
-		<-releaseCall
-	}})
-	policy := llm.RetryPolicy{MaxRetries: 0}
-	clk := agenttest.NewFakeClock()
-	s := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{
-		StateDir:       dir,
-		LLMRetryPolicy: &policy,
-		clock:          clk,
-	}))
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
-	if err := s.Rename("quota wait meta writer test"); err != nil {
-		t.Fatalf("Rename: %v", err)
-	}
-
-	trip := tripwireCtx(t).Done()
-	run := startInput(context.Background(), s, "start the work", EntryUserInput)
-	testwait.Until(t, "the first model call begins", func() bool {
-		select {
-		case <-callStarted:
-			return true
-		default:
-			return false
-		}
-	})
-	// Hold the save mutex the wait's stamp save would wait on, then let the
-	// call meet the usage limit.
-	s.metaSaveMu.Lock()
-	release := sync.OnceFunc(s.metaSaveMu.Unlock)
-	defer release()
-	close(releaseCall)
-	testwait.Until(t, "the wait is published unstamped while a metadata writer holds the save lock", func() bool {
-		f := s.RestingFailure()
-		return f != nil && f.WaitStartedAt == 0
-	})
-	release()
-	recoverProvider(adapter)
-	reachReset(clk)
-	run.awaitEnd(t, trip, "the call resumes at the reset")
-	if got := streamCalls(adapter); got != 2 {
-		t.Fatalf("model calls = %d, want 2: the wait must retry once", got)
-	}
-}
-
-// The failed-save warning is a diagnostic: a configured Notification hook must
-// not run on the turn goroutine, where a slow hook would keep the wait from
-// serving a reset, a wake or a Stop.
-func TestFailedStampSaveWarningDoesNotRunTheNotificationHook(t *testing.T) {
-	s, clk, _, adapter := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
-	if err := s.Rename("quota wait hook test"); err != nil {
-		t.Fatalf("Rename: %v", err)
-	}
-	// Fail only the rename whose staged payload carries the wait stamp.
-	stagedPath := schema.SessionMetaPath(s.stateDir, s.ID()) + ".tmp"
-	fail := &notesRenameFailureFS{Fs: afero.NewOsFs(), err: errors.New("injected metadata write failure")}
-	failed := make(chan struct{})
-	var failedOnce sync.Once
-	fail.before = func() {
-		data, err := os.ReadFile(stagedPath)
-		fail.fail = err == nil && bytes.Contains(data, []byte(`"quota_wait_stamps"`))
-		if fail.fail {
-			failedOnce.Do(func() { close(failed) })
-		}
-	}
-	s.cfg.testOnly.metaFS = fail
-
-	marker := filepath.Join(t.TempDir(), "notification-hook")
-	runner := hooks.NewRunner(nil, "")
-	runner.Add(plugin.HookNotification, plugin.RegisteredHook{
-		Matcher: "*",
-		Type:    "command",
-		Command: "touch " + shellquote.Literal(marker),
-		Timeout: 5,
-	})
-	s.hookRunner = runner
-
-	warnings := make(chan events.WarningData, 16)
-	s.ConsumeEventsLossless(func(ev events.SessionEvent) {
-		if data, ok := ev.Data.(events.WarningData); ok {
-			select {
-			case warnings <- data:
-			default:
-			}
-		}
-	}, func() {})
-
-	trip := tripwireCtx(t).Done()
-	run := startInput(context.Background(), s, "start the work", EntryUserInput)
-	testwait.Until(t, "the wait's metadata write fails", func() bool {
-		select {
-		case <-failed:
-			return true
-		default:
-			return false
-		}
-	})
-	testwait.Until(t, "the wait becomes visible unstamped", func() bool {
-		f := s.RestingFailure()
-		return f != nil && f.WaitStartedAt == 0
-	})
-	testwait.Until(t, "the failed-save warning reaches the consumer", func() bool {
-		for {
-			select {
-			case w := <-warnings:
-				if w.Code == events.WarningCodeSessionMetaSaveFailed {
-					return true
-				}
-			default:
-				return false
-			}
-		}
-	})
-	// The hook would run after the event is sent on the turn goroutine, so give
-	// it the chance it would have had before asserting it never ran.
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(marker); err == nil {
-			t.Fatal("the failed-save warning ran the Notification hook")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	recoverProvider(adapter)
-	reachReset(clk)
-	run.awaitEnd(t, trip, "the call resumes at the reset")
-	if got := streamCalls(adapter); got != 2 {
-		t.Fatalf("model calls = %d, want 2: the wait must retry once", got)
-	}
+	secondRun.awaitEnd(t, secondTrip, "the restored call retries after the steer")
 }
 
 // The elapsed sample is the RETRY GROUP's time, not the whole model-call
@@ -2029,12 +1619,6 @@ func TestWaitElapsedSampleIsTheQuotaGroupsOwnNotThePhases(t *testing.T) {
 	}))
 	var announcements quotaWaitAnnouncements
 	s.ConsumeEventsLossless(announcements.consume, func() {})
-	// Name the session up front: the background prompt namer otherwise runs a
-	// concurrent meta save, and a try-save that meets it publishes the wait
-	// unstamped, which this test's recorder drops.
-	if err := s.Rename("quota wait elapsed sample test"); err != nil {
-		t.Fatalf("Rename: %v", err)
-	}
 	trip := tripwireCtx(t).Done()
 	run := startInput(context.Background(), s, "start the work", EntryUserInput)
 	select {
@@ -2120,12 +1704,6 @@ func TestSubMillisecondWaitStartStillAnnouncesAWait(t *testing.T) {
 	s, clk, _, _ := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
 	var announcements quotaWaitAnnouncements
 	s.ConsumeEventsLossless(announcements.consume, func() {})
-	// Name the session up front: the background prompt namer otherwise runs a
-	// concurrent meta save, and a try-save that meets it publishes the wait
-	// unstamped, which this test's recorder drops.
-	if err := s.Rename("quota wait sub-millisecond test"); err != nil {
-		t.Fatalf("Rename: %v", err)
-	}
 	trip := tripwireCtx(t).Done()
 	// Half a millisecond before the reset: a positive wait whose delay
 	// truncates to zero on the wire.
@@ -2171,12 +1749,6 @@ func TestWaitStartAnnouncesTheCallsRealElapsedSample(t *testing.T) {
 	s, clk, _, adapter := newAttentionLivelockSession(t, nil)
 	var announcements quotaWaitAnnouncements
 	s.ConsumeEventsLossless(announcements.consume, func() {})
-	// Name the session up front: the background prompt namer otherwise runs a
-	// concurrent meta save, and a try-save that meets it publishes the wait
-	// unstamped, which this test's recorder drops.
-	if err := s.Rename("quota wait start elapsed test"); err != nil {
-		t.Fatalf("Rename: %v", err)
-	}
 	// The call streams content, then meets the limit mid-stream once the test
 	// has let the clock run: the elapsed sample must span the streamed work.
 	streamed := make(chan struct{})

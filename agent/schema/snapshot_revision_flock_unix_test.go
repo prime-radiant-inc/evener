@@ -4,7 +4,6 @@ package schema
 
 import (
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -136,7 +135,7 @@ func TestLockSessionMetaCrossProcessAppliesToOsFs(t *testing.T) {
 	}
 	const id = "02wMz5Txv1C3Hut0M8GCeB"
 
-	release, applied, _, err := lockSessionMetaCrossProcess(afero.NewOsFs(), dir, id, false)
+	release, applied, err := lockSessionMetaCrossProcess(afero.NewOsFs(), dir, id)
 	if err != nil {
 		t.Fatalf("pointer OsFs: %v", err)
 	}
@@ -145,7 +144,7 @@ func TestLockSessionMetaCrossProcessAppliesToOsFs(t *testing.T) {
 	}
 	release()
 
-	release, applied, _, err = lockSessionMetaCrossProcess(afero.OsFs{}, dir, id, false)
+	release, applied, err = lockSessionMetaCrossProcess(afero.OsFs{}, dir, id)
 	if err != nil {
 		t.Fatalf("value OsFs: %v", err)
 	}
@@ -154,7 +153,7 @@ func TestLockSessionMetaCrossProcessAppliesToOsFs(t *testing.T) {
 	}
 	release()
 
-	release, applied, _, err = lockSessionMetaCrossProcess(afero.NewMemMapFs(), dir, id, false)
+	release, applied, err = lockSessionMetaCrossProcess(afero.NewMemMapFs(), dir, id)
 	if err != nil {
 		t.Fatalf("MemMapFs: %v", err)
 	}
@@ -162,31 +161,4 @@ func TestLockSessionMetaCrossProcessAppliesToOsFs(t *testing.T) {
 		t.Fatal("a non-OS afero.Fs claimed a cross-process lock it cannot provide")
 	}
 	release()
-}
-
-// TestTrySaveSessionMetaReportsABusyLock pins the try-save seam: while another
-// process holds the session's meta lock, TrySaveSessionMeta writes nothing and
-// reports ErrSessionMetaLocked instead of waiting, and succeeds once released.
-func TestTrySaveSessionMetaReportsABusyLock(t *testing.T) {
-	dir := t.TempDir()
-	const id = "02wMz5Txv1C3Hut0M8GCeB"
-	if err := SaveSessionMeta(dir, SessionMeta{ID: id, Name: "before"}); err != nil {
-		t.Fatal(err)
-	}
-	release, applied, _, err := lockSessionMetaCrossProcess(afero.NewOsFs(), dir, id, false)
-	if err != nil {
-		t.Fatalf("lockSessionMetaCrossProcess: %v", err)
-	}
-	if !applied {
-		release()
-		t.Skip("cross-process locking does not apply to this filesystem")
-	}
-	err = TrySaveSessionMeta(dir, SessionMeta{ID: id, Name: "blocked"})
-	release()
-	if !errors.Is(err, ErrSessionMetaLocked) {
-		t.Fatalf("TrySaveSessionMeta with the lock held = %v, want ErrSessionMetaLocked", err)
-	}
-	if err := TrySaveSessionMeta(dir, SessionMeta{ID: id, Name: "after"}); err != nil {
-		t.Fatalf("TrySaveSessionMeta after release: %v", err)
-	}
 }

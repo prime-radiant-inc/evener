@@ -938,10 +938,11 @@ type Session struct {
 	// quotaWait is the model call waiting out a provider usage limit, nil
 	// while none waits (session_quota_wait.go). quotaWakes counts the asks
 	// (a user message, a model switch) for such a wait to retry now.
-	// quotaWaitStamps is the last wait identity the session issued, so a
-	// later wait of the same turn always compares greater than an earlier
-	// one even when wall-clock instants collide or step back. Persisted as
-	// SessionMeta.QuotaWaitStamps and seeded on restore.
+	// quotaWaitStamps counts the wait identities this runtime issued. Its
+	// value is the sequence part of the next stamp, minted inside the durable
+	// boot generation's range (session_quota_wait.go), so a wait always
+	// compares greater than an earlier one even when wall-clock instants
+	// collide or step back.
 	// steerArrivals counts accepted user steering and steerArrivalsDrained is
 	// its value as the latest steering drain began, so a wait can tell a
 	// steer that may not be in its request. Guarded by mu.
@@ -3692,40 +3693,7 @@ func (s *Session) autoSaveMetaLocked() error {
 	return s.saveSessionMetaLocked()
 }
 
-// tryAutoSaveMeta is autoSaveMeta for a caller that must not wait on another
-// metadata writer. saved is false and nothing was written when this session's
-// save mutex or the shared meta locks are held; a real write failure still
-// returns its error.
-func (s *Session) tryAutoSaveMeta() (saved bool, err error) {
-	if s.stateDir == "" {
-		return true, nil
-	}
-	if !s.metaSaveMu.TryLock() {
-		return false, nil
-	}
-	defer s.metaSaveMu.Unlock()
-	err = s.trySaveSessionMetaLocked()
-	if errors.Is(err, schema.ErrSessionMetaLocked) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
 func (s *Session) saveSessionMetaLocked() error {
-	return s.writeSessionMeta(false)
-}
-
-// trySaveSessionMetaLocked is saveSessionMetaLocked for a caller that must not
-// wait on a concurrent metadata writer: it reports schema.ErrSessionMetaLocked
-// rather than blocking.
-func (s *Session) trySaveSessionMetaLocked() error {
-	return s.writeSessionMeta(true)
-}
-
-func (s *Session) writeSessionMeta(try bool) error {
 	// The metadata write is the durability point for a notes mutation whose
 	// value is still staged in the live store, so persist the live store.
 	// Meta() reports the published committed cut to readers; handing that to
@@ -3734,13 +3702,7 @@ func (s *Session) writeSessionMeta(try bool) error {
 	human, agentNote, urls, _ := s.notesLiveSnapshot()
 	meta := s.metaWithNotes(human, agentNote, urls)
 	if fs := s.cfg.testOnly.metaFS; fs != nil {
-		if try {
-			return schema.TrySaveSessionMetaWithFS(fs, s.stateDir, meta)
-		}
 		return schema.SaveSessionMetaWithFS(fs, s.stateDir, meta)
-	}
-	if try {
-		return schema.TrySaveSessionMeta(s.stateDir, meta)
 	}
 	return schema.SaveSessionMeta(s.stateDir, meta)
 }

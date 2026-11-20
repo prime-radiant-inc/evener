@@ -15,6 +15,6 @@ import "github.com/spf13/afero"
 // cross-process coordination on a platform the product does not target. Windows,
 // the one non-Unix GOOS the GOOS=windows build-tag discipline vet in CI compiles,
 // now has a real LockFileEx lock in snapshot_flock_windows.go.
-func lockSessionMetaCrossProcess(_ afero.Fs, _, _ string, _ bool) (func(), bool, bool, error) {
-	return func() {}, false, false, nil
+func lockSessionMetaCrossProcess(_ afero.Fs, _, _ string) (func(), bool, error) {
+	return func() {}, false, nil
 }

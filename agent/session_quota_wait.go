@@ -3,7 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
-	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -138,41 +138,22 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 	// wait is published, so whoever sees the session waiting sees a drive
 	// whose bound no longer runs.
 	drive.waitBegins()
-	// The stamp is minted in this hold, so every wait the session issues
-	// compares greater than the one before it. It is not published here: the
-	// wait becomes visible only once the minted stamp is durable.
-	s.quotaWaitStamps++
-	stamp := s.quotaWaitStamps
-	s.mu.Unlock()
-	defer drive.waitEnded()
-	// Save the minted stamp before the wait is visible to any read, so a
-	// process death mid-wait cannot remint a stamp a pane already saw. The
-	// attempt does not wait for a concurrent metadata writer: lock contention
-	// publishes the wait unstamped instead of holding up a retry the user
-	// already asked for. A failed write also publishes it unstamped: the
-	// counter never reached disk, so a restore could mint this number again,
-	// and a pane must not be handed a stamp its next runtime can reuse. The
-	// wait, its timer and its wakes run the same either way.
-	saved, saveErr := s.tryAutoSaveMeta()
-	s.mu.Lock()
-	if s.closingOrClosedLocked() {
-		s.mu.Unlock()
-		return false, closingWaitError(ctx)
-	}
-	if saved {
-		wait.stamp = stamp
-		wait.failure.WaitStartedAt = stamp
-	}
+	// The stamp is minted in this hold from the durable boot generation and
+	// this runtime's sequence, so it is safe to expose without a metadata
+	// write: a restore can only mint from a later generation's range, and no
+	// write can sit between the limit and a cancellation. Every wait this
+	// runtime issues still compares greater than the one before it.
+	wait.stamp = s.nextQuotaWaitStampLocked()
+	wait.failure.WaitStartedAt = wait.stamp
 	s.quotaWait = wait
 	// A wake that came while the request was in flight, a switch already
 	// picked, or a steer that arrived after the last steering drain began
-	// (and so may not be in this request) retries at once. The checks run
-	// again in this publishing hold, so a wake or switch that arrived while
-	// the stamp was being saved is not lost between the holds.
+	// (and so may not be in this request) retries at once.
 	if s.quotaWakes != wakesBefore || len(s.pendingModels) > 0 || s.steerArrivals != s.steerArrivalsDrained {
 		wait.wake <- struct{}{}
 	}
 	s.mu.Unlock()
+	defer drive.waitEnded()
 	end := sync.OnceFunc(func() {
 		s.mu.Lock()
 		if s.quotaWait == wait {
@@ -184,17 +165,6 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 
 	s.noteParentJobActivity(jobPhaseModelRetrying)
 	s.emitQuotaRetry(callErr, model, resetAt.Sub(now), wait.stamp, resetAt.UnixMilli(), callElapsed, &wait.failure)
-	// The failed-save warning follows the start announcement: the roster
-	// samples the wait on the start event, so the wait must already be
-	// announced. It is a diagnostic (emitDiagnosticWarning), so it never runs a
-	// Notification hook that would keep the turn from serving a reset, a wake
-	// or Stop.
-	if saveErr != nil {
-		s.emitDiagnosticWarning(events.WarningData{
-			Code:    events.WarningCodeSessionMetaSaveFailed,
-			Message: fmt.Sprintf("auto-save failed: %v", saveErr),
-		})
-	}
 	select {
 	case <-ctx.Done():
 		return false, ctx.Err()
@@ -239,6 +209,47 @@ func closingWaitError(ctx context.Context) error {
 		return err
 	}
 	return context.Canceled
+}
+
+// A wait's stamp comes from a numeric range reserved to one runtime, keyed by
+// the session's durable boot generation: generation*quotaWaitRangeWidth plus a
+// sequence that rises with each wait the runtime issues. Restores mint a later
+// generation before serving input, so a restored session's first wait compares
+// greater than every wait the previous runtime issued, without any stamp being
+// written to session metadata.
+const (
+	// quotaWaitRangeWidth is the stamps one generation's range can issue. A
+	// runtime waits out at most one usage limit per model call, so the width
+	// is far beyond what one runtime can spend.
+	quotaWaitRangeWidth = 1_000_000_000
+	// maxExactStamp is the largest consecutive integer a JavaScript client
+	// represents exactly. A stamp stays within it so every client compares
+	// two stamps as numbers.
+	maxExactStamp = 1<<53 - 1
+)
+
+// nextQuotaWaitStampLocked mints the current wait's stamp and counts it. The
+// caller holds s.mu.
+//
+// Because the stamp is exposed to clients as soon as it is minted, no
+// metadata write may stand between the limit and the stamp: the boot
+// generation was minted durably once, before the runtime served input, and a
+// restore can only mint from a later generation's range. A session with no
+// installed generation (a test, or one that never mints) serves generation 1,
+// and a generation high enough to overflow the exact range saturates, so the
+// stamp never leaves the range a client compares.
+func (s *Session) nextQuotaWaitStampLocked() uint64 {
+	generation := uint64(1)
+	if s.bootGeneration != "" {
+		if parsed, err := strconv.ParseUint(s.bootGeneration, 10, 64); err == nil && parsed > 0 {
+			generation = parsed
+		}
+	}
+	if limit := uint64((maxExactStamp - quotaWaitRangeWidth + 1) / quotaWaitRangeWidth); generation > limit {
+		generation = limit
+	}
+	s.quotaWaitStamps++
+	return generation*uint64(quotaWaitRangeWidth) + s.quotaWaitStamps
 }
 
 // applyModelSwitchPickedDuringWait applies a switch picked while the call

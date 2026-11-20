@@ -553,39 +553,3 @@ func TestDelegateReadServesTheStoredWaitPastItsReset(t *testing.T) {
 		t.Fatalf("a read after the wake = %+v, want no wait", failure)
 	}
 }
-
-// A wait whose stamp could not be saved is published unstamped, and the wake
-// path clears only a stamped wait. Caching the unstamped start on the stored
-// thread would therefore leave the row reporting a wait through the retry that
-// ended it. The start must not be cached: the row's live roster sample shows
-// the wait while it lasts, and the unstamped wake has nothing to strand.
-func TestDelegateReadDoesNotCacheAnUnstampedQuotaWait(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	t.Cleanup(srv.Close)
-	serveRootWithoutHistory(t, srv, "root")
-	const childID = "quota-wait-unstamped-child"
-	childPath := writeDelegateTranscript(t, childID, "the delegate's work")
-	srv.SetDescendantTranscriptPathFunc(func(threadID string) string {
-		if threadID == childID {
-			return childPath
-		}
-		return ""
-	})
-	srv.RecordDescendantAppEvent("root", threadEvent(childID, events.SessionStartData{WorkingDir: "/work"}))
-	srv.RecordDescendantAppEvent("root", threadEvent(childID, events.ExecutionStartedData{TurnID: "quota-wait-turn"}))
-	// The daemon's failed-save start: a wait with a deadline and a summary but
-	// no stamp, which its zero-delay wake cannot identify.
-	srv.RecordDescendantAppEvent("root", threadEvent(childID, events.ModelRetryData{
-		Attempt:    1,
-		DelayMS:    time.Hour.Milliseconds(),
-		ErrorClass: "quota_exceeded",
-		ResumesAt:  time.Now().Add(time.Hour).UnixMilli(),
-		WaitFailure: &appwire.ThreadFailure{
-			Title: "waiting out the usage limit",
-		},
-	}))
-
-	if failure := readChildThread(t, srv, childID).Thread.Evener.Failure; failure != nil {
-		t.Fatalf("an unstamped wait start was cached on the delegate's thread: %+v: no wake can clear it", failure)
-	}
-}

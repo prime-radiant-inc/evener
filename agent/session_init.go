@@ -1259,7 +1259,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		modelResponses:           meta.TurnCount,
 		createdAt:                meta.CreatedAt,
 		workMillis:               meta.WorkMillis,
-		quotaWaitStamps:          meta.QuotaWaitStamps,
 		lastTurnEndedAt:          meta.LastTurnEndedAt,
 		lastMessage:              meta.LastMessage,
 		fork: forkInfo{
