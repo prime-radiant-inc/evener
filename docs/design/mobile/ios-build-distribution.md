@@ -79,13 +79,17 @@ template. `make test-native` includes this check. Native compilation, actual
 launch, link delivery and background recovery require a simulator or device build;
 a successful `simctl launch` request alone does not prove the process stayed alive.
 
-### Non-publishing pull-request build
+### Non-publishing qualification build
 
-`.github/workflows/ios-qualification.yml` checks out the pull-request head when
-it carries the qualification scripts the workflow calls, and otherwise checks
-out the merge ref — the tree the workflow file itself comes from — so a head
-that predates those scripts is not run against a tree that lacks them. The
-checkout is read-only and persists no credential. It uses macOS 26, Xcode 26.6,
+`.github/workflows/ios-qualification.yml` runs on pull requests and on pushes
+to main that touch the same paths. A pull request checks out its head when it
+carries the qualification scripts the workflow calls, and otherwise checks out
+the merge ref — the tree the workflow file itself comes from — so a head that
+predates those scripts is not run against a tree that lacks them. The checkout
+is read-only and persists no credential. The build job restores a DerivedData
+build cache keyed by the runner image, Xcode version and both dependency locks,
+and saves it only on a main push, so every later pull request can read it
+through Actions' base-branch fallback. It uses macOS 26, Xcode 26.6,
 Node 22.13.1, Ruby 3.3.6, Bundler 2.7.2 and the locked CocoaPods 1.16.2. It is
 separate from TestFlight and has no release secrets
 or publishing step. Existing Linux native/API gates remain required. Its policy

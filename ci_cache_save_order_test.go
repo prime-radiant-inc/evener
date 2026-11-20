@@ -48,10 +48,12 @@ type cacheWorkflowStep struct {
 	Name string            `yaml:"name"`
 	Uses string            `yaml:"uses"`
 	If   string            `yaml:"if"`
+	Run  string            `yaml:"run"`
 	With map[string]string `yaml:"with"`
 }
 
 type cacheWorkflowJob struct {
+	If       string `yaml:"if"`
 	Strategy struct {
 		Matrix map[string]any `yaml:"matrix"`
 	} `yaml:"strategy"`
@@ -273,7 +275,9 @@ func TestCompositeActionDescriptionsHoldNoExpressions(t *testing.T) {
 // entry saved there serves only that ref. Those saves crowd main's entries
 // out of the repository's cache budget, and each eviction on main makes the
 // next pull requests save their own copies. Go caches go through
-// go-cache-restore and go-cache-save, which save only on main.
+// go-cache-restore and go-cache-save, which save only on main. A documented
+// kind saved by an explicit actions/cache step on main (the iOS DerivedData
+// tree) is not one of these built-in toolchain caches.
 func TestBuiltInToolchainCachesStayOff(t *testing.T) {
 	paths := []string{
 		".github/workflows/ci.yml",
@@ -301,4 +305,52 @@ func TestBuiltInToolchainCachesStayOff(t *testing.T) {
 		}
 	}
 	check("setup-toolchain", readActionSteps(t, ".github/actions/setup-toolchain/action.yml"))
+}
+
+// Every kind keyed by commit needs its prefix in cache-prune's filter, or its
+// previous generation is never deleted and rides the budget until it expires.
+// The test reads the jq filter the job runs, not a copy of it.
+func TestCachePruneCoversTheDerivedDataKind(t *testing.T) {
+	jobs := readCacheWorkflow(t, ".github/workflows/ci.yml")
+	prune, ok := jobs["cache-prune"]
+	if !ok {
+		t.Fatal("ci.yml has no cache-prune job")
+	}
+	if !strings.Contains(prune.If, "github.event_name == 'push'") || !strings.Contains(prune.If, "github.ref == 'refs/heads/main'") {
+		t.Errorf("cache-prune if = %q, want a main-push guard", prune.If)
+	}
+	var script strings.Builder
+	for _, step := range prune.Steps {
+		script.WriteString(step.Run)
+		script.WriteString("\n")
+	}
+	match := regexp.MustCompile(`test\("(\^[^"]+)"\)`).FindStringSubmatch(script.String())
+	if match == nil {
+		t.Fatalf("cache-prune has no commit-key filter:\n%s", script.String())
+	}
+	filter, err := regexp.Compile(match[1])
+	if err != nil {
+		t.Fatalf("cache-prune filter %q does not compile: %v", match[1], err)
+	}
+	sha := strings.Repeat("a", 40)
+	podHash := strings.Repeat("b", 40)
+	packageHash := strings.Repeat("c", 40)
+	for _, key := range []string{
+		"go-tests-root-ubuntu24-amd64-go1.27.4-" + sha,
+		"gomod-ubuntu24-amd64-go1.27.4-" + sha,
+		"golangci-lint-tagged-ubuntu24-amd64-go1.27.4-" + sha,
+		"ios-deriveddata-macos26-xcode-26.6-" + podHash + "-" + packageHash + "-" + sha,
+	} {
+		if !filter.MatchString(key) {
+			t.Errorf("cache-prune filter %q does not match saved key %q", match[1], key)
+		}
+	}
+	for _, key := range []string{
+		"setup-ruby-bundler-cache-v6-macos-16-arm64-" + sha,
+		"ios-deriveddata-macos26-xcode-26.6-" + podHash + "-" + packageHash + "-" + sha + "-extra",
+	} {
+		if filter.MatchString(key) {
+			t.Errorf("cache-prune filter %q matches unkeyed entry %q", match[1], key)
+		}
+	}
 }

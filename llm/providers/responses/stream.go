@@ -2,10 +2,12 @@ package responses
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/llm"
@@ -33,10 +35,71 @@ type responsesToolState struct {
 type responsesOutputAccumulator struct {
 	toolStates   map[string]*responsesToolState
 	itemToCallID map[string]string
-	output       []any
-	rawOutput    []json.RawMessage
+	entries      []responsesAccumEntry
 }
 
+type responsesAccumPart struct {
+	index    int
+	hasIndex bool
+	data     []byte
+}
+
+type responsesAccumEntry struct {
+	index     int    // output_index, or -1 until a frame supplies it
+	id        string // the wire item id, which identifies a slot that carries no output_index
+	item      map[string]any
+	parts     []responsesAccumPart
+	raw       json.RawMessage
+	settled   bool
+	summaries bool // reasoning deltas were summaries, which replay as summaries, never as content
+}
+
+func (e *responsesAccumEntry) hasPartContent() bool {
+	return slices.ContainsFunc(e.parts, func(p responsesAccumPart) bool { return len(p.data) > 0 })
+}
+
+func (e *responsesAccumEntry) orderedParts() [][]byte {
+	ordered := e.parts
+	if !slices.ContainsFunc(e.parts, func(p responsesAccumPart) bool { return !p.hasIndex }) {
+		ordered = slices.Clone(e.parts)
+		slices.SortStableFunc(ordered, func(a, b responsesAccumPart) int { return cmp.Compare(a.index, b.index) })
+	}
+	out := make([][]byte, len(ordered))
+	for i, p := range ordered {
+		out[i] = p.data
+	}
+	return out
+}
+
+func (e *responsesAccumEntry) joinedParts() []byte {
+	return bytes.Join(e.orderedParts(), []byte(reasoningPartSeparator))
+}
+
+func (e *responsesAccumEntry) ensurePartSlot(idx int) (slot int, created bool) {
+	if slot := slices.IndexFunc(e.parts, func(p responsesAccumPart) bool { return p.hasIndex && p.index == idx }); slot >= 0 {
+		return slot, false
+	}
+	if len(e.parts) == 1 && !e.parts[0].hasIndex && len(e.parts[0].data) == 0 {
+		e.parts[0].index, e.parts[0].hasIndex = idx, true
+		return 0, true
+	}
+	e.parts = append(e.parts, responsesAccumPart{index: idx, hasIndex: true})
+	return len(e.parts) - 1, true
+}
+
+func (e *responsesAccumEntry) settleReasoning(item map[string]any) {
+	field, kind := "content", "reasoning_text"
+	if e.summaries {
+		field, kind = "summary", "summary_text"
+	}
+	parts := []any{}
+	for _, p := range e.orderedParts() {
+		if len(p) > 0 {
+			parts = append(parts, map[string]any{"type": kind, "text": string(p)})
+		}
+	}
+	item[field] = parts
+}
 func newResponsesOutputAccumulator() *responsesOutputAccumulator {
 	return &responsesOutputAccumulator{
 		toolStates:   map[string]*responsesToolState{},
@@ -44,17 +107,147 @@ func newResponsesOutputAccumulator() *responsesOutputAccumulator {
 	}
 }
 
-// Output returns the accumulated output array, in the wire shape a
-// response.completed payload's "output" field carries.
-func (acc *responsesOutputAccumulator) Output() []any { return acc.output }
+func (acc *responsesOutputAccumulator) settledCount() int {
+	if acc == nil {
+		return 0
+	}
+	n := 0
+	for _, e := range acc.entries {
+		if e.settled {
+			n++
+		}
+	}
+	return n
+}
 
-// RawOutput returns the raw JSON item tokens aligned with Output. An entry is
-// nil when the source event did not expose a decodable item token.
-func (acc *responsesOutputAccumulator) RawOutput() []json.RawMessage { return acc.rawOutput }
+func terminalReasoningItem(terminal []any, id string) map[string]any {
+	if id == "" {
+		return nil
+	}
+	for _, raw := range terminal {
+		item, _ := raw.(map[string]any)
+		if kind, _ := item["type"].(string); kind == "reasoning" && item["id"] == id {
+			return item
+		}
+	}
+	return nil
+}
 
-func (acc *responsesOutputAccumulator) appendOutput(item any, rawItem json.RawMessage) {
-	acc.output = append(acc.output, item)
-	acc.rawOutput = append(acc.rawOutput, rawItem)
+func (acc *responsesOutputAccumulator) recoveredOutput(terminalOutput []any) (out []any, raw []json.RawMessage) {
+	if !slices.ContainsFunc(acc.entries, func(e responsesAccumEntry) bool { // an ignored item carries no index
+		kind, _ := e.item["type"].(string)
+		return e.index < 0 && slices.Contains([]string{"message", "reasoning", "function_call", "web_search_call"}, kind)
+	}) {
+		slices.SortStableFunc(acc.entries, func(a, b responsesAccumEntry) int { return cmp.Compare(a.index, b.index) })
+	}
+	for _, e := range acc.entries {
+		if e.id != "" && e.item["id"] == nil {
+			e.item["id"] = e.id // the wire id the deltas carried, so a terminal copy matches by it
+		}
+		if e.settled {
+			if e.item["type"] == "reasoning" {
+				status, _ := e.item["status"].(string)
+				if status == "incomplete" || status == "in_progress" {
+					id, _ := e.item["id"].(string)
+					if term := terminalReasoningItem(terminalOutput, id); term != nil && term["status"] == "completed" {
+						e.item["status"] = "completed"
+					}
+				}
+			}
+		} else if e.item["type"] == "reasoning" {
+			id, _ := e.item["id"].(string)
+			term := terminalReasoningItem(terminalOutput, id)
+			termStatus, _ := term["status"].(string)
+			if term != nil && termStatus != "incomplete" && termStatus != "in_progress" {
+				// Let the matching terminal item supply the completed summary cleanly.
+				e.item["status"] = "completed"
+				termSummary, _ := term["summary"].([]any)
+				if len(termSummary) > 0 {
+					if !e.summaries {
+						e.settleReasoning(e.item)
+					}
+					e.item["summary"] = termSummary
+				} else {
+					e.settleReasoning(e.item)
+				}
+			} else {
+				e.item["status"] = "incomplete"
+				e.settleReasoning(e.item)
+			}
+		} else {
+			e.item["content"] = []any{map[string]any{"type": "output_text", "text": string(e.joinedParts())}}
+		}
+		out, raw = append(out, e.item), append(raw, e.raw)
+	}
+	return out, raw
+}
+
+func (acc *responsesOutputAccumulator) pending(payload map[string]any, kind string) *responsesAccumEntry {
+	item, _ := cmp.Or(payload["item"], payload["output_item"]).(map[string]any)
+	id1, _ := payload["item_id"].(string)
+	id2, _ := item["id"].(string)
+	index, id := -1, cmp.Or(id1, id2)
+	if v := payload["output_index"]; v != nil {
+		index = llm.IntFromAny(v)
+	}
+	for i := len(acc.entries) - 1; i >= 0; i-- {
+		e := &acc.entries[i]
+		if !e.settled && e.item["type"] == kind && (index >= 0 && e.index == index || id != "" && e.id == id || e.index < 0 && e.id == "" || index < 0 && id == "") {
+			e.index, e.id = max(e.index, index), cmp.Or(e.id, id)
+			return e
+		}
+	}
+	acc.entries = append(acc.entries, responsesAccumEntry{index: index, id: id, item: map[string]any{"type": kind}, parts: []responsesAccumPart{{}}})
+	return &acc.entries[len(acc.entries)-1]
+}
+
+func responsesDeltaText(payload map[string]any) string {
+	delta, _ := payload["delta"].(string)
+	text, _ := payload["text"].(string)
+	return cmp.Or(delta, text)
+}
+
+func responsesReasoningPartIndex(payload map[string]any, summary bool) (int, bool) {
+	key := "content_index"
+	if summary {
+		key = "summary_index"
+	}
+	if v := payload[key]; v != nil {
+		if idx := llm.IntFromAny(v); idx >= 0 {
+			return idx, true
+		}
+	}
+	return 0, false
+}
+
+func (acc *responsesOutputAccumulator) HandleDelta(payload map[string]any, kind string, summary bool) {
+	delta := responsesDeltaText(payload)
+	if delta == "" {
+		return
+	}
+	entry := acc.pending(payload, kind)
+	slot := len(entry.parts) - 1
+	if kind == "reasoning" {
+		if idx, ok := responsesReasoningPartIndex(payload, summary); ok {
+			slot, _ = entry.ensurePartSlot(idx)
+		}
+	}
+	entry.parts[slot].data = append(entry.parts[slot].data, delta...)
+	entry.summaries = entry.summaries || summary
+}
+
+func (acc *responsesOutputAccumulator) HandleReasoningPart(payload map[string]any, summary bool) bool {
+	entry := acc.pending(payload, "reasoning")
+	hasContent := entry.hasPartContent()
+	if idx, ok := responsesReasoningPartIndex(payload, summary); ok {
+		_, created := entry.ensurePartSlot(idx)
+		return created && hasContent
+	}
+	if !hasContent {
+		return false
+	}
+	entry.parts = append(entry.parts, responsesAccumPart{})
+	return true
 }
 
 // toolStateFor is the accumulated state for one function call: the entry
@@ -80,8 +273,12 @@ func (acc *responsesOutputAccumulator) toolStateFor(callID, itemID, name string)
 // response.output_item.added event's item, keyed by whichever of
 // call_id/item_id are present. Non-function_call items are a no-op (the
 // wire shape carries no other item type worth pre-registering here).
-func (acc *responsesOutputAccumulator) HandleOutputItemAdded(item map[string]any) {
-	if itemType, _ := item["type"].(string); itemType != "function_call" {
+func (acc *responsesOutputAccumulator) HandleOutputItemAdded(payload, item map[string]any) {
+	itemType, _ := item["type"].(string)
+	if itemType != "function_call" {
+		if phase, _ := item["phase"].(string); itemType == "message" && phase != "" {
+			acc.pending(payload, "message").item["phase"] = phase
+		}
 		return
 	}
 	callID, _ := item["call_id"].(string)
@@ -221,8 +418,25 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 	}
 	rawItemToken := captureResponsesOutputItemRaw(eventData)
 	it, _ := item["type"].(string)
+	index := -1
+	if v := payload["output_index"]; v != nil {
+		index = llm.IntFromAny(v)
+	}
 	if it != "function_call" {
-		acc.appendOutput(item, rawItemToken)
+		entry := acc.pending(payload, it)
+		if it == "message" && !slices.ContainsFunc(responsesReasoningParts(item["content"]), func(p llm.ResponsesReasoningPart) bool { return p.Text != "" || p.Type != "output_text" }) {
+			item["content"] = []any{map[string]any{"type": "output_text", "text": string(entry.joinedParts())}}
+		}
+		if phase, _ := item["phase"].(string); it == "message" && phase == "" && entry.item["phase"] != nil {
+			item["phase"] = entry.item["phase"]
+		}
+		if it == "reasoning" && entry.hasPartContent() && !slices.ContainsFunc(append(responsesReasoningParts(item["content"]), responsesReasoningParts(item["summary"])...), func(p llm.ResponsesReasoningPart) bool { return p.Text != "" }) {
+			entry.settleReasoning(item)
+		}
+		if entry.id != "" && item["id"] == nil {
+			item["id"] = entry.id // the deltas named this item before it settled
+		}
+		entry.raw, entry.item, entry.settled = rawItemToken, item, true
 		return item, nil, "", false
 	}
 	if responsesFunctionCallUnfinished(item) {
@@ -259,13 +473,8 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 	if argsStr == "" {
 		argsStr = st.args.String()
 	}
-	acc.appendOutput(map[string]any{
-		"type":      "function_call",
-		"call_id":   st.id,
-		"id":        st.itemID,
-		"name":      st.name,
-		"arguments": argsStr,
-	}, rawItemToken)
+	acc.entries = append(acc.entries, responsesAccumEntry{index: index, settled: true, raw: rawItemToken,
+		item: map[string]any{"type": "function_call", "call_id": st.id, "id": st.itemID, "name": st.name, "arguments": argsStr}})
 	return item, st, argsStr, true
 }
 
@@ -381,7 +590,6 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 
 	textID := "text_1"
 	textStarted := false
-	reasoningStarted := false
 	finished := false
 	// sawResponsesEvent records an event this decoder recognizes as belonging
 	// to the Responses API. It is the whole evidence the empty-stream sentinel
@@ -466,16 +674,14 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 			switch typ {
 			case "response.output_item.added":
 				if item, ok := payload["item"].(map[string]any); ok {
-					acc.HandleOutputItemAdded(item)
+					acc.HandleOutputItemAdded(payload, item)
 				}
 			case "response.output_text.delta":
-				delta, _ := payload["delta"].(string)
-				if delta == "" {
-					delta, _ = payload["text"].(string)
-				}
+				delta := responsesDeltaText(payload)
 				if delta == "" {
 					return nil
 				}
+				acc.HandleDelta(payload, "message", false)
 				if !textStarted {
 					textStarted = true
 					s.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: textID})
@@ -486,18 +692,18 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 				// (lunaroute fronting GLM) stream the raw reasoning text
 				// instead. Both are the model thinking, so both render as
 				// reasoning.
-				delta, _ := payload["delta"].(string)
+				delta := responsesDeltaText(payload)
 				if delta == "" {
 					return nil
 				}
+				acc.HandleDelta(payload, "reasoning", typ == "response.reasoning_summary_text.delta")
 				s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: delta})
 			case "response.reasoning_summary_part.added", "response.reasoning_part.added":
 				// Detailed reasoning arrives as multiple parts; separate them
 				// with a blank line so the rendered thought stays readable.
-				if reasoningStarted {
+				if acc.HandleReasoningPart(payload, typ == "response.reasoning_summary_part.added") {
 					s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: reasoningPartSeparator})
 				}
-				reasoningStarted = true
 			case "response.function_call_arguments.delta":
 				st, delta, ok := acc.HandleFunctionCallArgumentsDelta(payload, ev.Data)
 				if !ok {
@@ -555,7 +761,7 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 				// "response", extract that sub-object's raw bytes.
 				respBody := extractResponseObjectRaw(ev.Data)
 				built := fromResponses(rawResp, req.Model, respBody)
-				settleResponsesTerminalOutput(&built, rawResp, acc.Output(), acc.RawOutput())
+				settleResponsesTerminalOutput(&built, rawResp, acc)
 				built.Provider = res.Instance
 				p.stampResponseIDHash(sctx, &built)
 				llm.StampEndpointURL(&built, r.EndpointURL, r.Material)

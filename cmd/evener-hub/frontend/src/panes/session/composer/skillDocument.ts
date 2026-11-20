@@ -1,13 +1,24 @@
 import {
+  adoptedMarkerRanges,
   type ComposerMention,
   canonicalSkillNames,
   completeSkillReferenceAt,
+  type ImageMarkerRange,
+  markerNumbersOf,
+  markerRanges,
+  markerText,
   reconcileComposerMentions,
+  reconcileMarkerRanges,
+  sharedPrefixLength,
+  sharedSuffixLength,
+  type TextSplice,
+  validMarkerRanges,
 } from "@evener/appwire-client";
-import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
+import { type Mark, type Node as ProseMirrorNode, Schema } from "prosemirror-model";
 
 export {
   completeSkillReferenceAt,
+  type ImageMarkerRange,
   isSkillTokenCharacter,
   sharedPrefixLength,
   sharedSuffixLength,
@@ -18,6 +29,38 @@ export interface SkillEditorValue {
   skillNames: string[];
   commandNames?: string[];
   mentions?: ComposerMention[];
+  /** The "[image N]" occurrences in `text` whose image this value's writer
+   * staged but whose bytes this composer does not hold. Carried as a document
+   * mark (stagedAnchor) rather than a number list alone, so it lives in the
+   * editor's own history: deleting the occurrence removes it, and an undo that
+   * restores the occurrence restores the provenance with it. A marker the
+   * person types is an unmarked text node and never enters this set. */
+  adoptedImageMarkers?: number[];
+  /** Those same occurrences by EXACT UTF-16 position. A number alone cannot
+   * distinguish an adopted "[image 1]" from an identical literal beside it, so
+   * the repair that offers to delete the missing reference would delete the
+   * first spelling - the person's own prose. Derived from the marks on every
+   * serialize, so it agrees with the document; `adoptedImageMarkers` stays as
+   * the marker-number view of the same set for readers that only ask whether
+   * any occurrence of a number is unbacked. */
+  adoptedImageRanges?: ImageMarkerRange[];
+  /** The "[image N]" occurrences this composer STAGED itself, by exact UTF-16
+   * position - the mirror fact to `adoptedImageRanges`, for anchors whose bytes
+   * this source still holds.
+   *
+   * A number alone cannot say WHICH spelling a staging gesture wrote. The
+   * record outlives the bytes: a reload holds no tiles, so a record naming only
+   * a number makes a reader mark every occurrence of it, including a literal
+   * the person typed beside the anchor - and one repair press then deletes
+   * their prose. Naming the occurrence keeps the two apart.
+   *
+   * Like the adopted side, this is stored in the ProseMirror document as a
+   * `stagedImage` mark and serialized back into ranges by
+   * `serializeSkillDocument`, so undo and ordinary edits keep exact positions.
+   * `SkillEditor` syncs these marks in place (`addToHistory: false`) and
+   * `sameEditorValue` ignores them so position updates never rebuild the
+   * document or disturb undo history. */
+  stagedImageRanges?: ImageMarkerRange[];
 }
 
 /** Flat inline content: newlines are text, and skills occupy one document position. */
@@ -52,12 +95,171 @@ export const skillSchema = new Schema({
       leafText: (node) => `/${node.attrs.name}`,
     },
   },
+  marks: {
+    // An occurrence of a staged image marker this composer cannot back with
+    // bytes. It is invisible (a bare span) and exists only so ProseMirror's
+    // history carries the fact with the text it belongs to: a deletion takes
+    // it away, an undo brings it back, and a retyped marker is a fresh,
+    // unmarked node that sends as the literal prose it is. inclusive: false so
+    // typing against the boundary never adopts the person's own keystrokes.
+    stagedAnchor: {
+      attrs: { marker: {} },
+      inclusive: false,
+      toDOM: () => ["span", 0],
+    },
+    // An occurrence of a staged image marker this composer holds bytes for.
+    // Like stagedAnchor, it rides ProseMirror's history so deleting a staged
+    // marker and pressing Undo restores its provenance with the text, while
+    // separately typed literals remain unmarked prose.
+    stagedImage: {
+      attrs: { marker: {} },
+      inclusive: false,
+      toDOM: () => ["span", 0],
+    },
+  },
 });
+
+export function stagedAnchorMark(marker: number): Mark {
+  return skillSchema.marks.stagedAnchor.create({ marker });
+}
+
+export function stagedImageMark(marker: number): Mark {
+  return skillSchema.marks.stagedImage.create({ marker });
+}
+
+/** One stagedAnchor-marked run of text that still IS the literal it names. */
+export interface StagedAnchorSpan extends ImageMarkerRange {
+  /** Document position of the run's first character. */
+  from: number;
+  /** Document position one past its last character. */
+  to: number;
+}
+
+/** Records the stagedAnchor run `node` carries, at document `position` and
+ * serialized offset `start`, when the whole node is text. */
+function noteMarkSpans(
+  node: ProseMirrorNode,
+  position: number,
+  start: number,
+  markName: "stagedAnchor" | "stagedImage",
+  spans: StagedAnchorSpan[],
+): void {
+  if (!node.isText) return;
+  const run = node.text ?? "";
+  for (const mark of node.marks) {
+    if (mark.type.name !== markName) continue;
+    spans.push({
+      marker: Number(mark.attrs.marker),
+      from: position,
+      to: position + node.nodeSize,
+      start,
+      end: start + run.length,
+    });
+  }
+}
+
+/** Keeps only the spans whose slice of `text` is still exactly the literal
+ * its marker names, or whose non-empty marked fragment sits inside a restored
+ * complete literal of that same marker (for example, deleting `]` and typing
+ * `]` back onto the marked `[image 1` fragment). */
+function intactStagedAnchors(
+  doc: ProseMirrorNode,
+  text: string,
+  spans: readonly StagedAnchorSpan[],
+): StagedAnchorSpan[] {
+  const kept: StagedAnchorSpan[] = [];
+  const seen = new Set<string>();
+  for (const span of spans) {
+    if (span.end <= span.start) continue;
+    const needle = markerText(span.marker);
+    const minStart = Math.max(0, span.end - needle.length);
+    const maxStart = Math.min(span.start, text.length - needle.length);
+    for (let start = minStart; start <= maxStart; start++) {
+      const end = start + needle.length;
+      if (text.slice(start, end) !== needle) continue;
+      const key = `${span.marker}:${start}:${end}`;
+      if (seen.has(key)) break;
+      seen.add(key);
+      const from = start === span.start ? span.from : textOffsetToDocumentPosition(doc, start, 1);
+      const to = end === span.end ? span.to : textOffsetToDocumentPosition(doc, end, -1);
+      kept.push({ marker: span.marker, start, end, from, to });
+      break;
+    }
+  }
+  return kept;
+}
+
+/**
+ * The document's own answer to "which marked occurrence is an anchor": every
+ * run carrying a stagedAnchor mark whose text still spells exactly
+ * `markerText(marker)`, with both its serialized offsets and its document
+ * range.
+ *
+ * The mark alone is not enough. A mark outlives an edit that splits or
+ * extends its run - delete one bracket of "[image 1]" and the fragment keeps
+ * the mark, because ProseMirror never saw a reason to take it away - so a
+ * consumer that trusted the mark would treat half a literal, or a literal
+ * with prose welded to it, as a whole occurrence. Serialization already
+ * refuses to call such a fragment adopted (a range whose slice is not
+ * `markerText` names nothing), and the repair that deletes missing references
+ * must refuse it too, or it deletes text the person edited. One finder, so
+ * the two can never disagree about which occurrences those are.
+ */
+export function stagedAnchorSpans(doc: ProseMirrorNode): StagedAnchorSpan[] {
+  const spans: StagedAnchorSpan[] = [];
+  let text = "";
+  doc.forEach((node, position) => {
+    noteMarkSpans(node, position, text.length, "stagedAnchor", spans);
+    text += node.isText ? (node.text ?? "") : `/${node.attrs.name}`;
+  });
+  return intactStagedAnchors(doc, text, spans);
+}
+
+/** Text nodes for one run of prose, splitting out the exact occurrences the
+ * caller adopted. `base` is the run's own UTF-16 offset in the whole
+ * serialized text, so an adopted range names the occurrence in THIS run and
+ * an identical literal beside it stays plain text. */
+function textNodes(
+  text: string,
+  base: number,
+  adopted: readonly ImageMarkerRange[],
+  staged: readonly ImageMarkerRange[],
+): ProseMirrorNode[] {
+  if (text === "") return [];
+  if (adopted.length === 0 && staged.length === 0) return [skillSchema.text(text)];
+  const end = base + text.length;
+  const here = [
+    ...adopted
+      .filter((range) => range.start >= base && range.end <= end)
+      .map((range) => ({ ...range, mark: stagedAnchorMark(range.marker) })),
+    ...staged
+      .filter((range) => range.start >= base && range.end <= end)
+      .map((range) => ({ ...range, mark: stagedImageMark(range.marker) })),
+  ].sort((left, right) => left.start - right.start);
+  if (here.length === 0) return [skillSchema.text(text)];
+  const nodes: ProseMirrorNode[] = [];
+  let start = 0;
+  for (const range of here) {
+    const localStart = range.start - base;
+    const localEnd = range.end - base;
+    if (localStart < start) continue;
+    if (start < localStart) nodes.push(skillSchema.text(text.slice(start, localStart)));
+    nodes.push(skillSchema.text(text.slice(localStart, localEnd), [range.mark]));
+    start = localEnd;
+  }
+  if (start < text.length) nodes.push(skillSchema.text(text.slice(start)));
+  return nodes;
+}
 
 /** Only complete visible mentions in skillNames become atoms; never append hidden selections. */
 export function parseSkillDocument(value: SkillEditorValue): ProseMirrorNode {
   const skills = canonicalSkillNames(value.skillNames);
   const commands = canonicalSkillNames(value.commandNames);
+  // A value carrying exact ranges names the occurrences it means; one from an
+  // older build carries only numbers, and then every occurrence of a number is
+  // adopted - the reading those builds implemented.
+  const adopted = adoptedMarkerRanges(value.text, value.adoptedImageMarkers, value.adoptedImageRanges);
+  const staged = validMarkerRanges(value.text, value.stagedImageRanges);
   const names = [...new Set([...skills, ...commands])].sort((a, b) => b.length - a.length);
   const usedSkills = new Set<string>();
   const nodes: ProseMirrorNode[] = [];
@@ -71,14 +273,14 @@ export function parseSkillDocument(value: SkillEditorValue): ProseMirrorNode {
       mention?.kind ??
       (skills.includes(name) && (!commands.includes(name) || !usedSkills.has(name)) ? "skill" : "command");
     if (!(kind === "skill" ? skills : commands).includes(name)) continue;
-    if (textStart < offset) nodes.push(skillSchema.text(value.text.slice(textStart, offset)));
+    nodes.push(...textNodes(value.text.slice(textStart, offset), textStart, adopted, staged));
     const type = kind === "skill" ? skillSchema.nodes.skill : skillSchema.nodes.command;
     nodes.push(type.create({ name }));
     if (kind === "skill") usedSkills.add(name);
     offset += name.length;
     textStart = offset + 1;
   }
-  if (textStart < value.text.length) nodes.push(skillSchema.text(value.text.slice(textStart)));
+  nodes.push(...textNodes(value.text.slice(textStart), textStart, adopted, staged));
   return skillSchema.nodes.doc.create(null, nodes);
 }
 
@@ -88,19 +290,51 @@ export function serializeSkillDocument(doc: ProseMirrorNode): SkillEditorValue {
   const names: string[] = [];
   const commands: string[] = [];
   const mentions: ComposerMention[] = [];
-  doc.forEach((node) => {
-    if (node.isText) text += node.text;
-    else {
+  // The stagedAnchor spans are collected in the same pass that builds the
+  // text: a second doc.forEach would walk the document again to rebuild the
+  // very string this loop already has.
+  const anchorSpans: StagedAnchorSpan[] = [];
+  const stagedSpans: StagedAnchorSpan[] = [];
+  doc.forEach((node, position) => {
+    noteMarkSpans(node, position, text.length, "stagedAnchor", anchorSpans);
+    noteMarkSpans(node, position, text.length, "stagedImage", stagedSpans);
+    if (node.isText) {
+      text += node.text ?? "";
+    } else {
       const kind = node.type.name === "command" ? "command" : "skill";
       mentions.push({ kind, name: node.attrs.name, offset: text.length });
       text += `/${node.attrs.name}`;
       (kind === "command" ? commands : names).push(node.attrs.name);
     }
   });
-  const value = { text, skillNames: canonicalSkillNames(names) };
+  // The marks are the truth, but only where the run really is one whole marker
+  // literal: an integrity edit can split or extend a run after a mark was set,
+  // and a range whose slice is not markerText(marker) names an occurrence that
+  // no longer exists. stagedAnchorSpans is that same judgement, shared with
+  // the repair so a fragment the person edited is never called an anchor by
+  // one and deleted by the other.
+  const adoptedImageRanges = intactStagedAnchors(doc, text, anchorSpans).map(({ marker, start, end }) => ({
+    marker,
+    start,
+    end,
+  }));
+  const adoptedImageMarkers = markerNumbersOf(adoptedImageRanges);
+  const stagedImageRanges = intactStagedAnchors(doc, text, stagedSpans).map(({ marker, start, end }) => ({
+    marker,
+    start,
+    end,
+  }));
+  const value = {
+    text,
+    skillNames: canonicalSkillNames(names),
+    ...(adoptedImageRanges.length ? { adoptedImageMarkers, adoptedImageRanges } : {}),
+    ...(stagedImageRanges.length ? { stagedImageRanges } : {}),
+  };
   // Names alone suffice only when every matching reference is an actual skill
   // atom. Keep locations when commands or same-spelling prose need distinct
-  // intent, including after deletion of the final command.
+  // intent, including after deletion of the final command. The re-parse carries
+  // the document's own adoption so a marked occurrence cannot read as prose
+  // the parse would have re-derived differently.
   const needsMentions = commands.length > 0 || (value.skillNames.length > 0 && !parseSkillDocument(value).eq(doc));
   return {
     ...value,
@@ -110,10 +344,81 @@ export function serializeSkillDocument(doc: ProseMirrorNode): SkillEditorValue {
 }
 
 /** Shift existing atom identities across a plain-text splice without selecting new prose. */
-export function patchSelectionText(value: SkillEditorValue, text: string): SkillEditorValue {
-  if (!value.mentions) return serializeSkillDocument(parseSkillDocument({ ...value, text }));
+export function patchSelectionText(
+  value: SkillEditorValue,
+  text: string,
+  splice?: TextSplice,
+  stagedAdded?: readonly ImageMarkerRange[],
+): SkillEditorValue {
+  // The adoption is re-derived from the marks, so a splice that removes or
+  // moves an adopted occurrence has to move its range too: without this the
+  // patched document would mark whatever now sits at the old offset, or mark
+  // all of a number's occurrences when the stale range came up empty.
+  const ranges = reconcileAdoptionAcrossSplice(value, text, splice);
+  // The staged occurrences move by the same rule, and the ones this write
+  // inserted arrive at the coordinates the caller reported.
+  const stagedImageRanges = validMarkerRanges(text, [
+    ...reconcileMarkerRanges(
+      value.text,
+      text,
+      value.stagedImageRanges ?? [],
+      ...inferredBoundaries(value.text, text, splice),
+      splice,
+    ),
+    ...(stagedAdded ?? []),
+  ]);
+  const adopted: SkillEditorValue = {
+    ...value,
+    adoptedImageMarkers: markerNumbersOf(ranges),
+    adoptedImageRanges: ranges,
+  };
+  // Re-attach the reconciled staged ranges onto the serialized value so
+  // `SkillEditor` syncs the updated `stagedImage` marks in place.
+  const keep = (patched: SkillEditorValue): SkillEditorValue =>
+    stagedImageRanges.length === 0 ? patched : { ...patched, stagedImageRanges };
+  if (!value.mentions) return keep(serializeSkillDocument(parseSkillDocument({ ...adopted, text })));
   const mentions = reconcileComposerMentions(value.text, text, value.mentions);
-  return serializeSkillDocument(parseSkillDocument({ ...value, text, mentions }));
+  return keep(serializeSkillDocument(parseSkillDocument({ ...adopted, text, mentions })));
+}
+
+/** The shared prefix/suffix a reconcile falls back on when the caller has no
+ * exact splice to describe its edit. */
+function inferredBoundaries(before: string, after: string, splice?: TextSplice): [number, number] {
+  if (splice !== undefined) return [0, 0];
+  const prefix = sharedPrefixLength(before, after);
+  return [prefix, sharedSuffixLength(before, after, prefix)];
+}
+
+/** The marker occurrences a splice INSERTED, by the position they now occupy.
+ *
+ * A staging gesture is the one write that both puts "[image N]" into the text
+ * and holds the bytes it names, so it is the one write that can say a new
+ * occurrence is staged rather than typed. The inserted span is
+ * `splice.start .. splice.start + insertedLength` in the NEW text; every
+ * literal wholly inside it was written by this call. Without a splice there is
+ * nothing the caller performed and nothing to claim.
+ */
+export function stagedImageRangesAddedBy(after: string, splice?: TextSplice): ImageMarkerRange[] {
+  if (splice === undefined || splice.insertedLength <= 0) return [];
+  // Scan only the span this call wrote: a literal the person typed outside it
+  // is not this call's, so there is nothing to filter.
+  return markerRanges(after.slice(splice.start, splice.start + splice.insertedLength)).map((range) => ({
+    marker: range.marker,
+    start: range.start + splice.start,
+    end: range.end + splice.start,
+  }));
+}
+
+/** The adoption a plain-text splice leaves behind, from the value's own pair -
+ * or from the caller's exact `splice` when the caller performed the edit and
+ * knows the span it replaced. */
+function reconcileAdoptionAcrossSplice(value: SkillEditorValue, text: string, splice?: TextSplice): ImageMarkerRange[] {
+  // The ranges this value actually names in its own text: an explicit range
+  // list when it has one, otherwise every occurrence of an adopted number.
+  const current = adoptedMarkerRanges(value.text, value.adoptedImageMarkers, value.adoptedImageRanges);
+  if (current.length === 0) return [];
+  const [prefix, suffix] = inferredBoundaries(value.text, text, splice);
+  return reconcileMarkerRanges(value.text, text, current, prefix, suffix, splice);
 }
 
 /**
@@ -163,6 +468,10 @@ export function materializeSelectionReferences(value: SkillEditorValue): SkillEd
           skillNames: kind === "skill" ? [...current.skillNames, name] : current.skillNames,
           commandNames: kind === "command" ? [...(current.commandNames ?? []), name] : current.commandNames,
           mentions: [...mentions, { kind, name, offset }],
+          // Appending a reference must not retire the anchors this value
+          // already carried as unbacked.
+          ...(current.adoptedImageMarkers ? { adoptedImageMarkers: current.adoptedImageMarkers } : {}),
+          ...(current.adoptedImageRanges ? { adoptedImageRanges: current.adoptedImageRanges } : {}),
         }),
       );
     }

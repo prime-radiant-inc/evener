@@ -1,3 +1,4 @@
+import { adoptedMarkerRanges, validMarkerRanges } from "@evener/appwire-client";
 import { baseKeymap, deleteSelection } from "prosemirror-commands";
 import { closeHistory, history, redo, undo } from "prosemirror-history";
 import { keymap } from "prosemirror-keymap";
@@ -11,11 +12,15 @@ import {
   documentPositionToTextOffset,
   sharedPrefixLength as documentSharedPrefixLength,
   sharedSuffixLength as documentSharedSuffixLength,
+  type ImageMarkerRange,
   isSkillTokenCharacter,
   parseSkillDocument,
   type SkillEditorValue,
   serializeSkillDocument,
   skillSchema,
+  stagedAnchorMark,
+  stagedAnchorSpans,
+  stagedImageMark,
   textOffsetToDocumentPosition,
 } from "./skillDocument";
 import styles from "./skilleditor.module.css";
@@ -33,6 +38,11 @@ export interface SkillEditorHandle {
    * that never landed. */
   insertSkill(start: number, end: number, name: string): boolean;
   insertCommand(start: number, end: number, name: string): boolean;
+  /** Deletes every occurrence the document marks as an adopted anchor - or
+   * only those naming `markers` - in ONE transaction, and reports how many
+   * occurrences it removed. The marks are the exact occurrences, so an
+   * identical literal beside one of them is untouched. */
+  removeStagedAnchors(markers?: readonly number[]): number;
 }
 
 export interface SkillEditorProps {
@@ -191,13 +201,78 @@ function createAtomView(node: ProseMirrorNode, kind: "skill" | "command", props:
   return { dom };
 }
 
+/** Whether two marker lists name the same numbers. Order carries no meaning, and
+ * neither does a repeat of one number. */
+function sameMarkerSet(a: readonly number[], b: readonly number[]): boolean {
+  const markers = new Set(a);
+  return b.every((marker) => markers.has(marker)) && markers.size === new Set(b).size;
+}
+
+/** Whether two range lists name the same occurrences: same marker, same
+ * position. Order carries no meaning and a repeat of one range is the same
+ * assertion twice, so both are normalised before comparing. */
+function sameRangeSet(a: readonly ImageMarkerRange[], b: readonly ImageMarkerRange[]): boolean {
+  const keys = (ranges: readonly ImageMarkerRange[]) =>
+    [...new Set(ranges.map((range) => `${range.marker}:${range.start}:${range.end}`))].sort();
+  const left = keys(a);
+  const right = keys(b);
+  return left.length === right.length && left.every((key, index) => key === right[index]);
+}
+
+/** Whether two values carry the same adoption: the same numbers AND the same
+ * occurrences. Two values that agree on the numbers but disagree on WHICH
+ * spelling is adopted are different values, and applying one over the other
+ * must move the mark. */
+function sameAdoption(
+  a: Pick<SkillEditorValue, "adoptedImageMarkers" | "adoptedImageRanges">,
+  b: Pick<SkillEditorValue, "adoptedImageMarkers" | "adoptedImageRanges">,
+): boolean {
+  return (
+    sameMarkerSet(a.adoptedImageMarkers ?? [], b.adoptedImageMarkers ?? []) &&
+    sameRangeSet(a.adoptedImageRanges ?? [], b.adoptedImageRanges ?? [])
+  );
+}
+
+/** Applies both `stagedAnchor` and `stagedImage` marks in place on `tr` without
+ * rebuilding the document, so earlier prose edits stay in ProseMirror's undo
+ * history when an attachment replaces a selected missing reference. */
+function syncImageMarks(tr: EditorState["tr"], value: SkillEditorValue): void {
+  const text = serializeSkillDocument(tr.doc).text;
+  if (tr.doc.rangeHasMark(0, tr.doc.content.size, skillSchema.marks.stagedAnchor)) {
+    tr.removeMark(0, tr.doc.content.size, skillSchema.marks.stagedAnchor);
+  }
+  if (tr.doc.rangeHasMark(0, tr.doc.content.size, skillSchema.marks.stagedImage)) {
+    tr.removeMark(0, tr.doc.content.size, skillSchema.marks.stagedImage);
+  }
+  for (const range of adoptedMarkerRanges(text, value.adoptedImageMarkers, value.adoptedImageRanges)) {
+    const from = textOffsetToDocumentPosition(tr.doc, range.start, 1);
+    const to = textOffsetToDocumentPosition(tr.doc, range.end, -1);
+    if (from < to) tr.addMark(from, to, stagedAnchorMark(range.marker));
+  }
+  for (const range of validMarkerRanges(text, value.stagedImageRanges)) {
+    const from = textOffsetToDocumentPosition(tr.doc, range.start, 1);
+    const to = textOffsetToDocumentPosition(tr.doc, range.end, -1);
+    if (from < to) tr.addMark(from, to, stagedImageMark(range.marker));
+  }
+}
+
 function sameEditorValue(a: SkillEditorValue, b: SkillEditorValue): boolean {
   return (
     a.text === b.text &&
     a.skillNames.length === b.skillNames.length &&
     a.skillNames.every((name, index) => b.skillNames[index] === name) &&
     JSON.stringify(a.commandNames ?? []) === JSON.stringify(b.commandNames ?? []) &&
-    JSON.stringify(a.mentions ?? []) === JSON.stringify(b.mentions ?? [])
+    JSON.stringify(a.mentions ?? []) === JSON.stringify(b.mentions ?? []) &&
+    // The adoption is part of the value the editor is rendering: the document
+    // carries those marks, so a value that names them is not the same value as
+    // one that does not. Without this, every keystroke would re-apply the
+    // caller's value as a non-echo replace and rebuild the document.
+    //
+    // The staged occurrences are NOT compared: they say where an occurrence
+    // is, not what the document shows. Comparing them would make every
+    // keystroke's new position read as a change and re-apply the caller's
+    // value over the document, which ends the session's undo history.
+    sameAdoption(a, b)
   );
 }
 
@@ -227,6 +302,20 @@ function insertAtom(
   view.dispatch(tr);
   view.focus();
   return true;
+}
+
+/** Every document range covered by a marked run that still spells one whole
+ * marker literal, narrowed to the numbers `markers` names (all of them when
+ * the list is absent). The exact-literal test is stagedAnchorSpans', the same
+ * one serialization applies - a marked fragment the person edited ("[image 1"
+ * after deleting one bracket) is not an anchor there, so it is not one here
+ * either, and the repair leaves it and everything between it and the next
+ * anchor exactly where they are. */
+function stagedAnchorDocRanges(doc: ProseMirrorNode, markers?: readonly number[]): { from: number; to: number }[] {
+  const wanted = markers === undefined ? undefined : new Set(markers);
+  return stagedAnchorSpans(doc)
+    .filter((span) => wanted === undefined || wanted.has(span.marker))
+    .map((span) => ({ from: span.from, to: span.to }));
 }
 
 /** A controlled value boundary around a persistent real ProseMirror editor. */
@@ -269,6 +358,23 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
       },
       insertSkill: (start, end, name) => insertAtom(viewRef.current, start, end, name, "skill"),
       insertCommand: (start, end, name) => insertAtom(viewRef.current, start, end, name, "command"),
+      removeStagedAnchors: (markers) => {
+        const view = viewRef.current;
+        if (!view || view.composing) return 0;
+        const ranges = stagedAnchorDocRanges(view.state.doc, markers);
+        if (ranges.length === 0) return 0;
+        // ONE transaction. Every range is a marked literal, and an unmarked
+        // node is never touched - so a literal "[image 1]" beside an adopted
+        // "[image 1]" survives a repair that removes the adopted one. Back to
+        // front, so an earlier deletion never moves a later position; the
+        // atoms BETWEEN the ranges are outside every replaced span and keep
+        // their identity, which is what a text-splice repair could not do.
+        const tr = closeHistory(view.state.tr);
+        for (const range of ranges.reverse()) tr.delete(range.from, range.to);
+        view.dispatch(tr);
+        view.focus();
+        return ranges.length;
+      },
     }),
     [],
   );
@@ -280,11 +386,9 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
       {
         state: createState(latest.current.value),
         dispatchTransaction: (transaction) => {
-          view.updateState(view.state.apply(transaction));
+          const next = view.state.apply(transaction);
+          view.updateState(next);
           view.dom.dataset.empty = String(view.state.doc.content.size === 0);
-          // An externally applied value is the controlled value arriving, not
-          // the user editing: echoing it back would re-enter the composer's own
-          // edit path during its submission and recovery transitions.
           if (transaction.docChanged && !transaction.getMeta(externalSync)) {
             latest.current.onChange(
               serializeSkillDocument(view.state.doc),
@@ -301,7 +405,9 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
           const text = event.clipboardData?.getData("text/plain").replace(/\r\n?/g, "\n");
           if (text)
             view.dispatch(
-              closeHistory(view.state.tr.insertText(text)).setMeta("paste", true).setMeta("uiEvent", "paste"),
+              closeHistory(view.state.tr.replaceSelectionWith(skillSchema.text(text), false))
+                .setMeta("paste", true)
+                .setMeta("uiEvent", "paste"),
             );
           return true;
         },
@@ -327,17 +433,11 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
     // it pending would make the next ordinary patch look authoritative.
     const authoritative = (props.restoreEpoch ?? 0) !== appliedRestoreRef.current;
     appliedRestoreRef.current = props.restoreEpoch ?? 0;
+    const apply = (transaction: typeof view.state.tr) =>
+      view.dispatch(transaction.setMeta("addToHistory", false).setMeta(externalSync, true));
     if (!echo) {
-      // Applied through a transaction, never by rebuilding the state: a fresh
-      // EditorState re-initializes every plugin, so one attachment marker would
-      // end the session's undo history. addToHistory: false, because the change
-      // came from the controlled value rather than the keyboard - undoing a
-      // cleared submission must not put the sent message back.
-      const apply = (transaction: typeof view.state.tr) =>
-        view.dispatch(transaction.setMeta("addToHistory", false).setMeta(externalSync, true));
-      const current = serializeSkillDocument(view.state.doc).text;
-      const prefix = sharedPrefixLength(current, props.value.text);
-      const end = current.length - sharedSuffixLength(current, props.value.text, prefix);
+      const prefix = sharedPrefixLength(current.text, props.value.text);
+      const end = current.text.length - sharedSuffixLength(current.text, props.value.text, prefix);
       // A boundary strictly inside an atom cannot be mapped to a position that
       // replaces that atom, and the value as a whole is authoritative whenever
       // the caller marked it a restore or it replaces everything - a goal
@@ -346,15 +446,17 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
       // text: a spliced command or quote that happens to spell a selected name
       // must not become an activation the user never chose.
       const splitsAtom = atomInteriorAt(view.state.doc, prefix) || atomInteriorAt(view.state.doc, end);
-      if (authoritative || splitsAtom || (prefix === 0 && end === current.length)) {
+      if (authoritative || splitsAtom || (prefix === 0 && end === current.text.length)) {
         const replacement = parseSkillDocument(props.value);
         if (!replacement.eq(view.state.doc))
           apply(view.state.tr.replaceWith(0, view.state.doc.content.size, replacement.content));
       } else {
         const from = textOffsetToDocumentPosition(view.state.doc, prefix, 1);
         const to = textOffsetToDocumentPosition(view.state.doc, end, -1);
-        const inserted = props.value.text.slice(prefix, props.value.text.length - (current.length - end));
-        apply(view.state.tr.replaceWith(from, to, inserted ? skillSchema.text(inserted) : Fragment.empty));
+        const inserted = props.value.text.slice(prefix, props.value.text.length - (current.text.length - end));
+        const tr = view.state.tr.replaceWith(from, to, inserted ? skillSchema.text(inserted) : Fragment.empty);
+        syncImageMarks(tr, props.value);
+        apply(tr);
       }
       // The applied value is not the last word: the integrity plugin separates
       // a chip from a token this change just joined to it, and the echo is
@@ -365,6 +467,10 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
       if (!sameEditorValue(settled, props.value)) {
         latest.current.onChange(settled, documentPositionToTextOffset(view.state.doc, view.state.selection.head));
       }
+    } else if (!sameRangeSet(current.stagedImageRanges ?? [], props.value.stagedImageRanges ?? [])) {
+      const tr = view.state.tr;
+      syncImageMarks(tr, props.value);
+      if (tr.docChanged) apply(tr);
     }
     view.setProps({
       attributes: {
