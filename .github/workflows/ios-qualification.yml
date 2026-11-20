@@ -86,11 +86,12 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # A pull_request run takes this workflow file from the merge ref.
-          # Fetch that same tree with full history so the PR head (one of the
-          # merge commit's parents) is local, then let the next step choose
-          # which tree to test.
+          # Five commits put the merge commit's two parents (the PR head and
+          # the base) on disk for the selector, and keep the launch git
+          # snapshot's `git log -n 5` (agent/git_snapshot.go) at five titles,
+          # while skipping a full-history download of the repository.
           ref: ${{ github.sha }}
-          fetch-depth: 0
+          fetch-depth: 5
           persist-credentials: false
       - name: Choose the tested tree
         id: tree
@@ -239,8 +240,10 @@ jobs:
       - name: Check out the merge ref with the PR head in its history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          # Same five-commit fetch as the build job: both merge parents for
+          # the selector, and five commits for the launch git snapshot.
           ref: ${{ github.sha }}
-          fetch-depth: 0
+          fetch-depth: 5
           persist-credentials: false
       - name: Choose the tested tree
         id: tree

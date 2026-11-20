@@ -3,6 +3,7 @@ package evener_test
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -10,8 +11,9 @@ import (
 // A pull_request run takes the qualification workflow from the merge ref, so
 // checking out the PR head alone runs new steps against a tree that may lack
 // the scripts they call (#5993). These tests pin the same-tree checkout: the
-// merge ref with full history, the selector that falls back to it when the
-// head predates the harness, and the switch to the chosen commit.
+// merge ref fetched deep enough for both of its parents and for the runtime's
+// git snapshot, the selector that falls back to it when the head predates the
+// harness, and the switch to the chosen commit.
 func TestIOSQualificationChecksOutTheWorkflowTree(t *testing.T) {
 	workflow := readWorkflow(t, ".github/workflows/ios-qualification.yml")
 	job, ok := workflow.Jobs["simulator-build"]
@@ -31,9 +33,7 @@ func TestIOSQualificationChecksOutTheWorkflowTree(t *testing.T) {
 	if got := fmt.Sprint(checkout.With["ref"]); got != "${{ github.sha }}" {
 		t.Errorf("checkout ref = %q, want the merge ref ${{ github.sha }}", got)
 	}
-	if got := fmt.Sprint(checkout.With["fetch-depth"]); got != "0" {
-		t.Errorf("checkout fetch-depth = %q, want 0 so the PR head is in history", got)
-	}
+	checkHistoryFloor(t, "simulator-build", checkout)
 	if !workflowRuns(job.Steps, "scripts/native/ios/qualification/checkout-ref.sh") {
 		t.Error("simulator-build does not run the checkout selector")
 	}
@@ -48,6 +48,40 @@ func TestIOSQualificationChecksOutTheWorkflowTree(t *testing.T) {
 	}
 	if !chosen {
 		t.Error("simulator-build does not check out the selector's chosen tree")
+	}
+
+	journeys, ok := workflow.Jobs["ui-journeys"]
+	if !ok {
+		t.Fatal("ios-qualification is missing the ui-journeys job")
+	}
+	var journeyCheckout *githubActionStep
+	for i := range journeys.Steps {
+		if strings.HasPrefix(journeys.Steps[i].Uses, "actions/checkout@") {
+			journeyCheckout = &journeys.Steps[i]
+			break
+		}
+	}
+	if journeyCheckout == nil {
+		t.Fatal("ui-journeys does not check out the repository")
+	}
+	checkHistoryFloor(t, "ui-journeys", journeyCheckout)
+}
+
+// checkHistoryFloor requires a depth that serves both history consumers: the
+// merge commit's two parents, which the checkout selector resolves, and the
+// five recent commits the launch git snapshot reads (agent/git_snapshot.go
+// runs `git log -n 5`). Depth 1 leaves the selector nothing to check; depths 2
+// to 4 truncate the snapshot's title list. Depth 0 still passes, and any depth
+// of five or more satisfies both consumers.
+func checkHistoryFloor(t *testing.T, job string, checkout *githubActionStep) {
+	t.Helper()
+	depth := fmt.Sprint(checkout.With["fetch-depth"])
+	if depth == "0" {
+		return
+	}
+	n, err := strconv.Atoi(depth)
+	if err != nil || n < 5 {
+		t.Errorf("%s checkout fetch-depth = %q, want 0 or at least 5 so both merge parents and five snapshot commits are in history", job, depth)
 	}
 }
 
