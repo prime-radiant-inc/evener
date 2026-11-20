@@ -37,6 +37,24 @@ export function replaceEditorText(editor: HTMLElement, text: string): void {
   });
 }
 
+/** Insert plain text at `offset` (or replace `[offset, end)`) through the real paste handler. */
+export function insertEditorTextAt(editor: HTMLElement, offset: number, text: string, end = offset): void {
+  selectEditorText(editor, offset, end);
+  flushSync(() => {
+    if (text === "") fireEvent.keyDown(editor, { key: "Backspace" });
+    else {
+      fireEvent.paste(editor, {
+        clipboardData: {
+          getData: (type: string) => (type === "text/plain" ? text : ""),
+          types: ["text/plain"],
+          files: [],
+          items: [],
+        },
+      });
+    }
+  });
+}
+
 /** Read the caret using the browser selection, independently of the editor model. */
 export function editorCursor(editor: HTMLElement): number {
   const selection = editor.ownerDocument.getSelection();

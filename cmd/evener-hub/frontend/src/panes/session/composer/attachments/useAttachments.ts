@@ -8,16 +8,20 @@
 // encode continuations across remounts. Image bytes never go through
 // localStorage.
 import {
+  type ImageMarkerRange,
   insertMarker,
   markerText,
   nextComposerImageMarker,
   rejectionReason,
   stripMarker,
+  stripMarkerAt,
+  type TextSplice,
 } from "@evener/appwire-client";
 import { type SetStateAction, useMemo, useState } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import type { InputAttachment } from "../../../../stores/threads";
+import { spelledImageMarkers } from "../submitProtocol";
 import { reencodeToPng } from "./encodePng";
 
 export interface PendingAttachment {
@@ -77,7 +81,18 @@ export type TextEditSource = "edit" | "submission" | "cleanup";
 export interface TextEditor {
   /** Selection is the UTF-16 range replaced by an accepted attachment marker. */
   read(): { text: string; cursor: number; selection: { start: number; end: number } };
-  write(text: string, cursor: number, source?: TextEditSource): void;
+  /** `splice`, when supplied, is the exact span in the CURRENT text this write
+   * replaced and how much text went in its place. It is what makes the write
+   * unambiguous: a gesture that inserts a marker immediately before an
+   * existing one produces a before/after pair that shares "[image " with the
+   * untouched marker, and inferring the edit from that pair would put the
+   * insertion INSIDE it and retire its provenance. Callers that know their own
+   * coordinates should always say so. */
+  write(text: string, cursor: number, source?: TextEditSource, splice?: TextSplice): void;
+  /** Returns the tracked staged occurrence range for `marker` (if still in
+   * text) and whether `marker` ever had positional provenance. Used so tile
+   * removal and cleanup delete only the staged occurrence, preserving literals. */
+  stagedRangeFor?(marker: number): { range?: ImageMarkerRange; positioned: boolean };
 }
 
 export interface UseAttachmentsResult {
@@ -86,6 +101,14 @@ export interface UseAttachmentsResult {
    * restored into Composer state. Their marker high-water mark remains
    * authoritative for attachments added afterward. */
   replaceWithSettled(items: PendingAttachment[]): void;
+  /** Moves every staged item whose marker `text` spells to a free number,
+   * leaving `text` exactly as it arrived. A retained composer keeps its tiles
+   * across the draft another pane replaced, so a tile's number can name an
+   * occurrence the incoming text owns as ordinary prose; leaving the tile
+   * there would pair that literal with this tile's bytes at Send. The tile's
+   * identity (its bytes and its encode continuation) moves with it - only the
+   * number changes. `reserved` names numbers this move must also skip. */
+  renumberOff(text: string, reserved?: readonly number[]): void;
   /** Clears every staged item, restarts marker numbering, and invalidates all
    * encode continuations already in flight. The editor text is owned by the
    * caller and is deliberately left untouched. */
@@ -137,6 +160,12 @@ export function createAttachmentStore() {
     nextMarkerRef: { current: 0 },
     removedWhilePendingRef: { current: new Set<symbol>() },
     generationRef: { current: 0 },
+    // Numbers a staged image may not take: an adoption record this composer
+    // carries (a draft it read but cannot back with bytes) still names them.
+    // The composer source fills this from its own provenance; a store nothing
+    // fills reserves nothing, which is the mounted-composer-only path's
+    // pre-existing behavior.
+    reservedMarkersRef: { current: [] as number[] },
   }));
 }
 
@@ -146,11 +175,19 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
   const setItems = (next: SetStateAction<PendingAttachment[]>) => {
     store.setState((state) => ({ items: typeof next === "function" ? next(state.items) : next }));
   };
+  const stripTrackedMarker = (text: string, cursor: number | undefined, marker: number) => {
+    if (editor.stagedRangeFor) {
+      const tracked = editor.stagedRangeFor(marker);
+      if (tracked.range) return stripMarkerAt(text, cursor, tracked.range);
+      if (tracked.positioned) return { value: text, cursor };
+    }
+    return stripMarker(text, cursor, marker);
+  };
   // The marker high-water mark is deliberately NOT derived from items.length
   // (which shrinks on removal) - a plain ref persists across renders without
   // re-triggering one, exactly mirroring composer-attachments.js's own
   // pendingState.__nextMarker bookkeeping.
-  const { nextMarkerRef, removedWhilePendingRef, generationRef } = store.getState();
+  const { nextMarkerRef, removedWhilePendingRef, generationRef, reservedMarkersRef } = store.getState();
   // kata kt4j: operation tokens removed via removeItem while decode was still
   // in flight. The browser's Image/canvas pipeline has no cancellation hook,
   // so a reencodeToPng call started before removal keeps running and still
@@ -201,6 +238,40 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
     setItems([]);
   };
 
+  const renumberOff = (text: string, reserved: readonly number[] = []) => {
+    // A marker the text spells is that text's own occurrence - whoever wrote
+    // it, it is not an anchor this composer staged for this text.
+    const spelled = new Set(spelledImageMarkers(text));
+    if (spelled.size === 0) return;
+    const blocked = [...new Set([...reserved, ...reservedMarkersRef.current])];
+    const items = store.getState().items;
+    let highWater = nextMarkerRef.current;
+    // Nothing moved means the text spells none of this composer's numbers, which
+    // is the ordinary rebind and must stay a no-op.
+    let moved = false;
+    // The accumulating list starts as the current tiles and takes each new
+    // number as it is assigned, so `nextComposerImageMarker` sees both the
+    // unmoved tiles' numbers and the ones this same call already handed out.
+    const assigned: PendingAttachment[] = [...items];
+    for (const [index, item] of items.entries()) {
+      if (!spelled.has(item.marker)) continue;
+      // Each assignment starts above the previous one, so two moved tiles never
+      // land on the same number and no move can land on a tile that is staying.
+      const marker = nextComposerImageMarker(text, assigned, highWater, blocked);
+      highWater = marker;
+      assigned[index] = { ...item, marker };
+      moved = true;
+    }
+    if (!moved) return;
+    // replaceWithSettled matches each item against the one at its own index, so
+    // a moved tile keeps its operation token and therefore its in-flight encode
+    // (and, once settled, its bytes).
+    replaceWithSettled(assigned);
+    // The assigned numbers are this high-water mark now; a later gesture starts
+    // above them.
+    nextMarkerRef.current = highWater;
+  };
+
   const ingestFiles = (files: File[], onRejected: (message: string) => void) => {
     const generation = generationRef.current;
     const rejections: string[] = [];
@@ -222,6 +293,7 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
         editor.read().text,
         store.getState().items,
         nextMarkerRef.current,
+        reservedMarkersRef.current,
       );
       accepted.push({ file, marker: nextMarkerRef.current, token: Symbol("pending attachment") });
     }
@@ -234,16 +306,31 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
         text,
         selection: { start, end },
       } = editor.read();
+      // One write reaches the editor for the whole batch, so its splice is the
+      // batch's own: the selection the gesture replaced, and the markers put
+      // there. Reported as exact coordinates rather than left to be inferred -
+      // an insertion directly before an adopted marker shares "[image " with
+      // it, and the inference would retire that marker.
+      const splice: TextSplice = { start, end, insertedLength: 0 };
       const newItems: PendingAttachment[] = accepted.map(({ file, marker, token }) => {
-        const edit = insertMarker(text, start, end, markerText(marker));
+        const literal = markerText(marker);
+        const edit = insertMarker(text, start, end, literal);
         text = edit.value;
         start = end = edit.cursor;
+        splice.insertedLength += literal.length;
         const item = { marker, name: file.name, mediaType: "image/png", pending: true };
         operationTokens.set(item, token);
         return item;
       });
-      editor.write(text, start);
       setItems((prev) => [...prev, ...newItems]);
+      // The text and the tile that backs its marker are one gesture, so the
+      // persisted record is written once, AFTER the tile exists: the write
+      // carries the marker in stagedImageMarkers because the bytes are in the
+      // store by then. Writing the text first would persist an anchor with no
+      // provenance, and the store's own change notification would then depend
+      // on a second write to repair it - which is the window a reload, or an
+      // encode settling late, could read the wrong draft through.
+      editor.write(text, start, undefined, splice);
 
       for (const { file, token } of accepted) {
         reencodeToPng(file)
@@ -265,10 +352,13 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
             if (removedWhilePendingRef.current.delete(token)) return;
             const currentItem = store.getState().items.find((item) => operationToken(item) === token);
             if (currentItem) {
-              const current = editor.read();
-              const stripped = stripMarker(current.text, current.cursor, currentItem.marker);
-              editor.write(stripped.value, stripped.cursor ?? current.cursor, "cleanup");
+              // The tile leaves the store before the strip's own write, so the
+              // save that write performs never names this marker as staged
+              // (see removeItem).
               setItems((prev) => prev.filter((item) => operationToken(item) !== token));
+              const current = editor.read();
+              const stripped = stripTrackedMarker(current.text, current.cursor, currentItem.marker);
+              editor.write(stripped.value, stripped.cursor ?? current.cursor, "cleanup", stripped.splice);
             }
             onRejected(`${file.name || "unknown"} (image decode failed)`);
           });
@@ -292,25 +382,23 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
     // removal adds an entry no in-flight decode will ever consult again.
     const removed = store.getState().items.find((item) => item.marker === marker);
     if (removed) removedWhilePendingRef.current.add(operationToken(removed));
-    const current = editor.read();
-    const stripped = stripMarker(current.text, current.cursor, marker);
-    editor.write(stripped.value, stripped.cursor ?? current.cursor);
+    // The tile leaves the store BEFORE the text write, so whichever save that
+    // write performs already sees a composition without it. A save taken while
+    // the tile was still there would name the marker's number as staged, and
+    // the literal this strip leaves behind - a separate spelling the person
+    // typed - would come back after a reload as a missing reference: a draft
+    // needing no repair at all, refused.
     setItems((prev) => prev.filter((item) => item.marker !== marker));
+    const current = editor.read();
+    const stripped = stripTrackedMarker(current.text, current.cursor, marker);
+    editor.write(stripped.value, stripped.cursor ?? current.cursor, undefined, stripped.splice);
   };
 
   const clearSubmitted = (submittedMarkers: Set<number>) => {
-    if (submittedMarkers.size > 0) {
-      // Each write describes one exact splice, so atoms between removed
-      // markers retain their identities. Live editor refs update synchronously.
-      // A marker already removed by a concurrent edit remains a safe no-op.
-      let { text, cursor } = editor.read();
-      for (const marker of submittedMarkers) {
-        const stripped = stripMarker(text, cursor, marker);
-        text = stripped.value;
-        cursor = stripped.cursor ?? cursor;
-        editor.write(text, cursor, "submission");
-      }
-    }
+    // Same ordering rule as removeItem: the items leave the store first, so the
+    // writes below persist a composition that no longer carries them. A save
+    // that still saw them would name their numbers as staged even though the
+    // text it records no longer holds those occurrences.
     setItems((prev) => {
       const next = prev.filter((item) => !submittedMarkers.has(item.marker));
       if (next.length === 0) {
@@ -329,6 +417,18 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
       }
       return next;
     });
+    if (submittedMarkers.size > 0) {
+      // Each write describes one exact splice, so atoms between removed
+      // markers retain their identities. Live editor refs update synchronously.
+      // A marker already removed by a concurrent edit remains a safe no-op.
+      let { text, cursor } = editor.read();
+      for (const marker of submittedMarkers) {
+        const stripped = stripTrackedMarker(text, cursor, marker);
+        text = stripped.value;
+        cursor = stripped.cursor ?? cursor;
+        editor.write(text, cursor, "submission", stripped.splice);
+      }
+    }
   };
 
   const toInputAttachments = (): InputAttachment[] => {
@@ -343,6 +443,7 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
       return store.getState().items;
     },
     replaceWithSettled,
+    renumberOff,
     reset,
     get hasPending() {
       return store.getState().items.some((item) => item.pending);

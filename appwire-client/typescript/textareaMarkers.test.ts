@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
-import { insertMarker, markerPattern, markerText, stripMarker } from "./textareaMarkers";
+import { insertMarker, markerPattern, markerText, reconcileMarkerRanges, stripMarker } from "./textareaMarkers";
 
 test("markerText renders the literal [image N] placeholder", () => {
   expect(markerText(1)).toBe("[image 1]");
@@ -97,4 +97,24 @@ test("returns an undefined cursor unchanged when the caller's cursor is unknown"
   const result = stripMarker("[image 1]", undefined, 1);
   expect(result.value).toBe("");
   expect(result.cursor).toBeUndefined();
+});
+
+// --- reconcileMarkerRanges: a caller's exact splice beats the inference -----
+// An attachment gesture knows the span it replaced. A before/after pair does
+// not: two literals that begin "[image " share a prefix that stops INSIDE the
+// untouched one, so an insertion immediately before it reads as a splice
+// through it and the anchor is retired. That is the state that shipped
+// "[image 1]" as prose with no image behind it.
+
+test("an exact splice shifts an untouched marker past text inserted at its own start", () => {
+  const ranges = [{ marker: 1, start: 0, end: 9 }];
+  const before = "[image 1]";
+  const after = "[image 2][image 1]";
+  // The inference (shared prefix 7, shared suffix 2) cuts through the marker.
+  expect(reconcileMarkerRanges(before, after, ranges, 7, 2)).toEqual([]);
+  // The gesture's own coordinates say the span replaced was empty and sat
+  // before the marker, so the marker survives, shifted by the insertion.
+  expect(reconcileMarkerRanges(before, after, ranges, 7, 2, { start: 0, end: 0, insertedLength: 9 })).toEqual([
+    { marker: 1, start: 9, end: 18 },
+  ]);
 });
