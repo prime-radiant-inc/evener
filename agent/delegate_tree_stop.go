@@ -821,6 +821,11 @@ func (c *delegateTreeController) drainStopForClose(ctx context.Context, stop *de
 // publishDrainWarnings publishes the warnings a stop pass settled, on the path
 // that caller owns.
 //
+// On a successful ordinary stop the warnings travel inside the plans the drain
+// executes, so they are emitted after the delegate updates; this helper
+// publishes on the ordinary path only when a pass returns before those plans
+// run.
+//
 // The two callers have different obligations and must not share one publisher:
 //
 //   - The ordinary stop driver (warningsOnly false) publishes on emit, the
@@ -870,12 +875,12 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 	// parked on the session's own delivery path spends the budget reserved for
 	// leaving collectible worktrees on disk.
 	//
-	// The bound is PASSED to each Reconcile, not installed on the controller.
-	// The controller is shared with the live root, so a bound installed here
-	// applied to every delegate publication for as long as this drain ran: an
-	// unrelated sibling finishing in that window had its update and activity
-	// suppressed by this pass's deadline. A bound belongs to the pass that
-	// supplied it.
+	// The bound lives in this pass, not on the controller: pubCtx carries it to
+	// this pass's publications through publishDrainWarnings, while Reconcile
+	// takes only the evidence snapshot. A bound installed on the shared
+	// controller would reach every delegate publication for as long as this drain
+	// ran, so an unrelated sibling finishing in that window could have its update
+	// and activity suppressed by this pass's deadline.
 	// Each Reconcile hands back a retirement-mutation lease, and the drain
 	// deliberately holds every one until it returns. Collect them and release
 	// all on return — LIFO, as the per-iteration defers did — rather than
@@ -935,6 +940,11 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 		if plans.retirementRelease != nil {
 			retirementReleases = append(retirementReleases, plans.retirementRelease)
 		}
+		publishPlansWarnings := func() {
+			if root != nil {
+				root.publishDrainWarnings(pubCtx, warningsOnly, plans.warnings)
+			}
+		}
 		if err != nil {
 			if errors.Is(err, errDelegateTargetBusy) {
 				if channelClosed(abandon) {
@@ -945,22 +955,37 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 			// A warning the pass settled is published even when the pass
 			// failed: the receipt that produced it is gone from the store,
 			// so no later pass can settle it again.
-			if root != nil {
-				root.publishDrainWarnings(pubCtx, warningsOnly, plans.warnings)
-			}
+			publishPlansWarnings()
 			return err
 		}
-		// Publication comes before any plan runs. A warning this pass settled
-		// names a receipt that was abandoned during the pass and cannot be
-		// settled again, so a repair or cleanup that fails below must not carry
-		// it out of the drain unpublished. Publishing first also keeps the
-		// warning off the plan-execution path: it is news, not an effect.
-		if root != nil {
-			root.publishDrainWarnings(pubCtx, warningsOnly, plans.warnings)
+		// A warning this pass settled names a receipt that was abandoned during
+		// the pass and cannot be settled again, so nothing below may carry it out
+		// of the drain unpublished. The two callers publish it at different
+		// points, though:
+		//
+		//   - The close drain (warningsOnly true) runs no plans, so it publishes
+		//     here, bounded by pubCtx, and clears the warnings before withholding
+		//     the plans below.
+		//   - The ordinary stop (warningsOnly false) keeps the update-then-warning
+		//     order its delivery path always had. Its warnings ride the plans
+		//     into executeDelegateMutationPlans, which emits the delegate updates
+		//     first and the warnings after them. Publishing here would run emit --
+		//     and with it the configured Notification hook, synchronously --
+		//     before the shell repairs and attention cleanup below, delaying that
+		//     work and leaving clients on a stale stop state (#6939).
+		//
+		// A repair or cleanup failure below still publishes the settled warnings
+		// on the ordinary path, because that return skips the plan execution that
+		// would otherwise have emitted them.
+		if warningsOnly {
+			publishPlansWarnings()
+			plans.warnings = nil
 		}
-		plans.warnings = nil
 		for _, plan := range plans.shellRepairs {
 			if err := executeDelegateShellRepair(plan, c.now()); err != nil {
+				if !warningsOnly {
+					publishPlansWarnings()
+				}
 				return err
 			}
 		}
@@ -968,6 +993,9 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 			if err := c.executeDelegateAttentionCleanup(plan); err != nil {
 				if errors.Is(err, errDelegateStaleLease) {
 					continue
+				}
+				if !warningsOnly {
+					publishPlansWarnings()
 				}
 				return err
 			}
