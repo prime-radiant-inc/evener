@@ -9,6 +9,12 @@ import { chordLabel } from "../../../widgets";
 // names that path instead of a generic unavailability.
 export const STEER_RECOVERY_FENCED_REASON = "Steer isn't available until this session is resumed";
 
+// Why a Steer press is refused while the draft names an adopted anchor this
+// composer holds no image for: Send refuses the same draft, so steering it
+// would carry the anchor to the model as literal text by a second route. Both
+// Steer surfaces state this rather than accepting a press that goes nowhere.
+export const STEER_UNBACKED_IMAGE_REASON = "Remove the missing image reference before steering";
+
 // The same fence in the pending rows' vocabulary: their daemon-queue actions
 // (Steer now, Edit, Remove) refuse as a family, so the reason names the
 // whole family rather than one verb.
@@ -31,11 +37,14 @@ export function submitTooltipLabel({ canQueue, enterToSend }: { canQueue: boolea
 // describing an action the fence refuses (kata 2f41).
 export function steerTooltipLabel({
   recoveryFenced,
+  unbackedImage,
   enterToSend,
 }: {
   recoveryFenced: boolean;
+  unbackedImage?: boolean;
   enterToSend: boolean;
 }): string {
   if (recoveryFenced) return STEER_RECOVERY_FENCED_REASON;
+  if (unbackedImage) return STEER_UNBACKED_IMAGE_REASON;
   return enterToSend ? "Interrupt and redirect now" : `Interrupt and redirect now · ${chordLabel(["Shift", "Enter"])}`;
 }
