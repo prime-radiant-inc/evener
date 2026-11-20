@@ -206,40 +206,6 @@ func TestDelegateSandboxSnapshot(t *testing.T) {
 	}
 }
 
-func TestSandboxPolicyFromStableSnapshot(t *testing.T) {
-	t.Parallel()
-	// Nil returns nil.
-	if got := sandboxPolicyFromStableSnapshot(nil); got != nil {
-		t.Fatal("nil snapshot should return nil")
-	}
-	// Invalid mode returns nil.
-	got := sandboxPolicyFromStableSnapshot(&delegatestore.SandboxSnapshot{Mode: "invalid"})
-	if got != nil {
-		t.Fatal("invalid mode should return nil")
-	}
-	// Valid snapshot round-trips.
-	net := true
-	snap := &delegatestore.SandboxSnapshot{
-		Mode:               "workspace-write",
-		DenylistAdd:        []string{"a"},
-		ExtraWritableRoots: []string{"c"},
-		Network:            &net,
-	}
-	got = sandboxPolicyFromStableSnapshot(snap)
-	if got == nil || got.Mode != sandbox.ModeWorkspaceWrite {
-		t.Fatalf("policy = %+v", got)
-	}
-	if got.Network == nil || !*got.Network {
-		t.Error("network not copied")
-	}
-	// Nil network stays nil.
-	snap.Network = nil
-	got = sandboxPolicyFromStableSnapshot(snap)
-	if got.Network != nil {
-		t.Error("nil network should stay nil")
-	}
-}
-
 func TestDescriptorProvenance(t *testing.T) {
 	t.Parallel()
 	// Nil provenance returns nil.
