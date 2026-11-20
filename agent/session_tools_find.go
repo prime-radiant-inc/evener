@@ -969,9 +969,9 @@ func newProjectNameResolver(bucketMetas ...map[string][]schema.SessionMeta) *pro
 //  2. What a record the row is TIED TO states: its owner, then its verified
 //     parent. Row-specific evidence must name the lane's project when the lane
 //     records one.
-//  3. A GONE path whose surviving checkout is exactly the project the bucket
-//     records: that ID check does not depend on the walk, which is what lets it
-//     lift the existence gate steps 1 and 2 apply.
+//  3. A GONE path whose surviving checkout is this row's project: the project the
+//     row saved for itself, and otherwise the one the bucket records. That ID
+//     check is what lets the checkout answer for a path that no longer exists.
 //  4. Bucket-wide inference from siblings. It describes the bucket, not the
 //     lane, so it only answers once nothing row-specific did.
 //  5. The path's own basename.
@@ -1039,6 +1039,8 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 	// A recorded path that is not absolute names no checkout at all: it would be
 	// walked relative to this process's directory, which is not where the session
 	// ran. Records are written absolute; one that is not is no evidence here.
+	bucketProject, bucketKnown := r.bucketProjectID(bucketDir)
+	ownProject := strings.TrimSpace(m.Config.MemoryProjectID)
 	laneSeen := false
 	lanePath := ""
 	laneProjectID := ""
@@ -1064,11 +1066,10 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 			}
 			continue
 		}
-		// An ordinary recorded path answers only while the directory it names is
-		// still there. Its Git ancestry describes the space the directory occupied,
-		// and once it is gone that space belongs to whatever encloses it — an
-		// affiliation the directory never had. projectAt is where that rule lives,
-		// so this asks it rather than testing existence again here.
+		// An ordinary recorded path that is still there answers from its Git
+		// ancestry, and projectAt is where that rule lives. A path that is gone has
+		// nothing here to answer for it: a walk from it would describe the space it
+		// occupied, not the directory itself. Its surviving prefix is asked below.
 		if checkout, _, ok, _, hasGitRoot := r.projectAt(recorded, bucketDir); ok && checkout != "" {
 			// A surviving directory that resolves to no Git root is its own project,
 			// and its basename is that project's name — unless the path spells an
@@ -1076,8 +1077,8 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 			// what a worktree directory leans on, and when the worktree's own pointer
 			// AND the enclosing repository's .git are both gone, the directory still
 			// sits where the worktree was. Its leaf is a lane name, so the marker
-			// fallback answers instead, exactly as it does for the same path when the
-			// record reaches step 4.
+			// fallback answers instead, exactly as it does for the same path in the
+			// marker step below.
 			//
 			// Only the LABEL changes here. The canonical directory stays the project
 			// identity for sibling eligibility, because a hash of the surviving
@@ -1089,6 +1090,34 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 				}
 			}
 			return filepath.Base(checkout)
+		}
+		// A recorded path whose TAIL is gone still names the checkout it sat in:
+		// the surviving prefix is that checkout, and it is where the removed
+		// directory really was. Full resolution and the lane classification above
+		// both read the whole path, so neither can answer here; the prefix is asked
+		// instead, with the same two questions in the same order.
+		//
+		// A prefix that is a lane keeps its boundary and goes through the bounded
+		// walk and metadata fallback step 1 uses. An ordinary one answers only when
+		// the checkout it resolves to is this row's project: the space a removed
+		// directory occupied belongs to whatever survives above it, and that is an
+		// affiliation the row has only when its own recording says so. A legacy or
+		// shared bucket records no project, so a row with none of its own is not
+		// given that affiliation there.
+		//
+		// It is asked before the marker below because that marker names whatever
+		// precedes ".worktrees", which can be an enclosing checkout while a
+		// surviving nested one is the row's project.
+		resolved := resolveExistingPrefix(recorded)
+		if _, laneRoot, _, _, isLane := r.stateWorktreeOwner(resolved, bucketDir); isLane {
+			if root := resolveMainRootWithin(resolved, laneRoot); root != "" {
+				return filepath.Base(root)
+			}
+			if name, _ := r.worktreePathFallback(resolved, bucketDir, m.ParentSessionID); name != "" {
+				return name
+			}
+		} else if root := r.resolveMainRoot(resolved); root != "" && r.checkoutIsRows(root, ownProject, bucketProject, bucketKnown) {
+			return filepath.Base(root)
 		}
 	}
 	if laneSeen {
@@ -1133,119 +1162,83 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 	if !filepath.IsAbs(wd) {
 		return ""
 	}
-	// One verdict serves steps 2 and 3: nothing between them writes.
-	wdExists := directoryExists(wd)
-
-	// 2. Resolve the main checkout from the .git layout for a directory that is
-	// still there. A label never needs a process: see mainRootOutcomeClean. A walk
-	// from a path that is gone describes its surroundings, not the checkout that
-	// used to sit there, which is why absence is step 3 rather than a guess here.
-	if wdExists {
-		if root := r.resolveMainRoot(wd); root != "" {
-			return filepath.Base(root)
-		}
-	}
-
-	// 3. A GONE path may still take the name of a checkout that survives above it.
-	// Two shapes answer here, in this order.
-	//
-	// A state-managed lane keeps its boundary, and a lane the record reaches only
-	// through a symlinked ancestor is asked the question step 1 asks: its own
-	// pointer names the checkout while the lane survives, and its metadata answers
-	// once the checkout is pruned. An ordinary path answers only when the bucket
-	// records a project and the walk finds exactly that project's root. The
-	// surviving prefix is resolved first: a recorded path that ran through a
-	// symlinked ancestor cannot be resolved as a whole once its tail is missing,
-	// and a walk started at the link's lexical parents misses the checkout the link
-	// points into.
-	//
-	// The step is asked before step 4's spelling-based marker because that marker
-	// names whatever precedes ".worktrees", which can be an enclosing checkout
-	// while a surviving nested one is the project the bucket records.
-	//
-	// This is display-only. projectAt and projectRecord still report no project for
-	// a deleted ordinary path, and recordedOrdinaryProject still hashes the recorded
-	// path itself, so sibling and parent comparisons are unchanged. A legacy or
-	// shared bucket records no project, so the ordinary branch does not answer
-	// there; step 4's marker and step 5's basename answer as they did before.
-	//
-	// A row that records a project of its own contradicts the bucket when the two
-	// differ, which --state-dir aimed at the wrong bucket produces: neither the
-	// bucket's project nor an ancestor of it describes this row, so the ordinary
-	// branch is refused and so is the marker in step 4.
-	bucketProject, bucketKnown := r.bucketProjectID(bucketDir)
-	ownProject := strings.TrimSpace(m.Config.MemoryProjectID)
-	foreignRow := bucketKnown && ownProject != "" && ownProject != bucketProject
-
-	if !wdExists {
-		resolved := resolveExistingPrefix(wd)
-		// A state-managed lane keeps its boundary, and a lane the record reaches
-		// through a symlinked ancestor is asked the question step 1 asks: its own
-		// pointer names the checkout while the lane survives, and its metadata
-		// answers once the checkout is pruned.
-		if _, laneRoot, _, _, isLane := r.stateWorktreeOwner(resolved, bucketDir); isLane {
-			if root := resolveMainRootWithin(resolved, laneRoot); root != "" {
-				return filepath.Base(root)
-			}
-			if name, _ := r.worktreePathFallback(resolved, bucketDir, m.ParentSessionID); name != "" {
-				return name
-			}
-		} else if bucketKnown && !foreignRow {
-			if root := r.resolveMainRoot(resolved); root != "" &&
-				identifier.ProjectFromCanonicalPath(identifier.ResolveClean(root)).ID == bucketProject {
-				return filepath.Base(root)
-			}
-		}
-	}
-
-	// 4. ONLY if wd is structurally a worktree path whose checkout directory has no .git layout to resolve.
-	// The marker names the project before its ".worktrees" segment, which is the
-	// bucket's project in the mismatched-bucket case: a contradicted row keeps its
-	// recorded basename instead.
-	if !foreignRow {
-		if name, isWorktree := r.worktreePathFallback(wd, bucketDir, m.ParentSessionID); isWorktree {
+	// 2. A path whose spelling contains an in-repository worktree marker names the
+	// project before that marker. The name is a claim about a checkout the row can
+	// check: a checkout that survives answers only when it is this row's project,
+	// so a marker naming the conflicting bucket's project keeps the recorded
+	// basename. A checkout that is gone contradicts nothing and answers as it
+	// always has.
+	if name, repoDir, isWorktree := inRepoWorktreeProjectPath(identifier.ResolveClean(wd)); isWorktree {
+		if !directoryExists(repoDir) || r.checkoutIsRows(repoDir, ownProject, bucketProject, bucketKnown) {
 			return name
 		}
 	}
 
-	// 5. Any other ordinary directory (e.g. /home/jesse/my-notes) is named by its
+	// 3. Any other ordinary directory (e.g. /home/jesse/my-notes) is named by its
 	// own basename, and so is a gone directory whose surviving checkout does not
-	// match the bucket.
+	// match the row's project.
 	return filepath.Base(wd)
 }
 
-// inRepoWorktreeProject answers the label an IN-REPOSITORY worktree path spells.
-// It is matched against the path's spelling, never against anything on disk, so
-// its callers must have established that the path is meaningful on its own.
+// checkoutIsRows reports whether the checkout above a recorded path is the
+// project this row belongs to: the project the row saved for itself, and
+// otherwise the one the bucket records. A row that saved its own project
+// contradicts the bucket it was found in when the two differ, which --state-dir
+// pointed at the wrong bucket produces, and then only its own project describes
+// the path it recorded.
 //
-// It is one function because it is one rule asked in two places, and the two
-// answers must not drift: the worktree fallback asks it for a state-dir row, and
-// projectName asks it for a surviving ordinary directory that has no Git root of
-// its own. A worktree directory whose Git metadata and whose enclosing
-// repository's Git metadata are both gone is still the repository's worktree as
-// far as the record shows, and its leaf is a lane name, not a project.
+// A bucket that records no project grants no affiliation: its sessions share one
+// repository, but nothing in the bucket says which, so a checkout no recorded
+// project names is not adopted on the bucket's behalf.
+func (r *projectNameResolver) checkoutIsRows(root, ownProject, bucketProject string, bucketKnown bool) bool {
+	id := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(root)).ID
+	if ownProject != "" {
+		return id == ownProject
+	}
+	return bucketKnown && id == bucketProject
+}
+
+// inRepoWorktreeProjectPath answers what an IN-REPOSITORY worktree path spells:
+// the project label before its marker, and the checkout that label names. It is
+// matched against the path's spelling, never against anything on disk, so its
+// callers must have established that the path is meaningful on its own.
+//
+// It is one rule asked in three places, and the answers must not drift: the
+// worktree fallback asks for the label of a state-dir row, and projectName asks
+// it both for a surviving ordinary directory that has no Git root of its own and
+// for the marker step, which checks the returned checkout against the row's
+// project before trusting the label. A worktree directory whose Git metadata and
+// whose enclosing repository's Git metadata are both gone is still the
+// repository's worktree as far as the record shows, and its leaf is a lane name,
+// not a project.
 //
 // isWorktree reports that a marker matched at all, including when the prefix
 // before it has no usable basename: the path IS a worktree path, so the caller
 // must not fall through to a basename that is a lane name.
-func inRepoWorktreeProject(clean string) (name string, isWorktree bool) {
+func inRepoWorktreeProjectPath(clean string) (name, repoDir string, isWorktree bool) {
 	sep := string(filepath.Separator)
 	for _, marker := range []string{
 		sep + ".claude" + sep + "worktrees" + sep,
 		sep + ".git" + sep + "worktrees" + sep,
 		sep + ".worktrees" + sep,
 	} {
-		if repoDir, _, ok := strings.Cut(clean, marker); ok {
-			if base := filepath.Base(repoDir); base != "" && base != "." && base != sep {
-				return base, true
+		if dir, _, ok := strings.Cut(clean, marker); ok {
+			if base := filepath.Base(dir); base != "" && base != "." && base != sep {
+				return base, dir, true
 			}
-			return "", true
+			return "", dir, true
 		}
 	}
-	if repoDir, ok := strings.CutSuffix(clean, sep+".worktrees"); ok {
-		return filepath.Base(repoDir), true
+	if dir, ok := strings.CutSuffix(clean, sep+".worktrees"); ok {
+		return filepath.Base(dir), dir, true
 	}
-	return "", false
+	return "", "", false
+}
+
+// inRepoWorktreeProject answers only the label; see inRepoWorktreeProjectPath.
+func inRepoWorktreeProject(clean string) (name string, isWorktree bool) {
+	name, _, isWorktree = inRepoWorktreeProjectPath(clean)
+	return name, isWorktree
 }
 
 // worktreePathFallback answers a state worktree's project label. It evaluates

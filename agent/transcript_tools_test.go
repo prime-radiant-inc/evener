@@ -1297,6 +1297,44 @@ func TestFind_ProjectName_DeletedSubdirThroughSymlinkToLiveLane(t *testing.T) {
 	}
 }
 
+// TestFind_ProjectName_ForeignBucketKeepsRowsOwnMarker covers a row stored in
+// another project's bucket whose recorded path spells an in-repository worktree
+// of its OWN checkout, removed since. The marker names that checkout, which the
+// row's saved project confirms, so the marker's name must answer even though the
+// bucket's project differs.
+func TestFind_ProjectName_ForeignBucketKeepsRowsOwnMarker(t *testing.T) {
+	stateHome := pinStateHome(t)
+
+	repo := newNamedCheckout(t, "worktree-owner-repo")
+	feature := filepath.Join(repo, ".worktrees", "feature")
+	gittest.Run(t, repo, "worktree", "add", "-q", feature, "-b", "feature")
+
+	repoProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repo))
+	other := newNamedCheckout(t, "unrelated-bucket-repo")
+	otherProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(other))
+	if otherProject.ID == repoProject.ID {
+		t.Fatalf("fixture projects collided at %q", repoProject.ID)
+	}
+	bucket, err := RuntimeDirForProjectWithStateHome(otherProject, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+	if err := os.RemoveAll(feature); err != nil {
+		t.Fatalf("remove worktree: %v", err)
+	}
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.Config.MemoryProjectID = repoProject.ID
+	row.EnvInfo.WorkingDir = feature
+
+	if got, want := newProjectNameResolver().projectName(row, bucket), filepath.Base(repo); got != want {
+		t.Fatalf("projectName(removed worktree %q of the row's own project, stored in another project's bucket) = %q, want the marker's checkout %q", feature, got, want)
+	}
+}
+
 // TestFind_ProjectName_StateLaneStopsGitWalkAtLaneRoot covers a shared --state-dir
 // that lives inside checkout A while holding a managed delegate lane for
 // checkout B. Deleting the originless lane leaves nothing at the lane path, so a
