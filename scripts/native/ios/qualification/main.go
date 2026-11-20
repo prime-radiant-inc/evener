@@ -577,7 +577,7 @@ func (r *runner) adoptSimulator(ctx context.Context, dir string) error {
 		return err
 	}
 	if !devices.holds(identity.UDID) {
-		return fmt.Errorf("the pre-booted simulator %s is no longer installed", identity.UDID)
+		return fmt.Errorf("%w: %s", errSimulatorGone, identity.UDID)
 	}
 	r.identity.SimulatorUDID = identity.UDID
 	for _, name := range []string{"simulator-identity.json", "simulator-runtimes.log", "simulator-create.log", "simulator-boot.log"} {

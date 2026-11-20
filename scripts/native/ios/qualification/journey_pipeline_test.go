@@ -314,7 +314,7 @@ func TestAdoptSimulatorRefusesAPreBootThatDidNotSurvive(t *testing.T) {
 	}
 	writeTestFile(t, filepath.Join(simulatorDir, "simulator-identity.json"),
 		[]byte(`{"udid":"11111111-2222-3333-4444-555555555555","runtime":"ios-26-6","deviceType":"iphone-17"}`))
-	if err := r.adoptSimulator(context.Background(), simulatorDir); err == nil || !strings.Contains(err.Error(), "no longer installed") {
+	if err := r.adoptSimulator(context.Background(), simulatorDir); !errors.Is(err, errSimulatorGone) {
 		t.Fatalf("a device that is gone was adopted: %v", err)
 	}
 }
