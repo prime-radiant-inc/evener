@@ -47,7 +47,7 @@ var notShownMetaFields = []string{
 	"TurnBudgetWarningEmitted", "LastInputTokens", "ContextWindow", "ContextWindowSource", "NameSource", "NameUpdatedAt",
 	"DivergenceTurn", "Goal", "PinnedNote", "Skills", "MemorySaveUnavailable", "HumanNote", "AgentNote",
 	"SessionURLs", "EnvContext", "ReasoningEffortEscalated", "CumulativeUsage",
-	"WorkMillis", "JobTreeRevision", "ScratchTempDir", "ScratchTreeRootID",
+	"WorkMillis", "QuotaWaitStamps", "JobTreeRevision", "ScratchTempDir", "ScratchTreeRootID",
 	"ScratchDirSessionID", "LaunchEnvBaseline",
 	"LaunchSystemPrompt",
 	"EnvInfo.Platform", "EnvInfo.OSVersion", "EnvInfo.Today", "EnvInfo.KnowledgeCutoff",
