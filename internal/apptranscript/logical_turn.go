@@ -81,7 +81,7 @@ type groupedTurn struct {
 
 // logicalTurnAccumulator buffers entries across a scan and emits grouped
 // logical turns. It is the two-phase engine of the full read
-// (ItemTurnsFromFile/ItemTurnsFromEntries): entries are appended in file order,
+// (ItemTurnsFromFile/itemTurnsFromEntries): entries are appended in file order,
 // then groupedAppTurns produces the logical turns. The bounded index build
 // mirrors this state machine over persisted records
 // (TurnKind/GroupItems/GroupCalls) so both paths agree by construction.

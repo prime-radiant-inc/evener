@@ -59,7 +59,7 @@ func singlePassProjector(turn schema.Turn, turnID string, entryIndex int) []appw
 
 // TestItemTurnsFromFileSinglePassMatchesEntriesForm is the differential proof for
 // the single-pass change: ItemTurnsFromFile over the file must produce exactly
-// the turns ItemTurnsFromEntries produces over the same transcript's decoded
+// the turns itemTurnsFromEntries produces over the same transcript's decoded
 // header+entries, including the prelude turn, the turn ids (1-based entry
 // indexing), and the usage/timestamp stamps.
 func TestItemTurnsFromFileSinglePassMatchesEntriesForm(t *testing.T) {
@@ -74,9 +74,9 @@ func TestItemTurnsFromFileSinglePassMatchesEntriesForm(t *testing.T) {
 		t.Fatalf("OpenWriterForSession: %v", err)
 	}
 	defer w.Close() //nolint:errcheck // read-only fixture use
-	entryTurns, err := ItemTurnsFromEntries(w.Header(), entries, singlePassProjector)
+	entryTurns, err := itemTurnsFromEntries(w.Header(), entries, singlePassProjector)
 	if err != nil {
-		t.Fatalf("ItemTurnsFromEntries: %v", err)
+		t.Fatalf("itemTurnsFromEntries: %v", err)
 	}
 
 	if len(fileTurns) == 0 {
