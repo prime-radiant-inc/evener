@@ -245,17 +245,30 @@ says nothing about the owner, such as a relay outage or a deadline. On a success
 that token is not proof the daemon is gone, and a client must not retire a
 standing hold on it.
 
-A **failed** saved read is the case that does carry ownership: it stamps
-`daemonless` on one of exactly two established facts. Either one roster
-snapshot, ancestry included, showed that nobody owns the thread; or the
-requested ref names a source this hub does not serve at all, in which case no
-daemon here could be serving it and no roster is needed — that holds even for a
-hub configured without one. Everywhere else it stamps `unknown-owner`: an
-incomplete scan, an unverified claim, a live or incompatible owner,
-unverifiable delegate ancestry, or no roster to ask. `unknown-owner` is not a
-claim that no daemon runs; it is the hub saying it does not know. A failed read
-must never claim a daemon is gone, because the only evidence it has is that it
-failed.
+A **failed** saved read is the case that does carry ownership, and it has three
+outcomes, not two:
+
+1. **Established live owner.** When a live reply already answered and only the
+   saved-history enrichment under it failed, the failure keeps that live reply's
+   boot generation *and* epoch. The daemon that answered named itself, so the
+   client retires the sequence it holds from a daemon that has been replaced with
+   the replacement's own identity, not with a refusal to name one.
+2. **Attested absence.** The failure carries `daemonless` with
+   `absenceAttested: true`, on one of exactly two established facts. Either one
+   roster snapshot, ancestry included, showed that nobody owns the thread; or the
+   requested ref names a source this hub does not serve at all, in which case no
+   daemon here could be serving it and no roster is needed — that holds even for
+   a hub configured without one. The attestation is the hub's own account of how
+   it knows, and it is what a forwarding layer checks before preserving a
+   `daemonless` it cannot otherwise qualify.
+3. **Unresolved ownership.** Everywhere else the failure carries
+   `unknown-owner`: an incomplete scan, an unverified claim, a live or
+   incompatible owner, unverifiable delegate ancestry, or no roster to ask. A
+   `daemonless` forwarded from a legacy peer that cannot attest it is demoted to
+   `unknown-owner` as well, because a peer too old to qualify its stamp leaves
+   this layer no evidence it can rely on. `unknown-owner` is not a claim that no
+   daemon runs; it is the hub saying it does not know. A failed read must never
+   claim a daemon is gone, because the only evidence it has is that it failed.
 
 The shared history reducer preserves higher item versions across overlapping
 pages. `HistoryState.replacementScopes` records closed page intervals and their

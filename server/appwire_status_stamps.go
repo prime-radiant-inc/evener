@@ -197,3 +197,42 @@ func (s *Server) envelopeFailedToolCalls() (int, bool) {
 	}
 	return *s.appEnvelope.FailedToolCalls, true
 }
+
+// stampBootGeneration stamps threadID's boot generation onto the two
+// notifications that describe a thread's live state instead of its recorded
+// history: evener/delegate/updated and overlay/upserted.
+//
+// A client retires the view it holds of a thread when the frames describing it
+// name a generation it has moved past, and history/updated is not the only
+// frame that carries that identity: a delegate row and an overlay item belong
+// to the same daemon's boot and are kept beside the history. Without the stamp
+// a client cannot tell that an upsert from a replaced daemon is stale, so it
+// applies it over the replacement's state -- the surviving half of the same
+// wedge the read path closes.
+//
+// The stamp is the SAME token history/updated carries for that thread: the
+// plain counter for the root, DescendantBootGeneration for a descendant
+// (bootGenerationFor). Both frames are addressed to a thread this server
+// serves, so there is no "unknown thread" case here.
+//
+// It happens HERE, at the server's single notification egress, for the reason
+// the stampers around it give: the projector and the overlay map events to
+// params and hold no session handle, while the served identity is the
+// server's. An empty generation (a server that never learned its identity)
+// leaves the field off entirely, and every other notification type is
+// returned untouched.
+func stampBootGeneration(params any, bootGeneration string) any {
+	if bootGeneration == "" {
+		return params
+	}
+	switch p := params.(type) {
+	case appwire.EvenerDelegateParams:
+		p.BootGeneration = bootGeneration
+		return p
+	case appwire.OverlayUpsertedParams:
+		p.BootGeneration = bootGeneration
+		return p
+	default:
+		return params
+	}
+}
