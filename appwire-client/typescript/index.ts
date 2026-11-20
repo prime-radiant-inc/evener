@@ -612,7 +612,12 @@ export type {
 export { BROWSER_SEND_QUEUE_POLICY, NATIVE_SEND_QUEUE_POLICY, sendQueueGate } from "./sendQueueGate";
 export type { QuietState } from "./sessionActivity";
 export { decodeActivityRead, isStuck, QUIET_AFTER_MS, quietState, STUCK_AFTER_MS } from "./sessionActivity";
-export { projectSessionActivity, type SessionActivityPresentation } from "./sessionActivityPresentation";
+export {
+  type DelegateLineage,
+  projectSessionActivity,
+  resolveDelegateParents,
+  type SessionActivityPresentation,
+} from "./sessionActivityPresentation";
 export type {
   SessionActivityClient,
   SessionActivityClock,
@@ -658,7 +663,7 @@ export {
 } from "./spawnPluginSelectionState";
 export type { AdvancedFieldValue, AdvancedValues, ChipScalars } from "./spawnSchema";
 export { collectAdvancedOverrides, perLaunchEvenerOptions, resolveScalars } from "./spawnSchema";
-export type { StableDelegateState } from "./stableDelegate";
+export type { DelegateWaitFields, DelegateWaitOptions, StableDelegateState } from "./stableDelegate";
 export {
   delegateStatedIntent,
   delegateWaitText,

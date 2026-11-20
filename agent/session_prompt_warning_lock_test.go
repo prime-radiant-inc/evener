@@ -67,6 +67,7 @@ func TestSetModelReportsRenderFailureWithoutSelfDeadlock(t *testing.T) {
 	// under test leaves held. The cleanup would then block forever and convert a
 	// named 10s failure into a package timeout that reads as a flake. This is the
 	// same fixture hazard, one layer down.
+	//
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"),
@@ -78,6 +79,13 @@ func TestSetModelReportsRenderFailureWithoutSelfDeadlock(t *testing.T) {
 	const cachedSentinel = "CACHED_VALID_PROMPT_SENTINEL"
 	sess.mu.Lock()
 	sess.cachedSystemPrompt = cachedSentinel
+	// The state a session that launched with a failed render is in: nothing
+	// frozen, so SetModel's recovery path runs. A successful launch freezes turn 0
+	// and every later refresh short-circuits, which would leave SetModel's warning
+	// unexercised. Flipped here rather than by breaking the render before
+	// NewSession, because a construction-time failure has already put its own
+	// warning on the channel by the time this test drains it.
+	sess.systemPromptFrozen = false
 	sess.mu.Unlock()
 	forceSystemPromptRenderFailure(t)
 

@@ -164,6 +164,12 @@ export interface ActivityDelegate {
   runStartedAt?: string;
   runEndedAt?: string;
   latestActivityAt?: string;
+  drainHeldByJobs?: boolean;
+  runningJobCount?: number;
+  oldestRunningJobStartedAt?: string;
+  drainHeldBySubagents?: boolean;
+  runningSubagentCount?: number;
+  holdSequence?: number;
   latestIntent?: string;
   runningForMs?: number | null;
   quietForMs?: number | null;
@@ -518,6 +524,7 @@ function parseDelegate(raw: unknown, depth: number): ParseResult<ActivityDelegat
     "runStartedAt",
     "runEndedAt",
     "latestActivityAt",
+    "oldestRunningJobStartedAt",
     "latestIntent",
     "packetKind",
     "reportPreview",
@@ -532,13 +539,23 @@ function parseDelegate(raw: unknown, depth: number): ParseResult<ActivityDelegat
     "terminal",
     "resumable",
     "needsAttention",
+    "drainHeldByJobs",
+    "drainHeldBySubagents",
     "structuredResultValid",
     "exhaustionResumable",
     "parentWatchGranted",
   ]) {
     if (!copyOptionalBoolean(raw, target, field)) return { value: null, incomplete: true };
   }
-  for (const field of ["runGeneration", "projectionRevision", "exhaustionLimit", "delegationAllowance"]) {
+  for (const field of [
+    "runGeneration",
+    "projectionRevision",
+    "runningJobCount",
+    "runningSubagentCount",
+    "holdSequence",
+    "exhaustionLimit",
+    "delegationAllowance",
+  ]) {
     if (!copyOptionalInteger(raw, target, field)) return { value: null, incomplete: true };
   }
   for (const field of ["runningForMs", "quietForMs", "durationMs"]) {

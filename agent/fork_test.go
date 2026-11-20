@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/afero"
 
+	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
@@ -234,6 +235,116 @@ func TestForkSessionPreservesMemorySaveUnavailable(t *testing.T) {
 				t.Fatalf("child MemorySaveUnavailable = %t, want %t", childMeta.MemorySaveUnavailable, tc.want)
 			}
 		})
+	}
+}
+
+func TestUnrestoredLegacyManagerForkAsideDiscardsParentPrompt(t *testing.T) {
+	t.Parallel()
+	const parentMarker = "LEGACY_MANAGER_ANCESTOR_MARKER_7f12"
+	stateDir := t.TempDir()
+
+	parent := newSession(t, withStateDir(stateDir), withConfig(SessionConfig{
+		MaxSubagentDepth: 2, Manager: true, ForceRealIO: true,
+		UserInstructionOverride: parentMarker,
+		testOnly:                testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+	}))
+	parent.appendTurn(schema.TurnUserInput, llm.User("fork me"))
+	parentID, parentPrompt, parentBaseline := parent.ID(), parent.cachedSystemPrompt, parent.Meta().LaunchEnvBaseline
+	parent.Close()
+
+	// Create an ordinary fork from the Manager, then plant the pre-#6959 legacy
+	// shape on disk and leave it UNRESTORED (LaunchSystemPrompt == "").
+	legacyForkID, err := ForkSession(stateDir, parentID, 1, "legacy fork", "")
+	if err != nil {
+		t.Fatalf("ForkSession: %v", err)
+	}
+	rewriteLegacyForkHeader(t, stateDir, legacyForkID, parentPrompt)
+	legacyMeta, err := schema.LoadSessionMeta(stateDir, legacyForkID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(legacyFork): %v", err)
+	}
+	staleBaseline := parentBaseline
+	staleBaseline.Model = "legacy-unrestored-manager-model"
+	legacyMeta.LaunchSystemPrompt = ""
+	legacyMeta.LaunchEnvBaseline = staleBaseline
+	if err := schema.SaveSessionMeta(stateDir, legacyMeta); err != nil {
+		t.Fatalf("SaveSessionMeta(legacyFork): %v", err)
+	}
+
+	// Open an aside (--resume-with matching config) from the unrestored legacy fork.
+	asideCfg := legacyMeta.Config.Clone()
+	asideID, err := AsideSessionWithConfig(stateDir, legacyForkID, asideCfg)
+	if err != nil {
+		t.Fatalf("AsideSessionWithConfig: %v", err)
+	}
+	if hdr := sessionHeader(t, stateDir, asideID); hdr.SystemPrompt != "" {
+		t.Fatalf("aside of unrestored legacy manager fork copied header prompt %q, want empty", hdr.SystemPrompt)
+	}
+	asideMeta, err := schema.LoadSessionMeta(stateDir, asideID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(aside): %v", err)
+	}
+	if asideMeta.LaunchEnvBaseline != (envctx.Snapshot{}) {
+		t.Fatalf("aside baseline = %+v, want zero snapshot", asideMeta.LaunchEnvBaseline)
+	}
+
+	restored := restorePromptState(t, stateDir, asideMeta, t.TempDir())
+	if restored.cachedSystemPrompt == parentPrompt || restored.Meta().LaunchSystemPrompt != restored.cachedSystemPrompt {
+		t.Fatalf("restored aside kept parent Manager prompt or failed to persist LaunchSystemPrompt:\n%s", restored.cachedSystemPrompt)
+	}
+}
+
+func TestRecoveredForkChildRejectsPreRecoveryDescendantHeader(t *testing.T) {
+	t.Parallel()
+	const managerMarker = "RECOVERED_ANCESTOR_MANAGER_MARKER_5e21"
+	stateDir := t.TempDir()
+
+	manager := newSession(t, withStateDir(stateDir), withConfig(SessionConfig{
+		MaxSubagentDepth: 2, Manager: true, ForceRealIO: true,
+		UserInstructionOverride: managerMarker,
+		testOnly:                testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+	}))
+	manager.appendTurn(schema.TurnUserInput, llm.User("fork 1"))
+	managerID, managerPrompt := manager.ID(), manager.cachedSystemPrompt
+	manager.Close()
+
+	// Fork1 was created from Manager before #6959, then Fork2 was forked from Fork1
+	// before #6959 (both headers copied managerPrompt, both LaunchSystemPrompt == "").
+	fork1ID, err := ForkSession(stateDir, managerID, 1, "fork1", "")
+	if err != nil {
+		t.Fatalf("ForkSession(fork1): %v", err)
+	}
+	rewriteLegacyForkHeader(t, stateDir, fork1ID, managerPrompt)
+	fork2ID, err := ForkSession(stateDir, fork1ID, 1, "fork2", "")
+	if err != nil {
+		t.Fatalf("ForkSession(fork2): %v", err)
+	}
+	rewriteLegacyForkHeader(t, stateDir, fork2ID, managerPrompt)
+
+	// Resume Fork1 on the new build: it recovers and persists its non-Manager LaunchSystemPrompt.
+	fork1Meta, err := schema.LoadSessionMeta(stateDir, fork1ID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(fork1): %v", err)
+	}
+	restoredFork1 := restorePromptState(t, stateDir, fork1Meta, t.TempDir())
+	fork1Prompt := restoredFork1.cachedSystemPrompt
+	if fork1Prompt == managerPrompt || restoredFork1.Meta().LaunchSystemPrompt != fork1Prompt {
+		t.Fatalf("fork1 did not recover its own non-Manager prompt")
+	}
+	restoredFork1.Close()
+
+	// Later resume Fork2 (saved pre-recovery with managerPrompt in its header):
+	// Fork2 must compare against Fork1's recovered LaunchSystemPrompt and recover too.
+	fork2Meta, err := schema.LoadSessionMeta(stateDir, fork2ID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(fork2): %v", err)
+	}
+	restoredFork2 := restorePromptState(t, stateDir, fork2Meta, t.TempDir())
+	if restoredFork2.cachedSystemPrompt == managerPrompt {
+		t.Fatalf("fork2 kept stale Manager prompt from pre-recovery header instead of recovering:\n%s", restoredFork2.cachedSystemPrompt)
+	}
+	if restoredFork2.Meta().LaunchSystemPrompt != restoredFork2.cachedSystemPrompt {
+		t.Fatalf("fork2 did not persist recovered LaunchSystemPrompt")
 	}
 }
 
@@ -784,5 +895,249 @@ func TestForkAndAsideReplayLargeTranscriptLine(t *testing.T) {
 	}
 	if _, err := asideSessionFSWithConfig(fs, stateDir, parentID, nil); err != nil {
 		t.Fatalf("asideSessionFSWithConfig: %v", err)
+	}
+}
+
+func TestRootForkReusesParentSystemPromptVerbatim(t *testing.T) {
+	t.Parallel()
+	const rootMarker = "PARENT_LAUNCH_PROMPT_9c17"
+	// The child keeps the parent's launch prompt and environment baseline only
+	// while it is the same role. Each case names what makes it a different one;
+	// `reconfigure` is the --resume-with selection, which reaches the same writer.
+	// The marker keeps every assertion off template prose.
+	for _, tc := range []struct {
+		name   string
+		resave func(*schema.SessionMeta)
+		resume *schema.ConfigSnapshot
+		shares bool
+	}{
+		{name: "root-to-root", shares: true},
+		{name: "manager", resave: func(m *schema.SessionMeta) { m.Manager, m.Config.Manager = true, true }},
+		{name: "delegate", resave: func(m *schema.SessionMeta) { m.IsSubagent = true }},
+		{name: "agent-reselected", resume: &schema.ConfigSnapshot{AgentName: "other-agent"}},
+		{name: "plugins-reselected", resume: &schema.ConfigSnapshot{PluginDirs: []string{"/plugins/fresh"}}},
+	} {
+		stateDir := t.TempDir()
+		parent := newSession(t, withStateDir(stateDir), withConfig(SessionConfig{MaxSubagentDepth: 2,
+			ForceRealIO: true, UserInstructionOverride: rootMarker, testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true}}))
+		parent.appendTurn(schema.TurnUserInput, llm.User("fork me"))
+		parentID, launchPrompt, baseline := parent.ID(), parent.cachedSystemPrompt, parent.Meta().LaunchEnvBaseline
+		if tc.resave != nil {
+			parent.Close()
+			meta, err := schema.LoadSessionMeta(stateDir, parentID)
+			if err != nil {
+				t.Fatalf("LoadSessionMeta(parent): %v", err)
+			}
+			tc.resave(&meta)
+			if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+				t.Fatalf("SaveSessionMeta(parent): %v", err)
+			}
+		}
+		childID, err := ForkSession(stateDir, parentID, 1, "forked", "")
+		if tc.resume != nil {
+			childID, err = AsideSessionWithConfig(stateDir, parentID, *tc.resume)
+		}
+		if err != nil {
+			t.Fatalf("%s: fork: %v", tc.name, err)
+		}
+		childMeta, err := schema.LoadSessionMeta(stateDir, childID)
+		if err != nil {
+			t.Fatalf("LoadSessionMeta: %v", err)
+		}
+		want, wantBaseline := launchPrompt, baseline
+		if !tc.shares {
+			want, wantBaseline = "", envctx.Snapshot{}
+		}
+		if hdr := sessionHeader(t, stateDir, childID); hdr.SystemPrompt != want {
+			t.Fatalf("%s fork recorded %q, want %q", tc.name, hdr.SystemPrompt, want)
+		} else if childMeta.LaunchEnvBaseline != wantBaseline {
+			t.Fatalf("%s fork baseline = %+v, want %+v", tc.name, childMeta.LaunchEnvBaseline, wantBaseline)
+		}
+		if tc.shares && !strings.Contains(want, rootMarker) {
+			t.Fatalf("setup: the inherited prompt does not carry the fixture marker:\n%s", want)
+		}
+	}
+}
+
+func sessionHeader(t *testing.T, stateDir, id string) transcript.Header {
+	t.Helper()
+	hdr, _, _, err := readTranscript(t.Context(), schema.SessionTranscriptPath(stateDir, id), stateDir)
+	if err != nil {
+		t.Fatalf("readTranscript(%s): %v", id, err)
+	}
+	return hdr
+}
+
+// rewriteLegacyForkHeader rewrites an existing transcript header on disk to
+// simulate a pre-#6959 fork whose header copied parentHeader.SystemPrompt
+// unconditionally while meta.LaunchSystemPrompt remained empty.
+func rewriteLegacyForkHeader(t *testing.T, stateDir, childID string, legacyPrompt string) {
+	t.Helper()
+	tpath := schema.SessionTranscriptPath(stateDir, childID)
+	hdr, entries, _, err := readTranscript(t.Context(), tpath, stateDir)
+	if err != nil {
+		t.Fatalf("readTranscript(%s): %v", childID, err)
+	}
+	hdr.SystemPrompt = legacyPrompt
+	if err := os.Remove(tpath); err != nil {
+		t.Fatalf("remove transcript: %v", err)
+	}
+	tw, err := transcript.NewWriter(tpath, hdr)
+	if err != nil {
+		t.Fatalf("transcript.NewWriter: %v", err)
+	}
+	for _, entry := range entries {
+		if err := tw.Append(entry.Turn); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestLegacyMismatchedForkRestoreDiscardsParentPromptAndPersistsChildPrompt(t *testing.T) {
+	t.Parallel()
+	const parentMarker = "LEGACY_PARENT_PROMPT_MARKER_41a8"
+	const childMarker = "LEGACY_CHILD_PROMPT_MARKER_9c3e"
+
+	for _, tc := range []struct {
+		name       string
+		makeParent func(t *testing.T, stateDir string) (parentID, parentPrompt string, parentBaseline envctx.Snapshot)
+		makeChild  func(t *testing.T, stateDir, parentID string) string
+		checkChild func(t *testing.T, parentPrompt, childPrompt string)
+	}{
+		{
+			name: "manager",
+			makeParent: func(t *testing.T, stateDir string) (string, string, envctx.Snapshot) {
+				parent := newSession(t, withStateDir(stateDir), withConfig(SessionConfig{
+					MaxSubagentDepth: 2, Manager: true, ForceRealIO: true,
+					UserInstructionOverride: parentMarker,
+					testOnly:                testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+				}))
+				parent.appendTurn(schema.TurnUserInput, llm.User("fork me"))
+				pID, prompt, base := parent.ID(), parent.cachedSystemPrompt, parent.Meta().LaunchEnvBaseline
+				parent.Close()
+				return pID, prompt, base
+			},
+			makeChild: func(t *testing.T, stateDir, parentID string) string {
+				childID, err := ForkSession(stateDir, parentID, 1, "forked from manager", "")
+				if err != nil {
+					t.Fatalf("ForkSession: %v", err)
+				}
+				return childID
+			},
+			checkChild: func(t *testing.T, parentPrompt, childPrompt string) {
+				if childPrompt == parentPrompt {
+					t.Fatalf("restored manager fork kept parent Manager prompt verbatim:\n%s", childPrompt)
+				}
+			},
+		},
+		{
+			name: "resume-with-plugins-and-agent-changed",
+			makeParent: func(t *testing.T, stateDir string) (string, string, envctx.Snapshot) {
+				parent := newSession(t, withStateDir(stateDir), withConfig(SessionConfig{
+					MaxSubagentDepth: 2, ForceRealIO: true,
+					AgentName:               "default",
+					PluginDirs:              []string{"/plugins/old"},
+					UserInstructionOverride: parentMarker,
+					testOnly:                testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+				}))
+				parent.appendTurn(schema.TurnUserInput, llm.User("aside me"))
+				pID, prompt, base := parent.ID(), parent.cachedSystemPrompt, parent.Meta().LaunchEnvBaseline
+				parent.Close()
+				return pID, prompt, base
+			},
+			makeChild: func(t *testing.T, stateDir, parentID string) string {
+				cfg := (SessionConfig{
+					MaxSubagentDepth:        2,
+					AgentName:               "other-agent",
+					PluginDirs:              []string{"/plugins/fresh"},
+					UserInstructionOverride: childMarker,
+				}).toSnapshot()
+				childID, err := AsideSessionWithConfig(stateDir, parentID, cfg)
+				if err != nil {
+					t.Fatalf("AsideSessionWithConfig: %v", err)
+				}
+				return childID
+			},
+			checkChild: func(t *testing.T, _, childPrompt string) {
+				if strings.Contains(childPrompt, parentMarker) || !strings.Contains(childPrompt, childMarker) {
+					t.Fatalf("restored --resume-with fork kept parent prompt instead of child prompt:\n%s", childPrompt)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			stateDir := t.TempDir()
+			parentID, parentPrompt, parentBaseline := tc.makeParent(t, stateDir)
+			childID := tc.makeChild(t, stateDir, parentID)
+
+			// Plant the pre-#6959 legacy shape on disk: parent's prompt in child header,
+			// empty LaunchSystemPrompt, and parent's LaunchEnvBaseline (with a marker model
+			// to prove a mismatched parent baseline is ignored on recovery).
+			rewriteLegacyForkHeader(t, stateDir, childID, parentPrompt)
+			childMeta, err := schema.LoadSessionMeta(stateDir, childID)
+			if err != nil {
+				t.Fatalf("LoadSessionMeta(child): %v", err)
+			}
+			staleBaseline := parentBaseline
+			staleBaseline.Model = "legacy-mismatched-parent-model"
+			childMeta.LaunchSystemPrompt = ""
+			childMeta.LaunchEnvBaseline = staleBaseline
+			if err := schema.SaveSessionMeta(stateDir, childMeta); err != nil {
+				t.Fatalf("SaveSessionMeta(child): %v", err)
+			}
+
+			// First restore: discards legacy parent header, renders child's own prompt,
+			// persists LaunchSystemPrompt, and seeds child's own LaunchEnvBaseline.
+			restored := restorePromptState(t, stateDir, childMeta, t.TempDir())
+			childPrompt := restored.cachedSystemPrompt
+			tc.checkChild(t, parentPrompt, childPrompt)
+			if !restored.systemPromptFrozen {
+				t.Fatal("recovered child prompt is not frozen")
+			}
+			savedMeta := restored.Meta()
+			if savedMeta.LaunchSystemPrompt != childPrompt {
+				t.Fatalf("LaunchSystemPrompt = %q, want %q", savedMeta.LaunchSystemPrompt, childPrompt)
+			}
+			if savedMeta.LaunchEnvBaseline.Model == staleBaseline.Model || savedMeta.LaunchEnvBaseline.Model == "" {
+				t.Fatalf("LaunchEnvBaseline.Model = %q, want child's own baseline (not stale %q)", savedMeta.LaunchEnvBaseline.Model, staleBaseline.Model)
+			}
+			restored.Close()
+
+			// Second restore: LaunchSystemPrompt is authoritative over the legacy header
+			// that remains on disk, and stays frozen.
+			reloadedMeta, err := schema.LoadSessionMeta(stateDir, childID)
+			if err != nil {
+				t.Fatalf("LoadSessionMeta(reloaded): %v", err)
+			}
+			restored2 := restorePromptState(t, stateDir, reloadedMeta, t.TempDir())
+			if restored2.cachedSystemPrompt != childPrompt || !restored2.systemPromptFrozen {
+				t.Fatalf("second restore did not freeze recovered child prompt verbatim:\ngot:\n%s\nwant:\n%s", restored2.cachedSystemPrompt, childPrompt)
+			}
+			if restored2.Meta().LaunchSystemPrompt != childPrompt {
+				t.Fatalf("second restore cleared LaunchSystemPrompt: got %q, want %q", restored2.Meta().LaunchSystemPrompt, childPrompt)
+			}
+			restored2.Close()
+
+			// Forking the recovered child inherits the recovered child prompt (from
+			// LaunchSystemPrompt), NOT the legacy parent prompt still in child's header.
+			grandchildID, err := ForkSession(stateDir, childID, 1, "grandchild", "")
+			if err != nil {
+				t.Fatalf("ForkSession(grandchild): %v", err)
+			}
+			if hdr := sessionHeader(t, stateDir, grandchildID); hdr.SystemPrompt != childPrompt {
+				t.Fatalf("grandchild header prompt = %q, want recovered child prompt %q", hdr.SystemPrompt, childPrompt)
+			}
+			grandchildMeta, err := schema.LoadSessionMeta(stateDir, grandchildID)
+			if err != nil {
+				t.Fatalf("LoadSessionMeta(grandchild): %v", err)
+			}
+			if grandchildMeta.LaunchEnvBaseline != savedMeta.LaunchEnvBaseline {
+				t.Fatalf("grandchild baseline = %+v, want %+v", grandchildMeta.LaunchEnvBaseline, savedMeta.LaunchEnvBaseline)
+			}
+		})
 	}
 }

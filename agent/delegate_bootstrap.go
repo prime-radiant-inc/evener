@@ -153,7 +153,18 @@ func (s *Session) emitDelegateUpdate(plan delegateUpdatePlan) {
 	}
 	now := s.sclock().Now().UTC()
 	rootID := s.delegateController.rootSessionID
-	for _, row := range plan.rows {
+	rows := plan.rows
+	// A descendant's own update is the only publication a parked ancestor gets
+	// when the shape of its wait moves: the ancestor appends no event and its
+	// drainHeld flag stays set, so a client holding its loaded row would keep
+	// the stale count. Ask the controller which ancestors' samples this plan
+	// changed and publish their rows with it.
+	s.delegateController.mu.Lock()
+	if ancestors := s.delegateController.changedDrainHoldAncestorsLocked(rows); len(ancestors) > 0 {
+		rows = append(append([]delegateSnapshot(nil), rows...), ancestors...)
+	}
+	s.delegateController.mu.Unlock()
+	for _, row := range rows {
 		ownerID := row.descriptor.OwnerSessionID
 		s.delegateController.mu.Lock()
 		logicalOwner := sessionActivityDelegateOwner(s.delegateController.durable, s.delegateController.durable[row.id])
@@ -164,19 +175,23 @@ func (s *Session) emitDelegateUpdate(plan delegateUpdatePlan) {
 		ancestors, ancestorRuntimes := s.delegateController.ancestorSubagentRuntimesLocked(ancestry)
 		ownerRuntime := s.delegateController.runtimeForDelegateOwnerLocked(row)
 		// The same live wait the delegate's read row reports, joined from the
-		// delegate's own job manager under the lock already held: a frame that
-		// omitted it would erase the wait from a row the capture had filled,
-		// because a winning frame replaces every mutating field.
-		heldByJobs, runningJobs, oldestRunningJob, holdSequence := s.delegateController.runningJobsForDelegateLocked(row.id)
+		// delegate's own job manager and open subtree under the lock already
+		// held: a frame that omitted it would erase the wait from a row the
+		// capture had filled, because a winning frame replaces every mutating
+		// field.
+		sample, holdSequence := s.delegateController.drainHoldForDelegateLocked(row.id)
+		s.delegateController.recordPublishedHoldSampleLocked(row.id, sample)
 		s.delegateController.mu.Unlock()
 		s.publishSessionActivityChanged(logicalOwner, ancestry, appwire.SessionActivityResourceDelegates)
 		data := delegateUpdatedDataFromStatus(delegateFrameStatusInfo(now, rootID, row))
 		data.AncestorSessionIDs = ancestors
-		data.DrainHeldByJobs = heldByJobs
+		data.DrainHeldByJobs = sample.heldJobs
+		data.DrainHeldBySubagents = sample.heldSubagents
 		data.HoldSequence = holdSequence
-		data.RunningJobCount = runningJobs
-		if heldByJobs && !oldestRunningJob.IsZero() {
-			data.OldestRunningJobStartedAt = oldestRunningJob.UTC().Format(time.RFC3339Nano)
+		data.RunningJobCount = sample.jobCount
+		data.RunningSubagentCount = sample.subagentCount
+		if sample.heldJobs && !sample.oldestJob.IsZero() {
+			data.OldestRunningJobStartedAt = sample.oldestJob.UTC().Format(time.RFC3339Nano)
 		}
 		// A subagent's own thread lists its subtree, so each live ancestor
 		// subagent's stream carries the update too. A released ancestor gets

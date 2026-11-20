@@ -252,6 +252,7 @@ Sandbox: {{ .Sandbox }}
 {{- range .Capabilities }}
 {{ . }}
 {{- end }}
+Later `<environment_context>` updates in the conversation supersede the launch environment, model, tools, skills, run-lifetime, and commit-provenance values above.
 </environment>
 
 {{ if .GitSnapshotFailed }}<git>

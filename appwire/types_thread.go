@@ -942,6 +942,12 @@ type EvenerDelegateInfo struct {
 	DrainHeldByJobs           bool   `json:"drainHeldByJobs,omitempty"`
 	RunningJobCount           int    `json:"runningJobCount,omitempty"`
 	OldestRunningJobStartedAt string `json:"oldestRunningJobStartedAt,omitempty"`
+	// DrainHeldBySubagents and RunningSubagentCount are the same hold for open
+	// descendant subagents: a coordinator parked in its finalization drain while
+	// its children run, so its stated intent is frozen. Carried on the frame for
+	// the same reason as the job hold, so a pushed frame and a read row agree.
+	DrainHeldBySubagents bool `json:"drainHeldBySubagents,omitempty"`
+	RunningSubagentCount int  `json:"runningSubagentCount,omitempty"`
 	// HoldSequence orders DrainHeldByJobs against every other sample of the same
 	// delegate's hold. The source bumps it under the controller lock when the
 	// sampled hold changes, so a consumer applies the highest sequence and

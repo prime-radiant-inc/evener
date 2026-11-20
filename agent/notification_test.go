@@ -1632,6 +1632,63 @@ func TestNotificationTurnOpeningBatchSurvivesLocalAdmissionFailure(t *testing.T)
 	}
 }
 
+func TestJobNotificationAfterIdleSetModelCarriesEnvironmentDiff(t *testing.T) {
+	t.Parallel()
+	launch := NewOpenAIProfile("gpt-5.4")
+	switched := newAnthropicProfile("claude-opus-4-6")
+	if launch.KnowledgeCutoff() == "" || switched.KnowledgeCutoff() == "" || launch.KnowledgeCutoff() == switched.KnowledgeCutoff() {
+		t.Fatalf("fixture profiles need distinct cutoffs: %q vs %q", launch.KnowledgeCutoff(), switched.KnowledgeCutoff())
+	}
+	openaiAdapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("turn 1 done") })
+	anthropicAdapter := newFakeAdapter("anthropic", func(llm.Request) llm.Response { return agenttest.FinalResponse("notif done") })
+	client := llm.NewClient()
+	client.Register(openaiAdapter)
+	client.Register(anthropicAdapter)
+	sess := newSession(t,
+		withClient(client),
+		withProfile(launch),
+		withConfig(SessionConfig{
+			ResolveProfile: testResolver,
+			testOnly:       testConfig{skipGitSnapshot: true},
+		}),
+	)
+	launchPrompt := sess.cachedSystemPrompt
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "start job", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	enqueueCompletedJobNotification(t, sess, "job_idle_model_switch")
+	if err := sess.SetModel("anthropic/claude-opus-4-6"); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+
+	reqs := anthropicAdapter.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("anthropic requests = %d, want 1", len(reqs))
+	}
+	if reqs[0].Messages[0].Text() != launchPrompt {
+		t.Fatalf("notification after idle SetModel mutated launch prompt")
+	}
+	envIdx, notifIdx := -1, -1
+	for i, msg := range reqs[0].Messages {
+		txt := msg.Text()
+		if strings.Contains(txt, "<environment_context>") && strings.Contains(txt, "model: claude-opus-4-6") && strings.Contains(txt, "knowledge cutoff: "+switched.KnowledgeCutoff()) {
+			envIdx = i
+		}
+		if strings.Contains(txt, "job_idle_model_switch") {
+			notifIdx = i
+		}
+	}
+	if envIdx < 0 || notifIdx < 0 || envIdx >= notifIdx {
+		t.Fatalf("expected <environment_context> with new model/cutoff before job notification (envIdx=%d notifIdx=%d); messages=%+v", envIdx, notifIdx, reqs[0].Messages)
+	}
+}
+
 // TestNotificationTurnSettlesCallerWatchSendBeforeItsModelCall pins that a
 // caller watch-send frame settles as soon as the notification turn writes it,
 // before the model call. Watch sends have no transcript replay detection, so a

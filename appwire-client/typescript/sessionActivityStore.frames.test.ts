@@ -3657,3 +3657,82 @@ test("a page the replaced daemon served is reconciled, not wiped, when the boot 
   expect(settled?.drainHeldByJobs ?? false).toBe(false);
   expect(settled?.runningJobCount ?? 0).toBe(0);
 });
+
+// The subagent hold is the same facet as the job hold: one `holdSequence`, one
+// merge rule. A coordinator parked on open descendants must reach a loaded row
+// at the revision it already carries, shrink as descendants finish, and clear
+// when the last one settles -- while a sample captured earlier cannot reinstate
+// it.
+test("a subagent hold reaches a loaded row, shrinks, and clears in sequence order", async () => {
+  const client = pushClient();
+  const context = pushContext();
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context,
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ projectionRevision: 4 })],
+  }));
+  const { store } = await pushOwner(client);
+  expect(store.getSnapshot().delegates.rows[0]?.drainHeldBySubagents ?? false).toBe(false);
+
+  // Entering the drain: two descendants open, at the revision the row holds.
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({
+        projectionRevision: 4,
+        status: "running",
+        drainHeldBySubagents: true,
+        holdSequence: 5,
+        runningSubagentCount: 2,
+      }),
+    ),
+  );
+  expect(store.getSnapshot().delegates.rows[0]).toMatchObject({
+    drainHeldBySubagents: true,
+    runningSubagentCount: 2,
+    holdSequence: 5,
+  });
+
+  // One finished: the count shrinks and the sequence advances.
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({
+        projectionRevision: 4,
+        status: "running",
+        drainHeldBySubagents: true,
+        holdSequence: 6,
+        runningSubagentCount: 1,
+      }),
+    ),
+  );
+  expect(store.getSnapshot().delegates.rows[0]).toMatchObject({
+    drainHeldBySubagents: true,
+    runningSubagentCount: 1,
+    holdSequence: 6,
+  });
+
+  // A sample captured before the shrink, delivered late: it loses.
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({
+        projectionRevision: 4,
+        status: "running",
+        drainHeldBySubagents: true,
+        holdSequence: 4,
+        runningSubagentCount: 2,
+      }),
+    ),
+  );
+  expect(store.getSnapshot().delegates.rows[0]).toMatchObject({
+    drainHeldBySubagents: true,
+    runningSubagentCount: 1,
+    holdSequence: 6,
+  });
+
+  // The last descendant settles: the hold clears and the count goes with it.
+  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 4, holdSequence: 7 })));
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.drainHeldBySubagents ?? false).toBe(false);
+  expect(row?.runningSubagentCount ?? 0).toBe(0);
+  expect(row?.holdSequence ?? 0).toBe(7);
+});
