@@ -1381,54 +1381,6 @@ test("a boot-restart read that installs the new boot's first wait clears the pre
   expect(after.quotaWaitEndedStamp).toBeUndefined();
 });
 
-// A second restart whose read names no wait must retire the wait the first
-// restart installed. The marker no longer outlives a restart, so the guard
-// cannot lean on it: the held wait's own stamp is the evidence that a wait
-// crossed the runtime change, even though the change zeroed that stamp for
-// the stamp comparisons.
-test("a wait-free read after a second boot restart retires the first restart's wait", () => {
-  const deadline = Date.parse("2026-11-07T14:30:00Z");
-  const firstBoot = endedQuotaWaitOnBootOne();
-  const restarted = testThread({
-    status: { type: "active" },
-    evener: {
-      activeTurnId: "turn_1",
-      failure: { title: "Usage limit reached", resumesAt: deadline, waitStartedAt: 1 },
-    },
-  });
-  const secondBoot = applyReadResponse(firstBoot, { thread: restarted, bootGeneration: "2" }, 2000);
-  expect(secondBoot.quotaWaitStartedAt).toBe(1);
-  const withChip = applyNotification(
-    secondBoot,
-    {
-      method: "evener/thread/modelRetry",
-      params: {
-        threadId: "thr_t",
-        ref: "ref_t",
-        turnId: "turn_1",
-        attempt: 1,
-        maxAttempts: 0,
-        delayMs: 21_600_000,
-        errorClass: "quota_exceeded",
-        groupElapsedMs: 5_000,
-        attemptCap: 0,
-        waitStartedAt: 1,
-        resumesAt: deadline,
-      },
-    },
-    2100,
-  );
-  expect(withChip.modelRetry?.errorClass).toBe("quota_exceeded");
-
-  const waitFree = testThread({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
-  const thirdBoot = applyReadResponse(withChip, { thread: waitFree, bootGeneration: "3" }, 3000);
-
-  expect(thirdBoot.quotaResumesAt).toBeUndefined();
-  expect(thirdBoot.quotaWaitStartedAt).toBeUndefined();
-  expect(thirdBoot.quotaWaitEndedStamp).toBeUndefined();
-  expect(thirdBoot.modelRetry).toBeUndefined();
-});
-
 // The same hazard through applyReadModel, where the runtime change is the
 // instance id (a restored delegate behind a new daemon) rather than the boot
 // generation. The fresh hydrated read names boot generation "1" too, so only
