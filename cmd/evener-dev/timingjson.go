@@ -21,6 +21,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -40,9 +41,9 @@ type jsonObject struct {
 func newJSONObject() *jsonObject { return &jsonObject{} }
 
 func (o *jsonObject) member(key string) (any, bool) {
-	for i := len(o.members) - 1; i >= 0; i-- {
-		if o.members[i].key == key {
-			return o.members[i].value, true
+	for _, m := range slices.Backward(o.members) {
+		if m.key == key {
+			return m.value, true
 		}
 	}
 	return nil, false
