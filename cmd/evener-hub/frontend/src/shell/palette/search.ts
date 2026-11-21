@@ -15,12 +15,11 @@ import {
   findIndexIn,
   findNeedle,
   type ItemModel,
-  MEMORY_CONTEXT_EVENT_KIND,
   type SearchResponse,
   type ThreadModel,
   type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
-import { projectedSearchTexts } from "../../panes/session/find/findHits";
+import { projectedSearchTexts, rowShowsOwnText } from "../../panes/session/find/findHits";
 import { messageAsShown } from "../../panes/session/find/messageText";
 
 // One text run of a highlighted string: `mark` true means it is the matched
@@ -53,6 +52,11 @@ function normalizeWhitespace(text: string): string {
 // `output` and `error`, and each live reasoning summary (its streamed chunks
 // joined). Each source that matches produces its own hit, all sharing the
 // item's turn label.
+// A steer's or a memory refresh's row shows only what the shared projection
+// reads for it (Find's rule, shared): a suppressed task steer renders nothing,
+// a daemon steer's reminder wrapper is stripped on screen, and a refresh's
+// recorded Text stays behind a folded Source. Its raw `text` is therefore not a
+// word a hit could land on.
 function itemSearchTexts(item: ItemModel, projected: ReadonlyMap<string, readonly string[]>): string[] {
   const texts: string[] = [];
   // A message is read as its row shows it (a reply's Markdown rendered), the
@@ -61,16 +65,10 @@ function itemSearchTexts(item: ItemModel, projected: ReadonlyMap<string, readonl
   const message = messageAsShown(item);
   // A system notice or warning is read the way its row shows it (projected
   // below), not from the raw wire text: a scaffold's raw Markdown and a
-  // failure's echoed line are not what is on screen. A memory refresh stays on
-  // its raw text until its own slice.
-  const projectedByNotice =
-    item.type === "warning" || (item.type === "systemMessage" && item.eventKind !== MEMORY_CONTEXT_EVENT_KIND);
-  // A thought's `text` is its trace, which no row shows, so only the
-  // summaries below are read for it.
+  // failure's echoed line are not what is on screen. A thought's `text` is its
+  // trace, which no row shows, so only the summaries below are read for it.
   if (message !== null) texts.push(message);
-  else if (item.type !== "reasoning" && !projectedByNotice && item.text) {
-    texts.push(item.text);
-  }
+  else if (!rowShowsOwnText(item) && item.type !== "reasoning" && item.text) texts.push(item.text);
   // What the view shows this item as - an action row's rationale, a thought's
   // summaries where the view shows the thought. Find's own rule, shared, so a
   // hit here is always one Find can land on.

@@ -423,13 +423,49 @@ test("findInSessionMatches reads round timings as their headline, not the raw du
   expect(findInSessionMatches(model, "total=6.411", SHOWN)).toEqual([]);
 });
 
-// Memory-context and steering stay on their own slice's handling; this slice
-// must not take their raw text away.
-test("findInSessionMatches keeps a memory refresh's raw text searchable", () => {
+// A steer's and a memory refresh's words are the ones their row shows. The
+// palette offers only those, so every row it lists is one Find can land on.
+function steerItem(id: string, text: string, fields: Partial<ItemModel> = {}): ItemModel {
+  return { id, turnId: "t", type: "steering", text, ...fields };
+}
+
+function memoryRefreshItem(id: string, text: string, content: string): ItemModel {
+  return {
+    id,
+    turnId: "t",
+    type: "systemMessage",
+    eventKind: "memory-context",
+    text,
+    raw: { memoryContext: { scope: "personal", state: "current", truncated: false, content } },
+  };
+}
+
+test("findInSessionMatches offers a steer the human typed, a human note and a memory refresh", () => {
   const model = modelWithTurns([
     turn("t1", [
-      itemWith("m", { type: "systemMessage", eventKind: "memory-context", text: "refreshed my memory needle" }),
+      steerItem("s1", "rethink the frobnitz", { source: "user" }),
+      steerItem("s2", "whiteboard: frobnitz plan", { source: "user", steeringKind: "human-note" }),
+      memoryRefreshItem("m1", "recorded text", "- frobnitz index"),
     ]),
   ]);
-  expect(findInSessionMatches(model, "memory needle", TOOLS).map((h) => h.itemId)).toEqual(["m"]);
+  expect(findInSessionMatches(model, "frobnitz", TOOLS).map((hit) => hit.itemId)).toEqual(["s1", "s2", "m1"]);
+});
+
+test("findInSessionMatches offers only what a steer's row shows", () => {
+  const model = modelWithTurns([
+    turn("t1", [
+      // Renders nothing: the tasks surfaces own it.
+      steerItem("sup", "the frobnitz task", { steeringKind: "task-list" }),
+      // The reminder wrapper is stripped on screen.
+      steerItem("wrapped", "<SYSTEM-REMINDER>frobnitz nudge</SYSTEM-REMINDER>", { steeringKind: "nudge" }),
+    ]),
+  ]);
+  expect(findInSessionMatches(model, "frobnitz", TOOLS).map((hit) => hit.itemId)).toEqual(["wrapped"]);
+  expect(findInSessionMatches(model, "SYSTEM-REMINDER", TOOLS)).toEqual([]);
+});
+
+test("findInSessionMatches reads a memory refresh's index, never the folded source", () => {
+  const model = modelWithTurns([turn("t1", [memoryRefreshItem("m1", "sourceFrobnitz", "- index frobnitz")])]);
+  expect(findInSessionMatches(model, "index frobnitz", TOOLS).map((hit) => hit.itemId)).toEqual(["m1"]);
+  expect(findInSessionMatches(model, "sourceFrobnitz", TOOLS)).toEqual([]);
 });
