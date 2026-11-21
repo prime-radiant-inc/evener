@@ -234,8 +234,8 @@ func TestStoreRejectsOperationsAfterClose(t *testing.T) {
 	if _, err := s.Load(); !errors.Is(err, ErrStoreClosed) {
 		t.Fatalf("load after close error = %v, want %v", err, ErrStoreClosed)
 	}
-	if _, err := s.readAll(); !errors.Is(err, ErrStoreClosed) {
-		t.Fatalf("readAll after close error = %v, want %v", err, ErrStoreClosed)
+	if _, err := s.LoadEvents(); !errors.Is(err, ErrStoreClosed) {
+		t.Fatalf("LoadEvents after close error = %v, want %v", err, ErrStoreClosed)
 	}
 	if err := s.Close(); !errors.Is(err, ErrStoreClosed) {
 		t.Fatalf("second close error = %v, want %v", err, ErrStoreClosed)
@@ -389,9 +389,9 @@ func appendEvent(t *testing.T, s *Store, e Event) {
 
 func readAllEvents(t *testing.T, s *Store) []Event {
 	t.Helper()
-	raw, err := s.readAll()
+	raw, err := s.LoadEvents()
 	if err != nil {
-		t.Fatalf("readAll: %v", err)
+		t.Fatalf("LoadEvents: %v", err)
 	}
 	return raw
 }
