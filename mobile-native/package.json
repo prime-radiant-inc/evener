@@ -109,7 +109,7 @@
     "lint": "biome ci src",
     "format": "biome format --write src",
     "test": "node --test ../scripts/native/scene-lifecycle.test.mjs ../scripts/native/test-discovery.test.mjs && sh ../scripts/native/run-tests.sh",
-    "postinstall": "patch-package --error-on-fail && node modules/evener-voice/ensure-model.mjs",
+    "postinstall": "patch-package --error-on-fail && node modules/evener-voice/ensure-model.mjs --skip-if-excluded",
     "test:voice-core": "swift test --package-path modules/evener-voice"
   },
   "private": true

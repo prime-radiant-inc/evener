@@ -20,6 +20,19 @@ func inheritedTranscriptAuthorship(a *schema.TranscriptAuthorship) *schema.Trans
 	return cloned
 }
 
+// isAgentAuthoredInput reports whether turn is an input recorded as written by
+// an agent rather than by the person: a delegate's first assignment, a fork's
+// carried input, an input relayed from an agent session. Absent authorship
+// means the author is unknown, not an agent, and a fork copies an unstamped
+// turn as unknown and inherited ("Original transcript authors",
+// docs/product/history-content.md), so neither counts. A nil authorship and an
+// unknown one are therefore the person's input on both surfaces that read
+// this: replay keeps the bytes as written, and an ask boundary settles on the
+// turn as a reply.
+func isAgentAuthoredInput(turn schema.Turn) bool {
+	return turn.Authorship != nil && turn.Authorship.Author.Kind == schema.TranscriptAuthorAgent
+}
+
 // Call before session/transcript leaf locks. The descriptor's physical store
 // owner is not necessarily the delegate's logical parent.
 func (s *Session) transcriptAuthor() schema.TranscriptAuthor {

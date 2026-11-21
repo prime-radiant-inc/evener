@@ -651,9 +651,6 @@ func TestCrossInstanceResponsesStripsOpaqueBlobKeepsNativePlaintext(t *testing.T
 	if wire != wireNativePlain {
 		t.Fatalf("wire reasoning = %s, want %s: the plaintext replays verbatim and no blob rides", wire, wireNativePlain)
 	}
-	if strings.Contains(wire, "rs_foreign") {
-		t.Fatalf("the fallback wire names the source instance's reasoning item id: %s", wire)
-	}
 	if !hasContentKind(out, llm.ContentText) {
 		t.Fatal("answer text must survive the strip")
 	}
@@ -1191,7 +1188,7 @@ disabled = true
 		profRepl := provider.FromResolved(gResRepl, rRepl)
 
 		// Check CheapModel migration alone is credential-free via HasInstance + ResolveInstanceModelFacts.
-		// IsSubagent=true with MaxSubagentDepth=0 keeps delegate catalog enumeration out of startup so
+		// minimalWorktreeToolRegistry=true keeps delegate catalog enumeration out of startup so
 		// only CheapModel migration touches google-vertex-express.
 		metaCheapOnly := schema.SessionMeta{
 			ID:         "0123456789ABCDEFGHJKMNPQRU",

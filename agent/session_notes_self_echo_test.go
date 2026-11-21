@@ -61,7 +61,7 @@ func newResponsesAnchorTurn(suffix string, call llm.ToolCallData) schema.Turn {
 	turn.ResponseEndpoint = "responses"
 	turn.ResponseStorageScopeFingerprint = "scope_" + suffix
 	turn.ResponseRequestFingerprint = "req_fp_" + suffix
-	turn.ResponseContextMarker = responseContextMarkerV1
+	turn.ResponseContextMarker = responseContextMarkerV2
 	return turn
 }
 

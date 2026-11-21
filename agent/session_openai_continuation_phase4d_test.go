@@ -90,7 +90,7 @@ func TestSession_OpenAIResponsesContinuationPhase4DIProducesStoredFullHistoryAnc
 	if req.Continuation.EndpointFamily != string(llm.ResponsesEndpointFamilyOpenAIPublic) ||
 		req.Continuation.RequestFingerprint != "cont-req-v1:phase4d" ||
 		req.Continuation.StorageScopeFingerprint != "cont-scope-v1:phase4d" ||
-		req.Continuation.ContextMarker != responseContextMarkerV1 ||
+		req.Continuation.ContextMarker != responseContextMarkerV2 ||
 		req.Continuation.StoragePolicyLabel != llm.ResponsesStoragePolicyPublicOpenAIStore {
 		t.Fatalf("Continuation metadata = %+v", req.Continuation)
 	}
@@ -101,7 +101,7 @@ func TestSession_OpenAIResponsesContinuationPhase4DIProducesStoredFullHistoryAnc
 		assistant.ResponseEndpoint != "https://api.openai.com/v1/responses" ||
 		assistant.ResponseRequestFingerprint != "cont-req-v1:phase4d" ||
 		assistant.ResponseStorageScopeFingerprint != "cont-scope-v1:phase4d" ||
-		assistant.ResponseContextMarker != responseContextMarkerV1 ||
+		assistant.ResponseContextMarker != responseContextMarkerV2 ||
 		assistant.ResponseRequestModel != "gpt-5.4" {
 		t.Fatalf("assistant continuation fields = %+v", assistant)
 	}
@@ -183,7 +183,7 @@ func TestSession_OpenAIResponsesContinuationPhase4DIIConsumesStoredAnchorAsDelta
 		req.Continuation.EndpointFamily != string(llm.ResponsesEndpointFamilyOpenAIPublic) ||
 		req.Continuation.RequestFingerprint != "cont-req-v1:phase4d" ||
 		req.Continuation.StorageScopeFingerprint != "cont-scope-v1:phase4d" ||
-		req.Continuation.ContextMarker != responseContextMarkerV1 ||
+		req.Continuation.ContextMarker != responseContextMarkerV2 ||
 		req.Continuation.StoragePolicyLabel != llm.ResponsesStoragePolicyPublicOpenAIStore {
 		t.Fatalf("Continuation metadata = %+v", req.Continuation)
 	}

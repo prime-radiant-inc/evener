@@ -252,8 +252,8 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 			return skippedToolResult(call, err)
 		}
 	}
-	// There is deliberately no separate unleased-tool refusal here (LIFE-01,
-	// #2340). Tool admission cannot read the queue: a watch notice that arrives
+	// There is deliberately no separate unleased-tool refusal here. Tool
+	// admission cannot read the queue: a watch notice that arrives
 	// while the provider is answering an ADMITTED ordinary turn is news for a
 	// later request, and the calls in hand belong to the request the provider
 	// already answered. Refusing them would return errors for valid calls and
@@ -261,10 +261,10 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	//
 	// The rule is enforced one level up instead: a tool call exists only as the
 	// answer to a model request, and every model request passes admission in
-	// prepareModelRequestWithError. A turn that would present a watch notice
-	// without a lease is refused there, so no such request reaches a provider and
-	// no tool call can come back from one. Tools of a leased request keep their
-	// BeginTool accounting above.
+	// prepareModelRequestWithError. There, dropUnleasedWatchAttentionTurns
+	// omits a stable child's watch rows that the attention fold identifies as
+	// pending from an unleased turn's presented history. Tools of a leased
+	// request keep their BeginTool accounting above.
 
 	// Self-heal off-distribution tool calls before hooks/dispatch. Snapshot the
 	// provider name-map here (execTool runs outside s.mu) — never lock inside

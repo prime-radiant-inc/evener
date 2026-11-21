@@ -831,6 +831,11 @@ type RestoreSessionConfig struct {
 	// this session's model instance instead of fetching it again.
 	StartupModelListing     *StartupModelListing
 	AcquireSessionOwnership func(sessionID string) error
+	// SelectedModel reports that this resume named a model explicitly — a
+	// user pick — rather than keeping the persisted one. The web picker
+	// submits its row even when it equals the saved model, so the identity
+	// alone cannot tell a pick from an ordinary resume.
+	SelectedModel bool
 	// OwnershipAlreadyAcquired keeps a host reservation alive across restore
 	// failure while still carrying AcquireSessionOwnership into the session.
 	OwnershipAlreadyAcquired    bool
@@ -1349,7 +1354,25 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// s.id is already known (meta.ID, set above), unlike a fresh NewSession
 	// call: attribute this listing's canonical API-log attempt to it instead
 	// of letting it fall into the shared unattributed bucket.
-	profile, selectedModels := resolveStartupModelProfileWithReuse(client, profile, s.id, *s.providerAdapterTimeout(), restoreCfg.StartupModelListing)
+	//
+	// An explicit model selection re-decides the startup resolution: the pick
+	// faces the same live-listing membership judgment NewSession applies —
+	// even when the selected model equals the saved one, because the web
+	// picker submits its row either way and the instance's live listing may
+	// have dropped it — and the hub's launch preflight cannot run that
+	// judgment without executing a command-backed credential. An ordinary
+	// resume that supplies no model keeps the fail-open restore behavior.
+	modelChanged := meta.ProfileID != profile.ID() || meta.Model != profile.Model()
+	var selectedModels liveModelEnumeration
+	if restoreCfg.SelectedModel || modelChanged {
+		var resolveErr error
+		profile, selectedModels, resolveErr = resolveStartupModelProfile(client, profile, s.id, *s.providerAdapterTimeout(), restoreCfg.StartupModelListing)
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
+	} else {
+		profile, selectedModels = resolveStartupModelProfileWithReuse(client, profile, s.id, *s.providerAdapterTimeout(), restoreCfg.StartupModelListing)
+	}
 	if err := validateVertexInteractionsModel(client, profile); err != nil {
 		return nil, err
 	}
@@ -1525,6 +1548,23 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// meta is the only place a header that carries no prompt can record the one
 	// this session renders, so a later restore does not re-render from live inputs.
 	s.persistFallbackPrompt = persistFallbackPrompt
+	// A resume that starts the session on a different model than it persisted
+	// re-decides the saved fallback list the way a mid-session switch does:
+	// entries that no longer validate against the picked profile drop per
+	// entry, before initSessionState's all-or-nothing check can strand a valid
+	// pick. An ordinary resume revalidates nothing and keeps the strict check.
+	if modelChanged {
+		s.mu.Lock()
+		dropped := s.revalidateModelFallbacksLocked()
+		s.lastDroppedModelFallbacks = dropped
+		s.mu.Unlock()
+		if len(dropped) > 0 {
+			// The live switch warns the same names in its marker turn; a
+			// restore writes no marker, so the warning is the user-visible
+			// line naming what the pick removed.
+			s.emit(events.WarningData{Message: fmt.Sprintf("the resumed model dropped %s from the saved model fallbacks", strings.Join(dropped, ", "))})
+		}
+	}
 	promptSources, err := s.initSessionState(cfg.SessionStartKind, !restoreCfg.deferRestoreSideEffects, restoredPrompt)
 	if err != nil {
 		return nil, err
@@ -1754,6 +1794,15 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		// top-level, so they never run P3; arming only on the real-side-effects
 		// path keeps that guarantee explicit.
 		s.armLaneResidueSweepTimer()
+		if modelChanged {
+			// The fold acknowledges the pick when this restore reports ready,
+			// so the picked model must already be on disk: a daemon that dies
+			// before the next periodic save would otherwise silently revert an
+			// acknowledged choice on the next resume. The live setter's switch
+			// already flushes meta on commit; the restore earns the same
+			// durability.
+			s.maybeAutoSave()
+		}
 	}
 	restoreComplete = true
 	return s, nil

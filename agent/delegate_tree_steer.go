@@ -304,6 +304,30 @@ func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelReques
 	return presented, scope, nil
 }
 
+// unpresentedSteeringIDs is the set CompleteModelRequest computes as its late
+// steers: pending admissions plus this lease's in-flight steering claims. It
+// is live controller state, not claim-owned — releasing the claim does not
+// clear it (the next request's claim binds it) — so a rebuild that reads it
+// fresh also withholds a steer that landed after CompleteModelRequest.
+func (c *delegateTreeController) unpresentedSteeringIDs(lease delegateLease) map[string]struct{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	live := c.live[lease.delegateID]
+	if live == nil {
+		return nil
+	}
+	ids := make(map[string]struct{}, len(live.pendingSteers))
+	for _, admission := range live.pendingSteers {
+		ids[admission.entryID] = struct{}{}
+	}
+	for _, steeringClaim := range c.steeringClaims {
+		if steeringClaim != nil && steeringClaim.lease == lease {
+			ids[steeringClaim.entryID] = struct{}{}
+		}
+	}
+	return ids
+}
+
 func (c *delegateTreeController) AbortModelRequest(claim *delegateModelRequestClaim) error {
 	defer c.retirementChanged()
 	c.mu.Lock()

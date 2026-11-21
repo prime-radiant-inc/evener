@@ -1370,7 +1370,7 @@ func (c *delegateTreeController) attentionHoldReleaseEventLocked(delegateID stri
 		aggregate.AttentionHoldReleasedGeneration >= generation {
 		return delegatestore.Event{}, false
 	}
-	if !c.settledAttentionStopUnreleasedLocked(delegateID, generation, aggregate.AttentionHoldReleasedGeneration) {
+	if !c.settledAttentionStopUnreleasedLocked(delegateID, aggregate.AttentionHoldReleasedGeneration) {
 		return delegatestore.Event{}, false
 	}
 	return delegatestore.Event{
@@ -1382,10 +1382,9 @@ func (c *delegateTreeController) attentionHoldReleaseEventLocked(delegateID stri
 	}, true
 }
 
-// settledAttentionStopUnreleasedLocked reports whether a settled generation at
-// or below the wake's sample was an attention run a user stopped, and no release
-// has reached it yet. This is the condition the release exists for: the wake is
-// newer evidence than that stop, so the quiet it left must not be rebuilt by a
+// settledAttentionStopUnreleasedLocked reports whether an attention run a user
+// stopped is still owed a release. The release names the wake's sample, so a
+// stopped run at or below it must not be rebuilt by a
 // cold restore. A later run of any other trigger settles its own generation and
 // says nothing about the earlier stop, so it neither owes a release nor excuses
 // one. Callers hold c.mu.
@@ -1393,9 +1392,8 @@ func (c *delegateTreeController) attentionHoldReleaseEventLocked(delegateID stri
 // The question is answered from the newest-stop index rather than by scanning:
 // the floor stays zero on a delegate that was never stopped, so a scan of every
 // generation ran on every settled wake and grew quadratically with the
-// delegate's life. Only the newest stop can be the one still owed a release —
-// an older stop is superseded by it — so one comparison decides.
-func (c *delegateTreeController) settledAttentionStopUnreleasedLocked(delegateID string, through, released uint64) bool {
-	newest := c.latestAttentionStop[delegateID]
-	return newest > released && newest <= through
+// delegate's life. A newest stop above the floor proves a release is owed, and
+// the release advances only to the sample, so any newer stop keeps its quiet.
+func (c *delegateTreeController) settledAttentionStopUnreleasedLocked(delegateID string, released uint64) bool {
+	return c.latestAttentionStop[delegateID] > released
 }

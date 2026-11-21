@@ -239,35 +239,26 @@ func removeURLWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *ap
 		})
 }
 
-// relayWithResume resolves the owning source for ref, gates on the named
-// thread action, and runs call — the shared shape behind the notes/urls
-// resume relays above.
-func relayWithResume[R any](ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, ref, clientMutationID, action string, call func(appsource.Source) (R, error)) (R, error) {
-	return relayWithResumeAfter(ctx, cfg, sources, nil, ref, clientMutationID, action, call)
+// threadActionAttempt resolves the owning source for ref, gates on the named
+// thread action, and runs call.
+func threadActionAttempt[R any](ctx context.Context, sources *appsource.Registry, ref, action string, call func(appsource.Source) (R, error)) (R, error) {
+	source, err := sourceForThread(sources, ref, "")
+	if err != nil {
+		var zero R
+		return zero, err
+	}
+	if err := ensureThreadActionAvailable(ctx, source, ref, "", action); err != nil {
+		var zero R
+		return zero, err
+	}
+	return call(source)
 }
 
-// relayWithResumeAfter is relayWithResume with an optional relay re-attach
-// between a cold resume and the retry. A mutation whose result reaches clients
-// as a live notification needs it: the model setter's thread/model/changed is
-// what carries the new model's reasoning profile, and without a relay on the
-// resumed daemon a subscribed pane keeps the old profile.
-func relayWithResumeAfter[R any](ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, relays *hubRelay, ref, clientMutationID, action string, call func(appsource.Source) (R, error)) (R, error) {
-	afterResume := func(resumed appwire.ThreadResumeResponse) error {
-		if relays == nil {
-			return nil
-		}
-		return relays.startRelayForThread(ctx, resumed.Thread)
-	}
-	return withSessionResume(ctx, cfg, sources, ref, clientMutationID, afterResume, func() (R, error) {
-		source, err := sourceForThread(sources, ref, "")
-		if err != nil {
-			var zero R
-			return zero, err
-		}
-		if err := ensureThreadActionAvailable(ctx, source, ref, "", action); err != nil {
-			var zero R
-			return zero, err
-		}
-		return call(source)
+// relayWithResume runs threadActionAttempt and, when the session has exited,
+// resumes it once and retries — the shared shape behind the notes/urls resume
+// relays above.
+func relayWithResume[R any](ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, ref, clientMutationID, action string, call func(appsource.Source) (R, error)) (R, error) {
+	return withSessionResume(ctx, cfg, sources, ref, clientMutationID, nil, func() (R, error) {
+		return threadActionAttempt(ctx, sources, ref, action, call)
 	})
 }

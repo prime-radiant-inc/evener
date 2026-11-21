@@ -848,16 +848,6 @@ func (s *Store) CheckRetirementReady() error {
 	return err
 }
 
-// readAll is the locked-public test/helper variant of readAllLocked.
-func (s *Store) readAll() ([]Event, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.ensureOpenLocked(); err != nil {
-		return nil, err
-	}
-	return s.readAllLocked()
-}
-
 // readEventsLocked returns every durable event in the log as a view the store
 // owns and the caller must only read, never mutate or retain past the call. It
 // reads and decodes only the bytes appended since the previous call, replaying

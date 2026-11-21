@@ -5,6 +5,7 @@ package sshconn
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -18,6 +19,7 @@ import (
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/internal/hubendpoint"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // Opt-in only: run the compiled test in unshare -Urn with loopback up. This
@@ -88,8 +90,8 @@ func TestRemoteRestartActualDisposableHub(t *testing.T) {
 			t.Error("original hub did not exit")
 		}
 	})
-	endpoint := func() (hubendpoint.Report, error) {
-		cmd := exec.Command(binary, "hub", "endpoint", "--json")
+	endpoint := func(ctx context.Context) (hubendpoint.Report, error) {
+		cmd := exec.CommandContext(ctx, binary, "hub", "endpoint", "--json")
 		cmd.Dir, cmd.Env = root, env
 		out, err := cmd.Output()
 		if err != nil {
@@ -98,23 +100,22 @@ func TestRemoteRestartActualDisposableHub(t *testing.T) {
 		return hubendpoint.DecodeReport(bytes.NewReader(out))
 	}
 	var before hubendpoint.Report
-	deadline := time.Now().Add(20 * time.Second)
-	for time.Now().Before(deadline) {
-		before, err = endpoint()
-		if err == nil && before.Running != nil {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	if err != nil || before.Running == nil {
-		t.Fatal("actual hub did not publish a verified endpoint, logs remain private")
-	}
+	probeCtx, stopProbes := context.WithTimeout(t.Context(), testwait.Budget(t))
+	defer stopProbes()
+	testwait.UntilSeen(t, "the actual hub to publish a verified endpoint", func() (bool, string) {
+		before, err = endpoint(probeCtx)
+		return err == nil && before.Running != nil, fmt.Sprintf("state %q, err %v", before.State, err)
+	})
 	// Kill only PIDs independently returned by this private selected endpoint.
 	t.Cleanup(func() {
-		report, err := endpoint()
+		probeCtx, cancelProbe := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelProbe()
+		report, err := endpoint(probeCtx)
 		if err == nil && report.Running != nil {
 			pid := report.Running.PID
 			_ = syscall.Kill(pid, syscall.SIGTERM)
+			// The 5s grace is the shutdown promptness bound under test, and the
+			// SIGKILL below is why this stays a local loop rather than testwait.
 			deadline := time.Now().Add(5 * time.Second)
 			for time.Now().Before(deadline) {
 				if err := syscall.Kill(pid, 0); err != nil {
@@ -140,7 +141,7 @@ func TestRemoteRestartActualDisposableHub(t *testing.T) {
 	if _, err := m.RestartForOperation(ctx, host, facts, nil); err != nil {
 		t.Fatal(err)
 	}
-	after, err := endpoint()
+	after, err := endpoint(t.Context())
 	if err != nil || after.Running == nil {
 		t.Fatalf("successor endpoint unavailable: %v", err)
 	}
@@ -166,7 +167,7 @@ func TestRemoteRestartActualDisposableHub(t *testing.T) {
 	if ch.Client() == nil || len(fr.recordedStarts()) != 1 {
 		t.Fatal("Ensure did not initialize the actual bridge")
 	}
-	attached, err := endpoint()
+	attached, err := endpoint(t.Context())
 	if err != nil || attached.Running == nil || attached.Running.PID != after.Running.PID || attached.Running.BootID != after.Running.BootID {
 		t.Fatal("Ensure changed the selected successor instead of attaching")
 	}

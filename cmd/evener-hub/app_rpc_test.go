@@ -574,6 +574,10 @@ func TestHubRPCThreadCompactStartResumesPastThread(t *testing.T) {
 	}
 }
 
+// A cold model pick is the fold's resume: the set cannot reach a daemon that
+// no longer runs, and the resume the hub launches behind it carries the pick,
+// so the session starts on it and no second model/set runs against the fresh
+// service.
 func TestHubRPCThreadModelSetResumesPastThread(t *testing.T) {
 	root := t.TempDir()
 	workingDir := t.TempDir()
@@ -593,25 +597,25 @@ func TestHubRPCThreadModelSetResumesPastThread(t *testing.T) {
 			},
 		}}, nil
 	})
-	modelCalled := ""
+	sets := make(chan appwire.ThreadModelSetParams, 1)
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadModelSet, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
 		if params.Ref != "local:"+sessionID {
 			t.Fatalf("model ref=%q", params.Ref)
 		}
-		modelCalled = params.ModelProvider + "/" + params.Model
+		sets <- params
 		return appwire.EmptyResponse{}, nil
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
 	defer daemonHTTP.Close()
 
 	runDir := t.TempDir()
-	resumeCalls := 0
+	launched := make(chan hubcore.ResumeRequest, 1)
 	spawner := &fakeRPCSpawner{
 		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
 			if req.SessionID != sessionID || req.StateDir != stateDir || req.WorkingDir != workingDir {
 				t.Fatalf("resume request=%+v", req)
 			}
-			resumeCalls++
+			launched <- req
 			entry := rendezvous.Entry{
 				PID:        106,
 				Protocol:   appwire.ProtocolVersion,
@@ -636,11 +640,19 @@ func TestHubRPCThreadModelSetResumesPastThread(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("ThreadModelSet: %v", err)
 	}
-	if resumeCalls != 1 {
-		t.Fatalf("resume calls=%d, want 1", resumeCalls)
+	var req hubcore.ResumeRequest
+	select {
+	case req = <-launched:
+	default:
+		t.Fatal("the cold model pick launched no resume")
 	}
-	if modelCalled != "openai/gpt-5.6-sol" {
-		t.Fatalf("modelCalled=%q", modelCalled)
+	if req.Provider != "openai" || req.ModelOverride != "openai/gpt-5.6-sol" || req.Resolved.Effective.Model != "openai/gpt-5.6-sol" {
+		t.Fatalf("resume request pick: provider=%q override=%q effective=%q", req.Provider, req.ModelOverride, req.Resolved.Effective.Model)
+	}
+	select {
+	case params := <-sets:
+		t.Fatalf("the resumed daemon took a second model/set: %+v", params)
+	default:
 	}
 }
 

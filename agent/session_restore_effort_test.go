@@ -69,3 +69,176 @@ func TestRestoreSession_SanitizesReasoningEffort(t *testing.T) {
 		})
 	}
 }
+
+// TestRestoreSessionWithModelChange_RevalidatesFallbacksPerEntry pins the
+// resume-with-a-different-model fallback contract: the saved list was
+// validated against a model the session no longer runs, so the same
+// per-entry revalidation a mid-session switch applies runs before the
+// all-or-nothing startup check — compatible entries stay, incompatible ones
+// drop, and a valid pick no longer strands the session. An ordinary resume
+// (the persisted model unchanged) keeps the strict all-or-nothing validation.
+func TestRestoreSessionWithModelChange_RevalidatesFallbacksPerEntry(t *testing.T) {
+	t.Parallel()
+	c := llm.NewClient()
+
+	changed := schema.SessionMeta{
+		ID:        "01RESTOREMODELFB0000001",
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config: schema.ConfigSnapshot{
+			ModelFallbacks: []string{"openai/gpt-4o-mini", "anthropic/claude-haiku-test"},
+		},
+	}
+	restored, err := RestoreSessionFromMetaWithConfig(c, withTestSessionNamer(c, newAnthropicProfile("claude-pick")), execenv.NewLocalExecutionEnvironment(t.TempDir()), changed, RestoreSessionConfig{})
+	if err != nil {
+		t.Fatalf("restore with an explicit model change: %v", err)
+	}
+	defer restored.Close()
+	if got := restored.cfg.ModelFallbacks; len(got) != 1 || got[0] != "anthropic/claude-haiku-test" {
+		t.Fatalf("restored model_fallbacks = %v, want only the compatible anthropic/claude-haiku-test", got)
+	}
+	if got := restored.lastDroppedModelFallbacks; len(got) != 1 || got[0] != "openai/gpt-4o-mini" {
+		t.Fatalf("dropped fallbacks = %v, want the incompatible openai/gpt-4o-mini surfaced in the session diagnostics", got)
+	}
+
+	ordinary := schema.SessionMeta{
+		ID:        "01RESTOREMODELFB0000002",
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config: schema.ConfigSnapshot{
+			ModelFallbacks: []string{"anthropic/claude-haiku-test"},
+		},
+	}
+	if _, err := RestoreSessionFromMetaWithConfig(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), ordinary, RestoreSessionConfig{}); err == nil {
+		t.Fatal("ordinary restore accepted a cross-surface fallback, want the strict all-or-nothing validation")
+	}
+}
+
+// TestRestoreWithModelChangeRefusesUnlistedPick pins that an explicit pick on
+// a resume faces the same live-listing membership judgment the live setter
+// applies: a model that resolves in the catalog but is absent from the
+// instance's usable live listing must refuse the restore before the session
+// starts. The hub's launch preflight cannot catch this shape — judging a
+// command-backed credential's live listing would run the credential command
+// in the hub process — so the restore is the refusal point.
+func TestRestoreWithModelChangeRefusesUnlistedPick(t *testing.T) {
+	t.Parallel()
+	client := llm.NewClient()
+	// The instance's live listing carries the persisted model but not the pick.
+	client.Register(newFakeEnumerableAdapter("openai", "gpt-5.2"))
+	meta := schema.SessionMeta{
+		ID:        "01PICKLIVEMEMBERSHIP001",
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		TurnCount: 1,
+	}
+	_, err := RestoreSessionFromMetaWithConfig(
+		client,
+		withTestSessionNamer(client, NewOpenAIProfile("gpt-9.9-unlisted")),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()),
+		meta,
+		RestoreSessionConfig{},
+	)
+	if err == nil {
+		t.Fatal("restore accepted a picked model the instance's live listing does not carry, want the pick refused before the session starts")
+	}
+}
+
+// TestRestoreWithSelectedSavedModelRefusesUnlistedPick pins the picker's
+// re-selection shape: the web picker submits its row even when it equals the
+// saved model, so an explicit selection runs the membership judgment on the
+// identity it selected — the instance's usable live listing may have dropped
+// a model the static catalog still offers. An ordinary resume that supplies
+// no model keeps the fail-open form.
+func TestRestoreWithSelectedSavedModelRefusesUnlistedPick(t *testing.T) {
+	t.Parallel()
+	client := llm.NewClient()
+	// The instance's usable live listing no longer carries the saved model.
+	client.Register(newFakeEnumerableAdapter("openai", "gpt-5.5"))
+	meta := schema.SessionMeta{
+		ID:        "01PICKSAVEDMODELUNLIST01",
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		TurnCount: 1,
+	}
+	_, err := RestoreSessionFromMetaWithConfig(
+		client,
+		withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()),
+		meta,
+		RestoreSessionConfig{SelectedModel: true},
+	)
+	if err == nil {
+		t.Fatal("re-selecting the saved model accepted a pick the instance's live listing no longer carries, want the restore refused")
+	}
+	relived, err := RestoreSessionFromMetaWithConfig(
+		client,
+		withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()),
+		meta,
+		RestoreSessionConfig{},
+	)
+	if err != nil {
+		t.Fatalf("ordinary resume without a model was refused: %v", err)
+	}
+	relived.Close()
+}
+
+// TestRestorePersistsModelChangeBeforeAck pins that the picked model reaches
+// meta.json during the restore itself: the fold acknowledges the pick when
+// the resumed daemon reports ready, so a daemon that exits before the next
+// periodic save must not leave the acknowledged choice reverted on the next
+// resume. The live setter's switch already flushes meta on commit
+// (applyModelSwitch); the restore earns the same durability.
+func TestRestorePersistsModelChangeBeforeAck(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	client := llm.NewClient()
+	meta := schema.SessionMeta{
+		ID:        "01PICKPERSISTBEFOREACK01",
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Name:      "Prior session",
+		TurnCount: 1,
+	}
+	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+		t.Fatalf("seed the dead daemon's meta: %v", err)
+	}
+	history := []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("prior task"))}
+	restored, err := RestoreSessionFromMetaWithConfig(
+		client,
+		withTestSessionNamer(client, NewOpenAIProfile("gpt-5.5-picked")),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()),
+		meta,
+		RestoreSessionConfig{StateDir: stateDir, resumeHistory: history},
+	)
+	if err != nil {
+		t.Fatalf("restore on the picked model: %v", err)
+	}
+	defer restored.Close()
+	// The daemon dies before any periodic save or a graceful close's flush:
+	// the ack must not depend on either. What is on disk right now is what a
+	// subsequent resume would read.
+	persisted, err := schema.LoadSessionMeta(stateDir, meta.ID)
+	if err != nil {
+		t.Fatalf("reload meta after the exit: %v", err)
+	}
+	if persisted.Model != "gpt-5.5-picked" {
+		t.Fatalf("persisted model after the exit = %q, want the acknowledged pick gpt-5.5-picked", persisted.Model)
+	}
+	// The next resume lands on the pick instead of silently reverting it.
+	relived, err := RestoreSessionFromMetaWithConfig(
+		client,
+		withTestSessionNamer(client, NewOpenAIProfile(persisted.Model)),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()),
+		persisted,
+		RestoreSessionConfig{StateDir: stateDir, resumeHistory: history},
+	)
+	if err != nil {
+		t.Fatalf("resume after the exit: %v", err)
+	}
+	defer relived.Close()
+	if relived.profile.Model() != "gpt-5.5-picked" {
+		t.Fatalf("resumed model = %q, want the acknowledged pick", relived.profile.Model())
+	}
+}

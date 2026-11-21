@@ -257,3 +257,23 @@ func TestMergeEnqueueRejectsWaitBeyondTheLargestDuration(t *testing.T) {
 		t.Fatalf("--wait 9223372036 = %d seconds, want %d", got, math.MaxInt64/int64(time.Second))
 	}
 }
+
+// TestMergeEnqueueUsageNamesTheRunnableBinary pins that both lines the --wait
+// parse error prints, the diagnostic and the usage line, name `evener-dev`, the
+// executable that dispatches merge-enqueue. Plain `evener` does not dispatch it.
+func TestMergeEnqueueUsageNamesTheRunnableBinary(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr strings.Builder
+	if code := runMergeEnqueue([]string{"--pr", "6499", "--wait", "5x"}, &stubQueue{}, pausedClock(), &stdout, &stderr); code != 2 {
+		t.Fatalf("runMergeEnqueue(--wait 5x) = %d, want 2", code)
+	}
+	lines := strings.Split(strings.TrimSpace(stderr.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("stderr has %d lines, want the diagnostic and the usage line: %q", len(lines), stderr.String())
+	}
+	for _, line := range lines {
+		if !strings.Contains(line, "evener-dev") {
+			t.Fatalf("stderr line %q does not name the evener-dev executable that dispatches merge-enqueue", line)
+		}
+	}
+}

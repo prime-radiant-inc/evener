@@ -45,12 +45,19 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 	var scalarField string
 	details := &detailAssembly{byKey: map[detailKey]*strings.Builder{}}
 	// structuredBuf is the structured preview accumulated in arrival order and
-	// shown is the exact text sent to the live pane. While the two sources
-	// agree, the pane shows the agreed prefix plus the growth of the longer
-	// source; once they diverge it keeps per-frame precedence.
+	// mirrorBuf is the same provider text without the synthesized item
+	// separators. The pane follows whichever source has more provider content
+	// (newlines excluded), so a scalar mirror matches whether each separator is
+	// present or absent; once the sources carry different content it keeps
+	// per-frame precedence. sMatch/mMatch are the raw agreement cursors into
+	// scalarBuf and mirrorBuf, and sSent/dSent the raw emission cursors into
+	// scalarBuf and structuredBuf.
 	var structuredBuf strings.Builder
-	var shown strings.Builder
-	var agree int
+	var mirrorBuf strings.Builder
+	var scalarContent, structuredContent, sentContent int
+	var sMatch, mMatch int
+	var sSent, sSentContent int
+	var dSent, dSentContent int
 	var diverged bool
 	// encryptedDetails accumulates opaque reasoning.encrypted items (OpenRouter
 	// Gemini/o-series) in arrival order; they ride the thinking part's
@@ -255,10 +262,15 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 					scalarField = field
 				}
 				scalarBuf.WriteString(scalar)
+				scalarContent += len(scalar) - strings.Count(scalar, "\n")
 			}
-			structured := details.appendChunk(choice.Delta.ReasoningDetails)
+			structured, mirror := details.appendChunk(choice.Delta.ReasoningDetails)
 			if structured != "" {
 				structuredBuf.WriteString(structured)
+				structuredContent += len(structured) - strings.Count(structured, "\n")
+			}
+			if !diverged {
+				mirrorBuf.WriteString(mirror)
 			}
 			delta := structured
 			if delta == "" {
@@ -267,22 +279,37 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 			if delta != "" {
 				var send string
 				if !diverged {
-					s, d := scalarBuf.String(), structuredBuf.String()
-					for agree < len(s) && agree < len(d) && s[agree] == d[agree] {
-						agree++
-					}
-					if agree < len(s) && agree < len(d) {
-						// The sources diverge; from here the pane keeps per-frame
-						// precedence and the overlap check stops guiding it.
-						diverged = true
-					} else {
-						longer := s
-						if len(d) > len(s) {
-							longer = d
+					s, d, mirror := scalarBuf.String(), structuredBuf.String(), mirrorBuf.String()
+					// Newlines the scalar carries where the mirror does not are
+					// synthesized item separators and may be present or absent; the
+					// mirror's own newlines are provider text and must match.
+					for {
+						for sMatch < len(s) && s[sMatch] == '\n' && (mMatch == len(mirror) || mirror[mMatch] != '\n') {
+							sMatch++
 						}
-						if len(longer) > shown.Len() {
-							send = longer[shown.Len():]
-							shown.WriteString(send)
+						if sMatch == len(s) || mMatch == len(mirror) {
+							break
+						}
+						if s[sMatch] != mirror[mMatch] {
+							diverged = true
+							break
+						}
+						sMatch++
+						mMatch++
+					}
+					if !diverged {
+						// Emit the longer source's provider bytes beyond the content
+						// already on the pane, once each.
+						if scalarContent >= structuredContent {
+							sSent, sSentContent = advanceContent(s, sSent, sSentContent, sentContent)
+							send = s[sSent:]
+							sSent, sSentContent = len(s), scalarContent
+							sentContent = scalarContent
+						} else {
+							dSent, dSentContent = advanceContent(d, dSent, dSentContent, sentContent)
+							send = d[dSent:]
+							dSent, dSentContent = len(d), structuredContent
+							sentContent = structuredContent
 						}
 					}
 				}
@@ -411,13 +438,16 @@ type detailAssembly struct {
 }
 
 // appendChunk folds one chunk's pieces into the assembly and returns the text
-// that chunk contributes to the live preview. Pieces of one explicit index
-// concatenate whether or not a frame boundary separates them; unindexed pieces
-// inside a single array keep the provider's newline, matching the non-stream
-// join. Distinct items are separated by one newline in the preview, including
-// across a frame boundary.
-func (a *detailAssembly) appendChunk(details []reasoningDetailItem) string {
+// that chunk contributes to the live preview and the same provider text without
+// the distinct-item separators the preview synthesizes. Pieces of one explicit
+// index concatenate whether or not a frame boundary separates them; unindexed
+// pieces inside a single array keep the provider's newline, matching the
+// non-stream join. Distinct items are separated by one newline in the preview,
+// including across a frame boundary; the mirror keeps that newline only between
+// unindexed pieces, so a scalar mirror matches content rather than punctuation.
+func (a *detailAssembly) appendChunk(details []reasoningDetailItem) (string, string) {
 	var out strings.Builder
+	var mirror strings.Builder
 	var prev detailKey
 	first := true
 	// unindexedSeen records that this chunk already carried unindexed text, so
@@ -462,8 +492,10 @@ func (a *detailAssembly) appendChunk(details []reasoningDetailItem) string {
 		}
 		out.WriteString(text)
 		if !key.indexed && unindexedSeen {
+			mirror.WriteString("\n")
 			b.WriteString("\n")
 		}
+		mirror.WriteString(text)
 		b.WriteString(text)
 		if !key.indexed {
 			unindexedSeen = true
@@ -472,7 +504,7 @@ func (a *detailAssembly) appendChunk(details []reasoningDetailItem) string {
 		first = false
 		a.last, a.lastSet = key, true
 	}
-	return out.String()
+	return out.String(), mirror.String()
 }
 
 // display is the settled reasoning text: non-empty items in first-appearance
@@ -483,4 +515,16 @@ func (a *detailAssembly) display() string {
 		texts = append(texts, a.byKey[key].String())
 	}
 	return joinDetailTexts(texts)
+}
+
+// advanceContent moves a raw cursor forward over bytes until its count of
+// provider (non-newline) bytes reaches content, returning the cursor and count.
+func advanceContent(s string, raw, counted, content int) (int, int) {
+	for raw < len(s) && counted < content {
+		if s[raw] != '\n' {
+			counted++
+		}
+		raw++
+	}
+	return raw, counted
 }

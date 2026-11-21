@@ -2583,19 +2583,12 @@ func TestReconnectStandsDownForAMappedDroppedChannel(t *testing.T) {
 	}
 }
 
-// waitClosed fails unless ch reaches the closed state within the deadline. A
+// waitClosed fails unless ch reaches the closed state. A
 // supervisor may close a channel just after releasing the host lock, so a
 // concurrent Ensure cannot assume it already happened.
 func waitClosed(t *testing.T, ch *Channel) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if ch.isClosed() {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatal("channel was never closed")
+	testwait.Until(t, "the channel to close", ch.isClosed)
 }
 
 // A configured BackoffMax bounds every reconnect delay, the first one included:
