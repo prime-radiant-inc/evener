@@ -1194,7 +1194,11 @@ function reconcileQuotaWait(
     (fresh.bootGeneration !== undefined &&
       held.history?.bootGeneration !== undefined &&
       fresh.bootGeneration !== held.history.bootGeneration);
-  const heldStamp = runtimeChanged ? 0 : (held.quotaWaitStartedAt ?? 0);
+  // The held wait's own stamp survives the runtime change for the wait-free
+  // retirement below: zeroing it for the stamp comparisons must not erase the
+  // evidence that a wait crossed the boundary.
+  const heldWaitStamp = held.quotaWaitStartedAt ?? 0;
+  const heldStamp = runtimeChanged ? 0 : heldWaitStamp;
   const readStamp = fresh.quotaWaitStartedAt ?? 0;
   const endedStamp = runtimeChanged ? 0 : (held.quotaWaitEndedStamp ?? 0);
   // A changed runtime must say "no marker" explicitly: the caller spreads
@@ -1258,7 +1262,7 @@ function reconcileQuotaWait(
   // stamp surviving as the retirement marker, chip and all. A model holding
   // no quota wait keeps every chip it has: an ordinary provider retry is not
   // this reconciliation's to retire.
-  if (runtimeChanged && (heldStamp > 0 || held.quotaWaitEndedStamp !== undefined)) {
+  if (runtimeChanged && (heldWaitStamp > 0 || held.quotaWaitEndedStamp !== undefined)) {
     // The previous runtime's stamps die with it — held and ended alike: the
     // restored daemon's sequence starts over, so no old stamp may outlive
     // the runtime that minted it to refuse the new one's waits.
