@@ -29,17 +29,22 @@ function message(id: string, text: string, type = "agentMessage"): ItemEntry {
   };
 }
 
-function reasoningEntry(id: string, summaries: string[][], kind: "thinking" | "item" = "thinking"): ProjectedEntry {
+function reasoningEntry(
+  id: string,
+  summaries: string[][],
+  kind: "thinking" | "item" = "thinking",
+  live = false,
+): ProjectedEntry {
   const item = {
     id,
     turnId: "t",
     type: "reasoning",
     text: "",
-    status: "completed",
+    status: live ? "inProgress" : "completed",
     reasoningSummaries: summaries,
   } as ItemModel;
   return kind === "thinking"
-    ? { kind, id, turnId: "t", sourceIndex: 0, item, live: false }
+    ? { kind, id, turnId: "t", sourceIndex: 0, item, live }
     : { kind: "item", id, turnId: "t", sourceIndex: 0, item, isMessage: false };
 }
 
@@ -84,8 +89,54 @@ function intentEntry(id: string, rationale: string): IntentEntry {
   };
 }
 
-function turnRow(id: string, entries: ProjectedEntry[]): TranscriptBodyRow {
-  const source = { id, status: "completed", items: [] } as unknown as TurnModel;
+/** The projector's shape for an action row with no stated rationale: its
+ * rationale is the neutral fallback, and the row itself shows the descriptor's
+ * own summary. */
+function rationaleLessAction(id: string, toolName: string, argumentsJson: string): IntentEntry {
+  return {
+    kind: "intent",
+    id: `intent:${id}`,
+    turnId: "t",
+    sourceIndex: 0,
+    sourceItemId: id,
+    rationale: "Action summary unavailable",
+    failed: false,
+    item: {
+      id,
+      turnId: "t",
+      type: "commandExecution",
+      text: "",
+      toolName,
+      argumentsJson,
+      status: "completed",
+    } as ItemModel,
+  };
+}
+
+function suppressedAction(id: string, rationale: string, argumentsJson: string): IntentEntry {
+  return {
+    kind: "intent",
+    id: `intent:${id}`,
+    turnId: "t",
+    sourceIndex: 0,
+    sourceItemId: id,
+    rationale,
+    failed: false,
+    item: {
+      id,
+      turnId: "t",
+      type: "commandExecution",
+      text: "",
+      toolName: "task_list",
+      argumentsJson,
+      description: rationale,
+      status: "completed",
+    } as ItemModel,
+  };
+}
+
+function turnRow(id: string, entries: ProjectedEntry[], status = "completed"): TranscriptBodyRow {
+  const source = { id, status, items: [] } as unknown as TurnModel;
   const turn: ProjectedTurn = { id, source, entries, visibleItems: [] };
   return { kind: "turn", id, turn, sourceTurnIndex: 0, showTurnSeparator: true };
 }
@@ -190,7 +241,7 @@ test("messages, thought summaries and action rationales are searched", () => {
 test("a thought is searched by its rendered summary and its hit opens the thought", () => {
   const rows = [turnRow("t", [reasoningEntry("r1", [["the **needle** sits here"]])])];
   expect(findHits(rows, "needle sits here", { config: TOOLS })).toEqual([
-    { key: "r1", itemId: "r1", rowIndex: 0, opens: ["r1"] },
+    { key: "r1", itemId: "r1", rowIndex: 0, opens: "r1" },
   ]);
   // The summary's own formatting marks are not words on the page.
   expect(findHits(rows, "**needle**", { config: TOOLS })).toEqual([]);
@@ -210,21 +261,17 @@ test("a full-verbosity thought is searched by its summary", () => {
   const full = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
   const rows = [turnRow("t", [reasoningEntry("r1", [["a needle thought"]], "item")])];
   expect(findHits(rows, "needle thought", { config: full })).toEqual([
-    { key: "r1", itemId: "r1", rowIndex: 0, opens: ["r1"] },
+    { key: "r1", itemId: "r1", rowIndex: 0, opens: "r1" },
   ]);
 });
 
-// A redacted critical thought shows its neutral label and can unfold its
-// summaries. Its raw `text` never renders, so it is not searched.
+// A redacted critical thought shows the projector's neutral label verbatim
+// and can unfold its Markdown summaries. Its raw `text` never renders, so it
+// is not searched.
 test("a redacted thought is searched by its rendered label and summaries", () => {
   const rows = [
     turnRow("t", [
-      redactedReasoning(
-        "r1",
-        "Thought **failed** in `main.go`",
-        [["the *needle* body"]],
-        "raw needle that never renders",
-      ),
+      redactedReasoning("r1", "Thought failed in main.go", [["the *needle* body"]], "raw needle that never renders"),
     ]),
   ];
   const keys = (query: string) => findHits(rows, query, { config: TOOLS }).map((hit) => hit.key);
@@ -237,7 +284,7 @@ test("a redacted thought is searched by its rendered label and summaries", () =>
 test("an action is searched by its rationale and the hit opens its collapsed group", () => {
   const rows = [turnRow("t", [intentEntry("c1", "list the repo"), intentEntry("c2", "grep for the needle")])];
   expect(findHits(rows, "grep for the needle", { config: COLLAPSED_INTENT })).toEqual([
-    { key: "intent:c2", itemId: "c2", rowIndex: 0, opens: ["intent-group:intent:c1"] },
+    { key: "intent:c2", itemId: "c2", rowIndex: 0, opens: "intent-group:intent:c1" },
   ]);
   // A cross-turn action group names its own row id.
   const entries: IntentEntry[] = [intentEntry("c1", "list the repo"), intentEntry("c2", "grep for the needle")];
@@ -249,8 +296,29 @@ test("an action is searched by its rationale and the hit opens its collapsed gro
     sourceTurnIds: ["t"],
   };
   expect(findHits([group], "needle", { config: COLLAPSED_INTENT }).map((hit) => hit.opens)).toEqual([
-    ["intent-group:intent:c1"],
+    "intent-group:intent:c1",
   ]);
+});
+
+test("an action row with no stated rationale is not searched by the projector's fallback", () => {
+  const rows = [turnRow("t", [rationaleLessAction("c1", "read_file", '{"file_path":"agent/tree.go"}')])];
+  // The opened group shows read_file's own summary, never this neutral text.
+  expect(findHits(rows, "action", { config: COLLAPSED_INTENT })).toEqual([]);
+  expect(findHits(rows, "unavailable", { config: COLLAPSED_INTENT })).toEqual([]);
+});
+
+test("a suppressed action row is not searched, because it renders nothing", () => {
+  const rows = [turnRow("t", [suppressedAction("c1", "view the task list", '{"action":"view"}')])];
+  expect(findHits(rows, "view the task list", { config: COLLAPSED_INTENT })).toEqual([]);
+});
+
+test("a streaming thought's unclosed Markdown is read as its live row shows it", () => {
+  const live = [turnRow("t", [reasoningEntry("r1", [["check **the assumptions"]], "thinking", true)], "inProgress")];
+  expect(findHits(live, "check the assumptions", { config: TOOLS }).map((hit) => hit.key)).toEqual(["r1"]);
+  // A settled thought shows the unbalanced marker literally, so the phrase
+  // without it is not on screen.
+  const settled = [turnRow("t", [reasoningEntry("r1", [["check **the assumptions"]])])];
+  expect(findHits(settled, "check the assumptions", { config: TOOLS })).toEqual([]);
 });
 
 test("a diagram's source is not searched once the reply shows the diagram instead", () => {

@@ -153,6 +153,34 @@ test("findInSessionMatches does not scan a thought's raw trace", () => {
   expect(findInSessionMatches(model, "raw frobnitz")).toEqual([]);
 });
 
+test("findInSessionMatches reads a streaming thought's unclosed Markdown live", () => {
+  const live = modelWithTurns([
+    turn("t1", [
+      itemWith("think", {
+        type: "reasoning",
+        status: "inProgress",
+        reasoningSummaries: [["check **the assumptions"]],
+      }),
+    ]),
+  ]);
+  expect(findInSessionMatches(live, "check the assumptions").map((hit) => hit.itemId)).toEqual(["think"]);
+  // Settled text shows the unbalanced marker literally.
+  const settled = modelWithTurns([
+    turn("t1", [itemWith("think", { type: "reasoning", reasoningSummaries: [["check **the assumptions"]] })]),
+  ]);
+  expect(findInSessionMatches(settled, "check the assumptions")).toEqual([]);
+});
+
+test("findInSessionMatches scans an action's rationale but not a system notice's description", () => {
+  const model = modelWithTurns([
+    turn("t1", [
+      itemWith("call", { type: "commandExecution", toolName: "shell", description: "grep for frobnitz" }),
+      itemWith("note", { type: "systemMessage", description: "frobnicate the frobnitz" }),
+    ]),
+  ]);
+  expect(findInSessionMatches(model, "frobnitz").map((hit) => hit.itemId)).toEqual(["call"]);
+});
+
 test("findInSessionMatches scans an action's rationale", () => {
   const model = modelWithTurns([
     turn("t1", [itemWith("call", { type: "commandExecution", toolName: "shell", description: "grep for frobnitz" })]),

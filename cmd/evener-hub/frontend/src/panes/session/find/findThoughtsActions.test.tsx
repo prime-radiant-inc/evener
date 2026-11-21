@@ -69,6 +69,31 @@ function action(id: string, rationale: string): TurnModel["items"][number] {
   } as TurnModel["items"][number];
 }
 
+function readFile(id: string, path: string): TurnModel["items"][number] {
+  return {
+    id,
+    turnId: "t1",
+    type: "commandExecution",
+    text: "",
+    status: "completed",
+    toolName: "read_file",
+    argumentsJson: JSON.stringify({ file_path: path }),
+  } as TurnModel["items"][number];
+}
+
+function taskListView(id: string, rationale: string): TurnModel["items"][number] {
+  return {
+    id,
+    turnId: "t1",
+    type: "commandExecution",
+    text: "",
+    status: "completed",
+    toolName: "task_list",
+    argumentsJson: JSON.stringify({ action: "view" }),
+    description: rationale,
+  } as TurnModel["items"][number];
+}
+
 function Harness({ model, config }: { model: ThreadModel; config: TranscriptDisplayConfigV1 }) {
   const port = useRef<HTMLDivElement>(null);
   const list = useRef<VirtualListHandle>({
@@ -161,6 +186,52 @@ test("a thought is not counted where the chat view hides thinking traces", async
   await waitFor(() => expect(bar().getAttribute("data-find-status")).toBe("none"));
   expect(count()).toBe(0);
   expect(currentAnchor()).toBeNull();
+});
+
+test("a streaming thought's unclosed Markdown lands on the words its live row shows", async () => {
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  const model = modelOf([turn([reasoning("r1", "check **the assumptions", "inProgress")], "inProgress")]);
+  requestFindInSession(REF, { query: "check the assumptions" });
+  render(<Harness model={model} config={config} />);
+
+  await waitFor(() => expect(count()).toBe(1));
+  await waitFor(() => expect(currentAnchor()?.getAttribute("data-view-anchor-id")).toBe("r1"));
+  expect(currentAnchor()?.textContent).toContain("check the assumptions");
+  expect(currentAnchor()?.textContent).not.toContain("**");
+});
+
+test("an action row with no stated rationale never matches the projector's fallback text", async () => {
+  const config = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: true,
+    toolCalls: false,
+    reasoning: false,
+    expandByDefault: false,
+    thinkingOpenByDefault: false,
+  });
+  const model = modelOf([turn([readFile("c1", "agent/tree.go")])]);
+  render(<Harness model={model} config={config} />);
+
+  act(() => requestFindInSession(REF, { query: "action" }));
+  await waitFor(() => expect(bar().getAttribute("data-find-status")).toBe("none"));
+  expect(count()).toBe(0);
+});
+
+test("a suppressed action row is never counted, because it renders nothing", async () => {
+  const config = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: true,
+    toolCalls: false,
+    reasoning: false,
+    expandByDefault: false,
+    thinkingOpenByDefault: false,
+  });
+  const model = modelOf([turn([taskListView("c1", "view the task list")])]);
+  render(<Harness model={model} config={config} />);
+
+  act(() => requestFindInSession(REF, { query: "view the task list" }));
+  await waitFor(() => expect(bar().getAttribute("data-find-status")).toBe("none"));
+  expect(count()).toBe(0);
 });
 
 test("an action rationale match opens the collapsed action group and lands on its words", async () => {

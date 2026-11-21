@@ -108,7 +108,10 @@ export function messageAsShown(item: ItemModel): string | null {
 }
 
 /** A thought's summaries as its row reads them: one string per rendered
- * paragraph, Markdown formatting gone. Shared with the palette. */
-export function reasoningSummariesAsRead(item: ItemModel): string[] {
-  return joinedReasoningParagraphs(item.reasoningSummaries).map((paragraph) => markdownAsRead(paragraph));
+ * paragraph, Markdown formatting gone. A live thought is rendered with its
+ * unclosed tail closed, exactly as ThinkBlock's live body does; settled text
+ * keeps its markers literal. Shared with the palette. */
+export function reasoningSummariesAsRead(item: ItemModel, live = item.status === "inProgress"): string[] {
+  const paragraphs = joinedReasoningParagraphs(item.reasoningSummaries);
+  return paragraphs.map((paragraph, index) => markdownAsRead(paragraph, live && index === paragraphs.length - 1));
 }

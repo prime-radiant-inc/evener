@@ -60,8 +60,9 @@ function itemSearchTexts(item: ItemModel): string[] {
   // A thought's `text` is its trace, which no row shows, so only the
   // summaries below are read for it.
   else if (item.type !== "reasoning" && item.text) texts.push(item.text);
-  // An action row's rationale: the same words the session's Find lands on.
-  if (item.description) texts.push(item.description);
+  // An action row's stated rationale: the same words the session's Find lands
+  // on. Other item types carry a description that no row shows as text.
+  if (item.type === "commandExecution" && item.description) texts.push(item.description);
   if (item.output) texts.push(item.output);
   if (item.error) texts.push(item.error);
   // A thought renders Markdown, so its summaries are read as the page reads.

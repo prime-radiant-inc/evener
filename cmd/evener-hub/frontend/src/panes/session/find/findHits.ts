@@ -1,10 +1,8 @@
-// Which transcript entries hold the words being looked for. Find searches
-// what the reader can read: a message's words, a thought's summaries and an
-// action row's rationale. A hit is one projected entry, so the count agrees
-// with what the reader steps through, and every hit has its words on screen
-// once its row mounts: a message never folds, and a thought's or an action's
-// words are behind a disclosure Find opens before it lands. Tool calls,
-// steers and system notices are not searched.
+// Which entries hold the words being looked for: a message's words, a
+// thought's summaries and an action row's rationale (tool calls, steers and
+// system notices are not searched). A hit is one projected entry, and its
+// words are on screen once its row mounts: a message never folds, a thought's
+// or an action's words sit behind a disclosure Find opens before it lands.
 import {
   entryDisplayKey,
   findNeedle,
@@ -17,9 +15,11 @@ import {
   type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import { mermaidRenderVersion } from "../../../widgets/mermaid/renderState";
+import { statedIntentOf } from "../transcript/ToolRow";
 import { type TranscriptBodyRow, transcriptRowsForProjection } from "../transcript/TranscriptBody";
-import { foldTurnEntries, intentGroupId, intentRunAt } from "../transcript/toolRuns";
-import { markdownAsRead, messageAsShown, reasoningSummariesAsRead } from "./messageText";
+import { toolRendererFor } from "../transcript/toolRenderers";
+import { intentGroupId, intentRunAt } from "../transcript/toolRuns";
+import { messageAsShown, reasoningSummariesAsRead } from "./messageText";
 
 export interface FindHit {
   /** The entry's display key: its identity across paging and re-projection,
@@ -33,14 +33,13 @@ export interface FindHit {
   readonly callId?: string;
   /** The model round the message came from, when it has one. */
   readonly roundId?: string;
-  /** Disclosures that hide the matching words, outermost first. Empty for a
-   * message (omitted there); a thought names its own disclosure and an action
-   * row its group. */
-  readonly opens?: readonly string[];
+  /** The one disclosure that hides the matching words, omitted for a message:
+   * a thought names its own, an action row its group. */
+  readonly opens?: string;
 }
 
-/** What the transcript view shows, which decides what Find counts: a view
- * that hides thinking traces shows no thought summary to land on. */
+/** What the view shows, which decides what Find counts: one that hides
+ * thinking traces has no thought summary to land on. */
 export interface FindView {
   readonly config?: TranscriptDisplayConfigV1;
   /** The diagram render state the text is read at. */
@@ -88,8 +87,10 @@ export function indexOfMatch(
 // identity across re-projection, so while a reply streams only the growing
 // item is read again; every other entry is a substring test.
 const haystacks = new WeakMap<ItemModel, { version: number; text: string | null }>();
-// A thought's summaries are immutable per item, so they are read once.
-const thoughtHaystacks = new WeakMap<ItemModel, readonly string[]>();
+// A thought's summaries are immutable per item, so they are read once per
+// reading: a live stream closes an unclosed marker at its tail, a settled one
+// keeps it literal.
+const thoughtHaystacks = new WeakMap<ItemModel, { live: boolean; text: readonly string[] }>();
 
 function readable(text: string): string {
   return findReadable(text).toLowerCase();
@@ -108,38 +109,38 @@ function haystack(item: ItemModel, version: number): string | null {
   return cached.text;
 }
 
-function thoughtHaystack(item: ItemModel): readonly string[] {
-  let cached = thoughtHaystacks.get(item);
-  if (cached === undefined) {
-    cached = reasoningSummariesAsRead(item).map(readable);
-    thoughtHaystacks.set(item, cached);
-  }
-  return cached;
+function thoughtHaystack(item: ItemModel, live: boolean): readonly string[] {
+  const cached = thoughtHaystacks.get(item);
+  if (cached?.live === live) return cached.text;
+  const text = reasoningSummariesAsRead(item, live).map(readable);
+  thoughtHaystacks.set(item, { live, text });
+  return text;
 }
 
-// A redacted thought's label is read once per item, like its summaries.
-const redactedLabels = new WeakMap<ItemModel, string>();
-
-function redactedLabel(entry: Extract<ProjectedEntry, { kind: "critical" }>): string {
-  let cached = redactedLabels.get(entry.item);
-  if (cached === undefined) {
-    cached = readable(markdownAsRead(entry.summary));
-    redactedLabels.set(entry.item, cached);
-  }
-  return cached;
+// What an action row actually says: its stated intent, and nothing where the
+// row renders none. The projector's neutral rationale is a fallback for rows
+// whose descriptor has no summary of its own, and a suppressed descriptor
+// renders no row at all, so neither is text a match could land on.
+function intentText(entry: Extract<ProjectedEntry, { kind: "intent" }>): string | null {
+  const descriptor = toolRendererFor(entry.item.toolName ?? "");
+  if (descriptor.suppress?.(entry.item)) return null;
+  return statedIntentOf(entry.item) ?? null;
 }
 
-function matches(entry: ProjectedEntry, needle: string, view: FindView, version: number): boolean {
-  if (entry.kind === "intent") return readable(entry.rationale).includes(needle);
+function matches(entry: ProjectedEntry, needle: string, view: FindView, version: number, live: boolean): boolean {
+  if (entry.kind === "intent") {
+    const text = intentText(entry);
+    return text !== null && readable(text).includes(needle);
+  }
   if (entry.item.type === "reasoning") {
     // A chat view shows only the placeholder before a live thought: its
     // summaries are not on screen, so they are not a match there.
     if (entry.kind === "thinking" && view.config !== undefined && hidesThinkingTraces(view.config.content))
       return false;
-    // A redacted thought shows its neutral label; what it can unfold is its
-    // summaries, never its raw text.
-    if (entry.kind === "critical" && entry.redacted && redactedLabel(entry).includes(needle)) return true;
-    return thoughtHaystack(entry.item).some((text) => text.includes(needle));
+    // A redacted thought shows its neutral label verbatim; what it can unfold
+    // is its Markdown summaries, never its raw text.
+    if (entry.kind === "critical" && entry.redacted && readable(entry.summary).includes(needle)) return true;
+    return thoughtHaystack(entry.item, live).some((text) => text.includes(needle));
   }
   return entry.kind === "item" && entry.isMessage && (haystack(entry.item, version)?.includes(needle) ?? false);
 }
@@ -152,8 +153,8 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string, view
   if (needle === "") return [];
   const version = view.version ?? mermaidRenderVersion();
   const hits: FindHit[] = [];
-  const add = (entry: ProjectedEntry, rowIndex: number, opens?: readonly string[]) => {
-    if (!matches(entry, needle, view, version)) return;
+  const add = (entry: ProjectedEntry, rowIndex: number, live: boolean, opens?: string) => {
+    if (!matches(entry, needle, view, version, live)) return;
     const { id, callId, roundId } = entry.item;
     const itemId = entry.kind === "intent" ? entry.sourceItemId : id;
     hits.push({
@@ -167,10 +168,13 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string, view
   };
   rows.forEach((row, rowIndex) => {
     if (row.kind === "intentGroup") {
-      for (const entry of row.entries) add(entry, rowIndex, [row.id]);
+      for (const entry of row.entries) add(entry, rowIndex, false, row.id);
       return;
     }
-    const laidOut = foldTurnEntries(row.turn);
+    // The turn's own entries: folding tool calls cannot change which action
+    // rows are consecutive, and Slice 1 searches no tool text.
+    const laidOut = row.turn.entries;
+    const turnSettled = row.turn.source.status !== "inProgress";
     for (let index = 0; index < laidOut.length; index += 1) {
       const entry = laidOut[index];
       if (entry === undefined) continue;
@@ -178,12 +182,14 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string, view
         // TurnBlock groups consecutive action rows under the first one's id.
         const run = intentRunAt(laidOut, index);
         const group = intentGroupId(run.entries[0]?.id);
-        for (const member of run.entries) add(member, rowIndex, [group]);
+        for (const member of run.entries) add(member, rowIndex, false, group);
         index = run.end - 1;
         continue;
       }
-      if (entry.kind === "run") continue;
-      add(entry, rowIndex, entry.item.type === "reasoning" ? [entryDisplayKey(entry)] : undefined);
+      // A thought reads live only while its turn is still running; ThinkBlock
+      // renders a stale in-progress thought on a completed turn as settled.
+      const live = entry.kind === "thinking" ? entry.live : !turnSettled && entry.item.status === "inProgress";
+      add(entry, rowIndex, live, entry.item.type === "reasoning" ? entryDisplayKey(entry) : undefined);
     }
   });
   return hits;

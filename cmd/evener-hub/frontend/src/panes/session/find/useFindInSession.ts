@@ -154,12 +154,6 @@ function matchOf(hit: FindHit | undefined): Pick<FindState, "key" | "item" | "ro
   return hit === undefined ? NO_MATCH : { key: hit.key, item: hit.itemId, round: hit.roundId ?? null };
 }
 
-// What hides a hit's words, as one comparable value, so a hit whose folds
-// change is a new hit even when its entry and key stay the same.
-function opensOf(hit: FindHit): string {
-  return (hit.opens ?? []).join("\0");
-}
-
 export function useFindInSession({
   ref,
   paneId,
@@ -221,7 +215,7 @@ export function useFindInSession({
           before.key === hit.key &&
           before.itemId === hit.itemId &&
           before.rowIndex === hit.rowIndex &&
-          opensOf(before) === opensOf(hit)
+          before.opens === hit.opens
         );
       });
     if (!same) lastHits.current = next;
@@ -409,7 +403,7 @@ export function useFindInSession({
   // group). A match that only goes by a new key or item is the same match:
   // the reader may have scrolled on, and is not pulled back to it. Rows
   // prepending above it are not a landing either.
-  const currentOpens = current === null ? "" : opensOf(current);
+  const currentOpens = current?.opens ?? "";
   // biome-ignore lint/correctness/useExhaustiveDependencies: the dependencies are the landing's causes, listed above
   useEffect(() => {
     if (current === null) {
@@ -422,8 +416,8 @@ export function useFindInSession({
     }
     // Whatever hides the matching words opens first, so the entry can mount
     // and show them. They stay open, as a reader's own toggle would.
-    for (const id of current.opens ?? []) {
-      const scoped = scopedDisclosureId(disclosureScope, id);
+    if (current.opens !== undefined) {
+      const scoped = scopedDisclosureId(disclosureScope, current.opens);
       if (!isDisclosureOpenNow(scoped, false)) setDisclosureOpen(scoped, true);
     }
     const before = landed.current;

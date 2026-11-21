@@ -114,20 +114,11 @@ export function runLabel(run: ToolRun, descriptorFor: FoldOptions["descriptorFor
  * (the projector reads the same one).
  */
 export function foldTurnEntries(turn: ProjectedTurn): (ProjectedEntry | ToolRun)[] {
-  let folded = foldedTurns.get(turn);
-  if (folded === undefined) {
-    folded = foldToolRuns(turn.entries, {
-      turnSettled: turn.source.status !== "inProgress",
-      descriptorFor: toolRendererFor,
-    });
-    foldedTurns.set(turn, folded);
-  }
-  return folded;
+  return foldToolRuns(turn.entries, {
+    turnSettled: turn.source.status !== "inProgress",
+    descriptorFor: toolRendererFor,
+  });
 }
-
-// A projection is immutable, so a turn's layout is folded once and shared by
-// the renderer and by Find, which reads it on every query.
-const foldedTurns = new WeakMap<ProjectedTurn, (ProjectedEntry | ToolRun)[]>();
 
 /** The consecutive action rows starting at `index`: TurnBlock renders them as
  * one group, TranscriptBody names a cross-turn group for them, and Find opens
