@@ -106,6 +106,28 @@ function delegateCall(id: string, prompt: string): TurnModel["items"][number] {
   } as TurnModel["items"][number];
 }
 
+// The reasoning content flag off: a thought renders as the compact trace row,
+// whose closed heading carries "Thought · ~N tokens" above the body that
+// holds the words Find counted.
+const COMPACT = makeTranscriptDisplayConfig({
+  kind: "custom",
+  toolIntent: true,
+  toolCalls: true,
+  reasoning: false,
+  expandByDefault: false,
+  thinkingOpenByDefault: false,
+});
+
+function reply(id: string, text: string): TurnModel["items"][number] {
+  return {
+    id,
+    turnId: "t1",
+    type: "agentMessage",
+    text,
+    status: "inProgress",
+  } as TurnModel["items"][number];
+}
+
 function Harness({ model, config }: { model: ThreadModel; config: TranscriptDisplayConfigV1 }) {
   const port = useRef<HTMLDivElement>(null);
   const list = useRef<VirtualListHandle>({
@@ -321,4 +343,48 @@ test("an action rationale match opens the collapsed action group and lands on it
     expect(currentAnchor()?.textContent).toContain("grep for the needle");
     expect(painted("evener-find-current")).toContain("grep for the needle");
   });
+});
+
+// The compact trace row's heading says "Thought · ~N tokens", which is chrome,
+// not the thought: a match belongs in the body the disclosure unfolds, never in
+// that heading.
+test("a settled compact thought's token heading is not where Find lands", async () => {
+  const model = modelOf([
+    turn([reasoning("r1", "counting tokens carefully", "inProgress"), reply("a1", "Answering")], "inProgress"),
+  ]);
+  render(<Harness model={model} config={COMPACT} />);
+
+  const currentRanges = () => registry.get("evener-find-current")?.ranges ?? [];
+  act(() => requestFindInSession(REF, { query: "tokens" }));
+  await waitFor(() => expect(count()).toBe(1));
+  await waitFor(() => expect(currentAnchor()?.getAttribute("data-view-anchor-id")).toBe("r1"));
+  await waitFor(() => {
+    const ranges = currentRanges();
+    expect(ranges.length).toBeGreaterThan(0);
+    // Every painted occurrence sits in the thought's body, not its <summary>
+    // heading ("Thought · ~12 tokens").
+    expect(ranges.filter((range) => range.startContainer.parentElement?.closest("summary") !== null)).toEqual([]);
+  });
+  // The one painted occurrence is the body's, and the body is unfolded.
+  expect(painted("evener-find-current")).toEqual(["tokens"]);
+  expect(currentAnchor()?.querySelector("[data-message-body]")?.textContent).toContain("counting tokens carefully");
+});
+
+test("a redacted thought stays searchable by its neutral label and by its body", async () => {
+  // A failed turn projects its settled thought as a redacted critical row: the
+  // neutral label is the closed heading, the summaries are the unfolded body.
+  const model = modelOf([turn([reasoning("r1", "the frobnitz budget")], "failed")]);
+  render(<Harness model={model} config={COMPACT} />);
+
+  act(() => requestFindInSession(REF, { query: "frobnitz" }));
+  await waitFor(() => expect(count()).toBe(1));
+  await waitFor(() => expect(currentAnchor()?.getAttribute("data-view-anchor-id")).toBe("r1"));
+  await waitFor(() => {
+    expect(currentAnchor()?.textContent).toContain("frobnitz");
+    expect(painted("evener-find-current")).toContain("frobnitz");
+  });
+
+  act(() => requestFindInSession(REF, { query: "Thought not shown" }));
+  await waitFor(() => expect(count()).toBe(1));
+  await waitFor(() => expect(painted("evener-find-current")).toContain("Thought not shown"));
 });
