@@ -280,6 +280,15 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 				var send string
 				if !diverged {
 					s, d, mirror := scalarBuf.String(), structuredBuf.String(), mirrorBuf.String()
+					// flushStructured emits the structured preview bytes beyond
+					// the content already on the pane and advances the cursors.
+					flushStructured := func() string {
+						dSent, dSentContent = advanceContent(d, dSent, dSentContent, sentContent)
+						flush := d[dSent:]
+						dSent, dSentContent = len(d), structuredContent
+						sentContent = structuredContent
+						return flush
+					}
 					// Newlines the scalar carries where the mirror does not are
 					// synthesized item separators and may be present or absent; the
 					// mirror's own newlines are provider text and must match.
@@ -297,7 +306,28 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 						sMatch++
 						mMatch++
 					}
-					if !diverged {
+					assembled := false
+					if diverged {
+						// The provider may mirror the items in assembled order
+						// instead of the preview's arrival order. Recognize that
+						// mirror against the assembled text: the pane keeps the
+						// arrival-order separators it already showed, and only
+						// text beyond the assembled items is new.
+						if order := details.assembledMirror(); order != "" {
+							if extra, ok := assembledOrderExtension(s, order); ok {
+								diverged, assembled = false, true
+								if structuredContent > sentContent {
+									send = flushStructured()
+								}
+								if extra != "" {
+									send += extra
+									sentContent += len(extra) - strings.Count(extra, "\n")
+									sSent, sSentContent = len(s), scalarContent
+								}
+							}
+						}
+					}
+					if !diverged && !assembled {
 						// Emit the longer source's provider bytes beyond the content
 						// already on the pane, once each.
 						if scalarContent >= structuredContent {
@@ -306,10 +336,7 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 							sSent, sSentContent = len(s), scalarContent
 							sentContent = scalarContent
 						} else {
-							dSent, dSentContent = advanceContent(d, dSent, dSentContent, sentContent)
-							send = d[dSent:]
-							dSent, dSentContent = len(d), structuredContent
-							sentContent = structuredContent
+							send = flushStructured()
 						}
 					}
 				}
@@ -507,14 +534,45 @@ func (a *detailAssembly) appendChunk(details []reasoningDetailItem) (string, str
 	return out.String(), mirror.String()
 }
 
-// display is the settled reasoning text: non-empty items in first-appearance
-// order, joined by exactly one newline.
-func (a *detailAssembly) display() string {
+// itemTexts returns every item's text in assembled item order.
+func (a *detailAssembly) itemTexts() []string {
 	texts := make([]string, 0, len(a.order))
 	for _, key := range a.order {
 		texts = append(texts, a.byKey[key].String())
 	}
-	return joinDetailTexts(texts)
+	return texts
+}
+
+// display is the settled reasoning text: non-empty items in first-appearance
+// order, joined by exactly one newline.
+func (a *detailAssembly) display() string {
+	return joinDetailTexts(a.itemTexts())
+}
+
+// assembledMirror is the provider text of the items in assembled item order,
+// without the synthesized separators display inserts between them.
+func (a *detailAssembly) assembledMirror() string {
+	return strings.Join(a.itemTexts(), "")
+}
+
+// assembledOrderExtension reports whether s mirrors provider text with
+// synthesized item separators optional, and returns the bytes of s beyond
+// provider when s extends it. Once the assembled text is consumed, anything
+// left in s is text the pane has not shown.
+func assembledOrderExtension(s, provider string) (string, bool) {
+	i, j := 0, 0
+	for j < len(provider) && i < len(s) {
+		if s[i] == '\n' && provider[j] != '\n' {
+			i++
+			continue
+		}
+		if s[i] != provider[j] {
+			return "", false
+		}
+		i++
+		j++
+	}
+	return s[i:], true
 }
 
 // advanceContent moves a raw cursor forward over bytes until its count of

@@ -84,6 +84,10 @@ func TestStreamMixedReasoningMatchesNonStreaming(t *testing.T) {
 		// growth must reach the pane even when the structured item catches up
 		// in the next frame, so the preview keeps the stream's order.
 		{"staggered-mirror-keeps-scalar-growth", `{"reasoning_content":"abc","reasoning_details":[{"type":"reasoning.text","text":"abc","index":0}]}`, "abc", "a|b|c", `{"reasoning_content":"a"}` + "\x00" + `{"reasoning_content":"b","reasoning_details":[{"type":"reasoning.text","text":"a","index":0}]}` + "\x00" + `{"reasoning_content":"c"}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"bc","index":0}]}`},
+		// A later scalar frame can mirror the items in assembled order rather
+		// than the preview's arrival order; it must be recognized against the
+		// assembled text instead of being appended to the arrival-order pane.
+		{"mirror-assembled-item-order", `{"reasoning_content":"ac\nb","reasoning_details":[{"type":"reasoning.text","text":"ac","index":0},{"type":"reasoning.text","text":"b","index":1}]}`, "ac\nb", "a|\nb|\nc", `{"reasoning_details":[{"type":"reasoning.text","text":"a","index":0}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"b","index":1}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"c","index":0}]}` + "\x00" + `{"reasoning_content":"ac\nb"}`},
 		// An unindexed text-bearing entry registers the implicit item on first
 		// appearance even when its text is empty, so later unindexed text keeps
 		// the position of its earlier empty appearance.
