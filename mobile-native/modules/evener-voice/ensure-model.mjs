@@ -72,8 +72,11 @@ async function appExcludesVoiceModule() {
 }
 
 const args = process.argv.slice(2);
-const skipIfExcluded = args.includes("--skip-if-excluded");
-const installArgs = args.filter((arg) => arg !== "--skip-if-excluded");
+// A manifest path may itself be spelled --skip-if-excluded; only a standalone
+// occurrence is the flag.
+const isSkipFlag = (arg, i) => arg === "--skip-if-excluded" && args[i - 1] !== "--wake-manifest";
+const skipIfExcluded = args.some(isSkipFlag);
+const installArgs = args.filter((arg, i) => !isSkipFlag(arg, i));
 if (installArgs.length && (installArgs.length !== 2 || installArgs[0] !== "--wake-manifest"))
 	throw new Error("usage: node ensure-model.mjs [--wake-manifest PATH] [--skip-if-excluded]");
 if (skipIfExcluded && (await appExcludesVoiceModule())) {
