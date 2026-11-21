@@ -124,12 +124,18 @@ func gitAnswered(ctx context.Context, err error) bool {
 // answer is one to remember (see gitRootCache.lookup): a structural resolution,
 // an absence the filesystem actually reported, and a verdict git itself returned
 // all are. A fork that never ran or never finished is not, and neither is a
-// filesystem that could not answer — see gitAnswered and hasGitEntryAncestor for
-// the two classifications this composes.
+// filesystem that could not answer, including a ".git" pointer this walk
+// refused to read — see gitAnswered, hasGitEntryAncestor, and
+// structuralWorktreeRootDetailed for the classifications this composes.
 func gitRootUncached(ctx context.Context, env ExecutionEnvironment, cwd string) (root string, definitive bool) {
 	if _, ok := env.(*LocalExecutionEnvironment); ok {
-		if structural, ok := structuralWorktreeRoot(cwd); ok {
+		structural, resolved, refused := structuralWorktreeRootDetailed(cwd)
+		if resolved {
 			return structural, true
+		}
+		if refused {
+			// Refused pointer: unresolved, not absent. Cache nothing.
+			return "", false
 		}
 		if present, known := hasGitEntryAncestor(cwd); !present {
 			// A stat that failed for any reason other than absence leaves the
@@ -236,14 +242,27 @@ func mainRepoRootUncached(env ExecutionEnvironment, cwd string) (root string, de
 	return root, true
 }
 
+// structuralWorktreeRoot is structuralWorktreeRootDetailed with the refusal
+// dropped: callers that only ask whether a root was found treat a refused
+// pointer as no root.
 func structuralWorktreeRoot(cwd string) (string, bool) {
+	root, ok, _ := structuralWorktreeRootDetailed(cwd)
+	return root, ok
+}
+
+// structuralWorktreeRootDetailed walks cwd and its ancestors for a ".git"
+// entry. refused reports an entry that ReadGitPointerFile refused (oversized, a
+// FIFO or other non-regular file, or unreadable). That is not "no repository
+// here": the caller must leave the question open rather than fall through to
+// the git binary, which the workspace can reach through PATH.
+func structuralWorktreeRootDetailed(cwd string) (root string, ok bool, refused bool) {
 	dir := filepath.Clean(cwd)
 	for {
 		gitPath := filepath.Join(dir, ".git")
 		info, err := os.Stat(gitPath)
 		if err == nil {
 			if info.IsDir() {
-				return identifier.ResolveClean(dir), true
+				return identifier.ResolveClean(dir), true, false
 			}
 			// Read through the pointer reader, not os.ReadFile. This runs from
 			// the FRESH resolution: child construction asks for the root
@@ -255,22 +274,20 @@ func structuralWorktreeRoot(cwd string) (string, bool) {
 			// delegate creation open past Stop. The pointer reader opens
 			// non-blocking and admits only a regular file, so a pointer that is
 			// not one answers "unreadable" here.
-			//
-			// An unreadable pointer returns unresolved rather than "no
-			// repository", which is the same distinction the caller already
-			// carries: unknown reachability stays open instead of being
-			// recorded as an absence.
 			content, err := ReadGitPointerFile(gitPath)
-			if err == nil {
-				if _, ok := identifier.ParseGitdirPointer(string(content)); ok {
-					return identifier.ResolveClean(dir), true
-				}
+			if err != nil {
+				return "", false, true
 			}
-			return "", false
+			if _, ok := identifier.ParseGitdirPointer(string(content)); ok {
+				return identifier.ResolveClean(dir), true, false
+			}
+			// Read fine but not a gitdir pointer: an ordinary working tree
+			// marker git itself can classify, so keep the binary fallback.
+			return "", false, false
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return "", false
+			return "", false, false
 		}
 		dir = parent
 	}

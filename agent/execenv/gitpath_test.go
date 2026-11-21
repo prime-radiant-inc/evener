@@ -90,22 +90,57 @@ func TestGitRootOrEmptyLocalNonRepoDoesNotForkGit(t *testing.T) {
 	}
 }
 
-// TestFreshGitRootRefusesAnOversizedPointer pins that the FRESH structural
-// lookup reads a ".git" pointer with the pointer reader, not the generic
-// whole-file reader. A pointer is one path line, so a file past the pointer cap
-// is not a pointer: it must be refused rather than loaded and parsed. The
-// padding follows a valid, parseable pointer line, so only the size cap can
-// produce the refusal.
+// TestFreshGitRootRefusesAnOversizedPointer pins that the FRESH lookup reads a
+// ".git" pointer with the pointer reader and keeps a refused read inconclusive.
+// A pointer is one path line, so a file past the pointer cap is not a pointer;
+// the padding follows a valid, parseable pointer line, so only the size cap can
+// produce the refusal. That refusal is neither a repository root nor the
+// absence of one, and it must not reach the git binary: the launcher searches a
+// PATH the workspace can reach.
 func TestFreshGitRootRefusesAnOversizedPointer(t *testing.T) {
-	t.Parallel()
 	dir := t.TempDir()
 	pointer := "gitdir: " + filepath.Join(dir, ".git", "worktrees", "lane") + "\n" +
 		strings.Repeat("x", gitPointerMaxBytes)
 	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte(pointer), 0o600); err != nil {
 		t.Fatalf("write .git pointer: %v", err)
 	}
+	// Not parallel: the PATH shim is process-wide.
+	shimDir, count := gitCountingShim(t, t.TempDir())
+	t.Setenv("PATH", shimDir)
 
-	if root, ok := structuralWorktreeRoot(dir); ok || root != "" {
-		t.Fatalf("structural root = %q, %v, want unresolved: an oversized .git pointer must be refused by the pointer reader", root, ok)
+	root, definitive := GitRootOrEmptyFreshDefinitive(NewLocalExecutionEnvironment(dir), dir)
+	if root != "" {
+		t.Fatalf("fresh git root = %q, want empty: an oversized .git pointer is not a repository root", root)
+	}
+	if n := count(); n != 0 {
+		t.Fatalf("fresh lookup forked git %d times, want 0: a refused pointer must not reach the binary", n)
+	}
+	if definitive {
+		t.Fatal("oversized pointer produced a definitive answer: a refused read is unresolved, not a confirmed absence")
+	}
+}
+
+// TestFreshGitRootFallsBackForAReadableNonPointer pins the other side of the
+// refusal: a ".git" file that was READ successfully and simply is not a gitdir
+// pointer is an ordinary structural miss, so the fresh lookup keeps its
+// Git-binary fallback. Only a refused read closes that path.
+func TestFreshGitRootFallsBackForAReadableNonPointer(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("not a gitdir pointer\n"), 0o600); err != nil {
+		t.Fatalf("write .git: %v", err)
+	}
+	// Not parallel: the PATH shim is process-wide.
+	shimDir, count := gitCountingShim(t, dir)
+	t.Setenv("PATH", shimDir)
+
+	root, definitive := GitRootOrEmptyFreshDefinitive(NewLocalExecutionEnvironment(dir), dir)
+	if n := count(); n != 1 {
+		t.Fatalf("fresh lookup forked git %d times, want 1: a readable non-pointer keeps the binary fallback", n)
+	}
+	if want := evalSym(t, dir); root != want {
+		t.Fatalf("fresh git root = %q, want %q", root, want)
+	}
+	if !definitive {
+		t.Fatal("git answered the fallback, so the result must be definitive")
 	}
 }
