@@ -175,34 +175,78 @@ func validateVertexInteractionsModel(profile *provider.Profile) error {
 	return validateVertexInteractionsResolved(profile.Resolved(), profile.Model(), profile.ID())
 }
 
-// validateSavedCheapModel checks a persisted SessionMeta.CheapModel candidate
-// against active registry/provider availability and Vertex Interactions support.
-func (s *Session) validateSavedCheapModel(candidate *provider.Profile) error {
+// googleMigrationTargetError returns an error only when a persisted target
+// names retired google-vertex-express (without a custom instance in reg) or a
+// Vertex AI Gemini model unsupported by /interactions. Temporarily disabled
+// models and missing credentials are NOT pruned here so user choices survive in
+// meta.json until re-enabled.
+func googleMigrationTargetError(reg *registry.Registry, targetProvider, targetModel string) error {
+	if strings.EqualFold(targetProvider, "google-vertex-express") {
+		if reg == nil {
+			return fmt.Errorf("provider %q is retired", targetProvider)
+		}
+		if _, ok := reg.Provider("google-vertex-express"); !ok {
+			return fmt.Errorf("provider %q is retired", targetProvider)
+		}
+	}
+	if reg != nil {
+		if res, err := reg.ResolveInstanceModelFacts(targetProvider, targetModel); err == nil {
+			return validateVertexInteractionsResolved(res, targetModel, targetProvider)
+		}
+	}
+	return nil
+}
+
+// googleMigrationCheapModelError checks a persisted SessionMeta.CheapModel
+// candidate only for retired google-vertex-express or unsupported Vertex
+// Gemini models, keeping temporarily disabled or uncredentialed choices intact.
+func (s *Session) googleMigrationCheapModelError(candidate *provider.Profile) error {
 	if candidate == nil {
 		return nil
 	}
 	cheapProv, cheapModel := candidate.CheapModelRef()
-	if cheapProv == candidate.ID() {
-		return validateVertexInteractionsModel(candidate.WithModel(cheapModel))
-	}
-	if s.resolveProfile != nil {
-		resolved, err := s.resolveProfile(cheapProv + "/" + cheapModel)
-		if err != nil {
-			return err
-		}
-		return validateVertexInteractionsModel(resolved)
-	}
-	if strings.EqualFold(cheapProv, "google-vertex-express") {
-		return fmt.Errorf("provider %q is retired", cheapProv)
-	}
 	reg := candidate.Registry()
 	if reg == nil && s.client != nil {
 		reg = s.client.Registry()
 	}
-	if reg != nil {
-		if res, err := reg.Resolve(cheapProv + "/" + cheapModel); err == nil {
-			return validateVertexInteractionsResolved(res, cheapModel, cheapProv)
+	if err := googleMigrationTargetError(reg, cheapProv, cheapModel); err != nil {
+		return err
+	}
+	if reg == nil && cheapProv == candidate.ID() {
+		return validateVertexInteractionsModel(candidate.WithModel(cheapModel))
+	}
+	return nil
+}
+
+// googleMigrationFallbackError checks a persisted ModelFallbacks entry only for
+// retired google-vertex-express or unsupported Vertex Gemini models.
+func (s *Session) googleMigrationFallbackError(fbModel string) error {
+	var reg *registry.Registry
+	if s.profile != nil {
+		reg = s.profile.Registry()
+	}
+	if reg == nil && s.client != nil {
+		reg = s.client.Registry()
+	}
+	fbProv, fbMod := "", fbModel
+	parts := strings.SplitN(fbModel, "/", 2)
+	if s.profile != nil {
+		if len(parts) == 2 && s.profile.CrossProviderRef(fbModel) {
+			fbProv, fbMod = parts[0], parts[1]
+		} else {
+			fbProv = s.profile.ID()
+			if len(parts) == 2 && strings.EqualFold(parts[0], fbProv) {
+				fbMod = parts[1]
+			}
 		}
+	} else if len(parts) == 2 {
+		fbProv, fbMod = parts[0], parts[1]
+	}
+	if err := googleMigrationTargetError(reg, fbProv, fbMod); err != nil {
+		return err
+	}
+	if reg == nil && s.profile != nil && fbProv == s.profile.ID() {
+		return validateVertexInteractionsModel(s.profile.WithModel(fbModel))
 	}
 	return nil
 }

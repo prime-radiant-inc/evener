@@ -900,8 +900,9 @@ and `google-vertex` speak Google's Interactions API (`POST /interactions` and
      [providers.vertex-express.models."gemini-3.8-flash"]
      alias_of = "google/gemini-3.8-flash"
      ```
-     Resume saved sessions with `evener --resume <session-id> --model vertex-express/gemini-3.8-flash`
-     or select `vertex-express/gemini-3.8-flash` in the UI picker.
+     Resume stopped saved sessions from the CLI with
+     `evener --resume <session-id> --model vertex-express/gemini-3.8-flash`
+     (the Hub UI picker switches models only while a session's daemon is already running).
   2. **Use a project-scoped Vertex API key** via a custom `google-vertex` stanza
      (`POST https://aiplatform.googleapis.com/v1/projects/{GOOGLE_VERTEX_PROJECT}/locations/global/interactions`):
      ```toml

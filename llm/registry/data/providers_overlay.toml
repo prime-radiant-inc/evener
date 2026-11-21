@@ -413,6 +413,9 @@ previous_interaction_id = true
 service_tier = true
 labels = true
 safety_settings = false
+[providers."google-vertex".models."*claude*"]
+# Google-owned Vertex Claude rows use rawPredict rather than /interactions and keep web_search enabled by default.
+web_search = true
 
 # ---------------------------------------------------------------------------
 # Amazon Bedrock (§9.3): Anthropic's Messages endpoint on bedrock-mantle

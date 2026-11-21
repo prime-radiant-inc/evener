@@ -329,6 +329,29 @@ func TestCuratedOverlay_GoogleVertexExpressRetired(t *testing.T) {
 	if vRes.Caps.Fields["safety_settings"] {
 		t.Fatalf("google-vertex safety_settings must default false: %+v", vRes.Caps.Fields)
 	}
+	if BoolValue(vRes.Caps.WebSearch) {
+		t.Fatalf("google-vertex/gemini-3.8-flash WebSearch = true, want false")
+	}
+	claudeRes := mustResolve(t, r, "google-vertex/claude-opus-5")
+	if !BoolValue(claudeRes.Caps.WebSearch) {
+		t.Fatalf("google-vertex/claude-opus-5 WebSearch = false, want true")
+	}
+
+	env := map[string]string{"GEMINI_API_KEY": "k-gem", "GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "global"}
+	rOff := fixtureLoad(t, env, "[providers.\"google-vertex\"]\nweb_search = false\n")
+	if BoolValue(mustResolve(t, rOff, "google-vertex/claude-opus-5").Caps.WebSearch) {
+		t.Fatal("user LayerConfig web_search = false must override google-vertex/claude-opus-5")
+	}
+	if BoolValue(mustResolve(t, rOff, "google-vertex/gemini-3.8-flash").Caps.WebSearch) {
+		t.Fatal("user LayerConfig web_search = false must keep google-vertex/gemini-3.8-flash false")
+	}
+	rOn := fixtureLoad(t, env, "[providers.\"google-vertex\"]\nweb_search = true\n")
+	if !BoolValue(mustResolve(t, rOn, "google-vertex/claude-opus-5").Caps.WebSearch) {
+		t.Fatal("user LayerConfig web_search = true must keep google-vertex/claude-opus-5 true")
+	}
+	if !BoolValue(mustResolve(t, rOn, "google-vertex/gemini-3.8-flash").Caps.WebSearch) {
+		t.Fatal("user LayerConfig web_search = true must override google-vertex/gemini-3.8-flash to true")
+	}
 	imgRes := mustResolve(t, r, "google/gemini-3-pro-image")
 	if BoolValue(imgRes.Caps.Tools) || BoolValue(imgRes.Caps.MultimodalToolResults) || BoolValue(imgRes.Caps.CombinedSearchAndFunctions) {
 		t.Fatalf("gemini-3-pro-image must have tools/multimodal/combined disabled: %+v", imgRes.Caps)

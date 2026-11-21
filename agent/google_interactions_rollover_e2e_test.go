@@ -654,6 +654,28 @@ func TestSessionGoogleInteractions_PreCutoverSignedToolCallRestoreAndFallback(t 
 	if pending := script.pending(); pending != 0 {
 		t.Fatalf("scripted endpoint still has %d unserved replies", pending)
 	}
+
+	// Post-2xx SSE errors pass straight through protocolhttp.Stream in 1 POST without a wrapper.
+	script.enqueueSSE("event: error\n" + `data: {"event_type":"error","error":{"code":"invalid_argument","message":"missing thought_signature"}}` + "\n\n")
+	post2xxStream, err := client.Stream(ctx, llm.Request{Provider: profile.ID(), Model: profile.Model(), Messages: baseMessages})
+	if err != nil {
+		t.Fatalf("Stream open for post-2xx SSE error: %v", err)
+	}
+	var post2xxErr error
+	for event := range post2xxStream.Events() {
+		if event.Type == llm.StreamEventError {
+			post2xxErr = event.Err
+		}
+	}
+	if closeErr := post2xxStream.Close(); closeErr != nil {
+		t.Fatalf("close post2xx stream: %v", closeErr)
+	}
+	if post2xxErr == nil {
+		t.Fatal("expected post-2xx SSE error to surface")
+	}
+	if bodies = script.requestBodies(); len(bodies) != 6 {
+		t.Fatalf("request count after post-2xx SSE error = %d, want 6 (1 POST without wrapper retry)", len(bodies))
+	}
 }
 
 func stepsContainFunc(steps []any, kind, name string) bool {

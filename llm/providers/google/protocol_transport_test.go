@@ -605,7 +605,7 @@ func TestProtocolStreamWrapperCloseDuringS1DoesNotDeadlock(t *testing.T) {
 	}
 }
 
-func TestProtocolStreamWrapperRetryS2InBandSignature400SurfacesError(t *testing.T) {
+func TestProtocolStreamPre2xxRetryS2InBandSignature400SurfacesError(t *testing.T) {
 	t.Parallel()
 	legacyReq := llm.Request{
 		Model: "gemini-3.8-flash",
@@ -624,7 +624,13 @@ func TestProtocolStreamWrapperRetryS2InBandSignature400SurfacesError(t *testing.
 
 	var attempts atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempts.Add(1)
+		n := attempts.Add(1)
+		if n == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"code":400,"message":"missing thought_signature","status":"INVALID_ARGUMENT"}}`))
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("event: error\ndata: {\"event_type\":\"error\",\"error\":{\"code\":\"invalid_argument\",\"message\":\"missing thought_signature\"}}\n\n"))
 	}))
@@ -852,7 +858,7 @@ func TestProtocolStreamWrapperCallerDeadlineAndCancel(t *testing.T) {
 	})
 }
 
-func TestProtocolStreamWrapperStorePolicyBlocksInBandRetry(t *testing.T) {
+func TestProtocolStreamPre2xxRetryAndPost2xxPassthrough(t *testing.T) {
 	t.Parallel()
 	legacyReq := llm.Request{
 		Model: "gemini-3.8-flash",
@@ -900,10 +906,23 @@ func TestProtocolStreamWrapperStorePolicyBlocksInBandRetry(t *testing.T) {
 			wantSuccess:  true,
 		},
 		{
-			name:         "explicit store=false still retries once on zero-output in-band SSE signature 400",
+			name:         "explicit store=false recovers on pre-2xx HTTP 400 signature rejection",
 			reqMod:       func(r *llm.Request) { r.Store = new(false) },
+			pre2xx400:    true,
 			wantAttempts: 2,
 			wantSuccess:  true,
+		},
+		{
+			name:         "fields.store=false (omitted store) recovers on pre-2xx HTTP 400 signature rejection",
+			resMod:       func(res *registry.Resolved) { res.Caps.Fields = map[string]bool{"store": false} },
+			pre2xx400:    true,
+			wantAttempts: 2,
+			wantSuccess:  true,
+		},
+		{
+			name:         "explicit store=false passes post-2xx in-band SSE signature 400 through without retry",
+			reqMod:       func(r *llm.Request) { r.Store = new(false) },
+			wantAttempts: 1,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

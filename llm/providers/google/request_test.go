@@ -1,7 +1,10 @@
 package google
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
 	"reflect"
 	"testing"
 
@@ -104,14 +107,18 @@ func TestBuildBodyProviderOptionsTypedSliceAndMapDeepCloned(t *testing.T) {
 	tagsMap := map[string][]string{
 		"env": {"prod"},
 	}
+	rawTools := json.RawMessage(`[{"type":"function","name":"raw_fn","description":"d","parameters":{"type":"object"}}]`)
+	rawSafety := json.RawMessage(`[{"type":"harassment","threshold":"block_only_high"}]`)
 	req := protoReq("")
 	req.ProviderOptions = map[string]any{
 		"google": map[string]any{
 			"safety_settings": safetySettings,
 			"tags_map":        tagsMap,
+			"tools":           rawTools,
 		},
 	}
 	res := protoRes(nil)
+	res.Caps.Fields = map[string]bool{"safety_settings": true, "store": true}
 
 	body1, err := (&Protocol{}).BuildBody(req, res)
 	if err != nil {
@@ -151,6 +158,41 @@ func TestBuildBodyProviderOptionsTypedSliceAndMapDeepCloned(t *testing.T) {
 	wantSS := []any{map[string]any{"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"}}
 	if !reflect.DeepEqual(body2["safety_settings"], wantSS) {
 		t.Fatalf("body2 safety_settings = %#v, want %#v", body2["safety_settings"], wantSS)
+	}
+
+	rawReq := protoReq("")
+	rawReq.ProviderOptions = map[string]any{
+		"google": map[string]any{
+			"tools":           rawTools,
+			"safety_settings": rawSafety,
+		},
+	}
+	rawBody1, err := (&Protocol{}).BuildBody(rawReq, res)
+	if err != nil {
+		t.Fatalf("BuildBody raw #1: %v", err)
+	}
+	rt1, okRT := rawBody1["tools"].(json.RawMessage)
+	rs1, okRS := rawBody1["safety_settings"].(json.RawMessage)
+	if !okRT || !okRS {
+		t.Fatalf("expected json.RawMessage preserved, got tools=%T safety_settings=%T", rawBody1["tools"], rawBody1["safety_settings"])
+	}
+	rt1[0] = 'X'
+	rs1[0] = 'X'
+	if rawTools[0] != '[' || rawSafety[0] != '[' {
+		t.Fatalf("caller json.RawMessage mutated: tools=%q safety=%q", rawTools, rawSafety)
+	}
+
+	srv, got := protoServer(t, http.StatusOK, interactionsJSON)
+	liveRes := protoLive(srv)
+	liveRes.Caps.Fields = map[string]bool{"safety_settings": true, "store": true}
+	if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), rawReq, liveRes); err != nil {
+		t.Fatalf("Complete with json.RawMessage provider options: %v", err)
+	}
+	if gotTools, ok := got.body["tools"].([]any); !ok || len(gotTools) != 1 {
+		t.Fatalf("wire tools = %T %#v, want 1-element JSON array", got.body["tools"], got.body["tools"])
+	}
+	if gotSafety, ok := got.body["safety_settings"].([]any); !ok || len(gotSafety) != 1 {
+		t.Fatalf("wire safety_settings = %T %#v, want 1-element JSON array", got.body["safety_settings"], got.body["safety_settings"])
 	}
 }
 

@@ -180,15 +180,17 @@ func TestLegacyUnsignedToolCall400FallbackCompleteAndStream(t *testing.T) {
 		}
 	})
 
-	t.Run("Stream zero-output in-band 400 retries once with single StreamEventStreamStart", func(t *testing.T) {
+	t.Run("Stream pre-2xx HTTP 400 retries once with single StreamEventStreamStart", func(t *testing.T) {
 		var attempts int32
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			n := atomic.AddInt32(&attempts, 1)
-			w.Header().Set("Content-Type", "text/event-stream")
 			if n == 1 {
-				_, _ = w.Write([]byte("event: error\ndata: {\"event_type\":\"error\",\"error\":{\"code\":\"invalid_argument\",\"message\":\"missing thought_signature\"}}\n\n"))
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":{"code":400,"message":"Function call is missing a thought_signature.","status":"INVALID_ARGUMENT"}}`))
 				return
 			}
+			w.Header().Set("Content-Type", "text/event-stream")
 			_, _ = w.Write([]byte(interactionsSSE))
 		}))
 		defer srv.Close()
@@ -212,6 +214,30 @@ func TestLegacyUnsignedToolCall400FallbackCompleteAndStream(t *testing.T) {
 		}
 		if starts != 1 || finalText != "hello" || atomic.LoadInt32(&attempts) != 2 {
 			t.Fatalf("starts=%d text=%q attempts=%d", starts, finalText, attempts)
+		}
+	})
+
+	t.Run("Stream post-2xx in-band SSE error never retries internally", func(t *testing.T) {
+		var attempts int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt32(&attempts, 1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("event: error\ndata: {\"event_type\":\"error\",\"error\":{\"code\":\"invalid_argument\",\"message\":\"missing thought_signature\"}}\n\n"))
+		}))
+		defer srv.Close()
+
+		st, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), legacyReq, protoLive(srv))
+		if err != nil {
+			t.Fatalf("Stream open failed: %v", err)
+		}
+		var streamErr error
+		for ev := range st.Events() {
+			if ev.Type == llm.StreamEventError {
+				streamErr = ev.Err
+			}
+		}
+		if streamErr == nil || atomic.LoadInt32(&attempts) != 1 {
+			t.Fatalf("expected error without internal retry on post-2xx SSE; err=%v attempts=%d", streamErr, attempts)
 		}
 	})
 

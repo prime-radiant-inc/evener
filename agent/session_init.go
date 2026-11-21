@@ -43,6 +43,7 @@ import (
 	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // BuildVersion is recorded in each session's metadata (SessionMeta.BuildVersion).
@@ -1235,6 +1236,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		client:                   client,
 		profile:                  profile,
 		resolveProfile:           cfg.ResolveProfile,
+		savedModelFallbacks:      savedModelFallbacks,
 		depth:                    cfg.spawn.depth,
 		delegationAllowance:      delegationAllowance,
 		jobActivityClock:         jobClock,
@@ -1345,7 +1347,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// retired provider (e.g. google-vertex-express) or unsupported Vertex model.
 	if meta.CheapModel != "" {
 		candidate := provider.WithCheapModel(s.profile, meta.CheapModel)
-		if err := s.validateSavedCheapModel(candidate); err != nil {
+		if err := s.googleMigrationCheapModelError(candidate); err != nil {
 			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{
 				Message: fmt.Sprintf("restore: ignored saved cheap_model %q: %v", meta.CheapModel, err),
 			})
@@ -1356,7 +1358,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if savedModelFallbacks {
 		kept := make([]string, 0, len(s.cfg.ModelFallbacks))
 		for _, fbModel := range s.cfg.ModelFallbacks {
-			if err := s.validateModelFallbackEntry(fbModel); err != nil {
+			if err := s.googleMigrationFallbackError(fbModel); err != nil {
 				s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{
 					Message: fmt.Sprintf("restore: pruned saved model_fallbacks entry %q: %v", fbModel, err),
 				})
@@ -2092,6 +2094,18 @@ func (s *Session) validateModelFallbackEntry(fbModel string) error {
 	}
 	fbProfile, crossProvider, err := s.resolveProfileForRef(s.profile, fbModel)
 	if err != nil {
+		if s.savedModelFallbacks && errors.Is(err, registry.ErrModelDisabled) {
+			reg := s.profile.Registry()
+			if reg == nil && s.client != nil {
+				reg = s.client.Registry()
+			}
+			if reg != nil {
+				if res, ferr := reg.ResolveInstanceModelFacts(parts[0], parts[1]); ferr == nil && res.Surface != s.profile.Surface() {
+					return fmt.Errorf("model_fallbacks entry %q switches surface from %q to %q; cross-surface fallbacks are not supported because prompt/tool surfaces differ", fbModel, s.profile.Surface(), res.Surface)
+				}
+			}
+			return nil
+		}
 		return fmt.Errorf("model_fallbacks entry %q: %w", fbModel, err)
 	}
 	if !crossProvider {

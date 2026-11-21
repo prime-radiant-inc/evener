@@ -170,6 +170,7 @@ func TestLiveGoogleInteractionsSessionTurnEmitsSafetySettings(t *testing.T) {
 			skipUnlessLiveGoogle(t, target.instance)
 			sess, _, recorder := newLiveGoogleSession(t, target.instance)
 
+			// TRIPWIRE: live Google/Vertex network round-trip ceiling far above a sub-10s single turn.
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 			got, err := sess.ProcessInput(ctx, "Reply with the single word pong.", nil)
@@ -255,6 +256,7 @@ func TestLiveGoogleInteractionsSettlesLegacySignedToolCallHistory(t *testing.T) 
 				},
 			)
 
+			// TRIPWIRE: live Google/Vertex network round-trip ceiling far above a sub-10s single turn.
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 			defer cancel()
 			got, err := sess.ProcessInput(ctx, "Reply with the single word done.", nil)

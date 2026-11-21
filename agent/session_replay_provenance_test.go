@@ -10,6 +10,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -934,4 +937,109 @@ func TestRestoreSession_PrunesRetiredCheapModelAndModelFallbacks(t *testing.T) {
 	}); err == nil {
 		t.Fatal("expected explicit ModelFallbacks override targeting unsupported Vertex 2.5 model to fail restore")
 	}
+
+	t.Run("preserves temporarily disabled saved CheapModel and ModelFallbacks while keeping explicit CLI strict", func(t *testing.T) {
+		cfgPath := filepath.Join(t.TempDir(), "providers.toml")
+		tomlCfg := `
+[providers."google-vertex".models."gemini-3.5-flash-lite"]
+disabled = true
+
+[providers."google-vertex".models."gemini-3.8-flash"]
+disabled = true
+`
+		if err := os.WriteFile(cfgPath, []byte(tomlCfg), 0o600); err != nil {
+			t.Fatalf("WriteFile providers.toml: %v", err)
+		}
+		rDis, err := registry.Load(
+			registry.WithConfigPath(cfgPath),
+			registry.WithOffline(true), registry.WithoutCache(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(k string) (string, bool) {
+				switch k {
+				case "GEMINI_API_KEY":
+					return "k-gem", true
+				case "GOOGLE_VERTEX_PROJECT":
+					return "p", true
+				case "GOOGLE_VERTEX_LOCATION":
+					return "global", true
+				}
+				return "", false
+			}),
+		)
+		if err != nil {
+			t.Fatalf("registry.Load: %v", err)
+		}
+		cDis := llm.NewClient(llm.WithRegistry(rDis))
+		cDis.Register(&fakeAdapter{name: "google"})
+		cDis.Register(&fakeAdapter{name: "google-vertex"})
+
+		gResDis, err := rDis.Resolve("google/gemini-3.8-flash")
+		if err != nil {
+			t.Fatal(err)
+		}
+		profDis := provider.FromResolved(gResDis, rDis)
+		stateDirDis := t.TempDir()
+		metaDis := schema.SessionMeta{
+			ID:         "0123456789ABCDEFGHJKMNPQRT",
+			CreatedAt:  time.Now(),
+			Model:      "gemini-3.8-flash",
+			ProfileID:  "google",
+			CheapModel: "google-vertex/gemini-3.5-flash-lite",
+			Config: schema.ConfigSnapshot{
+				ModelFallbacks: []string{"google-vertex-express/gemini-3.8-flash", "google-vertex/gemini-2.5-flash", "google-vertex/gemini-3.8-flash"},
+			},
+		}
+		if err := schema.SaveSessionMeta(stateDirDis, metaDis); err != nil {
+			t.Fatalf("SaveSessionMeta: %v", err)
+		}
+		sessDis, err := RestoreSessionFromMetaWithConfig(cDis, profDis, execenv.NewLocalExecutionEnvironment(t.TempDir()), metaDis, RestoreSessionConfig{
+			StateDir: stateDirDis,
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				return provider.Resolve(rDis, ref)
+			},
+		})
+		if err != nil {
+			t.Fatalf("RestoreSessionFromMetaWithConfig with disabled saved entries: %v", err)
+		}
+		if got := sessDis.profile.CheapModelRefString(); got != "google-vertex/gemini-3.5-flash-lite" {
+			t.Fatalf("disabled saved CheapModel dropped: got %q, want google-vertex/gemini-3.5-flash-lite", got)
+		}
+		if len(sessDis.cfg.ModelFallbacks) != 1 || sessDis.cfg.ModelFallbacks[0] != "google-vertex/gemini-3.8-flash" {
+			t.Fatalf("disabled saved ModelFallbacks = %v, want [google-vertex/gemini-3.8-flash]", sessDis.cfg.ModelFallbacks)
+		}
+		if err := sessDis.saveMeta(); err != nil {
+			t.Fatalf("saveMeta: %v", err)
+		}
+		reloaded, err := schema.LoadSessionMeta(stateDirDis, metaDis.ID)
+		if err != nil {
+			t.Fatalf("LoadSessionMeta: %v", err)
+		}
+		if reloaded.CheapModel != "google-vertex/gemini-3.5-flash-lite" {
+			t.Fatalf("on-disk CheapModel = %q, want google-vertex/gemini-3.5-flash-lite", reloaded.CheapModel)
+		}
+		if len(reloaded.Config.ModelFallbacks) != 1 || reloaded.Config.ModelFallbacks[0] != "google-vertex/gemini-3.8-flash" {
+			t.Fatalf("on-disk ModelFallbacks = %v, want [google-vertex/gemini-3.8-flash]", reloaded.Config.ModelFallbacks)
+		}
+		sessDis.Close()
+		var disWarnings []string
+		for ev := range sessDis.Events() {
+			if d, ok := ev.Data.(events.WarningData); ok {
+				disWarnings = append(disWarnings, d.Message)
+			}
+		}
+		if len(disWarnings) != 2 {
+			t.Fatalf("expected 2 pruning warnings (express + 2.5) and zero for disabled models, got %v", disWarnings)
+		}
+
+		// Explicit CLI --model-fallback stays strict on disabled models.
+		if _, err := RestoreSessionFromMetaWithConfig(cDis, profDis, execenv.NewLocalExecutionEnvironment(t.TempDir()), metaDis, RestoreSessionConfig{
+			StateDir:       t.TempDir(),
+			ModelFallbacks: []string{"google-vertex/gemini-3.8-flash"},
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				return provider.Resolve(rDis, ref)
+			},
+		}); !errors.Is(err, registry.ErrModelDisabled) {
+			t.Fatalf("expected explicit ModelFallbacks targeting disabled model to fail with ErrModelDisabled, got %v", err)
+		}
+	})
 }

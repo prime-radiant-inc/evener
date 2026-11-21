@@ -198,6 +198,7 @@ type Session struct {
 	cheap                    *cheapmodel.Caller
 	profile                  *provider.Profile
 	resolveProfile           func(ref string) (*provider.Profile, error) // cross-provider resolver; may be nil
+	savedModelFallbacks      bool                                        // true when cfg.ModelFallbacks came from persisted SessionMeta (not explicit CLI override)
 	delegateModelDescription string
 	modelSnapshot            *modelavailability.Snapshot
 	// lastDroppedModelFallbacks records the cfg.ModelFallbacks entries dropped

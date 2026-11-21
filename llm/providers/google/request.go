@@ -544,6 +544,13 @@ func cloneJSONValueWithPath(v any, active map[cloneContainerKey]bool, instance s
 			out[i] = cloned
 		}
 		return out, nil
+	case json.RawMessage:
+		if x == nil {
+			return json.RawMessage(nil), nil
+		}
+		cp := make(json.RawMessage, len(x))
+		copy(cp, x)
+		return cp, nil
 	default:
 		if v == nil {
 			return nil, nil
