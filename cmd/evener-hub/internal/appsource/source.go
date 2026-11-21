@@ -940,7 +940,9 @@ type RelayDelivery struct {
 	// DaemonGone marks the relay's own announcement that the daemon behind
 	// this session is gone (DaemonGoneResync), the one notification the hub
 	// fans out to every route it serves. Nothing a daemon sends carries it.
-	DaemonGone  bool
+	DaemonGone bool
+	// Acknowledge reports that the hub consumed the delivery. The hub calls
+	// it at most once per delivery.
 	Acknowledge func()
 	// Proceed transfers bounded pending ownership to the listener without
 	// acknowledging the delivery. It permits later ordered publications to
