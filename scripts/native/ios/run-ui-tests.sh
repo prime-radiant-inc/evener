@@ -274,6 +274,14 @@ if [ -n "$runtime_pair" ]; then
 	bash "$repo_root/scripts/native/ios/qualification/install-runtime-pair.sh" "$runtime_pair" "$identity" "$run_dir"
 	log "using the runtime pair built by the setup job at $runtime_pair"
 else
+	# The workflow sets Node up for every tree whose run-ui-tests.sh lacks the
+	# pair read above, so this branch normally has npm. A hand-run or a future
+	# launcher that reaches it without Node must say so outright instead of
+	# surfacing make's first missing-command line.
+	if ! command -v npm >/dev/null 2>&1; then
+		echo "$SCRIPT_NAME: this tree builds its runtime pair locally, but npm is not on PATH; the pair handoff path is the one the workflow provisions" >&2
+		exit 1
+	fi
 	log "building the runtime pair (make build-runtime)"
 	make build-runtime >"$output/build-runtime.log" 2>&1 || {
 		echo "build-runtime failed; see $output/build-runtime.log" >&2

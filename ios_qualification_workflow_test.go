@@ -373,17 +373,50 @@ func TestIOSQualificationOverlapsTheRuntimeSetupWithTheBuild(t *testing.T) {
 			t.Errorf("ui-journeys needs %v, want it to wait for %s", journeys.Needs, want)
 		}
 	}
-	// A head whose run-ui-tests.sh predates the handoff builds its own pair in
-	// this job, which embeds the frontend: the toolchain pin must survive the
-	// move of the pair build to journey-setup.
-	nodePinned := false
-	for _, step := range journeys.Steps {
-		if strings.HasPrefix(step.Uses, "actions/setup-node@") && fmt.Sprint(step.With["node-version"]) == "22.13.1" {
-			nodePinned = true
+	// The pair handoff moved the runtime build, and the frontend npm step in
+	// it, to journey-setup. Node is now needed only by a tree whose own
+	// run-ui-tests.sh predates the handoff, so the probe keys on the consumer
+	// rather than on this workflow's version. Go stays unconditional: the
+	// qualification runner compiles itself and records `go version` as part of
+	// the journeys' toolchain identity.
+	checkoutAt, probeAt := -1, -1
+	var probe string
+	goUnconditional, nodeGated := false, false
+	for i, step := range journeys.Steps {
+		if strings.Contains(step.Run, `git checkout --force "$CHOSEN_REF"`) {
+			checkoutAt = i
+		}
+		if step.ID == "pair" {
+			probeAt = i
+			probe = step.Run
+		}
+		if strings.HasPrefix(step.Uses, "actions/setup-go@") {
+			goUnconditional = step.If == ""
+		}
+		if strings.HasPrefix(step.Uses, "actions/setup-node@") {
+			if got := fmt.Sprint(step.With["node-version"]); got != "22.13.1" {
+				t.Errorf("ui-journeys sets up Node %q, want the 22.13.1 pin its local pair build needs", got)
+			}
+			nodeGated = strings.Contains(step.If, "steps.pair.outputs.handoff")
 		}
 	}
-	if !nodePinned {
-		t.Error("ui-journeys does not pin Node 22.13.1, which the harness that builds its own pair needs")
+	if probe == "" {
+		t.Error("ui-journeys does not probe the chosen tree for the runtime-pair handoff")
+	} else {
+		for _, want := range []string{"EVENER_QUALIFICATION_RUNTIME_BINARIES", "scripts/native/ios/run-ui-tests.sh", "handoff="} {
+			if !strings.Contains(probe, want) {
+				t.Errorf("runtime-pair probe lacks %q:\n%s", want, probe)
+			}
+		}
+	}
+	if checkoutAt >= 0 && probeAt >= 0 && probeAt < checkoutAt {
+		t.Error("ui-journeys probes the tree before checking it out, so the probe reads the workflow's version instead of the tested head's")
+	}
+	if !goUnconditional {
+		t.Error("ui-journeys gates setup-go, but the qualification runner records `go version` during the journeys")
+	}
+	if !nodeGated {
+		t.Error("ui-journeys sets up Node unconditionally, but a tree that installs the runtime pair never runs the npm build")
 	}
 
 	// runStep normalizes the command of the first step that contains needle,

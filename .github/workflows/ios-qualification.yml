@@ -384,11 +384,22 @@ jobs:
           # serves only that ref (see "CI Caches" in
           # docs/developing-evener/testing.md).
           cache: false
-      # A head whose run-ui-tests.sh predates the pair handoff ignores the
-      # variable below and runs `make build-runtime` here, which embeds the
-      # frontend and needs the build job's Node. Keep the pin so that fallback
-      # fails for no version reason; a harness that reads the pair never uses it.
-      - name: Set up Node 22.13.1 for a harness that builds its own pair
+      # The pair handoff moved the runtime build to journey-setup. A tree whose
+      # run-ui-tests.sh reads EVENER_QUALIFICATION_RUNTIME_BINARIES installs
+      # that pair and never runs `make build-runtime` here, so it never needs
+      # Node. Probe the chosen tree, not this workflow: an older head that
+      # predates the handoff still builds its own pair and must keep the pin.
+      - name: Probe the chosen tree for the runtime-pair handoff
+        id: pair
+        run: |
+          set -euo pipefail
+          if grep -Eq '^[^#]*EVENER_QUALIFICATION_RUNTIME_BINARIES' scripts/native/ios/run-ui-tests.sh; then
+            echo "handoff=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "handoff=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Set up Node 22.13.1 for a tree that still builds its own pair
+        if: ${{ steps.pair.outputs.handoff != 'true' }}
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "22.13.1"
