@@ -145,42 +145,52 @@ test("one visible-sidebar clock advances activity rows and expanded watch detail
   expect(client.calls.filter((call) => call.method !== "thread/unsubscribe").length).toBe(readsBeforeClose);
 });
 
-test("the live watch detail resolves delegate and job names from the evidence the route already holds", async () => {
+test("the live watch detail names a named delegate's own watch and its job target", async () => {
+  const childRef = "remote:child";
+  // A named delegate's own activity read proves the viewed session's identity;
+  // its own row is never in its own delegates collection.
+  const context = (requestedRef: string) => ({ ...activityContext(requestedRef), delegateName: "navigation-observer" });
   const client = activityClient();
+  client.on("evener/thread/activity/read", ({ ref: requestedRef, scope }) => ({
+    ...activitySummary(requestedRef, scope),
+    context: context(requestedRef),
+  }));
   client.on("evener/thread/delegates/list", ({ ref: requestedRef, scope }) => ({
-    context: activityContext(requestedRef),
+    context: context(requestedRef),
     scope: scope ?? "session",
-    delegates: [activityDelegate({ name: "navigation-observer", ownerRef: requestedRef, rootRef: requestedRef })],
+    delegates: [],
     page: { complete: true, issues: [] },
   }));
   client.on("evener/thread/jobs/list", ({ ref: requestedRef, scope }) => ({
-    context: activityContext(requestedRef),
+    context: context(requestedRef),
     scope: scope ?? "session",
     jobs: [activityJob({ ownerRef: requestedRef, description: "Child checks" })],
     page: { complete: true, issues: [] },
   }));
+  // The watch belongs in its receiver's own collection, with the source ref
+  // naming the same physical session.
+  const ownWatch = activityWatch(
+    { source: "job_raw", target: "job_raw", outputMatch: "ready", cadence: [{ kind: "output" }] },
+    childRef,
+  );
+  ownWatch.sourceRef = childRef;
   client.on("evener/thread/watches/list", ({ ref: requestedRef, scope }) => ({
-    context: activityContext(requestedRef),
+    context: context(requestedRef),
     scope: scope ?? "session",
-    watches: [
-      activityWatch(
-        { source: "job_raw", target: "job_raw", outputMatch: "ready", cadence: [{ kind: "output" }] },
-        "remote:child",
-      ),
-    ],
+    watches: [ownWatch],
     page: { complete: true, issues: [] },
   }));
   connectionStore.getState().connect(client);
-  installFocusedScope(ref);
+  installFocusedScope(childRef);
   // The session transcript beside the sidebar already observes jobs and
   // delegates; the sidebar reads that same store and owns no read of its own.
-  const activity = acquireSessionActivity(client, ref, "session");
+  const activity = acquireSessionActivity(client, childRef, "session");
   const stopDelegates = activity.store.observe("delegates");
   const stopJobs = activity.store.observe("jobs");
   let mounted: ReturnType<typeof mount> | undefined;
   try {
-    await waitFor(() => expect(activity.store.getSnapshot().delegates.rows).toHaveLength(1));
     await waitFor(() => expect(activity.store.getSnapshot().jobs.rows).toHaveLength(1));
+    expect(activity.store.getSnapshot().context?.delegateName).toBe("navigation-observer");
     const entityReads = () =>
       client.calls.filter(
         (call) => call.method === "evener/thread/delegates/list" || call.method === "evener/thread/jobs/list",
