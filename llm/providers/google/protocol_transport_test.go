@@ -515,8 +515,8 @@ func TestProtocolIncompleteStreamNamesTheInstanceAndDistinguishesQueuedEOF(t *te
 				streamErr = ev.Err
 			}
 		}
-		if se, ok := errors.AsType[*llm.StreamError](streamErr); !ok || !se.Retryable() || !strings.Contains(streamErr.Error(), res.Instance+" stream ended without completion") {
-			t.Fatalf("in_progress EOF = %v, want retryable StreamError naming %q", streamErr, res.Instance)
+		if se, ok := errors.AsType[*llm.StreamError](streamErr); !ok || !se.Retryable() || se.Provider() != res.Instance {
+			t.Fatalf("in_progress EOF = %v, want retryable *llm.StreamError with Provider()=%q", streamErr, res.Instance)
 		}
 	})
 
@@ -815,6 +815,39 @@ func TestProtocolStreamWrapperCallerDeadlineAndCancel(t *testing.T) {
 		}
 		if _, ok := errors.AsType[*llm.AbortError](streamErr); !ok {
 			t.Fatalf("Stream error = %T %v, want *llm.AbortError", streamErr, streamErr)
+		}
+	})
+
+	t.Run("finish followed immediately by caller deadline emits no trailing StreamEventError", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(interactionsSSE))
+			if fl, ok := w.(http.Flusher); ok {
+				fl.Flush()
+			}
+			<-r.Context().Done()
+		}))
+		t.Cleanup(srv.Close)
+		res := protoLive(srv)
+		ctx, triggerDeadline := newManualDeadlineCtx(context.Background())
+		defer triggerDeadline()
+		st, err := (&Protocol{Client: srv.Client()}).Stream(ctx, legacyReq, res)
+		if err != nil {
+			t.Fatalf("Stream open failed: %v", err)
+		}
+		var sawFinish bool
+		for ev := range st.Events() {
+			if ev.Type == llm.StreamEventFinish {
+				sawFinish = true
+				triggerDeadline()
+			}
+			if ev.Type == llm.StreamEventError {
+				t.Fatalf("unexpected StreamEventError after Finish=%v: %v", sawFinish, ev.Err)
+			}
+		}
+		if !sawFinish {
+			t.Fatal("expected StreamEventFinish")
 		}
 	})
 }

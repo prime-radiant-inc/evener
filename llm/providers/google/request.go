@@ -346,7 +346,6 @@ func buildBodyWithPolicy(req llm.Request, res registry.Resolved, stream, fallbac
 	if options != nil {
 		if key, ok := cloneContainerIdentity(options); ok {
 			active[key] = true
-			defer delete(active, key)
 		}
 	}
 
@@ -370,7 +369,6 @@ func buildBodyWithPolicy(req llm.Request, res registry.Resolved, stream, fallbac
 		}
 		if key, ok := cloneContainerIdentity(overlaid); ok {
 			active[key] = true
-			defer delete(active, key)
 		}
 		for k, v := range overlaid {
 			cloned, err := cloneJSONValueWithPath(v, active, res.Instance)
@@ -520,41 +518,6 @@ func cyclicOptionsError(instance string) error {
 	}
 }
 
-func checkValueCycle(v any, active map[cloneContainerKey]bool, instance string) error {
-	key, tracked := cloneContainerIdentity(v)
-	if tracked {
-		if active[key] {
-			return cyclicOptionsError(instance)
-		}
-		active[key] = true
-		defer delete(active, key)
-	}
-	if v == nil {
-		return nil
-	}
-	rv := reflect.ValueOf(v)
-	switch rv.Kind() {
-	case reflect.Map:
-		for iter := rv.MapRange(); iter.Next(); {
-			if err := checkValueCycle(iter.Value().Interface(), active, instance); err != nil {
-				return err
-			}
-		}
-	case reflect.Slice:
-		for i := 0; i < rv.Len(); i++ {
-			if err := checkValueCycle(rv.Index(i).Interface(), active, instance); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func cloneJSONValue(v any) any {
-	cloned, _ := cloneJSONValueWithPath(v, map[cloneContainerKey]bool{}, "")
-	return cloned
-}
-
 func cloneJSONValueWithPath(v any, active map[cloneContainerKey]bool, instance string) (any, error) {
 	key, tracked := cloneContainerIdentity(v)
 	if tracked {
@@ -592,29 +555,61 @@ func cloneJSONValueWithPath(v any, active map[cloneContainerKey]bool, instance s
 		}
 		return out, nil
 	default:
-		if v != nil {
-			rv := reflect.ValueOf(v)
-			switch rv.Kind() {
-			case reflect.Map:
-				for iter := rv.MapRange(); iter.Next(); {
-					if err := checkValueCycle(iter.Value().Interface(), active, instance); err != nil {
-						return nil, err
-					}
-				}
-			case reflect.Slice:
-				for i := 0; i < rv.Len(); i++ {
-					if err := checkValueCycle(rv.Index(i).Interface(), active, instance); err != nil {
-						return nil, err
-					}
-				}
-			}
+		if v == nil {
+			return nil, nil
 		}
-		return v, nil
+		rv := reflect.ValueOf(v)
+		switch rv.Kind() {
+		case reflect.Map:
+			if rv.IsNil() {
+				return map[string]any(nil), nil
+			}
+			if rv.Type().Key().Kind() == reflect.String {
+				out := make(map[string]any, rv.Len())
+				for iter := rv.MapRange(); iter.Next(); {
+					cloned, err := cloneJSONValueWithPath(iter.Value().Interface(), active, instance)
+					if err != nil {
+						return nil, err
+					}
+					out[iter.Key().String()] = cloned
+				}
+				return out, nil
+			}
+			out := reflect.MakeMapWithSize(rv.Type(), rv.Len())
+			for iter := rv.MapRange(); iter.Next(); {
+				cloned, err := cloneJSONValueWithPath(iter.Value().Interface(), active, instance)
+				if err != nil {
+					return nil, err
+				}
+				out.SetMapIndex(iter.Key(), reflect.ValueOf(cloned))
+			}
+			return out.Interface(), nil
+		case reflect.Slice:
+			if rv.Type().Elem().Kind() == reflect.Uint8 {
+				if rv.IsNil() {
+					return v, nil
+				}
+				cp := make([]byte, rv.Len())
+				reflect.Copy(reflect.ValueOf(cp), rv)
+				return cp, nil
+			}
+			out := make([]any, rv.Len())
+			for i := 0; i < rv.Len(); i++ {
+				cloned, err := cloneJSONValueWithPath(rv.Index(i).Interface(), active, instance)
+				if err != nil {
+					return nil, err
+				}
+				out[i] = cloned
+			}
+			return out, nil
+		default:
+			return v, nil
+		}
 	}
 }
 
 func isGoogleLabelLetter(r rune) bool {
-	return unicode.IsLower(r) || (unicode.IsLetter(r) && !unicode.IsUpper(r))
+	return unicode.IsLetter(r) && !unicode.IsUpper(r)
 }
 
 func isGoogleLabelRune(r rune) bool {
@@ -676,36 +671,38 @@ func filterGoogleLabelsFromMetadata(meta map[string]string) map[string]any {
 
 func validateAndCloneGoogleLabels(raw any) (map[string]any, error) {
 	out := map[string]any{}
+	add := func(k, s string) error {
+		if !isValidGoogleLabelKey(k) {
+			return &llm.ConfigurationError{Message: fmt.Sprintf("google label key %q violates Google label rules", k)}
+		}
+		if !isValidGoogleLabelValue(s) {
+			return &llm.ConfigurationError{Message: fmt.Sprintf("google label %q value %q violates Google label rules", k, s)}
+		}
+		out[k] = s
+		return nil
+	}
 	switch m := raw.(type) {
 	case map[string]any:
 		if len(m) > 64 {
 			return nil, &llm.ConfigurationError{Message: "google labels exceed maximum of 64 entries"}
 		}
 		for k, v := range m {
-			if !isValidGoogleLabelKey(k) {
-				return nil, &llm.ConfigurationError{Message: fmt.Sprintf("google label key %q violates Google label rules", k)}
-			}
 			s, ok := v.(string)
 			if !ok {
 				return nil, &llm.ConfigurationError{Message: fmt.Sprintf("google label %q value must be a string", k)}
 			}
-			if !isValidGoogleLabelValue(s) {
-				return nil, &llm.ConfigurationError{Message: fmt.Sprintf("google label %q value %q violates Google label rules", k, s)}
+			if err := add(k, s); err != nil {
+				return nil, err
 			}
-			out[k] = s
 		}
 	case map[string]string:
 		if len(m) > 64 {
 			return nil, &llm.ConfigurationError{Message: "google labels exceed maximum of 64 entries"}
 		}
 		for k, s := range m {
-			if !isValidGoogleLabelKey(k) {
-				return nil, &llm.ConfigurationError{Message: fmt.Sprintf("google label key %q violates Google label rules", k)}
+			if err := add(k, s); err != nil {
+				return nil, err
 			}
-			if !isValidGoogleLabelValue(s) {
-				return nil, &llm.ConfigurationError{Message: fmt.Sprintf("google label %q value %q violates Google label rules", k, s)}
-			}
-			out[k] = s
 		}
 	default:
 		return nil, &llm.ConfigurationError{Message: "google labels must be a string map"}
@@ -1116,6 +1113,9 @@ func toInteractionInput(res registry.Resolved, msgs []llm.Message, multimodalToo
 				case llm.ContentAudio:
 					return "", nil, false, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for google: %s", p.Kind)}
 				}
+			}
+			if pendingModelStep > 0 {
+				flushModelOutput()
 			}
 		case llm.RoleTool:
 			for _, p := range m.Content {

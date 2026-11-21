@@ -69,8 +69,10 @@ func isGoogleNonAuthorizingTerminalSettlement(protocol string, finish llm.Finish
 }
 
 func isGoogleNonAuthorizingStatus(protocol string, finish llm.FinishReason) bool {
-	return isGoogleNonAuthorizingTerminalSettlement(protocol, finish) ||
-		(protocol == registry.ProtocolGoogle && finish.Reason == llm.FinishReasonContentFilter)
+	if protocol != registry.ProtocolGoogle {
+		return false
+	}
+	return isGoogleNonAuthorizingTerminalSettlement(protocol, finish) || finish.Reason == llm.FinishReasonContentFilter
 }
 
 func stripToolCallsFromMessage(msg llm.Message) llm.Message {

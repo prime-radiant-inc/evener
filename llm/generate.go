@@ -234,33 +234,8 @@ func prepareGeneration(opts GenerateOptions) (*generationState, error) {
 	}
 
 	if maxToolRounds > 0 && hasActiveTool {
-		providerName := normalizeProviderName(opts.Provider)
-		if providerName == "" {
-			providerName = client.DefaultProvider()
-		}
-		if providerName != "" {
-			if res, rErr := client.Registry().ResolveInstanceModelFacts(providerName, opts.Model); rErr == nil && res.Protocol == registry.ProtocolGoogle {
-				anchor := strings.TrimSpace(opts.PreviousResponseID)
-				if gOpts, ok := opts.ProviderOptions[registry.ProtocolGoogle].(map[string]any); ok {
-					if rawAnchor, exists := gOpts["previous_interaction_id"]; exists && rawAnchor != nil {
-						s, ok := rawAnchor.(string)
-						if !ok {
-							return nil, &ConfigurationError{ProviderInstance: res.Instance, Message: "google provider_options.previous_interaction_id must be a string"}
-						}
-						if anchor == "" {
-							anchor = strings.TrimSpace(s)
-						}
-					}
-				}
-				if anchor != "" {
-					return nil, &ConfigurationError{ProviderInstance: res.Instance, Message: "google interactions with previous_interaction_id cannot use automatic Generate/StreamGenerate tool loops; use Client.Complete/Client.Stream or set MaxToolRounds=0"}
-				}
-				toolsSupported := res.Caps.Tools == nil || *res.Caps.Tools
-				webSearch := opts.WebSearch && (res.Caps.WebSearch == nil || *res.Caps.WebSearch) && !registry.IsVertexGeminiOmni(res.Transport.Preset, res.WireID)
-				if webSearch && len(toolDefs) > 0 && toolsSupported && registry.BoolValue(res.Caps.CombinedSearchAndFunctions) {
-					return nil, &ConfigurationError{ProviderInstance: res.Instance, Message: "google interactions combining web_search with active function tools cannot use automatic Generate/StreamGenerate tool loops; use Client.Complete/Client.Stream or set MaxToolRounds=0"}
-				}
-			}
+		if err := preflightGoogleAutoToolLoop(client, opts, toolDefs); err != nil {
+			return nil, err
 		}
 	}
 
@@ -279,6 +254,44 @@ func prepareGeneration(opts GenerateOptions) (*generationState, error) {
 		maxToolRounds:     maxToolRounds,
 		policy:            policy,
 	}, nil
+}
+
+func preflightGoogleAutoToolLoop(client *Client, opts GenerateOptions, toolDefs []ToolDefinition) error {
+	providerName := normalizeProviderName(opts.Provider)
+	if providerName == "" {
+		providerName = client.DefaultProvider()
+	}
+	if providerName == "" {
+		return nil
+	}
+	res, err := client.Registry().ResolveInstanceModelFacts(providerName, opts.Model)
+	if err != nil {
+		return nil //nolint:nilerr // preflight only inspects resolvable Google rows; resolution errors surface at dispatch
+	}
+	if res.Protocol != registry.ProtocolGoogle {
+		return nil
+	}
+	anchor := strings.TrimSpace(opts.PreviousResponseID)
+	if gOpts, ok := opts.ProviderOptions[registry.ProtocolGoogle].(map[string]any); ok {
+		if rawAnchor, exists := gOpts["previous_interaction_id"]; exists && rawAnchor != nil {
+			s, ok := rawAnchor.(string)
+			if !ok {
+				return &ConfigurationError{ProviderInstance: res.Instance, Message: "google provider_options.previous_interaction_id must be a string"}
+			}
+			if anchor == "" {
+				anchor = strings.TrimSpace(s)
+			}
+		}
+	}
+	if anchor != "" {
+		return &ConfigurationError{ProviderInstance: res.Instance, Message: "google interactions with previous_interaction_id cannot use automatic Generate/StreamGenerate tool loops; use Client.Complete/Client.Stream or set MaxToolRounds=0"}
+	}
+	toolsSupported := res.Caps.Tools == nil || *res.Caps.Tools
+	webSearch := opts.WebSearch && (res.Caps.WebSearch == nil || *res.Caps.WebSearch) && !registry.IsVertexGeminiOmni(res.Transport.Preset, res.WireID)
+	if webSearch && len(toolDefs) > 0 && toolsSupported && registry.BoolValue(res.Caps.CombinedSearchAndFunctions) {
+		return &ConfigurationError{ProviderInstance: res.Instance, Message: "google interactions combining web_search with active function tools cannot use automatic Generate/StreamGenerate tool loops; use Client.Complete/Client.Stream or set MaxToolRounds=0"}
+	}
+	return nil
 }
 
 // request builds the model request for one step from opts and the conversation so far.

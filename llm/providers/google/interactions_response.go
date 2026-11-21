@@ -122,13 +122,17 @@ func fromInteraction(raw map[string]any, requestedModel string, body []byte, ins
 				step.textItems, step.citations, step.nonTextModalities = extractModelOutputContent(content, true)
 			}
 		case "function_call":
-			if !rawCaptured {
-				rawCaptured = true
-				rawArgs = captureInteractionArgsRaw(body)
-			}
 			var rawTok json.RawMessage
-			if stepIdx < len(rawArgs) {
-				rawTok = rawArgs[stepIdx]
+			if argsAny := stepMap["arguments"]; argsAny != nil {
+				if s, isStr := argsAny.(string); !isStr || strings.ContainsRune(s, '\ufffd') {
+					if !rawCaptured {
+						rawCaptured = true
+						rawArgs = captureInteractionArgsRaw(body)
+					}
+					if stepIdx < len(rawArgs) {
+						rawTok = rawArgs[stepIdx]
+					}
+				}
 			}
 			step.callID = stringVal(stepMap["id"])
 			step.callName = stringVal(stepMap["name"])
@@ -501,7 +505,8 @@ func classifyGeminiError(httpStatus int, body []byte, retryAfter *time.Duration,
 
 func settleInteractionStatus(r *llm.Response, raw map[string]any, stepErrMap map[string]any, nonTextModalities []string) error {
 	status := strings.TrimSpace(stringVal(raw["status"]))
-	emptyTextAndCalls := len(r.ToolCalls()) == 0 && !hasTextPart(r.Message)
+	calls := r.ToolCalls()
+	emptyTextAndCalls := len(calls) == 0 && r.Text() == ""
 
 	emptyOutputErr := func() (err error, isStepErr bool) {
 		if len(stepErrMap) > 0 {
@@ -523,7 +528,7 @@ func settleInteractionStatus(r *llm.Response, raw map[string]any, stepErrMap map
 				return err
 			}
 		}
-		if len(r.ToolCalls()) > 0 {
+		if len(calls) > 0 {
 			r.Finish = llm.FinishReason{Reason: llm.FinishReasonToolCalls, Raw: "completed"}
 		} else {
 			r.Finish = llm.FinishReason{Reason: llm.FinishReasonStop, Raw: "completed"}
@@ -804,15 +809,6 @@ func resolveInteractionStepArgs(rawTok json.RawMessage, fallback any) (json.RawM
 func stringVal(v any) string {
 	s, _ := v.(string)
 	return s
-}
-
-func hasTextPart(msg llm.Message) bool {
-	for _, p := range msg.Content {
-		if p.Kind == llm.ContentText && p.Text != "" {
-			return true
-		}
-	}
-	return false
 }
 
 func appendUniqueStrings(dst []string, src ...string) []string {

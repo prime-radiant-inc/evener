@@ -425,7 +425,7 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 				}
 			}
 		case ContentThinking, ContentRedThinking:
-			if p.Thinking != nil && p.Thinking.GoogleInteraction && t.protocol != registry.ProtocolGoogle {
+			if isForeignGoogleInteractionThinking(p, t.protocol) {
 				continue
 			}
 			if t.stripOpaqueThinking {
@@ -477,7 +477,7 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 //
 // Chat reasoning is priced across the message by estimateMessageInputParts.
 func thinkingReplayChars(target targetInfo, p ContentPart) int {
-	if p.Thinking == nil || (p.Thinking.GoogleInteraction && target.protocol != registry.ProtocolGoogle) {
+	if p.Thinking == nil || isForeignGoogleInteractionThinking(p, target.protocol) {
 		return 0
 	}
 	t := p.Thinking
@@ -598,8 +598,12 @@ func (p *reasoningTextPresence) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
+func isForeignGoogleInteractionThinking(p ContentPart, proto string) bool {
+	return p.Thinking != nil && p.Thinking.GoogleInteraction && proto != registry.ProtocolGoogle
+}
+
 func (r *chatReasoningEstimate) add(target targetInfo, p ContentPart) {
-	if p.Kind != ContentThinking || p.Thinking == nil || (p.Thinking.GoogleInteraction && target.protocol != registry.ProtocolGoogle) {
+	if p.Kind != ContentThinking || p.Thinking == nil || isForeignGoogleInteractionThinking(p, target.protocol) {
 		return
 	}
 	r.displayChars += len(p.Thinking.Text)

@@ -27,10 +27,11 @@ type protectedSnapshot struct {
 	raw     []byte
 }
 
+var protectedInteractionFields = [...]string{"input", "tools", "response_format"}
+
 func snapshotProtectedFields(body map[string]any) (map[string]protectedSnapshot, error) {
-	keys := []string{"input", "tools", "response_format"}
-	out := make(map[string]protectedSnapshot, len(keys))
-	for _, k := range keys {
+	out := make(map[string]protectedSnapshot, len(protectedInteractionFields))
+	for _, k := range protectedInteractionFields {
 		v, exists := body[k]
 		if !exists {
 			out[k] = protectedSnapshot{}
@@ -106,7 +107,7 @@ func (p *Protocol) completionCall(
 			if err != nil {
 				return err
 			}
-			for _, k := range []string{"input", "tools", "response_format"} {
+			for _, k := range protectedInteractionFields {
 				pre, post := preSnapshots[k], postSnapshots[k]
 				if pre.present != post.present || !bytes.Equal(pre.raw, post.raw) {
 					return &llm.ConfigurationError{ProviderInstance: res.Instance, Message: fmt.Sprintf("instance %q: request preparer modified protected Interactions field %q", res.Instance, k)}
@@ -221,17 +222,26 @@ func vertexInteractionsLocationRemedy(instance, loc, wireID string) string {
 		globalDesc = "GOOGLE_VERTEX_LOCATION=global (global routing with no data-residency guarantee)"
 	)
 	const disclosure = "switching from %q changes the geographic data-residency boundary"
+	const directionalFmt = "instance %q: Vertex location %q does not serve /interactions for %q; use %s (or %s / %s; " + disclosure + ")"
 	switch {
 	case strings.HasPrefix(lower, "us-"):
-		return fmt.Sprintf("instance %q: Vertex location %q does not serve /interactions for %q; use %s (or %s / %s; "+disclosure+")",
+		return fmt.Sprintf(directionalFmt,
 			instance, loc, wireID, usDesc, euDesc, globalDesc, loc)
 	case strings.HasPrefix(lower, "europe-") && lower != "europe-west2" && lower != "europe-west6":
-		return fmt.Sprintf("instance %q: Vertex location %q does not serve /interactions for %q; use %s (or %s / %s; "+disclosure+")",
+		return fmt.Sprintf(directionalFmt,
 			instance, loc, wireID, euDesc, usDesc, globalDesc, loc)
 	default:
 		return fmt.Sprintf("instance %q: Vertex location %q does not serve /interactions for %q; supported endpoints are %s, %s, or %s ("+disclosure+")",
 			instance, loc, wireID, usDesc, euDesc, globalDesc, loc)
 	}
+}
+
+func (p interactionBodyPolicy) allowsPre2xxSignatureRetry() bool {
+	return p.anchorID == "" && p.hasUnsignedNonNativeCalls
+}
+
+func (p interactionBodyPolicy) allowsPost2xxSignatureRetry() bool {
+	return p.allowsPre2xxSignatureRetry() && !p.storeOmitted && !p.effectiveStore
 }
 
 func isSignatureValidation400(err error) bool {
@@ -252,8 +262,8 @@ func (p *Protocol) Complete(ctx context.Context, req llm.Request, res registry.R
 		return protocolhttp.CompleteViaStream(ctx, res.Instance, func(ctx context.Context) (llm.Stream, error) { return p.Stream(ctx, req, res) })
 	}
 	resp, policy, settledFrom2xx, err := p.completeOnce(ctx, req, res, false)
-	allowRetry := !settledFrom2xx || (!policy.storeOmitted && !policy.effectiveStore)
-	if err != nil && allowRetry && policy.anchorID == "" && policy.hasUnsignedNonNativeCalls && isSignatureValidation400(err) {
+	if err != nil && isSignatureValidation400(err) &&
+		((!settledFrom2xx && policy.allowsPre2xxSignatureRetry()) || (settledFrom2xx && policy.allowsPost2xxSignatureRetry())) {
 		retryResp, _, _, retryErr := p.completeOnce(ctx, req, res, true)
 		return retryResp, retryErr
 	}
@@ -288,10 +298,10 @@ func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Res
 	if err != nil {
 		return nil, llm.RewriteErrorProvider(err, res.Instance)
 	}
-	if policy.anchorID != "" || !policy.hasUnsignedNonNativeCalls {
+	if !policy.allowsPre2xxSignatureRetry() {
 		return p.openStreamWithBody(ctx, req, res, body, policy)
 	}
-	if policy.storeOmitted || policy.effectiveStore {
+	if !policy.allowsPost2xxSignatureRetry() {
 		s1, err := p.openStreamWithBody(ctx, req, res, body, policy)
 		if err != nil {
 			if isSignatureValidation400(err) {
@@ -354,7 +364,6 @@ func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Res
 		}
 		relay := func(st llm.Stream, allowRetry bool) bool {
 			defer func() { _ = st.Close() }()
-			sawTerminal := false
 			for {
 				var (
 					ev llm.StreamEvent
@@ -366,9 +375,7 @@ func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Res
 					return false
 				case ev, ok = <-st.Events():
 					if !ok {
-						if !sawTerminal {
-							emitContextErrorIfActive(nil)
-						}
+						emitContextErrorIfActive(nil)
 						return false
 					}
 				}
@@ -384,8 +391,8 @@ func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Res
 					sawOutput = true
 					outer.Send(ev)
 				case llm.StreamEventFinish:
-					sawTerminal = true
 					outer.Send(ev)
+					return false
 				case llm.StreamEventError:
 					if allowRetry && !sawOutput && isSignatureValidation400(ev.Err) {
 						return true

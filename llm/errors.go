@@ -407,17 +407,17 @@ func RewriteErrorProvider(err error, provider string) error {
 		return nil
 	}
 	//nolint:errorlint // deliberate: only the error itself is rewritten, never one inside a wrapper this package cannot rebuild (see above)
-	pc, ok := err.(providerCopier)
-	if !ok {
-		//nolint:errorlint // deliberate: same direct-error policy for cross-package providerCopier
-		if ext, ok := err.(ProviderCopier); ok && ext.Provider() != "" {
-			return ext.CopyWithProvider(provider)
+	if pc, ok := err.(providerCopier); ok {
+		if pc.Provider() == "" {
+			return err
 		}
+		return pc.copyWithProvider(provider)
 	}
-	if !ok || pc.Provider() == "" {
-		return err
+	//nolint:errorlint // deliberate: same direct-error policy for cross-package providerCopier
+	if ext, ok := err.(ProviderCopier); ok && ext.Provider() != "" {
+		return ext.CopyWithProvider(provider)
 	}
-	return pc.copyWithProvider(provider)
+	return err
 }
 
 // ErrorFromHTTPStatus maps an HTTP status code to the corresponding Error

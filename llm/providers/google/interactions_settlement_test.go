@@ -418,6 +418,37 @@ func TestInteraction_SSE_ToolCallPlaceholderVsDeltaConfirmedAndTerminalBackfill(
 		}
 	})
 
+	t.Run("open unstopped function_call non-prefix terminal replacement skips ToolCallDelta", func(t *testing.T) {
+		sse := buildSSE(
+			[2]string{"step.start", `{"event_type":"step.start","index":0,"step":{"type":"function_call","id":"fc_rep","name":"write_file","arguments":{}}}`},
+			[2]string{"step.delta", `{"event_type":"step.delta","index":0,"delta":{"type":"arguments_delta","arguments":"{\"wrong"}}`},
+			[2]string{"interaction.completed", `{"event_type":"interaction.completed","interaction":{"id":"i_rep","status":"requires_action","steps":[{"type":"function_call","id":"fc_rep","name":"write_file","arguments":{"path":"ok.txt"}}]}}`},
+		)
+		resp, events, err := runInteractionsSSETest(t, sse, "gemini-prod", "gemini-4-neon", false)
+		if err != nil {
+			t.Fatalf("SSE decode: %v", err)
+		}
+		if calls := resp.ToolCalls(); len(calls) != 1 || string(calls[0].Arguments) != `{"path":"ok.txt"}` {
+			t.Fatalf("settled calls = %+v, want Arguments='{\"path\":\"ok.txt\"}'", calls)
+		}
+		var deltaArgs []string
+		var endArgs string
+		for _, ev := range events {
+			if ev.Type == llm.StreamEventToolCallDelta && ev.ToolCall != nil {
+				deltaArgs = append(deltaArgs, string(ev.ToolCall.Arguments))
+			}
+			if ev.Type == llm.StreamEventToolCallEnd && ev.ToolCall != nil {
+				endArgs = string(ev.ToolCall.Arguments)
+			}
+		}
+		if !reflect.DeepEqual(deltaArgs, []string{`{"wrong`}) {
+			t.Fatalf("ToolCallDelta arguments = %v, want only [{\"wrong]", deltaArgs)
+		}
+		if endArgs != `{"path":"ok.txt"}` {
+			t.Fatalf("ToolCallEnd Arguments = %q, want '{\"path\":\"ok.txt\"}'", endArgs)
+		}
+	})
+
 	t.Run("interaction.completed malformed string arguments preserved for argrepair", func(t *testing.T) {
 		sse := buildSSE(
 			[2]string{"step.start", `{"event_type":"step.start","index":0,"step":{"type":"function_call","id":"fc_bad","name":"write_file","arguments":{}}}`},
@@ -690,14 +721,25 @@ func TestInteraction_SSE_SparseLargeStepIndexAndGap(t *testing.T) {
 		defer cancel()
 		pr, pw := io.Pipe()
 		defer func() { _ = pw.Close() }()
+		stop := context.AfterFunc(ctx, func() { _ = pw.Close() })
+		defer stop()
 		httpResp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: pr}
 		stream := llm.NewChanStream(cancel)
 		go decodeInteractionStream(ctx, cancel, httpResp, stream, llm.Request{Model: "gemini-4-neon"}, "gemini-prod", "gemini-4-neon", "", llm.APILogCredentialMaterial{}, nil, false, nil)
 
-		_, _ = io.WriteString(pw, buildSSE(
-			[2]string{"step.start", `{"event_type":"step.start","index":1000000000,"step":{"type":"model_output"}}`},
-			[2]string{"step.delta", `{"event_type":"step.delta","index":1000000000,"delta":{"type":"text","text":"open"}}`},
-		))
+		go func() {
+			_, _ = io.WriteString(pw, buildSSE(
+				[2]string{"step.start", `{"event_type":"step.start","index":1000000000,"step":{"type":"model_output"}}`},
+				[2]string{"step.delta", `{"event_type":"step.delta","index":1000000000,"delta":{"type":"text","text":"open"}}`},
+				[2]string{"step.start", `{"event_type":"step.start","index":0,"step":{"type":"model_output"}}`},
+				[2]string{"step.delta", `{"event_type":"step.delta","index":0,"delta":{"type":"text","text":"synced"}}`},
+			))
+		}()
+		for ev := range stream.Events() {
+			if ev.Type == llm.StreamEventTextDelta && ev.Delta == "synced" {
+				break
+			}
+		}
 		closed := make(chan error, 1)
 		go func() { closed <- stream.Close() }()
 		select {

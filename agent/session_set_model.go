@@ -161,15 +161,18 @@ func validateModelSwitchMembership(client *llm.Client, profile *provider.Profile
 	return fmt.Errorf("model %s is not available from instance %s (available: %s)", profile.Model(), profile.ID(), formatModelAlternatives(listing.Models))
 }
 
+func validateVertexInteractionsResolved(res registry.Resolved, model, instance string) error {
+	if res.Transport.Preset == registry.PresetVertexGemini && !registry.VertexSupportsGeminiModel(res.WireID) {
+		return fmt.Errorf("model %q on %s is not supported by Vertex AI Interactions API (use a Gemini 3.1+/4 model such as gemini-3.8-flash)", model, instance)
+	}
+	return nil
+}
+
 func validateVertexInteractionsModel(profile *provider.Profile) error {
 	if profile == nil {
 		return nil
 	}
-	res := profile.Resolved()
-	if res.Transport.Preset == registry.PresetVertexGemini && !registry.VertexSupportsGeminiModel(res.WireID) {
-		return fmt.Errorf("model %q on %s is not supported by Vertex AI Interactions API (use a Gemini 3.1+/4 model such as gemini-3.8-flash)", profile.Model(), profile.ID())
-	}
-	return nil
+	return validateVertexInteractionsResolved(profile.Resolved(), profile.Model(), profile.ID())
 }
 
 // validateSavedCheapModel checks a persisted SessionMeta.CheapModel candidate
@@ -198,9 +201,7 @@ func (s *Session) validateSavedCheapModel(candidate *provider.Profile) error {
 	}
 	if reg != nil {
 		if res, err := reg.Resolve(cheapProv + "/" + cheapModel); err == nil {
-			if res.Transport.Preset == registry.PresetVertexGemini && !registry.VertexSupportsGeminiModel(res.WireID) {
-				return fmt.Errorf("model %q on %s is not supported by Vertex AI Interactions API (use a Gemini 3.1+/4 model such as gemini-3.8-flash)", cheapModel, cheapProv)
-			}
+			return validateVertexInteractionsResolved(res, cheapModel, cheapProv)
 		}
 	}
 	return nil

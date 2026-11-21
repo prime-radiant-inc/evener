@@ -64,6 +64,29 @@ func (s *interactionStreamSlot) startToolCall(instance, wireModel string) *llm.T
 	}
 }
 
+func (s *interactionStreamSlot) settleStreamedOrInitialArgs() bool {
+	if !s.receivedArgFragments && !s.hasNonEmptyInitialArgs {
+		return false
+	}
+	rawBytes := s.initialArgs
+	if s.receivedArgFragments {
+		rawBytes = s.argBuf
+	}
+	s.settledArgs, s.settledSpelling = llm.NormalizeToolArguments(rawBytes)
+	s.hasSettledArgs = true
+	return true
+}
+
+func (s *interactionStreamSlot) nonEmptyTextItems() []string {
+	var items []string
+	for _, b := range s.textBuilders {
+		if txt := b.String(); txt != "" {
+			items = append(items, txt)
+		}
+	}
+	return items
+}
+
 func (s *interactionStreamSlot) settledToolCall(instance, wireModel string) llm.ToolCallData {
 	args := s.settledArgs
 	if len(args) == 0 {
@@ -125,19 +148,17 @@ func (a *interactionStreamAccumulator) ensureSlot(idx int, stepType string) *int
 	return slot
 }
 
-func (a *interactionStreamAccumulator) sortedSlotIndices() []int {
-	indices := make([]int, 0, len(a.slots))
-	for idx := range a.slots {
-		indices = append(indices, idx)
-	}
-	slices.Sort(indices)
-	return indices
-}
-
 func (a *interactionStreamAccumulator) send(ev llm.StreamEvent) {
 	if a.stream != nil {
 		a.stream.Send(ev)
 	}
+}
+
+func (a *interactionStreamAccumulator) flushDeferred(slot *interactionStreamSlot) {
+	for _, ev := range slot.deferredEvents {
+		a.send(ev)
+	}
+	slot.deferredEvents = nil
 }
 
 func (a *interactionStreamAccumulator) emit(slot *interactionStreamSlot, ev llm.StreamEvent) {
@@ -145,10 +166,7 @@ func (a *interactionStreamAccumulator) emit(slot *interactionStreamSlot, ev llm.
 		return
 	}
 	if slot.index == a.nextEmitIndex {
-		for _, d := range slot.deferredEvents {
-			a.send(d)
-		}
-		slot.deferredEvents = nil
+		a.flushDeferred(slot)
 		a.send(ev)
 		return
 	}
@@ -167,10 +185,7 @@ func (a *interactionStreamAccumulator) advanceEmitIndex() {
 		}
 		a.nextEmitIndex++
 		if next, hasNext := a.slots[a.nextEmitIndex]; hasNext && len(next.deferredEvents) > 0 {
-			for _, ev := range next.deferredEvents {
-				a.send(ev)
-			}
-			next.deferredEvents = nil
+			a.flushDeferred(next)
 		}
 	}
 }
@@ -299,12 +314,10 @@ func (a *interactionStreamAccumulator) handleStepStart(idx int, step map[string]
 			slot.spanStarted = true
 			a.emit(slot, llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: slot.startToolCall(a.instance, a.wireModel)})
 		}
-	case "google_search_call", "google_search_result":
-		m := maps.Clone(step)
-		if stepType == "google_search_result" {
-			m = normalizeGoogleSearchResultStep(m)
-		}
-		slot.stepMap = m
+	case "google_search_call":
+		slot.stepMap = maps.Clone(step)
+	case "google_search_result":
+		slot.stepMap = normalizeGoogleSearchResultStep(step)
 	}
 }
 
@@ -472,13 +485,7 @@ func (a *interactionStreamAccumulator) handleStepStop(idx int, payload map[strin
 			a.advanceEmitIndex()
 		}
 	case "function_call":
-		if slot.receivedArgFragments || slot.hasNonEmptyInitialArgs {
-			rawBytes := slot.initialArgs
-			if slot.receivedArgFragments {
-				rawBytes = slot.argBuf
-			}
-			slot.settledArgs, slot.settledSpelling = llm.NormalizeToolArguments(rawBytes)
-			slot.hasSettledArgs = true
+		if slot.settleStreamedOrInitialArgs() {
 			tc := slot.settledToolCall(a.instance, a.wireModel)
 			a.emit(slot, llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &tc})
 			slot.spanEnded = true
@@ -563,13 +570,15 @@ func (a *interactionStreamAccumulator) complete(payload map[string]any, evData [
 					}
 				}
 				if !slot.hasSettledArgs && stepMap["arguments"] != nil {
-					if !rawTermCaptured {
-						rawTermCaptured = true
-						rawTermArgs = captureCompletedStepsArgsRaw(evData)
-					}
 					var rawTok json.RawMessage
-					if stepIdx < len(rawTermArgs) {
-						rawTok = rawTermArgs[stepIdx]
+					if s, isStr := stepMap["arguments"].(string); !isStr || strings.ContainsRune(s, '\ufffd') {
+						if !rawTermCaptured {
+							rawTermCaptured = true
+							rawTermArgs = captureCompletedStepsArgsRaw(evData)
+						}
+						if stepIdx < len(rawTermArgs) {
+							rawTok = rawTermArgs[stepIdx]
+						}
 					}
 					termArgs, termSpelling := resolveInteractionStepArgs(rawTok, stepMap["arguments"])
 					isEmptyObj := bytes.Equal(bytes.TrimSpace(termArgs), []byte("{}"))
@@ -584,10 +593,10 @@ func (a *interactionStreamAccumulator) complete(payload map[string]any, evData [
 						tc := slot.settledToolCall(a.instance, wireModel)
 						rawWire := []byte(tc.WireArguments())
 						if !bytes.Equal(bytes.TrimSpace(rawWire), []byte("{}")) && !bytes.Equal(rawWire, slot.argBuf) {
-							if len(slot.argBuf) > 0 && bytes.HasPrefix(rawWire, slot.argBuf) {
-								slot.backfilledArgBytes = rawWire[len(slot.argBuf):]
-							} else {
+							if len(slot.argBuf) == 0 {
 								slot.backfilledArgBytes = rawWire
+							} else if bytes.HasPrefix(rawWire, slot.argBuf) {
+								slot.backfilledArgBytes = rawWire[len(slot.argBuf):]
 							}
 						}
 					}
@@ -620,7 +629,7 @@ func (a *interactionStreamAccumulator) complete(payload map[string]any, evData [
 		}
 	}
 
-	indices := a.sortedSlotIndices()
+	indices := slices.Sorted(maps.Keys(a.slots))
 
 	// Finalize any remaining open/unresolved function_call slots and emit remaining events in index order.
 	for _, j := range indices {
@@ -629,16 +638,8 @@ func (a *interactionStreamAccumulator) complete(payload map[string]any, evData [
 			if slot.callID == "" {
 				slot.callID = identifier.MustNewSyntheticCallID()
 			}
-			if !slot.hasSettledArgs {
-				if slot.receivedArgFragments || slot.hasNonEmptyInitialArgs {
-					rawBytes := slot.initialArgs
-					if slot.receivedArgFragments {
-						rawBytes = slot.argBuf
-					}
-					slot.settledArgs, slot.settledSpelling = llm.NormalizeToolArguments(rawBytes)
-				} else {
-					slot.settledArgs = json.RawMessage("{}")
-				}
+			if !slot.hasSettledArgs && !slot.settleStreamedOrInitialArgs() {
+				slot.settledArgs = json.RawMessage("{}")
 				slot.hasSettledArgs = true
 			}
 		}
@@ -649,10 +650,7 @@ func (a *interactionStreamAccumulator) complete(payload map[string]any, evData [
 			continue
 		}
 		slot := a.slots[j]
-		for _, ev := range slot.deferredEvents {
-			a.send(ev)
-		}
-		slot.deferredEvents = nil
+		a.flushDeferred(slot)
 		a.finishOpenSlot(slot, wireModel)
 	}
 	if len(indices) > 0 {
@@ -677,11 +675,7 @@ func (a *interactionStreamAccumulator) complete(payload map[string]any, evData [
 			callName:          slot.callName,
 			settledArgs:       slot.settledArgs,
 			settledSpelling:   slot.settledSpelling,
-		}
-		for _, b := range slot.textBuilders {
-			if s := b.String(); s != "" {
-				st.textItems = append(st.textItems, s)
-			}
+			textItems:         slot.nonEmptyTextItems(),
 		}
 		steps = append(steps, st)
 	}
@@ -717,12 +711,7 @@ func (a *interactionStreamAccumulator) finishOpenSlot(slot *interactionStreamSlo
 	switch slot.stepType {
 	case "model_output":
 		if !slot.hadStreamedText {
-			var items []string
-			for _, b := range slot.textBuilders {
-				if s := b.String(); s != "" {
-					items = append(items, s)
-				}
-			}
+			items := slot.nonEmptyTextItems()
 			if len(items) > 0 {
 				if !slot.spanStarted {
 					slot.spanStarted = true
@@ -915,6 +904,13 @@ func captureCompletedStepsArgsRaw(evData []byte) []json.RawMessage {
 }
 
 func extractDeltaArgFragment(delta map[string]any, evData []byte) []byte {
+	val := delta["arguments"]
+	if val == nil {
+		val = delta["partial_arguments"]
+	}
+	if s, ok := val.(string); ok && !strings.ContainsRune(s, '\ufffd') {
+		return []byte(s)
+	}
 	var focused struct {
 		Delta struct {
 			Arguments        json.RawMessage `json:"arguments"`
@@ -935,10 +931,6 @@ func extractDeltaArgFragment(delta map[string]any, evData []byte) []byte {
 				return tok
 			}
 		}
-	}
-	val := delta["arguments"]
-	if val == nil {
-		val = delta["partial_arguments"]
 	}
 	switch v := val.(type) {
 	case string:
