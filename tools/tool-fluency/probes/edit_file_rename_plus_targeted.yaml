@@ -38,7 +38,7 @@ expect:
     - path: widget.go
       contains: "func newName() string {\n"
     - path: widget.go
-      contains: "// newName renders the widget using newName.\n"
+      contains: "// Render renders the widget using newName.\n"
     - path: widget.go
       contains: "return strings.ToUpper(\"render \" + newName())\n"
   final_contains: ["RESULT_RENAME_PLUS_TARGETED"]
