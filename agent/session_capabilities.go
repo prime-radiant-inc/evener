@@ -3,9 +3,12 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -53,6 +56,73 @@ var toolProbeTimeout = 2 * time.Second
 // wedged git can never consume the PATH and cache measurements, and the cheap
 // facts still land at their own pace.
 var gitProbeTimeout = 10 * time.Second
+
+// testSnapshotConfigHome is the config home the running test binary established
+// before any test ran. agent's TestMain points HOME and XDG_CONFIG_HOME at a
+// directory that outlives every test and then records os.UserConfigDir() here
+// (pinTestSnapshotConfigHome). Empty means no test binary pinned one — a
+// package that links agent without agent's TestMain — and the guard stands
+// down.
+var testSnapshotConfigHome string
+
+// snapshotConfigHomeForkError refuses the launch-time environment snapshot under
+// `go test` when the running test moved the config home away from the one the
+// test binary established.
+//
+// The snapshot forks `go env` (probeCapabilities). The go command records
+// telemetry under os.UserConfigDir()/go/telemetry — $XDG_CONFIG_HOME on Linux,
+// $HOME/Library/Application Support on macOS — and the first time it runs in a
+// config home with no upload token it daemonizes a sidecar (Setsid, never
+// waited) that keeps creating files there after `go env` has exited. When that
+// config home is a t.TempDir the sidecar races the TempDir RemoveAll cleanup and
+// a test that passed fails with "unlinkat …: directory not empty". Nothing can
+// join the sidecar, so such a test must not fork at all (#1527).
+//
+// The check reads the config home the go command would really use, at the fork
+// site, instead of inferring it from the test's source: a test that builds its
+// session with newSession and no withEnvironmentSnapshot(), or passes
+// SessionConfig{testOnly: testConfig{skipGitSnapshot: true}}, never reaches it,
+// whatever shape its options took (#6110).
+func snapshotConfigHomeForkError() error {
+	if !testing.Testing() {
+		return nil
+	}
+	current, err := os.UserConfigDir()
+	if err != nil {
+		// The go command cannot resolve a config home either, so it has no
+		// telemetry directory to write into.
+		return nil
+	}
+	return configHomeForkRefusal(testSnapshotConfigHome, current)
+}
+
+// configHomeForkRefusal is snapshotConfigHomeForkError's decision, split out so
+// the comparison is tested with explicit homes instead of the ambient
+// environment.
+func configHomeForkRefusal(baseline, current string) error {
+	if baseline == "" || sameConfigHome(baseline, current) {
+		return nil
+	}
+	return fmt.Errorf("the launch-time environment snapshot is on while this test moved its config home from %q to %q: "+
+		"the snapshot's `go env` probe would spawn the Go telemetry sidecar there, and the sidecar keeps writing after "+
+		"`go env` exits, racing the test's temp-dir cleanup (\"unlinkat …: directory not empty\", #1527). "+
+		"Build the session with newSession and no withEnvironmentSnapshot(), or pass "+
+		"SessionConfig{testOnly: testConfig{skipGitSnapshot: true}} (RestoreSessionConfig likewise)",
+		baseline, current)
+}
+
+// sameConfigHome reports whether two config homes name the same directory,
+// comparing the cleaned paths and, when both resolve, their symlink targets
+// (macOS /var and /private/var name one directory).
+func sameConfigHome(a, b string) bool {
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	if a == b {
+		return true
+	}
+	resolvedA, errA := filepath.EvalSymlinks(a)
+	resolvedB, errB := filepath.EvalSymlinks(b)
+	return errA == nil && errB == nil && resolvedA == resolvedB
+}
 
 // capabilityProbe is what the session-start probes measured. Its two halves are
 // tracked independently (gitProbed / toolsProbed) precisely so one failing does
