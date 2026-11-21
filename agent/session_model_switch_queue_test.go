@@ -1026,21 +1026,139 @@ func TestACommittedSwitchPublishesEvenWhenANewerQueuedPickLaterFails(t *testing.
 	}
 	// The acceptance publications must keep a subscriber's label truthful
 	// throughout: A's pick is announced when it queues, B's pick is announced
-	// when it queues, and B's deferred rejection must retract its announcement
-	// back to the model the session actually runs — the last acceptance names
-	// A again, never B, so no surface keeps showing a pick that failed.
+	// when it queues, A's commit re-asserts B (the commit frame names the model
+	// the session runs now, so the newer accepted pick must follow it), and
+	// B's deferred rejection must retract its announcement back to the model
+	// the session actually runs — the last acceptance names A again, never B,
+	// so no surface keeps showing a pick that failed.
 	wantNext := []struct{ provider, model string }{
 		{"openai", "gpt-5.4"},
+		{"glm", "glm-test"},
 		{"glm", "glm-test"},
 		{"openai", "gpt-5.4"},
 	}
 	if len(nextModel) != len(wantNext) {
-		t.Fatalf("next-model announcements = %+v, want %d: A accepted, B accepted, B's failed deferred check reverting to A", nextModel, len(wantNext))
+		t.Fatalf("next-model announcements = %+v, want %d: A accepted, B accepted, B re-asserted at A's commit, B's failed deferred check reverting to A", nextModel, len(wantNext))
 	}
 	for i, want := range wantNext {
 		if nextModel[i].Provider != want.provider || nextModel[i].Model != want.model {
 			t.Fatalf("next-model announcement %d = %s/%s, want %s/%s", i, nextModel[i].Provider, nextModel[i].Model, want.provider, want.model)
 		}
+	}
+}
+
+// TestCommittedSwitchPublicationReassertsANewerAcceptedPick pins the visible
+// selection through the window a commit publication opens: a pick accepted
+// while the previous switch was publishing is the queue's newest choice, and
+// its acceptance was already published, but the commit frame that follows
+// names the model the session runs now. Without re-announcing the accepted
+// pick at the publication, a subscriber's label and the status cache rest on
+// the committed model until the pick's own application - burying the
+// acceptance the way a rejected pick's retraction exists to unbury.
+func TestCommittedSwitchPublicationReassertsANewerAcceptedPick(t *testing.T) {
+	dir := t.TempDir()
+	openaiAdapter := &fakeAdapter{
+		name: "openai",
+		liveModels: func(context.Context) ([]registry.Model, error) {
+			return []registry.Model{{ID: "gpt-5.2"}, {ID: "gpt-5.4"}, {ID: "gpt-4.1-mini"}}, nil
+		},
+	}
+	s := newSession(t,
+		withAdapter(openaiAdapter),
+		withDir(dir),
+		withConfig(SessionConfig{
+			StateDir:         dir,
+			MaxSubagentDepth: 1,
+			ResolveProfile:   testResolver,
+			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+		}))
+	releaseAPublish := make(chan struct{})
+	aPublishEntered := make(chan struct{}, 1)
+	hookOnce := make(chan struct{}, 1)
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.beforeModelSwitchPublish = func() {
+			select {
+			case hookOnce <- struct{}{}:
+				aPublishEntered <- struct{}{}
+				<-releaseAPublish
+			default:
+			}
+		}
+	})
+	openaiAdapter.setSteps([]func(llm.Request) llm.Response{
+		// Turn 1: pick A mid-turn; the pick queues for this turn's boundary.
+		func(llm.Request) llm.Response {
+			if err := s.SetModel("gpt-5.4"); err != nil {
+				t.Errorf("mid-turn pick of A: %v", err)
+			}
+			return agenttest.CommunicateResponse(true, "first turn done")
+		},
+		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "queued turn done") },
+	})
+	var evMu sync.Mutex
+	evs := []events.SessionEvent{}
+	drained := make(chan struct{})
+	s.ConsumeEventsLossless(func(ev events.SessionEvent) {
+		evMu.Lock()
+		evs = append(evs, ev)
+		evMu.Unlock()
+	}, func() { close(drained) })
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	queueOneMutation(t, s, "cm-reassert-publish", "the message queued behind the first turn")
+
+	// While A's application sits between its swap and its publication, the
+	// newer pick arrives and queues for a later boundary: the queue's order
+	// makes B the session's next-turn choice from this moment.
+	go func() {
+		<-aPublishEntered
+		if err := s.SetModel("gpt-4.1-mini"); err != nil {
+			t.Errorf("queued pick of B: %v", err)
+		}
+		close(releaseAPublish)
+	}()
+
+	if _, err := s.ProcessInput(context.Background(), "the first message", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	s.Close()
+	<-drained
+
+	// The commit publication lands after B's acceptance, so the model frames
+	// must end on B: the first model frame after A's commit names B, and the
+	// session's final committed model is B.
+	evMu.Lock()
+	defer evMu.Unlock()
+	aCommit := -1
+	lastCommit := events.ModelChangedData{}
+	for i, ev := range evs {
+		if d, ok := ev.Data.(events.ModelChangedData); ok {
+			if d.NewModel == "gpt-5.4" {
+				aCommit = i
+			}
+			lastCommit = d
+		}
+	}
+	if aCommit < 0 {
+		t.Fatal("no commit frame for A's applied switch")
+	}
+	for _, ev := range evs[aCommit+1:] {
+		if d, ok := ev.Data.(events.NextModelChangedData); ok {
+			if d.Model != "gpt-4.1-mini" {
+				t.Fatalf("the first model frame after A's commit announces %q, want the newer accepted pick gpt-4.1-mini", d.Model)
+			}
+			break
+		}
+		if d, ok := ev.Data.(events.ModelChangedData); ok {
+			t.Fatalf("the first model frame after A's commit is a commit of %q; the newer accepted pick's announcement must be reasserted before any later commit can own the visible selection", d.NewModel)
+		}
+	}
+	if lastCommit.NewModel != "gpt-4.1-mini" {
+		t.Fatalf("the last commit names %q, want B (gpt-4.1-mini) applied at a boundary", lastCommit.NewModel)
+	}
+	if got := s.Profile().Model(); got != "gpt-4.1-mini" {
+		t.Fatalf("profile model = %q, want B (gpt-4.1-mini)", got)
 	}
 }
 

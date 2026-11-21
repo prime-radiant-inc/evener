@@ -2308,6 +2308,12 @@ type pendingModelSwitch struct {
 	// the session while the pick waits for its boundary (ReportedModelRef).
 	resolvedModel    string
 	resolvedProvider string
+	// profile is the enriched profile the pick resolved to, the same one the
+	// at-rest path commits. A commit publication that lands after this pick's
+	// acceptance re-announces from it, so the visible selection moves back to
+	// the queue's newest choice instead of resting on the just-committed
+	// model until the pick's own boundary.
+	profile *provider.Profile
 }
 
 // modelSwitchFence bounds one switch application's commit to the pick that
@@ -2457,7 +2463,7 @@ func (s *Session) queueModelSwitch(target modelSwitchTarget, pickSeq uint64) err
 	// apply if the newer one fails its deferred check.
 	queued := false
 	if pickSeq > s.modelPickAccepted {
-		s.enqueuePendingModelLocked(pendingModelSwitch{target: target, primedInstance: primedInstance, primedListing: primedListing, seq: pickSeq, resolvedModel: nextProfile.Model(), resolvedProvider: nextProfile.ID()})
+		s.enqueuePendingModelLocked(pendingModelSwitch{target: target, primedInstance: primedInstance, primedListing: primedListing, seq: pickSeq, resolvedModel: nextProfile.Model(), resolvedProvider: nextProfile.ID(), profile: nextProfile})
 		// A call waiting out the old model's usage limit retries on this
 		// one now rather than at the turn boundary it is waiting to reach.
 		s.wakeQuotaWaitLocked()
@@ -2734,7 +2740,7 @@ func (s *Session) applyModelSwitch(target modelSwitchTarget, primedInstance stri
 		// rejected there and must not cancel an older one in the meantime.
 		// The pop orders entries by issue, so it still applies before any
 		// older queued pick that survives.
-		s.enqueuePendingModelLocked(pendingModelSwitch{target: target, primedInstance: listedInstance, primedListing: listing, seq: fence.pickSeq, resolvedModel: nextProfile.Model(), resolvedProvider: nextProfile.ID()})
+		s.enqueuePendingModelLocked(pendingModelSwitch{target: target, primedInstance: listedInstance, primedListing: listing, seq: fence.pickSeq, resolvedModel: nextProfile.Model(), resolvedProvider: nextProfile.ID(), profile: nextProfile})
 		s.wakeQuotaWaitLocked()
 		s.mu.Unlock()
 		// Queued is accepted for the next boundary, so the pick is published
@@ -2852,6 +2858,23 @@ func (s *Session) applyModelSwitch(target modelSwitchTarget, primedInstance stri
 		ContextAssumed:         usage.Assumed,
 		CompactionThreshold:    usage.CompactionThreshold,
 	})
+	// A pick accepted while this switch was publishing is still the queue's
+	// newest choice, and its acceptance was already published. The commit
+	// frame above names the model the session runs now, so without this the
+	// advertised selection rests on the committed model until the pick's own
+	// boundary - burying the acceptance. Re-announce the newest accepted pick
+	// here, under the publication lock, where no further commit can land
+	// between the two and undo it.
+	s.mu.Lock()
+	newest := s.newestPendingModelIndexLocked()
+	var queuedPick *provider.Profile
+	if newest >= 0 {
+		queuedPick = s.pendingModels[newest].profile
+	}
+	s.mu.Unlock()
+	if queuedPick != nil {
+		s.announceNextModel(queuedPick)
+	}
 	// Flush meta.json so a daemon crash before the next happy-path turn
 	// boundary doesn't leave on-disk model stale. Kata wnfz. maybeAutoSave
 	// re-acquires s.mu via s.Meta(), so the lock must be released first.

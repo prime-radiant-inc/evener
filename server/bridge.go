@@ -254,7 +254,10 @@ func sessionEventStatusEffect(ev events.SessionEvent) func(*Server) {
 			return nil
 		}
 		return func(s *Server) {
-			s.updateSessionInfoLocked(ev.SessionID, d.Model, d.Provider)
+			// An acceptance (or its retraction) moves the advertised pair
+			// only: the session keeps running the committed model until the
+			// pick's own commit, so pricing must not follow the pick here.
+			s.updateSessionAdvertisedModelLocked(ev.SessionID, d.Model, d.Provider)
 		}
 	case events.EventStatusSettled:
 		// Only a resting state settles outside a turn; anything else would

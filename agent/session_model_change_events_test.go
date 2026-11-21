@@ -136,15 +136,21 @@ func TestSetModel_FailedSwitch_DoesNotEmitModelChangedEvent(t *testing.T) {
 		t.Fatal("expected error from unknown instance ref")
 	}
 
-	select {
-	case ev := <-sess.Events():
-		if _, ok := ev.Data.(events.ModelChangedData); ok {
-			t.Fatal("EventModelChanged emitted for a failed SetModel")
+	// Drain every buffered event, not just the first: the channel's first
+	// event is the session start, so a single read would pass even if the
+	// rejected pick had announced itself behind it.
+	for {
+		select {
+		case ev := <-sess.Events():
+			if _, ok := ev.Data.(events.ModelChangedData); ok {
+				t.Fatal("EventModelChanged emitted for a failed SetModel")
+			}
+			if _, ok := ev.Data.(events.NextModelChangedData); ok {
+				t.Fatal("EventNextModelChanged emitted for a failed SetModel")
+			}
+		default:
+			return
 		}
-		if _, ok := ev.Data.(events.NextModelChangedData); ok {
-			t.Fatal("EventNextModelChanged emitted for a failed SetModel")
-		}
-	default:
 	}
 }
 
