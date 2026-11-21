@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -33,8 +32,8 @@ func TestTurnCacheReusesParseUntilFileChanges(t *testing.T) {
 		t.Fatalf("parses=%d, want 1 (cache should reuse the unchanged file)", parses)
 	}
 
-	// Change the file (size + modtime) → re-parse.
-	time.Sleep(10 * time.Millisecond)
+	// The rewrite changes the file's size, which the cache's validity gate
+	// compares, so the changed file must re-parse once.
 	if err := os.WriteFile(path, []byte("a\nb\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
