@@ -50,7 +50,7 @@ func ReadGitPointerFile(path string) ([]byte, error) {
 		// read, and it must not be opened to find that out.
 		return nil, fmt.Errorf("open %q: %w", path, ErrNotRegularFile)
 	}
-	f, err := openRegularNoFollow(target)
+	f, err := OpenRegularNoFollow(target)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +77,7 @@ func ReadGitPointerFile(path string) ([]byte, error) {
 // but not the wait. The mount is read from the OPENED descriptor, so no swap
 // between stat and open can hide it.
 func readGitPointerDescriptor(path string, f *os.File) ([]byte, error) {
-	if fdOnPseudoMount(int(f.Fd())) {
+	if FDOnPseudoMount(int(f.Fd())) {
 		return nil, fmt.Errorf("open %q: %w", path, ErrNotRegularFile)
 	}
 	data, readErr := io.ReadAll(io.LimitReader(f, gitPointerMaxBytes+1))

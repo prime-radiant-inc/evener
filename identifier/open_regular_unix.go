@@ -9,7 +9,7 @@ import (
 	"syscall"
 )
 
-// openRegularNoFollow opens path for reading through a single descriptor that
+// OpenRegularNoFollow opens path for reading through a single descriptor that
 // is validated before any read: the open refuses a symlink at the final
 // component (ELOOP, the target is never touched) and never blocks — a
 // read-only open of a FIFO would otherwise block until a writer appears, so
@@ -17,7 +17,12 @@ import (
 // then fstat'd and must be a regular file; anything else (a FIFO, a device) is
 // refused. The validation and the read share one descriptor, so nothing can
 // be swapped between the check and the bytes.
-func openRegularNoFollow(path string) (*os.File, error) {
+//
+// It is the one implementation of that guard: this package's .git pointer
+// reader and execenv's dedupe, transcript, image, and apilog readers all open
+// workspace-controlled paths with it, so the symlink refusal, the non-blocking
+// open, and the regular-file requirement cannot drift apart.
+func OpenRegularNoFollow(path string) (*os.File, error) {
 	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		if errors.Is(err, syscall.ELOOP) {
