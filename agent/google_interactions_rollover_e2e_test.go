@@ -534,30 +534,48 @@ func TestSessionGoogleInteractions_PreCutoverSignedToolCallRestoreAndFallback(t 
 	if bytes.Contains(bodies[0], []byte("server_tool_use")) || bytes.Contains(bodies[0], []byte("legacy grounded answer")) {
 		t.Fatalf("attempt 1 replayed historical Grounding: %s", bodies[0])
 	}
+	if bytes.Contains(bodies[0], []byte(`"legacy"`)) || bytes.Contains(bodies[0], []byte("search result")) {
+		t.Fatalf("attempt 1 replayed historical web_search payload: %s", bodies[0])
+	}
 
 	phaseASteps := interactionsSteps(t, bodies[0])
-	wantPhaseA := []any{
-		map[string]any{"type": "user_input", "content": []any{
-			map[string]any{"type": "text", "text": "legacy request"},
-		}},
-		map[string]any{"type": "model_output", "content": []any{
-			map[string]any{"type": "text", "text": "[historical grounded output omitted from model replay]"},
-		}},
-		map[string]any{"type": "function_call", "id": "call_search", "name": "web_search", "arguments": map[string]any{
-			"_omitted": "[historical grounded tool input omitted from model replay]",
-		}},
-		map[string]any{"type": "function_call", "id": "call_read", "name": "read_file", "arguments": map[string]any{"path": "a.txt"}},
-		map[string]any{"type": "function_result", "call_id": "call_search", "name": "web_search", "result": "[historical web_search output omitted from model replay]"},
-		map[string]any{"type": "function_result", "call_id": "call_read", "name": "read_file", "result": "file body"},
-		map[string]any{"type": "model_output", "content": []any{
-			map[string]any{"type": "text", "text": "intermediate legacy answer"},
-		}},
-		map[string]any{"type": "user_input", "content": []any{
-			map[string]any{"type": "text", "text": "post-upgrade prompt"},
-		}},
+	if len(phaseASteps) != 8 {
+		t.Fatalf("phase A steps count = %d, want 8: %s", len(phaseASteps), mustJSON(t, phaseASteps))
 	}
-	if !reflect.DeepEqual(phaseASteps, wantPhaseA) {
-		t.Fatalf("phase A steps mismatch\n got: %s\nwant: %s", mustJSON(t, phaseASteps), mustJSON(t, wantPhaseA))
+	if !reflect.DeepEqual(phaseASteps[0], map[string]any{"type": "user_input", "content": []any{map[string]any{"type": "text", "text": "legacy request"}}}) {
+		t.Fatalf("phase A step[0] = %s", mustJSON(t, phaseASteps[0]))
+	}
+	step1, _ := phaseASteps[1].(map[string]any)
+	step1Content, _ := step1["content"].([]any)
+	var step1Part map[string]any
+	if len(step1Content) > 0 {
+		step1Part, _ = step1Content[0].(map[string]any)
+	}
+	step1Text, _ := step1Part["text"].(string)
+	if step1["type"] != "model_output" || len(step1Content) != 1 || step1Part["type"] != "text" || strings.TrimSpace(step1Text) == "" {
+		t.Fatalf("phase A step[1] expected non-empty omitted model_output text, got %s", mustJSON(t, phaseASteps[1]))
+	}
+	step2, _ := phaseASteps[2].(map[string]any)
+	step2Args, _ := step2["arguments"].(map[string]any)
+	if step2["type"] != "function_call" || step2["id"] != "call_search" || step2["name"] != "web_search" || len(step2Args) == 0 || step2Args["query"] != nil {
+		t.Fatalf("phase A step[2] expected paired web_search function_call with omitted args, got %s", mustJSON(t, phaseASteps[2]))
+	}
+	if !reflect.DeepEqual(phaseASteps[3], map[string]any{"type": "function_call", "id": "call_read", "name": "read_file", "arguments": map[string]any{"path": "a.txt"}}) {
+		t.Fatalf("phase A step[3] = %s", mustJSON(t, phaseASteps[3]))
+	}
+	step4, _ := phaseASteps[4].(map[string]any)
+	step4Res, _ := step4["result"].(string)
+	if step4["type"] != "function_result" || step4["call_id"] != "call_search" || step4["name"] != "web_search" || strings.TrimSpace(step4Res) == "" {
+		t.Fatalf("phase A step[4] expected paired web_search function_result with non-empty omitted content, got %s", mustJSON(t, phaseASteps[4]))
+	}
+	if !reflect.DeepEqual(phaseASteps[5], map[string]any{"type": "function_result", "call_id": "call_read", "name": "read_file", "result": "file body"}) {
+		t.Fatalf("phase A step[5] = %s", mustJSON(t, phaseASteps[5]))
+	}
+	if !reflect.DeepEqual(phaseASteps[6], map[string]any{"type": "model_output", "content": []any{map[string]any{"type": "text", "text": "intermediate legacy answer"}}}) {
+		t.Fatalf("phase A step[6] = %s", mustJSON(t, phaseASteps[6]))
+	}
+	if !reflect.DeepEqual(phaseASteps[7], map[string]any{"type": "user_input", "content": []any{map[string]any{"type": "text", "text": "post-upgrade prompt"}}}) {
+		t.Fatalf("phase A step[7] = %s", mustJSON(t, phaseASteps[7]))
 	}
 	assertNoAdjacentUserInputs(t, phaseASteps)
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -230,7 +231,7 @@ func TestWebSearch_ExpandHistoryOmitsGoogleGroundingAndLegacyToolPairs(t *testin
 					if p.Text == "Go 1.24 was grounded and released." {
 						t.Fatal("outbound replay leaked original grounded ProtocolGoogle assistant text")
 					}
-					if p.Text == "[historical grounded output omitted from model replay]" {
+					if msg.Role == llm.RoleAssistant && strings.TrimSpace(p.Text) != "" && p.Text != "follow-up ok" {
 						sawOmittedGroundedText = true
 					}
 				case llm.ContentToolCall:
@@ -239,8 +240,12 @@ func TestWebSearch_ExpandHistoryOmitsGoogleGroundingAndLegacyToolPairs(t *testin
 					}
 					switch p.ToolCall.Name {
 					case "web_search":
-						if string(p.ToolCall.Arguments) != `{"_omitted":"[historical grounded tool input omitted from model replay]"}` {
-							t.Fatalf("omitted web_search args = %s", string(p.ToolCall.Arguments))
+						var argObj map[string]any
+						if err := json.Unmarshal(p.ToolCall.Arguments, &argObj); err != nil || len(argObj) == 0 {
+							t.Fatalf("expected non-empty JSON object for omitted web_search args, got %s (err=%v)", string(p.ToolCall.Arguments), err)
+						}
+						if bytes.Contains(p.ToolCall.Arguments, []byte("go 1.24")) || argObj["query"] != nil {
+							t.Fatalf("outbound replay leaked original web_search arguments: %s", string(p.ToolCall.Arguments))
 						}
 						if p.ToolCall.ArgumentsSpelling != "" || p.ToolCall.RawArguments != "" {
 							t.Fatalf("expected cleared ArgumentsSpelling/RawArguments, got spelling=%q raw=%q", p.ToolCall.ArgumentsSpelling, p.ToolCall.RawArguments)
@@ -263,8 +268,9 @@ func TestWebSearch_ExpandHistoryOmitsGoogleGroundingAndLegacyToolPairs(t *testin
 					}
 					switch p.ToolResult.ToolCallID {
 					case "ws-legacy-1":
-						if p.ToolResult.Content != "[historical web_search output omitted from model replay]" {
-							t.Fatalf("omitted web_search result = %#v", p.ToolResult.Content)
+						contentStr, ok := p.ToolResult.Content.(string)
+						if !ok || strings.TrimSpace(contentStr) == "" || strings.Contains(contentStr, "secret grounded web search result") {
+							t.Fatalf("expected non-empty omitted web_search result without original grounded payload, got %#v", p.ToolResult.Content)
 						}
 						sawOmittedToolResult = true
 					case "ws-mcp-1":
@@ -322,8 +328,8 @@ func TestWebSearch_ExpandHistoryOmitsGoogleGroundingAndLegacyToolPairs(t *testin
 		if hasContentKind(out, llm.ContentWebSearch) {
 			t.Fatal("ContentWebSearch replayed on same-protocol ProtocolGoogle expandHistory")
 		}
-		if len(out) != 1 || out[0].Text() != "[historical grounded output omitted from model replay]" {
-			t.Fatalf("expanded text = %q, want omitted placeholder", out[0].Text())
+		if len(out) != 1 || strings.TrimSpace(out[0].Text()) == "" || strings.Contains(out[0].Text(), "grounded text") {
+			t.Fatalf("expanded text = %q, want non-empty omitted replacement without original grounded text", out[0].Text())
 		}
 	})
 

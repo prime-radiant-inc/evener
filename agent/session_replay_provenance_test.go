@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1041,5 +1042,94 @@ disabled = true
 		}); !errors.Is(err, registry.ErrModelDisabled) {
 			t.Fatalf("expected explicit ModelFallbacks targeting disabled model to fail with ErrModelDisabled, got %v", err)
 		}
+	})
+
+	t.Run("preserves saved CheapModel and ModelFallbacks when custom google-vertex-express replacement instance is configured", func(t *testing.T) {
+		dir := t.TempDir()
+		credMarker := filepath.Join(dir, "cred-ran")
+		cfgPath := filepath.Join(dir, "providers.toml")
+		tomlCfg := fmt.Sprintf(
+			"[providers.\"google-vertex-express\"]\nbase = \"google\"\napi_key = '''$(sh -c 'printf x >> %q; printf k-repl')'''\n",
+			credMarker,
+		)
+		if err := os.WriteFile(cfgPath, []byte(tomlCfg), 0o600); err != nil {
+			t.Fatalf("WriteFile providers.toml: %v", err)
+		}
+		rRepl, err := registry.Load(
+			registry.WithConfigPath(cfgPath),
+			registry.WithOffline(true), registry.WithoutCache(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(k string) (string, bool) {
+				if k == "GEMINI_API_KEY" {
+					return "k-gem", true
+				}
+				return "", false
+			}),
+		)
+		if err != nil {
+			t.Fatalf("registry.Load: %v", err)
+		}
+		cRepl := llm.NewClient(llm.WithRegistry(rRepl))
+		cRepl.Register(&fakeAdapter{name: "google"})
+		cRepl.Register(&fakeAdapter{name: "google-vertex-express"})
+
+		gResRepl, err := rRepl.Resolve("google/gemini-3.8-flash")
+		if err != nil {
+			t.Fatal(err)
+		}
+		profRepl := provider.FromResolved(gResRepl, rRepl)
+
+		// Check CheapModel migration alone is credential-free via HasInstance + ResolveInstanceModelFacts.
+		metaCheapOnly := schema.SessionMeta{
+			ID:         "0123456789ABCDEFGHJKMNPQRU",
+			CreatedAt:  time.Now(),
+			Model:      "gemini-3.8-flash",
+			ProfileID:  "google",
+			CheapModel: "google-vertex-express/gemini-3.5-flash-lite",
+		}
+		sessCheap, err := RestoreSessionFromMetaWithConfig(cRepl, profRepl, execenv.NewLocalExecutionEnvironment(t.TempDir()), metaCheapOnly, RestoreSessionConfig{
+			StateDir: t.TempDir(),
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				return provider.Resolve(rRepl, ref)
+			},
+		})
+		if err != nil {
+			t.Fatalf("RestoreSessionFromMetaWithConfig (cheap only): %v", err)
+		}
+		if got := sessCheap.profile.CheapModelRefString(); got != "google-vertex-express/gemini-3.5-flash-lite" {
+			t.Fatalf("configured replacement CheapModel pruned: got %q, want google-vertex-express/gemini-3.5-flash-lite", got)
+		}
+		if _, statErr := os.Stat(credMarker); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("CheapModel migration check executed command credential unexpectedly: %v", statErr)
+		}
+		sessCheap.Close()
+
+		// Also verify saved ModelFallbacks pointing to the configured replacement instance survive.
+		metaBoth := schema.SessionMeta{
+			ID:         "0123456789ABCDEFGHJKMNPQRV",
+			CreatedAt:  time.Now(),
+			Model:      "gemini-3.8-flash",
+			ProfileID:  "google",
+			CheapModel: "google-vertex-express/gemini-3.5-flash-lite",
+			Config: schema.ConfigSnapshot{
+				ModelFallbacks: []string{"google-vertex-express/gemini-3.8-flash"},
+			},
+		}
+		sessBoth, err := RestoreSessionFromMetaWithConfig(cRepl, profRepl, execenv.NewLocalExecutionEnvironment(t.TempDir()), metaBoth, RestoreSessionConfig{
+			StateDir: t.TempDir(),
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				return provider.Resolve(rRepl, ref)
+			},
+		})
+		if err != nil {
+			t.Fatalf("RestoreSessionFromMetaWithConfig (both): %v", err)
+		}
+		if got := sessBoth.profile.CheapModelRefString(); got != "google-vertex-express/gemini-3.5-flash-lite" {
+			t.Fatalf("configured replacement CheapModel = %q, want google-vertex-express/gemini-3.5-flash-lite", got)
+		}
+		if len(sessBoth.cfg.ModelFallbacks) != 1 || sessBoth.cfg.ModelFallbacks[0] != "google-vertex-express/gemini-3.8-flash" {
+			t.Fatalf("configured replacement ModelFallbacks = %v, want [google-vertex-express/gemini-3.8-flash]", sessBoth.cfg.ModelFallbacks)
+		}
+		sessBoth.Close()
 	})
 }

@@ -1496,7 +1496,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		s.acceptDelegateAttentionInput()
 	} else if kind == EntryRuntime {
 		s.acceptRuntimeInput(inputProvenance)
-	} else if err := s.acceptUserInputWithSkillSelection(ctx, input, images, inputProvenance, kind == EntryUserInput, skillSelection, skillRouteErr == nil); err != nil {
+	} else if err := s.acceptUserInputWithSkillSelection(ctx, input, images, inputProvenance, kind == EntryUserInput, skillSelection); err != nil {
 		if errors.Is(err, errSteeringCarrierStoodDown) {
 			// A carrier that stood down ran no model turn. Record it so the
 			// claim's caller can report ran=false truthfully (issue #185 item 3).
@@ -2192,7 +2192,7 @@ func (s *Session) appendUserInputTurnRefusingPoison(turn schema.Turn) error {
 }
 
 func (s *Session) acceptUserInput(ctx context.Context, input string, images []ImageAttachment, inputProvenance *provenance.Causal, drainResumeSessionStart bool) error {
-	return s.acceptUserInputWithSkillSelection(ctx, input, images, inputProvenance, drainResumeSessionStart, nil, true)
+	return s.acceptUserInputWithSkillSelection(ctx, input, images, inputProvenance, drainResumeSessionStart, nil)
 }
 
 // takePromptHookStop consumes a UserPromptSubmit hook's recorded continue:false.
@@ -2237,7 +2237,7 @@ func (s *Session) hookStoppedTheInput() bool {
 // acceptUserInputWithSkillSelection is acceptUserInput plus the typed skill
 // selection for a genuine user skill route: the recorded input turn keeps the
 // original text and carries the selection record in its SkillState.
-func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input string, images []ImageAttachment, inputProvenance *provenance.Causal, drainResumeSessionStart bool, skillInput *schema.SkillInputRecord, launchNamer bool) error {
+func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input string, images []ImageAttachment, inputProvenance *provenance.Causal, drainResumeSessionStart bool, skillInput *schema.SkillInputRecord) error {
 	queuedIdentity := queuedClientMutationFromContext(ctx)
 	if queuedIdentity.SteeringCarrier {
 		// Queued input with no content of its own: the steering it carries is
@@ -2444,12 +2444,12 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 			s.mu.Lock()
 			s.promptHookStop = reason
 			s.mu.Unlock()
-		} else if launchNamer {
+		} else {
 			// Naming is a model call, so it waits for the hook's verdict: a
 			// stopped prompt must not reach the naming provider either.
 			s.launchInitialPromptNamerUnlessStopped(input)
 		}
-	} else if launchNamer {
+	} else {
 		s.launchInitialPromptNamerUnlessStopped(input)
 	}
 

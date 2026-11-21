@@ -181,13 +181,8 @@ func validateVertexInteractionsModel(profile *provider.Profile) error {
 // models and missing credentials are NOT pruned here so user choices survive in
 // meta.json until re-enabled.
 func googleMigrationTargetError(reg *registry.Registry, targetProvider, targetModel string) error {
-	if strings.EqualFold(targetProvider, "google-vertex-express") {
-		if reg == nil {
-			return fmt.Errorf("provider %q is retired", targetProvider)
-		}
-		if _, ok := reg.Provider("google-vertex-express"); !ok {
-			return fmt.Errorf("provider %q is retired", targetProvider)
-		}
+	if strings.EqualFold(targetProvider, "google-vertex-express") && (reg == nil || !reg.HasInstance("google-vertex-express")) {
+		return fmt.Errorf("provider %q is retired", targetProvider)
 	}
 	if reg != nil {
 		if res, err := reg.ResolveInstanceModelFacts(targetProvider, targetModel); err == nil {
