@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/server"
 )
@@ -89,16 +90,11 @@ func TestDefaultBridgeRegistersAsTheAuthoritativeConsumer(t *testing.T) {
 	}
 
 	sess.Close()
-	deadline := time.Now().Add(60 * time.Second)
-	for {
+	testwait.Until(t, "the bridge to deliver every emitted effort change", func() bool {
 		mu.Lock()
-		n := efforts
-		mu.Unlock()
-		if n >= emitted || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
+		defer mu.Unlock()
+		return efforts >= emitted
+	})
 
 	mu.Lock()
 	defer mu.Unlock()

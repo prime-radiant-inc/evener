@@ -285,8 +285,15 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 	// Resume must validate only the daemon/app-wire contract. The resumed
 	// session's persisted metadata, not ambient launch config, selects the model;
 	// passing req.Resolved.Effective.Model here can reject an otherwise-valid
-	// resume because of a stale launch-config model.
-	if err := validateEvenerLaunchContract(ctx, h.EvenerBinary, "", req.Env); err != nil {
+	// resume because of a stale launch-config model. An explicit pick re-decides
+	// the model the resume starts on, so it earns the same live-listing judgment
+	// a fresh launch's model gets: launch-check refuses an unlisted or disabled
+	// pick before any child starts, which refuses the whole resume.
+	launchCheckModel := ""
+	if req.ModelOverride != "" {
+		launchCheckModel = req.ModelOverride
+	}
+	if err := validateEvenerLaunchContract(ctx, h.EvenerBinary, launchCheckModel, req.Env); err != nil {
 		return rendezvous.Entry{}, err
 	}
 	return resumeDaemonWithProviderConfig(ctx, h.EvenerBinary, h.RunDir, req, timeout, os.Stderr, childConfig)
@@ -428,6 +435,13 @@ func buildResumeArgs(req hubcore.ResumeRequest) []string {
 		// default must not overwrite it. Only an explicit launch-layer
 		// override replaces it.
 		resumeResolved.Effective.CompactAtPercent = nil
+	}
+	if req.ModelOverride != "" {
+		// An explicit pick is the one model a resume launches with: the strip
+		// above keeps the meta-reconstructed model out of the child's
+		// arguments, and the override is the model the resumed daemon starts
+		// on.
+		args = append(args, "--model", req.ModelOverride)
 	}
 	args = append(args, launchconfig.ToArgs(resumeResolved)...)
 	return args

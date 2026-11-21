@@ -13,12 +13,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -198,20 +198,14 @@ func awaitDurableJobCompletion(t *testing.T, sess *agent.Session) {
 	// TRIPWIRE: finalization is one goroutine hop and one store append past a
 	// process that has already exited, so this bound only fires when the
 	// terminal record is never going to be committed at all.
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+	testwait.UntilSeen(t, "the managed job to finish finalizing before the drain starts", func() (bool, string) {
 		done, err := managedJobsTerminal(sess)
 		if err != nil {
 			t.Fatalf("read job activity tree: %v", err)
 		}
-		if done && sess.ManagedJobsFinalizedForTest() {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("managed job never finished finalizing before the drain started")
-		}
-		time.Sleep(time.Millisecond)
-	}
+		finalized := sess.ManagedJobsFinalizedForTest()
+		return done && finalized, fmt.Sprintf("terminal=%v finalized=%v", done, finalized)
+	})
 }
 
 // managedJobsTerminal reports whether the session has at least one managed job

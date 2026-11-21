@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -220,18 +222,11 @@ func TestServeAsk_StatusAwaitingAtRest(t *testing.T) {
 	// past turnsBeforeReply proves the reply was not silently dropped, but the
 	// status state can still be observed in its narrow active window before the
 	// serve layer publishes the final settled state.
-	deadline := time.Now().Add(10 * time.Second)
 	var afterReply serveStatusState
-	for {
+	testwait.UntilSeen(t, fmt.Sprintf("the reply turn to advance past %d", turnsBeforeReply), func() (bool, string) {
 		afterReply = getServeAskStatus(t, entry.Address)
-		if afterReply.Turns > turnsBeforeReply {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("turns did not advance past %d within 10s (the reply was never processed); last status = %+v", turnsBeforeReply, afterReply)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		return afterReply.Turns > turnsBeforeReply, fmt.Sprintf("status = %+v", afterReply)
+	})
 	// The reply's own turn (scriptedCommunicate("answered")) is a plain
 	// reply, so thread/read settles idle.
 	afterReply = pollServeAskStatusUntil(t, entry.Address, "idle", 10*time.Second, 100*time.Millisecond)

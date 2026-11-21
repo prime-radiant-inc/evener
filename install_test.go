@@ -25,6 +25,7 @@ import (
 	agentplugin "primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -1107,18 +1108,32 @@ api_key = "sk-install-test"
 		t.Fatalf("start installed evener serve: %v", err)
 	}
 
-	done := make(chan error, 1)
+	// done closes once the serve has exited, so both the readiness check and
+	// the cleanups can observe the exit; a one-shot value would be consumed by
+	// whichever read it first and leave the other blocking forever.
+	done := make(chan struct{})
+	var waitErr error
 	go func() {
-		done <- cmd.Wait()
+		waitErr = cmd.Wait()
+		close(done)
 	}()
 
 	var entry rendezvous.Entry
-	started := false
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
+	// Reap the serve if readiness never arrives: the shutdown cleanup below is
+	// registered only after the wait and needs a published entry, so a failed
+	// wait would otherwise leave the daemon running with its output unread.
+	t.Cleanup(func() {
+		if entry.Address != "" {
+			return
+		}
+		_ = cmd.Process.Kill()
+		<-done
+		t.Logf("installed evener serve did not start\nstdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
+	})
+	testwait.Until(t, "the installed evener serve to publish a rendezvous entry", func() bool {
 		select {
-		case err := <-done:
-			t.Fatalf("installed evener serve exited before rendezvous entry: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+		case <-done:
+			t.Fatalf("installed evener serve exited before rendezvous entry: %v\nstdout:\n%s\nstderr:\n%s", waitErr, stdout.String(), stderr.String())
 		default:
 		}
 
@@ -1128,16 +1143,10 @@ api_key = "sk-install-test"
 		}
 		if len(entries) > 0 && entries[0].Address != "" {
 			entry = entries[0]
-			started = true
-			break
+			return true
 		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if !started {
-		_ = cmd.Process.Kill()
-		<-done
-		t.Fatalf("installed evener serve did not start\nstdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
-	}
+		return false
+	})
 
 	t.Cleanup(func() {
 		select {
@@ -1461,7 +1470,9 @@ func runCommand(t *testing.T, dir string, env []string, name string, args ...str
 // exec it — golang/go#22315. The condition clears as soon as that child
 // reaches its own execve, so a short bounded retry (the same treatment
 // cmd/go gives test binaries) keeps the exec honest: non-ETXTBSY failures
-// return immediately and the caller still sees a real exec failure.
+// return immediately and the caller still sees a real exec failure. The
+// 50-attempt bound is a retry budget, not a testwait condition: it caps how
+// many times a whole make install may re-run before the caller reports.
 //
 // The grandchild case is matched textually: when the freshly written file is
 // exec'd by a shell spawned by make, the ETXTBSY surfaces only as the shell's

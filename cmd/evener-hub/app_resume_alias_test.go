@@ -82,6 +82,41 @@ func TestResumeUsesRetainedCurrentSessionAndReservesAliases(t *testing.T) {
 	}
 }
 
+// TestModelSetFoldsThePickAcrossAliasResolution pins the cold fold's pick
+// threading through ownership resolution: the pick enters the hub on the
+// workspace alias, while the session the resume settles on is the alias's
+// current target, so the launch must name that target and carry the pick — a
+// resume that started the target on its saved model would silently drop the
+// pick. The fixture rides the rendezvous workspace alias, the durable
+// evidence a hub resolves without any lock-store state. The recovery-fenced
+// alias shape stays in TestResumeUsesRetainedCurrentSessionAndReservesAliases,
+// where the explicit resume re-admits it; the fold's automatic resume must
+// refuse that fence.
+func TestModelSetFoldsThePickAcrossAliasResolution(t *testing.T) {
+	cfg := hubcore.WebConfig{RunDir: t.TempDir(), ResumeLocks: hubcore.NewResumeLocks()}
+	writeRendezvous(t, cfg.RunDir, rendezvous.Entry{PID: 4242, SessionID: "z-current", ThreadID: "z-current", WorkspaceRef: "local:a-stable"})
+	launched := make(chan hubcore.ResumeRequest, 1)
+	cfg.Spawner = &fakeRPCSpawner{resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+		launched <- req
+		return rendezvous.Entry{}, errors.New("launcher observed")
+	}}
+	if _, err := hubThreadAutoResumeWithModel(t.Context(), cfg, nil, appwire.ThreadResumeParams{Ref: "local:a-stable"}, "work/house-model"); err == nil {
+		t.Fatal("resume succeeded, want the launcher's refusal")
+	}
+	var req hubcore.ResumeRequest
+	select {
+	case req = <-launched:
+	default:
+		t.Fatal("the resume never launched")
+	}
+	if req.SessionID != "z-current" {
+		t.Errorf("launch session=%q, want the alias-resolved current session z-current", req.SessionID)
+	}
+	if req.Provider != "work" || req.ModelOverride != "work/house-model" || req.Resolved.Effective.Model != "work/house-model" {
+		t.Errorf("alias resume lost the model pick: provider=%q override=%q effective=%q", req.Provider, req.ModelOverride, req.Resolved.Effective.Model)
+	}
+}
+
 func TestResumeMissingMarkerUsesDurableRecoveryTarget(t *testing.T) {
 	for _, recreated := range []bool{false, true} {
 		for _, multiple := range []bool{false, true} {

@@ -18,6 +18,7 @@ import (
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/rendezvous"
 	"primeradiant.com/evener/server"
 )
@@ -256,17 +257,16 @@ func serveArgValue(args []string, flagName string) string {
 
 func awaitRendezvousEntry(t *testing.T, runDir string) rendezvous.Entry {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
-	for {
+	var entry rendezvous.Entry
+	testwait.UntilSeen(t, "one rendezvous entry in "+runDir, func() (bool, string) {
 		entries, err := rendezvous.List(runDir)
 		if err == nil && len(entries) == 1 {
-			return entries[0]
+			entry = entries[0]
+			return true, ""
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no rendezvous entry in %s", runDir)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return false, fmt.Sprintf("entries=%d err=%v", len(entries), err)
+	})
+	return entry
 }
 
 // awaitRetirementSettled waits until the daemon's own published lifecycle

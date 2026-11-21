@@ -185,7 +185,7 @@ type SessionDelegate struct {
 	// hold is set: the whole subtree the drain waits on, not just direct
 	// children. Absent whenever the hold is, so it never reports a count alone.
 	RunningSubagentCount int `json:"runningSubagentCount,omitempty"`
-	// HoldSequence orders DrainHeldByJobs against the other samples of the same
+	// HoldSequence orders the whole hold against every other sample of the same
 	// delegate's hold. The hold is a per-row fact whose samples can reach a
 	// client out of order — a publisher that sampled before another can send
 	// after it — and the projection revision cannot order them, because both

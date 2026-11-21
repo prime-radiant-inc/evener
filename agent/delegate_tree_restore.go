@@ -524,7 +524,7 @@ type delegateDeliveryWake struct {
 	receiver     delegateDeliveryReceiver
 	attentionIDs []string
 	// wakeGeneration is the newest settled generation the acknowledgments
-	// grouped into this wake superseded, sampled under the controller lock when
+	// grouped into this wake superseded, sampled at delivery admission, not when
 	// each wake was journaled. The callback releases against this sample rather
 	// than reading the generation again after the acknowledgment landed: a stop
 	// that settles in between is newer evidence than this delivery, and
@@ -788,7 +788,7 @@ func (c *delegateTreeController) wakeDeliveryReceiverAt(receiver delegateDeliver
 		// list read would present the delivered row alone and leave
 		// the stopped report for a later generation.
 		//
-		// The generation was sampled by the wake funnel when it journaled this
+		// The generation was sampled at delivery admission, not when the wake funnel journaled this
 		// acknowledgment's release: the delegate's newest settled generation,
 		// which is the newest quiet the delivery supersedes. Sampling it here
 		// would read the generation after the acknowledgment landed, so a stop
