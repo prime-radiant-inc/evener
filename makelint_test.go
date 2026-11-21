@@ -68,7 +68,6 @@ var lintGateCommands = map[string]string{
 	"lint-package-imports":    "scripts/sdk/package-import-paths-check.sh",
 	"lint-go-module-consumer": "scripts/gate/go-module-consumer-check.sh",
 	"lint-js-toolchain-pins":  "scripts/sdk/js-toolchain-pins-check.mjs",
-	"lint-tracked-file-size":  "scripts/ops/tracked-file-size-check.sh",
 	"lint-repo-audit":         "./evener-dev dev repo-audit",
 	"secret-scan":             "scripts/ops/gitleaks-scan.sh repo",
 }
