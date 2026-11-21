@@ -1694,18 +1694,25 @@ input and its bounds are these:
 - **A Stop reaches it through the drive's own cancellation context**, not a
   generation fence: the turn ends as a cancelled turn, not a fatal run, and the
   work the delegate owns survives.
-- **It presents no attention that needs a lease.** An unleased stable-child turn
-  withholds every unresolved durable watch row and defers the notice to leased
-  attention, so a drive never consumes, credits, or double-presents a durable
-  attention row.
+- **It presents no watch attention that needs a lease, and credits nothing.**
+  An unleased stable-child turn withholds every watch row the attention fold
+  still resolves as pending -- the unleased projection filter keys on the watch
+  identities only, not on attention in general -- and the split defers each
+  withheld notice to leased attention. The turn commits no consumption marker,
+  because only a leased generation credits a presentation. Ordinary queued
+  completions are not attention and ride the turn unchanged.
 
 A drive mints no JobRecord and settles no delegate result. A notification turn
 is not report-requiring; the delegate's own generations remain the only thing
 that finishes or reports it. A drive turn that fails for any reason other than
-a stop gates the child's automatic drives as a fatal run and stops the work it
-owns; the gate clears when an explicit send or an attention launch takes the
-child. A failed drive is therefore visible on the delegate without being
-settled as its result.
+a stop sets the child's fatal-run gate and stops the work it owns. The gate is
+read before an automatic drive reserves or launches anything
+(`driveDelegateAttention`), so the drive's own retries stay refused while it is
+set. Only a run that actually launches for the child clears it: an explicit
+send or an accepted attention start (`launchAcceptedDelegateAttention`), which
+the post-restart owed-attention bootstrap also reaches without the drive gate
+(`admitOwedDelegateAttentionStarts`). A failed drive is therefore visible on
+the delegate without being settled as its result.
 
 Attention does not use a public delegate actor, because an idle resource has no
 active generation lease to authenticate. The controller instead verifies that

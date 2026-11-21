@@ -2117,8 +2117,9 @@ func (a *subagent) notificationDriveBlockedLocked(s *Session) bool {
 // ("Notification drives are input turns", issue #6797): the controller has no
 // generation to admit a notification drive into, and its bounds are the runtime
 // input claim, the session drive budget, the drive's hung-turn bound, the stop
-// that cancels it, and the unleased watch-notice split that keeps durable
-// attention out of it.
+// that cancels it, and the unleased watch-notice split that keeps watch notices
+// out of it (the turn credits no attention row, because only a leased generation
+// commits a presentation).
 func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 	if sub == nil {
 		return false
@@ -2238,7 +2239,8 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 		defer drive.end()
 		// No lease on this ctx by design (see the function comment and #6797).
 		// The unleased predicate this turn sees is what withholds watch
-		// notices and defers them to a leased generation.
+		// notices and defers them to a leased generation; the turn itself
+		// credits no attention row.
 		_, err := childSess.ProcessInputKind(withDriveTurn(driveCtx, drive), "", nil, EntryNotification)
 		// A Stop of the delegate (stopDrive) cancelled the turn: that is the
 		// ordinary nonfatal end of a stopped run, so the work the delegate
