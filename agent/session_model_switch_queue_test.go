@@ -330,8 +330,27 @@ func TestSupersededPendingApplicationDoesNotOverwriteANewerPick(t *testing.T) {
 	// application then resumes against the newer choice.
 	go func() {
 		<-tailFetchCalled
+		// The queued pick's application is parked inside its boundary listing
+		// fetch - popped from the queue, not yet committed, nothing newer
+		// committed - so the read sample must keep naming the validating pick
+		// itself: the thread/model/set hook's synchronous refresh can run
+		// exactly here when a pick races the end of its turn.
+		model, instance := s.ReportedModelRef()
+		if model != "gpt-5.4" || instance != "openai" {
+			t.Errorf("advertised pair while the pick's application validates = %s/%s, want the accepted pick gpt-5.4/openai", instance, model)
+		}
 		if err := s.SetModel("gpt-4.1-mini"); err != nil {
 			t.Errorf("newer SetModel: %v", err)
+		}
+		// The newer pick has committed and published while the queued pick's
+		// application is still parked mid-validation. The read sample must
+		// name the committed pick, not the validating pick it superseded:
+		// model-set's synchronous refresh runs exactly here, and reporting
+		// the parked pick would overwrite the committed choice in thread/read
+		// for as long as the superseded application takes to drop.
+		model, instance = s.ReportedModelRef()
+		if model != "gpt-4.1-mini" || instance != "openai" {
+			t.Errorf("advertised pair while the superseded pick validates = %s/%s, want the committed newer pick gpt-4.1-mini/openai", instance, model)
 		}
 		newerPicked <- struct{}{}
 		close(releaseTailFetch)
@@ -386,7 +405,17 @@ func TestConcurrentMidTurnPicksLastAcceptedChoiceWins(t *testing.T) {
 		},
 		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "queued turn done") },
 	})
-	serveSessionWithMutationStore(t, s)
+	var evMu sync.Mutex
+	evs := []events.SessionEvent{}
+	drained := make(chan struct{})
+	s.ConsumeEventsLossless(func(ev events.SessionEvent) {
+		evMu.Lock()
+		evs = append(evs, ev)
+		evMu.Unlock()
+	}, func() { close(drained) })
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
 	queueOneMutation(t, s, "cm-last-accepted", "the queued message")
 	// The boundary hook is the rendezvous: it fires after the first turn's
 	// boundary and before the loop applies the pending switch, so it can
@@ -418,6 +447,23 @@ func TestConcurrentMidTurnPicksLastAcceptedChoiceWins(t *testing.T) {
 	}
 	if requests[1].Model != "gpt-4.1-mini" {
 		t.Fatalf("the queued message ran on model %q; the newer pick's accepted choice must survive the earlier pick's late store (%q)", requests[1].Model, "gpt-4.1-mini")
+	}
+	s.Close()
+	<-drained
+	// The earlier pick's preflight finished after the newer pick queued and
+	// announced, so its late arrival must not move the visible choice back to
+	// itself: the queue selects the newer pick, and the announcement the
+	// composer last saw must still name it.
+	evMu.Lock()
+	var lastAnnounce events.NextModelChangedData
+	for _, ev := range evs {
+		if d, ok := ev.Data.(events.NextModelChangedData); ok {
+			lastAnnounce = d
+		}
+	}
+	evMu.Unlock()
+	if lastAnnounce.Model != "gpt-4.1-mini" {
+		t.Fatalf("the last acceptance announcement named %q; the earlier pick's late arrival must not announce itself over the newer pick the queue selects (%q)", lastAnnounce.Model, "gpt-4.1-mini")
 	}
 }
 
@@ -996,11 +1042,15 @@ func TestACommittedSwitchPublishesEvenWhenANewerQueuedPickLaterFails(t *testing.
 
 	var last events.ModelChangedData
 	sawModelChanged := false
+	var nextModel []events.NextModelChangedData
 	evMu.Lock()
 	for _, ev := range evs {
 		if d, ok := ev.Data.(events.ModelChangedData); ok {
 			last = d
 			sawModelChanged = true
+		}
+		if d, ok := ev.Data.(events.NextModelChangedData); ok {
+			nextModel = append(nextModel, d)
 		}
 	}
 	evMu.Unlock()
@@ -1009,6 +1059,232 @@ func TestACommittedSwitchPublishesEvenWhenANewerQueuedPickLaterFails(t *testing.
 	}
 	if got := s.Profile().Model(); got != "gpt-5.4" {
 		t.Fatalf("profile model = %q, want the committed switch's model %q; the failed queued pick must not swap", got, "gpt-5.4")
+	}
+	// The acceptance publications must keep a subscriber's label truthful
+	// throughout: A's pick is announced when it queues, B's pick is announced
+	// when it queues, A's commit re-asserts B (the commit frame names the model
+	// the session runs now, so the newer accepted pick must follow it), and
+	// B's deferred rejection must retract its announcement back to the model
+	// the session actually runs — the last acceptance names A again, never B,
+	// so no surface keeps showing a pick that failed.
+	wantNext := []struct{ provider, model string }{
+		{"openai", "gpt-5.4"},
+		{"glm", "glm-test"},
+		{"glm", "glm-test"},
+		{"openai", "gpt-5.4"},
+	}
+	if len(nextModel) != len(wantNext) {
+		t.Fatalf("next-model announcements = %+v, want %d: A accepted, B accepted, B re-asserted at A's commit, B's failed deferred check reverting to A", nextModel, len(wantNext))
+	}
+	for i, want := range wantNext {
+		if nextModel[i].Provider != want.provider || nextModel[i].Model != want.model {
+			t.Fatalf("next-model announcement %d = %s/%s, want %s/%s", i, nextModel[i].Provider, nextModel[i].Model, want.provider, want.model)
+		}
+	}
+	// Commit-relative order: B's acceptance precedes A's commit publication,
+	// and the re-assertion follows it - the commit frame names the model the
+	// session runs now, so the re-assertion is what keeps a subscriber's
+	// label from resting on the committed model until B's own boundary.
+	evMu.Lock()
+	bAccept, aCommit, bReassert := -1, -1, -1
+	for i, ev := range evs {
+		if d, ok := ev.Data.(events.NextModelChangedData); ok && d.Model == "glm-test" {
+			if bAccept < 0 {
+				bAccept = i
+			} else if aCommit >= 0 && bReassert < 0 {
+				bReassert = i
+			}
+		}
+		if d, ok := ev.Data.(events.ModelChangedData); ok && d.NewModel == "gpt-5.4" {
+			aCommit = i
+		}
+	}
+	evMu.Unlock()
+	if bAccept < 0 || aCommit <= bAccept || bReassert <= aCommit {
+		t.Fatalf("commit-relative order = B accepted at %d, A committed at %d, B re-asserted at %d; the acceptance must precede the commit that would bury it and the re-assertion must follow that commit", bAccept, aCommit, bReassert)
+	}
+}
+
+// stagedLadderProtocol is an instance whose live listing names the target's
+// effort tiers only from its second listing on: the session's startup capture
+// saw the model reason without naming tiers, and the pick's own fetch is what
+// carries them. The listing must run through the transport protocol - a
+// registered adapter override's rows are never applied to the registry's live
+// layer - for the tiers to reach a later resolve. The transport stubs come
+// from windowListingProtocol; only the staged ListModels is this test's own.
+type stagedLadderProtocol struct {
+	windowListingProtocol
+	instance string
+	mu       sync.Mutex
+	calls    int
+}
+
+func (p *stagedLadderProtocol) ListModels(_ context.Context, res registry.Resolved) ([]registry.Model, error) {
+	if res.Instance != p.instance {
+		return []registry.Model{{ID: "gpt-launch"}}, nil
+	}
+	p.mu.Lock()
+	p.calls++
+	call := p.calls
+	p.mu.Unlock()
+	if call < 2 {
+		return []registry.Model{{ID: "gpt-tier", Caps: registry.Caps{Reasoning: new(true)}}}, nil
+	}
+	return []registry.Model{{ID: "gpt-tier", Caps: registry.Caps{Reasoning: new(true), EffortValues: []string{"low", "high"}}}}, nil
+}
+
+// newStagedLadderProtocol returns the id's registered ladder protocol,
+// resetting its listing counter for a repeated test run, or registers a new
+// one serving instance.
+func newStagedLadderProtocol(id, instance string) *stagedLadderProtocol {
+	if existing, ok := llm.ProtocolFor(id); ok {
+		p, ok := existing.(*stagedLadderProtocol)
+		if !ok {
+			panic("staged ladder protocol registered with another type")
+		}
+		p.mu.Lock()
+		p.calls = 0
+		p.mu.Unlock()
+		return p
+	}
+	p := &stagedLadderProtocol{instance: instance}
+	p.id = id
+	llm.RegisterProtocol(p)
+	return p
+}
+
+func (p *stagedLadderProtocol) listingCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
+}
+
+// TestQueuedPickAnnouncementCarriesTheLiveListedReasoningLadder pins the
+// acceptance against the profile the pick-time enumeration enriched: the
+// target's static registry row reasons but names no effort tiers, and the
+// instance's live listing is the only place the tiers appear. The acceptance
+// must publish the enriched ladder - what the boundary's commit frame already
+// carries - or the composer's effort ladder is empty between the pick and its
+// boundary.
+func TestQueuedPickAnnouncementCarriesTheLiveListedReasoningLadder(t *testing.T) {
+	const protocolID = "test-proto-agent-queue-ladder"
+	proto := newStagedLadderProtocol(protocolID, "lunaroute")
+	dir := t.TempDir()
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(map[string]registry.Provider{
+			"home": {
+				Base: "openai-compatible", APIKey: "test",
+				Transport: registry.Transport{BaseURL: "https://home.example.com/v1"},
+				Models:    map[string]registry.Model{"gpt-launch": {}},
+			},
+			"lunaroute": {
+				Base: "openai-compatible", APIKey: "test",
+				Transport: registry.Transport{BaseURL: "https://lunaroute.example.com/v1"},
+				Protocol:  protocolID,
+				Models: map[string]registry.Model{
+					// The static row reasons but names no ladder; only the
+					// instance's live listing carries the tiers.
+					"gpt-tier": {Caps: registry.Caps{Reasoning: new(true)}},
+				},
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	client := llm.NewClient(llm.WithRegistry(r))
+	homeAdapter := &fakeAdapter{
+		name:       "home",
+		liveModels: func(context.Context) ([]registry.Model, error) { return []registry.Model{{ID: "gpt-launch"}}, nil },
+	}
+	client.Register(homeAdapter)
+	// Every other instance gets a scripted adapter so the session's startup
+	// enumeration stays offline; lunaroute keeps none, so its listings run
+	// through the staged transport protocol.
+	for _, inst := range r.Instances() {
+		if inst.Name != "home" && inst.Name != "lunaroute" {
+			client.Register(&fakeAdapter{name: inst.Name})
+		}
+	}
+	launch, err := provider.Resolve(r, "home/gpt-launch")
+	if err != nil {
+		t.Fatalf("launch profile: %v", err)
+	}
+	s := newSession(t,
+		withClient(client),
+		withProfile(launch),
+		withDir(dir),
+		withConfig(SessionConfig{
+			StateDir:         dir,
+			MaxSubagentDepth: 1,
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				return provider.Resolve(r, ref)
+			},
+			testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+		}))
+	var pickUsage ContextMetrics
+	var pickPressure float64
+	homeAdapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			if err := s.SetModel("lunaroute/gpt-tier"); err != nil {
+				t.Errorf("mid-turn pick: %v", err)
+			}
+			// Sampled in the same step as the pick: the acceptance frame
+			// describes this same session state, so what thread/read would
+			// answer here is what the frame must carry.
+			pickUsage, pickPressure = s.ContextStatus()
+			return agenttest.CommunicateResponse(true, "first turn done")
+		},
+	})
+
+	var evMu sync.Mutex
+	evs := []events.SessionEvent{}
+	drained := make(chan struct{})
+	s.ConsumeEventsLossless(func(ev events.SessionEvent) {
+		evMu.Lock()
+		evs = append(evs, ev)
+		evMu.Unlock()
+	}, func() { close(drained) })
+	if _, err := s.ProcessInput(context.Background(), "the only turn", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	s.Close()
+	<-drained
+
+	var acceptance *events.NextModelChangedData
+	evMu.Lock()
+	for _, ev := range evs {
+		if d, ok := ev.Data.(events.NextModelChangedData); ok {
+			acceptance = &d
+		}
+	}
+	evMu.Unlock()
+	if acceptance == nil {
+		t.Fatal("no acceptance announcement for the queued pick")
+	}
+	if acceptance.Provider != "lunaroute" || acceptance.Model != "gpt-tier" {
+		t.Fatalf("acceptance = %s/%s, want lunaroute/gpt-tier", acceptance.Provider, acceptance.Model)
+	}
+	if len(acceptance.ReasoningEffortLevels) != 2 || acceptance.ReasoningEffortLevels[0] != "low" || acceptance.ReasoningEffortLevels[1] != "high" {
+		t.Fatalf("acceptance ladder = %v, want the live listing's [low high]", acceptance.ReasoningEffortLevels)
+	}
+	// The frame's context figures are the status sample's for this same
+	// state: a subscriber's meter and thread/read must never disagree about
+	// the running model's context.
+	if acceptance.ContextUsed != pickUsage.Used ||
+		acceptance.ContextWindow != pickUsage.Window ||
+		acceptance.ContextPressure != pickPressure ||
+		acceptance.ContextAssumed != pickUsage.Assumed ||
+		acceptance.CompactionThreshold != pickUsage.CompactionThreshold {
+		t.Fatalf("acceptance context = used %d window %d pressure %.4f assumed %t threshold %d, want the status sample's used %d window %d pressure %.4f assumed %t threshold %d",
+			acceptance.ContextUsed, acceptance.ContextWindow, acceptance.ContextPressure, acceptance.ContextAssumed, acceptance.CompactionThreshold,
+			pickUsage.Used, pickUsage.Window, pickPressure, pickUsage.Assumed, pickUsage.CompactionThreshold)
+	}
+	if got := proto.listingCount(); got < 2 {
+		t.Fatalf("lunaroute listed %d times, want the pick's fetch among them", got)
 	}
 }
 

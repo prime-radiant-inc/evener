@@ -625,6 +625,31 @@ type ModelChangedData struct {
 	CompactionThreshold int     `json:"compaction_threshold,omitempty"`
 }
 
+// NextModelChangedData is the payload for an EventNextModelChanged event: the
+// model a live session's next turn will run on, announced when SetModel
+// accepts and queues a mid-turn pick, and again naming the session's current
+// profile when a queued pick's deferred validation rejects it. It carries what
+// EventModelChanged cannot: a ModelChangedData on the stream is a commit
+// publication, serialized by the commit lock and ordered with the switch
+// marker, so an accepted-but-not-yet-applied pick rides its own kind. The
+// reasoning fields describe the announced profile so a client's pickers re-key
+// without a model/list round trip. The context fields are the settlement
+// current at announcement - the running model's - so a subscriber's context
+// meter does not re-basis against a model that has not started a turn yet;
+// the boundary's ModelChangedData re-settles them against the new profile.
+type NextModelChangedData struct {
+	Provider               string   `json:"provider"`
+	Model                  string   `json:"model"`
+	ReasoningEffortLevels  []string `json:"reasoning_effort_levels,omitempty"`
+	SupportsReasoning      bool     `json:"supports_reasoning,omitempty"`
+	DefaultReasoningEffort string   `json:"default_reasoning_effort,omitempty"`
+	ContextUsed            int      `json:"context_used,omitempty"`
+	ContextWindow          int      `json:"context_window,omitempty"`
+	ContextPressure        float64  `json:"context_pressure,omitempty"`
+	ContextAssumed         bool     `json:"context_assumed,omitempty"`
+	CompactionThreshold    int      `json:"compaction_threshold,omitempty"`
+}
+
 // ReasoningEffortChangedData is the payload for an EventReasoningEffortChanged
 // event: SetReasoningEffort committed a new effort value (already normalized;
 // empty means unset/default).

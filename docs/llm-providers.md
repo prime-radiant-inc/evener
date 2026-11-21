@@ -963,11 +963,16 @@ injected at construction (cycle-free: `cmd/evener` builds the closure;
   explicit delegate model and then the parent model.
 - A runtime switch requested while a turn is running is queued and applied at
   the turn boundary, not refused: the running turn finishes on the model it
-  started with, the next turn (typically the message the user was typing when
-  they picked) runs on the new one, and `thread/model/changed` plus the
-  transcript's model-switch marker land at that boundary. Validation that needs
-  a settled history — unrepresentable-content checks — re-runs there; a switch
-  that fails it is dropped with a transcript warning instead of being retried.
+  started with, and the next turn (typically the message the user was typing
+  when they picked) runs on the new one. Acceptance is visible at once: the
+  pick broadcasts `thread/model/changed` and `thread/read` reports the
+  accepted model, so the composer reflects the pick while the turn is still
+  running. The boundary then commits the switch — `thread/model/changed`
+  again, plus the transcript's model-switch marker. Validation that needs a
+  settled history — unrepresentable-content checks — re-runs there; a switch
+  that fails it is dropped with a transcript warning instead of being
+  retried, and a corrective `thread/model/changed` names the model actually
+  running so the composer does not keep the rejected pick's label.
 - The cross-instance fallback guard compares `Surface()`, not a behavior tag:
   a `model_fallbacks` entry that would switch to a different surface fails
   fast (prompt and tool surfaces differ too much to fall back silently);

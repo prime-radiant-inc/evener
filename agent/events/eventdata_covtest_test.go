@@ -17,6 +17,7 @@ func TestCovNewEventPayloads(t *testing.T) {
 	}{
 		{"SessionNameChanged", SessionNameChangedData{Name: "new name", Source: "user"}, EventSessionNameChanged},
 		{"ModelChanged", ModelChangedData{OldProvider: "old-provider", OldModel: "old-model", NewProvider: "new-provider", NewModel: "new-model", ReasoningEffortLevels: []string{"low", "high"}, SupportsReasoning: true, MarkerText: "model changed"}, EventModelChanged},
+		{"NextModelChanged", NextModelChangedData{Provider: "openai", Model: "gpt-queued", ReasoningEffortLevels: []string{"low", "high"}, SupportsReasoning: true}, EventNextModelChanged},
 		{"ReasoningEffortChanged", ReasoningEffortChangedData{ReasoningEffort: "high"}, EventReasoningEffortChanged},
 		{"SandboxEscalationRequested", SandboxEscalationRequestedData{EscalationID: "esc_1", Mode: "workspace-write", Tool: "write_file", Kind: "write", DeniedPath: "/outside/file", Command: "write", OutputSoFar: "partial", PartiallyRan: true}, EventSandboxEscalationRequested},
 		{"SandboxEscalationResolved", SandboxEscalationResolvedData{EscalationID: "esc_1"}, EventSandboxEscalationResolved},

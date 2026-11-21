@@ -221,7 +221,7 @@ func (s *Server) historyTargetLocked(threadID string) (string, bool) {
 // through the session's current provider instance.
 func (s *Server) historyCost(model string) *registry.Cost {
 	s.mu.RLock()
-	profile := s.status.Profile
+	profile := s.status.CommittedProfile
 	s.mu.RUnlock()
 	return s.costFor(profile + "/" + model)
 }
