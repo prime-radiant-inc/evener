@@ -2078,6 +2078,32 @@ func TestDelegateAttentionRefusedLaunchReopensThroughTheWakeMap(t *testing.T) {
 		t.Fatal("the refused launch left the reopened report without a wake: the controller no longer owes the delegate attention")
 	}
 
+	// The foreign lock is temporary, so a scheduled pass that refuses it must
+	// stay a retry: after maxDelegateAttentionRestoreFailures counted refusals
+	// the drive hands the report to the root and resolves the delegate's copy,
+	// which leaves nothing to present once the lane comes back. Each pass below
+	// is the production drive against the still-locked lane.
+	for range maxDelegateAttentionRestoreFailures + 2 {
+		lane.root.drivePendingDelegateAttention()
+	}
+	if !lane.root.delegateController.owesDelegateAttention(lane.fixture.delegateID) {
+		t.Fatal("the foreign lock counted toward the permanent restore-failure give-up: the delegate no longer owes the reopened report")
+	}
+	if !lane.root.delegateController.coldRestoreDriveCandidateLocked(lane.fixture.delegateID) {
+		t.Fatal("repeated foreign-lock refusals parked the delegate: the reopened report has no scheduled restore left")
+	}
+	heldPending, heldErr := lane.delegateSess.pendingDelegateAttentionIDs()
+	heldReopened := false
+	for _, id := range heldPending {
+		if strings.Contains(id, delegateAttentionReopenMarker) {
+			heldReopened = true
+			break
+		}
+	}
+	if !heldReopened {
+		t.Fatalf("the reopened report left the delegate while its lane was held: pending=%v (%v)", heldPending, heldErr)
+	}
+
 	// Give the lane back. An unlocked lane is re-locked under the tree's own
 	// marker at the launch, so only the stranded report can keep the
 	// presentation from running now.
@@ -2088,6 +2114,9 @@ func TestDelegateAttentionRefusedLaunchReopensThroughTheWakeMap(t *testing.T) {
 	lane.root.drivePendingDelegateAttention()
 	select {
 	case <-entered:
+	// TRIPWIRE: the pass launches the presentation as soon as the lane is
+	// unlocked; 30s only fires on a genuine hang, not a loaded shard's
+	// scheduling delay.
 	case <-time.After(30 * time.Second):
 		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
 		t.Fatalf("the re-armed wake never drove the reopened report (pending attention=%d (%v))", len(pending), pendErr)
