@@ -625,7 +625,16 @@ while :; do sleep 0.05; done
 // value would otherwise apply to the build and fail it before the helper runs.
 func TestMergeEnqueueBuildsOverASavedGOFLAGS(t *testing.T) {
 	goenv := filepath.Join(t.TempDir(), "goenv")
-	if err := os.WriteFile(goenv, []byte("GOFLAGS=-modfile=/nonexistent/go.mod\n"), 0o644); err != nil {
+	var content strings.Builder
+	content.WriteString("GOFLAGS=-modfile=/nonexistent/go.mod\n")
+	for _, key := range []string{"GOMODCACHE", "GOCACHE"} {
+		if out, err := exec.Command("go", "env", key).Output(); err == nil {
+			if val := strings.TrimSpace(string(out)); val != "" {
+				content.WriteString(key + "=" + val + "\n")
+			}
+		}
+	}
+	if err := os.WriteFile(goenv, []byte(content.String()), 0o644); err != nil {
 		t.Fatalf("write GOENV: %v", err)
 	}
 	tmp := t.TempDir()
