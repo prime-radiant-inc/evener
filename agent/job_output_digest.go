@@ -81,24 +81,23 @@ func shellInlineDigest(full string, total, dropped int64) string {
 // shellInlineDigestWithin is shellInlineDigest bounded by the registry's
 // rendered limits: lineBudget counts the digest plus its one-line footer
 // (0 = unbounded), and charBudget bounds the digest's runes (0 = unbounded).
-// It first bounds the head and tail previews to lineBudget (reserving one line
-// each for the omission marker and job footer), then trims whole lines from the
-// inner edges of whichever preview is longer so both the first line and final
-// diagnostic survive tight character budgets. Only if each end is down to a
-// single oversized line does it fall back to shrinking the longer slice by
-// bytes, preserving valid UTF-8. Each candidate computes the omitted lifetime
-// range from the slices actually shown.
+// It first allocates head and tail whole-line slots inside lineBudget (reserving
+// one line each for the omission marker and job footer, preferring the final
+// line when only one preview line fits), then trims whole lines from the inner
+// edges until charBudget fits (dropping head before tail if each end is down to
+// a single oversized line). Each candidate computes the omitted lifetime range
+// from the slices actually shown.
 func shellInlineDigestWithin(full string, total, dropped int64, lineBudget, charBudget int) string {
 	headLines, tailLines := shellDigestLines, shellDigestLines
 	if lineBudget > 0 {
 		// The digest path always renders a job footer line. Keep at least one
-		// line at each end when the allowance holds two; otherwise give the one
-		// remaining line to the head.
+		// line at each end when the allowance holds two; when only one preview
+		// line fits, prefer the final line.
 		switch avail := lineBudget - 2; {
 		case avail <= 0:
 			headLines, tailLines = 0, 0
 		case avail == 1:
-			headLines, tailLines = 1, 0
+			headLines, tailLines = 0, 1
 		default:
 			headLines, tailLines = min(avail/2, shellDigestLines), min(avail-avail/2, shellDigestLines)
 		}
@@ -106,7 +105,7 @@ func shellInlineDigestWithin(full string, total, dropped int64, lineBudget, char
 	head, headCount, tail, tailCount := shellInlineDigestSlices(full, shellDigestHalfBytes, shellDigestHalfBytes, headLines, tailLines)
 	for {
 		digest := assembleOutputDigest(head, tail, total, dropped)
-		if digestFits(digest, lineBudget, charBudget) {
+		if charBudget <= 0 || len([]rune(digest)) <= charBudget {
 			return digest
 		}
 		switch {
@@ -114,33 +113,14 @@ func shellInlineDigestWithin(full string, total, dropped int64, lineBudget, char
 			head, headCount, _ = firstLineBytes(head, headCount-1)
 		case tailCount > 1:
 			tail, tailCount, _ = lastLineBytes(tail, tailCount-1)
-		case len(head) == 0 && len(tail) == 0:
-			return digest
-		case len(head) >= len(tail):
-			head = runetrim.TrimTrailingPartial(head[:len(head)/2])
-			if len(head) == 0 {
-				headCount = 0
-			}
+		case headCount > 0:
+			head, headCount = nil, 0
+		case tailCount > 0:
+			tail, tailCount = nil, 0
 		default:
-			tail = runetrim.TrimLeadingPartial(tail[len(tail)-len(tail)/2:])
-			if len(tail) == 0 {
-				tailCount = 0
-			}
+			return digest
 		}
 	}
-}
-
-// digestFits reports whether a rendered digest survives the registry's limits.
-// The shell footer is a single line (exit status, windowed-output note, and
-// retention details join with " · "), hence the +1.
-func digestFits(digest string, lineBudget, charBudget int) bool {
-	if lineBudget > 0 && textLineCount(digest)+1 > lineBudget {
-		return false
-	}
-	if charBudget > 0 && len([]rune(digest)) > charBudget {
-		return false
-	}
-	return true
 }
 
 // shellInlineDigestSlices selects the initial head and tail byte slices and
@@ -178,19 +158,6 @@ func shellInlineDigestSlices(full string, headBudget, tailBudget, headLines, tai
 	head, headCount, _ = firstLineBytes(headRaw, headLines)
 	tail, tailCount, _ = lastLineBytes(tailRaw, tailLines)
 	return head, headCount, tail, tailCount
-}
-
-// textLineCount counts rendered lines: newline separators plus a non-terminated
-// final line.
-func textLineCount(s string) int {
-	if s == "" {
-		return 0
-	}
-	n := strings.Count(s, "\n")
-	if !strings.HasSuffix(s, "\n") {
-		n++
-	}
-	return n
 }
 
 // firstLineBytes returns the first n lines of b (each line including its trailing

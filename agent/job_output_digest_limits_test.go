@@ -214,3 +214,43 @@ func TestShellToolDigestLineLimitKeepsLongFinalDiagnostic(t *testing.T) {
 		t.Fatalf("registry changed the rendered shell result:\nwant:\n%s\ngot:\n%s", formatShellResult(out), res.Output)
 	}
 }
+
+// Under MaxLines: 1, the omission marker and job footer share one line so
+// neither the continuation offset nor the exit/job footer is stripped.
+func TestShellToolDigestOneLineLimitKeepsMarkerAndFooterTogether(t *testing.T) {
+	t.Parallel()
+	full := strings.Repeat("line output ...........................\n", 300)
+	path := filepath.Join(t.TempDir(), "big.log")
+	if err := os.WriteFile(path, []byte(full), 0o600); err != nil {
+		t.Fatalf("write output fixture: %v", err)
+	}
+	cfg := minimalTestSessionConfig(t)
+	cfg.ToolOutputLimits = map[string]schema.ToolOutputLimit{
+		"shell": {MaxChars: 800, MaxLines: 1, Strategy: schema.TruncHeadTail},
+	}
+	s := newSession(t, withConfig(cfg))
+	args, err := json.Marshal(map[string]string{"command": "cat -- " + shellSingleQuote(path)})
+	if err != nil {
+		t.Fatalf("marshal shell args: %v", err)
+	}
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "digest-lines-1",
+		Name:      "shell",
+		Arguments: args,
+	})
+	if res.IsError {
+		t.Fatalf("shell returned error: %s", res.Output)
+	}
+	var out shellToolResult
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
+		t.Fatalf("unmarshal shell result: %v (output: %s)", err, res.Output)
+	}
+	if strings.Contains(res.Output, "\n") {
+		t.Fatalf("one-line limit rendered multiple lines:\n%s", res.Output)
+	}
+	for _, want := range []string{"omitted [0,", "offset_bytes=0", "exit 0", "job:" + out.JobID} {
+		if !strings.Contains(res.Output, want) {
+			t.Fatalf("one-line result missing %q:\n%s", want, res.Output)
+		}
+	}
+}

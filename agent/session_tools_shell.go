@@ -697,20 +697,23 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars, maxLines int, turn
 	// count it against the line bound so the registry never truncates away the
 	// digest's omission marker and offset_bytes hint.
 	out.Output = nil
-	footerChars := 0
-	if maxChars > 0 {
-		footerChars = len([]rune(formatShellResult(out))) + 1
-	}
+	footer := formatShellResult(out)
 	charBudget := 0
 	if maxChars > 0 {
-		charBudget = max(maxChars-footerChars, 1)
+		charBudget = max(maxChars-(len([]rune(footer))+1), 1)
 	}
 	digest := shellInlineDigestWithin(res.Output, res.TotalBytes, res.DroppedBytes, maxLines, charBudget)
 	peekTruncated := true
 	out.Output = &digest
 	out.Truncated = &peekTruncated
+	rendered := formatShellResult(out)
+	if maxLines == 1 {
+		// With a one-line limit, put the marker and footer on the same line so
+		// the registry keeps exit status, job reference, and offset_bytes together.
+		rendered = strings.TrimSuffix(digest, "\n") + " " + footer
+	}
 	return tool.StateResult{
-		Output:  formatShellResult(out),
+		Output:  rendered,
 		State:   out,
 		IsError: res.Status == string(jobstore.StatusFailed),
 	}, nil
