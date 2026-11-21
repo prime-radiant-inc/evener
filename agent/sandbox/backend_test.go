@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -151,38 +152,87 @@ func TestConfineTrustedInfraNilIsIdentity(t *testing.T) {
 	}
 }
 
-// setenvPairs returns the NAME=VALUE assignments carried as bwrap --setenv flags
-// before the separator. Everything after the separator is the child's argv and
-// is deliberately not searched.
-func setenvPairs(args []string) map[string]string {
-	sep := slices.Index(args, "--")
-	if sep < 0 {
-		return nil
+// childEnvRecords reads the private child-env fd a confined command carries and
+// returns its NUL-separated records. It decodes the payload itself rather than
+// reusing the production encoder, so a test proves the wire format. The fd is
+// closed at test end: a unit test never starts the launcher that would consume
+// it.
+func childEnvRecords(t *testing.T, cmd *exec.Cmd) []string {
+	t.Helper()
+	if len(cmd.ExtraFiles) != 1 {
+		t.Fatalf("confined command must carry exactly one private child-env fd, got %d", len(cmd.ExtraFiles))
 	}
-	out := map[string]string{}
-	for i := 0; i+2 < len(args[:sep]); i++ {
-		if args[i] == "--setenv" {
-			out[args[i+1]] = args[i+2]
+	f := cmd.ExtraFiles[0]
+	t.Cleanup(func() { _ = f.Close() })
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		t.Fatalf("seek private child-env fd: %v", err)
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		t.Fatalf("read private child-env fd: %v", err)
+	}
+	records := strings.Split(string(data), "\x00")
+	if n := len(records); n > 0 && records[n-1] == "" {
+		records = records[:n-1]
+	}
+	return records
+}
+
+// bwrapChildEnv decodes the bwrap --args records the private fd carries.
+func bwrapChildEnv(t *testing.T, cmd *exec.Cmd) (map[string]string, []string) {
+	t.Helper()
+	records := childEnvRecords(t, cmd)
+	set := map[string]string{}
+	var unset []string
+	for i := 0; i < len(records); {
+		switch records[i] {
+		case "--setenv":
+			if i+2 >= len(records) {
+				t.Fatalf("truncated --setenv record: %q", records)
+			}
+			set[records[i+1]] = records[i+2]
+			i += 3
+		case "--unsetenv":
+			if i+1 >= len(records) {
+				t.Fatalf("truncated --unsetenv record: %q", records)
+			}
+			unset = append(unset, records[i+1])
+			i += 2
+		default:
+			t.Fatalf("unexpected child-env record %q", records[i])
 		}
 	}
-	return out
+	return set, unset
+}
+
+// assertNoArgvValue fails when any element of args contains want: the launcher
+// command line must never carry a configured secret value.
+func assertNoArgvValue(t *testing.T, args []string, want string) {
+	t.Helper()
+	if joined := strings.Join(args, "\x00"); strings.Contains(joined, want) {
+		t.Errorf("value %q is visible in the launcher argv: %v", want, args)
+	}
 }
 
 // TestConfineWithChildEnvAppliesConfigBehindBwrap is the backend half of the
 // rule that a server's configured environment must never reach the sandbox
 // LAUNCHER: bwrap is dynamically linked, so LD_PRELOAD et al. in its own
-// environment run before any namespace or mount exists. The assignments ride
-// --setenv instead, which bwrap applies to the child after confinement is in
-// place, and the argv after "--" stays the original command.
+// environment run before any namespace or mount exists. The assignments ride a
+// private fd (bwrap --args) that bwrap applies to the child after confinement is
+// in place, so neither the launcher's environment nor its argv carries them, and
+// the argv after "--" stays the original command.
 func TestConfineWithChildEnvAppliesConfigBehindBwrap(t *testing.T) {
 	rp, cwd, _ := resolveFixture(t, ModeWorkspaceWrite, true)
 	w, err := NewWrapper(rp, "/usr/bin/bwrap", "/tmp/evener-session")
 	if err != nil {
 		t.Fatalf("NewWrapper: %v", err)
 	}
+	const hidden = "/tmp/evil.so"
 	cmd := exec.Command("/bin/bash", "-c", "echo hi") //nolint:noctx // test-only cmd, never run
 	orig := slices.Clone(cmd.Args)
-	w.ConfineWithChildEnv(cmd, cwd, ChildEnvDelta{Set: map[string]string{"LD_PRELOAD": "/tmp/evil.so", "MY_SERVER_FLAG": "1"}})
+	if err := w.ConfineWithChildEnv(cmd, cwd, ChildEnvDelta{Set: map[string]string{"LD_PRELOAD": hidden, "MY_SERVER_FLAG": "1"}}); err != nil {
+		t.Fatalf("ConfineWithChildEnv: %v", err)
+	}
 
 	if cmd.Path != "/usr/bin/bwrap" {
 		t.Errorf("ConfineWithChildEnv must still prepend the backend: path=%q", cmd.Path)
@@ -192,10 +242,17 @@ func TestConfineWithChildEnvAppliesConfigBehindBwrap(t *testing.T) {
 	if sep < 0 || !slices.Equal(cmd.Args[sep+1:], orig) {
 		t.Fatalf("original command must survive after --: %v", cmd.Args)
 	}
-	got := setenvPairs(cmd.Args)
+	// issue #7009: the value must not be on the launcher command line, where
+	// host process-list diagnostics sample it.
+	assertNoArgvValue(t, cmd.Args, hidden)
+	// The launcher is told where the private channel is.
+	if !hasSeq(cmd.Args[:sep], "--args", "3") {
+		t.Errorf("bwrap must be pointed at the private child-env fd with --args 3: %v", cmd.Args)
+	}
+	got, _ := bwrapChildEnv(t, cmd)
 	for name, want := range map[string]string{"LD_PRELOAD": "/tmp/evil.so", "MY_SERVER_FLAG": "1"} {
 		if got[name] != want {
-			t.Errorf("--setenv %s = %q, want %q (argv: %v)", name, got[name], want, cmd.Args)
+			t.Errorf("private child-env fd set %s = %q, want %q", name, got[name], want)
 		}
 	}
 	// The trusted-infra entry point carries the same child env and the network
@@ -206,30 +263,15 @@ func TestConfineWithChildEnvAppliesConfigBehindBwrap(t *testing.T) {
 		t.Fatalf("NewWrapper: %v", err)
 	}
 	infra := exec.Command("/bin/bash", "-c", "echo hi") //nolint:noctx // test-only cmd, never run
-	wOff.ConfineTrustedInfraWithChildEnv(infra, cwdOff, ChildEnvDelta{Set: map[string]string{"MY_SERVER_FLAG": "1"}})
+	if err := wOff.ConfineTrustedInfraWithChildEnv(infra, cwdOff, ChildEnvDelta{Set: map[string]string{"MY_SERVER_FLAG": "1"}}); err != nil {
+		t.Fatalf("ConfineTrustedInfraWithChildEnv: %v", err)
+	}
 	if slices.Contains(infra.Args, "--unshare-net") {
 		t.Errorf("trusted-infrastructure child env must keep the network carve-out: %v", infra.Args)
 	}
-	if setenvPairs(infra.Args)["MY_SERVER_FLAG"] != "1" {
+	if set, _ := bwrapChildEnv(t, infra); set["MY_SERVER_FLAG"] != "1" {
 		t.Errorf("trusted-infrastructure child env must still be delivered: %v", infra.Args)
 	}
-}
-
-// unsetenvNames returns the names the wrapped argv removes INSIDE the sandbox,
-// via bwrap's own --unsetenv NAME. Like setenvPairs it searches only the flags
-// before the "--" separator.
-func unsetenvNames(args []string) []string {
-	sep := slices.Index(args, "--")
-	if sep < 0 {
-		return nil
-	}
-	var out []string
-	for i := 0; i+1 < len(args[:sep]); i++ {
-		if args[i] == "--unsetenv" {
-			out = append(out, args[i+1])
-		}
-	}
-	return out
 }
 
 // TestConfineWithChildEnvUnsetsFloorRemovedNames is the bwrap half of Medium
@@ -237,9 +279,9 @@ func unsetenvNames(args []string) []string {
 //
 // bwrap starts the confined child from the LAUNCHER's environment, so a name the
 // floor removed from the child's environment would reach the child anyway
-// unless the argv says otherwise. --unsetenv is that statement, and it must
-// ride on the child's side of the separator like --setenv does. The reductions
-// arrive sorted so the generated argv stays deterministic.
+// unless the child-env channel says otherwise. --unsetenv is that statement,
+// delivered over the private fd beside the assignments. The reductions arrive
+// sorted so the payload stays deterministic.
 func TestConfineWithChildEnvUnsetsFloorRemovedNames(t *testing.T) {
 	rp, cwd, _ := resolveFixture(t, ModeWorkspaceWrite, true)
 	w, err := NewWrapper(rp, "/usr/bin/bwrap", "/tmp/evener-session")
@@ -248,72 +290,163 @@ func TestConfineWithChildEnvUnsetsFloorRemovedNames(t *testing.T) {
 	}
 	cmd := exec.Command("/bin/bash", "-c", "echo hi") //nolint:noctx // test-only cmd, never run
 	orig := slices.Clone(cmd.Args)
-	w.ConfineWithChildEnv(cmd, cwd, ChildEnvDelta{
+	if err := w.ConfineWithChildEnv(cmd, cwd, ChildEnvDelta{
 		Set:   map[string]string{"npm_config_cache": "/tmp/scratch/npm"},
 		Unset: []string{"SSH_AUTH_SOCK", "AWS_SECRET_ACCESS_KEY"},
-	})
+	}); err != nil {
+		t.Fatalf("ConfineWithChildEnv: %v", err)
+	}
 
 	sep := slices.Index(cmd.Args, "--")
 	if sep < 0 || !slices.Equal(cmd.Args[sep+1:], orig) {
 		t.Fatalf("original command must survive after --: %v", cmd.Args)
 	}
-	if got := unsetenvNames(cmd.Args); !slices.Equal(got, []string{"AWS_SECRET_ACCESS_KEY", "SSH_AUTH_SOCK"}) {
-		t.Errorf("--unsetenv names = %v, want both floor-removed names in sorted order (argv: %v)", got, cmd.Args)
+	set, unset := bwrapChildEnv(t, cmd)
+	if !slices.Equal(unset, []string{"AWS_SECRET_ACCESS_KEY", "SSH_AUTH_SOCK"}) {
+		t.Errorf("child-env unsets = %v, want both floor-removed names in sorted order", unset)
 	}
-	if got := setenvPairs(cmd.Args)["npm_config_cache"]; got != "/tmp/scratch/npm" {
-		t.Errorf("--setenv npm_config_cache = %q, want the derived redirect (argv: %v)", got, cmd.Args)
+	if got := set["npm_config_cache"]; got != "/tmp/scratch/npm" {
+		t.Errorf("child-env set npm_config_cache = %q, want the derived redirect", got)
 	}
-	// Both halves ride the child's side: a --unsetenv after the "--" would be
-	// the child's own argv, and one the launcher honoured would not reach it.
-	for _, name := range []string{"AWS_SECRET_ACCESS_KEY", "SSH_AUTH_SOCK"} {
-		if at := slices.Index(cmd.Args, name); at < 0 || at > sep {
-			t.Errorf("%s must be named in the bwrap flags before the separator: %v", name, cmd.Args)
-		}
+	// Both halves ride the private fd, never the launcher's command line.
+	for _, name := range unset {
+		assertNoArgvValue(t, cmd.Args, name)
 	}
 
-	// An unset-only delta still emits its flag; a delta with neither half leaves
-	// the argv untouched, so no backend pays for an unused flag.
+	// An unset-only delta still gets a channel; a delta with neither half leaves
+	// the argv and fds untouched, so no backend pays for an unused file.
 	unsetOnly := exec.Command("/bin/bash", "-c", "echo hi") //nolint:noctx // test-only cmd, never run
-	w.ConfineWithChildEnv(unsetOnly, cwd, ChildEnvDelta{Unset: []string{"DOCKER_HOST"}})
-	if got := unsetenvNames(unsetOnly.Args); !slices.Equal(got, []string{"DOCKER_HOST"}) {
-		t.Errorf("an unset-only delta emitted %v, want [DOCKER_HOST]", got)
+	if err := w.ConfineWithChildEnv(unsetOnly, cwd, ChildEnvDelta{Unset: []string{"DOCKER_HOST"}}); err != nil {
+		t.Fatalf("ConfineWithChildEnv: %v", err)
+	}
+	if _, unset := bwrapChildEnv(t, unsetOnly); !slices.Equal(unset, []string{"DOCKER_HOST"}) {
+		t.Errorf("an unset-only delta delivered %v, want [DOCKER_HOST]", unset)
 	}
 	empty := exec.Command("/bin/bash", "-c", "echo hi") //nolint:noctx // test-only cmd, never run
 	want := slices.Clone(empty.Args)
-	w.ConfineWithChildEnv(empty, cwd, ChildEnvDelta{})
-	if sep := slices.Index(empty.Args, "--"); sep < 0 || !slices.Equal(empty.Args[sep+1:], want) || slices.Contains(empty.Args, "--unsetenv") {
+	if err := w.ConfineWithChildEnv(empty, cwd, ChildEnvDelta{}); err != nil {
+		t.Fatalf("ConfineWithChildEnv: %v", err)
+	}
+	if sep := slices.Index(empty.Args, "--"); sep < 0 || !slices.Equal(empty.Args[sep+1:], want) || slices.Contains(empty.Args, "--args") || empty.ExtraFiles != nil {
 		t.Errorf("an empty delta must leave the child argv unchanged: %v", empty.Args)
 	}
 }
 
-// TestChildEnvArgvSeatbeltUsesEnvAfterSeparator pins the Seatbelt half: that
-// backend has no --setenv, so the assignments become an /usr/bin/env prefix on
-// the confined side of the "--". sandbox-exec itself keeps the launcher env.
-func TestChildEnvArgvSeatbeltUsesEnvAfterSeparator(t *testing.T) {
+// TestChildEnvArgvSeatbeltUsesShellAfterSeparator pins the Seatbelt half: that
+// backend has no args-from-fd flag, so a fixed shell script on the confined side
+// of the "--" reads the private fd and applies the assignments. sandbox-exec
+// itself keeps the launcher env, and no value reaches the argv.
+func TestChildEnvArgvSeatbeltUsesShellAfterSeparator(t *testing.T) {
 	argv := []string{"/usr/bin/sandbox-exec", "-p", "(version 1)", "--", "/bin/bash", "-c", "echo hi"}
-	got := childEnvArgv(BackendSeatbelt, argv, 3, ChildEnvDelta{Set: map[string]string{"LD_PRELOAD": "/tmp/evil.so", "MY_SERVER_FLAG": "1"}})
+	got := childEnvArgv(BackendSeatbelt, argv, 3, 3)
 	want := []string{
 		"/usr/bin/sandbox-exec", "-p", "(version 1)", "--",
-		"/usr/bin/env", "LD_PRELOAD=/tmp/evil.so", "MY_SERVER_FLAG=1",
+		"/bin/bash", "-c", childEnvScript(3), "/bin/bash",
 		"/bin/bash", "-c", "echo hi",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("childEnvArgv =\n%v\nwant\n%v", got, want)
 	}
-	// Empty child env is a no-op, so no backend pays for an unused helper.
-	if same := childEnvArgv(BackendSeatbelt, argv, 3, ChildEnvDelta{}); !slices.Equal(same, argv) {
-		t.Errorf("empty child env must leave the argv unchanged, got %v", same)
+	if script := childEnvScript(3); !strings.Contains(script, "<&3") || !strings.Contains(script, "exec 3<&-") {
+		t.Errorf("seatbelt helper must read the private fd and keep it out of the server: %q", script)
 	}
-	// A name the floor removed is removed on the confined side too, through
-	// /usr/bin/env -u (sandbox-exec has no --unsetenv of its own).
-	unsets := childEnvArgv(BackendSeatbelt, argv, 3, ChildEnvDelta{Unset: []string{"SSH_AUTH_SOCK"}})
-	wantUnset := []string{
-		"/usr/bin/sandbox-exec", "-p", "(version 1)", "--",
-		"/usr/bin/env", "-u", "SSH_AUTH_SOCK",
-		"/bin/bash", "-c", "echo hi",
+	if script := childEnvScript(7); !strings.Contains(script, "<&7") || !strings.Contains(script, "exec 7<&-") {
+		t.Errorf("seatbelt helper must use the fd it is given: %q", script)
 	}
-	if !slices.Equal(unsets, wantUnset) {
-		t.Errorf("childEnvArgv with an unset =\n%v\nwant\n%v", unsets, wantUnset)
+	// Nothing from the delta can reach this argv, because it carries none.
+	if joined := strings.Join(got, "\x00"); strings.Contains(joined, "LD_PRELOAD") {
+		t.Errorf("seatbelt wrapper argv must carry no assignments: %v", got)
+	}
+}
+
+// TestChildEnvPayloadRecords pins both wire formats: bwrap's --args consumes
+// bwrap flags, while the Seatbelt helper reads "-NAME" and "+NAME=VALUE".
+// Unsets come first and names are sorted, so the payload is deterministic.
+func TestChildEnvPayloadRecords(t *testing.T) {
+	delta := ChildEnvDelta{
+		Set:   map[string]string{"MULTI": "line1\nline2", "LD_PRELOAD": "/tmp/evil.so"},
+		Unset: []string{"SSH_AUTH_SOCK"},
+	}
+	bwrap := strings.TrimSuffix(string(childEnvPayload(BackendBwrap, delta)), "\x00")
+	wantBwrap := strings.Join([]string{
+		"--unsetenv", "SSH_AUTH_SOCK",
+		"--setenv", "LD_PRELOAD", "/tmp/evil.so",
+		"--setenv", "MULTI", "line1\nline2",
+	}, "\x00")
+	if bwrap != wantBwrap {
+		t.Errorf("bwrap payload = %q, want %q", bwrap, wantBwrap)
+	}
+	seatbelt := strings.TrimSuffix(string(childEnvPayload(BackendSeatbelt, delta)), "\x00")
+	wantSeatbelt := strings.Join([]string{
+		"-SSH_AUTH_SOCK",
+		"+LD_PRELOAD=/tmp/evil.so",
+		"+MULTI=line1\nline2",
+	}, "\x00")
+	if seatbelt != wantSeatbelt {
+		t.Errorf("seatbelt payload = %q, want %q", seatbelt, wantSeatbelt)
+	}
+}
+
+// TestChildEnvScriptAppliesTheFdWithoutEvaluatingValues proves the Seatbelt
+// helper applies assignments from the private fd and treats a value as data: a
+// value carrying shell syntax must arrive unchanged. It runs the same script
+// macOS's bash 3.2 executes, using the host bash.
+func TestChildEnvScriptAppliesTheFdWithoutEvaluatingValues(t *testing.T) {
+	const value = "line1\nline2 $HOME $(id) `id`"
+	f, err := childEnvFile(BackendSeatbelt, ChildEnvDelta{
+		Set:   map[string]string{"SECRET_VALUE": value},
+		Unset: []string{"AMBIENT_SECRET"},
+	})
+	if err != nil {
+		t.Fatalf("childEnvFile: %v", err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	cmd := exec.Command("/bin/bash", "-c", childEnvScript(3), "bash", "/bin/sh", "-c", `printf '%s|%s' "$SECRET_VALUE" "${AMBIENT_SECRET-<unset>}"`)
+	cmd.Env = []string{"AMBIENT_SECRET=ambient"}
+	cmd.ExtraFiles = []*os.File{f}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("child-env script: %v: %s", err, out)
+	}
+	if want := value + "|<unset>"; string(out) != want {
+		t.Errorf("child-env script delivered %q, want %q", out, want)
+	}
+}
+
+// TestChildEnvFdRoundTripsThroughRealBwrap proves the Linux path end to end:
+// a configured value reaches the confined child's environment while staying off
+// the launcher's command line.
+func TestChildEnvFdRoundTripsThroughRealBwrap(t *testing.T) {
+	facts := requireRealBwrap(t)
+	facts.Home = t.TempDir()
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	net := true
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: &net}, facts, cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	w, err := NewWrapper(rp, facts.BwrapPath, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewWrapper: %v", err)
+	}
+	const secret = "sk-live-child-env-4e11"
+	cmd := exec.Command("/bin/sh", "-c", `printf '%s' "$MCP_SERVER_TOKEN"`)
+	cmd.Env = []string{"PATH=/usr/bin:/bin"}
+	if err := w.ConfineWithChildEnv(cmd, cwd, ChildEnvDelta{Set: map[string]string{"MCP_SERVER_TOKEN": secret}}); err != nil {
+		t.Fatalf("ConfineWithChildEnv: %v", err)
+	}
+	t.Cleanup(func() {
+		for _, f := range cmd.ExtraFiles {
+			_ = f.Close()
+		}
+	})
+	assertNoArgvValue(t, cmd.Args, secret)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("confined command: %v: %s", err, out)
+	}
+	if string(out) != secret {
+		t.Errorf("confined child saw MCP_SERVER_TOKEN=%q, want %q", out, secret)
 	}
 }
 
@@ -326,7 +459,9 @@ func TestConfineWithChildEnvNilWrapperJoinsCmdEnv(t *testing.T) {
 	cmd := exec.Command("/bin/echo", "hi") //nolint:noctx // test-only cmd, never run
 	cmd.Env = []string{"KEEP=1", "OVERRIDE=old"}
 	wantArgs := slices.Clone(cmd.Args)
-	w.ConfineWithChildEnv(cmd, "/somewhere", ChildEnvDelta{Set: map[string]string{"OVERRIDE": "new", "ADDED": "2"}, Unset: []string{"KEEP"}})
+	if err := w.ConfineWithChildEnv(cmd, "/somewhere", ChildEnvDelta{Set: map[string]string{"OVERRIDE": "new", "ADDED": "2"}, Unset: []string{"KEEP"}}); err != nil {
+		t.Fatalf("ConfineWithChildEnv: %v", err)
+	}
 
 	if !slices.Equal(cmd.Args, wantArgs) {
 		t.Errorf("an unsandboxed spawn must not gain argv: %v", cmd.Args)

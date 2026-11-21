@@ -214,6 +214,10 @@ func connectOne(ctx context.Context, client *mcpsdk.Client, cfg mcpconfig.Server
 	}
 
 	session, err := client.Connect(perServerCtx, transport, nil)
+	// Connect started the launcher, which owns its own copy of the private
+	// child-env fd from the exec on. Close this process's copy now rather than
+	// leave one fd open per stdio server for the session's lifetime.
+	releaseChildEnvChannel(transport)
 	if err != nil {
 		return failedConn(cfg, dial, err)
 	}
@@ -248,6 +252,20 @@ func connectOne(ctx context.Context, client *mcpsdk.Client, cfg mcpconfig.Server
 		origNames: origNames,
 		status:    "connected",
 	}
+}
+
+// releaseChildEnvChannel closes the private child-env fd the sandbox attached
+// to a stdio transport's command. It is a no-op for a remote transport and for
+// a spawn that needed no child env (the command carries no extra files then).
+func releaseChildEnvChannel(t mcpsdk.Transport) {
+	ct, ok := t.(*mcpsdk.CommandTransport)
+	if !ok || ct.Command == nil {
+		return
+	}
+	for _, f := range ct.Command.ExtraFiles {
+		_ = f.Close()
+	}
+	ct.Command.ExtraFiles = nil
 }
 
 // Option configures NewManager. It is the non-breaking seam for threading a
@@ -303,7 +321,9 @@ func productionDialWithEnv(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper,
 				if err := confirmSandboxForServer(ctx, wrapper); err != nil {
 					return nil, err
 				}
-				confineCommandUnderSandbox(ct.Command, cfg, wrapper, environ)
+				if err := confineCommandUnderSandbox(ct.Command, cfg, wrapper, environ); err != nil {
+					return nil, err
+				}
 			}
 		}
 		return t, nil
@@ -344,9 +364,9 @@ const serverSandboxRecheckPause = time.Second
 // DYLD_INSERT_LIBRARIES and the rest from their own environment before any
 // namespace, mount, or Seatbelt policy exists — and an MCP server's cfg.Env can
 // come from a config layer a repository writes. It therefore never joins
-// cmd.Env: the Confine*WithChildEnv methods apply it on the far side of the
-// confinement (bwrap --setenv, or /usr/bin/env after sandbox-exec's --), which
-// is the server's own loader environment and nothing else.
+// cmd.Env: the Confine*WithChildEnv methods hand it to the confined child over a
+// private fd (bwrap --args, or a shell after sandbox-exec's --), so neither the
+// launcher's environment nor its argv carries the values.
 //
 // The parent environment is scrubbed of credential-named vars (evener's own
 // provider key et al.), so an ambient secret never reaches the confined server,
@@ -374,7 +394,7 @@ const serverSandboxRecheckPause = time.Second
 // identical either way. environ must return the parent environment to scrub.
 // productionDial passes os.Environ; deterministic construction tests pass a
 // fixed slice.
-func confineCommandUnderSandbox(cmd *exec.Cmd, cfg mcpconfig.ServerConfig, w *sandbox.Wrapper, environ func() []string) {
+func confineCommandUnderSandbox(cmd *exec.Cmd, cfg mcpconfig.ServerConfig, w *sandbox.Wrapper, environ func() []string) error {
 	// The floor must judge npm's project config from the directory the server
 	// is confined to, not the session's launch dir.
 	workingDir := w.Policy().Git.WorktreeRoot
@@ -396,15 +416,17 @@ func confineCommandUnderSandbox(cmd *exec.Cmd, cfg mcpconfig.ServerConfig, w *sa
 		childEnv = floorChildEnv(launcherEnv, sandbox.ApplyEnvFloorInDir(
 			mergeEnvInto(scrubbed, cfg.Env), w.Policy(), w.SessionTmp(), workingDir))
 	}
+	// fd hygiene first: a sandboxed MCP server inherits no evener fds beyond
+	// stdio. The only extra fd it gains is the private child-env channel below,
+	// which the launcher reads and this spawn site releases once it has started.
+	cmd.ExtraFiles = nil
 	// Confinement wraps the argv and, for Seatbelt, sets cmd.Dir to the worktree
 	// so a macOS MCP server starts in the same directory a Linux (bwrap, via
 	// --chdir) one does — sandbox-exec has no chdir flag.
 	if cfg.DenyNetworkException {
-		w.ConfineWithChildEnv(cmd, workingDir, childEnv)
-	} else {
-		w.ConfineTrustedInfraWithChildEnv(cmd, workingDir, childEnv)
+		return w.ConfineWithChildEnv(cmd, workingDir, childEnv)
 	}
-	cmd.ExtraFiles = nil
+	return w.ConfineTrustedInfraWithChildEnv(cmd, workingDir, childEnv)
 }
 
 // floorChildEnv is the delta that turns the launcher's environment into the

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"primeradiant.com/evener/identifier"
@@ -268,17 +269,35 @@ func (w *Wrapper) ConfineTrustedInfra(cmd *exec.Cmd, dir string) {
 	w.withNetworkAllowed().Confine(cmd, dir)
 }
 
-// childEnvBinary is the program the Seatbelt backend runs immediately after its
-// "--" separator to apply the configured environment. bwrap needs no helper: it
-// applies assignments with --setenv. The path is absolute because the confined
-// process's PATH is the session's, not the launcher's.
-const childEnvBinary = "/usr/bin/env"
+// childEnvShell is the program the Seatbelt backend runs immediately after its
+// "--" separator to apply the configured environment. sandbox-exec has no
+// args-from-fd flag, so a shell reads the assignments from the private
+// child-env fd and applies them itself. The path is absolute because the
+// confined process's PATH is the session's, not the launcher's; /bin/bash is
+// the macOS system shell and every construct the script uses is bash 3.2.
+const childEnvShell = "/bin/bash"
+
+// childEnvScriptTemplate is the fixed script that shell runs. The launcher
+// reads NUL-separated records from the private fd: "-NAME" unsets a name and
+// "+NAME=VALUE" assigns one. The text is built from constants only — never from
+// configuration — and values are applied through quoting-only expansion, so a
+// repository-controlled value is never evaluated as shell code. The final
+// "exec N<&-" keeps the private fd out of the server, matching the fd hygiene a
+// bare bwrap spawn gets.
+const childEnvScriptTemplate = `while IFS= read -r -d '' rec; do
+	case $rec in
+	-*) unset "${rec#-}" ;;
+	+*) export "${rec#+}" ;;
+	esac
+done <&%[1]d
+exec %[1]d<&-
+exec "$@"`
 
 // ChildEnvDelta is the difference between the sandbox LAUNCHER's environment
 // (cmd.Env) and the environment the CONFINED child must observe: Set carries
 // every assignment the child gains, and Unset names every variable the child
 // must not inherit from the launcher. Unset is sorted by name so the generated
-// argv is deterministic.
+// payload is deterministic.
 //
 // The delta is a difference rather than an overlay because the two environments
 // are not related by one. The floor DERIVES assignments from the environment it
@@ -294,7 +313,7 @@ type ChildEnvDelta struct {
 }
 
 // empty reports whether the delta changes nothing, so a backend pays for no
-// helper and no flag when there is nothing to apply.
+// private file and no flag when there is nothing to apply.
 func (d ChildEnvDelta) empty() bool { return len(d.Set) == 0 && len(d.Unset) == 0 }
 
 // ConfineWithChildEnv confines cmd exactly like Confine and delivers childEnv to
@@ -305,31 +324,36 @@ func (d ChildEnvDelta) empty() bool { return len(d.Set) == 0 && len(d.Unset) == 
 // LD_LIBRARY_PATH, DYLD_INSERT_LIBRARIES and friends BEFORE any namespace,
 // mount, or Seatbelt policy exists. A configured environment whose contents come
 // from a config layer a repository can write therefore must not ride there.
-// bwrap's --setenv/--unsetenv pairs and an /usr/bin/env prefix after the
-// backend's "--" separator give the child the same environment on the far side
-// of the confinement: the namespaces and mounts are in place before the
-// assignment is applied, and the loader that reads it is the child's own.
+// The assignments instead ride a private fd (cmd.ExtraFiles) that the launcher
+// reads at startup — bwrap's --args, or a shell after sandbox-exec's "--" — so
+// their VALUES never appear in the launcher's argv, where host process-list
+// diagnostics would see them. They still apply on the far side of the
+// confinement: the namespaces and mounts are in place before the assignment is
+// applied, and the loader that reads it is the child's own.
 //
-// Assignments are ordered by name so the generated argv is deterministic. A nil
+// Assignments are ordered by name so the payload is deterministic. The channel
+// is appended to cmd.ExtraFiles: the spawn site owns it and must close it once
+// the launcher has started (the launcher reads it during startup). A nil
 // wrapper has no backend to apply them behind, so they join cmd.Env: an
 // unconfined spawn's own environment IS the child's.
-func (w *Wrapper) ConfineWithChildEnv(cmd *exec.Cmd, dir string, childEnv ChildEnvDelta) {
-	w.confineWithChildEnv(cmd, dir, childEnv, false)
+func (w *Wrapper) ConfineWithChildEnv(cmd *exec.Cmd, dir string, childEnv ChildEnvDelta) error {
+	return w.confineWithChildEnv(cmd, dir, childEnv, false)
 }
 
 // ConfineTrustedInfraWithChildEnv is ConfineWithChildEnv with
 // ConfineTrustedInfra's network carve-out: identical confinement except that
 // egress is never severed, for trusted-infrastructure spawns.
-func (w *Wrapper) ConfineTrustedInfraWithChildEnv(cmd *exec.Cmd, dir string, childEnv ChildEnvDelta) {
-	w.confineWithChildEnv(cmd, dir, childEnv, true)
+func (w *Wrapper) ConfineTrustedInfraWithChildEnv(cmd *exec.Cmd, dir string, childEnv ChildEnvDelta) error {
+	return w.confineWithChildEnv(cmd, dir, childEnv, true)
 }
 
 // confineWithChildEnv is the shared body: it wraps cmd.Args and splices
-// childEnv into the wrapped argv on the child's side of the separator.
-func (w *Wrapper) confineWithChildEnv(cmd *exec.Cmd, dir string, childEnv ChildEnvDelta, trustedInfra bool) {
+// childEnv's private fd into the wrapped invocation on the child's side of the
+// separator.
+func (w *Wrapper) confineWithChildEnv(cmd *exec.Cmd, dir string, childEnv ChildEnvDelta, trustedInfra bool) error {
 	if w == nil {
 		cmd.Env = mergeChildEnvAssignments(cmd.Env, childEnv)
-		return
+		return nil
 	}
 	target := w
 	if trustedInfra {
@@ -339,67 +363,105 @@ func (w *Wrapper) confineWithChildEnv(cmd *exec.Cmd, dir string, childEnv ChildE
 		cmd.Dir = dir
 	}
 	original := cmd.Args
-	argv := childEnvArgv(target.policy.Backend, target.Wrap(original, dir), len(original), childEnv)
+	wrapped := target.Wrap(original, dir)
+	argv := wrapped
+	if !childEnv.empty() {
+		fd := childEnvFdBase + len(cmd.ExtraFiles)
+		channel, err := childEnvFile(target.policy.Backend, childEnv)
+		if err != nil {
+			return err
+		}
+		argv = childEnvArgv(target.policy.Backend, wrapped, len(original), fd)
+		cmd.ExtraFiles = append(cmd.ExtraFiles, channel)
+	}
 	cmd.Path = argv[0]
 	cmd.Args = argv
+	return nil
 }
 
 // childEnvNames returns childEnv's variable names in sorted order, so every
-// generated environment or argv is deterministic.
+// generated environment or payload is deterministic.
 func childEnvNames(childEnv map[string]string) []string {
 	return slices.Sorted(maps.Keys(childEnv))
 }
 
-// childEnvArgv splices childEnv into a wrapped argv so the assignments apply to
-// the confined process, never to the backend that starts it. n is the length of
-// the ORIGINAL argv, which both backends place unchanged at the end of the
-// wrapped vector, so the separator's position is arithmetic rather than a
-// search: bwrap's "--setenv" pairs go just before the "--", and Seatbelt's
-// /usr/bin/env prefix just after it.
-//
-// The unset names go first, so on both backends a name that somehow appeared in
-// both halves would end up set rather than unset — the direction the merged
-// environment, which cannot contain an unset name, actually assigns.
+// childEnvFdBase is the child fd number of the first extra file: Go's exec
+// numbers cmd.ExtraFiles from 3.
+const childEnvFdBase = 3
+
+// childEnvArgv splices the private child-env channel into a wrapped argv so the
+// assignments apply to the confined process, never to the backend that starts
+// it. n is the length of the ORIGINAL argv, which both backends place unchanged
+// at the end of the wrapped vector, so the separator's position is arithmetic
+// rather than a search: bwrap's "--args FD" goes just before the "--", and
+// Seatbelt's shell prefix just after it. fd is where the payload fd lands in
+// the child.
 //
 // A wrapped argv that does not end in the original argv behind a separator would
 // put the assignments on the wrong side of the confinement, so it panics rather
 // than deliver them to the launcher's loader — the same fail-closed posture Wrap
 // takes for an unconfirmed policy.
-func childEnvArgv(backend Backend, argv []string, n int, childEnv ChildEnvDelta) []string {
-	if childEnv.empty() {
-		return argv
-	}
+func childEnvArgv(backend Backend, argv []string, n, fd int) []string {
 	split := len(argv) - n
 	if split < 1 || argv[split-1] != "--" {
 		panic("sandbox: wrapped argv does not end in the original argv behind the backend separator")
 	}
-	names := childEnvNames(childEnv.Set)
-	unset := slices.Sorted(slices.Values(childEnv.Unset))
 	var insert []string
 	at := split
 	switch backend {
 	case BackendBwrap:
 		at = split - 1
-		for _, name := range unset {
-			insert = append(insert, "--unsetenv", name)
-		}
-		for _, name := range names {
-			insert = append(insert, "--setenv", name, childEnv.Set[name])
-		}
+		insert = []string{"--args", strconv.Itoa(fd)}
 	case BackendSeatbelt:
-		insert = append(insert, childEnvBinary)
-		for _, name := range unset {
-			insert = append(insert, "-u", name)
-		}
-		for _, name := range names {
-			insert = append(insert, name+"="+childEnv.Set[name])
-		}
+		insert = []string{childEnvShell, "-c", childEnvScript(fd), childEnvShell}
 	}
 	out := make([]string, 0, len(argv)+len(insert))
 	out = append(out, argv[:at]...)
 	out = append(out, insert...)
 	out = append(out, argv[at:]...)
 	return out
+}
+
+// childEnvScript is childEnvScriptTemplate with the private fd filled in.
+func childEnvScript(fd int) string {
+	return fmt.Sprintf(childEnvScriptTemplate, fd)
+}
+
+// childEnvPayload encodes childEnv as the NUL-separated records the private
+// channel carries. bwrap's --args consumes bwrap flags, so bwrap gets
+// --unsetenv NAME and --setenv NAME VALUE records; the Seatbelt shell gets the
+// "-NAME"/"+NAME=VALUE" form its script reads.
+//
+// The unset names go first, so a name that somehow appeared in both halves
+// would end up set rather than unset — the direction the merged environment,
+// which cannot contain an unset name, actually assigns.
+func childEnvPayload(backend Backend, childEnv ChildEnvDelta) []byte {
+	unset := slices.Sorted(slices.Values(childEnv.Unset))
+	names := childEnvNames(childEnv.Set)
+	var payload []byte
+	record := func(fields ...string) {
+		for _, field := range fields {
+			payload = append(payload, field...)
+			payload = append(payload, 0)
+		}
+	}
+	switch backend {
+	case BackendBwrap:
+		for _, name := range unset {
+			record("--unsetenv", name)
+		}
+		for _, name := range names {
+			record("--setenv", name, childEnv.Set[name])
+		}
+	case BackendSeatbelt:
+		for _, name := range unset {
+			record("-" + name)
+		}
+		for _, name := range names {
+			record("+" + name + "=" + childEnv.Set[name])
+		}
+	}
+	return payload
 }
 
 // mergeChildEnvAssignments applies childEnv to env by NAME: an unset name loses
