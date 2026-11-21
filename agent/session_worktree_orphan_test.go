@@ -1753,10 +1753,11 @@ func (l *sharedDescendantLane) driveUntil(stop <-chan struct{}) func() error {
 
 // startDrive starts one drive worker and returns the flush-error reader plus a
 // channel that closes when the worker exits. The worker drives once up front
-// for rows already presentable, then on each wake edge the lane's notify
-// callbacks signal: the daemon reaches a presentation on its wake edge, not on
-// a cadence, and a refused drive arms the root's paced retry. A callback the
-// test itself wired is its own driver and is left alone. stop outranks a
+// for rows already presentable — in the worker, so startDrive does not run
+// that pass inline — then on each wake edge the lane's notify callbacks signal:
+// the daemon reaches a presentation on its wake edge, not on a cadence, and a
+// refused drive arms the root's paced retry. A callback the test itself wired
+// is its own driver and is left alone. stop outranks a
 // buffered wake: once the caller closes it, no new pass starts. A pass already
 // admitted when stop closes can still be in flight, so a caller that must not
 // drive a runtime it has moved past joins the returned done channel. The worker
@@ -1792,10 +1793,12 @@ func (l *sharedDescendantLane) startDrive(stop <-chan struct{}) (func() error, <
 			sess.SetNotifyFunc(l.signal)
 		}
 	}
-	drive()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		// The first pass rides the worker so a caller blocked in a drive hook
+		// cannot outrun the timeout it starts after this call returns.
+		drive()
 		stopped := func() bool {
 			return channelClosed(stop) || channelClosed(l.testDone)
 		}
@@ -4127,8 +4130,9 @@ func TestDelegateAttentionStopAdmittedDuringReopenResolvesFreshRow(t *testing.T)
 	// Drive the presentation: the busy arm reopens the consumed report, the
 	// seam admits the stop mid-window, and the first drive is enough — its
 	// flush pumps the delivery the spawn deferred past its last drain cut, so
-	// a stranded deferred row still presents.
-	flushErr := lane.driveUntil(stopAdmitted)
+	// a stranded deferred row still presents. The pass runs in the worker, so
+	// a hook stall cannot keep the test from reaching the tripwire below.
+	flushErr, driveDone := lane.startDrive(stopAdmitted)
 	select {
 	case <-stopAdmitted:
 	// TRIPWIRE: the seam admits the stop inside the first reopen window, a
@@ -4139,6 +4143,13 @@ func TestDelegateAttentionStopAdmittedDuringReopenResolvesFreshRow(t *testing.T)
 		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
 		t.Fatalf("the reopen window never admitted the stop (pending attention=%d (%v); deferred deliveries=%v flush=%v)",
 			len(pending), pendErr, deferred, lastFlushErr)
+	}
+	// Join the worker before reading the fold: the first pass is the reopen
+	// itself, and its append and re-check must land before the reads below.
+	select {
+	case <-driveDone:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the admitted stop's first drive never returned (flush=%v)", flushErr())
 	}
 
 	// The re-check's contract: the stop owns the freshly appended row, so
