@@ -394,7 +394,7 @@ func TestExpandHistoryEscapesSummarizerProseAfterACheckpointFoldsIt(t *testing.T
 		return llm.Response{Message: llm.Assistant(reply)}
 	}
 	client := llm.NewClient()
-	responses := []func(llm.Request) llm.Response{summarize, summarize, summarize}
+	responses := []func(llm.Request) llm.Response{summarize, summarize, summarize, summarize, summarize}
 	client.Register(newFakeAdapter("openai", responses...))
 	cm := contextmgr.NewManager(NewOpenAIProfile("gpt-5.2"), client, cheapmodel.New(client))
 	cm.PreserveRecentTurns = 1
@@ -458,5 +458,47 @@ func TestExpandHistoryEscapesSummarizerProseAfterACheckpointFoldsIt(t *testing.T
 	// Replay escapes the request copy only.
 	if foldedCheckpoint.Message.Text() != stored {
 		t.Fatal("replay escaped the stored checkpoint in place")
+	}
+
+	// A third pass checkpoints the checkpoint the second pass produced.
+	// Extracting the earlier summary that checkpoint carries runs it back
+	// through parseMarkdownBlocks, which trims the blank lines the render ended
+	// on, so this fold's carriage is the summary's opening without its trailing
+	// newline. The summarizer's prose must still reach the model escaped, while
+	// the person's message and the code the reply quoted keep every byte.
+	history = []schema.Turn{
+		foldedCheckpoint,
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("one more answer")),
+	}
+	produced = nil
+	if !cm.ForceCompact(context.Background(), &history, "", func(events.EventKind, events.EventData) {}) {
+		t.Fatal("the third compaction did not summarize")
+	}
+	var refoldedCheckpoint schema.Turn
+	for _, turn := range produced {
+		if turn.Kind == schema.TurnCheckpoint {
+			refoldedCheckpoint = turn
+		}
+	}
+	if refoldedCheckpoint.Kind == "" {
+		t.Fatalf("the third compaction produced no checkpoint: %+v", produced)
+	}
+	refolded := refoldedCheckpoint.Message.Text()
+	if !strings.Contains(refolded, reply) {
+		t.Fatalf("the second checkpoint does not carry the summarizer's reply:\n%s", refolded)
+	}
+	if !strings.Contains(refolded, personBody) {
+		t.Fatalf("the second checkpoint does not carry the person's message:\n%s", refolded)
+	}
+	wantRefolded := withBodyEscaped(t, refolded, reply, escapedReply)
+	projected = expandHistory([]schema.Turn{refoldedCheckpoint}, replayScope{})
+	if len(projected) != 1 {
+		t.Fatalf("expanded %d messages, want 1: %+v", len(projected), projected)
+	}
+	if got := projected[0].Text(); got != wantRefolded {
+		t.Fatalf("second checkpoint projection = %q, want %q", got, wantRefolded)
+	}
+	if refoldedCheckpoint.Message.Text() != refolded {
+		t.Fatal("replay escaped the stored second checkpoint in place")
 	}
 }

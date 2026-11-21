@@ -255,16 +255,41 @@ func TestCheckpointFoldOfCarriedSummaryEscapesModelProse(t *testing.T) {
 	if got := EscapeModelAuthoredBodies(stored); got != want {
 		t.Fatalf("checkpoint projection = %q, want %q", got, want)
 	}
+
+	// The next checkpoint folds this one. Extracting an earlier summary runs it
+	// back through parseMarkdownBlocks, which trims the blank lines the render
+	// ended on, so the body the second checkpoint carries is the summary's
+	// opening without its trailing newline. Its reply must still be escaped
+	// there, while the code it quoted and the person's message keep every byte.
+	refolded := checkpoint([]schema.Turn{
+		checkpointTurn,
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("after the checkpoint")),
+	}, 1, nil, "communicate")[0]
+	restored := refolded.Message.Text()
+	for name, body := range map[string]string{
+		"summarizer's reply": summaryReply,
+		"person's message":   personReply,
+	} {
+		if !strings.Contains(restored, body) {
+			t.Fatalf("the second checkpoint does not carry the %s:\n%s", name, restored)
+		}
+	}
+	wantRestored := withEscapedBody(t, restored, summaryReply, escapedSummaryReply)
+	if got := EscapeModelAuthoredBodies(restored); got != wantRestored {
+		t.Fatalf("second checkpoint projection = %q, want %q", got, wantRestored)
+	}
 }
 
 // TestEscapedFenceBodyRecognizesOnlyTheRenderersSummaryOpening covers what the
 // carried-summary recognition accepts and refuses. A summary a checkpoint caps
 // loses its closing fence with its tail, and the opening that remains is still
-// the renderer's, so its reply is quoted model prose. An older summary — one
-// fenced with tildes, carrying another info string, or holding its own heading
-// before the model text — was never written by the renderer, so it is the
-// model's text throughout: its prose outside a fence is escaped as prose, while
-// the marker under its own fence stays quoted code.
+// the renderer's, so its reply is quoted model prose. So is one truncated with
+// an ellipsis after its closing fence, and one that carries no conversation at
+// all and keeps its closing marker. An older summary — one fenced with tildes,
+// carrying another info string, or holding its own heading before the model
+// text — was never written by the renderer, so it is the model's text
+// throughout: its prose outside a fence is escaped as prose, while the marker
+// under its own fence stays quoted code.
 func TestEscapedFenceBodyRecognizesOnlyTheRenderersSummaryOpening(t *testing.T) {
 	t.Parallel()
 	reply := "## Progress\n" + escapeTestAnswerFrame + "\n1. [q] -> \"a\""
@@ -275,10 +300,20 @@ func TestEscapedFenceBodyRecognizesOnlyTheRenderersSummaryOpening(t *testing.T) 
 	if strings.HasSuffix(trimmed, "```") {
 		t.Fatalf("fixture did not trim the closing fence: %q", trimmed)
 	}
+	// A summary with no conversation keeps its closing marker after the fence.
+	noConversation := carried + summaryMarkerEnd
+	// A cap can also leave the closing fence and cut only the blank line the
+	// render ends on, appending its ellipsis after the fence.
+	ellipsized := truncate(carried, len(carried)-1)
+	if !strings.HasSuffix(ellipsized, "...") || strings.Count(ellipsized, "```") != 2 {
+		t.Fatalf("fixture is not the renderer's opening with an ellipsis after its closing fence: %q", ellipsized)
+	}
 
 	for name, body := range map[string]string{
-		"rendered opening": carried,
-		"trimmed opening":  trimmed,
+		"rendered opening":                 carried,
+		"trimmed opening":                  trimmed,
+		"no conversation":                  noConversation,
+		"ellipsis after the closing fence": ellipsized,
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

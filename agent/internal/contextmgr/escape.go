@@ -1,7 +1,6 @@
 package contextmgr
 
 import (
-	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
@@ -135,63 +134,53 @@ func escapedFenceBody(owner, body string) string {
 	if !strings.ContainsAny(body, "[<") {
 		return body
 	}
-	if owner == "Earlier Summaries" {
-		trimmed := strings.TrimSuffix(body, "\n")
-		if carriesPartnerMessages(trimmed) || (trimmed != body && carriesPartnerMessages(body)) ||
-			carriedSummaryOpening(body) {
-			return EscapeModelAuthoredBodies(body)
-		}
+	if owner == "Earlier Summaries" && carriedSummaryOpening(body) {
+		// The body is a summary turn in its own right, so its inner sections
+		// select what is model prose. Recursing re-reads it from its head: the
+		// tracker finds the end of the "## Summary" fence on its own, whether
+		// the fold kept that fence or cut it at the body's tail.
+		return EscapeModelAuthoredBodies(body)
 	}
 	return sysmsg.EscapeModelAuthoredFrames(body)
 }
 
-// carriedSummaryOpening reports whether text is what a checkpoint fold keeps of
-// a summary turn the renderer wrote. A fold moves the summary's conversation
-// section — and the turn's closing marker with it — into the checkpoint's own
-// conversation, so the body a fold carries is the turn's opening: the summary
-// marker, the pointer line and partner-carry reminder the renderer may write,
-// then the model's text fenced under summaryModelTextHeading. That opening is
-// still the renderer's framing, so the reply under the heading is read through
-// as model prose instead of as quoted code.
+// carriedSummaryOpening reports whether text is the opening of a summary turn
+// the renderer wrote, as a checkpoint fold carries it. A fold moves the
+// summary's conversation section — and the turn's closing marker with it — into
+// the checkpoint's own conversation, so the body it keeps is the turn's
+// opening: the summary marker, the pointer line and partner-carry reminder the
+// renderer may write, then the model's text fenced under
+// summaryModelTextHeading. That opening is still the renderer's framing, so the
+// reply under the heading is read through as model prose instead of as quoted
+// code.
 //
-// Nothing may follow the heading's section: a body with anything else after it
-// is not the opening a fold keeps, and an older summary — which is the model's
-// text throughout — stays whole. A summary trimmed at its tail keeps the same
-// opening; its fenced text is model prose whether or not the closing fence
-// survived the cut.
+// The opening is recognised by that layout alone: the heading's first non-blank
+// line must be a fence the renderer picked. Whether the closing fence survived
+// the fold is not asked — a body trimmed at its tail keeps the same opening —
+// and neither is what follows the fence's end, because the recursion reads the
+// turn's own sections from what the fold kept.
 func carriedSummaryOpening(text string) bool {
-	start, body, end, ok := markdownSectionSpan(text, summaryModelTextHeading)
-	if !ok || strings.TrimSpace(text[end:]) != "" || !isSummaryTurnOpening(text[:start]) {
+	start, body, _, ok := markdownSectionSpan(text, summaryModelTextHeading)
+	if !ok || !isSummaryTurnOpening(text[:start]) {
 		return false
 	}
-	section := text[body:end]
-	if modelText, sole := soleFencedText(section); sole {
-		// Read through the renderer: only its own heading, fence and info
-		// string reproduce its output, so a summary fenced another way is not
-		// the layout a fold keeps.
-		return text[start:end] == renderCompactionModelText(summaryModelTextHeading, modelText+"\n")
+	for line := range strings.SplitSeq(text[body:], "\n") {
+		if strings.TrimSpace(line) != "" {
+			return renderedFenceOpener(line)
+		}
 	}
-	// A checkpoint that caps an oversized summary cuts it at its tail, taking
-	// the closing fence with it. What remains is still the renderer's opening
-	// when it begins with the info string the renderer writes and nothing
-	// closes the block.
-	lines := strings.Split(strings.TrimSpace(section), "\n")
-	var fence mdfence.Tracker
-	if len(lines) < 2 || !renderedFenceOpener(lines[0], &fence) {
-		return false
-	}
-	return !slices.ContainsFunc(lines[1:], fence.Step)
+	return false
 }
 
-// renderedFenceOpener steps fence over line and reports whether line is the
-// opener writeMarkdownFence writes: three or more backticks with the info
-// string "text" and nothing else.
-func renderedFenceOpener(line string, fence *mdfence.Tracker) bool {
+// renderedFenceOpener reports whether line is the opener writeMarkdownFence
+// writes: three or more backticks with the info string "text" and nothing
+// else.
+func renderedFenceOpener(line string) bool {
 	n := 0
 	for n < len(line) && line[n] == '`' {
 		n++
 	}
-	return n >= 3 && strings.TrimSpace(line[n:]) == "text" && fence.Step(line)
+	return n >= 3 && strings.TrimSpace(line[n:]) == "text"
 }
 
 // humanBody reports whether the fence opened under owner/block holds text the
