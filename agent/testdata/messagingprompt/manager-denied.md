@@ -153,7 +153,6 @@ Currently callable tools:
 - `ask_user`
 - `compact_context`
 - `doctor_evener`
-- `edit_file`
 - `find_session_transcripts`
 - `list_dir`
 - `manage_worktree`

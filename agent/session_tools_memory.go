@@ -23,7 +23,7 @@ func registerMemoryTools(reg *tool.Registry, s *Session) error {
 	tools := []tool.RegisteredTool{
 		{Definition: tool.DefMemoryRead(), ReadOnly: true, Exec: s.execMemoryRead},
 		{Definition: tool.DefMemoryWrite(), Exec: s.execMemoryWrite},
-		{Definition: tool.MemoryDefinition(tool.DefEditFile(), "memory_edit"), Exec: s.execMemoryEdit},
+		{Definition: tool.DefMemoryEdit(), Exec: s.execMemoryEdit},
 		{Definition: tool.MemoryDefinition(tool.DefGrep(), "memory_search"), ReadOnly: true, Exec: s.execMemorySearch},
 		{Definition: tool.DefMemoryDelete(), Exec: s.execMemoryDelete},
 	}
@@ -368,8 +368,8 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 }
 func (s *Session) execMemoryEdit(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 	return s.execOwnMemoryWrite(args, "edit", func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any, stamp func([]byte) []byte) (any, error) {
-		return execFileEditWith(forwarded, s.fileReadGuard(env), func(path, oldString, newString string, replaceAll bool) (string, error) {
-			return env.EditFileWithCtx(ctx, path, oldString, newString, replaceAll, stamp)
+		return execFileEditWith(forwarded, s.fileReadGuard(env), func(path string, edits []execenv.FileEdit) (string, error) {
+			return env.EditFileBatchWithCtx(ctx, path, edits, stamp)
 		})
 	})
 }

@@ -253,7 +253,7 @@ export async function open(options) {
      if (options.scenario === 'configuration' && args.id === 'entry') await page.getByTestId('composer-stop').waitFor({ state: 'visible' });
      if (options.scenario === 'configuration' && args.id === 'action') await page.getByRole('spinbutton', { name: 'Max rounds', exact: true }).scrollIntoViewIfNeeded();
      if (options.scenario === 'configuration' && args.id === 'verified') {
-      await page.locator('[data-tool-name="apply_patch"]').waitFor({ state: 'visible' });
+      await page.locator('[data-tool-name="shell"]').waitFor({ state: 'visible' });
       await page.locator('[data-testid="agent-message-item"][data-live="false"]').waitFor({ state: 'visible' });
      }
      if (options.scenario === 'daily') {

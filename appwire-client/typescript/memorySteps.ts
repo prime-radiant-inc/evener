@@ -1,4 +1,4 @@
-import { editDiffText } from "./editDiff";
+import { editBatchDiffText, editOperationsOf } from "./editDiff";
 import type { ItemModel } from "./model";
 import {
   BINARY_PAYLOAD_HEADER,
@@ -67,13 +67,12 @@ export function memoryEditWords(step: MemoryStep): StepWords {
   const args = memoryArgs(step);
   const target = memoryFileTarget(args);
   if (!target) return { verb: "Edited memory" };
-  const oldString = str(args, "old_string");
-  const newString = str(args, "new_string");
-  // Neither side present is the malformed shape the clients' bodies fall
-  // back on; there is no diff to describe, so no detail rides the summary.
-  if (oldString === undefined && newString === undefined) return { verb: "Edited memory", target };
+  const ops = editOperationsOf(args);
+  // Malformed or unparseable edit arguments carry no diff to describe, so no
+  // detail rides the summary.
+  if (ops === null) return { verb: "Edited memory", target };
   const path = filePathOf(args) ?? "";
-  const diff = editDiffText(path, oldString ?? "", newString ?? "");
+  const diff = editBatchDiffText(path, ops);
   return { verb: "Edited memory", target, detail: diffResultText(diff) };
 }
 

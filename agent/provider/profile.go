@@ -74,12 +74,12 @@ func surfaceConventions(surface string) (docFiles []string, toolNameMap map[stri
 // capabilities is the surface's tool set.
 func (p *Profile) capabilities() []toolCapability {
 	switch p.res.Surface {
-	case registry.SurfaceAnthropic:
-		return anthropicStyleCapabilities
+	case registry.SurfaceOpenAI:
+		return openAICodexCapabilities
 	case registry.SurfaceGoogle:
 		return geminiStyleCapabilities
 	default:
-		return openAICodexCapabilities
+		return anthropicStyleCapabilities
 	}
 }
 

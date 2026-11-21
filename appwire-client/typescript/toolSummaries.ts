@@ -9,7 +9,7 @@
 
 import { parseAskUserQuestions } from "./askShared";
 import { delegateSendTarget, delegateSendWords } from "./delegateSteps";
-import { editDiffText } from "./editDiff";
+import { editBatchDiffText, editOperationsOf } from "./editDiff";
 import { housekeepingProgress, housekeepingWords } from "./housekeepingSteps";
 import { jobListWords, jobProgress, jobStatusWords, jobStopWords } from "./jobSteps";
 import { jobWatchWords } from "./jobWatchSteps";
@@ -197,10 +197,9 @@ function globWords(step: ToolStep): StepWords {
 function editFileWords(step: ToolStep): StepWords {
   const path = filePathArg(step);
   if (!path) return { verb: "Edited a file" };
-  const args = parseArgs(step.argumentsJSON);
-  const oldString = str(args, "old_string") ?? "";
-  const newString = str(args, "new_string") ?? "";
-  return { verb: "Edited", target: path, detail: diffResultText(editDiffText(path, oldString, newString)) };
+  const ops = editOperationsOf(parseArgs(step.argumentsJSON));
+  if (ops === null) return { verb: "Edited", target: path };
+  return { verb: "Edited", target: path, detail: diffResultText(editBatchDiffText(path, ops)) };
 }
 
 /** "Wrote agent/tree_order.go", or "Wrote a file". */

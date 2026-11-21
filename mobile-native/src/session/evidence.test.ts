@@ -24,6 +24,35 @@ describe("what a step has to show (spec 8.2)", () => {
 		]);
 	});
 
+	it("draws multi-edit edit_file calls (canonical edits[]) as batched diffs", () => {
+		expect(
+			stepEvidence(
+				step("edit_file", {
+					file_path: "a.go",
+					edits: [
+						{ old_string: "one\ntwo", new_string: "uno" },
+						{ old_string: "three", new_string: "tres\ncuatro" },
+					],
+				}),
+			),
+		).toEqual([
+			{
+				kind: "diff",
+				text: "--- a.go\n+++ a.go\n@@ edit 1 @@\n-one\n-two\n+uno\n@@ edit 2 @@\n-three\n+tres\n+cuatro",
+				added: 3,
+				removed: 3,
+			},
+		]);
+	});
+
+	it("counts header-like ---/+++ content lines accurately in edit_file diffs", () => {
+		expect(
+			stepEvidence(
+				step("edit_file", { file_path: "a.md", old_string: "--\n-- heading", new_string: "++\n++ heading" }),
+			),
+		).toEqual([{ kind: "diff", text: "--- a.md\n+++ a.md\n---\n--- heading\n+++\n+++ heading", added: 2, removed: 2 }]);
+	});
+
 	it("draws a patch as its own diff", () => {
 		const patch = "*** Update File: a.go\n@@\n context\n+new\n-old";
 		expect(stepEvidence(step("apply_patch", { patch }))).toEqual([{ kind: "diff", text: patch, added: 1, removed: 1 }]);
@@ -69,6 +98,9 @@ describe("what a step has to show (spec 8.2)", () => {
 		// An edit whose arguments carry neither side has no diff to draw.
 		expect(stepEvidence(step("edit_file", {}))).toEqual([]);
 		expect(stepEvidence(step("edit_file", { file_path: "a.go" }))).toEqual([]);
+		expect(stepEvidence(step("edit_file", { file_path: "a.go", edits: [] }))).toEqual([]);
+		expect(stepEvidence(step("edit_file", { file_path: "a.go", edits: "not-json" }))).toEqual([]);
+		expect(stepEvidence(step("edit_file", { file_path: "a.go", edits: [{ old_str: "a", new_str: "b" }] }))).toEqual([]);
 	});
 });
 
@@ -613,6 +645,43 @@ describe("memory step evidence", () => {
 				),
 			),
 		).toEqual([{ kind: "diff", text: "--- MEMORY.md\n+++ MEMORY.md\n-old\n+new", added: 1, removed: 1 }]);
+	});
+
+	it("shows multi-edit memory_edit calls as file diffs", () => {
+		expect(
+			stepEvidence(
+				memory(
+					"memory_edit",
+					JSON.stringify({
+						scope: "project",
+						file_path: "MEMORY.md",
+						edits: [
+							{ old_string: "old 1", new_string: "new 1" },
+							{ old_string: "old 2", new_string: "new 2" },
+						],
+					}),
+				),
+			),
+		).toEqual([
+			{
+				kind: "diff",
+				text: "--- MEMORY.md\n+++ MEMORY.md\n@@ edit 1 @@\n-old 1\n+new 1\n@@ edit 2 @@\n-old 2\n+new 2",
+				added: 2,
+				removed: 2,
+			},
+		]);
+	});
+
+	it("falls back to JSON evidence for malformed memory_edit arguments", () => {
+		for (const malformed of [
+			{ scope: "project", file_path: "MEMORY.md" },
+			{ scope: "project", file_path: "MEMORY.md", edits: [] },
+			{ scope: "project", file_path: "MEMORY.md", edits: "not-json" },
+			{ scope: "project", file_path: "MEMORY.md", edits: [{ old_str: "a", new_str: "b" }] },
+		]) {
+			const evidence = stepEvidence(memory("memory_edit", JSON.stringify(malformed), "edited"));
+			expect(evidence.map((entry) => entry.kind)).toEqual(["json", "output"]);
+		}
 	});
 
 	it.each([

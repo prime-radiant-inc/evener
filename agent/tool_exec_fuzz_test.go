@@ -84,8 +84,8 @@ func FuzzToolExecution(f *testing.F) {
 		{0, `{"file_path":"a.txt"}`},
 		{0, `{"file_path":"a.txt","offset":1,"limit":2}`},
 		{1, `{"file_path":"b.txt","content":"hello"}`},
-		{2, `{"file_path":"c.txt","old_string":"x","new_string":"y"}`},
-		{2, `{"file_path":"c.txt","old_string":"x","new_string":"y","replace_all":true}`},
+		{2, `{"file_path":"c.txt","edits":[{"old_string":"x","new_string":"y"}]}`},
+		{2, `{"file_path":"c.txt","edits":[{"old_string":"x","new_string":"y","replace_all":true}]}`},
 		{3, `{"pattern":"*.go"}`},
 		{4, `{"pattern":"x","path":".","output_mode":"count"}`},
 		{5, `{"path":"."}`},
@@ -104,7 +104,7 @@ func FuzzToolExecution(f *testing.F) {
 		// edit h%3==0): these drive ExecuteCall's handler-error formatting path,
 		// which the success-returning seeds above never reach.
 		{0, `{"file_path":"r0.txt"}`},
-		{2, `{"file_path":"e2.txt","old_string":"x","new_string":"y"}`},
+		{2, `{"file_path":"e2.txt","edits":[{"old_string":"x","new_string":"y"}]}`},
 	}
 	for _, s := range seeds {
 		f.Add(s.tool, []byte(s.args))

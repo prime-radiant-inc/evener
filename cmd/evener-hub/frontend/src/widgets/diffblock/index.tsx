@@ -42,14 +42,13 @@ const NO_NEWLINE_MARKER = "\\ No newline at end of file";
 
 /**
  * Classifies each line of unified-diff text. "---"/"+++" file-header lines
- * are only recognized as headers BEFORE the first "@@" hunk of a file
- * block (tracked via `inHeader`): after that, a content line that itself
- * starts with "---" or "+++" (a deleted/added line whose original text
- * happened to start that way) is unambiguously a deletion/addition, never
- * mistaken for a second header - a real ambiguity in the unified diff
- * format that a naive per-line prefix check gets wrong. A "diff --git"
- * line starts a new file block in a multi-file diff and re-arms header
- * detection for that file's own "---"/"+++" pair.
+ * are recognized as headers while `inHeader` is true: `inHeader` turns false on
+ * the first "@@" hunk header, or immediately after a "+++" line following a
+ * "---" line (`seenOldHeader`) so flat single-edit diffs with no "@@" still
+ * classify subsequent "---"/"+++" content lines as deletions/additions. A
+ * "diff --git" or "index " line re-arms header detection for the next file.
+ * Mirrors appwire-client/typescript/editDiff.ts's `classifyDiffLineKinds` so
+ * DiffBlock stays self-contained while matching diffStats and mobile StepEvidence.
  */
 function parseUnifiedDiff(unified: string): DiffLine[] {
   if (unified === "") return [];
@@ -66,16 +65,26 @@ function parseUnifiedDiff(unified: string): DiffLine[] {
 
   const lines: DiffLine[] = [];
   let inHeader = true;
+  let seenOldHeader = false;
 
   for (const raw of rawLines) {
     if (raw.startsWith("diff --git") || raw.startsWith("index ")) {
       lines.push({ kind: "header", marker: "", content: raw });
       inHeader = true;
+      seenOldHeader = false;
     } else if (raw.startsWith("@@")) {
       lines.push({ kind: "header", marker: "", content: raw });
       inHeader = false;
-    } else if (inHeader && (raw.startsWith("--- ") || raw === "---" || raw.startsWith("+++ ") || raw === "+++")) {
+      seenOldHeader = false;
+    } else if (inHeader && (raw.startsWith("--- ") || raw === "---")) {
       lines.push({ kind: "header", marker: "", content: raw });
+      seenOldHeader = true;
+    } else if (inHeader && (raw.startsWith("+++ ") || raw === "+++")) {
+      lines.push({ kind: "header", marker: "", content: raw });
+      if (seenOldHeader) {
+        inHeader = false;
+        seenOldHeader = false;
+      }
     } else if (raw === NO_NEWLINE_MARKER) {
       lines.push({ kind: "meta", marker: "", content: raw });
     } else if (raw.startsWith("+")) {

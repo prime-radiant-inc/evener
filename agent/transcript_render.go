@@ -14,6 +14,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/runetrim"
 
 	"primeradiant.com/evener/agent/internal/mdfence"
@@ -2229,6 +2230,57 @@ func formatNumber(f float64) string {
 	return strconv.FormatFloat(f, 'g', -1, 64)
 }
 
+// extractRenderedEditOps decodes a stored edit_file call's edit operations from
+// canonical edits[] or falls back to historical top-level fields.
+func extractRenderedEditOps(m map[string]any) []execenv.FileEdit {
+	if raw, hasEdits := m["edits"]; hasEdits {
+		items, ok := raw.([]any)
+		if !ok || len(items) == 0 {
+			return nil
+		}
+		ops := make([]execenv.FileEdit, 0, len(items))
+		for _, item := range items {
+			obj, ok := item.(map[string]any)
+			if !ok {
+				return nil
+			}
+			oldStr, okOld := obj["old_string"].(string)
+			newStr, okNew := obj["new_string"].(string)
+			if !okOld || !okNew {
+				return nil
+			}
+			replaceAll, _ := obj["replace_all"].(bool)
+			ops = append(ops, execenv.FileEdit{OldString: oldStr, NewString: newStr, ReplaceAll: replaceAll})
+		}
+		return ops
+	}
+	return []execenv.FileEdit{{
+		OldString:  scalarString(m["old_string"]),
+		NewString:  scalarString(m["new_string"]),
+		ReplaceAll: scalarString(m["replace_all"]) == "true",
+	}}
+}
+
+// editFileSummary renders the single-edit summary or the batch aggregate.
+func editFileSummary(path string, edits []execenv.FileEdit) string {
+	if len(edits) == 0 {
+		return path
+	}
+	if len(edits) == 1 {
+		s := fmt.Sprintf("%s (replace %d→%d chars", path, len(edits[0].OldString), len(edits[0].NewString))
+		if edits[0].ReplaceAll {
+			s += ", all"
+		}
+		return s + ")"
+	}
+	oldChars, newChars := 0, 0
+	for _, edit := range edits {
+		oldChars += len(edit.OldString)
+		newChars += len(edit.NewString)
+	}
+	return fmt.Sprintf("%s (%d edits, replace %d→%d chars)", path, len(edits), oldChars, newChars)
+}
+
 // toolInputSummary returns a one-line, bounded summary of a tool call's input
 // per the known-tool list in spec §Tool Call Condensation. It never emits full
 // file contents or full edit strings. Unknown tools fall back to up to three
@@ -2275,12 +2327,7 @@ func toolInputSummary(name string, args json.RawMessage) string {
 		summary = fmt.Sprintf("%s (%d bytes)", path, len(get("content")))
 
 	case "edit_file":
-		path := get("file_path")
-		s := fmt.Sprintf("%s (replace %d→%d chars", path, len(get("old_string")), len(get("new_string")))
-		if get("replace_all") == "true" {
-			s += ", all"
-		}
-		summary = s + ")"
+		summary = editFileSummary(get("file_path"), extractRenderedEditOps(m))
 
 	case "grep":
 		summary = joinSummary(quoteIfSet(get("pattern")), pathSegment(get("path")))

@@ -77,7 +77,7 @@ func TestMemoryRefreshIgnoresOwnPageDescriptionEdit(t *testing.T) {
 			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "fact.md"})
 		},
 		func(llm.Request) llm.Response {
-			return memoryCallResponse("memory_edit", map[string]any{"scope": "personal", "file_path": "fact.md", "old_string": "opaque-own-1", "new_string": "opaque-own-2"})
+			return memoryCallResponse("memory_edit", map[string]any{"scope": "personal", "file_path": "fact.md", "edits": []any{map[string]any{"old_string": "opaque-own-1", "new_string": "opaque-own-2"}}})
 		},
 		func(req llm.Request) llm.Response {
 			if got := memoryContextMessages(req); got != 1 {
@@ -874,7 +874,7 @@ func TestMemoryRefreshIgnoresOwnPageEdit(t *testing.T) {
 			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "opaque-own-page.md"})
 		},
 		func(llm.Request) llm.Response {
-			return memoryCallResponse("memory_edit", map[string]any{"scope": "personal", "file_path": "opaque-own-page.md", "old_string": "opaque-own-body-1", "new_string": "opaque-own-body-2"})
+			return memoryCallResponse("memory_edit", map[string]any{"scope": "personal", "file_path": "opaque-own-page.md", "edits": []any{map[string]any{"old_string": "opaque-own-body-1", "new_string": "opaque-own-body-2"}}})
 		},
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("edited") },
 		func(req llm.Request) llm.Response {

@@ -102,7 +102,7 @@ func TestGoalNoProgressBreakerIgnoresFailedAndUnknownMutations(t *testing.T) {
 			name: "failed writes",
 			call: func(_ int, dir string) (string, []byte) {
 				missing := filepath.Join(dir, "does-not-exist.txt")
-				return "edit_file", []byte(fmt.Sprintf(`{"file_path":%q,"old_string":"a","new_string":"b"}`, missing))
+				return "edit_file", []byte(fmt.Sprintf(`{"file_path":%q,"edits":[{"old_string":"a","new_string":"b"}]}`, missing))
 			},
 		},
 	}
