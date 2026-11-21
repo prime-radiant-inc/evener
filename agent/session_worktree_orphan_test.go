@@ -2001,6 +2001,110 @@ func TestDelegateAttentionFailedStartReopensConsumedReport(t *testing.T) {
 	})
 }
 
+// The reopen a refused launch performs must also re-arm the fresh row as a
+// wake. The successful commitStart replaced the controller's wake set with the
+// accept's post-consume pending list, so the delegate left c.attention when the
+// report was its only pending item; appending the reopened row to the
+// transcript alone leaves it undriven in-process. This test pins the production
+// wake path rather than a test-owned drive: after the refusal, the root's
+// scheduled drive pass must select the delegate from its re-armed wake, and
+// once the foreign lane is given back the pass must present the report.
+func TestDelegateAttentionRefusedLaunchReopensThroughTheWakeMap(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var wedgeOnce sync.Once
+	var wedgedSession atomic.Value
+	wedge := func(req llm.Request) llm.Response {
+		wedgedSession.Store(req.SessionID)
+		wedgeOnce.Do(func() { close(entered) })
+		<-release
+		return agenttest.FinalResponse("done")
+	}
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	holdSharedDescendantAnnounce("reopen-through-wake-map")
+	lane := spawnSharedDescendantLane(t, r, "reopen-through-wake-map", "dlg_reopenwake00001", "034reopenwake00001", wedge)
+
+	lane.announceRelease()
+	lane.delegateSub.mu.Lock()
+	delegateDone := lane.delegateSub.done
+	lane.delegateSub.mu.Unlock()
+	select {
+	case <-delegateDone:
+	// TRIPWIRE: the tail finishes within a couple of drain passes of the
+	// release; 15s only fires on a genuine hang.
+	case <-time.After(15 * time.Second):
+		t.Fatalf("the delegate's finalize tail never finished after the seeded announce release")
+	}
+	if pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs(); pendErr != nil || len(pending) == 0 {
+		t.Fatalf("the retained child's report is not pending after the seeded window: pending=%v (%v)", pending, pendErr)
+	}
+	// Every later drive under test is the production pass this test calls, not
+	// the fixture's notify edges.
+	lane.delegateSess.SetNotifyFunc(nil)
+	lane.sharedSub.sess.SetNotifyFunc(nil)
+
+	const foreignSID = "034foreignholder0002"
+	adoptForeignLane(t, r, lane.lanePath, foreignSID)
+
+	// Drive the presentation once through the test worker; the commit succeeds
+	// and the launch refuses the foreign lane, stamping the child abandoned and
+	// reopening the consumed report.
+	setupStop := make(chan struct{})
+	_, setupDone := lane.startDrive(setupStop)
+	testwait.Until(t, "the presentation start to refuse the foreign-held lane", func() bool {
+		return lane.root.childDrainAbandoned(lane.delegateSess.id)
+	})
+	close(setupStop)
+	waitForTestSignal(t, setupDone, "the setup drive worker to exit before recovery")
+	testwait.Until(t, "the reopen to leave the failed report pending", func() bool {
+		pending, err := lane.delegateSess.pendingDelegateAttentionIDs()
+		if err != nil {
+			return false
+		}
+		for _, id := range pending {
+			if strings.Contains(id, delegateAttentionReopenMarker) {
+				return true
+			}
+		}
+		return false
+	})
+
+	// The wake the committed start dropped must be back: this is the production
+	// selection state the paced retry and the root's scheduled pass read.
+	if !lane.root.delegateController.owesDelegateAttention(lane.fixture.delegateID) {
+		t.Fatal("the refused launch left the reopened report without a wake: the controller no longer owes the delegate attention")
+	}
+
+	// Give the lane back. An unlocked lane is re-locked under the tree's own
+	// marker at the launch, so only the stranded report can keep the
+	// presentation from running now.
+	wtGit(t, r.mainRoot, "worktree", "unlock", lane.lanePath)
+
+	// The root's scheduled drive pass, not a test-owned child drive, must select
+	// the re-armed wake and present the reopened report.
+	lane.root.drivePendingDelegateAttention()
+	select {
+	case <-entered:
+	case <-time.After(30 * time.Second):
+		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
+		t.Fatalf("the re-armed wake never drove the reopened report (pending attention=%d (%v))", len(pending), pendErr)
+	}
+	if got, _ := wedgedSession.Load().(string); got != lane.delegateSess.id {
+		t.Fatalf("the reopened presentation ran on session %q, want the lane-owning delegate %q", got, lane.delegateSess.id)
+	}
+
+	releaseOnce.Do(func() { close(release) })
+	testwait.Until(t, "the delegate's attention turn to finish after release", func() bool {
+		lane.delegateSub.mu.Lock()
+		running := lane.delegateSub.running
+		lane.delegateSub.mu.Unlock()
+		return !running
+	})
+}
+
 // A deliberate stop that cancels an in-flight attention presentation owns the
 // report's teardown, not the settle tail: the stop's discard machinery
 // enumerated the attention ids it knew at plan time, so a reopen appending a

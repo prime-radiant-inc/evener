@@ -69,6 +69,19 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 		}
 		return false
 	}
+	// A delegate whose last launch refused a foreign-held lane keeps its owed
+	// row quiet: the retry revalidates the lane (a git inspection) instead of
+	// consuming the report again and churning commit/reopen/finish against a
+	// lane that is still gone. A successful probe ends the quiet and the normal
+	// start proceeds; a failed one re-stamps the child and leaves the row owed.
+	delegateID := sub.sess.owningDelegateID
+	if s.delegateController.laneHeldAttentionQuiet(delegateID) {
+		if err := s.revalidateLaneForLaunch(delegateID); err != nil {
+			s.recordDrainAbandonedChildOnLaneRefusal(sub, "its lane is still held before a retried attention launch")
+			return true
+		}
+		s.clearDrainAbandonedDelegate(delegateID)
+	}
 	if observer := s.cfg.testOnly.delegateAttentionBeforeDriveClaim; observer != nil {
 		observer(sub)
 	}
@@ -205,7 +218,7 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 		// keeps the reservation, so the sticky retry re-presents it and the
 		// reopen is left to that retry's own failure.
 		if errors.Is(commitErr, errDelegateTargetBusy) {
-			s.reopenFailedDelegateAttention(sub, ids[0])
+			s.reopenFailedDelegateAttention(sub, ids[0], false)
 		}
 		s.delegateController.retryDelegateAttentionLater()
 		return true
@@ -237,7 +250,12 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 		s.emit(warningDataFromError("launch delegate attention", errors.Join(launchErr, finishErr)))
 		// The committed start closed and the launch refused, so this
 		// generation will never present the report it consumed.
-		s.reopenFailedDelegateAttention(sub, ids[0])
+		// The committed start already replaced the controller's wake set with
+		// the accept's post-consume pending list, dropping this delegate from
+		// c.attention when the report was its only pending item. Reopening the
+		// row must therefore re-arm it, or no in-process drive ever selects the
+		// delegate again.
+		s.reopenFailedDelegateAttention(sub, ids[0], true)
 		s.delegateController.retryDelegateAttentionLater()
 	}
 	return true
@@ -248,7 +266,13 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 // deliberately stopped child are left to their teardown: those paths already
 // discard pending attention, and a report re-delivered into a tearing-down
 // tree would only race the discard.
-func (s *Session) reopenFailedDelegateAttention(sub *subagent, attentionID string) {
+//
+// armWake re-arms the reopened row's wake in the controller. The launch-refusal
+// arm needs it: its committed start replaced the wake set with the accept's
+// post-consume pending list. The busy-commit arm does not: its failed commit
+// never replaced the wake, so the delegate is still selected and the driven
+// presentation reads the reopened transcript row.
+func (s *Session) reopenFailedDelegateAttention(sub *subagent, attentionID string, armWake bool) {
 	if s == nil || sub == nil || sub.sess == nil || attentionID == "" {
 		return
 	}
@@ -266,8 +290,13 @@ func (s *Session) reopenFailedDelegateAttention(sub *subagent, attentionID strin
 	}
 	// A drive retry reopens a row whose presentation failed with no user stop
 	// behind it, so nothing quiets the reopened row: it presents at once.
-	if _, err := sub.sess.reopenConsumedDelegateAttention(attentionID, 0); err != nil {
+	reopenID, err := sub.sess.reopenConsumedDelegateAttention(attentionID, 0)
+	if err != nil {
 		s.emit(warningDataFromError("reopen unpresented delegate attention", err))
+		return
+	}
+	if armWake && reopenID != "" {
+		s.delegateController.rearmReopenedDelegateAttention(sub.sess.owningDelegateID, reopenID)
 	}
 }
 

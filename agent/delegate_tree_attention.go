@@ -50,6 +50,11 @@ type delegateAttentionState struct {
 	// the root: the drive stops cold-restoring the delegate until new attention
 	// arrives or the daemon restarts.
 	parked bool
+	// laneHeldQuiet is set when a lane-held launch refusal left owed attention
+	// undeliverable. The wake stays owed and retried, but the drain's quiescence
+	// scans do not count it, so the one-shot drain can still give up. A
+	// successful lane revalidation ends the quiet.
+	laneHeldQuiet bool
 	// driveTurn records when the attention drive last selected the delegate
 	// (attentionDriveSeq order): the drive picks the delegate it has not picked
 	// yet, else the one picked longest ago, so eligible delegates take turns and
@@ -486,21 +491,41 @@ func (c *delegateTreeController) noteDelegateAttentionLocked(delegateID, attenti
 		return false
 	}
 	state := c.attentionStateLocked(delegateID)
+	if _, committed := state.committedWakeIDs[attentionID]; committed {
+		return false
+	}
+	addCommittedWakeLocked(state, attentionID)
+	// New attention is a new chance: a delegate the drive gave up on gets
+	// another round of attempts.
+	c.resetDelegateAttentionAttemptsLocked(delegateID)
+	return true
+}
+
+// rearmReopenedDelegateAttention unions a reopened row's fresh identity into
+// delegateID's wake set without resetting its delivery attempts: the row is the
+// same report re-keyed after a failed start, not new attention. This restores
+// the wake the failed start's commit replaced.
+func (c *delegateTreeController) rearmReopenedDelegateAttention(delegateID, attentionID string) {
+	if c == nil || delegateID == "" || attentionID == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.durable[delegateID] == nil {
+		return
+	}
+	addCommittedWakeLocked(c.attentionStateLocked(delegateID), attentionID)
+}
+
+func addCommittedWakeLocked(state *delegateAttentionState, attentionID string) {
 	if state.wakeIDs == nil {
 		state.wakeIDs = make(map[string]struct{})
 	}
 	if state.committedWakeIDs == nil {
 		state.committedWakeIDs = make(map[string]struct{})
 	}
-	if _, committed := state.committedWakeIDs[attentionID]; committed {
-		return false
-	}
 	state.wakeIDs[attentionID] = struct{}{}
 	state.committedWakeIDs[attentionID] = struct{}{}
-	// New attention is a new chance: a delegate the drive gave up on gets
-	// another round of attempts.
-	c.resetDelegateAttentionAttemptsLocked(delegateID)
-	return true
 }
 
 func (c *delegateTreeController) forgetDelegateAttentionLocked(delegateID, attentionID string) {
@@ -659,6 +684,9 @@ func (c *delegateTreeController) replaceDelegateAttentionLocked(delegateID strin
 	}
 	state := c.attentionStateLocked(delegateID)
 	state.wakeIDs = ids
+	// The replacement is a new generation's word on what it carries, so any
+	// quiet from an earlier lane-held refusal is stale.
+	state.laneHeldQuiet = false
 	maps.DeleteFunc(state.committedWakeIDs, func(attentionID string, _ struct{}) bool {
 		_, kept := ids[attentionID]
 		return !kept
@@ -678,13 +706,29 @@ func (c *delegateTreeController) owesDelegateAttention(delegateID string) bool {
 }
 
 func (c *delegateTreeController) hasPendingDelegateAttention() bool {
+	return c.hasOwedDelegateAttentionLocked(nil)
+}
+
+// hasDeliverableDelegateAttention is hasPendingDelegateAttention for the
+// drain's give-up scans: attention held behind a foreign lane is owed and
+// retried, but it is not deliverable work the one-shot drain can wait on.
+func (c *delegateTreeController) hasDeliverableDelegateAttention() bool {
+	return c.hasOwedDelegateAttentionLocked(func(state *delegateAttentionState) bool {
+		return state.laneHeldQuiet
+	})
+}
+
+// hasOwedDelegateAttentionLocked reports whether any delegate owes attention
+// that skip does not hold back. parked is always held back: a parked delegate's
+// own paths say why in their own warning.
+func (c *delegateTreeController) hasOwedDelegateAttentionLocked(skip func(*delegateAttentionState) bool) bool {
 	if c == nil {
 		return false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for delegateID, state := range c.attention {
-		if state.parked {
+		if state.parked || (skip != nil && skip(state)) {
 			continue
 		}
 		aggregate := c.durable[delegateID]
@@ -695,6 +739,47 @@ func (c *delegateTreeController) hasPendingDelegateAttention() bool {
 		}
 	}
 	return false
+}
+
+// quietLaneHeldAttention marks delegateID's owed attention as held behind a
+// lane another session owns. The state is created when absent so the refusal
+// that dropped the committed start's wake and the reopen that restores it
+// cannot land in either order and leave the drain counting the row.
+func (c *delegateTreeController) quietLaneHeldAttention(delegateID string) {
+	if c == nil || delegateID == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.durable[delegateID] == nil {
+		return
+	}
+	c.attentionStateLocked(delegateID).laneHeldQuiet = true
+}
+
+// clearLaneHeldAttention ends the quiet a successful lane revalidation
+// resolves, so the next drive selects the owed row normally.
+func (c *delegateTreeController) clearLaneHeldAttention(delegateID string) {
+	if c == nil || delegateID == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if state := c.attention[delegateID]; state != nil {
+		state.laneHeldQuiet = false
+	}
+}
+
+// laneHeldAttentionQuiet reports whether delegateID's owed attention is quiet
+// behind a lane this session does not hold.
+func (c *delegateTreeController) laneHeldAttentionQuiet(delegateID string) bool {
+	if c == nil || delegateID == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	state := c.attention[delegateID]
+	return state != nil && state.laneHeldQuiet
 }
 
 // delegateAttentionWakeEligibleLocked reports whether delegateID could accept
