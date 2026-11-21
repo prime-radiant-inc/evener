@@ -24,7 +24,7 @@ import { threadsStore } from "../../../stores/threads";
 import { type ModelCatalog, type ModelCatalogEntry, useToasts } from "../../../widgets";
 import { modelListToCatalog } from "../../../widgets/modelCatalog/catalogClient";
 import { ModelSwitchTrigger } from "./ModelSwitchTrigger";
-import { modelLabel } from "./statusFormat";
+import { modelIdentity, modelLabel } from "./statusFormat";
 
 export interface ModelSwitchProps {
   sessionRef: string;
@@ -49,6 +49,9 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
   // and it took the switch away from every cold session too.
   const disabled = !model.capabilities.changeModel;
   const currentModelLabel = modelLabel(model.modelProvider, model.model);
+  // The picker marks its running row by the catalog's qualified id, so its
+  // value must not collapse an equal pair the way the visible label does.
+  const currentModelIdentity = modelIdentity(model);
 
   const loadCatalog = useCallback(async (refresh?: boolean): Promise<ModelCatalog> => {
     return modelListToCatalog(await threadsStore.getState().listModels(refresh));
@@ -78,7 +81,7 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
   return (
     <ModelSwitchTrigger
       label={currentModelLabel}
-      value={currentModelLabel}
+      value={currentModelIdentity}
       disabled={disabled}
       loadCatalog={loadCatalog}
       refreshKey={modelsRevision}

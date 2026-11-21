@@ -1460,6 +1460,30 @@ test("thread/vision-model/changed updates visionModel", () => {
   expect(model.visionModel).toBe("anthropic/claude-haiku-4-5");
 });
 
+// The frame names the provider directly, so an equal provider/model pair (a
+// bundled instance like kimi-for-coding/kimi-for-coding) still names the
+// provider a qualified catalog row is addressed by. Dropping that split would
+// leave the running row unmarked until a snapshot supplied a profile again.
+test("thread/model/changed keeps the named provider when it equals the model id", () => {
+  let model = testHydrate({
+    modelProvider: "kimi-for-coding",
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, profile: "kimi-for-coding" },
+  });
+
+  model = applyNotification(
+    model,
+    {
+      method: "thread/model/changed",
+      params: { threadId: "thr_t", ref: "ref_t", modelProvider: "kimi-for-coding", model: "kimi-for-coding" },
+    },
+    2000,
+  );
+
+  expect(model.modelProvider).toBe("kimi-for-coding");
+  expect(model.model).toBe("kimi-for-coding");
+  expect(model.modelProfile).toBe("kimi-for-coding");
+});
+
 // Wave 5 T1: thread/model/changed's real payload (appwire/types_turn.go's
 // ThreadModelChangedParams) carries reasoningEffortLevels/
 // supportsReasoning alongside modelProvider/model — "describe the NEW

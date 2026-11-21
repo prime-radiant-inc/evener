@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
-import { contextTone, formatWorkDuration, modelLabel, totalWorkMillis } from "./statusFormat";
+import { contextTone, formatWorkDuration, modelIdentity, modelLabel, totalWorkMillis } from "./statusFormat";
 
 // A session's accumulated work time reads "Ns" under a minute, "Nm" under an
 // hour, and "Nh Nm" above. This is deliberately separate from
@@ -52,6 +52,22 @@ test("modelLabel collapses to a single label when provider and model are still i
 
 test("modelLabel shows provider/model once they've actually been split apart (post thread/model/changed)", () => {
   expect(modelLabel("anthropic", "claude-opus-5")).toBe("anthropic/claude-opus-5");
+});
+
+// modelIdentity: the picker addresses rows by qualified id, unlike modelLabel's
+// collapsed display copy (see the helper's own comment).
+test("modelIdentity keeps the bare model when the cold-hydrate equal pair names no modelProfile", () => {
+  expect(modelIdentity({ modelProvider: "kimi-for-coding", model: "kimi-for-coding" })).toBe("kimi-for-coding");
+});
+
+test("modelIdentity qualifies an equal provider/model pair through modelProfile", () => {
+  expect(
+    modelIdentity({ modelProvider: "kimi-for-coding", model: "kimi-for-coding", modelProfile: "kimi-for-coding" }),
+  ).toBe("kimi-for-coding/kimi-for-coding");
+});
+
+test("modelIdentity qualifies a split provider/model pair", () => {
+  expect(modelIdentity({ modelProvider: "anthropic", model: "claude-opus-5" })).toBe("anthropic/claude-opus-5");
 });
 
 // totalWorkMillis: workMillis is the cumulative time already banked for

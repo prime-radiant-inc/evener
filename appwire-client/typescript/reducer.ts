@@ -467,11 +467,12 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
         ...model,
         modelProvider: n.params.modelProvider,
         model: n.params.model,
-        // The frame names the provider itself, so the snapshot's separate
-        // provider instance would only be a second, staler name for it. Only
-        // cleared when a read set one, so a thread that never carried the key
-        // keeps its shape.
-        ...(model.modelProfile === undefined ? {} : { modelProfile: undefined }),
+        // The frame names the provider itself. Keep it as the identity's
+        // explicit split (modelProfile) as well: an equal provider/model pair
+        // still addresses a qualified catalog row, and dropping the provider
+        // would leave the running row unmarked until a snapshot supplied a
+        // profile again.
+        modelProfile: n.params.modelProvider,
         reasoningEffortLevels: n.params.reasoningEffortLevels ?? [],
         supportsReasoning: n.params.supportsReasoning ?? false,
         defaultReasoningEffort: n.params.defaultReasoningEffort,
