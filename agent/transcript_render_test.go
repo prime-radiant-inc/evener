@@ -1160,9 +1160,8 @@ func TestToolInputSummary(t *testing.T) {
 }
 
 // TestTranscriptRenderEditFileSummary pins the one-line edit_file summary for
-// every argument shape a stored transcript can hold: canonical edits[], the
-// repaired pre-dispatch shapes (stringified JSON, bare edit object, item
-// aliases), and the historical top-level old_string/new_string call.
+// canonical edits[], the historical top-level old_string/new_string call, and
+// malformed edits values.
 func TestTranscriptRenderEditFileSummary(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -1191,47 +1190,22 @@ func TestTranscriptRenderEditFileSummary(t *testing.T) {
 			want: "a.go (2 edits, replace 3→3 chars)",
 		},
 		{
-			name: "stringified edits array",
+			name: "stringified edits array falls back to path",
 			args: `{"file_path":"a.go","edits":"[{\"old_string\":\"aa\",\"new_string\":\"bbb\"},{\"old_string\":\"c\",\"new_string\":\"dd\"}]"}`,
-			want: "a.go (2 edits, replace 3→5 chars)",
-		},
-		{
-			name: "stringified single edit object",
-			args: `{"file_path":"a.go","edits":"{\"old_string\":\"aa\",\"new_string\":\"bbb\"}"}`,
-			want: "a.go (replace 2→3 chars)",
-		},
-		{
-			name: "bare edit object",
-			args: `{"file_path":"a.go","edits":{"old_string":"aa","new_string":"bbb"}}`,
-			want: "a.go (replace 2→3 chars)",
-		},
-		{
-			name: "nested old_str and newText aliases",
-			args: `{"file_path":"a.go","edits":[{"old_str":"aa","newText":"bbb","replaceAll":true}]}`,
-			want: "a.go (replace 2→3 chars, all)",
-		},
-		{
-			name: "stringified nested aliases",
-			args: `{"file_path":"a.go","edits":"[{\"old_str\":\"aa\",\"newText\":\"bbb\"}]"}`,
-			want: "a.go (replace 2→3 chars)",
-		},
-		{
-			name: "underscored aliases and string replaceAll",
-			args: `{"file_path":"a.go","edits":{"old_text":"a","new_text":"bb","replaceAll":"true"}}`,
-			want: "a.go (replace 1→2 chars, all)",
-		},
-		{
-			name: "identical competing aliases promote once",
-			args: `{"file_path":"a.go","edits":[{"old_str":"aa","oldText":"aa","new_string":"b"}]}`,
-			want: "a.go (replace 2→1 chars)",
-		},
-		{
-			name: "competing aliases with different values fall back to path",
-			args: `{"file_path":"a.go","edits":[{"old_str":"aa","oldText":"zz","new_string":"b"}]}`,
 			want: "a.go",
 		},
 		{
-			name: "malformed edits fall back to path",
+			name: "bare edit object falls back to path",
+			args: `{"file_path":"a.go","edits":{"old_string":"aa","new_string":"bbb"}}`,
+			want: "a.go",
+		},
+		{
+			name: "non-canonical alias keys fall back to path",
+			args: `{"file_path":"a.go","edits":[{"old_str":"aa","newText":"bbb","replaceAll":true}]}`,
+			want: "a.go",
+		},
+		{
+			name: "malformed edits elements fall back to path",
 			args: `{"file_path":"a.go","edits":[null,"bad",{"old_string":123}]}`,
 			want: "a.go",
 		},
@@ -1251,16 +1225,6 @@ func TestTranscriptRenderEditFileSummary(t *testing.T) {
 			want: "a.go",
 		},
 		{
-			name: "mixed edits and root keys fall back to path",
-			args: `{"file_path":"a.go","edits":[{"old_string":"aaaa","new_string":"bbbbbb"}],"old_string":"zzzz","new_string":"yyyy"}`,
-			want: "a.go",
-		},
-		{
-			name: "mixed edits and root alias falls back to path",
-			args: `{"file_path":"a.go","edits":[{"old_string":"aaaa","new_string":"bbbbbb"}],"replaceAll":true}`,
-			want: "a.go",
-		},
-		{
 			name: "legacy top-level edit preserved",
 			args: `{"file_path":"a.go","old_string":"aaaa","new_string":"bbbbbb"}`,
 			want: "a.go (replace 4→6 chars)",
@@ -1270,20 +1234,11 @@ func TestTranscriptRenderEditFileSummary(t *testing.T) {
 			args: `{"file_path":"a.go","old_string":"x","new_string":"y","replace_all":true}`,
 			want: "a.go (replace 1→1 chars, all)",
 		},
-		{
-			name: "legacy top-level aliases",
-			args: `{"file_path":"a.go","old_str":"a","newText":"bb"}`,
-			want: "a.go (replace 1→2 chars)",
-		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			// Repeating the call proves alias resolution never depends on Go
-			// map iteration order.
-			for i := 0; i < 20; i++ {
-				if got := toolInputSummary("edit_file", []byte(tc.args)); got != tc.want {
-					t.Fatalf("summary = %q, want %q", got, tc.want)
-				}
+			if got := toolInputSummary("edit_file", []byte(tc.args)); got != tc.want {
+				t.Fatalf("summary = %q, want %q", got, tc.want)
 			}
 		})
 	}

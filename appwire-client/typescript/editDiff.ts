@@ -14,130 +14,36 @@ export interface EditOperation {
 
 export type DiffLineKind = "header" | "add" | "del" | "context" | "meta";
 
-// Sorted repair aliases matching agent/internal/tool/repair/repair.go and
-// agent/transcript_render.go so canonical-first precedence and alias-conflict
-// rejection are identical across Go and TypeScript.
-const EDIT_FIELD_ALIASES: Record<"old_string" | "new_string" | "replace_all", readonly string[]> = {
-  old_string: ["oldText", "old_str", "old_text"],
-  new_string: ["newText", "new_str", "new_text"],
-  replace_all: ["replaceAll"],
-};
-
-const ROOT_EDIT_CONFLICT_KEYS: readonly string[] = [
-  "old_string",
-  ...EDIT_FIELD_ALIASES.old_string,
-  "new_string",
-  ...EDIT_FIELD_ALIASES.new_string,
-  "replace_all",
-  ...EDIT_FIELD_ALIASES.replace_all,
-];
-
 const NO_NEWLINE_MARKER = "\\ No newline at end of file";
 
-type FieldLookup = { found: true; value: unknown } | { found: false; conflict: boolean };
-
-function readEditField(obj: Record<string, unknown>, canonical: keyof typeof EDIT_FIELD_ALIASES): FieldLookup {
-  if (Object.hasOwn(obj, canonical) && obj[canonical] !== undefined) {
-    return { found: true, value: obj[canonical] };
-  }
-  let found = false;
-  let value: unknown;
-  for (const alias of EDIT_FIELD_ALIASES[canonical]) {
-    if (!Object.hasOwn(obj, alias) || obj[alias] === undefined) continue;
-    const candidate = obj[alias];
-    if (found && !Object.is(value, candidate)) {
-      return { found: false, conflict: true };
-    }
-    value = candidate;
-    found = true;
-  }
-  return found ? { found: true, value } : { found: false, conflict: false };
-}
-
-function parseReplaceAll(raw: unknown): boolean | null {
-  if (typeof raw === "boolean") return raw;
-  if (typeof raw === "string") {
-    const lower = raw.toLowerCase();
-    if (lower === "true") return true;
-    if (lower === "false") return false;
-  }
-  return null;
-}
-
-function decodeEditOperation(obj: Record<string, unknown>, requireBoth: boolean): EditOperation | null {
-  const oldField = readEditField(obj, "old_string");
-  if (!oldField.found && oldField.conflict) return null;
-  const newField = readEditField(obj, "new_string");
-  if (!newField.found && newField.conflict) return null;
-
-  if (requireBoth) {
-    if (!oldField.found || !newField.found) return null;
-  } else if (!oldField.found && !newField.found) {
-    return null;
-  }
-
-  let oldString = "";
-  if (oldField.found) {
-    if (typeof oldField.value !== "string") return null;
-    oldString = oldField.value;
-  }
-
-  let newString = "";
-  if (newField.found) {
-    if (typeof newField.value !== "string") return null;
-    newString = newField.value;
-  }
-
-  const replaceAllField = readEditField(obj, "replace_all");
-  if (!replaceAllField.found && replaceAllField.conflict) return null;
-
-  if (replaceAllField.found) {
-    const replaceAll = parseReplaceAll(replaceAllField.value);
-    if (replaceAll === null) return null;
-    return { oldString, newString, replaceAll };
-  }
-
-  return { oldString, newString };
-}
-
-function unwrapEditItems(raw: unknown): unknown[] | null {
-  let current = raw;
-  while (typeof current === "string") {
-    try {
-      current = JSON.parse(current) as unknown;
-    } catch {
-      return null;
-    }
-  }
-  if (Array.isArray(current)) return current;
-  if (isPlainObject(current)) return [current];
-  return null;
-}
-
-// Extracts edit operations from edit_file / memory_edit arguments while
-// preserving original raw arguments in stored transcripts.
+// Extracts edit operations from canonical edits[] or historical top-level
+// old_string/new_string edit_file / memory_edit arguments.
 export function editOperationsOf(args: Record<string, unknown>): EditOperation[] | null {
-  const hasEdits = Object.hasOwn(args, "edits") && args.edits !== undefined;
-  if (!hasEdits) {
-    const legacy = decodeEditOperation(args, false);
-    return legacy ? [legacy] : null;
+  if ("edits" in args) {
+    if (!Array.isArray(args.edits) || args.edits.length === 0) return null;
+    const ops: EditOperation[] = [];
+    for (const item of args.edits) {
+      if (!isPlainObject(item)) return null;
+      if (typeof item.old_string !== "string" || typeof item.new_string !== "string") return null;
+      if (item.replace_all !== undefined && typeof item.replace_all !== "boolean") return null;
+      ops.push(
+        item.replace_all !== undefined
+          ? { oldString: item.old_string, newString: item.new_string, replaceAll: item.replace_all }
+          : { oldString: item.old_string, newString: item.new_string },
+      );
+    }
+    return ops;
   }
-
-  for (const key of ROOT_EDIT_CONFLICT_KEYS) {
-    if (Object.hasOwn(args, key) && args[key] !== undefined) return null;
-  }
-
-  const items = unwrapEditItems(args.edits);
-  if (items === null || items.length === 0) return null;
-
-  const ops: EditOperation[] = [];
-  for (const item of items) {
-    if (!isPlainObject(item)) return null;
-    const op = decodeEditOperation(item, true);
-    if (op === null) return null;
-    ops.push(op);
-  }
-  return ops;
+  const old = typeof args.old_string === "string" ? args.old_string : undefined;
+  const next = typeof args.new_string === "string" ? args.new_string : undefined;
+  if (old === undefined && next === undefined) return null;
+  return [
+    {
+      oldString: old ?? "",
+      newString: next ?? "",
+      ...(typeof args.replace_all === "boolean" ? { replaceAll: args.replace_all } : {}),
+    },
+  ];
 }
 
 // Single diff-synthesis implementation for one or more edits to a single file.

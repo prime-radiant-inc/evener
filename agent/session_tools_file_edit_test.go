@@ -477,8 +477,8 @@ func TestEditFile_RepairedStringifiedEditsExecutesAndRendersLiveAndReopened(t *t
 	if !sawRepaired || !sawStart || !sawEnd {
 		t.Fatalf("live events missing: repaired=%v start=%v end=%v", sawRepaired, sawStart, sawEnd)
 	}
-	if summary := toolInputSummary("edit_file", json.RawMessage(liveArgsJSON)); !strings.Contains(summary, "2 edits") {
-		t.Fatalf("live toolInputSummary = %q, want 2 edits", summary)
+	if summary := toolInputSummary("edit_file", json.RawMessage(liveArgsJSON)); summary != "code.txt" {
+		t.Fatalf("live toolInputSummary = %q, want %q", summary, "code.txt")
 	}
 
 	// Reopen persisted transcript and project through apptranscript.
@@ -498,8 +498,8 @@ func TestEditFile_RepairedStringifiedEditsExecutesAndRendersLiveAndReopened(t *t
 			}
 			if item.Status == "inProgress" {
 				sawProjectedStart = true
-				if summary := toolInputSummary("edit_file", json.RawMessage(item.ArgumentsJSON)); !strings.Contains(summary, "2 edits") {
-					t.Fatalf("reopened toolInputSummary = %q, want 2 edits", summary)
+				if summary := toolInputSummary("edit_file", json.RawMessage(item.ArgumentsJSON)); summary != "code.txt" {
+					t.Fatalf("reopened toolInputSummary = %q, want %q", summary, "code.txt")
 				}
 			} else if item.Status == "completed" {
 				sawProjectedDone = true

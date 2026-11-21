@@ -714,7 +714,7 @@ test("says compact_context's usual lines when its arguments are missing", () => 
   expect(toolStepSummary({ toolName: "compact_context" })).toBe("Asked for a context compaction");
 });
 
-test("editFileSummary aggregates multi-edit, repaired, and legacy edits and omits detail when malformed", () => {
+test("editFileSummary aggregates multi-edit and legacy edits and omits detail when malformed", () => {
   const editStep = (args: Record<string, unknown>) =>
     toolStepSummary({ toolName: "edit_file", argumentsJSON: JSON.stringify(args) });
 
@@ -727,16 +727,6 @@ test("editFileSummary aggregates multi-edit, repaired, and legacy edits and omit
       ],
     }),
   ).toBe("Edited a.go · +3 -3");
-
-  expect(
-    editStep({
-      file_path: "a.go",
-      edits: JSON.stringify([
-        { old_str: "one", newText: "uno\ndos" },
-        { old_text: "two", new_text: "tres" },
-      ]),
-    }),
-  ).toBe("Edited a.go · +3 -2");
 
   expect(
     editStep({
@@ -755,11 +745,6 @@ test("editFileSummary aggregates multi-edit, repaired, and legacy edits and omit
 
   expect(editStep({ file_path: "a.go" })).toBe("Edited a.go");
   expect(editStep({ file_path: "a.go", edits: [null] })).toBe("Edited a.go");
-  expect(
-    editStep({
-      file_path: "a.go",
-      edits: [{ old_string: "a", new_string: "b" }],
-      old_string: "c",
-    }),
-  ).toBe("Edited a.go");
+  expect(editStep({ file_path: "a.go", edits: "not-json" })).toBe("Edited a.go");
+  expect(editStep({ file_path: "a.go", edits: [{ old_str: "a", new_str: "b" }] })).toBe("Edited a.go");
 });

@@ -20,7 +20,7 @@ test("diffStats counts content lines and never the file headers", () => {
   expect(diffStats("*** Update File: a.go\n@@\n context\n+new\n-old\n+more")).toEqual({ added: 2, removed: 1 });
 });
 
-test("editOperationsOf decodes canonical, repaired, and legacy single-edit shapes", () => {
+test("editOperationsOf decodes canonical edits[] and legacy single-edit shapes", () => {
   expect(editOperationsOf({ file_path: "a.md", edits: [{ old_string: "a", new_string: "b" }] })).toEqual<
     EditOperation[]
   >([{ oldString: "a", newString: "b" }]);
@@ -41,92 +41,31 @@ test("editOperationsOf decodes canonical, repaired, and legacy single-edit shape
   expect(
     editOperationsOf({
       file_path: "a.md",
-      edits: JSON.stringify([
-        { old_str: "a", new_str: "b" },
-        { oldText: "c", newText: "d", replaceAll: "true" },
-      ]),
-    }),
-  ).toEqual<EditOperation[]>([
-    { oldString: "a", newString: "b" },
-    { oldString: "c", newString: "d", replaceAll: true },
-  ]);
-
-  expect(
-    editOperationsOf({
-      file_path: "a.md",
-      edits: JSON.stringify({ old_text: "a", new_text: "b", replaceAll: false }),
-    }),
-  ).toEqual<EditOperation[]>([{ oldString: "a", newString: "b", replaceAll: false }]);
-
-  expect(
-    editOperationsOf({
-      file_path: "a.md",
-      edits: { old_str: "a", newText: "b", replaceAll: "false" },
-    }),
-  ).toEqual<EditOperation[]>([{ oldString: "a", newString: "b", replaceAll: false }]);
-
-  expect(
-    editOperationsOf({
-      file_path: "a.md",
       old_string: "legacy-old",
       new_string: "legacy-new",
       replace_all: true,
     }),
   ).toEqual<EditOperation[]>([{ oldString: "legacy-old", newString: "legacy-new", replaceAll: true }]);
 
-  expect(
-    editOperationsOf({
-      file_path: "a.md",
-      old_str: "legacy-old",
-      newText: "legacy-new",
-    }),
-  ).toEqual<EditOperation[]>([{ oldString: "legacy-old", newString: "legacy-new" }]);
+  expect(editOperationsOf({ file_path: "a.md", old_string: "only-old" })).toEqual<EditOperation[]>([
+    { oldString: "only-old", newString: "" },
+  ]);
+  expect(editOperationsOf({ file_path: "a.md", new_string: "only-new" })).toEqual<EditOperation[]>([
+    { oldString: "", newString: "only-new" },
+  ]);
 });
 
-test("editOperationsOf enforces canonical-first precedence and rejects conflicting aliases", () => {
-  expect(
-    editOperationsOf({
-      edits: [{ old_string: "a", new_string: "canonical", new_str: "alias" }],
-    }),
-  ).toEqual([{ oldString: "a", newString: "canonical" }]);
-
-  expect(
-    editOperationsOf({
-      edits: [{ old_string: "a", new_str: "same", newText: "same" }],
-    }),
-  ).toEqual([{ oldString: "a", newString: "same" }]);
-
-  expect(
-    editOperationsOf({
-      edits: [{ old_string: "a", new_str: "one", newText: "two" }],
-    }),
-  ).toBeNull();
-
-  expect(
-    editOperationsOf({
-      edits: [{ old_str: "one", oldText: "two", new_string: "b" }],
-    }),
-  ).toBeNull();
-
-  expect(
-    editOperationsOf({
-      old_str: "a",
-      new_str: "one",
-      newText: "two",
-    }),
-  ).toBeNull();
-});
-
-test("editOperationsOf rejects mixed-form and malformed inputs", () => {
-  expect(editOperationsOf({ edits: [{ old_string: "a", new_string: "b" }], old_string: "c" })).toBeNull();
+test("editOperationsOf rejects malformed and pre-repair inputs", () => {
   expect(editOperationsOf({ edits: null, old_string: "a", new_string: "b" })).toBeNull();
-  expect(editOperationsOf({ edits: [{ old_string: "a", new_string: "b" }], new_str: "c" })).toBeNull();
-  expect(editOperationsOf({ edits: [{ old_string: "a", new_string: "b" }], replaceAll: true })).toBeNull();
   expect(editOperationsOf({ edits: [null] })).toBeNull();
   expect(editOperationsOf({ edits: [] })).toBeNull();
   expect(editOperationsOf({ edits: "not-json" })).toBeNull();
+  expect(editOperationsOf({ edits: JSON.stringify([{ old_string: "a", new_string: "b" }]) })).toBeNull();
+  expect(editOperationsOf({ edits: { old_string: "a", new_string: "b" } })).toBeNull();
+  expect(editOperationsOf({ edits: [{ old_str: "a", new_str: "b" }] })).toBeNull();
   expect(editOperationsOf({ edits: [{ old_string: "a" }] })).toBeNull();
   expect(editOperationsOf({ edits: [{ old_string: 123, new_string: "b" }] })).toBeNull();
+  expect(editOperationsOf({ edits: [{ old_string: "a", new_string: "b", replace_all: "true" }] })).toBeNull();
   expect(editOperationsOf({ file_path: "a.md" })).toBeNull();
   expect(editOperationsOf({})).toBeNull();
 });

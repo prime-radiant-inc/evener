@@ -90,32 +90,14 @@ test("edit_file: body renders multi-edit edits[] with all hunks and @@ edit N @@
   expect(screen.getByText("second new")).toBeTruthy();
 });
 
-test("edit_file: body renders stringified pre-repair edits", () => {
-  const d = toolRendererFor("edit_file");
-  const Body = d.body!;
-  const args = JSON.stringify({
-    file_path: "a.ts",
-    edits: JSON.stringify([
-      { old_str: "alpha", new_str: "beta" },
-      { oldText: "gamma", newText: "delta" },
-    ]),
-  });
-  render(<Body item={item({ toolName: "edit_file", argumentsJSON: args })} live={false} />);
-  expect(screen.getByText("@@ edit 1 @@")).toBeTruthy();
-  expect(screen.getByText("@@ edit 2 @@")).toBeTruthy();
-  expect(screen.getByText("alpha")).toBeTruthy();
-  expect(screen.getByText("beta")).toBeTruthy();
-  expect(screen.getByText("gamma")).toBeTruthy();
-  expect(screen.getByText("delta")).toBeTruthy();
-});
-
 test("edit_file: malformed edit_file renders null", () => {
   const d = toolRendererFor("edit_file");
   const Body = d.body!;
   for (const malformed of [
     { file_path: "a.ts" },
     { file_path: "a.ts", edits: [] },
-    { file_path: "a.ts", edits: [{ old_string: "a", new_string: "b" }], old_string: "c" },
+    { file_path: "a.ts", edits: "not-json" },
+    { file_path: "a.ts", edits: [{ old_str: "a", new_str: "b" }] },
   ]) {
     const { container, unmount } = render(
       <Body item={item({ toolName: "edit_file", argumentsJSON: JSON.stringify(malformed) })} live={false} />,

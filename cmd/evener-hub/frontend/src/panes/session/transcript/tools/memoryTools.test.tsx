@@ -242,32 +242,12 @@ test("memory_edit renders multi-edit edits[] with @@ edit N @@ headers and all h
   expect(screen.getByText("second new")).toBeTruthy();
 });
 
-test("memory_edit renders stringified pre-repair edits", () => {
-  const Body = toolRendererFor("memory_edit").body!;
-  render(
-    <Body
-      item={item({
-        toolName: "memory_edit",
-        argumentsJSON: JSON.stringify({
-          scope: "project",
-          file_path: "MEMORY.md",
-          edits: JSON.stringify([{ old_str: "pre-repair old", new_str: "pre-repair new" }]),
-        }),
-      })}
-      live={false}
-    />,
-  );
-
-  expect(screen.getByText("pre-repair old")).toBeTruthy();
-  expect(screen.getByText("pre-repair new")).toBeTruthy();
-});
-
 test("malformed memory_edit shapes fall back to defaultToolBody", () => {
   const Body = toolRendererFor("memory_edit").body!;
   for (const malformed of [
     { scope: "project", file_path: "MEMORY.md", edits: [] },
     { scope: "project", file_path: "MEMORY.md", edits: "not-json" },
-    { scope: "project", file_path: "MEMORY.md", edits: [{ old_string: "a", new_string: "b" }], old_string: "c" },
+    { scope: "project", file_path: "MEMORY.md", edits: [{ old_str: "a", new_str: "b" }] },
   ]) {
     const { unmount } = render(
       <Body

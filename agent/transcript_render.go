@@ -2235,142 +2235,35 @@ type renderedEditOp struct {
 	ReplaceAll           bool
 }
 
-// renderedEditAliases lists each edit field's repair aliases in sorted order.
-var renderedEditAliases = map[string][]string{
-	"old_string":  {"oldText", "old_str", "old_text"},
-	"new_string":  {"newText", "new_str", "new_text"},
-	"replace_all": {"replaceAll"},
-}
-
-// extractRenderedEditOps decodes a stored edit_file call's edit operations in
-// canonical, repaired, or historical shape, and returns nil rather than guess.
+// extractRenderedEditOps decodes a stored edit_file call's edit operations from
+// canonical edits[] or falls back to historical top-level fields.
 func extractRenderedEditOps(m map[string]any) []renderedEditOp {
-	raw, hasEdits := m["edits"]
-	if !hasEdits {
-		// Historical single edits keep their shape: absent fields render as 0→0.
-		if op, ok := decodeRenderedEdit(m, false); ok {
-			return []renderedEditOp{op}
-		}
-		return nil
-	}
-	// Mixed-form calls (edits[] plus top-level edit fields) are ambiguous, and
-	// the TypeScript renderer rejects them; match it rather than guessing that
-	// the root fields are stale.
-	if hasRenderedRootEditField(m) {
-		return nil
-	}
-	items, ok := renderedEditItems(raw)
-	if !ok || len(items) == 0 {
-		return nil
-	}
-	ops := make([]renderedEditOp, 0, len(items))
-	for _, item := range items {
-		obj, ok := item.(map[string]any)
-		if !ok {
+	if raw, hasEdits := m["edits"]; hasEdits {
+		items, ok := raw.([]any)
+		if !ok || len(items) == 0 {
 			return nil
 		}
-		op, ok := decodeRenderedEdit(obj, true)
-		if !ok {
-			return nil
-		}
-		ops = append(ops, op)
-	}
-	return ops
-}
-
-// hasRenderedRootEditField reports whether m carries any top-level single-edit
-// field, canonical or alias alike.
-func hasRenderedRootEditField(m map[string]any) bool {
-	for canonical, aliases := range renderedEditAliases {
-		if _, ok := m[canonical]; ok {
-			return true
-		}
-		for _, alias := range aliases {
-			if _, ok := m[alias]; ok {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// renderedEditItems normalizes an edits value, unwrapping JSON-stringified ones.
-func renderedEditItems(raw any) ([]any, bool) {
-	for {
-		s, ok := raw.(string)
-		if !ok {
-			break
-		}
-		if err := json.Unmarshal([]byte(s), &raw); err != nil {
-			return nil, false
-		}
-	}
-	switch v := raw.(type) {
-	case []any:
-		return v, true
-	case map[string]any:
-		return []any{v}, true
-	default:
-		return nil, false
-	}
-}
-
-// decodeRenderedEdit reads one item; requireBoth enforces canonical shape.
-func decodeRenderedEdit(m map[string]any, requireBoth bool) (renderedEditOp, bool) {
-	var op renderedEditOp
-	for _, f := range []struct {
-		canonical string
-		dst       *string
-	}{
-		{"old_string", &op.OldString},
-		{"new_string", &op.NewString},
-	} {
-		raw, found, conflict := renderedField(m, f.canonical)
-		if conflict || (requireBoth && !found) {
-			return renderedEditOp{}, false
-		}
-		if found {
-			s, ok := raw.(string)
+		ops := make([]renderedEditOp, 0, len(items))
+		for _, item := range items {
+			obj, ok := item.(map[string]any)
 			if !ok {
-				return renderedEditOp{}, false
+				return nil
 			}
-			*f.dst = s
+			oldStr, okOld := obj["old_string"].(string)
+			newStr, okNew := obj["new_string"].(string)
+			if !okOld || !okNew {
+				return nil
+			}
+			replaceAll, _ := obj["replace_all"].(bool)
+			ops = append(ops, renderedEditOp{OldString: oldStr, NewString: newStr, ReplaceAll: replaceAll})
 		}
+		return ops
 	}
-	raw, found, conflict := renderedField(m, "replace_all")
-	if conflict {
-		return renderedEditOp{}, false
-	}
-	if found {
-		switch v := raw.(type) {
-		case bool:
-			op.ReplaceAll = v
-		case string:
-			op.ReplaceAll = strings.EqualFold(v, "true")
-		default:
-			return renderedEditOp{}, false
-		}
-	}
-	return op, true
-}
-
-// renderedField returns canonical's raw value, preferring canonical over its
-// sorted aliases; conflict reports differing alias values.
-func renderedField(m map[string]any, canonical string) (raw any, found, conflict bool) {
-	if v, ok := m[canonical]; ok {
-		return v, true, false
-	}
-	for _, alias := range renderedEditAliases[canonical] {
-		v, ok := m[alias]
-		if !ok {
-			continue
-		}
-		if found && scalarString(raw) != scalarString(v) {
-			return nil, false, true
-		}
-		raw, found = v, true
-	}
-	return raw, found, false
+	return []renderedEditOp{{
+		OldString:  scalarString(m["old_string"]),
+		NewString:  scalarString(m["new_string"]),
+		ReplaceAll: scalarString(m["replace_all"]) == "true",
+	}}
 }
 
 // editFileSummary renders the single-edit summary or the batch aggregate.
