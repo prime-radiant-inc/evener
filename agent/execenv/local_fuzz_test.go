@@ -51,9 +51,10 @@ func newFuzzEnv(t *testing.T, fs afero.Fs, content []byte) (*LocalExecutionEnvir
 //   - CORE-REPLACE TEETH: when the edit succeeds AND the original contained
 //     oldString verbatim (so the exact, non-fuzzy branch ran) AND newString does
 //     not itself contain oldString (so a replacement cannot reintroduce it), the
-//     resulting bytes equal the independently computed strings.Replace /
-//     ReplaceAll result. The guard skips the fuzzy branch (whose match we do not
-//     try to predict) and the newString⊇oldString trap that would make
+//     resulting bytes equal the independently computed LF strings.Replace /
+//     ReplaceAll result on LF inputs, or preserve BOM + CRLF line endings on
+//     CRLF/BOM inputs. The guard skips the fuzzy branch (whose match we do not
+//     try to predict), lone-CR collisions, and the newString⊇oldString trap that would make
 //     "oldString gone" a false expectation.
 //
 // SAFETY: MemMapFs only; no real disk, no subprocess.
@@ -67,6 +68,8 @@ func FuzzEditFile(f *testing.F) {
 	f.Add("x", "x", "xx", true)
 	f.Add("", "", "", false)
 	f.Add("abc", "", "z", true)
+	f.Add("\xEF\xBB\xBFhello\r\nworld\r\n", "hello", "HI\nTHERE", false)
+	f.Add("a\r\nb\nc\r\n", "a\r\n", "A1\r\nA2\r\n", false)
 
 	f.Fuzz(func(t *testing.T, content, oldString, newString string, replaceAll bool) {
 		fs := afero.NewMemMapFs()
@@ -90,17 +93,53 @@ func FuzzEditFile(f *testing.F) {
 
 		// Core-replace teeth: only when the exact (non-fuzzy) branch ran and a
 		// replacement cannot reintroduce oldString.
-		if oldString != "" && strings.Contains(string(before), oldString) && !strings.Contains(newString, oldString) {
-			var expected string
-			if replaceAll {
-				expected = strings.ReplaceAll(string(before), oldString, newString)
-			} else {
-				// Non-replaceAll success implies the exact-match count was 1.
-				expected = strings.Replace(string(before), oldString, newString, 1)
+		bom := []byte(nil)
+		body := before
+		if bytes.HasPrefix(before, []byte{0xEF, 0xBB, 0xBF}) {
+			bom = before[:3]
+			body = before[3:]
+		}
+		lfBody := strings.ReplaceAll(string(body), "\r\n", "\n")
+		oldLF := strings.ReplaceAll(oldString, "\r\n", "\n")
+		newLF := strings.ReplaceAll(newString, "\r\n", "\n")
+		if oldLF != "" && strings.Contains(lfBody, oldLF) && !strings.Contains(newLF, oldLF) {
+			pureLF := len(bom) == 0 && !bytes.Contains(body, []byte("\r\n")) && !strings.Contains(oldString, "\r\n") && !strings.Contains(newString, "\r\n")
+			if pureLF {
+				var expected string
+				if replaceAll {
+					expected = strings.ReplaceAll(string(before), oldString, newString)
+				} else {
+					// Non-replaceAll success implies the exact-match count was 1.
+					expected = strings.Replace(string(before), oldString, newString, 1)
+				}
+				if string(after) != expected {
+					t.Fatalf("EditFile exact-replace mismatch\n old=%q new=%q replaceAll=%v\n before=%q\n after=%q\n want=%q",
+						oldString, newString, replaceAll, before, after, expected)
+				}
+				return
 			}
-			if string(after) != expected {
-				t.Fatalf("EditFile exact-replace mismatch\n old=%q new=%q replaceAll=%v\n before=%q\n after=%q\n want=%q",
-					oldString, newString, replaceAll, before, after, expected)
+			if !bytes.HasPrefix(after, bom) {
+				t.Fatalf("EditFile dropped leading BOM\n before=%q\n after=%q", before, after)
+			}
+			if !strings.Contains(newLF, "\r") {
+				var expectedLF string
+				if replaceAll {
+					expectedLF = strings.ReplaceAll(lfBody, oldLF, newLF)
+				} else {
+					expectedLF = strings.Replace(lfBody, oldLF, newLF, 1)
+				}
+				if gotLF := strings.ReplaceAll(string(after[len(bom):]), "\r\n", "\n"); gotLF != expectedLF {
+					t.Fatalf("EditFile CRLF/BOM LF-normalized mismatch\n old=%q new=%q replaceAll=%v\n before=%q\n after=%q\n wantLF=%q",
+						oldString, newString, replaceAll, before, after, expectedLF)
+				}
+				pureCRLF := bytes.Contains(body, []byte("\r\n")) && !bytes.Contains(bytes.ReplaceAll(body, []byte("\r\n"), nil), []byte("\n"))
+				if pureCRLF {
+					wantCRLF := string(bom) + strings.ReplaceAll(expectedLF, "\n", "\r\n")
+					if string(after) != wantCRLF {
+						t.Fatalf("EditFile CRLF-preserving mismatch\n old=%q new=%q replaceAll=%v\n before=%q\n after=%q\n want=%q",
+							oldString, newString, replaceAll, before, after, wantCRLF)
+					}
+				}
 			}
 		}
 	})
@@ -123,6 +162,7 @@ func FuzzEditFileDifferential(f *testing.F) {
 	f.Add("one\ntwo\nthree\n", "two\nthree", "TWO\nTHREE", false)
 	f.Add("nomatch here", "totally absent string", "y", false)
 	f.Add("", "", "", true)
+	f.Add("\xEF\xBB\xBFone\r\ntwo\r\n", "two", "TWO\nLINE", false)
 
 	f.Fuzz(func(t *testing.T, content, oldString, newString string, replaceAll bool) {
 		osFs := afero.NewBasePathFs(afero.NewOsFs(), t.TempDir())
@@ -144,6 +184,14 @@ func FuzzEditFileDifferential(f *testing.F) {
 		memBytes := readOrEmpty(t, memFs, memAbs)
 		if !bytes.Equal(osBytes, memBytes) {
 			t.Fatalf("resulting bytes diverged across filesystems\n os =%q\n mem=%q", osBytes, memBytes)
+		}
+		if osErr == nil {
+			if !strings.HasPrefix(osMsg, "edited ") {
+				t.Fatalf("successful EditFile returned unexpected message %q", osMsg)
+			}
+			if bytes.Equal(osBytes, []byte(content)) {
+				t.Fatalf("successful EditFile left bytes unchanged: %q", osBytes)
+			}
 		}
 	})
 }

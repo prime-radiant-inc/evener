@@ -188,6 +188,21 @@ type ContextualFileReader interface {
 	EditFileCtx(ctx context.Context, path, oldString, newString string, replaceAll bool) (string, error)
 }
 
+// FileEdit is one exact-text replacement within a single-file batch edit.
+type FileEdit struct {
+	OldString  string
+	NewString  string
+	ReplaceAll bool
+}
+
+// BatchFileEditor is an optional execution-environment capability for applying
+// multiple non-overlapping replacements to one file atomically in a single read
+// and write. Separate from ExecutionEnvironment so existing test doubles remain
+// unaffected.
+type BatchFileEditor interface {
+	EditFileBatchCtx(ctx context.Context, path string, edits []FileEdit) (string, error)
+}
+
 // ContextualFileMutator is FileMutator's read entry with the caller's context
 // threaded to the read; apply_patch type-asserts for it, falling back to
 // ReadFileRaw when absent.

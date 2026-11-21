@@ -5,8 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/afero"
@@ -363,6 +366,17 @@ func (e *LocalExecutionEnvironment) WriteFile(path string, content string) (stri
 	return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
 }
 
+// MaxEditFileSpans caps total matched spans across all entries and match paths
+// in a single EditFileBatchWithCtx call. A variable so tests can exercise the
+// refusal with a fixture-sized cap.
+var MaxEditFileSpans = 100_000
+
+// MaxEditFileOutputBytes caps the spliced output byte size of
+// EditFileBatchWithCtx before allocating converted replacement buffers or the
+// output slice. A variable so tests can exercise the refusal with a
+// fixture-sized cap.
+var MaxEditFileOutputBytes int64 = MaxWholeFileReadBytes
+
 // EditFile replaces occurrences of oldString with newString in the file at
 // path, subject to the active sandbox policy. If oldString is not
 // found exactly, a whitespace-normalized fuzzy match is attempted. Unless
@@ -382,12 +396,43 @@ func (e *LocalExecutionEnvironment) EditFileCtx(ctx context.Context, path string
 // EditFileWithCtx is EditFileCtx, except that finish, when not nil, turns the
 // edited bytes into the bytes written, inside the same read and write.
 func (e *LocalExecutionEnvironment) EditFileWithCtx(ctx context.Context, path string, oldString string, newString string, replaceAll bool, finish func(edited []byte) []byte) (string, error) {
+	return e.EditFileBatchWithCtx(ctx, path, []FileEdit{{
+		OldString:  oldString,
+		NewString:  newString,
+		ReplaceAll: replaceAll,
+	}}, finish)
+}
+
+// EditFileBatchCtx applies multiple non-overlapping replacements to path
+// atomically in a single read and write.
+func (e *LocalExecutionEnvironment) EditFileBatchCtx(ctx context.Context, path string, edits []FileEdit) (string, error) {
+	return e.EditFileBatchWithCtx(ctx, path, edits, nil)
+}
+
+type preparedEdit struct {
+	oldLF   string
+	newLF   string
+	lenLF   int64
+	lenCRLF int64
+}
+
+type editSpan struct {
+	lfStart   int
+	lfEnd     int
+	origStart int
+	origEnd   int
+	editIndex int
+	useCRLF   bool
+}
+
+// EditFileBatchWithCtx is EditFileBatchCtx, except that finish, when not nil,
+// turns the edited bytes into the bytes written inside the same read and write.
+func (e *LocalExecutionEnvironment) EditFileBatchWithCtx(ctx context.Context, path string, edits []FileEdit, finish func(edited []byte) []byte) (string, error) {
 	t, err := e.fileTarget("edit_file", path, targetWrite)
 	if err != nil {
 		return "", err
 	}
 	defer t.release()
-	var b []byte
 	if t.sfs != nil {
 		// Deny an edit in a non-writable location up front (read-only mode, outside
 		// the writable roots, or a masked/git-protected surface) before reading, so
@@ -395,38 +440,276 @@ func (e *LocalExecutionEnvironment) EditFileWithCtx(ctx context.Context, path st
 		if derr := t.sfs.checkWritable("edit_file", t.abs); derr != nil {
 			return "", derr
 		}
-		b, err = t.sfs.readFileCtx(ctx, "edit_file", t.abs)
+	}
+
+	if len(edits) == 0 {
+		return "", errors.New("edit_file: edits must not be empty")
+	}
+	var inputErrs []error
+	for i, ed := range edits {
+		if ed.OldString == "" {
+			if len(edits) == 1 {
+				inputErrs = append(inputErrs, errors.New("old_string must not be empty"))
+			} else {
+				inputErrs = append(inputErrs, fmt.Errorf("edits[%d]: old_string must not be empty", i))
+			}
+		}
+	}
+	if len(inputErrs) > 0 {
+		return "", errors.Join(inputErrs...)
+	}
+
+	var origBytes []byte
+	if t.sfs != nil {
+		origBytes, err = t.sfs.readFileCtx(ctx, "edit_file", t.abs)
 	} else {
-		b, err = readFileCappedCtx(ctx, e.filesystem(), t.abs)
+		origBytes, err = readFileCappedCtx(ctx, e.filesystem(), t.abs)
 	}
 	if err != nil {
 		return "", err
 	}
-	s := string(b)
-	fuzzyNote := ""
-	if !strings.Contains(s, oldString) {
-		// Fuzzy fallback: try whitespace-normalized matching.
-		match := findFuzzyMatch(s, oldString)
-		if match == "" {
-			if near := nearestFileRegion(s, oldString); near != "" {
-				return "", fmt.Errorf("old_string not found in %s\nnearest text in the file (copy it exactly — your old_string may be a partial line or omit a line):\n%s", path, near)
-			}
-			return "", fmt.Errorf("old_string not found in %s", path)
-		}
-		oldString = match
-		fuzzyNote = " [NOTE: Matched with whitespace normalization]"
+
+	bomLen := 0
+	if bytes.HasPrefix(origBytes, []byte{0xEF, 0xBB, 0xBF}) {
+		bomLen = 3
 	}
-	if !replaceAll && strings.Count(s, oldString) != 1 {
-		return "", fmt.Errorf("old_string not unique in %s; use replace_all=true or provide a more specific old_string", path)
-	}
-	n := strings.Count(s, oldString)
-	if replaceAll {
-		s = strings.ReplaceAll(s, oldString, newString)
+	body := origBytes[bomLen:]
+
+	hasCRLF := bytes.Contains(body, []byte("\r\n"))
+	var lfText string
+	if !hasCRLF {
+		lfText = string(body)
 	} else {
-		s = strings.Replace(s, oldString, newString, 1)
-		n = 1
+		lfText = strings.ReplaceAll(string(body), "\r\n", "\n")
 	}
-	edited := []byte(s)
+
+	defaultCRLF := false
+	if idx := bytes.IndexByte(body, '\n'); idx > 0 && body[idx-1] == '\r' {
+		defaultCRLF = true
+	}
+
+	prepared := make([]preparedEdit, len(edits))
+	for i, ed := range edits {
+		oldLF := strings.ReplaceAll(ed.OldString, "\r\n", "\n")
+		newLF := strings.ReplaceAll(ed.NewString, "\r\n", "\n")
+		lenLF := int64(len(newLF))
+		lenCRLF := lenLF + int64(strings.Count(newLF, "\n"))
+		prepared[i] = preparedEdit{
+			oldLF:   oldLF,
+			newLF:   newLF,
+			lenLF:   lenLF,
+			lenCRLF: lenCRLF,
+		}
+	}
+
+	var (
+		spans        []editSpan
+		editErrs     []error
+		usedFuzzy    bool
+		nearestCount int
+	)
+	editPrefix := func(i int) string {
+		if len(edits) == 1 {
+			return ""
+		}
+		return fmt.Sprintf("edits[%d]: ", i)
+	}
+
+matchLoop:
+	for i, ed := range edits {
+		pe := prepared[i]
+		idx := strings.Index(lfText, pe.oldLF)
+		if idx >= 0 {
+			if !ed.ReplaceAll {
+				if second := strings.Index(lfText[idx+1:], pe.oldLF); second >= 0 {
+					lines := exactAmbiguousLines(lfText, pe.oldLF, idx, second)
+					editErrs = append(editErrs, fmt.Errorf("%sold_string not unique in %s (matches at lines %s); use replace_all=true or provide a more specific old_string",
+						editPrefix(i), path, formatLineNumbers(lines)))
+					continue
+				}
+				if len(spans)+1 > MaxEditFileSpans {
+					editErrs = append(editErrs, fmt.Errorf("%smatched spans exceed the %d-span edit limit", editPrefix(i), MaxEditFileSpans))
+					break matchLoop
+				}
+				spans = append(spans, editSpan{
+					lfStart:   idx,
+					lfEnd:     idx + len(pe.oldLF),
+					editIndex: i,
+				})
+				continue
+			}
+			pos := idx
+			for {
+				if len(spans)+1 > MaxEditFileSpans {
+					editErrs = append(editErrs, fmt.Errorf("%smatched spans exceed the %d-span edit limit", editPrefix(i), MaxEditFileSpans))
+					break matchLoop
+				}
+				spans = append(spans, editSpan{
+					lfStart:   pos,
+					lfEnd:     pos + len(pe.oldLF),
+					editIndex: i,
+				})
+				nextStart := pos + len(pe.oldLF)
+				next := strings.Index(lfText[nextStart:], pe.oldLF)
+				if next < 0 {
+					break
+				}
+				pos = nextStart + next
+			}
+			continue
+		}
+
+		remaining := max(MaxEditFileSpans-len(spans), 0)
+		fuzzySpans, ambigLines, limitExceeded := findFuzzyMatchSpans(lfText, pe.oldLF, ed.ReplaceAll, remaining)
+		if limitExceeded {
+			editErrs = append(editErrs, fmt.Errorf("%smatched spans exceed the %d-span edit limit", editPrefix(i), MaxEditFileSpans))
+			break matchLoop
+		}
+		if len(ambigLines) > 0 {
+			editErrs = append(editErrs, fmt.Errorf("%sold_string not unique in %s (ambiguous whitespace-normalized matches at lines %s); use replace_all=true or provide more context",
+				editPrefix(i), path, formatLineNumbers(ambigLines)))
+			continue
+		}
+		if len(fuzzySpans) == 0 {
+			var near string
+			if nearestCount < 3 {
+				near = nearestFileRegion(lfText, pe.oldLF)
+				if near != "" {
+					nearestCount++
+				}
+			}
+			if near != "" {
+				editErrs = append(editErrs, fmt.Errorf("%sold_string not found in %s (exact and whitespace-normalized matching found no match)\nnearest text in the file (copy it exactly — your old_string may be a partial line or omit a line):\n%s",
+					editPrefix(i), path, near))
+			} else {
+				editErrs = append(editErrs, fmt.Errorf("%sold_string not found in %s (exact and whitespace-normalized matching found no match)",
+					editPrefix(i), path))
+			}
+			continue
+		}
+		if !ed.ReplaceAll {
+			sp := fuzzySpans[0]
+			matched := lfText[sp.start:sp.end]
+			prevIdx := strings.Index(lfText[:sp.start], matched)
+			nextIdx := strings.Index(lfText[sp.end:], matched)
+			if prevIdx >= 0 || nextIdx >= 0 {
+				var lines []int
+				if prevIdx >= 0 {
+					lines = append(lines, 1+strings.Count(lfText[:prevIdx], "\n"))
+				}
+				lines = append(lines, 1+strings.Count(lfText[:sp.start], "\n"))
+				if nextIdx >= 0 {
+					lines = append(lines, 1+strings.Count(lfText[:sp.end+nextIdx], "\n"))
+				}
+				editErrs = append(editErrs, fmt.Errorf("%sold_string not unique in %s (fuzzy match also appears as a substring at lines %s); provide more context",
+					editPrefix(i), path, formatLineNumbers(lines)))
+				continue
+			}
+		}
+		usedFuzzy = true
+		for _, fs := range fuzzySpans {
+			spans = append(spans, editSpan{
+				lfStart:   fs.start,
+				lfEnd:     fs.end,
+				editIndex: i,
+			})
+		}
+	}
+
+	if len(editErrs) > 0 {
+		return "", errors.Join(editErrs...)
+	}
+
+	slices.SortFunc(spans, func(a, b editSpan) int {
+		if a.lfStart != b.lfStart {
+			return a.lfStart - b.lfStart
+		}
+		if a.lfEnd != b.lfEnd {
+			return a.lfEnd - b.lfEnd
+		}
+		return a.editIndex - b.editIndex
+	})
+
+	for k := 1; k < len(spans); k++ {
+		if spans[k-1].lfEnd > spans[k].lfStart {
+			return "", fmt.Errorf("edits[%d] and edits[%d] match overlapping text; merge overlapping or nearby edits into a single edit",
+				spans[k-1].editIndex, spans[k].editIndex)
+		}
+	}
+
+	if !hasCRLF {
+		for k := range spans {
+			spans[k].origStart = bomLen + spans[k].lfStart
+			spans[k].origEnd = bomLen + spans[k].lfEnd
+		}
+	} else {
+		origPos := 0
+		lfPos := 0
+		advanceTo := func(targetLF int) int {
+			for lfPos < targetLF {
+				if body[origPos] == '\r' && origPos+1 < len(body) && body[origPos+1] == '\n' {
+					origPos += 2
+				} else {
+					origPos++
+				}
+				lfPos++
+			}
+			return origPos
+		}
+		for k := range spans {
+			spans[k].origStart = bomLen + advanceTo(spans[k].lfStart)
+			spans[k].origEnd = bomLen + advanceTo(spans[k].lfEnd)
+		}
+	}
+
+	for k := range spans {
+		origSlice := origBytes[spans[k].origStart:spans[k].origEnd]
+		if bytes.Contains(origSlice, []byte("\r\n")) {
+			spans[k].useCRLF = true
+		} else if bytes.IndexByte(origSlice, '\n') >= 0 {
+			spans[k].useCRLF = false
+		} else {
+			spans[k].useCRLF = defaultCRLF
+		}
+	}
+
+	outLen := int64(len(origBytes))
+	for _, sp := range spans {
+		pe := prepared[sp.editIndex]
+		replLen := pe.lenLF
+		if sp.useCRLF {
+			replLen = pe.lenCRLF
+		}
+		outLen += replLen - int64(sp.origEnd-sp.origStart)
+	}
+	if outLen > MaxEditFileOutputBytes {
+		return "", fmt.Errorf("edited output for %s would be %d bytes, exceeding the %d-byte edit limit", path, outLen, MaxEditFileOutputBytes)
+	}
+
+	crlfCache := make([]string, len(prepared))
+	edited := make([]byte, 0, int(outLen))
+	cursor := 0
+	for _, sp := range spans {
+		edited = append(edited, origBytes[cursor:sp.origStart]...)
+		pe := prepared[sp.editIndex]
+		if sp.useCRLF && pe.lenCRLF != pe.lenLF {
+			repl := crlfCache[sp.editIndex]
+			if repl == "" {
+				repl = strings.ReplaceAll(pe.newLF, "\n", "\r\n")
+				crlfCache[sp.editIndex] = repl
+			}
+			edited = append(edited, repl...)
+		} else {
+			edited = append(edited, pe.newLF...)
+		}
+		cursor = sp.origEnd
+	}
+	edited = append(edited, origBytes[cursor:]...)
+
+	if bytes.Equal(edited, origBytes) {
+		return "", fmt.Errorf("no changes made to %s: replacement produces identical file content", path)
+	}
+
 	if finish != nil {
 		edited = finish(edited)
 	}
@@ -434,14 +717,120 @@ func (e *LocalExecutionEnvironment) EditFileWithCtx(ctx context.Context, path st
 		if werr := t.sfs.writeFile("edit_file", t.abs, edited, 0o644); werr != nil {
 			return "", werr
 		}
-	} else if werr := afero.WriteFile(e.filesystem(), t.abs, edited, 0o644); werr != nil {
+	} else if werr := writeFileAtomic(e.filesystem(), t.abs, edited); werr != nil {
 		return "", werr
 	}
+
+	n := len(spans)
 	plural := "s"
 	if n == 1 {
 		plural = ""
 	}
-	return fmt.Sprintf("edited %s: %d replacement%s%s", path, n, plural, fuzzyNote), nil
+	fuzzyNote := ""
+	if usedFuzzy {
+		fuzzyNote = " [NOTE: Matched with whitespace normalization]"
+	}
+	if len(edits) == 1 {
+		return fmt.Sprintf("edited %s: %d replacement%s%s", path, n, plural, fuzzyNote), nil
+	}
+	return fmt.Sprintf("edited %s: %d replacement%s across %d edits%s", path, n, plural, len(edits), fuzzyNote), nil
+}
+
+func exactAmbiguousLines(lfText, oldLF string, firstIdx, secondRel int) []int {
+	lines := make([]int, 0, maxAmbiguousLines)
+	line := 1 + strings.Count(lfText[:firstIdx], "\n")
+	lines = append(lines, line)
+	pos := firstIdx + 1 + secondRel
+	prev := firstIdx
+	for len(lines) < maxAmbiguousLines {
+		line += strings.Count(lfText[prev:pos], "\n")
+		lines = append(lines, line)
+		prev = pos
+		if pos+1 >= len(lfText) {
+			break
+		}
+		next := strings.Index(lfText[pos+1:], oldLF)
+		if next < 0 {
+			break
+		}
+		pos = pos + 1 + next
+	}
+	return lines
+}
+
+func formatLineNumbers(lines []int) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, ln := range lines {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(strconv.Itoa(ln))
+	}
+	return b.String()
+}
+
+// writeFileAtomic writes data to targetAbs via sibling temp file + rename
+// inside fsys's namespace, preserving target write admission and file mode.
+func writeFileAtomic(fsys afero.Fs, targetAbs string, data []byte) error {
+	resolvedTarget := targetAbs
+	if _, isOs := fsys.(*afero.OsFs); isOs {
+		if r, err := filepath.EvalSymlinks(targetAbs); err == nil {
+			resolvedTarget = r
+		}
+	}
+	probe, err := fsys.OpenFile(resolvedTarget, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	_ = probe.Close()
+
+	mode := os.FileMode(0o644)
+	if info, err := fsys.Stat(resolvedTarget); err == nil {
+		if perm := info.Mode().Perm(); perm != 0 {
+			mode = perm
+		}
+	}
+
+	dir := filepath.Dir(resolvedTarget)
+	tmp, err := afero.TempFile(fsys, dir, ".evener-edit-*.tmp")
+	if err != nil {
+		return fmt.Errorf("atomic write requires creating a temp file in %s: %w", dir, err)
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = fsys.Remove(tmpName)
+		}
+	}()
+
+	for written := 0; written < len(data); {
+		n, werr := tmp.Write(data[written:])
+		written += n
+		if werr != nil {
+			_ = tmp.Close()
+			return werr
+		}
+		if n == 0 {
+			_ = tmp.Close()
+			return io.ErrShortWrite
+		}
+	}
+	if cerr := fsys.Chmod(tmpName, mode); cerr != nil {
+		_ = tmp.Close()
+		return cerr
+	}
+	if cerr := tmp.Close(); cerr != nil {
+		return cerr
+	}
+	if rerr := fsys.Rename(tmpName, resolvedTarget); rerr != nil {
+		return rerr
+	}
+	cleanup = false
+	return nil
 }
 
 // detectImageFormat checks file extension and magic bytes to identify image files.

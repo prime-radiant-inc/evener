@@ -16,7 +16,8 @@ const maxAmbiguousLines = 10
 
 // findFuzzyMatch returns the file's first whitespace-normalized match for
 // oldString, or "" if no match. It delegates to findFuzzyMatchSpans so
-// edit_file keeps its historical caller until the batch engine replaces it.
+// existing direct test callers (line_window_test.go,
+// local_edge_program_fuzz_test.go) continue to exercise findFuzzyMatchSpans.
 func findFuzzyMatch(content, oldString string) string {
 	// Every accepted span is non-empty and non-overlapping, so content cannot
 	// hold more than len(content) of them.
