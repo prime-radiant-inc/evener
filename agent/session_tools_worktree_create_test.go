@@ -102,6 +102,10 @@ func TestMain(m *testing.M) {
 		// value would hand the tests the real cache.
 		_ = os.Setenv("XDG_CACHE_HOME", filepath.Join(testHome, ".cache"))
 	}
+	// Pin the config home every test inherits, so a session whose launch
+	// snapshot forks `go env` in a config home a test moved itself is refused at
+	// the fork (session_capabilities.go).
+	pinTestSnapshotConfigHome()
 	// Production code spawns git with the process environment, so the isolation
 	// has to be the process's: a fixture-only setting would leave the code under
 	// test reading host config and starting detached maintenance.

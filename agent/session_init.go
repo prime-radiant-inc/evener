@@ -1855,6 +1855,11 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// snapshot: both are the launch-time environment snapshot, and a test whose
 	// contract sits below that layer must not fork for either.
 	if !s.cfg.testOnly.skipGitSnapshot {
+		// The fork is refused when a test moved the config home the `go env`
+		// probe would write its telemetry sidecar into (session_capabilities.go).
+		if err := snapshotConfigHomeForkError(); err != nil {
+			return nil, err
+		}
 		s.capabilities = probeCapabilities(env, ei.WorkingDir)
 	}
 
