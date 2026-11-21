@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -79,7 +80,7 @@ func TestLocalExecutionEnvironment_ExecCommand_ContextCancel_KillsProcessGroup(t
 
 	// Cancel only once the child is running, so the cancel lands on a live
 	// process group rather than racing cmd.Start().
-	waitForStartedChild(t, env)
+	waitForStartedChild(t, env, done, func() string { return fmt.Sprintf("%v (res=%+v)", err, res) })
 	start := time.Now()
 	cancel()
 
@@ -1268,15 +1269,16 @@ func TestCleanup_TerminatesRunningProcesses(t *testing.T) {
 
 	// Start a long-running command in a goroutine.
 	done := make(chan struct{})
+	var err error
 	go func() {
-		_, _ = env.ExecCommand(ctx, "sleep 60", 120_000, "", nil)
+		_, err = env.ExecCommand(ctx, "sleep 60", 120_000, "", nil)
 		close(done)
 	}()
 
 	// Cleanup only terminates what the tracker holds, so wait for the pid to be
 	// registered: a Cleanup that runs before cmd.Start() is a no-op and leaves
 	// the command running past the test.
-	waitForStartedChild(t, env)
+	waitForStartedChild(t, env, done, func() string { return fmt.Sprintf("%v", err) })
 
 	// Cleanup should terminate the process.
 	env.Cleanup()
@@ -1291,10 +1293,16 @@ func TestCleanup_TerminatesRunningProcesses(t *testing.T) {
 }
 
 // waitForStartedChild waits until env has registered a running child, the
-// observable that cmd.Start() returned.
-func waitForStartedChild(t *testing.T, env *LocalExecutionEnvironment) {
+// observable that cmd.Start() returned. If ExecCommand returns first, it fails
+// with describe's account of that return instead of waiting out the budget.
+func waitForStartedChild(t *testing.T, env *LocalExecutionEnvironment, done <-chan struct{}, describe func() string) {
 	t.Helper()
 	testwait.Until(t, "ExecCommand to start the child", func() bool {
+		select {
+		case <-done:
+			t.Fatalf("ExecCommand returned before registering a child: %s", describe())
+		default:
+		}
 		found := false
 		env.runningPIDs.Range(func(_, _ any) bool {
 			found = true
