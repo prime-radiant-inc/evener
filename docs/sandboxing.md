@@ -265,9 +265,11 @@ An individual filesystem call already in progress may still block until it retur
   toolchain under `$HOME` — left a sandboxed `go test` dying with
   `go: no such tool "vet"`, because the go command can run from a granted path
   while `GOROOT/pkg/tool` is unreadable. It is probed once with a bounded
-  `go env -C / GOROOT` query run outside any module, from the go the daemon's
-  PATH names or — when that PATH has none, as under launchd — a standard install
-  prefix (`/usr/local/go`, Homebrew, MacPorts). The value is granted under the
+  `go env -C / GOROOT` query run outside any module and with a pinned toolchain
+  selection (no workspace, no download), from the go the session's login-shell
+  PATH resolves first — that is the PATH its commands run with — then the go the
+  daemon's PATH names or, as under launchd, a standard install prefix
+  (`/usr/local/go`, Homebrew, MacPorts). The value is granted under the
   spelling go reports plus its canonical alias, because Seatbelt judges the path a
   process actually names. It passes through the same shared-tree guard as the
   developer-toolchain grant, so a GOROOT at or above `$HOME`, the worktree, or a

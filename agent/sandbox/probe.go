@@ -369,6 +369,10 @@ func (f FakeProber) Probe() HostFacts { return f.Facts }
 // production constructs the zero value and receives hostProbeSystem.
 type RealProber struct {
 	system probeSystem
+	// SessionPATH is the PATH spawned commands receive: the login-shell PATH
+	// an execenv carries, which can name a Go the daemon's own PATH does not.
+	// Empty falls back to the process PATH alone.
+	SessionPATH string
 }
 
 // probeSystem is the narrow host boundary needed for capability discovery. It
@@ -471,7 +475,16 @@ func (hostProbeSystem) combinedOutput(ctx context.Context, name string, args ...
 }
 
 func (hostProbeSystem) output(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return hostProbeSystem{}.outputWithEnv(ctx, nil, name, args...)
+}
+
+// outputWithEnv runs the child with extraEnv appended to the daemon's
+// environment.
+func (hostProbeSystem) outputWithEnv(ctx context.Context, extraEnv []string, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
 	cmd.WaitDelay = probeWaitDelay
 	out, err := cmd.Output()
 	return out, orphanpipe.ChildErr(cmd, err)
@@ -497,10 +510,14 @@ func (p RealProber) Probe() HostFacts {
 	if system == nil {
 		system = hostProbeSystem{}
 	}
-	return probeHost(system)
+	return probeHostWithPATH(system, p.SessionPATH)
 }
 
-func probeHost(system probeSystem) HostFacts {
+// probeHost probes with the process PATH alone; probeHostWithPATH adds the
+// session PATH ahead of it.
+func probeHost(system probeSystem) HostFacts { return probeHostWithPATH(system, "") }
+
+func probeHostWithPATH(system probeSystem, sessionPATH string) HostFacts {
 	facts := HostFacts{
 		OS:            system.goos(),
 		KernelVersion: probeKernelVersion(system),
@@ -551,7 +568,7 @@ func probeHost(system probeSystem) HostFacts {
 		}
 		facts.DeveloperToolRoots = probeDeveloperToolRoots(system)
 		facts.DeveloperToolBinDir = probeDeveloperToolBinDir(system)
-		facts.GoToolchainRoots, facts.GoToolchainGoBin = probeGoToolchainRoots(system)
+		facts.GoToolchainRoots, facts.GoToolchainGoBin = probeGoToolchainRoots(system, sessionPATH)
 	}
 
 	return facts
@@ -1223,16 +1240,19 @@ var goInstallPrefixLaunchers = []string{
 // The answer is probed with `go env -C / GOROOT` rather than read from the go
 // env file, because GOROOT is not one of the settings that file reliably names:
 // it can also come from the environment or from the toolchain go selected. -C /
-// runs the query outside any module, so a project's go/toolchain line cannot
-// make this probe select (and download) a different toolchain before the
-// sandbox exists; an explicit GOTOOLCHAIN pin is host configuration and the
-// spawned go honours it too. GOWORK is not consulted outside a module. -C needs
-// Go 1.20+, and an older go simply contributes no root.
-func probeGoToolchainRoots(system probeSystem) ([]string, string) {
+// runs the query outside any module, and the query pins GOWORK=off and
+// GOTOOLCHAIN=local so neither a workspace nor a toolchain switch (and its
+// download) can decide the answer before the sandbox exists. -C needs Go 1.20+,
+// and an older go simply contributes no root.
+//
+// Launchers are tried in the order a spawned command would resolve one: the
+// session PATH first, since that is what the shell tool hands its children,
+// then the daemon's PATH, then the standard install prefixes.
+func probeGoToolchainRoots(system probeSystem, sessionPATH string) ([]string, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), probeCommandTimeout)
 	defer cancel()
 	seen := make(map[string]bool, len(goInstallPrefixLaunchers)+1)
-	for _, goBin := range goLaunchers(system) {
+	for _, goBin := range goLaunchers(system, sessionPATH) {
 		// Two spellings can name one launcher (a PATH entry and a prefix
 		// fallback); the second cannot answer differently.
 		key := goBin
@@ -1251,14 +1271,34 @@ func probeGoToolchainRoots(system probeSystem) ([]string, string) {
 }
 
 // goLaunchers lists the go binaries the probe may run, most specific first:
-// the one PATH resolves, then the install-prefix fallbacks present on disk.
-func goLaunchers(system probeSystem) []string {
+// the one the session PATH resolves, then the daemon's PATH, then the
+// install-prefix fallbacks present on disk.
+func goLaunchers(system probeSystem, sessionPATH string) []string {
 	var out []string
-	if goBin, err := system.lookPath("go"); err == nil && goBin != "" {
+	appendGoBin := func(goBin string) {
+		if goBin == "" || slices.Contains(out, goBin) {
+			return
+		}
 		out = append(out, goBin)
 	}
+	// Spawned commands resolve go through the session PATH, so its first
+	// existing go is the installation the grant has to cover. A rc-chain entry
+	// the daemon cannot see would otherwise pick a different toolchain than the
+	// one the probe recorded.
+	for _, dir := range filepath.SplitList(sessionPATH) {
+		if dir == "" || !filepath.IsAbs(dir) {
+			continue
+		}
+		goBin := filepath.Join(filepath.Clean(dir), "go")
+		if system.nonDirectoryFile(goBin) {
+			appendGoBin(goBin)
+		}
+	}
+	if goBin, err := system.lookPath("go"); err == nil {
+		appendGoBin(goBin)
+	}
 	for _, goBin := range goInstallPrefixLaunchers {
-		if !system.nonDirectoryFile(goBin) || slices.Contains(out, goBin) {
+		if !system.nonDirectoryFile(goBin) {
 			continue
 		}
 		// A standard prefix is a trusted install location, not a licence to
@@ -1267,7 +1307,7 @@ func goLaunchers(system probeSystem) []string {
 		if canonical := CanonicalDir(goBin); canonical != "" && !identifier.PathUnder(canonical, filepath.Dir(filepath.Dir(goBin))) {
 			continue
 		}
-		out = append(out, goBin)
+		appendGoBin(goBin)
 	}
 	return out
 }
@@ -1277,7 +1317,7 @@ func goLaunchers(system probeSystem) []string {
 // caller's context is the TOTAL budget for discovery, so a launcher that times
 // out leaves the remaining candidates only the time that is left.
 func goEnvGOROOT(ctx context.Context, system probeSystem, goBin string) []string {
-	out, err := system.output(ctx, goBin, "env", "-C", "/", "GOROOT")
+	out, err := probeOutput(ctx, system, probeGoToolchainEnv, goBin, "env", "-C", "/", "GOROOT")
 	if err != nil {
 		return nil
 	}
@@ -1296,6 +1336,26 @@ func goEnvGOROOT(ctx context.Context, system probeSystem, goBin string) []string
 		return []string{root}
 	}
 	return []string{root, canonical}
+}
+
+// probeGoToolchainEnv pins Go's toolchain selection for the discovery query:
+// GOWORK=off stops a workspace from being loaded and GOTOOLCHAIN=local stops a
+// switch to (and download of) a toolchain the probe would launch outside the
+// sandbox. Discovery of an already-installed host toolchain is unaffected.
+var probeGoToolchainEnv = []string{"GOWORK=off", "GOTOOLCHAIN=local"}
+
+// probeSystemWithEnv is the optional capability behind the GOROOT probe: a
+// system that can run a child with extra environment entries. Stubs that do
+// not implement it fall back to output, which inherits the process env.
+type probeSystemWithEnv interface {
+	outputWithEnv(ctx context.Context, extraEnv []string, name string, args ...string) ([]byte, error)
+}
+
+func probeOutput(ctx context.Context, system probeSystem, extraEnv []string, name string, args ...string) ([]byte, error) {
+	if envSystem, ok := system.(probeSystemWithEnv); ok {
+		return envSystem.outputWithEnv(ctx, extraEnv, name, args...)
+	}
+	return system.output(ctx, name, args...)
 }
 
 // probeDeveloperToolBinDir returns the active developer directory's bin

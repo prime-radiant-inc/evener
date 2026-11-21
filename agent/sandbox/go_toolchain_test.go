@@ -267,10 +267,12 @@ type goToolchainProbeSystem struct {
 	goBin       string
 	goBinErr    error
 	prefixFiles map[string]bool
+	answers     map[string]string
 	gorootOut   string
 	gorootErr   error
 	outputName  string
 	outputArgs  []string
+	outputEnv   []string
 }
 
 func (s *goToolchainProbeSystem) nonDirectoryFile(path string) bool { return s.prefixFiles[path] }
@@ -285,7 +287,15 @@ func (s *goToolchainProbeSystem) lookPath(name string) (string, error) {
 func (s *goToolchainProbeSystem) output(_ context.Context, name string, args ...string) ([]byte, error) {
 	s.outputName = name
 	s.outputArgs = slices.Clone(args)
+	if answer, ok := s.answers[name]; ok {
+		return []byte(answer), nil
+	}
 	return []byte(s.gorootOut), s.gorootErr
+}
+
+func (s *goToolchainProbeSystem) outputWithEnv(ctx context.Context, extraEnv []string, name string, args ...string) ([]byte, error) {
+	s.outputEnv = slices.Clone(extraEnv)
+	return s.output(ctx, name, args...)
 }
 
 // TestProbeGoToolchainRoots pins the probe contract: one bounded
@@ -342,7 +352,7 @@ func TestProbeGoToolchainRoots(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, _ := probeGoToolchainRoots(tc.system)
+			got, _ := probeGoToolchainRoots(tc.system, "")
 			if !slices.Equal(got, tc.want) {
 				t.Errorf("probeGoToolchainRoots = %v, want %v", got, tc.want)
 			}
@@ -371,7 +381,7 @@ func TestProbeGoToolchainRootsKeepsTheLiteralSymlinkSpelling(t *testing.T) {
 	}
 	system := &goToolchainProbeSystem{goBin: "/usr/local/bin/go", gorootOut: link + "\n"}
 	want := []string{link, target}
-	if got, _ := probeGoToolchainRoots(system); !slices.Equal(got, want) {
+	if got, _ := probeGoToolchainRoots(system, ""); !slices.Equal(got, want) {
 		t.Errorf("probeGoToolchainRoots = %v, want the literal and canonical spellings %v", got, want)
 	}
 }
@@ -388,11 +398,52 @@ func TestProbeGoToolchainRootsFallsBackToAnInstallPrefix(t *testing.T) {
 		gorootOut:   dir + "\n",
 	}
 	want := goRootPair(dir)
-	if got, launcher := probeGoToolchainRoots(system); !slices.Equal(got, want) || launcher != "/opt/homebrew/bin/go" {
+	if got, launcher := probeGoToolchainRoots(system, ""); !slices.Equal(got, want) || launcher != "/opt/homebrew/bin/go" {
 		t.Errorf("probeGoToolchainRoots = %v, launcher %q, want %v from the Homebrew prefix", got, launcher, want)
 	}
 	if system.outputName != "/opt/homebrew/bin/go" {
 		t.Errorf("probe ran %q, want the Homebrew install prefix", system.outputName)
+	}
+}
+
+// TestProbeGoToolchainRootsPrefersTheSessionPATHLauncher: spawned commands run
+// with the login-shell PATH, which can name a Go the daemon's own PATH does
+// not. The probe must ask that launcher first, or the grant covers a toolchain
+// the session never runs and the SDK it does run stays unreadable.
+func TestProbeGoToolchainRootsPrefersTheSessionPATHLauncher(t *testing.T) {
+	t.Parallel()
+	sdkGo := "/Users/someone/sdk/go1.24/bin/go"
+	daemonGo := "/usr/local/go/bin/go"
+	sdkRoot := goToolchainDir(t)
+	daemonRoot := goToolchainDir(t)
+	system := &goToolchainProbeSystem{
+		goBin:       daemonGo,
+		prefixFiles: map[string]bool{sdkGo: true},
+		answers:     map[string]string{sdkGo: sdkRoot, daemonGo: daemonRoot},
+	}
+	roots, launcher := probeGoToolchainRoots(system, "/Users/someone/sdk/go1.24/bin:/usr/local/bin")
+	if launcher != sdkGo {
+		t.Fatalf("launcher = %q, want the go the session PATH resolves first (%q)", launcher, sdkGo)
+	}
+	if want := goRootPair(sdkRoot); !slices.Equal(roots, want) {
+		t.Errorf("roots = %v, want the session launcher's GOROOT %v", roots, want)
+	}
+}
+
+// TestProbeGoToolchainRootsPinsToolchainSelection: the discovery query must not
+// load a workspace or switch to (and download) a toolchain before the sandbox
+// exists.
+func TestProbeGoToolchainRootsPinsToolchainSelection(t *testing.T) {
+	t.Parallel()
+	root := goToolchainDir(t)
+	system := &goToolchainProbeSystem{goBin: "/usr/local/go/bin/go", gorootOut: root + "\n"}
+	if _, launcher := probeGoToolchainRoots(system, ""); launcher == "" {
+		t.Fatalf("probe contributed no launcher")
+	}
+	for _, want := range probeGoToolchainEnv {
+		if !slices.Contains(system.outputEnv, want) {
+			t.Errorf("probe env %v lacks %q", system.outputEnv, want)
+		}
 	}
 }
 
