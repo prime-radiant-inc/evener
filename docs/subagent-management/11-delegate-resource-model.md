@@ -1669,33 +1669,35 @@ governed by the same lease.
 
 The notification drive is the one model-bearing drive that is not a generation.
 It exists to run a resident stable child's own `EntryNotification` queue -- the
-remainder after every watch notice was deferred to leased attention -- on a
-child whose last generation has already finished, and the controller has nothing
-of its own to admit it into:
+ordinary completions, with every watch notice beside them deferred to leased
+attention by the unleased split -- on a child with no generation running or
+finalizing, and the controller has nothing of its own to admit it into:
 
 - `ReserveAttention` needs a pending attention ID and a `PhaseIdle`, resumable
-  delegate, and starts a generation that consumes that row;
+  delegate, and reserves drive capacity for a generation keyed to that row;
 - `ReserveStart` refuses a delegate whose previous generation is still
-  finalizing and takes owner-input capacity for a public send; and
-- `idleDelegateRestoreCommit` commits only on `PhaseIdle` plus `Resumable` and
-  builds its own cold runtime.
+  finalizing, and reserves a delegate-turn slot for a public send; and
+- `idleDelegateRestoreCommit` commits a lease for an idle, resumable delegate's
+  existing generation and builds a cold runtime, taking no trigger of its own.
 
-Issue #6797 records why each existing lease path refuses this drive. Until the
-resource model gains a notification generation, the drive is admitted as an
-input and its bounds are these:
+Issue #6797 records why none of the existing lease paths fits this drive. Until
+the resource model gains a notification generation, the drive is admitted as
+an input and its bounds are these:
 
 - **Admission is the runtime input claim.** `admitIdleRuntimeInput` delegates to
   the controller's `admitRuntimeInput`, which takes the controller mutex,
   refuses while a reclamation claim covers the delegate, and counts the drive in
   `inputsInFlight`. A claim and an admission are therefore ordered: neither can
   tear down a runtime the other holds.
-- **Spawning is bounded by the launching session's drive budget**, separate from
-  delegate fan-out, and the turn by the drive's hung-turn bound, which pauses
-  while a model call waits out a usage limit and gives the slot back for the
-  wait.
+- **Spawning draws one tree-wide drive budget.** The root mints a single
+  notification-drive counter and every descendant inherits it, so a drive at
+  any level reserves a slot on the same tree-wide counter, separate from
+  delegate fan-out. The turn is bounded by the drive's hung-turn bound, which
+  pauses while a model call waits out a usage limit and gives the slot back for
+  the wait.
 - **A Stop reaches it through the drive's own cancellation context**, not a
-  generation fence: the turn ends as a cancelled turn, not a fatal run, and the
-  work the delegate owns survives.
+  generation fence: a stop-cancelled turn is the ordinary nonfatal end of a
+  stopped run, and the work the delegate owns survives.
 - **It presents no watch attention that needs a lease, and credits nothing.**
   An unleased stable-child turn withholds every watch row the attention fold
   still resolves as pending -- the unleased projection filter keys on the watch
@@ -1705,10 +1707,11 @@ input and its bounds are these:
   completions are not attention and ride the turn unchanged.
 
 A drive mints no JobRecord and settles no delegate result. A notification turn
-is not report-requiring; the delegate's own generations remain the only thing
-that finishes or reports it. A drive turn that fails for any reason other than
-a stop sets the child's fatal-run gate and stops the work it owns. The gate is
-read before an automatic drive reserves or launches anything
+carries no report requirement either: settlement and terminal capture take a
+lease, which this turn does not hold, so the delegate's own generations remain
+the only thing that finishes or reports it. A drive turn that fails for any
+reason other than a stop sets the child's fatal-run gate and stops the work it
+owns. The gate is read before an automatic drive reserves or launches anything
 (`driveDelegateAttention`), so the drive's own retries stay refused while it is
 set. Only a run that actually launches for the child clears it: an explicit
 send or an accepted attention start (`launchAcceptedDelegateAttention`), which

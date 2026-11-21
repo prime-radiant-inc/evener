@@ -2116,10 +2116,11 @@ func (a *subagent) notificationDriveBlockedLocked(s *Session) bool {
 // exception in docs/subagent-management/11-delegate-resource-model.md
 // ("Notification drives are input turns", issue #6797): the controller has no
 // generation to admit a notification drive into, and its bounds are the runtime
-// input claim, the session drive budget, the drive's hung-turn bound, the stop
-// that cancels it, and the unleased watch-notice split that keeps watch notices
-// out of it (the turn credits no attention row, because only a leased generation
-// commits a presentation).
+// input claim, the one tree-wide drive counter the root mints and every
+// descendant inherits, the drive's hung-turn bound, the stop that cancels it,
+// and the unleased watch-notice split that keeps watch notices out of it (the
+// turn credits no attention row, because only a leased generation commits a
+// presentation).
 func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 	if sub == nil {
 		return false

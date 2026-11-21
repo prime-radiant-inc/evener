@@ -653,8 +653,8 @@ func TestDelegateResourceSupervision_MixedBatchCarriesTheCompletionAndDefersTheW
 //
 //   - the ordinary completion the drive exists to serve rides the drive turn, and
 //   - the watch notice beside it does NOT, because an unleased turn withholds
-//     every unresolved durable watch row and defers the notice to leased
-//     attention, which then presents it and credits the presentation.
+//     every pending watch row and defers the notice to leased attention, which
+//     then presents it and credits the presentation.
 //
 // This is the regression guard for the documented contract. If a later change
 // gives the drive a lease of its own, the watch notice may ride the turn and
