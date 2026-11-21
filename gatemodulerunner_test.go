@@ -11,10 +11,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/internal/devtool/gatesurface"
 	"primeradiant.com/evener/internal/devtool/procgroup"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // moduleRunnerScript is the gate that owns module selection, private per-module
@@ -1053,19 +1053,21 @@ func TestTimed(t *testing.T) {
 		_ = cmd.Wait()
 		_ = outFile.Close()
 	}
+	announced := false
+	t.Cleanup(func() {
+		if !announced {
+			abort()
+		}
+	})
 	// The fixture's own test is inside its run by now, which is before the
 	// export by construction.
-	deadline := time.Now().Add(60 * time.Second)
-	for {
+	testwait.UntilSeen(t, "the fixture to announce itself", func() (bool, string) {
 		if _, err := os.Stat(started); err == nil {
-			break
+			return true, ""
 		}
-		if time.Now().After(deadline) {
-			abort()
-			t.Fatalf("the fixture never announced itself:\n%s", runnerOutput())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return false, runnerOutput()
+	})
+	announced = true
 	// $$ in the script is this bash process's pid.
 	planted := fmt.Sprintf("%s.tmp-%d", dest, cmd.Process.Pid)
 	if err := os.Symlink(victim, planted); err != nil {

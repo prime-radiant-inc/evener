@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/internal/testfs"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // startHeldRun starts the evener-dev binary against the fixture with one shard
@@ -56,43 +57,41 @@ func startHeldRun(t *testing.T, extraEnv ...string) (*exec.Cmd, int, string, str
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("starting held run: %v", err)
 	}
+	// A descendant can outlive a killed runner holding the stderr pipe.
+	cmd.WaitDelay = 5 * time.Second
+	announced := false
 	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
+		_ = cmd.Wait() // also drains the stderr copy goroutine before the read
+		if !announced {
+			t.Logf("held shard never announced; stderr:\n%s", stderr.String())
+		}
 	})
 
-	// Await the hold announcement; the ceiling is a tripwire sized for a
-	// cold `go test -c` under load, not a mechanism.
-	deadline := time.Now().Add(120 * time.Second)
-	for {
+	// Await the hold announcement: the shard's write is the condition, and
+	// the cold `go test -c` behind it gets the shared guard.
+	var heldPid int
+	testwait.Until(t, "the held shard to announce itself", func() bool {
 		matches, _ := filepath.Glob(filepath.Join(holdDir, "held.*"))
-		if len(matches) == 1 {
-			var heldPid int
-			if _, err := fmt.Sscanf(filepath.Base(matches[0]), "held.%d", &heldPid); err != nil {
-				t.Fatalf("parsing held pid from %s: %v", matches[0], err)
-			}
-			return cmd, heldPid, tmp, holdDir
+		if len(matches) != 1 {
+			return false
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("held shard never announced; stderr:\n%s", &stderr)
+		if _, err := fmt.Sscanf(filepath.Base(matches[0]), "held.%d", &heldPid); err != nil {
+			t.Fatalf("parsing held pid from %s: %v", matches[0], err)
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return true
+	})
+	announced = true
+	return cmd, heldPid, tmp, holdDir
 }
 
 // awaitFile waits for a path to appear, failing with label if it never does.
 func awaitFile(t *testing.T, path, label string) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		if _, err := os.Stat(path); err == nil {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: %s never appeared", label, path)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Until(t, label+": "+path+" to appear", func() bool {
+		_, err := os.Stat(path)
+		return err == nil
+	})
 }
 
 // releaseHold unblocks a held shard by opening the write end of its FIFO.
@@ -109,16 +108,9 @@ func releaseHold(t *testing.T, holdDir string) {
 
 func awaitPidGone(t *testing.T, pid int, label string) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		if err := syscall.Kill(pid, 0); err == syscall.ESRCH {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: pid %d still alive", label, pid)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Until(t, fmt.Sprintf("%s: pid %d to disappear", label, pid), func() bool {
+		return syscall.Kill(pid, 0) == syscall.ESRCH
+	})
 }
 
 // TestAgentShardsHungTestFailsItsRunAndIsNamed pins what the test timeout is

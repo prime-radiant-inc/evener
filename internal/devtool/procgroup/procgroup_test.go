@@ -11,17 +11,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
-)
 
-// childReadyTripwire bounds the readiness poll below. Reaching a fixture's
-// first write costs a process creation: 440 samples taken on a host at load
-// average ~130 all landed under 65ms, but the two creations the sibling git
-// fixture needed have been measured at up to 10s on that same class of host —
-// which is exactly where the bare 10s ceiling this replaced would have fired,
-// on a fixture that was never in trouble. The bound is a hang guard, never the
-// mechanism: the poll's real exits are the file appearing and the child's own
-// reap.
-const childReadyTripwire = 90 * time.Second
+	"primeradiant.com/evener/internal/testwait"
+)
 
 // childWait reaps a started child exactly once and publishes the result, so a
 // readiness poll can watch the child's own exit while the test keeps ownership
@@ -64,25 +56,24 @@ func TestStartMergesIntoCallerSysProcAttr(t *testing.T) {
 // so tests synchronize on real child state instead of sleeps. It watches the
 // child's own reap alongside the file: a fixture that dies before writing —
 // a bad script, a failed exec, a sandbox refusal — names that exit instead of
-// spending the whole tripwire and then blaming a file that was never coming.
+// waiting out the guard and then blaming a file that was never coming.
 func waitForFile(t *testing.T, path string, child *childWait) string {
 	t.Helper()
-	deadline := time.Now().Add(childReadyTripwire)
-	for {
+	var contents string
+	testwait.Until(t, "the child to write "+path, func() bool {
 		b, err := os.ReadFile(path)
 		if err == nil && len(b) > 0 && strings.HasSuffix(string(b), "\n") {
-			return strings.TrimSpace(string(b))
+			contents = strings.TrimSpace(string(b))
+			return true
 		}
 		select {
 		case <-child.done:
 			t.Fatalf("child exited before writing %s: %v", path, child.err)
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("child never wrote %s within %v", path, childReadyTripwire)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return false
+	})
+	return contents
 }
 
 func pidAlive(pid int) bool {
@@ -112,10 +103,12 @@ func TestStartPlacesChildInOwnProcessGroup(t *testing.T) {
 
 func TestStopTerminatesWholeGroup(t *testing.T) {
 	// The child forks a grandchild and publishes its pid; Stop must take
-	// out both, or an interrupted lint run leaks linter descendants.
+	// out both, or an interrupted lint run leaks linter descendants. The
+	// grandchild outlives any wait below, so a Stop that spares it fails
+	// instead of passing once a shorter fixture expires.
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "grandchild.pid")
-	cmd := exec.Command("sh", "-c", "sleep 30 & echo $! >"+pidFile+"; wait") //nolint:noctx // lifecycle managed by the process-group Stop under test
+	cmd := exec.Command("sh", "-c", "sleep 300 & echo $! >"+pidFile+"; wait") //nolint:noctx // lifecycle managed by the process-group Stop under test
 	if err := Start(cmd); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -126,14 +119,14 @@ func TestStopTerminatesWholeGroup(t *testing.T) {
 	}
 	Stop(cmd.Process.Pid, child.done, 5*time.Second)
 	<-child.done
-	deadline := time.Now().Add(5 * time.Second)
-	for pidAlive(grandchild) && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if pidAlive(grandchild) {
-		Kill(cmd.Process.Pid)
-		t.Fatalf("grandchild %d survived Stop", grandchild)
-	}
+	t.Cleanup(func() {
+		if pidAlive(grandchild) {
+			Kill(cmd.Process.Pid)
+		}
+	})
+	testwait.Until(t, "grandchild "+strconv.Itoa(grandchild)+" to exit after Stop", func() bool {
+		return !pidAlive(grandchild)
+	})
 }
 
 func TestStopEscalatesToKillWhenTermIgnored(t *testing.T) {
