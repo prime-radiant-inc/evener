@@ -706,13 +706,45 @@ func TestCacheSavesReplaceTheirPredecessor(t *testing.T) {
 	// The delete has to name the keys go-cache-restore exported, or it lists
 	// nothing and deletes nothing while the pipeline stays green.
 	for variable, want := range map[string]string{
-		"BUILD_PREFIX":   "${{ env.GO_CACHE_PREFIX }}",
+		"BUILD_PREFIX":   "${{ env.GO_CACHE_DELETE_PREFIX }}",
 		"BUILD_KEY":      "${{ env.GO_CACHE_KEY }}",
-		"MODULES_PREFIX": "${{ env.GO_MODULES_PREFIX }}",
+		"MODULES_PREFIX": "${{ env.GO_MODULES_DELETE_PREFIX }}",
 		"MODULES_KEY":    "${{ env.GO_MODULES_CACHE_KEY }}",
 	} {
 		if got := steps[deleted].Env[variable]; got != want {
 			t.Errorf("go-cache-save delete %s = %q, want %q", variable, got, want)
+		}
+	}
+	// Renaming either side of that handoff would leave the delete listing an
+	// empty prefix, so pin the exported names too. The delete prefix leaves out
+	// the Go version: a toolchain bump must retire the old version's entries,
+	// not save beside them.
+	var resolved string
+	for _, step := range readActionSteps(t, ".github/actions/go-cache-restore/action.yml") {
+		if step.Name == "Resolve Go cache keys" {
+			resolved = step.Run
+		}
+	}
+	if resolved == "" {
+		t.Fatal("go-cache-restore has no key resolution step")
+	}
+	for variable, want := range map[string]string{
+		"GO_CACHE_DELETE_PREFIX":   "delete_prefix",
+		"GO_MODULES_DELETE_PREFIX": "modules_delete_prefix",
+	} {
+		if !strings.Contains(resolved, "echo \""+variable+"=${"+want+"}\"") {
+			t.Errorf("go-cache-restore does not export %s from %s; a rename would leave the delete listing nothing:\n%s", variable, want, resolved)
+		}
+	}
+	for _, line := range strings.Split(resolved, "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "delete_prefix=") &&
+			!strings.HasPrefix(strings.TrimSpace(line), "modules_delete_prefix=") {
+			continue
+		}
+		// A toolchain bump must retire the previous version's entries rather
+		// than leave two whole fleets in the budget until the next prune.
+		if strings.Contains(line, "GOVERSION") {
+			t.Errorf("go-cache-restore's delete prefix carries GOVERSION: %s", strings.TrimSpace(line))
 		}
 	}
 	for _, save := range []string{"Save Go build cache", "Save Go module cache"} {
@@ -742,5 +774,38 @@ func TestCacheSavesReplaceTheirPredecessor(t *testing.T) {
 	if env := ios.Steps[deleted].Env; env["PREFIX"] != "${{ steps.deriveddata-cache.outputs.prefix }}" ||
 		env["KEPT_KEY"] != "${{ steps.deriveddata-cache.outputs.prefix }}${{ github.sha }}" {
 		t.Errorf("ios-qualification delete env = %v, want the restore prefix and this commit's key", env)
+	}
+}
+
+// actions: write belongs to the jobs that delete a superseded cache entry and
+// to cache-prune, which deletes pruned entries, and to nothing else at job or
+// workflow level. The cache step is skipped on pull_request and merge_group,
+// but the token still carries the scope through every run of the workflow, so
+// a grant on an unrelated job hands candidate code a write-capable Actions
+// token for no gain (PR #7434 review).
+func TestActionsWriteStaysOnSavingJobs(t *testing.T) {
+	granted := 0
+	for _, path := range goCacheWorkflows {
+		if got := readWorkflowGrants(t, path)["actions"]; got != "" && got != "none" {
+			t.Errorf("%s: workflow-level actions %q, want the grant on the saving jobs alone", path, got)
+		}
+		for name, job := range readCacheWorkflow(t, path) {
+			if job.Permissions["actions"] != "write" {
+				continue
+			}
+			granted++
+			saves := false
+			for _, step := range job.Steps {
+				if step.Uses == "./.github/actions/go-cache-save" {
+					saves = true
+				}
+			}
+			if !saves && name != "cache-prune" {
+				t.Errorf("%s %s: actions write without saving a cache", path, name)
+			}
+		}
+	}
+	if granted == 0 {
+		t.Fatal("no job holds actions write, so no grant was checked")
 	}
 }

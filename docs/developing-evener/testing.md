@@ -1176,10 +1176,23 @@ The rules that keep the budget:
   takes the newest entry of a prefix, so the predecessor is dead weight the
   moment the new entry saves; a save that fails after the delete costs that
   kind one cold run, while leaving the predecessor costs whichever entry the
-  eviction picks. The delete needs `actions: write`, held by each saving job
-  (skipped wherever the save is) and by `cache-prune` below, and
+  eviction picks. The delete names entries by kind, runner image and arch but
+  leaves out the Go version, although the restore and save keys carry it: a
+  toolchain bump makes the previous version's entries dead weight no restore
+  can pick, and the first save of the new version has to retire them or two
+  whole fleets sit in the budget until the prune. A delete also stands down
+  when the restore exported no prefix or key, which is what a job that failed
+  before `go-cache-restore` leaves behind: `gh cache list --key ""` lists
+  every entry in the repository, Go and iOS alike, and deleting on it would
+  empty the budget. The delete needs `actions: write`, held by each saving job
+  (skipped wherever the save is) and by `cache-prune` below;
   `TestCacheSavesReplaceTheirPredecessor` pins the grant, the main-push guard
-  on each delete, the keys it names, and that the delete precedes the save.
+  on each delete, the prefix and key it names, and that the delete precedes
+  the save. `TestCacheDeleteScriptAgainstStubGH` runs the shipped scripts
+  against a stub `gh` and shows each predecessor deleted, the key this run
+  saves kept, and exact-hit, unset-prefix and failed-listing runs deleting
+  nothing. `TestActionsWriteStaysOnSavingJobs` keeps the scope off every job
+  that does not save a cache.
 
   CI's `cache-prune` job remains the backstop: after every lane of a ci.yml
   main push it deletes each `go-*`, `gomod-*`, `golangci-lint-*` and

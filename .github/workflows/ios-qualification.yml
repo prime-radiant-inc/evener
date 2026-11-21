@@ -235,6 +235,13 @@ jobs:
           PREFIX: ${{ steps.deriveddata-cache.outputs.prefix }}
           KEPT_KEY: ${{ steps.deriveddata-cache.outputs.prefix }}${{ github.sha }}
         run: |
+          # A step whose key resolver did not run sets neither, and
+          # `gh cache list --key ""` lists every cache in the repository, Go
+          # and iOS alike. Deleting on that would empty the budget.
+          if [ -z "$PREFIX" ] || [ -z "$KEPT_KEY" ]; then
+            echo "::warning::No cache prefix or key to supersede; leaving the cache entries alone."
+            exit 0
+          fi
           if ! listing="$(gh cache list --repo "$GITHUB_REPOSITORY" --ref refs/heads/main \
             --key "$PREFIX" --limit 100 --json id,key --jq '.[] | "\(.id) \(.key)"')"; then
             echo "::warning::Could not list the $PREFIX entries; cache-prune will delete the predecessor."
