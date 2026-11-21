@@ -934,6 +934,44 @@ func TestRestoreSession_PrunesRetiredCheapModelAndModelFallbacks(t *testing.T) {
 	}); err == nil {
 		t.Fatal("expected explicit ModelFallbacks override targeting unsupported Vertex 2.5 model to fail restore")
 	}
+	// Explicit CLI --model-fallback also stays strict when --model changes the primary model on resume (e.g. upgrading a saved Vertex 2.5 session).
+	metaModelChanged := schema.SessionMeta{
+		ID:        "0123456789ABCDEFGHJKMNPQRY",
+		CreatedAt: time.Now(),
+		Model:     "gemini-2.5-flash",
+		ProfileID: "google-vertex",
+		Config: schema.ConfigSnapshot{
+			ModelFallbacks: []string{"google-vertex/gemini-2.5-flash", "google-vertex/gemini-3.8-flash"},
+		},
+	}
+	v38ResMain, err := r.Resolve("google-vertex/gemini-3.8-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profV38Main := provider.FromResolved(v38ResMain, r)
+	if _, err := RestoreSessionFromMetaWithConfig(client, profV38Main, execenv.NewLocalExecutionEnvironment(t.TempDir()), metaModelChanged, RestoreSessionConfig{
+		StateDir:       t.TempDir(),
+		ModelFallbacks: []string{"google-vertex/gemini-2.5-flash"},
+		ResolveProfile: func(ref string) (*provider.Profile, error) {
+			return provider.Resolve(r, ref)
+		},
+	}); err == nil {
+		t.Fatal("expected model-changing restore with explicit unsupported --model-fallback to fail strictly")
+	}
+	// Saved fallbacks on a model-changing resume still prune obsolete entries and keep valid ones.
+	sessModelChangedSaved, err := RestoreSessionFromMetaWithConfig(client, profV38Main, execenv.NewLocalExecutionEnvironment(t.TempDir()), metaModelChanged, RestoreSessionConfig{
+		StateDir: t.TempDir(),
+		ResolveProfile: func(ref string) (*provider.Profile, error) {
+			return provider.Resolve(r, ref)
+		},
+	})
+	if err != nil {
+		t.Fatalf("model-changing restore with saved fallbacks failed: %v", err)
+	}
+	if len(sessModelChangedSaved.cfg.ModelFallbacks) != 1 || sessModelChangedSaved.cfg.ModelFallbacks[0] != "google-vertex/gemini-3.8-flash" {
+		t.Fatalf("model-changing restore saved ModelFallbacks = %v, want [google-vertex/gemini-3.8-flash]", sessModelChangedSaved.cfg.ModelFallbacks)
+	}
+	sessModelChangedSaved.Close()
 
 	t.Run("rejects unsupported Vertex primary model on restore without overwriting saved meta and allows supported override", func(t *testing.T) {
 		dir := t.TempDir()

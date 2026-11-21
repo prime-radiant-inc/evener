@@ -515,6 +515,156 @@ func TestProtocolIncompleteStreamNamesTheInstanceAndDistinguishesQueuedEOF(t *te
 			t.Fatalf("queued EOF error = %v, want non-retryable stamped with %q", streamErr, res.Instance)
 		}
 	})
+
+	t.Run("stored in_progress EOF after interaction.created is non-retryable and prevents duplicate StreamGenerate POST", func(t *testing.T) {
+		createdThenDrop := "event: interaction.created\n" +
+			`data: {"event_type":"interaction.created","interaction":{"id":"int_stored_1","status":"in_progress"}}` + "\n\n"
+
+		var storedHits atomic.Int32
+		srvStored := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			n := storedHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			if n == 1 {
+				_, _ = w.Write([]byte(createdThenDrop))
+				return
+			}
+			_, _ = w.Write([]byte(interactionsSSE))
+		}))
+		t.Cleanup(srvStored.Close)
+
+		rStored, err := registry.Load(
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+			registry.WithInstances(map[string]registry.Provider{
+				"google": {Base: "google", APIKey: "k", Transport: registry.Transport{BaseURL: srvStored.URL + "/v1beta"}},
+			}),
+		)
+		if err != nil {
+			t.Fatalf("registry.Load: %v", err)
+		}
+		cStored := llm.NewClient(llm.WithRegistry(rStored))
+		noSleep := func(context.Context, time.Duration) error { return nil }
+		sr, err := llm.StreamGenerate(context.Background(), llm.GenerateOptions{
+			Client:   cStored,
+			Provider: "google",
+			Model:    "gemini-3.8-flash",
+			Prompt:   new("hello"),
+			Store:    new(true),
+			Sleep:    noSleep,
+		})
+		if err != nil {
+			t.Fatalf("StreamGenerate open: %v", err)
+		}
+		var storedStreamErr error
+		for ev := range sr.Events() {
+			if ev.Type == llm.StreamEventError {
+				storedStreamErr = ev.Err
+			}
+		}
+		if storedHits.Load() != 1 {
+			t.Fatalf("stored StreamGenerate HTTP POSTs = %d, want 1 (must not submit duplicate stored interaction)", storedHits.Load())
+		}
+		le, ok := errors.AsType[llm.Error](storedStreamErr)
+		if !ok || le.Retryable() || !errors.Is(storedStreamErr, ErrPendingInteractionStatus) {
+			t.Fatalf("stored in_progress EOF error = %T %v, want non-retryable ErrPendingInteractionStatus", storedStreamErr, storedStreamErr)
+		}
+		rawMap, _ := le.Raw().(map[string]any)
+		if rawMap["interaction_id"] != "int_stored_1" {
+			t.Fatalf("stored in_progress EOF raw = %#v, want interaction_id=int_stored_1", le.Raw())
+		}
+
+		// Stateless (Store=false) stream disconnect before content still retries automatically and succeeds on POST #2.
+		var statelessHits atomic.Int32
+		srvStateless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			n := statelessHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			if n == 1 {
+				_, _ = w.Write([]byte(createdThenDrop))
+				return
+			}
+			_, _ = w.Write([]byte(interactionsSSE))
+		}))
+		t.Cleanup(srvStateless.Close)
+		rStateless, err := registry.Load(
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+			registry.WithInstances(map[string]registry.Provider{
+				"google": {Base: "google", APIKey: "k", Transport: registry.Transport{BaseURL: srvStateless.URL + "/v1beta"}},
+			}),
+		)
+		if err != nil {
+			t.Fatalf("registry.Load: %v", err)
+		}
+		cStateless := llm.NewClient(llm.WithRegistry(rStateless))
+		srStateless, err := llm.StreamGenerate(context.Background(), llm.GenerateOptions{
+			Client:   cStateless,
+			Provider: "google",
+			Model:    "gemini-3.8-flash",
+			Prompt:   new("hello"),
+			Sleep:    noSleep,
+		})
+		if err != nil {
+			t.Fatalf("stateless StreamGenerate open: %v", err)
+		}
+		var statelessErr error
+		for ev := range srStateless.Events() {
+			if ev.Type == llm.StreamEventError {
+				statelessErr = ev.Err
+			}
+		}
+		if statelessErr != nil || statelessHits.Load() != 2 {
+			t.Fatalf("stateless StreamGenerate err=%v hits=%d, want nil and 2 POSTs", statelessErr, statelessHits.Load())
+		}
+
+		// Stored (Store=true) stream that drops BEFORE interaction.created supplies an ID also retries automatically.
+		var preIDHits atomic.Int32
+		srvPreID := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			n := preIDHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			if n == 1 {
+				return
+			}
+			_, _ = w.Write([]byte(interactionsSSE))
+		}))
+		t.Cleanup(srvPreID.Close)
+		rPreID, err := registry.Load(
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+			registry.WithInstances(map[string]registry.Provider{
+				"google": {Base: "google", APIKey: "k", Transport: registry.Transport{BaseURL: srvPreID.URL + "/v1beta"}},
+			}),
+		)
+		if err != nil {
+			t.Fatalf("registry.Load: %v", err)
+		}
+		cPreID := llm.NewClient(llm.WithRegistry(rPreID))
+		srPreID, err := llm.StreamGenerate(context.Background(), llm.GenerateOptions{
+			Client:   cPreID,
+			Provider: "google",
+			Model:    "gemini-3.8-flash",
+			Prompt:   new("hello"),
+			Store:    new(true),
+			Sleep:    noSleep,
+		})
+		if err != nil {
+			t.Fatalf("pre-ID stored StreamGenerate open: %v", err)
+		}
+		var preIDErr error
+		for ev := range srPreID.Events() {
+			if ev.Type == llm.StreamEventError {
+				preIDErr = ev.Err
+			}
+		}
+		if preIDErr != nil || preIDHits.Load() != 2 {
+			t.Fatalf("pre-ID stored StreamGenerate err=%v hits=%d, want nil and 2 POSTs", preIDErr, preIDHits.Load())
+		}
+	})
 }
 
 func TestProtocolStreamWrapperCloseDuringS1DoesNotDeadlock(t *testing.T) {

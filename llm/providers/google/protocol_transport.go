@@ -353,12 +353,13 @@ func (p *Protocol) openStream(ctx context.Context, req llm.Request, res registry
 
 func (p *Protocol) openStreamWithBody(ctx context.Context, req llm.Request, res registry.Resolved, body map[string]any, policy interactionBodyPolicy) (llm.Stream, error) {
 	summariesDisabled := policy.summariesDisabled
+	stored := policy.effectiveStore && !policy.storeOmitted
 	call, err := p.completionCall(ctx, "interactions.create(stream)", "google_interactions_stream", http.MethodPost, protocolhttp.URL(res, res.Transport.StreamEndpoint), body, policy, req, res, &summariesDisabled)
 	if err != nil {
 		return nil, llm.RewriteErrorProvider(err, res.Instance)
 	}
 	return protocolhttp.Stream(ctx, call, func(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, r *protocolhttp.Result, attempt *transport.APIAttemptCapture) {
-		decodeInteractionStream(sctx, cancel, resp, s, req, res.Instance, res.WireID, r.EndpointURL, r.Material, attempt, summariesDisabled, p.Hasher)
+		decodeInteractionStream(sctx, cancel, resp, s, req, res.Instance, res.WireID, r.EndpointURL, r.Material, attempt, summariesDisabled, stored, p.Hasher)
 	})
 }
 

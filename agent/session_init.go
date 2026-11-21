@@ -1553,7 +1553,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// entries that no longer validate against the picked profile drop per
 	// entry, before initSessionState's all-or-nothing check can strand a valid
 	// pick. An ordinary resume revalidates nothing and keeps the strict check.
-	if modelChanged {
+	if modelChanged && savedModelFallbacks {
 		s.mu.Lock()
 		dropped := s.revalidateModelFallbacksLocked()
 		s.lastDroppedModelFallbacks = dropped

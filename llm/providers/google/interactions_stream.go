@@ -771,7 +771,7 @@ func decodeInteractionStream(
 	instance, wireModel, endpointURL string,
 	material llm.APILogCredentialMaterial,
 	attempt *transport.APIAttemptCapture,
-	summariesDisabled bool,
+	summariesDisabled, stored bool,
 	hasher *llm.ContinuationHasher,
 ) {
 	defer func() {
@@ -794,12 +794,14 @@ func decodeInteractionStream(
 		Finished:      &finished,
 		IncompleteMsg: provider + " stream ended without completion",
 		TerminalError: func(parseErr error) error {
-			if acc.status == "queued" {
+			if acc.status == "queued" || (stored && acc.id != "") {
+				status := cmp.Or(acc.status, "in_progress")
 				return &interactionError{
 					sentinel: ErrPendingInteractionStatus,
 					provider: provider,
-					message:  fmt.Sprintf("interaction %q stream closed while status %q", acc.id, acc.status),
-					raw:      map[string]any{"status": acc.status, "interaction_id": acc.id},
+					message:  fmt.Sprintf("interaction %q stream closed while status %q", acc.id, status),
+					raw:      map[string]any{"status": status, "interaction_id": acc.id},
+					cause:    parseErr,
 				}
 			}
 			return llm.NewStreamError(provider, runner.IncompleteMsg, parseErr)
