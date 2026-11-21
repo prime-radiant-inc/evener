@@ -16,7 +16,21 @@ const checkpointConversationHeading = "## Conversation"
 type checkpointConversationEntry struct {
 	Role string `json:"role"`
 	Text string `json:"text"`
+	// AgentAuthored marks an entry no person typed: a delegate's assignment
+	// recorded as an input, or a parent agent's steer into its delegate. Role
+	// stays "user" so the fit never sheds it and a compaction carries it forward
+	// like the instruction it is — the guarantee the partner's messages have —
+	// while it renders under checkpointAgentAuthoredHeading, whose fenced body
+	// the escape reads as model prose rather than as the person's words.
+	AgentAuthored bool `json:"agent_authored,omitempty"`
 }
+
+// checkpointAgentAuthoredHeading heads the conversation entries an agent wrote
+// and the person did not: a delegate's assignment, a parent's steer. It is its
+// own heading rather than "### Agent" because the two are read back
+// differently: "### Agent" holds the agent's replies, which the fit sheds
+// first, and this holds instructions, which it keeps.
+const checkpointAgentAuthoredHeading = "Agent message"
 
 type checkpointMarkdownBlock struct {
 	Heading string
@@ -31,8 +45,10 @@ func renderCheckpointConversation(entries []checkpointConversationEntry) string 
 	var b strings.Builder
 	b.WriteString(checkpointConversationHeading + "\n\n")
 	for _, entry := range entries {
-		switch entry.Role {
-		case "agent":
+		switch {
+		case entry.AgentAuthored:
+			b.WriteString("### " + checkpointAgentAuthoredHeading + "\n\n")
+		case entry.Role == "agent":
 			b.WriteString("### Agent\n\n")
 		default:
 			b.WriteString("### User\n\n")
@@ -296,6 +312,8 @@ func extractMarkdownConversation(text string) []checkpointConversationEntry {
 		switch role {
 		case "user":
 			entries = append(entries, checkpointConversationEntry{Role: "user", Text: block.Text})
+		case "agent message":
+			entries = append(entries, checkpointConversationEntry{Role: "user", Text: block.Text, AgentAuthored: true})
 		case "agent", "assistant":
 			entries = append(entries, checkpointConversationEntry{Role: "agent", Text: block.Text})
 		}
@@ -452,7 +470,7 @@ func cleanCheckpointConversation(entries []checkpointConversationEntry) []checkp
 		if text == "" {
 			continue
 		}
-		out = append(out, checkpointConversationEntry{Role: role, Text: text})
+		out = append(out, checkpointConversationEntry{Role: role, Text: text, AgentAuthored: entry.AgentAuthored})
 	}
 	return out
 }

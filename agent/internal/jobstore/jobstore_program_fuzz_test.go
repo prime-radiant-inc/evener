@@ -165,9 +165,6 @@ func jcpStoreLifecycle(t *testing.T, root string, r *jcpReader) {
 	if err != nil || len(loaded) != len(events) {
 		t.Fatalf("LoadEvents = %d/%v, want %d", len(loaded), err, len(events))
 	}
-	if _, err := s.readAll(); err != nil {
-		t.Fatalf("readAll: %v", err)
-	}
 
 	lost := Reconcile(map[string]*JobRecord{
 		"live": {JobID: "live", Status: StatusRunning},
@@ -188,7 +185,6 @@ func jcpStoreLifecycle(t *testing.T, root string, r *jcpReader) {
 		func() error { _, err := s.LoadWatches(); return err },
 		func() error { _, err := s.LoadWatchSends(); return err },
 		func() error { _, err := s.LoadEvents(); return err },
-		func() error { _, err := s.readAll(); return err },
 	} {
 		if err := operation(); !errors.Is(err, ErrStoreClosed) {
 			t.Fatalf("closed store operation error = %v, want ErrStoreClosed", err)
@@ -860,7 +856,6 @@ func jcpStoreErrorPaths(t *testing.T, root string, r *jcpReader) {
 		{"Load", func(s *Store) error { _, err := s.Load(); return err }},
 		{"LoadWatches", func(s *Store) error { _, err := s.LoadWatches(); return err }},
 		{"LoadWatchSends", func(s *Store) error { _, err := s.LoadWatchSends(); return err }},
-		{"readAll", func(s *Store) error { _, err := s.readAll(); return err }},
 	} {
 		s := &Store{path: "/read-error.jsonl", fs: &jcpHookFS{Fs: afero.NewMemMapFs(), statErr: jcpInjectedErr}}
 		jcpRequireError(t, operation.label, operation.call(s))

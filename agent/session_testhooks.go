@@ -228,6 +228,11 @@ type testConfig struct {
 	// controller's own snapshot, so a test can land a turn between the two.
 	// Nil in production.
 	afterModelHistorySnapshot func()
+	// afterDelegateModelSnapshot runs after a leased delegate round completes
+	// its controller model-request claim and before the skill rebuild re-reads
+	// the history, so a test can land a turn in that append window. Nil in
+	// production.
+	afterDelegateModelSnapshot func()
 	// subagentAfterFinalStatePublish observes the interval after a retained child
 	// publishes terminal state and before it restores its parent notify callback.
 	subagentAfterFinalStatePublish func(*subagent)

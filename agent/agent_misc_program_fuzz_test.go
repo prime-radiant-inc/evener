@@ -177,7 +177,7 @@ func miscContinuationAndCounterProgram(t *testing.T) {
 
 	unsafe := llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentImage}}}
 	_ = responsesContinuationMessageHasUnsafeDeltaContent(unsafe)
-	anchor := schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call"}}}}, ResponseID: "id", ResponseIDHash: "hash", ResponseEndpoint: "endpoint", ResponseStorageScopeFingerprint: "scope", ResponseRequestFingerprint: "request", ResponseContextMarker: responseContextMarkerV1}
+	anchor := schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call"}}}}, ResponseID: "id", ResponseIDHash: "hash", ResponseEndpoint: "endpoint", ResponseStorageScopeFingerprint: "scope", ResponseRequestFingerprint: "request", ResponseContextMarker: responseContextMarkerV2}
 	toolResult := func(callID string, image bool) schema.Turn {
 		part := llm.ContentPart{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: callID}}
 		if image {

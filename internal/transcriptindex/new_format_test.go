@@ -89,14 +89,22 @@ func TestReopenMarkerOpensACompletedTurnAgain(t *testing.T) {
 	}
 }
 
-func TestReclaimedTurnTakesItsLastCompletion(t *testing.T) {
-	candidates := indexedCandidates(t, newFormatFixture(t, "open and reclaimed"), -1)
-	for turnID, want := range map[string]struct {
+// reclaimedCompletionFigures are the end caps the "open and reclaimed"
+// fixture records for its completed executions.
+func reclaimedCompletionFigures() map[string]struct {
+	duration, completedAt int64
+} {
+	return map[string]struct {
 		duration, completedAt int64
 	}{
 		"turn_m15": {5000, fixtureClock.Add(45e9).UnixMilli()},
 		"turn_m16": {2500, fixtureClock.Add(48e9).UnixMilli()},
-	} {
+	}
+}
+
+func TestReclaimedTurnTakesItsLastCompletion(t *testing.T) {
+	candidates := indexedCandidates(t, newFormatFixture(t, "open and reclaimed"), -1)
+	for turnID, want := range reclaimedCompletionFigures() {
 		turn := turnOf(t, candidates, turnID)
 		if turn.Status != appwire.TurnStatusCompleted || turn.Error != nil || turn.DurationMS == nil || *turn.DurationMS != want.duration || turn.CompletedAt == nil || *turn.CompletedAt != want.completedAt {
 			t.Fatalf("%s = %s, want completed after %d ms at %d", turnID, dump(turn), want.duration, want.completedAt)
@@ -430,6 +438,65 @@ func TestFullReadFoldsReopenAndCompletionInOrder(t *testing.T) {
 	}
 }
 
+// The full read carries a stamped execution's completion figures with its
+// status, on every fragment: the index reports the recorded duration and
+// completion time, so a saved read of the same turn must report them too.
+func TestFullReadReportsStampedCompletionTimeAndDuration(t *testing.T) {
+	turns := fullReadTurns(t, newFormatFixture(t, "open and reclaimed"))
+	want := reclaimedCompletionFigures()
+	seen := map[string]int{}
+	for i := range turns {
+		w, ok := want[turns[i].ID]
+		if !ok {
+			continue
+		}
+		seen[turns[i].ID]++
+		if turns[i].Status != appwire.TurnStatusCompleted || turns[i].Error != nil || turns[i].DurationMS == nil || *turns[i].DurationMS != w.duration || turns[i].CompletedAt == nil || *turns[i].CompletedAt != w.completedAt {
+			t.Fatalf("full read %s fragment %d = %s, want completed after %d ms at %d", turns[i].ID, i, dump(turns[i]), w.duration, w.completedAt)
+		}
+	}
+	for id := range want {
+		if seen[id] == 0 {
+			t.Fatalf("full read has no %s: %s", id, dump(turns))
+		}
+	}
+}
+
+// A reopen clears the completion figures with the status: an execution the
+// file reopened and left open is in progress with no end cap.
+func TestFullReadReopenClearsCompletionFigures(t *testing.T) {
+	fx := newFormatFixture(t, "open and reclaimed")
+	// Through turn_m16's reopen marker: the last line is the reopen.
+	fx.lines = fx.lines[:10]
+	turns := fullReadTurns(t, fx)
+	full := fullReadTurn(t, turns, "turn_m16")
+	if full.Status != appwire.TurnStatusInProgress || full.DurationMS != nil || full.CompletedAt != nil {
+		t.Fatalf("full read turn_m16 = %s, want inProgress with no completion", dump(*full))
+	}
+	if indexed := turnOf(t, indexedCandidates(t, fx, -1), "turn_m16"); indexed.Status != appwire.TurnStatusInProgress || indexed.DurationMS != nil || indexed.CompletedAt != nil {
+		t.Fatalf("indexed turn_m16 = %s, want inProgress with no completion", dump(indexed))
+	}
+}
+
+// A recorded zero duration is still a completion figure: the index surfaces it
+// as a pointer to zero, so the full read must not drop it.
+func TestFullReadKeepsAZeroDuration(t *testing.T) {
+	fx := newFormatFixture(t, "open and reclaimed")
+	fx.lines = []fixtureLine{
+		entryLine(opens("turn_z1", schema.TurnSpanExecution, user("instant"))),
+		entryLine(inTurn("turn_z1", assistant(text("done")))),
+		entryLine(completion("turn_z1", schema.TurnCompleted, 5, 0)),
+	}
+	turns := fullReadTurns(t, fx)
+	full := fullReadTurn(t, turns, "turn_z1")
+	if full.Status != appwire.TurnStatusCompleted || full.DurationMS == nil || *full.DurationMS != 0 {
+		t.Fatalf("full read turn_z1 = %s, want completed with a zero duration", dump(*full))
+	}
+	if indexed := turnOf(t, indexedCandidates(t, fx, -1), "turn_z1"); indexed.DurationMS == nil || *indexed.DurationMS != 0 {
+		t.Fatalf("indexed turn_z1 = %s, want a zero duration", dump(indexed))
+	}
+}
+
 // A stamped execution's failure diagnostic is whole-turn like its status: a
 // standalone delivery can split the execution so a fragment that carries no
 // TURN_FAILURE of its own still has to report the failure the file records.
@@ -721,4 +788,15 @@ func fullReadTurns(t testing.TB, fx fixture) []appwire.Turn {
 		t.Fatal(err)
 	}
 	return turns
+}
+
+func fullReadTurn(t testing.TB, turns []appwire.Turn, id string) *appwire.Turn {
+	t.Helper()
+	for i := range turns {
+		if turns[i].ID == id {
+			return &turns[i]
+		}
+	}
+	t.Fatalf("full read has no %s: %s", id, dump(turns))
+	return nil
 }

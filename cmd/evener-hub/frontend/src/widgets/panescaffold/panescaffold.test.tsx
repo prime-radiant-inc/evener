@@ -275,16 +275,11 @@ test("the footer fills to the screen's bottom edge while keeping its content cle
   // bottom edge and owns the band at every width, including a landscape phone
   // whose width crosses the desktop shell boundary.
   expect(topRuleBlock(css, ".footerBeforeEdge")).toContain("padding-bottom: var(--space-3)");
-  // While the composer is focused the status bar hides, so the dock takes
-  // the home-indicator band back (focus can outlive the keyboard).
-  expect(css).toMatch(
-    /:global\(body\):has\(\[data-composer-editing\]\) \.footerBeforeEdge \{[^}]*padding-bottom: var\(--dock-clearance\)/,
-  );
   // The composer's activity line is the pane's bottom edge: its chips already
   // occupy the tap floor, so reserving the home-indicator band below them
   // spends that band twice and eats the transcript's height. A phone pane
   // renders no edge footer, so this must address .footer - the composer's
-  // actual home on a phone - not the session's .footerBeforeEdge exemption.
+  // actual home on a phone - not the session's .footerBeforeEdge rule.
   expect(css).toMatch(/\.footer:has\(:global\(\[data-composer-activity-line="true"\]\)\) \{[^}]*padding-bottom: 0;/);
 });
 

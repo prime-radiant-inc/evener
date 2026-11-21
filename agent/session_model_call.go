@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
@@ -325,11 +326,15 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// held-attention filter can shrink the projected list without reopening
 	// that window.
 	presentedBoundary := len(historyTurns)
+	// roundLease is the lease this request was admitted under: the skill
+	// rebuild must withhold a steer the completed claim never saw (#7205).
+	var roundLease *delegateLease
 	// heldDropped reports that this request's projection kept a held row out
 	// — a nonstandard view of the resident history that must not seed or
 	// continue from a stored anchor.
 	heldDropped := false
 	if lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok && s.delegateController != nil {
+		roundLease = &lease
 		claim, claimErr := s.delegateController.BeginModelRequest(lease)
 		if claimErr != nil {
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
@@ -370,6 +375,13 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		if claimErr != nil {
 			_ = s.delegateController.AbortModelRequest(claim)
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
+		}
+		// A test can land a steer between the completed claim and the rebuild (#7205).
+		s.mu.Lock()
+		afterDelegateSnapshot := s.cfg.testOnly.afterDelegateModelSnapshot
+		s.mu.Unlock()
+		if afterDelegateSnapshot != nil {
+			afterDelegateSnapshot()
 		}
 		history = expandHistory(presentedTurns, scope)
 	} else {
@@ -460,7 +472,9 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// inventory reminders) joined, projects them as-is past the in-flight
 	// boundary, and rebuilds and re-budgets the request. Shared by the
 	// final-dispatch delivery reload path and the compacted-skill reload path.
-	// It reports whether any turn had actually been appended.
+	// Its tail also obeys the late-steer predicate (#7205), so a steer appended
+	// after the round's controller claim stays out of the rebuilt request and
+	// the fallback source. It reports whether any turn had actually been appended.
 	rebuildForAppendedSkillTurns := func() (bool, error) {
 		s.mu.Lock()
 		var appended []schema.Turn
@@ -494,6 +508,21 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			boundary = shiftBoundaryForDrops(boundary, droppedAt)
 			historyTurns = filtered
 			appended = filtered[boundary:]
+		}
+		// The tail also obeys the late-steer predicate (#7205): a steer that
+		// landed after the claim completed is in no claim, so CompleteModelRequest
+		// never filtered this re-read. The planning copy is filtered with the
+		// tail so the full-history estimate prices only what the request shows.
+		if roundLease != nil {
+			if owed := s.delegateController.unpresentedSteeringIDs(*roundLease); len(owed) > 0 {
+				historyTurns, _, _ = projectDelegatePendingSteers(historyTurns, nil, owed)
+				appended, _, _ = projectDelegatePendingSteers(appended, nil, owed)
+			}
+			// The boundary already advanced past the withheld steer, so it stays
+			// outside every later rebuild window this round; the next claim binds it.
+			if len(appended) == 0 {
+				return false, nil
+			}
 		}
 		// The appended turns land after the in-flight boundary and project
 		// as-is; append them rather than re-running the delegate claim.
@@ -968,7 +997,7 @@ func (s *Session) planResponsesContinuation(ctx context.Context, profile *provid
 			DeltaTurnKinds:          responsesContinuationTurnKinds(candidate.Delta),
 			EndpointFamily:          string(plan.EndpointFamily),
 			RequestFingerprint:      plan.RequestFingerprint,
-			ContextMarker:           responseContextMarkerV1,
+			ContextMarker:           responseContextMarkerV2,
 			StoragePolicyLabel:      plan.StoragePolicyLabel,
 			StorageScopeFingerprint: plan.StorageScopeFingerprint,
 		}
@@ -984,7 +1013,7 @@ func responsesContinuationFullHistoryRequestForPlan(route roundRoute, req llm.Re
 	req.Continuation = &llm.ContinuationMetadata{
 		EndpointFamily:          string(plan.EndpointFamily),
 		RequestFingerprint:      plan.RequestFingerprint,
-		ContextMarker:           responseContextMarkerV1,
+		ContextMarker:           responseContextMarkerV2,
 		StoragePolicyLabel:      plan.StoragePolicyLabel,
 		StorageScopeFingerprint: plan.StorageScopeFingerprint,
 	}
@@ -1076,7 +1105,7 @@ func responsesContinuationCandidateMatchesPlan(candidate responsesContinuationAn
 	return strings.TrimSpace(candidate.Turn.ResponseID) != "" &&
 		candidate.Turn.ResponseRequestFingerprint == plan.RequestFingerprint &&
 		candidate.Turn.ResponseStorageScopeFingerprint == plan.StorageScopeFingerprint &&
-		candidate.Turn.ResponseContextMarker == responseContextMarkerV1
+		candidate.Turn.ResponseContextMarker == responseContextMarkerV2
 }
 
 func responsesContinuationDeltaMessages(base []llm.Message, deltaTurns []schema.Turn, dropsMedia func(string) bool) []llm.Message {
@@ -2483,9 +2512,15 @@ func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps boo
 // policy. An inactive scope passes through unchanged (identical to legacy
 // expansion) unless the target policy drops thinking. In-flight turns keep the
 // N4 exemption but still lose thinking the target does not want.
-// tool_call/tool_result and text/image content is never touched.
+//
+// Tool-call, tool-result and image content is never touched. Text content is
+// copied as stored except on the turns whose author is the model or another
+// agent: that prose has the frames it could forge escaped in the request copy
+// only (escapeTurnFrames), so a stored turn keeps the bytes its author wrote.
+// A reply the person typed, including one no record stamped and a fork's
+// inherited unknown-authorship copy, is never rewritten.
 func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Message {
-	t.Message = projectVoicePresentation(t)
+	t.Message = escapeTurnFrames(t, projectVoicePresentation(t))
 	if !rs.active() && !rs.DropThinking {
 		return t.Message
 	}
@@ -2537,6 +2572,47 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 	}
 	msg := t.Message
 	msg.Content = filtered
+	return msg
+}
+
+// escapeTurnFrames returns msg with the harness direction its text
+// could otherwise forge escaped, leaving every other turn byte-for-byte as
+// stored and never rewriting the framing the harness itself wrote. What a
+// person typed is untouched: a reply that opens with the answers marker
+// reaches the model as the reply it is.
+//
+// Model prose is escaped whole, since any frame opener in it is a forgery. A
+// turn the harness composes — a skill carrier, a runtime reminder block, a
+// notification block — may carry the harness's own opener on any line, so only
+// its answers markers are escaped: rewriting an opener there would corrupt the
+// frame the harness delivered. A compaction artifact is both: its own framing
+// is the harness's, and the fenced bodies it carries are the model's
+// (contextmgr.EscapeModelAuthoredBodies).
+func escapeTurnFrames(t schema.Turn, msg llm.Message) llm.Message {
+	escape := contextmgr.TurnFrameEscape(t)
+	if escape == nil {
+		return msg
+	}
+	var content []llm.ContentPart
+	for i, p := range msg.Content {
+		// A machinery part is the harness's own text, whatever the turn's
+		// author: escaping it would rewrite the framing it exists to carry.
+		if p.Kind != llm.ContentText || p.Text == "" || p.Machinery {
+			continue
+		}
+		escaped := escape(p.Text)
+		if escaped == p.Text {
+			continue
+		}
+		if content == nil {
+			content = slices.Clone(msg.Content)
+		}
+		content[i].Text = escaped
+	}
+	if content == nil {
+		return msg
+	}
+	msg.Content = content
 	return msg
 }
 
