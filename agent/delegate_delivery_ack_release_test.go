@@ -39,6 +39,7 @@ func TestNonInlineDeliveryAckJournalsTheHoldRelease(t *testing.T) {
 	if err != nil || !admitted {
 		t.Fatalf("BeginDelivery = admitted:%t err:%v", admitted, err)
 	}
+	journalStopAtGeneration(t, c, "dlg_hold", 2) // a second stop settles after the sample
 	if _, err := c.CompleteDelivery(token, true); err != nil {
 		t.Fatalf("CompleteDelivery: %v", err)
 	}
