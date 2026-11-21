@@ -81,10 +81,12 @@ func shellInlineDigest(full string, total, dropped int64) string {
 // shellInlineDigestWithin is shellInlineDigest bounded by the registry's
 // rendered limits: lineBudget counts the digest plus its one-line footer
 // (0 = unbounded), and charBudget bounds the digest's runes (0 = unbounded).
-// It shrinks the head and tail previews until the omission marker and its
-// offset_bytes hint fit, so the registry's own truncator never keeps its head
-// and tail and cuts the marker out of the middle. Each candidate renders its
-// omission range from the slices it actually shows.
+// It shrinks the head and tail previews together, halving the larger budget
+// each step, until the omission marker and its offset_bytes hint fit, so the
+// registry's own truncator never keeps its head and tail and cuts the marker
+// out of the middle. Neither end is dropped while the other still fits alone,
+// which keeps a log's final diagnostic line alongside its first. Each candidate
+// renders its omission range from the slices it actually shows.
 func shellInlineDigestWithin(full string, total, dropped int64, lineBudget, charBudget int) string {
 	headBudget, tailBudget := shellDigestHalfBytes, shellDigestHalfBytes
 	for {
@@ -92,12 +94,13 @@ func shellInlineDigestWithin(full string, total, dropped int64, lineBudget, char
 		if digestFits(digest, lineBudget, charBudget) {
 			return digest
 		}
-		if tailBudget > 0 {
-			tailBudget /= 2
-		} else if headBudget > 0 {
-			headBudget /= 2
-		} else {
+		switch {
+		case headBudget == 0 && tailBudget == 0:
 			return digest
+		case headBudget >= tailBudget:
+			headBudget /= 2
+		default:
+			tailBudget /= 2
 		}
 	}
 }

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,8 +63,19 @@ func TestShellToolDigestFitsAConstrainedCharLimit(t *testing.T) {
 // footer fit, rather than let the registry cut the marker away.
 func TestShellToolDigestFitsAConstrainedLineLimit(t *testing.T) {
 	t.Parallel()
-	full := strings.Repeat("status line ..............................\n", 300)
-	path := filepath.Join(t.TempDir(), "big.log")
+	// A build log of 43-byte lines: the 512-byte head alone is 11 lines, so a
+	// one-sided shrink would satisfy the 10-line budget by dropping the tail and
+	// its final diagnostic. Both ends must survive.
+	const first = "BUILD FIRST: compiling package alpha .......\n"
+	const last = "BUILD LAST: linking binary omega ..........\n"
+	var log strings.Builder
+	log.WriteString(first)
+	for i := 1; i < 299; i++ {
+		fmt.Fprintf(&log, "build step %03d: compiling package ..... ok\n", i)
+	}
+	log.WriteString(last)
+	full := log.String()
+	path := filepath.Join(t.TempDir(), "build.log")
 	if err := os.WriteFile(path, []byte(full), 0o600); err != nil {
 		t.Fatalf("write output fixture: %v", err)
 	}
@@ -96,6 +108,12 @@ func TestShellToolDigestFitsAConstrainedLineLimit(t *testing.T) {
 	}
 	if got := strings.Count(res.Output, "\n") + 1; got > 10 {
 		t.Fatalf("rendered result has %d lines, want at most 10", got)
+	}
+	if !strings.HasPrefix(*out.Output, "BUILD FIRST:") {
+		t.Fatalf("digest dropped the first line:\n%s", *out.Output)
+	}
+	if !strings.Contains(*out.Output, "BUILD LAST:") {
+		t.Fatalf("digest dropped the last diagnostic line:\n%s", *out.Output)
 	}
 	if !strings.Contains(*out.Output, "offset_bytes=") {
 		t.Fatalf("digest lost its offset_bytes hint under the 10-line limit:\n%s", *out.Output)
