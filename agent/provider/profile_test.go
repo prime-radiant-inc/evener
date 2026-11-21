@@ -117,13 +117,13 @@ func TestResolveProfileSurfaceConventions(t *testing.T) {
 			if got := findToolDef(p, "web_search") != nil; got != tc.webSearchTool {
 				t.Fatalf("web_search function tool advertised: %v, want %v (google protocol + WebSearch only)", got, tc.webSearchTool)
 			}
-				wantApplyPatch := tc.surface == registry.SurfaceOpenAI
-				if got := findToolDef(p, "apply_patch") != nil; got != wantApplyPatch {
-					t.Fatalf("apply_patch advertised = %v, want %v for surface %q", got, wantApplyPatch, tc.surface)
-				}
-				if got := findToolDef(p, "edit_file") != nil; got == wantApplyPatch {
-					t.Fatalf("edit_file advertised = %v, want %v for surface %q", got, !wantApplyPatch, tc.surface)
-				}
+			wantApplyPatch := tc.surface == registry.SurfaceOpenAI
+			if got := findToolDef(p, "apply_patch") != nil; got != wantApplyPatch {
+				t.Fatalf("apply_patch advertised = %v, want %v for surface %q", got, wantApplyPatch, tc.surface)
+			}
+			if got := findToolDef(p, "edit_file") != nil; got == wantApplyPatch {
+				t.Fatalf("edit_file advertised = %v, want %v for surface %q", got, !wantApplyPatch, tc.surface)
+			}
 		})
 	}
 }
