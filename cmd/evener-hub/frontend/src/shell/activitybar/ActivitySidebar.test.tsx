@@ -16,11 +16,12 @@ import Zoom from "../../panes/zoom/Zoom";
 import "../../panes/zoom";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
-import { sessionActivitySnapshot } from "../../stores/sessionActivity";
+import { acquireSessionActivity, sessionActivitySnapshot } from "../../stores/sessionActivity";
 import {
   activityClient,
   activityContext,
   activityDelegate,
+  activityJob,
   activitySummary,
   activityWatch,
 } from "../../stores/sessionActivityTestUtils";
@@ -142,6 +143,65 @@ test("one visible-sidebar clock advances activity rows and expanded watch detail
     if (typeof tick === "function") Function.prototype.call.call(tick, undefined);
   });
   expect(client.calls.filter((call) => call.method !== "thread/unsubscribe").length).toBe(readsBeforeClose);
+});
+
+test("the live watch detail resolves delegate and job names from the evidence the route already holds", async () => {
+  const client = activityClient();
+  client.on("evener/thread/delegates/list", ({ ref: requestedRef, scope }) => ({
+    context: activityContext(requestedRef),
+    scope: scope ?? "session",
+    delegates: [activityDelegate({ name: "navigation-observer", ownerRef: requestedRef, rootRef: requestedRef })],
+    page: { complete: true, issues: [] },
+  }));
+  client.on("evener/thread/jobs/list", ({ ref: requestedRef, scope }) => ({
+    context: activityContext(requestedRef),
+    scope: scope ?? "session",
+    jobs: [activityJob({ ownerRef: requestedRef, description: "Child checks" })],
+    page: { complete: true, issues: [] },
+  }));
+  client.on("evener/thread/watches/list", ({ ref: requestedRef, scope }) => ({
+    context: activityContext(requestedRef),
+    scope: scope ?? "session",
+    watches: [
+      activityWatch(
+        { source: "job_raw", target: "job_raw", outputMatch: "ready", cadence: [{ kind: "output" }] },
+        "remote:child",
+      ),
+    ],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  installFocusedScope(ref);
+  // The session transcript beside the sidebar already observes jobs and
+  // delegates; the sidebar reads that same store and owns no read of its own.
+  const activity = acquireSessionActivity(client, ref, "session");
+  const stopDelegates = activity.store.observe("delegates");
+  const stopJobs = activity.store.observe("jobs");
+  let mounted: ReturnType<typeof mount> | undefined;
+  try {
+    await waitFor(() => expect(activity.store.getSnapshot().delegates.rows).toHaveLength(1));
+    await waitFor(() => expect(activity.store.getSnapshot().jobs.rows).toHaveLength(1));
+    const entityReads = () =>
+      client.calls.filter(
+        (call) => call.method === "evener/thread/delegates/list" || call.method === "evener/thread/jobs/list",
+      ).length;
+    const readsBeforeMount = entityReads();
+    activitySidebarStore.getState().openWith("watches");
+    mounted = mount();
+    const watch = await screen.findByText("watch_raw");
+    const summary = watch.closest("summary");
+    if (!summary) throw new Error("Watch summary missing");
+    act(() => fireEvent.click(summary));
+    await screen.findByTestId("watch-facts");
+    expect(screen.getByTestId("watch-facts").textContent).toContain("Child checks");
+    expect(screen.getByText(/navigation-observer/)).toBeTruthy();
+    expect(entityReads()).toBe(readsBeforeMount);
+  } finally {
+    act(() => mounted?.unmount());
+    stopJobs();
+    stopDelegates();
+    activity.release();
+  }
 });
 
 test("closed sidebar owns no read and an open tab observes only its own collection", async () => {

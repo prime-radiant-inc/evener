@@ -15,6 +15,7 @@ import { cascadeOrigin, cascadeOriginRef } from "../../panes/zoom/inspectionOrig
 import { deriveCascadePath, parseZoomParams } from "../../panes/zoom/intent";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
+import { EntityViewsProvider, sessionEntityViews } from "../../transcriptDisplay/entityViews";
 import { CloseIcon, FocusScope, IconButton, SegmentedControl } from "../../widgets";
 import { DisclosurePersistenceContext } from "../../widgets/disclosure/disclosureStore";
 import { tabbable } from "../../widgets/focusscope/tabbable";
@@ -88,6 +89,14 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
     return () => cancelAnimationFrame(frame);
   }, [open, mobile, ref]);
   const { snapshot } = useSessionActivity(open ? ref : null);
+  // The watch detail resolves entity names from the evidence the session
+  // transcript beside this surface already loaded. Only the Watches tab
+  // mounts that detail; without a provider here the live route fell back to
+  // raw ids.
+  const entities = useMemo(
+    () => (open && tab === "watches" && ref !== null ? sessionEntityViews({ sessionRef: ref, snapshot }) : undefined),
+    [open, tab, ref, snapshot],
+  );
   const subagents = useSubagentCounts(open ? ref : null);
   // Closed derives nothing: the sidebar is mounted for the whole desktop
   // session, and a location lookup plus recursive walk per polling update
@@ -210,14 +219,16 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
               <DisclosurePersistenceContext.Provider value={JSON.stringify([scope.leaf.ref, tab])}>
                 <ActivityBodyClock>
                   {(now) => (
-                    <ActivityViewport
-                      key={JSON.stringify([scope.leaf.ref, tab])}
-                      sessionRef={scope.leaf.ref}
-                      tab={tab}
-                      className={CLASS.body}
-                    >
-                      {Body === null ? null : <Body scope={scope} now={now} />}
-                    </ActivityViewport>
+                    <EntityViewsProvider entities={entities} ownerRef={ref ?? undefined}>
+                      <ActivityViewport
+                        key={JSON.stringify([scope.leaf.ref, tab])}
+                        sessionRef={scope.leaf.ref}
+                        tab={tab}
+                        className={CLASS.body}
+                      >
+                        {Body === null ? null : <Body scope={scope} now={now} />}
+                      </ActivityViewport>
+                    </EntityViewsProvider>
                   )}
                 </ActivityBodyClock>
               </DisclosurePersistenceContext.Provider>
