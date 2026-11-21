@@ -1,0 +1,26 @@
+schema: 1
+id: edit_file.crlf_bom_multi_edit
+tool: edit_file
+prompt: |
+  Read settings.txt. The file begins with a UTF-8 BOM and uses CRLF line
+  endings; keep both unchanged. Use edit_file to change color=red to color=blue,
+  and change the consecutive lines size=small and mode=fast to size=large and
+  mode=safe respectively.
+  Finish with RESULT_CRLF_BOM_MULTI_EDIT.
+fixture:
+  files:
+    settings.txt: "\uFEFF# settings\r\ncolor=red\r\nsize=small\r\nmode=fast\r\n"
+expect:
+  calls:
+    - tool: read_file
+    - tool: edit_file
+    - tool: communicate
+  forbidden_calls: [shell]
+  artifacts:
+    - path: settings.txt
+      contains: "\uFEFF# settings\r\n"
+    - path: settings.txt
+      contains: "color=blue\r\n"
+    - path: settings.txt
+      contains: "size=large\r\nmode=safe\r\n"
+  final_contains: ["RESULT_CRLF_BOM_MULTI_EDIT"]

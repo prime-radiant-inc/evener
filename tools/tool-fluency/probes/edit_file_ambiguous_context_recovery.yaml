@@ -1,0 +1,39 @@
+schema: 1
+id: edit_file.ambiguous_context_recovery
+tool: edit_file
+prompt: |
+  Read services.ini, then use edit_file to enable only the beta service:
+  change enabled=false to enabled=true under [beta]. Leave alpha and gamma
+  disabled. If a call is rejected because the old text is ambiguous, include
+  the section header and enough surrounding context to target only the beta
+  block, then try again.
+  Finish with RESULT_AMBIGUOUS_CONTEXT_RECOVERY.
+fixture:
+  files:
+    services.ini: |
+      [alpha]
+      enabled=false
+      region=us-east
+
+      [beta]
+      enabled=false
+      region=eu-west
+
+      [gamma]
+      enabled=false
+      region=ap-south
+expect:
+  calls:
+    - tool: read_file
+    - tool: edit_file
+    - tool: communicate
+  forbidden_calls: [shell]
+  allow_tool_errors: true
+  artifacts:
+    - path: services.ini
+      contains: "[alpha]\nenabled=false\nregion=us-east\n"
+    - path: services.ini
+      contains: "[beta]\nenabled=true\nregion=eu-west\n"
+    - path: services.ini
+      contains: "[gamma]\nenabled=false\nregion=ap-south\n"
+  final_contains: ["RESULT_AMBIGUOUS_CONTEXT_RECOVERY"]

@@ -1,0 +1,152 @@
+schema: 1
+id: edit_file.disjoint_multi_edit
+tool: edit_file
+prompt: |
+  Read settings.py, then use edit_file to apply four changes:
+  DEFAULT_TIMEOUT = 30 becomes DEFAULT_TIMEOUT = 45;
+  RETRY_LIMIT = 2 becomes RETRY_LIMIT = 4;
+  LOG_LEVEL = "info" becomes LOG_LEVEL = "debug";
+  CACHE_TTL_SECONDS = 60 becomes CACHE_TTL_SECONDS = 120.
+  Finish with RESULT_DISJOINT_MULTI_EDIT.
+fixture:
+  files:
+    settings.py: |
+      """Application settings for the demo worker."""
+      # Demo worker configuration.
+
+      # Network timeouts, in seconds.
+      DEFAULT_TIMEOUT = 30
+      CONNECT_TIMEOUT = 5
+      READ_TIMEOUT = 10
+      WRITE_TIMEOUT = 10
+
+      # Retry policy.
+      RETRY_LIMIT = 2
+      RETRY_BACKOFF_SECONDS = 1
+      RETRY_BACKOFF_MAX_SECONDS = 30
+
+      # Logging.
+      LOG_LEVEL = "info"
+      LOG_FORMAT = "json"
+      LOG_SAMPLE_RATE = 0.25
+
+      # Cache.
+      CACHE_TTL_SECONDS = 60
+      CACHE_MAX_ENTRIES = 512
+      CACHE_PREFIX = "worker:"
+
+      # Batch sizing.
+      BATCH_SIZE = 100
+      BATCH_DEADLINE_SECONDS = 20
+      BATCH_QUEUE_DEPTH = 64
+
+      # Health checks.
+      HEALTH_INTERVAL_SECONDS = 15
+      HEALTH_FAILURE_THRESHOLD = 3
+      HEALTH_SUCCESS_THRESHOLD = 2
+
+      # Worker identity.
+      WORKER_NAME = "demo-worker"
+      WORKER_REGION = "us-east"
+      WORKER_ENVIRONMENT = "staging"
+      WORKER_RELEASE = "2026.11"
+
+      # HTTP server.
+      HTTP_PORT = 8080
+      HTTP_READ_HEADER_SECONDS = 5
+      HTTP_IDLE_SECONDS = 60
+      HTTP_MAX_HEADER_BYTES = 8192
+
+      # Queue consumer.
+      CONSUMER_CONCURRENCY = 8
+      CONSUMER_PREFETCH = 32
+      CONSUMER_VISIBILITY_SECONDS = 90
+
+      # Feature flags.
+      FEATURE_ASYNC = True
+      FEATURE_METRICS = True
+      FEATURE_DEBUG_ROUTES = False
+
+      # Shutdown behavior.
+      SHUTDOWN_GRACE_SECONDS = 25
+      SHUTDOWN_DRAIN_SECONDS = 10
+      SHUTDOWN_FORCE = False
+
+      # Background maintenance.
+      MAINTENANCE_INTERVAL_SECONDS = 300
+      MAINTENANCE_JITTER_SECONDS = 30
+      MAINTENANCE_ENABLED = True
+
+      # Database pool.
+      POOL_MIN_SIZE = 4
+      POOL_MAX_SIZE = 32
+      POOL_IDLE_SECONDS = 120
+      POOL_LIFETIME_SECONDS = 1800
+
+      # Storage paths.
+      DATA_DIR = "/var/lib/demo"
+      TEMP_DIR = "/tmp/demo"
+      LOG_DIR = "/var/log/demo"
+
+      # Serialization.
+      SERIALIZER = "protobuf"
+      SERIALIZER_VERSION = 3
+      SERIALIZER_STRICT = True
+
+      # Compression.
+      COMPRESSION = "zstd"
+      COMPRESSION_LEVEL = 3
+      COMPRESSION_WINDOW = 16
+
+      # Tracing.
+      TRACE_ENABLED = True
+      TRACE_SAMPLE_RATE = 0.05
+      TRACE_EXPORTER = "otlp"
+
+      # Metrics.
+      METRICS_ENABLED = True
+      METRICS_INTERVAL_SECONDS = 30
+      METRICS_PREFIX = "demo"
+
+      # Alerts.
+      ALERT_WINDOW_SECONDS = 60
+      ALERT_MIN_COUNT = 5
+      ALERT_CHANNEL = "ops"
+
+      # Quotas.
+      REQUEST_QUOTA_PER_MINUTE = 600
+      BACKFILL_QUOTA_PER_MINUTE = 60
+      QUOTA_BURST_MULTIPLIER = 2
+
+      # Security.
+      TLS_MIN_VERSION = "1.2"
+      TOKEN_TTL_SECONDS = 3600
+      TOKEN_ISSUER = "demo"
+
+      # Local development.
+      DEV_RELOAD = False
+      DEV_PROFILE = False
+      DEV_TRACE = False
+
+      # Remaining knobs kept for compatibility with the old worker.
+      LEGACY_MODE = False
+      LEGACY_PREFIX = "v1"
+      LEGACY_BATCHING = True
+
+      # End of settings.
+expect:
+  calls:
+    - tool: read_file
+    - tool: edit_file
+    - tool: communicate
+  forbidden_calls: [shell]
+  artifacts:
+    - path: settings.py
+      contains: "DEFAULT_TIMEOUT = 45\n"
+    - path: settings.py
+      contains: "RETRY_LIMIT = 4\n"
+    - path: settings.py
+      contains: "LOG_LEVEL = \"debug\"\n"
+    - path: settings.py
+      contains: "CACHE_TTL_SECONDS = 120\n"
+  final_contains: ["RESULT_DISJOINT_MULTI_EDIT"]

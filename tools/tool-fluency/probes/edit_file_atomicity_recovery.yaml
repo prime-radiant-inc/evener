@@ -1,0 +1,36 @@
+schema: 1
+id: edit_file.atomicity_recovery
+tool: edit_file
+prompt: |
+  Read config.ini, then use edit_file to apply three changes:
+  retry_limit = 2 becomes retry_limit = 3;
+  timeout_seconds = 30 becomes timeout_seconds = 45;
+  mode = legacy becomes mode = modern.
+  The file may already be partly in the requested state: if an edit's old text
+  is missing, verify the intended value is already present and leave it correct
+  instead of forcing a change or damaging the block.
+  Finish with RESULT_ATOMICITY_RECOVERY.
+fixture:
+  files:
+    config.ini: |
+      ; worker settings
+      [worker]
+      retry_limit = 2
+      timeout_seconds = 30
+      mode = modern
+
+      [logging]
+      level = info
+expect:
+  calls:
+    - tool: read_file
+    - tool: edit_file
+    - tool: communicate
+  forbidden_calls: [shell]
+  allow_tool_errors: true
+  artifacts:
+    - path: config.ini
+      contains: "[worker]\nretry_limit = 3\ntimeout_seconds = 45\nmode = modern\n"
+    - path: config.ini
+      contains: "[logging]\nlevel = info\n"
+  final_contains: ["RESULT_ATOMICITY_RECOVERY"]
