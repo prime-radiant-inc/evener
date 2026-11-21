@@ -1289,12 +1289,12 @@ func (c *delegateTreeController) appendAttentionWakeLocked(delegateID string, ev
 
 // appendAttentionWakeAtLocked journals the events that publish delegateID's
 // wake, together with the release that orders that wake against a settled
-// user-stop quiet, through the generation the wake's admission sampled. An
-// acknowledgment whose claim was admitted earlier passes that admission
-// sample, so a stop that settled after the claim stays newer evidence than the
-// delivery and the release does not cover it.
+// user-stop quiet, through the generation the wake's claim or arm sampled. An
+// acknowledgment passes the sample its delivery's claim took when it was
+// created, so a stop that settled while a deferred claim waited, or after it,
+// stays newer evidence than the delivery and the release does not cover it.
 //
-// The release names the newest settled generation at the wake's admission, so
+// The release names the sample the wake carried, so
 // a wake admitted while a successor run is open releases through the
 // generation before that run and leaves the open generation outside the
 // record: the stop that settles it afterwards is newer evidence than this
@@ -1313,13 +1313,13 @@ func (c *delegateTreeController) appendAttentionWakeAtLocked(delegateID string, 
 	// The sample is recorded under the controller lock at the moment the wake
 	// commits, so a request captured before the release callback still reads the
 	// quiet as ended, and it only ever rises so a later wake cannot lower it. The
-	// sample itself was taken under that lock too: at admission for a carried
-	// one, and just above for an arm. It stands on its own even when the journal
-	// owes no release to compare against: a wake admitted before any generation
-	// settled records a sample, and one whose quiet no stop installed records the
-	// generation it superseded without a release event. A refused append
-	// published no wake, so it records nothing; an admission that appends nothing
-	// at all still happened, and records.
+	// sample itself was taken under that lock too: when its delivery's claim was
+	// created, and just above for an arm. It stands on its own even when the
+	// journal owes no release to compare against: a wake admitted before any
+	// generation settled records a sample, and one whose quiet no stop installed
+	// records the generation it superseded without a release event. A refused
+	// append published no wake, so it records nothing; an admission that appends
+	// nothing at all still happened, and records.
 	record := func() {
 		if generation == 0 {
 			return
@@ -1343,12 +1343,13 @@ func (c *delegateTreeController) appendAttentionWakeAtLocked(delegateID string, 
 // attentionHoldReleaseEventLocked is the release owed when a wake is admitted
 // for delegateID. A wake is newer evidence than the quiet a settled user-stop
 // generation left, so that generation's quiet must not be rebuilt by a cold
-// restore. The generation is the one the wake sampled when it was admitted —
-// the newest settled one then, the generation before the delegate's open run
-// when there is one — never one sampled later: a stop that settles after the
-// wake settles a later generation, and its quiet must stand. An acknowledgment
-// hands over the sample its claim took at admission, so a stop that settled
-// between the claim and the acknowledgment also stands.
+// restore. The generation is the one the wake sampled — the newest settled one
+// when its claim was created or its arm ran, the generation before the
+// delegate's open run when there is one — never one sampled later: a stop that
+// settles after the wake settles a later generation, and its quiet must stand.
+// An acknowledgment hands over the sample its claim took when it was created,
+// so a stop that settled while a deferred claim waited to be admitted also
+// stands.
 //
 // A release is owed whenever a settled generation quieted a row and no release
 // has reached it: the wake is newer evidence than that stop whatever the
