@@ -434,9 +434,10 @@ func processRunning(pid int) bool {
 func stopGroupOnCleanup(t *testing.T, pgid int) {
 	t.Helper()
 	t.Cleanup(func() {
-		if syscall.Kill(pgid, 0) == nil {
-			_ = syscall.Kill(-pgid, syscall.SIGKILL)
-		}
+		// The group outlives its leader: a child can still run after the pid the
+		// fixture published has exited, so the kill is unconditional, and an empty
+		// group simply reports ESRCH.
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
 	})
 }
 
@@ -501,6 +502,7 @@ func TestMergeEnqueueStopsTheBuildGroupOnTermination(t *testing.T) {
 	childFile := filepath.Join(dir, "build-child")
 	groupFile := filepath.Join(dir, "build-group")
 	childStopped := filepath.Join(dir, "build-child-stopped")
+	childReady := filepath.Join(dir, "build-child-ready")
 	// `go build` is preceded by `go env GOHOSTOS`/`GOHOSTARCH`, so the stand-in
 	// answers that first and only then stands in for the build.
 	binDir := filepath.Join(dir, "bin")
@@ -509,9 +511,13 @@ func TestMergeEnqueueStopsTheBuildGroupOnTermination(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(binDir, "go"), []byte(`#!/usr/bin/env bash
 if [ "$1" = env ]; then exit 0; fi
+trap 'wait "$build_child"' TERM
 ( trap 'printf stopped > "$FAKE_BUILD_CHILD_STOPPED"; exit 0' TERM
+  printf ready > "$FAKE_BUILD_CHILD_READY"
   while :; do sleep 0.05; done ) &
-printf '%s\n' "$!" > "$FAKE_BUILD_CHILD.tmp"
+build_child=$!
+while [ ! -f "$FAKE_BUILD_CHILD_READY" ]; do sleep 0.01; done
+printf '%s\n' "$build_child" > "$FAKE_BUILD_CHILD.tmp"
 mv -- "$FAKE_BUILD_CHILD.tmp" "$FAKE_BUILD_CHILD"
 printf '%s\n' "$$" > "$FAKE_BUILD_GROUP.tmp"
 mv -- "$FAKE_BUILD_GROUP.tmp" "$FAKE_BUILD_GROUP"
@@ -526,6 +532,7 @@ wait
 		"FAKE_BUILD_CHILD=" + childFile,
 		"FAKE_BUILD_GROUP=" + groupFile,
 		"FAKE_BUILD_CHILD_STOPPED=" + childStopped,
+		"FAKE_BUILD_CHILD_READY=" + childReady,
 		"PATH=" + binDir + ":/usr/bin:/bin",
 	})
 	buildChild := waitForHelperPID(t, childFile)
@@ -539,7 +546,9 @@ wait
 	}
 	waitForProcessGone(t, buildChild)
 	// The child records the TERM itself, so this fails if the first signal reached
-	// only the `go` process and left its children to the KILL at the end.
+	// only the `go` process and left its children to the KILL at the end. The pid
+	// was published only after the child armed its trap and the leader held its
+	// own, so the signal cannot arrive before either is ready.
 	waitForFile(t, childStopped)
 	assertDirEmpty(t, tmp)
 }
@@ -574,6 +583,65 @@ func TestMergeEnqueueReportsAScratchSetupFailureAsRefusal(t *testing.T) {
 	if !strings.Contains(stderr, "mktemp -d under") {
 		t.Errorf("stderr = %q, want the scratch failure named", stderr)
 	}
+}
+
+// TestMergeEnqueueStopsAHelperChildAfterAnInterruptedWait covers a prebuilt
+// helper that exits on TERM without forwarding it: the child it started, and any
+// gh call beside it, must not outlive the launcher that was told to stop.
+func TestMergeEnqueueStopsAHelperChildAfterAnInterruptedWait(t *testing.T) {
+	dir := t.TempDir()
+	sleeperFile := filepath.Join(dir, "sleeper")
+	groupFile := filepath.Join(dir, "helper-group")
+	bin := writeHelper(t, dir, `#!/usr/bin/env bash
+trap 'exit 143' TERM
+# Its output stays out of the launcher's pipes, so a leak shows up as a running
+# process rather than as a wait that never returns.
+sleep 300 > /dev/null 2>&1 &
+printf '%s\n' "$!" > "$FAKE_SLEEPER.tmp"
+mv -- "$FAKE_SLEEPER.tmp" "$FAKE_SLEEPER"
+printf '%s\n' "$$" > "$FAKE_HELPER_GROUP.tmp"
+mv -- "$FAKE_HELPER_GROUP.tmp" "$FAKE_HELPER_GROUP"
+while :; do sleep 0.05; done
+`)
+
+	p := startLauncher(t, []string{
+		"EVENER_DEV_BIN=" + bin,
+		"FAKE_SLEEPER=" + sleeperFile,
+		"FAKE_HELPER_GROUP=" + groupFile,
+	}, "--pr", "42")
+	sleeper := waitForHelperPID(t, sleeperFile)
+	stopGroupOnCleanup(t, waitForHelperPID(t, groupFile))
+	if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signal launcher: %v", err)
+	}
+
+	if status := p.waitExit(t); status != 130 {
+		t.Fatalf("exit = %d, want 130 (stderr: %q)", status, p.stderr.String())
+	}
+	waitForProcessGone(t, sleeper)
+}
+
+// TestMergeEnqueueBuildsOverASavedGOFLAGS covers `go env -w GOFLAGS=...`: a saved
+// value would otherwise apply to the build and fail it before the helper runs.
+func TestMergeEnqueueBuildsOverASavedGOFLAGS(t *testing.T) {
+	goenv := filepath.Join(t.TempDir(), "goenv")
+	if err := os.WriteFile(goenv, []byte("GOFLAGS=-modfile=/nonexistent/go.mod\n"), 0o644); err != nil {
+		t.Fatalf("write GOENV: %v", err)
+	}
+	tmp := t.TempDir()
+	_, stderr, status := runMergeEnqueue(t,
+		[]string{
+			"EVENER_DEV_BIN=",
+			"TMPDIR=" + tmp,
+			"GOENV=" + goenv,
+			"PATH=" + goToolPath(t),
+		})
+
+	if want := "usage: evener-dev dev merge-enqueue"; status != 2 || !strings.Contains(stderr, want) {
+		t.Fatalf("exit = %d, stderr = %q, want 2 with the built helper's usage naming %q",
+			status, stderr, want)
+	}
+	assertDirEmpty(t, tmp)
 }
 
 // goToolPath is a PATH that supplies the go toolchain and nothing else: a PATH

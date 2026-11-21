@@ -88,6 +88,24 @@ term_sent=0
 group_stop=""
 gh_group_file=""
 
+# kill_groups PGID — stop a tracked group, and the gh group the helper
+# published. Used by the second signal and after any interrupted wait: a helper
+# that exits on TERM without forwarding it to its own child leaves that child and
+# an in-flight gh call behind, and they would outlive the scratch this run owns.
+kill_groups() {
+  [ -z "$1" ] || [ "$1" -le 1 ] || kill -KILL -- "-$1" 2>/dev/null || true
+  # internal/devtool/mergeq publishes the live gh group here while a call is in
+  # flight (EVENER_MERGEQ_GH_GROUP_FILE). A value that is not a whole number
+  # above 1 is not one, and is left alone.
+  if [ -n "$gh_group_file" ] && [ -r "$gh_group_file" ]; then
+    gh_pgid=$(cat -- "$gh_group_file" 2>/dev/null) || gh_pgid=""
+    case "$gh_pgid" in
+      '' | *[!0-9]*) ;;
+      *) [ "$gh_pgid" -gt 1 ] && kill -KILL -- "-$gh_pgid" 2>/dev/null || true ;;
+    esac
+  fi
+}
+
 # stop_child starts the tracked child's stop, or ends it. The first signal asks
 # it to cancel: for the helper that means stopping the `gh` call it waits on and
 # reporting 130, the status passed through. A second signal does not wait: the
@@ -112,17 +130,7 @@ stop_child() {
     fi
     return 0
   fi
-  kill -KILL -- "-$child" 2>/dev/null || true
-  # internal/devtool/mergeq publishes the live gh group here while a call is in
-  # flight (EVENER_MERGEQ_GH_GROUP_FILE). A value that is not a whole number
-  # above 1 is not one, and is left alone.
-  if [ -n "$gh_group_file" ] && [ -r "$gh_group_file" ]; then
-    gh_pgid=$(cat -- "$gh_group_file" 2>/dev/null) || gh_pgid=""
-    case "$gh_pgid" in
-      '' | *[!0-9]*) ;;
-      *) [ "$gh_pgid" -gt 1 ] && kill -KILL -- "-$gh_pgid" 2>/dev/null || true ;;
-    esac
-  fi
+  kill_groups "$child"
 }
 
 # start_tracked CMD... — run CMD as the tracked child, in a process group of its
@@ -204,20 +212,24 @@ gh_group_file="$work/gh-group"
 if [ -n "$need_build" ]; then
   # Built, not `go run`, which reports every child status as 1 and would erase
   # both the drop/timeout 1 and the refusal 2. The build is tracked like the
-  # helper, so a signal stops and reaps it. GOOS/GOARCH name this host over an
-  # inherited or `go env -w` pair, GOFLAGS is cleared, GOWORK pins this
-  # checkout's workspace, and GOTMPDIR keeps the build's work directory in this
-  # scratch rather than the operator's TMPDIR.
+  # helper, and the host pair is read inside that group too: on a cold machine
+  # `go env` can download a toolchain, and a foreground call would outlive the
+  # signal stopping the build. GOOS/GOARCH name this host over an inherited or
+  # saved pair, GOFLAGS carries a harmless flag so a saved `go env -w
+  # GOFLAGS=...` cannot apply, GOWORK pins this checkout's workspace, and
+  # GOTMPDIR keeps the build's work directory in this scratch.
   helper_bin="$work/evener-dev"
   group_stop=1
-  start_tracked env GOOS="$(go env GOHOSTOS)" GOARCH="$(go env GOHOSTARCH)" GOFLAGS= GOWORK="$root/go.work" GOTMPDIR="$work" go build -o "$helper_bin" ./cmd/evener-dev/bin
+  start_tracked bash -c '
+export GOWORK="$1/go.work" GOFLAGS=-buildvcs=false GOTMPDIR="$2"
+GOOS=$(go env GOHOSTOS) GOARCH=$(go env GOHOSTARCH) exec go build -o "$3" ./cmd/evener-dev/bin' _ "$root" "$work" "$helper_bin"
   build_pgid=$child
   wait_tracked
   group_stop=""
   if [ "$stops" -ne 0 ]; then
-    # Build children run in the build's group; stopping it again leaves nothing
+    # The build's children run in its group; stopping it again leaves nothing
     # writing into a scratch directory that is about to be removed.
-    [ -z "$build_pgid" ] || kill -KILL -- "-$build_pgid" 2>/dev/null || true
+    kill_groups "$build_pgid"
     exit 130
   fi
   [ "$status" -eq 0 ] || fail "building the evener-dev helper failed"
@@ -226,12 +238,18 @@ fi
 [ "$stops" -eq 0 ] || exit 130
 
 start_tracked env EVENER_MERGEQ_GH_GROUP_FILE="$gh_group_file" "$helper_bin" dev merge-enqueue "$@"
+helper_pgid=$child
 wait_tracked
 
 # An interrupted run reports the interruption, not whatever the killed group
 # died with: a wait broken by a trapped signal answers 128+signal even when the
-# handler then killed the child, so the collected status depends on timing.
-[ "$stops" -eq 0 ] || exit 130
+# handler then killed the child, so the collected status depends on timing. What
+# the helper left behind is stopped here either way, including a helper that
+# exited on TERM without forwarding it to its own child.
+if [ "$stops" -ne 0 ]; then
+  kill_groups "$helper_pgid"
+  exit 130
+fi
 
 # A helper the shell could not execute reports 126 or 127, which the contract
 # does not define; that is the launcher failure, not "command not executable".
