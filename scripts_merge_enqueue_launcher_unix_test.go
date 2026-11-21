@@ -1797,8 +1797,8 @@ func logValue(t *testing.T, f launcherFixture, prefix string) string {
 //
 // The launcher emits `[reason=<value>]` beside the operator-facing sentence for
 // exactly this: the sentence is copy and changes, the value does not. Reading a
-// code is not the same as matching copy, so this does not trip the repository's
-// error-text-assertions rule, and rewording the advice cannot fail a case.
+// code is not the same as matching copy, and rewording the advice cannot fail a
+// case.
 func refusalReason(t *testing.T, f launcherFixture) string {
 	t.Helper()
 	body, err := os.ReadFile(f.stderr)
