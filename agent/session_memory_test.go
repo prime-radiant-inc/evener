@@ -2037,7 +2037,7 @@ func TestLegacyBaselinelessRestoreWithDisableMemorySupersedesToolAndSkillInvento
 		StateDir:        history,
 		MemoryStateRoot: root,
 		MemoryProjectID: "legacy-project",
-		testOnly:        testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+		testOnly:        testConfig{skipGitSnapshot: true, noSyncJobStore: true, envProbes: fixedEnvProbes()},
 	}))
 	launchPrompt := s.cachedSystemPrompt
 	if !strings.Contains(launchPrompt, "gardening-memory") || !strings.Contains(launchPrompt, "memory_write") {
@@ -2060,7 +2060,7 @@ func TestLegacyBaselinelessRestoreWithDisableMemorySupersedesToolAndSkillInvento
 
 	r, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workspace), meta, RestoreSessionConfig{
 		StateDir: history, MemoryStateRoot: root, DisableMemory: true, CommitProvenance: "off",
-		testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+		testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true, envProbes: fixedEnvProbes()},
 	})
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
@@ -2118,7 +2118,7 @@ func TestLegacyBaselinelessRestoreWithDisableMemorySupersedesToolAndSkillInvento
 	}
 	r2, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workspace), reloaded, RestoreSessionConfig{
 		StateDir: history, MemoryStateRoot: root, DisableMemory: true, CommitProvenance: "off",
-		testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+		testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true, envProbes: fixedEnvProbes()},
 	})
 	if err != nil {
 		t.Fatalf("second restore: %v", err)

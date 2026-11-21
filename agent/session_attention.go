@@ -1430,6 +1430,16 @@ func (s *Session) retainSelectablePendingTurnsLocked(fold delegateAttentionFold,
 		}
 		turns = append(turns, turn)
 	}
+	return s.restoreAttentionTurns(turns, resident)
+}
+
+// restoreAttentionTurns puts turns, in arrival order, back into the resumed
+// history, each anchored by the turns that follow it, which a compaction
+// marker after them would otherwise have cut. A turn whose attention identity
+// appears in resident keeps the position it already has and is not restored,
+// but it still anchors the restored turns that arrived before it. A nil
+// resident restores every turn.
+func (s *Session) restoreAttentionTurns(turns []schema.Turn, resident map[string]struct{}) error {
 	for i, turn := range turns {
 		if _, present := resident[turn.AttentionID]; present {
 			continue
@@ -1854,12 +1864,7 @@ func (s *Session) holdAcceptedTrigger(attentionID string) {
 // have cut.
 func (s *Session) restoreAcceptedTrigger(attentionID string, turns []schema.Turn) error {
 	s.holdAcceptedTrigger(attentionID)
-	for i, turn := range turns {
-		if err := s.retainDelegateAttentionTurn(turn, turns[i+1:]...); err != nil {
-			return err
-		}
-	}
-	return nil
+	return s.restoreAttentionTurns(turns, nil)
 }
 
 // acceptDelegateAttention records the exact reserved generation in the child

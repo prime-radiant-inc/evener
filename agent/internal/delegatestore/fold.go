@@ -599,12 +599,15 @@ func applyAttentionChanged(state State, event Event) error {
 
 // applyAttentionHoldReleased records that a newer event ended the quiet a
 // settled stop at payload.Generation held. The record names a settled
-// generation, never the one an open run is still writing: a wake admitted
-// while a successor run is open supersedes the generation before that run, so
-// that generation is accepted and the open one is refused. A stop that settles
-// the open generation afterwards is newer evidence than the wake, and its
-// quiet must stand. The field is monotonic so a stale release replayed after a
-// newer one cannot move it backwards.
+// generation, never one an open run is still writing or one that has not
+// settled yet. A wake admitted while a successor run is open supersedes the
+// generation before that run, so that generation is accepted and the open one
+// is refused. A delivery's claim also carries the generation it was admitted
+// in, and a later run can settle before the acknowledgment lands, so an older
+// settled generation is accepted too: the field is monotonic, so every newer
+// stop's quiet stays outside the record and stands. A stop that settles the
+// open generation afterwards is still newer evidence than the wake, and its
+// quiet must stand.
 func applyAttentionHoldReleased(state State, event Event) error {
 	payload := event.AttentionHoldReleased
 	aggregate, err := requireAggregate(state, event.DelegateID)
@@ -615,8 +618,8 @@ func applyAttentionHoldReleased(state State, event Event) error {
 	if payload.Generation == 0 || settled == 0 {
 		return fmt.Errorf("delegate %q attention hold release names no generation", event.DelegateID)
 	}
-	if payload.Generation != settled {
-		return fmt.Errorf("delegate %q attention hold release names generation %d, which is not the settled generation", event.DelegateID, payload.Generation)
+	if payload.Generation > settled {
+		return fmt.Errorf("delegate %q attention hold release names generation %d, which is newer than the settled generation", event.DelegateID, payload.Generation)
 	}
 	if payload.Generation > aggregate.AttentionHoldReleasedGeneration {
 		aggregate.AttentionHoldReleasedGeneration = payload.Generation

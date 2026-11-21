@@ -20,12 +20,11 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// These two tests cover part of review round 2's finding:
-// session_tool_round.go's direct-append steering sites (no-tool-calls retry,
-// task reminder) labeled the live SteeringInjectedData event correctly but
-// left schema.Turn.SteeringKind empty, so a reload showed no kind at all.
-// Each asserts the kind lands on the appended turn, read off s.history the
-// way round 1's tests read the flushed compaction records. The third
+// These two tests cover the direct-append steering sites in
+// session_tool_round.go (no-tool-calls retry, task reminder): those sites
+// labeled the live SteeringInjectedData event correctly but left
+// schema.Turn.SteeringKind empty, so a reload showed no kind at all. Each
+// asserts the kind lands on the appended turn, read off s.history. The third
 // direct-append site in this file, loop detection, is covered by extending
 // the existing TestSession_LoopDetection_EmitsEventAndInjectsSteering
 // (session_lifecycle_test.go) instead of a new test here, since that test

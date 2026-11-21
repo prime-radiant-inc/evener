@@ -232,6 +232,7 @@ jobs:
             ${{ env.QUALIFICATION_OUTPUT }}/*.exit
             ${{ env.QUALIFICATION_OUTPUT }}/Podfile.lock.candidate
             ${{ env.QUALIFICATION_OUTPUT }}/Podfile.lock.diff
+          retention-days: 7
           if-no-files-found: warn
 
   # The journeys job's build-independent work: the runtime pair (make
@@ -391,6 +392,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "22.13.1"
+      # Both downloads below print `digest-mismatch: error` in their step log:
+      # that is actions/download-artifact's own input (its default), not a
+      # finding, and a real mismatch fails the step.
       - name: Download the build products
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -432,4 +436,5 @@ jobs:
             ${{ env.JOURNEY_OUTPUT }}/ui/*.json
             ${{ env.JOURNEY_OUTPUT }}/ui/*.exit
             ${{ env.JOURNEY_OUTPUT }}/ui/ui.xcresult
+          retention-days: 7
           if-no-files-found: warn

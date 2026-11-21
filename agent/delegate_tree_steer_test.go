@@ -351,7 +351,7 @@ func TestDelegateControllerLateSteeringEscalatesOnNextRequest(t *testing.T) {
 	if _, err := c.Steer(context.Background(), rootDelegateActor("root-session"), lease.delegateID, "late steering"); err != nil {
 		t.Fatalf("Steer: %v", err)
 	}
-	if _, err := c.CompleteModelRequest(first, first.runtime.delegateModelHistorySnapshot(), replayScope{}); err != nil {
+	if _, _, err := c.CompleteModelRequest(first, first.runtime.delegateModelHistorySnapshot(), replayScope{}); err != nil {
 		t.Fatalf("CompleteModelRequest first: %v", err)
 	}
 	before, err := c.completionSnapshot(lease)
@@ -419,9 +419,15 @@ func TestDelegateControllerModelSnapshotDefersSteerAcceptedAfterRequestBind(t *t
 	if _, err := c.Steer(context.Background(), rootDelegateActor("root-session"), lease.delegateID, "late accepted steer"); err != nil {
 		t.Fatalf("Steer: %v", err)
 	}
-	current, err := c.CompleteModelRequest(modelClaim, runtime.delegateModelHistorySnapshot(), replayScope{})
+	filtered, scope, err := c.CompleteModelRequest(modelClaim, runtime.delegateModelHistorySnapshot(), replayScope{})
 	if err != nil {
 		t.Fatalf("CompleteModelRequest: %v", err)
+	}
+	current := expandHistory(filtered, scope)
+	for _, turn := range filtered {
+		if turn.Kind == schema.TurnSteering && turn.Message.Text() == parentMessageAttribution+"late accepted steer" {
+			t.Fatalf("the controller's filtered turns retained the late accepted steer: %#v", filtered)
+		}
 	}
 	if countMessageText(current, parentMessageAttribution+"late accepted steer") != 0 {
 		t.Fatalf("late accepted steer entered already-bound request: %#v", current)
@@ -433,6 +439,109 @@ func TestDelegateControllerModelSnapshotDefersSteerAcceptedAfterRequestBind(t *t
 	if got := countMessageText(next, parentMessageAttribution+"late accepted steer"); got != 1 {
 		t.Fatalf("next request contains late accepted steer %d times, want once: %#v", got, next)
 	}
+}
+
+// The bound round records its unprojected fallback source from the controller's
+// filtered turns, so a steer the controller defers cannot ride a failover:
+// callModelWithFallback re-expands those same turns.
+func TestDelegateFallbackSourceUsesControllerFilteredTurns(t *testing.T) {
+	runtime := newSession(t, withStateDir(t.TempDir()))
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	runtime.delegateController = c
+	c.mu.Lock()
+	c.live[lease.delegateID].runtime = runtime
+	c.live[lease.delegateID].binding.runtime = runtime
+	c.mu.Unlock()
+
+	// The steer's durable append lands while its persistence is in flight:
+	// the turn a request bound before the append filters out.
+	steerClaim, err := c.BeginSteerPersistence(rootDelegateActor("root-session"), lease.delegateID)
+	if err != nil {
+		t.Fatalf("BeginSteerPersistence: %v", err)
+	}
+	const deferred = "deferred steer must wait for the next request"
+	if _, err := steerClaim.runtime.appendDelegateSteeringDurably(deferred, steerClaim.entryID); err != nil {
+		t.Fatalf("append steering: %v", err)
+	}
+
+	ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
+	var timings events.RoundTimings
+	_, _, history, _, _, _, err := runtime.prepareModelRequestWithError(ctx, 1, &timings)
+	if err != nil {
+		t.Fatalf("prepare delegate model request: %v", err)
+	}
+	if got := countMessageText(history, parentMessageAttribution+deferred); got != 0 {
+		t.Fatalf("the bound request presented the deferred steer %d times, want 0", got)
+	}
+	source, ok := runtime.takeRoundFallbackSource()
+	if !ok {
+		t.Fatal("prepareModelRequestWithError recorded no fallback source")
+	}
+	fallbackHistory := runtime.requestMessages(source.system, expandHistory(source.turns, source.scope))
+	if got := countMessageText(fallbackHistory, parentMessageAttribution+deferred); got != 0 {
+		t.Fatalf("the fallback source presented the deferred steer %d times, want 0", got)
+	}
+}
+
+// The in-flight boundary indexes the projection CompleteModelRequest returns,
+// so it moves with every row that projection removes: a late steer it drops,
+// and a bound steer it lifts to the tail.
+func TestDelegateControllerModelRequestShiftsInFlightBoundary(t *testing.T) {
+	t.Run("late steer", func(t *testing.T) {
+		c, _ := newDelegateControllerTestHarness(t, 1, 1)
+		seedDelegateControllerRunning(t, c, "dlg_target", "")
+		runtime := attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
+		lease := delegateLease{delegateID: "dlg_target", generation: 1}
+		runtime.mu.Lock()
+		runtime.history = []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("prior"))}
+		runtime.mu.Unlock()
+		claim, err := c.BeginModelRequest(lease)
+		if err != nil {
+			t.Fatalf("BeginModelRequest: %v", err)
+		}
+		if _, err := c.Steer(context.Background(), rootDelegateActor("root-session"), lease.delegateID, "late steer"); err != nil {
+			t.Fatalf("Steer: %v", err)
+		}
+		// [prior, late steer, in-flight]: the dropped steer sits below the boundary.
+		runtime.mu.Lock()
+		runtime.history = append(runtime.history, schema.NewTurn(schema.TurnAssistant, llm.Assistant("in flight")))
+		runtime.mu.Unlock()
+		presented, scope, err := c.CompleteModelRequest(claim, runtime.delegateModelHistorySnapshot(), replayScope{InFlightFrom: 2})
+		if err != nil {
+			t.Fatalf("CompleteModelRequest: %v", err)
+		}
+		if len(presented) != 2 || scope.InFlightFrom != 1 || presented[scope.InFlightFrom].Kind != schema.TurnAssistant {
+			t.Fatalf("projected %d turns with boundary %d, want 2 and 1 at the in-flight turn", len(presented), scope.InFlightFrom)
+		}
+	})
+
+	t.Run("bound steer", func(t *testing.T) {
+		c, _ := newDelegateControllerTestHarness(t, 1, 1)
+		seedDelegateControllerRunning(t, c, "dlg_target", "")
+		runtime := attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
+		lease := delegateLease{delegateID: "dlg_target", generation: 1}
+		if _, err := c.Steer(context.Background(), rootDelegateActor("root-session"), lease.delegateID, "bound steer"); err != nil {
+			t.Fatalf("Steer: %v", err)
+		}
+		// [bound steer, in-flight]: lifting the steer to the tail moves the
+		// in-flight turn one position left.
+		runtime.mu.Lock()
+		runtime.history = append(runtime.history, schema.NewTurn(schema.TurnAssistant, llm.Assistant("in flight")))
+		runtime.mu.Unlock()
+		claim, err := c.BeginModelRequest(lease)
+		if err != nil {
+			t.Fatalf("BeginModelRequest: %v", err)
+		}
+		presented, scope, err := c.CompleteModelRequest(claim, runtime.delegateModelHistorySnapshot(), replayScope{InFlightFrom: 1})
+		if err != nil {
+			t.Fatalf("CompleteModelRequest: %v", err)
+		}
+		if len(presented) != 2 || scope.InFlightFrom != 0 || presented[scope.InFlightFrom].Kind != schema.TurnAssistant {
+			t.Fatalf("projected %d turns with boundary %d, want 2 and 0 at the in-flight turn", len(presented), scope.InFlightFrom)
+		}
+	})
 }
 
 func TestDelegateControllerModelRequestUsesOutgoingReplayScope(t *testing.T) {
@@ -585,7 +694,11 @@ func completeDelegateModelRequest(c *delegateTreeController, lease delegateLease
 	if err != nil {
 		return nil, err
 	}
-	return c.CompleteModelRequest(claim, claim.runtime.delegateModelHistorySnapshot(), replayScope{})
+	presented, scope, err := c.CompleteModelRequest(claim, claim.runtime.delegateModelHistorySnapshot(), replayScope{})
+	if err != nil {
+		return nil, err
+	}
+	return expandHistory(presented, scope), nil
 }
 
 func TestDelegateControllerBeginToolRejectsStoppingOrStaleLease(t *testing.T) {

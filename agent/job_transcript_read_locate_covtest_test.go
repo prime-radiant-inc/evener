@@ -10,10 +10,9 @@ import (
 )
 
 // TestLocateLocalJob_NonProjectDirError covers a lookup in a state dir whose
-// base name is not a valid project ID. The bucket-name guard was removed
-// (roborev fix round 1); the lookup now proceeds to findLocalJobInProject and
-// fails because no jobs.jsonl exists at that path — not because the bucket
-// name was rejected.
+// base name is not a valid project ID. The bucket-name guard was removed, so
+// the lookup proceeds to findLocalJobInProject and fails because no jobs.jsonl
+// exists at that path — not because the bucket name was rejected.
 func TestLocateLocalJob_NonProjectDirError(t *testing.T) {
 	sid, err := identifier.NewSessionID()
 	if err != nil {
