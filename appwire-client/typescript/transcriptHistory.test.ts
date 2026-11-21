@@ -1911,7 +1911,7 @@ test("a wait-free read of the same running turn keeps the wake's zero-delay chip
 function retryReadTurn(
   items: Array<{
     id: string;
-    type: "userMessage" | "agentMessage" | "reasoning" | "commandExecution";
+    type: "userMessage" | "agentMessage" | "reasoning" | "commandExecution" | "steering";
     version?: number;
   }>,
 ): Turn {
@@ -2145,7 +2145,7 @@ test("a wait-free read that adds only a user steer to the retrying turn keeps th
     turns: [
       retryReadTurn([
         { id: "item_user", type: "userMessage" },
-        { id: "item_steer", type: "userMessage" },
+        { id: "item_steer", type: "steering" },
       ]),
     ],
   });

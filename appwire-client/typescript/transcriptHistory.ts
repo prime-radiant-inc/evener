@@ -1168,11 +1168,14 @@ interface QuotaWaitFields {
   retireChip?: boolean;
 }
 
-// The live fold's model-output item types (reducer.ts's
-// MODEL_OUTPUT_ITEM_TYPES): assistant text, reasoning, and a command the model
-// chose to run. A user steer, a system row, or a tool result is not output.
-// Kept here by hand rather than imported: reducer.ts imports this module.
-const MODEL_OUTPUT_ITEM_TYPES = new Set(["agentMessage", "reasoning", "commandExecution"]);
+// item/completed kinds that count as the model actually producing something
+// (design doc Component 1): assistant message, reasoning, tool call. A
+// systemMessage or userMessage item (a steer "are you stuck?" completing its
+// own systemMessage item, say) arrives mid-grind and must not be mistaken for
+// the retry's wait being over. Defined here, not in reducer.ts, because
+// reducer.ts imports this module and the live fold and the read merge must
+// agree on the set.
+export const MODEL_OUTPUT_ITEM_TYPES = new Set(["agentMessage", "reasoning", "commandExecution"]);
 
 // Whether the read's merge shows the retried call producing model output. The
 // wake's zero-delay chip is the retry's PROGRESS state, so a read naming the
