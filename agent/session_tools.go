@@ -817,7 +817,12 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 		} else if skillState != nil {
 			liveTurn := schema.NewTurn(schema.TurnToolResults, live)
 			liveTurn.SkillState = skillState
-			persistedTurn := schema.NewTurn(schema.TurnToolResults, persisted)
+			// The persisted copy keeps the live turn's timestamp: the prefix
+			// anchor reads it on both sides, and a second NewTurn here would
+			// give the transcript entry a different instant than the turn a
+			// resumed session rebuilds from it.
+			persistedTurn := liveTurn
+			persistedTurn.Message = persisted
 			persistedTurn.SkillState = skillState
 			// The obligation is already durable above, so a failed carrier write
 			// returns rather than reporting a recorded round.
@@ -922,7 +927,8 @@ func (s *Session) takeDelegateDeliveryCommits(calls []llm.ToolCallData) []delega
 func (s *Session) appendToolResultsDurably(live, persisted llm.Message, skillState *schema.SkillTurnState) error {
 	liveTurn := schema.NewTurn(schema.TurnToolResults, live)
 	liveTurn.SkillState = skillState.Clone()
-	persistedTurn := schema.NewTurn(schema.TurnToolResults, persisted)
+	persistedTurn := liveTurn
+	persistedTurn.Message = persisted
 	persistedTurn.SkillState = skillState.Clone()
 	err := s.appendTurnAfterTranscriptWrite(
 		persistedTurn,

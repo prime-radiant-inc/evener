@@ -143,6 +143,10 @@ type SessionMeta struct {
 	ID        string `json:"id"`         // session identifier
 	ProfileID string `json:"profile_id"` // ID of the provider profile in use
 	Model     string `json:"model"`      // model name the session is driving
+	// Protocol is the wire protocol the profile resolved to. Persisted beside
+	// the model identity so a restore can tell a measurement taken under another
+	// protocol from one this session may reuse.
+	Protocol string `json:"protocol,omitempty"`
 	// CheapModel is the configured cheap/fast model for side calls, as a
 	// WithCheapModel ref ("provider/model" when cross-provider, else bare model).
 	// Empty when none is configured. Persisted so the cheap routing survives
@@ -168,6 +172,14 @@ type SessionMeta struct {
 	// LastInputTokens is the prompt-token count from the most recent LLM call,
 	// used to display context-window pressure on resume.
 	LastInputTokens int `json:"last_input_tokens,omitempty"`
+	// LastInputMeasuredLen is the history length the count was measured at, and
+	// LastInputAnchor identifies the turn at that index. A restore seeds the
+	// count through them, so turns appended after the measurement are not
+	// charged to it and a rewritten prefix is rejected. LastInputMeasuredLen is
+	// a pointer so a meta written before it existed (nil) is distinguishable
+	// from a count measured over an empty history (0).
+	LastInputMeasuredLen *int   `json:"last_input_measured_len,omitempty"`
+	LastInputAnchor      string `json:"last_input_anchor,omitempty"`
 	// ContextWindow is the window the session budgets against, and
 	// ContextWindowSource where it came from ("live", "overlay", "config",
 	// "snapshot", or "assumed"). They are rewritten on every save, so a resumed

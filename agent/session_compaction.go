@@ -145,6 +145,17 @@ func (s *Session) publishFoldedHistory(snapLen, snapRevision int, folded []schem
 // replacement or resurrects a deletion. Callers must hold s.mu.
 func (s *Session) bumpHistoryRevisionLocked() {
 	s.historyRevision++
+	// An exact input count describes the history it was measured against, and
+	// this call marks a rewrite of that history. Clear it here, in the same
+	// s.mu hold as the bump: a reply validates its measurement under s.mu and
+	// records under that same hold, so it either records before this publish
+	// (and this clear drops the pre-fold count) or after it (and the bump makes
+	// its measurement stale). Clearing only inside the compaction pass left the
+	// second case open — a reply that passed its check just before publication
+	// could reinstall a pre-fold count afterwards.
+	if s.contextMgr != nil {
+		s.contextMgr.ClearInputMeasurement()
+	}
 }
 
 // publishFoldTransaction commits one completed fold attempt atomically. The

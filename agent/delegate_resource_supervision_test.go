@@ -5391,7 +5391,7 @@ func TestDelegateResourceSupervision_FilteredFoldKeepsTheInFlightBoundary(t *tes
 			if cw <= 0 {
 				t.Fatalf("context window size is %d; cannot force pressure", cw)
 			}
-			sub.sess.contextMgr.RecordInputTokens(int(0.93*float64(cw))+1, len(preHistory)-1)
+			sub.sess.contextMgr.RecordInputTokens(int(0.93*float64(cw))+1, len(preHistory)-1, "")
 
 			if _, _, _, _, _, _, err := sub.sess.prepareModelRequestWithError(context.Background(), 1, new(events.RoundTimings)); err != nil {
 				t.Fatalf("round 1 model request on the stable child = %v", err)

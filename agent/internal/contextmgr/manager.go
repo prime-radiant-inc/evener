@@ -103,6 +103,16 @@ type Manager struct {
 	// of char/4 for the bulk of history. Reset to 0 after compaction.
 	lastInputTokens     int // exact input token count from last API response
 	historyLenAtMeasure int // number of turns when lastInputTokens was recorded
+	// measuredAnchor identifies the turn at historyLenAtMeasure-1, the last turn
+	// the count covers. The length alone cannot tell a rewritten history of the
+	// same size from the measured one, so a reader charges the count only while
+	// that turn is still there. Empty means the count carries no anchor (a turn
+	// with no identity, or a measurement recorded before anchors existed).
+	measuredAnchor string
+	// measuredTarget names the profile that reported the count. A persistable
+	// copy is withheld when it is not the session's configured profile, as when
+	// a --model-fallback request answered under a fallback model.
+	measuredTarget measurementTarget
 
 	// estimate is the memo behind EstimateStatusForRevision. It is only ever a
 	// cache of a value the full walk would produce: see estimateMemo. Guarded by

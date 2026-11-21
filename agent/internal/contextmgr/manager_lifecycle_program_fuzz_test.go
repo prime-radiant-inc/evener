@@ -86,7 +86,7 @@ func cmgpRunManagerLifecycle(t *testing.T, program []byte) {
 	if got := cm.CumulativeUsage(); got.InputTokens != 9 || got.OutputTokens != 8 || got.TotalTokens != 17 {
 		t.Fatalf("cumulative usage = %+v", got)
 	}
-	cm.RecordInputTokens(80, len(history))
+	cm.RecordInputTokens(80, len(history), "")
 	if cm.LastInputTokens() != 80 {
 		t.Fatalf("recorded input tokens = %d", cm.LastInputTokens())
 	}
@@ -109,7 +109,7 @@ func cmgpRunManagerLifecycle(t *testing.T, program []byte) {
 	cm.SetProfile(summaryProfile)
 	cm.CheckpointThreshold = 0.0001
 	cm.SummarizeThreshold = 0.0001
-	cm.RecordInputTokens(999, len(history))
+	cm.RecordInputTokens(999, len(history), "")
 	var compactTurns []schema.Turn
 	cm.OnCompactionTurn = func(turn schema.Turn) { compactTurns = append(compactTurns, turn) }
 	var automatic cmgpEventLog

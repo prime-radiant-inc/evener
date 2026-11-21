@@ -72,7 +72,7 @@ func TestContextStatusParityAcrossMutations(t *testing.T) {
 
 	// A recorded measurement for the current length replaces the char/4
 	// estimate.
-	if accepted := s.contextMgr.RecordInputTokensFor(s.profile, 300, 1); !accepted {
+	if accepted := s.contextMgr.RecordInputTokensFor(s.profile, 300, 1, ""); !accepted {
 		t.Fatal("RecordInputTokensFor refused the fixture's own profile")
 	}
 	assertContextStatus(t, s, 300, wantWindow, false)
@@ -303,7 +303,7 @@ func TestContextStatusConcurrentMutations(t *testing.T) {
 			s.mu.Lock()
 			historyLen := len(s.history)
 			s.mu.Unlock()
-			if accepted := s.contextMgr.RecordInputTokensFor(s.profile, 1000, historyLen); !accepted {
+			if accepted := s.contextMgr.RecordInputTokensFor(s.profile, 1000, historyLen, ""); !accepted {
 				refused.Add(1)
 			}
 		}
@@ -332,7 +332,7 @@ func TestContextStatusConcurrentMutations(t *testing.T) {
 	s.mu.Lock()
 	finalLen := len(s.history)
 	s.mu.Unlock()
-	if accepted := s.contextMgr.RecordInputTokensFor(s.profile, 300, finalLen); !accepted {
+	if accepted := s.contextMgr.RecordInputTokensFor(s.profile, 300, finalLen, ""); !accepted {
 		t.Fatal("RecordInputTokensFor refused the fixture's own profile after the writers stopped")
 	}
 	metrics, pressure := s.ContextStatus()

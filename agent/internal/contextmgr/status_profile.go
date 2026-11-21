@@ -48,12 +48,12 @@ func (cm *Manager) EstimateStatusForRevision(history []schema.Turn, sysPromptCha
 // passed a copy or nil that leaves turns the memo never walked. It must not treat
 // the zero metrics as an answer; it should copy the history and ask again.
 func (cm *Manager) EstimateStatusForHistory(history []schema.Turn, historyLen, sysPromptChars, historyRevision int) (schema.ContextMetrics, float64, *provider.Profile, bool) {
-	prof, lastTokens, measuredLen, profileGen := cm.profileSnapshot()
+	prof, lastTokens, measuredLen, anchor, profileGen := cm.profileSnapshot()
 	window, assumed := EffectiveWindow(prof)
 	if window <= 0 {
 		return schema.ContextMetrics{}, 0, prof, true
 	}
-	used, ok := cm.estimateUsedTokensMemo(prof, profileGen, lastTokens, measuredLen, history, historyLen, sysPromptChars, historyRevision)
+	used, ok := cm.estimateUsedTokensMemo(prof, profileGen, lastTokens, measuredLen, anchor, history, historyLen, sysPromptChars, historyRevision)
 	if !ok {
 		return schema.ContextMetrics{}, 0, prof, false
 	}
@@ -98,6 +98,7 @@ type estimateMemo struct {
 	profileGen  uint64
 	lastTokens  int
 	measuredLen int
+	anchor      string
 	sysPrompt   int
 	revision    int
 }
@@ -130,17 +131,29 @@ func (cm *Manager) ObserveHistory(historyRevision, historyLen int) (covered int,
 // estimateUsedTokensMemo is estimateUsedTokensFor with the memo in front of it.
 // It returns exactly what estimateUsedTokensFor would for the same history, or
 // ok=false when a nil history leaves turns it has not walked.
-func (cm *Manager) estimateUsedTokensMemo(prof *provider.Profile, profileGen uint64, lastTokens, measuredLen int, history []schema.Turn, historyLen int, sysPromptChars, historyRevision int) (int, bool) {
+func (cm *Manager) estimateUsedTokensMemo(prof *provider.Profile, profileGen uint64, lastTokens, measuredLen int, anchor string, history []schema.Turn, historyLen int, sysPromptChars, historyRevision int) (int, bool) {
+	// How many leading turns of the described history the caller did not copy
+	// because the memo covers them. Index i of history is turn skip+i.
+	skip := historyLen - len(history)
+
 	measured := lastTokens > 0 && measuredLen <= historyLen
+	// The anchor turn is history[measuredLen-1], so it is checkable only when the
+	// caller's copy still holds that index. A copy that starts after it can be
+	// vouched for only by a memo built under the same key, which was checked when
+	// it was taken.
+	anchorChecked := false
+	if measured && anchor != "" && measuredLen > 0 {
+		if idx := measuredLen - 1 - skip; idx >= 0 {
+			anchorChecked = true
+			measured = turnAnchor(history[idx]) == anchor
+		}
+	}
 	// The estimator's own baseline. Parts are kept over history[base:] so the
 	// prefix an API measurement already accounts for is never walked.
 	base := 0
 	if measured {
 		base = measuredLen
 	}
-	// How many leading turns of the described history the caller did not copy
-	// because the memo covers them. Index i of history is turn skip+i.
-	skip := historyLen - len(history)
 
 	cm.mu.Lock()
 	memo := cm.estimate
@@ -149,11 +162,18 @@ func (cm *Manager) estimateUsedTokensMemo(prof *provider.Profile, profileGen uin
 	reusable := memo.valid && historyRevision >= 0 && memo.revision == historyRevision &&
 		memo.base == base && memo.profileGen == profileGen &&
 		memo.lastTokens == lastTokens && memo.measuredLen == measuredLen &&
+		memo.anchor == anchor &&
 		memo.sysPrompt == sysPromptChars && memo.turns <= historyLen &&
 		memo.turns >= skip
 	if !reusable && skip > base {
 		// The turns between the measured baseline and the caller's copy start are
 		// in neither the memo nor the copy, so this cannot answer for them.
+		return 0, false
+	}
+	if measured && anchor != "" && !anchorChecked && !reusable {
+		// The prefix the count stands on is outside the copy, and no memo for
+		// this revision vouches for it. Answering would charge a count to turns
+		// nobody checked.
 		return 0, false
 	}
 
@@ -184,6 +204,7 @@ func (cm *Manager) estimateUsedTokensMemo(prof *provider.Profile, profileGen uin
 			profileGen:  profileGen,
 			lastTokens:  lastTokens,
 			measuredLen: measuredLen,
+			anchor:      anchor,
 			sysPrompt:   sysPromptChars,
 			revision:    historyRevision,
 		}

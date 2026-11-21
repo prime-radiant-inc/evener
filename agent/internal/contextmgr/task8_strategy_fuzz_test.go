@@ -145,7 +145,7 @@ func t8AssertUsageAndMetrics(t *testing.T, profile *provider.Profile, history []
 	if usage.InputTokens != base+3 || usage.OutputTokens != base/2+2 || usage.TotalTokens != base+base/2+5 {
 		t.Fatalf("usage sum = %+v, base=%d", usage, base)
 	}
-	cm.RecordInputTokens(base, len(history))
+	cm.RecordInputTokens(base, len(history), "")
 	cm.SetProfile(profile)
 	if got := cm.LastInputTokens(); got != base {
 		t.Fatalf("LastInputTokens = %d, want %d", got, base)

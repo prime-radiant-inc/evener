@@ -1529,6 +1529,12 @@ type Session struct {
 	envContextMCPConnected atomic.Bool // set when round-start MCP redial connects new tools
 	systemPromptFrozen     bool        // cachedSystemPrompt is the immutable launch prompt
 	persistFallbackPrompt  bool        // a restored header carries none, so meta records it
+	// requestMeasurement is the resident history a model request was built from:
+	// its length, the anchor at that length, and the historyRevision at the
+	// snapshot. recordResponseUsage records the provider's input count against
+	// it and discards it when a rewrite landed while the reply streamed.
+	// Guarded by mu.
+	requestMeasurement requestMeasurement
 }
 
 type sessionDetachedProcess struct {

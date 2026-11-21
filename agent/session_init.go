@@ -1588,9 +1588,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 	}()
 
-	// Seed context manager with the meta's token count.
-	if meta.LastInputTokens > 0 && s.contextMgr != nil {
-		s.contextMgr.RecordInputTokens(meta.LastInputTokens, len(s.history))
+	// Seed the persisted measurement only when this resume restored the target
+	// that produced it and the history still holds the measured prefix.
+	if s.contextMgr != nil {
+		if tokens, measuredLen, anchor, ok := restoreInputMeasurement(&meta, s.profile, len(s.history)); ok {
+			s.contextMgr.RecordInputTokens(tokens, measuredLen, anchor)
+		}
 	}
 
 	// Seed persisted cumulative token totals before the first autosave can
@@ -1815,6 +1818,29 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	restoreComplete = true
 	return s, nil
+}
+
+// restoreInputMeasurement decides what persisted measurement a resume may seed.
+// A count belongs only to the instance, model, and protocol that produced it,
+// so a resume under a changed target drops it. Its measured length is the one
+// saved with the count — not the restored history's length, which includes
+// turns appended after the measurement — and the anchor then lets the readers
+// reject a restored prefix that was rewritten. A meta written before the length
+// was persisted has none, so the count keeps the old restored-history-length
+// seed; when the pointer is present, a measured length of 0 means the count was
+// taken over no turns.
+func restoreInputMeasurement(meta *schema.SessionMeta, profile *provider.Profile, historyLen int) (tokens, measuredLen int, anchor string, ok bool) {
+	if meta == nil || profile == nil || meta.LastInputTokens <= 0 {
+		return 0, 0, "", false
+	}
+	if !contextmgr.ProfileTargetMatches(meta.ProfileID, meta.Model, meta.Protocol, profile) {
+		return 0, 0, "", false
+	}
+	measuredLen = historyLen
+	if meta.LastInputMeasuredLen != nil {
+		measuredLen = *meta.LastInputMeasuredLen
+	}
+	return meta.LastInputTokens, measuredLen, meta.LastInputAnchor, true
 }
 
 // cacheReadPtr converts a persisted CumulativeUsage cache-read count back to

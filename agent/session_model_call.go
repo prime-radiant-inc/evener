@@ -280,6 +280,16 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	s.attentionMu.Lock()
 	s.mu.Lock()
 	historyTurns := append([]schema.Turn{}, s.history...)
+	// The response's input count belongs to this snapshot, not to whatever
+	// history holds when the reply settles: a fold that publishes while the
+	// reply streams rewrites history, and pairing the pre-fold count with the
+	// post-fold length would make the meter jump back to the old usage.
+	s.requestMeasurement = requestMeasurement{
+		ok:       true,
+		length:   len(historyTurns),
+		anchor:   contextmgr.PrefixAnchor(historyTurns, len(historyTurns)),
+		revision: s.historyRevision,
+	}
 	// A request's coverage belongs to its history snapshot. A later fold may
 	// replace a retracted frontier before this request stages its inputs.
 	historyCoverage := s.snapshotConversationCoverageLocked(historyTurns)
@@ -481,6 +491,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	rebuildForAppendedSkillTurns := func() (bool, error) {
 		s.mu.Lock()
 		var appended []schema.Turn
+		priorMeasurement := s.requestMeasurement
 		// Measure against the snapshot this request projected (presentedTurns),
 		// not the round snapshot (historyTurns): a leased delegate round
 		// projects the controller's later snapshot, which can already hold the
@@ -492,6 +503,14 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// history, and moving it down with the drop below would make every
 			// withheld row look like a fresh append on the next rebuild.
 			presentedBoundary = len(s.history)
+			// The rebuilt request presents these appended turns, so the input
+			// count the provider returns for it covers them. Move the
+			// measurement up with the request; left on the pre-rebuild
+			// snapshot, the reader prices the appended turns a second time as
+			// a delta past the measured prefix. A fold that landed since the
+			// capture refuses the advance, so settlement drops the pre-fold
+			// count instead of charging it to the folded history.
+			s.advanceRequestMeasurementLocked()
 		}
 		historyTurns = append([]schema.Turn{}, s.history...)
 		s.mu.Unlock()
@@ -524,6 +543,12 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// The boundary already advanced past the withheld steer, so it stays
 			// outside every later rebuild window this round; the next claim binds it.
 			if len(appended) == 0 {
+				// Nothing is rebuilt, so the request still presents the
+				// pre-rebuild snapshot: the advance above would claim coverage
+				// of turns the provider never sees.
+				s.mu.Lock()
+				s.requestMeasurement = priorMeasurement
+				s.mu.Unlock()
 				return false, nil
 			}
 		}
@@ -1579,14 +1604,81 @@ func (s *Session) recordResponseUsage(resp llm.Response, req llm.Request, answer
 		responseHasServerWebSearch(resp.Message.Content),
 	)
 	if record {
-		s.mu.Lock()
-		hLen := len(s.history)
-		s.mu.Unlock()
-		// Only the profile that answered may own this measurement: a SetModel
-		// during the request cleared the measurement it belonged to (roborev's
-		// fifteenth round).
-		s.contextMgr.RecordInputTokensFor(answeringProfile, tokens, hLen)
+		// The check and the recording are one critical section. A fold
+		// publishes rewritten history under s.mu and clears the count there,
+		// so a reply that validated just before publication would otherwise
+		// reinstall its pre-fold count after the clear.
+		func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			hLen, anchor, ok := s.settleRequestMeasurementLocked()
+			if !ok {
+				return
+			}
+			// Only the profile that answered may own this measurement: a
+			// SetModel during the request cleared the measurement it belonged
+			// to (roborev's fifteenth round).
+			s.contextMgr.RecordInputTokensFor(answeringProfile, tokens, hLen, anchor)
+		}()
 	}
+}
+
+// requestMeasurement is the history a model request was built from. length and
+// anchor name the prefix the provider's input count covers; revision is the
+// historyRevision at that snapshot, which an ordinary append never bumps.
+type requestMeasurement struct {
+	ok       bool
+	length   int
+	anchor   string
+	revision int
+}
+
+// advanceRequestMeasurementLocked moves the pending measurement up to the
+// current history, for a request rebuilt before dispatch whose appended turns
+// the provider's count will cover. It refuses when the captured measurement no
+// longer describes this history — a fold or repair bumped the revision, or the
+// measured prefix was rewritten — leaving the stale snapshot in place so
+// settlement rejects the pre-rewrite count. The caller must hold s.mu.
+func (s *Session) advanceRequestMeasurementLocked() bool {
+	m := s.requestMeasurement
+	if !m.ok || m.revision != s.historyRevision {
+		return false
+	}
+	if m.length > 0 && contextmgr.PrefixAnchor(s.history, m.length) != m.anchor {
+		return false
+	}
+	s.requestMeasurement = requestMeasurement{
+		ok:       true,
+		length:   len(s.history),
+		anchor:   contextmgr.PrefixAnchor(s.history, len(s.history)),
+		revision: s.historyRevision,
+	}
+	return true
+}
+
+// settleRequestMeasurementLocked returns the prefix a response's input count
+// may be recorded against. A historyRevision change means a fold or repair
+// rewrote history while the reply streamed: the pre-fold count and the
+// post-fold history describe different conversations, so it is dropped rather
+// than paired with the new shape. History that only grew keeps the captured
+// prefix, and the reader prices the appended turns as a delta. A session with
+// no capture (a direct caller outside the round loop) measures what is resident
+// now. The caller holds s.mu across this check and the recording, so a fold
+// publishing rewritten history cannot interleave between them.
+func (s *Session) settleRequestMeasurementLocked() (length int, anchor string, ok bool) {
+	m := s.requestMeasurement
+	s.requestMeasurement = requestMeasurement{}
+	if !m.ok {
+		historyLen := len(s.history)
+		return historyLen, contextmgr.PrefixAnchor(s.history, historyLen), true
+	}
+	if s.historyRevision != m.revision || len(s.history) < m.length {
+		return 0, "", false
+	}
+	if m.length > 0 && contextmgr.PrefixAnchor(s.history, m.length) != m.anchor {
+		return 0, "", false
+	}
+	return m.length, m.anchor, true
 }
 
 // responseHasServerWebSearch reports whether a response's content includes a
