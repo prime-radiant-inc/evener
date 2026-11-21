@@ -664,6 +664,66 @@ func TestProtocolIncompleteStreamNamesTheInstanceAndDistinguishesQueuedEOF(t *te
 		if preIDErr != nil || preIDHits.Load() != 2 {
 			t.Fatalf("pre-ID stored StreamGenerate err=%v hits=%d, want nil and 2 POSTs", preIDErr, preIDHits.Load())
 		}
+
+		// Omitted store (fields.store = false) defaults to stored on Google servers, so disconnect after interaction.created is also non-retryable.
+		createdOmittedThenDrop := "event: interaction.created\n" +
+			`data: {"event_type":"interaction.created","interaction":{"id":"int_omitted_1","status":"in_progress"}}` + "\n\n"
+		var omittedHits atomic.Int32
+		srvOmitted := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			n := omittedHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			if n == 1 {
+				_, _ = w.Write([]byte(createdOmittedThenDrop))
+				return
+			}
+			_, _ = w.Write([]byte(interactionsSSE))
+		}))
+		t.Cleanup(srvOmitted.Close)
+		rOmitted, err := registry.Load(
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+			registry.WithInstances(map[string]registry.Provider{
+				"google": {
+					Base:      "google",
+					APIKey:    "k",
+					Caps:      registry.Caps{Fields: map[string]bool{"store": false}},
+					Transport: registry.Transport{BaseURL: srvOmitted.URL + "/v1beta"},
+				},
+			}),
+		)
+		if err != nil {
+			t.Fatalf("registry.Load: %v", err)
+		}
+		cOmitted := llm.NewClient(llm.WithRegistry(rOmitted))
+		srOmitted, err := llm.StreamGenerate(context.Background(), llm.GenerateOptions{
+			Client:   cOmitted,
+			Provider: "google",
+			Model:    "gemini-3.8-flash",
+			Prompt:   new("hello"),
+			Sleep:    noSleep,
+		})
+		if err != nil {
+			t.Fatalf("omitted-store StreamGenerate open: %v", err)
+		}
+		var omittedErr error
+		for ev := range srOmitted.Events() {
+			if ev.Type == llm.StreamEventError {
+				omittedErr = ev.Err
+			}
+		}
+		if omittedHits.Load() != 1 {
+			t.Fatalf("omitted-store StreamGenerate HTTP POSTs = %d, want 1", omittedHits.Load())
+		}
+		leOmitted, ok := errors.AsType[llm.Error](omittedErr)
+		if !ok || leOmitted.Retryable() || !errors.Is(omittedErr, ErrPendingInteractionStatus) {
+			t.Fatalf("omitted-store in_progress EOF error = %T %v, want non-retryable ErrPendingInteractionStatus", omittedErr, omittedErr)
+		}
+		rawOmitted, _ := leOmitted.Raw().(map[string]any)
+		if rawOmitted["interaction_id"] != "int_omitted_1" {
+			t.Fatalf("omitted-store in_progress EOF raw = %#v, want interaction_id=int_omitted_1", leOmitted.Raw())
+		}
 	})
 }
 

@@ -466,16 +466,11 @@ func (a *interactionStreamAccumulator) handleStepStop(idx int, payload map[strin
 	}
 	switch slot.stepType {
 	case "thought":
-		if slot.hadStreamedSummary {
-			if slot.spanStarted {
-				a.emit(slot, llm.StreamEvent{Type: llm.StreamEventReasoningEnd})
-			}
-			slot.spanEnded = true
-			a.advanceEmitIndex()
-		} else if a.summariesDisabled {
-			slot.spanEnded = true
-			a.advanceEmitIndex()
+		if slot.hadStreamedSummary && slot.spanStarted {
+			a.emit(slot, llm.StreamEvent{Type: llm.StreamEventReasoningEnd})
 		}
+		slot.spanEnded = true
+		a.advanceEmitIndex()
 	case "model_output":
 		if slot.hadStreamedText {
 			if slot.spanStarted {

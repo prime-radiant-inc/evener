@@ -561,7 +561,7 @@ func TestInteraction_SSE_SlotQueueSummariesAndUnstoppedSpans(t *testing.T) {
 		}
 	})
 
-	t.Run("summariesDisabled advances immediately at step.stop while summary-enabled signed thought waits", func(t *testing.T) {
+	t.Run("stopped signature-only thought advances live emission immediately while unstopped thought backfills", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		pr, pw := io.Pipe()
@@ -598,16 +598,60 @@ func TestInteraction_SSE_SlotQueueSummariesAndUnstoppedSpans(t *testing.T) {
 			t.Fatal("summariesDisabled stream failed to emit step 1 text delta before interaction.completed")
 		}
 
-		// With summariesDisabled=false, a signed thought without streamed summary waits until interaction.completed.
-		sseEnabled := buildSSE(
+		// With summariesDisabled=false (default automatic summaries), a stopped signature-only thought also advances live emission immediately at step.stop while keeping signature and any terminal-only summary in the settled response.
+		ctxAuto, cancelAuto := context.WithCancel(context.Background())
+		defer cancelAuto()
+		prAuto, pwAuto := io.Pipe()
+		httpRespAuto := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: prAuto}
+		streamAuto := llm.NewChanStream(cancelAuto)
+		go decodeInteractionStream(ctxAuto, cancelAuto, httpRespAuto, streamAuto, llm.Request{Model: "gemini-4-neon"}, "gemini-prod", "gemini-4-neon", "", llm.APILogCredentialMaterial{}, nil, false, false, nil)
+
+		unblockTimer := time.AfterFunc(250*time.Millisecond, func() { _ = pwAuto.Close() })
+		defer unblockTimer.Stop()
+
+		go func() {
+			_, _ = io.WriteString(pwAuto, buildSSE(
+				[2]string{"step.start", `{"event_type":"step.start","index":0,"step":{"type":"thought","signature":"sig_yes"}}`},
+				[2]string{"step.stop", `{"event_type":"step.stop","index":0}`},
+				[2]string{"step.start", `{"event_type":"step.start","index":1,"step":{"type":"model_output"}}`},
+				[2]string{"step.delta", `{"event_type":"step.delta","index":1,"delta":{"type":"text","text":"live_auto_answer"}}`},
+			))
+		}()
+
+		var sawAutoLiveText bool
+		var settledAuto *llm.Response
+		for ev := range streamAuto.Events() {
+			if ev.Type == llm.StreamEventTextDelta && ev.Delta == "live_auto_answer" {
+				unblockTimer.Stop()
+				sawAutoLiveText = true
+				_, _ = io.WriteString(pwAuto, buildSSE(
+					[2]string{"step.stop", `{"event_type":"step.stop","index":1}`},
+					[2]string{"interaction.completed", `{"event_type":"interaction.completed","interaction":{"id":"i_sum2","status":"completed","steps":[{"type":"thought","signature":"sig_yes","summary":[{"type":"text","text":"terminal summary"}]},{"type":"model_output","content":[{"type":"text","text":"live_auto_answer"}]}]}}`},
+				))
+				_ = pwAuto.Close()
+			}
+			if ev.Type == llm.StreamEventFinish {
+				settledAuto = ev.Response
+			}
+		}
+		if !sawAutoLiveText {
+			t.Fatal("summary-enabled stream held back live text delta behind a stopped signature-only thought")
+		}
+		if settledAuto == nil || len(settledAuto.Message.Content) != 2 ||
+			settledAuto.Message.Content[0].Thinking.Signature != "sig_yes" ||
+			settledAuto.Message.Content[0].Thinking.Text != "terminal summary" {
+			t.Fatalf("settled response lost signature or terminal summary: %+v", settledAuto)
+		}
+
+		// An unstopped thought (no step.stop before interaction.completed) still emits terminal summary reasoning in order.
+		sseUnstopped := buildSSE(
 			[2]string{"step.start", `{"event_type":"step.start","index":0,"step":{"type":"thought","signature":"sig_yes"}}`},
-			[2]string{"step.stop", `{"event_type":"step.stop","index":0}`},
 			[2]string{"step.start", `{"event_type":"step.start","index":1,"step":{"type":"model_output"}}`},
 			[2]string{"step.delta", `{"event_type":"step.delta","index":1,"delta":{"type":"text","text":"answer"}}`},
 			[2]string{"step.stop", `{"event_type":"step.stop","index":1}`},
 			[2]string{"interaction.completed", `{"event_type":"interaction.completed","interaction":{"id":"i_sum2","status":"completed","steps":[{"type":"thought","signature":"sig_yes","summary":[{"type":"text","text":"terminal summary"}]}]}}`},
 		)
-		resp2, events2, err := runInteractionsSSETest(t, sseEnabled, "gemini-prod", "gemini-4-neon", false)
+		resp2, events2, err := runInteractionsSSETest(t, sseUnstopped, "gemini-prod", "gemini-4-neon", false)
 		if err != nil {
 			t.Fatalf("summary-enabled SSE: %v", err)
 		}
