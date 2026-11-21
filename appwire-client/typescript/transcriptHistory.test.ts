@@ -1905,6 +1905,180 @@ test("a wait-free read of the same running turn keeps the wake's zero-delay chip
   expect(after.quotaResumesAt).toBeUndefined();
 });
 
+// The retrying turn as a read reports it: the pre-wake steer the client
+// already holds, plus whatever the read carries now.
+function retryReadTurn(
+  items: Array<{
+    id: string;
+    type: "userMessage" | "agentMessage" | "reasoning" | "commandExecution";
+    version?: number;
+  }>,
+): Turn {
+  return {
+    id: "turn_1",
+    status: "active",
+    itemsView: "fragment",
+    items: items.map((item) => ({
+      id: item.id,
+      turnId: "turn_1",
+      type: item.type,
+      text: item.id,
+      status: "completed",
+      version: item.version,
+    })),
+  } as Turn;
+}
+
+// The held state the new tests share: turn_1 running, holding the pre-wake
+// steer; the wait starts (stamp 4) and its wake leaves the zero-delay chip and
+// the ended stamp 4 — copied from the two tests above.
+function modelAwaitingRetriedOutput(): ThreadModel {
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  let model = testHydrate({
+    status: { type: "active" },
+    evener: { activeTurnId: "turn_1" },
+    turns: [retryReadTurn([{ id: "item_user", type: "userMessage" }])],
+  });
+  // The wait starts...
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: 21_600_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 0,
+        waitStartedAt: 4,
+        resumesAt: deadline,
+      },
+    },
+    1500,
+  );
+  // ...and its wake clears the hold, leaving the progress chip and the ended
+  // stamp.
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: 0,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 0,
+        waitStartedAt: 4,
+      },
+    },
+    1600,
+  );
+  return model;
+}
+
+// The wake's zero-delay chip is the retry's PROGRESS state, so the read stops
+// being "not news" as soon as it carries model output the client does not
+// hold: the call has produced something after the wake, and the chip has
+// nothing left to describe.
+test("a wait-free read that shows post-wake model output in the retrying turn retires the zero-delay chip", () => {
+  const model = modelAwaitingRetriedOutput();
+  const read = testThread({
+    status: { type: "active" },
+    evener: { activeTurnId: "turn_1" },
+    turns: [
+      retryReadTurn([
+        { id: "item_user", type: "userMessage" },
+        { id: "item_out", type: "agentMessage", version: 6 },
+      ]),
+    ],
+  });
+
+  const after = applyReadResponse(model, { thread: read }, 2000);
+
+  expect(after.modelRetry).toBeUndefined();
+  expect(after.quotaWaitEndedStamp).toBe(4);
+  expect(after.quotaResumesAt).toBeUndefined();
+});
+
+// The mobile shape (applyReadModel on a caller-hydrated model) gets the same
+// verdict from the same guard: the read's recorded turns carry the output.
+test("applyReadModel retires the zero-delay chip when the hydrated read shows new model output", () => {
+  const model = modelAwaitingRetriedOutput();
+  const fresh = hydrateThread(
+    {
+      thread: testThread({
+        status: { type: "active" },
+        evener: { activeTurnId: "turn_1" },
+        turns: [
+          retryReadTurn([
+            { id: "item_user", type: "userMessage" },
+            { id: "item_out", type: "agentMessage", version: 6 },
+          ]),
+        ],
+      }),
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+    },
+    "ref_t",
+    2000,
+  );
+
+  const after = applyReadModel(model, fresh);
+
+  expect(after.modelRetry).toBeUndefined();
+  expect(after.quotaWaitEndedStamp).toBe(4);
+});
+
+// The same running turn with nothing the client does not already hold is not
+// news about the call: the chip and its receipt instant stand.
+test("a wait-free read that shows only already-held items in the retrying turn keeps the zero-delay chip", () => {
+  const model = modelAwaitingRetriedOutput();
+  const read = testThread({
+    status: { type: "active" },
+    evener: { activeTurnId: "turn_1" },
+    turns: [retryReadTurn([{ id: "item_user", type: "userMessage" }])],
+  });
+
+  const after = applyReadResponse(model, { thread: read }, 2000);
+
+  expect(after.modelRetry?.delayMs).toBe(0);
+  expect(after.modelRetry?.attempt).toBe(1);
+  expect(after.modelRetry?.receivedAt).toBe(1600);
+  expect(after.quotaWaitEndedStamp).toBe(4);
+});
+
+// A steer arriving mid-grind is not model output: it must not retire the
+// chip the way an assistant message, reasoning row, or generated command does.
+test("a wait-free read that adds only a user steer to the retrying turn keeps the zero-delay chip", () => {
+  const model = modelAwaitingRetriedOutput();
+  const read = testThread({
+    status: { type: "active" },
+    evener: { activeTurnId: "turn_1" },
+    turns: [
+      retryReadTurn([
+        { id: "item_user", type: "userMessage" },
+        { id: "item_steer", type: "userMessage" },
+      ]),
+    ],
+  });
+
+  const after = applyReadResponse(model, { thread: read }, 2000);
+
+  expect(after.modelRetry?.delayMs).toBe(0);
+  expect(after.modelRetry?.attempt).toBe(1);
+  expect(after.modelRetry?.receivedAt).toBe(1600);
+  expect(after.quotaWaitEndedStamp).toBe(4);
+});
+
 // The daemon's retired-input list is the only durable evidence that a canceled
 // message will never reach history. A read snapshot must carry it, or the
 // client can never retire the row that message left behind.
