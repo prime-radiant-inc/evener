@@ -193,7 +193,11 @@ func (s *Session) prepareSubagentEnvironmentFor(workingDir string, requested *sa
 		} else {
 			policy := *requested
 			policy.InfraReadRoots = SessionInfraRoots(s.cfg, local)
-			resolved, err = sandbox.Resolve(policy, s.sandboxHostFacts(), local.WorkingDirectory())
+			host := s.sandboxHostFacts()
+			if s.cfg.testOnly.sandboxProber == nil {
+				host = WithGoToolchainGrant(host, local, local.WorkingDirectory())
+			}
+			resolved, err = sandbox.Resolve(policy, host, local.WorkingDirectory())
 		}
 		if err != nil {
 			local.DisposeSandboxScratch()
@@ -693,7 +697,11 @@ func provisionRestoredSandbox(cfg SessionConfig, env execenv.ExecutionEnvironmen
 	if cfg.testOnly.sandboxProber != nil {
 		prober = cfg.testOnly.sandboxProber
 	}
-	rp, err := sandbox.ResolveNamed(cfg.Sandbox, cfg.SandboxNet, prober.Probe(), env.WorkingDirectory(), SessionInfraRoots(cfg, env))
+	host := prober.Probe()
+	if cfg.testOnly.sandboxProber == nil {
+		host = WithGoToolchainGrant(host, le, env.WorkingDirectory())
+	}
+	rp, err := sandbox.ResolveNamed(cfg.Sandbox, cfg.SandboxNet, host, env.WorkingDirectory(), SessionInfraRoots(cfg, env))
 	if err != nil {
 		return fmt.Errorf("restore session sandbox: %w", err)
 	}

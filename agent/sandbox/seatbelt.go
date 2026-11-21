@@ -104,10 +104,10 @@ func SeatbeltPolicy(rp ResolvedPolicy, sessionTmp string, canon Canonicalizer) (
 	}
 	ps := &paramSet{canon: canon}
 
-	readKeys := readRootKeys(rp, sessionTmp, ps)
+	readKeys, socketKeys := readRootKeys(rp, sessionTmp, ps)
 	read := buildAllowRule("file-read*", readKeys)
 	write := buildAllowRule("file-write*", writeRootKeys(rp, sessionTmp, ps))
-	network := networkSection(rp, readKeys)
+	network := networkSection(rp, socketKeys)
 	denials := denySection(rp, ps)
 
 	sections := []string{seatbeltBasePolicy}
@@ -159,20 +159,30 @@ func (ps *paramSet) define(key, path string) string {
 	return key
 }
 
-// readRootKeys allocates the read allow's root params. ReadAnywhere (read-only,
+// readRootKeys allocates the read allow's root params, and separately the keys
+// the restricted-mode unix-socket allow may name. ReadAnywhere (read-only,
 // workspace-write) grants "/" — reads are "anywhere minus the denylist", with the
 // denylist subtracted authoritatively by denySection. Worktree-only (restricted)
-// grants each read root plus the session tmp.
-func readRootKeys(rp ResolvedPolicy, sessionTmp string, ps *paramSet) []string {
+// grants each read root plus the session tmp; a root in SocketExemptReadRoots
+// (a toolchain read grant) is omitted from the socket keys.
+func readRootKeys(rp ResolvedPolicy, sessionTmp string, ps *paramSet) (keys, socketKeys []string) {
 	if rp.Spawned.Read == ReadAnywhere {
-		return []string{ps.define("READABLE_ROOT_0", "/")}
+		key := ps.define("READABLE_ROOT_0", "/")
+		return []string{key}, []string{key}
+	}
+	exempt := make(map[string]bool, len(rp.SocketExemptReadRoots))
+	for _, root := range rp.SocketExemptReadRoots {
+		exempt[ps.canon(root)] = true
 	}
 	roots := dedupeRoots(appendNonEmpty(slices.Clone(rp.Spawned.ReadRoots), sessionTmp))
-	keys := make([]string, 0, len(roots))
 	for i, root := range roots {
-		keys = append(keys, ps.defineRead(fmt.Sprintf("READABLE_ROOT_%d", i), root)...)
+		rootKeys := ps.defineRead(fmt.Sprintf("READABLE_ROOT_%d", i), root)
+		keys = append(keys, rootKeys...)
+		if !exempt[ps.canon(root)] {
+			socketKeys = append(socketKeys, rootKeys...)
+		}
 	}
-	return keys
+	return keys, socketKeys
 }
 
 // defineRead records the read-grant param(s) for ONE read root: the canonical
@@ -440,9 +450,10 @@ func buildAllowRule(action string, rootKeys []string) string {
 //
 // Restricted mode gets a closed outbound set instead of the blanket allow:
 // TCP/UDP, the mDNSResponder resolver socket, and a unix-socket grant
-// per read root (the params the file-read allow already defines, so no read-root
-// path text enters the policy). Read-only and workspace-write keep the blanket
-// allow byte-for-byte; the ruling is documented in docs/sandboxing.md.
+// per read root that is a socket surface (the params the file-read allow already
+// defines, so no read-root path text enters the policy; toolchain-only read
+// roots are excluded, see readRootKeys). Read-only and workspace-write keep the
+// blanket allow byte-for-byte; the ruling is documented in docs/sandboxing.md.
 // net=off returns "" — the base's (deny default) then blocks all egress with no
 // explicit deny.
 func networkSection(rp ResolvedPolicy, readKeys []string) string {

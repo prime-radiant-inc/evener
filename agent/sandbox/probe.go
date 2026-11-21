@@ -20,6 +20,7 @@ import (
 
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/envvars/userdirs"
+	"primeradiant.com/evener/execsupport/orphanpipe"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -98,6 +99,23 @@ type HostFacts struct {
 	// naming it. It adds no grant — the directory is already inside the read-only
 	// toolchain grant.
 	DeveloperToolBinDir string
+
+	// GoToolchainRoots are the Go toolchain root (GOROOT) the host's go
+	// command resolves, when that root is knowable. Restricted mode grants it
+	// READ access to spawned processes because the go command can run from a
+	// granted path while its tool directory (GOROOT/pkg/tool) sits outside every
+	// system read root — a version-manager toolchain, a golang.org/dl SDK, or a
+	// GOTOOLCHAIN-selected toolchain — and `go test` then dies with
+	// `no such tool "vet"` (issue #4235). Read-only, spawned layer only, and
+	// only consulted by restricted mode. Empty on non-darwin hosts, when go is
+	// not on PATH, or when the probe has no answer; that never fails session
+	// start.
+	GoToolchainRoots []string
+
+	// GoToolchainGoBin is the launcher the GOROOT probe ran. The resolver
+	// refuses the grant when the worktree controls it: a sandboxed session can
+	// write its own worktree, so a go planted there is not a host toolchain.
+	GoToolchainGoBin string
 
 	// GitGlobalConfigPaths are the user's GLOBAL git config FILES that exist on
 	// this host. git-config(1) FILES names two of them —
@@ -446,15 +464,53 @@ func (hostProbeSystem) run(ctx context.Context, name string, args ...string) err
 }
 
 func (hostProbeSystem) combinedOutput(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = probeWaitDelay
+	out, err := cmd.CombinedOutput()
+	return out, orphanpipe.ChildErr(cmd, err)
 }
 
 func (hostProbeSystem) output(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).Output()
+	return hostProbeSystem{}.outputWithEnv(ctx, nil, name, args...)
+}
+
+// outputWithEnv runs the child with extraEnv appended to the daemon's
+// environment.
+func (hostProbeSystem) outputWithEnv(ctx context.Context, extraEnv []string, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	if len(extraEnv) > 0 {
+		// A repeated key is ambiguous: getenv takes whichever entry it reaches
+		// first. Drop the inherited entry so the explicit one is the only one.
+		overridden := make(map[string]bool, len(extraEnv))
+		for _, kv := range extraEnv {
+			if key, _, ok := strings.Cut(kv, "="); ok {
+				overridden[key] = true
+			}
+		}
+		env := make([]string, 0, len(os.Environ())+len(extraEnv))
+		for _, kv := range os.Environ() {
+			if key, _, ok := strings.Cut(kv, "="); ok && overridden[key] {
+				continue
+			}
+			env = append(env, kv)
+		}
+		cmd.Env = append(env, extraEnv...)
+	}
+	cmd.WaitDelay = probeWaitDelay
+	out, err := cmd.Output()
+	return out, orphanpipe.ChildErr(cmd, err)
 }
 
 // probeCommandTimeout bounds each capability-probe subprocess.
 var probeCommandTimeout = 3 * time.Second
+
+// probeWaitDelay bounds how long a probe waits for a captured output pipe to
+// close after its child exits or is killed. A launcher shim (a version-manager
+// wrapper, a shell rc hook) can hand the pipe to a background descendant that
+// outlives the child, and exec otherwise waits for that descendant before
+// Output returns -- past probeCommandTimeout. orphanpipe.ChildErr folds the
+// drain-only exec.ErrWaitDelay back into the child's own answer.
+const probeWaitDelay = time.Second
 
 // Probe gathers host capabilities. The bwrap capability and overlay probes are
 // intentionally conservative here (presence + version); M3 hardens BwrapCapable
@@ -519,6 +575,7 @@ func probeHost(system probeSystem) HostFacts {
 		}
 		facts.DeveloperToolRoots = probeDeveloperToolRoots(system)
 		facts.DeveloperToolBinDir = probeDeveloperToolBinDir(system)
+		facts.GoToolchainRoots, facts.GoToolchainGoBin = probeGoToolchainRoots(system, "", "")
 	}
 
 	return facts
@@ -1170,6 +1227,178 @@ func probeDeveloperToolRoots(system probeSystem) []string {
 	add(enclosingAppBundle(activeDeveloperDir(system)))
 	add(commandLineToolsRoot)
 	return out
+}
+
+// goInstallPrefixLaunchers are the install-prefix go binaries the GOROOT probe
+// falls back to when the daemon's inherited PATH does not name go. A daemon
+// started by launchd or a GUI session inherits a PATH that skips the shell rc
+// chain -- the reason spawned commands get the login PATH -- so Homebrew's go
+// can be reachable in a session and invisible to this probe.
+var goInstallPrefixLaunchers = []string{
+	"/usr/local/go/bin/go",
+	"/opt/homebrew/bin/go",
+	"/usr/local/bin/go",
+	"/opt/local/bin/go",
+}
+
+// ProbeGoToolchain returns the GOROOT roots of the go the given session PATH
+// selects, and that launcher. sessionPATH is the PATH spawned commands run
+// with; worktree is the session's writable tree, whose entries are never
+// executed and never reach the child's PATH.
+func ProbeGoToolchain(sessionPATH, worktree string) ([]string, string) {
+	return probeGoToolchainRoots(hostProbeSystem{}, sessionPATH, worktree)
+}
+
+// probeGoToolchainRoots returns the GOROOT the go selected by sessionPATH
+// resolves, or nil when no launcher answers.
+//
+// The answer is probed with `go env -C / GOROOT` rather than read from the go
+// env file, because GOROOT is not one of the settings that file reliably names:
+// it can also come from the environment or from the toolchain go selected. -C /
+// runs the query outside any module, and the query pins GOWORK=off so no
+// workspace can decide the answer. A second query lets the host's GOTOOLCHAIN
+// select an installed SDK — the toolchain the spawned go will actually use —
+// while GOPROXY=off keeps it from downloading one before the sandbox exists.
+// -C needs Go 1.20+, and an older go simply contributes no root.
+//
+// Launchers are tried in the order a spawned command would resolve one: the
+// session PATH first, since that is what the shell tool hands its children,
+// then the daemon's PATH, then the standard install prefixes.
+func probeGoToolchainRoots(system probeSystem, sessionPATH, worktree string) ([]string, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), probeCommandTimeout)
+	defer cancel()
+	probePATH := trustedSessionPATH(sessionPATH, worktree)
+	seen := make(map[string]bool, len(goInstallPrefixLaunchers)+1)
+	for _, goBin := range goLaunchers(system, probePATH, worktree) {
+		// Two spellings can name one launcher (a PATH entry and a prefix
+		// fallback); the second cannot answer differently.
+		key := goBin
+		if canonical := CanonicalDir(goBin); canonical != "" {
+			key = canonical
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		roots := goEnvGOROOT(ctx, system, goProbeEnv(probePATH, "GOTOOLCHAIN=local"), goBin)
+		roots = append(roots, goEnvGOROOT(ctx, system, goProbeEnv(probePATH, "GOPROXY=off"), goBin)...)
+		if len(roots) > 0 {
+			return dedupeRoots(roots), goBin
+		}
+	}
+	return nil, ""
+}
+
+// trustedSessionPATH returns the session PATH entries the probe may execute
+// from. A relative, empty or worktree-controlled entry is dropped: the session
+// can write its worktree, so a go planted there is not a host toolchain, and a
+// shim that needs a helper from one is a shim for that tree.
+func trustedSessionPATH(sessionPATH, worktree string) []string {
+	var out []string
+	for _, dir := range filepath.SplitList(sessionPATH) {
+		if dir == "" || !filepath.IsAbs(dir) {
+			continue
+		}
+		dir = filepath.Clean(dir)
+		if underWorktree(dir, worktree) || slices.Contains(out, dir) {
+			continue
+		}
+		out = append(out, dir)
+	}
+	return out
+}
+
+// goLaunchers lists the go binaries the probe may run, most specific first:
+// the one the session PATH resolves, then the daemon's PATH, then the
+// install-prefix fallbacks present on disk. A launcher the worktree controls is
+// never executed, and neither is a symlink naming one: the probe runs outside
+// the sandbox, so its own boundary is checked before the child starts.
+func goLaunchers(system probeSystem, probePATH []string, worktree string) []string {
+	var out []string
+	appendGoBin := func(goBin string) {
+		if goBin == "" || underWorktree(goBin, worktree) || slices.Contains(out, goBin) {
+			return
+		}
+		out = append(out, goBin)
+	}
+	// Spawned commands resolve go through the session PATH, so its first
+	// existing go is the installation the grant has to cover. A rc-chain entry
+	// the daemon cannot see would otherwise pick a different toolchain than the
+	// one the probe recorded.
+	for _, dir := range probePATH {
+		goBin := filepath.Join(dir, "go")
+		if system.nonDirectoryFile(goBin) {
+			appendGoBin(goBin)
+		}
+	}
+	if goBin, err := system.lookPath("go"); err == nil {
+		appendGoBin(goBin)
+	}
+	for _, goBin := range goInstallPrefixLaunchers {
+		if !system.nonDirectoryFile(goBin) {
+			continue
+		}
+		// A standard prefix is a trusted install location, not a licence to
+		// follow its symlink anywhere: a prefix entry pointing outside the
+		// prefix (into a worktree, say) is not that installation's go.
+		if canonical := CanonicalDir(goBin); canonical != "" && !identifier.PathUnder(canonical, filepath.Dir(filepath.Dir(goBin))) {
+			continue
+		}
+		appendGoBin(goBin)
+	}
+	return out
+}
+
+// goEnvGOROOT runs the bounded `go env -C / GOROOT` query and returns the
+// answer only when it is an absolute path naming an existing directory. The
+// caller's context is the TOTAL budget for discovery, so a launcher that times
+// out leaves the remaining candidates only the time that is left.
+func goEnvGOROOT(ctx context.Context, system probeSystem, extraEnv []string, goBin string) []string {
+	out, err := probeOutput(ctx, system, extraEnv, goBin, "env", "-C", "/", "GOROOT")
+	if err != nil {
+		return nil
+	}
+	root := filepath.Clean(strings.TrimSpace(string(trimTrailingNewline(out))))
+	// A relative answer names a directory under Evener's own working directory,
+	// not a toolchain root: filepath.Clean(".", "relative/...") stays relative.
+	canonical := CanonicalDir(root)
+	if !filepath.IsAbs(root) || canonical == "" {
+		return nil
+	}
+	// Keep the spelling go reported. Seatbelt judges the path a process actually
+	// names, and the read emitter adds the canonical alias for a symlinked
+	// spelling (paramSet.defineRead). The canonical form rides along so the
+	// resolver can drop a spelling the worktree itself can retarget.
+	if canonical == root {
+		return []string{root}
+	}
+	return []string{root, canonical}
+}
+
+// goProbeEnv builds the discovery query's environment. GOWORK=off keeps a
+// workspace out of the answer; the validated session PATH lets a version-manager
+// shim find its own helpers without exposing a worktree entry; pins decide
+// whether the query may follow the host's toolchain selection.
+func goProbeEnv(probePATH []string, pins ...string) []string {
+	env := []string{"GOWORK=off"}
+	if len(probePATH) > 0 {
+		env = append(env, "PATH="+strings.Join(probePATH, string(filepath.ListSeparator)))
+	}
+	return append(env, pins...)
+}
+
+// probeSystemWithEnv is the optional capability behind the GOROOT probe: a
+// system that can run a child with extra environment entries. Stubs that do
+// not implement it fall back to output, which inherits the process env.
+type probeSystemWithEnv interface {
+	outputWithEnv(ctx context.Context, extraEnv []string, name string, args ...string) ([]byte, error)
+}
+
+func probeOutput(ctx context.Context, system probeSystem, extraEnv []string, name string, args ...string) ([]byte, error) {
+	if envSystem, ok := system.(probeSystemWithEnv); ok {
+		return envSystem.outputWithEnv(ctx, extraEnv, name, args...)
+	}
+	return system.output(ctx, name, args...)
 }
 
 // probeDeveloperToolBinDir returns the active developer directory's bin

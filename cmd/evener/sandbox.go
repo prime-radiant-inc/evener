@@ -19,7 +19,9 @@ var probeSandboxHost = func() sandbox.HostFacts {
 // provisionSandbox is cmdutil.ProvisionSandbox against the real host probe;
 // tests swap probeSandboxHost to control the host facts.
 func provisionSandbox(env *execenv.LocalExecutionEnvironment, cfg *agent.SessionConfig, cwd string) error {
-	return cmdutil.ProvisionSandbox(env, cfg, cwd, probeSandboxHost)
+	return cmdutil.ProvisionSandbox(env, cfg, cwd, func() sandbox.HostFacts {
+		return agent.WithGoToolchainGrant(probeSandboxHost(), env, cwd)
+	})
 }
 
 // startScratchReclaim runs the reclaim for a command working in workingDir on

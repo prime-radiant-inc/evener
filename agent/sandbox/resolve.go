@@ -143,6 +143,13 @@ type ResolvedPolicy struct {
 	// Spawned is the kernel-wrapped process layer's grants (M3/M6 satisfy).
 	Spawned AccessScope
 
+	// SocketExemptReadRoots are spawned read roots granted only to reach a
+	// toolchain's tools. The file-read rule covers them, but restricted mode's
+	// unix-socket allow -- derived from the read roots -- skips them: a
+	// toolchain directory is a read surface, not a socket surface, and a socket
+	// grant there would widen host-socket reach beyond the read fix.
+	SocketExemptReadRoots []string
+
 	// MaskedPaths are absolute paths denied in BOTH layers (the secrets +
 	// pseudo-fs denylist). Enforcement treats each as a subtree prefix (masking
 	// /proc masks /proc/<pid>/environ; masking ~/.ssh masks its whole tree).
@@ -434,6 +441,36 @@ func guardedHostRoots(candidates []string, home, worktree string) []string {
 	return out
 }
 
+// underWorktree reports whether path names a location inside the session's
+// worktree, in either its literal or its resolved spelling. A sandboxed session
+// can rewrite anything there, so neither spelling is a stable host grant.
+func underWorktree(path, worktree string) bool {
+	if path == "" || worktree == "" {
+		return false
+	}
+	if identifier.PathUnder(filepath.Clean(path), worktree) {
+		return true
+	}
+	if canonical := CanonicalDir(path); canonical != "" && identifier.PathUnder(canonical, worktree) {
+		return true
+	}
+	return false
+}
+
+// rootsOutsideWorktree drops host-derived roots that name a location inside the
+// session's worktree. The worktree is already a read root, so the grant adds
+// nothing -- and granting its spelling would let a retargeted symlink outlive
+// the shared-tree check.
+func rootsOutsideWorktree(roots []string, worktree string) []string {
+	out := make([]string, 0, len(roots))
+	for _, root := range roots {
+		if !underWorktree(root, worktree) {
+			out = append(out, root)
+		}
+	}
+	return out
+}
+
 // Resolve turns a policy request plus host facts and the session's cwd into a
 // ResolvedPolicy, or a typed *RefusalError when the host cannot enforce the
 // request (the fail-closed floor). It is a pure function of its inputs (reads no
@@ -559,7 +596,7 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		resolveInputs:       policy,
 		resolveHost:         host,
 	}
-	rp.FileTool, rp.Spawned = scopesFor(policy, host, layout, worktree)
+	rp.FileTool, rp.Spawned, rp.SocketExemptReadRoots = scopesFor(policy, host, layout, worktree)
 	rp.configMasks = configMasks
 	// The masks' state is recorded before admission judges them, so a mask
 	// that changes in between differs from this record and is judged again
@@ -1043,7 +1080,7 @@ func cacheStrategyFor(mode Mode, backend Backend, host HostFacts) CacheStrategy 
 }
 
 // scopesFor builds the file-tool and spawned-process access scopes for a mode.
-func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree string) (fileTool, spawned AccessScope) {
+func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree string) (fileTool, spawned AccessScope, socketExempt []string) {
 	switch policy.Mode {
 	case ModeOff, ModeReadOnly:
 		// Reads anywhere (minus masked); no writes (session tmp is the only scratch).
@@ -1087,10 +1124,14 @@ func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree 
 		// them git was unusable in this mode on any host with a global config —
 		// read-only and file-exact, ruled 2026-08-07), the session's hook/MCP-server
 		// paths (session infrastructure, which must run in every mode — ruled
-		// 2026-08-06), and write the git metadata subset. Those extra grants stay OUT
-		// of readFile: a hook living in the plugin cache must be executable and the
-		// git shim must reach its toolchain, but the model must not gain a file-tool
-		// browse grant over either along with it.
+		// 2026-08-06), the host's Go toolchain root (the go command can run from a
+		// granted path while GOROOT/pkg/tool sits outside every system read root, so
+		// `go test` died with `no such tool "vet"` — read-only and spawned-only,
+		// ruled for issue #4235), and write the git metadata subset. Those extra
+		// grants stay OUT of readFile: a hook living in the plugin cache must be
+		// executable, the git shim and the go command must reach their toolchains,
+		// but the model must not gain a file-tool browse grant over them along with
+		// it.
 		//
 		// The other modes carry their own InfraReadRoots line above: reads are
 		// already allowed anywhere minus the mask, so the grant adds nothing to
@@ -1099,17 +1140,37 @@ func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree 
 		// ReadRoots entry re-binds it (#6208). A masked root still stays masked in
 		// every mode: the fail-closed filter below applies to all of them.
 		devRoots := guardedHostRoots(host.DeveloperToolRoots, host.Home, worktree)
+		goRoots := guardedHostRoots(host.GoToolchainRoots, host.Home, worktree)
 		gitConfig := guardedHostRoots(slices.Concat(host.GitGlobalConfigPaths, host.GitSystemConfigPaths), host.Home, worktree)
-		readSpawn := dedupeRoots(slices.Concat(readFile, layout.ReadGrantPaths, defaultSystemReadRoots, devRoots, gitConfig, policy.InfraReadRoots))
+		// A GOROOT inside the worktree needs no grant (the worktree is already a
+		// read root) and must not get one: the session can retarget a symlink it
+		// controls, and Seatbelt re-resolves a spelling at every spawn. For the
+		// same reason a launcher the worktree controls is not a host toolchain --
+		// an untrusted go must contribute no grant at all.
+		goRoots = rootsOutsideWorktree(goRoots, worktree)
+		if launcher := host.GoToolchainGoBin; launcher != "" && underWorktree(launcher, worktree) {
+			goRoots = nil
+		}
+		readBase := slices.Concat(readFile, layout.ReadGrantPaths, defaultSystemReadRoots, devRoots, gitConfig, policy.InfraReadRoots)
+		readSpawn := dedupeRoots(slices.Concat(readBase, goRoots))
 		writeSpawn := dedupeRoots(slices.Concat(writeFile, layout.WritablePaths))
 		fileTool = AccessScope{Read: ReadWorktreeOnly, ReadRoots: readFile, WriteRoots: writeFile}
 		spawned = AccessScope{Read: ReadWorktreeOnly, ReadRoots: readSpawn, WriteRoots: writeSpawn}
+		// Only the roots the toolchain grant ADDS lose their unix-socket allow: a
+		// GOROOT that was independently granted (an extra read root, a system
+		// root) keeps the socket reach its own grant earned.
+		base := dedupeRoots(readBase)
+		for _, root := range goRoots {
+			if !slices.Contains(base, root) {
+				socketExempt = append(socketExempt, root)
+			}
+		}
 	}
 	if policy.WriteBlocked {
 		fileTool.WriteRoots = nil
 		spawned.WriteRoots = nil
 	}
-	return fileTool, spawned
+	return fileTool, spawned, socketExempt
 }
 
 // dedupeRoots cleans, drops empty/whitespace-only entries, and de-duplicates a
