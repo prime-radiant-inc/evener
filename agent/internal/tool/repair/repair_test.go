@@ -1027,3 +1027,64 @@ func TestRepairArgs_ObjectArrayEdgeCasesAndNonMutation(t *testing.T) {
 		}
 	})
 }
+
+func TestRepairArgs_DropUnknown_ArrayItemsOnlyNotDirectNestedObject(t *testing.T) {
+	t.Parallel()
+	params := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"output": map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"message": map[string]any{"type": "string"},
+				},
+				"required": []string{"message"},
+			},
+			"edits": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"old_string": map[string]any{"type": "string"},
+						"new_string": map[string]any{"type": "string"},
+					},
+					"required": []string{"old_string", "new_string"},
+				},
+			},
+		},
+		"required": []string{"output"},
+	}
+
+	args := map[string]any{
+		"output": map[string]any{
+			"message": "ok",
+			"secret":  "do not log",
+		},
+		"edits": []any{
+			map[string]any{
+				"old_string": "a",
+				"new_string": "b",
+				"notes":      "x",
+			},
+		},
+	}
+
+	before := cloneTestValue(args)
+	out, _ := RepairArgs(params, args)
+	if !reflect.DeepEqual(args, before) {
+		t.Fatalf("input mutated: before=%#v after=%#v", before, args)
+	}
+
+	outOutput := out["output"].(map[string]any)
+	if outOutput["secret"] != "do not log" {
+		t.Fatalf("unknown key in direct nested object property must be preserved for validation rejection: got %#v", outOutput)
+	}
+
+	outEdit := out["edits"].([]any)[0].(map[string]any)
+	if _, hasNotes := outEdit["notes"]; hasNotes {
+		t.Fatalf("unknown key in array object item must be dropped: got %#v", outEdit)
+	}
+}

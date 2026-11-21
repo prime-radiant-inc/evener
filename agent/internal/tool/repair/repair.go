@@ -544,7 +544,8 @@ func nullableUnionNonNullType(v any) string {
 
 // repairNestedProperties walks nested objects and arrays in obj (copy-on-write)
 // and applies nested aliases, coercions, empty-optional removal, and unknown-key
-// removal at every nested object level.
+// removal on array-of-objects items (never dropping unknown keys on direct
+// nested object properties).
 func repairNestedProperties(schema, obj map[string]any, path []pathStep, keep []string) []Change {
 	props := schemaProps(schema)
 	if len(props) == 0 {
@@ -574,7 +575,7 @@ func repairNestedProperties(schema, obj map[string]any, path []pathStep, keep []
 			}
 		}
 		at := append(slices.Clip(path), pathStep{name: key})
-		if nested, c := repairNestedValue(propSchema, raw, at, keep, taskAlias); len(c) > 0 {
+		if nested, c := repairNestedValue(propSchema, raw, at, keep, taskAlias, false); len(c) > 0 {
 			obj[key] = nested
 			changes = append(changes, c...)
 		}
@@ -582,7 +583,7 @@ func repairNestedProperties(schema, obj map[string]any, path []pathStep, keep []
 	return changes
 }
 
-func repairNestedValue(schema map[string]any, value any, path []pathStep, keep []string, taskAlias taskItemAliasSpec) (any, []Change) {
+func repairNestedValue(schema map[string]any, value any, path []pathStep, keep []string, taskAlias taskItemAliasSpec, isArrayItem bool) (any, []Change) {
 	switch v := value.(type) {
 	case map[string]any:
 		if schemaProps(schema) == nil {
@@ -598,7 +599,9 @@ func repairNestedValue(schema map[string]any, value any, path []pathStep, keep [
 		changes = append(changes, applyCoercions(schema, repaired, path)...)
 		changes = append(changes, repairNestedProperties(schema, repaired, path, keep)...)
 		changes = append(changes, dropOwnEmptyOptionals(schema, repaired, path, keep)...)
-		changes = append(changes, dropUnknown(schema, repaired, path, preserveUnknown)...)
+		if isArrayItem {
+			changes = append(changes, dropUnknown(schema, repaired, path, preserveUnknown)...)
+		}
 		if len(changes) > 0 {
 			return repaired, changes
 		}
@@ -611,7 +614,7 @@ func repairNestedValue(schema map[string]any, value any, path []pathStep, keep [
 		var changes []Change
 		for i, element := range v {
 			elemPath := append(slices.Clip(path), pathStep{name: strconv.Itoa(i), index: true})
-			nested, c := repairNestedValue(items, element, elemPath, keep, taskAlias)
+			nested, c := repairNestedValue(items, element, elemPath, keep, taskAlias, true)
 			if len(c) == 0 {
 				continue
 			}
