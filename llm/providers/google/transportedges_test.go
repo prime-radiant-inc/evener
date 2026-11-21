@@ -442,6 +442,32 @@ func TestEffectiveToolsReplacementCombinedSearchAndFunctionsPolicy(t *testing.T)
 		if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), reqStoreCombined, resTypedGen); err == nil {
 			t.Fatal("expected Transport.Body map[string]string generation_config tool_choice=auto to fail")
 		}
+		resTypedGenValid := protoLive(srv)
+		resTypedGenValid.Caps.CombinedSearchAndFunctions = new(true)
+		resTypedGenValid.Caps.Fields["previous_interaction_id"] = true
+		resTypedGenValid.Transport.Body = map[string]any{"generation_config": map[string]string{"tool_choice": "validated"}}
+		if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), reqStoreCombined, resTypedGenValid); err != nil {
+			t.Fatalf("Complete with Transport.Body map[string]string generation_config tool_choice=validated failed: %v", err)
+		}
+
+		// Transport.Body typed map[string]string generation_config also obeys ReasoningDisabled and tool_choice pruning.
+		resPruneTypedGen := protoLive(srv)
+		resPruneTypedGen.Caps.Reasoning = new(false)
+		resPruneTypedGen.Caps.Fields["generation_config.tool_choice"] = false
+		resPruneTypedGen.Transport.Body = map[string]any{
+			"generation_config": map[string]string{
+				"thinking_level":     "high",
+				"thinking_summaries": "auto",
+				"tool_choice":        "auto",
+			},
+		}
+		got.body = nil
+		if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), resPruneTypedGen); err != nil {
+			t.Fatalf("Complete with pruned typed generation_config failed: %v", err)
+		}
+		if _, hasGenCfg := got.body["generation_config"]; hasGenCfg {
+			t.Fatalf("expected pruned typed generation_config to be omitted, got %v", got.body["generation_config"])
+		}
 
 		// CombinedSearchAndFunctions=false rejected (e.g. gemini-2.5-flash).
 		noCombRes := combinedRes()

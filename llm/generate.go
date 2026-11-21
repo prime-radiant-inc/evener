@@ -261,7 +261,7 @@ func preflightGoogleAutoToolLoop(client *Client, opts GenerateOptions, toolDefs 
 	if providerName == "" {
 		providerName = client.DefaultProvider()
 	}
-	if providerName == "" {
+	if providerName == "" || client.ServesOverride(providerName) {
 		return nil
 	}
 	res, err := client.Registry().ResolveInstanceModelFacts(providerName, opts.Model)

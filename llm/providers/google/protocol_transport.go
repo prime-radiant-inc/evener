@@ -131,6 +131,7 @@ func (p *Protocol) completionCall(
 		}
 
 		// 6. Authoritative reasoning=false and generation_config.tool_choice enforcement.
+		normalizeGenerationConfigObject(finalBody)
 		if res.Caps.ReasoningDisabled() {
 			if genCfg, ok := finalBody["generation_config"].(map[string]any); ok {
 				delete(genCfg, "thinking_level")
@@ -145,7 +146,10 @@ func (p *Protocol) completionCall(
 			if !toolChoiceEnabled {
 				return &llm.ConfigurationError{ProviderInstance: res.Instance, Message: "combined google_search and function tools require generation_config.tool_choice enabled"}
 			}
-			mode := effectiveGenerationConfigToolChoiceMode(finalBody["generation_config"])
+			var mode string
+			if genCfg, ok := finalBody["generation_config"].(map[string]any); ok {
+				mode = effectiveToolChoiceMode(genCfg["tool_choice"])
+			}
 			switch mode {
 			case "validated", "any", "none":
 			default:
@@ -173,24 +177,24 @@ func (p *Protocol) completionCall(
 	return call, nil
 }
 
-func effectiveGenerationConfigToolChoiceMode(genCfgRaw any) string {
-	if genCfgRaw == nil {
-		return ""
+func normalizeGenerationConfigObject(body map[string]any) {
+	raw, exists := body["generation_config"]
+	if !exists || raw == nil {
+		return
 	}
-	if m, ok := genCfgRaw.(map[string]any); ok {
-		return effectiveToolChoiceMode(m["tool_choice"])
+	if _, ok := raw.(map[string]any); ok {
+		return
 	}
-	b, err := json.Marshal(genCfgRaw)
+	b, err := json.Marshal(raw)
 	if err != nil {
-		return ""
+		return
 	}
-	var wrapper struct {
-		ToolChoice json.RawMessage `json:"tool_choice"`
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	var m map[string]any
+	if dec.Decode(&m) == nil && m != nil {
+		body["generation_config"] = m
 	}
-	if json.Unmarshal(b, &wrapper) != nil || len(wrapper.ToolChoice) == 0 {
-		return ""
-	}
-	return effectiveToolChoiceMode(wrapper.ToolChoice)
 }
 
 func effectiveToolChoiceMode(v any) string {
