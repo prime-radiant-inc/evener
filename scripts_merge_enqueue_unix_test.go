@@ -779,3 +779,19 @@ printf '%s\n' "$TMPDIR" > "$FAKE_SEEN"
 	}
 	assertDirEmpty(t, cache)
 }
+
+// TestMergeEnqueueCleanupPreservesExit2WhenTMPDIRAndHelperAreAbsent pins that
+// the EXIT trap's scratch_rm cannot replace an early exit 2 with exit 1 when
+// both TMPDIR and EVENER_DEV_BIN point into a removed scratch directory.
+func TestMergeEnqueueCleanupPreservesExit2WhenTMPDIRAndHelperAreAbsent(t *testing.T) {
+	gone := filepath.Join(t.TempDir(), "removed-scratch")
+	_, stderr, status := runMergeEnqueue(t,
+		[]string{
+			"TMPDIR=" + gone,
+			"EVENER_DEV_BIN=" + filepath.Join(gone, "evener-dev"),
+		},
+		"--pr", "42")
+	if status != 2 {
+		t.Fatalf("exit = %d, want 2 (stderr: %s)", status, stderr)
+	}
+}

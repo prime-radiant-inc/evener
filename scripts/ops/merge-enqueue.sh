@@ -168,8 +168,12 @@ wait_tracked() {
 # which the contract reads as a queue drop, so a setup failure reports 2.
 in_scratch_setup=""
 cleanup() {
-  scratch_rm
-  [ -z "$in_scratch_setup" ] || exit 2
+  local rc=$?
+  scratch_rm || true
+  if [ -n "$in_scratch_setup" ]; then
+    exit 2
+  fi
+  return "$rc"
 }
 trap 'cleanup' EXIT
 trap 'stop_child' INT
