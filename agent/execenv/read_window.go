@@ -278,7 +278,12 @@ type renderedWindow struct {
 	singleLineRawLen   int
 }
 
-func renderPreparedRows(rows []preparedRow, unnumbered bool, maxBytes int, tailKeepLast bool) renderedWindow {
+const (
+	readRegistryBackstopPadding = 2000
+	readFooterTrailingReserve   = 256
+)
+
+func renderPreparedRows(rows []preparedRow, unnumbered bool, maxBytes int, tailKeepLast bool, displayPath string, headerReserve int) renderedWindow {
 	if len(rows) == 0 {
 		return renderedWindow{}
 	}
@@ -310,7 +315,14 @@ func renderPreparedRows(rows []preparedRow, unnumbered bool, maxBytes int, tailK
 		if raw == nil {
 			raw = r.content
 		}
-		budget := max(0, maxBytes-rowPrefixLen(r.num, unnumbered)-1)
+		effectiveMax := maxBytes
+		if displayPath != "" {
+			maxTotal := DefaultReadMaxBytes + readRegistryBackstopPadding
+			footerCap := max(256, maxTotal-headerReserve-1024)
+			footer := formatSingleLineOverflowFooter(r.num, r.rawLineLen, displayPath, unnumbered, footerCap)
+			effectiveMax = min(maxBytes, max(0, maxTotal-headerReserve-len(footer)))
+		}
+		budget := max(0, effectiveMax-rowPrefixLen(r.num, unnumbered)-1)
 		r.content = truncateLineUTF8Bytes(raw, budget)
 		r.clamped = false
 		stoppedByBytes = true
@@ -371,18 +383,84 @@ func renderPreparedRows(rows []preparedRow, unnumbered bool, maxBytes int, tailK
 	return res
 }
 
+func boundedFooterPath(path string, maxBytes int) string {
+	if path == "" {
+		return "file"
+	}
+	if maxBytes <= 0 || len(path) <= maxBytes {
+		return path
+	}
+	if maxBytes <= 3 {
+		return path[len(path)-maxBytes:]
+	}
+	keep := len(path) - (maxBytes - 3)
+	for keep < len(path) && !utf8.RuneStart(path[keep]) {
+		keep++
+	}
+	return "..." + path[keep:]
+}
+
+func maxFooterPathBytes() int {
+	return min(4096, max(128, DefaultReadMaxBytes/4))
+}
+
+func readBodyBudget(displayPath string, unnumbered bool, p readWindowParams) (bodyMaxBytes, headerReserve int) {
+	maxTotal := DefaultReadMaxBytes + readRegistryBackstopPadding
+	if unnumbered {
+		headerReserve = len(formatTailHeader(displayPath, p, max(DefaultReadLines, 1), true, false)) + 16
+		budget := min(DefaultReadMaxBytes, max(0, maxTotal-headerReserve-readFooterTrailingReserve))
+		return budget, headerReserve
+	}
+	return DefaultReadMaxBytes, 0
+}
+
+func formatTailHeader(displayPath string, p readWindowParams, shownCount int, stoppedByBytes, stoppedByLines bool) string {
+	pathLabel := boundedFooterPath(displayPath, maxFooterPathBytes())
+	if p.tailMode && p.explicitLimit {
+		return fmt.Sprintf("[Tail slice of %s: showing %d lines starting %d lines from end (file >2 MiB, absolute line numbers omitted)]\n",
+			pathLabel, shownCount, p.tailN)
+	}
+	switch {
+	case stoppedByBytes:
+		return fmt.Sprintf("[Tail of %s: last %d lines (file >2 MiB, %d-byte output cap reached; absolute line numbers omitted)]\n",
+			pathLabel, shownCount, DefaultReadMaxBytes)
+	case stoppedByLines:
+		return fmt.Sprintf("[Tail of %s: last %d lines (file >2 MiB, %d-line limit reached; absolute line numbers omitted)]\n",
+			pathLabel, shownCount, DefaultReadLines)
+	default:
+		return fmt.Sprintf("[Tail of %s: last %d lines (file >2 MiB, absolute line numbers omitted)]\n",
+			pathLabel, shownCount)
+	}
+}
+
+func formatSingleLineOverflowFooter(lineNum, rawLineLen int, displayPath string, unnumbered bool, maxFooterBytes int) string {
+	if !unnumbered && lineNum > 0 {
+		if displayPath != "" {
+			withSed := fmt.Sprintf("\n[Line %d is %d bytes, exceeding the %d-byte single-read cap. To inspect further bytes: sed -n '%dp' %s | head -c %d]",
+				lineNum, rawLineLen, DefaultReadMaxBytes, lineNum, ShellEscapeArgs(displayPath), DefaultReadMaxBytes)
+			if maxFooterBytes <= 0 || len(withSed) <= maxFooterBytes {
+				return withSed
+			}
+		}
+		return fmt.Sprintf("\n[Line %d is %d bytes, exceeding the %d-byte single-read cap.]",
+			lineNum, rawLineLen, DefaultReadMaxBytes)
+	}
+	return fmt.Sprintf("\n[Tail line is %d bytes, exceeding the %d-byte single-read cap.]",
+		rawLineLen, DefaultReadMaxBytes)
+}
+
 func emptyFileNotice(displayPath string) string {
 	if displayPath == "" {
 		return "[File is empty (0 bytes).]"
 	}
-	return fmt.Sprintf("[File %s is empty (0 bytes).]", displayPath)
+	return fmt.Sprintf("[File %s is empty (0 bytes).]", boundedFooterPath(displayPath, maxFooterPathBytes()))
 }
 
 func pastEOFNotice(displayPath string, totalLines, requestedOffset int) string {
 	if displayPath == "" {
 		return fmt.Sprintf("[File has %d lines; requested offset=%d is past end of file.]", totalLines, requestedOffset)
 	}
-	return fmt.Sprintf("[File %s has %d lines; requested offset=%d is past end of file.]", displayPath, totalLines, requestedOffset)
+	return fmt.Sprintf("[File %s has %d lines; requested offset=%d is past end of file.]", boundedFooterPath(displayPath, maxFooterPathBytes()), totalLines, requestedOffset)
 }
 
 type readFooterOpts struct {
@@ -393,6 +471,7 @@ type readFooterOpts struct {
 	moreRemain     bool
 	stoppedByBytes bool
 	stoppedByLines bool
+	headerReserve  int
 }
 
 func finalizeReadOutput(rw renderedWindow, opts readFooterOpts) (string, ReadFileMeta) {
@@ -422,44 +501,16 @@ func finalizeReadOutput(rw renderedWindow, opts readFooterOpts) (string, ReadFil
 
 	var out strings.Builder
 	if opts.unnumbered {
-		pathLabel := opts.displayPath
-		if pathLabel == "" {
-			pathLabel = "file"
-		}
-		if p.tailMode && p.explicitLimit {
-			fmt.Fprintf(&out, "[Tail slice of %s: showing %d lines starting %d lines from end (file >2 MiB, absolute line numbers omitted)]\n",
-				pathLabel, rw.shownCount, p.tailN)
-		} else {
-			switch {
-			case stoppedByBytes:
-				fmt.Fprintf(&out, "[Tail of %s: last %d lines (file >2 MiB, %d-byte output cap reached; absolute line numbers omitted)]\n",
-					pathLabel, rw.shownCount, DefaultReadMaxBytes)
-			case stoppedByLines:
-				fmt.Fprintf(&out, "[Tail of %s: last %d lines (file >2 MiB, %d-line limit reached; absolute line numbers omitted)]\n",
-					pathLabel, rw.shownCount, DefaultReadLines)
-			default:
-				fmt.Fprintf(&out, "[Tail of %s: last %d lines (file >2 MiB, absolute line numbers omitted)]\n",
-					pathLabel, rw.shownCount)
-			}
-		}
+		out.WriteString(formatTailHeader(opts.displayPath, p, rw.shownCount, stoppedByBytes, stoppedByLines))
 	}
 	out.WriteString(rw.body)
 
 	// Attach trailing footer/notice.
 	switch {
 	case rw.singleLineOverflow:
-		if !opts.unnumbered && rw.singleLineNum > 0 {
-			if opts.displayPath != "" {
-				fmt.Fprintf(&out, "\n[Line %d is %d bytes, exceeding the %d-byte single-read cap. To inspect further bytes: sed -n '%dp' %s | head -c %d]",
-					rw.singleLineNum, rw.singleLineRawLen, DefaultReadMaxBytes, rw.singleLineNum, ShellEscapeArgs(opts.displayPath), DefaultReadMaxBytes)
-			} else {
-				fmt.Fprintf(&out, "\n[Line %d is %d bytes, exceeding the %d-byte single-read cap.]",
-					rw.singleLineNum, rw.singleLineRawLen, DefaultReadMaxBytes)
-			}
-		} else {
-			fmt.Fprintf(&out, "\n[Tail line is %d bytes, exceeding the %d-byte single-read cap.]",
-				rw.singleLineRawLen, DefaultReadMaxBytes)
-		}
+		maxTotal := DefaultReadMaxBytes + readRegistryBackstopPadding
+		footerCap := max(256, maxTotal-opts.headerReserve-1024)
+		out.WriteString(formatSingleLineOverflowFooter(rw.singleLineNum, rw.singleLineRawLen, opts.displayPath, opts.unnumbered, footerCap))
 	case opts.unnumbered:
 		if p.tailMode && p.explicitLimit && opts.moreRemain {
 			rem := max(int64(1), p.tailN-int64(rw.shownCount))
@@ -538,8 +589,8 @@ func formatNumberLinesBytes(text []byte, offsetLine, limitLines *int) string {
 		if startOffset > 0 {
 			startLine = 1 + bytes.Count(body[:startOffset], []byte{'\n'})
 		}
-		rows, _, _, _ := collectBytesRows(body[startOffset:], startLine, p.effLimit, !p.explicitLimit, p.singleLineEscape, false)
-		rw := renderPreparedRows(rows, false, DefaultReadMaxBytes, !p.explicitLimit)
+		rows, _, _, _ := collectBytesRows(body[startOffset:], startLine, p.effLimit, p.explicitLimit, p.singleLineEscape, false, DefaultReadMaxBytes)
+		rw := renderPreparedRows(rows, false, DefaultReadMaxBytes, !p.explicitLimit, "", 0)
 		return rw.body
 	}
 
@@ -551,8 +602,8 @@ func formatNumberLinesBytes(text []byte, offsetLine, limitLines *int) string {
 		}
 		offset += idx + 1
 	}
-	rows, _, _, _ := collectBytesRows(body[offset:], p.start, p.effLimit, true, p.singleLineEscape, false)
-	rw := renderPreparedRows(rows, false, DefaultReadMaxBytes, false)
+	rows, _, _, _ := collectBytesRows(body[offset:], p.start, p.effLimit, true, p.singleLineEscape, false, DefaultReadMaxBytes)
+	rw := renderPreparedRows(rows, false, DefaultReadMaxBytes, false, "", 0)
 	return rw.body
 }
 
@@ -602,8 +653,8 @@ func formatNumberLinesString(text string, offsetLine, limitLines *int) string {
 		if startOffset > 0 {
 			startLine = 1 + strings.Count(body[:startOffset], "\n")
 		}
-		rows := collectStringRows(body[startOffset:], startLine, p.effLimit, !p.explicitLimit, p.singleLineEscape)
-		rw := renderPreparedRows(rows, false, DefaultReadMaxBytes, !p.explicitLimit)
+		rows := collectStringRows(body[startOffset:], startLine, p.effLimit, p.explicitLimit, p.singleLineEscape, DefaultReadMaxBytes)
+		rw := renderPreparedRows(rows, false, DefaultReadMaxBytes, !p.explicitLimit, "", 0)
 		return rw.body
 	}
 
@@ -615,12 +666,12 @@ func formatNumberLinesString(text string, offsetLine, limitLines *int) string {
 		}
 		offset += idx + 1
 	}
-	rows := collectStringRows(body[offset:], p.start, p.effLimit, true, p.singleLineEscape)
-	rw := renderPreparedRows(rows, false, DefaultReadMaxBytes, false)
+	rows := collectStringRows(body[offset:], p.start, p.effLimit, true, p.singleLineEscape, DefaultReadMaxBytes)
+	rw := renderPreparedRows(rows, false, DefaultReadMaxBytes, false, "", 0)
 	return rw.body
 }
 
-func collectBytesRows(window []byte, startLine, effLimit int, stopAtMaxBytes, singleLineEscape, unnumbered bool) (rows []preparedRow, consumed int, moreRemain, stoppedByBytes bool) {
+func collectBytesRows(window []byte, startLine, effLimit int, stopAtMaxBytes, singleLineEscape, unnumbered bool, maxBodyBytes int) (rows []preparedRow, consumed int, moreRemain, stoppedByBytes bool) {
 	remaining := effLimit
 	lineNumber := startLine
 	bodyBytes := 0
@@ -638,7 +689,7 @@ func collectBytesRows(window []byte, startLine, effLimit int, stopAtMaxBytes, si
 		}
 		row := prepareWindowRow(lineNumber, unnumbered, line, singleLineEscape, DefaultReadMaxLineChars)
 		rowLen := row.renderedLen(unnumbered)
-		if stopAtMaxBytes && len(rows) > 0 && bodyBytes+rowLen > DefaultReadMaxBytes {
+		if stopAtMaxBytes && len(rows) > 0 && bodyBytes+rowLen > maxBodyBytes {
 			return rows, consumed, true, true
 		}
 		consumed = nextConsumed
@@ -657,7 +708,7 @@ func collectBytesRows(window []byte, startLine, effLimit int, stopAtMaxBytes, si
 	return rows, consumed, true, false
 }
 
-func collectStringRows(window string, startLine, effLimit int, stopAtMaxBytes, singleLineEscape bool) []preparedRow {
+func collectStringRows(window string, startLine, effLimit int, stopAtMaxBytes, singleLineEscape bool, maxBodyBytes int) []preparedRow {
 	var rows []preparedRow
 	remaining := effLimit
 	lineNumber := startLine
@@ -679,8 +730,8 @@ func collectStringRows(window string, startLine, effLimit int, stopAtMaxBytes, s
 		if singleLineEscape {
 			rawLen := len(lineStr)
 			sliceStr := lineStr
-			if len(rows) == 0 && len(sliceStr) > DefaultReadMaxBytes {
-				sliceStr = truncateLineUTF8String(lineStr, DefaultReadMaxBytes)
+			if len(rows) == 0 && len(sliceStr) > maxBodyBytes {
+				sliceStr = truncateLineUTF8String(lineStr, maxBodyBytes)
 			}
 			row = preparedRow{
 				num:        lineNumber,
@@ -705,7 +756,7 @@ func collectStringRows(window string, startLine, effLimit int, stopAtMaxBytes, s
 				copy(out[len(prefix):], suffix)
 				var orig []byte
 				if len(rows) == 0 {
-					orig = []byte(truncateLineUTF8String(lineStr, DefaultReadMaxBytes))
+					orig = []byte(truncateLineUTF8String(lineStr, maxBodyBytes))
 				}
 				row = preparedRow{
 					num:        lineNumber,
@@ -717,7 +768,7 @@ func collectStringRows(window string, startLine, effLimit int, stopAtMaxBytes, s
 			}
 		}
 		rowLen := row.renderedLen(false)
-		if stopAtMaxBytes && len(rows) > 0 && bodyBytes+rowLen > DefaultReadMaxBytes {
+		if stopAtMaxBytes && len(rows) > 0 && bodyBytes+rowLen > maxBodyBytes {
 			return rows
 		}
 		consumed = nextConsumed
@@ -771,7 +822,8 @@ func renderTextReadRich(displayPath string, b []byte, offsetLine, limitLines *in
 		}
 
 		window := body[startOffset:]
-		rows, _, moreRemain, stoppedByBytes := collectBytesRows(window, startLine, p.effLimit, p.explicitLimit, p.singleLineEscape, unnumbered)
+		bodyMax, headerReserve := readBodyBudget(displayPath, unnumbered, p)
+		rows, _, moreRemain, stoppedByBytes := collectBytesRows(window, startLine, p.effLimit, p.explicitLimit, p.singleLineEscape, unnumbered, bodyMax)
 		stoppedByLines := false
 
 		if p.explicitLimit {
@@ -789,7 +841,7 @@ func renderTextReadRich(displayPath string, b []byte, offsetLine, limitLines *in
 			}
 		}
 
-		rw := renderPreparedRows(rows, unnumbered, DefaultReadMaxBytes, !p.explicitLimit)
+		rw := renderPreparedRows(rows, unnumbered, bodyMax, !p.explicitLimit, displayPath, headerReserve)
 		if !p.explicitLimit && rw.stoppedByBytes {
 			stoppedByBytes = true
 		}
@@ -801,6 +853,7 @@ func renderTextReadRich(displayPath string, b []byte, offsetLine, limitLines *in
 			moreRemain:     moreRemain,
 			stoppedByBytes: stoppedByBytes,
 			stoppedByLines: stoppedByLines,
+			headerReserve:  headerReserve,
 		})
 		return out, meta, nil
 	}
@@ -820,7 +873,8 @@ func renderTextReadRich(displayPath string, b []byte, offsetLine, limitLines *in
 	}
 
 	window := body[offset:]
-	rows, consumed, moreRemain, stoppedByBytes := collectBytesRows(window, p.start, p.effLimit, true, p.singleLineEscape, false)
+	bodyMax, headerReserve := readBodyBudget(displayPath, false, p)
+	rows, consumed, moreRemain, stoppedByBytes := collectBytesRows(window, p.start, p.effLimit, true, p.singleLineEscape, false, bodyMax)
 	stoppedByLines := false
 	if moreRemain && !stoppedByBytes && !p.explicitLimit {
 		stoppedByLines = true
@@ -834,7 +888,7 @@ func renderTextReadRich(displayPath string, b []byte, offsetLine, limitLines *in
 		totalLines = (p.start + len(rows) - 1) + remLines
 	}
 
-	rw := renderPreparedRows(rows, false, DefaultReadMaxBytes, false)
+	rw := renderPreparedRows(rows, false, bodyMax, false, displayPath, headerReserve)
 	out, meta := finalizeReadOutput(rw, readFooterOpts{
 		displayPath:    displayPath,
 		params:         p,
@@ -842,6 +896,7 @@ func renderTextReadRich(displayPath string, b []byte, offsetLine, limitLines *in
 		moreRemain:     moreRemain,
 		stoppedByBytes: stoppedByBytes,
 		stoppedByLines: stoppedByLines,
+		headerReserve:  headerReserve,
 	})
 	return out, meta, nil
 }
@@ -1035,6 +1090,8 @@ func scanTailWindowSeekerRich(ctx context.Context, rs io.ReadSeeker, size int64,
 		totalLines = int(newlinesFound + 1)
 	}
 
+	bodyMax, headerReserve := readBodyBudget(displayPath, unnumbered, p)
+
 	var tailReader io.Reader
 	if startOffset >= chunkStart {
 		tailReader = bytes.NewReader(lastChunk[startOffset-chunkStart:])
@@ -1145,7 +1202,7 @@ func scanTailWindowSeekerRich(ctx context.Context, rs io.ReadSeeker, size int64,
 		row := prepareWindowRow(lineNum, unnumbered, rawCopy, p.singleLineEscape, DefaultReadMaxLineChars)
 		rl := row.renderedLen(unnumbered)
 		if p.explicitLimit {
-			if len(rows) > 0 && keptBytes+rl > DefaultReadMaxBytes {
+			if len(rows) > 0 && keptBytes+rl > bodyMax {
 				stoppedByBytes = true
 				moreRemain = true
 				break
@@ -1155,7 +1212,7 @@ func scanTailWindowSeekerRich(ctx context.Context, rs io.ReadSeeker, size int64,
 		} else {
 			rows = append(rows, row)
 			keptBytes += rl
-			for len(rows) > 1 && keptBytes > DefaultReadMaxBytes {
+			for len(rows) > 1 && keptBytes > bodyMax {
 				dropped := rows[0].renderedLen(unnumbered)
 				rows = rows[1:]
 				keptBytes -= dropped
@@ -1180,7 +1237,7 @@ func scanTailWindowSeekerRich(ctx context.Context, rs io.ReadSeeker, size int64,
 		stoppedByLines = true
 	}
 
-	rw := renderPreparedRows(rows, unnumbered, DefaultReadMaxBytes, false)
+	rw := renderPreparedRows(rows, unnumbered, bodyMax, false, displayPath, headerReserve)
 	out, meta := finalizeReadOutput(rw, readFooterOpts{
 		displayPath:    displayPath,
 		params:         p,
@@ -1189,6 +1246,7 @@ func scanTailWindowSeekerRich(ctx context.Context, rs io.ReadSeeker, size int64,
 		moreRemain:     moreRemain,
 		stoppedByBytes: stoppedByBytes,
 		stoppedByLines: stoppedByLines,
+		headerReserve:  headerReserve,
 	})
 	return out, meta, nil
 }
@@ -1205,6 +1263,7 @@ func scanLineWindowRich(ctx context.Context, r io.Reader, size int64, displayPat
 		return "", ReadFileMeta{}, errReadBinaryWindow
 	}
 	p := resolveReadWindowParams(offsetLine, limitLines)
+	bodyMax, headerReserve := readBodyBudget(displayPath, false, p)
 	pending := head
 	buf := make([]byte, readWindowChunk)
 	empties := 0
@@ -1341,7 +1400,7 @@ func scanLineWindowRich(ctx context.Context, r io.Reader, size int64, displayPat
 			// Early abort if we already have >=1 line and the partial line alone
 			// cannot possibly fit within DefaultReadMaxBytes even after clamping.
 			if emitted > 0 {
-				remainingBudget := DefaultReadMaxBytes - bodyBytes - rowPrefixLen(p.start+emitted, false) - 1
+				remainingBudget := bodyMax - bodyBytes - rowPrefixLen(p.start+emitted, false) - 1
 				if p.singleLineEscape && len(line) > remainingBudget+1 {
 					stoppedByBytes = true
 					moreRemain = true
@@ -1350,7 +1409,7 @@ func scanLineWindowRich(ctx context.Context, r io.Reader, size int64, displayPat
 				}
 				if !p.singleLineEscape && len(line) > max(remainingBudget+1, DefaultReadMaxLineChars*4+64) {
 					probe := prepareWindowRow(p.start+emitted, false, line, false, DefaultReadMaxLineChars)
-					if probe.clamped && probe.renderedLen(false) > DefaultReadMaxBytes-bodyBytes {
+					if probe.clamped && probe.renderedLen(false) > bodyMax-bodyBytes {
 						stoppedByBytes = true
 						moreRemain = true
 						postWindowInLine = true
@@ -1375,7 +1434,7 @@ func scanLineWindowRich(ctx context.Context, r io.Reader, size int64, displayPat
 					copy(rawCopy, line)
 					row := prepareWindowRow(p.start+emitted, false, rawCopy, p.singleLineEscape, DefaultReadMaxLineChars)
 					rl := row.renderedLen(false)
-					if len(rows) > 0 && bodyBytes+rl > DefaultReadMaxBytes {
+					if len(rows) > 0 && bodyBytes+rl > bodyMax {
 						stoppedByBytes = true
 						moreRemain = true
 						postWindowLineOffset = 1
@@ -1409,7 +1468,7 @@ func scanLineWindowRich(ctx context.Context, r io.Reader, size int64, displayPat
 
 		row := prepareWindowRow(p.start+emitted, false, rawCopy, p.singleLineEscape, DefaultReadMaxLineChars)
 		rl := row.renderedLen(false)
-		if len(rows) > 0 && bodyBytes+rl > DefaultReadMaxBytes {
+		if len(rows) > 0 && bodyBytes+rl > bodyMax {
 			stoppedByBytes = true
 			moreRemain = true
 			postWindowLineOffset = 1
@@ -1453,7 +1512,7 @@ func scanLineWindowRich(ctx context.Context, r io.Reader, size int64, displayPat
 		totalLines = (p.start + len(rows) - 1) + remLines
 	}
 
-	rw := renderPreparedRows(rows, false, DefaultReadMaxBytes, false)
+	rw := renderPreparedRows(rows, false, bodyMax, false, displayPath, headerReserve)
 	out, meta := finalizeReadOutput(rw, readFooterOpts{
 		displayPath:    displayPath,
 		params:         p,
@@ -1461,6 +1520,7 @@ func scanLineWindowRich(ctx context.Context, r io.Reader, size int64, displayPat
 		moreRemain:     moreRemain,
 		stoppedByBytes: stoppedByBytes,
 		stoppedByLines: stoppedByLines,
+		headerReserve:  headerReserve,
 	})
 	return out, meta, nil
 }

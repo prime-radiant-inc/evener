@@ -539,3 +539,121 @@ func TestReadFileLargeFileNonEOFOmitsTotalLinesScan(t *testing.T) {
 		t.Fatalf("equivalence failed: out=%q wholeOut=%q meta=%+v wholeMeta=%+v", out, wholeOut, meta, wholeMeta)
 	}
 }
+
+func TestNumberLinesNegativeOffsetKeepsTailMostLines(t *testing.T) {
+	t.Parallel()
+	var sb strings.Builder
+	pad := strings.Repeat("z", 190)
+	for i := 1; i <= 600; i++ {
+		fmt.Fprintf(&sb, "n-%04d-%s\n", i, pad)
+	}
+	text := sb.String()
+	off := -500
+
+	gotStr := NumberLines(text, &off, nil)
+	gotBytes := NumberLinesBytes([]byte(text), &off, nil)
+	if gotStr != gotBytes {
+		t.Fatalf("NumberLines vs NumberLinesBytes diverged for negative offset")
+	}
+	if len(gotStr) > DefaultReadMaxBytes {
+		t.Fatalf("NumberLines len = %d, want <= %d", len(gotStr), DefaultReadMaxBytes)
+	}
+	if !strings.Contains(gotStr, "600\tn-0600-") {
+		t.Fatalf("NumberLines negative offset dropped final line 600; head starts with %.120q", gotStr)
+	}
+	if strings.Contains(gotStr, "101\tn-0101-") {
+		t.Fatalf("NumberLines negative offset kept oldest line 101 instead of tail-most lines")
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tail.txt")
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := NewLocalExecutionEnvironment(dir)
+	t.Cleanup(env.Cleanup)
+	richOut, _, err := env.ReadFileRichCtx(t.Context(), path, &off, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(richOut, gotStr) {
+		t.Fatalf("ReadFileRichCtx tail rows do not match NumberLines rows")
+	}
+}
+
+// Not parallel: mutates package-level ReadTotalLinesScanCap.
+func TestReadFileLongPathStaysUnderRegistryCap(t *testing.T) {
+	baseDir := t.TempDir()
+	// Build a ~2,500-byte valid OS path under baseDir (each component < 255 bytes).
+	seg := strings.Repeat("d", 100)
+	var relParts []string
+	for len(filepath.Join(relParts...)) < 2450 {
+		relParts = append(relParts, seg)
+	}
+	relPath := filepath.Join(append(relParts, "target.txt")...)
+	if len(relPath) < 2400 {
+		t.Fatalf("fixture relPath len = %d, want >= 2400", len(relPath))
+	}
+	fullPath := filepath.Join(baseDir, relPath)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	env := NewLocalExecutionEnvironment(baseDir)
+	t.Cleanup(env.Cleanup)
+
+	// Case 1: single-line overflow (60,000 bytes) with limit=1.
+	if err := os.WriteFile(fullPath, []byte(strings.Repeat("x", 60000)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	off, lim := 1, 1
+	out, meta, err := env.ReadFileRichCtx(t.Context(), relPath, &off, &lim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc := utf8.RuneCountInString(out); rc > 50_000 {
+		t.Fatalf("single-line overflow with %d-byte path produced %d runes, want <= 50000", len(relPath), rc)
+	}
+	if !meta.Truncated || meta.TruncatedBy != "chars" {
+		t.Fatalf("meta = %+v, want Truncated=true TruncatedBy=chars", meta)
+	}
+	if !strings.Contains(out, relPath) || !strings.Contains(out, "60000") {
+		t.Fatalf("single-line overflow footer missing path or byte count")
+	}
+	wholeOut, _, wholeMeta, err := env.ReadFileRichAndBytesCtx(t.Context(), relPath, &off, &lim)
+	if err != nil || wholeOut != out || wholeMeta != meta {
+		t.Fatalf("single-line overflow equivalence failed: err=%v len=%d/%d", err, len(out), len(wholeOut))
+	}
+
+	// Case 2: unnumbered large-file tail (>ReadTotalLinesScanCap) exceeding 48 KB.
+	origCap := ReadTotalLinesScanCap
+	ReadTotalLinesScanCap = 4096
+	t.Cleanup(func() { ReadTotalLinesScanCap = origCap })
+
+	var sb strings.Builder
+	pad := strings.Repeat("y", 190)
+	for i := 1; i <= 600; i++ {
+		fmt.Fprintf(&sb, "n-%04d-%s\n", i, pad)
+	}
+	if err := os.WriteFile(fullPath, []byte(sb.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	off = -500
+	out, meta, err = env.ReadFileRichCtx(t.Context(), relPath, &off, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc := utf8.RuneCountInString(out); rc > 50_000 {
+		t.Fatalf("unnumbered tail with %d-byte path produced %d runes, want <= 50000", len(relPath), rc)
+	}
+	if !meta.TailMode || meta.StartLine != 0 || !meta.Truncated || meta.TruncatedBy != "chars" {
+		t.Fatalf("tail meta = %+v", meta)
+	}
+	if !strings.Contains(out, relPath) || !strings.Contains(out, "n-0600-") {
+		t.Fatalf("unnumbered tail missing path header or final line")
+	}
+	wholeOut, _, wholeMeta, err = env.ReadFileRichAndBytesCtx(t.Context(), relPath, &off, nil)
+	if err != nil || wholeOut != out || wholeMeta != meta {
+		t.Fatalf("unnumbered tail equivalence failed: err=%v len=%d/%d", err, len(out), len(wholeOut))
+	}
+}
