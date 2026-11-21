@@ -347,7 +347,6 @@ func TestRun_TerminalErrorHookIsNotConsultedOnCancelOrFatal(t *testing.T) {
 				Provider:      "responses",
 				Resp:          respFrom("data: {\"a\":1}\n\n"),
 				Stream:        llm.NewChanStream(nil),
-				ParentCtx:     runCtx,
 				OnEvent:       tc.onEvent,
 				Finished:      &finished,
 				IncompleteMsg: "responses stream ended without completion",
@@ -368,18 +367,17 @@ func TestRun_TerminalErrorHookIsNotConsultedOnCancelOrFatal(t *testing.T) {
 	}
 
 	t.Run("adapter-owned deadline consults TerminalError", func(t *testing.T) {
-		parentCtx := context.Background()
-		attemptCtx, cancel := context.WithDeadline(parentCtx, time.Now().Add(-time.Millisecond))
+		attemptCtx, cancel := llm.ApplyAdapterTimeout(context.Background(), &llm.AdapterTimeout{Request: time.Nanosecond}, true)
 		defer cancel()
+		<-attemptCtx.Done()
 		sentinel := errors.New("stored stream accepted before adapter deadline")
 		finished := false
 		hookCalls := 0
 		var sawCause error
 		r := &StreamRunner{
 			Provider:      "google",
-			Resp:          respFrom("data: {\"a\":1}\n\n"),
+			Resp:          &http.Response{Body: io.NopCloser(errReader{err: io.ErrUnexpectedEOF})},
 			Stream:        llm.NewChanStream(nil),
-			ParentCtx:     parentCtx,
 			OnEvent:       func(llm.SSEEvent) error { return nil },
 			Finished:      &finished,
 			IncompleteMsg: "google stream ended without completion",
@@ -398,6 +396,10 @@ func TestRun_TerminalErrorHookIsNotConsultedOnCancelOrFatal(t *testing.T) {
 		}
 	})
 }
+
+type errReader struct{ err error }
+
+func (r errReader) Read([]byte) (int, error) { return 0, r.err }
 
 // TestFinish_PublishesFinishEventOnceAndStopsParse pins Finish for both attempt
 // states: the Finish event reaches the stream exactly once, the runner counts

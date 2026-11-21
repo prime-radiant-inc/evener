@@ -731,6 +731,58 @@ func TestProtocolIncompleteStreamNamesTheInstanceAndDistinguishesQueuedEOF(t *te
 		createdFrame := "event: interaction.created\n" +
 			`data: {"event_type":"interaction.created","interaction":{"id":"int_deadline_1","status":"in_progress"}}` + "\n\n"
 
+		runStream := func(t *testing.T, ctx context.Context, firstAttempt func(http.ResponseWriter, *http.Request), opts llm.GenerateOptions, onEvent func(llm.StreamEvent)) (int32, error) {
+			t.Helper()
+			var hits atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				n := hits.Add(1)
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				if n == 1 {
+					firstAttempt(w, r)
+					return
+				}
+				_, _ = w.Write([]byte(interactionsSSE))
+			}))
+			t.Cleanup(srv.Close)
+			reg, err := registry.Load(
+				registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+				registry.WithStateRoot(t.TempDir()),
+				registry.WithEnv(func(string) (string, bool) { return "", false }),
+				registry.WithInstances(map[string]registry.Provider{
+					"google": {Base: "google", APIKey: "k", Transport: registry.Transport{BaseURL: srv.URL + "/v1beta"}},
+				}),
+			)
+			if err != nil {
+				t.Fatalf("registry.Load: %v", err)
+			}
+			opts.Client = llm.NewClient(llm.WithRegistry(reg))
+			opts.Provider = "google"
+			opts.Model = "gemini-3.8-flash"
+			opts.Prompt = new("hello")
+			opts.Sleep = noSleep
+			sr, err := llm.StreamGenerate(ctx, opts)
+			if err != nil {
+				t.Fatalf("StreamGenerate open: %v", err)
+			}
+			var streamErr error
+			for ev := range sr.Events() {
+				if onEvent != nil {
+					onEvent(ev)
+				}
+				if ev.Type == llm.StreamEventError {
+					streamErr = ev.Err
+				}
+			}
+			return hits.Load(), streamErr
+		}
+
+		createdThenHang := func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(createdFrame))
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		}
+
 		for _, tc := range []struct {
 			name    string
 			timeout *llm.AdapterTimeout
@@ -739,53 +791,12 @@ func TestProtocolIncompleteStreamNamesTheInstanceAndDistinguishesQueuedEOF(t *te
 			{"adapter StreamRead deadline", &llm.AdapterTimeout{StreamRead: 40 * time.Millisecond}},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				var hits atomic.Int32
-				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					n := hits.Add(1)
-					w.Header().Set("Content-Type", "text/event-stream")
-					w.WriteHeader(http.StatusOK)
-					if n == 1 {
-						_, _ = w.Write([]byte(createdFrame))
-						w.(http.Flusher).Flush()
-						<-r.Context().Done()
-						return
-					}
-					_, _ = w.Write([]byte(interactionsSSE))
-				}))
-				t.Cleanup(srv.Close)
-
-				reg, err := registry.Load(
-					registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
-					registry.WithStateRoot(t.TempDir()),
-					registry.WithEnv(func(string) (string, bool) { return "", false }),
-					registry.WithInstances(map[string]registry.Provider{
-						"google": {Base: "google", APIKey: "k", Transport: registry.Transport{BaseURL: srv.URL + "/v1beta"}},
-					}),
-				)
-				if err != nil {
-					t.Fatalf("registry.Load: %v", err)
-				}
-				c := llm.NewClient(llm.WithRegistry(reg))
-				sr, err := llm.StreamGenerate(context.Background(), llm.GenerateOptions{
-					Client:         c,
-					Provider:       "google",
-					Model:          "gemini-3.8-flash",
-					Prompt:         new("hello"),
+				hits, gotErr := runStream(t, context.Background(), createdThenHang, llm.GenerateOptions{
 					Store:          new(true),
 					AdapterTimeout: tc.timeout,
-					Sleep:          noSleep,
-				})
-				if err != nil {
-					t.Fatalf("StreamGenerate open: %v", err)
-				}
-				var gotErr error
-				for ev := range sr.Events() {
-					if ev.Type == llm.StreamEventError {
-						gotErr = ev.Err
-					}
-				}
-				if hits.Load() != 1 {
-					t.Fatalf("stored %s HTTP POSTs = %d, want 1", tc.name, hits.Load())
+				}, nil)
+				if hits != 1 {
+					t.Fatalf("stored %s HTTP POSTs = %d, want 1", tc.name, hits)
 				}
 				le, ok := errors.AsType[llm.Error](gotErr)
 				if !ok || le.Retryable() || !errors.Is(gotErr, ErrPendingInteractionStatus) {
@@ -799,142 +810,38 @@ func TestProtocolIncompleteStreamNamesTheInstanceAndDistinguishesQueuedEOF(t *te
 		}
 
 		// Stateless stream with adapter Request deadline after interaction.created still retries automatically and succeeds on POST #2.
-		var statelessHits atomic.Int32
-		srvStateless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			n := statelessHits.Add(1)
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			if n == 1 {
-				_, _ = w.Write([]byte(createdFrame))
-				w.(http.Flusher).Flush()
-				<-r.Context().Done()
-				return
-			}
-			_, _ = w.Write([]byte(interactionsSSE))
-		}))
-		t.Cleanup(srvStateless.Close)
-		regStateless, err := registry.Load(
-			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
-			registry.WithStateRoot(t.TempDir()),
-			registry.WithEnv(func(string) (string, bool) { return "", false }),
-			registry.WithInstances(map[string]registry.Provider{
-				"google": {Base: "google", APIKey: "k", Transport: registry.Transport{BaseURL: srvStateless.URL + "/v1beta"}},
-			}),
-		)
-		if err != nil {
-			t.Fatalf("registry.Load: %v", err)
-		}
-		srStateless, err := llm.StreamGenerate(context.Background(), llm.GenerateOptions{
-			Client:         llm.NewClient(llm.WithRegistry(regStateless)),
-			Provider:       "google",
-			Model:          "gemini-3.8-flash",
-			Prompt:         new("hello"),
+		statelessHits, statelessErr := runStream(t, context.Background(), createdThenHang, llm.GenerateOptions{
 			AdapterTimeout: &llm.AdapterTimeout{Request: 40 * time.Millisecond},
-			Sleep:          noSleep,
-		})
-		if err != nil {
-			t.Fatalf("stateless StreamGenerate open: %v", err)
-		}
-		var statelessErr error
-		for ev := range srStateless.Events() {
-			if ev.Type == llm.StreamEventError {
-				statelessErr = ev.Err
-			}
-		}
-		if statelessErr != nil || statelessHits.Load() != 2 {
-			t.Fatalf("stateless adapter Request deadline err=%v hits=%d, want nil and 2 POSTs", statelessErr, statelessHits.Load())
+		}, nil)
+		if statelessErr != nil || statelessHits != 2 {
+			t.Fatalf("stateless adapter Request deadline err=%v hits=%d, want nil and 2 POSTs", statelessErr, statelessHits)
 		}
 
 		// Stored stream with adapter Request deadline BEFORE interaction.created supplies an ID still retries automatically and succeeds on POST #2.
-		var preIDHits atomic.Int32
-		srvPreID := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			n := preIDHits.Add(1)
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			if n == 1 {
-				w.(http.Flusher).Flush()
-				<-r.Context().Done()
-				return
-			}
-			_, _ = w.Write([]byte(interactionsSSE))
-		}))
-		t.Cleanup(srvPreID.Close)
-		regPreID, err := registry.Load(
-			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
-			registry.WithStateRoot(t.TempDir()),
-			registry.WithEnv(func(string) (string, bool) { return "", false }),
-			registry.WithInstances(map[string]registry.Provider{
-				"google": {Base: "google", APIKey: "k", Transport: registry.Transport{BaseURL: srvPreID.URL + "/v1beta"}},
-			}),
-		)
-		if err != nil {
-			t.Fatalf("registry.Load: %v", err)
-		}
-		srPreID, err := llm.StreamGenerate(context.Background(), llm.GenerateOptions{
-			Client:         llm.NewClient(llm.WithRegistry(regPreID)),
-			Provider:       "google",
-			Model:          "gemini-3.8-flash",
-			Prompt:         new("hello"),
+		preIDHits, preIDErr := runStream(t, context.Background(), func(w http.ResponseWriter, r *http.Request) {
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		}, llm.GenerateOptions{
 			Store:          new(true),
 			AdapterTimeout: &llm.AdapterTimeout{Request: 40 * time.Millisecond},
-			Sleep:          noSleep,
-		})
-		if err != nil {
-			t.Fatalf("pre-ID stored StreamGenerate open: %v", err)
-		}
-		var preIDErr error
-		for ev := range srPreID.Events() {
-			if ev.Type == llm.StreamEventError {
-				preIDErr = ev.Err
-			}
-		}
-		if preIDErr != nil || preIDHits.Load() != 2 {
-			t.Fatalf("pre-ID stored adapter Request deadline err=%v hits=%d, want nil and 2 POSTs", preIDErr, preIDHits.Load())
+		}, nil)
+		if preIDErr != nil || preIDHits != 2 {
+			t.Fatalf("pre-ID stored adapter Request deadline err=%v hits=%d, want nil and 2 POSTs", preIDErr, preIDHits)
 		}
 
 		// Caller cancellation after client decoded interaction.created on a stored stream stays AbortError (context.Canceled).
-		srvCancel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
+		callerCtx, callerCancel := context.WithCancel(context.Background())
+		defer callerCancel()
+		_, cancelErr := runStream(t, callerCtx, func(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(createdFrame))
 			_, _ = w.Write([]byte("event: custom.ping\ndata: {\"ok\":true}\n\n"))
 			w.(http.Flusher).Flush()
 			<-r.Context().Done()
-		}))
-		t.Cleanup(srvCancel.Close)
-		regCancel, err := registry.Load(
-			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
-			registry.WithStateRoot(t.TempDir()),
-			registry.WithEnv(func(string) (string, bool) { return "", false }),
-			registry.WithInstances(map[string]registry.Provider{
-				"google": {Base: "google", APIKey: "k", Transport: registry.Transport{BaseURL: srvCancel.URL + "/v1beta"}},
-			}),
-		)
-		if err != nil {
-			t.Fatalf("registry.Load: %v", err)
-		}
-		callerCtx, callerCancel := context.WithCancel(context.Background())
-		defer callerCancel()
-		srCancel, err := llm.StreamGenerate(callerCtx, llm.GenerateOptions{
-			Client:   llm.NewClient(llm.WithRegistry(regCancel)),
-			Provider: "google",
-			Model:    "gemini-3.8-flash",
-			Prompt:   new("hello"),
-			Store:    new(true),
-			Sleep:    noSleep,
-		})
-		if err != nil {
-			t.Fatalf("caller-cancel StreamGenerate open: %v", err)
-		}
-		var cancelErr error
-		for ev := range srCancel.Events() {
+		}, llm.GenerateOptions{Store: new(true)}, func(ev llm.StreamEvent) {
 			if ev.Type == llm.StreamEventProviderEvent {
 				callerCancel()
 			}
-			if ev.Type == llm.StreamEventError {
-				cancelErr = ev.Err
-			}
-		}
+		})
 		if _, ok := errors.AsType[*llm.AbortError](cancelErr); !ok || !errors.Is(cancelErr, context.Canceled) {
 			t.Fatalf("caller cancellation error = %T %v, want *llm.AbortError wrapping context.Canceled", cancelErr, cancelErr)
 		}

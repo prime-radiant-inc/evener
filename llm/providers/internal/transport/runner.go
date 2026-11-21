@@ -9,6 +9,7 @@
 package transport
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"net/http"
@@ -39,10 +40,6 @@ type StreamRunner struct {
 	// Attempt is the explicitly attached canonical attempt, when any. It owns
 	// exact response-byte capture for the private per-session API log.
 	Attempt *APIAttemptCapture
-	// ParentCtx is the caller context before ApplyAdapterTimeout, allowing the
-	// runner to distinguish adapter-owned request deadlines from caller
-	// cancellation or caller-owned deadlines even when Attempt is nil.
-	ParentCtx context.Context
 	// StatusCode is the HTTP response status for Attempt.
 	StatusCode int
 	// Cancel stops the SSE parse once Finish has run: a provider may keep the
@@ -101,13 +98,7 @@ func (r *StreamRunner) incomplete(parseErr error) error {
 }
 
 func (r *StreamRunner) adapterTimeoutSource(ctx context.Context) llm.APITimeoutSource {
-	if source := r.Attempt.TimeoutSource(); source != llm.APITimeoutNone {
-		return source
-	}
-	if r.ParentCtx != nil {
-		return llm.APITimeoutSourceForContext(r.ParentCtx, ctx)
-	}
-	return llm.APITimeoutNone
+	return cmp.Or(r.Attempt.TimeoutSource(), llm.APITimeoutSourceFromContext(ctx))
 }
 
 // Run drives the SSE decode loop. It never cancels: cancellation happens in
@@ -123,11 +114,7 @@ func (r *StreamRunner) Run(ctx context.Context) {
 	if !*r.Finished {
 		if err := ctx.Err(); err != nil {
 			if adapterTimeout != llm.APITimeoutNone && r.TerminalError != nil {
-				cause := parseErr
-				if cause == nil {
-					cause = err
-				}
-				terminalErr = r.TerminalError(cause)
+				terminalErr = r.TerminalError(err)
 			} else {
 				terminalErr = llm.WrapContextError(r.Provider, err)
 			}

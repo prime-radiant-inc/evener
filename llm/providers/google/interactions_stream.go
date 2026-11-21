@@ -759,7 +759,7 @@ func (a *interactionStreamAccumulator) finishOpenSlot(slot *interactionStreamSlo
 }
 
 func decodeInteractionStream(
-	sctx, parentCtx context.Context,
+	sctx context.Context,
 	cancel context.CancelFunc,
 	resp *http.Response,
 	s *llm.ChanStream,
@@ -785,7 +785,6 @@ func decodeInteractionStream(
 		Resp:          resp,
 		Stream:        s,
 		Attempt:       attempt,
-		ParentCtx:     parentCtx,
 		StatusCode:    resp.StatusCode,
 		Cancel:        cancel,
 		Finished:      &finished,

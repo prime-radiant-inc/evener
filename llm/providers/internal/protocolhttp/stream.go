@@ -61,7 +61,7 @@ func Stream(parentCtx context.Context, c *Call, decode StreamDecoder) (llm.Strea
 	}
 	s := llm.NewChanStream(cancelAll)
 	s.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
-	r := &Result{StatusCode: resp.StatusCode, Header: resp.Header, EndpointURL: llm.FinalResponseEndpointURL(resp, c.URL), Material: p.material, PrunedFields: p.PrunedFields, ParentCtx: parentCtx}
+	r := &Result{StatusCode: resp.StatusCode, Header: resp.Header, EndpointURL: llm.FinalResponseEndpointURL(resp, c.URL), Material: p.material, PrunedFields: p.PrunedFields}
 	go decode(sctx, cancelAll, resp, s, r, attempt)
 	return s, nil
 }

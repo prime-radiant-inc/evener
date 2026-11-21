@@ -26,8 +26,6 @@ type Result struct {
 	EndpointURL  string
 	Material     llm.APILogCredentialMaterial
 	PrunedFields []string
-	// ParentCtx is the caller context passed to Stream before ApplyAdapterTimeout.
-	ParentCtx context.Context
 }
 
 // Do performs a non-streaming exchange. finish decodes a 2xx Result into

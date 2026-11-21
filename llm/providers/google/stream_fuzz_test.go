@@ -38,7 +38,7 @@ func accumulateInteractionsSSE(sse []byte, chunkOneByte bool) (*llm.Response, bo
 	}
 	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(body)}
 	s := llm.NewChanStream(cancel)
-	go decodeInteractionStream(ctx, nil, cancel, resp, s, llm.Request{Model: "fuzz-model"}, "google-fuzz", "fuzz-model", "http://fuzz.local/endpoint", llm.APILogCredentialMaterial{}, nil, false, false, nil)
+	go decodeInteractionStream(ctx, cancel, resp, s, llm.Request{Model: "fuzz-model"}, "google-fuzz", "fuzz-model", "http://fuzz.local/endpoint", llm.APILogCredentialMaterial{}, nil, false, false, nil)
 
 	acc := llm.NewStreamAccumulator()
 	sawError := false
