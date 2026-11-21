@@ -879,7 +879,6 @@ func TestRestoreSession_PrunesRetiredCheapModelAndModelFallbacks(t *testing.T) {
 	}
 	client := llm.NewClient(llm.WithRegistry(r))
 	client.Register(&fakeAdapter{name: "google"})
-	client.Register(&fakeAdapter{name: "google-vertex"})
 
 	gRes, err := r.Resolve("google/gemini-3.8-flash")
 	if err != nil {
@@ -939,6 +938,120 @@ func TestRestoreSession_PrunesRetiredCheapModelAndModelFallbacks(t *testing.T) {
 		t.Fatal("expected explicit ModelFallbacks override targeting unsupported Vertex 2.5 model to fail restore")
 	}
 
+	t.Run("rejects unsupported Vertex primary model on restore without overwriting saved meta and allows supported override", func(t *testing.T) {
+		dir := t.TempDir()
+		savedMeta := schema.SessionMeta{
+			ID:        "0123456789ABCDEFGHJKMNPQRW",
+			CreatedAt: time.Now(),
+			Model:     "gemini-3.8-flash",
+			ProfileID: "google",
+		}
+		if err := schema.SaveSessionMeta(dir, savedMeta); err != nil {
+			t.Fatalf("SaveSessionMeta: %v", err)
+		}
+		v25Res, err := r.Resolve("google-vertex/gemini-2.5-flash")
+		if err != nil {
+			t.Fatal(err)
+		}
+		profV25 := provider.FromResolved(v25Res, r)
+		if _, err := RestoreSessionFromMetaWithConfig(client, profV25, execenv.NewLocalExecutionEnvironment(t.TempDir()), savedMeta, RestoreSessionConfig{
+			StateDir: dir,
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				return provider.Resolve(r, ref)
+			},
+		}); err == nil {
+			t.Fatal("expected RestoreSessionFromMetaWithConfig with unsupported google-vertex/gemini-2.5-flash to fail")
+		}
+		reloaded, err := schema.LoadSessionMeta(dir, savedMeta.ID)
+		if err != nil {
+			t.Fatalf("LoadSessionMeta after rejected restore: %v", err)
+		}
+		if reloaded.ProfileID != "google" || reloaded.Model != "gemini-3.8-flash" {
+			t.Fatalf("rejected restore overwrote saved meta: got %s/%s, want google/gemini-3.8-flash", reloaded.ProfileID, reloaded.Model)
+		}
+
+		v38Res, err := r.Resolve("google-vertex/gemini-3.8-flash")
+		if err != nil {
+			t.Fatal(err)
+		}
+		profV38 := provider.FromResolved(v38Res, r)
+		sessOK, err := RestoreSessionFromMetaWithConfig(client, profV38, execenv.NewLocalExecutionEnvironment(t.TempDir()), savedMeta, RestoreSessionConfig{
+			StateDir: dir,
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				return provider.Resolve(r, ref)
+			},
+		})
+		if err != nil {
+			t.Fatalf("RestoreSessionFromMetaWithConfig with supported google-vertex/gemini-3.8-flash failed: %v", err)
+		}
+		sessOK.Close()
+	})
+
+	t.Run("registered adapter override under google-vertex bypasses Interactions model check across startup, switch, and fallbacks", func(t *testing.T) {
+		cOverride := llm.NewClient(llm.WithRegistry(r))
+		cOverride.Register(&fakeAdapter{name: "google"})
+		cOverride.Register(&fakeAdapter{name: "google-vertex"})
+
+		v25Res, err := r.Resolve("google-vertex/gemini-2.5-flash")
+		if err != nil {
+			t.Fatal(err)
+		}
+		profV25 := provider.FromResolved(v25Res, r)
+
+		fresh, err := NewSession(cOverride, profV25, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+			StateDir:       t.TempDir(),
+			ModelFallbacks: []string{"google-vertex/gemini-2.5-flash"},
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				return provider.Resolve(r, ref)
+			},
+		})
+		if err != nil {
+			t.Fatalf("NewSession with registered google-vertex override failed: %v", err)
+		}
+		fresh.Close()
+
+		sw, err := NewSession(cOverride, prof, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+			StateDir: t.TempDir(),
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				return provider.Resolve(r, ref)
+			},
+		})
+		if err != nil {
+			t.Fatalf("NewSession for SetModel: %v", err)
+		}
+		if err := sw.SetModel("google-vertex/gemini-2.5-flash"); err != nil {
+			t.Fatalf("SetModel to google-vertex/gemini-2.5-flash with registered override failed: %v", err)
+		}
+		sw.Close()
+
+		metaOv := schema.SessionMeta{
+			ID:         "0123456789ABCDEFGHJKMNPQRX",
+			CreatedAt:  time.Now(),
+			Model:      "gemini-2.5-flash",
+			ProfileID:  "google-vertex",
+			CheapModel: "google-vertex/gemini-2.5-flash-lite",
+			Config: schema.ConfigSnapshot{
+				ModelFallbacks: []string{"google-vertex/gemini-2.5-flash"},
+			},
+		}
+		restoredOv, err := RestoreSessionFromMetaWithConfig(cOverride, profV25, execenv.NewLocalExecutionEnvironment(t.TempDir()), metaOv, RestoreSessionConfig{
+			StateDir: t.TempDir(),
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				return provider.Resolve(r, ref)
+			},
+		})
+		if err != nil {
+			t.Fatalf("RestoreSessionFromMetaWithConfig with registered override failed: %v", err)
+		}
+		if got := restoredOv.profile.CheapModelRefString(); got != "google-vertex/gemini-2.5-flash-lite" {
+			t.Fatalf("overridden CheapModel = %q, want google-vertex/gemini-2.5-flash-lite", got)
+		}
+		if len(restoredOv.cfg.ModelFallbacks) != 1 || restoredOv.cfg.ModelFallbacks[0] != "google-vertex/gemini-2.5-flash" {
+			t.Fatalf("overridden ModelFallbacks = %v, want [google-vertex/gemini-2.5-flash]", restoredOv.cfg.ModelFallbacks)
+		}
+		restoredOv.Close()
+	})
+
 	t.Run("preserves temporarily disabled saved CheapModel and ModelFallbacks while keeping explicit CLI strict", func(t *testing.T) {
 		cfgPath := filepath.Join(t.TempDir(), "providers.toml")
 		tomlCfg := `
@@ -972,7 +1085,6 @@ disabled = true
 		}
 		cDis := llm.NewClient(llm.WithRegistry(rDis))
 		cDis.Register(&fakeAdapter{name: "google"})
-		cDis.Register(&fakeAdapter{name: "google-vertex"})
 
 		gResDis, err := rDis.Resolve("google/gemini-3.8-flash")
 		if err != nil {

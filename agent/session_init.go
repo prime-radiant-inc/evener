@@ -951,6 +951,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err := schema.ValidateSessionID(meta.ID); err != nil {
 		return nil, fmt.Errorf("invalid session id: %w", err)
 	}
+	if err := validateVertexInteractionsModel(client, profile); err != nil {
+		return nil, err
+	}
 	restoreComplete := false
 	ownershipAcquired := false
 	if restoreCfg.AcquireSessionOwnership != nil {
@@ -1335,6 +1338,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err := s.bootstrapDelegateResources(); err != nil {
 		return nil, err
 	}
+	defer func() {
+		if !restoreComplete {
+			_ = s.closeOwnedDelegateStore()
+		}
+	}()
 	// Delegate reconciliation is durable, local startup work. Complete it before
 	// any provider metadata access so caller-delivery crash replay cannot depend
 	// on provider availability or latency.
@@ -1342,6 +1350,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// call: attribute this listing's canonical API-log attempt to it instead
 	// of letting it fall into the shared unattributed bucket.
 	profile, selectedModels := resolveStartupModelProfileWithReuse(client, profile, s.id, *s.providerAdapterTimeout(), restoreCfg.StartupModelListing)
+	if err := validateVertexInteractionsModel(client, profile); err != nil {
+		return nil, err
+	}
 	s.profile = profile
 	// Restore the cheap/fast model routing from the persisted meta, pruning any
 	// retired provider (e.g. google-vertex-express) or unsupported Vertex model.
@@ -1369,11 +1380,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		s.cfg.ModelFallbacks = kept
 	}
 	s.captureModelAvailability(selectedModels)
-	defer func() {
-		if !restoreComplete {
-			_ = s.closeOwnedDelegateStore()
-		}
-	}()
 	s.subagents = newSubagentManager(cfg.MaxRetainedTerminal)
 	newJM := newJobManager
 	if cfg.testOnly.noSyncJobStore || testSpeedIO(cfg) {
@@ -2086,7 +2092,7 @@ func (s *Session) validateModelFallbackEntry(fbModel string) error {
 	if len(parts) != 2 || !s.profile.CrossProviderRef(fbModel) {
 		if s.profile != nil {
 			fbProfile := s.profile.WithModel(fbModel)
-			if err := validateVertexInteractionsModel(fbProfile); err != nil {
+			if err := validateVertexInteractionsModel(s.client, fbProfile); err != nil {
 				return fmt.Errorf("model_fallbacks entry %q: %w", fbModel, err)
 			}
 		}
@@ -2117,7 +2123,7 @@ func (s *Session) validateModelFallbackEntry(fbModel string) error {
 	if fbProfile.Surface() != s.profile.Surface() {
 		return fmt.Errorf("model_fallbacks entry %q switches surface from %q to %q; cross-surface fallbacks are not supported because prompt/tool surfaces differ", fbModel, s.profile.Surface(), fbProfile.Surface())
 	}
-	if err := validateVertexInteractionsModel(fbProfile); err != nil {
+	if err := validateVertexInteractionsModel(s.client, fbProfile); err != nil {
 		return fmt.Errorf("model_fallbacks entry %q: %w", fbModel, err)
 	}
 	return nil

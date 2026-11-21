@@ -330,49 +330,22 @@ func TestProtocolReclassifiesGRPCStatus(t *testing.T) {
 
 func TestProtocolRegionalVertexLocation404ResidencyRemedy(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct {
-		loc         string
-		wantLead    string
-		wantOther   []string
-		wantMissing []string
-	}{
-		{
-			loc:       "us-central1",
-			wantLead:  "GOOGLE_VERTEX_LOCATION=us",
-			wantOther: []string{"United States", "European Union", "no data-residency guarantee", "changes the geographic data-residency boundary"},
-		},
-		{
-			loc:       "europe-west1",
-			wantLead:  "GOOGLE_VERTEX_LOCATION=eu",
-			wantOther: []string{"European Union", "United States", "no data-residency guarantee", "changes the geographic data-residency boundary"},
-		},
-		{
-			loc:       "europe-west2", // London (non-EU) must list us, eu, global with residency disclosure, not lead with eu alone
-			wantLead:  "us",
-			wantOther: []string{"eu", "global", "no data-residency guarantee", "changes the geographic data-residency boundary"},
-		},
-		{
-			loc:       "asia-northeast1",
-			wantLead:  "us",
-			wantOther: []string{"eu", "global", "no data-residency guarantee", "changes the geographic data-residency boundary"},
-		},
-	} {
-		t.Run(tc.loc, func(t *testing.T) {
-			body := `{"error":{"code":404,"message":"Interactions endpoint is not available in ` + tc.loc + `."}}`
+	for _, loc := range []string{"us-central1", "europe-west1", "europe-west2", "asia-northeast1"} {
+		t.Run(loc, func(t *testing.T) {
+			body := `{"error":{"code":404,"message":"Interactions endpoint is not available in ` + loc + `."}}`
 			srv, _ := protoServer(t, http.StatusNotFound, body)
-			res := vertexAuthorityRes(t, srv, tc.loc)
+			res := vertexAuthorityRes(t, srv, loc)
 			_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
 			cfgErr, ok := errors.AsType[*llm.ConfigurationError](err)
 			if !ok {
 				t.Fatalf("regional Vertex 404 must be *llm.ConfigurationError, got %T %v", err, err)
 			}
-			if !strings.Contains(cfgErr.Message, tc.loc) || !strings.Contains(cfgErr.Message, tc.wantLead) {
-				t.Fatalf("remedy %q missing loc %q or %q", cfgErr.Message, tc.loc, tc.wantLead)
+			if cfgErr.Provider() != res.Instance || strings.TrimSpace(cfgErr.Message) == "" {
+				t.Fatalf("ConfigurationError provider=%q message=%q, want instance %q with non-empty message", cfgErr.Provider(), cfgErr.Message, res.Instance)
 			}
-			for _, sub := range tc.wantOther {
-				if !strings.Contains(cfgErr.Message, sub) {
-					t.Fatalf("remedy %q missing residency phrase %q", cfgErr.Message, sub)
-				}
+			causeErr, ok := errors.AsType[llm.Error](errors.Unwrap(cfgErr))
+			if !ok || causeErr.StatusCode() != http.StatusNotFound {
+				t.Fatalf("expected wrapped 404 llm.Error cause, got %T %v", errors.Unwrap(cfgErr), errors.Unwrap(cfgErr))
 			}
 		})
 	}

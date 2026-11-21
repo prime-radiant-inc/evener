@@ -91,7 +91,7 @@ const modelSwitchEnumerationTimeout = 8 * time.Second
 // selection) runs on an already-existing session, so sessionID is always that
 // session's own id.
 func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, sessionID string, timeout llm.AdapterTimeout, primedInstance string, primed *llm.ModelListing) (resolved *provider.Profile, listedInstance string, listing *llm.ModelListing, err error) {
-	if err := validateVertexInteractionsModel(profile); err != nil {
+	if err := validateVertexInteractionsModel(client, profile); err != nil {
 		return profile, "", nil, err
 	}
 	if primed != nil && primedInstance == profile.ID() {
@@ -102,7 +102,7 @@ func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, ses
 		if res, err := client.Resolve(profile.ID() + "/" + profile.Model()); err == nil {
 			profile = profile.WithResolved(res)
 		}
-		if err := validateVertexInteractionsModel(profile); err != nil {
+		if err := validateVertexInteractionsModel(client, profile); err != nil {
 			return profile, primedInstance, primed, err
 		}
 		if err := validateModelSwitchMembership(client, profile, *primed); err != nil {
@@ -118,7 +118,7 @@ func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, ses
 	}
 	filled, enumeration := fillLiveModelMetadata(ctx, client, profile)
 	if enumeration.err != nil {
-		if err := validateVertexInteractionsModel(filled); err != nil {
+		if err := validateVertexInteractionsModel(client, filled); err != nil {
 			return filled, "", nil, err
 		}
 		// Fail open unconditionally: an instance that cannot be listed at all
@@ -142,7 +142,7 @@ func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, ses
 // pass runs here; fail-open-on-listing-error is handled by the caller, before
 // this is called.
 func validateModelSwitchMembership(client *llm.Client, profile *provider.Profile, listing llm.ModelListing) error {
-	if err := validateVertexInteractionsModel(profile); err != nil {
+	if err := validateVertexInteractionsModel(client, profile); err != nil {
 		return err
 	}
 	if client == nil || profile == nil {
@@ -168,8 +168,8 @@ func validateVertexInteractionsResolved(res registry.Resolved, model, instance s
 	return nil
 }
 
-func validateVertexInteractionsModel(profile *provider.Profile) error {
-	if profile == nil {
+func validateVertexInteractionsModel(client *llm.Client, profile *provider.Profile) error {
+	if profile == nil || client.ServesOverride(profile.ID()) {
 		return nil
 	}
 	return validateVertexInteractionsResolved(profile.Resolved(), profile.Model(), profile.ID())
@@ -180,7 +180,10 @@ func validateVertexInteractionsModel(profile *provider.Profile) error {
 // Vertex AI Gemini model unsupported by /interactions. Temporarily disabled
 // models and missing credentials are NOT pruned here so user choices survive in
 // meta.json until re-enabled.
-func googleMigrationTargetError(reg *registry.Registry, targetProvider, targetModel string) error {
+func googleMigrationTargetError(client *llm.Client, reg *registry.Registry, targetProvider, targetModel string) error {
+	if client.ServesOverride(targetProvider) {
+		return nil
+	}
 	if strings.EqualFold(targetProvider, "google-vertex-express") && (reg == nil || !reg.HasInstance("google-vertex-express")) {
 		return fmt.Errorf("provider %q is retired", targetProvider)
 	}
@@ -204,11 +207,11 @@ func (s *Session) googleMigrationCheapModelError(candidate *provider.Profile) er
 	if reg == nil && s.client != nil {
 		reg = s.client.Registry()
 	}
-	if err := googleMigrationTargetError(reg, cheapProv, cheapModel); err != nil {
+	if err := googleMigrationTargetError(s.client, reg, cheapProv, cheapModel); err != nil {
 		return err
 	}
 	if reg == nil && cheapProv == candidate.ID() {
-		return validateVertexInteractionsModel(candidate.WithModel(cheapModel))
+		return validateVertexInteractionsModel(s.client, candidate.WithModel(cheapModel))
 	}
 	return nil
 }
@@ -237,11 +240,11 @@ func (s *Session) googleMigrationFallbackError(fbModel string) error {
 	} else if len(parts) == 2 {
 		fbProv, fbMod = parts[0], parts[1]
 	}
-	if err := googleMigrationTargetError(reg, fbProv, fbMod); err != nil {
+	if err := googleMigrationTargetError(s.client, reg, fbProv, fbMod); err != nil {
 		return err
 	}
 	if reg == nil && s.profile != nil && fbProv == s.profile.ID() {
-		return validateVertexInteractionsModel(s.profile.WithModel(fbModel))
+		return validateVertexInteractionsModel(s.client, s.profile.WithModel(fbModel))
 	}
 	return nil
 }
