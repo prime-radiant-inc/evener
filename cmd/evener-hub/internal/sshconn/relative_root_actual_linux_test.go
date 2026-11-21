@@ -18,6 +18,7 @@ import (
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/internal/hubendpoint"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // Like TestRemoteRestartActualDisposableHub, this replaces only SSH transport.
@@ -82,8 +83,8 @@ func TestRemoteRelativeStateRootActualDisposableHub(t *testing.T) {
 				t.Fatal(err)
 			}
 			env := []string{"PATH=" + pathDir, "HOME=" + home, "XDG_CONFIG_HOME=" + configDir, "XDG_STATE_HOME=" + filepath.Join(root, "state"), "XDG_CACHE_HOME=" + filepath.Join(root, "cache")}
-			endpoint := func() (hubendpoint.Report, error) {
-				cmd := exec.Command(target, "hub", "endpoint", "--json")
+			endpoint := func(ctx context.Context) (hubendpoint.Report, error) {
+				cmd := exec.CommandContext(ctx, target, "hub", "endpoint", "--json")
 				cmd.Dir, cmd.Env = root, env
 				out, err := cmd.Output()
 				if err != nil {
@@ -93,18 +94,20 @@ func TestRemoteRelativeStateRootActualDisposableHub(t *testing.T) {
 			}
 			// This also cleans up a healthy bootstrap whose successor proof failed.
 			t.Cleanup(func() {
-				report, err := endpoint()
+				report, err := endpoint(context.Background())
 				if err == nil && report.Running != nil {
 					_ = syscall.Kill(report.Running.PID, syscall.SIGTERM)
 					deadline := time.Now().Add(5 * time.Second)
+					ctx, cancel := context.WithDeadline(context.Background(), deadline)
+					defer cancel()
 					for time.Now().Before(deadline) {
-						report, err = endpoint()
+						report, err = endpoint(ctx)
 						if err == nil && report.State == "stopped" {
 							return
 						}
 						time.Sleep(20 * time.Millisecond)
 					}
-					t.Error("actual hub did not release its selected lock after TERM")
+					t.Errorf("actual hub did not release its selected lock after TERM (state %q, err %v)", report.State, err)
 				}
 			})
 			var before hubendpoint.Report
@@ -129,17 +132,12 @@ func TestRemoteRelativeStateRootActualDisposableHub(t *testing.T) {
 						t.Error("original ad-hoc hub did not exit")
 					}
 				})
-				deadline := time.Now().Add(15 * time.Second)
-				for time.Now().Before(deadline) {
-					before, err = endpoint()
-					if err == nil && before.Running != nil {
-						break
-					}
-					time.Sleep(50 * time.Millisecond)
-				}
-				if err != nil || before.Running == nil {
-					t.Fatalf("actual ad-hoc startup unavailable: %v", err)
-				}
+				probeCtx, stopProbes := context.WithTimeout(t.Context(), testwait.Budget(t))
+				defer stopProbes()
+				testwait.UntilSeen(t, "the actual ad-hoc hub to publish its endpoint", func() (bool, string) {
+					before, err = endpoint(probeCtx)
+					return err == nil && before.Running != nil, fmt.Sprintf("state %q, err %v", before.State, err)
+				})
 			}
 			host := hostreg.Host{Name: "relative-root", SSH: "root@disposable", EvenerPath: target}
 			starts, writes := 0, 0
@@ -170,7 +168,7 @@ func TestRemoteRelativeStateRootActualDisposableHub(t *testing.T) {
 			if err == nil {
 				_, err = m.RestartForOperation(ctx, host, facts, nil)
 			}
-			after, endpointErr := endpoint()
+			after, endpointErr := endpoint(t.Context())
 			if err != nil || endpointErr != nil || after.Running == nil {
 				t.Fatalf("actual managed lifecycle: err=%v endpointErr=%v state=%s root=%q healthy=%t starts=%d pending=%t", err, endpointErr, after.State, after.HubStateRoot, after.Running != nil, starts, m.pendingRestart(host.Name).selected != nil)
 			}
