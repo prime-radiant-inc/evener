@@ -1,12 +1,15 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/llm"
 )
 
@@ -67,5 +70,79 @@ func TestDelegateSkillAppendProjectsBetweenSnapshotsTurnOnce(t *testing.T) {
 	// pass vacuously if the round never reached the adapter step.
 	if got := supervisionRequestCount(fixture.adapter); got != 2 {
 		t.Fatalf("provider requests = %d, want 2 (the send round's asserting request never ran)", got)
+	}
+}
+
+// #7205: a parent steer that lands after the leased round completed its
+// controller model-request claim is not in the round's bound claim, so
+// CompleteModelRequest never filters it. The skill rebuild re-reads the
+// resident history and appends the steer to both the rebuilt request and the
+// round's fallback source, presenting it in a round bound before it arrived
+// and again when the next request binds it. The rebuilt tail must obey the
+// same late-steer predicate.
+func TestDelegateRebuildWithholdsSteerAppendedAfterSnapshot(t *testing.T) {
+	runtime := newSession(t, withStateDir(t.TempDir()))
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	runtime.delegateController = c
+	c.mu.Lock()
+	c.live[lease.delegateID].runtime = runtime
+	c.live[lease.delegateID].binding.runtime = runtime
+	c.mu.Unlock()
+
+	// One pending delivery obligation whose skill this session cannot follow
+	// appends a typed failure notification and sets appendedNotifications, so
+	// the round rebuilds through rebuildForAppendedSkillTurns.
+	runtime.mu.Lock()
+	runtime.skillLifecycle.Obligations = append(runtime.skillLifecycle.Obligations, schema.SkillDeliveryObligation{
+		InvocationID: "inv-7205",
+		Identity:     schema.SkillContentIdentity{Name: skill.GardeningMemorySkillName},
+		Route:        "model_tool",
+	})
+	runtime.skillLifecycle.Revision++
+	runtime.mu.Unlock()
+
+	const marker = "steer appended after the snapshot (7205)"
+	var once sync.Once
+	updateSessionTestConfig(runtime, func(cfg *testConfig) {
+		cfg.afterDelegateModelSnapshot = func() {
+			once.Do(func() {
+				if _, err := c.Steer(context.Background(), rootDelegateActor("root-session"), lease.delegateID, marker); err != nil {
+					t.Errorf("late steer: %v", err)
+				}
+			})
+		}
+	})
+
+	ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
+	var timings events.RoundTimings
+	_, _, history, _, _, _, err := runtime.prepareModelRequestWithError(ctx, 1, &timings)
+	if err != nil {
+		t.Fatalf("prepare delegate model request: %v", err)
+	}
+	if got := countMessageText(history, parentMessageAttribution+marker); got != 0 {
+		t.Fatalf("the rebuilt request presented a steer appended after the snapshot %d times, want 0: %#v", got, history)
+	}
+	// Positive control: the rebuild ran, carrying the typed failure
+	// notification it appended.
+	if got := strings.Count(messagesText(history), "needs the memory save tools"); got != 1 {
+		t.Fatalf("the rebuilt request carried the appended failure notification %d times, want 1", got)
+	}
+	source, ok := runtime.takeRoundFallbackSource()
+	if !ok {
+		t.Fatal("prepareModelRequestWithError recorded no fallback source")
+	}
+	fallbackHistory := runtime.requestMessages(source.system, expandHistory(source.turns, source.scope))
+	if got := countMessageText(fallbackHistory, parentMessageAttribution+marker); got != 0 {
+		t.Fatalf("the fallback source presented a steer appended after the snapshot %d times, want 0", got)
+	}
+	// The steer is still owed: the next request binds it and presents it once.
+	_, _, next, _, _, _, err := runtime.prepareModelRequestWithError(ctx, 2, &timings)
+	if err != nil {
+		t.Fatalf("prepare second delegate model request: %v", err)
+	}
+	if got := countMessageText(next, parentMessageAttribution+marker); got != 1 {
+		t.Fatalf("the next request presented the steer %d times, want 1", got)
 	}
 }
