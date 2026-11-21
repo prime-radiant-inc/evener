@@ -35,15 +35,7 @@ func TestRunCheckKillsWhatAHungCheckStarted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Don't leave the sleeper behind if the wait fails.
-	gone := false
-	t.Cleanup(func() {
-		if !gone {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
-		}
-	})
 	testwait.Until(t, "the check's child "+strconv.Itoa(pid)+" to die", func() bool {
 		return syscall.Kill(pid, 0) == syscall.ESRCH
 	})
-	gone = true
 }
