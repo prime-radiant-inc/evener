@@ -69,19 +69,6 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 		}
 		return false
 	}
-	// A delegate whose last launch refused a foreign-held lane keeps its owed
-	// row quiet: the retry revalidates the lane (a git inspection) instead of
-	// consuming the report again and churning commit/reopen/finish against a
-	// lane that is still gone. A successful probe ends the quiet and the normal
-	// start proceeds; a failed one re-stamps the child and leaves the row owed.
-	delegateID := sub.sess.owningDelegateID
-	if s.delegateController.laneHeldAttentionQuiet(delegateID) {
-		if err := s.revalidateLaneForLaunch(delegateID); err != nil {
-			s.recordDrainAbandonedChildOnLaneRefusal(sub, "its lane is still held before a retried attention launch")
-			return true
-		}
-		s.clearDrainAbandonedDelegate(delegateID)
-	}
 	if observer := s.cfg.testOnly.delegateAttentionBeforeDriveClaim; observer != nil {
 		observer(sub)
 	}
@@ -495,6 +482,15 @@ func (s *Session) drivePendingDelegateAttention() bool {
 	owner, sub, err := s.restoreColdDelegateAttentionRuntime(delegateID)
 	if err != nil {
 		s.warnDelegateAttentionFailed(delegateAttentionRestoreLabel, delegateID, err)
+		if errors.Is(err, errDelegateLaneHeld) {
+			// The refusal happened before any launch ran, so no launch-side stamp
+			// marks this delegate: a cold runtime in particular has no child to
+			// stamp. Keep the owed row for the paced retry but out of the drain's
+			// quiescence scans, which would otherwise wait on a lane another
+			// session holds forever. A later restore that revalidates the lane
+			// clears the quiet (reviveValidateIsolationLane).
+			s.delegateController.quietLaneHeldAttention(delegateID)
+		}
 		s.countDelegateAttentionRestoreFailure(delegateID, err)
 		s.scheduleDelegateAttentionRetry()
 		return true

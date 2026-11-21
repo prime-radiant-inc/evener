@@ -50,10 +50,11 @@ type delegateAttentionState struct {
 	// the root: the drive stops cold-restoring the delegate until new attention
 	// arrives or the daemon restarts.
 	parked bool
-	// laneHeldQuiet is set when a lane-held launch refusal left owed attention
-	// undeliverable. The wake stays owed and retried, but the drain's quiescence
-	// scans do not count it, so the one-shot drain can still give up. A
-	// successful lane revalidation ends the quiet.
+	// laneHeldQuiet is set when a foreign-held lane left owed attention
+	// undeliverable, whether a launch refused the lane or a cold scheduled
+	// restore refused it before any launch ran. The wake stays owed and
+	// retried, but the drain's quiescence scans do not count it, so the one-shot
+	// drain can still give up. A successful lane revalidation ends the quiet.
 	laneHeldQuiet bool
 	// driveTurn records when the attention drive last selected the delegate
 	// (attentionDriveSeq order): the drive picks the delegate it has not picked
@@ -742,9 +743,10 @@ func (c *delegateTreeController) hasOwedDelegateAttentionLocked(skip func(*deleg
 }
 
 // quietLaneHeldAttention marks delegateID's owed attention as held behind a
-// lane another session owns. The state is created when absent so the refusal
-// that dropped the committed start's wake and the reopen that restores it
-// cannot land in either order and leave the drain counting the row.
+// lane another session owns, whether a launch refusal or a cold scheduled
+// restore found it held. The state is created when absent so the refusal that
+// dropped the committed start's wake and the reopen that restores it cannot
+// land in either order and leave the drain counting the row.
 func (c *delegateTreeController) quietLaneHeldAttention(delegateID string) {
 	if c == nil || delegateID == "" {
 		return
@@ -768,18 +770,6 @@ func (c *delegateTreeController) clearLaneHeldAttention(delegateID string) {
 	if state := c.attention[delegateID]; state != nil {
 		state.laneHeldQuiet = false
 	}
-}
-
-// laneHeldAttentionQuiet reports whether delegateID's owed attention is quiet
-// behind a lane this session does not hold.
-func (c *delegateTreeController) laneHeldAttentionQuiet(delegateID string) bool {
-	if c == nil || delegateID == "" {
-		return false
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	state := c.attention[delegateID]
-	return state != nil && state.laneHeldQuiet
 }
 
 // delegateAttentionWakeEligibleLocked reports whether delegateID could accept

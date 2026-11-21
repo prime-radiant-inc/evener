@@ -2134,6 +2134,114 @@ func TestDelegateAttentionRefusedLaunchReopensThroughTheWakeMap(t *testing.T) {
 	})
 }
 
+// A cold delegate's scheduled restore revalidates its lane before any launch
+// runs, so a foreign-held lane refuses the restore itself: no launch refusal
+// stamps the child and no resident runtime retries into the launch-side quiet.
+// The owed row must still leave the drain's quiescence scans while it stays
+// pending for the paced retry, or a one-shot drain waits on a lane another
+// session holds forever. Once the lane is given back the restore revalidates
+// it, ends the quiet, and presents the report.
+func TestColdDelegateAttentionHeldLaneLeavesDrainQuiescence(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	var lanePath string
+	fixture := newColdDelegateFixtureConfigured(t, "", func(d *delegatestore.Descriptor) {
+		d.Isolation = "worktree"
+		lanePath = r.delegateLane(t, "cold-held-quiet", "dlg_coldheldquiet01", "034coldheldquiet001")
+		d.WorkingDir = lanePath
+	})
+	const attentionID = "delegate:cold-held-report"
+	writer, err := transcript.NewWriter(transcriptPath(fixture.stateDir, fixture.childID), transcript.Header{
+		SessionID:       fixture.childID,
+		ParentSessionID: fixture.meta.ID,
+		Task:            "cold held report",
+		ProfileID:       "openai",
+		Model:           "gpt-5.2",
+		WorkingDir:      fixture.workspace,
+		Depth:           1,
+	})
+	if err != nil {
+		t.Fatalf("create cold delegate transcript: %v", err)
+	}
+	turn := schema.NewTurn(schema.TurnSteering, llm.User("cold held report"))
+	turn.AttentionID = attentionID
+	if err := writer.AppendDurable(turn); err != nil {
+		t.Fatalf("append cold delegate attention: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close cold delegate transcript: %v", err)
+	}
+
+	const foreignSID = "034coldforeignholder001"
+	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
+	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", worktree.FormatSessionMarker(foreignSID), lanePath)
+
+	root, err := restoreDelegateResourceBootstrapSessionWithTestConfig(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir,
+		testConfig{sandboxProber: unsandboxedProber(fixture.workspace)})
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	if !root.delegateController.owesDelegateAttention(fixture.delegateID) {
+		t.Fatal("the cold delegate's report is not owed before the drive")
+	}
+	if !root.delegateController.hasDeliverableDelegateAttention() {
+		t.Fatal("the cold delegate's report is not deliverable before the refusal")
+	}
+
+	entered := make(chan struct{})
+	var enteredOnce sync.Once
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+		if req.SessionID == fixture.childID {
+			enteredOnce.Do(func() { close(entered) })
+		}
+		return agenttest.FinalResponse("done")
+	}})
+	quietCleared := make(chan bool, 4)
+	root.cfg.testOnly.afterDelegateAttentionRestore = func(delegateID string, _ *subagent) {
+		if delegateID != fixture.delegateID {
+			return
+		}
+		select {
+		case quietCleared <- root.delegateController.hasDeliverableDelegateAttention():
+		default:
+		}
+	}
+
+	root.drivePendingDelegateAttention()
+	if !root.delegateController.owesDelegateAttention(fixture.delegateID) {
+		t.Fatal("a foreign-held lane dropped the cold delegate's owed report instead of keeping it for the paced retry")
+	}
+	if root.delegateController.hasDeliverableDelegateAttention() {
+		// Error, not Fatal: the unlock below releases the lane so the deferred
+		// Close can finish, and the failure still names the regression.
+		t.Error("a cold delegate's foreign-held lane still counts as deliverable work: the drain cannot give up")
+	}
+	if _, locked, reason := r.laneLocked(t, lanePath); !locked || !strings.Contains(reason, foreignSID) {
+		t.Fatalf("the refusal touched the foreign lock: locked=%v reason=%q", locked, reason)
+	}
+
+	// Give the lane back: the next restore revalidates it, ends the quiet, and
+	// presents the report.
+	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
+	root.drivePendingDelegateAttention()
+	select {
+	case deliverable := <-quietCleared:
+		if !deliverable {
+			t.Fatal("a successful restore left the owed report quiet: the drain would ignore fresh attention")
+		}
+	default:
+		t.Fatal("the unlocked lane's restore never reached the attention drive")
+	}
+	select {
+	case <-entered:
+	// TRIPWIRE: the scripted in-process adapter answers as soon as the restored
+	// run reaches it; 30s only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
+		t.Fatal("the restored cold delegate never presented its owed report")
+	}
+}
+
 // A deliberate stop that cancels an in-flight attention presentation owns the
 // report's teardown, not the settle tail: the stop's discard machinery
 // enumerated the attention ids it knew at plan time, so a reopen appending a
