@@ -1176,15 +1176,19 @@ function reconcileQuotaWait(
   },
   postCutWaitStamps?: ReadonlySet<number>,
 ): QuotaWaitFields {
-  // A read that names no live generation is not a runtime change. A
-  // saved-history fallback carries a daemonless token, and so does any
-  // success the hub serves from the saved index; neither says anything about
-  // whether the live daemon still serves the held wait, so neither may
-  // retire or replace what the live daemon published. Absent tokens (an
-  // older peer) keep the unscoped behavior below.
+  // A read that names no live generation is not a runtime change: a saved
+  // index success carries a daemonless token, and so does a failed-live
+  // fallback. Neither says anything about whether the live daemon still
+  // serves the held wait, so neither may retire or replace what the live
+  // daemon published. A read that DOES name a live generation reconciles
+  // even when its window came from saved history (a live read that returned
+  // no items): the hub keeps the live token and thread metadata, so that
+  // read is a witness to the runtime. Absent tokens (an older peer) keep the
+  // unscoped behavior below.
   const nonLiveRead =
-    fresh.fallback === true ||
-    (fresh.bootGeneration !== undefined && liveBootGeneration(fresh.bootGeneration) === undefined);
+    fresh.bootGeneration === undefined
+      ? fresh.fallback === true
+      : liveBootGeneration(fresh.bootGeneration) === undefined;
   if (nonLiveRead) {
     return {
       quotaResumesAt: held.quotaResumesAt,

@@ -1608,6 +1608,31 @@ test("a daemonless saved-index read keeps the held quota wait and chip", () => {
   expect(after.modelRetry).toBe(model.modelRetry);
 });
 
+// A live read whose window came back empty still names the live daemon: the
+// hub fills the window from saved history but keeps the live boot token
+// (fallbackHistoryIdentity). That is a confirmed runtime change, so the
+// previous runtime's wait must not survive it — the saved window is no
+// reason to keep a deadline the new daemon does not have.
+test("a live-read-empty read from a restarted daemon retires the previous runtime's held wait", () => {
+  const model = liveQuotaWaitOnBootOne();
+  const resumed = testThread({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
+  const liveRead = {
+    thread: resumed,
+    bootGeneration: "2",
+    epoch: 2,
+    snapshot: { incarnation: "inc-2", length: 1 },
+    servedFrom: "saved-index",
+    fallbackReason: "live-read-empty",
+    asOf: "2026-11-08T00:00:01Z",
+  };
+  const after = applyReadResponse(model, liveRead, 2000);
+  expect(after.lastFrameAt).toBe(2000);
+
+  expect(after.quotaResumesAt).toBeUndefined();
+  expect(after.quotaWaitStartedAt).toBeUndefined();
+  expect(after.modelRetry).toBeUndefined();
+});
+
 // The same-runtime control: a wait-free read on the runtime that minted the
 // held wait still retires it and records its stamp as the retirement marker,
 // so the runtime-change rule above does not swallow the ordinary retirement.
