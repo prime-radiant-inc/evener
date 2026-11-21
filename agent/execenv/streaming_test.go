@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/internal/testwait"
 )
 
 var errStreamWrite = errors.New("stream write failed")
@@ -119,12 +121,13 @@ func TestStreamCommandWaitStopsDescendantsAfterLeaderExit(t *testing.T) {
 			deadline := time.Now().Add(time.Second)
 			groupGone := func() bool { return syscall.Kill(-h.Pid, 0) == syscall.ESRCH }
 			childGone := func() bool { return syscall.Kill(childPID, 0) == syscall.ESRCH }
-			for (!groupGone() || !childGone()) && time.Now().Before(deadline) {
-				time.Sleep(10 * time.Millisecond)
-			}
-			if !groupGone() || !childGone() {
-				t.Fatalf("processes remain alive after Wait: group %d gone=%v, child %d gone=%v",
-					h.Pid, groupGone(), childPID, childGone())
+			var group, child bool
+			testwait.UntilSeen(t, "the process group and child to be gone after Wait", func() (bool, string) {
+				group, child = groupGone(), childGone()
+				return group && child || !time.Now().Before(deadline), fmt.Sprintf("group %d gone=%v, child %d gone=%v", h.Pid, group, childPID, child)
+			})
+			if !group || !child {
+				t.Fatalf("processes remain alive %s after Wait: group %d gone=%v, child %d gone=%v", time.Second, h.Pid, group, childPID, child)
 			}
 		})
 	}
@@ -177,19 +180,31 @@ func TestStreamCommandWaitDeliversLeaderOutputThroughForcedCleanup(t *testing.T)
 	// Group death proves Wait already ran Terminate and Kill; only then may the
 	// copier run, recreating the starved-copier schedule deterministically.
 	deadline := time.Now().Add(5 * time.Second)
-	for syscall.Kill(-h.Pid, 0) != syscall.ESRCH {
-		if time.Now().After(deadline) {
+	waitJoined := false
+	defer func() {
+		if !waitJoined {
 			releaseCopier()
 			h.Signal()
-			<-waitDone
-			t.Fatalf("process group %d survived forced cleanup", h.Pid)
+			limit := min(5*time.Second, testwait.Budget(t))
+			select {
+			case <-waitDone:
+			case <-time.After(limit):
+			}
 		}
-		time.Sleep(10 * time.Millisecond)
+	}()
+	var killErr error
+	testwait.UntilSeen(t, "the process group to die from forced cleanup", func() (bool, string) {
+		killErr = syscall.Kill(-h.Pid, 0)
+		return killErr == syscall.ESRCH || !time.Now().Before(deadline), fmt.Sprintf("pid %d: %v", h.Pid, killErr)
+	})
+	if killErr != syscall.ESRCH {
+		t.Fatalf("process group %d survived forced cleanup within 5s: %v", h.Pid, killErr)
 	}
 	releaseCopier()
 
 	select {
 	case result := <-waitDone:
+		waitJoined = true
 		if result.err != nil || result.code != 0 {
 			t.Fatalf("wait = (%d, %v), want (0, nil)", result.code, result.err)
 		}
@@ -243,45 +258,57 @@ func TestStreamCommandSignalKillsWholeProcessGroup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
+	waitDone := make(chan struct{})
+	var waitOnce sync.Once
+	wait := func() { waitOnce.Do(func() { go func() { _, _ = h.Wait(); close(waitDone) }() }) }
+	t.Cleanup(func() {
+		h.Signal()
+		wait()
+		select {
+		case <-waitDone:
+		case <-time.After(min(5*time.Second, testwait.Budget(t))):
+		}
+	})
 	deadline := time.Now().Add(5 * time.Second)
 	var childPID int
-	for time.Now().Before(deadline) {
-		mu.Lock()
-		out := buf.String()
-		mu.Unlock()
-		if strings.Contains(out, "READY") {
-			for line := range strings.SplitSeq(out, "\n") {
-				if rest, ok := strings.CutPrefix(line, "CHILD="); ok {
-					childPID, _ = strconv.Atoi(strings.TrimSpace(rest))
-				}
-			}
-			break
+	var out string
+	testwait.UntilSeen(t, "the forked child pid and READY in the stream output", func() (bool, string) {
+		if !time.Now().Before(deadline) {
+			return true, fmt.Sprintf("output=%q", out)
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		mu.Lock()
+		out = buf.String()
+		mu.Unlock()
+		if !strings.Contains(out, "READY") {
+			return false, fmt.Sprintf("output=%q", out)
+		}
+		for line := range strings.SplitSeq(out, "\n") {
+			if rest, ok := strings.CutPrefix(line, "CHILD="); ok {
+				childPID, _ = strconv.Atoi(strings.TrimSpace(rest))
+			}
+		}
+		return childPID > 0, fmt.Sprintf("output=%q", out)
+	})
 	if childPID <= 0 {
-		t.Fatalf("never parsed forked child pid; output: %q", buf.String())
+		t.Fatalf("never parsed forked child pid within 5s; output: %q", out)
 	}
 
 	// READY prints before the exec, so signaling now could kill the shell
 	// pre-exec and never exercise the exec'd-replacement case. Wait until the
 	// handle's pid has actually become the sleep before signaling.
 	execDeadline := time.Now().Add(5 * time.Second)
-	for {
-		cmdline, err := processCommandName(h.Pid)
-		if err == nil && strings.HasPrefix(cmdline, "sleep") {
-			break
-		}
-		if time.Now().After(execDeadline) {
-			t.Fatalf("pid %d never became the exec'd sleep; cmdline=%q err=%v", h.Pid, cmdline, err)
-		}
-		time.Sleep(20 * time.Millisecond)
+	var cmdline string
+	var cmdErr error
+	testwait.UntilSeen(t, fmt.Sprintf("pid %d to become the exec'd sleep", h.Pid), func() (bool, string) {
+		cmdline, cmdErr = processCommandName(h.Pid)
+		return (cmdErr == nil && strings.HasPrefix(cmdline, "sleep")) || !time.Now().Before(execDeadline), fmt.Sprintf("cmdline=%q err=%v", cmdline, cmdErr)
+	})
+	if cmdErr != nil || !strings.HasPrefix(cmdline, "sleep") {
+		t.Fatalf("pid %d never became the exec'd sleep within 5s: cmdline=%q err=%v", h.Pid, cmdline, cmdErr)
 	}
 
 	h.Signal()
-
-	waitDone := make(chan struct{})
-	go func() { _, _ = h.Wait(); close(waitDone) }()
+	wait()
 	select {
 	case <-waitDone:
 	case <-time.After(5 * time.Second):
@@ -290,14 +317,17 @@ func TestStreamCommandSignalKillsWholeProcessGroup(t *testing.T) {
 
 	gone := func(pid int) bool { return syscall.Kill(pid, 0) == syscall.ESRCH }
 	deadline = time.Now().Add(4 * time.Second) // SIGTERM immediate, SIGKILL escalation at 2s
-	for time.Now().Before(deadline) {
-		if gone(h.Pid) && gone(childPID) {
-			return
+	var execGone, childGone bool
+	testwait.UntilSeen(t, "the signaled process group to exit", func() (bool, string) {
+		if !time.Now().Before(deadline) {
+			return true, fmt.Sprintf("exec'd pid %d gone=%v, forked child pid %d gone=%v", h.Pid, execGone, childPID, childGone)
 		}
-		time.Sleep(50 * time.Millisecond)
+		execGone, childGone = gone(h.Pid), gone(childPID)
+		return execGone && childGone, fmt.Sprintf("exec'd pid %d gone=%v, forked child pid %d gone=%v", h.Pid, execGone, childPID, childGone)
+	})
+	if !execGone || !childGone {
+		t.Fatalf("process group member survived Signal within %s: exec'd pid %d gone=%v, forked child pid %d gone=%v", 4*time.Second, h.Pid, execGone, childPID, childGone)
 	}
-	t.Fatalf("process group member survived Signal: exec'd pid %d gone=%v, forked child pid %d gone=%v",
-		h.Pid, gone(h.Pid), childPID, gone(childPID))
 }
 
 func processCommandName(pid int) (string, error) {
