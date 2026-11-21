@@ -1,7 +1,7 @@
 # `read_file` v2: Head-Only Paging, Line Clamping, Tail Reads, Range-Aware Repeat Tracking, and Media Hygiene
 
 **Date:** 2026-11-21
-**Status:** Draft (pending builder check and Jesse's approval)
+**Status:** Approved (Jesse approved Items 1, 2, 4, 5, 6 plus the `system.md.tmpl` copy-before-read wording fix)
 
 ## Intent and Why
 
@@ -89,7 +89,7 @@ Make all caps package-level `var`s (matching `MaxWholeFileReadBytes` and `readWi
 - `DefaultReadLines = 2000` (unchanged default line cap when `limit` is omitted or `<= 0`).
 - `DefaultReadMaxBytes = 48_000` *(proposal)*: maximum rendered body bytes emitted by `execenv` before stopping on a clean line boundary. Leaving 2,000 bytes of headroom under `registry.go`'s `MaxChars: 50_000` guarantees `execenv`'s footer is never chopped off by the registry backstop.
 - `DefaultReadMaxLineChars = 2000`: maximum UTF-8 runes kept per line when `limit != 1` (or `limit` omitted).
-- `ReadTotalLinesScanCap int64 = 4 << 20` (4 MiB) *(proposal)*: files at or below this size scan to EOF (if needed) to report exact `totalLines`; files above this size stop at the window boundary to preserve `#6427`/`#6637` O(window) I/O performance.
+- `ReadTotalLinesScanCap int64 = 2 << 20` (2 MiB) *(proposal; chosen below the existing 4 MiB `TestReadFileWindowReadsOnlyTheWindow` O(window) cost test so that guarantee stays untouched)*: files at or below this size count remaining `\n` bytes to EOF (without scanning post-window bytes for NUL, preserving `TestReadFileWindowScopesTheBinaryRefusal`) to report exact `totalLines`; files above this size stop at the window boundary to preserve `#6427`/`#6637` O(window) I/O performance.
 
 #### Structured Read Metadata & Optional Capability Interface (`agent/execenv/execenv.go`)
 ```go
@@ -211,6 +211,12 @@ Update `DefReadFile()` (and keep `DefReadFileNativeVision`, `DefReadFilePDFVisio
   - `pages`: `"PDF reads only: 1-based page or inclusive page range (e.g. \"1-5\" or \"3\"; max 20 pages per call). Required for PDFs over 10 pages or 20 MiB."`
   - `vision_prompt`: unchanged per vision regime (omitted in Regime 1, PDF-scoped in Regime 2, image+PDF in Regime 3).
 - Update `agent/testdata/readfilevision/regime{1,2,3}-{read-file,memory-read}.md` (plus any affected `memoryprompt`/`messagingprompt` goldens) with `-update-prompt` and inspect every diff.
+
+#### Fixing the Copy-Before-Read Prompt Confounder (`agent/prompts/system.md.tmpl:214`)
+Live Codex A/B tests (Item 3) showed `gpt-6.1-sol`, `gpt-6.2-sol`, and `gpt-6.2-astra` repeatedly running `shell` `cp` on ordinary `.go` source files before reading them because `agent/prompts/system.md.tmpl:214` states `"Before you run anything against an input you cannot regenerate, even a read, make an exact copy and work on that copy."` (and then reading the copy via `cat`/`sed`/`awk` inside the same shell call).
+- Tighten line 214 to:
+  `"Before you run a mutating command or script against an input you cannot regenerate (such as a one-off data file or database), make an exact copy and work on that copy; read-only inspection of workspace source files needs no copy. An exact copy counts as the original input when you check your work. The deliverable still goes where the requester named it, running under its expected name and ports; say so if you had to change either."`
+- Regenerate the 6 affected `agent/testdata/messagingprompt/manager-*.md` goldens via `-update-prompt` and verify the diff touches only that line.
 
 ---
 
