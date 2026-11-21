@@ -78,7 +78,11 @@ func TestPrepareToolCall_AliasesArgs(t *testing.T) {
 	if err := json.Unmarshal(res.Call.Arguments, &got); err != nil {
 		t.Fatalf("unmarshal healed: %v", err)
 	}
-	if got["old_string"] != "a" {
+	edits, ok := got["edits"].([]any)
+	if !ok || len(edits) != 1 {
+		t.Fatalf("not aliased: %v", got)
+	}
+	if first, _ := edits[0].(map[string]any); first["old_string"] != "a" {
 		t.Fatalf("not aliased: %v", got)
 	}
 	if len(res.Changes) == 0 {
@@ -112,7 +116,7 @@ func TestPrepareToolCall_SynthesizesStableIDWhenEmpty(t *testing.T) {
 	t.Parallel()
 	et := editTool(t)
 	call := llm.ToolCallData{Name: "edit_file",
-		Arguments: json.RawMessage(`{"file_path":"/x","old_string":"a","new_string":"b"}`)}
+		Arguments: json.RawMessage(`{"file_path":"/x","edits":[{"old_string":"a","new_string":"b"}]}`)}
 	res := prepareToolCall(call, et, []string{"edit_file"}, "edit_file", "communicate", "")
 	if res.Call.ID == "" {
 		t.Fatal("expected synthesized ID")
@@ -128,7 +132,7 @@ func TestPrepareToolCall_SynthesizesStableIDWhenEmpty(t *testing.T) {
 func TestPrepareToolCall_SynthesizedIDsAreUniqueWhenEmpty(t *testing.T) {
 	t.Parallel()
 	et := editTool(t)
-	args := json.RawMessage(`{"file_path":"/x","old_string":"a","new_string":"b"}`)
+	args := json.RawMessage(`{"file_path":"/x","edits":[{"old_string":"a","new_string":"b"}]}`)
 	first := prepareToolCall(llm.ToolCallData{Name: "edit_file", Arguments: args},
 		et, []string{"edit_file"}, "edit_file", "communicate", "")
 	second := prepareToolCall(llm.ToolCallData{Name: "edit_file", Arguments: args},
@@ -198,7 +202,7 @@ func TestPrepareToolCall_LengthStopWithValidArgs(t *testing.T) {
 	t.Parallel()
 	et := editTool(t)
 	res := prepareToolCall(llm.ToolCallData{ID: "c1", Name: "edit_file",
-		Arguments: json.RawMessage(`{"file_path":"/x","old_string":"a","new_string":"b"}`)},
+		Arguments: json.RawMessage(`{"file_path":"/x","edits":[{"old_string":"a","new_string":"b"}]}`)},
 		et, []string{"edit_file"}, "edit_file", "communicate", llm.FinishReasonLength)
 	if res.PrevalErr != "" {
 		t.Fatalf("valid args must execute: %q", res.PrevalErr)

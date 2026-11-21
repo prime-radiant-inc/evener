@@ -64,7 +64,7 @@ func TestMemoryGardeningSkill(t *testing.T) {
 			},
 			func(req llm.Request) llm.Response {
 				memoryRequireResult(t, req, "memory_read", "opaque-before-72")
-				return memoryCallResponse("memory_edit", map[string]any{"scope": "personal", "file_path": "topic.txt", "old_string": "opaque-before-72", "new_string": "opaque-after-74"})
+					return memoryCallResponse("memory_edit", map[string]any{"scope": "personal", "file_path": "topic.txt", "edits": []any{map[string]any{"old_string": "opaque-before-72", "new_string": "opaque-after-74"}}})
 			},
 			func(req llm.Request) llm.Response {
 				memoryRequireResult(t, req, "memory_edit", "")
@@ -2418,9 +2418,9 @@ func TestMemoryToolResultsNameScopeRelativePaths(t *testing.T) {
 				isError bool
 			}{
 				{"memory_write", map[string]any{"file_path": "dir/page.md", "when": "d", "body": "opaque-needle\n"}, false},
-				{"memory_edit", map[string]any{"file_path": "dir/page.md", "old_string": "opaque-needle", "new_string": "opaque-needle-2"}, false},
-				{"memory_edit", map[string]any{"file_path": "dir/page.md", "old_string": "absent-text", "new_string": "x"}, true},
-				{"memory_edit", map[string]any{"file_path": "missing.md", "old_string": "a", "new_string": "b"}, true},
+				{"memory_edit", map[string]any{"file_path": "dir/page.md", "edits": []any{map[string]any{"old_string": "opaque-needle", "new_string": "opaque-needle-2"}}}, false},
+				{"memory_edit", map[string]any{"file_path": "dir/page.md", "edits": []any{map[string]any{"old_string": "absent-text", "new_string": "x"}}}, true},
+				{"memory_edit", map[string]any{"file_path": "missing.md", "edits": []any{map[string]any{"old_string": "a", "new_string": "b"}}}, true},
 				{"memory_read", map[string]any{"file_path": "missing.md"}, true},
 				{"memory_search", map[string]any{"pattern": "opaque-needle"}, false},
 				{"memory_search", map[string]any{"pattern": "opaque-needle", "output_mode": "files_with_matches"}, false},
@@ -2708,7 +2708,7 @@ func TestMemoryFreeFormOperations(t *testing.T) {
 	if res.IsError || res.Output != "   6\tToken\n" {
 		t.Fatalf("window=%q error=%t", res.Output, res.IsError)
 	}
-	res = memoryExec(t, s, "memory_edit", map[string]any{"scope": "project", "file_path": "duplicate.txt", "old_string": "Token", "new_string": "changed"})
+	res = memoryExec(t, s, "memory_edit", map[string]any{"scope": "project", "file_path": "duplicate.txt", "edits": []any{map[string]any{"old_string": "Token", "new_string": "changed"}}})
 	if !res.IsError {
 		t.Fatal("duplicate edit accepted")
 	}
@@ -2716,7 +2716,7 @@ func TestMemoryFreeFormOperations(t *testing.T) {
 	if err != nil || string(got) != memoryWhenBlock+"before\nToken\nToken\nafter\n" {
 		t.Fatalf("failed edit changed bytes=%q err=%v", got, err)
 	}
-	res = memoryExec(t, s, "memory_edit", map[string]any{"scope": "project", "file_path": "duplicate.txt", "old_string": "Token", "new_string": "changed", "replace_all": true})
+	res = memoryExec(t, s, "memory_edit", map[string]any{"scope": "project", "file_path": "duplicate.txt", "edits": []any{map[string]any{"old_string": "Token", "new_string": "changed", "replace_all": true}}})
 	if res.IsError {
 		t.Fatal(res.Output)
 	}
@@ -2794,8 +2794,7 @@ func TestMemoryPathAuthority(t *testing.T) {
 				args["when"], args["body"] = "w", "bad"
 			}
 			if name == "memory_edit" {
-				args["old_string"] = "opaque"
-				args["new_string"] = "bad"
+				args["edits"] = []any{map[string]any{"old_string": "opaque", "new_string": "bad"}}
 			}
 			if res := memoryExec(t, s, name, args); !res.IsError {
 				t.Fatalf("%s path=%q accepted: %s", name, path, res.Output)

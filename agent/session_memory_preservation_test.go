@@ -137,9 +137,9 @@ func TestMemoryPreservation(t *testing.T) {
 			args map[string]any
 		}{
 			{"memory_search", map[string]any{"scope": "personal", "pattern": "opaque-wrong-207"}},
-			{"memory_edit", map[string]any{"scope": "personal", "file_path": "fact.md", "old_string": "opaque-wrong-207", "new_string": "opaque-correct-213"}},
-			{"memory_edit", map[string]any{"scope": "personal", "file_path": "topic", "old_string": "opaque-wrong-207", "new_string": "opaque-correct-213"}},
-			{"memory_edit", map[string]any{"scope": "personal", "file_path": "log.md", "old_string": "opaque-wrong-207\n", "new_string": ""}},
+		{"memory_edit", map[string]any{"scope": "personal", "file_path": "fact.md", "edits": []any{map[string]any{"old_string": "opaque-wrong-207", "new_string": "opaque-correct-213"}}}},
+		{"memory_edit", map[string]any{"scope": "personal", "file_path": "topic", "edits": []any{map[string]any{"old_string": "opaque-wrong-207", "new_string": "opaque-correct-213"}}}},
+		{"memory_edit", map[string]any{"scope": "personal", "file_path": "log.md", "edits": []any{map[string]any{"old_string": "opaque-wrong-207\n", "new_string": ""}}}},
 			{"memory_delete", map[string]any{"scope": "personal", "file_path": "duplicate"}},
 			{"memory_search", map[string]any{"scope": "personal", "pattern": "opaque-wrong-207"}},
 		}

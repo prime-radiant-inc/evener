@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
@@ -95,27 +97,92 @@ func execFileWrite(ctx context.Context, env execenv.ExecutionEnvironment, args m
 }
 
 func execFileEdit(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any, guard readGuard) (any, error) {
-	edit := env.EditFile
-	if ce, ok := env.(execenv.ContextualFileReader); ok {
-		edit = func(path, oldString, newString string, replaceAll bool) (string, error) {
-			return ce.EditFileCtx(ctx, path, oldString, newString, replaceAll)
+	return execFileEditWith(args, guard, func(path string, edits []execenv.FileEdit) (string, error) {
+		if be, ok := env.(execenv.BatchFileEditor); ok {
+			return be.EditFileBatchCtx(ctx, path, edits)
 		}
-	}
-	return execFileEditWith(args, guard, edit)
+		if len(edits) > 1 {
+			return "", errors.New("edit_file: execution environment does not support multi-edit")
+		}
+		e := edits[0]
+		if ce, ok := env.(execenv.ContextualFileReader); ok {
+			return ce.EditFileCtx(ctx, path, e.OldString, e.NewString, e.ReplaceAll)
+		}
+		return env.EditFile(path, e.OldString, e.NewString, e.ReplaceAll)
+	})
 }
 
 // execFileEditWith is edit_file's semantics over edit, so a caller can supply
 // an editor that also changes the bytes it writes.
-func execFileEditWith(args map[string]any, guard readGuard, edit func(path, oldString, newString string, replaceAll bool) (string, error)) (any, error) {
-	path := fmt.Sprint(args["file_path"])
-	replaceAll := false
-	if v, ok := args["replace_all"].(bool); ok {
-		replaceAll = v
+func execFileEditWith(args map[string]any, guard readGuard, edit func(path string, edits []execenv.FileEdit) (string, error)) (any, error) {
+	path, ok := args["file_path"].(string)
+	if !ok {
+		return nil, errors.New("edit_file: file_path must be a string")
+	}
+	edits, err := parseFileEdits(args)
+	if err != nil {
+		return nil, err
 	}
 	warn := guard.ReadBeforeWriteWarning(path)
-	result, err := edit(path, fmt.Sprint(args["old_string"]), fmt.Sprint(args["new_string"]), replaceAll)
+	result, err := edit(path, edits)
 	if err == nil && warn != "" {
 		return warn + result, nil
 	}
 	return result, err
+}
+
+func parseFileEdits(args map[string]any) ([]execenv.FileEdit, error) {
+	rawEdits, exists := args["edits"]
+	if !exists || rawEdits == nil {
+		return nil, errors.New("edit_file: edits is required")
+	}
+	var items []any
+	switch v := rawEdits.(type) {
+	case []any:
+		items = v
+	case []map[string]any:
+		items = make([]any, len(v))
+		for i, m := range v {
+			items[i] = m
+		}
+	case []execenv.FileEdit:
+		if len(v) == 0 {
+			return nil, errors.New("edit_file: edits must not be empty")
+		}
+		return slices.Clone(v), nil
+	default:
+		return nil, errors.New("edit_file: edits must be an array")
+	}
+	if len(items) == 0 {
+		return nil, errors.New("edit_file: edits must not be empty")
+	}
+	edits := make([]execenv.FileEdit, len(items))
+	for i, item := range items {
+		m, ok := item.(map[string]any)
+		if !ok || m == nil {
+			return nil, fmt.Errorf("edit_file: edits[%d] must be an object", i)
+		}
+		oldStr, ok := m["old_string"].(string)
+		if !ok {
+			return nil, fmt.Errorf("edit_file: edits[%d].old_string must be a string", i)
+		}
+		newStr, ok := m["new_string"].(string)
+		if !ok {
+			return nil, fmt.Errorf("edit_file: edits[%d].new_string must be a string", i)
+		}
+		var replaceAll bool
+		if rawAll, hasAll := m["replace_all"]; hasAll && rawAll != nil {
+			b, ok := rawAll.(bool)
+			if !ok {
+				return nil, fmt.Errorf("edit_file: edits[%d].replace_all must be a boolean", i)
+			}
+			replaceAll = b
+		}
+		edits[i] = execenv.FileEdit{
+			OldString:  oldStr,
+			NewString:  newStr,
+			ReplaceAll: replaceAll,
+		}
+	}
+	return edits, nil
 }

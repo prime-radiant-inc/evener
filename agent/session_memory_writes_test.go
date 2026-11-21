@@ -38,7 +38,7 @@ func TestMemoryIndexWritesRefused(t *testing.T) {
 	for _, name := range []string{"MEMORY.md", "./MEMORY.md", "memory.md"} {
 		for tool, args := range map[string]map[string]any{
 			"memory_write":  {"scope": "personal", "file_path": name, "when": "w", "body": "x"},
-			"memory_edit":   {"scope": "personal", "file_path": name, "old_string": "x", "new_string": "y"},
+			"memory_edit":   {"scope": "personal", "file_path": name, "edits": []any{map[string]any{"old_string": "x", "new_string": "y"}}},
 			"memory_delete": {"scope": "personal", "file_path": name},
 		} {
 			res := memoryExec(t, s, tool, args)
@@ -78,7 +78,7 @@ func TestMemoryControlCharacterPathsRefused(t *testing.T) {
 		}
 		for tool, args := range map[string]map[string]any{
 			"memory_write": {"scope": "personal", "file_path": name, "when": "w", "body": "y"},
-			"memory_edit":  {"scope": "personal", "file_path": name, "old_string": "x", "new_string": "y"},
+			"memory_edit":  {"scope": "personal", "file_path": name, "edits": []any{map[string]any{"old_string": "x", "new_string": "y"}}},
 		} {
 			res := memoryExec(t, s, tool, args)
 			if !res.IsError || res.Output != errMemoryPathControlCharacter.Error() {
@@ -119,7 +119,7 @@ func TestMemoryWriteStampsThePage(t *testing.T) {
 		t.Fatalf("got %q\nwant %q", raw, want)
 	}
 	before := string(raw)
-	if res := memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": "cents.md", "old_string": "absent", "new_string": "y"}); !res.IsError {
+	if res := memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": "cents.md", "edits": []any{map[string]any{"old_string": "absent", "new_string": "y"}}}); !res.IsError {
 		t.Fatal("edit of an absent string succeeded")
 	}
 	if raw, _ := os.ReadFile(filepath.Join(scope, "cents.md")); string(raw) != before {
@@ -161,7 +161,7 @@ func TestMemoryEditNotesMissingWhen(t *testing.T) {
 	seedMemoryPage(t, scope, "bare.md", "# Bare\nold\n")
 	seedMemoryPage(t, scope, "when.md", "---\nwhen: Writing a commit message\n---\n# When\nold\n")
 	for name, wantNote := range map[string]bool{"described.md": true, "bare.md": true, "when.md": false} {
-		res := memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": name, "old_string": "old", "new_string": "new"})
+		res := memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": name, "edits": []any{map[string]any{"old_string": "old", "new_string": "new"}}})
 		if res.IsError || strings.HasSuffix(res.Output, memoryMissingWhenNote) != wantNote || strings.Contains(res.Output, "description") {
 			t.Fatalf("%s: %+v", name, res)
 		}
@@ -180,7 +180,7 @@ func TestMemoryEditNotesUnreadableFrontmatter(t *testing.T) {
 		"indented.md":  "description: Fix: use cents\n  continued: here\n",
 	} {
 		seedMemoryPage(t, scope, name, "---\n"+block+"---\n# Cents\nold\n")
-		res := memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": name, "old_string": "old", "new_string": "new"})
+		res := memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": name, "edits": []any{map[string]any{"old_string": "old", "new_string": "new"}}})
 		if res.IsError || !strings.HasSuffix(res.Output, memoryUnreadableFrontmatterNote) {
 			t.Fatalf("%s: %+v", name, res)
 		}
@@ -212,7 +212,7 @@ func TestMemoryEditQuotesAnUnquotedColonValue(t *testing.T) {
 		"quoted-kept.md": {"evidence: \"file: a.go\"\ndescription: a: b\nwhen: w\n", "evidence: \"file: a.go\"\ndescription: 'a: b'\nwhen: w\n"},
 	} {
 		seedMemoryPage(t, scope, name, "---\n"+tc.block+"---\n# Page\nold\n")
-		res := memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": name, "old_string": "old", "new_string": "new"})
+		res := memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": name, "edits": []any{map[string]any{"old_string": "old", "new_string": "new"}}})
 		if res.IsError || strings.Contains(res.Output, "\n\n") {
 			t.Fatalf("%s: %+v", name, res)
 		}
@@ -233,7 +233,7 @@ func TestMemoryEditLeavesUnextendableFrontmatterUnstamped(t *testing.T) {
 		"ended.md": "---\ndescription: Ended page\nwhen: w\n...\n---\n# Ended\n",
 	} {
 		seedMemoryPage(t, scope, name, body)
-		res := memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": name, "old_string": "#", "new_string": "##"})
+		res := memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": name, "edits": []any{map[string]any{"old_string": "#", "new_string": "##"}}})
 		if res.IsError || strings.Contains(res.Output, "\n\n") {
 			t.Fatalf("%s: %+v", name, res)
 		}
@@ -303,7 +303,7 @@ func TestMemoryEditStampsInItsOwnWrite(t *testing.T) {
 	if err := os.WriteFile(page, []byte("---\nwhen: old fact\n---\nbody\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	res := memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": "a.md", "old_string": "old fact", "new_string": "new fact"})
+	res := memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": "a.md", "edits": []any{map[string]any{"old_string": "old fact", "new_string": "new fact"}}})
 	if res.IsError || strings.Contains(res.Output, "\n\n") {
 		t.Fatalf("%+v", res)
 	}
@@ -311,7 +311,7 @@ func TestMemoryEditStampsInItsOwnWrite(t *testing.T) {
 	if raw, _ := os.ReadFile(page); string(raw) != want {
 		t.Fatalf("got %q\nwant %q", raw, want)
 	}
-	res = memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": "a.md", "old_string": "when: new fact\n", "new_string": ""})
+	res = memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": "a.md", "edits": []any{map[string]any{"old_string": "when: new fact\n", "new_string": ""}}})
 	if res.IsError || !strings.HasSuffix(res.Output, memoryMissingWhenNote) {
 		t.Fatalf("%+v", res)
 	}
@@ -330,7 +330,7 @@ func TestMemoryEditStampsACRLFPageInPlace(t *testing.T) {
 	if err := os.WriteFile(page, []byte("---\r\ndescription: Rule 7: whole numbers\r\n---\r\n# Rule\r\nold body\r\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	res := memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": "a.md", "old_string": "old body", "new_string": "new body"})
+	res := memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": "a.md", "edits": []any{map[string]any{"old_string": "old body", "new_string": "new body"}}})
 	if res.IsError || strings.Contains(res.Output, "no description") || strings.Contains(res.Output, "not valid YAML") {
 		t.Fatalf("%+v", res)
 	}
@@ -435,7 +435,7 @@ func TestMemoryWriteNotesGoldens(t *testing.T) {
 			args, tool := map[string]any{"scope": "personal", "file_path": "page.md", "when": "Writing a commit message", "body": "# Page\nfact\n"}, "memory_write"
 			if tc.seed != "" {
 				seedMemoryPage(t, scope, "page.md", tc.seed)
-				args, tool = map[string]any{"scope": "personal", "file_path": "page.md", "old_string": "old", "new_string": "new"}, "memory_edit"
+				args, tool = map[string]any{"scope": "personal", "file_path": "page.md", "edits": []any{map[string]any{"old_string": "old", "new_string": "new"}}}, "memory_edit"
 			}
 			res := memoryExec(t, s, tool, args)
 			if res.IsError {

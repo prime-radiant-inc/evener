@@ -122,10 +122,10 @@ func stceFileTools(t *testing.T) {
 	if res := exec(&stceFileEnv{DenyEnv: &agenttest.DenyEnv{WorkDir: root}, writeErr: errors.New("write failure")}, "write-error", "write_file", map[string]any{"file_path": "x", "content": "y"}); !res.IsError {
 		t.Fatalf("write error = %#v", res)
 	}
-	if res := exec(&stceFileEnv{DenyEnv: &agenttest.DenyEnv{WorkDir: root}}, "edit", "edit_file", map[string]any{"file_path": "x", "old_string": "a", "new_string": "b", "replace_all": true}); res.IsError || !strings.HasPrefix(res.Output, warning) {
+	if res := exec(&stceFileEnv{DenyEnv: &agenttest.DenyEnv{WorkDir: root}}, "edit", "edit_file", map[string]any{"file_path": "x", "edits": []any{map[string]any{"old_string": "a", "new_string": "b", "replace_all": true}}}); res.IsError || !strings.HasPrefix(res.Output, warning) {
 		t.Fatalf("edit warning = %#v", res)
 	}
-	if res := exec(&stceFileEnv{DenyEnv: &agenttest.DenyEnv{WorkDir: root}, editErr: errors.New("edit failure")}, "edit-error", "edit_file", map[string]any{"file_path": "x"}); !res.IsError {
+	if res := exec(&stceFileEnv{DenyEnv: &agenttest.DenyEnv{WorkDir: root}, editErr: errors.New("edit failure")}, "edit-error", "edit_file", map[string]any{"file_path": "x", "edits": []any{map[string]any{"old_string": "a", "new_string": "b"}}}); !res.IsError {
 		t.Fatalf("edit error = %#v", res)
 	}
 

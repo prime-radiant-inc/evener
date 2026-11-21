@@ -35,13 +35,11 @@ Operate on a relative path in the bound personal or project memory wiki. Write o
 
 ## memory_edit
 
-Operate on a relative path in the bound personal or project memory wiki. Replace an exact string occurrence in an existing file. Always read the file first so you know the exact text to match. old_string must identify a unique location in the file, so include enough surrounding context to make it unambiguous. Keep each call small and focused. Set replace_all only for deliberate whole-file replacements such as a symbol rename.
+Operate on a relative path in the bound personal or project memory wiki. Apply one or more exact replacements to an existing file atomically. Read the file first with memory_read and never copy line-number prefixes (like '12\t') into old_string or new_string. Batch disjoint changes in the same file into one call via edits rather than separate calls. Every edits[].old_string matches the original file (not after earlier edits) and must not overlap any other edit; merge nearby changes into one entry. Keep each old_string as small as possible while unique, and use memory_write when replacing most or all of a file. If any edit fails to match, is ambiguous, or overlaps another edit, nothing is written.
 
+- `edits`: Disjoint replacements matched against the original file and applied atomically.
 - `file_path`: Path of the memory file, relative to the scope root, such as topic.md or tools/vitest.md; never an absolute path or a file outside memory.
 - `intent`: What you hope to learn or accomplish from this tool call, using a verb-first gerund. Make your hypothesis and the desired outcome clear; e.g. "Reading config to identify the active profile, so I can log in." or "Searching handlers for request routing, so I can trace the hang."
-- `new_string`: The replacement text.
-- `old_string`: Exact text to replace; must be unique unless replace_all is true.
-- `replace_all`: Replace every occurrence instead of requiring a unique match.
 - `scope`: Which memory to use: personal or project.
 
 ## memory_search

@@ -158,7 +158,7 @@
       "turnId": "turn_1",
       "toolName": "edit_file",
       "callId": "call_edit_file",
-      "argumentsJson": "{\"file_path\":\"agent/tree.go\",\"new_string\":\"func settle() {\\n\\tdrain()\\n}\\n\",\"old_string\":\"func settle() {}\\n\"}",
+      "argumentsJson": "{\"edits\":[{\"new_string\":\"func settle() {\\n\\tdrain()\\n}\\n\",\"old_string\":\"func settle() {}\\n\"}],\"file_path\":\"agent/tree.go\"}",
       "status": "inProgress",
       "startedAt": 1790625600000
     },

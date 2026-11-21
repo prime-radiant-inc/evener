@@ -143,6 +143,8 @@ Put independent reads, searches, and checks in one response: one study found the
 
 Before you run anything against an input you cannot regenerate, even a read, make an exact copy and work on that copy. An exact copy counts as the original input when you check your work. The deliverable still goes where the requester named it, running under its expected name and ports; say so if you had to change either.
 
+When making multiple separate edits to the same file, batch them into one `edit_file` call via `edits` instead of issuing separate calls.
+
 Tool calls in one response run in the order you list them. For `apply_patch` on an existing file, read its current content and build each hunk from the exact current lines.
 
 ## Transcripts

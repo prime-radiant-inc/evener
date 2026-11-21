@@ -1061,7 +1061,7 @@ func TestAllBuiltinParametersCarryDescriptions(t *testing.T) {
 		DefDelegateSend(), DefModelList(), DefJobWatch(nil),
 		DefJobStatus(), DefJobList(), DefJobStop(), DefGrep(), DefGlob(),
 		DefApplyPatch(), DefWebFetch(), DefWebSearch(), DefCommunicate(),
-		DefTaskList(nil), DefUseSkill(), DefFindSessionTranscripts(),
+		DefTaskList(nil), DefUseSkill(), DefFindSessionTranscripts(), DefMemoryEdit(),
 		DefDoctorEvener(), DefManageWorktree(), DefManageWorktreeDisposeOnly(),
 		DefReadTranscript(), DefAskUser(), DefUpdateGoal(), DefNotesAgentSet(),
 		DefUrlsAdd(), DefUrlsRemove(), DefNotesRead(),
@@ -1070,6 +1070,53 @@ func TestAllBuiltinParametersCarryDescriptions(t *testing.T) {
 		if missing := UndocumentedProperties(def); len(missing) > 0 {
 			t.Errorf("%s parameters carry no description: %s", def.Name, strings.Join(missing, ", "))
 		}
+	}
+}
+
+func TestDefEditFileAndMemoryEditSchema(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		def      llm.ToolDefinition
+		wantReq  []string
+		hasScope bool
+	}{
+		{name: "edit_file", def: DefEditFile(), wantReq: []string{"file_path", "edits"}, hasScope: false},
+		{name: "memory_edit", def: DefMemoryEdit(), wantReq: []string{"file_path", "edits", "scope"}, hasScope: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.def.Name != tc.name {
+				t.Fatalf("Name = %q, want %q", tc.def.Name, tc.name)
+			}
+			if tc.def.Parameters["additionalProperties"] != false {
+				t.Fatalf("additionalProperties = %v, want false", tc.def.Parameters["additionalProperties"])
+			}
+			required(t, tc.def, tc.name, tc.wantReq)
+			props := tc.def.Parameters["properties"].(map[string]any)
+			if _, has := props["old_string"]; has {
+				t.Fatalf("%s must not expose top-level old_string", tc.name)
+			}
+			if _, has := props["new_string"]; has {
+				t.Fatalf("%s must not expose top-level new_string", tc.name)
+			}
+			if _, has := props["scope"]; has != tc.hasScope {
+				t.Fatalf("%s scope present=%v, want %v", tc.name, has, tc.hasScope)
+			}
+			edits, ok := props["edits"].(map[string]any)
+			if !ok || edits["type"] != "array" || edits["minItems"] != 1 {
+				t.Fatalf("%s edits schema = %#v", tc.name, props["edits"])
+			}
+			items := edits["items"].(map[string]any)
+			if items["additionalProperties"] != false {
+				t.Fatalf("%s edits.items additionalProperties = %v, want false", tc.name, items["additionalProperties"])
+			}
+			itemProps := items["properties"].(map[string]any)
+			for _, k := range []string{"old_string", "new_string", "replace_all"} {
+				if _, ok := itemProps[k]; !ok {
+					t.Fatalf("%s edits.items missing %q", tc.name, k)
+				}
+			}
+		})
 	}
 }
 
