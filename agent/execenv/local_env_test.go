@@ -584,9 +584,9 @@ func TestUnsandboxedScratchDirConcurrentProvisioning(t *testing.T) {
 //
 // structuralWorktreeRoot stops at the FIRST ".git" entry it finds walking up
 // from cwd and reports a miss ("", false) when that entry is neither a
-// directory nor a parseable "gitdir:" pointer; hasGitEntryAncestor, walking the
-// same chain, only checks that the entry EXISTS. So a directory whose nearest
-// ".git" is a regular file that is not a gitdir pointer — a checkout left
+// directory nor a parseable "gitdir:" pointer; the fresh lookup's old second
+// ancestor walk only checked that the entry EXISTS. So a directory whose
+// nearest ".git" is a regular file that is not a gitdir pointer — a checkout left
 // half-written by an interrupted `git worktree add`/`git submodule` step, a
 // ".git" file restored from an archive, a stray file with that name — misses
 // structurally and still reaches the git-subprocess fallback. An INTACT linked
@@ -611,8 +611,8 @@ func TestUnsandboxedScratchDirGitProbeDoesNotSelfDeadlock(t *testing.T) {
 	if _, ok := structuralWorktreeRoot(work); ok {
 		t.Fatal("layout no longer misses structuralWorktreeRoot; this test would not exercise the git fallback")
 	}
-	if present, known := hasGitEntryAncestor(work); !present || !known {
-		t.Fatalf("layout has no observable .git ancestor (present=%v known=%v); this test would not exercise the git fallback", present, known)
+	if _, err := os.Stat(filepath.Join(repo, ".git")); err != nil {
+		t.Fatalf("layout has no observable .git entry: %v; this test would not exercise the git fallback", err)
 	}
 
 	env := NewLocalExecutionEnvironment(work)

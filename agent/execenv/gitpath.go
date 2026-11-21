@@ -124,24 +124,24 @@ func gitAnswered(ctx context.Context, err error) bool {
 // answer is one to remember (see gitRootCache.lookup): a structural resolution,
 // an absence the filesystem actually reported, and a verdict git itself returned
 // all are. A fork that never ran or never finished is not, and neither is a
-// filesystem that could not answer, including a ".git" pointer this walk
-// refused to read — see gitAnswered, hasGitEntryAncestor, and
+// filesystem that could not answer — see gitAnswered and
 // structuralWorktreeRootDetailed for the classifications this composes.
 func gitRootUncached(ctx context.Context, env ExecutionEnvironment, cwd string) (root string, definitive bool) {
 	if _, ok := env.(*LocalExecutionEnvironment); ok {
-		structural, resolved, refused := structuralWorktreeRootDetailed(cwd)
-		if resolved {
+		structural, outcome := structuralWorktreeRootDetailed(cwd)
+		switch outcome {
+		case worktreeRootFound:
 			return structural, true
-		}
-		if refused {
-			// Refused pointer: unresolved, not absent. Cache nothing.
+		case worktreeRootAbsent:
+			// One walk established that no ".git" entry exists in any ancestor.
+			return "", true
+		case worktreeRootRefused:
+			// Refused pointer or unresolved stat: unknown, not absent. Cache
+			// nothing, and do not hand the question to the binary.
 			return "", false
 		}
-		if present, known := hasGitEntryAncestor(cwd); !present {
-			// A stat that failed for any reason other than absence leaves the
-			// question open, so answer empty for this call and cache nothing.
-			return "", known
-		}
+		// worktreeRootNonPointer: a readable ".git" that is not a gitdir
+		// pointer is left to the binary below.
 	}
 
 	execCtx, cancel := context.WithTimeout(ctx, gitExecTimeout)
@@ -242,27 +242,46 @@ func mainRepoRootUncached(env ExecutionEnvironment, cwd string) (root string, de
 	return root, true
 }
 
-// structuralWorktreeRoot is structuralWorktreeRootDetailed with the refusal
-// dropped: callers that only ask whether a root was found treat a refused
-// pointer as no root.
+// worktreeRootOutcome is what one structural walk learned about the ".git"
+// entry chain from cwd to the filesystem root.
+type worktreeRootOutcome int
+
+const (
+	// worktreeRootAbsent: no ".git" entry exists in cwd or any ancestor.
+	worktreeRootAbsent worktreeRootOutcome = iota
+	// worktreeRootFound: an entry resolved cwd's working-tree root.
+	worktreeRootFound
+	// worktreeRootRefused: an entry exists but could not be read, or a stat
+	// failed for a reason other than absence. Unresolved, not absent.
+	worktreeRootRefused
+	// worktreeRootNonPointer: an entry was read and is not a gitdir pointer.
+	// The Git binary may still classify it.
+	worktreeRootNonPointer
+)
+
+// structuralWorktreeRoot is structuralWorktreeRootDetailed for callers that
+// only ask whether a root was found.
 func structuralWorktreeRoot(cwd string) (string, bool) {
-	root, ok, _ := structuralWorktreeRootDetailed(cwd)
-	return root, ok
+	root, outcome := structuralWorktreeRootDetailed(cwd)
+	return root, outcome == worktreeRootFound
 }
 
 // structuralWorktreeRootDetailed walks cwd and its ancestors for a ".git"
-// entry. refused reports an entry that ReadGitPointerFile refused (oversized, a
-// FIFO or other non-regular file, or unreadable). That is not "no repository
-// here": the caller must leave the question open rather than fall through to
-// the git binary, which the workspace can reach through PATH.
-func structuralWorktreeRootDetailed(cwd string) (root string, ok bool, refused bool) {
+// entry, ONCE. The outcome distinguishes a resolved root, a refused read, a
+// readable entry that is not a gitdir pointer, and an absence the walk observed.
+// The walk is the only ancestor probe: a second probe would leave a window in
+// which the workspace can plant a ".git" entry the later probe sees but never
+// reads, and the Git binary behind it resolves from a PATH the workspace can
+// reach. A refused read or an unresolved stat is not "no repository here": the
+// caller must leave the question open rather than fall through to that binary.
+func structuralWorktreeRootDetailed(cwd string) (root string, outcome worktreeRootOutcome) {
 	dir := filepath.Clean(cwd)
 	for {
 		gitPath := filepath.Join(dir, ".git")
 		info, err := os.Stat(gitPath)
 		if err == nil {
 			if info.IsDir() {
-				return identifier.ResolveClean(dir), true, false
+				return identifier.ResolveClean(dir), worktreeRootFound
 			}
 			// Read through the pointer reader, not os.ReadFile. This runs from
 			// the FRESH resolution: child construction asks for the root
@@ -276,41 +295,24 @@ func structuralWorktreeRootDetailed(cwd string) (root string, ok bool, refused b
 			// not one answers "unreadable" here.
 			content, err := ReadGitPointerFile(gitPath)
 			if err != nil {
-				return "", false, true
+				return "", worktreeRootRefused
 			}
 			if _, ok := identifier.ParseGitdirPointer(string(content)); ok {
-				return identifier.ResolveClean(dir), true, false
+				return identifier.ResolveClean(dir), worktreeRootFound
 			}
 			// Read fine but not a gitdir pointer: an ordinary working tree
 			// marker git itself can classify, so keep the binary fallback.
-			return "", false, false
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", false, false
-		}
-		dir = parent
-	}
-}
-
-// hasGitEntryAncestor reports whether cwd or an ancestor holds a ".git" entry.
-// known says whether the walk actually established that: only ErrNotExist means
-// "there is nothing here". A stat that failed for any other reason — the
-// directory unreadable, the filesystem erroring — leaves the question open, and
-// the caller must not memoize an absence it never observed.
-func hasGitEntryAncestor(cwd string) (present, known bool) {
-	dir := filepath.Clean(cwd)
-	for {
-		_, err := os.Stat(filepath.Join(dir, ".git"))
-		if err == nil {
-			return true, true
+			return "", worktreeRootNonPointer
 		}
 		if !errors.Is(err, fs.ErrNotExist) {
-			return false, false
+			// Only an absence the filesystem actually reported lets the walk
+			// move on; anything else leaves it unknown whether a ".git" is
+			// here, and a fallback would hand that unknown to the binary.
+			return "", worktreeRootRefused
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return false, true
+			return "", worktreeRootAbsent
 		}
 		dir = parent
 	}

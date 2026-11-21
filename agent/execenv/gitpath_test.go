@@ -144,3 +144,39 @@ func TestFreshGitRootFallsBackForAReadableNonPointer(t *testing.T) {
 		t.Fatal("git answered the fallback, so the result must be definitive")
 	}
 }
+
+// TestFreshGitRootRefusesAnUnresolvableEntry pins that a ".git" entry whose
+// stat fails for a reason other than absence is refused by the same walk that
+// looks for a root. Walking past it would let the directory inherit an
+// enclosing repository's root, and a second probe would let the workspace plant
+// an entry between the two walks for the Git binary to see but never read.
+func TestFreshGitRootRefusesAnUnresolvableEntry(t *testing.T) {
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "repo")
+	work := filepath.Join(repo, "work")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatalf("make work: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatalf("make enclosing .git: %v", err)
+	}
+	// A self-referential ".git" symlink: Stat fails with ELOOP, not ENOENT, so
+	// the entry exists but cannot be resolved.
+	if err := os.Symlink(".git", filepath.Join(work, ".git")); err != nil {
+		t.Fatalf("make .git symlink loop: %v", err)
+	}
+	// Not parallel: the PATH shim is process-wide.
+	shimDir, count := gitCountingShim(t, repo)
+	t.Setenv("PATH", shimDir)
+
+	root, definitive := GitRootOrEmptyFreshDefinitive(NewLocalExecutionEnvironment(work), work)
+	if root != "" {
+		t.Fatalf("fresh git root = %q, want empty: an unresolvable .git entry must not inherit the enclosing root", root)
+	}
+	if n := count(); n != 0 {
+		t.Fatalf("fresh lookup forked git %d times, want 0: an unresolvable entry must not reach the binary", n)
+	}
+	if definitive {
+		t.Fatal("unresolvable .git entry produced a definitive answer: it is unresolved, not an absence")
+	}
+}
