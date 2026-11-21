@@ -812,9 +812,11 @@ generation, because it has none: the notification drive of a resident stable
 child runs this way (see "Notification drives are input turns" below). Only a
 stable child holds durable delegate attention, so on that child the request
 instead passes the unleased projection filter, which omits every watch row the
-attention fold still resolves as pending. The turn therefore cannot present
-attention that only a leased generation could credit. Ordinary queued
-completions are not attention and ride the turn unchanged.
+attention fold still resolves as pending. The filter keys on the watch
+identities only; it withholds no other durable attention row. The turn also
+writes no consumption marker, because only a leased generation credits a
+presentation, and ordinary queued completions are not attention and ride the
+turn unchanged.
 
 The controller is also the tree-wide delegate-turn capacity authority. A
 starting reservation holds capacity immediately so concurrent constructors
