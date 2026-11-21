@@ -97,11 +97,13 @@ func pxMust(t *testing.T, err error) {
 // pxReq is one decoded body. items is the list it replayed: input items for
 // Responses, messages for Chat Completions.
 type pxReq struct {
+	Model        string            `json:"model"`
 	Instructions json.RawMessage   `json:"instructions"`
 	Tools        json.RawMessage   `json:"tools"`
 	Input        []json.RawMessage `json:"input"`
 	Messages     []json.RawMessage `json:"messages"`
 	Previous     string            `json:"previous_response_id"`
+	Store        *bool             `json:"store"`
 	items        []json.RawMessage
 }
 
@@ -136,6 +138,7 @@ func pxPrefix(t *testing.T, label string, prev, cur []json.RawMessage) {
 func pxStable(t *testing.T, bodies [][]byte) {
 	t.Helper()
 	first := pxDecode(t, bodies[0])
+	pxLaunch(t, first)
 	prev := first.items
 	for i, body := range bodies[1:] {
 		cur := pxDecode(t, body)
@@ -145,6 +148,64 @@ func pxStable(t *testing.T, bodies [][]byte) {
 		pxPrefix(t, fmt.Sprintf("request %d", i+2), prev, cur.items)
 		prev = cur.items
 	}
+}
+
+// pxLaunch fails unless req carries the launch prompt pxStable compares and a
+// tool inventory naming probe, so two empty fields cannot pass for a stable
+// prefix.
+func pxLaunch(t *testing.T, req pxReq) {
+	t.Helper()
+	if !pxNonEmpty(req.Instructions) {
+		if len(req.Messages) == 0 {
+			t.Fatalf("first request carries no launch instructions: %s", req.Instructions)
+		}
+		// Chat Completions carries the launch prompt as the first message.
+		var system struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		}
+		if err := json.Unmarshal(req.Messages[0], &system); err != nil {
+			t.Fatalf("decode first request's launch message: %v\n%s", err, req.Messages[0])
+		}
+		if system.Role != "system" || !pxNonEmpty(system.Content) {
+			t.Fatalf("first request carries no launch prompt: %s", req.Messages[0])
+		}
+	}
+	var tools []struct {
+		Name     string `json:"name"`
+		Function struct {
+			Name string `json:"name"`
+		} `json:"function"`
+	}
+	if err := json.Unmarshal(req.Tools, &tools); err != nil {
+		t.Fatalf("decode first request's tools: %v\n%s", err, req.Tools)
+	}
+	for _, tool := range tools {
+		if tool.Name == "probe" || tool.Function.Name == "probe" {
+			return
+		}
+	}
+	t.Fatalf("first request's tools do not name probe: %s", req.Tools)
+}
+
+// pxNonEmpty reports whether raw is a JSON value carrying content: absent,
+// null, a blank string and empty containers do not.
+func pxNonEmpty(raw json.RawMessage) bool {
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return false
+	}
+	switch v := v.(type) {
+	case nil:
+		return false
+	case string:
+		return strings.TrimSpace(v) != ""
+	case []any:
+		return len(v) > 0
+	case map[string]any:
+		return len(v) > 0
+	}
+	return true
 }
 
 // pxHas fails unless body carries every fragment verbatim.
@@ -351,6 +412,17 @@ func TestWirePrefixSurvivesEnvSwapModelSwitchBackAndRootFork(t *testing.T) {
 	bodies := w.reqs(t, 5)
 	pxStable(t, bodies[:4]) // live turns 1-4: the post-switch-back turn is request 4
 
+	// The model the session was switched to rides the top-level request, so the
+	// switch-away turn asks for gpt-5.5 and the switch-back turn gpt-5.4.
+	switched := pxDecode(t, bodies[2])
+	switchBack := pxDecode(t, bodies[3])
+	if got := switched.Model; got != "gpt-5.5" {
+		t.Fatalf("switch-away request model = %q, want %q", got, "gpt-5.5")
+	}
+	if got := switchBack.Model; got != "gpt-5.4" {
+		t.Fatalf("switch-back request model = %q, want %q", got, "gpt-5.4")
+	}
+
 	// The launch prompt and tools go out unchanged after switching back to the
 	// launch model (request 4) and on the fork child's first request (request 5).
 	launch := pxDecode(t, bodies[0])
@@ -374,7 +446,7 @@ func TestWirePrefixSurvivesEnvSwapModelSwitchBackAndRootFork(t *testing.T) {
 	}
 
 	// The model turn appends the switch it made, naming the model asked for.
-	envModel := pxEnvLines(t, pxDecode(t, bodies[2]).items[len(swapped):])
+	envModel := pxEnvLines(t, switched.items[len(swapped):])
 	if envModel["model"] != "gpt-5.5" {
 		t.Fatalf("model line = %q, want %q", envModel["model"], "gpt-5.5")
 	}
@@ -385,7 +457,12 @@ func TestWirePrefixSurvivesEnvSwapModelSwitchBackAndRootFork(t *testing.T) {
 	child := pxDecode(t, bodies[4]).items
 	pxPrefix(t, "fork child", swapped[:len(swapped)-1], child)
 	envChild := pxEnvLines(t, child[len(swapped)-1:])
-	if !strings.Contains(envChild["commit trailer"], "<"+childID+"@") {
+	// Only a usable hostname can mint a trailer; skip the check where
+	// TestSystemPromptCarriesCommitTrailer skips rather than fail on a line the
+	// environment cannot produce.
+	if _, ok := commitTrailerFor(profile.ID()+"/"+profile.Model(), childID); !ok {
+		t.Log("skipping the child commit trailer check: this host cannot mint a trailer")
+	} else if !strings.Contains(envChild["commit trailer"], "<"+childID+"@") {
 		t.Fatalf("child commit trailer = %q, want <%s@...>", envChild["commit trailer"], childID)
 	}
 }
@@ -409,6 +486,15 @@ func TestResponsesContinuationAutoFallbackAndReAnchor(t *testing.T) {
 	}
 	cfg := SessionConfig{OpenAIResponsesContinuation: "auto", testOnly: testConfig{responsesContinuationSupportRegistry: support}}
 	bodies := pxRun(t, w, "openai", "openai/gpt-5.4", pxOpenAI(w), support, 5, withConfig(cfg))
+	// The fallback resend is a fresh full-history send that must be storable so
+	// the next turn can anchor on the response it gets, and it carries no anchor
+	// of its own (asserted for request 4 below).
+	fallback := pxDecode(t, bodies[3])
+	if fallback.Store == nil {
+		t.Fatal("fallback resend carries no store field, want true")
+	} else if !*fallback.Store {
+		t.Fatal("fallback resend store = false, want true")
+	}
 	// Requests 1 and 4 are the full-history sends; 3 is the rejected stale
 	// anchor and 5 the clean re-anchor on the response 4 stored.
 	for i, anchor := range []string{"", "resp_1", "resp_2", "", "resp_4"} {
@@ -419,11 +505,10 @@ func TestResponsesContinuationAutoFallbackAndReAnchor(t *testing.T) {
 	// The rejected-anchor resend is full history, so it reopens with the very
 	// items request 1 sent, plaintext reasoning included, plus the linked probe
 	// call, its function_call_output result, and the rejected turn's user text.
-	fallback := pxDecode(t, bodies[3]).items
-	pxPrefix(t, "fallback resend", pxDecode(t, bodies[0]).items, fallback)
+	pxPrefix(t, "fallback resend", pxDecode(t, bodies[0]).items, fallback.items)
 	pxHas(t, bodies[3], "  step 1  ")
 	var sawProbeCall, sawProbeOutput, sawRejectedAsk bool
-	for _, raw := range fallback {
+	for _, raw := range fallback.items {
 		var item struct {
 			Type    string `json:"type"`
 			Role    string `json:"role"`
