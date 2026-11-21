@@ -14,6 +14,7 @@ import {
   type HistorySignal,
   historyIsLive,
   invalidated,
+  MODEL_OUTPUT_ITEM_TYPES,
   type ModelExtras,
   mergeHistory,
   modelImageSessionRoute,
@@ -190,13 +191,6 @@ function upsertPendingEscalation(
   if (idx === -1) return [...escalations, incoming];
   return escalations.map((e, i) => (i === idx ? incoming : e));
 }
-
-// item/completed kinds that count as the model actually producing something
-// (design doc Component 1): assistant message, reasoning, tool call. A
-// systemMessage or userMessage item completing (a steer "are you stuck?"
-// completing its own systemMessage item, say) arrives mid-grind and must not
-// be mistaken for the retry's wait being over.
-const MODEL_OUTPUT_ITEM_TYPES = new Set(["agentMessage", "reasoning", "commandExecution"]);
 
 // Folds one live wire notification into model. Most notifications carry
 // ref/threadId and are matched via notificationTargetsThread — routing those

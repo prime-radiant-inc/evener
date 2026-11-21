@@ -1065,7 +1065,13 @@ export function applyReadResponse<M extends ThreadModel>(
   // retire, and the wait-free clear below keeps its own long-standing rule.
   const quotaWait = reconcileQuotaWait(
     model,
-    { ...fields, bootGeneration: resp.bootGeneration, runningTurnId: resp.thread.evener.activeTurnId, fallback },
+    {
+      ...fields,
+      bootGeneration: resp.bootGeneration,
+      runningTurnId: resp.thread.evener.activeTurnId,
+      turns,
+      fallback,
+    },
     postCutWaitStamps,
   );
   const retireQuotaRetry = quotaWait.retireChip === true;
@@ -1161,6 +1167,49 @@ interface QuotaWaitFields {
    * ordinary (non-quota) retry the read says nothing about. */
   retireChip?: boolean;
 }
+
+// item/completed kinds that count as the model actually producing something
+// (design doc Component 1): assistant message, reasoning, tool call. A
+// systemMessage or userMessage item (a steer "are you stuck?" completing its
+// own systemMessage item, say) arrives mid-grind and must not be mistaken for
+// the retry's wait being over. Defined here, not in reducer.ts, because
+// reducer.ts imports this module and the live fold and the read merge must
+// agree on the set.
+export const MODEL_OUTPUT_ITEM_TYPES = new Set(["agentMessage", "reasoning", "commandExecution"]);
+
+// Whether the read's merge shows the retried call producing model output. The
+// wake's zero-delay chip is the retry's PROGRESS state, so a read naming the
+// retrying turn running is not news about the call only while it shows nothing
+// new from the model in that turn. An item the held model does not have, or
+// has only at a lower version, is new output: the chip has stopped describing
+// anything and the read retires it. Versions are daemon-issued ordinals, so
+// this needs no clock and no receipt time, and the merge's own turns are
+// compared, so a version raised through `changes` counts too. Undefined
+// versions (pre-v6 reads, overlay items) fall back to identity novelty — a new
+// identity is still news, an unchanged one is not. That is deliberately not
+// `supersedes`, which calls two unversioned items a supersession.
+function readCarriesNewModelOutput(held: ThreadModel, turns: readonly TurnModel[], turnId: string): boolean {
+  const turn = turns.find((candidate) => candidate.id === turnId);
+  if (turn === undefined) return false;
+  // Recorded history is the baseline when the model has it: a pruned
+  // background model keeps identities and versions there while its display
+  // turns drop the rows (pruneBackgroundHistoryBodies), so comparing against
+  // the display would call a restored, unchanged row new output.
+  const recorded = held.history?.turns ?? held.turns;
+  const heldVersions = new Map(
+    (recorded.find((candidate) => candidate.id === turnId)?.items ?? []).map((item) => [
+      itemIdentity(item),
+      item.version,
+    ]),
+  );
+  return turn.items.some((item) => {
+    if (!MODEL_OUTPUT_ITEM_TYPES.has(item.type)) return false;
+    const identity = itemIdentity(item);
+    const before = heldVersions.get(identity);
+    return !heldVersions.has(identity) || (item.version ?? 0) > (before ?? 0);
+  });
+}
+
 function reconcileQuotaWait(
   held: ThreadModel,
   fresh: {
@@ -1169,6 +1218,8 @@ function reconcileQuotaWait(
     quotaResumesAt?: string;
     quotaWaitStartedAt?: number;
     runningTurnId?: string;
+    // The read's merged turns, for the wait-free branch's output check.
+    turns: readonly TurnModel[];
     // The read was served from the saved history index because its live read
     // failed. A fallback's wait fields are not authority (see the early
     // return below).
@@ -1322,9 +1373,14 @@ function reconcileQuotaWait(
   // endedStamp), the read is not news about the call and the chip stands. An
   // ordinary provider retry (no quota state anywhere) keeps its chip too:
   // this reconciliation never retires what is not quota.
+  // The read stops being not-news once its merge carries model output the
+  // model does not hold (readCarriesNewModelOutput).
   const retryingTurn = held.modelRetry?.turnId ?? held.runningTurnId;
   const liveZeroDelayRetry =
-    held.modelRetry?.delayMs === 0 && retryingTurn !== undefined && fresh.runningTurnId === retryingTurn;
+    held.modelRetry?.delayMs === 0 &&
+    retryingTurn !== undefined &&
+    fresh.runningTurnId === retryingTurn &&
+    !readCarriesNewModelOutput(held, fresh.turns, retryingTurn);
   const endedQuotaChip =
     heldStamp === 0 &&
     endedStamp > 0 &&
@@ -1464,7 +1520,12 @@ export function applyReadModel<M extends ThreadModel>(
   // equal-stamp refresh keeps it, and an ordinary retry is untouched.
   const quotaWait = reconcileQuotaWait(
     model,
-    { ...fresh, bootGeneration: fresh.history?.bootGeneration, fallback },
+    {
+      ...fresh,
+      bootGeneration: fresh.history?.bootGeneration,
+      turns,
+      fallback,
+    },
     postCutWaitStamps,
   );
   const retireQuotaRetry = quotaWait.retireChip === true;
