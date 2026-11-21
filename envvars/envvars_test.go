@@ -14,13 +14,11 @@ func TestEVENERScratchDirIsRegisteredInternalVariable(t *testing.T) {
 	}
 }
 
-func TestGoogleVertexExpressVariablesAreRegistered(t *testing.T) {
-	key, ok := Find("GOOGLE_VERTEX_API_KEY")
-	if !ok || !key.Secret || key.Visibility != Public {
-		t.Fatalf("GOOGLE_VERTEX_API_KEY = %+v, ok=%v; want a public secret", key, ok)
+func TestGoogleVertexExpressVariablesAreRetired(t *testing.T) {
+	if v, ok := Find("GOOGLE_VERTEX_API_KEY"); ok {
+		t.Fatalf("GOOGLE_VERTEX_API_KEY must be retired, still found %+v", v)
 	}
-	base, ok := Find("GOOGLE_VERTEX_EXPRESS_BASE_URL")
-	if !ok || base.Secret || base.Visibility != Public {
-		t.Fatalf("GOOGLE_VERTEX_EXPRESS_BASE_URL = %+v, ok=%v; want a public non-secret", base, ok)
+	if v, ok := Find("GOOGLE_VERTEX_EXPRESS_BASE_URL"); ok {
+		t.Fatalf("GOOGLE_VERTEX_EXPRESS_BASE_URL must be retired, still found %+v", v)
 	}
 }

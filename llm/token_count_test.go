@@ -750,6 +750,108 @@ func TestEstimateMessagesInputTokensForResolved_OPrefixIsNotAnOpenAIClaim(t *tes
 	}
 }
 
+func TestGoogleInteractionThinkingZeroTokensOnNonGoogleTargets(t *testing.T) {
+	t.Parallel()
+	googleThought := &ThinkingData{
+		GoogleInteraction:     true,
+		Text:                  strings.Repeat("g", 400),
+		Summary:               []string{strings.Repeat("s", 200)},
+		Signature:             strings.Repeat("k", 200),
+		ScalarReasoningText:   strings.Repeat("q", 200),
+		ScalarReasoningField:  "reasoning",
+		ResponsesContentParts: []ResponsesReasoningPart{{Type: "reasoning_text", Text: strings.Repeat("r", 200)}},
+	}
+	if got := googleThought.ChatReplayText(true); got != "" {
+		t.Fatalf("GoogleInteraction ChatReplayText(true) = %q, want empty", got)
+	}
+	if googleThought.ReplayableResponsesPlaintext() {
+		t.Fatal("GoogleInteraction ReplayableResponsesPlaintext() = true, want false")
+	}
+
+	msgs := []Message{{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentThinking, Thinking: googleThought}}}}
+	on := true
+	targets := []struct {
+		name string
+		res  registry.Resolved
+	}{
+		{name: "anthropic", res: registry.Resolved{Instance: "anthropic", Protocol: registry.ProtocolAnthropic}},
+		{name: "chat", res: registry.Resolved{Instance: "openai-chat", Protocol: registry.ProtocolOpenAIChat}},
+		{name: "chat thinking_as_text", res: registry.Resolved{Instance: "openai-chat", Protocol: registry.ProtocolOpenAIChat, Caps: registry.Caps{ThinkingAsText: &on}}},
+		{name: "responses", res: registry.Resolved{Instance: "openai", Protocol: registry.ProtocolOpenAIResponses}},
+	}
+	for _, tc := range targets {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := EstimateMessagesInputTokensForResolved(tc.res, msgs).Tokens; got != 0 {
+				t.Fatalf("%s billed %d tokens for GoogleInteraction thinking, want 0", tc.name, got)
+			}
+			if got := TokenPartEstimatorFor(tc.res).PartsForeignReasoning(msgs[0]).Total(); got != 0 {
+				t.Fatalf("%s foreign-reasoning billed %d tokens for GoogleInteraction thinking, want 0", tc.name, got)
+			}
+		})
+	}
+	if got := EstimateMessagesInputTokens(msgs).Tokens; got != 0 {
+		t.Fatalf("targetless EstimateMessagesInputTokens billed %d tokens, want 0", got)
+	}
+
+	// Native non-Google reasoning still bills normally.
+	nativeAnthropic := []Message{{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentThinking, Thinking: &ThinkingData{Text: strings.Repeat("a", 400), Signature: "sig"}}}}}
+	if got := EstimateMessagesInputTokensForResolved(registry.Resolved{Instance: "anthropic", Protocol: registry.ProtocolAnthropic}, nativeAnthropic).Tokens; got == 0 {
+		t.Fatal("native Anthropic thinking must still bill > 0 tokens")
+	}
+	nativeChat := []Message{{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentThinking, Thinking: &ThinkingData{Text: strings.Repeat("c", 400)}}}}}
+	if got := EstimateMessagesInputTokensForResolved(registry.Resolved{Instance: "openai-chat", Protocol: registry.ProtocolOpenAIChat, Caps: registry.Caps{ThinkingAsText: &on}}, nativeChat).Tokens; got == 0 {
+		t.Fatal("native Chat thinking_as_text must still bill > 0 tokens")
+	}
+	nativeResponses := []Message{{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentThinking, Thinking: &ThinkingData{ResponsesContentParts: []ResponsesReasoningPart{{Type: "reasoning_text", Text: strings.Repeat("r", 400)}}}}}}}
+	if got := EstimateMessagesInputTokensForResolved(registry.Resolved{Instance: "openai", Protocol: registry.ProtocolOpenAIResponses}, nativeResponses).Tokens; got == 0 {
+		t.Fatal("native Responses thinking must still bill > 0 tokens")
+	}
+}
+
+func TestGoogleInteractionThinkingAndSignatureProvenanceBilling(t *testing.T) {
+	t.Parallel()
+	res := registry.Resolved{
+		Instance: "google",
+		ModelID:  "gemini-3.8-flash",
+		WireID:   "gemini-3.8-flash",
+		Protocol: registry.ProtocolGoogle,
+	}
+	sig := strings.Repeat("s", 40)
+	sum := strings.Repeat("a", 20)
+	matchMsgs := []Message{{
+		Role: RoleAssistant,
+		Content: []ContentPart{
+			{Kind: ContentThinking, Thinking: &ThinkingData{
+				GoogleInteraction: true,
+				GoogleInstance:    "google",
+				GoogleModel:       "gemini-3.8-flash",
+				Signature:         sig,
+				Summary:           []string{sum},
+				Text:              sum,
+			}},
+			{Kind: ContentToolCall, ToolCall: &ToolCallData{
+				GoogleInteraction: true,
+				GoogleInstance:    "google",
+				GoogleModel:       "gemini-3.8-flash",
+				ID:                "c1",
+				Name:              "f",
+				Arguments:         []byte(`{}`),
+				ThoughtSignature:  sig,
+			}},
+		},
+	}}
+	matched := EstimateMessagesInputTokensForResolved(res, matchMsgs).Tokens
+
+	otherRes := res
+	otherRes.WireID = "gemini-4-neon"
+	mismatched := EstimateMessagesInputTokensForResolved(otherRes, matchMsgs).Tokens
+
+	// Matched target bills thought Signature + Summary + tool ThoughtSignature (40 + 20 + 40 = 100 chars = 25 tokens more than mismatched).
+	if matched-mismatched != 25 {
+		t.Fatalf("matched=%d mismatched=%d, want delta=25 (thought sig+summary + tool sig)", matched, mismatched)
+	}
+}
+
 // The model's own family is the more particular fact: a row that records claude
 // while carrying an OpenAI provider surface still bills Anthropic's image rules,
 // because the surface describes where the row was reached, not what the model is.

@@ -260,6 +260,77 @@ func TestToChatMessages_DocumentBecomesFilePart(t *testing.T) {
 	}
 }
 
+func TestToChatMessages_GoogleInteractionGuards(t *testing.T) {
+	t.Parallel()
+	msgs := []llm.Message{{
+		Role: llm.RoleAssistant,
+		Content: []llm.ContentPart{
+			{
+				Kind: llm.ContentThinking,
+				Thinking: &llm.ThinkingData{
+					GoogleInteraction:    true,
+					GoogleInstance:       "google",
+					GoogleModel:          "gemini-4-neon",
+					Text:                 "google thought",
+					Signature:            "reasoning",
+					ScalarReasoningField: "reasoning",
+					ScalarReasoningText:  "google scalar thought",
+				},
+			},
+			{Kind: llm.ContentText, Text: "answer"},
+			{
+				Kind: llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{
+					GoogleInteraction: true,
+					GoogleInstance:    "google",
+					GoogleModel:       "gemini-4-neon",
+					ID:                "tc_g",
+					Name:              "lookup",
+					Arguments:         []byte(`{}`),
+					ThoughtSignature:  "sig_google_interaction",
+				},
+			},
+			{
+				Kind: llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{
+					GoogleInteraction: false,
+					ID:                "tc_legacy",
+					Name:              "legacy",
+					Arguments:         []byte(`{}`),
+					ThoughtSignature:  "sig_legacy_compat",
+				},
+			},
+		},
+	}}
+
+	for _, thinkingAsText := range []bool{false, true} {
+		caps := registry.Caps{
+			Fields:         registry.Baseline(registry.ProtocolOpenAIChat),
+			ThinkingAsText: &thinkingAsText,
+		}
+		out, err := toChatMessages(msgs, caps, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		msg := out[0]
+		if msg["reasoning"] != nil || msg["reasoning_content"] != nil || msg["reasoning_details"] != nil {
+			t.Fatalf("thinkingAsText=%v emitted GoogleInteraction reasoning: %#v", thinkingAsText, msg)
+		}
+		if msg["content"] != "answer" {
+			t.Fatalf("thinkingAsText=%v content = %#v, want exact \"answer\"", thinkingAsText, msg["content"])
+		}
+		calls := msg["tool_calls"].([]map[string]any)
+		if _, hasExtra := calls[0]["extra_content"]; hasExtra {
+			t.Fatalf("GoogleInteraction tool_call must not emit extra_content: %#v", calls[0])
+		}
+		extra, _ := calls[1]["extra_content"].(map[string]any)
+		googleExtra, _ := extra["google"].(map[string]any)
+		if googleExtra["thought_signature"] != "sig_legacy_compat" {
+			t.Fatalf("non-GoogleInteraction tool_call lost extra_content.google.thought_signature: %#v", calls[1])
+		}
+	}
+}
+
 // TestToChatMessages_UncarriableDocumentDoesNotHideLaterMedia pins the gate's
 // scan: a document part the wire cannot carry must not end the scan, or later
 // valid media would silently ride the plain-text form and drop.

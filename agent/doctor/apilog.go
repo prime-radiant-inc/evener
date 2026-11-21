@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/apilog"
 	"primeradiant.com/evener/llm/providers/chatcompletions"
+	"primeradiant.com/evener/llm/providers/google"
 	"primeradiant.com/evener/llm/providers/responses"
 )
 
@@ -877,6 +878,8 @@ var recomputeExtractors = map[string]func(body []byte, requestedModel string) (l
 	"openai_codex":                       responses.ExtractRecordedResponse,
 	"openai_chat_completions":            chatcompletions.ExtractRecordedResponse,
 	"openai_compatible_chat_completions": chatcompletions.ExtractRecordedResponse,
+	"google_interactions":                google.ExtractRecordedResponse,
+	"google_interactions_stream":         google.ExtractRecordedResponse,
 }
 
 // recomputeRow re-extracts TextLength/ToolCalls from record's stored

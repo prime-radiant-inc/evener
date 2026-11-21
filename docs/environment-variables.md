@@ -101,8 +101,6 @@ build-llmcall` builds `./llmcall`; run that path or install it separately on you
 | `GOOGLE_VERTEX_PROJECT` | no | Google Vertex project the endpoint is built from. |
 | `GOOGLE_VERTEX_LOCATION` | no | Google Vertex location the endpoint host is built from. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | no | Path to the Google application-default credentials file; when unset, the well-known gcloud path is used. |
-| `GOOGLE_VERTEX_API_KEY` | yes | Google Cloud API key for Vertex AI express mode; the google-vertex-express instance. |
-| `GOOGLE_VERTEX_EXPRESS_BASE_URL` | no | Vertex AI express-mode base URL override (default https://aiplatform.googleapis.com/v1). |
 | `CLOUDFLARE_ACCOUNT_ID` | no | Cloudflare account id the Workers AI endpoint is built from. |
 | `DATABRICKS_HOST` | no | Databricks workspace host the endpoint is built from. |
 | `INFOMANIAK_PRODUCT_ID` | no | Infomaniak product id the endpoint is built from. |

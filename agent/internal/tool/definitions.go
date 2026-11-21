@@ -787,24 +787,6 @@ func DefWebFetch() llm.ToolDefinition {
 	}
 }
 
-func DefWebSearch() llm.ToolDefinition {
-	return llm.ToolDefinition{
-		Name:        "web_search",
-		Description: "Search the web for current information. Returns grounded results from Google Search. Use when you need up-to-date facts, documentation, error messages, or API references.",
-		Parameters: map[string]any{
-			"type":                 "object",
-			"additionalProperties": false,
-			"properties": map[string]any{
-				"query": map[string]any{
-					"type":        "string",
-					"description": "The search query.",
-				},
-			},
-			"required": []string{"query"},
-		},
-	}
-}
-
 // DefaultResultToolName is the result tool's name unless a session renames it
 // (SessionConfig.ResultToolName). Tool descriptions that teach the result tool
 // are built from the configured name by the Def...Named constructors.

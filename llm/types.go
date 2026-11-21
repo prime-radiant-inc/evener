@@ -128,7 +128,8 @@ type ContentPart struct {
 	Kind ContentKind `json:"kind"`
 
 	Text       string          `json:"text,omitempty"`
-	Phase      string          `json:"phase,omitempty"` // OpenAI Responses API phase ("commentary", "final_answer")
+	Phase      string          `json:"phase,omitempty"`       // OpenAI Responses API phase ("commentary", "final_answer")
+	GoogleStep int             `json:"google_step,omitempty"` // 1-based Interactions model_output step index
 	Image      *ImageData      `json:"image,omitempty"`
 	Audio      *AudioData      `json:"audio,omitempty"`
 	Document   *DocumentData   `json:"document,omitempty"`
@@ -186,6 +187,13 @@ type ToolCallData struct {
 	// ThoughtSignature carries provider-specific thought-signature state (e.g., Gemini)
 	// required to continue tool-calling turns safely.
 	ThoughtSignature string `json:"thought_signature,omitempty"`
+	// GoogleInteraction marks a tool call originating from a Gemini Interactions
+	// function_call step, scoped to GoogleInstance and GoogleModel.
+	GoogleInteraction bool `json:"google_interaction,omitempty"`
+	// GoogleInstance and GoogleModel record the resolved Google instance and wire
+	// model ID that issued this Interactions tool call.
+	GoogleInstance string `json:"google_instance,omitempty"`
+	GoogleModel    string `json:"google_model,omitempty"`
 }
 
 // Spelling is a tool call's recorded bytes; a non-string value decodes to empty, not an error.
@@ -290,6 +298,13 @@ type ThinkingData struct {
 	Redacted         bool     `json:"redacted,omitempty"`
 	EncryptedContent string   `json:"encrypted_content,omitempty"`
 	Summary          []string `json:"summary,omitempty"`
+	// GoogleInteraction marks a Gemini Interactions thought step. A step that
+	// carries only a Signature is replay metadata with nothing to display.
+	GoogleInteraction bool `json:"google_interaction,omitempty"`
+	// GoogleInstance and GoogleModel record the resolved Google instance and wire
+	// model ID that issued this Interactions thought step.
+	GoogleInstance string `json:"google_instance,omitempty"`
+	GoogleModel    string `json:"google_model,omitempty"`
 	// Chat Completions scalar replay when Text includes structured reasoning.
 	ScalarReasoningField string `json:"scalar_reasoning_field,omitempty"`
 	ScalarReasoningText  string `json:"scalar_reasoning_text,omitempty"`
@@ -310,15 +325,28 @@ type ResponsesReasoningPart struct {
 	Text string `json:"text"`
 }
 
+// ReplayableGoogleThoughtFor reports whether t is a Google Interactions
+// thought step issued by the exact (instance, wireModel) target.
+func (t *ThinkingData) ReplayableGoogleThoughtFor(instance, wireModel string) bool {
+	return t != nil && t.GoogleInteraction && !t.Redacted && t.EncryptedContent == "" &&
+		!IsOpenAICompatReasoningField(t.Signature) &&
+		(strings.TrimSpace(t.Signature) != "" || len(t.Summary) > 0) &&
+		instance != "" && wireModel != "" &&
+		t.GoogleInstance == instance && t.GoogleModel == wireModel
+}
+
 // ReplayableResponsesPlaintext reports a finished Responses item with native
 // typed parts. A bare Text projection is display-only and never replays.
 func (t *ThinkingData) ReplayableResponsesPlaintext() bool {
-	return t != nil && !t.ResponsesIncomplete && !t.Redacted && t.EncryptedContent == "" &&
+	return t != nil && !t.GoogleInteraction && !t.ResponsesIncomplete && !t.Redacted && t.EncryptedContent == "" &&
 		(len(t.ResponsesContentParts) > 0 || len(t.ResponsesSummaryParts) > 0)
 }
 
 // ChatReplayText selects the text for the Chat Completions replay shape.
 func (t *ThinkingData) ChatReplayText(scalar bool) string {
+	if t == nil || t.GoogleInteraction {
+		return ""
+	}
 	if scalar && t.ScalarReasoningText != "" && IsOpenAICompatReasoningField(t.ScalarReasoningField) {
 		return t.ScalarReasoningText
 	}
@@ -495,10 +523,18 @@ func StripOpaqueThinkingForCrossProvider(p ContentPart) (ContentPart, bool) {
 	return p, false
 }
 
-// WebSearchData holds a web-search content part, including the query and the raw provider payload.
+// WebSearchSource is one citation source of a web-search content part.
+type WebSearchSource struct {
+	Title string `json:"title,omitempty"`
+	URL   string `json:"url,omitempty"`
+}
+
+// WebSearchData holds a web-search content part, including the query, its
+// citation sources, and the raw provider payload.
 type WebSearchData struct {
-	Query string          `json:"query,omitempty"`
-	Raw   json.RawMessage `json:"raw"`
+	Query   string            `json:"query,omitempty"`
+	Sources []WebSearchSource `json:"sources,omitempty"`
+	Raw     json.RawMessage   `json:"raw"`
 }
 
 // ToolDefinition describes a tool the model may call, including its JSON Schema parameters.
@@ -1050,9 +1086,9 @@ func ClampReasoningEffort(requested string, supportedLevels []string) string {
 // here, so it also returns "".
 //
 // Rows that derive a numeric budget instead of spelling the level
-// (anthropic budget_tokens/budget+effort, the google thinkingConfig) do not
-// use this: such a row legitimately states no effort ladder and still needs
-// the requested effort to size its budget.
+// (anthropic budget_tokens/budget+effort) do not use this: such a row
+// legitimately states no effort ladder and still needs the requested effort to
+// size its budget.
 func VouchedEffort(requested string, levels []string) string {
 	v := ClampReasoningEffort(requested, levels)
 	if v == "" || v == ReasoningEffortNone {
@@ -1076,23 +1112,23 @@ func VouchedEffort(requested string, levels []string) string {
 //
 // The branches below restate each builder's own gate — chatcompletions'
 // applyThinkingFormat, responses' reasoningObject, anthropic's
-// applyThinkingShape, and google's thinkingConfig — rather than asking the
-// builder, which reports its decision only as a side effect on the request
-// body. That is deliberate: the one caller needs a pure, cheap answer on the
-// envelope read path, and the alternative is a return value threaded through
-// four wire implementations. It also means this is a second copy of those
-// gates, so a branch here is only as right as the last person to read both.
-// TestDefaultReasoningEffort_NamesTheTierTheWireCarries drives the real
-// builders over the pruned body and is what catches a divergence; it does not
-// make divergence impossible. The google branch models the one prune rule that
-// drops the whole thinkingConfig object; any other gate that runs after the
-// builder (a provider's generationConfig overlay) stays outside what this can
-// see.
+// applyThinkingShape, and google's applyInteractionThinkingConfig — rather
+// than asking the builder, which reports its decision only as a side effect on
+// the request body. That is deliberate: the one caller needs a pure, cheap
+// answer on the envelope read path, and the alternative is a return value
+// threaded through four wire implementations. It also means this is a second
+// copy of those gates, so a branch here is only as right as the last person to
+// read both. TestDefaultReasoningEffort_NamesTheTierTheWireCarries drives the
+// real builders over the pruned body and is what catches a divergence; it does
+// not make divergence impossible. The google branch models the
+// FieldGoogleThinkingLevel prune rule that drops
+// generation_config.thinking_level; any other gate that runs after the builder
+// (a provider's generation_config overlay) stays outside what this can see.
 //
 // Rows that derive a numeric budget instead of spelling the level (anthropic
-// budget_tokens/budget+effort, the google thinkingConfig) count as reaching
-// the wire: such a row legitimately states no effort ladder and still sizes its
-// budget from the effort.
+// budget_tokens/budget+effort) count as reaching the wire: such a row
+// legitimately states no effort ladder and still sizes its budget from the
+// effort.
 func EffortReachesWire(tier string, res registry.Resolved) bool {
 	caps := res.Caps
 	shape := registry.StringValue(caps.ThinkingShape)
@@ -1147,37 +1183,25 @@ func EffortReachesWire(tier string, res registry.Resolved) bool {
 		}
 		return false
 	case registry.ProtocolGoogle:
-		// registry.Prune runs after the builder and deletes the whole
-		// thinkingConfig object, whichever shape spelled into it, so a row that
-		// turns the field off carries neither a level nor a budget.
-		if sends, pinned := caps.Fields[registry.FieldGoogleThinkingConfig]; pinned && !sends {
+		if sends, pinned := caps.Fields[registry.FieldGoogleThinkingLevel]; pinned && !sends {
 			return false
 		}
-		switch shape {
-		case "budget":
-			return budgetSized
-		case "level":
-			// A gateway's no-effort verdict keeps includeThoughts but spells no
-			// level, whatever the row's ladder lists.
-			if registry.BoolValue(caps.EffortParameterUnsupported) {
-				return false
-			}
-			// The builder spells the tier through a row with no ladder and only
-			// a vouched level through a row that names one.
-			spelled := tier
-			if len(caps.EffortValues) != 0 {
-				spelled = vouched
-			}
-			// It then writes its wire enum: only the four tiers that enum spells
-			// are on the wire. Evener's top two are renamed onto the ceiling and
-			// anything else is dropped, so neither carries the tier that was
-			// asked for — reporting either would name a tier the body never
-			// spells, which is the defect this predicate exists to prevent.
-			switch strings.ToUpper(spelled) {
-			case "MINIMAL", "LOW", "MEDIUM", "HIGH":
-				return true
-			}
+		if shape != "level" {
 			return false
+		}
+		if registry.BoolValue(caps.EffortParameterUnsupported) {
+			return false
+		}
+		if strings.EqualFold(tier, "max") {
+			return false
+		}
+		spelled := tier
+		if len(caps.EffortValues) != 0 {
+			spelled = vouched
+		}
+		switch strings.ToUpper(spelled) {
+		case "MINIMAL", "LOW", "MEDIUM", "HIGH", "XHIGH":
+			return true
 		}
 		return false
 	case registry.ProtocolOpenAIResponses:

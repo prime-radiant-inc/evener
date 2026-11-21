@@ -174,15 +174,12 @@ func TestCachedToolDefs_IncludesRegistryOnlyTools(t *testing.T) {
 	}
 }
 
-// --- web_search tool dedup (Anthropic duplicate tool names) ---
+// --- web_search function tool absent across all providers ---
 
-func TestToolDefs_WebSearchExcludedForNonGemini(t *testing.T) {
+func TestToolDefs_WebSearchExcludedForAllProviders(t *testing.T) {
 	t.Parallel()
-	// The web_search function tool is a shim for Gemini only (see tool_web_search.go).
-	// For Anthropic and OpenAI, native web search is used via req.WebSearch.
-	// Including the web_search function tool for Anthropic causes a duplicate
-	// "web_search" name (the adapter also injects a server-side web_search tool),
-	// which Anthropic's API rejects.
+	// The legacy Gemini web_search function tool was removed; no provider
+	// profile advertises a client-side web_search function tool.
 	for _, tc := range []struct {
 		name    string
 		profile *provider.Profile
@@ -191,7 +188,7 @@ func TestToolDefs_WebSearchExcludedForNonGemini(t *testing.T) {
 	}{
 		{"anthropic", newAnthropicProfile("claude-test"), "anthropic", false},
 		{"openai", NewOpenAIProfile("gpt-test"), "openai", false},
-		{"gemini", newGeminiProfile("gemini-test"), "gemini", true},
+		{"gemini", newGeminiProfile("gemini-test"), "gemini", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

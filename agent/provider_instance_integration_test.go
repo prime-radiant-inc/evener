@@ -24,8 +24,8 @@ package agent
 //  4. Cross-instance switch — resolver maps "work2/<model>" to a renamed openai
 //     profile; SetModel("work2/gpt-5.2") swaps the profile, preserves a
 //     WithCommunicateOutputSchema override, and keeps identity "work2".
-//  5. Provider-conditional tool on switch — SetModel to a google-protocol
-//     instance wires real web_search; SetModel away removes it.
+//  5. Provider-conditional tool on switch — SetModel between openai and
+//     google updates wire tool aliases and never wires legacy web_search.
 
 import (
 	"context"
@@ -210,10 +210,10 @@ func TestProviderInstance_CrossInstanceSwitch_PreservesOverrideAndIdentity(t *te
 
 // ── Subtest 5: Provider-conditional tool on switch ────────────────────────────
 
-// TestProviderInstance_ProviderConditionalTool_GoogleSwitchWiresWebSearch verifies
-// that switching from a renamed openai instance ("work") to a google instance
-// wires the real web_search function tool, and switching away removes it.
-func TestProviderInstance_ProviderConditionalTool_GoogleSwitchWiresWebSearch(t *testing.T) {
+// TestProviderInstance_GoogleSwitchDoesNotWireWebSearch verifies that switching
+// between a renamed openai instance ("work") and a google instance updates
+// wire tool names and never wires a legacy web_search function tool.
+func TestProviderInstance_GoogleSwitchDoesNotWireWebSearch(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -230,9 +230,17 @@ func TestProviderInstance_ProviderConditionalTool_GoogleSwitchWiresWebSearch(t *
 	}
 	defer sess.Close()
 
-	// Pre-condition: renamed openai instance must NOT have real web_search.
-	if webSearchExecIsReal(t, sess.reg) {
-		t.Fatal("pre-condition: renamed openai session must not have real web_search function tool")
+	hasWireTool := func(name string) bool {
+		for _, td := range sess.allToolDefinitions(0) {
+			if td.Name == name {
+				return true
+			}
+		}
+		return false
+	}
+
+	if sess.reg.Get("web_search") != nil {
+		t.Fatal("pre-condition: renamed openai session must not have web_search function tool")
 	}
 
 	// Switch to google via resolver.
@@ -241,17 +249,20 @@ func TestProviderInstance_ProviderConditionalTool_GoogleSwitchWiresWebSearch(t *
 	if got := sess.profile.Surface(); got != registry.SurfaceGoogle {
 		t.Fatalf("after SetModel, Surface = %q, want google", got)
 	}
-	if !webSearchExecIsReal(t, sess.reg) {
-		t.Fatal("after switching to google profile, web_search function tool must be real (not placeholder)")
+	if sess.reg.Get("web_search") != nil {
+		t.Fatal("after switching to google profile, legacy web_search function tool must not be wired")
+	}
+	if !hasWireTool("run_shell_command") {
+		t.Fatal("after switching to google profile, run_shell_command wire tool alias must be advertised")
 	}
 
-	// Switch back to a renamed openai instance — web_search must be removed.
+	// Switch back to a renamed openai instance.
 	sess.SetModel("work2/gpt-5.2")
 
 	if got := sess.profile.ID(); got != "work2" {
 		t.Fatalf("after second SetModel, profile ID = %q, want work2", got)
 	}
-	if webSearchExecIsReal(t, sess.reg) {
-		t.Fatal("after switching back to openai, web_search function tool must not be real (openai uses native web search)")
+	if sess.reg.Get("web_search") != nil || !hasWireTool("exec_command") {
+		t.Fatal("after switching back to openai, exec_command must be advertised and web_search absent")
 	}
 }

@@ -151,13 +151,8 @@ func wireEffortEvidence(body map[string]any) (names []string, budgets []int) {
 	if cfg, ok := body["output_config"].(map[string]any); ok {
 		addName(cfg["effort"])
 	}
-	if gen, ok := body["generationConfig"].(map[string]any); ok {
-		if thinking, ok := gen["thinkingConfig"].(map[string]any); ok {
-			addName(thinking["thinkingLevel"])
-			if budget, ok := thinking["thinkingBudget"].(int); ok {
-				budgets = append(budgets, budget)
-			}
-		}
+	if gen, ok := body["generation_config"].(map[string]any); ok {
+		addName(gen["thinking_level"])
 	}
 	return names, budgets
 }
@@ -268,12 +263,6 @@ func TestDefaultReasoningEffort_NamesTheTierTheWireCarries(t *testing.T) {
 			profile:     newAnthropicProfile("claude-unknown-model"),
 			want:        "",
 			wantCarried: false,
-		},
-		{
-			name:        "a budget-shaped Google row sizes its budget from the fallback",
-			profile:     newGeminiProfile("gemini-2.5-flash"),
-			want:        "medium",
-			wantCarried: true,
 		},
 		{
 			// The enable-object dialects keep thinking on without naming a
@@ -425,37 +414,26 @@ func TestDefaultReasoningEffort_NamesTheTierTheWireCarries(t *testing.T) {
 			wantCarried: true,
 		},
 		{
-			// Google renames evener's top two tiers onto its enum ceiling, so
-			// the body spells HIGH where the request asked for xhigh: a
-			// different tier, which no readout may name.
-			name:        "Google's level shape claims no tier for one its enum renames",
+			// Interactions supports xhigh directly on the wire.
+			name:        "Google's level shape carries xhigh when vouched",
 			profile:     withThinkingShape(newGeminiProfile("gemini-3.8-flash"), "level", "xhigh"),
+			want:        "xhigh",
+			wantCarried: true,
+		},
+		{
+			// max clamps onto the ceiling and continues to report "".
+			name:        "Google's level shape claims no tier for max",
+			profile:     withThinkingShape(newGeminiProfile("gemini-3.8-flash"), "level", "max"),
 			want:        "",
 			wantCarried: false,
 		},
 		{
-			// A row that turns the thinkingConfig field off loses the whole
-			// object to registry.Prune, which runs after the builder, so the
-			// level the builder spelled never reaches the wire and no tier may
-			// be claimed for it.
+			// A row that turns generation_config.thinking_level off loses it to registry.Prune.
 			name: "Google's level shape claims no tier where the row prunes the field away",
 			profile: func() *provider.Profile {
 				p := withThinkingShape(newGeminiProfile("gemini-3.8-flash"), "level", "low", "medium", "high")
 				res := p.Resolved()
-				res.Caps.Fields = map[string]bool{registry.FieldGoogleThinkingConfig: false}
-				return p.WithResolved(res)
-			}(),
-			want:        "",
-			wantCarried: false,
-		},
-		{
-			// The prune deletes the object, not one shape's contents, so the
-			// budget shape loses its thinkingBudget to the same rule.
-			name: "Google's budget shape claims no tier where the row prunes the field away",
-			profile: func() *provider.Profile {
-				p := withThinkingShape(newGeminiProfile("gemini-2.5-flash"), "budget")
-				res := p.Resolved()
-				res.Caps.Fields = map[string]bool{registry.FieldGoogleThinkingConfig: false}
+				res.Caps.Fields = map[string]bool{registry.FieldGoogleThinkingLevel: false}
 				return p.WithResolved(res)
 			}(),
 			want:        "",

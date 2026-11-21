@@ -1,6 +1,7 @@
 package google
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/internal/protocolhttp"
+	"primeradiant.com/evener/llm/providers/internal/requestutil"
 	"primeradiant.com/evener/llm/providers/internal/transport"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -19,20 +21,205 @@ func (p *Protocol) call(operation, family, method, u string, body map[string]any
 	return &protocolhttp.Call{Operation: operation, EndpointFamily: family, Method: method, URL: u, Body: body, Req: req, Res: res, Client: p.Client, Reclassify: reclassifyGemini(res)}
 }
 
-func (p *Protocol) completionCall(operation, family, method, u string, body map[string]any, req llm.Request, res registry.Resolved) *protocolhttp.Call {
-	call := p.call(operation, family, method, u, body, req, res)
-	call.FinalizeBody = func(_ context.Context, finalBody map[string]any) error {
-		return reconcileOutputField(finalBody, req.MaxTokens, res.Caps.MaxOutputTokens)
-	}
-	return call
+type protectedSnapshot struct {
+	present bool
+	raw     []byte
 }
 
-// reclassifyGemini applies the gRPC status remap of classifyGeminiError to
-// the runner's classified error (RESOURCE_EXHAUSTED on a 400 is a rate
-// limit, DEADLINE_EXCEEDED a timeout, UNAVAILABLE/INTERNAL a server error)
-// and keeps the instance name on the remapped error. It then turns Vertex's
-// "Publisher model ... was not found" 404 on a regional location into an
-// actionable configuration error (regionalVertexGlobalOnlyRemedy).
+var protectedInteractionFields = [...]string{"input", "tools", "response_format"}
+
+func snapshotProtectedFields(body map[string]any) (map[string]protectedSnapshot, error) {
+	out := make(map[string]protectedSnapshot, len(protectedInteractionFields))
+	for _, k := range protectedInteractionFields {
+		v, exists := body[k]
+		if !exists {
+			out[k] = protectedSnapshot{}
+			continue
+		}
+		b, err := json.Marshal(v)
+		if err != nil {
+			return nil, err
+		}
+		out[k] = protectedSnapshot{present: true, raw: b}
+	}
+	return out, nil
+}
+
+func (p *Protocol) completionCall(
+	ctx context.Context,
+	operation, family, method, u string,
+	body map[string]any,
+	policy interactionBodyPolicy,
+	req llm.Request,
+	res registry.Resolved,
+	resolvedSummariesDisabled *bool,
+) (*protocolhttp.Call, error) {
+	call := p.call(operation, family, method, u, body, req, res)
+
+	var preSnapshots map[string]protectedSnapshot
+	auth := llm.AuthenticatorForContext(ctx, res.Transport.Auth)
+	if _, hasPreparer := auth.(llm.RequestPreparer); hasPreparer {
+		snap, err := snapshotProtectedFields(body)
+		if err != nil {
+			return nil, err
+		}
+		if pinnedTools, hasPinned := res.Transport.Body["tools"]; hasPinned {
+			b, err := json.Marshal(pinnedTools)
+			if err != nil {
+				return nil, err
+			}
+			snap["tools"] = protectedSnapshot{present: true, raw: b}
+		}
+		preSnapshots = snap
+	}
+
+	call.FinalizeBody = func(_ context.Context, finalBody map[string]any) error {
+		// 1. stream authority.
+		if policy.stream {
+			finalBody["stream"] = true
+		} else {
+			delete(finalBody, "stream")
+		}
+
+		// 2. Unsupported execution modes, caching, deferred tier, and retired keys.
+		if err := validateInteractionBodyGuards(finalBody, res.Instance, true); err != nil {
+			return err
+		}
+
+		// 3. Anchor lock.
+		if policy.anchorID == "" {
+			if _, has := finalBody["previous_interaction_id"]; has {
+				return &llm.ConfigurationError{ProviderInstance: res.Instance, Message: "transport constants cannot inject previous_interaction_id after input assembly"}
+			}
+		} else if s, ok := finalBody["previous_interaction_id"].(string); !ok || s != policy.anchorID {
+			return &llm.ConfigurationError{ProviderInstance: res.Instance, Message: "transport constants cannot modify previous_interaction_id after input assembly"}
+		}
+
+		// 4. Storage policy lock.
+		if policy.storeOmitted {
+			if _, has := finalBody["store"]; has {
+				return &llm.ConfigurationError{ProviderInstance: res.Instance, Message: "google provider disables sending store; transport constants cannot inject store"}
+			}
+		} else if b, ok := finalBody["store"].(bool); !ok || b != policy.effectiveStore {
+			return &llm.ConfigurationError{ProviderInstance: res.Instance, Message: "transport constants cannot override Interactions store policy"}
+		}
+
+		// 5. Unconditional model authority and RequestPreparer snapshot lock.
+		if s, ok := finalBody["model"].(string); !ok || s != policy.wireModel {
+			return &llm.ConfigurationError{ProviderInstance: res.Instance, Message: "Interactions model field cannot be modified or removed"}
+		}
+		if preSnapshots != nil {
+			postSnapshots, err := snapshotProtectedFields(finalBody)
+			if err != nil {
+				return err
+			}
+			for _, k := range protectedInteractionFields {
+				pre, post := preSnapshots[k], postSnapshots[k]
+				if pre.present != post.present || !bytes.Equal(pre.raw, post.raw) {
+					return &llm.ConfigurationError{ProviderInstance: res.Instance, Message: fmt.Sprintf("instance %q: request preparer modified protected Interactions field %q", res.Instance, k)}
+				}
+			}
+		}
+
+		// Validate any Transport.Body labels.* additions.
+		if rawLabels, has := finalBody["labels"]; has && rawLabels != nil {
+			validated, err := validateAndCloneGoogleLabels(rawLabels)
+			if err != nil {
+				return err
+			}
+			finalBody["labels"] = validated
+		}
+
+		// 6. Authoritative reasoning=false and generation_config.tool_choice enforcement.
+		normalizeGenerationConfigObject(finalBody)
+		if res.Caps.ReasoningDisabled() {
+			if genCfg, ok := finalBody["generation_config"].(map[string]any); ok {
+				delete(genCfg, "thinking_level")
+				delete(genCfg, "thinking_summaries")
+				if len(genCfg) == 0 {
+					delete(finalBody, "generation_config")
+				}
+			}
+		}
+		toolChoiceEnabled := requestutil.WireFieldEnabled(res.Caps, "generation_config.tool_choice", res.Protocol)
+		if policy.combinedTools {
+			if !toolChoiceEnabled {
+				return &llm.ConfigurationError{ProviderInstance: res.Instance, Message: "combined google_search and function tools require generation_config.tool_choice enabled"}
+			}
+			var mode string
+			if genCfg, ok := finalBody["generation_config"].(map[string]any); ok {
+				mode = effectiveToolChoiceMode(genCfg["tool_choice"])
+			}
+			switch mode {
+			case "validated", "any", "none":
+			default:
+				return &llm.ConfigurationError{ProviderInstance: res.Instance, Message: fmt.Sprintf("combined google_search and function tools require generation_config.tool_choice mode in {validated, any, none}, got %q", mode)}
+			}
+		} else if !toolChoiceEnabled {
+			if genCfg, ok := finalBody["generation_config"].(map[string]any); ok {
+				delete(genCfg, "tool_choice")
+				if len(genCfg) == 0 {
+					delete(finalBody, "generation_config")
+				}
+			}
+		}
+
+		// 7. Output-limit pruning and minimum-cap precedence.
+		if err := reconcileOutputField(finalBody, req.MaxTokens, res.Caps.MaxOutputTokens, res.Caps, res.Protocol); err != nil {
+			return err
+		}
+		if resolvedSummariesDisabled != nil {
+			genCfg, _ := finalBody["generation_config"].(map[string]any)
+			*resolvedSummariesDisabled = res.Caps.ReasoningDisabled() || (genCfg != nil && genCfg["thinking_summaries"] == "none")
+		}
+		return nil
+	}
+	return call, nil
+}
+
+func normalizeGenerationConfigObject(body map[string]any) {
+	raw, exists := body["generation_config"]
+	if !exists || raw == nil {
+		return
+	}
+	if _, ok := raw.(map[string]any); ok {
+		return
+	}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	var m map[string]any
+	if dec.Decode(&m) == nil && m != nil {
+		body["generation_config"] = m
+	}
+}
+
+func effectiveToolChoiceMode(v any) string {
+	if v == nil {
+		return ""
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(b, &s) == nil {
+		return strings.ToLower(strings.TrimSpace(s))
+	}
+	var obj struct {
+		AllowedTools struct {
+			Mode string `json:"mode"`
+		} `json:"allowed_tools"`
+	}
+	if json.Unmarshal(b, &obj) == nil {
+		return strings.ToLower(strings.TrimSpace(obj.AllowedTools.Mode))
+	}
+	return ""
+}
+
 func reclassifyGemini(res registry.Resolved) func(status int, body []byte, err error) error {
 	return func(status int, body []byte, err error) error {
 		var retryAfter *time.Duration
@@ -40,78 +227,143 @@ func reclassifyGemini(res registry.Resolved) func(status int, body []byte, err e
 			retryAfter = le.RetryAfter()
 		}
 		out := llm.RewriteErrorProvider(classifyGeminiError(status, body, retryAfter, err), res.Instance)
-		if remedy, ok := regionalVertexGlobalOnlyRemedy(res, status, body); ok {
-			return &llm.ConfigurationError{Message: fmt.Sprintf("%s; provider said: %s", remedy, out.Error()), Cause: out}
+		if remedy, ok := regionalVertexLocationRemedy(res, status); ok {
+			return &llm.ConfigurationError{
+				ProviderInstance: res.Instance,
+				Message:          fmt.Sprintf("%s; provider said: %s", remedy, out.Error()),
+				Cause:            out,
+			}
 		}
 		return out
 	}
 }
 
-// regionalVertexGlobalOnlyRemedy recognizes the 404 Vertex returns when a
-// publisher model is not served by the location the resolved transport was
-// built with, and returns the message naming the remedy. Vertex serves some
-// models (Gemini 3 and later, recent Claude ids) only from its global
-// endpoint; the raw 404 says to check the region but not which one works.
-// Only a regional location gets a remedy — a request already addressed to
-// global/us/eu is not helped by moving endpoints — and only for a model the
-// registry knows is global-only: Vertex returns this same 404 when the
-// project simply lacks access to a model that is valid there, and rewriting
-// that as an endpoint change would hide the real failure.
-func regionalVertexGlobalOnlyRemedy(res registry.Resolved, status int, body []byte) (string, bool) {
-	// Only a request addressed to the endpoint the vertex-location rule
-	// derived from the location reaches a Vertex regional endpoint; a
-	// transport that merely reads GOOGLE_VERTEX_LOCATION into its own URL is
-	// talking to something else, and rewriting its 404 would misattribute the
-	// failure.
+func regionalVertexLocationRemedy(res registry.Resolved, status int) (string, bool) {
 	loc, derived := registry.VertexLocationDerived(res.Transport, res.HostDerivedByRule)
-	if !derived {
-		return "", false
-	}
-	// The phrase is matched without regard to case: the regional body observed
-	// on 2026-09-12 reads "Publisher model", and the remedy should not depend
-	// on the provider's capitalization.
-	if status != http.StatusNotFound || !strings.Contains(strings.ToLower(string(body)), "publisher model") {
+	if !derived || status != http.StatusNotFound {
 		return "", false
 	}
 	if loc == "global" || loc == "us" || loc == "eu" {
 		return "", false
 	}
-	if !registry.IsVertexGlobalOnly(res.WireID) {
-		return "", false
+	return vertexInteractionsLocationRemedy(res.Instance, loc, res.WireID), true
+}
+
+func vertexInteractionsLocationRemedy(instance, loc, wireID string) string {
+	lower := strings.ToLower(strings.TrimSpace(loc))
+	const (
+		usDesc     = "GOOGLE_VERTEX_LOCATION=us (United States multi-region data residency)"
+		euDesc     = "GOOGLE_VERTEX_LOCATION=eu (European Union multi-region data residency)"
+		globalDesc = "GOOGLE_VERTEX_LOCATION=global (global routing with no data-residency guarantee)"
+	)
+	const disclosure = "switching from %q changes the geographic data-residency boundary"
+	const directionalFmt = "instance %q: Vertex location %q does not serve /interactions for %q; use %s (or %s / %s; " + disclosure + ")"
+	switch {
+	case strings.HasPrefix(lower, "us-"):
+		return fmt.Sprintf(directionalFmt,
+			instance, loc, wireID, usDesc, euDesc, globalDesc, loc)
+	case strings.HasPrefix(lower, "europe-") && lower != "europe-west2" && lower != "europe-west6":
+		return fmt.Sprintf(directionalFmt,
+			instance, loc, wireID, euDesc, usDesc, globalDesc, loc)
+	default:
+		return fmt.Sprintf("instance %q: Vertex location %q does not serve /interactions for %q; supported endpoints are %s, %s, or %s ("+disclosure+")",
+			instance, loc, wireID, usDesc, euDesc, globalDesc, loc)
 	}
-	return fmt.Sprintf("instance %q: Vertex location %q does not serve model %q; use global, us, or eu (set GOOGLE_VERTEX_LOCATION)", res.Instance, loc, res.WireID), true
+}
+
+func (p interactionBodyPolicy) allowsPre2xxSignatureRetry() bool {
+	return p.anchorID == "" && p.hasUnsignedNonNativeCalls
+}
+
+func (p interactionBodyPolicy) allowsPost2xxSignatureRetry() bool {
+	return p.allowsPre2xxSignatureRetry() && !p.storeOmitted && !p.effectiveStore
+}
+
+func isSignatureValidation400(err error) bool {
+	if err == nil {
+		return false
+	}
+	le, ok := errors.AsType[llm.Error](err)
+	if !ok || le.StatusCode() != http.StatusBadRequest {
+		return false
+	}
+	lower := strings.ToLower(le.Error())
+	return strings.Contains(lower, "thought_signature") || strings.Contains(lower, "thought signature") || strings.Contains(lower, "signature")
 }
 
 // Complete implements llm.Protocol.
 func (p *Protocol) Complete(ctx context.Context, req llm.Request, res registry.Resolved) (llm.Response, error) {
-	if protocolhttp.RequiresStreamingComplete(res) {
+	if protocolhttp.RequiresStreamingCompleteContext(ctx, res) {
 		return protocolhttp.CompleteViaStream(ctx, res.Instance, func(ctx context.Context) (llm.Stream, error) { return p.Stream(ctx, req, res) })
 	}
-	body, err := p.BuildBody(req, res)
-	if err != nil {
-		return llm.Response{}, err
+	resp, policy, settledFrom2xx, err := p.completeOnce(ctx, req, res, false)
+	if err != nil && isSignatureValidation400(err) &&
+		((!settledFrom2xx && policy.allowsPre2xxSignatureRetry()) || (settledFrom2xx && policy.allowsPost2xxSignatureRetry())) {
+		retryResp, _, _, retryErr := p.completeOnce(ctx, req, res, true)
+		return retryResp, retryErr
 	}
-	call := p.completionCall("generateContent", "google_generate_content", http.MethodPost, protocolhttp.URL(res, res.Transport.Endpoint), body, req, res)
-	return protocolhttp.Complete(ctx, call, func(r *protocolhttp.Result) (llm.Response, error) {
-		return fromGeminiResponse(r.Raw, req.Model, r.Body), nil
+	return resp, err
+}
+
+func (p *Protocol) completeOnce(ctx context.Context, req llm.Request, res registry.Resolved, fallbackUnsignedCalls bool) (llm.Response, interactionBodyPolicy, bool, error) {
+	body, policy, err := buildBodyWithPolicy(req, res, false, fallbackUnsignedCalls)
+	if err != nil {
+		return llm.Response{}, policy, false, llm.RewriteErrorProvider(err, res.Instance)
+	}
+	call, err := p.completionCall(ctx, "interactions.create", "google_interactions", http.MethodPost, protocolhttp.URL(res, res.Transport.Endpoint), body, policy, req, res, nil)
+	if err != nil {
+		return llm.Response{}, policy, false, llm.RewriteErrorProvider(err, res.Instance)
+	}
+	settledFrom2xx := false
+	resp, err := protocolhttp.Complete(ctx, call, func(r *protocolhttp.Result) (llm.Response, error) {
+		settledFrom2xx = true
+		decoded, derr := fromInteraction(r.Raw, req.Model, r.Body, res.Instance, res.WireID)
+		if derr != nil {
+			return llm.Response{}, llm.RewriteErrorProvider(derr, res.Instance)
+		}
+		llm.StampContinuationIDHash(ctx, &decoded, p.Hasher)
+		return decoded, nil
 	})
+	return resp, policy, settledFrom2xx, err
 }
 
 // Stream implements llm.Protocol.
 func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Resolved) (llm.Stream, error) {
-	body, err := p.BuildBody(req, res)
+	body, policy, err := buildBodyWithPolicy(req, res, true, false)
 	if err != nil {
+		return nil, llm.RewriteErrorProvider(err, res.Instance)
+	}
+	s1, err := p.openStreamWithBody(ctx, req, res, body, policy)
+	if err != nil {
+		if policy.allowsPre2xxSignatureRetry() && isSignatureValidation400(err) {
+			return p.openStream(ctx, req, res, true)
+		}
 		return nil, err
 	}
-	call := p.completionCall("streamGenerateContent", "google_stream_generate_content", http.MethodPost, protocolhttp.URL(res, res.Transport.StreamEndpoint), body, req, res)
+	return s1, nil
+}
+
+func (p *Protocol) openStream(ctx context.Context, req llm.Request, res registry.Resolved, fallbackUnsignedCalls bool) (llm.Stream, error) {
+	body, policy, err := buildBodyWithPolicy(req, res, true, fallbackUnsignedCalls)
+	if err != nil {
+		return nil, llm.RewriteErrorProvider(err, res.Instance)
+	}
+	return p.openStreamWithBody(ctx, req, res, body, policy)
+}
+
+func (p *Protocol) openStreamWithBody(ctx context.Context, req llm.Request, res registry.Resolved, body map[string]any, policy interactionBodyPolicy) (llm.Stream, error) {
+	summariesDisabled := policy.summariesDisabled
+	stored := policy.effectiveStore || policy.storeOmitted
+	call, err := p.completionCall(ctx, "interactions.create(stream)", "google_interactions_stream", http.MethodPost, protocolhttp.URL(res, res.Transport.StreamEndpoint), body, policy, req, res, &summariesDisabled)
+	if err != nil {
+		return nil, llm.RewriteErrorProvider(err, res.Instance)
+	}
 	return protocolhttp.Stream(ctx, call, func(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, r *protocolhttp.Result, attempt *transport.APIAttemptCapture) {
-		decodeGenerateContentStream(sctx, cancel, resp, s, req, res.Instance, r.EndpointURL, r.Material, attempt)
+		decodeInteractionStream(sctx, cancel, resp, s, req, res.Instance, res.WireID, r.EndpointURL, r.Material, attempt, summariesDisabled, stored, p.Hasher)
 	})
 }
 
-// ListModels implements llm.Protocol. On Vertex it pages through the
-// publisher-model listing (listVertexModels); on the Gemini API it reads one
-// page of up to 1000 models, keeping those that support generateContent.
+// ListModels implements llm.Protocol.
 func (p *Protocol) ListModels(ctx context.Context, res registry.Resolved) ([]registry.Model, error) {
 	if res.Transport.ModelsEndpoint == registry.EndpointUnsupported {
 		return nil, llm.ErrModelListingUnsupported
@@ -156,28 +408,7 @@ func (p *Protocol) ListModels(ctx context.Context, res registry.Resolved) ([]reg
 	return rows, err
 }
 
-// CountTokens implements llm.Protocol: the completion body wrapped as a
-// generateContentRequest with the model name, as the countTokens method
-// expects. The runner's prune (protocolhttp.Prepare) only sees the outer
-// {"generateContentRequest": ...} body, so inner is pruned here first.
-func (p *Protocol) CountTokens(ctx context.Context, req llm.Request, res registry.Resolved) (int, error) {
-	if res.Transport.CountTokensEndpoint == registry.EndpointUnsupported {
-		return 0, llm.ErrInputTokenCountUnsupported
-	}
-	inner, err := p.BuildBody(req, res)
-	if err != nil {
-		return 0, err
-	}
-	registry.Prune(inner, res.Caps, res.Protocol)
-	inner["model"] = "models/" + res.WireID
-	body := map[string]any{"generateContentRequest": inner}
-	var count int
-	err = protocolhttp.Do(ctx, p.call("countTokens", "google_count_tokens", http.MethodPost, protocolhttp.URL(res, res.Transport.CountTokensEndpoint), body, req, res), func(r *protocolhttp.Result) (*llm.Response, error) {
-		count = tokenCountInt(r.Raw["totalTokens"])
-		if count <= 0 && r.Raw["totalTokens"] == nil {
-			return nil, fmt.Errorf("countTokens: missing totalTokens in %q", r.Body)
-		}
-		return nil, nil
-	})
-	return count, err
+// CountTokens implements llm.Protocol: Interactions defines no countTokens endpoint.
+func (p *Protocol) CountTokens(_ context.Context, _ llm.Request, res registry.Resolved) (int, error) {
+	return 0, llm.RewriteErrorProvider(llm.ErrInputTokenCountUnsupported, res.Instance)
 }

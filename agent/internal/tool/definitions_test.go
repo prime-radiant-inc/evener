@@ -1060,7 +1060,7 @@ func TestAllBuiltinParametersCarryDescriptions(t *testing.T) {
 		DefDelegate(nil), DefDelegateWithSandbox(nil, DelegateSandboxSchema{}),
 		DefDelegateSend(), DefModelList(), DefJobWatch(nil),
 		DefJobStatus(), DefJobList(), DefJobStop(), DefGrep(), DefGlob(),
-		DefApplyPatch(), DefWebFetch(), DefWebSearch(), DefCommunicate(),
+		DefApplyPatch(), DefWebFetch(), DefCommunicate(),
 		DefTaskList(nil), DefUseSkill(), DefFindSessionTranscripts(),
 		DefDoctorEvener(), DefManageWorktree(), DefManageWorktreeDisposeOnly(),
 		DefReadTranscript(), DefAskUser(), DefUpdateGoal(), DefNotesAgentSet(),

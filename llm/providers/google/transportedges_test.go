@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"maps"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -13,16 +15,11 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-// streamingRequiredScheme is the test-only auth scheme that routes Complete
-// through CompleteViaStream (protocolhttp.RequiresStreamingComplete).
 const streamingRequiredScheme = "google-test-streaming-required"
 
-// A transport whose auth scheme requires streaming completion must serve
-// Complete from the SSE stream and still return the accumulated response.
 func TestCompleteRoutesThroughStreamWhenPreparerRequiresIt(t *testing.T) {
-	// Not parallel: RegisterAuthenticator adds to llm's package-wide authenticators registry (no unregister, so entries persist for the process).
 	providertest.RegisterStreamingRequiredAuth(t, streamingRequiredScheme, providertest.StreamingRequiredAuth{})
-	srv, _ := protoServer(t, 200, generateSSE)
+	srv, _ := protoServer(t, 200, interactionsSSE)
 	res := protoLive(srv)
 	res.Transport.Auth = streamingRequiredScheme
 	resp, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
@@ -34,9 +31,245 @@ func TestCompleteRoutesThroughStreamWhenPreparerRequiresIt(t *testing.T) {
 	}
 }
 
-// A request BuildBody rejects (named tool_choice with no name) must fail
-// Complete, Stream, and CountTokens before any HTTP traffic, as a
-// configuration error stamped with the instance.
+type callScopedMutatingPreparer struct{}
+
+func (callScopedMutatingPreparer) Apply(context.Context, *http.Request, registry.Resolved) error {
+	return nil
+}
+func (callScopedMutatingPreparer) PrepareRequest(_ context.Context, _ *http.Request, body map[string]any, _ llm.Request, _ registry.Resolved) error {
+	body["input"] = "tampered"
+	return nil
+}
+func (callScopedMutatingPreparer) RequiresStreamingComplete() bool { return false }
+
+func TestFinalizeBodyLocksAndCallScopedPreparerSnapshot(t *testing.T) {
+	t.Parallel()
+	t.Run("protected Transport.Body keys rejected before HTTP", func(t *testing.T) {
+		for _, k := range []string{"input", "model", "tools.0", "response_format", "response_format.mime_type", "agent", "previous_interaction_id", "store", "continuation_token", "cached_content", "background", "generationConfig.temperature"} {
+			res := protoRes(nil)
+			res.Transport.Body = map[string]any{k: "x"}
+			if _, err := (&Protocol{}).BuildBody(protoReq(""), res); err == nil {
+				t.Errorf("key %q in Transport.Body must fail BuildBody", k)
+			}
+		}
+	})
+
+	t.Run("legacy generateContent endpoint override rejected", func(t *testing.T) {
+		for _, ep := range []string{"/models/{model}:generateContent", "/models/{model}:streamGenerateContent?alt=sse"} {
+			res := protoRes(nil)
+			res.Transport.Endpoint = ep
+			if _, err := (&Protocol{}).BuildBody(protoReq(""), res); err == nil {
+				t.Errorf("endpoint %q must fail BuildBody", ep)
+			}
+		}
+	})
+
+	t.Run("unsupported Vertex Gemini model fails fast", func(t *testing.T) {
+		res := protoRes(nil)
+		res.Transport.Preset = registry.PresetVertexGemini
+		res.WireID = "gemini-2.5-flash"
+		if _, err := (&Protocol{}).BuildBody(protoReq(""), res); err == nil {
+			t.Fatal("Vertex gemini-2.5-flash must fail BuildBody")
+		}
+	})
+
+	t.Run("Transport.Body labels invalid and service_tier deferred rejected", func(t *testing.T) {
+		srv, _ := protoServer(t, 200, interactionsJSON)
+		res := protoLive(srv)
+		res.Transport.Body = map[string]any{"labels.bad/key": "v"}
+		if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res); err == nil {
+			t.Fatal("invalid labels.* in Transport.Body must fail")
+		}
+
+		res2 := protoLive(srv)
+		res2.Transport.Body = map[string]any{"service_tier": "deferred"}
+		if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res2); err == nil {
+			t.Fatal("service_tier=deferred in Transport.Body must fail")
+		}
+	})
+
+	t.Run("Transport.Body reasoning=false strips thinking controls and respects max_output_tokens=false", func(t *testing.T) {
+		srv, got := protoServer(t, 200, interactionsJSON)
+		res := protoLive(srv)
+		res.Caps.Reasoning = new(false)
+		res.Caps.Fields["generation_config.max_output_tokens"] = false
+		res.Transport.Body = map[string]any{
+			"generation_config.thinking_level":     "high",
+			"generation_config.thinking_summaries": "auto",
+			"generation_config.max_output_tokens":  500,
+			"generation_config.seed":               7,
+		}
+		req := protoReq("high")
+		req.MaxTokens = new(100)
+		if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), req, res); err != nil {
+			t.Fatal(err)
+		}
+		gen := got.body["generation_config"].(map[string]any)
+		if _, has := gen["thinking_level"]; has {
+			t.Fatalf("reasoning=false must strip thinking_level: %v", gen)
+		}
+		if _, has := gen["thinking_summaries"]; has {
+			t.Fatalf("reasoning=false must strip thinking_summaries: %v", gen)
+		}
+		if _, has := gen["max_output_tokens"]; has {
+			t.Fatalf("fields.generation_config.max_output_tokens=false must strip max_output_tokens: %v", gen)
+		}
+		if gen["seed"] != float64(7) {
+			t.Fatalf("sibling seed must survive: %v", gen)
+		}
+	})
+
+	t.Run("call-scoped RequestPreparer mutating input is rejected", func(t *testing.T) {
+		srv, _ := protoServer(t, 200, interactionsJSON)
+		res := protoLive(srv)
+		res.Transport.Auth = registry.AuthOAuthOpenAICodex
+		ctx := llm.WithAuthenticatorOverride(context.Background(), callScopedMutatingPreparer{})
+		if _, err := (&Protocol{Client: srv.Client()}).Complete(ctx, protoReq(""), res); err == nil {
+			t.Fatal("call-scoped RequestPreparer mutating input must fail FinalizeBody snapshot lock")
+		}
+	})
+}
+
+func TestLegacyUnsignedToolCall400FallbackCompleteAndStream(t *testing.T) {
+	t.Parallel()
+	legacyReq := llm.Request{
+		Model: "gemini-3.8-flash",
+		Messages: []llm.Message{
+			llm.User("check files"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+					ID: "c1", Name: "glob", Arguments: json.RawMessage(`{"pattern":"*.go"}`),
+					ThoughtSignature: "legacy_sig", GoogleInteraction: false,
+				}},
+			}},
+			llm.ToolResult("c1", "main.go", false),
+			llm.User("summarize"),
+		},
+	}
+
+	t.Run("Complete retries once with structured text blocks", func(t *testing.T) {
+		var attempts int32
+		var secondBody map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			n := atomic.AddInt32(&attempts, 1)
+			raw, _ := io.ReadAll(r.Body)
+			if n == 1 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":{"code":400,"message":"Function call is missing a thought_signature.","status":"INVALID_ARGUMENT"}}`))
+				return
+			}
+			_ = json.Unmarshal(raw, &secondBody)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(interactionsJSON))
+		}))
+		defer srv.Close()
+
+		resp, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), legacyReq, protoLive(srv))
+		if err != nil {
+			t.Fatalf("Complete fallback failed: %v", err)
+		}
+		if resp.Text() != "hello" || atomic.LoadInt32(&attempts) != 2 {
+			t.Fatalf("attempts=%d text=%q", attempts, resp.Text())
+		}
+		for _, rawStep := range secondBody["input"].([]any) {
+			st := rawStep.(map[string]any)
+			if st["type"] == "function_call" || st["type"] == "function_result" {
+				t.Fatalf("fallback request still contained raw function_call/function_result: %#v", secondBody["input"])
+			}
+		}
+	})
+
+	t.Run("Stream pre-2xx HTTP 400 retries once with single StreamEventStreamStart", func(t *testing.T) {
+		var attempts int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			n := atomic.AddInt32(&attempts, 1)
+			if n == 1 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":{"code":400,"message":"Function call is missing a thought_signature.","status":"INVALID_ARGUMENT"}}`))
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(interactionsSSE))
+		}))
+		defer srv.Close()
+
+		st, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), legacyReq, protoLive(srv))
+		if err != nil {
+			t.Fatalf("Stream fallback failed: %v", err)
+		}
+		var starts int
+		var finalText string
+		for ev := range st.Events() {
+			if ev.Type == llm.StreamEventStreamStart {
+				starts++
+			}
+			if ev.Type == llm.StreamEventError {
+				t.Fatalf("unexpected stream error: %v", ev.Err)
+			}
+			if ev.Type == llm.StreamEventFinish && ev.Response != nil {
+				finalText = ev.Response.Text()
+			}
+		}
+		if starts != 1 || finalText != "hello" || atomic.LoadInt32(&attempts) != 2 {
+			t.Fatalf("starts=%d text=%q attempts=%d", starts, finalText, attempts)
+		}
+	})
+
+	t.Run("Stream post-2xx in-band SSE error never retries internally", func(t *testing.T) {
+		var attempts int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt32(&attempts, 1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("event: error\ndata: {\"event_type\":\"error\",\"error\":{\"code\":\"invalid_argument\",\"message\":\"missing thought_signature\"}}\n\n"))
+		}))
+		defer srv.Close()
+
+		st, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), legacyReq, protoLive(srv))
+		if err != nil {
+			t.Fatalf("Stream open failed: %v", err)
+		}
+		var streamErr error
+		for ev := range st.Events() {
+			if ev.Type == llm.StreamEventError {
+				streamErr = ev.Err
+			}
+		}
+		if streamErr == nil || atomic.LoadInt32(&attempts) != 1 {
+			t.Fatalf("expected error without internal retry on post-2xx SSE; err=%v attempts=%d", streamErr, attempts)
+		}
+	})
+
+	t.Run("Stream after output event never retries internally", func(t *testing.T) {
+		var attempts int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt32(&attempts, 1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(
+				"event: step.start\ndata: {\"event_type\":\"step.start\",\"index\":0,\"step\":{\"type\":\"model_output\"}}\n\n" +
+					"event: step.delta\ndata: {\"event_type\":\"step.delta\",\"index\":0,\"delta\":{\"type\":\"text\",\"text\":\"partial\"}}\n\n" +
+					"event: error\ndata: {\"event_type\":\"error\",\"error\":{\"code\":\"invalid_argument\",\"message\":\"missing thought_signature\"}}\n\n",
+			))
+		}))
+		defer srv.Close()
+
+		st, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), legacyReq, protoLive(srv))
+		if err != nil {
+			t.Fatalf("Stream open failed: %v", err)
+		}
+		var streamErr error
+		for ev := range st.Events() {
+			if ev.Type == llm.StreamEventError {
+				streamErr = ev.Err
+			}
+		}
+		if streamErr == nil || atomic.LoadInt32(&attempts) != 1 {
+			t.Fatalf("expected error without internal retry after output; err=%v attempts=%d", streamErr, attempts)
+		}
+	})
+}
+
 func TestBuildBodyErrorsPropagateThroughCompleteStreamCountTokens(t *testing.T) {
 	t.Parallel()
 	req := protoReq("")
@@ -52,10 +285,6 @@ func TestBuildBodyErrorsPropagateThroughCompleteStreamCountTokens(t *testing.T) 
 			_, err := (&Protocol{}).Stream(context.Background(), req, res)
 			return err
 		},
-		"count_tokens": func() error {
-			_, err := (&Protocol{}).CountTokens(context.Background(), req, res)
-			return err
-		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := run()
@@ -66,8 +295,240 @@ func TestBuildBodyErrorsPropagateThroughCompleteStreamCountTokens(t *testing.T) 
 	}
 }
 
-// A models endpoint that already carries a query must append pageSize with &
-// rather than a second question mark.
+func TestEffectiveToolsReplacementCombinedSearchAndFunctionsPolicy(t *testing.T) {
+	t.Parallel()
+
+	combinedRes := func() registry.Resolved {
+		return protoRes(func(c *registry.Caps) {
+			c.CombinedSearchAndFunctions = new(true)
+			c.Fields["previous_interaction_id"] = true
+		})
+	}
+
+	combinedSlice := []map[string]any{
+		{"type": "google_search"},
+		{"type": "function", "name": "fn", "description": "d", "parameters": map[string]any{"type": "object"}},
+	}
+	combinedAny := []any{
+		map[string]any{"type": "google_search"},
+		map[string]any{"type": "function", "name": "fn", "description": "d", "parameters": map[string]any{"type": "object"}},
+	}
+	combinedRaw := json.RawMessage(`[{"type":"google_search"},{"type":"function","name":"fn","description":"d","parameters":{"type":"object"}}]`)
+	funcOnly := []map[string]any{
+		{"type": "function", "name": "fn", "description": "d", "parameters": map[string]any{"type": "object"}},
+	}
+
+	t.Run("combined replacement with default store=false fails before HTTP", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			modReq func(*llm.Request)
+			modRes func(*registry.Resolved)
+		}{
+			{
+				name: "ProviderOptions []map[string]any",
+				modReq: func(r *llm.Request) {
+					r.ProviderOptions = map[string]any{"google": map[string]any{"tools": combinedSlice}}
+				},
+			},
+			{
+				name: "ProviderOptions []any",
+				modReq: func(r *llm.Request) {
+					r.ProviderOptions = map[string]any{"google": map[string]any{"tools": combinedAny}}
+				},
+			},
+			{
+				name: "ProviderOptions json.RawMessage",
+				modReq: func(r *llm.Request) {
+					r.ProviderOptions = map[string]any{"google": map[string]any{"tools": combinedRaw}}
+				},
+			},
+			{
+				name: "ProviderOptions []map[string]any with json.RawMessage type",
+				modReq: func(r *llm.Request) {
+					r.ProviderOptions = map[string]any{"google": map[string]any{"tools": []map[string]any{
+						{"type": json.RawMessage(`"google_search"`)},
+						{"type": "function", "name": "fn", "description": "d", "parameters": map[string]any{"type": "object"}},
+					}}}
+				},
+			},
+			{
+				name: "Transport.Body []map[string]any with json.RawMessage type",
+				modRes: func(res *registry.Resolved) {
+					res.Transport.Body = map[string]any{"tools": []map[string]any{
+						{"type": json.RawMessage(`"google_search"`)},
+						{"type": "function", "name": "fn", "description": "d", "parameters": map[string]any{"type": "object"}},
+					}}
+				},
+			},
+			{
+				name:   "Transport.Body tools",
+				modRes: func(res *registry.Resolved) { res.Transport.Body = map[string]any{"tools": combinedSlice} },
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				var hits atomic.Int32
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					hits.Add(1)
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(interactionsJSON))
+				}))
+				defer srv.Close()
+
+				res := protoLive(srv)
+				res.Caps.CombinedSearchAndFunctions = new(true)
+				res.Caps.Fields["previous_interaction_id"] = true
+				if tc.modRes != nil {
+					tc.modRes(&res)
+				}
+				req := protoReq("")
+				if tc.modReq != nil {
+					tc.modReq(&req)
+				}
+				_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), req, res)
+				if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok || hits.Load() != 0 {
+					t.Fatalf("expected pre-HTTP ConfigurationError (hits=0), got err=%T %v hits=%d", err, err, hits.Load())
+				}
+			})
+		}
+	})
+
+	t.Run("stateful combined replacement defaults tool_choice=validated and rejects invalid caps or auto", func(t *testing.T) {
+		srv, got := protoServer(t, http.StatusOK, interactionsJSON)
+		res := protoLive(srv)
+		res.Caps.CombinedSearchAndFunctions = new(true)
+		res.Caps.Fields["previous_interaction_id"] = true
+
+		req := protoReq("")
+		req.Store = new(true)
+		req.ProviderOptions = map[string]any{"google": map[string]any{"tools": combinedRaw}}
+		if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), req, res); err != nil {
+			t.Fatalf("stateful combined replacement failed: %v", err)
+		}
+		if got.body["store"] != true {
+			t.Fatalf("wire store = %v, want true", got.body["store"])
+		}
+		if genCfg, _ := got.body["generation_config"].(map[string]any); genCfg["tool_choice"] != "validated" {
+			t.Fatalf("wire generation_config.tool_choice = %v, want validated", genCfg["tool_choice"])
+		}
+
+		// Explicit generation_config.tool_choice = "auto" rejected.
+		reqAuto := protoReq("")
+		reqAuto.Store = new(true)
+		reqAuto.ProviderOptions = map[string]any{"google": map[string]any{
+			"tools":             combinedSlice,
+			"generation_config": map[string]any{"tool_choice": "auto"},
+		}}
+		if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), reqAuto, res); err == nil {
+			t.Fatal("expected explicit generation_config.tool_choice=auto with combined replacement to fail")
+		}
+
+		// json.RawMessage "auto" and Transport.Body typed map[string]string generation_config with "auto" rejected.
+		reqAutoRaw := protoReq("")
+		reqAutoRaw.Store = new(true)
+		reqAutoRaw.ProviderOptions = map[string]any{"google": map[string]any{
+			"tools":             combinedSlice,
+			"generation_config": map[string]any{"tool_choice": json.RawMessage(`"auto"`)},
+		}}
+		if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), reqAutoRaw, res); err == nil {
+			t.Fatal("expected json.RawMessage generation_config.tool_choice=auto with combined replacement to fail")
+		}
+		reqStoreCombined := protoReq("")
+		reqStoreCombined.Store = new(true)
+		reqStoreCombined.ProviderOptions = map[string]any{"google": map[string]any{"tools": combinedSlice}}
+		resTypedGen := protoLive(srv)
+		resTypedGen.Caps.CombinedSearchAndFunctions = new(true)
+		resTypedGen.Caps.Fields["previous_interaction_id"] = true
+		resTypedGen.Transport.Body = map[string]any{"generation_config": map[string]string{"tool_choice": "auto"}}
+		if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), reqStoreCombined, resTypedGen); err == nil {
+			t.Fatal("expected Transport.Body map[string]string generation_config tool_choice=auto to fail")
+		}
+		resTypedGenValid := protoLive(srv)
+		resTypedGenValid.Caps.CombinedSearchAndFunctions = new(true)
+		resTypedGenValid.Caps.Fields["previous_interaction_id"] = true
+		resTypedGenValid.Transport.Body = map[string]any{"generation_config": map[string]string{"tool_choice": "validated"}}
+		if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), reqStoreCombined, resTypedGenValid); err != nil {
+			t.Fatalf("Complete with Transport.Body map[string]string generation_config tool_choice=validated failed: %v", err)
+		}
+
+		// Transport.Body typed map[string]string generation_config also obeys ReasoningDisabled and tool_choice pruning.
+		resPruneTypedGen := protoLive(srv)
+		resPruneTypedGen.Caps.Reasoning = new(false)
+		resPruneTypedGen.Caps.Fields["generation_config.tool_choice"] = false
+		resPruneTypedGen.Transport.Body = map[string]any{
+			"generation_config": map[string]string{
+				"thinking_level":     "high",
+				"thinking_summaries": "auto",
+				"tool_choice":        "auto",
+			},
+		}
+		got.body = nil
+		if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), resPruneTypedGen); err != nil {
+			t.Fatalf("Complete with pruned typed generation_config failed: %v", err)
+		}
+		if _, hasGenCfg := got.body["generation_config"]; hasGenCfg {
+			t.Fatalf("expected pruned typed generation_config to be omitted, got %v", got.body["generation_config"])
+		}
+
+		// CombinedSearchAndFunctions=false rejected (e.g. gemini-2.5-flash).
+		noCombRes := combinedRes()
+		noCombRes.Caps.CombinedSearchAndFunctions = new(false)
+		if _, err := (&Protocol{}).BuildBody(req, noCombRes); err == nil {
+			t.Fatal("expected CombinedSearchAndFunctions=false to reject combined replacement")
+		}
+
+		// Tools=false rejected (e.g. gemini-3-pro-image).
+		noToolsRes := combinedRes()
+		noToolsRes.Caps.Tools = new(false)
+		if _, err := (&Protocol{}).BuildBody(req, noToolsRes); err == nil {
+			t.Fatal("expected Tools=false to reject function tool replacement")
+		}
+	})
+
+	t.Run("function-only replacement overrides req.WebSearch=true with store=false and tool_choice=auto", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			modReq func(*llm.Request)
+			modRes func(*registry.Resolved)
+		}{
+			{
+				name:   "ProviderOptions tools",
+				modReq: func(r *llm.Request) { r.ProviderOptions = map[string]any{"google": map[string]any{"tools": funcOnly}} },
+			},
+			{
+				name:   "Transport.Body tools",
+				modRes: func(res *registry.Resolved) { res.Transport.Body = map[string]any{"tools": funcOnly} },
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				srv, got := protoServer(t, http.StatusOK, interactionsJSON)
+				res := protoLive(srv)
+				res.Caps.WebSearch = new(true)
+				res.Caps.CombinedSearchAndFunctions = new(true)
+				res.Caps.Fields["previous_interaction_id"] = true
+				if tc.modRes != nil {
+					tc.modRes(&res)
+				}
+				req := protoReq("")
+				req.WebSearch = true
+				req.Tools = []llm.ToolDefinition{{Name: "orig", Parameters: map[string]any{"type": "object"}}}
+				req.ToolChoice = &llm.ToolChoice{Mode: "auto"}
+				if tc.modReq != nil {
+					tc.modReq(&req)
+				}
+				if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), req, res); err != nil {
+					t.Fatalf("function-only replacement failed: %v", err)
+				}
+				if got.body["store"] != false {
+					t.Fatalf("wire store = %v, want false", got.body["store"])
+				}
+				if genCfg, _ := got.body["generation_config"].(map[string]any); genCfg["tool_choice"] != "auto" {
+					t.Fatalf("wire generation_config.tool_choice = %v, want auto", genCfg["tool_choice"])
+				}
+			})
+		}
+	})
+}
+
 func TestListModelsEndpointWithExistingQuery(t *testing.T) {
 	t.Parallel()
 	srv, got := protoServer(t, 200, `{"models":[]}`)
@@ -81,79 +542,12 @@ func TestListModelsEndpointWithExistingQuery(t *testing.T) {
 	}
 }
 
-func TestCountTokensUnsupportedEndpoint(t *testing.T) {
-	t.Parallel()
-	res := protoRes(nil)
-	res.Transport.CountTokensEndpoint = registry.EndpointUnsupported
-	_, err := (&Protocol{}).CountTokens(context.Background(), protoReq(""), res)
-	if !errors.Is(err, llm.ErrInputTokenCountUnsupported) {
-		t.Fatalf("err = %v, want ErrInputTokenCountUnsupported", err)
-	}
-}
-
-// A 404 whose body does not name a publisher model is not the regional-model
-// shape, so the remedy must not rewrite it: it stays the provider's own 404.
-func TestRegionalVertex404WithoutPublisherPhraseStaysProviderError(t *testing.T) {
-	t.Parallel()
-	srv, _ := protoServer(t, http.StatusNotFound, `{"error":{"code":404,"message":"Requested entity was not found."}}`)
-	res := vertexAuthorityRes(t, srv, "us-central1")
-	_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
-	if _, ok := errors.AsType[*llm.ConfigurationError](err); ok {
-		t.Fatalf("a 404 without the publisher-model phrase must not claim the regional remedy: %v", err)
-	}
-	le, ok := errors.AsType[llm.Error](err)
-	if !ok || le.StatusCode() != http.StatusNotFound {
-		t.Fatalf("the provider's 404 must survive: %v", err)
-	}
-}
-
-// Transport body constants run after the builder, so a generationConfig
-// constant that is not an object must fail the completion loudly, and a nil
-// constant must leave the finalizer rebuilding an empty generationConfig that
-// still receives the output budget.
-func TestTransportGenerationConfigConstantTypes(t *testing.T) {
-	t.Parallel()
-	t.Run("non-object fails", func(t *testing.T) {
-		srv, _ := protoServer(t, 200, generateJSON)
-		res := protoLive(srv)
-		res.Transport.Body = map[string]any{"generationConfig": "not-an-object"}
-		req := protoReq("")
-		req.MaxTokens = new(100)
-		_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), req, res)
-		if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok {
-			t.Fatalf("a non-object generationConfig constant must fail as a configuration error, got %T %v", err, err)
-		}
-	})
-	t.Run("nil is rebuilt with the output budget", func(t *testing.T) {
-		srv, got := protoServer(t, 200, generateJSON)
-		res := protoLive(srv)
-		res.Transport.Body = map[string]any{"generationConfig": nil}
-		req := protoReq("")
-		req.MaxTokens = new(100)
-		resp, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), req, res)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp.Text() != "hello" {
-			t.Fatalf("resp = %+v", resp)
-		}
-		gen, _ := got.body["generationConfig"].(map[string]any)
-		if gen == nil || gen["maxOutputTokens"] != float64(100) {
-			t.Fatalf("a nil generationConfig constant must be rebuilt with the output budget, body = %v", got.body)
-		}
-	})
-}
-
-// The Vertex publisher-model listing composes its URL from the base URL's
-// scheme and host: a base URL with neither must fail listing, and a page that
-// is not JSON must fail too.
 func TestVertexListingURLAndDecodeErrors(t *testing.T) {
 	t.Parallel()
 	srv, _ := protoServer(t, 200, `{"models":[]}`)
 	vertexRes := func() registry.Resolved {
 		res := protoLive(srv)
-		res.Transport.Endpoint = "/publishers/google/models/{model}:generateContent"
-		res.Transport.StreamEndpoint = "/publishers/google/models/{model}:streamGenerateContent?alt=sse"
+		res.Transport.Preset = registry.PresetVertexGemini
 		res.Transport.ModelsEndpoint = "/publisherModels"
 		return res
 	}
@@ -170,123 +564,4 @@ func TestVertexListingURLAndDecodeErrors(t *testing.T) {
 	if _, err := (&Protocol{Client: srv2.Client()}).ListModels(context.Background(), res2); err == nil {
 		t.Fatal("a non-JSON publisher-model page must fail models.list")
 	}
-}
-
-// classifyGeminiError maps the ambiguous 400 to the HTTP status whose error
-// class the gRPC status names, and keeps the provider's own 400 for any status
-// outside the remapped set.
-func TestClassifyGeminiStatusRemapArms(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		grpc string
-		want int
-	}{
-		{"DEADLINE_EXCEEDED", http.StatusRequestTimeout},
-		{"UNAVAILABLE", http.StatusServiceUnavailable},
-		{"INTERNAL", http.StatusServiceUnavailable},
-		{"INVALID_ARGUMENT", http.StatusBadRequest},
-	} {
-		t.Run(tc.grpc, func(t *testing.T) {
-			body := `{"error":{"code":400,"message":"m","status":"` + tc.grpc + `"}}`
-			srv, _ := protoServer(t, http.StatusBadRequest, body)
-			_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), protoLive(srv))
-			le, ok := errors.AsType[llm.Error](err)
-			if !ok {
-				t.Fatalf("err = %v, want a typed llm.Error", err)
-			}
-			if le.StatusCode() != tc.want {
-				t.Fatalf("gRPC %q on a 400 must reclassify to status %d, got %d (%v)", tc.grpc, tc.want, le.StatusCode(), err)
-			}
-		})
-	}
-}
-
-func TestTokenCountIntValueShapes(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		in   any
-		want int
-	}{
-		{7, 7},
-		{int64(9), 9},
-		{1.9, 1},
-		{json.Number("42"), 42},
-		{"not-a-number", 0},
-	} {
-		if got := tokenCountInt(tc.in); got != tc.want {
-			t.Fatalf("tokenCountInt(%#v) = %d, want %d", tc.in, got, tc.want)
-		}
-	}
-}
-
-// TestFromGeminiResponseDecoderArms pins the non-streaming decoder's fallback
-// thought-signature lookups, its skip of non-object parts, and the
-// groundingMetadata web-search projection (with non-string queries filtered).
-func TestFromGeminiResponseDecoderArms(t *testing.T) {
-	t.Parallel()
-	fcRaw := func(partExtra string) map[string]any {
-		part := map[string]any{"functionCall": map[string]any{"name": "t", "args": map[string]any{}}}
-		if partExtra != "" {
-			var extra map[string]any
-			if err := json.Unmarshal([]byte(partExtra), &extra); err != nil {
-				t.Fatalf("test fixture: %v", err)
-			}
-			maps.Copy(part, extra)
-		}
-		return map[string]any{"candidates": []any{map[string]any{
-			"content": map[string]any{"parts": []any{part}},
-		}}}
-	}
-
-	t.Run("thought signature fallbacks", func(t *testing.T) {
-		for name, tc := range map[string]struct {
-			part string
-			want string
-		}{
-			"part thoughtSignature":  {`{"thoughtSignature":"psig"}`, "psig"},
-			"part thought_signature": {`{"thought_signature":"psnake"}`, "psnake"},
-			"fc thoughtSignature":    {`{"functionCall":{"thoughtSignature":"fsig"}}`, "fsig"},
-			"fc thought_signature":   {`{"functionCall":{"thought_signature":"fsnake"}}`, "fsnake"},
-		} {
-			t.Run(name, func(t *testing.T) {
-				r := fromGeminiResponse(fcRaw(tc.part), "m", nil)
-				calls := r.ToolCalls()
-				if len(calls) != 1 || calls[0].ThoughtSignature != tc.want {
-					t.Fatalf("ThoughtSignature = %v, want %q (%+v)", calls, tc.want, r.Message)
-				}
-			})
-		}
-	})
-
-	t.Run("non-object part skipped", func(t *testing.T) {
-		raw := map[string]any{"candidates": []any{map[string]any{
-			"content": map[string]any{"parts": []any{"nope", map[string]any{"text": "hi"}}},
-		}}}
-		r := fromGeminiResponse(raw, "m", nil)
-		if len(r.Message.Content) != 1 || r.Message.Content[0].Text != "hi" {
-			t.Fatalf("content = %#v, want the single decodable text part", r.Message.Content)
-		}
-	})
-
-	t.Run("grounding metadata web search", func(t *testing.T) {
-		raw := map[string]any{"candidates": []any{map[string]any{
-			"groundingMetadata": map[string]any{"webSearchQueries": []any{"q1", 42, "q2"}},
-		}}}
-		r := fromGeminiResponse(raw, "m", nil)
-		var web *llm.WebSearchData
-		for _, p := range r.Message.Content {
-			if p.Kind == llm.ContentWebSearch {
-				web = p.WebSearch
-			}
-		}
-		if web == nil {
-			t.Fatalf("groundingMetadata must surface a web-search part: %#v", r.Message.Content)
-		}
-		if web.Query != "q1; q2" {
-			t.Fatalf("Query = %q, want non-string queries filtered and the rest joined", web.Query)
-		}
-		if len(web.Raw) == 0 {
-			t.Fatal("the raw groundingMetadata must ride along")
-		}
-	})
 }

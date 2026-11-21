@@ -3,35 +3,33 @@
   "ref": "google/gemini-2.5-flash-lite",
   "stream": false,
   "method": "POST",
-  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent",
+  "url": "https://generativelanguage.googleapis.com/v1beta/interactions",
   "headers": {
     "Content-Type": "application/json",
     "X-Goog-Api-Key": "\u003ccredential\u003e"
   },
   "body": {
-    "contents": [
+    "generation_config": {
+      "max_output_tokens": 65536,
+      "thinking_summaries": "auto"
+    },
+    "input": [
       {
-        "parts": [
+        "content": [
           {
-            "text": "What is the weather in Oslo?"
+            "text": "What is the weather in Oslo?",
+            "type": "text"
           }
         ],
-        "role": "user"
+        "type": "user_input"
       }
     ],
-    "generationConfig": {
-      "maxOutputTokens": 65536
-    },
-    "systemInstruction": {
-      "parts": [
-        {
-          "text": "You are terse."
-        }
-      ]
-    },
+    "model": "gemini-2.5-flash-lite",
+    "store": false,
+    "system_instruction": "You are terse.",
     "tools": [
       {
-        "google_search": {}
+        "type": "google_search"
       }
     ]
   },

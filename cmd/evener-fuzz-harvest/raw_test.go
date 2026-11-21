@@ -66,9 +66,9 @@ func TestHarvestProviderAliasesKeepDecoderSeeds(t *testing.T) {
 			wantDir:        dirAnthropicStream,
 		},
 		{
-			name:           "Google streamGenerateContent",
-			endpointFamily: "google_stream_generate_content",
-			body:           `data: {"candidates":[]}` + "\n\n",
+			name:           "Google Interactions SSE",
+			endpointFamily: "google_interactions_stream",
+			body:           "event: interaction.created\n" + `data: {"event_type":"interaction.created","interaction":{"id":"i1"}}` + "\n\n",
 			wantDir:        dirGeminiStream,
 		},
 		{
@@ -116,8 +116,8 @@ func TestHarvestProviderAliasesRouteByBodyShapeWithoutEndpointFamily(t *testing.
 			wantDirs: []string{dirAnthropicStream},
 		},
 		{
-			name:     "Google is unambiguous",
-			body:     `data: {"candidates":[]}` + "\n\n",
+			name:     "Google Interactions SSE is unambiguous",
+			body:     "event: interaction.created\n" + `data: {"event_type":"interaction.created","interaction":{"id":"i1"}}` + "\n\n",
 			wantDirs: []string{dirGeminiStream},
 		},
 		{
@@ -137,6 +137,28 @@ func TestHarvestProviderAliasesRouteByBodyShapeWithoutEndpointFamily(t *testing.
 			assertHarvestedProviderDirs(t, "", []byte(tt.body), tt.wantDirs...)
 		})
 	}
+}
+
+func TestHarvestGoogleInteractionsRoutingAndHistoricalExclusions(t *testing.T) {
+	// Terminal no-provider-target matches: non-stream Interactions JSON and historical generateContent families must enter only dirParseSSE.
+	for _, family := range []string{"google_interactions", "google_generate_content", "google_stream_generate_content"} {
+		t.Run("terminal_no_target_"+family, func(t *testing.T) {
+			assertHarvestedProviderDirs(t, family, []byte("event: interaction.created\n"+`data: {"event_type":"interaction.created"}`+"\n\n"))
+		})
+	}
+	// Historical generateContent shape without endpointFamily must not route to dirGeminiStream.
+	assertHarvestedProviderDirs(t, "", []byte(`data: {"candidates":[]}`+"\n\n"))
+	// Blind provider="google" fallback without Interactions framing must not route to dirGeminiStream.
+	out := t.TempDir()
+	apiLog := filepath.Join(t.TempDir(), "google-blind.api.jsonl")
+	writeFile(t, apiLog, canonicalAPIAttemptLineFor(t, "google", "", apilog.AttemptSuccess, []byte("data: {}\n\n"))+"\n")
+	r := newRunner(out, NewEmitter(false, 32<<10), nil)
+	harvestSSE(r, &Sanitizer{}, []string{apiLog})
+	if got := countFiles(t, filepath.Join(out, dirGeminiStream)); got != 0 {
+		t.Fatalf("blind google fallback routed %d files to %s, want 0", got, dirGeminiStream)
+	}
+	// step.* event_type also detects Interactions SSE.
+	assertHarvestedProviderDirs(t, "", []byte(`data: {"event_type":"step.start","index":0}`+"\n\n"), dirGeminiStream)
 }
 
 func assertHarvestedProviderDirs(t *testing.T, endpointFamily string, body []byte, wantDirs ...string) {

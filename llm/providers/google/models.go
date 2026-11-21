@@ -2,10 +2,10 @@ package google
 
 import "slices"
 
-// supportsGenerateContent reports whether a models.list row serves the
-// generateContent method, the only one this protocol speaks. Google lists the
-// API methods a model accepts, so a row without it (an embedding model, say)
-// is not a chat model at all.
+// supportsGenerateContent reports whether a models.list row advertises the
+// generateContent capability. Retained after the /interactions cutover as the
+// models.list capability filter separating chat/generation models from
+// non-chat rows (such as embedding models).
 func supportsGenerateContent(methods []string) bool {
 	return slices.Contains(methods, "generateContent")
 }
