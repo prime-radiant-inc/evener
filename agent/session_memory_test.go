@@ -64,7 +64,7 @@ func TestMemoryGardeningSkill(t *testing.T) {
 			},
 			func(req llm.Request) llm.Response {
 				memoryRequireResult(t, req, "memory_read", "opaque-before-72")
-					return memoryCallResponse("memory_edit", map[string]any{"scope": "personal", "file_path": "topic.txt", "edits": []any{map[string]any{"old_string": "opaque-before-72", "new_string": "opaque-after-74"}}})
+				return memoryCallResponse("memory_edit", map[string]any{"scope": "personal", "file_path": "topic.txt", "edits": []any{map[string]any{"old_string": "opaque-before-72", "new_string": "opaque-after-74"}}})
 			},
 			func(req llm.Request) llm.Response {
 				memoryRequireResult(t, req, "memory_edit", "")
