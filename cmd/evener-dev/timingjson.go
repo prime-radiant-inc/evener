@@ -160,7 +160,7 @@ func decodeJSONValue(dec *json.Decoder) (any, error) {
 		}
 		return obj, nil
 	case '[':
-		var arr []any
+		arr := []any{}
 		for dec.More() {
 			item, err := decodeJSONValue(dec)
 			if err != nil {

@@ -397,3 +397,30 @@ func TestTimingBudgetBlessRefusesNonFiniteMeasurement(t *testing.T) {
 		t.Fatalf("--bless rewrote the budget from a non-finite measurement:\n%s", got)
 	}
 }
+
+func TestTimingBudgetBlessPreservesEmptyArray(t *testing.T) {
+	dir := t.TempDir()
+	measuredPath := filepath.Join(dir, "measured.tsv")
+	budgetPath := filepath.Join(dir, "budget.json")
+	if err := os.WriteFile(measuredPath, []byte("SUM\tpkg\t1.0\nCPU\tpkg\t1.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const original = "{\n \"_notes\": [],\n \"_empty\": null,\n \"packages\": {}\n}\n"
+	if err := os.WriteFile(budgetPath, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := runTimingCompare([]string{"--measured", measuredPath, "--budget", budgetPath, "--bless"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("bless exited %d:\n%s%s", code, stdout.String(), stderr.String())
+	}
+	got, err := os.ReadFile(budgetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(got, []byte(`"_notes": []`)) {
+		t.Fatalf("empty array was not preserved:\n%s", got)
+	}
+	if !bytes.Contains(got, []byte(`"_empty": null`)) {
+		t.Fatalf("explicit null was not preserved:\n%s", got)
+	}
+}
