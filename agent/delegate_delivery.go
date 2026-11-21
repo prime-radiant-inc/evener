@@ -296,10 +296,7 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (_ del
 	}
 	delete(c.deliveryClaims, plan.deliveryID)
 	cold := claim.cold
-	// wakeGeneration is the release sample the receipt carries: the one the
-	// delivery's claim took when it was created, or the generation sampled here
-	// for a carried delivery that was never planned (#7226).
-	admit := func(claimToken delegateDeliveryClaimToken, wakeGeneration uint64) *delegateDeliveryAdmission {
+	admit := func(claimToken delegateDeliveryClaimToken) *delegateDeliveryAdmission {
 		c.nextToken++
 		inline := plan.waiter != nil || plan.callerCommitted
 		receipt := &delegateDeliveryAdmission{
@@ -312,11 +309,14 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (_ del
 			callerCommitted: plan.callerCommitted,
 		}
 		// Only a non-inline acknowledgment publishes a wake to the owner, and
-		// it releases through the sample passed here rather than one read when
-		// the acknowledgment lands, so a stop that settled while a deferred
-		// claim waited is not cleared by the release (#7226).
+		// only the plan's own claim is admitted non-inline: a carried admission
+		// exists only on an inline reply, which carries the held head to the
+		// caller already waiting on it. The release therefore carries the
+		// generation the claim was created in rather than one read when the
+		// acknowledgment lands, so a stop that settled while a deferred claim
+		// waited is not cleared (#7226).
 		if !inline {
-			receipt.wakeGeneration = wakeGeneration
+			receipt.wakeGeneration = claim.wakeGeneration
 		}
 		c.deliveries[receipt.token.processID] = receipt
 		return receipt
@@ -326,14 +326,13 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (_ del
 		// The held head is admitted under the receiver's own claim token, so
 		// a retry of it is planned as that delivery's. The deliveries behind
 		// it were never planned, so each gets a claim token of its own.
-		admit(plan.heldClaim.token, plan.heldClaim.wakeGeneration).heldClaim = plan.heldClaim
-		admissionWakeGeneration := c.attentionWakeGenerationLocked(plan.ownerDelegateID)
+		admit(plan.heldClaim.token).heldClaim = plan.heldClaim
 		for _, behind := range plan.carried[1:] {
 			c.nextToken++
-			admit(delegateDeliveryClaimToken{processID: c.nextToken, deliveryID: behind.DeliveryID}, admissionWakeGeneration)
+			admit(delegateDeliveryClaimToken{processID: c.nextToken, deliveryID: behind.DeliveryID})
 		}
 	}
-	token := admit(plan.claim, claim.wakeGeneration).token
+	token := admit(plan.claim).token
 	c.evidenceVersion++
 	return token, true, nil
 }
