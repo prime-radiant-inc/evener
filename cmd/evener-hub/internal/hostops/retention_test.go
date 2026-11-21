@@ -108,8 +108,8 @@ func TestCompactionBoundsTerminalRecordsPerHostAndLeavesTombstones(t *testing.T)
 	if tombstone.CompactedAt.IsZero() {
 		t.Fatal("tombstone carries no compactedAt")
 	}
-	if store.CursorEpoch().CompactSeq != 1 {
-		t.Fatalf("compactSeq = %d, want 1 after one compacting write", store.CursorEpoch().CompactSeq)
+	if store.CompactSeq() != 1 {
+		t.Fatalf("compactSeq = %d, want 1 after one compacting write", store.CompactSeq())
 	}
 
 	// §4: "A replay naming a tombstoned ID returns the full retained record
@@ -137,8 +137,8 @@ func TestCompactionBoundsTerminalRecordsPerHostAndLeavesTombstones(t *testing.T)
 	if got := len(reloaded.Tombstones()); got != 1 {
 		t.Fatalf("reloaded tombstones = %d, want 1", got)
 	}
-	if reloaded.CursorEpoch().CompactSeq != 1 {
-		t.Fatalf("reloaded compactSeq = %d, want 1", reloaded.CursorEpoch().CompactSeq)
+	if reloaded.CompactSeq() != 1 {
+		t.Fatalf("reloaded compactSeq = %d, want 1", reloaded.CompactSeq())
 	}
 	replayed, hit, err = reloaded.LookupOperation(OperationDedupQuery{
 		ClientOperationID: "op-1", Host: "m4", Kind: KindDeploy,
@@ -254,7 +254,7 @@ func TestRemovedHostHistoryCompactsOnlyPastTheHorizon(t *testing.T) {
 			t.Fatalf("record %s compacted inside the removed host's horizon with no bound exceeded", record.ID)
 		}
 	}
-	if got := store.CursorEpoch().CompactSeq; got != 0 {
+	if got := store.CompactSeq(); got != 0 {
 		t.Fatalf("compactSeq = %d, want 0: no bound was exceeded and the horizon had not passed", got)
 	}
 	// §4's boundary sentence: while records remain, the removed host's
@@ -444,7 +444,7 @@ func TestCompactionEnforcesTheAgeAndGlobalBounds(t *testing.T) {
 	if got := len(tight.Records()); got != 0 {
 		t.Fatalf("records under the unfittable byte cap = %d, want every terminal record compacted", got)
 	}
-	if tight.CursorEpoch().CompactSeq == 0 {
+	if tight.CompactSeq() == 0 {
 		t.Fatal("the byte-bound compaction advanced no compactSeq")
 	}
 	// The file cannot fit by construction; the write still lands durably and
@@ -515,7 +515,7 @@ func TestCompactionLandsAtomicallyWithTheTerminalState(t *testing.T) {
 	if failed, ok := store.Record(second.ID); !ok || failed.State != StatePending {
 		t.Fatalf("record after the refused write = %+v (present %v), want still pending", failed, ok)
 	}
-	if got := store.CursorEpoch().CompactSeq; got != 0 {
+	if got := store.CompactSeq(); got != 0 {
 		t.Fatalf("compactSeq = %d after the refused write, want 0", got)
 	}
 }
@@ -633,7 +633,7 @@ func TestMirrorWriteMeetsTheByteBound(t *testing.T) {
 	if got := len(roomy.Records()); got != 2 {
 		t.Fatalf("records before the mirror write = %d, want 2", got)
 	}
-	before := roomy.CursorEpoch().CompactSeq
+	before := roomy.CompactSeq()
 
 	// An unfittable cap: the mirror write itself must compact every removable
 	// terminal record, not defer the bound to a later record write.
@@ -646,8 +646,8 @@ func TestMirrorWriteMeetsTheByteBound(t *testing.T) {
 	if got := len(roomy.Records()); got != 0 {
 		t.Fatalf("records after the over-cap mirror write = %d, want the mirror write itself to compact", got)
 	}
-	if roomy.CursorEpoch().CompactSeq <= before {
-		t.Fatalf("compactSeq = %d after the over-cap mirror write, want above %d", roomy.CursorEpoch().CompactSeq, before)
+	if roomy.CompactSeq() <= before {
+		t.Fatalf("compactSeq = %d after the over-cap mirror write, want above %d", roomy.CompactSeq(), before)
 	}
 	if len(mustReadFile(t, storePath)) == 0 {
 		t.Fatal("the mirror write left no store file")
@@ -992,7 +992,7 @@ func TestByteBoundLeavesARecordSetThatAlreadyFits(t *testing.T) {
 	if got := len(store.Records()); got != 4 {
 		t.Fatalf("records after the fitting write = %d, want all 4 retained", got)
 	}
-	if got := store.CursorEpoch().CompactSeq; got != 0 {
+	if got := store.CompactSeq(); got != 0 {
 		t.Fatalf("compactSeq = %d after a write that already fit, want 0", got)
 	}
 }
@@ -1014,5 +1014,72 @@ func TestOpenQuarantinesACaseVariantRemovedHostKey(t *testing.T) {
 	wantQuarantined(t, store, path, body)
 	if state := storeSnapshotForTest(store); len(state.RemovedHosts) != 0 {
 		t.Fatalf("the replacement store carried the removal marker forward: %+v", state.RemovedHosts)
+	}
+}
+
+// TestLingeringMarkerStillReplaysTheLiveIncarnationsTombstone pins the
+// companion arm of the stale-marker rule: the marker may suppress the OLD
+// removal's tombstone, but a tombstone pinned to the live current pair replays
+// with compacted: true — the marker must not swallow the live incarnation's
+// lost-response replay.
+func TestLingeringMarkerStillReplaysTheLiveIncarnationsTombstone(t *testing.T) {
+	store, _ := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 1})
+	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	store.clock = func() time.Time { return base }
+	if err := store.MirrorHostState(HostMirror{
+		Boundaries: map[string]Boundary{"m4": {Generation: 7, IncarnationID: "inc-old", PresenceEpoch: 2}},
+		Removed:    map[string]RemovedHost{"m4": {RemovedAt: base, Generation: 7, IncarnationID: "inc-old"}},
+	}); err != nil {
+		t.Fatalf("MirrorHostState: %v", err)
+	}
+	first := createOpPair(t, store, "m4", "live-1", 8, "inc-new")
+	finish(t, store, first.ID)
+	second := createOpPair(t, store, "m4", "live-2", 8, "inc-new")
+	finish(t, store, second.ID) // compacts live-1 into a tombstone pinned to 8/inc-new.
+	if _, ok := store.Record(first.ID); ok {
+		t.Fatal("test setup: the live record was not compacted")
+	}
+
+	replayed, hit, err := store.LookupOperation(OperationDedupQuery{
+		ClientOperationID: "live-1", Host: "m4", Kind: KindDeploy,
+		Current: OperationPair{Generation: 8, IncarnationID: "inc-new"},
+	})
+	if err != nil {
+		t.Fatalf("LookupOperation: %v", err)
+	}
+	if !hit || !replayed.Compacted {
+		t.Fatalf("live-incarnation replay = hit %v compacted %v, want the compacted: true replay", hit, replayed.Compacted)
+	}
+}
+
+// TestLingeringRemovalMarkerNeverReplaysAgainstANewPair pins the re-add
+// clean-slate rule over a marker whose clear mirror write trailed: the request
+// resolves the name's current pair as the new incarnation, so the old
+// removal's tombstone must not replay even though the marker still names it.
+func TestLingeringRemovalMarkerNeverReplaysAgainstANewPair(t *testing.T) {
+	store, _ := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 1})
+	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	store.clock = func() time.Time { return base }
+	old := createOpPair(t, store, "m4", "op-old", 7, "inc-m4")
+	finish(t, store, old.ID)
+	other := createOpPair(t, store, "m4", "op-other", 7, "inc-m4")
+	finish(t, store, other.ID) // compacts op-old into a tombstone pinned to 7/inc-m4.
+	if err := store.MirrorHostState(HostMirror{
+		Boundaries: map[string]Boundary{"m4": {Generation: 7, IncarnationID: "inc-m4", PresenceEpoch: 2}},
+		Removed:    map[string]RemovedHost{"m4": {RemovedAt: base, Generation: 7, IncarnationID: "inc-m4"}},
+	}); err != nil {
+		t.Fatalf("MirrorHostState: %v", err)
+	}
+	// The name is live again at 8/inc-new (the clear mirror failed and was
+	// logged); the request's current pair is the new incarnation's.
+	_, hit, err := store.LookupOperation(OperationDedupQuery{
+		ClientOperationID: "op-old", Host: "m4", Kind: KindDeploy,
+		Current: OperationPair{Generation: 8, IncarnationID: "inc-new"},
+	})
+	if err != nil {
+		t.Fatalf("LookupOperation: %v", err)
+	}
+	if hit {
+		t.Fatal("a lingering removal marker replayed the old removal against the new pair")
 	}
 }

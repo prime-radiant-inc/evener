@@ -167,7 +167,7 @@ func TestQuarantineEpochSidecarRefusesAnEmptyCounterAndNeverRegresses(t *testing
 		if err != nil {
 			t.Fatalf("clean boot: %v", err)
 		}
-		if got := clean.CursorEpoch().QuarantineEpoch; got != 1 {
+		if got := clean.quarantineEpoch(); got != 1 {
 			t.Fatalf("the clean boot reads epoch %d, want 1", got)
 		}
 		var sidecar struct {
@@ -194,7 +194,7 @@ func TestQuarantineEpochSidecarRefusesAnEmptyCounterAndNeverRegresses(t *testing
 		if err != nil {
 			t.Fatalf("boot after cleanup: %v", err)
 		}
-		if got := after.CursorEpoch().QuarantineEpoch; got != 1 {
+		if got := after.quarantineEpoch(); got != 1 {
 			t.Fatalf("the epoch regressed to %d after the custody artifacts were removed", got)
 		}
 	})
@@ -276,7 +276,7 @@ func TestQuarantineNeverRenamesACleanStoreUnderAStaleIntent(t *testing.T) {
 		if _, ok := again.Record(created.ID); !ok {
 			t.Fatalf("the second fresh open lost the clean store's record: %+v", again.Records())
 		}
-		if got := again.CursorEpoch().QuarantineEpoch; got != 1 {
+		if got := again.quarantineEpoch(); got != 1 {
 			t.Fatalf("the epoch after the clear = %d, want the persisted 1", got)
 		}
 		if again.Quarantine() != nil {
@@ -320,7 +320,7 @@ func TestQuarantineNeverRenamesACleanStoreUnderAStaleIntent(t *testing.T) {
 		if !freshAside {
 			t.Fatalf("the newly corrupt file was moved aside under the stale intent: %v", entries)
 		}
-		if got := reopened.CursorEpoch().QuarantineEpoch; got != 2 {
+		if got := reopened.quarantineEpoch(); got != 2 {
 			t.Fatalf("the fresh quarantine's epoch = %d, want 2", got)
 		}
 	})
