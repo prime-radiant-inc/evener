@@ -93,10 +93,15 @@ func ScanPrelude(path string, maxLineBytes int) (transcript.Header, error) {
 }
 
 // PreludeTurn projects semantic transcript header context into the synthetic
-// system turn shown before conversation entries.
-func PreludeTurn(header transcript.Header) *appwire.Turn {
+// system turn shown before conversation entries. launchPrompt is the prompt the
+// session saved to its meta when the header records none (a role- or
+// plugin-changing fork starts with an empty header); a header prompt wins.
+func PreludeTurn(header transcript.Header, launchPrompt string) *appwire.Turn {
 	var items []appwire.ThreadItem
 	systemPrompt := strings.TrimSpace(header.SystemPrompt)
+	if systemPrompt == "" {
+		systemPrompt = strings.TrimSpace(launchPrompt)
+	}
 	if systemPrompt != "" {
 		items = append(items, appwire.ThreadItem{
 			Type:        "systemMessage",
@@ -1296,7 +1301,11 @@ func itemTurnProjectionFromFileContext(ctx context.Context, path string, maxLine
 	if err := ctx.Err(); err != nil {
 		return ItemTurnProjection{}, err
 	}
-	projection, err := groupedAppTurnProjection(&acc, header)
+	launchPrompt := ""
+	if strings.TrimSpace(header.SystemPrompt) == "" {
+		launchPrompt = schema.LaunchSystemPromptBesideTranscript(path)
+	}
+	projection, err := groupedAppTurnProjection(&acc, header, launchPrompt)
 	if ctx.Err() != nil {
 		return ItemTurnProjection{}, ctx.Err()
 	}
@@ -1328,7 +1337,10 @@ func itemTurnsFromEntries(header transcript.Header, entries []transcript.Entry, 
 	for i := range entries {
 		appendProjectedEntry(&acc, project, entries[i].Turn, i+1)
 	}
-	projection, err := groupedAppTurnProjection(&acc, header)
+	// The seam holds decoded entries and no transcript path, so it has no meta
+	// to read: callers that project a saved file go through
+	// itemTurnProjectionFromFileContext, which resolves the saved launch prompt.
+	projection, err := groupedAppTurnProjection(&acc, header, "")
 	return projection.Turns, err
 }
 

@@ -1310,7 +1310,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		},
 		meta, restoredTranscriptHeader.SystemPrompt,
 	)
-	persistFallbackPrompt := validSavedSystemPrompt(restoredTranscriptHeader.SystemPrompt) == "" || validSavedSystemPrompt(meta.LaunchSystemPrompt) != "" || ignoreLaunchBaseline
+	persistFallbackPrompt := schema.ValidSavedSystemPrompt(restoredTranscriptHeader.SystemPrompt) == "" || schema.ValidSavedSystemPrompt(meta.LaunchSystemPrompt) != "" || ignoreLaunchBaseline
 	s.envTracker = envctx.NewTracker(envctx.State{})
 	s.envContextState = nil
 	if !ignoreLaunchBaseline {
@@ -1803,6 +1803,15 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			// durability.
 			s.maybeAutoSave()
 		}
+		// The transcript header of a role- or plugin-changing fork records no
+		// prompt, so the session meta is the only place a reader can find the one this
+		// session launched with. Persist a freshly rendered one now, before the
+		// restored session is exposed: a history index opened on the first read
+		// computes its prelude once, at open, so a periodic or first-turn save
+		// would arrive too late for that handle.
+		if s.persistFallbackPrompt && s.systemPromptFrozen && s.cachedSystemPrompt != meta.LaunchSystemPrompt {
+			s.maybeAutoSave()
+		}
 	}
 	restoreComplete = true
 	return s, nil
@@ -1829,7 +1838,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// resolution over two saved fields can land on either one. Clearing it here
 	// keeps the render below the only way such a session gets a prompt, and keeps
 	// the --system-prompt read asked for below.
-	restoredPrompt = validSavedSystemPrompt(restoredPrompt)
+	restoredPrompt = schema.ValidSavedSystemPrompt(restoredPrompt)
 	s.cheap = cheapmodel.New(s.client)
 	s.cheap.AdapterTimeout = s.providerAdapterTimeout()
 	env := s.currentEnv()
