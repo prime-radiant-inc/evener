@@ -405,7 +405,6 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 			return ItemTurnProjection{}, err
 		}
 		turn := appwire.Turn{ID: group.turnID, Items: positioned, ItemsView: appwire.TurnItemsViewFull, Status: appwire.TurnStatusCompleted}
-		StampGroupedTurn(&turn, group.entries)
 		if group.stamped {
 			// The turn's start and usage are the EXECUTION's, so every fragment
 			// reports the same whole-turn figures. A fragment that reported only
@@ -437,6 +436,8 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 				turn.Status = appwire.TurnStatusCompleted
 				turn.Error = nil
 			}
+		} else {
+			StampGroupedTurn(&turn, group.entries)
 		}
 		if prelude != nil && !preludeEmitted {
 			// The header's items and a LEADING prelude run are ONE turn: the
