@@ -549,4 +549,27 @@ func TestIOSQualificationPreBootsTheSimulatorBeforeTheDownloads(t *testing.T) {
 	if got := journeys.Steps[runStep].Run; !strings.Contains(got, `--simulator-dir "$JOURNEY_SIMULATOR"`) {
 		t.Errorf("journey command does not adopt the pre-booted device:\n%s", got)
 	}
+
+	// Adoption is the only copier from JOURNEY_SIMULATOR into the uploaded
+	// JOURNEY_OUTPUT and never runs after a failed pre-boot, so the diagnostics
+	// upload must glob the pre-boot directory itself (#7237).
+	var upload *githubActionStep
+	for i := range journeys.Steps {
+		if strings.HasPrefix(journeys.Steps[i].Uses, "actions/upload-artifact@") && strings.Contains(journeys.Steps[i].If, "always()") {
+			upload = &journeys.Steps[i]
+			break
+		}
+	}
+	if upload == nil {
+		t.Fatal("ui-journeys does not upload its journey diagnostics")
+	}
+	paths := fmt.Sprint(upload.With["path"])
+	for _, want := range []string{
+		`${{ env.JOURNEY_SIMULATOR }}/*.log`,
+		`${{ env.JOURNEY_SIMULATOR }}/*.json`,
+	} {
+		if !strings.Contains(paths, want) {
+			t.Errorf("the journey diagnostics upload omits %s, so a failed simulator pre-boot leaves its log outside the artifact (#7237)", want)
+		}
+	}
 }

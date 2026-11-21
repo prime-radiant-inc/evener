@@ -480,6 +480,11 @@ jobs:
       - name: Upload journey diagnostics
         # The prerequisite gate fails before the output path exists; without
         # this condition the paths below would glob from the filesystem root.
+        # Adoption is the only copier from JOURNEY_SIMULATOR into the uploaded
+        # JOURNEY_OUTPUT and never runs after a failed pre-boot, so glob the
+        # pre-boot directory too (#7237). The second search-path root moves the
+        # artifact root to RUNNER_TEMP, upload-artifact's least common ancestor,
+        # so entries are nested under their run directory.
         if: ${{ always() && env.JOURNEY_OUTPUT != '' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -491,5 +496,7 @@ jobs:
             ${{ env.JOURNEY_OUTPUT }}/ui/*.json
             ${{ env.JOURNEY_OUTPUT }}/ui/*.exit
             ${{ env.JOURNEY_OUTPUT }}/ui/ui.xcresult
+            ${{ env.JOURNEY_SIMULATOR }}/*.log
+            ${{ env.JOURNEY_SIMULATOR }}/*.json
           retention-days: 7
           if-no-files-found: warn
