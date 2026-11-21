@@ -448,3 +448,19 @@ test("a failed diagram's language header becomes searchable too", () => {
   act(() => noteMermaidRender(source, "ok"));
   expect(findHits(rows, "mermaid")).toEqual([]);
 });
+
+// A thought's summary is Markdown too, so a diagram inside one falls back and
+// makes its source words visible the same way - and the thought's cached text
+// has to be read again after that change.
+test("a thought's failed diagram source becomes searchable when it falls back to code", () => {
+  const fence = "```";
+  const source = "flowchart TD\n  A --> thoughtNode";
+  const summary = `The flow:\n\n${fence}mermaid\n${source}\n${fence}\n\nDone.`;
+  const rows = [turnRow("t", [reasoningEntry("r1", [[summary]])])];
+  // First read warms the thought's cache while the diagram still renders.
+  expect(findHits(rows, "thoughtNode", { config: TOOLS })).toEqual([]);
+  act(() => noteMermaidRender(source, "error"));
+  expect(findHits(rows, "thoughtNode", { config: TOOLS }).map((hit) => hit.key)).toEqual(["r1"]);
+  act(() => noteMermaidRender(source, "ok"));
+  expect(findHits(rows, "thoughtNode", { config: TOOLS })).toEqual([]);
+});

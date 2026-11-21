@@ -89,8 +89,9 @@ export function indexOfMatch(
 const haystacks = new WeakMap<ItemModel, { version: number; text: string | null }>();
 // A thought's summaries are immutable per item, so they are read once per
 // reading: a live stream closes an unclosed marker at its tail, a settled one
-// keeps it literal.
-const thoughtHaystacks = new WeakMap<ItemModel, { live: boolean; text: readonly string[] }>();
+// keeps it literal. A diagram inside the Markdown can fail after the first
+// read and show its source, so the render version is part of the key.
+const thoughtHaystacks = new WeakMap<ItemModel, { version: number; live: boolean; text: readonly string[] }>();
 
 function readable(text: string): string {
   return findReadable(text).toLowerCase();
@@ -109,11 +110,11 @@ function haystack(item: ItemModel, version: number): string | null {
   return cached.text;
 }
 
-function thoughtHaystack(item: ItemModel, live: boolean): readonly string[] {
+function thoughtHaystack(item: ItemModel, version: number, live: boolean): readonly string[] {
   const cached = thoughtHaystacks.get(item);
-  if (cached?.live === live) return cached.text;
+  if (cached !== undefined && cached.version === version && cached.live === live) return cached.text;
   const text = reasoningSummariesAsRead(item, live).map(readable);
-  thoughtHaystacks.set(item, { live, text });
+  thoughtHaystacks.set(item, { version, live, text });
   return text;
 }
 
@@ -159,7 +160,7 @@ function matches(entry: ProjectedEntry, needle: string, view: FindView, version:
     // A redacted thought shows its neutral label verbatim; what it can unfold
     // is its Markdown summaries, never its raw text.
     if (entry.kind === "critical" && entry.redacted && readable(entry.summary).includes(needle)) return true;
-    return thoughtHaystack(entry.item, live).some((text) => text.includes(needle));
+    return thoughtHaystack(entry.item, version, live).some((text) => text.includes(needle));
   }
   return entry.kind === "item" && entry.isMessage && (haystack(entry.item, version)?.includes(needle) ?? false);
 }
