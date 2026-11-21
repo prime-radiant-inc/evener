@@ -49,7 +49,7 @@ func FuzzResponsesContinuationEligibility(f *testing.F) {
 			ResponseEndpoint:                "endpoint",
 			ResponseStorageScopeFingerprint: "scope",
 			ResponseRequestFingerprint:      "request",
-			ResponseContextMarker:           responseContextMarkerV1,
+			ResponseContextMarker:           responseContextMarkerV2,
 		}
 		callID := strings.TrimSpace(string(data))
 		if callID == "" {

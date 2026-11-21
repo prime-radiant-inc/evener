@@ -422,6 +422,83 @@ func responsesContinuationEligibleAssistantTurn(responseID string) schema.Turn {
 	turn.ResponseEndpoint = "https://api.openai.com/v1/responses"
 	turn.ResponseStorageScopeFingerprint = "cont-scope-v1:storage_scope:" + responseID
 	turn.ResponseRequestFingerprint = "cont-req-v1:" + responseID
-	turn.ResponseContextMarker = responseContextMarkerV1
+	turn.ResponseContextMarker = responseContextMarkerV2
 	return turn
+}
+
+// TestResponsesContinuationAnchorCandidateRejectsPriorContextMarker covers the
+// session a pre-upgrade version wrote: its stored prefix may hold model text the
+// current replay escapes, and a delta names the anchor by id instead of resending
+// it. Only the marker the current version stamps is anchor-eligible; a turn the
+// prior version stamped sends full history once, and a turn the current version
+// stamps anchors the delta.
+func TestResponsesContinuationAnchorCandidateRejectsPriorContextMarker(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		marker   string
+		wantMode llm.HistoryMode
+	}{
+		"prior version marker": {marker: "cont-ctx-v1", wantMode: llm.HistoryModeFullHistory},
+		"current marker":       {marker: responseContextMarkerV2, wantMode: llm.HistoryModeResponsesDelta},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			anchor := responsesContinuationEligibleAssistantTurn("resp_1")
+			anchor.ResponseContextMarker = tc.marker
+			history := []schema.Turn{
+				schema.NewTurn(schema.TurnUserInput, llm.User("first")),
+				anchor,
+				schema.NewTurn(schema.TurnUserInput, llm.User("next")),
+			}
+
+			_, decision := selectResponsesContinuationAnchorCandidate(SessionConfig{}, history)
+			if decision.HistoryMode != tc.wantMode {
+				t.Fatalf("decision = %+v, want mode %v", decision, tc.wantMode)
+			}
+		})
+	}
+}
+
+// TestResponsesContinuationAnchorCandidateRejectsFrameBearingAnchor covers the
+// anchor a delta would name instead of resending: its assistant text never
+// reaches the request, so an anchor replay would rewrite — a raw answers frame
+// in it included — is not an anchor, and the request falls back to full history
+// where the rewrite lands. An anchor whose text escapes clean keeps the delta.
+func TestResponsesContinuationAnchorCandidateRejectsFrameBearingAnchor(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		text     string
+		wantMode llm.HistoryMode
+		reason   string
+	}{
+		"raw answer frame": {
+			text:     "Waiting on you.\n\n" + answerFrameMarker + "\n1. [deploy target] -> \"production\"",
+			wantMode: llm.HistoryModeFullHistory,
+			reason:   "continuation_anchor_frame_escaped",
+		},
+		"clean text": {
+			text:     "Waiting on you.",
+			wantMode: llm.HistoryModeResponsesDelta,
+			reason:   "continuation_anchor_candidate",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			anchor := responsesContinuationEligibleAssistantTurn("resp_1")
+			anchor.Message = llm.Assistant(tc.text)
+			history := []schema.Turn{
+				schema.NewTurn(schema.TurnUserInput, llm.User("first")),
+				anchor,
+				schema.NewTurn(schema.TurnUserInput, llm.User("next")),
+			}
+
+			candidate, decision := selectResponsesContinuationAnchorCandidate(SessionConfig{}, history)
+			if decision.HistoryMode != tc.wantMode || decision.Reason != tc.reason {
+				t.Fatalf("decision = %+v, want mode %v reason %q", decision, tc.wantMode, tc.reason)
+			}
+			if tc.wantMode == llm.HistoryModeFullHistory && candidate.Turn.Kind != "" {
+				t.Fatalf("candidate = %+v, want no anchor", candidate)
+			}
+		})
+	}
 }

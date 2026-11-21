@@ -63,7 +63,7 @@ func FuzzModelRoundContracts(f *testing.F) {
 				EndpointFamily:          modelRoundChoice(r, "responses", "messages", ""),
 				RequestFingerprint:      text,
 				StorageScopeFingerprint: modelRoundChoice(r, "scope", "", text),
-				ContextMarker:           modelRoundChoice(r, responseContextMarkerV1, "", text),
+				ContextMarker:           modelRoundChoice(r, responseContextMarkerV2, "", text),
 				PreviousResponseIDHash:  text,
 				ConversationIDHash:      modelRoundChoice(r, "conversation", "", text),
 				StoragePolicyLabel:      modelRoundChoice(r, "store", "none", ""),
@@ -91,7 +91,7 @@ func FuzzModelRoundContracts(f *testing.F) {
 			ResponseID:                      modelRoundChoice(r, "resp", "", text),
 			ResponseRequestFingerprint:      plan.RequestFingerprint,
 			ResponseStorageScopeFingerprint: plan.StorageScopeFingerprint,
-			ResponseContextMarker:           modelRoundChoice(r, responseContextMarkerV1, "wrong", ""),
+			ResponseContextMarker:           modelRoundChoice(r, responseContextMarkerV2, "wrong", ""),
 		}}
 		_ = responsesContinuationCandidateMatchesPlan(candidate, plan)
 		_ = responsesContinuationDisabledKeyForPlan(normalized, plan, r.boolean())

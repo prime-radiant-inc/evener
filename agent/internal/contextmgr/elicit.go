@@ -104,6 +104,14 @@ func renderHistoryForElicit(history []schema.Turn, maxChars int) string {
 // renderTurnForElicit renders one turn as labeled plain text, including tool-call
 // arguments and tool-result content — the parts that carry the exact values the
 // elicitor must preserve. Returns "" for turns with no textual content.
+//
+// The rendering is a helper prompt, so the escape replay applies to model prose
+// applies here too (helperPromptEscape): a frame a model wrote in its own reply,
+// in an input an agent recorded, or in a steer an agent sent reaches the
+// elicitor escaped, and a compaction artifact's fenced bodies are read through.
+// A reply the person typed is copied as written. Only the turn's text is
+// escaped: a tool call's arguments and a tool result's content are the exact
+// values this prompt exists to recover, so they stay as they were recorded.
 func renderTurnForElicit(t schema.Turn) string {
 	if t.Kind == schema.TurnAttentionResolution {
 		return ""
@@ -113,7 +121,7 @@ func renderTurnForElicit(t schema.Turn) string {
 		switch p.Kind {
 		case llm.ContentText:
 			if p.Text != "" {
-				b.WriteString(p.Text)
+				b.WriteString(escapeHelperText(t, p.Text))
 				b.WriteString("\n")
 			}
 		case llm.ContentToolCall:
@@ -126,7 +134,8 @@ func renderTurnForElicit(t schema.Turn) string {
 			}
 		}
 	}
-	if strings.TrimSpace(b.String()) == "" {
+	body := b.String()
+	if strings.TrimSpace(body) == "" {
 		return ""
 	}
 	label := ""
@@ -138,5 +147,5 @@ func renderTurnForElicit(t schema.Turn) string {
 	case schema.TurnSteering, schema.TurnCheckpoint, schema.TurnSummary:
 		label = "Context: "
 	}
-	return label + b.String()
+	return label + body
 }

@@ -440,6 +440,44 @@ format marker is unchanged: older strict readers can reject records containing
 the new field, so downgrading a writer is not a promise of readable new history.
 This shared metadata does not change human-interaction permissions.
 
+## Request-only frame escaping
+
+Some text in the history is a frame the harness reads rather than prose: the
+`[answers]` marker that opens a reconciled reply to a pending question, and the
+faux-XML openers for a delegate's report, a finished job, a watch fire, runtime
+reminders, shared notes and a skill's instructions. A model that writes one of
+those at a line start would otherwise reach the next request as a frame from the
+harness or from the person.
+
+The model-facing projection escapes that direction on the turns a model or
+another agent wrote: assistant text, user-role input an agent recorded, a parent
+agent's steer, a compaction note handoff, and a compaction artifact's fenced
+bodies. The escape is request-only. The stored turn keeps the bytes its author
+wrote, so transcript reads, client rendering and the authoritative transcript
+are unchanged, and the same turn projects escaped again on every request.
+
+A reply the person typed is never rewritten, even when it opens with the answers
+marker: that marker is exactly how an answer arrives. The same holds for input
+with no recorded authorship and for a fork's inherited copy of an unstamped
+turn — inheritance proves the copy, not an agent author, so those bytes stay as
+written. Fenced code, indented code and blockquotes inside model prose are
+quoted content and keep their markers; only prose line starts are escaped.
+
+A compaction artifact is both the harness's framing and the model's text. Its own
+headings, markers and pointer lines stay as written, and so do the person's
+conversation block and the artifact's original prompt. The model's fenced bodies
+— working notes, earlier summaries, the summarizer's fenced reply, an
+agent-authored entry — are read through their inner structure so the prose
+inside is escaped while any code the model quoted stays quoted. A summary the
+checkpoint fold carries without the summary turn's closing marker is still
+recognized by the layout the renderer wrote, so folding an earlier summary does
+not turn its reply into quoted code.
+
+The note-elicitation and summarization requests follow the same rule. They copy
+stored turns into a helper prompt, so model-authored prose there is escaped the
+same way, genuine replies and stored turns keep every byte, and the escapes do
+not change the prompt size caps.
+
 ## Summary failure diagnostics
 
 The same survive-and-reconcile rule governs every partial transcript write. A
