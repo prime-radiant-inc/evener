@@ -218,10 +218,23 @@ var geminiSchemaMetaKeys = map[string]bool{
 	"$vocabulary":    true,
 }
 
+// sanitizeGeminiSchema rewrites a JSON Schema into the restricted subset Gemini
+// accepts. The pricing pass and the dispatch pass both call it and must agree
+// byte for byte, so its output may not depend on map iteration order.
 func sanitizeGeminiSchema(v any) any {
 	switch x := v.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(x))
+		// Collapse a nullable type union before the rebuild, so each output key
+		// has one writer whatever order the map yields its keys; the schema's
+		// own nullable field wins over the synthesized one.
+		typ, _, union := geminiNullableType(x["type"])
+		if union {
+			out["type"] = typ
+			if _, hasNullable := x["nullable"]; !hasNullable {
+				out["nullable"] = true
+			}
+		}
 		for k, vv := range x {
 			// The Gemini Schema proto accepts neither JSON Schema's
 			// additionalProperties field nor its $ document metadata.
@@ -237,15 +250,11 @@ func sanitizeGeminiSchema(v any) any {
 				out[k] = sanitizeGeminiNamedSchemas(vv)
 				continue
 			}
-			if k == "type" {
-				if typ, nullable, ok := geminiNullableType(vv); ok {
-					out[k] = typ
-					out["nullable"] = nullable
-					continue
-				}
+			if k == "type" && union {
+				continue
 			}
 			if k == "enum" {
-				if _, nullable, ok := geminiNullableType(x["type"]); ok && nullable {
+				if union {
 					out[k] = geminiEnumWithoutNull(vv)
 					continue
 				}

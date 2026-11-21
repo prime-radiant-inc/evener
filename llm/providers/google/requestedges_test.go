@@ -84,6 +84,7 @@ func TestSanitizeGeminiSchemaAdversarialTypeShapes(t *testing.T) {
 		{"empty-string type member passes through", map[string]any{"type": []any{"", "null"}}, map[string]any{"type": []any{"", "null"}}},
 		{"two non-null type members passes through", map[string]any{"type": []any{"string", "integer"}}, map[string]any{"type": []any{"string", "integer"}}},
 		{"all-null type list passes through", map[string]any{"type": []any{"null", "null"}}, map[string]any{"type": []any{"null", "null"}}},
+		{"explicit nullable wins over a collapsed union", map[string]any{"type": []any{"string", "null"}, "nullable": false}, map[string]any{"type": "string", "nullable": false}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := sanitizeGeminiSchema(tc.in)
@@ -91,6 +92,19 @@ func TestSanitizeGeminiSchemaAdversarialTypeShapes(t *testing.T) {
 				t.Fatalf("sanitizeGeminiSchema(%#v) = %#v, want %#v", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// Go randomizes map iteration order, so every call must agree on the result.
+func TestSanitizeGeminiSchemaExplicitNullableWinsOverUnion(t *testing.T) {
+	t.Parallel()
+	in := map[string]any{"type": []any{"string", "null"}, "nullable": false}
+	want := map[string]any{"type": "string", "nullable": false}
+	for i := range 200 {
+		got := sanitizeGeminiSchema(in)
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("iteration %d: sanitizeGeminiSchema(%#v) = %#v, want %#v", i, in, got, want)
+		}
 	}
 }
 
