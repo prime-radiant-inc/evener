@@ -135,6 +135,29 @@ function suppressedAction(id: string, rationale: string, argumentsJson: string):
   };
 }
 
+/** A delegate call with no stated description: its intent line is the brief
+ * the projector carries in the arguments, clipped to the row's preview. */
+function delegateAction(id: string, prompt: string): IntentEntry {
+  return {
+    kind: "intent",
+    id: `intent:${id}`,
+    turnId: "t",
+    sourceIndex: 0,
+    sourceItemId: id,
+    rationale: "Action summary unavailable",
+    failed: false,
+    item: {
+      id,
+      turnId: "t",
+      type: "commandExecution",
+      text: "",
+      toolName: "delegate",
+      argumentsJSON: JSON.stringify({ prompt }),
+      status: "completed",
+    } as ItemModel,
+  };
+}
+
 function turnRow(id: string, entries: ProjectedEntry[], status = "completed"): TranscriptBodyRow {
   // The source turn knows the items it projected, which is how the live rule
   // tells a thought still at the turn's tail from one a later item overtook.
@@ -312,6 +335,22 @@ test("an action row with no stated rationale is not searched by the projector's 
 test("a suppressed action row is not searched, because it renders nothing", () => {
   const rows = [turnRow("t", [suppressedAction("c1", "view the task list", '{"action":"view"}')])];
   expect(findHits(rows, "view the task list", { config: COLLAPSED_INTENT })).toEqual([]);
+});
+
+// A delegate with no stated description shows its brief, clipped to the intent
+// line's preview width: the row's own words are the only text Find may count.
+test("a delegate's clipped brief is searched where the intent line shows it", () => {
+  const shown = "alpha-brief";
+  const clippedOff = "clippedneedle";
+  const prompt = `${shown} ${"pad ".repeat(40)}${clippedOff}`;
+  const rows = [turnRow("t", [delegateAction("c1", prompt)])];
+
+  expect(findHits(rows, shown, { config: COLLAPSED_INTENT }).map((hit) => [hit.itemId, hit.opens])).toEqual([
+    ["c1", "intent-group:intent:c1"],
+  ]);
+  // Past the preview the row shows an ellipsis, so the clipped-off words are
+  // not text a match could land on.
+  expect(findHits(rows, clippedOff, { config: COLLAPSED_INTENT })).toEqual([]);
 });
 
 test("a streaming thought's unclosed Markdown is read as its live row shows it", () => {

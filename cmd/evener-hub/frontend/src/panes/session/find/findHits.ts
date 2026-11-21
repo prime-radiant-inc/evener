@@ -17,7 +17,7 @@ import {
   type TurnModel,
 } from "@evener/appwire-client";
 import { mermaidRenderVersion } from "../../../widgets/mermaid/renderState";
-import { statedIntentOf } from "../transcript/ToolRow";
+import { displayedIntentOf } from "../transcript/ToolCallItem";
 import { type TranscriptBodyRow, transcriptRowsForProjection } from "../transcript/TranscriptBody";
 import { toolRendererFor } from "../transcript/toolRenderers";
 import { intentGroupId, intentRunAt } from "../transcript/toolRuns";
@@ -119,14 +119,15 @@ function thoughtHaystack(item: ItemModel, version: number, live: boolean): reado
   return text;
 }
 
-// What an action row actually says: its stated intent, and nothing where the
-// row renders none. The projector's neutral rationale is a fallback for rows
-// whose descriptor has no summary of its own, and a suppressed descriptor
-// renders no row at all, so neither is text a match could land on.
+// What an action row actually says: the same intent line ToolCallItem paints
+// (a delegate's clipped brief included), and nothing where the row renders
+// none. The projector's neutral rationale is a fallback for rows whose
+// descriptor has no summary of its own, and a suppressed descriptor renders no
+// row at all, so neither is text a match could land on.
 function intentText(entry: Extract<ProjectedEntry, { kind: "intent" }>): string | null {
   const descriptor = toolRendererFor(entry.item.toolName ?? "");
   if (descriptor.suppress?.(entry.item)) return null;
-  return statedIntentOf(entry.item) ?? null;
+  return displayedIntentOf(entry.item) ?? null;
 }
 
 /** The text an entry shows that Find searches, as written: empty where the view

@@ -68,6 +68,17 @@ function delegateIntentOf(item: ItemModel): string | undefined {
   return brief === undefined || brief === "" ? undefined : clipDelegateIntent(brief, DELEGATE_INTENT_PREVIEW_MAX);
 }
 
+/** The words a row's intent line shows: the delegate's own brief (which the
+ * projector never writes into `description`), else the stated intent - and the
+ * projected neutral summary only where the call stated one for it to stand in
+ * for. Find reads this same rule, so its hits are the text the row paints. */
+export function displayedIntentOf(item: ItemModel, projectedSummary?: string): string | undefined {
+  if (item.toolName === "delegate") return delegateIntentOf(item);
+  const stated = statedIntentOf(item);
+  if (projectedSummary !== undefined && stated !== undefined) return projectedSummary;
+  return stated;
+}
+
 // summaryWhenExpanded resolves through one seam: a fixed string passes
 // through, a per-item function (the task card's recap of THIS call) is
 // applied to the item - so the render body below stays flat.
@@ -212,12 +223,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // intent-less tool call, including read_file rows that clearly read a file.
   const descriptorSummary = descriptor.summary(item, { cwd }) + (summarySuffix ?? "");
   const useProjectedSummary = projectedSummary !== undefined && descriptorSummary.trim() === "";
-  let intent = item.description;
-  if (isDelegate) {
-    intent = delegateIntentOf(item);
-  } else if (projectedSummary !== undefined && statedIntent !== undefined) {
-    intent = projectedSummary;
-  }
+  const intent = displayedIntentOf(item, projectedSummary);
   // kata xw3t: the URL, if any, embedded in this row's own summary text -
   // web_fetch's only descriptor with one today. Read directly off the item
   // (not the thread model): unlike summarySuffix, nothing about which URL a

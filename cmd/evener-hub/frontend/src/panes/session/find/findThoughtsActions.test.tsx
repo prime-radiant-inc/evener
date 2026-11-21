@@ -94,6 +94,18 @@ function taskListView(id: string, rationale: string): TurnModel["items"][number]
   } as TurnModel["items"][number];
 }
 
+function delegateCall(id: string, prompt: string): TurnModel["items"][number] {
+  return {
+    id,
+    turnId: "t1",
+    type: "commandExecution",
+    text: "",
+    status: "completed",
+    toolName: "delegate",
+    argumentsJSON: JSON.stringify({ prompt }),
+  } as TurnModel["items"][number];
+}
+
 function Harness({ model, config }: { model: ThreadModel; config: TranscriptDisplayConfigV1 }) {
   const port = useRef<HTMLDivElement>(null);
   const list = useRef<VirtualListHandle>({
@@ -263,6 +275,27 @@ test("a suppressed action row is never counted, because it renders nothing", asy
   act(() => requestFindInSession(REF, { query: "view the task list" }));
   await waitFor(() => expect(bar().getAttribute("data-find-status")).toBe("none"));
   expect(count()).toBe(0);
+});
+
+// A delegate with no stated description shows its brief, clipped to the intent
+// line's preview width. Find counts that row and lands on the words the row
+// actually paints, never on what the clip removed.
+test("a delegate's clipped brief lands on the words the intent line shows", async () => {
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" });
+  const shown = "alpha-brief";
+  const clippedOff = "clippedneedle";
+  const prompt = `${shown} ${"pad ".repeat(40)}${clippedOff}`;
+  const model = modelOf([turn([delegateCall("c1", prompt)])]);
+  render(<Harness model={model} config={config} />);
+
+  act(() => requestFindInSession(REF, { query: shown }));
+  await waitFor(() => expect(count()).toBe(1));
+  await waitFor(() => expect(currentAnchor()?.getAttribute("data-view-anchor-id")).toBe("intent:c1"));
+  await waitFor(() => {
+    expect(currentAnchor()?.textContent).toContain(shown);
+    expect(currentAnchor()?.textContent).not.toContain(clippedOff);
+    expect(painted("evener-find-current")).toContain(shown);
+  });
 });
 
 test("an action rationale match opens the collapsed action group and lands on its words", async () => {

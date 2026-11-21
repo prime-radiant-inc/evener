@@ -270,6 +270,25 @@ test("findInSessionMatches does not read the rationale of a suppressed action ro
   expect(findInSessionMatches(model, "frobnitz", VIEW)).toEqual([]);
 });
 
+test("findInSessionMatches reads a delegate's brief only where the row shows it", () => {
+  const shown = "alpha-brief";
+  const clippedOff = "clippedneedle";
+  const prompt = `${shown} ${"pad ".repeat(40)}${clippedOff}`;
+  const model = modelWithTurns([
+    turn("t1", [
+      itemWith("call", {
+        type: "commandExecution",
+        toolName: "delegate",
+        argumentsJSON: JSON.stringify({ prompt }),
+      }),
+    ]),
+  ]);
+  expect(findInSessionMatches(model, shown, VIEW).map((hit) => hit.itemId)).toEqual(["call"]);
+  // The intent line clips the brief, so words past the preview are not on
+  // screen for a result to land on.
+  expect(findInSessionMatches(model, clippedOff, VIEW)).toEqual([]);
+});
+
 test("a match in both text and output yields two hits sharing the turn label", () => {
   const model = modelWithTurns([turn("t1", [itemWith("i1", { text: "frobnitz here", output: "frobnitz there" })])]);
   const hits = findInSessionMatches(model, "frobnitz", VIEW);
