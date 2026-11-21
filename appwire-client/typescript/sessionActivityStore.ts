@@ -306,6 +306,23 @@ export class SessionActivityStore {
     }
   }
   getSnapshot = (): SessionActivitySnapshot => this.state;
+  /** The snapshot a binding that keeps these rows alive over a fresh store
+   * should retain. A hold sample a page served before the latest boot
+   * transition cannot be attributed to either side of that transition, so the
+   * row is reported as carrying no wait -- its durable fields intact -- until a
+   * page of the adopted source settles it. Without such a row the state itself
+   * is returned. */
+  retainedSnapshot(): SessionActivitySnapshot {
+    const rows = this.state.delegates.rows;
+    let next: SessionDelegate[] | null = null;
+    for (let at = 0; at < rows.length; at += 1) {
+      const row = rows[at];
+      if (!row || !this.unresolvedPageHold(row)) continue;
+      if (!next) next = rows.slice();
+      next[at] = withoutDelegateHold(row);
+    }
+    return next ? { ...this.state, delegates: { ...this.state.delegates, rows: next } } : this.state;
+  }
   subscribe = (listener: () => void): (() => void) => {
     if (this.disposed) return () => {};
     this.listeners.add(listener);
@@ -1014,14 +1031,15 @@ export class SessionActivityStore {
   /** Whether a loaded row still wears a hold sample a page served before the
    * latest boot transition: the store cannot tell whether that page came from
    * the daemon the transition replaced or from the one that replaced it. */
+  private unresolvedPageHold(row: SessionDelegate): boolean {
+    if (!hasDelegateHoldSample(row)) return false;
+    const transitions = this.delegatePageHolds.get(rowIdentity("delegates", row));
+    return transitions !== undefined && transitions < this.bootTransitions;
+  }
+  /** Whether any loaded row wears an unresolved page hold. */
   private unresolvedPageHolds(): boolean {
     if (this.delegatePageHolds.size === 0) return false;
-    for (const row of this.state.delegates.rows) {
-      if (!hasDelegateHoldSample(row)) continue;
-      const transitions = this.delegatePageHolds.get(rowIdentity("delegates", row));
-      if (transitions !== undefined && transitions < this.bootTransitions) return true;
-    }
-    return false;
+    return this.state.delegates.rows.some((row) => this.unresolvedPageHold(row));
   }
   /** Clear every loaded row's hold sample. Only a token that attests nobody
    * serves the thread any more earns this: no daemon is left whose wait the

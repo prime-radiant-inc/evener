@@ -66,7 +66,7 @@ export class SubagentTree {
 		this.detachStore = null;
 		this.stopActivity.forEach((stop) => stop());
 		this.stopActivity = [];
-		this.retained = this.store?.getSnapshot() ?? this.retained;
+		this.retained = this.store?.retainedSnapshot() ?? this.retained;
 		// The rows the new store retains wear samples the outgoing store
 		// attributed to the generation it adopted -- which can be a replacement
 		// relay recovery announced to the store directly, one no follow read ever

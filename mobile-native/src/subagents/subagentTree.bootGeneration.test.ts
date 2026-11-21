@@ -7,6 +7,7 @@ import { expect, test, vi } from "vitest";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { deferred } from "@evener/appwire-client/testing/deferred";
+import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { SubagentTree } from "./subagentTree";
 import { installActivityFixture } from "./sessionActivityTestUtils";
 
@@ -188,6 +189,40 @@ test("a relay resync's replacement generation outlives the client swap that foll
 	// the hold survives. Had the swap walked the rows back to 1, adopting 2
 	// would have retired exactly this still-live wait.
 	expect(heldSequence(subject)).toBe(9);
+});
+
+test("a page-served hold the replacement generation did not publish is not retained as its own", async () => {
+	const subject = new SubagentTree("local:coord", "coord");
+	subject.observeActivity();
+	const focused = hub();
+	answerReads(focused, "1");
+	await subject.setClient(focused);
+	await subject.follow();
+	expect(heldSequence(subject)).toBe(7);
+
+	// Relay recovery names generation 2 and the store adopts it from the recovery
+	// read, while the refreshed delegates page is still in flight. The loaded
+	// row's hold was served by a page, which names no generation: after the
+	// transition nothing proves whether the replaced daemon or its replacement
+	// sampled it.
+	const landing = deferred<void>();
+	serveDelegates(focused, { replacement: true, gate: landing.promise });
+	answerReads(focused, "2");
+	focused.emitNotification({ method: "evener/thread/resync", params: { ref: "local:coord", threadId: "coord" } });
+	await nextMacrotask();
+
+	// The screen lets go before the replacement's page lands.
+	await subject.setClient(null);
+
+	// The new store inherits the rows. Its page is held back, and the follow read
+	// names generation 2; the unresolved sample must not be read as 2's own.
+	const page = deferred<void>();
+	const client = hub({ held: false, gate: page.promise });
+	answerReads(client, "2");
+	void subject.setClient(client);
+	await subject.follow();
+
+	expect(heldSequence(subject)).toBeUndefined();
 });
 
 test("a follow read answered from saved history keeps the live hold", async () => {
