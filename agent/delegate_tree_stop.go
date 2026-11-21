@@ -1020,7 +1020,7 @@ func (c *delegateTreeController) runStopReconcileDriver(stop *delegateStopState,
 // retirement evidence scan takes. A claim cannot slip between the release and
 // the publication: it either meets the lease and is refused before admission
 // closes, or observes done closed and the lease gone. Done stays the barrier
-// callers use to observe the settled stop (#7159).
+// callers use to observe the settled stop.
 func (c *delegateTreeController) publishStopDriverDone(driver *delegateStopDriver, release func(), err error) {
 	c.mu.Lock()
 	driver.err = err

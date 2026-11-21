@@ -1965,7 +1965,7 @@ func TestRetirementDelegateStopDriverHandoff(t *testing.T) {
 			}
 			// The driver releases the handoff's retirement lease before it
 			// publishes done, so the settled stop must not leave admission
-			// racing the driver goroutine (#7159).
+			// racing the driver goroutine.
 			if hasRetirementBlocker(c.Snapshot().Blockers, "delegate") {
 				t.Fatal("driver done published with the handoff lease still held")
 			}
@@ -1989,12 +1989,12 @@ func TestRetirementDelegateStopDriverHandoff(t *testing.T) {
 }
 
 // TestRetirementDelegateStopDriverPublishSerializesHandoff pins the lock order
-// behind #7159's fix. The driver must release its handoff lease inside the owner
-// lock whose scan the retirement evidence read takes, and publish done in the
-// same critical section: a claim then either meets the lease and is refused
-// before admission closes, or observes done closed and the lease gone. Releasing
-// outside that lock let a claim enter preparing against a pending driver that
-// would refuse it, closing input admission for a refusal.
+// of the stop-driver handoff. The driver must release its handoff lease inside
+// the owner lock whose scan the retirement evidence read takes, and publish done
+// in the same critical section: a claim then either meets the lease and is
+// refused before admission closes, or observes done closed and the lease gone.
+// Releasing outside that lock let a claim enter preparing against a pending
+// driver that would refuse it, closing input admission for a refusal.
 func TestRetirementDelegateStopDriverPublishSerializesHandoff(t *testing.T) {
 	t.Parallel()
 	root, tree, _ := newRetirementDelegateController(t)
