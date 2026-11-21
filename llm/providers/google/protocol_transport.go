@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"primeradiant.com/evener/llm"
@@ -287,6 +288,16 @@ func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Res
 	if policy.anchorID != "" || !policy.hasUnsignedNonNativeCalls {
 		return p.openStreamWithBody(ctx, req, res, body, policy)
 	}
+	if policy.storeOmitted || policy.effectiveStore {
+		s1, err := p.openStreamWithBody(ctx, req, res, body, policy)
+		if err != nil {
+			if isSignatureValidation400(err) {
+				return p.openStream(ctx, req, res, true)
+			}
+			return nil, err
+		}
+		return s1, nil
+	}
 
 	cancelCtx, cancelAll := context.WithCancel(ctx)
 	s1, err := p.openStreamWithBody(cancelCtx, req, res, body, policy)
@@ -298,7 +309,11 @@ func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Res
 		return nil, err
 	}
 
-	outer := llm.NewChanStream(cancelAll)
+	var consumerClosed atomic.Bool
+	outer := llm.NewChanStream(func() {
+		consumerClosed.Store(true)
+		cancelAll()
+	})
 	go func() {
 		defer func() {
 			cancelAll()
@@ -306,8 +321,37 @@ func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Res
 		}()
 		emittedStart := false
 		sawOutput := false
+		emitContextErrorIfActive := func(st llm.Stream) {
+			if consumerClosed.Load() {
+				return
+			}
+			err := ctx.Err()
+			if err == nil {
+				return
+			}
+			if st != nil {
+				for {
+					select {
+					case ev, ok := <-st.Events():
+						if !ok {
+							outer.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.WrapContextError(res.Instance, err)})
+							return
+						}
+						if ev.Type == llm.StreamEventError || ev.Type == llm.StreamEventFinish {
+							outer.Send(ev)
+							return
+						}
+					default:
+						outer.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.WrapContextError(res.Instance, err)})
+						return
+					}
+				}
+			}
+			outer.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.WrapContextError(res.Instance, err)})
+		}
 		relay := func(st llm.Stream, allowRetry bool) bool {
 			defer func() { _ = st.Close() }()
+			sawTerminal := false
 			for {
 				var (
 					ev llm.StreamEvent
@@ -315,9 +359,13 @@ func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Res
 				)
 				select {
 				case <-cancelCtx.Done():
+					emitContextErrorIfActive(st)
 					return false
 				case ev, ok = <-st.Events():
 					if !ok {
+						if !sawTerminal {
+							emitContextErrorIfActive(nil)
+						}
 						return false
 					}
 				}
@@ -331,6 +379,9 @@ func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Res
 					llm.StreamEventReasoningStart, llm.StreamEventReasoningDelta, llm.StreamEventReasoningEnd,
 					llm.StreamEventToolCallStart, llm.StreamEventToolCallDelta, llm.StreamEventToolCallEnd:
 					sawOutput = true
+					outer.Send(ev)
+				case llm.StreamEventFinish:
+					sawTerminal = true
 					outer.Send(ev)
 				case llm.StreamEventError:
 					if allowRetry && !sawOutput && isSignatureValidation400(ev.Err) {
@@ -346,7 +397,7 @@ func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Res
 		if relay(s1, true) {
 			s2, err2 := p.openStream(cancelCtx, req, res, true)
 			if err2 != nil {
-				if cancelCtx.Err() == nil {
+				if !consumerClosed.Load() {
 					outer.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.RewriteErrorProvider(err2, res.Instance)})
 				}
 				return

@@ -516,8 +516,8 @@ func TestSessionGoogleInteractions_PreCutoverSignedToolCallRestoreAndFallback(t 
 	if err != nil {
 		t.Fatalf("read transcript after restore: %v", err)
 	}
-	if !bytes.HasPrefix(after, before) {
-		t.Fatalf("restored session rewrote its transcript prefix:\nbefore: %s\nafter: %s", before, after)
+	if !bytes.HasPrefix(after, before) || len(after) <= len(before) {
+		t.Fatalf("restored session transcript did not grow as an append-only extension:\nbefore (%d): %s\nafter (%d): %s", len(before), before, len(after), after)
 	}
 
 	bodies := script.requestBodies()

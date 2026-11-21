@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/llm"
 )
@@ -260,6 +261,31 @@ func TestInteraction_CitationOnlyModelOutputInsertsWebSearchCarrier(t *testing.T
 	if resp.Message.Content[1].Kind != llm.ContentText || resp.Message.Content[1].Text != "Grounded answer" {
 		t.Fatalf("expected ContentText at index 1, got %+v", resp.Message.Content[1])
 	}
+
+	// SSE text_annotation_delta carrying inline url_citation must also emit
+	// WebSearchData.Sources and the replay-blocking ContentWebSearch carrier.
+	sse := buildSSE(
+		[2]string{"step.start", `{"event_type":"step.start","index":0,"step":{"type":"model_output"}}`},
+		[2]string{"step.delta", `{"event_type":"step.delta","index":0,"delta":{"type":"text","text":"Grounded answer"}}`},
+		[2]string{"step.delta", `{"event_type":"step.delta","index":0,"delta":{"type":"text_annotation_delta","url_citation":{"title":"Inline Ref","url":"https://inline.example"}}}`},
+		[2]string{"step.stop", `{"event_type":"step.stop","index":0}`},
+		[2]string{"interaction.completed", `{"event_type":"interaction.completed","interaction":{"id":"int_cite_sse","model":"gemini-4-neon","status":"completed"}}`},
+	)
+	sseResp, _, err := runInteractionsSSETest(t, sse, "gemini-prod", "gemini-4-neon", false)
+	if err != nil {
+		t.Fatalf("SSE citation-only decode: %v", err)
+	}
+	if len(sseResp.Message.Content) != 2 {
+		t.Fatalf("expected 2 parts (inserted ContentWebSearch before ContentText), got %+v", sseResp.Message.Content)
+	}
+	wantInline := []llm.WebSearchSource{{Title: "Inline Ref", URL: "https://inline.example"}}
+	if sseResp.Message.Content[0].Kind != llm.ContentWebSearch || sseResp.Message.Content[0].WebSearch == nil || !reflect.DeepEqual(sseResp.Message.Content[0].WebSearch.Sources, wantInline) {
+		t.Fatalf("expected ContentWebSearch with inline url_citation at index 0, got %+v", sseResp.Message.Content[0])
+	}
+	replayReq := llm.Request{Model: "gemini-4-neon", Messages: []llm.Message{llm.User("q"), sseResp.Message}}
+	if _, err := (&Protocol{}).BuildBody(replayReq, protoRes(nil)); err == nil {
+		t.Fatal("BuildBody must reject replaying ContentWebSearch produced from inline text_annotation_delta")
+	}
 }
 
 // Not parallel: swaps package-level rawArgsBodyDecode seam.
@@ -389,6 +415,31 @@ func TestInteraction_SSE_ToolCallPlaceholderVsDeltaConfirmedAndTerminalBackfill(
 		}
 		if calls := respMal.ToolCalls(); len(calls) != 1 || string(calls[0].Arguments) != `{"pa` || calls[0].RawArguments != "" {
 			t.Fatalf("malformed calls = %+v, want verbatim Arguments='{\"pa' and RawArguments==''", calls)
+		}
+	})
+
+	t.Run("interaction.completed malformed string arguments preserved for argrepair", func(t *testing.T) {
+		sse := buildSSE(
+			[2]string{"step.start", `{"event_type":"step.start","index":0,"step":{"type":"function_call","id":"fc_bad","name":"write_file","arguments":{}}}`},
+			[2]string{"step.stop", `{"event_type":"step.stop","index":0}`},
+			[2]string{"interaction.completed", `{"event_type":"interaction.completed","interaction":{"id":"i_bad_term","status":"requires_action","steps":[{"type":"function_call","id":"fc_bad","name":"write_file","arguments":"{bad_json"}]}}`},
+		)
+		resp, events, err := runInteractionsSSETest(t, sse, "gemini-prod", "gemini-4-neon", false)
+		if err != nil {
+			t.Fatalf("SSE decode: %v", err)
+		}
+		calls := resp.ToolCalls()
+		if len(calls) != 1 || string(calls[0].Arguments) != `{bad_json` || calls[0].RawArguments != "" {
+			t.Fatalf("terminal malformed calls = %+v, want Arguments='{bad_json' and RawArguments==''", calls)
+		}
+		var sawEndArgs string
+		for _, ev := range events {
+			if ev.Type == llm.StreamEventToolCallEnd && ev.ToolCall != nil {
+				sawEndArgs = string(ev.ToolCall.Arguments)
+			}
+		}
+		if sawEndArgs != `{bad_json` {
+			t.Fatalf("ToolCallEnd Arguments = %q, want '{bad_json'", sawEndArgs)
 		}
 	})
 }
@@ -530,6 +581,103 @@ func TestInteraction_SSE_SlotQueueSummariesAndUnstoppedSpans(t *testing.T) {
 		}
 		if resp.Text() != "t1" {
 			t.Fatalf("resp.Text() = %q, want t1", resp.Text())
+		}
+	})
+}
+
+func TestInteraction_SSE_SparseLargeStepIndexAndGap(t *testing.T) {
+	t.Parallel()
+
+	t.Run("sparse large step index with gap settles O(actual steps) in ascending order", func(t *testing.T) {
+		sse := buildSSE(
+			[2]string{"step.start", `{"event_type":"step.start","index":0,"step":{"type":"model_output"}}`},
+			[2]string{"step.delta", `{"event_type":"step.delta","index":0,"delta":{"type":"text","text":"first"}}`},
+			[2]string{"step.stop", `{"event_type":"step.stop","index":0}`},
+			[2]string{"step.start", `{"event_type":"step.start","index":1000000000,"step":{"type":"model_output"}}`},
+			[2]string{"step.delta", `{"event_type":"step.delta","index":1000000000,"delta":{"type":"text","text":"sparse"}}`},
+			[2]string{"step.stop", `{"event_type":"step.stop","index":1000000000}`},
+			[2]string{"interaction.completed", `{"event_type":"interaction.completed","interaction":{"id":"i_sparse","status":"completed"}}`},
+		)
+
+		type result struct {
+			resp   llm.Response
+			events []llm.StreamEvent
+			err    error
+		}
+		ch := make(chan result, 1)
+		go func() {
+			r, evs, err := runInteractionsSSETest(t, sse, "gemini-prod", "gemini-4-neon", false)
+			ch <- result{r, evs, err}
+		}()
+
+		var res result
+		select {
+		case res = <-ch:
+		case <-time.After(2 * time.Second):
+			t.Fatal("sparse step index settlement stalled")
+		}
+		if res.err != nil {
+			t.Fatalf("sparse SSE decode: %v", res.err)
+		}
+		var seq []llm.StreamEventType
+		var deltas []string
+		for _, ev := range res.events {
+			seq = append(seq, ev.Type)
+			if ev.Type == llm.StreamEventTextDelta {
+				deltas = append(deltas, ev.Delta)
+			}
+		}
+		wantSeq := []llm.StreamEventType{
+			llm.StreamEventTextStart, llm.StreamEventTextDelta, llm.StreamEventTextEnd,
+			llm.StreamEventTextStart, llm.StreamEventTextDelta, llm.StreamEventTextEnd,
+			llm.StreamEventFinish,
+		}
+		if !reflect.DeepEqual(seq, wantSeq) {
+			t.Fatalf("event sequence = %v, want %v", seq, wantSeq)
+		}
+		if !reflect.DeepEqual(deltas, []string{"first", "sparse"}) {
+			t.Fatalf("deltas = %v, want [first sparse]", deltas)
+		}
+		if len(res.resp.Message.Content) != 2 || res.resp.Message.Content[0].GoogleStep != 1 || res.resp.Message.Content[1].GoogleStep != 1000000001 {
+			t.Fatalf("content GoogleStep mismatch: %+v", res.resp.Message.Content)
+		}
+	})
+
+	t.Run("sparse step index Close returns promptly without blocking", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		pr, pw := io.Pipe()
+		defer func() { _ = pw.Close() }()
+		httpResp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: pr}
+		stream := llm.NewChanStream(cancel)
+		go decodeInteractionStream(ctx, cancel, httpResp, stream, llm.Request{Model: "gemini-4-neon"}, "gemini-prod", "gemini-4-neon", "", llm.APILogCredentialMaterial{}, nil, false, nil)
+
+		_, _ = io.WriteString(pw, buildSSE(
+			[2]string{"step.start", `{"event_type":"step.start","index":1000000000,"step":{"type":"model_output"}}`},
+			[2]string{"step.delta", `{"event_type":"step.delta","index":1000000000,"delta":{"type":"text","text":"open"}}`},
+		))
+		closed := make(chan error, 1)
+		go func() { closed <- stream.Close() }()
+		select {
+		case cerr := <-closed:
+			if cerr != nil {
+				t.Fatalf("stream.Close() = %v", cerr)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("stream.Close() blocked after sparse large step index")
+		}
+	})
+
+	t.Run("negative step index is rejected", func(t *testing.T) {
+		sse := buildSSE(
+			[2]string{"step.start", `{"event_type":"step.start","index":-1,"step":{"type":"model_output"}}`},
+			[2]string{"step.delta", `{"event_type":"step.delta","index":-1,"delta":{"type":"text","text":"bad"}}`},
+			[2]string{"step.stop", `{"event_type":"step.stop","index":-1}`},
+			[2]string{"interaction.completed", `{"event_type":"interaction.completed","interaction":{"id":"i_neg","status":"completed"}}`},
+		)
+		_, _, err := runInteractionsSSETest(t, sse, "gemini-prod", "gemini-4-neon", false)
+		if _, ok := errors.AsType[*llm.StreamError](err); !ok {
+			t.Fatalf("expected *llm.StreamError for negative step index, got %v", err)
 		}
 	})
 }

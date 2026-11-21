@@ -1072,9 +1072,9 @@ func ClampReasoningEffort(requested string, supportedLevels []string) string {
 // here, so it also returns "".
 //
 // Rows that derive a numeric budget instead of spelling the level
-// (anthropic budget_tokens/budget+effort, the google thinkingConfig) do not
-// use this: such a row legitimately states no effort ladder and still needs
-// the requested effort to size its budget.
+// (anthropic budget_tokens/budget+effort) do not use this: such a row
+// legitimately states no effort ladder and still needs the requested effort to
+// size its budget.
 func VouchedEffort(requested string, levels []string) string {
 	v := ClampReasoningEffort(requested, levels)
 	if v == "" || v == ReasoningEffortNone {
@@ -1098,23 +1098,23 @@ func VouchedEffort(requested string, levels []string) string {
 //
 // The branches below restate each builder's own gate — chatcompletions'
 // applyThinkingFormat, responses' reasoningObject, anthropic's
-// applyThinkingShape, and google's thinkingConfig — rather than asking the
-// builder, which reports its decision only as a side effect on the request
-// body. That is deliberate: the one caller needs a pure, cheap answer on the
-// envelope read path, and the alternative is a return value threaded through
-// four wire implementations. It also means this is a second copy of those
-// gates, so a branch here is only as right as the last person to read both.
-// TestDefaultReasoningEffort_NamesTheTierTheWireCarries drives the real
-// builders over the pruned body and is what catches a divergence; it does not
-// make divergence impossible. The google branch models the one prune rule that
-// drops the whole thinkingConfig object; any other gate that runs after the
-// builder (a provider's generationConfig overlay) stays outside what this can
-// see.
+// applyThinkingShape, and google's applyInteractionThinkingConfig — rather
+// than asking the builder, which reports its decision only as a side effect on
+// the request body. That is deliberate: the one caller needs a pure, cheap
+// answer on the envelope read path, and the alternative is a return value
+// threaded through four wire implementations. It also means this is a second
+// copy of those gates, so a branch here is only as right as the last person to
+// read both. TestDefaultReasoningEffort_NamesTheTierTheWireCarries drives the
+// real builders over the pruned body and is what catches a divergence; it does
+// not make divergence impossible. The google branch models the
+// FieldGoogleThinkingLevel prune rule that drops
+// generation_config.thinking_level; any other gate that runs after the builder
+// (a provider's generation_config overlay) stays outside what this can see.
 //
 // Rows that derive a numeric budget instead of spelling the level (anthropic
-// budget_tokens/budget+effort, the google thinkingConfig) count as reaching
-// the wire: such a row legitimately states no effort ladder and still sizes its
-// budget from the effort.
+// budget_tokens/budget+effort) count as reaching the wire: such a row
+// legitimately states no effort ladder and still sizes its budget from the
+// effort.
 func EffortReachesWire(tier string, res registry.Resolved) bool {
 	caps := res.Caps
 	shape := registry.StringValue(caps.ThinkingShape)

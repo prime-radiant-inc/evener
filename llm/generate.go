@@ -239,10 +239,10 @@ func prepareGeneration(opts GenerateOptions) (*generationState, error) {
 			providerName = client.DefaultProvider()
 		}
 		if providerName != "" {
-			if res, rErr := client.Resolve(providerName + "/" + opts.Model); rErr == nil && res.Protocol == registry.ProtocolGoogle {
+			if res, rErr := client.Registry().ResolveInstanceModelFacts(providerName, opts.Model); rErr == nil && res.Protocol == registry.ProtocolGoogle {
 				anchor := strings.TrimSpace(opts.PreviousResponseID)
 				if gOpts, ok := opts.ProviderOptions[registry.ProtocolGoogle].(map[string]any); ok {
-					if rawAnchor, exists := gOpts["previous_interaction_id"]; exists {
+					if rawAnchor, exists := gOpts["previous_interaction_id"]; exists && rawAnchor != nil {
 						s, ok := rawAnchor.(string)
 						if !ok {
 							return nil, &ConfigurationError{ProviderInstance: res.Instance, Message: "google provider_options.previous_interaction_id must be a string"}

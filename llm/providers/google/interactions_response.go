@@ -341,23 +341,20 @@ func extractCitationAnnotations(raw any) []llm.WebSearchSource {
 }
 
 func extractSingleCitation(m map[string]any) (llm.WebSearchSource, bool) {
-	if nested, ok := m["url_citation"].(map[string]any); ok {
-		typ := stringVal(m["type"])
-		if typ == "" || typ == "url_citation" {
-			src := llm.WebSearchSource{
-				Title: stringVal(nested["title"]),
-				URL:   stringVal(nested["url"]),
-			}
-			if src.Title != "" || src.URL != "" {
-				return src, true
-			}
-		}
-	}
 	typ := stringVal(m["type"])
-	if typ != "" && typ != "url_citation" {
+	if typ != "" && typ != "url_citation" && typ != "text_annotation_delta" {
 		return llm.WebSearchSource{}, false
 	}
-	if typ == "" && m["url_citation"] == nil && m["url"] == nil && m["title"] == nil {
+	if nested, ok := m["url_citation"].(map[string]any); ok {
+		src := llm.WebSearchSource{
+			Title: stringVal(nested["title"]),
+			URL:   stringVal(nested["url"]),
+		}
+		if src.Title != "" || src.URL != "" {
+			return src, true
+		}
+	}
+	if (typ == "" || typ == "text_annotation_delta") && m["url_citation"] == nil && m["url"] == nil && m["title"] == nil {
 		return llm.WebSearchSource{}, false
 	}
 	src := llm.WebSearchSource{

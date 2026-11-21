@@ -585,3 +585,253 @@ func completeViaStreamCheck(t *testing.T, srv *httptest.Server, legacyReq llm.Re
 		t.Fatalf("CompleteViaStream err = %v, want 400 llm.Error with Provider()=%q", cerr, res.Instance)
 	}
 }
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+type manualDeadlineCtx struct {
+	context.Context
+	done chan struct{}
+	once sync.Once
+}
+
+func newManualDeadlineCtx(parent context.Context) (*manualDeadlineCtx, func()) {
+	c := &manualDeadlineCtx{Context: parent, done: make(chan struct{})}
+	return c, func() { c.once.Do(func() { close(c.done) }) }
+}
+
+func (c *manualDeadlineCtx) Deadline() (time.Time, bool) { return time.Time{}, true }
+func (c *manualDeadlineCtx) Done() <-chan struct{}       { return c.done }
+func (c *manualDeadlineCtx) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
+func TestProtocolStreamWrapperCallerDeadlineAndCancel(t *testing.T) {
+	t.Parallel()
+	legacyReq := llm.Request{
+		Model: "gemini-3.8-flash",
+		Messages: []llm.Message{
+			llm.User("check files"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+					ID: "c1", Name: "glob", Arguments: json.RawMessage(`{"pattern":"*.go"}`),
+					ThoughtSignature: "legacy_sig", GoogleInteraction: false,
+				}},
+			}},
+			llm.ToolResult("c1", "main.go", false),
+			llm.User("summarize"),
+		},
+	}
+
+	newBlockingServer := func(t *testing.T) *httptest.Server {
+		t.Helper()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("event: interaction.created\n" + `data: {"event_type":"interaction.created","interaction":{"id":"int_wait","status":"in_progress"}}` + "\n\n"))
+			if fl, ok := w.(http.Flusher); ok {
+				fl.Flush()
+			}
+			<-r.Context().Done()
+		}))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+
+	t.Run("direct Stream emits KindTimeout StreamEventError on caller deadline", func(t *testing.T) {
+		srv := newBlockingServer(t)
+		res := protoLive(srv)
+		ctx, triggerDeadline := newManualDeadlineCtx(context.Background())
+		defer triggerDeadline()
+		st, err := (&Protocol{Client: srv.Client()}).Stream(ctx, legacyReq, res)
+		if err != nil {
+			t.Fatalf("Stream open failed: %v", err)
+		}
+		ev, ok := <-st.Events()
+		if !ok || ev.Type != llm.StreamEventStreamStart {
+			t.Fatalf("first event = (%+v, ok=%v), want StreamEventStreamStart", ev, ok)
+		}
+		triggerDeadline()
+		var streamErr error
+		for ev := range st.Events() {
+			if ev.Type == llm.StreamEventError {
+				streamErr = ev.Err
+			}
+		}
+		if llm.Kind(streamErr) != llm.KindTimeout {
+			t.Fatalf("Stream error = %T %v (kind=%v), want KindTimeout", streamErr, streamErr, llm.Kind(streamErr))
+		}
+	})
+
+	t.Run("CompleteViaStream returns KindTimeout on caller deadline", func(t *testing.T) {
+		srv := newBlockingServer(t)
+		res := protoLive(srv)
+		res.Transport.Auth = registry.AuthOAuthOpenAICodex
+		headersReceived := make(chan struct{})
+		var once sync.Once
+		baseRT := srv.Client().Transport
+		httpClient := &http.Client{
+			Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				resp, err := baseRT.RoundTrip(r)
+				if err == nil {
+					once.Do(func() { close(headersReceived) })
+				}
+				return resp, err
+			}),
+		}
+		ctx, triggerDeadline := newManualDeadlineCtx(llm.WithAuthenticatorOverride(context.Background(), callScopedStreamingPreparer{}))
+		defer triggerDeadline()
+		go func() {
+			<-headersReceived
+			triggerDeadline()
+		}()
+		_, err := (&Protocol{Client: httpClient}).Complete(ctx, legacyReq, res)
+		if llm.Kind(err) != llm.KindTimeout {
+			t.Fatalf("CompleteViaStream err = %T %v (kind=%v), want KindTimeout", err, err, llm.Kind(err))
+		}
+	})
+
+	t.Run("direct Stream emits KindAbort StreamEventError on caller cancel", func(t *testing.T) {
+		srv := newBlockingServer(t)
+		res := protoLive(srv)
+		ctx, cancel := context.WithCancel(context.Background())
+		st, err := (&Protocol{Client: srv.Client()}).Stream(ctx, legacyReq, res)
+		if err != nil {
+			t.Fatalf("Stream open failed: %v", err)
+		}
+		ev, ok := <-st.Events()
+		if !ok || ev.Type != llm.StreamEventStreamStart {
+			t.Fatalf("first event = (%+v, ok=%v), want StreamEventStreamStart", ev, ok)
+		}
+		cancel()
+		var streamErr error
+		for ev := range st.Events() {
+			if ev.Type == llm.StreamEventError {
+				streamErr = ev.Err
+			}
+		}
+		if _, ok := errors.AsType[*llm.AbortError](streamErr); !ok {
+			t.Fatalf("Stream error = %T %v, want *llm.AbortError", streamErr, streamErr)
+		}
+	})
+}
+
+func TestProtocolStreamWrapperStorePolicyBlocksInBandRetry(t *testing.T) {
+	t.Parallel()
+	legacyReq := llm.Request{
+		Model: "gemini-3.8-flash",
+		Messages: []llm.Message{
+			llm.User("check files"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+					ID: "c1", Name: "glob", Arguments: json.RawMessage(`{"pattern":"*.go"}`),
+					ThoughtSignature: "legacy_sig", GoogleInteraction: false,
+				}},
+			}},
+			llm.ToolResult("c1", "main.go", false),
+			llm.User("summarize"),
+		},
+	}
+
+	const inBandSig400 = "event: interaction.created\n" +
+		`data: {"event_type":"interaction.created","interaction":{"id":"int_persisted","status":"in_progress"}}` + "\n\n" +
+		"event: error\n" +
+		`data: {"event_type":"error","error":{"code":"invalid_argument","message":"missing thought_signature"}}` + "\n\n"
+
+	for _, tc := range []struct {
+		name         string
+		reqMod       func(*llm.Request)
+		resMod       func(*registry.Resolved)
+		pre2xx400    bool
+		wantAttempts int32
+		wantSuccess  bool
+	}{
+		{
+			name:         "store=true blocks post-2xx in-band SSE signature retry",
+			reqMod:       func(r *llm.Request) { r.Store = new(true) },
+			wantAttempts: 1,
+		},
+		{
+			name:         "fields.store=false (omitted store) blocks post-2xx in-band SSE signature retry",
+			resMod:       func(res *registry.Resolved) { res.Caps.Fields = map[string]bool{"store": false} },
+			wantAttempts: 1,
+		},
+		{
+			name:         "store=true still recovers on pre-2xx HTTP 400 signature rejection",
+			reqMod:       func(r *llm.Request) { r.Store = new(true) },
+			pre2xx400:    true,
+			wantAttempts: 2,
+			wantSuccess:  true,
+		},
+		{
+			name:         "explicit store=false still retries once on zero-output in-band SSE signature 400",
+			reqMod:       func(r *llm.Request) { r.Store = new(false) },
+			wantAttempts: 2,
+			wantSuccess:  true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var attempts atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				n := attempts.Add(1)
+				if tc.pre2xx400 && n == 1 {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write([]byte(`{"error":{"code":400,"message":"missing thought_signature","status":"INVALID_ARGUMENT"}}`))
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				if n == 1 && !tc.pre2xx400 {
+					_, _ = w.Write([]byte(inBandSig400))
+					return
+				}
+				_, _ = w.Write([]byte(interactionsSSE))
+			}))
+			defer srv.Close()
+
+			req := legacyReq
+			if tc.reqMod != nil {
+				tc.reqMod(&req)
+			}
+			res := protoLive(srv)
+			if tc.resMod != nil {
+				tc.resMod(&res)
+			}
+			st, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), req, res)
+			if err != nil {
+				t.Fatalf("Stream open failed: %v", err)
+			}
+			var streamErr error
+			var finished *llm.Response
+			for ev := range st.Events() {
+				if ev.Type == llm.StreamEventError {
+					streamErr = ev.Err
+				}
+				if ev.Type == llm.StreamEventFinish {
+					finished = ev.Response
+				}
+			}
+			if got := attempts.Load(); got != tc.wantAttempts {
+				t.Fatalf("attempts = %d, want %d", got, tc.wantAttempts)
+			}
+			if tc.wantSuccess {
+				if streamErr != nil || finished == nil || finished.Text() != "hello" {
+					t.Fatalf("expected recovered completion, err=%v finished=%+v", streamErr, finished)
+				}
+			} else {
+				if le, ok := errors.AsType[llm.Error](streamErr); !ok || le.StatusCode() != http.StatusBadRequest {
+					t.Fatalf("streamErr = %T %v, want 400 llm.Error", streamErr, streamErr)
+				}
+			}
+		})
+	}
+}

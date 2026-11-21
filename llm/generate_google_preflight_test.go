@@ -3,6 +3,9 @@ package llm
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"primeradiant.com/evener/llm/registry"
@@ -168,4 +171,80 @@ func TestGenerateGooglePreflightRejectsAnchoredAndCombinedBeforeTurn1(t *testing
 			})
 		}
 	})
+}
+
+func TestGenerateGooglePreflightSkipsCommandCredentialAndIgnoresNilAnchor(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "cred-ran")
+	cfgPath := filepath.Join(dir, "providers.toml")
+	cfg := fmt.Sprintf(
+		"[providers.google-cmd]\nbase = \"google\"\napi_key = '''$(sh -c 'printf x >> %q; printf test-key')'''\nweb_search = true\n",
+		marker,
+	)
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
+	}
+	r, err := registry.Load(
+		registry.WithOffline(true),
+		registry.WithoutCache(),
+		registry.WithConfigPath(cfgPath),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+	)
+	if err != nil {
+		t.Fatalf("registry.Load: %v", err)
+	}
+
+	activeTool := Tool{
+		Definition: ToolDefinition{Name: "ping", Parameters: map[string]any{"type": "object"}},
+		Execute:    func(context.Context, any) (any, error) { return "pong", nil },
+	}
+	credRuns := func() int {
+		b, err := os.ReadFile(marker)
+		if err != nil {
+			return 0
+		}
+		return len(b)
+	}
+
+	// 1. Preflight rejection must run the credential command 0 times.
+	spy := &preflightSpyAdapter{name: "google-cmd"}
+	c := NewClient(WithRegistry(r))
+	c.Register(spy)
+	_, err = Generate(context.Background(), GenerateOptions{
+		Client:             c,
+		Provider:           "google-cmd",
+		Model:              "gemini-3.8-flash",
+		Prompt:             new("hi"),
+		PreviousResponseID: "int_prev",
+		Tools:              []Tool{activeTool},
+	})
+	if _, ok := errors.AsType[*ConfigurationError](err); !ok || spy.called {
+		t.Fatalf("expected preflight ConfigurationError before dispatch; err=%v called=%v", err, spy.called)
+	}
+	if runs := credRuns(); runs != 0 {
+		t.Fatalf("preflight rejection executed credential command %d times, want 0", runs)
+	}
+
+	// 2. Allowed dispatch with nil previous_interaction_id succeeds and runs credential command once.
+	_, err = Generate(context.Background(), GenerateOptions{
+		Client:   c,
+		Provider: "google-cmd",
+		Model:    "gemini-3.8-flash",
+		Prompt:   new("hi"),
+		Tools:    []Tool{activeTool},
+		ProviderOptions: map[string]any{
+			"google": map[string]any{"previous_interaction_id": nil},
+		},
+	})
+	if err != nil {
+		t.Fatalf("nil previous_interaction_id unexpectedly failed: %v", err)
+	}
+	if !spy.called {
+		t.Fatal("allowed dispatch did not reach adapter")
+	}
+	if runs := credRuns(); runs != 1 {
+		t.Fatalf("allowed dispatch executed credential command %d times, want 1", runs)
+	}
 }

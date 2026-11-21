@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/identifier"
@@ -95,7 +96,6 @@ type interactionStreamAccumulator struct {
 	latestUsage       map[string]any
 
 	slots         map[int]*interactionStreamSlot
-	maxIndex      int
 	nextEmitIndex int
 }
 
@@ -107,14 +107,10 @@ func newInteractionStreamAccumulator(stream *llm.ChanStream, instance, wireModel
 		requestedModel:    requestedModel,
 		summariesDisabled: summariesDisabled,
 		slots:             map[int]*interactionStreamSlot{},
-		maxIndex:          -1,
 	}
 }
 
 func (a *interactionStreamAccumulator) ensureSlot(idx int, stepType string) *interactionStreamSlot {
-	if idx > a.maxIndex {
-		a.maxIndex = idx
-	}
 	slot, ok := a.slots[idx]
 	if !ok {
 		slot = &interactionStreamSlot{
@@ -127,6 +123,15 @@ func (a *interactionStreamAccumulator) ensureSlot(idx int, stepType string) *int
 		slot.stepType = stepType
 	}
 	return slot
+}
+
+func (a *interactionStreamAccumulator) sortedSlotIndices() []int {
+	indices := make([]int, 0, len(a.slots))
+	for idx := range a.slots {
+		indices = append(indices, idx)
+	}
+	slices.Sort(indices)
+	return indices
 }
 
 func (a *interactionStreamAccumulator) send(ev llm.StreamEvent) {
@@ -564,7 +569,12 @@ func (a *interactionStreamAccumulator) complete(payload map[string]any, evData [
 						rawTok = rawTermArgs[stepIdx]
 					}
 					termArgs, termSpelling := resolveInteractionStepArgs(rawTok, stepMap["arguments"])
-					if len(termArgs) > 0 && termArgs[0] == '{' && json.Valid(termArgs) {
+					isEmptyObj := bytes.Equal(bytes.TrimSpace(termArgs), []byte("{}"))
+					_, isTermStr := stepMap["arguments"].(string)
+					hasLiveArgs := slot.receivedArgFragments || slot.hasNonEmptyInitialArgs
+					validTermObj := len(termArgs) > 0 && termArgs[0] == '{' && json.Valid(termArgs) && (!isEmptyObj || !hasLiveArgs)
+					malformedTermStr := !hasLiveArgs && isTermStr && len(bytes.TrimSpace(termArgs)) > 0 && !isEmptyObj
+					if validTermObj || malformedTermStr {
 						slot.settledArgs = termArgs
 						slot.settledSpelling = termSpelling
 						slot.hasSettledArgs = true
@@ -607,12 +617,11 @@ func (a *interactionStreamAccumulator) complete(payload map[string]any, evData [
 		}
 	}
 
+	indices := a.sortedSlotIndices()
+
 	// Finalize any remaining open/unresolved function_call slots and emit remaining events in index order.
-	for j := 0; j <= a.maxIndex; j++ {
-		slot, ok := a.slots[j]
-		if !ok {
-			continue
-		}
+	for _, j := range indices {
+		slot := a.slots[j]
 		if slot.stepType == "function_call" {
 			if slot.callID == "" {
 				slot.callID = identifier.MustNewSyntheticCallID()
@@ -632,27 +641,26 @@ func (a *interactionStreamAccumulator) complete(payload map[string]any, evData [
 		}
 	}
 
-	for j := a.nextEmitIndex; j <= a.maxIndex; j++ {
-		slot, ok := a.slots[j]
-		if !ok {
+	for _, j := range indices {
+		if j < a.nextEmitIndex {
 			continue
 		}
+		slot := a.slots[j]
 		for _, ev := range slot.deferredEvents {
 			a.send(ev)
 		}
 		slot.deferredEvents = nil
 		a.finishOpenSlot(slot, wireModel)
 	}
-	if a.maxIndex >= a.nextEmitIndex {
-		a.nextEmitIndex = a.maxIndex + 1
+	if len(indices) > 0 {
+		if last := indices[len(indices)-1]; last >= a.nextEmitIndex {
+			a.nextEmitIndex = last + 1
+		}
 	}
 
-	steps := make([]interactionStep, 0, len(a.slots))
-	for j := 0; j <= a.maxIndex; j++ {
-		slot, ok := a.slots[j]
-		if !ok {
-			continue
-		}
+	steps := make([]interactionStep, 0, len(indices))
+	for _, j := range indices {
+		slot := a.slots[j]
 		st := interactionStep{
 			stepIdx:           slot.index,
 			stepType:          slot.stepType,
@@ -826,19 +834,23 @@ func decodeInteractionStream(
 			switch eventType {
 			case "interaction.created", "interaction.status_update":
 				acc.handleLifecycle(eventType, payload)
-			case "step.start":
+			case "step.start", "step.delta", "step.stop":
 				idx := llm.IntFromAny(payload["index"])
-				if step, ok := payload["step"].(map[string]any); ok {
-					acc.handleStepStart(idx, step, ev.Data)
+				if idx < 0 {
+					return &transport.FatalStreamError{Err: llm.NewStreamError(provider, fmt.Sprintf("%s stream %s has negative step index %d", provider, eventType, idx), nil)}
 				}
-			case "step.delta":
-				idx := llm.IntFromAny(payload["index"])
-				if delta, ok := payload["delta"].(map[string]any); ok {
-					acc.handleStepDelta(idx, delta, ev.Data)
+				switch eventType {
+				case "step.start":
+					if step, ok := payload["step"].(map[string]any); ok {
+						acc.handleStepStart(idx, step, ev.Data)
+					}
+				case "step.delta":
+					if delta, ok := payload["delta"].(map[string]any); ok {
+						acc.handleStepDelta(idx, delta, ev.Data)
+					}
+				case "step.stop":
+					acc.handleStepStop(idx, payload)
 				}
-			case "step.stop":
-				idx := llm.IntFromAny(payload["index"])
-				acc.handleStepStop(idx, payload)
 			case "interaction.completed":
 				r, err := acc.complete(payload, ev.Data)
 				if err != nil {
