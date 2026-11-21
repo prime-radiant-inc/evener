@@ -94,6 +94,12 @@ func TestStreamMixedReasoningMatchesNonStreaming(t *testing.T) {
 		// An item may grow by a line break alone; the assembled path must emit
 		// it even though the content count does not change.
 		{"assembled-mirror-line-break-growth", `{"reasoning_content":"ac\nbd\ne","reasoning_details":[{"type":"reasoning.text","text":"ac","index":0},{"type":"reasoning.text","text":"bd\n","index":1}]}`, "ac\nbd\n", "a|\nb|\nc|\nd|\ne", `{"reasoning_details":[{"type":"reasoning.text","text":"a","index":0}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"b","index":1}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"c","index":0}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"d","index":1}]}` + "\x00" + `{"reasoning_content":"ac\nbd"}` + "\x00" + `{"reasoning_content":"\ne","reasoning_details":[{"type":"reasoning.text","text":"\n","index":1}]}`},
+		// A scalar that runs ahead of a recognized assembled prefix must not be
+		// repeated when the lagging item catches up on a later frame.
+		{"assembled-mirror-catch-up", `{"reasoning_content":"acd\nb","reasoning_details":[{"type":"reasoning.text","text":"acd","index":0},{"type":"reasoning.text","text":"b","index":1}]}`, "acd\nb", "a|\nb|\nc|d", `{"reasoning_details":[{"type":"reasoning.text","text":"a","index":0}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"b","index":1}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"c","index":0}]}` + "\x00" + `{"reasoning_content":"ac"}` + "\x00" + `{"reasoning_content":"d"}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"d","index":0}]}` + "\x00" + `{"reasoning_content":"\nb"}`},
+		// A trailing line break the scalar already showed must not be emitted
+		// again by a later scalar fragment.
+		{"assembled-mirror-trailing-line-break", `{"reasoning_content":"ac\nb\nd","reasoning_details":[{"type":"reasoning.text","text":"ac","index":0},{"type":"reasoning.text","text":"b","index":1}]}`, "ac\nb", "a|\nb|\nc|\n|d", `{"reasoning_details":[{"type":"reasoning.text","text":"a","index":0}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"b","index":1}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"c","index":0}]}` + "\x00" + `{"reasoning_content":"ac\nb\n"}` + "\x00" + `{"reasoning_content":"d"}`},
 		// An unindexed text-bearing entry registers the implicit item on first
 		// appearance even when its text is empty, so later unindexed text keeps
 		// the position of its earlier empty appearance.

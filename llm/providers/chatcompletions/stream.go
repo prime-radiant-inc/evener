@@ -278,78 +278,90 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 			}
 			if delta != "" {
 				var send string
+				sBuf, dBuf, mBuf := scalarBuf.String(), structuredBuf.String(), mirrorBuf.String()
+				// flushStructured emits the structured preview bytes beyond
+				// the content already on the pane and advances the cursors.
+				flushStructured := func() string {
+					dSent, dSentContent = advanceContent(dBuf, dSent, dSentContent, sentContent)
+					flush := dBuf[dSent:]
+					dSent, dSentContent = len(dBuf), structuredContent
+					sentContent = structuredContent
+					return flush
+				}
 				if !diverged {
-					s, d, mirror := scalarBuf.String(), structuredBuf.String(), mirrorBuf.String()
-					// flushStructured emits the structured preview bytes beyond
-					// the content already on the pane and advances the cursors.
-					flushStructured := func() string {
-						dSent, dSentContent = advanceContent(d, dSent, dSentContent, sentContent)
-						flush := d[dSent:]
-						dSent, dSentContent = len(d), structuredContent
-						sentContent = structuredContent
-						return flush
-					}
 					// Newlines the scalar carries where the mirror does not are
 					// synthesized item separators and may be present or absent; the
 					// mirror's own newlines are provider text and must match.
 					for {
-						for sMatch < len(s) && s[sMatch] == '\n' && (mMatch == len(mirror) || mirror[mMatch] != '\n') {
+						for sMatch < len(sBuf) && sBuf[sMatch] == '\n' && (mMatch == len(mBuf) || mBuf[mMatch] != '\n') {
 							sMatch++
 						}
-						if sMatch == len(s) || mMatch == len(mirror) {
+						if sMatch == len(sBuf) || mMatch == len(mBuf) {
 							break
 						}
-						if s[sMatch] != mirror[mMatch] {
+						if sBuf[sMatch] != mBuf[mMatch] {
 							diverged = true
 							break
 						}
 						sMatch++
 						mMatch++
 					}
-					assembled := false
-					if diverged {
-						// The provider may mirror the items in assembled order
-						// instead of the preview's arrival order. Recognize that
-						// mirror against the assembled text: the pane keeps the
-						// arrival-order separators it already showed, and only
-						// text beyond the assembled items is new.
-						if order := details.assembledMirror(); order != "" {
-							if extra, ok := assembledOrderExtension(s, order); ok {
-								diverged, assembled = false, true
-								// A newline the items appended without changing
-								// their content count is still provider text the
-								// pane has not shown.
-								if structuredContent > sentContent || structuredContent == sentContent && dSent < len(d) {
-									send = flushStructured()
+				}
+				assembled := false
+				if diverged {
+					// The provider may mirror the items in assembled order
+					// instead of the preview's arrival order. Recognize that
+					// mirror against the assembled text: the pane keeps the
+					// arrival-order separators it already showed, and only
+					// text beyond the assembled items is new. The items can
+					// lag the scalar by a frame, so a later frame retries the
+					// same recognition before committing to divergence.
+					if order := details.assembledMirror(); order != "" {
+						if extra, ok := assembledOrderExtension(sBuf, order); ok {
+							diverged, assembled = false, true
+							// A newline the items appended without changing
+							// their content count is still provider text the
+							// pane has not shown; pending bytes whose content
+							// is already shown are suppressed.
+							if structuredContent > sentContent || dSentContent == structuredContent && dSent < len(dBuf) {
+								send = flushStructured()
+							}
+							if extra != "" {
+								// The scalar may have run ahead before the
+								// items caught up: skip the bytes it already
+								// showed, both raw and content-counted.
+								start := len(sBuf) - len(extra)
+								skip := 0
+								if sSent > start {
+									skip = sSent - start
 								}
+								shown := sentContent - structuredContent -
+									len(sBuf[start:start+skip]) + strings.Count(sBuf[start:start+skip], "\n")
+								if shown > 0 {
+									raw, _ := advanceContent(extra[skip:], 0, 0, shown)
+									skip += raw
+								}
+								extra = extra[skip:]
 								if extra != "" {
-									// Text the pane already shows beyond the
-									// assembled items is not new: the scalar may
-									// have run ahead before the items caught up.
-									if shown := sentContent - structuredContent; shown > 0 {
-										raw, _ := advanceContent(extra, 0, 0, shown)
-										extra = extra[raw:]
-									}
-									if extra != "" {
-										send += extra
-										sentContent += len(extra) - strings.Count(extra, "\n")
-									}
-									sSent, sSentContent = len(s), scalarContent
+									send += extra
+									sentContent += len(extra) - strings.Count(extra, "\n")
 								}
 							}
+							sSent, sSentContent = len(sBuf), scalarContent
+							dSent, dSentContent = len(dBuf), structuredContent
 						}
 					}
-					if !diverged && !assembled {
-						// Emit the longer source's provider bytes beyond the content
-						// already on the pane, once each.
-						if scalarContent >= structuredContent {
-							sSent, sSentContent = advanceContent(s, sSent, sSentContent, sentContent)
-							send = s[sSent:]
-							sSent, sSentContent = len(s), scalarContent
-							sentContent = scalarContent
-						} else {
-							send = flushStructured()
-						}
+				}
+				if !diverged && !assembled {
+					// Emit the longer source's provider bytes beyond the content
+					// already on the pane, once each.
+					if scalarContent >= structuredContent {
+						sSent, sSentContent = advanceContent(sBuf, sSent, sSentContent, sentContent)
+						send = sBuf[sSent:]
+						sSent, sSentContent = len(sBuf), scalarContent
+						sentContent = scalarContent
+					} else {
+						send = flushStructured()
 					}
 				}
 				if diverged {
@@ -357,6 +369,7 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 					// one, else the scalar fragment. Divergence is permanent, and a repeat
 					// of the pane's suffix is still new text here.
 					send = delta
+					sentContent += len(send) - strings.Count(send, "\n")
 				}
 				if send != "" {
 					if !reasoningStarted {
