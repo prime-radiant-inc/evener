@@ -152,6 +152,7 @@ func TestWorktreePrune_OrphanArmCollectsUnchangedStaleParentLane(t *testing.T) {
 // gone the same stale parent is reclaimable again.
 func TestWorktreePrune_OrphanArmWithholdsReleaseWhileLivelockHeld(t *testing.T) {
 	t.Parallel()
+	requireSessionLivelock(t)
 	r := newWorktreeRepo(t)
 	const parentSID = "034livestaleparent00000001"
 	const dlg = "dlg_034livestaleparent000"
@@ -195,6 +196,7 @@ func TestWorktreePrune_OrphanArmWithholdsReleaseWhileLivelockHeld(t *testing.T) 
 // upgrade window again, one level down.
 func TestWorktreePrune_OrphanArmSparesNestedLaneWhileRootHoldsLivelock(t *testing.T) {
 	t.Parallel()
+	requireSessionLivelock(t)
 	r := newWorktreeRepo(t)
 	const rootSID = "034nestedroot00000000000000"
 	const parentSID = "034nestedsub000000000000000"
@@ -4851,6 +4853,7 @@ func TestWorktreePrune_OrphanArmRestoresWhenParentWakesDuringRelease(t *testing.
 // machinery unharmed.
 func TestWorktreePrune_OrphanArmSparesLiveOwnerWhileWakeRuns(t *testing.T) {
 	t.Parallel()
+	requireSessionLivelock(t)
 	r := newWorktreeRepo(t)
 	var lanePath string
 	// One state root, the shipped shape: the arm resolves a foreign parent's
