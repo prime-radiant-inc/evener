@@ -371,9 +371,8 @@ func (e *LocalExecutionEnvironment) WriteFile(path string, content string) (stri
 var MaxEditFileSpans = 100_000
 
 // MaxEditFileOutputBytes caps the spliced output byte size of
-// EditFileBatchWithCtx before allocating converted replacement buffers or the
-// output slice. A variable so tests can exercise the refusal with a
-// fixture-sized cap.
+// EditFileBatchWithCtx, checked before the output buffer is allocated. A
+// variable so tests can exercise the refusal with a fixture-sized cap.
 var MaxEditFileOutputBytes int64 = MaxWholeFileReadBytes
 
 // EditFile replaces occurrences of oldString with newString in the file at
@@ -470,10 +469,17 @@ func (e *LocalExecutionEnvironment) EditFileBatchWithCtx(ctx context.Context, pa
 		bom = "\xEF\xBB\xBF"
 	}
 	raw := string(origBytes[len(bom):])
-	useCRLF := false
-	if idx := strings.IndexByte(raw, '\n'); idx > 0 && raw[idx-1] == '\r' {
-		useCRLF = true
+	// Record each newline's original terminator so untouched lines keep theirs
+	// even when the file mixes CRLF and LF. crlfLines[i] describes the i-th
+	// newline of lfText, in file order.
+	crlfLines := make([]bool, 0, strings.Count(raw, "\n"))
+	for i := 0; i < len(raw); i++ {
+		if raw[i] == '\n' {
+			crlfLines = append(crlfLines, i > 0 && raw[i-1] == '\r')
+		}
 	}
+	// Replacements follow the file's first line ending, as they always have.
+	useCRLF := len(crlfLines) > 0 && crlfLines[0]
 	lfText := strings.ReplaceAll(raw, "\r\n", "\n")
 
 	prepared := make([]preparedEdit, len(edits))
@@ -621,39 +627,78 @@ matchLoop:
 		}
 	}
 
-	lfOutLen := int64(len(lfText))
+	// Compute the exact restored length before allocating the output, so an
+	// edit that only exceeds the cap once CRLF terminators are restored is
+	// rejected without building it. Untouched text keeps each newline's
+	// original terminator; replacement text gets the file's first ending.
+	restoredLen := int64(len(bom)) + int64(len(lfText))
+	nlIdx := 0
+	pos := 0
 	for _, sp := range spans {
-		lfOutLen += int64(len(prepared[sp.editIndex].newLF)) - int64(sp.end-sp.start)
-	}
-	if int64(len(bom))+lfOutLen > MaxEditFileOutputBytes {
-		return "", fmt.Errorf("edited output for %s would be %d bytes, exceeding the %d-byte edit limit", path, int64(len(bom))+lfOutLen, MaxEditFileOutputBytes)
-	}
-
-	var outLF strings.Builder
-	outLF.Grow(int(lfOutLen))
-	cursor := 0
-	for _, sp := range spans {
-		outLF.WriteString(lfText[cursor:sp.start])
 		rep := prepared[sp.editIndex].newLF
 		if bom != "" && sp.start == 0 {
 			rep = strings.TrimPrefix(rep, bom)
 		}
-		outLF.WriteString(rep)
+		restoredLen += int64(len(rep)) - int64(sp.end-sp.start)
+		for n := strings.Count(lfText[pos:sp.start], "\n"); n > 0; n-- {
+			if crlfLines[nlIdx] {
+				restoredLen++
+			}
+			nlIdx++
+		}
+		nlIdx += strings.Count(lfText[sp.start:sp.end], "\n")
+		if useCRLF {
+			restoredLen += int64(strings.Count(rep, "\n"))
+		}
+		pos = sp.end
+	}
+	for ; nlIdx < len(crlfLines); nlIdx++ {
+		if crlfLines[nlIdx] {
+			restoredLen++
+		}
+	}
+	if restoredLen > MaxEditFileOutputBytes {
+		return "", fmt.Errorf("edited output for %s would be %d bytes, exceeding the %d-byte edit limit", path, restoredLen, MaxEditFileOutputBytes)
+	}
+
+	var out strings.Builder
+	out.Grow(int(restoredLen))
+	cursor := 0
+	nlIdx = 0
+	// writeOrig emits untouched text with each newline's original terminator.
+	writeOrig := func(seg string) {
+		for {
+			before, after, ok := strings.Cut(seg, "\n")
+			if !ok {
+				out.WriteString(seg)
+				return
+			}
+			out.WriteString(before)
+			if crlfLines[nlIdx] {
+				out.WriteString("\r\n")
+			} else {
+				out.WriteByte('\n')
+			}
+			nlIdx++
+			seg = after
+		}
+	}
+	for _, sp := range spans {
+		writeOrig(lfText[cursor:sp.start])
+		rep := prepared[sp.editIndex].newLF
+		if bom != "" && sp.start == 0 {
+			rep = strings.TrimPrefix(rep, bom)
+		}
+		if useCRLF {
+			rep = strings.ReplaceAll(rep, "\n", "\r\n")
+		}
+		out.WriteString(rep)
+		nlIdx += strings.Count(lfText[sp.start:sp.end], "\n")
 		cursor = sp.end
 	}
-	outLF.WriteString(lfText[cursor:])
+	writeOrig(lfText[cursor:])
 
-	restored := outLF.String()
-	finalLen := int64(len(bom)) + int64(len(restored))
-	if useCRLF {
-		finalLen += int64(strings.Count(restored, "\n"))
-	}
-	if finalLen > MaxEditFileOutputBytes {
-		return "", fmt.Errorf("edited output for %s would be %d bytes, exceeding the %d-byte edit limit", path, finalLen, MaxEditFileOutputBytes)
-	}
-	if useCRLF {
-		restored = strings.ReplaceAll(restored, "\n", "\r\n")
-	}
+	restored := out.String()
 	edited := append([]byte(bom), restored...)
 
 	if bytes.Equal(edited, origBytes) {

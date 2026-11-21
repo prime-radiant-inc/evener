@@ -20,7 +20,7 @@ func repoAuditMain(args []string) int {
 
 func repoAuditRun(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: evener dev repo-audit")
+		_, _ = fmt.Fprintln(stderr, "usage: evener-dev dev repo-audit")
 		return 2
 	}
 	// Every check reads repo-relative paths, so it runs from the checkout's root.

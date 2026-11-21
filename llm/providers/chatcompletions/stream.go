@@ -108,8 +108,9 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 					// rescueClaudeXMLArgs returns the input unchanged when
 					// no XML is present, preserving raw bytes (incl. invalid
 					// UTF-8). It only re-marshals on actual Claude-XML
-					// rescue (rare, intentional).
-					rescuedArgs := rescueClaudeXMLArgs(tc.args.String())
+					// rescue (rare, intentional). The tool's schema gates
+					// inlining JSON-shaped string values.
+					rescuedArgs := rescueToolArgs(tc.args.String(), req.Tools, tc.name)
 					tcd := llm.ToolCallData{
 						ID:               tc.id,
 						Name:             tc.name,

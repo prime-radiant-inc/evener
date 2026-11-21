@@ -8,7 +8,7 @@ import (
 )
 
 // The dispatcher lives entirely in Run(), so its contract is pinned the
-// real-process way: build the actual evener binary and invoke `evener dev`
+// real-process way: build the actual evener binary and invoke `evener-dev dev`
 // to read its exit code and stderr directly. Not `go run`, which reports 1
 // whatever the child exited with, erasing exactly the codes under test. The
 // binary is built once per package run (buildEvenerDev).
@@ -20,7 +20,7 @@ func runEvenerDev(t *testing.T, args ...string) (code int, stdout, stderr string
 	return execEvenerDev(t, args...)
 }
 
-// execEvenerDev runs `evener dev args...` and returns its exit code and each
+// execEvenerDev runs `evener-dev dev args...` and returns its exit code and each
 // stream separately.
 func execEvenerDev(t *testing.T, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
@@ -33,7 +33,7 @@ func execEvenerDev(t *testing.T, args ...string) (code int, stdout, stderr strin
 	}
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) {
-		t.Fatalf("running evener dev: %v", err)
+		t.Fatalf("running evener-dev dev: %v", err)
 	}
 	return exit.ExitCode(), out.String(), errOut.String()
 }
@@ -46,6 +46,9 @@ func TestDispatchRejectsMissingSubcommand(t *testing.T) {
 	if stderr == "" || stdout != "" {
 		t.Errorf("usage belongs on stderr only: stdout %q, stderr %q", stdout, stderr)
 	}
+	if !strings.Contains(stderr, "usage: evener-dev dev <subcommand>") {
+		t.Errorf("usage does not name the evener-dev dev dispatch: %q", stderr)
+	}
 }
 
 func TestDispatchRejectsUnknownSubcommand(t *testing.T) {
@@ -55,5 +58,8 @@ func TestDispatchRejectsUnknownSubcommand(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "launder-money") {
 		t.Errorf("unknown subcommand not named in stderr: %q", stderr)
+	}
+	if !strings.Contains(stderr, "evener-dev dev: unknown subcommand") {
+		t.Errorf("diagnostic does not name the evener-dev dev dispatch: %q", stderr)
 	}
 }

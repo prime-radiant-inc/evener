@@ -577,7 +577,27 @@ func TestEditFileBatch_CRLFMixedEndingsAndBOM(t *testing.T) {
 		}
 	})
 
-	t.Run("CRLF-first mixed endings normalize to CRLF", func(t *testing.T) {
+	t.Run("editing one line in a mixed file keeps untouched line endings", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		env := NewLocalExecutionEnvironment(dir)
+		orig := "a\r\nb\nc\r\n"
+		if err := os.WriteFile(filepath.Join(dir, "mixed.txt"), []byte(orig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFileBatchCtx(context.Background(), "mixed.txt", []FileEdit{
+			{OldString: "a", NewString: "A"},
+		}); err != nil {
+			t.Fatalf("mixed ending edit failed: %v", err)
+		}
+		got, _ := os.ReadFile(filepath.Join(dir, "mixed.txt"))
+		want := "A\r\nb\nc\r\n"
+		if string(got) != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("CRLF-first mixed endings use CRLF for replacements only", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		env := NewLocalExecutionEnvironment(dir)
@@ -591,7 +611,7 @@ func TestEditFileBatch_CRLFMixedEndingsAndBOM(t *testing.T) {
 			t.Fatalf("mixed ending edit failed: %v", err)
 		}
 		got, _ := os.ReadFile(filepath.Join(dir, "mixed.txt"))
-		want := "A1\r\nA2\r\nb\r\nc\r\n"
+		want := "A1\r\nA2\r\nb\nc\r\n"
 		if string(got) != want {
 			t.Fatalf("got %q, want %q", got, want)
 		}
@@ -617,7 +637,7 @@ func TestEditFileBatch_CRLFMixedEndingsAndBOM(t *testing.T) {
 		}
 	})
 
-	t.Run("LF-first mixed endings normalize to LF", func(t *testing.T) {
+	t.Run("LF-first mixed endings use LF for replacements only", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		env := NewLocalExecutionEnvironment(dir)
@@ -626,12 +646,12 @@ func TestEditFileBatch_CRLFMixedEndingsAndBOM(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, err := env.EditFileBatchCtx(context.Background(), "mixed2.txt", []FileEdit{
-			{OldString: "b\r\n", NewString: "B1\r\nB2\r\n"},
+			{OldString: "b", NewString: "B1\nB2"},
 		}); err != nil {
 			t.Fatalf("mixed2 edit failed: %v", err)
 		}
 		got, _ := os.ReadFile(filepath.Join(dir, "mixed2.txt"))
-		want := "a\nB1\nB2\nc\n"
+		want := "a\nB1\nB2\r\nc\n"
 		if string(got) != want {
 			t.Fatalf("got %q, want %q", got, want)
 		}
@@ -792,6 +812,54 @@ func TestEditFileBatch_ResourceBounds(t *testing.T) {
 		}
 		if got, _ := os.ReadFile(filepath.Join(dir, "cap.txt")); string(got) != orig {
 			t.Fatalf("file mutated on output-cap refusal: %q", got)
+		}
+	})
+
+	t.Run("mixed CRLF/LF restored length decides the cap before writing", func(t *testing.T) {
+		MaxEditFileSpans = 100
+		MaxEditFileOutputBytes = 20
+		dir := t.TempDir()
+		env := NewLocalExecutionEnvironment(dir)
+
+		// The LF-normalized output is 15 bytes, but restoring each line's own
+		// terminator (two of the three are CRLF) makes it exactly 20, so the
+		// edit fits the cap.
+		origAtCap := "x\r\nx\nx\r\n"
+		if err := os.WriteFile(filepath.Join(dir, "atcap.txt"), []byte(origAtCap), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFileBatchCtx(context.Background(), "atcap.txt", []FileEdit{
+			{OldString: "x", NewString: "1\n23", ReplaceAll: true},
+		}); err != nil {
+			t.Fatalf("edit at the restored-length cap failed: %v", err)
+		}
+		wantAtCap := "1\r\n23\r\n1\r\n23\n1\r\n23\r\n"
+		if got, _ := os.ReadFile(filepath.Join(dir, "atcap.txt")); string(got) != wantAtCap {
+			t.Fatalf("at-cap output = %q, want %q", got, wantAtCap)
+		}
+
+		// A third CRLF terminator pushes the restored output to 21 bytes, one
+		// over the cap, though the LF-normalized output is still 15 bytes. The
+		// refusal must name the restored length and happen before writing.
+		origOver := "x\r\nx\r\nx\r\n"
+		if err := os.WriteFile(filepath.Join(dir, "over.txt"), []byte(origOver), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		finishCalled := false
+		_, err := env.EditFileBatchWithCtx(context.Background(), "over.txt", []FileEdit{
+			{OldString: "x", NewString: "1\n23", ReplaceAll: true},
+		}, func(b []byte) []byte {
+			finishCalled = true
+			return b
+		})
+		if err == nil || !strings.Contains(err.Error(), "would be 21 bytes") {
+			t.Fatalf("expected a 21-byte restored-length cap error, got %v", err)
+		}
+		if finishCalled {
+			t.Fatal("finish must not be called when the restored-length cap is exceeded")
+		}
+		if got, _ := os.ReadFile(filepath.Join(dir, "over.txt")); string(got) != origOver {
+			t.Fatalf("over-cap file mutated: %q", got)
 		}
 	})
 }
