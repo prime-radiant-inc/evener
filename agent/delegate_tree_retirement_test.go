@@ -1963,6 +1963,12 @@ func TestRetirementDelegateStopDriverHandoff(t *testing.T) {
 			if driver.err != nil {
 				t.Fatal(driver.err)
 			}
+			// The driver releases the handoff's retirement lease before it
+			// publishes done, so the settled stop must not leave admission
+			// racing the driver goroutine (#7159).
+			if hasRetirementBlocker(c.Snapshot().Blockers, "delegate") {
+				t.Fatal("driver done published with the handoff lease still held")
+			}
 			after, err = tree.store.Load()
 			if err != nil || !slices.ContainsFunc(after, func(e delegatestore.Event) bool {
 				return e.SubtreeStopCompleted != nil && e.SubtreeStopCompleted.RequestSeq == stop.requestSeq

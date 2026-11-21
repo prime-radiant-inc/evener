@@ -188,10 +188,7 @@ func (c *delegateTreeController) StopSubtreeAndDrive(ctx context.Context, actor 
 	c.mu.Unlock()
 	if startDriver {
 		handedOff = true
-		go func() {
-			defer retirementRelease()
-			c.runStopReconcileDriver(stop, driver, root)
-		}()
+		go c.runStopReconcileDriver(stop, driver, root, retirementRelease)
 	}
 	return result, cancelPlan, plans, nil
 }
@@ -1013,8 +1010,13 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 	}
 }
 
-func (c *delegateTreeController) runStopReconcileDriver(stop *delegateStopState, driver *delegateStopDriver, root *Session) {
+func (c *delegateTreeController) runStopReconcileDriver(stop *delegateStopState, driver *delegateStopDriver, root *Session, release func()) {
 	err := c.drainStopAbandonable(driver.ctx, stop, root, driver.ctx.Done(), false)
+	// Release the handoff's retirement admission before publishing done. Done is
+	// the barrier callers use to observe the settled stop; a lease released one
+	// goroutine step later made an immediately-following claim race the driver
+	// and see the settled stop as admitted work (#7159).
+	release()
 	c.mu.Lock()
 	driver.err = err
 	close(driver.done)
