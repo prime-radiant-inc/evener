@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // TestW2Conc_StreamCommandSignalEscalatesToSIGKILL pins the SIGTERM->SIGKILL
@@ -121,19 +123,14 @@ func w2conc_pidGone(pid int) bool {
 	return syscall.Kill(pid, 0) == syscall.ESRCH
 }
 
-// w2conc_waitFor blocks until marker appears in the locked buffer, failing the
-// test if it never does within a generous deadline.
+// w2conc_waitFor blocks until marker appears in the locked buffer, reporting the
+// last output seen if it never does.
 func w2conc_waitFor(t *testing.T, mu *sync.Mutex, buf *bytes.Buffer, marker string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	testwait.UntilSeen(t, "marker "+marker+" in the streamed output", func() (bool, string) {
 		mu.Lock()
 		got := buf.String()
 		mu.Unlock()
-		if strings.Contains(got, marker) {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("marker %q never appeared in output", marker)
+		return strings.Contains(got, marker), got
+	})
 }
