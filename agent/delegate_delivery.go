@@ -369,7 +369,7 @@ type delegateDeliveryAck struct {
 	delegateID   string
 	ownerChanged bool
 	// wakeGeneration is the settled generation the acknowledged delivery's wake
-	// supersedes, sampled under the controller lock where the wake was
+	// supersedes, sampled under the controller lock at delivery admission, not where the wake was
 	// journaled. A callback that sampled the generation itself would read it
 	// after the acknowledgment landed, so a stop that settled in between would
 	// be cleared by a delivery older than it.
@@ -757,7 +757,7 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 		return plans, err
 	}
 	// plans carries the generation the acknowledgment's release superseded,
-	// sampled under the controller lock where that release was journaled. The
+	// sampled at delivery admission, not where that release was journaled. The
 	// callback releases against that sample rather than reading the generation
 	// again, so a stop that settles between the acknowledgment and this wake
 	// keeps its quiet.

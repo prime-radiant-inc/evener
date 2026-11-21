@@ -121,9 +121,8 @@ type IntentStated struct {
 // quiet itself is in-memory, so without this record a cold restore cannot tell
 // a stop whose quiet is still current from one a newer event already released.
 // Generation names the settled generation whose stop the release superseded: a
-// release is only ever appended while the aggregate rests at that generation,
-// so generations only move the record forward and a release can never name a
-// stop that settles later.
+// release may be journaled later for a delivery admitted at that generation,
+// and the fold accepts any nonzero sample at or below the latest settled one.
 type AttentionHoldReleased struct {
 	Generation uint64 `json:"generation"`
 }
