@@ -131,6 +131,17 @@ run_xcodebuild() {
 	return "$status"
 }
 
+# capture_simulator_system_log OUTPUT UDID START reads the device's unified log
+# for the window from START through the end of the finishing second into
+# OUTPUT/simulator-system.log. Issue #5992's diagnostic: the capture is best
+# effort, so a failed one names its error log and does not fail the run.
+capture_simulator_system_log() {
+	xcrun simctl spawn "$2" log show \
+		--start "$3" --end "$(date -v+1S '+%Y-%m-%d %H:%M:%S')" \
+		--style compact >"$1/simulator-system.log" 2>"$1/simulator-system-capture.log" ||
+		echo "$SCRIPT_NAME: simulator system log capture failed, see $1/simulator-system-capture.log" >&2
+}
+
 # The runner's fixture test sources this file to drive the real cleanup and
 # cancellable xcodebuild wait; stop before argument parsing or state is minted.
 if [ "${RUN_UI_TESTS_LIB_ONLY:-0}" = "1" ]; then
@@ -455,10 +466,7 @@ log "xcodebuild exit: $test_exit"
 # default level into the uploaded set so a slow first launch can be compared
 # with a normal one. It covers the fixture-only simulator this run created; a
 # failed capture must not fail an otherwise green run.
-xcrun simctl spawn "$sim_udid" log show \
-	--start "$run_start" --end "$(date '+%Y-%m-%d %H:%M:%S')" \
-	--style compact >"$output/simulator-system.log" 2>"$output/simulator-system-capture.log" ||
-	log "simulator system log capture failed, see $output/simulator-system-capture.log"
+capture_simulator_system_log "$output" "$sim_udid" "$run_start"
 
 # Validate the result bundle: every intended test identity must have
 # actually executed, none skipped, zero failures. An unreadable or partial
