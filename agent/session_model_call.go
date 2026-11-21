@@ -510,12 +510,13 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		}
 		// The tail also obeys the late-steer predicate (#7205): a steer that
 		// landed after the claim completed is in no claim, so CompleteModelRequest
-		// never filtered this re-read. The exclusion set is only worth a
-		// controller lock when a steering row is present, and
-		// projectDelegatePendingSteers owns the "steering rows only" rule.
-		if roundLease != nil && slices.ContainsFunc(appended, func(turn schema.Turn) bool { return turn.Kind == schema.TurnSteering }) {
-			owed := s.delegateController.unpresentedSteeringIDs(*roundLease)
-			appended, _, _ = projectDelegatePendingSteers(appended, nil, owed)
+		// never filtered this re-read. The planning copy is filtered with the
+		// tail so the full-history estimate prices only what the request shows.
+		if roundLease != nil {
+			if owed := s.delegateController.unpresentedSteeringIDs(*roundLease); len(owed) > 0 {
+				historyTurns, _, _ = projectDelegatePendingSteers(historyTurns, nil, owed)
+				appended, _, _ = projectDelegatePendingSteers(appended, nil, owed)
+			}
 			// The boundary already advanced past the withheld steer, so it stays
 			// outside every later rebuild window this round; the next claim binds it.
 			if len(appended) == 0 {

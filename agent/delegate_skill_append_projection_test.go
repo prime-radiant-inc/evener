@@ -124,11 +124,6 @@ func TestDelegateRebuildWithholdsSteerAppendedAfterSnapshot(t *testing.T) {
 	if got := countMessageText(history, parentMessageAttribution+marker); got != 0 {
 		t.Fatalf("the rebuilt request presented a steer appended after the snapshot %d times, want 0: %#v", got, history)
 	}
-	// Positive control: the rebuild ran, carrying the typed failure
-	// notification it appended.
-	if got := strings.Count(messagesText(history), "needs the memory save tools"); got != 1 {
-		t.Fatalf("the rebuilt request carried the appended failure notification %d times, want 1", got)
-	}
 	source, ok := runtime.takeRoundFallbackSource()
 	if !ok {
 		t.Fatal("prepareModelRequestWithError recorded no fallback source")
@@ -137,6 +132,22 @@ func TestDelegateRebuildWithholdsSteerAppendedAfterSnapshot(t *testing.T) {
 	if got := countMessageText(fallbackHistory, parentMessageAttribution+marker); got != 0 {
 		t.Fatalf("the fallback source presented a steer appended after the snapshot %d times, want 0", got)
 	}
+	// Positive control by outcome identity, not wording: the rebuild ran and
+	// carried the failed skill-delivery outcome it appended.
+	carriedOutcome := false
+	for _, turn := range source.turns {
+		if turn.SkillState == nil {
+			continue
+		}
+		for _, outcome := range turn.SkillState.Outcomes {
+			if outcome.InvocationID == "inv-7205" && outcome.Status == "failed" {
+				carriedOutcome = true
+			}
+		}
+	}
+	if !carriedOutcome {
+		t.Fatalf("the rebuilt fallback source carries no failed outcome for inv-7205: the rebuild never ran, so this proof is vacuous")
+	}
 	// The steer is still owed: the next request binds it and presents it once.
 	_, _, next, _, _, _, err := runtime.prepareModelRequestWithError(ctx, 2, &timings)
 	if err != nil {
@@ -144,5 +155,56 @@ func TestDelegateRebuildWithholdsSteerAppendedAfterSnapshot(t *testing.T) {
 	}
 	if got := countMessageText(next, parentMessageAttribution+marker); got != 1 {
 		t.Fatalf("the next request presented the steer %d times, want 1", got)
+	}
+}
+
+// #7205: the rebuilt tail's planning copy is priced for the full-history
+// estimate, so it must obey the same late-steer predicate as the request. A
+// withheld steer that survives only into the estimate can still refuse a
+// request whose messages fit the window.
+func TestDelegateRebuildEstimatesWithoutWithheldSteer(t *testing.T) {
+	runtime := newSession(t, withStateDir(t.TempDir()))
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	runtime.delegateController = c
+	c.mu.Lock()
+	c.live[lease.delegateID].runtime = runtime
+	c.live[lease.delegateID].binding.runtime = runtime
+	c.mu.Unlock()
+
+	runtime.mu.Lock()
+	runtime.skillLifecycle.Obligations = append(runtime.skillLifecycle.Obligations, schema.SkillDeliveryObligation{
+		InvocationID: "inv-7205-estimate",
+		Identity:     schema.SkillContentIdentity{Name: skill.GardeningMemorySkillName},
+		Route:        "model_tool",
+	})
+	runtime.skillLifecycle.Revision++
+	runtime.mu.Unlock()
+
+	// A grounded measured baseline makes the manager's estimate ride the
+	// request instead of being skipped as unmeasured.
+	runtime.contextMgr.RecordInputTokens(1, 0)
+
+	marker := strings.Repeat("x", 600_000)
+	var once sync.Once
+	updateSessionTestConfig(runtime, func(cfg *testConfig) {
+		cfg.afterDelegateModelSnapshot = func() {
+			once.Do(func() {
+				if _, err := c.Steer(context.Background(), rootDelegateActor("root-session"), lease.delegateID, marker); err != nil {
+					t.Errorf("late steer: %v", err)
+				}
+			})
+		}
+	})
+
+	ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
+	var timings events.RoundTimings
+	_, _, _, req, _, _, err := runtime.prepareModelRequestWithError(ctx, 1, &timings)
+	if err != nil {
+		t.Fatalf("prepare delegate model request: %v", err)
+	}
+	if req.FullHistoryInputTokensEstimate >= len(marker)/4 {
+		t.Fatalf("the withheld steer priced the rebuilt request's full-history estimate at %d tokens, want below %d: the estimate priced a turn the request does not present", req.FullHistoryInputTokensEstimate, len(marker)/4)
 	}
 }
