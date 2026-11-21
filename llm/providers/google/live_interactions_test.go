@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,8 +15,9 @@ import (
 )
 
 // liveInteractionsDefaultModel is the model the live suite drives unless
-// EVENER_LIVE_GOOGLE_MODEL names another one.
-const liveInteractionsDefaultModel = "gemini-2.5-flash"
+// EVENER_LIVE_GOOGLE_MODEL names another one. gemini-3.8-flash is served by
+// /interactions on both surfaces and carries combined_search_and_functions.
+const liveInteractionsDefaultModel = "gemini-3.8-flash"
 
 type liveInteractionsTarget struct {
 	name     string
@@ -74,6 +76,28 @@ func resolveLiveInteractions(t *testing.T, instance string) registry.Resolved {
 	res, err := r.Resolve(instance + "/" + liveInteractionsModel())
 	if err != nil {
 		t.Fatalf("resolve %s: %v", instance, err)
+	}
+	return res
+}
+
+// resolveLiveInteractionsWithWebSearch resolves the same real rows with a
+// test config layer that opts both surfaces into web_search, matching the
+// "web_search = true" configuration a combined google_search + function run
+// requires.
+func resolveLiveInteractionsWithWebSearch(t *testing.T, instance string) registry.Resolved {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "providers.toml")
+	config := "[providers.google]\nweb_search = true\n\n[providers.\"google-vertex\"]\nweb_search = true\n"
+	if err := os.WriteFile(path, []byte(config), 0o644); err != nil {
+		t.Fatalf("write live web_search config: %v", err)
+	}
+	r, err := registry.Load(registry.WithConfigPath(path))
+	if err != nil {
+		t.Fatalf("registry.Load with web_search config: %v", err)
+	}
+	res, err := r.Resolve(instance + "/" + liveInteractionsModel())
+	if err != nil {
+		t.Fatalf("resolve %s with web_search config: %v", instance, err)
 	}
 	return res
 }
@@ -225,12 +249,9 @@ func TestLiveInteractionsStatefulCombinedSearchAndFunctionRound(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 			defer cancel()
 
-			res := resolveLiveInteractions(t, target.instance)
-			// The web_search = true test config layer: combined google_search
-			// and function tools are opt-in through these caps.
-			enabled := true
-			res.Caps.WebSearch = &enabled
-			res.Caps.CombinedSearchAndFunctions = &enabled
+			// The web_search = true test config layer: gemini-3.8-flash already
+			// carries combined_search_and_functions natively.
+			res := resolveLiveInteractionsWithWebSearch(t, target.instance)
 			store := true
 			p := &Protocol{Client: http.DefaultClient}
 			tools := []llm.ToolDefinition{liveInteractionsPingTool()}

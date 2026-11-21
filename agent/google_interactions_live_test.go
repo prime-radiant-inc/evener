@@ -22,8 +22,9 @@ import (
 )
 
 // liveGoogleDefaultModel is the model the live session suite drives unless
-// EVENER_LIVE_GOOGLE_MODEL names another one.
-const liveGoogleDefaultModel = "gemini-2.5-flash"
+// EVENER_LIVE_GOOGLE_MODEL names another one. gemini-3.8-flash is served by
+// /interactions on both surfaces.
+const liveGoogleDefaultModel = "gemini-3.8-flash"
 
 type liveGoogleTarget struct {
 	name     string
