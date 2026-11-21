@@ -3238,6 +3238,122 @@ printf '+%s\n' "$$" >&"${EVENER_MERGEQ_GH_GROUP_FD:?the launcher named no group 
 	}
 }
 
+// TestMergeEnqueueLauncherRemovesAMintedDirOnCancellationBeforeHandoff pins the
+// window finish used to miss: the prebuilt path creates its private directory
+// when the channel is minted but used to record it in gh_private_dir only after
+// the file had been opened and unlinked. A cancellation in between left the
+// minted directory (and the channel file inside it) behind.
+//
+// The launcher's own mint and EXIT trap are run, not a copy. The cancellation
+// is taken at the mint's own unlink of the channel file -- the last statement
+// before the handoff -- so the directory is created and registered and has not
+// yet been removed. That is deterministic: no sleep and no test hook in the
+// script, only rm intercepted for that one call.
+func TestMergeEnqueueLauncherRemovesAMintedDirOnCancellationBeforeHandoff(t *testing.T) {
+	t.Parallel()
+	dir := resolvePath(t, fixtureScratchBase(t))
+	root := resolvePathAfterCreate(t, filepath.Join(dir, "scratch-root"))
+	record := filepath.Join(dir, "minted-dir")
+	const mintCleanupFuncs = "/^gh_group_fd=/p;" +
+		"/^gh_group_read_fd=/p;" +
+		"/^gh_private_dir=/p;" +
+		"/^finish()/,/^}/p;" +
+		"/^mint_gh_group_channel()/,/^}/p"
+	script := `set -euo pipefail; ` +
+		`scratch_root="$2"; record="$3"; ` +
+		`scratch_rm() { :; }; ` +
+		`helper_started=false; ` +
+		`scratch_path_is_trusted() { return 0; }; ` +
+		`scratch_resolve() { printf '%s\n' "$1" > "$record"; printf '%s\n' "$1"; }; ` +
+		`rm_count=0; ` +
+		`rm() { rm_count=$((rm_count + 1)); if [ "$rm_count" -eq 1 ]; then exit 130; fi; command rm "$@"; }; ` +
+		`trap 'finish' EXIT; ` +
+		`mint_gh_group_channel`
+	err := runLauncherFunc(t, mintCleanupFuncs, script, root, record)
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 130 {
+		t.Fatalf("the mint did not end with the cancellation's 130: %v", err)
+	}
+	body, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("the mint never created its private directory: %v", err)
+	}
+	minted := strings.TrimSpace(string(body))
+	if minted == "" {
+		t.Fatalf("scratch_resolve recorded no directory: the mint did not get as far as a create")
+	}
+	if _, err := os.Stat(minted); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the minted directory %s survived the cancellation before the handoff: %v", minted, err)
+	}
+}
+
+// TestMergeEnqueueLauncherClearsAnInheritedGroupFileWhenMintFails pins the low:
+// the launch cleared EVENER_MERGEQ_GH_GROUP_FD but passed an inherited
+// EVENER_MERGEQ_GH_GROUP_FILE through to the helper. When minting failed, the
+// helper read the path, published to it and removed it -- a caller's file the
+// launcher never created.
+//
+// The fixture models the helper's groupChannel: the descriptor wins when it is
+// non-empty, and the inherited path is used only when there is none. The mint is
+// forced to fail the way the replaceable-scratch cases do -- an untrusted
+// TMPDIR with no usable fallback -- while a prebuilt helper still runs.
+func TestMergeEnqueueLauncherClearsAnInheritedGroupFileWhenMintFails(t *testing.T) {
+	t.Parallel()
+	f := newLauncherFixture(t, `#!/usr/bin/env bash
+set -uo pipefail
+printf 'fd=%s\n' "${EVENER_MERGEQ_GH_GROUP_FD:-}" >> "$EVENER_FIXTURE_LOG"
+handle=""
+if [ -z "${EVENER_MERGEQ_GH_GROUP_FD:-}" ]; then
+  handle="${EVENER_MERGEQ_GH_GROUP_FILE:-}"
+fi
+if [ -n "$handle" ]; then
+  printf '+%s\n' "$$" > "$handle"
+  rm -f "$handle"
+fi
+printf 'helper-ran\n' >> "$EVENER_FIXTURE_LOG"
+`)
+	tmp := f.tmpDir()
+	if err := os.MkdirAll(tmp, 0o755); err != nil {
+		t.Fatalf("create the fixture TMPDIR: %v", err)
+	}
+	if err := os.Chmod(tmp, 0o777); err != nil {
+		t.Fatalf("make the fixture TMPDIR replaceable: %v", err)
+	}
+	// No fallback root: a runtime directory and a HOME that cannot be created
+	// under a regular file, so the mint has nothing to mint into.
+	denied := filepath.Join(f.dir, "not-a-directory")
+	if err := os.WriteFile(denied, []byte("not a directory\n"), 0o600); err != nil {
+		t.Fatalf("write the denied root: %v", err)
+	}
+	handle := filepath.Join(f.dir, "inherited-gh-group")
+	const original = "the caller's own group id\n"
+	if err := os.WriteFile(handle, []byte(original), 0o600); err != nil {
+		t.Fatalf("write the inherited file: %v", err)
+	}
+	cmd := f.launcherCmd(t, "--pr", "6499", "--wait", "570", "--repo", "example.invalid/none")
+	cmd.Env = envOverride(cmd.Env,
+		"XDG_RUNTIME_DIR="+filepath.Join(denied, "runtime"),
+		"HOME="+denied,
+		"EVENER_MERGEQ_GH_GROUP_FILE="+handle,
+	)
+	runLauncher(t, cmd, f)
+	mustExit(t, cmd, f, 0)
+	waitForLine(t, f, "helper-ran")
+	// The premise: minting really failed, so the descriptor the helper saw was
+	// empty and a helper that reads the inherited path would have used it.
+	if fd := logValue(t, f, "fd="); fd != "" {
+		t.Fatalf("the launcher minted descriptor %q, so minting did not fail; %s", fd, f.output(t))
+	}
+	assertNoMintedDirs(t, tmp)
+	body, err := os.ReadFile(handle)
+	if err != nil {
+		t.Fatalf("the caller's inherited group file is gone: the launcher left a failed mint's file path visible to the helper (%v)", err)
+	}
+	if string(body) != original {
+		t.Fatalf("the caller's inherited group file now holds %q, want %q: the helper published into a file the launcher did not create", body, original)
+	}
+}
+
 // TestMergeEnqueueLauncherStopsAHelperAWrapperLeftBehind pins the case where the
 // launched PID is not the helper: EVENER_DEV_BIN names a wrapper that starts the
 // Go helper as a child and exits on TERM without forwarding it.
@@ -5517,6 +5633,19 @@ trap '' TERM
 printf 'call-pid=%s;pgid=%s\n' "$$" "$(ps -o pgid= -p "$$" | tr -d ' ')" >> "$EVENER_FIXTURE_LOG"
 while :; do sleep 0.05; done
 `), 0o755)
+	// The call is started through a short-lived intermediate that exits at once.
+	// The call is then reparented out of the helper's descendant tree while
+	// keeping the process group `set -m` gave it, so a launcher that never read
+	// the published descriptor id cannot reach it by walking the helper's tree.
+	starter := filepath.Join(dir, "gh-call-start.sh")
+	writeTestFile(t, starter, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+set -m
+"$1" &
+call=$!
+set +m
+printf '+%s\n' "$call" >&"${EVENER_MERGEQ_GH_GROUP_FD:?the launcher named no group channel}"
+`), 0o755)
 	// The bystander: a group of its own, started here, and named by nothing the
 	// launcher can legitimately reach. Its pgid is what the plant carries.
 	bystander := exec.Command("sh", "-c", "while :; do sleep 1; done")
@@ -5534,18 +5663,19 @@ while :; do sleep 0.05; done
 	// built, so the fixture path is the one the launcher executes.
 	writeTestFile(t, f.path, []byte(`#!/usr/bin/env bash
 set -uo pipefail
-# The real call, in a group of its own, published on the launcher's channel.
-set -m
-`+shellquote.Literal(call)+` &
-call=$!
-set +m
-printf '+%s\n' "$call" >&"${EVENER_MERGEQ_GH_GROUP_FD:?the launcher named no group channel}"
-printf 'call-pid=%s;pgid=%s\n' "$call" "$(ps -o pgid= -p "$call" | tr -d ' ')" >> "$EVENER_FIXTURE_LOG"
+printf 'helper-pid=%s\n' "$$" >> "$EVENER_FIXTURE_LOG"
+# The real call, in a group of its own, started by an intermediate that exits so
+# the call reparents away from this helper, and published on the launcher's
+# channel by the only process that knows its pid.
+`+shellquote.Literal(starter)+` `+shellquote.Literal(call)+` &
+wait $!
 # The plant, in the scratch the launcher would mint a name in, in the shape a
-# path handle would have read. Written after the publication, so a launcher that
-# consulted a name as well would have to choose between two ids -- and this one
-# is a stranger's.
-plant="${TMPDIR:?}/gh-group"
+# path handle would have read: the prebuilt path's file-based handle was
+# $TMPDIR/merge-enqueue-gh-group-$$, with $$ the launcher's pid, which is this
+# helper's parent. Written after the publication, so a launcher that consulted a
+# name as well would have to choose between two ids -- and this one is a
+# stranger's.
+plant="${TMPDIR:?}/merge-enqueue-gh-group-$PPID"
 printf '%s\n' `+strconv.Itoa(bystanderPID)+` > "$plant"
 printf 'planted=%s\n' "$plant" >> "$EVENER_FIXTURE_LOG"
 printf 'planted\n' >> "$EVENER_FIXTURE_LOG"
@@ -5562,14 +5692,23 @@ while :; do sleep 0.05; done
 	var helperPID int
 	runLauncher(t, cmd, f, &helperPID)
 	callPID, callGroup := logPIDAndGroup(t, f, "call-pid=")
+	// Registered before the assertions: the call is reparented out of every
+	// ancestry the sweep can follow, so a failure between here and the assertion
+	// would otherwise leave it polling.
+	t.Cleanup(func() { killGroups(callPID) })
 	waitForLine(t, f, "planted")
+	helperPID = logPID(t, f, "helper-pid=")
+	if slices.ContainsFunc(launcherDescendants(t, helperPID), func(proc procLine) bool {
+		return proc.pid == callPID
+	}) {
+		t.Fatalf("the call %d is still a descendant of the helper %d: a stop that walked the helper's tree could reach it, so this case would not show the published descriptor id was what stopped it", callPID, helperPID)
+	}
 	if callGroup != callPID {
 		t.Fatalf("the call is in group %d, want its own group %d: this case needs it reachable only through the published id", callGroup, callPID)
 	}
 	if callGroup == bystanderPID {
 		t.Fatalf("the call and the bystander are the same group %d, so the case could not tell a stop that reached the right group from one that reached the plant", callGroup)
 	}
-	t.Cleanup(func() { killGroups(callPID) })
 	// The scratch root is world-writable while the forced stop decides, and the
 	// plant is in it. That is the state a path handle would be read in: whatever
 	// name it resolved, the directory holding it is one another user can write.

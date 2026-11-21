@@ -757,9 +757,10 @@ gh_group_read_fd=""
 # The last group the helper published through the channel, or empty. Updated by
 # drain_gh_group_fd and read by the two census functions.
 published_gh_pgid=""
-# The private directory the channel file is minted in on the prebuilt path. It
-# exists only between the mint and the unlink, and is normally gone before the
-# helper starts.
+# The private directory the channel file is minted in on the prebuilt path. It is
+# named from the `mktemp -d` that creates it until the mint removes it, and is
+# normally gone before the helper starts. A cancellation in between leaves it set
+# so finish removes the channel file and the directory this script created.
 gh_private_dir=""
 # The scratch directory the helper was built in, or empty on the prebuilt path.
 #
@@ -1173,9 +1174,11 @@ finish() {
     { exec 3>&- 4<&-; } 2>/dev/null || true
   fi
   # The prebuilt path's private directory is normally unlinked and removed by
-  # the mint itself. It survives only when the mint could not unlink the file
-  # there, and it holds nothing else this script needs.
+  # the mint itself. It survives only when a cancellation landed between its
+  # creation and removal, or the mint could not remove it, and it holds nothing
+  # this script needs.
   if [ -n "$gh_private_dir" ]; then
+    rm -f "$gh_private_dir/gh-group" 2>/dev/null || true
     rmdir "$gh_private_dir" 2>/dev/null || true
   fi
   # Under set -e a failing scratch_rm would abort this handler before the
@@ -1254,13 +1257,14 @@ mint_gh_group_channel() {
     # continues: the prebuilt path must work on a host where isolation cannot be
     # established.
     [ -n "${scratch_root:-}" ] || return 0
-    dir=$(mktemp -d "$scratch_root/merge-enqueue.XXXXXX" 2>/dev/null) || dir=""
+    gh_private_dir=$(mktemp -d "$scratch_root/merge-enqueue.XXXXXX" 2>/dev/null) || gh_private_dir=""
+    dir="$gh_private_dir"
     # Resolved through the same function the root was, so the directory this
     # function goes on to create in is the one it just checked. A raw `mktemp -d`
     # result can still carry a symlinked component above it.
     [ -n "$dir" ] && dir=$(scratch_resolve "$dir" 2>/dev/null) || dir=""
     if [ -n "$dir" ] && ! scratch_path_is_trusted "$dir"; then
-      rmdir "$dir" 2>/dev/null || true
+      if rmdir "$dir" 2>/dev/null; then gh_private_dir=""; fi
       dir=""
     fi
     if [ -z "$dir" ]; then
@@ -1272,7 +1276,7 @@ mint_gh_group_channel() {
   # existing entry, so a name another user planted here fails the create rather
   # than being opened through.
   if ! (umask 077 && set -C && : > "$channel") 2>/dev/null; then
-    [ -n "$scratch" ] || rmdir "$dir" 2>/dev/null || true
+    if [ -z "$scratch" ] && rmdir "$dir" 2>/dev/null; then gh_private_dir=""; fi
     return 0
   fi
   # The opens are contained: a file that cannot be opened leaves the run without
@@ -1292,17 +1296,14 @@ mint_gh_group_channel() {
   if ! { exec 3>>"$channel"; } 2>/dev/null || ! { exec 4<"$channel"; } 2>/dev/null; then
     { exec 3>&- 4<&-; } 2>/dev/null || true
     rm -f "$channel" 2>/dev/null || true
-    [ -n "$scratch" ] || rmdir "$dir" 2>/dev/null || true
+    if [ -z "$scratch" ] && rmdir "$dir" 2>/dev/null; then gh_private_dir=""; fi
     return 0
   fi
   # The unlink is the point, not tidiness: after it, no path names the file and
   # the descriptors are the only handles. A directory that cannot be removed
   # here is left to the EXIT trap.
   rm -f "$channel" 2>/dev/null || true
-  if [ -z "$scratch" ]; then
-    gh_private_dir="$dir"
-    rmdir "$dir" 2>/dev/null || true
-  fi
+  if [ -z "$scratch" ] && rmdir "$dir" 2>/dev/null; then gh_private_dir=""; fi
   gh_group_fd=3
   gh_group_read_fd=4
   return 0
@@ -1349,7 +1350,7 @@ start_helper() {
   mint_gh_group_channel "$helper_scratch"
   launching=true
   set -m
-  env GOFLAGS= EVENER_MERGEQ_GH_GROUP_FD="${gh_group_fd:-}" "$1" dev merge-enqueue \
+  env GOFLAGS= EVENER_MERGEQ_GH_GROUP_FD="${gh_group_fd:-}" EVENER_MERGEQ_GH_GROUP_FILE= "$1" dev merge-enqueue \
     --repo "$repo" --pr "$pr" --wait "$wait" ${jump[@]+"${jump[@]}"} 4<&- &
   set +m
   child=$!
