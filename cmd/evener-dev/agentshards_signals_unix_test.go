@@ -57,32 +57,28 @@ func startHeldRun(t *testing.T, extraEnv ...string) (*exec.Cmd, int, string, str
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("starting held run: %v", err)
 	}
-	// A descendant can outlive a killed runner holding the stderr pipe.
-	cmd.WaitDelay = 5 * time.Second
-	announced := false
 	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
-		_ = cmd.Wait() // also drains the stderr copy goroutine before the read
-		if !announced {
-			t.Logf("held shard never announced; stderr:\n%s", stderr.String())
-		}
+		_, _ = cmd.Process.Wait()
 	})
 
-	// Await the hold announcement: the shard's write is the condition, and
-	// the cold `go test -c` behind it gets the shared guard.
-	var heldPid int
-	testwait.Until(t, "the held shard to announce itself", func() bool {
+	// Await the hold announcement; the ceiling is a tripwire sized for a
+	// cold `go test -c` under load, not a mechanism.
+	deadline := time.Now().Add(120 * time.Second)
+	for {
 		matches, _ := filepath.Glob(filepath.Join(holdDir, "held.*"))
-		if len(matches) != 1 {
-			return false
+		if len(matches) == 1 {
+			var heldPid int
+			if _, err := fmt.Sscanf(filepath.Base(matches[0]), "held.%d", &heldPid); err != nil {
+				t.Fatalf("parsing held pid from %s: %v", matches[0], err)
+			}
+			return cmd, heldPid, tmp, holdDir
 		}
-		if _, err := fmt.Sscanf(filepath.Base(matches[0]), "held.%d", &heldPid); err != nil {
-			t.Fatalf("parsing held pid from %s: %v", matches[0], err)
+		if time.Now().After(deadline) {
+			t.Fatalf("held shard never announced; stderr:\n%s", &stderr)
 		}
-		return true
-	})
-	announced = true
-	return cmd, heldPid, tmp, holdDir
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // awaitFile waits for a path to appear, failing with label if it never does.
