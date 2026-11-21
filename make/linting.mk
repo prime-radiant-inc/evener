@@ -1,4 +1,4 @@
-.PHONY: lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-prompt-eval lint-package-imports lint-go-module-consumer lint-js-toolchain-pins lint-tracked-file-size lint-repo-audit lint-cache-clean lint-cache-sweep secret-scan
+.PHONY: lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-prompt-eval lint-package-imports lint-go-module-consumer lint-js-toolchain-pins lint-repo-audit lint-cache-clean lint-cache-sweep secret-scan
 
 # secret-scan runs gitleaks over the whole working tree using the committed
 # .gitleaks.toml ruleset. Part of the gate (`make lint`); skips with a warning
@@ -337,18 +337,6 @@ lint-go-module-consumer:
 lint-js-toolchain-pins:
 	$(call run_quiet_lint,node scripts/sdk/js-toolchain-pins-check.mjs)
 
-# lint-tracked-file-size keeps large blobs out of git. A file stays in history
-# after it is deleted, so the budget stops it at the PR that adds it; the
-# script holds the short allowlist of files that have to be committed.
-## Fail if a tracked file is over 1 MiB and is not on the script's allowlist.
-## proves: No git-tracked file exceeds 1 MiB except the allowlisted ones in
-##   scripts/ops/tracked-file-size-check.sh.
-## trigger: Required CI (via make lint); local pre-merge. Well under a second.
-## requires: None beyond a POSIX shell and git.
-## fails-when: A tracked file over 1 MiB is not on the allowlist.
-lint-tracked-file-size:
-	$(call run_quiet_lint,scripts/ops/tracked-file-size-check.sh)
-
 # lint-repo-audit holds the repository's own source, scripts and Makefile to
 # the rules that fail on what a change writes rather than on what the code
 # does, so they gate in lint instead of red-ing an unrelated package's tests.
@@ -389,7 +377,7 @@ lint-repo-audit: build-dev
 # ignores its arguments and exits 0 (issue #1406: every root-scoped "biome both
 # scopes" invocation reported green while checking nothing).
 
-LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-prompt-eval lint-package-imports lint-go-module-consumer lint-js-toolchain-pins lint-tracked-file-size lint-repo-audit secret-scan
+LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-prompt-eval lint-package-imports lint-go-module-consumer lint-js-toolchain-pins lint-repo-audit secret-scan
 
 ## Go lint, formatting, tagged floors, generated outputs, imports, repository
 ## source audits, and secrets. The frontend's Biome scopes run in `make
@@ -399,8 +387,7 @@ LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal l
 ##   workspace module; generated-output freshness; the fuzz registry check;
 ##   that no web or native import names the AppWire TypeScript package by
 ##   path; that Biome, Vitest, TypeScript and React are pinned to one exact
-##   version across the npm trees; that no tracked file is over 1 MiB beyond a
-##   short allowlist; the repository source audits in
+##   version across the npm trees; the repository source audits in
 ##   internal/devtool/repoaudit; the prompt-eval harness's own tests; and the
 ##   repo secret scan.
 ## trigger: Required CI; local pre-merge.

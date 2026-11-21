@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -47,8 +46,10 @@ func goGCTargetPercent(t *testing.T) int {
 // alone is the difference between tuning the daemon and blowing up the RSS of
 // the memory-constrained host that set GOGC on purpose.
 //
-// Not parallel: each case sets the variable for the process and reads it
-// through the registry row the production code reads.
+// An empty GOGC is the one set value that is not an operator's target: the Go
+// runtime reads an empty GOGC as unset, so evener treats it the same way.
+//
+// Not parallel: each case sets the variable for the process.
 func TestTuneGCTargetRaisesTheCollectorOnlyWhenUntuned(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -65,6 +66,13 @@ func TestTuneGCTargetRaisesTheCollectorOnlyWhenUntuned(t *testing.T) {
 			current: gcDefaultPercent,
 			want:    gcTargetPercent,
 			calls:   []int{gcTargetPercent},
+		},
+		{
+			name:    "an empty GOGC is treated as unset",
+			current: gcDefaultPercent,
+			want:    gcTargetPercent,
+			calls:   []int{gcTargetPercent},
+			gogcSet: true,
 		},
 		{
 			name:    "an operator's GOGC is kept",
@@ -90,117 +98,28 @@ func TestTuneGCTargetRaisesTheCollectorOnlyWhenUntuned(t *testing.T) {
 			gogc:    "100",
 			gogcSet: true,
 		},
+		{
+			name:    "a malformed GOGC is the runtime's to handle",
+			current: gcDefaultPercent,
+			want:    gcDefaultPercent,
+			calls:   nil,
+			gogc:    "banana",
+			gogcSet: true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			setGoGC(t, tc.gogc, tc.gogcSet)
 			current := tc.current
 			var calls []int
-			if err := tuneGCTarget(func(percent int) int {
+			tuneGCTarget(func(percent int) int {
 				calls = append(calls, percent)
 				previous := current
 				current = percent
 				return previous
-			}); err != nil {
-				t.Fatalf("tuneGCTarget: %v", err)
-			}
+			})
 			if current != tc.want {
 				t.Errorf("collector target = %d, want %d", current, tc.want)
-			}
-			if !slices.Equal(calls, tc.calls) {
-				t.Errorf("SetGCPercent calls = %v, want %v", calls, tc.calls)
-			}
-		})
-	}
-}
-
-// A GOGC the collector would not honor is refused before the process runs, and
-// the collector is never moved: a typo must not be read as Go's default 100
-// while evener behaves as though nobody configured it, which is what the
-// runtime's own parse does with an unparseable value. The sentinel is matched
-// with errors.Is, the class rather than the wording.
-func TestTuneGCTargetRefusesAValueTheCollectorWouldNotHonor(t *testing.T) {
-	for _, value := range []string{"banana", "150%", "1e3", " 100", "100 ", "", "-0x10"} {
-		t.Run(value, func(t *testing.T) {
-			setGoGC(t, value, true)
-			called := false
-			err := tuneGCTarget(func(int) int { called = true; return gcDefaultPercent })
-			if !errors.Is(err, errInvalidGOGC) {
-				t.Fatalf("tuneGCTarget(%q) error = %v, want errInvalidGOGC", value, err)
-			}
-			if called {
-				t.Errorf("SetGCPercent called for a refused %q; the collector must not move on a value the process refuses", value)
-			}
-		})
-	}
-}
-
-// Every value Go's own startup read accepts is accepted here, so validation
-// never refuses a GOGC the collector would have honored. The runtime's read is
-// "off" or a base-10 int32, and a negative percentage disables collection.
-func TestParseGCPercentAcceptsWhatTheCollectorAccepts(t *testing.T) {
-	for _, tc := range []struct {
-		value string
-		want  int
-	}{
-		{"off", -1},
-		{"0", 0},
-		{"100", 100},
-		{"200", 200},
-		{"-1", -1},
-		{"2147483647", 2147483647},
-	} {
-		got, err := parseGCPercent(tc.value)
-		if err != nil || got != tc.want {
-			t.Errorf("parseGCPercent(%q) = %d, %v; want %d, nil", tc.value, got, err, tc.want)
-		}
-	}
-}
-
-// The refusal is what an operator sees, so it must exit nonzero before any work
-// and leave a diagnostic on stderr. applyGCTuning takes the process's own
-// seams, so this drives it exactly as main does.
-func TestApplyGCTuningRefusesAMalformedValueAtStartup(t *testing.T) {
-	setGoGC(t, "not-a-number", true)
-	var stderr bytes.Buffer
-	var exits []int
-	applyGCTuning(func(int) int { return gcDefaultPercent }, &stderr, func(code int) { exits = append(exits, code) })
-	if !slices.Equal(exits, []int{1}) {
-		t.Fatalf("exit codes = %v, want [1]: a bad GOGC must stop the process before it runs", exits)
-	}
-	if stderr.Len() == 0 {
-		t.Error("refusal wrote nothing to stderr; the operator gets no clue which variable failed")
-	}
-}
-
-// applyGCTuning forwards the policy and exits nowhere when the configuration is
-// accepted: it is the startup seam, so both arms matter — an unset variable
-// still reaches the collector, and an exported one reaches no call at all.
-func TestApplyGCTuningForwardsThePolicyWithoutExiting(t *testing.T) {
-	cases := []struct {
-		name    string
-		gogc    string
-		gogcSet bool
-		calls   []int
-	}{
-		{name: "unset tunes the collector", calls: []int{gcTargetPercent}},
-		{name: "an exported value is left in place", gogc: "300", gogcSet: true, calls: nil},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			setGoGC(t, tc.gogc, tc.gogcSet)
-			var stderr bytes.Buffer
-			var exits []int
-			var calls []int
-			applyGCTuning(func(percent int) int {
-				calls = append(calls, percent)
-				return gcDefaultPercent
-			}, &stderr, func(code int) { exits = append(exits, code) })
-			if len(exits) != 0 {
-				t.Fatalf("exit codes = %v, want none", exits)
-			}
-			if stderr.Len() != 0 {
-				t.Errorf("stderr = %q, want nothing", stderr.String())
 			}
 			if !slices.Equal(calls, tc.calls) {
 				t.Errorf("SetGCPercent calls = %v, want %v", calls, tc.calls)
@@ -228,7 +147,7 @@ func TestGOGCStartupHelper(t *testing.T) {
 	if os.Getenv(gogcStartupHelperEnv) != "1" {
 		t.Skip("helper process only")
 	}
-	applyGCTuning(debug.SetGCPercent, os.Stderr, os.Exit)
+	tuneGCTarget(debug.SetGCPercent)
 	report := os.Getenv(gogcStartupReportEnv)
 	if err := os.WriteFile(report, []byte(strconv.Itoa(goGCTargetPercent(t))), 0o644); err != nil {
 		t.Fatal(err)
@@ -238,8 +157,10 @@ func TestGOGCStartupHelper(t *testing.T) {
 // TestGOGCFromTheEnvironmentIsWhatTheCollectorPacesAgainst pins the knob end to
 // end: a GOGC exported for the process is the target the collector runs with
 // after evener's startup, and an absent GOGC still lands on evener's own 200.
-// The child is this test binary re-executed, so the runtime's real startup read
-// is in play rather than a simulated one.
+// A malformed value is not evener's to refuse: the runtime's silent fallback to
+// 100 is what the process runs with, and startup succeeds. The child is this
+// test binary re-executed, so the runtime's real startup read is in play rather
+// than a simulated one.
 func TestGOGCFromTheEnvironmentIsWhatTheCollectorPacesAgainst(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -250,6 +171,7 @@ func TestGOGCFromTheEnvironmentIsWhatTheCollectorPacesAgainst(t *testing.T) {
 		{name: "an exported GOGC is the target", gogc: "300", gogcSet: true, want: "300"},
 		{name: "GOGC=off disables collection", gogc: "off", gogcSet: true, want: "-1"},
 		{name: "an absent GOGC is evener's 200", want: strconv.Itoa(gcTargetPercent)},
+		{name: "a malformed GOGC falls back like the runtime", gogc: "banana", gogcSet: true, want: strconv.Itoa(gcDefaultPercent)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			report := filepath.Join(t.TempDir(), "gogc-report")
@@ -294,14 +216,14 @@ func withoutEnv(env []string, name string) []string {
 	return out
 }
 
-// gogcMainHelperEnv marks the child side of the entry-point refusal test.
+// gogcMainHelperEnv marks the child side of the entry-point test.
 const gogcMainHelperEnv = "RUNTIME_TUNING_GOGC_MAIN_HELPER"
 
-// TestGOGCBadValueMainHelper is the child side: the shipped entry point, with
-// its own os.Exit, asked to start under whatever GOGC the parent exported.
-// --version is the argument because a refused configuration must stop the
-// process before any work, so no subcommand has to be real for the test.
-func TestGOGCBadValueMainHelper(t *testing.T) {
+// TestGOGCMainHelper is the child side: the shipped entry point, with its own
+// os.Exit, asked to start under whatever GOGC the parent exported. --version is
+// the argument because the startup tuning runs before any work, so no subcommand
+// has to be real for the test.
+func TestGOGCMainHelper(t *testing.T) {
 	if os.Getenv(gogcMainHelperEnv) != "1" {
 		t.Skip("helper process only")
 	}
@@ -309,29 +231,21 @@ func TestGOGCBadValueMainHelper(t *testing.T) {
 	main()
 }
 
-// TestMainRefusesAMalformedGOGC is main's own wiring, not the seam's: with a
-// GOGC the collector would not honor, the process exits nonzero and says
-// nothing on stdout — it never reaches the version query that would prove the
-// refusal came too late.
-func TestMainRefusesAMalformedGOGC(t *testing.T) {
-	cmd := exec.Command(os.Args[0], "-test.run=^TestGOGCBadValueMainHelper$")
+// TestMainStartsUnderAMalformedGOGC is main's own wiring, not the seam's: a
+// GOGC the runtime cannot parse must not stop evener at startup any more. The
+// process reaches the version query and exits zero; the runtime's silent
+// fallback to 100 is the only consequence of the bad value.
+func TestMainStartsUnderAMalformedGOGC(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=^TestGOGCMainHelper$")
 	cmd.Env = append(withoutEnv(os.Environ(), envvars.GoGC.Name),
 		gogcMainHelperEnv+"=1", envvars.GoGC.Name+"=banana")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
-	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) {
-		t.Fatalf("main exited successfully under a malformed GOGC (err = %v); stdout:\n%s", err, stdout.String())
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("main failed to start under a malformed GOGC: %v\nstderr:\n%s", err, stderr.String())
 	}
-	if got := exitErr.ExitCode(); got != 1 {
-		t.Fatalf("exit code = %d, want 1; stderr:\n%s", got, stderr.String())
-	}
-	if stdout.Len() != 0 {
-		t.Fatalf("main wrote %q to stdout before refusing; the refusal must come before the version query", stdout.String())
-	}
-	if stderr.Len() == 0 {
-		t.Error("refusal wrote nothing to stderr; the operator gets no clue which variable failed")
+	if !strings.Contains(stdout.String(), "evener ") {
+		t.Fatalf("main did not reach the version query; stdout:\n%s", stdout.String())
 	}
 }
 
@@ -348,9 +262,7 @@ func TestTuneGCTargetMovesTheRealCollectorTarget(t *testing.T) {
 		t.Fatalf("collector target = %d before tuning, want %d", got, gcDefaultPercent)
 	}
 	setGoGC(t, "", false)
-	if err := tuneGCTarget(debug.SetGCPercent); err != nil {
-		t.Fatalf("tuneGCTarget: %v", err)
-	}
+	tuneGCTarget(debug.SetGCPercent)
 	if got := goGCTargetPercent(t); got != gcTargetPercent {
 		t.Fatalf("collector target = %d after tuning, want %d", got, gcTargetPercent)
 	}
@@ -358,9 +270,7 @@ func TestTuneGCTargetMovesTheRealCollectorTarget(t *testing.T) {
 	const operatorPercent = 50
 	debug.SetGCPercent(operatorPercent)
 	setGoGC(t, strconv.Itoa(operatorPercent), true)
-	if err := tuneGCTarget(debug.SetGCPercent); err != nil {
-		t.Fatalf("tuneGCTarget over an operator's value: %v", err)
-	}
+	tuneGCTarget(debug.SetGCPercent)
 	if got := goGCTargetPercent(t); got != operatorPercent {
 		t.Fatalf("collector target = %d after tuning over an operator's %d, want %d", got, operatorPercent, operatorPercent)
 	}
