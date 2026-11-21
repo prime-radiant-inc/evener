@@ -276,6 +276,11 @@ wait`
 	}()
 
 	testwait.Until(t, "the child to signal trap readiness", func() bool {
+		select {
+		case code := <-exited:
+			t.Fatalf("child exited (code %d) before signaling trap readiness", code)
+		default:
+		}
 		_, err := os.Stat(ready)
 		return err == nil
 	})

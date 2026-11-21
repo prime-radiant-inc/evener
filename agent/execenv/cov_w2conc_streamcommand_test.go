@@ -6,13 +6,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"strings"
-	"sync"
 	"syscall"
 	"testing"
 	"time"
-
-	"primeradiant.com/evener/internal/testwait"
 )
 
 // TestW2Conc_StreamCommandSignalEscalatesToSIGKILL pins the SIGTERM->SIGKILL
@@ -31,11 +27,10 @@ func TestW2Conc_StreamCommandSignalEscalatesToSIGKILL(t *testing.T) {
 	// SIGKILL escalation after terminateGrace can end it. READY is printed only
 	// after the trap is installed, so waiting for it avoids racing a SIGTERM in
 	// before the handler is armed.
-	var mu sync.Mutex
-	var buf bytes.Buffer
+	out := newReadyWriter("READY")
 	h, err := env.StreamCommand(context.Background(),
 		"trap '' TERM; echo READY; while :; do sleep 0.05; done", "", nil,
-		&lockedWriter{&mu, &buf})
+		out)
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -43,7 +38,13 @@ func TestW2Conc_StreamCommandSignalEscalatesToSIGKILL(t *testing.T) {
 	done := make(chan int, 1)
 	go func() { c, _ := h.Wait(); done <- c }()
 
-	w2conc_waitFor(t, &mu, &buf, "READY")
+	select {
+	case <-out.ready:
+	case code := <-done:
+		t.Fatalf("process exited (code %d) before READY reached the streamed output: %q", code, out.String())
+	case <-time.After(5 * time.Second):
+		t.Fatalf("READY did not reach the streamed output within 5s: %q", out.String())
+	}
 
 	// SIGTERM is trapped, so this alone would never stop the loop; only the
 	// escalation to SIGKILL after terminateGrace reaps it.
@@ -121,16 +122,4 @@ func errorsIsCanceled(err error) bool {
 // w2conc_pidGone reports whether pid no longer exists.
 func w2conc_pidGone(pid int) bool {
 	return syscall.Kill(pid, 0) == syscall.ESRCH
-}
-
-// w2conc_waitFor blocks until marker appears in the locked buffer, reporting the
-// last output seen if it never does.
-func w2conc_waitFor(t *testing.T, mu *sync.Mutex, buf *bytes.Buffer, marker string) {
-	t.Helper()
-	testwait.UntilSeen(t, "marker "+marker+" in the streamed output", func() (bool, string) {
-		mu.Lock()
-		got := buf.String()
-		mu.Unlock()
-		return strings.Contains(got, marker), got
-	})
 }
