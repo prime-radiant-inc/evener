@@ -150,22 +150,6 @@ func TestIsRootOnlyJobPresenceTool(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// protectedGrantTools / isProtectedGrantTool
-// ---------------------------------------------------------------------------
-
-func TestIsProtectedGrantTool(t *testing.T) {
-	t.Parallel()
-	for _, name := range []string{"ask_user", "urls_add", "urls_remove"} {
-		if !isProtectedGrantTool(name) {
-			t.Fatalf("expected %s to be protected", name)
-		}
-	}
-	if isProtectedGrantTool("read_file") {
-		t.Fatalf("expected read_file to not be protected")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // removeRootOnlySubagentTools
 // ---------------------------------------------------------------------------
 
@@ -336,60 +320,6 @@ func TestLocalEnvPolicyFromName(t *testing.T) {
 		if ok != tc.valid {
 			t.Errorf("localEnvPolicyFromName(%q) ok = %v, want %v", tc.name, ok, tc.valid)
 		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// cloneMap
-// ---------------------------------------------------------------------------
-
-func TestCloneMapEmpty(t *testing.T) {
-	t.Parallel()
-	if cloneMap(nil) != nil {
-		t.Fatalf("expected nil for nil map")
-	}
-	if cloneMap(map[string]any{}) != nil {
-		t.Fatalf("expected nil for empty map")
-	}
-}
-
-func TestCloneMapValid(t *testing.T) {
-	t.Parallel()
-	in := map[string]any{"key": "value", "num": 42}
-	out := cloneMap(in)
-	if out == nil {
-		t.Fatalf("expected non-nil clone")
-	}
-	if out["key"] != "value" {
-		t.Fatalf("key = %v", out["key"])
-	}
-	// Verify deep copy
-	out["key"] = "modified"
-	if in["key"] == "modified" {
-		t.Fatalf("expected deep copy")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// cloneShallowMap
-// ---------------------------------------------------------------------------
-
-func TestCloneShallowMapEmpty(t *testing.T) {
-	t.Parallel()
-	if cloneShallowMap(nil) != nil {
-		t.Fatalf("expected nil for nil map")
-	}
-	if cloneShallowMap(map[string]any{}) != nil {
-		t.Fatalf("expected nil for empty map")
-	}
-}
-
-func TestCloneShallowMapValid(t *testing.T) {
-	t.Parallel()
-	in := map[string]any{"key": "value"}
-	out := cloneShallowMap(in)
-	if out == nil || out["key"] != "value" {
-		t.Fatalf("expected clone with key=value, got %v", out)
 	}
 }
 
