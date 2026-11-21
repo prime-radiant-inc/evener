@@ -145,11 +145,7 @@ func (p *Protocol) completionCall(
 			if !toolChoiceEnabled {
 				return &llm.ConfigurationError{ProviderInstance: res.Instance, Message: "combined google_search and function tools require generation_config.tool_choice enabled"}
 			}
-			genCfg, _ := finalBody["generation_config"].(map[string]any)
-			mode := effectiveToolChoiceMode(nil)
-			if genCfg != nil {
-				mode = effectiveToolChoiceMode(genCfg["tool_choice"])
-			}
+			mode := effectiveGenerationConfigToolChoiceMode(finalBody["generation_config"])
 			switch mode {
 			case "validated", "any", "none":
 			default:
@@ -177,16 +173,45 @@ func (p *Protocol) completionCall(
 	return call, nil
 }
 
+func effectiveGenerationConfigToolChoiceMode(genCfgRaw any) string {
+	if genCfgRaw == nil {
+		return ""
+	}
+	if m, ok := genCfgRaw.(map[string]any); ok {
+		return effectiveToolChoiceMode(m["tool_choice"])
+	}
+	b, err := json.Marshal(genCfgRaw)
+	if err != nil {
+		return ""
+	}
+	var wrapper struct {
+		ToolChoice json.RawMessage `json:"tool_choice"`
+	}
+	if json.Unmarshal(b, &wrapper) != nil || len(wrapper.ToolChoice) == 0 {
+		return ""
+	}
+	return effectiveToolChoiceMode(wrapper.ToolChoice)
+}
+
 func effectiveToolChoiceMode(v any) string {
-	switch x := v.(type) {
-	case string:
-		return strings.ToLower(strings.TrimSpace(x))
-	case map[string]any:
-		if allowed, ok := x["allowed_tools"].(map[string]any); ok {
-			if s, ok := allowed["mode"].(string); ok {
-				return strings.ToLower(strings.TrimSpace(s))
-			}
-		}
+	if v == nil {
+		return ""
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(b, &s) == nil {
+		return strings.ToLower(strings.TrimSpace(s))
+	}
+	var obj struct {
+		AllowedTools struct {
+			Mode string `json:"mode"`
+		} `json:"allowed_tools"`
+	}
+	if json.Unmarshal(b, &obj) == nil {
+		return strings.ToLower(strings.TrimSpace(obj.AllowedTools.Mode))
 	}
 	return ""
 }

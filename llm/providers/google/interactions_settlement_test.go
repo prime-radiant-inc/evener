@@ -834,37 +834,35 @@ func TestInteraction_StatusAndErrorClassification(t *testing.T) {
 	t.Run("queued/in_progress and missing/unknown status and media-only output", func(t *testing.T) {
 		for _, status := range []string{"queued", "in_progress"} {
 			body := []byte(`{"id":"int_p","model":"gemini-4-neon","status":"` + status + `"}`)
-			_, err := fromInteraction(decodeJSONForTest(t, body), "gemini-4-neon", body, "gemini-prod", "gemini-4-neon")
+			_, err := fromInteraction(decodeJSONForTest(t, body), "gemini-4-neon", body, "custom-inst", "gemini-4-neon")
 			if !errors.Is(err, ErrPendingInteractionStatus) || llm.Classify(err) != llm.ErrorClassPermanent {
 				t.Fatalf("status %q err=%v class=%v, want permanent ErrPendingInteractionStatus", status, err, llm.Classify(err))
 			}
 			var le llm.Error
-			if !errors.As(err, &le) || le.StatusCode() != 0 || le.Retryable() {
+			if !errors.As(err, &le) || le.StatusCode() != 0 || le.Retryable() || le.Provider() != "custom-inst" {
 				t.Fatalf("pending status llm.Error = %v", le)
-			}
-			rewritten := llm.RewriteErrorProvider(err, "custom-inst")
-			if rewrittenLE, ok := errors.AsType[llm.Error](rewritten); !ok || !errors.Is(rewritten, ErrPendingInteractionStatus) || rewrittenLE.Provider() != "custom-inst" {
-				t.Fatalf("RewriteErrorProvider failed on ErrPendingInteractionStatus: %v", rewritten)
 			}
 		}
 
 		// Premature SSE close with status == "queued" returns permanent ErrPendingInteractionStatus.
 		sseQueued := buildSSE([2]string{"interaction.created", `{"event_type":"interaction.created","interaction":{"id":"int_q","status":"queued"}}`})
-		_, _, errQ := runInteractionsSSETest(t, sseQueued, "gemini-prod", "gemini-4-neon", false)
+		_, _, errQ := runInteractionsSSETest(t, sseQueued, "custom-inst", "gemini-4-neon", false)
 		if !errors.Is(errQ, ErrPendingInteractionStatus) || llm.Classify(errQ) != llm.ErrorClassPermanent {
 			t.Fatalf("premature queued SSE = %v, want permanent ErrPendingInteractionStatus", errQ)
+		}
+		if leQ, ok := errors.AsType[llm.Error](errQ); !ok || leQ.Provider() != "custom-inst" || leQ.StatusCode() != 0 || leQ.Retryable() {
+			t.Fatalf("premature queued SSE llm.Error = %v (provider=%q)", errQ, leQ.Provider())
 		}
 
 		// Missing / unknown status -> ErrUnexpectedInteractionStatus.
 		for _, rawStatus := range []string{`""`, `"mystery_state"`} {
 			body := []byte(`{"id":"int_u","model":"gemini-4-neon","status":` + rawStatus + `}`)
-			_, err := fromInteraction(decodeJSONForTest(t, body), "gemini-4-neon", body, "gemini-prod", "gemini-4-neon")
+			_, err := fromInteraction(decodeJSONForTest(t, body), "gemini-4-neon", body, "custom-inst", "gemini-4-neon")
 			if !errors.Is(err, ErrUnexpectedInteractionStatus) || llm.Classify(err) != llm.ErrorClassPermanent {
 				t.Fatalf("status %s err=%v, want permanent ErrUnexpectedInteractionStatus", rawStatus, err)
 			}
-			rewritten := llm.RewriteErrorProvider(err, "custom-inst")
-			if rewrittenLE, ok := errors.AsType[llm.Error](rewritten); !ok || !errors.Is(rewritten, ErrUnexpectedInteractionStatus) || rewrittenLE.Provider() != "custom-inst" {
-				t.Fatalf("RewriteErrorProvider failed on ErrUnexpectedInteractionStatus: %v", rewritten)
+			if le, ok := errors.AsType[llm.Error](err); !ok || le.Provider() != "custom-inst" || le.StatusCode() != 0 || le.Retryable() {
+				t.Fatalf("unexpected status llm.Error = %v (provider=%q)", err, le.Provider())
 			}
 		}
 

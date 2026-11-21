@@ -795,13 +795,12 @@ func decodeInteractionStream(
 		IncompleteMsg: provider + " stream ended without completion",
 		TerminalError: func(parseErr error) error {
 			if acc.status == "queued" {
-				err := &interactionError{
+				return &interactionError{
 					sentinel: ErrPendingInteractionStatus,
-					provider: "google",
+					provider: provider,
 					message:  fmt.Sprintf("interaction %q stream closed while status %q", acc.id, acc.status),
 					raw:      map[string]any{"status": acc.status, "interaction_id": acc.id},
 				}
-				return llm.RewriteErrorProvider(err, provider)
 			}
 			return llm.NewStreamError(provider, runner.IncompleteMsg, parseErr)
 		},

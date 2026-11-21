@@ -343,6 +343,24 @@ func TestEffectiveToolsReplacementCombinedSearchAndFunctionsPolicy(t *testing.T)
 				},
 			},
 			{
+				name: "ProviderOptions []map[string]any with json.RawMessage type",
+				modReq: func(r *llm.Request) {
+					r.ProviderOptions = map[string]any{"google": map[string]any{"tools": []map[string]any{
+						{"type": json.RawMessage(`"google_search"`)},
+						{"type": "function", "name": "fn", "description": "d", "parameters": map[string]any{"type": "object"}},
+					}}}
+				},
+			},
+			{
+				name: "Transport.Body []map[string]any with json.RawMessage type",
+				modRes: func(res *registry.Resolved) {
+					res.Transport.Body = map[string]any{"tools": []map[string]any{
+						{"type": json.RawMessage(`"google_search"`)},
+						{"type": "function", "name": "fn", "description": "d", "parameters": map[string]any{"type": "object"}},
+					}}
+				},
+			},
+			{
 				name:   "Transport.Body tools",
 				modRes: func(res *registry.Resolved) { res.Transport.Body = map[string]any{"tools": combinedSlice} },
 			},
@@ -402,6 +420,27 @@ func TestEffectiveToolsReplacementCombinedSearchAndFunctionsPolicy(t *testing.T)
 		}}
 		if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), reqAuto, res); err == nil {
 			t.Fatal("expected explicit generation_config.tool_choice=auto with combined replacement to fail")
+		}
+
+		// json.RawMessage "auto" and Transport.Body typed map[string]string generation_config with "auto" rejected.
+		reqAutoRaw := protoReq("")
+		reqAutoRaw.Store = new(true)
+		reqAutoRaw.ProviderOptions = map[string]any{"google": map[string]any{
+			"tools":             combinedSlice,
+			"generation_config": map[string]any{"tool_choice": json.RawMessage(`"auto"`)},
+		}}
+		if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), reqAutoRaw, res); err == nil {
+			t.Fatal("expected json.RawMessage generation_config.tool_choice=auto with combined replacement to fail")
+		}
+		reqStoreCombined := protoReq("")
+		reqStoreCombined.Store = new(true)
+		reqStoreCombined.ProviderOptions = map[string]any{"google": map[string]any{"tools": combinedSlice}}
+		resTypedGen := protoLive(srv)
+		resTypedGen.Caps.CombinedSearchAndFunctions = new(true)
+		resTypedGen.Caps.Fields["previous_interaction_id"] = true
+		resTypedGen.Transport.Body = map[string]any{"generation_config": map[string]string{"tool_choice": "auto"}}
+		if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), reqStoreCombined, resTypedGen); err == nil {
+			t.Fatal("expected Transport.Body map[string]string generation_config tool_choice=auto to fail")
 		}
 
 		// CombinedSearchAndFunctions=false rejected (e.g. gemini-2.5-flash).

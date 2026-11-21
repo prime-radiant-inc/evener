@@ -192,6 +192,51 @@ func TestGenerateGooglePreflightRejectsAnchoredAndCombinedBeforeTurn1(t *testing
 		}
 	})
 
+	t.Run("combined replacement with json.RawMessage type rejected before Turn 1", func(t *testing.T) {
+		rawSearchSlice := []map[string]any{
+			{"type": json.RawMessage(`"google_search"`)},
+			{"type": "function", "name": "ping", "parameters": map[string]any{"type": "object"}},
+		}
+		rawSearchAny := []any{
+			map[string]any{"type": json.RawMessage(`"google_search"`)},
+			map[string]any{"type": "function", "name": "ping", "parameters": map[string]any{"type": "object"}},
+		}
+		for _, tc := range []struct {
+			name  string
+			tools any
+		}{
+			{"[]map[string]any with json.RawMessage type", rawSearchSlice},
+			{"[]any with json.RawMessage type", rawSearchAny},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				spy := &preflightSpyAdapter{name: "google"}
+				c := NewClient(WithRegistry(r))
+				c.Register(spy)
+				_, err := Generate(context.Background(), GenerateOptions{
+					Client: c, Provider: "google", Model: "gemini-3.8-flash",
+					Prompt: new("search"), Tools: []Tool{activeTool}, Store: new(true),
+					ProviderOptions: map[string]any{"google": map[string]any{"tools": tc.tools}},
+				})
+				if _, ok := errors.AsType[*ConfigurationError](err); !ok || spy.called || activeToolExecRan {
+					t.Fatalf("expected ConfigurationError before Turn 1; err=%v called=%v exec=%v", err, spy.called, activeToolExecRan)
+				}
+			})
+		}
+
+		// MaxToolRounds=0 (caller-managed) with the same json.RawMessage combined list succeeds.
+		zero := 0
+		spy := &preflightSpyAdapter{name: "google"}
+		c := NewClient(WithRegistry(r))
+		c.Register(spy)
+		if _, err := Generate(context.Background(), GenerateOptions{
+			Client: c, Provider: "google", Model: "gemini-3.8-flash",
+			Prompt: new("search"), Tools: []Tool{activeTool}, Store: new(true), MaxToolRounds: &zero,
+			ProviderOptions: map[string]any{"google": map[string]any{"tools": rawSearchSlice}},
+		}); err != nil || !spy.called {
+			t.Fatalf("MaxToolRounds=0 with json.RawMessage combined list failed: err=%v called=%v", err, spy.called)
+		}
+	})
+
 	t.Run("function-only replacement overrides WebSearch=true in Generate preflight", func(t *testing.T) {
 		spy := &preflightSpyAdapter{name: "google"}
 		c := NewClient(WithRegistry(r))
@@ -203,6 +248,15 @@ func TestGenerateGooglePreflightRejectsAnchoredAndCombinedBeforeTurn1(t *testing
 			ProviderOptions: map[string]any{"google": map[string]any{"tools": funcOnly}},
 		}); err != nil || !spy.called {
 			t.Fatalf("function-only replacement must pass preflight and reach adapter: err=%v called=%v", err, spy.called)
+		}
+
+		rawFuncOnly := []map[string]any{{"type": json.RawMessage(`"function"`), "name": "ping", "parameters": map[string]any{"type": "object"}}}
+		if _, err := Generate(context.Background(), GenerateOptions{
+			Client: c, Provider: "google", Model: "gemini-3.8-flash",
+			Prompt: new("hi"), Tools: []Tool{activeTool}, WebSearch: true,
+			ProviderOptions: map[string]any{"google": map[string]any{"tools": rawFuncOnly}},
+		}); err != nil || !spy.called {
+			t.Fatalf("json.RawMessage function-only replacement must pass preflight: err=%v called=%v", err, spy.called)
 		}
 	})
 

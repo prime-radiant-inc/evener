@@ -15,6 +15,10 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -676,6 +680,59 @@ func TestSessionGoogleInteractions_PreCutoverSignedToolCallRestoreAndFallback(t 
 	if bodies = script.requestBodies(); len(bodies) != 6 {
 		t.Fatalf("request count after post-2xx SSE error = %d, want 6 (1 POST without wrapper retry)", len(bodies))
 	}
+
+	t.Run("dormant Google delegate wakes with retired google-vertex-express fallback pruned", func(t *testing.T) {
+		rDel, err := registry.Load(
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(k string) (string, bool) {
+				if k == "GEMINI_API_KEY" {
+					return "k-gem", true
+				}
+				return "", false
+			}),
+		)
+		if err != nil {
+			t.Fatalf("registry.Load: %v", err)
+		}
+		fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+			descriptor.ResolvedProfileID = "google"
+			descriptor.ResolvedModel = "gemini-3.8-flash"
+			descriptor.Config.ModelFallbacks = []string{"google-vertex-express/gemini-2.5-flash", "google/gemini-2.5-flash"}
+		})
+		cDel := llm.NewClient(llm.WithRegistry(rDel))
+		cDel.Register(fixture.adapter)
+		googleFake := newFakeAdapter("google", func(llm.Request) llm.Response {
+			return agenttest.CommunicateResponse(true, "dormant google delegate woke")
+		})
+		cDel.Register(googleFake)
+
+		rootDel, err := RestoreSessionFromMetaWithConfig(cDel, fixture.profile, execenv.NewLocalExecutionEnvironment(fixture.workspace), fixture.meta, RestoreSessionConfig{
+			StateDir:    fixture.stateDir,
+			ForceRealIO: true,
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				return provider.Resolve(rDel, ref)
+			},
+			testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, sandboxProber: bwrapCapableProber(fixture.workspace)},
+		})
+		if err != nil {
+			t.Fatalf("restore root: %v", err)
+		}
+		defer rootDel.Close()
+
+		outcome := (delegateRuntime{owner: rootDel}).send(ctx, fixture.delegateID, "wake up", 10_000)
+		abortUnpersistedDelegateOutcome(t, outcome)
+		if outcome.result.Err != nil || outcome.result.Status != jobstore.StatusCompleted {
+			t.Fatalf("dormant Google delegate failed to wake: %+v", outcome.result)
+		}
+		children := rootDel.subagents.sessions()
+		if len(children) != 1 {
+			t.Fatalf("woken delegate children = %d, want 1", len(children))
+		}
+		if !reflect.DeepEqual(children[0].cfg.ModelFallbacks, []string{"google/gemini-2.5-flash"}) {
+			t.Fatalf("woken delegate ModelFallbacks = %v, want [google/gemini-2.5-flash]", children[0].cfg.ModelFallbacks)
+		}
+	})
 }
 
 func stepsContainFunc(steps []any, kind, name string) bool {

@@ -57,16 +57,6 @@ func (e *interactionError) Raw() any                   { return e.raw }
 func (e *interactionError) Unwrap() error              { return e.cause }
 func (e *interactionError) Is(target error) bool       { return target != nil && target == e.sentinel }
 
-func (e *interactionError) CopyWithProvider(name string) error {
-	return &interactionError{
-		sentinel: e.sentinel,
-		provider: strings.TrimSpace(name),
-		message:  e.message,
-		raw:      e.raw,
-		cause:    e,
-	}
-}
-
 type interactionStep struct {
 	stepIdx           int
 	stepType          string
