@@ -4,30 +4,35 @@ package sandbox
 
 import (
 	"context"
-	"os"
 	"testing"
-	"time"
+
+	"primeradiant.com/evener/execsupport/orphanpipe/orphanpipetest"
 )
 
-// TestProbeOutputBoundsADescendantHoldingThePipe: a launcher that leaves a
-// background descendant holding the captured stdout must not stall a probe past
-// probeWaitDelay. exec waits for the pipe to close, and the descendant holds it
-// after the direct child exits, so without cmd.WaitDelay Output returns only
-// when the descendant does (here, after twenty seconds).
+// TestProbeOutputBoundsADescendantHoldingThePipe proves the bound structurally:
+// the launcher leaves a grandchild holding the captured stdout, and the probe
+// call must return while that grandchild still lives. Without cmd.WaitDelay the
+// call waits for the grandchild, and Await fails after its tripwire instead of
+// passing on a stopwatch.
 func TestProbeOutputBoundsADescendantHoldingThePipe(t *testing.T) {
 	t.Parallel()
-	if _, err := os.Stat("/bin/sh"); err != nil {
-		t.Skipf("/bin/sh is unavailable: %v", err)
+	holder := orphanpipetest.New(t)
+	script := holder.WriteScript(t, "go", "echo /usr/local/go\n"+holder.Spawn())
+
+	type result struct {
+		out []byte
+		err error
 	}
-	start := time.Now()
-	out, err := (hostProbeSystem{}).output(context.Background(), "/bin/sh", "-c", "echo /usr/local/go; sleep 20 &")
-	if err != nil {
-		t.Fatalf("output: %v", err)
+	done := make(chan result, 1)
+	go func() {
+		out, err := (hostProbeSystem{}).output(context.Background(), script)
+		done <- result{out: out, err: err}
+	}()
+	got := orphanpipetest.Await(t, holder, done)
+	if got.err != nil {
+		t.Fatalf("output: %v", got.err)
 	}
-	if got := string(trimTrailingNewline(out)); got != "/usr/local/go" {
-		t.Errorf("output = %q, want the child's own answer", got)
-	}
-	if elapsed := time.Since(start); elapsed > 10*time.Second {
-		t.Errorf("output waited %s for a background descendant; probeWaitDelay must bound it", elapsed)
+	if text := string(trimTrailingNewline(got.out)); text != "/usr/local/go" {
+		t.Errorf("output = %q, want the launcher's own answer", text)
 	}
 }

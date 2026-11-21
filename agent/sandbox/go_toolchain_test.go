@@ -32,6 +32,15 @@ func goToolchainDir(t *testing.T) string {
 	return dir
 }
 
+// goRootPair is the probe's answer for a directory: the spelling go reported,
+// plus its canonical form when the two differ.
+func goRootPair(dir string) []string {
+	if canonical := CanonicalDir(dir); canonical != "" && canonical != dir {
+		return []string{dir, canonical}
+	}
+	return []string{dir}
+}
+
 // TestRestrictedGrantsGoToolchainRootToSpawnedOnly pins the resolver half of the
 // ruling: a restricted session's SPAWNED processes may read the host's Go
 // toolchain root, because the go command can run from a granted path while its
@@ -189,6 +198,67 @@ func TestGoToolchainRootLosesToTheDenylist(t *testing.T) {
 	}
 }
 
+// TestGoToolchainGrantRefusesTheWorktree: a grant the worktree controls is not
+// a host grant. A GOROOT inside the worktree adds nothing (the worktree is
+// already readable) and must not be granted by a spelling the session can
+// retarget; a launcher inside the worktree refuses the whole grant.
+func TestGoToolchainGrantRefusesTheWorktree(t *testing.T) {
+	t.Parallel()
+	cwd := mainRepo(t)
+	root := goToolchainDir(t)
+	inWorktree := filepath.Join(cwd, "goroot")
+
+	host := darwinHostWithGoToolchain(inWorktree, root)
+	host.GoToolchainGoBin = filepath.Join(cwd, "bin", "go")
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted}, host, cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	for _, refused := range []string{inWorktree, root} {
+		if slices.Contains(rp.Spawned.ReadRoots, refused) {
+			t.Errorf("%q must not be granted when the worktree controls the launcher: %v", refused, rp.Spawned.ReadRoots)
+		}
+	}
+
+	// A trusted launcher keeps the host root; the worktree-internal spelling
+	// still contributes nothing.
+	host = darwinHostWithGoToolchain(inWorktree, root)
+	host.GoToolchainGoBin = "/usr/local/go/bin/go"
+	rp, err = Resolve(SandboxPolicy{Mode: ModeRestricted}, host, cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if slices.Contains(rp.Spawned.ReadRoots, inWorktree) {
+		t.Errorf("a GOROOT inside the worktree must not be granted separately: %v", rp.Spawned.ReadRoots)
+	}
+	if !slices.Contains(rp.Spawned.ReadRoots, root) {
+		t.Errorf("the trusted Go toolchain root %q must stay granted, got %v", root, rp.Spawned.ReadRoots)
+	}
+}
+
+// TestGoToolchainSocketExemptionSparesIndependentlyGrantedRoots: when the
+// GOROOT is also an extra read root the user asked for, the toolchain grant
+// must not strip the unix-socket reach that root's own grant earned.
+func TestGoToolchainSocketExemptionSparesIndependentlyGrantedRoots(t *testing.T) {
+	t.Parallel()
+	root := goToolchainDir(t)
+	cwd := mainRepo(t)
+
+	policy := SandboxPolicy{Mode: ModeRestricted, ExtraReadRoots: []string{root}}
+	rp, err := Resolve(policy, darwinHostWithGoToolchain(root), cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	text, params := SeatbeltPolicy(rp, "/evener-session-tmp", identityCanon)
+	key := paramKeyForPath(params, root)
+	if key == "" {
+		t.Fatalf("no Seatbelt param names the extra read root %q; params = %v", root, params)
+	}
+	if !strings.Contains(text, "(allow network-outbound (remote unix-socket "+subpathParam(key)+"))") {
+		t.Errorf("an independently granted read root must keep its unix-socket allow:\n%s", text)
+	}
+}
+
 // goToolchainProbeSystem answers only the calls the GOROOT probe makes and
 // records the argv handed to output; the rest of probeSystem comes from the
 // shared stub.
@@ -236,13 +306,13 @@ func TestProbeGoToolchainRoots(t *testing.T) {
 		{
 			name:    "existing directory",
 			system:  &goToolchainProbeSystem{goBin: "/usr/local/go/bin/go", gorootOut: validDir + "\n"},
-			want:    []string{validDir},
+			want:    goRootPair(validDir),
 			wantArg: []string{"env", "-C", "/", "GOROOT"},
 		},
 		{
 			name:   "trailing newline tolerated",
 			system: &goToolchainProbeSystem{goBin: "/usr/local/go/bin/go", gorootOut: validDir + "\n\n"},
-			want:   []string{validDir},
+			want:   goRootPair(validDir),
 		},
 		{
 			name:   "command error",
@@ -272,7 +342,7 @@ func TestProbeGoToolchainRoots(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := probeGoToolchainRoots(tc.system)
+			got, _ := probeGoToolchainRoots(tc.system)
 			if !slices.Equal(got, tc.want) {
 				t.Errorf("probeGoToolchainRoots = %v, want %v", got, tc.want)
 			}
@@ -300,8 +370,9 @@ func TestProbeGoToolchainRootsKeepsTheLiteralSymlinkSpelling(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 	system := &goToolchainProbeSystem{goBin: "/usr/local/bin/go", gorootOut: link + "\n"}
-	if got := probeGoToolchainRoots(system); !slices.Equal(got, []string{link}) {
-		t.Errorf("probeGoToolchainRoots = %v, want the literal spelling %q", got, link)
+	want := []string{link, target}
+	if got, _ := probeGoToolchainRoots(system); !slices.Equal(got, want) {
+		t.Errorf("probeGoToolchainRoots = %v, want the literal and canonical spellings %v", got, want)
 	}
 }
 
@@ -316,8 +387,9 @@ func TestProbeGoToolchainRootsFallsBackToAnInstallPrefix(t *testing.T) {
 		prefixFiles: map[string]bool{"/opt/homebrew/bin/go": true},
 		gorootOut:   dir + "\n",
 	}
-	if got := probeGoToolchainRoots(system); !slices.Equal(got, []string{dir}) {
-		t.Errorf("probeGoToolchainRoots = %v, want %v", got, []string{dir})
+	want := goRootPair(dir)
+	if got, launcher := probeGoToolchainRoots(system); !slices.Equal(got, want) || launcher != "/opt/homebrew/bin/go" {
+		t.Errorf("probeGoToolchainRoots = %v, launcher %q, want %v from the Homebrew prefix", got, launcher, want)
 	}
 	if system.outputName != "/opt/homebrew/bin/go" {
 		t.Errorf("probe ran %q, want the Homebrew install prefix", system.outputName)

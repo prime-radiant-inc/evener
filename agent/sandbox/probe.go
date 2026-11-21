@@ -112,6 +112,11 @@ type HostFacts struct {
 	// start.
 	GoToolchainRoots []string
 
+	// GoToolchainGoBin is the launcher the GOROOT probe ran. The resolver
+	// refuses the grant when the worktree controls it: a sandboxed session can
+	// write its own worktree, so a go planted there is not a host toolchain.
+	GoToolchainGoBin string
+
 	// GitGlobalConfigPaths are the user's GLOBAL git config FILES that exist on
 	// this host. git-config(1) FILES names two of them —
 	// $XDG_CONFIG_HOME/git/config (with $HOME/.config standing in for an unset or
@@ -546,7 +551,7 @@ func probeHost(system probeSystem) HostFacts {
 		}
 		facts.DeveloperToolRoots = probeDeveloperToolRoots(system)
 		facts.DeveloperToolBinDir = probeDeveloperToolBinDir(system)
-		facts.GoToolchainRoots = probeGoToolchainRoots(system)
+		facts.GoToolchainRoots, facts.GoToolchainGoBin = probeGoToolchainRoots(system)
 	}
 
 	return facts
@@ -1223,13 +1228,26 @@ var goInstallPrefixLaunchers = []string{
 // sandbox exists; an explicit GOTOOLCHAIN pin is host configuration and the
 // spawned go honours it too. GOWORK is not consulted outside a module. -C needs
 // Go 1.20+, and an older go simply contributes no root.
-func probeGoToolchainRoots(system probeSystem) []string {
+func probeGoToolchainRoots(system probeSystem) ([]string, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), probeCommandTimeout)
+	defer cancel()
+	seen := make(map[string]bool, len(goInstallPrefixLaunchers)+1)
 	for _, goBin := range goLaunchers(system) {
-		if root := goEnvGOROOT(system, goBin); root != "" {
-			return []string{root}
+		// Two spellings can name one launcher (a PATH entry and a prefix
+		// fallback); the second cannot answer differently.
+		key := goBin
+		if canonical := CanonicalDir(goBin); canonical != "" {
+			key = canonical
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if roots := goEnvGOROOT(ctx, system, goBin); len(roots) > 0 {
+			return roots, goBin
 		}
 	}
-	return nil
+	return nil, ""
 }
 
 // goLaunchers lists the go binaries the probe may run, most specific first:
@@ -1240,32 +1258,44 @@ func goLaunchers(system probeSystem) []string {
 		out = append(out, goBin)
 	}
 	for _, goBin := range goInstallPrefixLaunchers {
-		if system.nonDirectoryFile(goBin) && !slices.Contains(out, goBin) {
-			out = append(out, goBin)
+		if !system.nonDirectoryFile(goBin) || slices.Contains(out, goBin) {
+			continue
 		}
+		// A standard prefix is a trusted install location, not a licence to
+		// follow its symlink anywhere: a prefix entry pointing outside the
+		// prefix (into a worktree, say) is not that installation's go.
+		if canonical := CanonicalDir(goBin); canonical != "" && !identifier.PathUnder(canonical, filepath.Dir(filepath.Dir(goBin))) {
+			continue
+		}
+		out = append(out, goBin)
 	}
 	return out
 }
 
 // goEnvGOROOT runs the bounded `go env -C / GOROOT` query and returns the
-// answer only when it is an absolute path naming an existing directory.
-func goEnvGOROOT(system probeSystem, goBin string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), probeCommandTimeout)
-	defer cancel()
+// answer only when it is an absolute path naming an existing directory. The
+// caller's context is the TOTAL budget for discovery, so a launcher that times
+// out leaves the remaining candidates only the time that is left.
+func goEnvGOROOT(ctx context.Context, system probeSystem, goBin string) []string {
 	out, err := system.output(ctx, goBin, "env", "-C", "/", "GOROOT")
 	if err != nil {
-		return ""
+		return nil
 	}
 	root := filepath.Clean(strings.TrimSpace(string(trimTrailingNewline(out))))
 	// A relative answer names a directory under Evener's own working directory,
 	// not a toolchain root: filepath.Clean(".", "relative/...") stays relative.
-	if !filepath.IsAbs(root) || CanonicalDir(root) == "" {
-		return ""
+	canonical := CanonicalDir(root)
+	if !filepath.IsAbs(root) || canonical == "" {
+		return nil
 	}
 	// Keep the spelling go reported. Seatbelt judges the path a process actually
 	// names, and the read emitter adds the canonical alias for a symlinked
-	// spelling (paramSet.defineRead).
-	return root
+	// spelling (paramSet.defineRead). The canonical form rides along so the
+	// resolver can drop a spelling the worktree itself can retarget.
+	if canonical == root {
+		return []string{root}
+	}
+	return []string{root, canonical}
 }
 
 // probeDeveloperToolBinDir returns the active developer directory's bin

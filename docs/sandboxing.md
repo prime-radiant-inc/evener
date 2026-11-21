@@ -272,8 +272,11 @@ An individual filesystem call already in progress may still block until it retur
   process actually names. It passes through the same shared-tree guard as the
   developer-toolchain grant, so a GOROOT at or above `$HOME`, the worktree, or a
   temp root is refused; the denylist still wins over it; it adds nothing to any
-  write surface and no unix-socket allow, unlike an ordinary read root; and it
-  reaches the spawned layer only.
+  write surface and no unix-socket allow (unless that root was independently
+  granted, in which case that grant's socket reach stands); and it reaches the
+  spawned layer only. A GOROOT inside the worktree gets no separate grant — the
+  worktree is already readable, and the session can retarget a link there — and a
+  launcher the worktree controls contributes no grant at all.
 
   The toolchain grant alone was **necessary but not sufficient**. On a host with a
   global git config, `git` still died under `restricted` with

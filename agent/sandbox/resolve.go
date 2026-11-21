@@ -441,6 +441,36 @@ func guardedHostRoots(candidates []string, home, worktree string) []string {
 	return out
 }
 
+// underWorktree reports whether path names a location inside the session's
+// worktree, in either its literal or its resolved spelling. A sandboxed session
+// can rewrite anything there, so neither spelling is a stable host grant.
+func underWorktree(path, worktree string) bool {
+	if path == "" || worktree == "" {
+		return false
+	}
+	if identifier.PathUnder(filepath.Clean(path), worktree) {
+		return true
+	}
+	if canonical := CanonicalDir(path); canonical != "" && identifier.PathUnder(canonical, worktree) {
+		return true
+	}
+	return false
+}
+
+// rootsOutsideWorktree drops host-derived roots that name a location inside the
+// session's worktree. The worktree is already a read root, so the grant adds
+// nothing -- and granting its spelling would let a retargeted symlink outlive
+// the shared-tree check.
+func rootsOutsideWorktree(roots []string, worktree string) []string {
+	out := make([]string, 0, len(roots))
+	for _, root := range roots {
+		if !underWorktree(root, worktree) {
+			out = append(out, root)
+		}
+	}
+	return out
+}
+
 // Resolve turns a policy request plus host facts and the session's cwd into a
 // ResolvedPolicy, or a typed *RefusalError when the host cannot enforce the
 // request (the fail-closed floor). It is a pure function of its inputs (reads no
@@ -1112,11 +1142,29 @@ func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree 
 		devRoots := guardedHostRoots(host.DeveloperToolRoots, host.Home, worktree)
 		goRoots := guardedHostRoots(host.GoToolchainRoots, host.Home, worktree)
 		gitConfig := guardedHostRoots(slices.Concat(host.GitGlobalConfigPaths, host.GitSystemConfigPaths), host.Home, worktree)
-		readSpawn := dedupeRoots(slices.Concat(readFile, layout.ReadGrantPaths, defaultSystemReadRoots, devRoots, goRoots, gitConfig, policy.InfraReadRoots))
+		// A GOROOT inside the worktree needs no grant (the worktree is already a
+		// read root) and must not get one: the session can retarget a symlink it
+		// controls, and Seatbelt re-resolves a spelling at every spawn. For the
+		// same reason a launcher the worktree controls is not a host toolchain --
+		// an untrusted go must contribute no grant at all.
+		goRoots = rootsOutsideWorktree(goRoots, worktree)
+		if launcher := host.GoToolchainGoBin; launcher != "" && underWorktree(launcher, worktree) {
+			goRoots = nil
+		}
+		readBase := slices.Concat(readFile, layout.ReadGrantPaths, defaultSystemReadRoots, devRoots, gitConfig, policy.InfraReadRoots)
+		readSpawn := dedupeRoots(slices.Concat(readBase, goRoots))
 		writeSpawn := dedupeRoots(slices.Concat(writeFile, layout.WritablePaths))
 		fileTool = AccessScope{Read: ReadWorktreeOnly, ReadRoots: readFile, WriteRoots: writeFile}
 		spawned = AccessScope{Read: ReadWorktreeOnly, ReadRoots: readSpawn, WriteRoots: writeSpawn}
-		socketExempt = goRoots
+		// Only the roots the toolchain grant ADDS lose their unix-socket allow: a
+		// GOROOT that was independently granted (an extra read root, a system
+		// root) keeps the socket reach its own grant earned.
+		base := dedupeRoots(readBase)
+		for _, root := range goRoots {
+			if !slices.Contains(base, root) {
+				socketExempt = append(socketExempt, root)
+			}
+		}
 	}
 	if policy.WriteBlocked {
 		fileTool.WriteRoots = nil
