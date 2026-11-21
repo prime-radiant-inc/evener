@@ -55,7 +55,7 @@ func TestSandboxReadFileWindowMatchesTheOffArm(t *testing.T) {
 		}
 		// The rows must be real content from the requested line, so a read that
 		// agreed with the off arm by returning nothing could not pass.
-		if want := fmt.Sprintf("%4d\tline of representative", w.off); !strings.HasPrefix(confined, want) {
+		if want := fmt.Sprintf("%d\tline of representative", w.off); !strings.HasPrefix(confined, want) {
 			t.Fatalf("confined window (offset=%d, limit=%d) = %q, want rows from line %d", w.off, w.lim, confined, w.off)
 		}
 	}

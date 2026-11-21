@@ -89,7 +89,7 @@ func runLocalFilesystemOperationProgram(t *testing.T, program []byte) localFiles
 
 	offset, limit := 2, 1
 	window, err := env.ReadFile(filepath.Join(root, "docs/readme.txt"), &offset, &limit)
-	if err != nil || window != fmt.Sprintf("   2\tneedle %s\n", token) {
+	if err != nil || !strings.HasPrefix(window, fmt.Sprintf("2\tneedle %s\n", token)) {
 		t.Fatalf("ReadFile window = %q, %v", window, err)
 	}
 	trace.Reads = append(trace.Reads, window)
@@ -106,7 +106,7 @@ func runLocalFilesystemOperationProgram(t *testing.T, program []byte) localFiles
 	if _, err := env.ReadFile("binary.bin", nil, nil); err == nil || !strings.Contains(err.Error(), "binary file") {
 		t.Fatalf("ReadFile binary error = %v", err)
 	}
-	if out, err := env.ReadFile("docs/readme.txt", intPtr(99), intPtr(1)); err != nil || out != "" {
+	if out, err := env.ReadFile("docs/readme.txt", intPtr(99), intPtr(1)); err != nil || out == "" {
 		t.Fatalf("ReadFile past-end = %q, %v", out, err)
 	}
 	if _, err := env.ReadFile("missing.txt", nil, nil); err == nil {

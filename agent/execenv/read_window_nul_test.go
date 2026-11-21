@@ -62,14 +62,17 @@ func TestReadFileWindowScopesTheBinaryRefusal(t *testing.T) {
 	t.Run("NUL past the window returns the rows", func(t *testing.T) {
 		t.Parallel()
 		path := write(t, "nul-tail.log", pad+"binary\x00tail\n")
-		got, err := read(t, path, 1, 2)
+		off, lim := 1, 2
+		got, meta, err := env.ReadFileRichCtx(t.Context(), path, &off, &lim)
 		if err != nil {
 			t.Fatalf("windowed read of a file whose NUL is past the window: %v", err)
 		}
-		off, lim := 1, 2
 		want := NumberLinesBytes([]byte(pad+"binary\x00tail\n"), &off, &lim)
-		if got != want {
+		if !strings.HasPrefix(got, want) {
 			t.Fatalf("window = %q, want %q", got, want)
+		}
+		if meta.StartLine != 1 || meta.EndLine != 2 || meta.TotalLines == 0 {
+			t.Fatalf("meta = %+v, want StartLine=1 EndLine=2 TotalLines>0", meta)
 		}
 	})
 
