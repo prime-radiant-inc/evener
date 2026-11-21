@@ -11,22 +11,22 @@ An audit of `pi` (`@earendil-works/pi-coding-agent` 0.85.1), Claude Code (`Edit`
 
 1. **One `edits[]`-only tool beats dual-mode schemas (`pi` `#2639`):** exposing both top-level `old_string`/`new_string` and `edits[]` produces frequent invalid calls, and Anthropic strips root-level `oneOf`/`anyOf`/`allOf`. Making `edits[]` the sole schema makes batching disjoint changes in one file the model's default habit.
 2. **RL priors require schema-generic argument healing (Armin Ronacher, July 2026):** frontier models heavily RL-trained on Claude Code's `str_replace` sometimes send top-level `old_string`/`new_string`, stringify `edits` as a JSON string (Opus 4.6, GLM-5.1), wrap a bare edit object, or append invented trailing keys inside `edits[]` (`type`, `unique`, `notes`) even when `old_string`/`new_string` are byte-correct. Keeping Claude/Gemini field names (`file_path`, `old_string`, `new_string`, `replace_all`) and healing those shapes in `agent/internal/tool/repair` eliminates retry loops without loosening execution semantics.
-3. **Byte-faithful CRLF and BOM handling:** LLMs always emit LF (`\n`) and never emit a UTF-8 BOM, and Evener's `read_file` already strips `\r` from CRLF lines (`agent/execenv/local_files.go:296`). Matching in LF space after stripping an optional leading BOM and restoring original line endings and BOM on write prevents silent CRLF corruption and exact-match failures.
-4. **Tight fuzzy matching beats deep fallback ladders (OpenCode `#32559`, `#44996`):** deep Levenshtein/block-anchor cascades silently bind to the wrong block in repetitive code and contradict exact-match error copy. Evener's whitespace-normalized fallback stays narrow and safe when paired with a uniqueness check and truthful error reporting.
-5. **Errors are recovery prompts, and tool descriptions stay concise (OpenCode `edit.txt`, Amp, `pi`):** collecting all edit misses/ambiguities in one pass, naming 1-based line numbers for duplicate hits and nearest regions, telling the model never to copy `read_file`'s line-number prefix (`12\t`), and stating rules once without repetition cuts retry turns and per-turn schema tokens.
+3. **Byte-faithful CRLF, mixed-ending, and BOM handling:** LLMs always emit LF (`\n`) and never emit a UTF-8 BOM, and Evener's `read_file` already strips `\r` from CRLF lines (`agent/execenv/local_files.go:296`). Matching in LF space while mapping matched spans back to exact original byte offsets preserves untouched bytes verbatim (including mixed line endings and leading BOM) and applies the replaced span's line ending only to inserted text.
+4. **Tight fuzzy matching beats deep fallback ladders (OpenCode `#32559`, `#44996`):** deep Levenshtein/block-anchor cascades silently bind to the wrong block in repetitive code and contradict exact-match error copy. Evener's whitespace-normalized fallback stays narrow and safe when it returns exact matched byte offsets, checks uniqueness (including exact-substring ambiguity outside the matched line/window), and reports truthfully what matchers ran.
+5. **Errors are recovery prompts, and tool descriptions stay concise (OpenCode `edit.txt`, Amp, `pi`):** collecting all edit misses/ambiguities in one pass, naming 1-based line numbers for duplicate hits and nearest regions, telling the model never to copy `read_file` line-number prefixes (`12\t`), and stating rules once without repetition cuts retry turns and per-turn schema tokens.
 
-This design brings atomic single-file multi-edit, clean repair, CRLF/BOM fidelity, and actionable diagnostics to Evener's `edit_file` (and `memory_edit`, which shares `DefEditFile()` and the same executor).
+This design brings atomic single-file multi-edit, clean repair, byte-faithful line endings, and actionable diagnostics to Evener's `edit_file` (and `memory_edit`, which shares the same schema builder and executor).
 
 ## Goals, Non-Goals, and Anti-Goals
 
 ### Goals
-- Support atomic, all-or-nothing multi-edit on a single file in `edit_file` via an `edits[]`-only schema.
+- Support atomic, all-or-nothing multi-edit on a single file in `edit_file` via an `edits[]`-only schema, including atomic publication on disk (temp file + rename) for both confined and unconfined writes.
 - Match every edit against the original file text and reject overlapping or nested spans cleanly before writing.
-- Preserve per-edit `replace_all`, Evener's whitespace-normalized fuzzy matching (with uniqueness checking), CRLF/BOM preservation, and nearest-region failure diagnostics with line numbers.
-- Let `memory_edit` inherit atomic multi-edit automatically through the shared `DefEditFile()` definition and `execFileEditWith`.
-- Generalize `agent/internal/tool/repair` to handle nested object/array aliasing, coercion, unknown-key stripping, stringified JSON arrays, and single-item array promotion without hardcoding `edit_file` field names.
+- Preserve per-edit `replace_all` (with explicit span and expanded-output bounds), Evener's whitespace-normalized fuzzy matching (returning exact byte offsets with uniqueness checking), CRLF/mixed-ending/BOM preservation for workspace files, and nearest-region failure diagnostics with 1-based line numbers.
+- Let `memory_edit` inherit atomic multi-edit through the shared builder (`DefMemoryEdit()`) and `execFileEditWith`, while referencing `memory_read`/`memory_write` in its description and preserving the memory guide's LF stamping contract.
+- Generalize `agent/internal/tool/repair` to handle single-item array promotion, mixed-form conflict rejection, stringified JSON arrays, bare-object wrapping, and recursive nested aliasing, coercion, and unknown-key stripping in the right phase order without hardcoding `edit_file` field names.
 - Tighten the `edit_file` tool description and add a one-line batching nudge in `agent/prompts/system.md.tmpl`.
-- Render multi-edit diffs and summaries cleanly in `@evener/appwire-client`, web UI, mobile-native, and Go transcript rendering while continuing to render historical single-edit transcripts.
+- Render multi-edit diffs and accurate line counts in `@evener/appwire-client`, web UI, mobile-native, and Go transcript rendering while continuing to render historical single-edit transcripts.
 
 ### Non-Goals
 - Multi-file edits inside `edit_file`. Cross-file patching remains `apply_patch`'s job (keeping `edit_file` single-file preserves sandbox escalation, `memory_edit` reuse, and web "open beside").
@@ -35,7 +35,8 @@ This design brings atomic single-file multi-edit, clean repair, CRLF/BOM fidelit
 - Positional/occurrence-index matching or deep Levenshtein fuzzy cascades.
 
 ### Anti-Goals
-- **Partial writes on failure:** if any edit in `edits[]` is invalid, missing, ambiguous, or overlaps another edit, zero bytes change on disk (and `memory_edit`'s frontmatter stamp and index refresh do not run).
+- **Partial writes or truncation on failure:** if any edit in `edits[]` is invalid, missing, ambiguous, overlaps another edit, exceeds resource bounds, or hits a mid-write I/O error, the original file bytes on disk survive unchanged (and `memory_edit`'s frontmatter stamp and index refresh do not run).
+- **Silent discard of mixed calls:** a call sending both `edits` and top-level `old_string`/`new_string` must be rejected before dispatch, never partially executed after `dropUnknown` strips the top-level keys.
 - **Ambiguous dual-mode schemas:** never expose both top-level `old_string`/`new_string` and `edits[]` in the advertised schema.
 - **Silent non-atomic fallback:** if an `ExecutionEnvironment` does not support batch editing, a multi-edit call (`len(edits) > 1`) must error rather than loop over single-edit calls.
 - **Misleading error copy:** never tell the model "must match exact whitespace" when whitespace-normalized fuzzy matching also ran.
@@ -50,10 +51,10 @@ This design brings atomic single-file multi-edit, clean repair, CRLF/BOM fidelit
 - **Single-file invariants across Evener:**
   - `agent/session_escalation.go` (`escalatableTools`) only escalates single-file tools because human approval grants one leaf path.
   - `cmd/evener-hub/frontend/src/panes/session/transcript/tools/editTools.tsx` binds `openBesidePath: filePathArg`, which requires one file path per call.
-  - `agent/session_tools_memory.go` binds `memory_edit` via `tool.MemoryDefinition(tool.DefEditFile(), "memory_edit")` and writes one page per call with a frontmatter `updated:` stamp.
+  - `agent/session_tools_memory.go` writes one memory page per call, stamping `updated:`/`by:` through `frontmatter.SetField` (`agent/internal/frontmatter/frontmatter.go`, which normalizes stamped Markdown pages to LF without a leading BOM per `docs/product/memory.md`).
 - **Interface compatibility:** `execenv.ExecutionEnvironment` is implemented by over a dozen test doubles across `agent/`. Extending `execenv` via an optional capability interface (matching `ContextualFileReader`, `GlobBudgeter`, `DirListBudgeter`, `FileMutator`) keeps existing doubles compiling.
 - **Testing rules (`docs/developing-evener/testing.md`):** Tests assert behavior, never exact error-message phrasing or copy constants.
-- **Compatibility rule:** Historical transcript rendering for saved `{file_path, old_string, new_string}` calls is preserved so existing transcripts remain readable. Runtime argument repair for top-level `{old_string, new_string}` is permanent off-distribution model-quirk healing in `agent/internal/tool/repair` (same class as `old_str` -> `old_string`), approved by Jesse as part of Approach A.
+- **Compatibility rule:** Historical transcript rendering for saved `{file_path, old_string, new_string}` calls is preserved so existing transcripts remain readable. Runtime argument repair for legacy-only top-level `{old_string, new_string}` is permanent off-distribution model-quirk healing in `agent/internal/tool/repair` (same class as `old_str` -> `old_string`), approved by Jesse as part of Approach A.
 
 ## Approaches Considered
 
@@ -71,18 +72,21 @@ Design items agreed with Jesse are unmarked; design calls filled in by this spec
 
 ### 1. Tool Schema and Description (`agent/internal/tool/definitions.go`)
 
-State the behavioral rules **once** in `DefEditFile.Description` and keep each property description to one short clause (since `memory_edit` clones `DefEditFile()`, avoiding repetition saves ~120-160 tokens per turn across both tools):
+Build `DefEditFile()` and `DefMemoryEdit()` from one internal helper `defEditFile(readTool, writeTool string)` so behavioral rules are stated **once**, property descriptions stay single-clause, and `memory_edit` points models to `memory_read` and `memory_write` (never workspace `read_file`/`write_file`):
 
 ```go
-func DefEditFile() llm.ToolDefinition {
+func defEditFile(readTool, writeTool string) llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "edit_file",
-		Description: "Apply one or more exact replacements to an existing file atomically. " +
-			"Read the file first and never copy read_file line-number prefixes (like '12\\t') into old_string or new_string. " +
-			"Batch disjoint changes in the same file into one call via edits rather than separate calls. " +
-			"Every edits[].old_string matches the original file (not after earlier edits) and must not overlap any other edit; merge nearby changes into one entry. " +
-			"Keep each old_string as small as possible while unique, and use write_file when replacing most or all of a file. " +
-			"If any edit fails to match, is ambiguous, or overlaps another edit, nothing is written.",
+		Description: fmt.Sprintf(
+			"Apply one or more exact replacements to an existing file atomically. "+
+				"Read the file first with %s and never copy line-number prefixes (like '12\\t') into old_string or new_string. "+
+				"Batch disjoint changes in the same file into one call via edits rather than separate calls. "+
+				"Every edits[].old_string matches the original file (not after earlier edits) and must not overlap any other edit; merge nearby changes into one entry. "+
+				"Keep each old_string as small as possible while unique, and use %s when replacing most or all of a file. "+
+				"If any edit fails to match, is ambiguous, or overlaps another edit, nothing is written.",
+			readTool, writeTool,
+		),
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -120,9 +124,17 @@ func DefEditFile() llm.ToolDefinition {
 		},
 	}
 }
+
+func DefEditFile() llm.ToolDefinition {
+	return defEditFile("read_file", "write_file")
+}
+
+func DefMemoryEdit() llm.ToolDefinition {
+	return MemoryDefinition(defEditFile("memory_read", "memory_write"), "memory_edit")
+}
 ```
 
-**`memory_edit` inheritance:** `tool.MemoryDefinition(tool.DefEditFile(), "memory_edit")` clones `DefEditFile()`, adds `scope` to `properties` and `required`, and updates `file_path`'s description. No structural change is needed in `MemoryDefinition`; `memory_edit` automatically gains `edits[]`.
+`registerMemoryTools` (`agent/session_tools_memory.go:26`) switches from `tool.MemoryDefinition(tool.DefEditFile(), "memory_edit")` to `tool.DefMemoryEdit()`, matching `DefMemoryRead()`, `DefMemoryWrite()`, and `DefMemoryDelete()`.
 
 ### 2. System Prompt Guidance (`agent/prompts/system.md.tmpl`)
 
@@ -134,33 +146,34 @@ All detailed matching, overlap, and line-prefix rules stay in `DefEditFile.Descr
 
 ### 3. Schema-Generic Argument Repair (`agent/internal/tool/repair/repair.go`)
 
-`prepareToolCall` (`agent/session_tool_repair.go`) runs `repair.RepairArgs(t.Definition.Parameters, args, ...)` whenever `t.Schema.Validate(args)` fails, and records applied `repair.Change` items on `EventToolCallRepaired`. Instead of adding `edit_file`-specific walkers to the leaf `repair` package, generalize the existing schema-driven passes in `repair.go` (mirroring how `dropEmptyOptionalsWithin` at `repair.go:443` already recurses into nested objects and array items):
+`prepareToolCall` (`agent/session_tool_repair.go`) runs `repair.RepairArgs(t.Definition.Parameters, args, ...)` whenever `t.Schema.Validate(args)` fails, and records applied `repair.Change` items on `EventToolCallRepaired`. Generalize the schema-driven passes in `repair.go` in a strict 5-phase order so decoded/wrapped arrays always receive item-level aliasing before unknown-key stripping, and mixed calls are never silently stripped into passing:
 
 1. **Extend `aliasTable` (`repair.go:46`):**
-   Add `oldText` -> `old_string`, `old_text` -> `old_string`, `newText` -> `new_string`, `new_text` -> `new_string`, `replaceAll` -> `replace_all` alongside the existing `old_str` -> `old_string`, `new_str` -> `new_string` entries. The safe-apply rule (rename only when canonical is declared on the active object schema, alias is not declared, alias is present, canonical is absent) prevents collisions on unrelated tools.
-2. **Schema-generic single-item array promotion (before recursive alias/coercion/drop-unknown):**
-   When an object schema declares a required property `K` with `"type": "array"` whose `items` is an object schema with a non-empty `required` list, and `args[K]` is absent or `nil`:
-   - Inspect top-level keys of `args` that are **not** declared on the root object schema.
-   - Map each such key to a property of `K.items` (directly or via `aliasTable`, respecting the safe-apply rule).
-   - If the matched keys cover every key in `K.items.required`, move those matched unknown keys into `args[K] = []any{item}` and delete them from the root `args`, recording a `repair.Change` on field `K`.
-   - When `args[K]` is already present and non-nil, promotion does **not** run, so a confused call carrying both `edits` and top-level `old_string`/`new_string` fails validation cleanly instead of silently merging duplicates.
-   - Works identically for both `edit_file` and `memory_edit` (and any future required array-of-objects tool) with zero hardcoded tool or field names.
-3. **Stringified JSON arrays in `applyCoercions` (`case "array"`):**
-   When a property has `"type": "array"`, its `items` schema declares `"type": "object"`, and the incoming value is a `string`:
-   - Attempt `json.Unmarshal` of the string (bounded by the existing argument size/depth limits).
-   - If it decodes to `[]any`, replace with that slice (`ChangeCoerceType`, detail `"json_string→array"`).
-   - If it decodes to `map[string]any`, wrap as `[]any{decoded}` (`ChangeCoerceType`, detail `"json_string→[object]"`).
-   - If it is not valid JSON or decodes to neither array nor object, leave it untouched so schema validation reports the real type error (never wrap a plain string into `[]any{raw}` when `items.type == "object"`).
-   - If the incoming value is already a `map[string]any`, existing scalar-to-array coercion wraps it into `[]any{raw}`.
-4. **Recursive `applyAliases`, `applyCoercions`, and `dropUnknown` into nested object/array items:**
-   - Recurse `applyAliases` and `applyCoercions` into nested `type: "object"` properties and `type: "array"` elements whose `items` is `type: "object"`, prefixing `Change.Field` with `edits[i].` (same copy-on-write cloning pattern as `dropEmptyOptionalsWithin`). This automatically heals nested `old_str`/`oldText`/`new_str`/`newText`/`replaceAll` aliases and `replace_all: "true"` boolean strings.
-   - Recurse `dropUnknown` into nested object items when `items.additionalProperties == false` (running *after* recursive `applyAliases` and `applyCoercions`). This directly neutralizes the Claude Opus 4.8 / Sonnet 5 failure mode documented in July 2026 where models emit byte-correct `old_string`/`new_string` alongside invented trailing keys (`type`, `unique`, `notes`) inside `edits[]`, while still failing loudly if a typo like `old_sting` leaves required `old_string` missing.
+   Add `oldText` -> `old_string`, `old_text` -> `old_string`, `newText` -> `new_string`, `new_text` -> `new_string`, `replaceAll` -> `replace_all` alongside existing `old_str` -> `old_string` and `new_str` -> `new_string`. The safe-apply rule (rename only when canonical is declared on the active object schema, alias is not declared, alias is present, canonical is absent) prevents collisions on unrelated tools.
+2. **Phase 1 (Root aliases):** Run existing top-level `applyAliases` on root `args` against root `params` (e.g. `path` -> `file_path`).
+3. **Phase 2 (Single-item array promotion and mixed-form conflict detection):**
+   Inspect every required property `K` of root `params` whose schema is `"type": "array"` with an object `items` schema carrying a non-empty `required` list. Identify root keys in `args` that are **not** declared on root `params` and map (directly or via `aliasTable`) to a declared property of `K.items`:
+   - **If `args[K]` is absent or `nil`:** if those matched root keys cover every key in `K.items.required`, move those keys into `args[K] = []any{item}` and delete them from root `args`, recording a `repair.Change` on field `K`.
+   - **If `args[K]` is already present (non-nil) and one or more such conflicting root keys are present:** do **not** promote AND add those conflicting root keys to a `preserveUnknown` set so Phase 5 (`dropUnknown`) leaves them in place. Because `additionalProperties: false`, `t.Schema.Validate(healed)` then rejects the mixed call before dispatch, leaving the file untouched and avoiding silent partial execution.
+4. **Phase 3 (Root coercion, including stringified JSON arrays and bare objects):**
+   Run `applyCoercions` on root `args` **before** descending into array items:
+   - When a root property has `"type": "array"` and its `items` schema declares `"type": "object"`:
+     - If `raw` is a `string`: attempt `json.Unmarshal` (bounded by existing argument size/depth limits). If it decodes to `[]any`, replace with that slice (`ChangeCoerceType`, `"json_string→array"`); if it decodes to `map[string]any`, wrap as `[]any{decoded}` (`ChangeCoerceType`, `"json_string→[object]"`). If it is not valid JSON or decodes to neither array nor object, leave it untouched so schema validation reports the real type error (never wrap a plain string into `[]any{raw}` when `items.type == "object"`).
+     - If `raw` is a `map[string]any`: existing scalar-to-array coercion wraps it into `[]any{raw}`.
+5. **Phase 4 (Recursive nested object and array-item repair):**
+   Now that any promoted, JSON-decoded, or bare-wrapped array is a real `[]any`, walk nested `type: "object"` properties and `type: "array"` elements whose `items` is `type: "object"` (using the same copy-on-write cloning pattern as `dropEmptyOptionalsWithin` at `repair.go:443`), running in order per item:
+   - `applyAliases` (heals `old_str`/`oldText`/`old_text`, `new_str`/`newText`/`new_text`, `replaceAll`, prefixing `Change.Field` with `edits[i].`)
+   - `applyCoercions` (heals `replace_all: "true"`/`"false"` -> `bool`)
+   - `dropEmptyOptionals`
+   - `dropUnknown` when `items.additionalProperties == false` (neutralizes the Claude Opus 4.8 / Sonnet 5 failure mode where models emit byte-correct `old_string`/`new_string` plus invented trailing keys like `type`/`unique`/`notes`, while still failing loudly if a typo like `old_sting` leaves required `old_string` missing)
+6. **Phase 5 (Root `dropEmptyOptionals` and `dropUnknown`):**
+   Run root `dropEmptyOptionals` and root `dropUnknown`, skipping any key in `preserveUnknown` from Phase 2 so mixed-form calls always fail schema validation.
 
 **Non-mutation invariant:** `FuzzRepairArgs` enforces that `RepairArgs` never mutates its input `args` map or nested slices/maps. Every recursive pass clones slices and modified item maps on write.
 
 ### 4. Multi-Edit Execution Engine (`agent/execenv`)
 
-#### Types and Capability Interface (`agent/execenv/execenv.go`)
+#### Types, Bounds, and Capability Interface (`agent/execenv/execenv.go`, `agent/execenv/local_files.go`)
 
 ```go
 // FileEdit is one exact-text replacement within a single-file batch edit.
@@ -179,77 +192,97 @@ type BatchFileEditor interface {
 }
 ```
 
+Package-level resource caps (variables like `MaxWholeFileReadBytes` in `agent/execenv/read_capped.go` so tests can exercise both refusals with fixture-sized caps):
+- `MaxEditFileSpans = 100_000`: maximum total matched spans across all entries in a single batch (checked inside the `replace_all` match loop so a 1-character `replace_all` on a large file fails fast without unbounded slice growth).
+- `MaxEditFileOutputBytes = MaxWholeFileReadBytes` (128 MiB default): maximum spliced output byte size (checked before allocating the output buffer).
+
 `LocalExecutionEnvironment` implements:
 - `EditFileBatchCtx(ctx context.Context, path string, edits []FileEdit) (string, error)` -> calls `EditFileBatchWithCtx(ctx, path, edits, nil)`
 - `EditFileBatchWithCtx(ctx context.Context, path string, edits []FileEdit, finish func(edited []byte) []byte) (string, error)`
 - Existing `EditFileWithCtx(ctx, path, oldString, newString, replaceAll, finish)` delegates directly to `EditFileBatchWithCtx(ctx, path, []FileEdit{{OldString: oldString, NewString: newString, ReplaceAll: replaceAll}}, finish)` so there is one engine and zero duplicated matching/writing logic.
 
-#### Atomic Matching and Splicing Algorithm (`agent/execenv/local_files.go`)
+#### Atomic Matching, Byte-Faithful Splicing, and Publication Algorithm (`agent/execenv/local_files.go`)
 
 ```mermaid
 flowchart TD
     A[Acquire fileTarget + checkWritable] --> B[Validate edits non-empty and old_string non-empty]
-    B --> C[Read file once with ctx]
-    C --> D[Strip optional UTF-8 BOM and normalize CRLF to LF]
-    D --> E[Match all edits against original LF content, collecting all errors]
-    E --> F{Any miss or ambiguity?}
+    B --> C[Read original file bytes once with ctx]
+    C --> D[Build LF view + optional CR-offset index + detect BOM]
+    D --> E[Match all edits against LF view, collecting all errors and enforcing span cap]
+    E --> F{Any miss, ambiguity, or cap error?}
     F -- Yes --> G[Return all edit errors with line numbers + nearest regions, write nothing]
-    F -- No --> H[Sort spans by start, end and check prev.end > curr.start]
+    F -- No --> H[Map matched LF spans to exact original byte spans, sort, check overlap]
     H --> I{Any overlap?}
     I -- Yes --> J[Return error naming both edit indices, write nothing]
-    I -- No --> K[Single-pass splice into pre-sized buffer + track changed]
-    K --> L{Any bytes changed?}
-    L -- No --> M[Return no-op error, write nothing]
-    L -- Yes --> N[Restore CRLF + BOM, run optional finish hook, write file once]
+    I -- No --> K[Check output byte cap, splice into pre-sized buffer preserving untouched bytes]
+    K --> L{Spliced bytes equal original bytes?}
+    L -- Yes --> M[Return no-op error, write nothing]
+    L -- No --> N[Run optional finish hook, then atomic temp+rename publication]
 ```
 
 Walkthrough:
 1. **Target & write preflight:** Call `e.fileTarget("edit_file", path, targetWrite)` and defer `t.release()`. Under sandbox (`t.sfs != nil`), run `t.sfs.checkWritable("edit_file", t.abs)` first so a non-writable path always returns a clean sandbox denial (enabling human escalation on containment denials) rather than an input or match error.
 2. **Input guard:** Reject `len(edits) == 0`. Reject any entry with `edits[i].OldString == ""`, collecting all empty-`old_string` errors (naming `edits[i]` when `len(edits) > 1`) before doing file I/O.
-3. **Single read + BOM/CRLF normalization *(proposal)*:** Read file bytes once via `t.sfs.readFileCtx` (sandboxed) or `readFileCappedCtx` (unconfined).
-   - Detect and strip a leading UTF-8 BOM (`\xEF\xBB\xBF`) so an invisible BOM never breaks an edit touching line 1.
-   - Detect whether the file uses CRLF (`\r\n` appears before the first `\n`). When CRLF, normalize `\r\n` -> `\n` on the file content and on each `ed.OldString` / `ed.NewString` for matching, then restore `\r\n` on the spliced output before writing. (Pure LF files skip both conversions with zero extra allocation.)
-4. **Match ALL edits against original LF content `s` (single-scan per edit, collect all errors):**
+3. **Single read + LF view with exact original-byte offset mapping:** Read raw bytes `origBytes` once via `t.sfs.readFileCtx` (sandboxed) or `readFileCappedCtx` (unconfined).
+   - Detect an optional leading UTF-8 BOM (`\xEF\xBB\xBF`, `bomLen = 3` or `0`) and treat `body := origBytes[bomLen:]` as the matchable body so an invisible BOM never breaks an edit touching line 1 and stays untouched in `origBytes[:bomLen]` on splice.
+   - Build the LF view `lfText` of `body` together with a lightweight offset map of stripped `\r` positions (`crOrigOffsets []int`, storing the byte index in `body` of each `\r` dropped from a `\r\n` pair):
+     - On pure LF files (no `\r\n`), `crOrigOffsets` is `nil` and `lfText` is `string(body)` with **zero extra allocation or offset translation**.
+     - On CRLF or mixed-ending files, any LF offset `p` maps to its exact byte offset in `origBytes` in O(log R) via `bomLen + p + countCRsBeforeLF(crOrigOffsets, p)`.
+     - Normalize `ed.OldString` and `ed.NewString` `\r\n` -> `\n` (`oldLF`, `newLF`) for matching.
+     - Compute `defaultEnding`: `"\r\n"` if the file's first line ending is CRLF, else `"\n"`.
+4. **Match ALL edits against `lfText` (single-scan per edit, collect all errors):**
    For each `i, ed := range edits`:
-   - Let `target := oldLF`.
-   - Call `idx := strings.Index(s, target)` **once**.
+   - Call `idx := strings.Index(lfText, oldLF)` **once**.
    - **Exact-match path (`idx >= 0`):**
-     - If `!ed.ReplaceAll`: check `second := strings.Index(s[idx+len(target):], target)`. If `second >= 0`, record an ambiguity error for `edits[i]` listing the 1-based line numbers of the occurrences (capped at e.g. 10 line numbers) and continue validating remaining edits. Otherwise append span `{start: idx, end: idx + len(target), newString: newLF, editIndex: i}`.
-     - If `ed.ReplaceAll`: append the first span at `idx`, then continue scanning from `pos := idx + len(target)` with `strings.Index(s[pos:], target)` until no more occurrences remain (matches `strings.ReplaceAll`'s non-overlapping occurrence set).
+     - If `!ed.ReplaceAll`: check `second := strings.Index(lfText[idx+len(oldLF):], oldLF)`. If `second >= 0`, record an ambiguity error for `edits[i]` listing the 1-based line numbers of occurrences (capped at 10) and continue. Otherwise append span `{lfStart: idx, lfEnd: idx + len(oldLF), newLF: newLF, editIndex: i}`.
+     - If `ed.ReplaceAll`: append the first span at `idx`, then loop with `strings.Index(lfText[pos:], oldLF)` advancing `pos` by `len(oldLF)`, checking `len(spans) >= MaxEditFileSpans` on every append so unbounded matches fail fast with a recoverable error.
    - **Fuzzy fallback (`idx < 0`):**
-     - Call `match, ambiguous := findFuzzyMatch(s, target, !ed.ReplaceAll)` (`checkUnique := !ed.ReplaceAll` so `replace_all: true` stops on the first match without scanning to EOF, and `!ed.ReplaceAll` verifies uniqueness in one pass without a second `strings.Count` scan).
+     - Call `fuzzySpans, ambiguous := findFuzzyMatchSpans(lfText, oldLF, ed.ReplaceAll, MaxEditFileSpans-len(spans))` (see below), which returns the **exact byte spans `(start, end)` in `lfText`** directly from the streaming line/window scan without re-searching `lfText` via `strings.Index`.
      - If `ambiguous`: record an ambiguity error for `edits[i]` (noting multiple whitespace-normalized matches and advising more context or `replace_all: true`) and continue.
-     - If `match == ""`: record a not-found error for `edits[i]`, truthfully stating that exact and whitespace-normalized matching ran and attaching `nearestFileRegion(s, target)` with 1-based line numbers (capping nearest-region snippets to the first 3 missed edits to keep error size bounded), then continue.
-     - Otherwise mark `usedFuzzy = true` and collect span(s) for `match` in `s` (`strings.Index` for single, loop for `replace_all`).
+     - If `len(fuzzySpans) == 0`: record a not-found error for `edits[i]`, truthfully stating that exact and whitespace-normalized matching ran and attaching `nearestFileRegion(lfText, oldLF)` with 1-based line numbers (capping nearest-region snippets to the first 3 missed edits), then continue.
+     - **Substring ambiguity guard for `!ed.ReplaceAll`:** for a single fuzzy match `[start, end)`, verify that the verbatim matched text `lfText[start:end]` does not also appear elsewhere in `lfText` as an exact substring (checking `strings.Index(lfText[:start], matched) >= 0 || strings.Index(lfText[end:], matched) >= 0`). If it does, record an ambiguity error instead of silently editing either location.
+     - Mark `usedFuzzy = true` and append each returned fuzzy span directly (using its own `(start, end)` offsets, never diverting to an earlier substring).
    - If any errors were collected across `edits`, return them joined together without writing anything to disk.
-5. **Overlap detection across all collected spans:**
-   - Sort `spans` by `start` ascending, then `end` ascending, then `editIndex` ascending.
+5. **Map spans to original byte offsets and check overlap:**
+   - Convert every span's `(lfStart, lfEnd)` to exact `(origStart, origEnd)` byte offsets in `origBytes`.
+   - For each span's replacement bytes `newBytes`: inspect the original replaced slice `origBytes[origStart:origEnd]` for its line ending (`"\r\n"` if it contains `\r\n`, `"\n"` if it contains `\n` without `\r\n`, else `defaultEnding`). Convert `\n` in `newLF` to that span's line ending. Untouched text outside matched spans is copied verbatim from `origBytes`, so mixed-ending files keep every untouched line byte-for-byte intact.
+   - Sort `spans` by `origStart` ascending, then `origEnd` ascending, then `editIndex` ascending.
    - For `k := 1; k < len(spans); k++`:
-     - If `spans[k-1].end > spans[k].start`: fail the whole call naming `edits[spans[k-1].editIndex]` and `edits[spans[k].editIndex]` and instructing the model to merge overlapping or nearby edits into one entry.
-     - Adjacent touching spans (`spans[k-1].end == spans[k].start`) are disjoint and allowed.
-     - Identical duplicate edits automatically fail overlap because `len(target) > 0` guarantees `spans[k-1].end > spans[k].start`.
-6. **Single-pass pre-sized splice & no-op guard:**
-   - Compute exact output byte length: `outLen := len(s) + sum(len(sp.newString) - (sp.end - sp.start))`.
-   - Allocate `edited := make([]byte, 0, outLen)` once; walk sorted `spans`, appending `s[cursor:sp.start]` and `sp.newString`, setting `changed = changed || s[sp.start:sp.end] != sp.newString`, and recording the 1-based starting line number of each changed span for the confirmation summary.
-   - If `!changed`: return a no-op error without calling `finish` or writing to disk. (Checking `changed` after fuzzy matching still permits intentional whitespace cleanup while rejecting true no-ops.)
-7. **Restore line endings & BOM, run `finish`, write once:**
-   - If the original file used CRLF, restore `\n` -> `\r\n`; if it had a leading UTF-8 BOM, prepend it.
-   - If `finish != nil`, call `edited = finish(edited)`.
-   - Write once through `t.sfs.writeFile("edit_file", t.abs, edited, 0o644)` or `afero.WriteFile(e.filesystem(), t.abs, edited, 0o644)`.
+     - If `spans[k-1].origEnd > spans[k].origStart`: fail the whole call naming `edits[spans[k-1].editIndex]` and `edits[spans[k].editIndex]` and instructing the model to merge overlapping or nearby edits into one entry.
+     - Adjacent touching spans (`spans[k-1].origEnd == spans[k].origStart`) are disjoint and allowed.
+     - Identical duplicate edits automatically fail overlap because `len(old) > 0` guarantees `origEnd > origStart`.
+6. **Output cap check, single-pass pre-sized splice, and exact no-op guard:**
+   - Compute exact `outLen := int64(len(origBytes)) + sum(int64(len(sp.newBytes)) - int64(sp.origEnd - sp.origStart))`. If `outLen > MaxEditFileOutputBytes`, return a recoverable size-limit error without allocating or writing.
+   - Allocate `edited := make([]byte, 0, outLen)` once; walk sorted `spans`, appending `origBytes[cursor:sp.origStart]` and `sp.newBytes`, then trailing `origBytes[cursor:]`.
+   - Check `bytes.Equal(edited, origBytes)` **before** calling `finish` or writing. If equal, return a no-op error without calling `finish` or writing to disk. (Comparing the fully spliced bytes catches both single-edit no-ops and adjacent cancelling edits like `a`->`ab` + `bc`->`c` on `abc`, while still permitting intentional whitespace cleanup via fuzzy match.)
+7. **Finish hook (`memory_edit` formatting contract) and atomic publication:**
+   - **Formatting contract for `finish != nil` (`memory_edit`):** `finish` (`stamp` in `agent/session_tools_memory.go`) runs on `edited` right before publication. When `memory_edit` stamps a Markdown page, `frontmatter.SetField` writes LF without a leading BOM, matching `docs/product/memory.md` (which states that stamped pages accept LF/CRLF/CR input and normalize frontmatter on stamp). Workspace `edit_file` calls pass `finish == nil` and preserve original BOM and per-line endings verbatim.
+   - **Atomic publication:**
+     - Sandboxed (`t.sfs != nil`): `t.sfs.writeFile("edit_file", t.abs, edited, 0o644)` already publishes atomically via temp file + `renameat` under the directory fd (and preserves existing permissions on regular files).
+     - Unconfined (`t.sfs == nil`): publish atomically via a helper `writeFileAtomic(fsys, targetAbs, edited)` instead of `afero.WriteFile` (`O_TRUNC`):
+       1. Stat `targetAbs` to capture existing file permissions (defaulting to `0o644` if unavailable) and resolve symlinks on the real OS filesystem (`filepath.EvalSymlinks`) so the sibling temp file is created in the resolved target's directory and `Rename` replaces the symlink target rather than replacing the symlink itself (preserving unconfined symlink behavior).
+       2. Create a unique temp file in that directory (`afero.TempFile`), write all bytes, `Chmod` to the original mode, `Close`, and `fsys.Rename(tmpName, resolvedTarget)`.
+       3. On any write, chmod, close, or rename failure, remove the temp file and return the error, leaving the original file bytes untouched.
 8. **Confirmation summary:**
-   - Single edit (`len(edits) == 1`): `edited <path>: <n> replacement[s][fuzzyNote]` (preserves existing single-edit summary shape).
+   - Single edit (`len(edits) == 1`): `edited <path>: <n> replacement[s][fuzzyNote]`.
    - Multiple edits (`len(edits) > 1`): `edited <path>: <totalSpans> replacement[s] across <len(edits)> edits[fuzzyNote]`.
 
-#### Fuzzy Uniqueness (`agent/execenv/local_edit_match.go`) *(Proposal)*
+#### Offset-Returning Fuzzy Matcher (`agent/execenv/local_edit_match.go`)
 
-Add `checkUnique bool` to `findFuzzyMatch(content, oldString string, checkUnique bool) (match string, ambiguous bool)`. When `checkUnique` is `true`, keep scanning lines (or multi-line windows) after the first normalized hit and return `("", true)` immediately upon seeing a second match; when `false` (`replace_all: true`), return on the first match as today. This is ~10 lines inside the existing streaming `eachLine` scan, eliminates redundant `strings.Count` on the fuzzy path, and closes the silent wrong-location fuzzy edit failure mode documented in OpenCode `#32559`. Also include the 1-based starting line number in `nearestFileRegion` output so a missed edit tells the model where in the file the nearest region sits.
+Replace string-returning `findFuzzyMatch` with an offset-returning matcher `findFuzzyMatchSpans(content, oldString string, replaceAll bool, maxSpans int) (spans []byteSpan, ambiguous bool)` (keep any internal callers updated):
+- Walks `content` with byte offsets tracked across `\n`-delimited lines (streaming, no whole-file line-slice allocation per issue `#4556`).
+- Single-line `oldString`: checks `normalizeWS(line) == normOld` and records exact `(lineStart, lineEnd)`.
+- Multi-line `oldString`: tracks a sliding window of `(lineStart, lineEnd)` pairs of size `wSize` and records exact `(window[0].start, window[wSize-1].end)`.
+- When `!replaceAll`: stops immediately and returns `(nil, true)` upon finding a second matching line/window; otherwise returns the single `[]byteSpan{{start, end}}`.
+- When `replaceAll`: collects all non-overlapping matching line/window spans (advancing past the matched window on multi-line hits so sliding windows do not overlap themselves), stopping early if `len(spans) > maxSpans`.
+- Also update `nearestFileRegion` to include the 1-based starting line number (`L<n>:`) so missed edits tell the model where in the file the nearest region sits.
 
 ### 5. Session File and Memory Executors (`agent/session_tools_file.go`, `agent/session_tools_memory.go`)
 
 - **Decode `edits` (`parseFileEdits` in `agent/session_tools_file.go`):**
   - Extract `args["edits"]` as `[]any`, decoding each `map[string]any` into `execenv.FileEdit{OldString, NewString, ReplaceAll}`. Return a validation error if `edits` is missing, empty, or contains a malformed element.
 - **Update `execFileEditWith` in place (`agent/session_tools_file.go`):**
-  - `execFileEditWith` is unexported and has only two callers (`execFileEdit` and `execMemoryEdit`). Update its signature in place to take `edit func(path string, edits []execenv.FileEdit) (string, error)` instead of creating a parallel `execFileEditBatchWith`.
+  - `execFileEditWith` is unexported and has only two callers (`execFileEdit` and `execMemoryEdit`). Update its signature in place to take `edit func(path string, edits []execenv.FileEdit) (string, error)` instead of adding a parallel `execFileEditBatchWith`.
   - Check `readGuard.ReadBeforeWriteWarning(path)` once for `file_path`, and prepend `warn` when `err == nil && warn != ""`.
 - **`execFileEdit` fallback (`agent/session_tools_file.go`):**
   - If `env` implements `execenv.BatchFileEditor`, call `be.EditFileBatchCtx(ctx, path, edits)`.
@@ -258,7 +291,7 @@ Add `checkUnique bool` to `findFuzzyMatch(content, oldString string, checkUnique
     - If `len(edits) > 1`: return an error (`"edit_file: execution environment does not support multi-edit"`).
 - **`execMemoryEdit` (`agent/session_tools_memory.go`):**
   - `execOwnMemoryWrite` already passes `*execenv.LocalExecutionEnvironment` and `stamp`. Call updated `execFileEditWith` delegating to `env.EditFileBatchWithCtx(ctx, path, edits, stamp)`.
-  - One read, one atomic multi-edit, one frontmatter `updated:` stamp, one write, one memory index update.
+  - One read, one atomic multi-edit, one frontmatter `updated:`/`by:` stamp, one atomic write, one memory index update.
 - **Hooks and sandbox escalation:**
   - `PreToolUse` / `PostToolUse` hooks receive the canonical post-repair JSON `{ "file_path": "...", "edits": [...] }` unchanged.
   - `session_escalation.go` keeps `"edit_file": true` in `escalatableTools` because `edit_file` remains strictly single-file.
@@ -277,7 +310,7 @@ Add `checkUnique bool` to `findFuzzyMatch(content, oldString string, checkUnique
 
 #### Shared Helpers (`appwire-client/typescript/editDiff.ts`)
 
-Add one shared edit-extraction and diff-synthesis path exported from `@evener/appwire-client`:
+Add one shared edit-extraction and diff-synthesis path exported from `@evener/appwire-client`, and align `diffStats` header tracking with `DiffBlock`:
 
 ```ts
 export interface EditOperation {
@@ -295,19 +328,22 @@ export function editOperationsOf(args: Record<string, unknown>): EditOperation[]
 // Single diff-synthesis implementation for one or more edits to a single file.
 // For a single edit, output is identical to editDiffText (no @@ header).
 // For multiple edits, each edit is separated by an "@@ edit N @@" header so
-// both web DiffBlock and mobile Diff render clear visual boundaries and
-// diffStats counts added/removed lines across all edits.
+// both web DiffBlock and mobile Diff render clear visual boundaries.
 export function editBatchDiffText(path: string, edits: readonly EditOperation[]): string;
 ```
 
-Reduce existing `editDiffText(path, oldString, newString)` to a one-line wrapper: `return editBatchDiffText(path, [{ oldString, newString }]);` so there is one formatting implementation across the repo.
+- Reduce `editDiffText(path, oldString, newString)` to a one-line wrapper: `return editBatchDiffText(path, [{ oldString, newString }]);`.
+- **Align `diffStats` with `DiffBlock` (`parseUnifiedDiff`):** track `inHeader` state in `diffStats`:
+  - Starts `true` (and resets `true` on `diff --git` or `index `).
+  - Turns `false` on `@@`, or immediately after consuming the initial `--- ...` / `+++ ...` file-header pair (so both multi-edit `@@ edit N @@` hunks AND legacy flat single-edit diffs count a deleted/added Markdown `---` or `+++` line as content rather than skipping it as a file header).
+  - Guarantees summary `+A -R` counts match the lines rendered by web's `DiffBlock` and mobile's `Diff`.
 
 #### Summary and Body Consumers
 
 All four consumers switch to `editOperationsOf(args)` + `editBatchDiffText(path, ops)`:
 
 1. **`appwire-client/typescript/toolSummaries.ts` (`editFileWords`):**
-   - Sums `+added -removed` across all edits via `diffResultText(editBatchDiffText(path, ops))`, rendering `Edited <path> · +A -R` (consistent with `applyPatchWords`, which renders `Patched <files> · +A -R`). Omits diff detail when `ops === null`.
+   - Sums `+added -removed` across all edits via `diffResultText(editBatchDiffText(path, ops))`, rendering `Edited <path> · +A -R` (consistent with `applyPatchWords`). Omits diff detail when `ops === null`.
 2. **`appwire-client/typescript/memorySteps.ts` (`memoryEditWords`):**
    - Uses `editOperationsOf(args)` + `editBatchDiffText(path, ops)`. When `ops === null`, omits diff detail (matching existing malformed-call guard).
 3. **`cmd/evener-hub/frontend/src/panes/session/transcript/tools/bodies.tsx` (`EditFileBody`) and `memoryTools.tsx` (`MemoryEditBody`):**
@@ -318,28 +354,44 @@ All four consumers switch to `editOperationsOf(args)` + `editBatchDiffText(path,
    - `evidence.ts` uses `editOperationsOf(args)` + `editBatchDiffText(path ?? "", ops)` for both `edit_file` and `memory_edit`.
    - `StepEvidence.tsx` (`diffLineStyle`) styles lines starting with `@@` with `{ color: palette.inkLow }` (same muted header style as `+++`/`---`), so multi-edit `@@ edit N @@` separators (and `apply_patch` hunk headers) read clearly on mobile.
 
-### 8. Verification Plan
+### 8. Implementation Order and Verification Plan
+
+#### Staged Implementation Order (Keep Every Intermediate Commit Working)
+
+1. **Stage 1: Backend batch engine + dual-shape transcript consumers (no schema switch yet).**
+   - Add `FileEdit`, `BatchFileEditor`, `EditFileBatchCtx`, `EditFileBatchWithCtx` (with `EditFileWithCtx` delegating to it), offset-returning `findFuzzyMatchSpans`, mixed-ending/BOM byte-faithful splicing, `writeFileAtomic` for unconfined writes, and `MaxEditFileSpans`/`MaxEditFileOutputBytes` bounds.
+   - Update `agent/transcript_render.go`, `@evener/appwire-client` (`editOperationsOf`, `editBatchDiffText`, header-aware `diffStats`, `toolSummaries.ts`, `memorySteps.ts`), web `bodies.tsx`/`memoryTools.tsx`, and mobile `evidence.ts`/`StepEvidence.tsx` to render both `edits[]` and legacy top-level calls.
+   - Existing single-edit calls and every existing test remain green at this boundary.
+2. **Stage 2: Schema, prompt, 5-phase repair, dispatch, and test fixtures together.**
+   - Update `DefEditFile()` / `DefMemoryEdit()`, `agent/prompts/system.md.tmpl`, 5-phase `repair.RepairArgs`, `execFileEditWith` / `execFileEdit` / `execMemoryEdit`, and raw-dispatch test fixtures in one atomic change, verified end-to-end across Go and TypeScript gates.
+
+#### Verification Cases
 
 Follow `docs/developing-evener/testing.md` (behavior assertions, never phrasing assertions):
 
 - **Go `execenv` tests (`agent/execenv`):**
   - Multi-edit disjoint replacements in one call (forward order, reverse file order, adjacent touching spans).
-  - Atomicity: edit 0 matches, edit 1 misses (or is ambiguous, or empty `old_string`) -> error returned naming every failing edit, file bytes unchanged, `finish` callback not called.
-  - Multi-error collection: two missing edits in one batch report both failures in a single error; `nearestFileRegion` snippets cap at 3 and include line numbers.
+  - Atomicity on match/validation failure: edit 0 matches, edit 1 misses (or is ambiguous, or empty `old_string`) -> error returned naming every failing edit, file bytes unchanged, `finish` callback not called.
+  - Atomicity on unconfined write failure: fault-injected write error in `writeFileAtomic` removes temp file and preserves original bytes on disk, permissions, and symlink target behavior.
+  - Multi-error collection: two missing edits in one batch report both failures in one error; `nearestFileRegion` snippets cap at 3 and carry 1-based line numbers.
   - Overlap rejection: partial overlap, nested span, identical duplicate edits, and `replace_all: true` overlapping another edit -> error returned naming both edit indices, file bytes unchanged.
-  - `replace_all: true` combined with a disjoint targeted edit in the same call.
-  - CRLF + UTF-8 BOM preservation across single and multi-edit calls (exact match succeeds with LF `old_string`, file retains `\r\n` and BOM).
-  - Whitespace-normalized fuzzy match in multi-edit + fuzzy ambiguity rejection when `!replace_all`.
-  - No-op batch rejected without writing or calling `finish`, while fuzzy whitespace-cleanup edit (`old_string == new_string` matching differently indented file text) succeeds.
+  - `replace_all: true` combined with a disjoint targeted edit in the same call; span-count cap (`MaxEditFileSpans`) and output-size cap (`MaxEditFileOutputBytes`) return recoverable errors without mutating disk.
+  - Byte-faithful line endings & BOM: pure CRLF + BOM file preserves CRLF and BOM; mixed-ending file (`a\r\nb\nc\r\n`) edited on line 1 preserves untouched LF after `b` byte-for-byte.
+  - Offset-returning fuzzy matching: single fuzzy match on line 2 (`  alpha   beta`) when line 1 has `prefix  alpha   beta` rejects the substring ambiguity rather than silently editing line 1; unique fuzzy match succeeds; fuzzy ambiguity across two whitespace variants fails when `!replace_all`; fuzzy `replace_all: true` replaces all whitespace-variant lines directly by offset.
+  - Exact no-op guard: single no-op AND adjacent cancelling edits (`abc` with `a`->`ab` and `bc`->`c`) return an error without calling `finish` or writing; fuzzy whitespace-cleanup edit (`old_string == new_string` matching differently indented bytes) succeeds.
   - Sandboxed (`NewConfinedFileEnvironment` / read-only / masked path) write-denial precedes read/match on multi-edit, and confined atomic write preserves all edits.
   - Update / extend `FuzzEditFile` (and `FuzzEditFileDifferential`) to verify atomicity and MemMapFs/OsFs parity across batches.
 - **Go repair & session tests (`agent/internal/tool`, `agent/internal/tool/repair`, `agent/`):**
-  - `TestAllBuiltinParametersCarryDescriptions` and `TestDefEditFile` schema assertions.
+  - `TestAllBuiltinParametersCarryDescriptions`, `DefEditFile()` mentions `read_file`/`write_file`, and `DefMemoryEdit()` mentions `memory_read`/`memory_write` (never `read_file`/`write_file`).
   - Provider schema emission tests (Anthropic, Google, OpenAI) confirm `DefEditFile()` emits cleanly on every provider.
-  - `repair.RepairArgs` tests: top-level `{old_string, new_string, replace_all}` promoted into `edits[0]`; top-level `{old_str, new_str}` promoted; conflicting top-level + `edits` NOT silently merged; stringified JSON array `edits` decoded; stringified JSON single object `edits` decoded and wrapped; bare object `edits` wrapped; non-JSON string `edits` NOT wrapped into `[string]`; nested aliases (`old_str`, `new_str`, `oldText`, `newText`, `replaceAll`), boolean string coercion (`"true"` -> `true`), and invented trailing keys inside `edits[i]` dropped while missing required `old_string` still fails; non-mutation of input map/slices.
-  - `agent` session tests: `edit_file` multi-edit end-to-end, `memory_edit` multi-edit updating frontmatter once, single-edit fallback on minimal `ExecutionEnvironment` fake, explicit error on multi-edit against a fake without `BatchFileEditor`, `readGuard` warning emitted once, update existing test fixtures that send raw `edit_file` calls directly to `Registry.ExecuteCall`.
+  - `repair.RepairArgs` tests:
+    - Legacy-only top-level `{old_string, new_string, replace_all}` and `{old_str, new_str}` promote to `edits[0]`.
+    - Mixed call carrying BOTH `edits` and top-level `old_string`/`new_string` is **rejected before dispatch** (conflicting root keys preserved past `dropUnknown`), leaving the file unchanged.
+    - Combined quirk test: stringified JSON array (or bare object) `edits` containing nested `old_str`/`new_str`/`replaceAll: "true"` plus invented trailing key `"notes"` decodes, aliases, coerces, drops `"notes"`, and reaches executor with canonical fields.
+    - Non-JSON string `edits` is NOT wrapped into `[string]`; typo `old_sting` leaving `old_string` missing fails validation; non-mutation of input map/slices verified by `FuzzRepairArgs`.
+  - `agent` session tests: `edit_file` multi-edit end-to-end, `memory_edit` multi-edit on LF and CRLF/BOM pages (verifying stamped LF output and refreshed index), single-edit fallback on minimal `ExecutionEnvironment` fake, explicit error on multi-edit against a fake without `BatchFileEditor`, `readGuard` warning emitted once.
 - **TypeScript tests (`appwire-client/typescript`, `cmd/evener-hub/frontend`, `mobile-native`):**
-  - `editOperationsOf` and `editBatchDiffText` unit tests covering single `edits[]`, multi `edits[]`, legacy top-level `{old_string, new_string}`, and malformed inputs.
+  - `editOperationsOf`, `editBatchDiffText`, and header-aware `diffStats` unit tests covering single `edits[]`, multi `edits[]`, legacy top-level `{old_string, new_string}`, malformed inputs, and edits removing/adding Markdown `---`/`+++` lines (confirming `diffStats` and `DiffBlock` agree).
   - `editFileSummary`, `memoryEditWords`, `EditFileBody`, `MemoryEditBody`, `evidence.ts`, and `StepEvidence.tsx` tests covering both new `edits[]` and historical top-level transcripts.
   - Gates: `make test-api-package`, `make test-web`, `make test-native`.
 
@@ -353,4 +405,4 @@ Follow `docs/developing-evener/testing.md` (behavior assertions, never phrasing 
 ### 10. Related Future Directions (Out of Scope Here)
 
 - **Strict grammar-constrained tool decoding for `edit_file`:** Armin Ronacher's July 2026 findings showed enabling strict tool schemas eliminated ~20% `edits[]` schema errors on Opus 4.8 / Sonnet 5. Enabling strict mode on `DefEditFile()` (making `replace_all` nullable/required or opting into Anthropic's strict tool mode) is a clean follow-up orthogonal to this spec.
-- **Hash-anchored edits (`hashline`):** Benchmarks in 2026 (Can Bölük, Lamberti arXiv:2607.12713, Oh My Pi) showed strong gains on non-Claude/non-OpenAI models by annotating `read_file` lines with short hashes/tags, at the cost of ~6% read token overhead and cross-cutting `read_file` wire changes. Worth evaluating separately if non-Claude/non-OpenAI edit reliability becomes a bottleneck.
+- **Hash-anchored edits (`hashline`):** Benchmarks in 2026 (Can Bölük, Lamberti `arXiv:2607.12713`, Oh My Pi) showed strong gains on non-Claude/non-OpenAI models by annotating `read_file` lines with short hashes/tags, at the cost of ~6% read token overhead and cross-cutting `read_file` wire changes. Worth evaluating separately if non-Claude/non-OpenAI edit reliability becomes a bottleneck.
