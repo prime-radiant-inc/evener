@@ -75,32 +75,94 @@ const (
 // ~shellDigestHalfBytes with the middle elided. The full output stays in the
 // OutputStore, reachable via the job transcript_ref.
 func shellInlineDigest(full string, total, dropped int64) string {
-	b := []byte(full)
-	headRaw := b
-	if len(headRaw) > shellDigestHalfBytes {
-		headRaw = headRaw[:shellDigestHalfBytes]
-		// Drop a trailing partial line so the head ends on a line boundary and no
-		// mid-line fragment is shown before the elision marker.
-		if i := bytes.LastIndexByte(headRaw, '\n'); i >= 0 {
-			headRaw = headRaw[:i+1]
+	return shellInlineDigestWithin(full, total, dropped, 0, 0)
+}
+
+// shellInlineDigestWithin is shellInlineDigest bounded by the registry's
+// rendered limits: lineBudget counts the digest plus its one-line footer
+// (0 = unbounded), and charBudget bounds the digest's runes (0 = unbounded).
+// It shrinks the head and tail previews until the omission marker and its
+// offset_bytes hint fit, so the registry's own truncator never keeps its head
+// and tail and cuts the marker out of the middle. Each candidate renders its
+// omission range from the slices it actually shows.
+func shellInlineDigestWithin(full string, total, dropped int64, lineBudget, charBudget int) string {
+	headBudget, tailBudget := shellDigestHalfBytes, shellDigestHalfBytes
+	for {
+		digest := shellInlineDigestSlices(full, headBudget, tailBudget, total, dropped)
+		if digestFits(digest, lineBudget, charBudget) {
+			return digest
 		}
-		// A single long line with no newline before the cut leaves the byte slice
-		// ending mid-rune; drop the dangling partial rune so the head is valid UTF-8.
-		headRaw = runetrim.TrimTrailingPartial(headRaw)
+		if tailBudget > 0 {
+			tailBudget /= 2
+		} else if headBudget > 0 {
+			headBudget /= 2
+		} else {
+			return digest
+		}
 	}
-	tailRaw := b
-	if len(tailRaw) > shellDigestHalfBytes {
-		tailRaw = tailRaw[len(tailRaw)-shellDigestHalfBytes:]
-		// Drop a leading partial line so the tail starts on a line boundary.
-		if i := bytes.IndexByte(tailRaw, '\n'); i >= 0 {
-			tailRaw = tailRaw[i+1:]
+}
+
+// digestFits reports whether a rendered digest survives the registry's limits.
+// The shell footer is a single line (exit status, windowed-output note, and
+// retention details join with " · "), hence the +1.
+func digestFits(digest string, lineBudget, charBudget int) bool {
+	if lineBudget > 0 && textLineCount(digest)+1 > lineBudget {
+		return false
+	}
+	if charBudget > 0 && len([]rune(digest)) > charBudget {
+		return false
+	}
+	return true
+}
+
+// shellInlineDigestSlices renders the digest for one pair of preview byte
+// budgets; a zero budget shows none of that end.
+func shellInlineDigestSlices(full string, headBudget, tailBudget int, total, dropped int64) string {
+	b := []byte(full)
+	var headRaw []byte
+	if headBudget > 0 {
+		headRaw = b
+		if len(headRaw) > headBudget {
+			headRaw = headRaw[:headBudget]
+			// Drop a trailing partial line so the head ends on a line boundary and no
+			// mid-line fragment is shown before the elision marker.
+			if i := bytes.LastIndexByte(headRaw, '\n'); i >= 0 {
+				headRaw = headRaw[:i+1]
+			}
+			// A single long line with no newline before the cut leaves the byte slice
+			// ending mid-rune; drop the dangling partial rune so the head is valid UTF-8.
+			headRaw = runetrim.TrimTrailingPartial(headRaw)
 		}
-		// Likewise drop a dangling partial rune at the cut so the tail is valid UTF-8.
-		tailRaw = runetrim.TrimLeadingPartial(tailRaw)
+	}
+	var tailRaw []byte
+	if tailBudget > 0 {
+		tailRaw = b
+		if len(tailRaw) > tailBudget {
+			tailRaw = tailRaw[len(tailRaw)-tailBudget:]
+			// Drop a leading partial line so the tail starts on a line boundary.
+			if i := bytes.IndexByte(tailRaw, '\n'); i >= 0 {
+				tailRaw = tailRaw[i+1:]
+			}
+			// Likewise drop a dangling partial rune at the cut so the tail is valid UTF-8.
+			tailRaw = runetrim.TrimLeadingPartial(tailRaw)
+		}
 	}
 	head, _, _ := firstLineBytes(headRaw, shellDigestLines)
 	tail, _, _ := lastLineBytes(tailRaw, shellDigestLines)
 	return assembleOutputDigest(head, tail, total, dropped)
+}
+
+// textLineCount counts rendered lines: newline separators plus a non-terminated
+// final line.
+func textLineCount(s string) int {
+	if s == "" {
+		return 0
+	}
+	n := strings.Count(s, "\n")
+	if !strings.HasSuffix(s, "\n") {
+		n++
+	}
+	return n
 }
 
 // firstLineBytes returns the first n lines of b (each line including its trailing
