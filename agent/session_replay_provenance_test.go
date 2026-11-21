@@ -618,9 +618,6 @@ func TestCrossInstanceResponsesStripsOpaqueBlobKeepsNativePlaintext(t *testing.T
 	if wire != wireNativePlain {
 		t.Fatalf("wire reasoning = %s, want %s: the plaintext replays verbatim and no blob rides", wire, wireNativePlain)
 	}
-	if strings.Contains(wire, "rs_foreign") {
-		t.Fatalf("the fallback wire names the source instance's reasoning item id: %s", wire)
-	}
 	if !hasContentKind(out, llm.ContentText) {
 		t.Fatal("answer text must survive the strip")
 	}
