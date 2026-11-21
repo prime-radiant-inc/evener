@@ -7806,9 +7806,9 @@ async function handleReady(
         ...backgroundHeldRefs(),
         ...mutationPinnedRefs(),
       ]);
-  const watchRefs = targetRef
-    ? new Set([targetRef])
-    : new Set([...threadsStore.getState().watchedThreads.keys(), ...pendingWatchedHydrations.keys()]);
+  // The count map is the watch-holder authority: it holds a ref whose first
+  // read failed before publishing a model, with no pending attempt left.
+  const watchRefs = targetRef ? new Set([targetRef]) : new Set(watchRefCounts.keys());
   const authoritativePublishedRefs = options?.authoritativePublishedRefs ?? new Set<string>();
   await Promise.all([
     ...Array.from(refs, (ref) =>
