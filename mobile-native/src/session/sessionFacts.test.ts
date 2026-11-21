@@ -235,7 +235,7 @@ describe("the model chip (spec 8.5)", () => {
 		expect(modelChipLabel(session, catalog, "DeepSeek 4.1 Flash")).toBe(`GLM 5.3 Vision · ${effortName("xhigh")}`);
 		// While the catalog is away, the announced id wins over the Board row,
 		// which still refers to the previous model.
-		expect(modelChipLabel(session, undefined, "DeepSeek 4.1 Flash")).toBe("glm-5.3-vision · XHigh");
+		expect(modelChipLabel(session, undefined, "DeepSeek 4.1 Flash")).toBe(`glm-5.3-vision · ${effortName("xhigh")}`);
 	});
 	it.each([
 		["minimal", "Minimal"],
