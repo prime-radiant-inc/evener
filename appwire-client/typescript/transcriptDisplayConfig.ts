@@ -229,8 +229,8 @@ export function informationalNoticesVisible(vector: ContentVector): boolean {
  * calls, reasoning and expansion — never steering — so daemon steering shows
  * for them as it does at intent and above. */
 /** The chat preset's conversation-only posture: the one preset fact every
- * carve-out reads (daemon steering, settled thinking traces, internal
- * snapshots). Custom selections model content fields, never this posture. */
+ * carve-out reads (daemon steering, thinking, internal snapshots). Custom
+ * selections model content fields, never this posture. */
 function isChatPreset(content: ContentSelection): boolean {
   return content.kind === "preset" && content.level === "chat";
 }
@@ -242,10 +242,9 @@ export function hidesDaemonSteering(content: ContentSelection): boolean {
   return isChatPreset(content);
 }
 
-/** The one rule the transcript projector answers from: the chat preset stays
- * conversation-only, so a SETTLED thought keeps no compact trace row there
- * (its live placeholder and critical rows still show, as they always have).
- * See isChatPreset. */
+/** The one rule the transcript projector answers from: thinking begins at
+ * Intent, so Chat hides live, settled, and critical reasoning rows. See
+ * isChatPreset. */
 export function hidesThinkingTraces(content: ContentSelection): boolean {
   return isChatPreset(content);
 }
