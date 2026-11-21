@@ -9,76 +9,11 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
-	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
-
-// TestQueuedModelSwitchSurvivesAnAdmissionRefusal pins the applier's
-// admission ordering. A pick accepted mid-turn is popped before the
-// retirement lease is taken, so a closed admission window must put the popped
-// entry back: dropped, the pick is gone from the queue, ReportedModelRef
-// regresses to the committed model, and the accepted pick never lands once
-// admission reopens. A refused retirement claim returns the controller to
-// resident, which is exactly the reopening the pick must survive.
-func TestQueuedModelSwitchSurvivesAnAdmissionRefusal(t *testing.T) {
-	dir := t.TempDir()
-	s := newSession(t, withAdapter(newFakeAdapter("openai")), withDir(dir), withConfig(SessionConfig{
-		StateDir:         dir,
-		MaxSubagentDepth: 1,
-		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
-	}))
-
-	// A pick made while an input is in flight queues for the boundary.
-	s.mu.Lock()
-	s.state = SessionProcessing
-	s.mu.Unlock()
-	if err := s.SetModel("gpt-5.4"); err != nil {
-		t.Fatalf("SetModel mid-turn: %v", err)
-	}
-	s.mu.Lock()
-	queued := len(s.pendingModels)
-	s.state = SessionIdle
-	s.mu.Unlock()
-	if queued != 1 {
-		t.Fatalf("pending picks after a mid-turn pick = %d, want 1", queued)
-	}
-
-	// A retirement preparation refuses the applier's admission lease.
-	retirement, err := NewRetirementController(0, clock.Real())
-	if err != nil {
-		t.Fatal(err)
-	}
-	retirement.mu.Lock()
-	retirement.phase = "preparing"
-	retirement.mu.Unlock()
-	s.retirementController.Store(retirement)
-
-	s.applyPendingModelSwitch()
-
-	s.mu.Lock()
-	requeued := len(s.pendingModels)
-	s.mu.Unlock()
-	if requeued != 1 {
-		t.Fatalf("pending picks after a refused admission = %d, want the pick re-queued", requeued)
-	}
-	if model, provider := s.ReportedModelRef(); provider != "openai" || model != "gpt-5.4" {
-		t.Fatalf("after a refused admission the advertised model = %s/%s, want the accepted pick openai/gpt-5.4 kept advertised", provider, model)
-	}
-
-	// Admission reopens; the next applier call must land the pick the refused
-	// attempt could not.
-	retirement.mu.Lock()
-	retirement.phase = "resident"
-	retirement.mu.Unlock()
-	s.applyPendingModelSwitch()
-
-	if got := s.currentProfile().Model(); got != "gpt-5.4" {
-		t.Fatalf("after admission reopened the session runs %q, want the queued pick gpt-5.4 applied", got)
-	}
-}
 
 // gatedListingAdapter wraps fakeAdapter with per-call scripted live-listing
 // behavior, so a test can block or fail each enumeration in turn while the

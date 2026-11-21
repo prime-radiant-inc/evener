@@ -2522,6 +2522,15 @@ func (s *Session) applyPendingModelSwitch() {
 // lets that call retry on a model the spent allowance may not limit; the
 // call owns the input, and its round has started nothing the new profile
 // could be swapped under.
+//
+// The applier takes no retirement-admission lease of its own. Every caller
+// runs inside the input's "turn" lease: both input-loop sites are inside
+// processInputKindWithProvenance, which holds that lease through its deferred
+// apply, and the quota wait's call runs inside that input's rounds.
+// RetirementController.TryClaim enters "preparing" only while no lease is
+// active, so admission cannot close under this call. A nested lease here
+// could only ever be refused after the pop, with the pick already out of the
+// queue - the shape that lost an accepted pick in #6973.
 func (s *Session) applyQueuedModelSwitches(inWaitingCall bool) {
 	for {
 		s.mu.Lock()
@@ -2545,29 +2554,7 @@ func (s *Session) applyQueuedModelSwitches(inWaitingCall bool) {
 		if !ok {
 			return
 		}
-		release, admissionErr := s.beginRetirementMutation("admission")
-		if admissionErr != nil {
-			// The pop ran before the lease, so a refused lease must not consume
-			// the pick: admission reopens when the retirement window closes,
-			// and the next applier call lands this entry then. One hold settles
-			// both ends: the entry goes back only when nothing newer owns the
-			// outcome - a committed pick's watermark, or a pick a concurrent
-			// applier (the quota wait's call) is validating - and the hold is
-			// retired only while it is still this pick's, not the other
-			// applier's.
-			s.mu.Lock()
-			newerValidating := s.modelValidating != nil && s.modelValidating.seq > pending.seq
-			if pending.seq >= s.modelPickAccepted && !newerValidating {
-				s.enqueuePendingModelLocked(pending)
-			}
-			if s.modelValidating != nil && s.modelValidating.seq == pending.seq {
-				s.modelValidating = nil
-			}
-			s.mu.Unlock()
-			return
-		}
 		err := s.applyModelSwitch(pending.target, pending.primedInstance, pending.primedListing, modelSwitchFence{pickSeq: pending.seq})
-		release()
 		s.clearModelValidating()
 		if err != nil {
 			s.emit(events.WarningData{
