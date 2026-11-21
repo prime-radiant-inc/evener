@@ -5332,8 +5332,6 @@ it("keeps the held body when a same-version merge supplies ask evidence", () => 
 // turn ownership AND wait presence. Pre-cut frames may only enrich.
 // ---------------------------------------------------------------------------
 
-// A quota retry frame: the wait's start (positive delay, stamp, instant) or
-// its wake (no delay, the same stamp).
 // A modelRetry frame: a quota wait's start (positive delay, stamp, instant) or
 // its wake (no delay, the same stamp), or an ordinary provider retry (any
 // other error class, no wait fields).
@@ -5344,7 +5342,6 @@ function quotaRetryFrame(overrides: {
   turnId?: string;
   model?: string;
   errorClass?: string;
-  maxAttempts?: number;
 }): AnyNotification {
   return {
     method: "evener/thread/modelRetry",
@@ -5352,7 +5349,7 @@ function quotaRetryFrame(overrides: {
       threadId,
       ref,
       attempt: 1,
-      maxAttempts: overrides.maxAttempts ?? 0,
+      maxAttempts: 0,
       delayMs: overrides.delayMs ?? 21_600_000,
       errorClass: overrides.errorClass ?? "quota_exceeded",
       groupElapsedMs: 5_000,
@@ -5877,7 +5874,7 @@ it("a pre-cut ordinary retry over a snapshot that already holds its clearing out
     [
       // Buffered inside the cut: the ordinary retry, then the output that
       // ended it (the same item and version the snapshot already holds).
-      quotaRetryFrame({ turnId: "turn_1", errorClass: "rate_limit", delayMs: 2_000, maxAttempts: 4 }),
+      quotaRetryFrame({ turnId: "turn_1", errorClass: "rate_limit", delayMs: 2_000 }),
       historyUpdate("cleared", 1),
     ],
     { lifetime: 1, adoptedRead: true },
