@@ -676,6 +676,32 @@ describe("a parked coordinator's drain wait", () => {
 		expect(one.text.replace("1", "#")).not.toBe(why.text.replace("2", "#"));
 	});
 
+	// The hold has two kinds and the docs name both (#7331): a drain held open
+	// on a managed background shell freezes the intent exactly as a held
+	// subagent does, so the row names the job wait the way the web row does.
+	const withJobHold = (d: ActivityDelegate, count: number): ActivityDelegate =>
+		({ ...d, drainHeldByJobs: true, runningJobCount: count }) as ActivityDelegate;
+
+	it("names the running job its drain holds open instead of its frozen intent", () => {
+		const parked = withJobHold(running("c", { latestIntent: "Frozen pre-drain line." }), 1);
+		expect(subagentWhy(rowOf(parked), NOW)).toEqual({ kind: "waiting", text: "Waiting on 1 running job" });
+		// Two jobs read in the plural.
+		const two = withJobHold(running("c", { latestIntent: "Frozen pre-drain line." }), 2);
+		expect(subagentWhy(rowOf(two), NOW)).toEqual({ kind: "waiting", text: "Waiting on 2 running jobs" });
+	});
+
+	it("phrases a drain held by both subagents and jobs as the web row does", () => {
+		const both = {
+			...withJobHold(running("c", { latestIntent: "Frozen pre-drain line." }), 1),
+			drainHeldBySubagents: true,
+			runningSubagentCount: 1,
+		} as ActivityDelegate;
+		expect(subagentWhy(rowOf(both), NOW)).toEqual({
+			kind: "waiting",
+			text: "Waiting on 1 subagent, 1 running job",
+		});
+	});
+
 	it("keeps the intent when nothing is held", () => {
 		// A count without the hold is a delegate still working with children.
 		const working = { ...running("w", { latestIntent: "Reading the board." }), runningSubagentCount: 2 };
@@ -685,6 +711,17 @@ describe("a parked coordinator's drain wait", () => {
 		});
 		// A hold with nothing countable states no wait either.
 		expect(subagentWhy(rowOf(withDrainHold(running("h", { latestIntent: "Reading." }), 0)), NOW)).toEqual({
+			kind: "intent",
+			text: "Reading.",
+		});
+		expect(subagentWhy(rowOf(withJobHold(running("h", { latestIntent: "Reading." }), 0)), NOW)).toEqual({
+			kind: "intent",
+			text: "Reading.",
+		});
+		// A job count without the job hold is a delegate still working with a
+		// background shell, not a parked run.
+		const shellWorking = { ...running("j", { latestIntent: "Reading." }), runningJobCount: 1 };
+		expect(subagentWhy(rowOf(shellWorking as ActivityDelegate), NOW)).toEqual({
 			kind: "intent",
 			text: "Reading.",
 		});
