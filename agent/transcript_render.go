@@ -2229,6 +2229,148 @@ func formatNumber(f float64) string {
 	return strconv.FormatFloat(f, 'g', -1, 64)
 }
 
+// renderedEditOp is one edit_file replacement decoded for transcript display.
+type renderedEditOp struct {
+	OldString, NewString string
+	ReplaceAll           bool
+}
+
+// renderedEditAliases lists each edit field's repair aliases in sorted order.
+var renderedEditAliases = map[string][]string{
+	"old_string":  {"oldText", "old_str", "old_text"},
+	"new_string":  {"newText", "new_str", "new_text"},
+	"replace_all": {"replaceAll"},
+}
+
+// extractRenderedEditOps decodes a stored edit_file call's edit operations in
+// canonical, repaired, or historical shape, and returns nil rather than guess.
+func extractRenderedEditOps(m map[string]any) []renderedEditOp {
+	raw, hasEdits := m["edits"]
+	if !hasEdits {
+		// Historical single edits keep their shape: absent fields render as 0→0.
+		if op, ok := decodeRenderedEdit(m, false); ok {
+			return []renderedEditOp{op}
+		}
+		return nil
+	}
+	items, ok := renderedEditItems(raw)
+	if !ok || len(items) == 0 {
+		return nil
+	}
+	ops := make([]renderedEditOp, 0, len(items))
+	for _, item := range items {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			return nil
+		}
+		op, ok := decodeRenderedEdit(obj, true)
+		if !ok {
+			return nil
+		}
+		ops = append(ops, op)
+	}
+	return ops
+}
+
+// renderedEditItems normalizes an edits value, unwrapping JSON-stringified ones.
+func renderedEditItems(raw any) ([]any, bool) {
+	for {
+		s, ok := raw.(string)
+		if !ok {
+			break
+		}
+		if err := json.Unmarshal([]byte(s), &raw); err != nil {
+			return nil, false
+		}
+	}
+	switch v := raw.(type) {
+	case []any:
+		return v, true
+	case map[string]any:
+		return []any{v}, true
+	default:
+		return nil, false
+	}
+}
+
+// decodeRenderedEdit reads one item; requireBoth enforces canonical shape.
+func decodeRenderedEdit(m map[string]any, requireBoth bool) (renderedEditOp, bool) {
+	var op renderedEditOp
+	for _, f := range []struct {
+		canonical string
+		dst       *string
+	}{
+		{"old_string", &op.OldString},
+		{"new_string", &op.NewString},
+	} {
+		raw, found, conflict := renderedField(m, f.canonical)
+		if conflict || (requireBoth && !found) {
+			return renderedEditOp{}, false
+		}
+		if found {
+			s, ok := raw.(string)
+			if !ok {
+				return renderedEditOp{}, false
+			}
+			*f.dst = s
+		}
+	}
+	raw, found, conflict := renderedField(m, "replace_all")
+	if conflict {
+		return renderedEditOp{}, false
+	}
+	if found {
+		switch v := raw.(type) {
+		case bool:
+			op.ReplaceAll = v
+		case string:
+			op.ReplaceAll = strings.EqualFold(v, "true")
+		default:
+			return renderedEditOp{}, false
+		}
+	}
+	return op, true
+}
+
+// renderedField returns canonical's raw value, preferring canonical over its
+// sorted aliases; conflict reports differing alias values.
+func renderedField(m map[string]any, canonical string) (raw any, found, conflict bool) {
+	if v, ok := m[canonical]; ok {
+		return v, true, false
+	}
+	for _, alias := range renderedEditAliases[canonical] {
+		v, ok := m[alias]
+		if !ok {
+			continue
+		}
+		if found && scalarString(raw) != scalarString(v) {
+			return nil, false, true
+		}
+		raw, found = v, true
+	}
+	return raw, found, false
+}
+
+// editFileSummary renders the single-edit summary or the batch aggregate.
+func editFileSummary(path string, edits []renderedEditOp) string {
+	if len(edits) == 0 {
+		return path
+	}
+	if len(edits) == 1 {
+		s := fmt.Sprintf("%s (replace %d→%d chars", path, len(edits[0].OldString), len(edits[0].NewString))
+		if edits[0].ReplaceAll {
+			s += ", all"
+		}
+		return s + ")"
+	}
+	oldChars, newChars := 0, 0
+	for _, edit := range edits {
+		oldChars += len(edit.OldString)
+		newChars += len(edit.NewString)
+	}
+	return fmt.Sprintf("%s (%d edits, replace %d→%d chars)", path, len(edits), oldChars, newChars)
+}
+
 // toolInputSummary returns a one-line, bounded summary of a tool call's input
 // per the known-tool list in spec §Tool Call Condensation. It never emits full
 // file contents or full edit strings. Unknown tools fall back to up to three
@@ -2275,12 +2417,7 @@ func toolInputSummary(name string, args json.RawMessage) string {
 		summary = fmt.Sprintf("%s (%d bytes)", path, len(get("content")))
 
 	case "edit_file":
-		path := get("file_path")
-		s := fmt.Sprintf("%s (replace %d→%d chars", path, len(get("old_string")), len(get("new_string")))
-		if get("replace_all") == "true" {
-			s += ", all"
-		}
-		summary = s + ")"
+		summary = editFileSummary(get("file_path"), extractRenderedEditOps(m))
 
 	case "grep":
 		summary = joinSummary(quoteIfSet(get("pattern")), pathSegment(get("path")))
