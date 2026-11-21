@@ -2870,11 +2870,9 @@ func (s *Session) rearmRootDelegateAttentionFromTranscript(entries []transcript.
 	// duplicate on a boundary-free restart), a missing one is re-appended,
 	// and resolved attentions are never pending, so nothing resurrects.
 	pendingTurns := fold.pendingTurns("")
-	for i, durable := range pendingTurns {
-		if err := s.retainDelegateAttentionTurn(durable, pendingTurns[i+1:]...); err != nil {
-			s.attentionMu.Unlock()
-			return err
-		}
+	if err := s.restoreAttentionTurns(pendingTurns, nil); err != nil {
+		s.attentionMu.Unlock()
+		return err
 	}
 	s.rootAttentionWakeIDs = make(map[string]struct{}, len(ids))
 	for _, id := range ids {
