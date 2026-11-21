@@ -83,8 +83,8 @@ func TestNearestFileRegionWindowBoundaries(t *testing.T) {
 		old     string
 		want    string
 	}{
-		{name: "window spans the matching line and the next", content: "one\ntwo\nthree", old: "two\nthree", want: "two\nthree"},
-		{name: "window past the end keeps the trailing empty segment", content: "alpha\nneedle line\n", old: "needle line\nmore", want: "needle line\n"},
+		{name: "window spans the matching line and the next", content: "one\ntwo\nthree", old: "two\nthree", want: "L2:\ntwo\nthree"},
+		{name: "window past the end keeps the trailing empty segment", content: "alpha\nneedle line\n", old: "needle line\nmore", want: "L2:\nneedle line\n"},
 		{name: "nothing similar enough", content: "one\ntwo\nthree", old: "four five", want: ""},
 		{name: "empty content", content: "", old: "x", want: ""},
 	}
