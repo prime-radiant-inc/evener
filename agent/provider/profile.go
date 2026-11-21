@@ -71,27 +71,16 @@ func surfaceConventions(surface string) (docFiles []string, toolNameMap map[stri
 	}
 }
 
-// capabilities is the surface's tool set; the web_search function tool is a
-// google-protocol arrangement (spec §7.5) and rides only with it.
+// capabilities is the surface's tool set.
 func (p *Profile) capabilities() []toolCapability {
-	var caps []toolCapability
 	switch p.res.Surface {
 	case registry.SurfaceOpenAI:
-		caps = openAICodexCapabilities
+		return openAICodexCapabilities
 	case registry.SurfaceGoogle:
-		caps = geminiStyleCapabilities
+		return geminiStyleCapabilities
 	default:
-		caps = anthropicStyleCapabilities
+		return anthropicStyleCapabilities
 	}
-	googleWebSearch := p.res.Protocol == registry.ProtocolGoogle && registry.BoolValue(p.res.Caps.WebSearch)
-	out := make([]toolCapability, 0, len(caps))
-	for _, c := range caps {
-		if c == capabilityWebSearch && !googleWebSearch {
-			continue
-		}
-		out = append(out, c)
-	}
-	return out
 }
 
 type toolCapability string
@@ -105,7 +94,6 @@ const (
 	capabilityJobControl       toolCapability = "job_control"
 	capabilityWorkflow         toolCapability = "workflow"
 	capabilityWebFetch         toolCapability = "web_fetch"
-	capabilityWebSearch        toolCapability = "web_search"
 )
 
 // Keep in sync with agent.WatchEventKindNames / agent.modelEventKinds. The
@@ -138,7 +126,6 @@ var (
 		capabilityJobControl,
 		capabilityWorkflow,
 		capabilityWebFetch,
-		capabilityWebSearch,
 	}
 )
 
@@ -198,9 +185,6 @@ func toolDefinitionsForCapabilities(capabilities []toolCapability, efforts []str
 	}
 	if enabled[capabilityWebFetch] {
 		add(tool.DefWebFetch())
-	}
-	if enabled[capabilityWebSearch] {
-		add(tool.DefWebSearch())
 	}
 	if enabled[capabilityWorkflow] {
 		add(tool.DefCommunicate())
@@ -440,11 +424,11 @@ func (p *Profile) ProviderOptions() map[string]any {
 	case registry.ProtocolOpenAIResponses:
 		return map[string]any{registry.ProtocolOpenAIResponses: map[string]any{"parallel_tool_calls": true}}
 	case registry.ProtocolGoogle:
-		return map[string]any{registry.ProtocolGoogle: map[string]any{"safetySettings": []map[string]any{
-			{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
-			{"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
-			{"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"},
-			{"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
+		return map[string]any{registry.ProtocolGoogle: map[string]any{"safety_settings": []map[string]any{
+			{"type": "harassment", "threshold": "block_only_high"},
+			{"type": "hate_speech", "threshold": "block_only_high"},
+			{"type": "sexually_explicit", "threshold": "block_only_high"},
+			{"type": "dangerous_content", "threshold": "block_only_high"},
 		}}}
 	}
 	return nil

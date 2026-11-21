@@ -2,18 +2,17 @@
 
 package agent
 
-// Round-6 regressions for the owner-liveness verdict's rendezvous arm (issue
-// #5471's reporting PR, RoboRev findings 1 and 2). Linux-only: the daemon
-// identity check reads the process start time from /proc
-// (processStartedAt), and the tests pin verdicts that depend on establishing
-// or refuting that identity.
+// Regressions for the owner-liveness verdict's rendezvous arm (issue #5471's
+// reporting PR). Linux-only: the daemon identity check reads the process
+// start time from /proc (processStartedAt), and the tests pin verdicts that
+// depend on establishing or refuting that identity.
 //
-//   - finding 1: an independently resumed coordinator (serve --resume of a
+//   - An independently resumed coordinator (serve --resume of a
 //     subagent that kept its lineage) has its own rendezvous entry while its
 //     original root's livelock sits free; the entry must be attributed to
 //     the tree by resolving its session identity to the same root, or the
 //     coordinator's nested lanes read dead-looking.
-//   - finding 2: a crashed daemon's stale rendezvous entry can be worn by a
+//   - A crashed daemon's stale rendezvous entry can be worn by a
 //     pid an unrelated process reused; signal-0 liveness alone must not read
 //     that as owner-live. A refuted identity is residue (not live evidence);
 //     an identity that cannot be established is doubt (owner-unverifiable).
@@ -62,8 +61,8 @@ func seedRendezvousEntry(t *testing.T, dir, sid string, pid int, startedAt time.
 	}
 }
 
-// TestWorktreePruneReportsLiveOwnerViaIndependentlyResumedCoordinator
-// (finding 1): the lane's delegate marker names a coordinator whose original
+// TestWorktreePruneReportsLiveOwnerViaIndependentlyResumedCoordinator:
+// the lane's delegate marker names a coordinator whose original
 // root's process is gone — its livelock file is present-but-free — but the
 // coordinator was resumed on its own id and registered a rendezvous entry.
 // The entry must be attributed to the tree by its session identity's root,
@@ -90,7 +89,7 @@ func TestWorktreePruneReportsLiveOwnerViaIndependentlyResumedCoordinator(t *test
 	requireLaneReportedSkippedAndKept(t, r, "coordinator-lane", path, "locked ("+marker+"); owner-live")
 }
 
-// TestWorktreePruneRefutesReusedPidRendezvousEntry (finding 2): the entry's
+// TestWorktreePruneRefutesReusedPidRendezvousEntry: the entry's
 // pid is alive — but it began long after the entry's daemon registered, so
 // the pid was reused by an unrelated process and the entry is a dead daemon's
 // residue. Signal-0 liveness alone would read owner-live and hide this
@@ -114,8 +113,8 @@ func TestWorktreePruneRefutesReusedPidRendezvousEntry(t *testing.T) {
 	requireLaneReportedSkippedAndKept(t, r, "reused-pid-lane", path, "locked ("+marker+"); owner-dead-looking")
 }
 
-// TestWorktreePruneUnverifiableWhenDaemonIdentityCannotBeEstablished
-// (finding 2): the entry carries no registration time, so whether its pid
+// TestWorktreePruneUnverifiableWhenDaemonIdentityCannotBeEstablished:
+// the entry carries no registration time, so whether its pid
 // still names the daemon that wrote it cannot be established. The verdict is
 // doubt — owner-unverifiable — even though the pid is alive and the root's
 // livelock sits free; an unverifiable entry must never license a
@@ -138,7 +137,7 @@ func TestWorktreePruneUnverifiableWhenDaemonIdentityCannotBeEstablished(t *testi
 	requireLaneReportedSkippedAndKept(t, r, "unestablishable-lane", path, "locked ("+marker+"); owner-unverifiable")
 }
 
-// TestWorktreePruneReportsLiveOwnerViaRendezvous (round 5, moved here): the
+// TestWorktreePruneReportsLiveOwnerViaRendezvous: the
 // rendezvous arm for a root that carries no livelock at all — a live
 // rendezvous pid is the evidence that still proves it alive, now verified as
 // the daemon that wrote the entry. The lane is still not collected.
@@ -230,8 +229,8 @@ func TestWorktreePrune_OrphanArmWithholdsReleaseForRendezvousDoubt(t *testing.T)
 	}
 }
 
-// TestWorktreePruneHeldLivelockOutranksUnestablishableEntry (review round 7,
-// finding 1): conclusive live evidence takes precedence over doubt. The
+// TestWorktreePruneHeldLivelockOutranksUnestablishableEntry: conclusive live
+// evidence takes precedence over doubt. The
 // tree's root process holds its livelock, and an attributed rendezvous entry
 // whose daemon identity cannot be established (no registration time) is only
 // doubt — it must not turn the verdict owner-unverifiable when the livelock
@@ -258,8 +257,8 @@ func TestWorktreePruneHeldLivelockOutranksUnestablishableEntry(t *testing.T) {
 	requireLaneReportedSkippedAndKept(t, r, "unestablishable-held-lane", path, "locked ("+marker+"); owner-live")
 }
 
-// TestWorktreePruneGonePidEntryDoesNotBlockDeadLooking (review round 7,
-// finding 1): a demonstrably gone pid is residue, not doubt. A stale
+// TestWorktreePruneGonePidEntryDoesNotBlockDeadLooking: a demonstrably gone
+// pid is residue, not doubt. A stale
 // rendezvous entry whose daemon's process is gone (here a short-lived child
 // that already exited and was reaped) must be discarded, not treated as an
 // unavailable start time that defers the verdict — the free livelock's
@@ -287,7 +286,7 @@ func TestWorktreePruneGonePidEntryDoesNotBlockDeadLooking(t *testing.T) {
 	requireLaneReportedSkippedAndKept(t, r, "gone-pid-lane", path, "locked ("+marker+"); owner-dead-looking")
 }
 
-// TestWorktreePruneHonorsConfiguredRendezvousRunDir (review round 9): the
+// TestWorktreePruneHonorsConfiguredRendezvousRunDir: the
 // probe must read the rendezvous directory the hosting daemon actually
 // registers in — serve's effective run dir, carried by the session config —
 // not the platform default. A daemon run with a non-default --run-dir has

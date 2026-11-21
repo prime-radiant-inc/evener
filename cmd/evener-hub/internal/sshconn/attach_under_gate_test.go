@@ -18,6 +18,7 @@ import (
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // attachUnderGateHost is the configured host the primitive's tests act on.
@@ -195,16 +196,10 @@ func TestAttachUnderGateHandoffStartsTheSupervisorThatReconnectsAfterTheGate(t *
 	// Drop the replacement: only a supervisor the handoff started can bring the
 	// host back now.
 	replacement.markLost()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if ch := m.currentChannel(host.Name); ch != nil && ch != replacement {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the handed-off supervisor never reconnected after the gate released")
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
+	testwait.Until(t, "the handed-off supervisor to reconnect after the gate released", func() bool {
+		ch := m.currentChannel(host.Name)
+		return ch != nil && ch != replacement
+	})
 	if got := len(fr.recordedStarts()); got != 3 {
 		t.Fatalf("attach starts = %d, want 3 (Ensure, reattach, supervisor reconnect)", got)
 	}
@@ -780,24 +775,11 @@ func TestSupervisorReconnectMarksTheReplacementChannel(t *testing.T) {
 	// carry its own supervision mark.
 	first.markLost()
 	var replacement *Channel
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if ch := m.currentChannel(host.Name); ch != nil && ch != first {
-			replacement = ch
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the supervisor never reconnected the dropped channel")
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	deadline = time.Now().Add(5 * time.Second)
-	for !replacement.supervised.Load() {
-		if time.Now().After(deadline) {
-			t.Fatal("the reconnected replacement is unmarked: a later live-channel handoff could start a second supervisor for it")
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
+	testwait.Until(t, "the supervisor to reconnect the dropped channel", func() bool {
+		replacement = m.currentChannel(host.Name)
+		return replacement != nil && replacement != first
+	})
+	testwait.Until(t, "the reconnected replacement to be marked supervised", replacement.supervised.Load)
 	// The reconnecting loop stands down once its replacement is adopted; wait
 	// for that exit so the loop counting below is exact.
 	select {

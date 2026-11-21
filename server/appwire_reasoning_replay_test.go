@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"sync"
@@ -219,7 +220,10 @@ func TestServerAppWireAbandonedCarrierReplaysDeferredClosedStatus(t *testing.T) 
 		t.Fatalf("subscribe: %v", err)
 	}
 	srv.SetProcessingTurn("abandoned-closed-turn")
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_abandoned_closed", Data: events.SessionEndData{Reason: "session_closed", State: "closed"}})
+	// An interrupted SESSION_END is the shape that genuinely defers: an
+	// uninterrupted closed one closes the session in the same commit and
+	// publishes its terminal frames immediately (sessionEventClosesSession).
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_abandoned_closed", Data: events.SessionEndData{Interrupted: true, State: "closed", Reason: "interrupted"}})
 	srv.SetProcessing(false)
 
 	deadline := time.After(time.Second)
@@ -228,6 +232,16 @@ func TestServerAppWireAbandonedCarrierReplaysDeferredClosedStatus(t *testing.T) 
 		case notification := <-client.Notifications():
 			if notification.Method != appwire.NotifyThreadClosed {
 				continue
+			}
+			var params map[string]any
+			if err := json.Unmarshal(notification.Params, &params); err != nil {
+				t.Fatalf("decode closed params: %v", err)
+			}
+			if params["threadId"] != "th_abandoned_closed" {
+				t.Fatalf("deferred closed threadId=%v, want th_abandoned_closed", params["threadId"])
+			}
+			if params["reason"] != "interrupted" {
+				t.Fatalf("deferred closed reason=%v, want interrupted", params["reason"])
 			}
 			read, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_abandoned_closed"})
 			if err != nil {
@@ -240,6 +254,100 @@ func TestServerAppWireAbandonedCarrierReplaysDeferredClosedStatus(t *testing.T) 
 		case <-deadline:
 			t.Fatal("subscribed client received no deferred thread/closed notification")
 		}
+	}
+}
+
+// A malformed entry in the deferred terminal list must not be published: the
+// replay validates every entry, so only the well-formed closed frame the
+// projector deferred reaches subscribers.
+func TestServerAppWireDropsMalformedDeferredTerminalNotification(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_malformed_deferred")
+	srv.SetProcessingTurn("malformed-deferred-turn")
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_malformed_deferred", Data: events.SessionEndData{Interrupted: true, State: "closed", Reason: "interrupted"}})
+
+	srv.mu.Lock()
+	rootThreadID, rootRef := srv.appRootIdentityLocked()
+	if len(srv.appDeferredTerminalNotifications) == 0 {
+		srv.mu.Unlock()
+		t.Fatal("the interrupted SESSION_END deferred no terminal notification")
+	}
+	srv.appDeferredTerminalNotifications = append(srv.appDeferredTerminalNotifications, pendingAppNotification{
+		threadID: rootThreadID,
+		ref:      rootRef,
+		method:   appwire.NotifyThreadClosed,
+		params: map[string]any{
+			// Missing "ref" is what makes the frame malformed. The bogus marker
+			// also rides in "reason" because the egress target stamp rewrites
+			// threadId (and adds ref) on a map, so a bogus threadId alone would
+			// not survive into the published bytes.
+			"threadId": "bogus-malformed-thread",
+			"reason":   "bogus-malformed-thread",
+		},
+	})
+	srv.mu.Unlock()
+
+	cursor := srv.appNotifier.CurrentSequence()
+	srv.SetProcessing(false)
+
+	closed := 0
+	for _, record := range srv.AppNotificationsAfter(cursor, "th_malformed_deferred") {
+		if bytes.Contains(record.Notification.Params, []byte("bogus-malformed-thread")) {
+			t.Fatalf("published a malformed deferred terminal notification: %s %s", record.Notification.Method, record.Notification.Params)
+		}
+		if record.Notification.Method != appwire.NotifyThreadClosed {
+			continue
+		}
+		closed++
+		params := notificationParams[map[string]any](t, record)
+		if params["threadId"] != rootThreadID || params["reason"] != "interrupted" {
+			t.Fatalf("deferred closed params=%v, want threadId %q reason interrupted", params, rootThreadID)
+		}
+	}
+	if closed != 1 {
+		t.Fatalf("published %d thread/closed notifications, want only the valid deferred one", closed)
+	}
+}
+
+func TestAppDeferredTerminalParams(t *testing.T) {
+	const threadID = "th_deferred_params"
+	const ref = "local:th_deferred_params"
+	status := appwire.ThreadStatusChangedParams{
+		ThreadID: threadID,
+		Ref:      ref,
+		Status:   appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+	}
+	closedTyped := appwire.ThreadClosedParams{ThreadID: threadID, Ref: ref, Reason: "interrupted"}
+	for _, tc := range []struct {
+		name   string
+		method string
+		params any
+		wantOK bool
+	}{
+		{name: "status struct", method: appwire.NotifyThreadStatusChanged, params: status, wantOK: true},
+		{name: "status struct missing threadId", method: appwire.NotifyThreadStatusChanged, params: appwire.ThreadStatusChangedParams{Ref: ref, Status: status.Status}},
+		{name: "status struct missing ref", method: appwire.NotifyThreadStatusChanged, params: appwire.ThreadStatusChangedParams{ThreadID: threadID, Status: status.Status}},
+		{name: "status struct missing status type", method: appwire.NotifyThreadStatusChanged, params: appwire.ThreadStatusChangedParams{ThreadID: threadID, Ref: ref}},
+		{name: "closed map", method: appwire.NotifyThreadClosed, params: map[string]any{"threadId": threadID, "ref": ref, "reason": "interrupted"}, wantOK: true},
+		{name: "closed map empty reason", method: appwire.NotifyThreadClosed, params: map[string]any{"threadId": threadID, "ref": ref, "reason": ""}, wantOK: true},
+		{name: "closed typed", method: appwire.NotifyThreadClosed, params: closedTyped, wantOK: true},
+		{name: "closed typed missing threadId", method: appwire.NotifyThreadClosed, params: appwire.ThreadClosedParams{Ref: ref, Reason: "interrupted"}},
+		{name: "closed typed missing ref", method: appwire.NotifyThreadClosed, params: appwire.ThreadClosedParams{ThreadID: threadID, Reason: "interrupted"}},
+		{name: "closed map missing threadId", method: appwire.NotifyThreadClosed, params: map[string]any{"ref": ref, "reason": "interrupted"}},
+		{name: "closed map empty threadId", method: appwire.NotifyThreadClosed, params: map[string]any{"threadId": "", "ref": ref, "reason": "interrupted"}},
+		{name: "closed map missing ref", method: appwire.NotifyThreadClosed, params: map[string]any{"threadId": threadID, "reason": "interrupted"}},
+		{name: "closed map empty ref", method: appwire.NotifyThreadClosed, params: map[string]any{"threadId": threadID, "ref": "", "reason": "interrupted"}},
+		{name: "closed map non-string reason", method: appwire.NotifyThreadClosed, params: map[string]any{"threadId": threadID, "ref": ref, "reason": 7}},
+		{name: "closed map missing reason", method: appwire.NotifyThreadClosed, params: map[string]any{"threadId": threadID, "ref": ref}},
+		{name: "status method carrying a closed map", method: appwire.NotifyThreadStatusChanged, params: map[string]any{"threadId": threadID, "ref": ref, "reason": "interrupted"}},
+		{name: "closed method carrying a status struct", method: appwire.NotifyThreadClosed, params: status},
+		{name: "unknown method", method: "thread/started", params: status},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := appDeferredTerminalParamsValid(tc.method, tc.params); got != tc.wantOK {
+				t.Fatalf("appDeferredTerminalParamsValid(%q, %#v)=%v, want %v", tc.method, tc.params, got, tc.wantOK)
+			}
+		})
 	}
 }
 

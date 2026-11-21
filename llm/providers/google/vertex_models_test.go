@@ -26,8 +26,9 @@ func vertexRes(srv *httptest.Server) registry.Resolved {
 		Auth: registry.AuthHeader, AuthHeader: "x-goog-api-key",
 		HostRule:            registry.HostRuleVertexLocation,
 		BaseURL:             srv.URL + "/v1/projects/my-project/locations/global",
-		Endpoint:            "/publishers/google/models/{model}:generateContent",
-		StreamEndpoint:      "/publishers/google/models/{model}:streamGenerateContent?alt=sse",
+		Preset:              registry.PresetVertexGemini,
+		Endpoint:            "/interactions",
+		StreamEndpoint:      "/interactions",
 		ModelsEndpoint:      "/publishers/google/models",
 		CountTokensEndpoint: registry.EndpointUnsupported,
 		Vars:                map[string]string{"GOOGLE_VERTEX_PROJECT": "my-project", "GOOGLE_VERTEX_LOCATION": "global"},
@@ -35,11 +36,9 @@ func vertexRes(srv *httptest.Server) registry.Resolved {
 	return res
 }
 
-// vertexExpectedIDs is the spec's §2.4 expected filter output for the
-// 2026-09-04 fixture, in listing order.
+// vertexExpectedIDs is the expected Interactions-supported filter output for the
+// fixture, in listing order (filtering out <3.0 and 3.0-preview IDs).
 var vertexExpectedIDs = []string{
-	"gemini-1.5-pro-002", "gemini-2.5-flash-preview-04-17", "gemini-2.5-pro",
-	"gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash-preview",
 	"gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-3.1-flash-lite",
 	"gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash",
 }
@@ -83,14 +82,14 @@ func TestVertexListModelsFollowsPagination(t *testing.T) {
 			_, _ = w.Write([]byte(`{"publisherModels":[{"name":"publishers/google/models/gemini-3.8-flash","launchStage":"GA"}],"nextPageToken":"p2"}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"publisherModels":[{"name":"publishers/google/models/gemini-2.5-pro","launchStage":"GA"}]}`))
+		_, _ = w.Write([]byte(`{"publisherModels":[{"name":"publishers/google/models/gemini-2.5-pro","launchStage":"GA"},{"name":"publishers/google/models/gemini-3.1-pro-preview","launchStage":"PUBLIC_PREVIEW"}]}`))
 	}))
 	defer srv.Close()
 	rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), vertexRes(srv))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 2 || rows[0].ID != "gemini-3.8-flash" || rows[1].ID != "gemini-2.5-pro" {
+	if len(rows) != 2 || rows[0].ID != "gemini-3.8-flash" || rows[1].ID != "gemini-3.1-pro-preview" {
 		t.Fatalf("rows = %+v", rows)
 	}
 	if len(paths) != 2 || paths[1] != "/v1beta1/publishers/google/models?pageSize=200&pageToken=p2" {
@@ -191,7 +190,10 @@ func TestVertexTextModelFilterRules(t *testing.T) {
 		want      bool
 	}{
 		{"gemini-3.8-flash", "GA", true},
-		{"gemini-3-flash-preview", "PUBLIC_PREVIEW", true},
+		{"gemini-3.1-pro-preview", "PUBLIC_PREVIEW", true},
+		{"gemini-3-flash-preview", "PUBLIC_PREVIEW", false},
+		{"gemini-3-pro-preview", "PUBLIC_PREVIEW", false},
+		{"gemini-2.5-flash", "GA", false},
 		{"gemini-2.5-pro-exp-03-25", "EXPERIMENTAL", false},
 		{"gemini-2.5-flash-tts", "GA", false},
 		{"gemini-embedding-2", "GA", false},
@@ -249,12 +251,12 @@ func TestVertexListModelsOnACustomPresetProviderWithoutHostRule(t *testing.T) {
 
 func TestVertexTransportDiscriminator(t *testing.T) {
 	t.Parallel()
-	gemini := registry.Resolved{Transport: registry.Transport{Endpoint: "/models/{model}:generateContent"}}
+	gemini := registry.Resolved{Transport: registry.Transport{Endpoint: "/interactions"}}
 	if isVertexTransport(gemini) {
-		t.Error("the Gemini API serves models under /models/: that is not Vertex")
+		t.Error("Gemini Developer API without PresetVertexGemini is not Vertex")
 	}
-	vertex := registry.Resolved{Transport: registry.Transport{Endpoint: "/publishers/google/models/{model}:generateContent"}}
+	vertex := registry.Resolved{Transport: registry.Transport{Preset: registry.PresetVertexGemini, Endpoint: "/interactions"}}
 	if !isVertexTransport(vertex) {
-		t.Error("a publisher-model endpoint is Vertex even with no host rule")
+		t.Error("PresetVertexGemini is Vertex even with no host rule")
 	}
 }

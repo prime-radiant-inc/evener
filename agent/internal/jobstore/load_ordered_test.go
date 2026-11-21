@@ -5,7 +5,7 @@ package jobstore
 // tests that compare against it keep this wrapper over the store's existing
 // whole-history read.
 func loadOrderedForTest(s *Store) ([]*JobRecord, error) {
-	events, err := s.readAll()
+	events, err := s.LoadEvents()
 	if err != nil {
 		return nil, err
 	}

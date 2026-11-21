@@ -10,16 +10,23 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/google"
 	"primeradiant.com/evener/llm/providers/responses"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -250,17 +257,43 @@ func TestExpandHistory_EmptyProvenance_ThinkingReplays(t *testing.T) {
 	}
 }
 
-// --- thinking, google target (same-provider only) ---
+// --- thinking, google target ((Instance, WireID) provenance) ---
 
-func TestExpandHistory_Google_SameProviderDifferentModel_ThinkingReplays(t *testing.T) {
+func TestExpandHistory_Google_InstanceAndWireIDProvenance(t *testing.T) {
 	t.Parallel()
-	turns := []schema.Turn{assistantThinkingTurn("google", "gemini-2.5-pro", "gemini-2.5-pro")}
-	out := expandHistory(turns, replayScope{
-		Instance: "google", Model: "gemini-3-pro", Protocol: registry.ProtocolGoogle,
+	googleTurn := func(instance, wireModel string) schema.Turn {
+		return schema.Turn{
+			Kind: schema.TurnAssistant,
+			Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{
+					GoogleInteraction: true,
+					GoogleInstance:    instance,
+					GoogleModel:       wireModel,
+					Text:              "thought",
+					Summary:           []string{"thought"},
+					Signature:         "sig-g",
+				}},
+				{Kind: llm.ContentText, Text: "answer"},
+			}},
+			ResponseProvider: instance,
+			ResponseProtocol: registry.ProtocolGoogle,
+			ResponseModel:    wireModel,
+		}
+	}
+	turns := []schema.Turn{googleTurn("google", "gemini-3.8-flash")}
+	same := expandHistory(turns, replayScope{
+		Instance: "google", Model: "alias-to-38", WireID: "gemini-3.8-flash", Protocol: registry.ProtocolGoogle,
 		InFlightFrom: len(turns), protocolOf: replayProtocolOf,
 	})
-	if !hasContentKind(out, llm.ContentThinking) {
-		t.Fatal("google enforces same-provider only; same-provider thinking must replay across models")
+	if !hasContentKind(same, llm.ContentThinking) {
+		t.Fatal("same (Instance, WireID) including alias must replay GoogleInteraction thinking")
+	}
+	diffWire := expandHistory(turns, replayScope{
+		Instance: "google", Model: "gemini-4-neon", WireID: "gemini-4-neon", Protocol: registry.ProtocolGoogle,
+		InFlightFrom: len(turns), protocolOf: replayProtocolOf,
+	})
+	if hasContentKind(diffWire, llm.ContentThinking) {
+		t.Fatal("different WireID on same Google instance must strip GoogleInteraction thinking")
 	}
 }
 
@@ -618,9 +651,6 @@ func TestCrossInstanceResponsesStripsOpaqueBlobKeepsNativePlaintext(t *testing.T
 	if wire != wireNativePlain {
 		t.Fatalf("wire reasoning = %s, want %s: the plaintext replays verbatim and no blob rides", wire, wireNativePlain)
 	}
-	if strings.Contains(wire, "rs_foreign") {
-		t.Fatalf("the fallback wire names the source instance's reasoning item id: %s", wire)
-	}
 	if !hasContentKind(out, llm.ContentText) {
 		t.Fatal("answer text must survive the strip")
 	}
@@ -648,4 +678,608 @@ func TestCrossInstanceResponsesStripsOpaqueBlobKeepsNativePlaintext(t *testing.T
 			t.Fatalf("pressure for %s = %d tokens, want %d: price what the wire sends", tc.instance, got, tc.tokens)
 		}
 	}
+}
+
+// TestModelFallbacks_RebindsGoogleWireIDProvenance verifies that falling back
+// from Google Model A to Google Model B rebinds scope.WireID so Model B keeps
+// its own prior thoughts/signatures while dropping Model A's, and same-WireID
+// aliases retain signatures.
+func TestModelFallbacks_RebindsGoogleWireIDProvenance(t *testing.T) {
+	t.Parallel()
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(k string) (string, bool) {
+			if k == "GEMINI_API_KEY" {
+				return "k-test", true
+			}
+			return "", false
+		}),
+		registry.WithInstances(map[string]registry.Provider{
+			"google": {
+				Models: map[string]registry.Model{
+					"alias-b": {AliasOf: "gemini-3.5-flash", WireID: "gemini-3.5-flash"},
+				},
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("registry.Load: %v", err)
+	}
+
+	var captured []llm.Request
+	adapter := newFakeErrAdapter("google", []func(llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			captured = append(captured, req)
+			return llm.Response{}, llm.ErrorFromHTTPStatus("google", 404, "primary model missing", nil, nil)
+		},
+		func(req llm.Request) (llm.Response, error) {
+			captured = append(captured, req)
+			return agenttest.FinalResponse("ok from fallback"), nil
+		},
+	})
+	client := llm.NewClient(llm.WithRegistry(r))
+	client.Register(adapter)
+
+	primaryRes, err := r.Resolve("google/gemini-3.8-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := newSession(t,
+		withClient(client),
+		withProfile(provider.FromResolved(primaryRes, r)),
+		withConfig(SessionConfig{
+			ModelFallbacks: []string{"alias-b"},
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				return provider.Resolve(r, ref)
+			},
+		}),
+	)
+	// Seed prior turns from Model A (gemini-3.8-flash) and Model B (gemini-3.5-flash).
+	sess.history = append(sess.history, schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{
+				GoogleInteraction: true, GoogleInstance: "google", GoogleModel: "gemini-3.8-flash",
+				Text: "thought-A", Summary: []string{"thought-A"}, Signature: "sig-A",
+			}},
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+				GoogleInteraction: true, GoogleInstance: "google", GoogleModel: "gemini-3.8-flash",
+				ID: "call_A", Name: "glob", Arguments: json.RawMessage(`{"pattern":"*"}`), ThoughtSignature: "tc-sig-A",
+			}},
+		}},
+		ResponseProvider: "google", ResponseProtocol: registry.ProtocolGoogle, ResponseModel: "gemini-3.8-flash",
+	})
+	sess.appendTurn(schema.TurnToolResults, llm.ToolResult("call_A", "ok", false))
+	sess.history = append(sess.history, schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{
+				GoogleInteraction: true, GoogleInstance: "google", GoogleModel: "gemini-3.5-flash",
+				Text: "thought-B", Summary: []string{"thought-B"}, Signature: "sig-B",
+			}},
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+				GoogleInteraction: true, GoogleInstance: "google", GoogleModel: "gemini-3.5-flash",
+				ID: "call_B", Name: "glob", Arguments: json.RawMessage(`{"pattern":"*"}`), ThoughtSignature: "tc-sig-B",
+			}},
+		}},
+		ResponseProvider: "google", ResponseProtocol: registry.ProtocolGoogle, ResponseModel: "gemini-3.5-flash",
+	})
+	sess.appendTurn(schema.TurnToolResults, llm.ToolResult("call_B", "ok", false))
+
+	if _, err := sess.ProcessInput(context.Background(), "go", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if len(captured) != 2 {
+		t.Fatalf("captured = %d, want 2 (primary + fallback)", len(captured))
+	}
+	// Primary (gemini-3.8-flash) keeps thought-A and drops thought-B.
+	if !hasSignedThinking(captured[0].Messages, "thought-A", "sig-A") || hasSignedThinking(captured[0].Messages, "thought-B", "sig-B") {
+		t.Fatalf("primary messages did not isolate (google, gemini-3.8-flash): %+v", captured[0].Messages)
+	}
+	// Fallback (alias-b -> WireID gemini-3.5-flash) keeps thought-B and drops thought-A, and BuildBody emits only tc-sig-B.
+	if hasSignedThinking(captured[1].Messages, "thought-A", "sig-A") || !hasSignedThinking(captured[1].Messages, "thought-B", "sig-B") {
+		t.Fatalf("fallback messages did not rebind WireID to gemini-3.5-flash: %+v", captured[1].Messages)
+	}
+	fbRes, err := r.Resolve("google/alias-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wireBody, err := (&google.Protocol{}).BuildBody(llm.ShapeRequest(captured[1], fbRes), fbRes)
+	if err != nil {
+		t.Fatalf("BuildBody(fallback): %v", err)
+	}
+	steps := wireBody["input"].([]any)
+	var sawThoughtB, sawSigB, sawSigA bool
+	for _, rawStep := range steps {
+		s, _ := rawStep.(map[string]any)
+		if s["type"] == "thought" && s["signature"] == "sig-B" {
+			sawThoughtB = true
+		}
+		if s["type"] == "function_call" && s["signature"] == "tc-sig-B" {
+			sawSigB = true
+		}
+		if s["type"] == "function_call" && s["signature"] == "tc-sig-A" {
+			sawSigA = true
+		}
+	}
+	if !sawThoughtB || !sawSigB || sawSigA {
+		t.Fatalf("fallback wire steps provenance mismatch: thoughtB=%v sigB=%v sigA=%v", sawThoughtB, sawSigB, sawSigA)
+	}
+}
+
+// TestVertexSupportsGeminiModel_SwitchAndStartupRejections verifies that
+// resolveModelSwitchTarget, validateModelSwitchMembership, and
+// resolveStartupModelProfile reject unsupported Vertex Gemini models locally
+// before live discovery or committing.
+func TestVertexSupportsGeminiModel_SwitchAndStartupRejections(t *testing.T) {
+	t.Parallel()
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(k string) (string, bool) {
+			switch k {
+			case "GOOGLE_VERTEX_PROJECT":
+				return "p", true
+			case "GOOGLE_VERTEX_LOCATION":
+				return "global", true
+			}
+			return "", false
+		}),
+	)
+	if err != nil {
+		t.Fatalf("registry.Load: %v", err)
+	}
+	client := llm.NewClient(llm.WithRegistry(r))
+	for _, unsupported := range []string{"gemini-2.5-flash", "gemini-3-flash-preview", "gemini-3-pro-preview"} {
+		res, err := r.Resolve("google-vertex/" + unsupported)
+		if err != nil {
+			t.Fatalf("Resolve(%s): %v", unsupported, err)
+		}
+		prof := provider.FromResolved(res, r)
+		if _, _, _, err := resolveModelSwitchTarget(client, prof, "", llm.DefaultAdapterTimeout(), "", nil); err == nil {
+			t.Errorf("resolveModelSwitchTarget(%s) = nil, want rejection", unsupported)
+		}
+		if err := validateModelSwitchMembership(client, prof, llm.ModelListing{Usable: false}); err == nil {
+			t.Errorf("validateModelSwitchMembership(%s) = nil, want rejection", unsupported)
+		}
+		if _, _, err := resolveStartupModelProfile(client, prof, "", llm.DefaultAdapterTimeout(), nil); err == nil {
+			t.Errorf("resolveStartupModelProfile(%s) = nil, want rejection", unsupported)
+		}
+	}
+}
+
+// TestRestoreSession_PrunesRetiredCheapModelAndModelFallbacks verifies that
+// restoring a pre-cutover session prunes saved ModelFallbacks and saved
+// CheapModel targeting retired google-vertex-express or unsupported
+// google-vertex/gemini-2.5-* with a warning, while keeping explicit
+// RestoreSessionConfig.ModelFallbacks strict.
+func TestRestoreSession_PrunesRetiredCheapModelAndModelFallbacks(t *testing.T) {
+	t.Parallel()
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(k string) (string, bool) {
+			switch k {
+			case "GEMINI_API_KEY":
+				return "k-gem", true
+			case "GOOGLE_VERTEX_PROJECT":
+				return "p", true
+			case "GOOGLE_VERTEX_LOCATION":
+				return "global", true
+			}
+			return "", false
+		}),
+	)
+	if err != nil {
+		t.Fatalf("registry.Load: %v", err)
+	}
+	client := llm.NewClient(llm.WithRegistry(r))
+	client.Register(&fakeAdapter{name: "google"})
+
+	gRes, err := r.Resolve("google/gemini-3.8-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prof := provider.FromResolved(gRes, r)
+
+	stateDir := t.TempDir()
+	meta := schema.SessionMeta{
+		ID:         "0123456789ABCDEFGHJKMNPQRS",
+		CreatedAt:  time.Now(),
+		Model:      "gemini-3.8-flash",
+		ProfileID:  "google",
+		CheapModel: "google-vertex-express/gemini-2.5-flash-lite",
+		Config: schema.ConfigSnapshot{
+			ModelFallbacks: []string{"google-vertex-express/gemini-3.8-flash", "google-vertex/gemini-2.5-flash", "google-vertex/gemini-3.8-flash"},
+		},
+	}
+	sess, err := RestoreSessionFromMetaWithConfig(client, prof, execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{
+		StateDir: stateDir,
+		ResolveProfile: func(ref string) (*provider.Profile, error) {
+			return provider.Resolve(r, ref)
+		},
+	})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+
+	if got := sess.profile.ConfiguredCheapModel(); got != "" {
+		t.Fatalf("saved retired CheapModel was not pruned: %q", got)
+	}
+	if got := sess.profile.CheapModel(); got != "gemini-3.5-flash-lite" {
+		t.Fatalf("CheapModel fallback = %q, want gemini-3.5-flash-lite", got)
+	}
+	if len(sess.cfg.ModelFallbacks) != 1 || sess.cfg.ModelFallbacks[0] != "google-vertex/gemini-3.8-flash" {
+		t.Fatalf("saved ModelFallbacks = %v, want [google-vertex/gemini-3.8-flash]", sess.cfg.ModelFallbacks)
+	}
+	sess.Close()
+	var warnings []string
+	for ev := range sess.Events() {
+		if d, ok := ev.Data.(events.WarningData); ok {
+			warnings = append(warnings, d.Message)
+		}
+	}
+	if len(warnings) < 2 {
+		t.Fatalf("expected warning diagnostics for pruned CheapModel and ModelFallbacks, got %v", warnings)
+	}
+
+	// Explicit CLI --model-fallback stays strict and fails restore.
+	if _, err := RestoreSessionFromMetaWithConfig(client, prof, execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{
+		StateDir:       t.TempDir(),
+		ModelFallbacks: []string{"google-vertex/gemini-2.5-flash"},
+		ResolveProfile: func(ref string) (*provider.Profile, error) {
+			return provider.Resolve(r, ref)
+		},
+	}); err == nil {
+		t.Fatal("expected explicit ModelFallbacks override targeting unsupported Vertex 2.5 model to fail restore")
+	}
+	// Explicit CLI --model-fallback also stays strict when --model changes the primary model on resume (e.g. upgrading a saved Vertex 2.5 session).
+	metaModelChanged := schema.SessionMeta{
+		ID:        "0123456789ABCDEFGHJKMNPQRY",
+		CreatedAt: time.Now(),
+		Model:     "gemini-2.5-flash",
+		ProfileID: "google-vertex",
+		Config: schema.ConfigSnapshot{
+			ModelFallbacks: []string{"google-vertex/gemini-2.5-flash", "google-vertex/gemini-3.8-flash"},
+		},
+	}
+	v38ResMain, err := r.Resolve("google-vertex/gemini-3.8-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profV38Main := provider.FromResolved(v38ResMain, r)
+	if _, err := RestoreSessionFromMetaWithConfig(client, profV38Main, execenv.NewLocalExecutionEnvironment(t.TempDir()), metaModelChanged, RestoreSessionConfig{
+		StateDir:       t.TempDir(),
+		ModelFallbacks: []string{"google-vertex/gemini-2.5-flash"},
+		ResolveProfile: func(ref string) (*provider.Profile, error) {
+			return provider.Resolve(r, ref)
+		},
+	}); err == nil {
+		t.Fatal("expected model-changing restore with explicit unsupported --model-fallback to fail strictly")
+	}
+	// Saved fallbacks on a model-changing resume still prune obsolete entries and keep valid ones.
+	sessModelChangedSaved, err := RestoreSessionFromMetaWithConfig(client, profV38Main, execenv.NewLocalExecutionEnvironment(t.TempDir()), metaModelChanged, RestoreSessionConfig{
+		StateDir: t.TempDir(),
+		ResolveProfile: func(ref string) (*provider.Profile, error) {
+			return provider.Resolve(r, ref)
+		},
+	})
+	if err != nil {
+		t.Fatalf("model-changing restore with saved fallbacks failed: %v", err)
+	}
+	if len(sessModelChangedSaved.cfg.ModelFallbacks) != 1 || sessModelChangedSaved.cfg.ModelFallbacks[0] != "google-vertex/gemini-3.8-flash" {
+		t.Fatalf("model-changing restore saved ModelFallbacks = %v, want [google-vertex/gemini-3.8-flash]", sessModelChangedSaved.cfg.ModelFallbacks)
+	}
+	sessModelChangedSaved.Close()
+
+	t.Run("rejects unsupported Vertex primary model on restore without overwriting saved meta and allows supported override", func(t *testing.T) {
+		dir := t.TempDir()
+		savedMeta := schema.SessionMeta{
+			ID:        "0123456789ABCDEFGHJKMNPQRW",
+			CreatedAt: time.Now(),
+			Model:     "gemini-3.8-flash",
+			ProfileID: "google",
+		}
+		if err := schema.SaveSessionMeta(dir, savedMeta); err != nil {
+			t.Fatalf("SaveSessionMeta: %v", err)
+		}
+		v25Res, err := r.Resolve("google-vertex/gemini-2.5-flash")
+		if err != nil {
+			t.Fatal(err)
+		}
+		profV25 := provider.FromResolved(v25Res, r)
+		if _, err := RestoreSessionFromMetaWithConfig(client, profV25, execenv.NewLocalExecutionEnvironment(t.TempDir()), savedMeta, RestoreSessionConfig{
+			StateDir: dir,
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				return provider.Resolve(r, ref)
+			},
+		}); err == nil {
+			t.Fatal("expected RestoreSessionFromMetaWithConfig with unsupported google-vertex/gemini-2.5-flash to fail")
+		}
+		reloaded, err := schema.LoadSessionMeta(dir, savedMeta.ID)
+		if err != nil {
+			t.Fatalf("LoadSessionMeta after rejected restore: %v", err)
+		}
+		if reloaded.ProfileID != "google" || reloaded.Model != "gemini-3.8-flash" {
+			t.Fatalf("rejected restore overwrote saved meta: got %s/%s, want google/gemini-3.8-flash", reloaded.ProfileID, reloaded.Model)
+		}
+
+		v38Res, err := r.Resolve("google-vertex/gemini-3.8-flash")
+		if err != nil {
+			t.Fatal(err)
+		}
+		profV38 := provider.FromResolved(v38Res, r)
+		sessOK, err := RestoreSessionFromMetaWithConfig(client, profV38, execenv.NewLocalExecutionEnvironment(t.TempDir()), savedMeta, RestoreSessionConfig{
+			StateDir: dir,
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				return provider.Resolve(r, ref)
+			},
+		})
+		if err != nil {
+			t.Fatalf("RestoreSessionFromMetaWithConfig with supported google-vertex/gemini-3.8-flash failed: %v", err)
+		}
+		sessOK.Close()
+	})
+
+	t.Run("registered adapter override under google-vertex bypasses Interactions model check across startup, switch, and fallbacks", func(t *testing.T) {
+		cOverride := llm.NewClient(llm.WithRegistry(r))
+		cOverride.Register(&fakeAdapter{name: "google"})
+		cOverride.Register(&fakeAdapter{name: "google-vertex"})
+
+		v25Res, err := r.Resolve("google-vertex/gemini-2.5-flash")
+		if err != nil {
+			t.Fatal(err)
+		}
+		profV25 := provider.FromResolved(v25Res, r)
+
+		fresh, err := NewSession(cOverride, profV25, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+			StateDir:       t.TempDir(),
+			ModelFallbacks: []string{"google-vertex/gemini-2.5-flash"},
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				return provider.Resolve(r, ref)
+			},
+		})
+		if err != nil {
+			t.Fatalf("NewSession with registered google-vertex override failed: %v", err)
+		}
+		fresh.Close()
+
+		sw, err := NewSession(cOverride, prof, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+			StateDir: t.TempDir(),
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				return provider.Resolve(r, ref)
+			},
+		})
+		if err != nil {
+			t.Fatalf("NewSession for SetModel: %v", err)
+		}
+		if err := sw.SetModel("google-vertex/gemini-2.5-flash"); err != nil {
+			t.Fatalf("SetModel to google-vertex/gemini-2.5-flash with registered override failed: %v", err)
+		}
+		sw.Close()
+
+		metaOv := schema.SessionMeta{
+			ID:         "0123456789ABCDEFGHJKMNPQRX",
+			CreatedAt:  time.Now(),
+			Model:      "gemini-2.5-flash",
+			ProfileID:  "google-vertex",
+			CheapModel: "google-vertex/gemini-2.5-flash-lite",
+			Config: schema.ConfigSnapshot{
+				ModelFallbacks: []string{"google-vertex/gemini-2.5-flash"},
+			},
+		}
+		restoredOv, err := RestoreSessionFromMetaWithConfig(cOverride, profV25, execenv.NewLocalExecutionEnvironment(t.TempDir()), metaOv, RestoreSessionConfig{
+			StateDir: t.TempDir(),
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				return provider.Resolve(r, ref)
+			},
+		})
+		if err != nil {
+			t.Fatalf("RestoreSessionFromMetaWithConfig with registered override failed: %v", err)
+		}
+		if got := restoredOv.profile.CheapModelRefString(); got != "google-vertex/gemini-2.5-flash-lite" {
+			t.Fatalf("overridden CheapModel = %q, want google-vertex/gemini-2.5-flash-lite", got)
+		}
+		if len(restoredOv.cfg.ModelFallbacks) != 1 || restoredOv.cfg.ModelFallbacks[0] != "google-vertex/gemini-2.5-flash" {
+			t.Fatalf("overridden ModelFallbacks = %v, want [google-vertex/gemini-2.5-flash]", restoredOv.cfg.ModelFallbacks)
+		}
+		restoredOv.Close()
+	})
+
+	t.Run("preserves temporarily disabled saved CheapModel and ModelFallbacks while keeping explicit CLI strict", func(t *testing.T) {
+		cfgPath := filepath.Join(t.TempDir(), "providers.toml")
+		tomlCfg := `
+[providers."google-vertex".models."gemini-3.5-flash-lite"]
+disabled = true
+
+[providers."google-vertex".models."gemini-3.8-flash"]
+disabled = true
+`
+		if err := os.WriteFile(cfgPath, []byte(tomlCfg), 0o600); err != nil {
+			t.Fatalf("WriteFile providers.toml: %v", err)
+		}
+		rDis, err := registry.Load(
+			registry.WithConfigPath(cfgPath),
+			registry.WithOffline(true), registry.WithoutCache(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(k string) (string, bool) {
+				switch k {
+				case "GEMINI_API_KEY":
+					return "k-gem", true
+				case "GOOGLE_VERTEX_PROJECT":
+					return "p", true
+				case "GOOGLE_VERTEX_LOCATION":
+					return "global", true
+				}
+				return "", false
+			}),
+		)
+		if err != nil {
+			t.Fatalf("registry.Load: %v", err)
+		}
+		cDis := llm.NewClient(llm.WithRegistry(rDis))
+		cDis.Register(&fakeAdapter{name: "google"})
+
+		gResDis, err := rDis.Resolve("google/gemini-3.8-flash")
+		if err != nil {
+			t.Fatal(err)
+		}
+		profDis := provider.FromResolved(gResDis, rDis)
+		stateDirDis := t.TempDir()
+		metaDis := schema.SessionMeta{
+			ID:         "0123456789ABCDEFGHJKMNPQRT",
+			CreatedAt:  time.Now(),
+			Model:      "gemini-3.8-flash",
+			ProfileID:  "google",
+			CheapModel: "google-vertex/gemini-3.5-flash-lite",
+			Config: schema.ConfigSnapshot{
+				ModelFallbacks: []string{"google-vertex-express/gemini-3.8-flash", "google-vertex/gemini-2.5-flash", "google-vertex/gemini-3.8-flash"},
+			},
+		}
+		if err := schema.SaveSessionMeta(stateDirDis, metaDis); err != nil {
+			t.Fatalf("SaveSessionMeta: %v", err)
+		}
+		sessDis, err := RestoreSessionFromMetaWithConfig(cDis, profDis, execenv.NewLocalExecutionEnvironment(t.TempDir()), metaDis, RestoreSessionConfig{
+			StateDir: stateDirDis,
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				return provider.Resolve(rDis, ref)
+			},
+		})
+		if err != nil {
+			t.Fatalf("RestoreSessionFromMetaWithConfig with disabled saved entries: %v", err)
+		}
+		if got := sessDis.profile.CheapModelRefString(); got != "google-vertex/gemini-3.5-flash-lite" {
+			t.Fatalf("disabled saved CheapModel dropped: got %q, want google-vertex/gemini-3.5-flash-lite", got)
+		}
+		if len(sessDis.cfg.ModelFallbacks) != 1 || sessDis.cfg.ModelFallbacks[0] != "google-vertex/gemini-3.8-flash" {
+			t.Fatalf("disabled saved ModelFallbacks = %v, want [google-vertex/gemini-3.8-flash]", sessDis.cfg.ModelFallbacks)
+		}
+		if err := sessDis.saveMeta(); err != nil {
+			t.Fatalf("saveMeta: %v", err)
+		}
+		reloaded, err := schema.LoadSessionMeta(stateDirDis, metaDis.ID)
+		if err != nil {
+			t.Fatalf("LoadSessionMeta: %v", err)
+		}
+		if reloaded.CheapModel != "google-vertex/gemini-3.5-flash-lite" {
+			t.Fatalf("on-disk CheapModel = %q, want google-vertex/gemini-3.5-flash-lite", reloaded.CheapModel)
+		}
+		if len(reloaded.Config.ModelFallbacks) != 1 || reloaded.Config.ModelFallbacks[0] != "google-vertex/gemini-3.8-flash" {
+			t.Fatalf("on-disk ModelFallbacks = %v, want [google-vertex/gemini-3.8-flash]", reloaded.Config.ModelFallbacks)
+		}
+		sessDis.Close()
+		var disWarnings []string
+		for ev := range sessDis.Events() {
+			if d, ok := ev.Data.(events.WarningData); ok {
+				disWarnings = append(disWarnings, d.Message)
+			}
+		}
+		if len(disWarnings) != 2 {
+			t.Fatalf("expected 2 pruning warnings (express + 2.5) and zero for disabled models, got %v", disWarnings)
+		}
+
+		// Explicit CLI --model-fallback stays strict on disabled models.
+		if _, err := RestoreSessionFromMetaWithConfig(cDis, profDis, execenv.NewLocalExecutionEnvironment(t.TempDir()), metaDis, RestoreSessionConfig{
+			StateDir:       t.TempDir(),
+			ModelFallbacks: []string{"google-vertex/gemini-3.8-flash"},
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				return provider.Resolve(rDis, ref)
+			},
+		}); !errors.Is(err, registry.ErrModelDisabled) {
+			t.Fatalf("expected explicit ModelFallbacks targeting disabled model to fail with ErrModelDisabled, got %v", err)
+		}
+	})
+
+	t.Run("preserves saved CheapModel and ModelFallbacks when custom google-vertex-express replacement instance is configured", func(t *testing.T) {
+		dir := t.TempDir()
+		credMarker := filepath.Join(dir, "cred-ran")
+		cfgPath := filepath.Join(dir, "providers.toml")
+		tomlCfg := fmt.Sprintf(
+			"[providers.\"google-vertex-express\"]\nbase = \"google\"\nmodels_endpoint = \"-\"\napi_key = '''$(sh -c 'printf x >> %q; printf k-repl')'''\n",
+			credMarker,
+		)
+		if err := os.WriteFile(cfgPath, []byte(tomlCfg), 0o600); err != nil {
+			t.Fatalf("WriteFile providers.toml: %v", err)
+		}
+		rRepl, err := registry.Load(
+			registry.WithConfigPath(cfgPath),
+			registry.WithOffline(true), registry.WithoutCache(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(k string) (string, bool) {
+				if k == "GEMINI_API_KEY" {
+					return "k-gem", true
+				}
+				return "", false
+			}),
+		)
+		if err != nil {
+			t.Fatalf("registry.Load: %v", err)
+		}
+		cRepl := llm.NewClient(llm.WithRegistry(rRepl))
+		cRepl.Register(&fakeAdapter{name: "google"})
+
+		gResRepl, err := rRepl.Resolve("google/gemini-3.8-flash")
+		if err != nil {
+			t.Fatal(err)
+		}
+		profRepl := provider.FromResolved(gResRepl, rRepl)
+
+		// Check CheapModel migration alone is credential-free via HasInstance + ResolveInstanceModelFacts.
+		// minimalWorktreeToolRegistry=true keeps delegate catalog enumeration out of startup so
+		// only CheapModel migration touches google-vertex-express.
+		metaCheapOnly := schema.SessionMeta{
+			ID:         "0123456789ABCDEFGHJKMNPQRU",
+			CreatedAt:  time.Now(),
+			Model:      "gemini-3.8-flash",
+			ProfileID:  "google",
+			CheapModel: "google-vertex-express/gemini-3.5-flash-lite",
+		}
+		sessCheap, err := RestoreSessionFromMetaWithConfig(cRepl, profRepl, execenv.NewLocalExecutionEnvironment(t.TempDir()), metaCheapOnly, RestoreSessionConfig{
+			StateDir: t.TempDir(),
+			testOnly: testConfig{minimalWorktreeToolRegistry: true, skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				return provider.Resolve(rRepl, ref)
+			},
+		})
+		if err != nil {
+			t.Fatalf("RestoreSessionFromMetaWithConfig (cheap only): %v", err)
+		}
+		if got := sessCheap.profile.CheapModelRefString(); got != "google-vertex-express/gemini-3.5-flash-lite" {
+			t.Fatalf("configured replacement CheapModel pruned: got %q, want google-vertex-express/gemini-3.5-flash-lite", got)
+		}
+		if _, statErr := os.Stat(credMarker); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("CheapModel migration check executed command credential unexpectedly: %v", statErr)
+		}
+		sessCheap.Close()
+
+		// Also verify saved ModelFallbacks pointing to the configured replacement instance survive.
+		metaBoth := schema.SessionMeta{
+			ID:         "0123456789ABCDEFGHJKMNPQRV",
+			CreatedAt:  time.Now(),
+			Model:      "gemini-3.8-flash",
+			ProfileID:  "google",
+			CheapModel: "google-vertex-express/gemini-3.5-flash-lite",
+			Config: schema.ConfigSnapshot{
+				ModelFallbacks: []string{"google-vertex-express/gemini-3.8-flash"},
+			},
+		}
+		sessBoth, err := RestoreSessionFromMetaWithConfig(cRepl, profRepl, execenv.NewLocalExecutionEnvironment(t.TempDir()), metaBoth, RestoreSessionConfig{
+			StateDir: t.TempDir(),
+			testOnly: testConfig{minimalWorktreeToolRegistry: true, skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				return provider.Resolve(rRepl, ref)
+			},
+		})
+		if err != nil {
+			t.Fatalf("RestoreSessionFromMetaWithConfig (both): %v", err)
+		}
+		if got := sessBoth.profile.CheapModelRefString(); got != "google-vertex-express/gemini-3.5-flash-lite" {
+			t.Fatalf("configured replacement CheapModel = %q, want google-vertex-express/gemini-3.5-flash-lite", got)
+		}
+		if len(sessBoth.cfg.ModelFallbacks) != 1 || sessBoth.cfg.ModelFallbacks[0] != "google-vertex-express/gemini-3.8-flash" {
+			t.Fatalf("configured replacement ModelFallbacks = %v, want [google-vertex-express/gemini-3.8-flash]", sessBoth.cfg.ModelFallbacks)
+		}
+		sessBoth.Close()
+	})
 }

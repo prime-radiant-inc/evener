@@ -34,6 +34,7 @@ import (
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/internal/plugins"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 	apilog "primeradiant.com/evener/llm/apilog"
 	"primeradiant.com/evener/llm/registry"
@@ -526,16 +527,12 @@ func TestServe_WritesAndRemovesRendezvousFile(t *testing.T) {
 	pid := os.Getpid()
 	target := filepath.Join(runDir, strconv.Itoa(pid)+".json")
 
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(target); err == nil {
-			break
+	testwait.UntilSeen(t, "rendezvous file "+target, func() (bool, string) {
+		if _, err := os.Stat(target); err != nil {
+			return false, err.Error()
 		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if _, err := os.Stat(target); err != nil {
-		t.Fatalf("rendezvous file %s was not created: %v", target, err)
-	}
+		return true, ""
+	})
 
 	entries, err := rendezvous.List(runDir)
 	if err != nil || len(entries) == 0 {

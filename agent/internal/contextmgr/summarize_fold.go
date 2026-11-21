@@ -134,7 +134,7 @@ historyLoop:
 			// already folded these turns, so their user messages arrive inside
 			// the checkpoint (a previous compaction) instead of here.
 			b.WriteString("User: ")
-			b.WriteString(truncate(t.Message.Text(), 5000))
+			b.WriteString(truncate(escapeHelperText(t, t.Message.Text()), 5000))
 			b.WriteString("\n")
 		case schema.TurnCheckpoint, schema.TurnSummary:
 			// A previous compaction is the only record of the conversation it
@@ -146,7 +146,7 @@ historyLoop:
 			// Left-out partner messages written first take their share of
 			// the budget from it.
 			b.WriteString("Previous compaction: ")
-			b.WriteString(truncate(t.Message.Text(), min(maxCheckpointChars, max(maxHistoryChars-b.Len(), 0))))
+			b.WriteString(truncate(escapeHelperText(t, t.Message.Text()), min(maxCheckpointChars, max(maxHistoryChars-b.Len(), 0))))
 			b.WriteString("\n")
 		case schema.TurnAssistant:
 			// Extract communicate calls so the summarizer sees how the agent
@@ -155,7 +155,7 @@ historyLoop:
 			text := t.Message.Text()
 			if text != "" {
 				b.WriteString("Assistant: ")
-				b.WriteString(truncate(text, 500))
+				b.WriteString(truncate(escapeHelperText(t, text), 500))
 				b.WriteString("\n")
 			}
 			truncated := false
@@ -216,7 +216,7 @@ historyLoop:
 			} else {
 				b.WriteString("System: ")
 			}
-			b.WriteString(t.Message.Text())
+			b.WriteString(escapeHelperText(t, t.Message.Text()))
 			b.WriteString("\n")
 		}
 		// The cap is checked after each turn, so the history can run past it
@@ -299,6 +299,17 @@ historyLoop:
 	result = append(result, summaryTurn)
 	result = append(result, history[cutoff:]...)
 	return result, nil
+}
+
+// escapeHelperText returns turn's text as the summarizer's prompt carries it:
+// a reply the person typed as written, and model prose with the frames it
+// could forge escaped (TurnFrameEscape). The summarizer's own requests
+// replay stored turns, so they follow the same request-only rule as replay.
+func escapeHelperText(t schema.Turn, text string) string {
+	if escape := TurnFrameEscape(t); escape != nil {
+		return escape(text)
+	}
+	return text
 }
 
 // safeCutoff adjusts a cutoff index so the preserved turns don't start with a

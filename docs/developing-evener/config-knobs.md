@@ -99,8 +99,6 @@ packages and test files do not count.
 | `GOOGLE_VERTEX_PROJECT` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
 | `GOOGLE_VERTEX_LOCATION` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
 | `GOOGLE_APPLICATION_CREDENTIALS` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener-hub/internal/hubcore`, `llm/registry` |
-| `GOOGLE_VERTEX_API_KEY` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
-| `GOOGLE_VERTEX_EXPRESS_BASE_URL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
 | `CLOUDFLARE_ACCOUNT_ID` | public | [environment-variables.md](../environment-variables.md) | `llm/registry` |
 | `DATABRICKS_HOST` | public | [environment-variables.md](../environment-variables.md) | `llm/registry` |
 | `INFOMANIAK_PRODUCT_ID` | public | [environment-variables.md](../environment-variables.md) | `llm/registry` |

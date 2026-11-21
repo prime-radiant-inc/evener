@@ -4,11 +4,14 @@ package execenv
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // TestExecArgvCancellationTerminatesEntireProcessGroupNotJustLeader is the
@@ -37,37 +40,39 @@ func TestExecArgvCancellationTerminatesEntireProcessGroupNotJustLeader(t *testin
 	}
 	dir := t.TempDir()
 	heartbeat := filepath.Join(dir, "heartbeat")
-	script := fmt.Sprintf(`(while true; do printf x >> %q; sleep 0.02; done) & sleep 5`, heartbeat)
+	script := fmt.Sprintf(`(while true; do printf x >> %q; sleep 0.02; done) & sleep 300`, heartbeat)
 
 	env := NewLocalExecutionEnvironment(dir)
 	zeroGrace := 50 * time.Millisecond
 	env.terminationGrace = &zeroGrace
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	done := make(chan struct{})
+	var execErr error
 	go func() {
 		defer close(done)
-		_, _ = env.ExecArgv(ctx, "sh", []string{"-c", script}, 10_000, dir, nil)
+		_, execErr = env.ExecArgv(ctx, "sh", []string{"-c", script}, 10_000, dir, nil)
 	}()
 
 	// Wait for the heartbeat child to actually start writing before canceling,
 	// so a slow-starting child can't produce a false pass.
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if info, statErr := os.Stat(heartbeat); statErr == nil && info.Size() > 0 {
-			break
+	testwait.UntilSeen(t, "the heartbeat child to start writing", func() (bool, string) {
+		info, statErr := os.Stat(heartbeat)
+		if statErr != nil {
+			return false, statErr.Error()
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("heartbeat child never started")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return info.Size() > 0, fmt.Sprintf("size=%d", info.Size())
+	})
 
 	cancel()
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("ExecArgv did not return after cancellation")
+	}
+	if !errors.Is(execErr, context.Canceled) {
+		t.Fatalf("ExecArgv after cancellation = %v, want context.Canceled", execErr)
 	}
 
 	settledInfo, statErr := os.Stat(heartbeat)

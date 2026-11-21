@@ -9,23 +9,30 @@ import (
 )
 
 func TestSystemPromptCarriesCommitTrailer(t *testing.T) {
-	host, err := os.Hostname()
-	if err != nil || host == "" {
-		t.Skip("no hostname available")
-	}
-
 	s := newSession(t, withConfig(SessionConfig{MaxSubagentDepth: 1}))
 	prompt, warning, renderFailed := s.renderSystemPrompt(s.env)
 	if warning != "" || renderFailed {
 		t.Fatalf("render failed: %s", warning)
 	}
-	want, err := commitprovenance.Trailer(BuildVersion, s.profile.ID()+"/"+s.profile.Model(), host, s.ID())
-	if err != nil {
-		t.Skipf("hostname %q is not usable in a trailer: %v", host, err)
+	want, ok := commitTrailerFor(s.profile.ID()+"/"+s.profile.Model(), s.ID())
+	if !ok {
+		t.Skip("this host cannot mint a commit trailer")
 	}
 	if !strings.Contains(prompt, want) {
 		t.Fatalf("system prompt does not carry the provenance trailer %q", want)
 	}
+}
+
+// commitTrailerFor returns the trailer this host can mint for session, or
+// ok=false when it cannot mint one: no usable hostname, or a field the trailer
+// syntax rejects.
+func commitTrailerFor(model, session string) (string, bool) {
+	host, err := os.Hostname()
+	if err != nil || strings.TrimSpace(host) == "" {
+		return "", false
+	}
+	trailer, err := commitprovenance.Trailer(BuildVersion, model, host, session)
+	return trailer, err == nil
 }
 
 func TestSystemPromptOmitsCommitTrailerWhenOff(t *testing.T) {

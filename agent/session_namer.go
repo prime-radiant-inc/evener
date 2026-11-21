@@ -161,7 +161,7 @@ func sessionNamerModel(profile *provider.Profile) string {
 // which requires a catalog row (a live-only or synthesized row inherits the
 // protocol's send-by-default baseline without any catalog fact) and reads the
 // protocol-keyed temperature path, so Google rows are judged on
-// generationConfig.temperature.
+// generation_config.temperature.
 func sessionNamerTemperature(client *llm.Client, profile *provider.Profile, model string) *float64 {
 	if client == nil || profile == nil || model == "" {
 		return nil
@@ -183,8 +183,9 @@ func sessionNamerTemperature(client *llm.Client, profile *provider.Profile, mode
 // form, structured unknown_parameter/unsupported_parameter codes) — instead of
 // re-matching provider prose here. The comparison is against the rejected
 // protocol's own temperature path: a Google-protocol rejection names the
-// nested spelling ("generationConfig.temperature"), everything else the plain
-// one, and an error with no protocol attribution is compared against both.
+// nested spelling (registry.TemperaturePath(registry.ProtocolGoogle)),
+// everything else the plain one, and an error with no protocol attribution is
+// compared against both.
 func isTemperatureUnsupported(err error) bool {
 	if llm.Kind(err) != llm.KindInvalidRequest {
 		return false
@@ -193,11 +194,12 @@ func isTemperatureUnsupported(err error) bool {
 	if param == "" {
 		return false
 	}
+	googleTempPath := registry.TemperaturePath(registry.ProtocolGoogle)
 	switch llm.ErrorProtocol(err) {
 	case registry.ProtocolGoogle:
-		return param == "generationConfig.temperature"
+		return param == googleTempPath
 	case "":
-		return param == "temperature" || param == "generationConfig.temperature"
+		return param == "temperature" || param == googleTempPath
 	default:
 		return param == "temperature"
 	}

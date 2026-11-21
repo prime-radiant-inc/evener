@@ -353,6 +353,7 @@ exports[`fixture queue-and-status reduces to the expected model 1`] = `
   "lastTurnEndedAt": undefined,
   "manager": false,
   "model": "claude-opus-4-1",
+  "modelProfile": "anthropic",
   "modelProvider": "anthropic",
   "name": "Refactor plan v2",
   "olderCursor": undefined,

@@ -191,29 +191,15 @@
  * home-indicator band. Reserve only the ordinary gap here at every width;
  * otherwise a wide touch viewport spends the safe-area band twice. Keep this
  * after the phone .footer rule so it wins for a footer/edge-footer pair there
- * too; the editing and Duo-cover overrides have higher specificity. */
+ * too; the Duo-cover override has higher specificity. */
 .footerBeforeEdge {
   padding-bottom: var(--space-3);
-}
-
-@media (max-width: 899px) {
-  /* A narrow pane with an edge footer moves the padded footer back to
-   * keyboard-aware clearance while any composer owns editing. Session mounts
-   * its own edge footer only above this breakpoint, so its landscape status
-   * bar stays visible during editing. */
-  :global(body):has([data-composer-editing]) .footerBeforeEdge {
-    padding-bottom: var(--dock-clearance);
-  }
 }
 
 @media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4) {
   .pane:has(> .body[data-pane-scaffold^="session:"]) > .footer {
     padding: var(--space-1) var(--space-2);
     padding-bottom: var(--dock-clearance);
-  }
-
-  .pane:has(> .body[data-pane-scaffold^="session:"]):not(:has([data-composer-editing])) > .footerBeforeEdge {
-    padding-bottom: var(--space-1);
   }
 
   /* The Duo cover's tighter dock already drops the band; the activity line

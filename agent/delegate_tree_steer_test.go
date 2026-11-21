@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
@@ -445,11 +446,14 @@ func TestDelegateControllerModelSnapshotDefersSteerAcceptedAfterRequestBind(t *t
 // filtered turns, so a steer the controller defers cannot ride a failover:
 // callModelWithFallback re-expands those same turns.
 func TestDelegateFallbackSourceUsesControllerFilteredTurns(t *testing.T) {
-	runtime := newSession(t, withStateDir(t.TempDir()))
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	runtime := newSession(t, withStateDir(t.TempDir()), withConfig(SessionConfig{
+		MaxSubagentDepth: 1,
+		AgentsDocPath:    filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+		spawn:            spawnConfig{delegateController: c, delegateRootSessionID: "root-session"},
+	}))
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
-	runtime.delegateController = c
 	c.mu.Lock()
 	c.live[lease.delegateID].runtime = runtime
 	c.live[lease.delegateID].binding.runtime = runtime

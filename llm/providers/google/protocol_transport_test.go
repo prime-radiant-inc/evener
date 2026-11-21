@@ -9,14 +9,15 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/apilog"
 	"primeradiant.com/evener/llm/registry"
 )
 
-// captureSink collects the api-log attempt records a call emits.
 type captureSink struct {
 	mu       sync.Mutex
 	attempts []apilog.APIAttemptRecord
@@ -33,9 +34,6 @@ func (s *captureSink) AppendSettlement(context.Context, apilog.APIAttemptGroupSe
 	return nil
 }
 
-// records returns a copy of the attempts appended so far. Every read goes
-// through it: the producer appends from its own goroutine, so an unguarded
-// read is only accidentally safe.
 func (s *captureSink) records() []apilog.APIAttemptRecord {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -52,10 +50,21 @@ func (s *captureSink) families() []string {
 	return out
 }
 
-const generateJSON = `{"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2,"totalTokenCount":7}}`
+const interactionsJSON = `{"id":"int_ok","model":"gemini-3.8-flash","status":"completed","steps":[{"type":"model_output","content":[{"type":"text","text":"hello"}]}],"usage":{"total_input_tokens":5,"total_output_tokens":2,"total_tokens":7}}`
 
-const generateSSE = "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hel\"}]}}]}\n\n" +
-	"data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"lo\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":2,\"totalTokenCount\":7}}\n\n"
+const interactionsSSE = "event: interaction.created\n" +
+	`data: {"event_type":"interaction.created","interaction":{"id":"int_sse_ok","model":"gemini-3.8-flash","status":"in_progress"}}` + "\n\n" +
+	"event: step.start\n" +
+	`data: {"event_type":"step.start","index":0,"step":{"type":"model_output"}}` + "\n\n" +
+	"event: step.delta\n" +
+	`data: {"event_type":"step.delta","index":0,"delta":{"type":"text","text":"hel"}}` + "\n\n" +
+	"event: step.delta\n" +
+	`data: {"event_type":"step.delta","index":0,"delta":{"type":"text","text":"lo"}}` + "\n\n" +
+	"event: step.stop\n" +
+	`data: {"event_type":"step.stop","index":0}` + "\n\n" +
+	"event: interaction.completed\n" +
+	`data: {"event_type":"interaction.completed","interaction":{"id":"int_sse_ok","model":"gemini-3.8-flash","status":"completed","usage":{"total_input_tokens":5,"total_output_tokens":2,"total_tokens":7}}}` + "\n\n" +
+	"event: done\ndata: [DONE]\n\n"
 
 type protoCapture struct {
 	path   string
@@ -70,8 +79,10 @@ func protoServer(t *testing.T, status int, body string) (*httptest.Server, *prot
 		raw, _ := io.ReadAll(r.Body)
 		got.path, got.header = r.URL.RequestURI(), r.Header.Clone()
 		_ = json.Unmarshal(raw, &got.body)
-		if strings.HasPrefix(body, "data:") {
+		if strings.HasPrefix(body, "event:") || strings.HasPrefix(body, "data:") {
 			w.Header().Set("Content-Type", "text/event-stream")
+		} else {
+			w.Header().Set("Content-Type", "application/json")
 		}
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
@@ -82,46 +93,58 @@ func protoServer(t *testing.T, status int, body string) (*httptest.Server, *prot
 
 func protoLive(srv *httptest.Server) registry.Resolved {
 	res := protoRes(nil)
-	res.WireID = "gemini-2.5-flash"
-	res.Transport = registry.Transport{Auth: registry.AuthHeader, AuthHeader: "x-goog-api-key", BaseURL: srv.URL + "/v1beta", Endpoint: "/models/{model}:generateContent", StreamEndpoint: "/models/{model}:streamGenerateContent?alt=sse", ModelsEndpoint: "/models", CountTokensEndpoint: "/models/{model}:countTokens"}
+	res.WireID = "gemini-3.8-flash"
+	res.Transport = registry.Transport{
+		Auth:                registry.AuthHeader,
+		AuthHeader:          "x-goog-api-key",
+		BaseURL:             srv.URL + "/v1beta",
+		Endpoint:            "/interactions",
+		StreamEndpoint:      "/interactions",
+		ModelsEndpoint:      "/models",
+		CountTokensEndpoint: registry.EndpointUnsupported,
+	}
 	res.Credential = registry.Credential{Value: "k-1", Source: "api_key"}
 	return res
 }
 
-// vertexAuthorityRes is a resolved Vertex publisher-model transport whose
-// authority the vertex-location host rule derived from loc: the provenance the
-// registry records (Resolved.HostDerivedByRule) when its base URL template
-// reads {GOOGLE_VERTEX_HOST}. What that derivation accepts and rejects is the
-// registry's own to prove; this fixture states the provenance the remedy reads.
 func vertexAuthorityRes(t *testing.T, srv *httptest.Server, loc string) registry.Resolved {
 	t.Helper()
 	res := protoLive(srv)
+	res.Instance = "google-vertex"
 	res.WireID = "gemini-3.8-flash"
+	res.Transport.Preset = registry.PresetVertexGemini
 	res.Transport.HostRule = registry.HostRuleVertexLocation
+	res.Transport.BaseURL = srv.URL + "/v1/projects/p/locations/" + loc
 	res.Transport.Vars = map[string]string{"GOOGLE_VERTEX_LOCATION": loc, "GOOGLE_VERTEX_PROJECT": "p"}
 	res.HostDerivedByRule = true
 	return res
 }
 
-func TestProtocolCompleteUsesHeaderAuthAndModelInPath(t *testing.T) {
+func TestProtocolCompleteUsesInteractionsEndpointAndStampsContinuationHash(t *testing.T) {
 	t.Parallel()
-	srv, got := protoServer(t, 200, generateJSON)
-	resp, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), protoLive(srv))
+	srv, got := protoServer(t, 200, interactionsJSON)
+	hasher := llm.NewContinuationHasher([]byte("complete-hash-secret"))
+	p := &Protocol{Client: srv.Client(), Hasher: hasher}
+	resp, err := p.Complete(context.Background(), protoReq(""), protoLive(srv))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Provider != "gemini-prod" || resp.Text() != "hello" || resp.Usage.TotalTokens != 7 {
+	if resp.Provider != "gemini-prod" || resp.ID != "int_ok" || resp.Text() != "hello" || resp.Usage.TotalTokens != 7 {
 		t.Fatalf("resp = %+v", resp)
 	}
-	if got.path != "/v1beta/models/gemini-2.5-flash:generateContent" || got.header.Get("x-goog-api-key") != "k-1" || strings.Contains(got.path, "key=") {
-		t.Fatalf("wire: %s %v", got.path, got.header)
+	if resp.Raw["id_hash"] == nil || resp.Raw["id_hash"] == "" {
+		t.Fatalf("expected StampContinuationIDHash id_hash on Complete resp.Raw, got %+v", resp.Raw)
+	}
+	if got.path != "/v1beta/interactions" || got.header.Get("x-goog-api-key") != "k-1" || got.body["model"] != "gemini-3.8-flash" || got.body["store"] != false {
+		t.Fatalf("wire: path=%s body=%v", got.path, got.body)
 	}
 }
 
-func TestProtocolStreamUsageOnFinishChunk(t *testing.T) {
+func TestProtocolStreamStampsContinuationHashAndUsesInteractionsSSE(t *testing.T) {
 	t.Parallel()
-	srv, got := protoServer(t, 200, generateSSE)
-	s, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), protoReq(""), protoLive(srv))
+	srv, got := protoServer(t, 200, interactionsSSE)
+	hasher := llm.NewContinuationHasher([]byte("stream-hash-secret"))
+	s, err := (&Protocol{Client: srv.Client(), Hasher: hasher}).Stream(context.Background(), protoReq(""), protoLive(srv))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,11 +157,28 @@ func TestProtocolStreamUsageOnFinishChunk(t *testing.T) {
 			final = ev.Response
 		}
 	}
-	if final == nil || final.Provider != "gemini-prod" || final.Text() != "hello" || final.Usage.TotalTokens != 7 {
+	if final == nil || final.Provider != "gemini-prod" || final.ID != "int_sse_ok" || final.Text() != "hello" || final.Usage.TotalTokens != 7 {
 		t.Fatalf("final = %+v", final)
 	}
-	if got.path != "/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse" {
-		t.Fatalf("path = %s", got.path)
+	if final.Raw["id_hash"] == nil || final.Raw["id_hash"] == "" {
+		t.Fatalf("expected StampContinuationIDHash id_hash on Stream resp.Raw, got %+v", final.Raw)
+	}
+	if got.path != "/v1beta/interactions" || got.body["stream"] != true {
+		t.Fatalf("path=%s stream=%v", got.path, got.body["stream"])
+	}
+}
+
+func TestProtocolCompleteSettlementErrorCarriesResolvedInstance(t *testing.T) {
+	t.Parallel()
+	srv, _ := protoServer(t, 200, `{"id":"int_q","status":"queued"}`)
+	res := vertexAuthorityRes(t, srv, "global")
+	_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
+	if !errors.Is(err, ErrPendingInteractionStatus) {
+		t.Fatalf("err = %v, want ErrPendingInteractionStatus", err)
+	}
+	le, ok := errors.AsType[llm.Error](err)
+	if !ok || le.Provider() != "google-vertex" {
+		t.Fatalf("error provider = %v (ok=%v), want google-vertex", err, ok)
 	}
 }
 
@@ -149,11 +189,11 @@ func TestProtocolCompletionFinalizesOutputBudgetAfterTransportOverlay(t *testing
 		body string
 		run  func(*Protocol, llm.Request, registry.Resolved) error
 	}{
-		{"complete", generateJSON, func(p *Protocol, req llm.Request, res registry.Resolved) error {
+		{"complete", interactionsJSON, func(p *Protocol, req llm.Request, res registry.Resolved) error {
 			_, err := p.Complete(context.Background(), req, res)
 			return err
 		}},
-		{"stream", generateSSE, func(p *Protocol, req llm.Request, res registry.Resolved) error {
+		{"stream", interactionsSSE, func(p *Protocol, req llm.Request, res registry.Resolved) error {
 			stream, err := p.Stream(context.Background(), req, res)
 			if err != nil {
 				return err
@@ -169,15 +209,110 @@ func TestProtocolCompletionFinalizesOutputBudgetAfterTransportOverlay(t *testing
 		t.Run(tc.name, func(t *testing.T) {
 			srv, got := protoServer(t, http.StatusOK, tc.body)
 			res := protoLive(srv)
-			res.Transport.Body = map[string]any{"generationConfig.maxOutputTokens": 1000}
+			res.Transport.Body = map[string]any{"generation_config.max_output_tokens": 1000}
 			req := protoReq("")
 			req.MaxTokens = new(100)
 			if err := tc.run(&Protocol{Client: srv.Client()}, req, res); err != nil {
 				t.Fatal(err)
 			}
-			generationConfig, _ := got.body["generationConfig"].(map[string]any)
-			if generationConfig["maxOutputTokens"] != float64(100) {
-				t.Fatalf("wire maxOutputTokens = %v, want admitted 100; body = %v", generationConfig["maxOutputTokens"], got.body)
+			gen, _ := got.body["generation_config"].(map[string]any)
+			if gen["max_output_tokens"] != float64(100) {
+				t.Fatalf("wire max_output_tokens = %v, want admitted 100; body = %v", gen["max_output_tokens"], got.body)
+			}
+		})
+	}
+}
+
+func TestProtocolCompleteStorePolicyBlocks2xxFailedSignatureRetry(t *testing.T) {
+	t.Parallel()
+	legacyReq := llm.Request{
+		Model: "gemini-3.8-flash",
+		Messages: []llm.Message{
+			llm.User("check files"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+					ID: "c1", Name: "glob", Arguments: json.RawMessage(`{"pattern":"*.go"}`),
+					ThoughtSignature: "legacy_sig", GoogleInteraction: false,
+				}},
+			}},
+			llm.ToolResult("c1", "main.go", false),
+			llm.User("summarize"),
+		},
+	}
+
+	const failed2xxSig400 = `{"id":"int_failed","model":"gemini-3.8-flash","status":"failed","errors":[{"code":"invalid_argument","message":"missing thought_signature"}]}`
+
+	for _, tc := range []struct {
+		name         string
+		reqMod       func(*llm.Request)
+		resMod       func(*registry.Resolved)
+		pre2xx400    bool
+		wantAttempts int32
+		wantSuccess  bool
+	}{
+		{
+			name:         "store=true blocks retry on HTTP 200 failed signature error",
+			reqMod:       func(r *llm.Request) { r.Store = new(true) },
+			wantAttempts: 1,
+		},
+		{
+			name:         "fields.store=false (omitted store) blocks retry on HTTP 200 failed signature error",
+			resMod:       func(res *registry.Resolved) { res.Caps.Fields = map[string]bool{"store": false} },
+			wantAttempts: 1,
+		},
+		{
+			name:         "store=true still recovers on pre-2xx HTTP 400 signature rejection",
+			reqMod:       func(r *llm.Request) { r.Store = new(true) },
+			pre2xx400:    true,
+			wantAttempts: 2,
+			wantSuccess:  true,
+		},
+		{
+			name:         "explicit store=false still retries once on HTTP 200 failed signature error",
+			reqMod:       func(r *llm.Request) { r.Store = new(false) },
+			wantAttempts: 2,
+			wantSuccess:  true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var attempts atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				n := attempts.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				if n == 1 && tc.pre2xx400 {
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write([]byte(`{"error":{"code":400,"message":"missing thought_signature","status":"INVALID_ARGUMENT"}}`))
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+				if n == 1 {
+					_, _ = w.Write([]byte(failed2xxSig400))
+					return
+				}
+				_, _ = w.Write([]byte(interactionsJSON))
+			}))
+			defer srv.Close()
+
+			req := legacyReq
+			if tc.reqMod != nil {
+				tc.reqMod(&req)
+			}
+			res := protoLive(srv)
+			if tc.resMod != nil {
+				tc.resMod(&res)
+			}
+			resp, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), req, res)
+			if got := attempts.Load(); got != tc.wantAttempts {
+				t.Fatalf("attempts = %d, want %d", got, tc.wantAttempts)
+			}
+			if tc.wantSuccess {
+				if err != nil || resp.Text() != "hello" {
+					t.Fatalf("expected recovered completion, resp=%+v err=%v", resp, err)
+				}
+			} else {
+				if le, ok := errors.AsType[llm.Error](err); !ok || le.StatusCode() != http.StatusBadRequest {
+					t.Fatalf("err = %T %v, want 400 llm.Error", err, err)
+				}
 			}
 		})
 	}
@@ -193,65 +328,34 @@ func TestProtocolReclassifiesGRPCStatus(t *testing.T) {
 	}
 }
 
-// A publisher model Vertex serves from its global endpoint only 404s on a
-// regional one. The raw message tells the user to check the region without
-// naming the remedy; the reclassifier turns it into a configuration error
-// that does (the same class the registry warns about at resolve time). The
-// match does not depend on the provider's casing: the regional body observed
-// on 2026-09-12 reads "Publisher model", and the same message with a capital M
-// takes the same path rather than dropping the guidance silently.
-func TestProtocolRegionalVertexPublisherModelNotFoundIsActionable(t *testing.T) {
+func TestProtocolRegionalVertexLocation404ResidencyRemedy(t *testing.T) {
 	t.Parallel()
-	for _, phrase := range []string{"Publisher model", "Publisher Model"} {
-		t.Run(phrase, func(t *testing.T) {
-			body := `{"error":{"code":404,"message":"` + phrase + ` ` + "`projects/p/locations/us-central1/publishers/google/models/gemini-3.8-flash`" + ` was not found or your project does not have access to it."}}`
+	for _, loc := range []string{"us-central1", "europe-west1", "europe-west2", "asia-northeast1"} {
+		t.Run(loc, func(t *testing.T) {
+			body := `{"error":{"code":404,"message":"Interactions endpoint is not available in ` + loc + `."}}`
 			srv, _ := protoServer(t, http.StatusNotFound, body)
-			res := vertexAuthorityRes(t, srv, "us-central1")
-
+			res := vertexAuthorityRes(t, srv, loc)
 			_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
 			cfgErr, ok := errors.AsType[*llm.ConfigurationError](err)
-			if !ok || !strings.Contains(cfgErr.Message, "us-central1") || !strings.Contains(cfgErr.Message, "global") {
-				t.Fatalf("regional publisher-model 404 must be an actionable configuration error: %v", err)
+			if !ok {
+				t.Fatalf("regional Vertex 404 must be *llm.ConfigurationError, got %T %v", err, err)
 			}
-			if !strings.Contains(cfgErr.Message, "not found or your project does not have access") {
-				t.Fatalf("the remedy must keep the provider's own detail visible: %q", cfgErr.Message)
+			if cfgErr.Provider() != res.Instance || strings.TrimSpace(cfgErr.Message) == "" {
+				t.Fatalf("ConfigurationError provider=%q message=%q, want instance %q with non-empty message", cfgErr.Provider(), cfgErr.Message, res.Instance)
+			}
+			causeErr, ok := errors.AsType[llm.Error](errors.Unwrap(cfgErr))
+			if !ok || causeErr.StatusCode() != http.StatusNotFound {
+				t.Fatalf("expected wrapped 404 llm.Error cause, got %T %v", errors.Unwrap(cfgErr), errors.Unwrap(cfgErr))
 			}
 		})
 	}
 }
 
-// A regional publisher-model 404 for a model the registry does not know to be
-// global-only is ambiguous: Vertex uses the same body for "not found" and for
-// "your project does not have access to it". Rewriting it as a global-endpoint
-// remedy would hide a genuine permissions failure, so it stays the provider's
-// own error.
-func TestProtocolRegionalNonGlobalOnly404StaysProviderError(t *testing.T) {
-	t.Parallel()
-	body := `{"error":{"code":404,"message":"Publisher model ` + "`projects/p/locations/us-central1/publishers/google/models/gemini-2.5-flash`" + ` was not found or your project does not have access to it."}}`
-	srv, _ := protoServer(t, http.StatusNotFound, body)
-	res := vertexAuthorityRes(t, srv, "us-central1")
-	res.WireID = "gemini-2.5-flash"
-
-	_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
-	if _, ok := errors.AsType[*llm.ConfigurationError](err); ok {
-		t.Fatalf("a model the registry does not know to be global-only must not claim a regional remedy: %v", err)
-	}
-	if le, ok := errors.AsType[llm.Error](err); !ok || le.StatusCode() != http.StatusNotFound {
-		t.Fatalf("the provider's 404 must survive: %v", err)
-	}
-}
-
-// The remedy is Vertex's: a transport whose host was not derived from a
-// Vertex location (no vertex-location host rule) is not talking to a Vertex
-// regional endpoint, whatever variables its URL templates read, so its 404
-// must not be rewritten into a Vertex location configuration error.
 func TestProtocolNonVertexTransport404StaysProviderError(t *testing.T) {
 	t.Parallel()
-	body := `{"error":{"code":404,"message":"Publisher model ` + "`projects/p/locations/us-central1/publishers/google/models/gemini-3.8-flash`" + ` was not found or your project does not have access to it."}}`
+	body := `{"error":{"code":404,"message":"Not found in us-central1."}}`
 	srv, _ := protoServer(t, http.StatusNotFound, body)
 	res := vertexAuthorityRes(t, srv, "us-central1")
-	// A custom gateway transport that happens to read GOOGLE_VERTEX_LOCATION
-	// into its path: no vertex-location host rule.
 	res.Transport.HostRule = ""
 
 	_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
@@ -263,20 +367,11 @@ func TestProtocolNonVertexTransport404StaysProviderError(t *testing.T) {
 	}
 }
 
-// A transport the host rule did not derive the authority for — a literal host
-// in the base URL (even one naming the location's own host with a path of its
-// own), or a GOOGLE_VERTEX_HOST supplied directly — is addressed to the route
-// the config built, so its 404 is that route's own failure and must not be
-// rewritten as a Vertex regional-location configuration error. Transport
-// resolution is where those shapes are told apart (registry's
-// TestResolve_LiteralHost* and TestResolve_DirectHost*); this covers the
-// remedy's side of the contract, and states the supplied-host shape.
 func TestProtocolUnderivedHost404StaysProviderError(t *testing.T) {
 	t.Parallel()
-	body := `{"error":{"code":404,"message":"Publisher model ` + "`projects/p/locations/us-central1/publishers/google/models/gemini-3.8-flash`" + ` was not found or your project does not have access to it."}}`
+	body := `{"error":{"code":404,"message":"Not found in us-central1."}}`
 	srv, _ := protoServer(t, http.StatusNotFound, body)
 	res := protoLive(srv)
-	res.WireID = "gemini-3.8-flash"
 	res.Transport.HostRule = registry.HostRuleVertexLocation
 	res.Transport.Vars = map[string]string{
 		"GOOGLE_VERTEX_LOCATION": "us-central1",
@@ -293,46 +388,41 @@ func TestProtocolUnderivedHost404StaysProviderError(t *testing.T) {
 	}
 }
 
-// The same 404 against the global endpoint already names the endpoint that
-// serves the model, so it stays the provider's own error.
-func TestProtocolGlobalVertexPublisherModelNotFoundStaysProviderError(t *testing.T) {
+func TestProtocolGlobalAndUSEUVertex404StaysProviderError(t *testing.T) {
 	t.Parallel()
-	body := `{"error":{"code":404,"message":"Publisher model ` + "`projects/p/locations/global/publishers/google/models/gemini-3.8-flash`" + ` was not found or your project does not have access to it."}}`
-	srv, _ := protoServer(t, http.StatusNotFound, body)
-	res := vertexAuthorityRes(t, srv, "global")
-
-	_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
-	if _, ok := errors.AsType[*llm.ConfigurationError](err); ok {
-		t.Fatalf("a global-endpoint 404 must not claim a regional remedy: %v", err)
-	}
-	if le, ok := errors.AsType[llm.Error](err); !ok || le.StatusCode() != http.StatusNotFound {
-		t.Fatalf("global 404 must stay the provider's 404: %v", err)
+	for _, loc := range []string{"global", "us", "eu"} {
+		t.Run(loc, func(t *testing.T) {
+			srv, _ := protoServer(t, http.StatusNotFound, `{"error":{"code":404,"message":"Not found"}}`)
+			res := vertexAuthorityRes(t, srv, loc)
+			_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
+			if _, ok := errors.AsType[*llm.ConfigurationError](err); ok {
+				t.Fatalf("%s 404 must not claim regional remedy: %v", loc, err)
+			}
+			if le, ok := errors.AsType[llm.Error](err); !ok || le.StatusCode() != http.StatusNotFound {
+				t.Fatalf("%s 404 must survive: %v", loc, err)
+			}
+		})
 	}
 }
 
-func TestProtocolListModelsAndCountTokens(t *testing.T) {
+func TestProtocolListModelsAndUnsupportedCountTokens(t *testing.T) {
 	t.Parallel()
-	srv, got := protoServer(t, 200, `{"models":[{"name":"models/gemini-2.5-flash","inputTokenLimit":922000,"outputTokenLimit":128000,"supportedGenerationMethods":["generateContent"]},{"name":"models/embedding-001","supportedGenerationMethods":["embedContent"]}]}`)
+	srv, got := protoServer(t, 200, `{"models":[{"name":"models/gemini-3.8-flash","inputTokenLimit":922000,"outputTokenLimit":128000,"supportedGenerationMethods":["generateContent"]},{"name":"models/embedding-001","supportedGenerationMethods":["embedContent"]}]}`)
 	res := protoLive(srv)
 	rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), res)
-	if err != nil || len(rows) != 1 || rows[0].ID != "gemini-2.5-flash" || rows[0].Caps.ContextWindow != nil || *rows[0].Caps.MaxInputTokens != 922000 || *rows[0].Caps.MaxOutputTokens != 128000 {
+	if err != nil || len(rows) != 1 || rows[0].ID != "gemini-3.8-flash" || *rows[0].Caps.MaxInputTokens != 922000 || *rows[0].Caps.MaxOutputTokens != 128000 {
 		t.Fatalf("rows = %+v err = %v", rows, err)
 	}
 	if got.path != "/v1beta/models?pageSize=1000" || got.header.Get("x-goog-api-key") != "k-1" {
 		t.Fatalf("wire: %s %v", got.path, got.header)
 	}
-	srv2, got2 := protoServer(t, 200, `{"totalTokens":13}`)
-	n, err := (&Protocol{Client: srv2.Client()}).CountTokens(context.Background(), protoReq(""), protoLive(srv2))
-	if err != nil || n != 13 || got2.path != "/v1beta/models/gemini-2.5-flash:countTokens" {
-		t.Fatalf("count = %d err = %v path = %s", n, err, got2.path)
-	}
-	if gcr := got2.body["generateContentRequest"].(map[string]any); gcr["model"] != "models/gemini-2.5-flash" || gcr["contents"] == nil {
-		t.Fatalf("count body = %v", got2.body)
+
+	_, err = (&Protocol{Client: srv.Client()}).CountTokens(context.Background(), protoReq(""), res)
+	if !errors.Is(err, llm.ErrInputTokenCountUnsupported) {
+		t.Fatalf("CountTokens err = %v, want ErrInputTokenCountUnsupported", err)
 	}
 }
 
-// TestProtocolEndpointFamilies pins the api-log endpoint_family of each
-// operation; the stream must not report the non-streaming family.
 func TestProtocolEndpointFamilies(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -341,11 +431,11 @@ func TestProtocolEndpointFamilies(t *testing.T) {
 		want string
 		run  func(p *Protocol, ctx context.Context, res registry.Resolved) error
 	}{
-		{"generate_content", generateJSON, "google_generate_content", func(p *Protocol, ctx context.Context, res registry.Resolved) error {
+		{"interactions", interactionsJSON, "google_interactions", func(p *Protocol, ctx context.Context, res registry.Resolved) error {
 			_, err := p.Complete(ctx, protoReq(""), res)
 			return err
 		}},
-		{"stream_generate_content", generateSSE, "google_stream_generate_content", func(p *Protocol, ctx context.Context, res registry.Resolved) error {
+		{"interactions_stream", interactionsSSE, "google_interactions_stream", func(p *Protocol, ctx context.Context, res registry.Resolved) error {
 			s, err := p.Stream(ctx, protoReq(""), res)
 			if err != nil {
 				return err
@@ -357,11 +447,7 @@ func TestProtocolEndpointFamilies(t *testing.T) {
 			}
 			return nil
 		}},
-		{"count_tokens", `{"totalTokens":13}`, "google_count_tokens", func(p *Protocol, ctx context.Context, res registry.Resolved) error {
-			_, err := p.CountTokens(ctx, protoReq(""), res)
-			return err
-		}},
-		{"models", `{"models":[{"name":"models/gemini-2.5-flash","supportedGenerationMethods":["generateContent"]}]}`, "google_models", func(p *Protocol, ctx context.Context, res registry.Resolved) error {
+		{"models", `{"models":[{"name":"models/gemini-3.8-flash","supportedGenerationMethods":["generateContent"]}]}`, "google_models", func(p *Protocol, ctx context.Context, res registry.Resolved) error {
 			_, err := p.ListModels(ctx, res)
 			return err
 		}},
@@ -381,24 +467,701 @@ func TestProtocolEndpointFamilies(t *testing.T) {
 	}
 }
 
-// TestProtocolIncompleteStreamNamesTheInstance pins that a stream that ends
-// before a finishReason reports the instance, not the protocol's own name.
-func TestProtocolIncompleteStreamNamesTheInstance(t *testing.T) {
+func TestProtocolIncompleteStreamNamesTheInstanceAndDistinguishesQueuedEOF(t *testing.T) {
 	t.Parallel()
-	truncated := "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hel\"}]}}]}\n\n"
-	srv, _ := protoServer(t, 200, truncated)
-	res := protoLive(srv)
-	st, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), protoReq(""), res)
-	if err != nil {
-		t.Fatal(err)
+	t.Run("in_progress EOF is retryable StreamError", func(t *testing.T) {
+		truncated := "event: interaction.created\n" +
+			`data: {"event_type":"interaction.created","interaction":{"id":"int_inc","status":"in_progress"}}` + "\n\n" +
+			"event: step.start\n" +
+			`data: {"event_type":"step.start","index":0,"step":{"type":"model_output"}}` + "\n\n" +
+			"event: step.delta\n" +
+			`data: {"event_type":"step.delta","index":0,"delta":{"type":"text","text":"hel"}}` + "\n\n"
+		srv, _ := protoServer(t, 200, truncated)
+		res := protoLive(srv)
+		st, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), protoReq(""), res)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var streamErr error
+		for ev := range st.Events() {
+			if ev.Type == llm.StreamEventError {
+				streamErr = ev.Err
+			}
+		}
+		if se, ok := errors.AsType[*llm.StreamError](streamErr); !ok || !se.Retryable() || se.Provider() != res.Instance {
+			t.Fatalf("in_progress EOF = %v, want retryable *llm.StreamError with Provider()=%q", streamErr, res.Instance)
+		}
+	})
+
+	t.Run("queued EOF is permanent ErrPendingInteractionStatus", func(t *testing.T) {
+		queued := "event: interaction.created\n" +
+			`data: {"event_type":"interaction.created","interaction":{"id":"int_q","status":"queued"}}` + "\n\n"
+		srv, _ := protoServer(t, 200, queued)
+		res := protoLive(srv)
+		st, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), protoReq(""), res)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var streamErr error
+		for ev := range st.Events() {
+			if ev.Type == llm.StreamEventError {
+				streamErr = ev.Err
+			}
+		}
+		if !errors.Is(streamErr, ErrPendingInteractionStatus) {
+			t.Fatalf("queued EOF = %v, want ErrPendingInteractionStatus", streamErr)
+		}
+		if le, ok := errors.AsType[llm.Error](streamErr); !ok || le.Retryable() || le.Provider() != res.Instance {
+			t.Fatalf("queued EOF error = %v, want non-retryable stamped with %q", streamErr, res.Instance)
+		}
+	})
+
+	t.Run("stored in_progress EOF after interaction.created is non-retryable and prevents duplicate StreamGenerate POST", func(t *testing.T) {
+		createdThenDrop := "event: interaction.created\n" +
+			`data: {"event_type":"interaction.created","interaction":{"id":"int_stored_1","status":"in_progress"}}` + "\n\n"
+
+		var storedHits atomic.Int32
+		srvStored := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			n := storedHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			if n == 1 {
+				_, _ = w.Write([]byte(createdThenDrop))
+				return
+			}
+			_, _ = w.Write([]byte(interactionsSSE))
+		}))
+		t.Cleanup(srvStored.Close)
+
+		rStored, err := registry.Load(
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+			registry.WithInstances(map[string]registry.Provider{
+				"google": {Base: "google", APIKey: "k", Transport: registry.Transport{BaseURL: srvStored.URL + "/v1beta"}},
+			}),
+		)
+		if err != nil {
+			t.Fatalf("registry.Load: %v", err)
+		}
+		cStored := llm.NewClient(llm.WithRegistry(rStored))
+		noSleep := func(context.Context, time.Duration) error { return nil }
+		sr, err := llm.StreamGenerate(context.Background(), llm.GenerateOptions{
+			Client:   cStored,
+			Provider: "google",
+			Model:    "gemini-3.8-flash",
+			Prompt:   new("hello"),
+			Store:    new(true),
+			Sleep:    noSleep,
+		})
+		if err != nil {
+			t.Fatalf("StreamGenerate open: %v", err)
+		}
+		var storedStreamErr error
+		for ev := range sr.Events() {
+			if ev.Type == llm.StreamEventError {
+				storedStreamErr = ev.Err
+			}
+		}
+		if storedHits.Load() != 1 {
+			t.Fatalf("stored StreamGenerate HTTP POSTs = %d, want 1 (must not submit duplicate stored interaction)", storedHits.Load())
+		}
+		le, ok := errors.AsType[llm.Error](storedStreamErr)
+		if !ok || le.Retryable() || !errors.Is(storedStreamErr, ErrPendingInteractionStatus) {
+			t.Fatalf("stored in_progress EOF error = %T %v, want non-retryable ErrPendingInteractionStatus", storedStreamErr, storedStreamErr)
+		}
+		rawMap, _ := le.Raw().(map[string]any)
+		if rawMap["interaction_id"] != "int_stored_1" {
+			t.Fatalf("stored in_progress EOF raw = %#v, want interaction_id=int_stored_1", le.Raw())
+		}
+
+		// Stateless (Store=false) stream disconnect before content still retries automatically and succeeds on POST #2.
+		var statelessHits atomic.Int32
+		srvStateless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			n := statelessHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			if n == 1 {
+				_, _ = w.Write([]byte(createdThenDrop))
+				return
+			}
+			_, _ = w.Write([]byte(interactionsSSE))
+		}))
+		t.Cleanup(srvStateless.Close)
+		rStateless, err := registry.Load(
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+			registry.WithInstances(map[string]registry.Provider{
+				"google": {Base: "google", APIKey: "k", Transport: registry.Transport{BaseURL: srvStateless.URL + "/v1beta"}},
+			}),
+		)
+		if err != nil {
+			t.Fatalf("registry.Load: %v", err)
+		}
+		cStateless := llm.NewClient(llm.WithRegistry(rStateless))
+		srStateless, err := llm.StreamGenerate(context.Background(), llm.GenerateOptions{
+			Client:   cStateless,
+			Provider: "google",
+			Model:    "gemini-3.8-flash",
+			Prompt:   new("hello"),
+			Sleep:    noSleep,
+		})
+		if err != nil {
+			t.Fatalf("stateless StreamGenerate open: %v", err)
+		}
+		var statelessErr error
+		for ev := range srStateless.Events() {
+			if ev.Type == llm.StreamEventError {
+				statelessErr = ev.Err
+			}
+		}
+		if statelessErr != nil || statelessHits.Load() != 2 {
+			t.Fatalf("stateless StreamGenerate err=%v hits=%d, want nil and 2 POSTs", statelessErr, statelessHits.Load())
+		}
+
+		// Stored (Store=true) stream that drops BEFORE interaction.created supplies an ID also retries automatically.
+		var preIDHits atomic.Int32
+		srvPreID := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			n := preIDHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			if n == 1 {
+				return
+			}
+			_, _ = w.Write([]byte(interactionsSSE))
+		}))
+		t.Cleanup(srvPreID.Close)
+		rPreID, err := registry.Load(
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+			registry.WithInstances(map[string]registry.Provider{
+				"google": {Base: "google", APIKey: "k", Transport: registry.Transport{BaseURL: srvPreID.URL + "/v1beta"}},
+			}),
+		)
+		if err != nil {
+			t.Fatalf("registry.Load: %v", err)
+		}
+		cPreID := llm.NewClient(llm.WithRegistry(rPreID))
+		srPreID, err := llm.StreamGenerate(context.Background(), llm.GenerateOptions{
+			Client:   cPreID,
+			Provider: "google",
+			Model:    "gemini-3.8-flash",
+			Prompt:   new("hello"),
+			Store:    new(true),
+			Sleep:    noSleep,
+		})
+		if err != nil {
+			t.Fatalf("pre-ID stored StreamGenerate open: %v", err)
+		}
+		var preIDErr error
+		for ev := range srPreID.Events() {
+			if ev.Type == llm.StreamEventError {
+				preIDErr = ev.Err
+			}
+		}
+		if preIDErr != nil || preIDHits.Load() != 2 {
+			t.Fatalf("pre-ID stored StreamGenerate err=%v hits=%d, want nil and 2 POSTs", preIDErr, preIDHits.Load())
+		}
+
+		// Omitted store (fields.store = false) defaults to stored on Google servers, so disconnect after interaction.created is also non-retryable.
+		createdOmittedThenDrop := "event: interaction.created\n" +
+			`data: {"event_type":"interaction.created","interaction":{"id":"int_omitted_1","status":"in_progress"}}` + "\n\n"
+		var omittedHits atomic.Int32
+		srvOmitted := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			n := omittedHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			if n == 1 {
+				_, _ = w.Write([]byte(createdOmittedThenDrop))
+				return
+			}
+			_, _ = w.Write([]byte(interactionsSSE))
+		}))
+		t.Cleanup(srvOmitted.Close)
+		rOmitted, err := registry.Load(
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+			registry.WithInstances(map[string]registry.Provider{
+				"google": {
+					Base:      "google",
+					APIKey:    "k",
+					Caps:      registry.Caps{Fields: map[string]bool{"store": false}},
+					Transport: registry.Transport{BaseURL: srvOmitted.URL + "/v1beta"},
+				},
+			}),
+		)
+		if err != nil {
+			t.Fatalf("registry.Load: %v", err)
+		}
+		cOmitted := llm.NewClient(llm.WithRegistry(rOmitted))
+		srOmitted, err := llm.StreamGenerate(context.Background(), llm.GenerateOptions{
+			Client:   cOmitted,
+			Provider: "google",
+			Model:    "gemini-3.8-flash",
+			Prompt:   new("hello"),
+			Sleep:    noSleep,
+		})
+		if err != nil {
+			t.Fatalf("omitted-store StreamGenerate open: %v", err)
+		}
+		var omittedErr error
+		for ev := range srOmitted.Events() {
+			if ev.Type == llm.StreamEventError {
+				omittedErr = ev.Err
+			}
+		}
+		if omittedHits.Load() != 1 {
+			t.Fatalf("omitted-store StreamGenerate HTTP POSTs = %d, want 1", omittedHits.Load())
+		}
+		leOmitted, ok := errors.AsType[llm.Error](omittedErr)
+		if !ok || leOmitted.Retryable() || !errors.Is(omittedErr, ErrPendingInteractionStatus) {
+			t.Fatalf("omitted-store in_progress EOF error = %T %v, want non-retryable ErrPendingInteractionStatus", omittedErr, omittedErr)
+		}
+		rawOmitted, _ := leOmitted.Raw().(map[string]any)
+		if rawOmitted["interaction_id"] != "int_omitted_1" {
+			t.Fatalf("omitted-store in_progress EOF raw = %#v, want interaction_id=int_omitted_1", leOmitted.Raw())
+		}
+	})
+}
+
+func TestProtocolStreamWrapperCloseDuringS1DoesNotDeadlock(t *testing.T) {
+	t.Parallel()
+	legacyReq := llm.Request{
+		Model: "gemini-3.8-flash",
+		Messages: []llm.Message{
+			llm.User("check files"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+					ID: "c1", Name: "glob", Arguments: json.RawMessage(`{"pattern":"*.go"}`),
+					ThoughtSignature: "legacy_sig", GoogleInteraction: false,
+				}},
+			}},
+			llm.ToolResult("c1", "main.go", false),
+			llm.User("summarize"),
+		},
 	}
+
+	releaseServer := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("event: interaction.created\n" + `data: {"event_type":"interaction.created","interaction":{"id":"int_open","status":"in_progress"}}` + "\n\n"))
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
+		select {
+		case <-r.Context().Done():
+		case <-releaseServer:
+		}
+	}))
+	defer srv.Close()
+	defer close(releaseServer)
+
+	st, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), legacyReq, protoLive(srv))
+	if err != nil {
+		t.Fatalf("Stream open failed: %v", err)
+	}
+
+	select {
+	case ev, ok := <-st.Events():
+		if !ok || ev.Type != llm.StreamEventStreamStart {
+			t.Fatalf("first event = (%+v, ok=%v), want StreamEventStreamStart", ev, ok)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for StreamEventStreamStart")
+	}
+
+	closed := make(chan error, 1)
+	go func() {
+		closed <- st.Close()
+	}()
+	select {
+	case cerr := <-closed:
+		if cerr != nil {
+			t.Fatalf("st.Close() = %v, want nil", cerr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("outer.Close() deadlocked while s1 remained open")
+	}
+}
+
+func TestProtocolStreamPre2xxRetryS2InBandSignature400SurfacesError(t *testing.T) {
+	t.Parallel()
+	legacyReq := llm.Request{
+		Model: "gemini-3.8-flash",
+		Messages: []llm.Message{
+			llm.User("check files"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+					ID: "c1", Name: "glob", Arguments: json.RawMessage(`{"pattern":"*.go"}`),
+					ThoughtSignature: "legacy_sig", GoogleInteraction: false,
+				}},
+			}},
+			llm.ToolResult("c1", "main.go", false),
+			llm.User("summarize"),
+		},
+	}
+
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := attempts.Add(1)
+		if n == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"code":400,"message":"missing thought_signature","status":"INVALID_ARGUMENT"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: error\ndata: {\"event_type\":\"error\",\"error\":{\"code\":\"invalid_argument\",\"message\":\"missing thought_signature\"}}\n\n"))
+	}))
+	defer srv.Close()
+
+	res := protoLive(srv)
+	st, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), legacyReq, res)
+	if err != nil {
+		t.Fatalf("Stream open failed: %v", err)
+	}
+	var starts int
 	var streamErr error
 	for ev := range st.Events() {
+		if ev.Type == llm.StreamEventStreamStart {
+			starts++
+		}
 		if ev.Type == llm.StreamEventError {
 			streamErr = ev.Err
 		}
 	}
-	if streamErr == nil || !strings.Contains(streamErr.Error(), res.Instance+" stream ended without completion") {
-		t.Fatalf("incomplete stream error = %v, want it to name %q", streamErr, res.Instance)
+	if got := attempts.Load(); got != 2 {
+		t.Fatalf("attempts = %d, want 2", got)
+	}
+	if starts != 1 {
+		t.Fatalf("StreamEventStreamStart count = %d, want 1", starts)
+	}
+	le, ok := errors.AsType[llm.Error](streamErr)
+	if !ok || le.StatusCode() != http.StatusBadRequest || le.Provider() != res.Instance {
+		t.Fatalf("s2 streamErr = %v, want 400 llm.Error with Provider()=%q", streamErr, res.Instance)
+	}
+
+	// Also confirm CompleteViaStream preserves the 400 llm.Error instead of dropping it.
+	// (Uses the same AuthOAuthOpenAICodex override gate as llm/auth_override.go.)
+	completeViaStreamCheck(t, srv, legacyReq, res)
+}
+
+type callScopedStreamingPreparer struct{}
+
+func (callScopedStreamingPreparer) Apply(context.Context, *http.Request, registry.Resolved) error {
+	return nil
+}
+func (callScopedStreamingPreparer) PrepareRequest(context.Context, *http.Request, map[string]any, llm.Request, registry.Resolved) error {
+	return nil
+}
+func (callScopedStreamingPreparer) RequiresStreamingComplete() bool { return true }
+
+func completeViaStreamCheck(t *testing.T, srv *httptest.Server, legacyReq llm.Request, res registry.Resolved) {
+	t.Helper()
+	res.Transport.Auth = registry.AuthOAuthOpenAICodex
+	ctx := llm.WithAuthenticatorOverride(context.Background(), callScopedStreamingPreparer{})
+	_, cerr := (&Protocol{Client: srv.Client()}).Complete(ctx, legacyReq, res)
+	if le, ok := errors.AsType[llm.Error](cerr); !ok || le.StatusCode() != http.StatusBadRequest || le.Provider() != res.Instance {
+		t.Fatalf("CompleteViaStream err = %v, want 400 llm.Error with Provider()=%q", cerr, res.Instance)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+type manualDeadlineCtx struct {
+	context.Context
+	done chan struct{}
+	once sync.Once
+}
+
+func newManualDeadlineCtx(parent context.Context) (*manualDeadlineCtx, func()) {
+	c := &manualDeadlineCtx{Context: parent, done: make(chan struct{})}
+	return c, func() { c.once.Do(func() { close(c.done) }) }
+}
+
+func (c *manualDeadlineCtx) Deadline() (time.Time, bool) { return time.Time{}, true }
+func (c *manualDeadlineCtx) Done() <-chan struct{}       { return c.done }
+func (c *manualDeadlineCtx) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
+func TestProtocolStreamWrapperCallerDeadlineAndCancel(t *testing.T) {
+	t.Parallel()
+	legacyReq := llm.Request{
+		Model: "gemini-3.8-flash",
+		Messages: []llm.Message{
+			llm.User("check files"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+					ID: "c1", Name: "glob", Arguments: json.RawMessage(`{"pattern":"*.go"}`),
+					ThoughtSignature: "legacy_sig", GoogleInteraction: false,
+				}},
+			}},
+			llm.ToolResult("c1", "main.go", false),
+			llm.User("summarize"),
+		},
+	}
+
+	newBlockingServer := func(t *testing.T) *httptest.Server {
+		t.Helper()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("event: interaction.created\n" + `data: {"event_type":"interaction.created","interaction":{"id":"int_wait","status":"in_progress"}}` + "\n\n"))
+			if fl, ok := w.(http.Flusher); ok {
+				fl.Flush()
+			}
+			<-r.Context().Done()
+		}))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+
+	t.Run("direct Stream emits KindTimeout StreamEventError on caller deadline", func(t *testing.T) {
+		srv := newBlockingServer(t)
+		res := protoLive(srv)
+		ctx, triggerDeadline := newManualDeadlineCtx(context.Background())
+		defer triggerDeadline()
+		st, err := (&Protocol{Client: srv.Client()}).Stream(ctx, legacyReq, res)
+		if err != nil {
+			t.Fatalf("Stream open failed: %v", err)
+		}
+		ev, ok := <-st.Events()
+		if !ok || ev.Type != llm.StreamEventStreamStart {
+			t.Fatalf("first event = (%+v, ok=%v), want StreamEventStreamStart", ev, ok)
+		}
+		triggerDeadline()
+		var streamErr error
+		for ev := range st.Events() {
+			if ev.Type == llm.StreamEventError {
+				streamErr = ev.Err
+			}
+		}
+		if llm.Kind(streamErr) != llm.KindTimeout {
+			t.Fatalf("Stream error = %T %v (kind=%v), want KindTimeout", streamErr, streamErr, llm.Kind(streamErr))
+		}
+	})
+
+	t.Run("CompleteViaStream returns KindTimeout on caller deadline", func(t *testing.T) {
+		srv := newBlockingServer(t)
+		res := protoLive(srv)
+		res.Transport.Auth = registry.AuthOAuthOpenAICodex
+		headersReceived := make(chan struct{})
+		var once sync.Once
+		baseRT := srv.Client().Transport
+		httpClient := &http.Client{
+			Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				resp, err := baseRT.RoundTrip(r)
+				if err == nil {
+					once.Do(func() { close(headersReceived) })
+				}
+				return resp, err
+			}),
+		}
+		ctx, triggerDeadline := newManualDeadlineCtx(llm.WithAuthenticatorOverride(context.Background(), callScopedStreamingPreparer{}))
+		defer triggerDeadline()
+		go func() {
+			<-headersReceived
+			triggerDeadline()
+		}()
+		_, err := (&Protocol{Client: httpClient}).Complete(ctx, legacyReq, res)
+		if llm.Kind(err) != llm.KindTimeout {
+			t.Fatalf("CompleteViaStream err = %T %v (kind=%v), want KindTimeout", err, err, llm.Kind(err))
+		}
+	})
+
+	t.Run("direct Stream emits KindAbort StreamEventError on caller cancel", func(t *testing.T) {
+		srv := newBlockingServer(t)
+		res := protoLive(srv)
+		ctx, cancel := context.WithCancel(context.Background())
+		st, err := (&Protocol{Client: srv.Client()}).Stream(ctx, legacyReq, res)
+		if err != nil {
+			t.Fatalf("Stream open failed: %v", err)
+		}
+		ev, ok := <-st.Events()
+		if !ok || ev.Type != llm.StreamEventStreamStart {
+			t.Fatalf("first event = (%+v, ok=%v), want StreamEventStreamStart", ev, ok)
+		}
+		cancel()
+		var streamErr error
+		for ev := range st.Events() {
+			if ev.Type == llm.StreamEventError {
+				streamErr = ev.Err
+			}
+		}
+		if _, ok := errors.AsType[*llm.AbortError](streamErr); !ok {
+			t.Fatalf("Stream error = %T %v, want *llm.AbortError", streamErr, streamErr)
+		}
+	})
+
+	t.Run("finish followed immediately by caller deadline emits no trailing StreamEventError", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(interactionsSSE))
+			if fl, ok := w.(http.Flusher); ok {
+				fl.Flush()
+			}
+			<-r.Context().Done()
+		}))
+		t.Cleanup(srv.Close)
+		res := protoLive(srv)
+		ctx, triggerDeadline := newManualDeadlineCtx(context.Background())
+		defer triggerDeadline()
+		st, err := (&Protocol{Client: srv.Client()}).Stream(ctx, legacyReq, res)
+		if err != nil {
+			t.Fatalf("Stream open failed: %v", err)
+		}
+		var sawFinish bool
+		for ev := range st.Events() {
+			if ev.Type == llm.StreamEventFinish {
+				sawFinish = true
+				triggerDeadline()
+			}
+			if ev.Type == llm.StreamEventError {
+				t.Fatalf("unexpected StreamEventError after Finish=%v: %v", sawFinish, ev.Err)
+			}
+		}
+		if !sawFinish {
+			t.Fatal("expected StreamEventFinish")
+		}
+	})
+}
+
+func TestProtocolStreamPre2xxRetryAndPost2xxPassthrough(t *testing.T) {
+	t.Parallel()
+	legacyReq := llm.Request{
+		Model: "gemini-3.8-flash",
+		Messages: []llm.Message{
+			llm.User("check files"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+					ID: "c1", Name: "glob", Arguments: json.RawMessage(`{"pattern":"*.go"}`),
+					ThoughtSignature: "legacy_sig", GoogleInteraction: false,
+				}},
+			}},
+			llm.ToolResult("c1", "main.go", false),
+			llm.User("summarize"),
+		},
+	}
+
+	const inBandSig400 = "event: interaction.created\n" +
+		`data: {"event_type":"interaction.created","interaction":{"id":"int_persisted","status":"in_progress"}}` + "\n\n" +
+		"event: error\n" +
+		`data: {"event_type":"error","error":{"code":"invalid_argument","message":"missing thought_signature"}}` + "\n\n"
+
+	for _, tc := range []struct {
+		name         string
+		reqMod       func(*llm.Request)
+		resMod       func(*registry.Resolved)
+		pre2xx400    bool
+		wantAttempts int32
+		wantSuccess  bool
+	}{
+		{
+			name:         "store=true blocks post-2xx in-band SSE signature retry",
+			reqMod:       func(r *llm.Request) { r.Store = new(true) },
+			wantAttempts: 1,
+		},
+		{
+			name:         "fields.store=false (omitted store) blocks post-2xx in-band SSE signature retry",
+			resMod:       func(res *registry.Resolved) { res.Caps.Fields = map[string]bool{"store": false} },
+			wantAttempts: 1,
+		},
+		{
+			name:         "store=true still recovers on pre-2xx HTTP 400 signature rejection",
+			reqMod:       func(r *llm.Request) { r.Store = new(true) },
+			pre2xx400:    true,
+			wantAttempts: 2,
+			wantSuccess:  true,
+		},
+		{
+			name:         "explicit store=false recovers on pre-2xx HTTP 400 signature rejection",
+			reqMod:       func(r *llm.Request) { r.Store = new(false) },
+			pre2xx400:    true,
+			wantAttempts: 2,
+			wantSuccess:  true,
+		},
+		{
+			name:         "fields.store=false (omitted store) recovers on pre-2xx HTTP 400 signature rejection",
+			resMod:       func(res *registry.Resolved) { res.Caps.Fields = map[string]bool{"store": false} },
+			pre2xx400:    true,
+			wantAttempts: 2,
+			wantSuccess:  true,
+		},
+		{
+			name:         "explicit store=false passes post-2xx in-band SSE signature 400 through without retry",
+			reqMod:       func(r *llm.Request) { r.Store = new(false) },
+			wantAttempts: 1,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var attempts atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				n := attempts.Add(1)
+				if tc.pre2xx400 && n == 1 {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write([]byte(`{"error":{"code":400,"message":"missing thought_signature","status":"INVALID_ARGUMENT"}}`))
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				if n == 1 && !tc.pre2xx400 {
+					_, _ = w.Write([]byte(inBandSig400))
+					return
+				}
+				_, _ = w.Write([]byte(interactionsSSE))
+			}))
+			defer srv.Close()
+
+			req := legacyReq
+			if tc.reqMod != nil {
+				tc.reqMod(&req)
+			}
+			res := protoLive(srv)
+			if tc.resMod != nil {
+				tc.resMod(&res)
+			}
+			st, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), req, res)
+			if err != nil {
+				t.Fatalf("Stream open failed: %v", err)
+			}
+			var streamErr error
+			var finished *llm.Response
+			for ev := range st.Events() {
+				if ev.Type == llm.StreamEventError {
+					streamErr = ev.Err
+				}
+				if ev.Type == llm.StreamEventFinish {
+					finished = ev.Response
+				}
+			}
+			if got := attempts.Load(); got != tc.wantAttempts {
+				t.Fatalf("attempts = %d, want %d", got, tc.wantAttempts)
+			}
+			if tc.wantSuccess {
+				if streamErr != nil || finished == nil || finished.Text() != "hello" {
+					t.Fatalf("expected recovered completion, err=%v finished=%+v", streamErr, finished)
+				}
+			} else {
+				if le, ok := errors.AsType[llm.Error](streamErr); !ok || le.StatusCode() != http.StatusBadRequest {
+					t.Fatalf("streamErr = %T %v, want 400 llm.Error", streamErr, streamErr)
+				}
+			}
+		})
 	}
 }

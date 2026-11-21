@@ -45,12 +45,12 @@ var requestHistoryFixtureTurns = []int{256, requestHistoryBudgetTurns}
 // copy-free preparation and below the smallest copy-bearing one, so that
 // reintroducing the dead shallow copy of s.history (1,024 turns *
 // unsafe.Sizeof(schema.Turn{}) bytes) fails here while healthy preparations
-// pass. The ceiling is PER LANE, because the race detector's instrumentation
+// pass. The ceiling is PER LANE because the race detector's instrumentation
 // adds real allocation to the same code path and moves the whole distribution
-// up: a single ceiling cannot hold a margin on both lanes at once. Measured
-// on 2026-11-17 with the minimum-of-rounds estimator, copy-free preparations
-// are 1,001,048 on the plain lane and 1,001,080 under -race, and copy-bearing
-// preparations are 1,844,824 and 1,844,856 (the copy is 1,024 *
+// up, so each build's ceiling must independently clear the required margins.
+// Measured on 2026-11-17 with the minimum-of-rounds estimator, copy-free
+// preparations are 1,001,048 on the plain lane and 1,001,080 under -race, and
+// copy-bearing preparations are 1,844,824 and 1,844,856 (the copy is 1,024 *
 // unsafe.Sizeof(schema.Turn{}) = 843,776 bytes in both; each lane's
 // copy-bearing reading is its own copy-free reading plus exactly that). Both
 // ceilings are 1,425,000, near the midpoint of each lane's feasible band:

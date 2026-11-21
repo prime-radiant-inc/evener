@@ -1197,11 +1197,9 @@ def baseline_summary(rows: list[RunResult]) -> dict:
     which shares the baseline has.
 
     A rep killed at the cap is in `runs` but in neither `shares` nor
-    `unmeasured`, both of which are drawn from graded runs. Counting it in no
-    bucket printed a two-value share list beside `pass: 2/3`, so a reader could
-    not tell whether the third rep was unmeasured, timed out, or simply absent
-    -- the same mistake as dropping it (#6601). It gets its own count, and the
-    three buckets partition `runs`, so every rep is visible in the header.
+    `unmeasured`, both of which are drawn from graded runs, so it gets its own
+    count. The measured shares, the unmeasured reps and the timed-out reps
+    partition `runs`, so the report can name every rep.
     """
     base = [r for r in rows if r.arm == "baseline"]
     graded = [r for r in base if not r.timed_out]
@@ -1228,8 +1226,8 @@ def write_report(root: Path) -> None:
     rendered = " ".join(render_share(s) for s in base["shares"])
     if base["unmeasured"]:
         rendered = f"{rendered} {base['unmeasured']} unmeasured".strip()
-    # A timed-out rep has no graded share, so without this the share list is
-    # shorter than the pass denominator with nothing to explain the gap (#6601).
+    # A timed-out rep has no graded share, so it needs its own count to keep the
+    # share list reconciled with the pass denominator.
     if base["timeouts"]:
         rendered = f"{rendered} {base['timeouts']} timed out".strip()
     print(f"baseline tail share: {rendered or 'n/a'}")

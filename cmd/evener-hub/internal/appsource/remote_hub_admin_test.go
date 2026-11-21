@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 func TestRemoteHubAdminMutationPreservesWireErrorRegardlessOfDataShape(t *testing.T) {
@@ -1052,19 +1053,10 @@ func TestRemoteHubSourceSubscribeHostNotificationsDeliversAndUnregisters(t *test
 	}
 
 	stopSub()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		source.subMu.Lock()
-		remaining := len(source.hostSubs)
-		source.subMu.Unlock()
-		if remaining == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("hostSubs = %d after cancel, want 0", remaining)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.UntilSeen(t, "hostSubs to reach 0 after cancel", func() (bool, string) {
+		n := source.HostNotificationSubscribers()
+		return n == 0, fmt.Sprintf("hostSubs = %d", n)
+	})
 }
 
 // gatedSendTransport holds a client's single frame-write slot open: the first

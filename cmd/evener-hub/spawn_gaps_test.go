@@ -148,7 +148,7 @@ func TestRendezvousWaitErrorCanceled(t *testing.T) {
 func TestRendezvousWaitErrorTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
 	defer cancel()
-	time.Sleep(5 * time.Millisecond)
+	<-ctx.Done()
 	err := rendezvousWaitError(ctx)
 	if !errors.Is(err, errRendezvousTimeout) {
 		t.Fatalf("expected errRendezvousTimeout, got %v", err)

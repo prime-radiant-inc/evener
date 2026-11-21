@@ -1358,7 +1358,7 @@ func (s *Session) moveHeldDelegateAttentionTurnsToTail(released []string) {
 	// resolved row a restart still owes a position is the exact trigger of the
 	// generation it recovers, and that row is moved where its identity is
 	// known — after its turn is back in history — by
-	// admitRecoveredDelegateAttentionTrigger.
+	// restoreAcceptedTrigger.
 	for _, attentionID := range pending {
 		if _, ok := releasable[attentionID]; !ok {
 			continue
@@ -1430,6 +1430,16 @@ func (s *Session) retainSelectablePendingTurnsLocked(fold delegateAttentionFold,
 		}
 		turns = append(turns, turn)
 	}
+	return s.restoreAttentionTurns(turns, resident)
+}
+
+// restoreAttentionTurns puts turns, in arrival order, back into the resumed
+// history, each anchored by the turns that follow it, which a compaction
+// marker after them would otherwise have cut. A turn whose attention identity
+// appears in resident keeps the position it already has and is not restored,
+// but it still anchors the restored turns that arrived before it. A nil
+// resident restores every turn.
+func (s *Session) restoreAttentionTurns(turns []schema.Turn, resident map[string]struct{}) error {
 	for i, turn := range turns {
 		if _, present := resident[turn.AttentionID]; present {
 			continue
@@ -1493,7 +1503,7 @@ func (s *Session) stopQuietedDelegateAttentionRowsLocked(fold delegateAttentionF
 	// that trigger behind the very quiet its own generation exists to end: the
 	// recovered request filters it out, the run settles successfully, and the
 	// report stays durably consumed with the model never having read it. The
-	// trigger's own restore releases it (releaseRecoveredDelegateAttentionTrigger),
+	// trigger's own restore releases it (restoreAcceptedTrigger),
 	// where the exact identity is known and the turn is already back in history.
 	for _, id := range fold.pendingIDs() {
 		source, _, ok := cutDelegateAttentionReopenSegment(id)
@@ -1854,12 +1864,7 @@ func (s *Session) holdAcceptedTrigger(attentionID string) {
 // have cut.
 func (s *Session) restoreAcceptedTrigger(attentionID string, turns []schema.Turn) error {
 	s.holdAcceptedTrigger(attentionID)
-	for i, turn := range turns {
-		if err := s.retainDelegateAttentionTurn(turn, turns[i+1:]...); err != nil {
-			return err
-		}
-	}
-	return nil
+	return s.restoreAttentionTurns(turns, nil)
 }
 
 // acceptDelegateAttention records the exact reserved generation in the child
@@ -2865,11 +2870,9 @@ func (s *Session) rearmRootDelegateAttentionFromTranscript(entries []transcript.
 	// duplicate on a boundary-free restart), a missing one is re-appended,
 	// and resolved attentions are never pending, so nothing resurrects.
 	pendingTurns := fold.pendingTurns("")
-	for i, durable := range pendingTurns {
-		if err := s.retainDelegateAttentionTurn(durable, pendingTurns[i+1:]...); err != nil {
-			s.attentionMu.Unlock()
-			return err
-		}
+	if err := s.restoreAttentionTurns(pendingTurns, nil); err != nil {
+		s.attentionMu.Unlock()
+		return err
 	}
 	s.rootAttentionWakeIDs = make(map[string]struct{}, len(ids))
 	for _, id := range ids {

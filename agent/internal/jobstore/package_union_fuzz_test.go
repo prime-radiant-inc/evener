@@ -170,14 +170,14 @@ func jobstorePackageStoreEdges(t *testing.T) {
 			setup(base)
 		}
 		s := &Store{fs: base, path: path, disableSync: true}
-		_, _ = s.readAll()
+		_, _ = s.LoadEvents()
 	}
 	for _, fs := range []afero.Fs{
 		&jcpHookFS{Fs: afero.NewMemMapFs(), openErr: jcpInjectedErr},
 		&jcpHookFS{Fs: afero.NewMemMapFs(), statErr: jcpInjectedErr},
 	} {
 		s := &Store{fs: fs, path: path, disableSync: true}
-		_, _ = s.readAll()
+		_, _ = s.LoadEvents()
 	}
 	base := afero.NewMemMapFs()
 	_ = afero.WriteFile(base, path, []byte("{}\n"), 0o644)
@@ -194,7 +194,7 @@ func jobstorePackageStoreEdges(t *testing.T) {
 			return &jcpHookFile{File: f, readErr: jcpInjectedErr}
 		}}
 		s := &Store{fs: fs, path: path, disableSync: true}
-		_, _ = s.readAll()
+		_, _ = s.LoadEvents()
 	}
 	for _, wrap := range []func(afero.File) afero.File{
 		func(f afero.File) afero.File { return &jcpHookFile{File: f, closeErr: jcpInjectedErr} },
@@ -202,7 +202,7 @@ func jobstorePackageStoreEdges(t *testing.T) {
 	} {
 		fs := &jcpHookFS{Fs: base, wrap: wrap}
 		s := &Store{fs: fs, path: path, disableSync: true}
-		_, _ = s.readAll()
+		_, _ = s.LoadEvents()
 	}
 	_ = afero.WriteFile(base, path, []byte("{}"), 0o644)
 	calls := 0
@@ -214,7 +214,7 @@ func jobstorePackageStoreEdges(t *testing.T) {
 		return f
 	}}
 	s := &Store{fs: fs, path: path, disableSync: true}
-	_, _ = s.readAll()
+	_, _ = s.LoadEvents()
 	_ = os.ErrNotExist
 }
 

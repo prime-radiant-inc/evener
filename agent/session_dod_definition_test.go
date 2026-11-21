@@ -883,7 +883,7 @@ func TestSession_AbortSignal_KeepsSessionAliveAndEmitsInterruptedSessionEnd(t *t
 		t.Fatalf("expected STEERING_INJECTED event for the interrupt transcript marker")
 	}
 
-	// (review round 2) The interrupt marker's SteeringKind must land on the
+	// The interrupt marker's SteeringKind must land on the
 	// persisted schema.Turn itself, not only on the live SteeringInjectedData
 	// event, so a reload labels it the same way the live transcript did.
 	sess.mu.Lock()
@@ -1842,8 +1842,8 @@ func TestProviderOptions_PassedToLLMRequest(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected %s key in ProviderOptions, got %v", registry.ProtocolGoogle, reqs[0].ProviderOptions)
 	}
-	if google["safetySettings"] == nil {
-		t.Fatalf("expected safetySettings in the google provider options, got %v", google)
+	if google["safety_settings"] == nil {
+		t.Fatalf("expected safety_settings in the google provider options, got %v", google)
 	}
 }
 

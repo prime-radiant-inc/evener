@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // Test 57: a settlement refusal must release the identity the rejected attach's
@@ -152,16 +153,10 @@ func TestRemoteHubPreSettlementNotificationRoutesUnderEffectiveIdentity(t *testi
 	// The frame is routed while the attach is still in flight: it must land in the
 	// in-flight subscription's buffer, under whichever key that subscription
 	// currently holds.
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if sub := inFlightSubscriber(t, remote.source); sub != nil && len(sub.in) > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the notification emitted during the attach window was never routed to the in-flight subscription")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	testwait.Until(t, "the notification emitted during the attach window to be routed to the in-flight subscription", func() bool {
+		sub := inFlightSubscriber(t, remote.source)
+		return sub != nil && len(sub.in) > 0
+	})
 
 	release()
 	var channel <-chan appwire.Notification

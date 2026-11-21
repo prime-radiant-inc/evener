@@ -86,21 +86,20 @@ func findToolDef(p *Profile, name string) *llm.ToolDefinition {
 }
 
 // TestResolveProfileSurfaceConventions pins the surface-keyed conventions
-// (spec §7.5): the doc files, the renamed tools, and the web_search function
-// tool that rides only with the google protocol.
+// (spec §7.5): the doc files, the renamed tools, and that no surface
+// advertises a client-side web_search function tool.
 func TestResolveProfileSurfaceConventions(t *testing.T) {
 	r := fixtureRegistry(t)
 	cases := []struct {
 		ref, surface, protocol string
 		docs                   []string
 		shellTool              string
-		webSearchTool          bool
 	}{
-		{"openai/gpt-5.5", registry.SurfaceOpenAI, registry.ProtocolOpenAIResponses, []string{"AGENTS.md", ".codex/instructions.md"}, "exec_command", false},
-		{"anthropic/claude-opus-5", registry.SurfaceAnthropic, registry.ProtocolAnthropic, []string{"CLAUDE.md", "AGENTS.md"}, "", false},
-		{"google/gemini-3-pro", registry.SurfaceGoogle, registry.ProtocolGoogle, []string{"GEMINI.md", "AGENTS.md"}, "run_shell_command", true},
-		{"work/glm-5", registry.SurfaceGeneric, registry.ProtocolOpenAIChat, []string{"AGENTS.md"}, "", false},
-		{"orclaude/minimax/minimax-m3", registry.SurfaceAnthropic, registry.ProtocolAnthropic, []string{"CLAUDE.md", "AGENTS.md"}, "", false},
+		{"openai/gpt-5.5", registry.SurfaceOpenAI, registry.ProtocolOpenAIResponses, []string{"AGENTS.md", ".codex/instructions.md"}, "exec_command"},
+		{"anthropic/claude-opus-5", registry.SurfaceAnthropic, registry.ProtocolAnthropic, []string{"CLAUDE.md", "AGENTS.md"}, ""},
+		{"google/gemini-3-pro", registry.SurfaceGoogle, registry.ProtocolGoogle, []string{"GEMINI.md", "AGENTS.md"}, "run_shell_command"},
+		{"work/glm-5", registry.SurfaceGeneric, registry.ProtocolOpenAIChat, []string{"AGENTS.md"}, ""},
+		{"orclaude/minimax/minimax-m3", registry.SurfaceAnthropic, registry.ProtocolAnthropic, []string{"CLAUDE.md", "AGENTS.md"}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.ref, func(t *testing.T) {
@@ -114,8 +113,8 @@ func TestResolveProfileSurfaceConventions(t *testing.T) {
 			if got := p.ToolNameMap()["shell"]; got != tc.shellTool {
 				t.Fatalf("shell tool name: %q", got)
 			}
-			if got := findToolDef(p, "web_search") != nil; got != tc.webSearchTool {
-				t.Fatalf("web_search function tool advertised: %v, want %v (google protocol + WebSearch only)", got, tc.webSearchTool)
+			if findToolDef(p, "web_search") != nil {
+				t.Fatalf("web_search function tool unexpectedly advertised for %s", tc.ref)
 			}
 			wantApplyPatch := tc.surface == registry.SurfaceOpenAI
 			if got := findToolDef(p, "apply_patch") != nil; got != wantApplyPatch {
@@ -181,7 +180,7 @@ func TestProfileProviderOptionsByProtocol(t *testing.T) {
 		t.Fatalf("responses extras: %+v", openai.ProviderOptions())
 	}
 	google := mustResolve(t, r, "google/gemini-3-pro")
-	if opts, _ := google.ProviderOptions()[registry.ProtocolGoogle].(map[string]any); opts["safetySettings"] == nil {
+	if opts, _ := google.ProviderOptions()[registry.ProtocolGoogle].(map[string]any); opts["safety_settings"] == nil {
 		t.Fatalf("google extras: %+v", google.ProviderOptions())
 	}
 	anthropic := mustResolve(t, r, "anthropic/claude-opus-5")

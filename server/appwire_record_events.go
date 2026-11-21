@@ -122,6 +122,9 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			// SetProcessingTurn already published. Do not publish its thread
 			// status or close frame over that newer active identity.
 			if supersededSessionEnd && (item.Method == appwire.NotifyThreadStatusChanged || item.Method == appwire.NotifyThreadClosed) {
+				if !appDeferredTerminalParamsValid(item.Method, item.Params) {
+					continue
+				}
 				s.appDeferredTerminalNotifications = append(s.appDeferredTerminalNotifications, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: item.Params})
 				continue
 			}
@@ -205,6 +208,32 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		}
 		return s.recordAppNotifications(threadID, pending)
 	})
+}
+
+// appDeferredTerminalParamsValid reports whether one terminal notification
+// the SESSION_END gate may defer carries well-formed params. A status must be
+// the typed struct; a close is validated in its map form because the
+// projector emits that shape to keep the empty reason key (see
+// internal/appprojector/appwire_projection.go).
+func appDeferredTerminalParamsValid(method string, params any) bool {
+	switch method {
+	case appwire.NotifyThreadStatusChanged:
+		status, ok := params.(appwire.ThreadStatusChangedParams)
+		return ok && status.ThreadID != "" && status.Ref != "" && status.Status.Type != ""
+	case appwire.NotifyThreadClosed:
+		switch closed := params.(type) {
+		case appwire.ThreadClosedParams:
+			return closed.ThreadID != "" && closed.Ref != ""
+		case map[string]any:
+			threadID, _ := closed["threadId"].(string)
+			ref, _ := closed["ref"].(string)
+			_, reasonIsString := closed["reason"].(string)
+			return threadID != "" && ref != "" && reasonIsString
+		}
+		return false
+	default:
+		return false
+	}
 }
 
 // appRootIdentityLocked is the served root thread and its ref. Callers hold
@@ -308,8 +337,11 @@ func (s *Server) finishProcessing() {
 			if item.threadID != threadID || item.ref != ref {
 				continue
 			}
-			if params, ok := item.params.(appwire.ThreadStatusChangedParams); ok && item.method == appwire.NotifyThreadStatusChanged {
-				s.status.State = params.Status.Type
+			if !appDeferredTerminalParamsValid(item.method, item.params) {
+				continue
+			}
+			if status, ok := item.params.(appwire.ThreadStatusChangedParams); ok {
+				s.status.State = status.Status.Type
 				deferredRest = true
 			}
 			pending = append(pending, item)
@@ -464,6 +496,21 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 		history := s.ensureDescendantHistory(ownerThreadID, threadID)
 		// A descendant's motion is its root's too: the meter shows the whole tree.
 		s.appActivity.observe(event.Kind)
+		// An interrupted end can still be queued when the next execution has
+		// already published its start: its own execution end was discarded as
+		// superseded. The end carries no turn identity, but an interrupt
+		// always emits its execution's end first, so a running turn here is a
+		// newer execution. Dropping the end whole keeps that execution
+		// addressable: the projector would clear the running turn it no longer
+		// owns, and the newer turn's own end would then be discarded, leaving
+		// the thread active forever. A non-interrupted end is the normal way a
+		// completed input settles the execution the projector holds.
+		if event.Kind == events.EventSessionEnd && !sessionEventClosesSession(event) {
+			if end, ok := event.Data.(events.SessionEndData); ok && end.Interrupted && projection.projector.RunningTurnID() != "" {
+				s.mu.Unlock()
+				return nil
+			}
+		}
 		projected := projection.projector.Project(event)
 		start, _ := event.Data.(events.SessionStartData)
 		pending := make([]pendingAppNotification, 0, len(projected))

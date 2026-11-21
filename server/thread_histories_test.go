@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appoverlay"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/llm"
 )
@@ -339,20 +340,12 @@ func TestThreadHistoriesCloseWaitsForADetachedHistoryStillClosing(t *testing.T) 
 func TestThreadHistoriesRegisterNothingOnceClosing(t *testing.T) {
 	c := closeRegistryWithADetachedReadParked(t)
 	r := c.r
-	// close marks the registry closing almost at once; bound the wait.
-	deadline := time.Now().Add(historyTestWait)
-	for {
+	// close marks the registry closing almost at once; wait for that flip.
+	testwait.Until(t, "the registry to begin closing", func() bool {
 		r.mu.Lock()
-		closing := r.closing
-		r.mu.Unlock()
-		if closing {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the registry never began closing")
-		}
-		time.Sleep(time.Millisecond)
-	}
+		defer r.mu.Unlock()
+		return r.closing
+	})
 	// ReplaceAppIdentity's registry steps.
 	if detached := r.detachExcept("new-root"); len(detached) != 0 {
 		t.Fatalf("a replace during close detached %d histories, want none left", len(detached))

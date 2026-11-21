@@ -172,16 +172,9 @@ func stceVisionAndWeb(t *testing.T, selector byte) {
 
 	_ = adapter
 
-	result, err := s.webSearch(context.Background(), "query")
-	if err != nil || result != "scripted vision" {
-		t.Fatalf("web search = %#v, %v", result, err)
-	}
 	adapter.FaultResponder = func(llm.Request) error { return errors.New("search failure") }
 	if got := s.describeImage(context.Background(), tool.ExecResult{ImageData: []byte("x")}); got != "" {
 		t.Fatalf("vision error = %q", got)
-	}
-	if _, err := s.webSearch(context.Background(), "query"); err == nil || !strings.Contains(err.Error(), "web search failed") {
-		t.Fatalf("web search error = %v", err)
 	}
 }
 

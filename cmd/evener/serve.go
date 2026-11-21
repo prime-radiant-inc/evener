@@ -756,6 +756,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			StartupModelListing:         startupListing,
 			AcquireSessionOwnership:     reserveSession,
 			OwnershipAlreadyAcquired:    true,
+			SelectedModel:               strings.TrimSpace(*lf.model) != "",
 			ModelFallbacks:              sessionCfg.ModelFallbacks,
 			OpenAIResponsesContinuation: settings.openAIResponsesContinuation,
 			ProviderIdleTimeout:         *lf.providerIdleTimeout,

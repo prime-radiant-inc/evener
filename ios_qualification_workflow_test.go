@@ -490,3 +490,63 @@ func TestIOSQualificationDiagnosticArtifactRetention(t *testing.T) {
 		t.Errorf("handoff uploads = %d, want 2 (build products and runtime pair)", handoffs)
 	}
 }
+
+// The pre-boot step exists so the simulator's first boot overlaps the work
+// after it: setup-node, both artifact downloads and the two layout restores.
+// The device travels to the journeys through one run-owned JOURNEY_SIMULATOR
+// directory, and the journey command adopts that same directory with
+// --simulator-dir. Dropping either half leaves every script test green while
+// the workflow quietly builds and boots a second device inside the journey
+// step, so both are pinned here.
+func TestIOSQualificationPreBootsTheSimulatorBeforeTheDownloads(t *testing.T) {
+	workflow := readWorkflow(t, ".github/workflows/ios-qualification.yml")
+	journeys, ok := workflow.Jobs["ui-journeys"]
+	if !ok {
+		t.Fatal("ios-qualification is missing the ui-journeys job")
+	}
+	preboot, runStep := -1, -1
+	for i, step := range journeys.Steps {
+		switch {
+		case strings.Contains(step.Run, "--mode simulator"):
+			preboot = i
+			if !strings.Contains(step.Run, `--output "$JOURNEY_SIMULATOR"`) {
+				t.Errorf("pre-boot step does not create the device in the run-owned JOURNEY_SIMULATOR directory:\n%s", step.Run)
+			}
+		case strings.Contains(step.Run, "run-ui-journeys.sh --products"):
+			runStep = i
+		}
+	}
+	if preboot == -1 {
+		t.Fatal("ui-journeys has no simulator pre-boot step")
+	}
+	if runStep == -1 {
+		t.Fatal("ui-journeys does not run the installed-app journeys")
+	}
+	// GITHUB_ENV mints the path before either consumer reads it; the same
+	// variable name on both steps is what makes them one directory.
+	defined := -1
+	for i, step := range journeys.Steps {
+		if strings.Contains(step.Run, "JOURNEY_SIMULATOR=%s/ios-journeys-simulator-") {
+			defined = i
+		}
+	}
+	if defined == -1 || defined > preboot {
+		t.Errorf("ui-journeys defines JOURNEY_SIMULATOR at step %d, want it before the pre-boot step at %d", defined, preboot)
+	}
+	downloads := 0
+	for i, step := range journeys.Steps {
+		if !strings.HasPrefix(step.Uses, "actions/download-artifact@") {
+			continue
+		}
+		downloads++
+		if i < preboot {
+			t.Errorf("download of %q runs before the simulator pre-boot, so the boot no longer overlaps it", fmt.Sprint(step.With["name"]))
+		}
+	}
+	if downloads != 2 {
+		t.Errorf("ui-journeys downloads = %d artifacts, want the build products and the runtime pair", downloads)
+	}
+	if got := journeys.Steps[runStep].Run; !strings.Contains(got, `--simulator-dir "$JOURNEY_SIMULATOR"`) {
+		t.Errorf("journey command does not adopt the pre-booted device:\n%s", got)
+	}
+}

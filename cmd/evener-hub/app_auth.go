@@ -1666,10 +1666,9 @@ func (c *hubAuthController) instanceUsesGCPADC(name string) bool {
 }
 
 // CredentialJsonSet stores a Google credential JSON for a gcp-adc instance
-// (spec 2026-09-04 google-vertex-express §4.4): validated the way the
-// authenticator will parse it, written to the credentials store under the
-// instance name, then the registry reloads so the instance resolves with
-// source store.
+// (validated the way the authenticator will parse it), written to the
+// credentials store under the instance name, then the registry reloads so the
+// instance resolves with source store.
 func (c *hubAuthController) CredentialJsonSet(params appwire.AuthCredentialJsonSetParams) (resp appwire.AuthStatusResponse, err error) {
 	name := normalizeAuthProvider(params.Provider)
 	value := strings.TrimSpace(params.Value)

@@ -131,6 +131,17 @@ run_xcodebuild() {
 	return "$status"
 }
 
+# capture_simulator_system_log OUTPUT UDID START reads the device's unified log
+# for the window from START through the end of the finishing second into
+# OUTPUT/simulator-system.log. Issue #5992's diagnostic: the capture is best
+# effort, so a failed one names its error log and does not fail the run.
+capture_simulator_system_log() {
+	xcrun simctl spawn "$2" log show \
+		--start "$3" --end "$(date -v+1S '+%Y-%m-%d %H:%M:%S')" \
+		--style compact >"$1/simulator-system.log" 2>"$1/simulator-system-capture.log" ||
+		echo "$SCRIPT_NAME: simulator system log capture failed, see $1/simulator-system-capture.log" >&2
+}
+
 # The runner's fixture test sources this file to drive the real cleanup and
 # cancellable xcodebuild wait; stop before argument parsing or state is minted.
 if [ "${RUN_UI_TESTS_LIB_ONLY:-0}" = "1" ]; then
@@ -248,8 +259,9 @@ cd "$repo_root"
 # Issue #5992: the first journey otherwise runs on a simulator that is still
 # settling from its first boot, paying it as a 19-74s first launch and slowed
 # UI queries, with every observed first-journey failure inside that window.
-# Boot the device here so it settles while the runtime pair is installed or
-# built; after that the app gets one launch of its own before xcodebuild
+# Start the boot here — unless the workflow's pre-boot step already started it
+# — so the device settles while the runtime pair is installed or built; after
+# that the app gets one launch of its own before xcodebuild
 # runs. This warms the device and the app's first-launch
 # caches only: every journey and every assertion below still runs unchanged,
 # and the warmup's own app instance is terminated before the measured run
@@ -259,10 +271,20 @@ if ! bundle_id="$(plutil -extract CFBundleIdentifier raw -o - "$app_path/Info.pl
 	echo "$SCRIPT_NAME: cannot read CFBundleIdentifier from $app_path/Info.plist, see $output/simulator-warmup.log" >&2
 	exit 1
 fi
-if ! xcrun simctl boot "$sim_udid" >>"$output/simulator-warmup.log" 2>&1; then
-	echo "$SCRIPT_NAME: simctl boot failed, inspect $output/simulator-warmup.log" >&2
-	exit 1
-fi
+# The workflow's pre-boot step may have started this device already, and a
+# boot is asynchronous — Booting until bootstatus below says otherwise — so
+# asking simctl to boot it a second time would fail the run. Ask for the state
+# instead; a device nobody started is booted here exactly as before.
+sim_state="$(xcrun simctl list --json devices 2>/dev/null | jq -r --arg udid "$sim_udid" '[.devices[][] | select(.udid == $udid) | .state] | first // ""' 2>/dev/null || true)"
+case "$sim_state" in
+Booted | Booting) ;;
+*)
+	if ! xcrun simctl boot "$sim_udid" >>"$output/simulator-warmup.log" 2>&1; then
+		echo "$SCRIPT_NAME: simctl boot failed, inspect $output/simulator-warmup.log" >&2
+		exit 1
+	fi
+	;;
+esac
 
 if [ -n "$runtime_pair" ]; then
 	# The hub's daemons are exec'd from $evener_binary and carry the run
@@ -422,6 +444,10 @@ inject_environment EVENER_QUALIFICATION_HUB_TOKEN "$hub_token"
 chmod 600 "$private_run"
 
 xcresult="$output/ui.xcresult"
+# Issue #5992's diagnostic: the uploaded set carried no device or app system
+# log, so record the measured window and read the device's unified log for it
+# back below.
+run_start="$(date '+%Y-%m-%d %H:%M:%S')"
 log "running the qualification journeys"
 set +e
 run_xcodebuild "$output/xcodebuild-test.log" \
@@ -435,6 +461,12 @@ test_exit=$?
 set -e
 echo "$test_exit" >"$output/xcodebuild-test.exit"
 log "xcodebuild exit: $test_exit"
+
+# Issue #5992's diagnostic: the measured window just ended; capture it at the
+# default level into the uploaded set so a slow first launch can be compared
+# with a normal one. It covers the fixture-only simulator this run created; a
+# failed capture must not fail an otherwise green run.
+capture_simulator_system_log "$output" "$sim_udid" "$run_start"
 
 # Validate the result bundle: every intended test identity must have
 # actually executed, none skipped, zero failures. An unreadable or partial

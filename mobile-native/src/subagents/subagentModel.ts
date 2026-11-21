@@ -311,8 +311,9 @@ export function stripSegments(
 
 export interface SubagentWhy {
 	/** What the line reports: a failure, a stop, a report or a bare finish; a
-	 * running row's stated tool intent, a running command, the subagents it
-	 * waits on, or nothing while the dot alone speaks its clock. */
+	 * running row's drain wait, else its stated tool intent, else the running
+	 * command, else the subagents it waits on, or nothing while the dot alone
+	 * speaks its clock. */
 	kind: "failed" | "stopped" | "report" | "finished" | "intent" | "command" | "waiting" | "silent";
 	/** The actual unsuccessful outcome, displayed beside its cause. */
 	word?: "Failed";

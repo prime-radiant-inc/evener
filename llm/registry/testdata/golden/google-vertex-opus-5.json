@@ -108,12 +108,12 @@
     "ThinkingDisplay": "derived",
     "ThinkingShape": "derived",
     "Tools": "snapshot/row",
-    "WebSearch": "overlay/provider",
+    "WebSearch": "overlay/glob:*claude*",
     "WireID": "snapshot/row",
     "model": "row:claude-opus-5"
   },
   "default_model": "gemini-3.8-flash",
-  "cheap_model": "gemini-2.5-flash-lite",
+  "cheap_model": "gemini-3.5-flash-lite",
   "credential_source": "adc",
   "pruned_fields": [
     "container",

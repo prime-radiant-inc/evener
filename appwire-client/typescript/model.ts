@@ -416,9 +416,9 @@ export interface ThreadModel {
   // The provider instance the snapshot named for the running model
   // (Thread.evener.profile), kept apart from model/modelProvider because it is
   // what makes a snapshot's raw model id addressable as "provider/model".
-  // thread/model/changed carries the same split directly and clears this,
-  // since that payload names its own provider. Absent from a daemon that
-  // reports no profile.
+  // thread/model/changed names the provider itself, and the reducer stores it
+  // here too: an equal provider/model pair must stay addressable after a live
+  // switch. Absent from a daemon that reports no profile.
   modelProfile?: string;
   modelProvider: string;
   model: string;

@@ -751,7 +751,7 @@ export interface EvenerDelegateInfo {
   drainHeldBySubagents?: boolean;
   runningSubagentCount?: number;
   /**
-   * HoldSequence orders DrainHeldByJobs against every other sample of the same
+   * HoldSequence orders the whole hold against every other sample of the same
    * delegate's hold. The source bumps it under the controller lock when the
    * sampled hold changes, so a consumer applies the highest sequence and
    * rejects a sample a slower publisher delivered late. Absent when no sample
@@ -4081,7 +4081,7 @@ export interface SessionDelegate {
    */
   runningSubagentCount?: number;
   /**
-   * HoldSequence orders DrainHeldByJobs against the other samples of the same
+   * HoldSequence orders the whole hold against every other sample of the same
    * delegate's hold. The hold is a per-row fact whose samples can reach a
    * client out of order — a publisher that sampled before another can send
    * after it — and the projection revision cannot order them, because both

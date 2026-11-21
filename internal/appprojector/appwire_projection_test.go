@@ -117,6 +117,52 @@ func TestProject_ReasoningEffortChanged(t *testing.T) {
 	}
 }
 
+// TestProject_NextModelChanged pins the acceptance publication's projection:
+// a queued pick's NextModelChanged maps to the same thread/model/changed frame
+// a committed switch produces — that is what lets a subscriber's label move at
+// pick time — carrying the new profile's reasoning ladder and the context
+// settlement current at acceptance, so a picker's meter does not re-basis
+// against a model that has not started a turn yet.
+func TestProject_NextModelChanged(t *testing.T) {
+	p := NewAppEventProjector("th1", "local:th1")
+	out := p.Project(events.SessionEvent{
+		Kind: events.EventNextModelChanged,
+		Data: events.NextModelChangedData{
+			Provider:               "openai",
+			Model:                  "gpt-queued",
+			ReasoningEffortLevels:  []string{"low", "medium", "high"},
+			SupportsReasoning:      true,
+			DefaultReasoningEffort: "high",
+			ContextUsed:            10_000,
+			ContextWindow:          100_000,
+			ContextPressure:        0.1,
+			CompactionThreshold:    80_000,
+		},
+	})
+	if len(out) != 1 {
+		t.Fatalf("want thread/model/changed alone, got %+v", out)
+	}
+	if out[0].Method != appwire.NotifyThreadModelChanged {
+		t.Fatalf("out[0].Method = %q, want thread/model/changed", out[0].Method)
+	}
+	params, ok := out[0].Params.(appwire.ThreadModelChangedParams)
+	if !ok {
+		t.Fatalf("params type = %T, want appwire.ThreadModelChangedParams", out[0].Params)
+	}
+	if params.ThreadID != "th1" || params.Ref != "local:th1" {
+		t.Fatalf("params missing threadId/ref: %+v", params)
+	}
+	if params.ModelProvider != "openai" || params.Model != "gpt-queued" {
+		t.Fatalf("params modelProvider/model = %s/%s, want openai/gpt-queued", params.ModelProvider, params.Model)
+	}
+	if !params.SupportsReasoning || len(params.ReasoningEffortLevels) != 3 || params.DefaultReasoningEffort != "high" {
+		t.Fatalf("params reasoning profile = %+v, want the queued model's ladder and default", params)
+	}
+	if params.ContextUsed != 10_000 || params.ContextWindow != 100_000 || params.CompactionThreshold != 80_000 {
+		t.Fatalf("params context settlement = used %d window %d threshold %d, want it passed through unchanged", params.ContextUsed, params.ContextWindow, params.CompactionThreshold)
+	}
+}
+
 func TestProject_VisionModelChanged(t *testing.T) {
 	p := NewAppEventProjector("th1", "local:th1")
 	out := p.Project(events.SessionEvent{

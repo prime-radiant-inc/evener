@@ -18,7 +18,6 @@ import (
 	"primeradiant.com/evener/agent/skill"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/registry"
 )
 
 // toolDeps is the dependency surface the core tool handler closures need from
@@ -172,11 +171,6 @@ type toolDeps struct {
 	// reasoningEffortLevels is captured once for the task_list tool definition.
 	reasoningEffortLevels []string
 
-	// webSearchEnabled is the resolved decision (the google protocol on a row
-	// that serves web search) for whether the function-tool web_search should
-	// be registered.
-	webSearchEnabled bool
-
 	// stateDir and sessionID locate the current session's transcript bucket and
 	// transcript file. They are the inputs the transcript tools pass to
 	// resolveTranscript; an empty stateDir means state persistence is off, in
@@ -303,8 +297,7 @@ func (g notesGuard) SnapshotAll() (human, agent string, urls []schema.SessionURL
 // webDeps holds the bound web tool functions. The profile and client stay
 // hidden inside the closures captured here.
 type webDeps struct {
-	fetch  func(ctx context.Context, rawURL, question string) (any, error)
-	search func(ctx context.Context, query string) (any, error)
+	fetch func(ctx context.Context, rawURL, question string) (any, error)
 }
 
 // newToolDeps builds the tool dependency surface from a session. Every member
@@ -375,8 +368,7 @@ func newToolDeps(s *Session) *toolDeps {
 		},
 		now: s.sclock().Now,
 		web: webDeps{
-			fetch:  s.webFetch,
-			search: s.webSearch,
+			fetch: s.webFetch,
 		},
 		requestSkillCompaction: s.requestSkillCompaction,
 		pressure:               s.contextPressure,
@@ -396,7 +388,6 @@ func newToolDeps(s *Session) *toolDeps {
 		},
 		skillActivate:         s.skillToolActivate,
 		reasoningEffortLevels: s.profile.ReasoningEffortLevels(),
-		webSearchEnabled:      s.profile.Protocol() == registry.ProtocolGoogle && s.profile.SupportsWebSearch(),
 		stateDir:              s.stateDir,
 		sessionID:             s.id,
 		currentMeta:           s.Meta,

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -10,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
@@ -302,10 +304,12 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// work — it is what keeps the boundary paired with the history this round
 	// actually expands (see the G4 note there).
 	scope := replayScope{
-		Instance:     profile.ID(),
-		Model:        profile.Model(),
-		Protocol:     profile.Protocol(),
-		InFlightFrom: inFlightFrom,
+		Instance:       profile.ID(),
+		Model:          profile.Model(),
+		WireID:         profile.Resolved().WireID,
+		Protocol:       profile.Protocol(),
+		InFlightFrom:   inFlightFrom,
+		ResultToolName: s.resultToolName(),
 		dropsToolResult: func(tr *llm.ToolResultData) bool {
 			_, rejected := suppressedDocuments[tr.ToolCallID]
 			return rejected
@@ -325,11 +329,15 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// held-attention filter can shrink the projected list without reopening
 	// that window.
 	presentedBoundary := len(historyTurns)
+	// roundLease is the lease this request was admitted under: the skill
+	// rebuild must withhold a steer the completed claim never saw (#7205).
+	var roundLease *delegateLease
 	// heldDropped reports that this request's projection kept a held row out
 	// — a nonstandard view of the resident history that must not seed or
 	// continue from a stored anchor.
 	heldDropped := false
 	if lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok && s.delegateController != nil {
+		roundLease = &lease
 		claim, claimErr := s.delegateController.BeginModelRequest(lease)
 		if claimErr != nil {
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
@@ -370,6 +378,13 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		if claimErr != nil {
 			_ = s.delegateController.AbortModelRequest(claim)
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
+		}
+		// A test can land a steer between the completed claim and the rebuild (#7205).
+		s.mu.Lock()
+		afterDelegateSnapshot := s.cfg.testOnly.afterDelegateModelSnapshot
+		s.mu.Unlock()
+		if afterDelegateSnapshot != nil {
+			afterDelegateSnapshot()
 		}
 		history = expandHistory(presentedTurns, scope)
 	} else {
@@ -460,7 +475,9 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// inventory reminders) joined, projects them as-is past the in-flight
 	// boundary, and rebuilds and re-budgets the request. Shared by the
 	// final-dispatch delivery reload path and the compacted-skill reload path.
-	// It reports whether any turn had actually been appended.
+	// Its tail also obeys the late-steer predicate (#7205), so a steer appended
+	// after the round's controller claim stays out of the rebuilt request and
+	// the fallback source. It reports whether any turn had actually been appended.
 	rebuildForAppendedSkillTurns := func() (bool, error) {
 		s.mu.Lock()
 		var appended []schema.Turn
@@ -494,6 +511,21 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			boundary = shiftBoundaryForDrops(boundary, droppedAt)
 			historyTurns = filtered
 			appended = filtered[boundary:]
+		}
+		// The tail also obeys the late-steer predicate (#7205): a steer that
+		// landed after the claim completed is in no claim, so CompleteModelRequest
+		// never filtered this re-read. The planning copy is filtered with the
+		// tail so the full-history estimate prices only what the request shows.
+		if roundLease != nil {
+			if owed := s.delegateController.unpresentedSteeringIDs(*roundLease); len(owed) > 0 {
+				historyTurns, _, _ = projectDelegatePendingSteers(historyTurns, nil, owed)
+				appended, _, _ = projectDelegatePendingSteers(appended, nil, owed)
+			}
+			// The boundary already advanced past the withheld steer, so it stays
+			// outside every later rebuild window this round; the next claim binds it.
+			if len(appended) == 0 {
+				return false, nil
+			}
 		}
 		// The appended turns land after the in-flight boundary and project
 		// as-is; append them rather than re-running the delegate claim.
@@ -968,7 +1000,7 @@ func (s *Session) planResponsesContinuation(ctx context.Context, profile *provid
 			DeltaTurnKinds:          responsesContinuationTurnKinds(candidate.Delta),
 			EndpointFamily:          string(plan.EndpointFamily),
 			RequestFingerprint:      plan.RequestFingerprint,
-			ContextMarker:           responseContextMarkerV1,
+			ContextMarker:           responseContextMarkerV2,
 			StoragePolicyLabel:      plan.StoragePolicyLabel,
 			StorageScopeFingerprint: plan.StorageScopeFingerprint,
 		}
@@ -984,7 +1016,7 @@ func responsesContinuationFullHistoryRequestForPlan(route roundRoute, req llm.Re
 	req.Continuation = &llm.ContinuationMetadata{
 		EndpointFamily:          string(plan.EndpointFamily),
 		RequestFingerprint:      plan.RequestFingerprint,
-		ContextMarker:           responseContextMarkerV1,
+		ContextMarker:           responseContextMarkerV2,
 		StoragePolicyLabel:      plan.StoragePolicyLabel,
 		StorageScopeFingerprint: plan.StorageScopeFingerprint,
 	}
@@ -1076,7 +1108,7 @@ func responsesContinuationCandidateMatchesPlan(candidate responsesContinuationAn
 	return strings.TrimSpace(candidate.Turn.ResponseID) != "" &&
 		candidate.Turn.ResponseRequestFingerprint == plan.RequestFingerprint &&
 		candidate.Turn.ResponseStorageScopeFingerprint == plan.StorageScopeFingerprint &&
-		candidate.Turn.ResponseContextMarker == responseContextMarkerV1
+		candidate.Turn.ResponseContextMarker == responseContextMarkerV2
 }
 
 func responsesContinuationDeltaMessages(base []llm.Message, deltaTurns []schema.Turn, dropsMedia func(string) bool) []llm.Message {
@@ -1684,7 +1716,7 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 		// decideNoToolCalls steers bare text back, and a delegate that ends
 		// without communicating gets communicateNudge.
 		ToolChoice: &llm.ToolChoice{Mode: "auto"},
-		WebSearch:  s.providerWebSearchEnabled(profile),
+		WebSearch:  s.providerWebSearchEnabled(profile) && protocolInjectsNativeWebSearch(profile.Protocol()),
 		AdapterTimeout: &llm.AdapterTimeout{
 			Connect:    10 * time.Second,
 			StreamRead: idleTimeout,
@@ -1981,7 +2013,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			// test that seeds no turns keeps the round's history.
 			if len(fallbackSource.turns) > 0 {
 				scope := fallbackSource.scope
-				scope.Instance, scope.Model, scope.Protocol = fbProfile.ID(), fbProfile.Model(), fbProfile.Protocol()
+				scope.Instance, scope.Model, scope.WireID, scope.Protocol = fbProfile.ID(), fbProfile.Model(), fbProfile.Resolved().WireID, fbProfile.Protocol()
 				scope.canonicalModel = func(model string) string { return s.canonicalModelID(fbProfile.ID(), model) }
 				fallbackHistory = s.requestMessages(fallbackSource.system, expandHistory(fallbackSource.turns, scope))
 			}
@@ -2171,7 +2203,7 @@ func (s *Session) responsesContinuationFallbackRequest(profile *provider.Profile
 	// facts: profile was resolved from the fallback reference, so its ladder and
 	// stated default are the fallback model's, not the primary's.
 	fbReq.ReasoningEffort = resolveRequestEffort(requestedEffort, profile.SupportsReasoning(), profile.ReasoningEffortLevels(), profile.DefaultReasoningEffort())
-	fbReq.WebSearch = s.providerWebSearchEnabled(profile)
+	fbReq.WebSearch = s.providerWebSearchEnabled(profile) && protocolInjectsNativeWebSearch(profile.Protocol())
 	fbReq.ProviderOptions = profile.ProviderOptions()
 	s.applyModelRequestMetadata(&fbReq)
 	route := s.priceRoundRoute(profile, fbReq)
@@ -2262,9 +2294,11 @@ func (s *Session) forceCompactForModelRecovery(ctx context.Context) {
 // guards (openai Responses, openai-chat) or for the Responses-continuation
 // delta path is byte-identical to before this rule existed.
 type replayScope struct {
-	Instance string // outgoing instance (req.Provider)
-	Model    string // outgoing requested model (req.Model)
-	Protocol string // outgoing wire protocol; empty ⇒ no filtering
+	Instance       string // outgoing instance (req.Provider)
+	Model          string // outgoing requested model (req.Model)
+	WireID         string // outgoing resolved wire model id (res.WireID)
+	Protocol       string // outgoing wire protocol; empty ⇒ no filtering
+	ResultToolName string // session's configured result tool name (empty defaults != "web_search")
 
 	// InFlightFrom is the history index of the first turn belonging to the
 	// in-flight turn. Turns at or after it are exempt from filtering: a
@@ -2405,24 +2439,29 @@ func projectThinkingForTarget(profile *provider.Profile, messages []llm.Message)
 // thinkingReplayEligible reports whether a completed prior turn's
 // thinking/redacted_thinking blocks may replay into the outgoing request.
 // Empty provenance (legacy transcripts) is always eligible. An anthropic
-// target requires an exact (instance, requested model) match — the requested
-// model taken from ResponseRequestModel, or canonicalized ResponseModel when
-// the request-model field is empty (closes G12). google and openai-responses
-// targets require the same instance: google's builder must replay prior
-// tool-call thought signatures regardless of model, and openai Responses
-// carries an opaque encrypted_content blob that only its issuing deployment
-// can decrypt (a cross-deployment replay yields "Encrypted content is not
-// supported"). An openai-chat target takes the default branch and replays
-// verbatim; unknown protocols keep their builder guard.
+// target requires an exact (instance, requested model) match (closes G12). A
+// Google-produced turn is only eligible for a ProtocolGoogle target matching
+// the same instance (and individual GoogleInteraction thought parts are gated
+// on ReplayableGoogleThoughtFor(Instance, WireID) in projectThinkingPart).
+// openai-responses targets require the same instance. An openai-chat target
+// takes the default branch and replays verbatim; unknown protocols keep their
+// builder guard.
 func (rs replayScope) thinkingReplayEligible(t schema.Turn) bool {
 	if strings.TrimSpace(t.ResponseProvider) == "" {
 		return true
 	}
 	producer := rs.producerProtocol(t)
+	if producer == registry.ProtocolGoogle {
+		return rs.Protocol == registry.ProtocolGoogle &&
+			rs.Instance != "" && rs.WireID != "" &&
+			rs.Instance == t.ResponseProvider
+	}
 	switch rs.Protocol {
 	case registry.ProtocolAnthropic:
 		return producer == rs.Protocol && rs.Instance == t.ResponseProvider && rs.requestedModelMatches(t)
-	case registry.ProtocolGoogle, registry.ProtocolOpenAIResponses:
+	case registry.ProtocolGoogle:
+		return false
+	case registry.ProtocolOpenAIResponses:
 		return producer == rs.Protocol && rs.Instance == t.ResponseProvider
 	default:
 		return true
@@ -2449,12 +2488,35 @@ func (rs replayScope) canonicalize(model string) string {
 // webSearchReplayEligible reports whether a completed prior turn's web_search
 // raw blocks may replay verbatim. Empty provenance is eligible; otherwise the
 // producing protocol must match the target's — across protocols the raw
-// payload is foreign JSON and is dropped (G13).
+// payload is foreign JSON and is dropped (G13). ProtocolGoogle Grounding
+// results are never replayed to any target, including ProtocolGoogle itself.
 func (rs replayScope) webSearchReplayEligible(t schema.Turn) bool {
+	if rs.producerProtocol(t) == registry.ProtocolGoogle {
+		return false
+	}
 	if strings.TrimSpace(t.ResponseProvider) == "" {
 		return true
 	}
 	return rs.producerProtocol(t) == rs.Protocol
+}
+
+const (
+	omittedGoogleGroundedOutputText = "[historical grounded output omitted from model replay]"
+	omittedGoogleToolInputJSON      = `{"_omitted":"[historical grounded tool input omitted from model replay]"}`
+	omittedWebSearchToolOutputText  = "[historical web_search output omitted from model replay]"
+)
+
+func (rs replayScope) omitsLegacyWebSearchTool(inFlight bool) bool {
+	return rs.active() && !inFlight && rs.ResultToolName != "web_search"
+}
+
+func omitLegacyWebSearchToolCall(tc *llm.ToolCallData) *llm.ToolCallData {
+	cloned := *tc
+	cloned.Arguments = json.RawMessage(omittedGoogleToolInputJSON)
+	cloned.ParsedArguments = nil
+	cloned.ArgumentsSpelling = ""
+	cloned.RawArguments = ""
+	return &cloned
 }
 
 // projectThinkingPart applies the N4 provenance rule and the target's thinking
@@ -2469,6 +2531,15 @@ func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps boo
 	if p.Kind != llm.ContentThinking && p.Kind != llm.ContentRedThinking {
 		return p, false
 	}
+	if rs.active() && p.Thinking != nil && p.Thinking.GoogleInteraction {
+		if rs.Protocol != registry.ProtocolGoogle || p.Kind != llm.ContentThinking || !p.Thinking.ReplayableGoogleThoughtFor(rs.Instance, rs.WireID) {
+			return p, true
+		}
+		return llm.TrimThinkingForReplay(p, rs.DropThinking)
+	}
+	if rs.active() && rs.Protocol == registry.ProtocolGoogle {
+		return p, true
+	}
 	if !provenanceKeeps {
 		if rs.Protocol != registry.ProtocolOpenAIResponses {
 			return p, true
@@ -2482,10 +2553,21 @@ func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps boo
 // filtered per the N4 rules for the scope, plus the target's own thinking
 // policy. An inactive scope passes through unchanged (identical to legacy
 // expansion) unless the target policy drops thinking. In-flight turns keep the
-// N4 exemption but still lose thinking the target does not want.
-// tool_call/tool_result and text/image content is never touched.
+// N4 exemption for non-Google producers but still lose thinking the target does
+// not want, and Google Interactions thoughts always require matching
+// (Instance, WireID) provenance. Completed ProtocolGoogle Grounding outputs,
+// web_search parts, and legacy unprefixed web_search tool pairs are omitted
+// when projecting prior turns.
+//
+// Image and non-web_search tool content is never touched. Text content is
+// copied as stored (apart from prior ProtocolGoogle grounded output omission)
+// except on the turns whose author is the model or another agent: that prose
+// has the frames it could forge escaped in the request copy only
+// (escapeTurnFrames), so a stored turn keeps the bytes its author wrote. A
+// reply the person typed, including one no record stamped and a fork's
+// inherited unknown-authorship copy, is never rewritten.
 func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Message {
-	t.Message = projectVoicePresentation(t)
+	t.Message = escapeTurnFrames(t, projectVoicePresentation(t))
 	if !rs.active() && !rs.DropThinking {
 		return t.Message
 	}
@@ -2494,10 +2576,16 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 	// not want thinking still gets the drop.
 	provenanceKeepsThinking := true
 	keepWebSearch := true
+	omitGoogleGroundedText := false
+	omitLegacyWebSearchTool := false
 	if rs.active() && !inFlight {
 		provenanceKeepsThinking = rs.thinkingReplayEligible(t)
 		keepWebSearch = rs.webSearchReplayEligible(t)
+		omitGoogleGroundedText = !keepWebSearch && t.Kind == schema.TurnAssistant &&
+			rs.producerProtocol(t) == registry.ProtocolGoogle &&
+			responseHasServerWebSearch(t.Message.Content)
 	}
+	omitLegacyWebSearchTool = rs.omitsLegacyWebSearchTool(inFlight)
 	// Allocate only when a part actually has to go: the chat drop visits every
 	// replayed message, and most carry no thinking part at all.
 	needsFilter := false
@@ -2509,6 +2597,18 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 			}
 		case llm.ContentWebSearch:
 			if !keepWebSearch {
+				needsFilter = true
+			}
+		case llm.ContentText:
+			if omitGoogleGroundedText && p.Text != "" {
+				needsFilter = true
+			}
+		case llm.ContentToolCall:
+			if omitLegacyWebSearchTool && p.ToolCall != nil && p.ToolCall.Name == "web_search" {
+				needsFilter = true
+			}
+		case llm.ContentToolResult:
+			if omitLegacyWebSearchTool && p.ToolResult != nil && p.ToolResult.Name == "web_search" {
 				needsFilter = true
 			}
 		}
@@ -2532,11 +2632,66 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 			if !keepWebSearch {
 				continue
 			}
+		case llm.ContentText:
+			if omitGoogleGroundedText && p.Text != "" {
+				p.Text = omittedGoogleGroundedOutputText
+			}
+		case llm.ContentToolCall:
+			if omitLegacyWebSearchTool && p.ToolCall != nil && p.ToolCall.Name == "web_search" {
+				p.ToolCall = omitLegacyWebSearchToolCall(p.ToolCall)
+			}
+		case llm.ContentToolResult:
+			if omitLegacyWebSearchTool && p.ToolResult != nil && p.ToolResult.Name == "web_search" {
+				tr := *p.ToolResult
+				tr.Content = omittedWebSearchToolOutputText
+				p.ToolResult = &tr
+			}
 		}
 		filtered = append(filtered, p)
 	}
 	msg := t.Message
 	msg.Content = filtered
+	return msg
+}
+
+// escapeTurnFrames returns msg with the harness direction its text
+// could otherwise forge escaped, leaving every other turn byte-for-byte as
+// stored and never rewriting the framing the harness itself wrote. What a
+// person typed is untouched: a reply that opens with the answers marker
+// reaches the model as the reply it is.
+//
+// Model prose is escaped whole, since any frame opener in it is a forgery. A
+// turn the harness composes — a skill carrier, a runtime reminder block, a
+// notification block — may carry the harness's own opener on any line, so only
+// its answers markers are escaped: rewriting an opener there would corrupt the
+// frame the harness delivered. A compaction artifact is both: its own framing
+// is the harness's, and the fenced bodies it carries are the model's
+// (contextmgr.EscapeModelAuthoredBodies).
+func escapeTurnFrames(t schema.Turn, msg llm.Message) llm.Message {
+	escape := contextmgr.TurnFrameEscape(t)
+	if escape == nil {
+		return msg
+	}
+	var content []llm.ContentPart
+	for i, p := range msg.Content {
+		// A machinery part is the harness's own text, whatever the turn's
+		// author: escaping it would rewrite the framing it exists to carry.
+		if p.Kind != llm.ContentText || p.Text == "" || p.Machinery {
+			continue
+		}
+		escaped := escape(p.Text)
+		if escaped == p.Text {
+			continue
+		}
+		if content == nil {
+			content = slices.Clone(msg.Content)
+		}
+		content[i].Text = escaped
+	}
+	if content == nil {
+		return msg
+	}
+	msg.Content = content
 	return msg
 }
 
@@ -2600,6 +2755,7 @@ func annotateSuppressedToolResult(tr *llm.ToolResultData) {
 func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message {
 	history := make([]llm.Message, 0, len(historyTurns))
 	pendingToolCalls := map[string]struct{}{}
+	var omittedWebSearchCallIDs map[string]struct{}
 	var deferredSteering []llm.Message
 
 	flushDeferredSteering := func() {
@@ -2654,6 +2810,10 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
 					tr := *p.ToolResult
+					_, pairedWebSearch := omittedWebSearchCallIDs[tr.ToolCallID]
+					if scope.omitsLegacyWebSearchTool(inFlight) && (tr.Name == "web_search" || pairedWebSearch) {
+						tr.Content = omittedWebSearchToolOutputText
+					}
 					droppedDocument := len(tr.ImageData) > 0 && scope.dropsToolResult != nil && scope.dropsToolResult(p.ToolResult)
 					if len(tr.ImageData) > 0 && (droppedDocument || scope.dropsMedia(tr.ImageMediaType)) {
 						// The target cannot see this payload (or the provider
@@ -2675,10 +2835,37 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			}
 			resolveToolResults(t.Message)
 		case schema.TurnTool:
-			history = append(history, scope.stripToolResultMedia(scope.projectToolResultMedia(scope.projectTurnMessage(t, inFlight))))
+			msg := scope.stripToolResultMedia(scope.projectToolResultMedia(scope.projectTurnMessage(t, inFlight)))
+			if scope.omitsLegacyWebSearchTool(inFlight) && len(omittedWebSearchCallIDs) > 0 {
+				var cloned []llm.ContentPart
+				for idx, p := range msg.Content {
+					if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
+						if _, paired := omittedWebSearchCallIDs[p.ToolResult.ToolCallID]; paired {
+							if cloned == nil {
+								cloned = slices.Clone(msg.Content)
+								msg.Content = cloned
+							}
+							tr := *p.ToolResult
+							tr.Content = omittedWebSearchToolOutputText
+							cloned[idx].ToolResult = &tr
+						}
+					}
+				}
+			}
+			history = append(history, msg)
 			resolveToolResults(t.Message)
 		case schema.TurnAssistant:
 			endToolRound()
+			if scope.omitsLegacyWebSearchTool(inFlight) {
+				for _, p := range t.Message.Content {
+					if p.Kind == llm.ContentToolCall && p.ToolCall != nil && p.ToolCall.Name == "web_search" && p.ToolCall.ID != "" {
+						if omittedWebSearchCallIDs == nil {
+							omittedWebSearchCallIDs = map[string]struct{}{}
+						}
+						omittedWebSearchCallIDs[p.ToolCall.ID] = struct{}{}
+					}
+				}
+			}
 			message := scope.projectTurnMessage(t, inFlight)
 			history = append(history, message)
 			startToolRound(message)

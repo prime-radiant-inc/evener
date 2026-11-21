@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -682,16 +683,10 @@ func TestManagerQueueInputAwaitsStaleBindingRedial(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	liveDeadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, known := source.SessionToolsSupported(ref); known {
-			break
-		}
-		if time.Now().After(liveDeadline) {
-			t.Fatal("first relay connection never became live")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Until(t, "the first relay connection to become live", func() bool {
+		_, known := source.SessionToolsSupported(ref)
+		return known
+	})
 
 	// The relay's daemon connection drops. The daemon cancels the binding it
 	// carried; the map still holds the old binding until the re-dial replaces
@@ -703,16 +698,10 @@ func TestManagerQueueInputAwaitsStaleBindingRedial(t *testing.T) {
 	// Wait for the disconnection to register on the session before queuing:
 	// the scenario under test is input arriving once reconnection is
 	// pending, and the ref's serving state is the observable for that.
-	disconnectionDeadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, known := source.SessionToolsSupported(ref); !known {
-			break
-		}
-		if time.Now().After(disconnectionDeadline) {
-			t.Fatal("relay did not register the disconnection")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Until(t, "the relay to register the disconnection", func() bool {
+		_, known := source.SessionToolsSupported(ref)
+		return !known
+	})
 
 	// The Manager queues input while reconnection is pending: the queue must
 	// await the replacement binding, not send the canceled one.

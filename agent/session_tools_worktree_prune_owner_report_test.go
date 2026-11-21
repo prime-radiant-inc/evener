@@ -12,6 +12,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/worktree"
@@ -49,6 +50,28 @@ func seedOwnerRootSession(t *testing.T, stateDir, sid string) {
 	}
 }
 
+// requireSessionLivelock skips where the lock is not applied, and fails where
+// it is: linux and darwin are session_livelock_unix.go's arm, so the verdicts
+// below read livelock evidence there and a failed acquisition or inspection is
+// a regression, not a reason to skip.
+func requireSessionLivelock(t *testing.T) {
+	t.Helper()
+	switch runtime.GOOS {
+	case "linux", "darwin":
+	default:
+		t.Skip("session livelock is unavailable on this platform")
+	}
+	dir := t.TempDir()
+	release, applied, err := schema.AcquireSessionLivelock(dir, "probe")
+	if err != nil || !applied {
+		t.Fatalf("acquire a livelock on %s: applied=%v err=%v", runtime.GOOS, applied, err)
+	}
+	defer release()
+	if held, exists, err := schema.SessionLivelockHeld(dir, "probe"); err != nil || !held || !exists {
+		t.Fatalf("a livelock this test just acquired reads held=%v exists=%v err=%v", held, exists, err)
+	}
+}
+
 // requireLaneReportedSkippedAndKept asserts the reporting contract's
 // invariant: the lane is in prune's skipped list with exactly the want reason,
 // absent from removed, and its worktree is still on disk.
@@ -83,6 +106,7 @@ func requireLaneReportedSkippedAndKept(t *testing.T, r *wtRepo, lane, path, want
 // manual recipe's job.
 func TestWorktreePruneReportsDeadLookingDelegateLaneOwner(t *testing.T) {
 	t.Parallel()
+	requireSessionLivelock(t)
 	r := newWorktreeRepo(t)
 	hermeticRendezvous(t, r)
 	owner := identifier.MustNewSessionID()
@@ -105,6 +129,7 @@ func TestWorktreePruneReportsDeadLookingDelegateLaneOwner(t *testing.T) {
 // still not collected.
 func TestWorktreePruneReportsLiveDelegateLaneOwner(t *testing.T) {
 	t.Parallel()
+	requireSessionLivelock(t)
 	r := newWorktreeRepo(t)
 	hermeticRendezvous(t, r)
 	owner := identifier.MustNewSessionID()
@@ -147,6 +172,7 @@ func TestWorktreePruneReportsUnverifiableDelegateLaneOwner(t *testing.T) {
 // same lane still reports the verdict. The lane is collected by neither.
 func TestLaneResidueSweepSkipsOwnerLivenessProbes(t *testing.T) {
 	t.Parallel()
+	requireSessionLivelock(t)
 	r := newWorktreeRepo(t)
 	hermeticRendezvous(t, r)
 	owner := identifier.MustNewSessionID()

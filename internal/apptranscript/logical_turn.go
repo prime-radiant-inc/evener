@@ -88,12 +88,13 @@ type groupedTurn struct {
 type logicalTurnAccumulator struct {
 	turns   []groupedTurn
 	grouper TurnGrouper
-	// stampedStatus holds, per stamped turn id, the status the file's
-	// transcript-only completion and reopen records fold in file order, the
-	// same fold the index makes: a completion sets the status, a reopen
-	// clears it to in progress, and the last record wins. They join no group,
-	// but the status belongs to the turn they name.
-	stampedStatus map[string]string
+	// stampedStatus holds, per stamped turn id, the completion state the
+	// file's transcript-only completion and reopen records fold in file order,
+	// the same fold the index makes: a completion sets the status and its
+	// duration and completion time, a reopen clears them to in progress, and
+	// the last record wins. They join no group, but the state belongs to the
+	// turn they name.
+	stampedStatus map[string]stampedState
 	// stampedFailure holds, per stamped turn id, the file's latest
 	// TURN_FAILURE entry. The index keeps one diagnostic per execution, so a
 	// failed stamped turn reports it on every visible fragment, not only on
@@ -113,34 +114,54 @@ type logicalTurnAccumulator struct {
 	stampedCompletionAt map[string][]int
 }
 
+// stampedState is one stamped turn's folded completion state: the status the
+// file's completion and reopen records give it, and the completion figures the
+// index keeps alongside the status (build.go's stampFold).
+type stampedState struct {
+	status string
+	// hasCompletion is true once a completion recorded an end cap. A
+	// completion with a zero duration still sets it, so the duration survives
+	// as a zero rather than being dropped.
+	hasCompletion bool
+	durationMS    int64
+	// completedAt is the recorded completion time in Unix milliseconds, or
+	// zero when the record carried none.
+	completedAt int64
+}
+
 // foldStampedStatus folds a transcript-only TURN_COMPLETION or TURN_REOPEN
-// into its stamped turn's status, in file order. Only an identity-format
-// record carries a turn id to fold the status into.
+// into its stamped turn's completion state, in file order. Only an
+// identity-format record carries a turn id to fold the state into.
 func (a *logicalTurnAccumulator) foldStampedStatus(turn *schema.Turn) {
 	if turn.Format != schema.TurnFormatIdentity || turn.TurnID == "" {
 		return
 	}
-	var status string
+	var state stampedState
 	switch turn.Kind {
 	case schema.TurnCompletion:
-		status = appwire.TurnStatusCompleted
+		state.status = appwire.TurnStatusCompleted
+		state.hasCompletion = true
 		if turn.Completion != nil {
 			switch turn.Completion.Status {
 			case schema.TurnFailed:
-				status = appwire.TurnStatusFailed
+				state.status = appwire.TurnStatusFailed
 			case schema.TurnInterrupted:
-				status = appwire.TurnStatusInterrupted
+				state.status = appwire.TurnStatusInterrupted
+			}
+			state.durationMS = turn.Completion.DurationMS
+			if !turn.Completion.CompletedAt.IsZero() {
+				state.completedAt = turn.Completion.CompletedAt.UnixMilli()
 			}
 		}
 	case schema.TurnReopen:
-		status = appwire.TurnStatusInProgress
+		state.status = appwire.TurnStatusInProgress
 	default:
 		return
 	}
 	if a.stampedStatus == nil {
-		a.stampedStatus = map[string]string{}
+		a.stampedStatus = map[string]stampedState{}
 	}
-	a.stampedStatus[turn.TurnID] = status
+	a.stampedStatus[turn.TurnID] = state
 }
 
 // foldStampedFailure records the file's latest TURN_FAILURE for a stamped
@@ -405,7 +426,6 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 			return ItemTurnProjection{}, err
 		}
 		turn := appwire.Turn{ID: group.turnID, Items: positioned, ItemsView: appwire.TurnItemsViewFull, Status: appwire.TurnStatusCompleted}
-		StampGroupedTurn(&turn, group.entries)
 		if group.stamped {
 			// The turn's start and usage are the EXECUTION's, so every fragment
 			// reports the same whole-turn figures. A fragment that reported only
@@ -422,9 +442,15 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 				// only while the folded status is failed.
 				turn.Status = appwire.TurnStatusInProgress
 				turn.Error = nil
-				if status, ok := acc.stampedStatus[group.turnID]; ok {
-					turn.Status = status
-					if status == appwire.TurnStatusFailed {
+				if state, ok := acc.stampedStatus[group.turnID]; ok {
+					turn.Status = state.status
+					if state.hasCompletion {
+						turn.DurationMS = &state.durationMS
+						if state.completedAt != 0 {
+							turn.CompletedAt = &state.completedAt
+						}
+					}
+					if state.status == appwire.TurnStatusFailed {
 						if failure, ok := acc.stampedFailure[group.turnID]; ok {
 							StampTurnFailure(&turn, failure)
 						}
@@ -437,6 +463,8 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 				turn.Status = appwire.TurnStatusCompleted
 				turn.Error = nil
 			}
+		} else {
+			StampGroupedTurn(&turn, group.entries)
 		}
 		if prelude != nil && !preludeEmitted {
 			// The header's items and a LEADING prelude run are ONE turn: the

@@ -148,7 +148,7 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 			// too, and so is a parent agent's steer into its delegate, which
 			// carries its own attribution; daemon nudges are not.
 			if text := t.Message.Text(); (isPartnerSteering(t) || isParentSteering(t)) && text != "" {
-				data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text})
+				data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text, AgentAuthored: isParentSteering(t)})
 			}
 
 		case schema.TurnUserInput:
@@ -162,7 +162,7 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 				data.collectCompaction(text, strings.HasPrefix(text, summaryMarkerStart))
 				continue
 			}
-			data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text})
+			data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text, AgentAuthored: isAgentAuthoredByRecord(t)})
 
 		case schema.TurnTool, schema.TurnToolResults:
 			// Extract terminal communicate results (agent responses to the user).
@@ -533,4 +533,13 @@ func sumCounts(m map[string]int) int {
 		total += v
 	}
 	return total
+}
+
+// isAgentAuthoredByRecord reports whether turn is an input recorded as written
+// by an agent rather than by the person: a delegate's first assignment, a fork's
+// carried input, an input relayed from an agent session. Absent authorship means
+// the author is unknown, not an agent — a fork copies an unstamped turn as
+// unknown and inherited — so such a turn stays the person's input.
+func isAgentAuthoredByRecord(t schema.Turn) bool {
+	return t.Authorship != nil && t.Authorship.Author.Kind == schema.TranscriptAuthorAgent
 }

@@ -451,7 +451,7 @@ func toAnthropicMessages(msgs []llm.Message, seesToolResultDocuments bool) (syst
 						"input": in,
 					})
 				case llm.ContentThinking:
-					if p.Thinking == nil || p.Thinking.Text == "" {
+					if p.Thinking == nil || p.Thinking.GoogleInteraction || p.Thinking.Text == "" {
 						// Encrypted-only thinking parts (OpenAI-compatible or
 						// Responses transcripts riding a cross-provider model
 						// switch) carry no replayable Anthropic thinking; an
@@ -471,7 +471,7 @@ func toAnthropicMessages(msgs []llm.Message, seesToolResultDocuments bool) (syst
 						"signature": sig,
 					})
 				case llm.ContentRedThinking:
-					if p.Thinking == nil {
+					if p.Thinking == nil || p.Thinking.GoogleInteraction {
 						continue
 					}
 					blocks = append(blocks, map[string]any{

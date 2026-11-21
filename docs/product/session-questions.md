@@ -135,6 +135,17 @@ did before these fields existed.
 How a client renders a recap from this evidence is a separate decision, tracked
 in #6765. This guide states the contract only.
 
+Only the person answering settles a pending `ask_user` boundary. A
+`TurnUserInput` recorded as written by an agent — a delegate's first assignment,
+a fork's carried input, an input relayed from an agent session — is not a reply
+the ask was waiting for, so it does not resolve one. The same predicate decides
+that question and the request-only frame escape that keeps model prose from
+reaching the model as the person's words, so the two surfaces agree: a turn kept
+verbatim on replay is a turn that can settle the ask. Input with no recorded
+authorship, and a fork's inherited copy of an unstamped input, counts as the
+person's reply on both, because inheritance proves the copy rather than an agent
+author.
+
 A ref-addressed `thread/read` carrying the expected pair, `offset` and `limit`
 returns `pendingAskPage:{composites,total,nextOffset,calllessCount}`. Any page
 key selects this grammar, which requires the pair and refuses subscriptions,

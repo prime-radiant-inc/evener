@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // Test 54: two controller relays that address one remote thread by different
@@ -272,17 +273,10 @@ func TestRemoteHubCanceledPendingSubscriberIsNotRestorable(t *testing.T) {
 	})); err != nil {
 		t.Fatalf("push: %v", err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for {
+	testwait.Until(t, "the delta to reach the in-flight replacement's buffer", func() bool {
 		replacement := installedSubscriberIn(t, source, "S")
-		if replacement != nil && replacement != pending && len(replacement.in) > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the delta never reached the in-flight replacement's buffer")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return replacement != nil && replacement != pending && len(replacement.in) > 0
+	})
 	unblock()
 	if err := <-failed; err == nil {
 		t.Fatal("the failing replacement SubscribeThread succeeded despite the refused subscribe")

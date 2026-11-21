@@ -61,6 +61,11 @@ type delegateDeliveryAdmission struct {
 	cold       bool
 	inline     bool
 	retryable  bool
+	// wakeGeneration is the owner's settled generation when the receipt was
+	// admitted. The acknowledgment's release carries it instead of sampling a
+	// newer one where the wake is journaled, so a stop that settles in between
+	// stays newer evidence than the delivery and keeps its quiet.
+	wakeGeneration uint64
 	// callerCommitted marks an inline admission whose result the caller
 	// already persisted in its own tool round. Its store acknowledgment can
 	// still be retried after the reply is gone; nothing is lost.
@@ -287,14 +292,21 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (_ del
 	cold := claim.cold
 	admit := func(claim delegateDeliveryClaimToken) *delegateDeliveryAdmission {
 		c.nextToken++
+		inline := plan.waiter != nil || plan.callerCommitted
 		receipt := &delegateDeliveryAdmission{
 			token:           delegateDeliveryToken{processID: c.nextToken, deliveryID: claim.deliveryID},
 			delegateID:      plan.delegateID,
 			ownerID:         plan.ownerDelegateID,
 			claim:           claim,
 			cold:            cold,
-			inline:          plan.waiter != nil || plan.callerCommitted,
+			inline:          inline,
 			callerCommitted: plan.callerCommitted,
+		}
+		// Only a non-inline acknowledgment publishes a wake to the owner, and
+		// it must release against this sample: sampling at acknowledgment time
+		// would supersede a stop that settled after the claim was admitted.
+		if !inline {
+			receipt.wakeGeneration = c.attentionWakeGenerationLocked(plan.ownerDelegateID)
 		}
 		c.deliveries[receipt.token.processID] = receipt
 		return receipt
@@ -357,7 +369,7 @@ type delegateDeliveryAck struct {
 	delegateID   string
 	ownerChanged bool
 	// wakeGeneration is the settled generation the acknowledged delivery's wake
-	// supersedes, sampled under the controller lock where the wake was
+	// supersedes, sampled under the controller lock at delivery admission, not where the wake was
 	// journaled. A callback that sampled the generation itself would read it
 	// after the acknowledgment landed, so a stop that settled in between would
 	// be cleared by a delivery older than it.
@@ -452,7 +464,7 @@ func (c *delegateTreeController) completeDeliveryAckLocked(token delegateDeliver
 	if !receipt.inline {
 		wakeOwner = receipt.ownerID
 	}
-	wakeGeneration, err := c.appendAttentionWakeLocked(wakeOwner, events...)
+	wakeGeneration, err := c.appendAttentionWakeAtLocked(wakeOwner, receipt.wakeGeneration, events...)
 	if err != nil {
 		receipt.retryable = true
 		c.evidenceVersion++
@@ -745,7 +757,7 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 		return plans, err
 	}
 	// plans carries the generation the acknowledgment's release superseded,
-	// sampled under the controller lock where that release was journaled. The
+	// sampled at delivery admission, not where that release was journaled. The
 	// callback releases against that sample rather than reading the generation
 	// again, so a stop that settles between the acknowledgment and this wake
 	// keeps its quiet.

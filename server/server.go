@@ -184,12 +184,20 @@ func (s DetailedStatus) MarshalJSON() ([]byte, error) {
 // StatusInfo is the daemon's materialized root-session state used to build
 // AppWire snapshots and notifications.
 type StatusInfo struct {
-	SessionID  string
-	State      string
-	Turns      int
-	Model      string
-	Profile    string
-	WorkingDir string
+	SessionID string
+	State     string
+	Turns     int
+	// Model and Profile are the pair a client is shown: an accepted but
+	// unapplied pick owns them from its acceptance. CommittedModel and
+	// CommittedProfile name the model the session is actually running, which
+	// is the pair usage pricing resolves - the tokens a read reports were
+	// spent on the committed model, not the pick that is merely next. A
+	// launch or a commit moves both pairs together.
+	Model            string
+	Profile          string
+	CommittedModel   string
+	CommittedProfile string
+	WorkingDir       string
 }
 
 // ContextMetrics describes the estimated size of the active session context.
@@ -552,11 +560,26 @@ func (s *Server) UpdateSessionInfo(sessionID, model, profile string) {
 func (s *Server) UpdateSessionInfoFrom(sessionID string, sample func() (model, profile string)) {
 	s.mu.Lock()
 	model, profile := sample()
-	s.updateSessionInfoLocked(sessionID, model, profile)
+	// The sample reports the advertised pair (an accepted pick while one is
+	// queued), so it moves display only; the committed pair moves when the
+	// switch commits.
+	s.updateSessionAdvertisedModelLocked(sessionID, model, profile)
 	s.mu.Unlock()
 }
 
 func (s *Server) updateSessionInfoLocked(sessionID, model, profile string) {
+	s.status.SessionID = sessionID
+	s.status.Model = model
+	s.status.Profile = profile
+	s.status.CommittedModel = model
+	s.status.CommittedProfile = profile
+}
+
+// updateSessionAdvertisedModelLocked records a pick the session advertises
+// before it applies: the display pair moves to the accepted pick, while the
+// committed pair - what pricing resolves - stays with the model the session
+// runs until the switch commits and moves both. Callers hold s.mu.
+func (s *Server) updateSessionAdvertisedModelLocked(sessionID, model, profile string) {
 	s.status.SessionID = sessionID
 	s.status.Model = model
 	s.status.Profile = profile

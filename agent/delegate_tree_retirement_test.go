@@ -1963,6 +1963,12 @@ func TestRetirementDelegateStopDriverHandoff(t *testing.T) {
 			if driver.err != nil {
 				t.Fatal(driver.err)
 			}
+			// The driver releases the handoff's retirement lease before it
+			// publishes done, so the settled stop must not leave admission
+			// racing the driver goroutine.
+			if hasRetirementBlocker(c.Snapshot().Blockers, "delegate") {
+				t.Fatal("driver done published with the handoff lease still held")
+			}
 			after, err = tree.store.Load()
 			if err != nil || !slices.ContainsFunc(after, func(e delegatestore.Event) bool {
 				return e.SubtreeStopCompleted != nil && e.SubtreeStopCompleted.RequestSeq == stop.requestSeq
@@ -1979,6 +1985,54 @@ func TestRetirementDelegateStopDriverHandoff(t *testing.T) {
 			defer c.Abort(claim, "")
 
 		})
+	}
+}
+
+// TestRetirementDelegateStopDriverPublishSerializesHandoff pins the lock order
+// of the stop-driver handoff. The driver must release its handoff lease inside
+// the owner lock whose scan the retirement evidence read takes, and publish done
+// in the same critical section: a claim then either meets the lease and is
+// refused before admission closes, or observes done closed and the lease gone.
+// Releasing outside that lock let a claim enter preparing against a pending
+// driver that would refuse it, closing input admission for a refusal.
+func TestRetirementDelegateStopDriverPublishSerializesHandoff(t *testing.T) {
+	t.Parallel()
+	root, tree, _ := newRetirementDelegateController(t)
+	defer root.Close()
+	stop := &delegateStopState{done: make(chan struct{})}
+	close(stop.done) // the drain returns at once; this test is about publication
+	driver := newDelegateStopDriver()
+	handoff, err := tree.beginRetirementMutation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var released, releasedAfterDone, releasedOutsideLock bool
+	release := func() {
+		released = true
+		select {
+		case <-driver.done:
+			releasedAfterDone = true
+		default:
+		}
+		if tree.mu.TryLock() {
+			releasedOutsideLock = true
+			tree.mu.Unlock()
+		}
+		handoff()
+	}
+	tree.runStopReconcileDriver(stop, driver, nil, release)
+	retirementAwait(t, driver.done)
+	if !released {
+		t.Fatal("driver published done without releasing its handoff lease")
+	}
+	if releasedAfterDone {
+		t.Error("handoff lease released after done was published")
+	}
+	if releasedOutsideLock {
+		t.Error("handoff lease released outside the owner lock the retirement evidence scan takes")
+	}
+	if driver.err != nil {
+		t.Fatal(driver.err)
 	}
 }
 

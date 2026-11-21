@@ -39,6 +39,8 @@ export class SubagentTree {
 	private modelGeneration = 0;
 	private observedSessionID: string | null = null;
 	private followedBootGeneration: string | undefined;
+	/** The generation the retained rows wear while no store is connected. */
+	private retainedBootGeneration: string | undefined;
 	private activityObservers = 0;
 	private stopActivity: (() => void)[] = [];
 	private snapshot: SubagentTreeSnapshot;
@@ -64,20 +66,32 @@ export class SubagentTree {
 		this.detachStore = null;
 		this.stopActivity.forEach((stop) => stop());
 		this.stopActivity = [];
-		this.retained = this.store?.getSnapshot() ?? this.retained;
+		this.retained = this.store?.retainedSnapshot() ?? this.retained;
+		// retainedSnapshot() returns the store's own state when it strips no
+		// hold; a distinct snapshot means a row lost an unattributable wait.
+		const strippedUnresolvedHold = this.store !== null && this.retained !== this.store.getSnapshot();
 		// The rows the new store retains wear samples the outgoing store
 		// attributed to the generation it adopted -- which can be a replacement
 		// relay recovery announced to the store directly, one no follow read ever
 		// named. The remembered follow generation cannot stand in for it: telling
 		// the fresh store that older generation would make the follow read's
 		// naming of the replacement retire the very samples it published.
-		const retainedBootGeneration = this.store?.bootGeneration ?? this.followedBootGeneration;
+		const retainedBootGeneration =
+			this.store?.bootGeneration ?? this.retainedBootGeneration ?? this.followedBootGeneration;
+		this.retainedBootGeneration = retainedBootGeneration;
 		this.store?.dispose();
 		this.store = null;
 		this.followLease?.release();
 		this.followLease = null;
 		this.client = client;
 		if (!client) {
+			// The Agents list renders the cached presentation, not the store's
+			// pages, so a row whose unresolved wait was stripped above must not
+			// keep displaying it for the whole disconnect. Only such a snapshot is
+			// reprojected: projecting a context-only state would fabricate an empty
+			// tree before any collection returned, and the lists show no loading
+			// skeleton once a tree exists.
+			if (strippedUnresolvedHold && this.retained) this.presentation = projectSessionActivity(this.retained);
 			this.publish();
 			return Promise.resolve();
 		}
@@ -91,6 +105,7 @@ export class SubagentTree {
 		// ordered under the generation that published them, so the replacement's
 		// live sample is the one the follow read then leaves standing.
 		store.adoptBootGeneration(retainedBootGeneration);
+		this.retainedBootGeneration = undefined;
 		this.detachStore = store.subscribe(() => {
 			const state = store.getSnapshot();
 			const next = projectSessionActivity(state);
