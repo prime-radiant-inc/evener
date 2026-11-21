@@ -11,6 +11,13 @@ import (
 	"primeradiant.com/evener/envvars"
 )
 
+// testRepoRoot and testRunDir keep the absolute paths out of the call sites:
+// gocritic's filepathJoin flags a separator inside a literal Join argument.
+const (
+	testRepoRoot = "/repo"
+	testRunDir   = "/tmp/run"
+)
+
 // The staging directory must sit inside the run output: a failed run keeps its
 // bundle there, and a path outside --output would escape cleanup.
 func TestMetroHoistStagingStaysInOutput(t *testing.T) {
@@ -27,19 +34,19 @@ func TestMetroHoistStagingStaysInOutput(t *testing.T) {
 // The patch must name the project, the host target, and absolute staging and
 // emit paths, because the script aborts on a missing flag or a relative path.
 func TestMetroHoistArgsCarryThePatchContract(t *testing.T) {
-	args := metroHoistArgs("/repo", "/tmp/run")
+	args := metroHoistArgs(testRepoRoot, testRunDir)
 	flags := map[string]string{}
 	for i := 0; i+1 < len(args); i++ {
 		if strings.HasPrefix(args[i], "--") {
 			flags[args[i]] = args[i+1]
 		}
 	}
-	staging := filepath.Join("/tmp/run", "metro-hoist")
+	staging := filepath.Join(testRunDir, "metro-hoist")
 	want := map[string]string{
 		"--app-project": "ios/Evener.xcodeproj",
 		"--host-target": "Evener",
 		"--staging":     staging,
-		"--emit":        "/tmp/run/metro-hoist.sh",
+		"--emit":        filepath.Join(testRunDir, "metro-hoist.sh"),
 	}
 	for flag, value := range want {
 		if flags[flag] != value {
@@ -49,7 +56,7 @@ func TestMetroHoistArgsCarryThePatchContract(t *testing.T) {
 	if len(args) < 4 || args[0] != "bundle" || args[1] != "exec" || args[2] != "ruby" {
 		t.Fatalf("args prefix = %v, want bundle exec ruby", args)
 	}
-	if want := filepath.Join("/repo", "scripts", "native", "ios", "qualification", "metro_hoist.rb"); args[3] != want {
+	if want := filepath.Join(testRepoRoot, "scripts", "native", "ios", "qualification", "metro_hoist.rb"); args[3] != want {
 		t.Fatalf("script = %q, want %q", args[3], want)
 	}
 }
