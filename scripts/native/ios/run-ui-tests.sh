@@ -248,8 +248,9 @@ cd "$repo_root"
 # Issue #5992: the first journey otherwise runs on a simulator that is still
 # settling from its first boot, paying it as a 19-74s first launch and slowed
 # UI queries, with every observed first-journey failure inside that window.
-# Boot the device here so it settles while the runtime pair is installed or
-# built; after that the app gets one launch of its own before xcodebuild
+# Start the boot here — unless the workflow's pre-boot step already started it
+# — so the device settles while the runtime pair is installed or built; after
+# that the app gets one launch of its own before xcodebuild
 # runs. This warms the device and the app's first-launch
 # caches only: every journey and every assertion below still runs unchanged,
 # and the warmup's own app instance is terminated before the measured run
@@ -259,10 +260,20 @@ if ! bundle_id="$(plutil -extract CFBundleIdentifier raw -o - "$app_path/Info.pl
 	echo "$SCRIPT_NAME: cannot read CFBundleIdentifier from $app_path/Info.plist, see $output/simulator-warmup.log" >&2
 	exit 1
 fi
-if ! xcrun simctl boot "$sim_udid" >>"$output/simulator-warmup.log" 2>&1; then
-	echo "$SCRIPT_NAME: simctl boot failed, inspect $output/simulator-warmup.log" >&2
-	exit 1
-fi
+# The workflow's pre-boot step may have started this device already, and a
+# boot is asynchronous — Booting until bootstatus below says otherwise — so
+# asking simctl to boot it a second time would fail the run. Ask for the state
+# instead; a device nobody started is booted here exactly as before.
+sim_state="$(xcrun simctl list --json devices 2>/dev/null | jq -r --arg udid "$sim_udid" '[.devices[][] | select(.udid == $udid) | .state] | first // ""' 2>/dev/null || true)"
+case "$sim_state" in
+Booted | Booting) ;;
+*)
+	if ! xcrun simctl boot "$sim_udid" >>"$output/simulator-warmup.log" 2>&1; then
+		echo "$SCRIPT_NAME: simctl boot failed, inspect $output/simulator-warmup.log" >&2
+		exit 1
+	fi
+	;;
+esac
 
 if [ -n "$runtime_pair" ]; then
 	# The hub's daemons are exec'd from $evener_binary and carry the run

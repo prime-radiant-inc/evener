@@ -107,6 +107,7 @@ jobs:
             scripts/native/ios/build-simulator.sh \
             scripts/native/ios/qualification \
             scripts/native/ios/run-ui-tests.sh \
+            scripts/native/ios/qualification/simulator_preboot.go \
             scripts/native/ios/run-ui-journeys.sh >> "$GITHUB_OUTPUT"
       - name: Check out the chosen tree
         env:
@@ -269,6 +270,7 @@ jobs:
             scripts/native/ios/build-simulator.sh \
             scripts/native/ios/qualification \
             scripts/native/ios/run-ui-tests.sh \
+            scripts/native/ios/qualification/simulator_preboot.go \
             scripts/native/ios/run-ui-journeys.sh >> "$GITHUB_OUTPUT"
       - name: Check out the chosen tree
         env:
@@ -346,6 +348,7 @@ jobs:
           printf 'JOURNEY_OUTPUT=%s/ios-journeys-%s-%s\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
           printf 'JOURNEY_PRODUCTS=%s/ios-journeys-products-%s-%s\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
           printf 'JOURNEY_RUNTIME_PAIR=%s/ios-journeys-runtime-%s-%s\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+          printf 'JOURNEY_SIMULATOR=%s/ios-journeys-simulator-%s-%s\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
       - name: Check out the merge ref with the PR head in its history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -368,6 +371,7 @@ jobs:
             scripts/native/ios/build-simulator.sh \
             scripts/native/ios/qualification \
             scripts/native/ios/run-ui-tests.sh \
+            scripts/native/ios/qualification/simulator_preboot.go \
             scripts/native/ios/run-ui-journeys.sh >> "$GITHUB_OUTPUT"
       - name: Check out the chosen tree
         env:
@@ -384,6 +388,19 @@ jobs:
           # serves only that ref (see "CI Caches" in
           # docs/developing-evener/testing.md).
           cache: false
+      # A simulator's first boot takes 106-121s, and it used to run inside the
+      # journey step after both downloads. Create and start the device here
+      # instead, so the boot overlaps setup-node, both artifact downloads and
+      # the two layout restores; run-ui-tests.sh adopts this device and still
+      # waits on bootstatus before it installs anything, so every journey and
+      # every assertion below is untouched. The step sits after the Go setup
+      # because the helper is a Go build against the pinned toolchain, never
+      # after the downloads it exists to overlap.
+      - name: Create and boot the run simulator
+        run: |
+          set -euo pipefail
+          go build -o "$RUNNER_TEMP/ios-qualification-preboot" ./scripts/native/ios/qualification
+          "$RUNNER_TEMP/ios-qualification-preboot" --mode simulator --output "$JOURNEY_SIMULATOR"
       # A head whose run-ui-tests.sh predates the pair handoff ignores the
       # variable below and runs `make build-runtime` here, which embeds the
       # frontend and needs the build job's Node. Keep the pin so that fallback
@@ -392,6 +409,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "22.13.1"
+      # Both downloads below print `digest-mismatch: error` in their step log:
+      # that is actions/download-artifact's own input (its default), not a
+      # finding, and a real mismatch fails the step.
       - name: Download the build products
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -418,7 +438,7 @@ jobs:
           # the pair's recorded commit with the build identity's sourceRevision
           # and its binaries' bytes with the manifest shipped beside them.
           EVENER_QUALIFICATION_RUNTIME_BINARIES: ${{ env.JOURNEY_RUNTIME_PAIR }}
-        run: bash scripts/native/ios/run-ui-journeys.sh --products "$JOURNEY_PRODUCTS" --output "$JOURNEY_OUTPUT"
+        run: bash scripts/native/ios/run-ui-journeys.sh --products "$JOURNEY_PRODUCTS" --output "$JOURNEY_OUTPUT" --simulator-dir "$JOURNEY_SIMULATOR"
       - name: Upload journey diagnostics
         # The prerequisite gate fails before the output path exists; without
         # this condition the paths below would glob from the filesystem root.

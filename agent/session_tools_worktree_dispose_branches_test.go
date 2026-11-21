@@ -217,10 +217,6 @@ func TestWatchesTargetingEmpty(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// delegateDisposeControlEnv: requires a local env (tested via the error path)
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // laneAheadCount: whitespace trimming
 // ---------------------------------------------------------------------------
 
@@ -343,9 +339,5 @@ func TestWorktreeDisposeValidDelegateID(t *testing.T) {
 		t.Fatalf("expected controller unavailable error, got %v", err)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// fmt usage verification
-// ---------------------------------------------------------------------------
 
 var _ = fmt.Sprintf

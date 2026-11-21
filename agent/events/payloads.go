@@ -966,7 +966,7 @@ type DelegateUpdatedData struct {
 	// with the frame's, so omitting them would erase the wait.
 	DrainHeldBySubagents bool `json:"drain_held_by_subagents,omitempty"`
 	RunningSubagentCount int  `json:"running_subagent_count,omitempty"`
-	// HoldSequence is the source-side order of the hold three fields above.
+	// HoldSequence is the source-side order of the complete hold sample above.
 	// The source bumps it when the sampled hold changes; a consumer applies the
 	// highest sequence it has seen and ignores a delayed sample. Absent when no
 	// sample ever differed.

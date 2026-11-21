@@ -362,6 +362,9 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 	// run must say so — each is a FRAGMENT of one turn, not a whole turn of its
 	// own, or a client keyed by turn id holds two complete turns the index
 	// reports as one (#1166).
+	//
+	// The list is in FILE order and the fragment block below reads it by
+	// position: both properties are load-bearing.
 	visibleRuns := map[string][]int{}
 	for turnID, runs := range runsByTurn {
 		for _, run := range runs {
@@ -473,13 +476,9 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 		// follows the header has an earlier fragment even when it is the only
 		// stamped run of its id.
 		if runs := visibleRuns[group.turnID]; group.stamped {
-			at := 0
-			for k, run := range runs {
-				if run == i {
-					at = k
-				}
-			}
-			visible, earlier := len(runs), at > 0
+			// This run emits items, so it is in runs.
+			first, last := i != runs[0], i != runs[len(runs)-1]
+			visible, earlier := len(runs), first
 			if headerStandalone && group.turnID == appwire.SystemPreludeTurnID {
 				visible++
 				earlier = true
@@ -487,7 +486,7 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 			if visible > 1 {
 				turn.ItemsView = appwire.TurnItemsViewFragment
 				turn.HasEarlierItems = earlier
-				turn.HasLaterItems = at < len(runs)-1
+				turn.HasLaterItems = last
 			}
 		}
 		turns = append(turns, turn)

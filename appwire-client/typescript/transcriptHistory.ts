@@ -1197,6 +1197,12 @@ function reconcileQuotaWait(
   const heldStamp = runtimeChanged ? 0 : (held.quotaWaitStartedAt ?? 0);
   const readStamp = fresh.quotaWaitStartedAt ?? 0;
   const endedStamp = runtimeChanged ? 0 : (held.quotaWaitEndedStamp ?? 0);
+  // A changed runtime must say "no marker" explicitly: the caller spreads
+  // these fields over the held model, so an omitted marker would carry the
+  // previous runtime's retirement marker across the restart.
+  const endedFields: QuotaWaitFields = {};
+  if (runtimeChanged) endedFields.quotaWaitEndedStamp = undefined;
+  else if (endedStamp > 0) endedFields.quotaWaitEndedStamp = endedStamp;
   if (readStamp > 0) {
     // The same wait the model holds: refresh its instant, keep the chip. An
     // equal-stamp announcement fills metadata, never replaces the wait.
@@ -1204,7 +1210,7 @@ function reconcileQuotaWait(
       return {
         quotaResumesAt: fresh.quotaResumesAt,
         quotaWaitStartedAt: readStamp,
-        ...(endedStamp > 0 ? { quotaWaitEndedStamp: endedStamp } : {}),
+        ...endedFields,
         retireChip: false,
       };
     }
@@ -1218,7 +1224,7 @@ function reconcileQuotaWait(
       return {
         quotaResumesAt: fresh.quotaResumesAt,
         quotaWaitStartedAt: readStamp,
-        ...(endedStamp > 0 ? { quotaWaitEndedStamp: endedStamp } : {}),
+        ...endedFields,
         retireChip: held.modelRetry?.errorClass === "quota_exceeded",
       };
     }
@@ -1239,9 +1245,7 @@ function reconcileQuotaWait(
     return {
       quotaResumesAt: held.quotaResumesAt,
       quotaWaitStartedAt: held.quotaWaitStartedAt,
-      ...(held.quotaWaitEndedStamp !== undefined && held.quotaWaitEndedStamp > 0
-        ? { quotaWaitEndedStamp: held.quotaWaitEndedStamp }
-        : {}),
+      ...endedFields,
       retireChip: false,
     };
   }
@@ -1297,7 +1301,7 @@ function reconcileQuotaWait(
     // read naming no wait and no held stamp has nothing to change here.
     quotaResumesAt: held.quotaResumesAt,
     quotaWaitStartedAt: undefined,
-    ...(endedStamp > 0 ? { quotaWaitEndedStamp: endedStamp } : {}),
+    ...endedFields,
     ...(endedQuotaChip ? { retireChip: true } : {}),
   };
 }

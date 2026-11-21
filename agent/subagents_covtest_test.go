@@ -29,26 +29,6 @@ func TestCovHasString2(t *testing.T) {
 	}
 }
 
-// TestCovAppendUniqueStrings covers appendUniqueStrings.
-func TestCovAppendUniqueStrings2(t *testing.T) {
-	t.Parallel()
-	// Add new strings.
-	got := appendUniqueStrings([]string{"a"}, "b", "c")
-	if len(got) != 3 || got[1] != "b" || got[2] != "c" {
-		t.Fatalf("got %+v", got)
-	}
-	// Skip empty and duplicates.
-	got = appendUniqueStrings([]string{"a"}, "", "a", "b")
-	if len(got) != 2 || got[1] != "b" {
-		t.Fatalf("should skip empty and dup: %+v", got)
-	}
-	// Nil input.
-	got = appendUniqueStrings(nil, "x")
-	if len(got) != 1 || got[0] != "x" {
-		t.Fatalf("nil input: %+v", got)
-	}
-}
-
 // TestCovRemoveStrings covers removeStrings.
 func TestCovRemoveStrings2(t *testing.T) {
 	t.Parallel()

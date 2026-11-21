@@ -404,11 +404,10 @@ def test_reanalyse_clears_a_tail_it_can_no_longer_measure(rae, tmp_path):
 
 
 def test_baseline_summary_counts_every_rep(rae):
-    """The baseline header must describe all reps, not just the last (#6601).
+    """The baseline summary must count every rep, not just the last.
 
-    A dict keyed by arm keeps one entry per arm name, and every baseline rep
-    shares that name, so the header described a single run and always printed
-    a denominator of 1.
+    `runs` and `pass` cover every rep, so the pass denominator is the full rep
+    count.
     """
     rows = [
         rae.RunResult(arm="baseline", task="overfull-hbox", rep=0,
@@ -429,17 +428,13 @@ def test_baseline_summary_counts_every_rep(rae):
     assert base["unmeasured"] == 1
 
 
-def test_baseline_header_shows_every_measured_rep_share(rae):
-    """Three passing reps at 15% / 0% / 85% must all reach the header (#6601).
+def test_baseline_summary_keeps_every_measured_rep_share(rae):
+    """Every measured baseline share must reach the summary, including 0%.
 
-    This is the issue's own proof shape: three real baseline rows, all passing,
-    tail shares 15% / 0% / 85%, where the report printed `85%` and `1/1`. A dict
-    keyed by arm keeps one entry per arm name and every baseline rep shares that
-    name, so two of the three vanished before the header was built.
-
-    The measured zero is asserted on its own because it is the value a later
-    truthiness check drops: `tail_share` returns a real `0.0` for a perfect
-    stop, and only `None` means unknown (#6598).
+    Three passing reps at 15% / 0% / 85% are three measured shares. The
+    measured zero is asserted on its own because it is the value a truthiness
+    check drops: `tail_share` returns a real `0.0` for a perfect stop, and only
+    `None` means unknown.
     """
     rows = [
         rae.RunResult(arm="baseline", task="overfull-hbox", rep=0,
@@ -460,43 +455,56 @@ def test_baseline_header_shows_every_measured_rep_share(rae):
     assert base["unmeasured"] == 0
 
 
-def test_baseline_header_accounts_for_every_rep(rae):
-    """Every baseline rep must land in a bucket the header shows (#6601).
+def test_baseline_header_accounts_for_every_rep(rae, tmp_path, capsys):
+    """The printed header must show every bucket the baseline summary counts.
 
     A reader judges every arm against this header, so a rep missing from it
-    narrows the reference distribution without saying so. A rep killed at the
-    cap has no graded share; counting it nowhere printed `pass: 2/3` beside a
-    two-value share list, so the denominator said three and the list showed two
-    with nothing to reconcile them -- still able to be read as a two-rep
-    baseline.
-
-    The assertion is the reconciliation, not the wording: the measured shares,
-    the unmeasured reps and the timed-out reps together cover every rep, so no
-    reading of the header can mistake one rep for the whole baseline.
+    narrows the reference distribution without saying so. The buckets
+    partition `runs`, and every bucket that has a rep reaches the header, so
+    no reading of it can mistake one rep for the whole baseline.
     """
     rows = [
         rae.RunResult(arm="baseline", task="overfull-hbox", rep=0,
                       final_compiles_clean=True, acceptance_call_index=4,
                       runaway_share=0.15, total_calls=20),
-        # Passed its check but was killed at the cap: not a pass (#6605).
+        # Passed its check but was killed at the cap, so it is not a pass.
         rae.RunResult(arm="baseline", task="overfull-hbox", rep=1,
                       final_compiles_clean=True, acceptance_call_index=6,
                       runaway_share=0.85, total_calls=40, timed_out=True),
         rae.RunResult(arm="baseline", task="overfull-hbox", rep=2,
                       final_compiles_clean=False, acceptance_call_index=5,
                       runaway_share=0.0, total_calls=30),
+        # Passes with no detected acceptance point: in the pass count, but
+        # nothing to measure a share from. Two of them so the unmeasured count
+        # differs from the timeout count and a swapped label cannot pass both
+        # assertions.
+        rae.RunResult(arm="baseline", task="overfull-hbox", rep=3,
+                      final_compiles_clean=True, acceptance_call_index=None,
+                      runaway_share=0.0, total_calls=34),
+        rae.RunResult(arm="baseline", task="overfull-hbox", rep=4,
+                      final_compiles_clean=True, acceptance_call_index=None,
+                      runaway_share=0.0, total_calls=36),
     ]
 
     base = rae.baseline_summary(rows)
-    assert base["runs"] == 3
-    assert base["pass"] == 1
+    assert base["runs"] == 5
+    assert base["pass"] == 3
     assert base["shares"] == [0.0, 0.15]
-    # The partition is the claim, so it is asserted first and through `.get`:
-    # without a bucket for the timed-out rep this fails as an accounting gap
-    # (two of three reps visible), not as a missing key.
+    # Assert the partition through `.get`, so a missing timeouts key fails as
+    # an accounting gap rather than as a missing key.
     assert (len(base["shares"]) + base["unmeasured"] + base.get("timeouts", 0)
             == base["runs"])
     assert base.get("timeouts") == 1
+    assert base["unmeasured"] == 2
+
+    _write_rows(tmp_path, rows)
+    rae.write_report(tmp_path)
+    header = next(line for line in capsys.readouterr().out.splitlines()
+                  if line.startswith("baseline tail share:"))
+    for share in base["shares"]:
+        assert rae.render_share(share) in header
+    assert f"{base['unmeasured']} unmeasured" in header
+    assert f"{base['timeouts']} timed out" in header
 
 
 def test_measured_zero_is_data_and_absent_value_is_not(rae):

@@ -157,13 +157,13 @@ func TestRunPreCompactHook_HandoffIsOneShot(t *testing.T) {
 }
 
 // TestRunPreCompactHook_StampsEachSourceItsOwnKind is the plugin-less case
-// (no hookRunner) review round 1 flagged as mattering most: runPreCompactHook
-// merges the pinned-note handoff and the goal objective into one messages
-// slice, and flushSteeringTurnRecords used to stamp every record in that
-// slice SteeringKindPrecompactHook regardless of which of the three sources
-// produced it. With no plugin loaded at all, that made a plugin-less session
-// emit ONLY mislabelled records — a goal objective confidently labeled as a
-// hook. Each source must carry its own kind instead.
+// (no hookRunner): runPreCompactHook merges the pinned-note handoff and the
+// goal objective into one messages slice, and flushSteeringTurnRecords used
+// to stamp every record in that slice SteeringKindPrecompactHook regardless
+// of which of the three sources produced it. With no plugin loaded at all,
+// that made a plugin-less session emit ONLY mislabelled records — a goal
+// objective confidently labeled as a hook. Each source must carry its own
+// kind instead.
 func TestRunPreCompactHook_StampsEachSourceItsOwnKind(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
@@ -188,9 +188,9 @@ func TestRunPreCompactHook_StampsEachSourceItsOwnKind(t *testing.T) {
 
 // TestRunPreCompactHook_PersistsKindOnTheTurn verifies runPreCompactHook sets
 // schema.Turn.SteeringKind on the turns it appends directly to hist — not
-// only on the steeringTurnRecord.kind round 1 added for the live emit — so a
-// reload labels a pre-compact steering turn the same way the live transcript
-// did (review round 2: this direct-append site bypasses the
+// only on the steeringTurnRecord.kind used for the live emit — so a reload
+// labels a pre-compact steering turn the same way the live transcript did
+// (this direct-append site bypasses the
 // steerKind/consumeSteeringMessage queue path that already persisted its
 // kind).
 func TestRunPreCompactHook_PersistsKindOnTheTurn(t *testing.T) {
@@ -238,9 +238,9 @@ func TestRunPreCompactHook_PluginModelContextKeepsPrecompactHookKind(t *testing.
 	}
 }
 
-// TestFlushSteeringTurnRecords_EmitsPerRecordKind pins the exact mechanism
-// review round 1 flagged: flushSteeringTurnRecords must emit each record's
-// OWN kind, not one constant shared across the whole batch. Uses
+// TestFlushSteeringTurnRecords_EmitsPerRecordKind pins the mechanism:
+// flushSteeringTurnRecords must emit each record's OWN kind, not one constant
+// shared across the whole batch. Uses
 // collectEvents (session_parity_test.go) rather than reading s.Events()
 // directly since NewSession itself emits onto the channel (SESSION_START)
 // before this test's own sends, so a fixed read-order assumption would pick

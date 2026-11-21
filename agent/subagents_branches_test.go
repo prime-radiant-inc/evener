@@ -12,10 +12,6 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// subagentResult struct
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // delegateSalvagedDraftNote constant
 // ---------------------------------------------------------------------------
 
@@ -52,32 +48,32 @@ func TestAppendUniqueStrings(t *testing.T) {
 	t.Parallel()
 	t.Run("new items added", func(t *testing.T) {
 		result := appendUniqueStrings([]string{"a"}, "b", "c")
-		if len(result) != 3 || result[1] != "b" || result[2] != "c" {
-			t.Fatalf("result = %v", result)
+		if want := []string{"a", "b", "c"}; !slices.Equal(result, want) {
+			t.Fatalf("result = %v, want %v", result, want)
 		}
 	})
 	t.Run("duplicates skipped", func(t *testing.T) {
 		result := appendUniqueStrings([]string{"a", "b"}, "b", "c")
-		if len(result) != 3 {
-			t.Fatalf("expected 3, got %d", len(result))
+		if want := []string{"a", "b", "c"}; !slices.Equal(result, want) {
+			t.Fatalf("result = %v, want %v", result, want)
 		}
 	})
-	t.Run("empty strings skipped", func(t *testing.T) {
-		result := appendUniqueStrings([]string{"a"}, "", "b", "")
-		if len(result) != 2 {
-			t.Fatalf("expected 2, got %d", len(result))
+	t.Run("empty and duplicate extras skipped", func(t *testing.T) {
+		result := appendUniqueStrings([]string{"a"}, "", "a", "b", "")
+		if want := []string{"a", "b"}; !slices.Equal(result, want) {
+			t.Fatalf("result = %v, want %v", result, want)
 		}
 	})
 	t.Run("nil base", func(t *testing.T) {
 		result := appendUniqueStrings(nil, "a", "b")
-		if len(result) != 2 {
-			t.Fatalf("expected 2, got %d", len(result))
+		if want := []string{"a", "b"}; !slices.Equal(result, want) {
+			t.Fatalf("result = %v, want %v", result, want)
 		}
 	})
 	t.Run("no extras", func(t *testing.T) {
 		result := appendUniqueStrings([]string{"a"})
-		if len(result) != 1 || result[0] != "a" {
-			t.Fatalf("result = %v", result)
+		if want := []string{"a"}; !slices.Equal(result, want) {
+			t.Fatalf("result = %v, want %v", result, want)
 		}
 	})
 }
@@ -150,22 +146,6 @@ func TestIsRootOnlyJobPresenceTool(t *testing.T) {
 	}
 	if isRootOnlyJobPresenceTool("read_file") {
 		t.Fatalf("expected read_file to not be root-only job presence tool")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// protectedGrantTools / isProtectedGrantTool
-// ---------------------------------------------------------------------------
-
-func TestIsProtectedGrantTool(t *testing.T) {
-	t.Parallel()
-	for _, name := range []string{"ask_user", "urls_add", "urls_remove"} {
-		if !isProtectedGrantTool(name) {
-			t.Fatalf("expected %s to be protected", name)
-		}
-	}
-	if isProtectedGrantTool("read_file") {
-		t.Fatalf("expected read_file to not be protected")
 	}
 }
 
@@ -344,60 +324,6 @@ func TestLocalEnvPolicyFromName(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// cloneMap
-// ---------------------------------------------------------------------------
-
-func TestCloneMapEmpty(t *testing.T) {
-	t.Parallel()
-	if cloneMap(nil) != nil {
-		t.Fatalf("expected nil for nil map")
-	}
-	if cloneMap(map[string]any{}) != nil {
-		t.Fatalf("expected nil for empty map")
-	}
-}
-
-func TestCloneMapValid(t *testing.T) {
-	t.Parallel()
-	in := map[string]any{"key": "value", "num": 42}
-	out := cloneMap(in)
-	if out == nil {
-		t.Fatalf("expected non-nil clone")
-	}
-	if out["key"] != "value" {
-		t.Fatalf("key = %v", out["key"])
-	}
-	// Verify deep copy
-	out["key"] = "modified"
-	if in["key"] == "modified" {
-		t.Fatalf("expected deep copy")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// cloneShallowMap
-// ---------------------------------------------------------------------------
-
-func TestCloneShallowMapEmpty(t *testing.T) {
-	t.Parallel()
-	if cloneShallowMap(nil) != nil {
-		t.Fatalf("expected nil for nil map")
-	}
-	if cloneShallowMap(map[string]any{}) != nil {
-		t.Fatalf("expected nil for empty map")
-	}
-}
-
-func TestCloneShallowMapValid(t *testing.T) {
-	t.Parallel()
-	in := map[string]any{"key": "value"}
-	out := cloneShallowMap(in)
-	if out == nil || out["key"] != "value" {
-		t.Fatalf("expected clone with key=value, got %v", out)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // subagentNeedsCommunicateNudge
 // ---------------------------------------------------------------------------
 
@@ -480,10 +406,6 @@ func TestRestoreFrozenSkillBodiesValid(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// preparedSubagentRun struct
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // preparedSubagentRun.disposeUnadopted
 // ---------------------------------------------------------------------------
 
@@ -509,10 +431,6 @@ func TestDisposeUnadoptedSubagentSessionNil(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// subagent struct fields
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // sandboxSnapshotFromEnv (tested via frozenDelegateSandboxMatches)
 // ---------------------------------------------------------------------------
 
@@ -522,10 +440,6 @@ func TestSandboxSnapshotFromEnvNilEnv(t *testing.T) {
 		t.Fatalf("expected nil for nil env")
 	}
 }
-
-// ---------------------------------------------------------------------------
-// rootOnlyJobControlTools variable
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // defaultSubagentInstructions constant
@@ -573,10 +487,6 @@ func TestDelegateToolNameCeilingNilRegistry(t *testing.T) {
 		t.Fatalf("expected nil for nil registry")
 	}
 }
-
-// ---------------------------------------------------------------------------
-// subagent emit field
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // subagent time fields

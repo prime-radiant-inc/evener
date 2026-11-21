@@ -11,14 +11,9 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
-	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/sandbox"
 )
-
-type covDelegateResultError struct{}
-
-func (*covDelegateResultError) Error() string { return "fail" }
 
 // TestCovAbortOwedDelegateBootstrap covers abortOwedDelegateBootstrap: the error-cleanup path that iterates
 // restored candidates in reverse, calling prepareDeferredOwedStart for each
@@ -257,28 +252,6 @@ func TestCovRestoreColdDelegateOwnerRuntime_EmptyParentID(t *testing.T) {
 	}
 }
 
-// TestCovDelegateOutcomeJobStatus covers delegateOutcomeJobStatus: all outcome branches.
-func TestCovDelegateOutcomeJobStatus(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		outcome delegatestore.OutcomeStatus
-		want    jobstore.Status
-	}{
-		{delegatestore.OutcomeCompleted, jobstore.StatusCompleted},
-		{delegatestore.OutcomeCancelled, jobstore.StatusCancelled},
-		{delegatestore.OutcomeStopped, jobstore.StatusStopped},
-		{delegatestore.OutcomeExhausted, jobstore.StatusExhausted},
-		{delegatestore.OutcomeFailed, jobstore.StatusFailed},
-		{"unknown_outcome", jobstore.StatusFailed},
-	}
-	for _, tt := range tests {
-		got := delegateOutcomeJobStatus(tt.outcome)
-		if got != tt.want {
-			t.Fatalf("delegateOutcomeJobStatus(%v) = %q, want %q", tt.outcome, got, tt.want)
-		}
-	}
-}
-
 // TestCovDescriptorProvenance covers descriptorProvenance.
 func TestCovDescriptorProvenance(t *testing.T) {
 	t.Parallel()
@@ -303,75 +276,6 @@ func TestCovDescriptorProvenance(t *testing.T) {
 	got.ChainTruncated = false
 	if desc.Provenance.WatchKeys[0].WatchID != "watch_original" || desc.Provenance.Chain[0].DeliveryID != "delivery_original" || !desc.Provenance.ChainTruncated {
 		t.Fatalf("mutating cloned provenance changed descriptor: %#v", desc.Provenance)
-	}
-}
-
-// TestCovDelegateResult covers startedDelegateResult: the result construction.
-func TestCovDelegateResult(t *testing.T) {
-	t.Parallel()
-	desc := delegatestore.Descriptor{
-		ChildSessionID:    "child_1",
-		ResolvedProfileID: "openai",
-		ResolvedModel:     "gpt-5",
-		TranscriptRef:     "local:child_1",
-	}
-	committed := delegateUpdatePlan{rows: []delegateSnapshot{{
-		id:        "dlg_1",
-		lifecycle: delegateLifecycleRunning,
-		resumable: false,
-	}}}
-	latestOutcome := &delegatestore.Outcome{Status: delegatestore.OutcomeCompleted, Reason: "reported_result"}
-	plans := delegateMutationPlans{updates: []delegateUpdatePlan{{rows: []delegateSnapshot{{
-		id:          "dlg_1",
-		lifecycle:   delegateLifecycleIdle,
-		resumable:   true,
-		lastOutcome: latestOutcome,
-	}}}}}
-	result := startedDelegateResult(desc, "dlg_1", committed, plans, nil)
-	if result.DelegateID != "dlg_1" {
-		t.Fatalf("delegateID = %q", result.DelegateID)
-	}
-	if result.ChildSessionID != "child_1" {
-		t.Fatalf("childSessionID = %q", result.ChildSessionID)
-	}
-	if result.Type != delegateResourceType {
-		t.Fatalf("type = %q", result.Type)
-	}
-	if result.Status != jobstore.Status(delegateLifecycleIdle) {
-		t.Fatalf("status = %q, want %q from latest durable snapshot", result.Status, delegateLifecycleIdle)
-	}
-	if result.Model != "openai/gpt-5" {
-		t.Fatalf("model = %q", result.Model)
-	}
-	if result.TranscriptRef != "local:child_1" {
-		t.Fatalf("transcript ref = %q, want local:child_1", result.TranscriptRef)
-	}
-	if result.Resumable == nil || !*result.Resumable {
-		t.Fatalf("resumable = %v, want explicit true from latest durable snapshot", result.Resumable)
-	}
-	if result.Reason != "reported_result" {
-		t.Fatalf("reason = %q, want reported_result from latest durable outcome", result.Reason)
-	}
-	if !result.RunningInBackground {
-		t.Fatal("should be running in background")
-	}
-	if result.Sandbox != nil {
-		t.Fatalf("sandbox = %+v, want nil", result.Sandbox)
-	}
-
-	// With sandbox snapshot.
-	network := true
-	desc.Sandbox = &delegatestore.SandboxSnapshot{Mode: "off", Network: &network}
-	result = startedDelegateResult(desc, "dlg_1", committed, plans, nil)
-	if result.Sandbox == nil || result.Sandbox.Mode != "off" || !result.Sandbox.Network {
-		t.Fatalf("sandbox = %+v, want mode=off network=true", result.Sandbox)
-	}
-
-	// With error.
-	wantErr := &covDelegateResultError{}
-	result = startedDelegateResult(desc, "dlg_1", committed, plans, wantErr)
-	if reflect.TypeOf(result.Err) != reflect.TypeOf(wantErr) || reflect.ValueOf(result.Err).Pointer() != reflect.ValueOf(wantErr).Pointer() {
-		t.Fatalf("error object = %T %v, want exact input object %p", result.Err, result.Err, wantErr)
 	}
 }
 

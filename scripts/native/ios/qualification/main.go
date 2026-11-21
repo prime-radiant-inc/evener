@@ -59,11 +59,12 @@ func main() {
 }
 
 func runCLI() int {
-	mode := flag.String("mode", "build", "What to run: build (build, verify and prepare the UI test products) or journeys (run the journeys against downloaded products)")
+	mode := flag.String("mode", "build", "What to run: build (build, verify and prepare the UI test products), journeys (run the journeys against downloaded products) or simulator (create and start this run's simulator, then exit)")
 	output := flag.String("output", "", "New absolute directory for diagnostics (both modes) and DerivedData (build mode), must not exist")
 	products := flag.String("products", "", "DerivedData-shaped directory carrying Build/Products from the build job (journeys mode)")
+	simulatorDir := flag.String("simulator-dir", "", "Directory a previous simulator-mode run left its device in; journeys mode adopts that device instead of creating its own, and still deletes it")
 	flag.Usage = func() {
-		_, _ = fmt.Fprintln(flag.CommandLine.Output(), "Usage: build-simulator.sh --output ABSOLUTE_DIR\n       run-ui-journeys.sh --products ABSOLUTE_DIR --output ABSOLUTE_DIR\nBuild mode builds a Release iPhone simulator app and embedded share extension, proves the intended journeys cannot run, registers the generated UI test target and builds the test products. Journeys mode runs the installed-app journeys against those downloaded products. Each mode creates and deletes its own simulator, requires the pinned macOS toolchain, and never publishes. Build mode also needs the installed npm/gem dependencies. Linux refuses before generation.")
+		_, _ = fmt.Fprintln(flag.CommandLine.Output(), "Usage: build-simulator.sh --output ABSOLUTE_DIR\n       run-ui-journeys.sh --products ABSOLUTE_DIR --output ABSOLUTE_DIR [--simulator-dir ABSOLUTE_DIR]\n       qualification --mode simulator --output ABSOLUTE_DIR\nBuild mode builds a Release iPhone simulator app and embedded share extension, proves the intended journeys cannot run, registers the generated UI test target and builds the test products. Journeys mode runs the installed-app journeys against those downloaded products. Simulator mode creates this run's simulator and starts its boot, so the boot overlaps the steps that follow; journeys mode adopts such a device through --simulator-dir instead of creating one. Every mode requires the pinned macOS toolchain and never publishes; the run that adopts a device still deletes it. Build mode also needs the installed npm/gem dependencies. Linux refuses before generation.")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -82,7 +83,9 @@ func runCLI() int {
 			flag.Usage()
 			return 2
 		}
-		err = journeys(ctx, *output, *products)
+		err = journeys(ctx, *output, *products, *simulatorDir)
+	case "simulator":
+		err = prepareSimulator(ctx, *output)
 	default:
 		flag.Usage()
 		return 2
@@ -181,14 +184,18 @@ func qualify(ctx context.Context, output, derivedData string) (result error) {
 
 // journeys runs the installed-app journeys against the products the build job
 // uploaded. It validates the downloaded layout before any side effect, then
-// creates its own simulator and leaves the deferred cleanup as the run's only
-// simulator owner.
-func journeys(ctx context.Context, output, products string) (result error) {
+// creates its own simulator — or adopts the one an earlier simulator-mode run
+// started, so its boot overlapped the artifact downloads — and leaves the
+// deferred cleanup as the run's only simulator owner either way.
+func journeys(ctx context.Context, output, products, simulatorDir string) (result error) {
 	if !filepath.IsAbs(output) || filepath.Clean(output) != output {
 		return errors.New("--output must be a new, clean absolute path")
 	}
 	if !filepath.IsAbs(products) || filepath.Clean(products) != products {
 		return errors.New("--products must be a clean absolute path")
+	}
+	if simulatorDir != "" && (!filepath.IsAbs(simulatorDir) || filepath.Clean(simulatorDir) != simulatorDir) {
+		return errors.New("--simulator-dir must be a clean absolute path")
 	}
 	layout, err := journeyProducts(products)
 	if err != nil {
@@ -214,7 +221,13 @@ func journeys(ctx context.Context, output, products string) (result error) {
 		return err
 	}
 	r.identity.AppPath = layout.App
-	return r.withOwnedSimulator(ctx, simulatorName(output), func(udid string) error {
+	adopted := simulatorDir != ""
+	if adopted {
+		if err := r.adoptSimulator(ctx, simulatorDir); err != nil {
+			return err
+		}
+	}
+	return r.withSimulator(ctx, simulatorName(output), adopted, func(udid string) error {
 		// The journey child reads the identity as it stands for this run, and
 		// the run's own products and simulator are valid only in its lifetime.
 		if err := r.writeJSON("build-identity.json", r.identity); err != nil {
@@ -256,6 +269,10 @@ func (r *runner) derivedDataDir() string {
 func simulatorName(output string) string {
 	return "Evener-qualification-" + filepath.Base(output)
 }
+
+// deviceUUIDPattern is the identity simctl create returns, and the only thing
+// one step can hand a simulator to the next through.
+var deviceUUIDPattern = regexp.MustCompile(`^[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}$`)
 
 // The runner is Apple silicon and the app is installed into an arm64
 // simulator, so ONLY_ACTIVE_ARCH builds the one slice the journeys exercise
@@ -465,7 +482,7 @@ func (r *runner) createSimulator(ctx context.Context, name string) (string, erro
 		return "", err
 	}
 	udid := strings.TrimSpace(string(created))
-	if !regexp.MustCompile(`^[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}$`).MatchString(udid) {
+	if !deviceUUIDPattern.MatchString(udid) {
 		return "", errors.New("simctl create did not return a device UUID; inspect simulator-create.log")
 	}
 	r.identity.SimulatorUDID = udid
@@ -479,9 +496,20 @@ func (r *runner) createSimulator(ctx context.Context, name string) (string, erro
 // created here and deleted by the deferred cleanup on every exit, including a
 // failed run. A create failure owns nothing, so no delete is issued.
 func (r *runner) withOwnedSimulator(ctx context.Context, name string, run func(udid string) error) (result error) {
-	udid, err := r.createSimulator(ctx, name)
-	if err != nil {
-		return err
+	return r.withSimulator(ctx, name, false, run)
+}
+
+// withSimulator runs against one simulator this run owns. A device an earlier
+// simulator-mode run created is adopted rather than created; the delete-on-
+// finish contract does not change with who started it, because the journey
+// output is the run's and a device left behind belongs to nobody.
+func (r *runner) withSimulator(ctx context.Context, name string, adopted bool, run func(udid string) error) (result error) {
+	udid := r.identity.SimulatorUDID
+	if !adopted {
+		var err error
+		if udid, err = r.createSimulator(ctx, name); err != nil {
+			return err
+		}
 	}
 	defer func() { result = errors.Join(result, r.cleanupSimulator()) }()
 	return run(udid)
@@ -849,13 +877,10 @@ func (r *runner) cleanupSimulator() error {
 	defer cancel()
 	udid := r.identity.SimulatorUDID
 	data, listErr := r.command(ctx, "simulator-before-cleanup", "xcrun", "simctl", "list", "--json", "devices")
-	var listing struct {
-		Devices map[string][]struct{ UDID, State string }
-	}
-	parseErr := json.Unmarshal(data, &listing)
+	devices, parseErr := parseSimulatorDevices(data)
 	var shutdownErr error
-	for _, devices := range listing.Devices {
-		for _, device := range devices {
+	for _, runtimeDevices := range devices {
+		for _, device := range runtimeDevices {
 			if device.UDID == udid && device.State == "Booted" {
 				_, shutdownErr = r.commandOutput(ctx, "simulator-shutdown", false, "xcrun", "simctl", "shutdown", udid)
 			}

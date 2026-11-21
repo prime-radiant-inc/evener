@@ -154,7 +154,7 @@ func fuzzInitW3RegressionPrograms(t *testing.T) {
 		{"clone-maps", TestS5Cov_CloneMaps},
 		{"env-policy-name", TestS5Cov_LocalEnvPolicyName},
 		{"env-policy-parse", TestS5Cov_LocalEnvPolicyFromName},
-		{"frozen-tools", TestS5Cov_FrozenSubagentToolNames},
+		{"frozen-tools", TestCovFrozenSubagentToolNames},
 		{"frozen-skills", TestS5Cov_RestoreFrozenSkillBodies},
 		{"communicate-nudge", TestS5Cov_SubagentNeedsCommunicateNudge},
 		{"strategy-all", TestS2Cov_SelectStrategy_AllNamedStrategies},
