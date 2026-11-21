@@ -304,6 +304,58 @@ func adoptTerminalPhases(streamed []any, streamedRaw []json.RawMessage, terminal
 	return streamed, streamedRaw
 }
 
+// fillSparseTerminalCalls lets a terminal record that omits a call's name or
+// arguments inherit them from the stream state for that same call. A record's
+// own non-empty name or arguments stays authoritative.
+func (acc *responsesOutputAccumulator) fillSparseTerminalCalls(r *llm.Response, terminal []any) {
+	byID := make(map[string]*llm.ToolCallData, len(r.Message.Content))
+	byItem := make(map[string]*llm.ToolCallData, len(r.Message.Content))
+	for i := range r.Message.Content {
+		if call := r.Message.Content[i].ToolCall; call != nil {
+			if _, ok := byID[call.ID]; !ok {
+				byID[call.ID] = call
+			}
+			if _, ok := byItem[call.ItemID]; !ok {
+				byItem[call.ItemID] = call
+			}
+		}
+	}
+	for _, raw := range terminal {
+		item, _ := raw.(map[string]any)
+		if kind, _ := item["type"].(string); kind != "function_call" || responsesFunctionCallUnfinished(item) {
+			continue
+		}
+		callID, _ := item["call_id"].(string)
+		itemID, _ := item["id"].(string)
+		if itemID == "" {
+			itemID, _ = item["item_id"].(string)
+		}
+		if callID == "" && itemID == "" {
+			continue
+		}
+		st := acc.toolStates[callID]
+		if st == nil && callID == "" {
+			st = acc.toolStates[itemID]
+		}
+		if st == nil {
+			continue
+		}
+		call := byID[callID]
+		if call == nil && callID == "" {
+			call = byItem[itemID]
+		}
+		if call == nil {
+			continue
+		}
+		if call.Name == "" {
+			call.Name = st.name
+		}
+		if len(call.Arguments) == 0 && st.args.Len() > 0 {
+			call.Arguments, call.ArgumentsSpelling = llm.NormalizeToolArguments(st.args.Bytes())
+		}
+	}
+}
+
 // settleResponsesTerminalOutput decides the settled message content and finish reason for a
 // Responses-API terminal payload. The terminal is authoritative: its text, refusal or finished call
 // wins. When it settles no answer of its own, the stream's output_item.done events are recovered in
@@ -351,6 +403,7 @@ func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, acc 
 		if settledItems == 0 {
 			return
 		}
+		acc.fillSparseTerminalCalls(r, terminalOutput)
 		// The stream accumulator holds only settled items.
 		count := len(terminalOutput)
 		for _, rawItem := range terminalOutput {

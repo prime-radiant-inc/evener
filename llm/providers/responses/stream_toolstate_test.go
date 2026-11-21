@@ -296,6 +296,110 @@ func TestResponsesStreamToolStateMapping(t *testing.T) {
 	})
 }
 
+// TestResponsesStreamDisambiguatesCallReferences drives two calls that reuse
+// one item identifier and settle their arguments through sparse references:
+// by output index, by item ID, and by a call ID the stream has not issued yet.
+// A later stream or terminal record must decide the disputed frame's owner, and
+// each issued call must settle with its own exact arguments, name and position
+// in both the live and recorded decoders.
+func TestResponsesStreamDisambiguatesCallReferences(t *testing.T) {
+	t.Parallel()
+	const nl = "\n\n"
+	type settledCall struct{ id, itemID, name, arguments string }
+	check := func(t *testing.T, frames []string, wantCalls, wantEnds []settledCall) {
+		t.Helper()
+		events, responses := settledBothEvents(t, strings.Join(frames, nl))
+		var ends []*llm.ToolCallData
+		for _, ev := range events {
+			if ev.Type == llm.StreamEventToolCallEnd {
+				ends = append(ends, ev.ToolCall)
+			}
+		}
+		if len(ends) != len(wantEnds) {
+			t.Fatalf("live tool-call ends = %d, want %d", len(ends), len(wantEnds))
+		}
+		for i, end := range ends {
+			if got := (settledCall{end.ID, end.ItemID, end.Name, string(end.Arguments)}); got != wantEnds[i] {
+				t.Errorf("live end[%d] = %+v, want %+v", i, got, wantEnds[i])
+			}
+		}
+		for i, r := range responses {
+			source := []string{"live", "recorded"}[i]
+			calls := r.ToolCalls()
+			if len(calls) != len(wantCalls) {
+				t.Fatalf("%s calls = %d, want %d", source, len(calls), len(wantCalls))
+			}
+			for j, call := range calls {
+				if got := (settledCall{call.ID, call.ItemID, call.Name, call.WireArguments()}); got != wantCalls[j] {
+					t.Errorf("%s call[%d] = %+v, want %+v", source, j, got, wantCalls[j])
+				}
+			}
+		}
+	}
+
+	t.Run("index and call ID resolve calls sharing an item identifier", func(t *testing.T) {
+		check(t,
+			[]string{
+				`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_shared","call_id":"call_a","name":"alpha"}}`,
+				`{"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_shared","call_id":"call_b","name":"beta"}}`,
+				`{"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_shared","delta":"{\"alpha\":"}`,
+				`{"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc_shared","arguments":"{\"alpha\":1}"}`,
+				`{"type":"response.function_call_arguments.delta","output_index":1,"item_id":"fc_shared","delta":"{\"beta\":"}`,
+				`{"type":"response.function_call_arguments.done","output_index":1,"item_id":"fc_shared","arguments":"{\"beta\":2}"}`,
+				`{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_shared","call_id":"call_a"}}`,
+				`{"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_shared","call_id":"call_b"}}`,
+				`{"type":"response.completed","response":{"status":"completed","output":[{"type":"function_call","id":"fc_shared","call_id":"call_a"},{"type":"function_call","id":"fc_shared","call_id":"call_b"}]}}`,
+			},
+			[]settledCall{
+				{"call_a", "fc_shared", "alpha", `{"alpha":1}`},
+				{"call_b", "fc_shared", "beta", `{"beta":2}`},
+			},
+			[]settledCall{
+				{"call_a", "fc_shared", "alpha", `{"alpha":1}`},
+				{"call_b", "fc_shared", "beta", `{"beta":2}`},
+			})
+	})
+
+	t.Run("a terminal record settles a disputed finalized frame", func(t *testing.T) {
+		check(t,
+			[]string{
+				`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_a","name":"alpha"}}`,
+				`{"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc_1","arguments":"{\"alpha\":1}"}`,
+				`{"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc_1","call_id":"call_b","name":"beta","arguments":"{\"beta\":2}"}`,
+				`{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_a"}}`,
+				`{"type":"response.completed","response":{"status":"completed","output":[{"type":"function_call","id":"fc_1","call_id":"call_a"},{"type":"function_call","id":"fc_2","call_id":"call_b"}]}}`,
+			},
+			[]settledCall{
+				{"call_a", "fc_1", "alpha", `{"alpha":1}`},
+				{"call_b", "fc_2", "beta", `{"beta":2}`},
+			},
+			[]settledCall{
+				{"call_a", "fc_1", "alpha", `{"alpha":1}`},
+			})
+	})
+
+	t.Run("a later stream record issues the disputed call", func(t *testing.T) {
+		check(t,
+			[]string{
+				`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_a","call_id":"call_a","name":"alpha"}}`,
+				`{"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc_a","arguments":"{\"alpha\":1}"}`,
+				`{"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc_a","call_id":"call_b","arguments":"{\"beta\":2}"}`,
+				`{"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_b","call_id":"call_b","name":"beta"}}`,
+				`{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_a","call_id":"call_a"}}`,
+				`{"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_b","call_id":"call_b"}}`,
+				`{"type":"response.completed","response":{"status":"completed","output":[]}}`,
+			},
+			[]settledCall{
+				{"call_a", "fc_a", "alpha", `{"alpha":1}`},
+				{"call_b", "fc_b", "beta", `{"beta":2}`},
+			},
+			[]settledCall{
+				{"call_a", "fc_a", "alpha", `{"alpha":1}`},
+				{"call_b", "fc_b", "beta", `{"beta":2}`},
+			})
+	})
+}
+
 // TestResponsesInbandErrorDecoding drives responsesInbandError's shape arms
 // through the live stream: an undecodable error frame and an empty envelope
 // stay raw passthroughs without failing the stream, while a code-only nested
