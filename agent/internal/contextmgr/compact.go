@@ -51,15 +51,29 @@ func replaceSteeringMarkerTurn(ctx context.Context, history *[]schema.Turn, mark
 	reportPostFoldInjection(ctx, len(*history)-preLen+removedBeforeBaseline)
 }
 
-// resetMeasurement drops the exact API token measurement so the next pressure
-// reading falls back to char/4 estimates that reflect in-place history changes.
-func (cm *Manager) resetMeasurement() {
+// ClearInputMeasurement drops the exact API token measurement so the next
+// pressure reading falls back to char/4 estimates that reflect in-place history
+// changes. A fold calls it before computing its layers so their pressure reads
+// see the mutations they make. The session calls it a second time when the fold
+// actually publishes: a reply that settled between those two points would
+// otherwise record a count describing the history the fold just replaced.
+func (cm *Manager) ClearInputMeasurement() {
 	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.clearMeasurementLocked()
+}
+
+// resetMeasurement is the manager's own form of ClearInputMeasurement, used
+// inside a compaction pass.
+func (cm *Manager) resetMeasurement() {
+	cm.ClearInputMeasurement()
+}
+
+func (cm *Manager) clearMeasurementLocked() {
 	cm.lastInputTokens = 0
 	cm.historyLenAtMeasure = 0
 	cm.measuredAnchor = ""
 	cm.measuredTarget = measurementTarget{}
-	cm.mu.Unlock()
 }
 
 // applyLayer runs one compaction layer over *history and reports it: fn

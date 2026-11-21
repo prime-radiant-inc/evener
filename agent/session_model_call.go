@@ -507,13 +507,10 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// count the provider returns for it covers them. Move the
 			// measurement up with the request; left on the pre-rebuild
 			// snapshot, the reader prices the appended turns a second time as
-			// a delta past the measured prefix (roborev's twenty-third round).
-			s.requestMeasurement = requestMeasurement{
-				ok:       true,
-				length:   presentedBoundary,
-				anchor:   contextmgr.PrefixAnchor(s.history, presentedBoundary),
-				revision: s.historyRevision,
-			}
+			// a delta past the measured prefix. A fold that landed since the
+			// capture refuses the advance, so settlement drops the pre-fold
+			// count instead of charging it to the folded history.
+			s.advanceRequestMeasurementLocked()
 		}
 		historyTurns = append([]schema.Turn{}, s.history...)
 		s.mu.Unlock()
@@ -1607,14 +1604,22 @@ func (s *Session) recordResponseUsage(resp llm.Response, req llm.Request, answer
 		responseHasServerWebSearch(resp.Message.Content),
 	)
 	if record {
-		hLen, anchor, ok := s.settleRequestMeasurement()
-		if !ok {
-			return
-		}
-		// Only the profile that answered may own this measurement: a SetModel
-		// during the request cleared the measurement it belonged to (roborev's
-		// fifteenth round).
-		s.contextMgr.RecordInputTokensFor(answeringProfile, tokens, hLen, anchor)
+		// The check and the recording are one critical section. A fold
+		// publishes rewritten history under s.mu and clears the count there,
+		// so a reply that validated just before publication would otherwise
+		// reinstall its pre-fold count after the clear.
+		func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			hLen, anchor, ok := s.settleRequestMeasurementLocked()
+			if !ok {
+				return
+			}
+			// Only the profile that answered may own this measurement: a
+			// SetModel during the request cleared the measurement it belonged
+			// to (roborev's fifteenth round).
+			s.contextMgr.RecordInputTokensFor(answeringProfile, tokens, hLen, anchor)
+		}()
 	}
 }
 
@@ -1628,16 +1633,39 @@ type requestMeasurement struct {
 	revision int
 }
 
-// settleRequestMeasurement returns the prefix a response's input count may be
-// recorded against. A historyRevision change means a fold or repair rewrote
-// history while the reply streamed: the pre-fold count and the post-fold
-// history describe different conversations, so it is dropped rather than paired
-// with the new shape. History that only grew keeps the captured prefix, and the
-// reader prices the appended turns as a delta. A session with no capture (a
-// direct caller outside the round loop) measures what is resident now.
-func (s *Session) settleRequestMeasurement() (length int, anchor string, ok bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// advanceRequestMeasurementLocked moves the pending measurement up to the
+// current history, for a request rebuilt before dispatch whose appended turns
+// the provider's count will cover. It refuses when the captured measurement no
+// longer describes this history — a fold or repair bumped the revision, or the
+// measured prefix was rewritten — leaving the stale snapshot in place so
+// settlement rejects the pre-rewrite count. The caller must hold s.mu.
+func (s *Session) advanceRequestMeasurementLocked() bool {
+	m := s.requestMeasurement
+	if !m.ok || m.revision != s.historyRevision {
+		return false
+	}
+	if m.length > 0 && contextmgr.PrefixAnchor(s.history, m.length) != m.anchor {
+		return false
+	}
+	s.requestMeasurement = requestMeasurement{
+		ok:       true,
+		length:   len(s.history),
+		anchor:   contextmgr.PrefixAnchor(s.history, len(s.history)),
+		revision: s.historyRevision,
+	}
+	return true
+}
+
+// settleRequestMeasurementLocked returns the prefix a response's input count
+// may be recorded against. A historyRevision change means a fold or repair
+// rewrote history while the reply streamed: the pre-fold count and the
+// post-fold history describe different conversations, so it is dropped rather
+// than paired with the new shape. History that only grew keeps the captured
+// prefix, and the reader prices the appended turns as a delta. A session with
+// no capture (a direct caller outside the round loop) measures what is resident
+// now. The caller holds s.mu across this check and the recording, so a fold
+// publishing rewritten history cannot interleave between them.
+func (s *Session) settleRequestMeasurementLocked() (length int, anchor string, ok bool) {
 	m := s.requestMeasurement
 	s.requestMeasurement = requestMeasurement{}
 	if !m.ok {

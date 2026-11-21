@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/contextmgr"
@@ -159,5 +160,98 @@ func TestRequestMeasurementCoversTurnsAppendedByAPreDispatchRebuild(t *testing.T
 	if got := sess.contextMgr.EstimateUsage(resident, 0).Used; got != 1000 {
 		fresh := contextmgr.NewManager(profile, nil, nil)
 		t.Fatalf("context meter after the rebuilt request = %d, want 1000: the appended turn was priced twice as a %d-token delta", got, fresh.EstimateUsage(resident[before:], 0).Used)
+	}
+}
+
+// TestRequestMeasurementAdvanceRefusesARewrittenSnapshot pins the guard on the
+// rebuild's advance: it may only move the measurement while the captured
+// snapshot still describes the history being rebuilt. After a fold or repair
+// (revision bump), or a prefix rewritten in place (anchor mismatch), the count
+// belongs to a conversation that no longer exists, and carrying the revision
+// forward would let settlement charge it to the new shape anyway.
+func TestRequestMeasurementAdvanceRefusesARewrittenSnapshot(t *testing.T) {
+	pre := pricedTurns(4, 40)
+	cases := []struct {
+		name    string
+		rewrite func(sess *Session, pre []schema.Turn)
+	}{
+		{
+			name: "fold bumps the revision",
+			rewrite: func(sess *Session, _ []schema.Turn) {
+				sess.history = append(pricedTurns(3, 40), pricedTurns(1, 40)...)
+				sess.bumpHistoryRevisionLocked()
+			},
+		},
+		{
+			name: "measured prefix rewritten in place",
+			rewrite: func(sess *Session, pre []schema.Turn) {
+				rewritten := pricedTurns(4, 8)
+				// The anchor names the turn at the measured boundary, so the
+				// rewrite has to move that turn's identity.
+				rewritten[3].Timestamp = pre[3].Timestamp.Add(time.Second)
+				sess.history = append(rewritten, pricedTurns(1, 40)...)
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sess := newSession(t)
+			profile := sess.currentProfile()
+			sess.mu.Lock()
+			sess.history = append([]schema.Turn{}, pre...)
+			sess.historyRevision = 7
+			sess.requestMeasurement = requestMeasurement{
+				ok:       true,
+				length:   len(pre),
+				anchor:   contextmgr.PrefixAnchor(pre, len(pre)),
+				revision: 7,
+			}
+			tc.rewrite(sess, pre)
+			advanced := sess.advanceRequestMeasurementLocked()
+			sess.mu.Unlock()
+			if advanced {
+				t.Fatal("the advance moved the measurement onto a rewritten history")
+			}
+			sess.recordResponseUsage(llm.Response{Usage: llm.Usage{InputTokens: 900}}, llm.Request{}, profile)
+			if got := sess.contextMgr.LastInputTokens(); got != 0 {
+				t.Fatalf("LastInputTokens = %d, want 0: a pre-rewrite count must not be charged to the rewritten history", got)
+			}
+		})
+	}
+}
+
+// TestFoldPublicationClearsTheRecordedInputCount pins the publication half of
+// the same race: the count a reply recorded before a fold is dropped in the
+// same s.mu hold that publishes the folded history, so the publication can
+// never leave a pre-fold count standing on the meter.
+func TestFoldPublicationClearsTheRecordedInputCount(t *testing.T) {
+	sess := newSession(t)
+	profile := sess.currentProfile()
+	pre := pricedTurns(4, 40)
+	sess.mu.Lock()
+	sess.history = append([]schema.Turn{}, pre...)
+	sess.historyRevision = 7
+	sess.mu.Unlock()
+
+	sess.recordResponseUsage(llm.Response{Usage: llm.Usage{InputTokens: 900}}, llm.Request{}, profile)
+	if got := sess.contextMgr.LastInputTokens(); got != 900 {
+		t.Fatalf("LastInputTokens before the fold = %d, want 900", got)
+	}
+
+	// The fold rewrites the earlier turns and keeps the anchored turn, so only
+	// publication itself can invalidate the count.
+	folded := append(pricedTurns(3, 12), pre[3])
+	sess.mu.Lock()
+	_, ok := sess.publishFoldedHistory(len(sess.history), sess.historyRevision, folded)
+	sess.mu.Unlock()
+	if !ok {
+		t.Fatal("publishFoldedHistory refused the fold")
+	}
+	if got := sess.contextMgr.LastInputTokens(); got != 0 {
+		t.Fatalf("LastInputTokens after the fold = %d, want 0: the pre-fold count outlived the publication", got)
+	}
+	fresh := contextmgr.NewManager(profile, nil, nil)
+	if got, want := sess.contextMgr.EstimateUsage(folded, 0).Used, fresh.EstimateUsage(folded, 0).Used; got != want {
+		t.Fatalf("context meter after the fold = %d, want the %d a session with no saved count reads", got, want)
 	}
 }
