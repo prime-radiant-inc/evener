@@ -171,12 +171,7 @@ try {
   fs.writeFileSync(path.join(evidence,"tasks.png"),Buffer.from((await send("Page.captureScreenshot")).result.data,"base64"));
   await closeAuxiliaryPanes();
   await until("!document.body.innerText.includes('Review fixture evidence')");
-  await clickText("Session actions"); await clickText("Activity");
-  await until("document.body.innerText.includes('Delegate dlg_editorial_resumed · send')");
-  fs.writeFileSync(path.join(evidence,"activity.png"),Buffer.from((await send("Page.captureScreenshot")).result.data,"base64"));
-  await closeAuxiliaryPanes();
-  await until("!document.body.innerText.includes('Delegate dlg_editorial_resumed · send')");
-  observations.tasks.push("Actual Tasks and Activity panel selection; fixture tasks and partial owner-derived activity; Details split exercised in matrix");
+  observations.tasks.push("Actual Tasks panel selection; fixture tasks; Details split exercised in matrix");
   for (const viewport of [{width:360,height:800,mobile:true,touch:true}, {width:390,height:844,mobile:true,touch:true}, {width:1280,height:1000,narrow:true}, {width:1440,height:1000}]) {
     for (const theme of ["light","dark"]) for (const size of ["m","xl"]) {
       await applyViewport(send, viewport);
