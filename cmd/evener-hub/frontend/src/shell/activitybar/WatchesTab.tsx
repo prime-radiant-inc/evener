@@ -21,6 +21,9 @@ export function WatchesTab({ scope, now }: ActivityTabBodyProps) {
   const collection = snapshot?.watches;
   const total = snapshot?.summary?.watches;
   const watchRows = buildWatchRows(collection?.rows ?? []);
+  // The receiver-owned watch in this view names the viewed session when that
+  // session is a delegate; its own row is not in its own delegates collection.
+  const viewing = snapshot?.context ?? undefined;
   useActivityScrollProgress(
     watchRows.map((row) => row.id),
     collection?.complete ?? false,
@@ -36,7 +39,7 @@ export function WatchesTab({ scope, now }: ActivityTabBodyProps) {
   return (
     <div className={CLASS.stack}>
       {watchRows.map((row) => (
-        <WatchRow key={row.id} row={row} now={now} />
+        <WatchRow key={row.id} row={row} now={now} viewing={viewing} />
       ))}
       <ActivityPageBoundary
         resource="watches"
