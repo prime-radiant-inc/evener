@@ -496,14 +496,20 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 		history := s.ensureDescendantHistory(ownerThreadID, threadID)
 		// A descendant's motion is its root's too: the meter shows the whole tree.
 		s.appActivity.observe(event.Kind)
-		// A prior turn's end may still be queued when a newer execution has
-		// already published its start. Dropping the end whole is what keeps
-		// the newer execution addressable: the projector would clear the
-		// running turn it no longer owns, and the newer turn's own end would
-		// then be discarded, leaving the thread active forever.
-		if event.Kind == events.EventSessionEnd && !sessionEventClosesSession(event) && projection.projector.RunningTurnID() != "" {
-			s.mu.Unlock()
-			return nil
+		// An interrupted end can still be queued when the next execution has
+		// already published its start: its own execution end was discarded as
+		// superseded. The end carries no turn identity, but an interrupt
+		// always emits its execution's end first, so a running turn here is a
+		// newer execution. Dropping the end whole keeps that execution
+		// addressable: the projector would clear the running turn it no longer
+		// owns, and the newer turn's own end would then be discarded, leaving
+		// the thread active forever. A non-interrupted end is the normal way a
+		// completed input settles the execution the projector holds.
+		if event.Kind == events.EventSessionEnd && !sessionEventClosesSession(event) {
+			if end, ok := event.Data.(events.SessionEndData); ok && end.Interrupted && projection.projector.RunningTurnID() != "" {
+				s.mu.Unlock()
+				return nil
+			}
 		}
 		projected := projection.projector.Project(event)
 		start, _ := event.Data.(events.SessionStartData)

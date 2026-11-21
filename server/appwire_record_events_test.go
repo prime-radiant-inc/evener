@@ -94,3 +94,34 @@ func TestDescendantInterruptedEndWithoutHistoryDoesNotSupersedeRunningExecution(
 		t.Fatalf("the newer turn's end published %+v, want one idle change naming t_new", frames)
 	}
 }
+
+// A session end that is not an interrupt settles the execution the projector
+// holds and names it; only an interrupted end whose own execution end was
+// already discarded is stale.
+func TestDescendantSessionEndSettlesRunningExecution(t *testing.T) {
+	s := NewServer(ServerConfig{})
+	t.Cleanup(s.Close)
+	serveRootWithoutHistory(t, s, "root")
+
+	emit := func(data events.EventData) {
+		t.Helper()
+		s.RecordDescendantAppEvent("root", threadEvent("child", data))
+	}
+	read := func() appwire.Thread {
+		return s.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:child"}).Thread
+	}
+
+	emit(events.SessionStartData{})
+	emit(events.ExecutionStartedData{TurnID: "t_run"})
+	cursor := s.appNotifier.CurrentSequence()
+
+	emit(events.SessionEndData{State: "idle", Reason: "input_complete"})
+
+	if thread := read(); thread.Status.Type != appwire.ThreadStatusIdle {
+		t.Fatalf("a completed input left status %q, want idle", thread.Status.Type)
+	}
+	frames := statusNotificationsAfter(t, s, cursor, "child")
+	if len(frames) != 1 || frames[0].Status.Type != appwire.ThreadStatusIdle || frames[0].EndedTurnID != "t_run" {
+		t.Fatalf("a completed input published %+v, want one idle change naming t_run", frames)
+	}
+}
