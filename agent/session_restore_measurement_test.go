@@ -5,7 +5,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
@@ -13,6 +16,54 @@ import (
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
+
+// TestSavedInputCountSurvivesARealRestore drives the whole path the unit tests
+// only split up: a scripted reply's input count is saved by Meta, the session
+// closes, and RestoreSessionFromMetaWithConfig must install that count so
+// ContextStatus prices the restored history from it plus the delta for the reply
+// appended after the measured boundary. It fails if the restore stops seeding
+// the count, which the split tests cannot see.
+func TestSavedInputCountSurvivesARealRestore(t *testing.T) {
+	const saved = 600
+	stateDir := t.TempDir()
+	sess := newSession(t, withStateDir(stateDir), withSteps(func(llm.Request) llm.Response {
+		resp := agenttest.FinalResponse("done")
+		resp.Usage.InputTokens = saved
+		return resp
+	}))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter; only fires on a genuine hang.
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hi", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	meta := sess.Meta()
+	if meta.LastInputTokens != saved {
+		t.Fatalf("seeded meta LastInputTokens = %d, want %d", meta.LastInputTokens, saved)
+	}
+	sess.Close()
+
+	client := llm.NewClient()
+	client.Register(newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("again") }))
+	restored, err := RestoreSessionFromMetaWithConfig(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(stateDir), meta, RestoreSessionConfig{
+		StateDir: stateDir,
+		testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	defer restored.Close()
+
+	metrics, _ := restored.ContextStatus()
+	if metrics.Used < saved {
+		t.Fatalf("ContextStatus after restore = %d, want at least the saved %d: the resume did not install the persisted count", metrics.Used, saved)
+	}
+	if metrics.Used == saved {
+		t.Fatalf("ContextStatus after restore = %d, want more than the saved %d: the reply appended after the measured boundary is missing", metrics.Used, saved)
+	}
+	if metrics.Used > saved+64 {
+		t.Fatalf("ContextStatus after restore = %d, want no more than %d: the whole history was re-estimated on top of the saved count", metrics.Used, saved+64)
+	}
+}
 
 // placeSessionRoundTrip writes turns the way a live session does: Record with
 // PlaceSession mints a transcript TurnID and stamps it on the persisted copy,
