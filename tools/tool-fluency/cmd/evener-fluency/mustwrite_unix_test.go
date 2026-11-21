@@ -71,21 +71,26 @@ func TestMustWriteHoldsForkLockAcrossTheWrite(t *testing.T) {
 // drainUntilWritten reads a non-blocking FIFO fd until writeFixture returns. A
 // read of 0 before then only means the writer has not connected yet (the
 // readiness hook fires before its open); EAGAIN means it is writing but the
-// buffer is empty. Neither blocks, so each poll reads once and then checks the
-// written channel.
+// buffer is empty. Neither blocks, so each check drains what is readable and
+// then polls the written channel.
 func drainUntilWritten(t *testing.T, fd int, written <-chan error) {
 	t.Helper()
 	buf := make([]byte, 1<<16)
 	testwait.UntilSeen(t, "writeFixture to return while its write was drained", func() (bool, string) {
-		n, err := syscall.Read(fd, buf)
-		switch {
-		case n > 0:
-			return false, "drained a chunk of the write"
-		case err == nil, err == syscall.EAGAIN: // no writer yet, or no data yet
-		case err == syscall.EINTR:
-			return false, "read interrupted"
-		default:
-			t.Fatalf("drain FIFO: %v", err)
+		// Drain without yielding while data is available, or the 4 MiB
+		// payload pays the poll backoff per 64 KiB read.
+		for {
+			n, err := syscall.Read(fd, buf)
+			switch {
+			case n > 0:
+				continue
+			case err == nil, err == syscall.EAGAIN: // no writer yet, or no data yet
+			case err == syscall.EINTR:
+				continue
+			default:
+				t.Fatalf("drain FIFO: %v", err)
+			}
+			break
 		}
 		select {
 		case werr := <-written:
