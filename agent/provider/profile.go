@@ -76,12 +76,12 @@ func surfaceConventions(surface string) (docFiles []string, toolNameMap map[stri
 func (p *Profile) capabilities() []toolCapability {
 	var caps []toolCapability
 	switch p.res.Surface {
-	case registry.SurfaceAnthropic:
-		caps = anthropicStyleCapabilities
+	case registry.SurfaceOpenAI:
+		caps = openAICodexCapabilities
 	case registry.SurfaceGoogle:
 		caps = geminiStyleCapabilities
 	default:
-		caps = openAICodexCapabilities
+		caps = anthropicStyleCapabilities
 	}
 	googleWebSearch := p.res.Protocol == registry.ProtocolGoogle && registry.BoolValue(p.res.Caps.WebSearch)
 	out := make([]toolCapability, 0, len(caps))

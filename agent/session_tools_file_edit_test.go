@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/internal/apptranscript"
@@ -311,6 +312,97 @@ func TestEditFile_RejectsMixedFormAndCompetingAliasesBeforeDispatch(t *testing.T
 			}
 		})
 	}
+}
+
+func TestEditFile_AndApplyPatch_NeverBothAdvertisedInSession(t *testing.T) {
+	t.Parallel()
+	hasTool := func(defs []llm.ToolDefinition, name string) bool {
+		for _, td := range defs {
+			if td.Name == name {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("per-surface initial ToolDefinitions", func(t *testing.T) {
+		t.Parallel()
+		cases := []struct {
+			name           string
+			adapter        string
+			profile        *provider.Profile
+			wantApplyPatch bool
+			wantEditFile   bool
+		}{
+			{"openai", "openai", NewOpenAIProfile("gpt-5.4"), true, false},
+			{"anthropic", "anthropic", newAnthropicProfile("claude-test"), false, true},
+			{"google", "google", newGeminiProfile("gemini-2.5-pro"), false, true},
+			{"generic-glm", "glm", newOpenAICompatProfile("glm", "glm-5", 0), false, true},
+			{"generic-kimi", "kimi", newOpenAICompatProfile("kimi", "kimi-k2.5", 0), false, true},
+			{"generic-ollama", "ollama", newOpenAICompatProfile("ollama", "llama3", 0), false, true},
+			{"generic-deepseek", "deepseek", newOpenAICompatProfile("deepseek", "deepseek-chat", 0), false, true},
+			{"generic-qwen", "qwen", newOpenAICompatProfile("qwen", "qwen3-coder", 0), false, true},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				sess := newSession(t,
+					withProfile(tc.profile),
+					withAdapter(&fakeAdapter{name: tc.adapter}),
+					withConfig(SessionConfig{testOnly: testConfig{skipGitSnapshot: true}}),
+				)
+				defs := sess.ToolDefinitions()
+				if got := hasTool(defs, "apply_patch"); got != tc.wantApplyPatch {
+					t.Fatalf("%s: apply_patch advertised = %v, want %v", tc.name, got, tc.wantApplyPatch)
+				}
+				if got := hasTool(defs, "edit_file"); got != tc.wantEditFile {
+					t.Fatalf("%s: edit_file advertised = %v, want %v", tc.name, got, tc.wantEditFile)
+				}
+			})
+		}
+	})
+
+	t.Run("switching model flips apply_patch and edit_file without exposing both", func(t *testing.T) {
+		t.Parallel()
+		sess := newSession(t,
+			withProfile(NewOpenAIProfile("gpt-5.4")),
+			withAdapter(&fakeAdapter{name: "openai"}),
+			withAdapter(&fakeAdapter{name: "google"}),
+			withAdapter(&fakeAdapter{name: "glm"}),
+			withConfig(SessionConfig{
+				ResolveProfile: testResolver,
+				testOnly:       testConfig{skipGitSnapshot: true},
+			}),
+		)
+
+		assertExclusive := func(wantApplyPatch, wantEditFile bool, phase string) {
+			t.Helper()
+			defs := sess.ToolDefinitions()
+			gotAP := hasTool(defs, "apply_patch")
+			gotEF := hasTool(defs, "edit_file")
+			if gotAP && gotEF {
+				t.Fatalf("%s: both apply_patch and edit_file advertised simultaneously", phase)
+			}
+			if gotAP != wantApplyPatch || gotEF != wantEditFile {
+				t.Fatalf("%s: apply_patch=%v edit_file=%v, want apply_patch=%v edit_file=%v",
+					phase, gotAP, gotEF, wantApplyPatch, wantEditFile)
+			}
+		}
+
+		assertExclusive(true, false, "initial openai")
+		if err := sess.SetModel("google/gemini-2.5-pro"); err != nil {
+			t.Fatalf("SetModel(google): %v", err)
+		}
+		assertExclusive(false, true, "after switch to google")
+		if err := sess.SetModel("glm/glm-5"); err != nil {
+			t.Fatalf("SetModel(glm): %v", err)
+		}
+		assertExclusive(false, true, "after switch to generic glm")
+		if err := sess.SetModel("openai/gpt-5.4"); err != nil {
+			t.Fatalf("SetModel(openai): %v", err)
+		}
+		assertExclusive(true, false, "after switch back to openai")
+	})
 }
 
 func TestEditFile_RepairedStringifiedEditsExecutesAndRendersLiveAndReopened(t *testing.T) {

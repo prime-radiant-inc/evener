@@ -414,6 +414,14 @@ func (s *Session) rebuildToolDefsCache() {
 		if included[td.Name] {
 			continue
 		}
+		// Never expose both apply_patch and edit_file in the same session; both
+		// stay registered in s.reg for mid-session model switching.
+		if td.Name == "apply_patch" && included["edit_file"] {
+			continue
+		}
+		if td.Name == "edit_file" && included["apply_patch"] {
+			continue
+		}
 		if td.Name == "update_goal" && !s.hasGoalConfigured() {
 			continue
 		}
@@ -434,6 +442,7 @@ func (s *Session) rebuildToolDefsCache() {
 			}
 		}
 		defs = append(defs, normalizeRegistryToolDefinition(td))
+		included[td.Name] = true
 	}
 	// The registry holds what this session can call, by canonical name.
 	canMessageDelegates := s.reg.Get("delegate_send") != nil
