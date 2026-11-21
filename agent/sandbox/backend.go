@@ -269,29 +269,39 @@ func (w *Wrapper) ConfineTrustedInfra(cmd *exec.Cmd, dir string) {
 	w.withNetworkAllowed().Confine(cmd, dir)
 }
 
-// childEnvShell is the program the Seatbelt backend runs immediately after its
+// childEnvReader is the program the Seatbelt backend runs immediately after its
 // "--" separator to apply the configured environment. sandbox-exec has no
-// args-from-fd flag, so a shell reads the assignments from the private
-// child-env fd and applies them itself. The path is absolute because the
-// confined process's PATH is the session's, not the launcher's; /bin/bash is
-// the macOS system shell and every construct the script uses is bash 3.2.
-const childEnvShell = "/bin/bash"
+// args-from-fd flag, so a reader process applies the assignments from the
+// private child-env fd itself. The path is absolute because the confined
+// process's PATH is the session's, not the launcher's. /usr/bin/perl is in the
+// macOS base system and is readable in every mode (restricted mode grants
+// /usr/bin and its runtime beside the system frameworks); unlike a shell it can
+// set an environment NAME containing a dot, which POSIX permits and a config
+// layer may use.
+const childEnvReader = "/usr/bin/perl"
 
-// childEnvScriptTemplate is the fixed script that shell runs. The launcher
+// childEnvScriptTemplate is the fixed script that reader runs. The launcher
 // reads NUL-separated records from the private fd: "-NAME" unsets a name and
 // "+NAME=VALUE" assigns one. The text is built from constants only — never from
-// configuration — and values are applied through quoting-only expansion, so a
-// repository-controlled value is never evaluated as shell code. The final
-// "exec N<&-" keeps the private fd out of the server, matching the fd hygiene a
-// bare bwrap spawn gets.
-const childEnvScriptTemplate = `while IFS= read -r -d '' rec; do
-	case $rec in
-	-*) unset "${rec#-}" ;;
-	+*) export "${rec#+}" ;;
-	esac
-done <&%[1]d
-exec %[1]d<&-
-exec "$@"`
+// configuration — and a value is stored as data, so a repository-controlled
+// value is never evaluated as code. Closing the fd before exec keeps it out of
+// the server, matching the fd hygiene a bare bwrap spawn gets.
+const childEnvScriptTemplate = `my $fd = %[1]d;
+open(my $fh, "<&=", $fd) or die "evener: child-env fd: $!\n";
+local $/ = "\0";
+while (defined(my $rec = <$fh>)) {
+	chomp $rec;
+	my $kind = substr($rec, 0, 1);
+	my $rest = substr($rec, 1);
+	if ($kind eq '-') { delete $ENV{$rest} }
+	elsif ($kind eq '+') {
+		my ($name, $value) = split(/=/, $rest, 2);
+		$ENV{$name} = defined $value ? $value : '';
+	}
+}
+close $fh;
+exec { $ARGV[0] } @ARGV;
+die "evener: exec $ARGV[0]: $!\n";`
 
 // ChildEnvDelta is the difference between the sandbox LAUNCHER's environment
 // (cmd.Env) and the environment the CONFINED child must observe: Set carries
@@ -316,6 +326,34 @@ type ChildEnvDelta struct {
 // private file and no flag when there is nothing to apply.
 func (d ChildEnvDelta) empty() bool { return len(d.Set) == 0 && len(d.Unset) == 0 }
 
+// validate rejects a name or value carrying a NUL byte. The private channel is
+// NUL-delimited, so an embedded NUL would split one record into several: on the
+// bwrap path a configured value could inject trailing --args flags, and on the
+// Seatbelt path it could inject another assignment. The error names the
+// variable but never repeats its value.
+func (d ChildEnvDelta) validate() error {
+	nulName := func(name string) error {
+		if strings.IndexByte(name, 0) >= 0 {
+			return fmt.Errorf("sandbox: environment variable %q contains a NUL byte", name)
+		}
+		return nil
+	}
+	for name, value := range d.Set {
+		if err := nulName(name); err != nil {
+			return err
+		}
+		if strings.IndexByte(value, 0) >= 0 {
+			return fmt.Errorf("sandbox: environment variable %q contains a NUL byte", name)
+		}
+	}
+	for _, name := range d.Unset {
+		if err := nulName(name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ConfineWithChildEnv confines cmd exactly like Confine and delivers childEnv to
 // the CONFINED process instead of to the backend launcher.
 //
@@ -325,9 +363,9 @@ func (d ChildEnvDelta) empty() bool { return len(d.Set) == 0 && len(d.Unset) == 
 // mount, or Seatbelt policy exists. A configured environment whose contents come
 // from a config layer a repository can write therefore must not ride there.
 // The assignments instead ride a private fd (cmd.ExtraFiles) that the launcher
-// reads at startup — bwrap's --args, or a shell after sandbox-exec's "--" — so
-// their VALUES never appear in the launcher's argv, where host process-list
-// diagnostics would see them. They still apply on the far side of the
+// reads at startup — bwrap's --args, or a reader process after sandbox-exec's
+// "--" — so their VALUES never appear in the launcher's argv, where host
+// process-list diagnostics would see them. They still apply on the far side of the
 // confinement: the namespaces and mounts are in place before the assignment is
 // applied, and the loader that reads it is the child's own.
 //
@@ -351,6 +389,9 @@ func (w *Wrapper) ConfineTrustedInfraWithChildEnv(cmd *exec.Cmd, dir string, chi
 // childEnv's private fd into the wrapped invocation on the child's side of the
 // separator.
 func (w *Wrapper) confineWithChildEnv(cmd *exec.Cmd, dir string, childEnv ChildEnvDelta, trustedInfra bool) error {
+	if err := childEnv.validate(); err != nil {
+		return err
+	}
 	if w == nil {
 		cmd.Env = mergeChildEnvAssignments(cmd.Env, childEnv)
 		return nil
@@ -394,7 +435,7 @@ const childEnvFdBase = 3
 // it. n is the length of the ORIGINAL argv, which both backends place unchanged
 // at the end of the wrapped vector, so the separator's position is arithmetic
 // rather than a search: bwrap's "--args FD" goes just before the "--", and
-// Seatbelt's shell prefix just after it. fd is where the payload fd lands in
+// Seatbelt's reader prefix just after it. fd is where the payload fd lands in
 // the child.
 //
 // A wrapped argv that does not end in the original argv behind a separator would
@@ -413,7 +454,7 @@ func childEnvArgv(backend Backend, argv []string, n, fd int) []string {
 		at = split - 1
 		insert = []string{"--args", strconv.Itoa(fd)}
 	case BackendSeatbelt:
-		insert = []string{childEnvShell, "-c", childEnvScript(fd), childEnvShell}
+		insert = []string{childEnvReader, "-e", childEnvScript(fd)}
 	}
 	out := make([]string, 0, len(argv)+len(insert))
 	out = append(out, argv[:at]...)
@@ -429,7 +470,7 @@ func childEnvScript(fd int) string {
 
 // childEnvPayload encodes childEnv as the NUL-separated records the private
 // channel carries. bwrap's --args consumes bwrap flags, so bwrap gets
-// --unsetenv NAME and --setenv NAME VALUE records; the Seatbelt shell gets the
+// --unsetenv NAME and --setenv NAME VALUE records; the Seatbelt reader gets the
 // "-NAME"/"+NAME=VALUE" form its script reads.
 //
 // The unset names go first, so a name that somehow appeared in both halves

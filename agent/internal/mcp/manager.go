@@ -213,11 +213,7 @@ func connectOne(ctx context.Context, client *mcpsdk.Client, cfg mcpconfig.Server
 		return failedConn(cfg, dial, err)
 	}
 
-	session, err := client.Connect(perServerCtx, transport, nil)
-	// Connect started the launcher, which owns its own copy of the private
-	// child-env fd from the exec on. Close this process's copy now rather than
-	// leave one fd open per stdio server for the session's lifetime.
-	releaseChildEnvChannel(transport)
+	session, err := connectAndRelease(perServerCtx, client, transport)
 	if err != nil {
 		return failedConn(cfg, dial, err)
 	}
@@ -266,6 +262,19 @@ func releaseChildEnvChannel(t mcpsdk.Transport) {
 		_ = f.Close()
 	}
 	ct.Command.ExtraFiles = nil
+}
+
+// connectAndRelease starts transport and connects to it, then closes this
+// process's copy of the private child-env fd the sandbox attached to the
+// transport's command. Connect has started the launcher by then, and the
+// launcher owns its own copy of the fd from the exec on, so the parent's copy
+// is dead weight — one leaked fd per stdio server for the session's lifetime if
+// it were left open. Every connect site goes through here, on success and on
+// error alike: a launcher that started and then failed still inherited the fd.
+func connectAndRelease(ctx context.Context, client *mcpsdk.Client, transport mcpsdk.Transport) (*mcpsdk.ClientSession, error) {
+	session, err := client.Connect(ctx, transport, nil)
+	releaseChildEnvChannel(transport)
+	return session, err
 }
 
 // Option configures NewManager. It is the non-breaking seam for threading a
@@ -365,8 +374,8 @@ const serverSandboxRecheckPause = time.Second
 // namespace, mount, or Seatbelt policy exists — and an MCP server's cfg.Env can
 // come from a config layer a repository writes. It therefore never joins
 // cmd.Env: the Confine*WithChildEnv methods hand it to the confined child over a
-// private fd (bwrap --args, or a shell after sandbox-exec's --), so neither the
-// launcher's environment nor its argv carries the values.
+// private fd (bwrap --args, or a reader process after sandbox-exec's --), so
+// neither the launcher's environment nor its argv carries the values.
 //
 // The parent environment is scrubbed of credential-named vars (evener's own
 // provider key et al.), so an ambient secret never reaches the confined server,
@@ -999,7 +1008,10 @@ func (c *conn) reconnect(_ context.Context) (*mcpsdk.ClientSession, bool) {
 	transport, err := dial(dialCtx)
 	if err == nil {
 		var newSess *mcpsdk.ClientSession
-		newSess, err = client.Connect(dialCtx, transport, nil)
+		// The lazy redial builds a fresh confined command with its own private
+		// child-env fd, so its parent copy is released exactly like the first
+		// connect's.
+		newSess, err = connectAndRelease(dialCtx, client, transport)
 		if err == nil {
 			old, committed := c.swap(newSess)
 			if !committed {

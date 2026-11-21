@@ -9,7 +9,7 @@ import (
 // childEnvFile writes childEnv's payload to a private, unnamed file and returns
 // it open at offset 0, ready to inherit as the child-env fd. The file has no
 // name once this returns, so only a process holding the fd can read the
-// assignments; the launcher (bwrap, or the Seatbelt shell) reads them at
+// assignments; the launcher (bwrap, or the Seatbelt reader) reads them at
 // startup and the spawn site closes them afterwards.
 func childEnvFile(backend Backend, childEnv ChildEnvDelta) (*os.File, error) {
 	return privateFile(childEnvPayload(backend, childEnv))

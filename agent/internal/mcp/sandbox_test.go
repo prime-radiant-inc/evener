@@ -69,7 +69,7 @@ func childEnvChannel(t *testing.T, cmd *exec.Cmd) (map[string]string, []string) 
 // therefore ride a private fd the launcher reads and closes, while cmd.Env
 // stays the scrubbed launcher environment.
 func TestMCPStdioServerSecretEnvNeverRidesLauncherArgv(t *testing.T) {
-	const secret = "sk-mcp-configured-9c1d"
+	const secret = "mcp-fixture-token-9c1d"
 	cfg := stdioCfg()
 	cfg.Env = map[string]string{"MCP_SERVER_TOKEN": secret}
 
@@ -385,7 +385,7 @@ func TestMCPStdioServerAppliesConfigEnvInsideTheSandbox(t *testing.T) {
 // (its provider API key et al.) from the parent environment, but a secret the
 // server config sets explicitly is deliberate configuration and must survive.
 func TestMCPStdioServerScrubsAmbientSecrets(t *testing.T) {
-	t.Setenv("EVENER_AMBIENT_API_KEY", "sk-ambient-leak")
+	t.Setenv("EVENER_AMBIENT_API_KEY", "ambient-fixture-key-leak")
 	cfg := mcpconfig.ServerConfig{
 		Name:    "s",
 		Type:    "stdio",
@@ -601,4 +601,77 @@ func TestMCPStdioServerFloorUsesTheConfinedWorktreeDir(t *testing.T) {
 	if want := filepath.Join(sessionTmp, "npm"); got != want {
 		t.Fatalf("npm_config_cache = %q, want the session scratch %q", got, want)
 	}
+}
+
+// childEnvCommand builds a stdio transport whose command carries a private
+// child-env fd, the way confinement leaves it. The command never speaks MCP, so
+// Connect fails — the fd must be released either way, and a failure is the
+// cheapest deterministic path to a started-then-failed launcher.
+func childEnvCommand(t *testing.T) (*mcpsdk.CommandTransport, *os.File) {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "child-env-*")
+	if err != nil {
+		t.Fatalf("create private child-env fd: %v", err)
+	}
+	if _, err := f.WriteString("+MCP_TOKEN=fixture-token\n"); err != nil {
+		t.Fatalf("write private child-env fd: %v", err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		t.Fatalf("rewind private child-env fd: %v", err)
+	}
+	cmd := exec.Command("/bin/sh", "-c", "exit 0") //nolint:noctx // test-only cmd, starts and exits without speaking MCP
+	cmd.ExtraFiles = []*os.File{f}
+	return &mcpsdk.CommandTransport{Command: cmd}, f
+}
+
+// assertChildEnvFdReleased fails when the parent still holds the private
+// child-env fd after a connect. Close on an already-closed *os.File returns an
+// error, which is how "released" is observed without reaching into fd tables.
+func assertChildEnvFdReleased(t *testing.T, ct *mcpsdk.CommandTransport, f *os.File) {
+	t.Helper()
+	if ct.Command.ExtraFiles != nil {
+		t.Errorf("connect left ExtraFiles populated: %v", ct.Command.ExtraFiles)
+	}
+	if err := f.Close(); err == nil {
+		t.Error("connect left the parent's copy of the private child-env fd open")
+	}
+}
+
+// TestInitialConnectReleasesParentChildEnvFd covers the first connect: the
+// launcher owns its own copy of the fd from the exec on, so the parent's copy
+// must not stay open for the session's lifetime.
+func TestInitialConnectReleasesParentChildEnvFd(t *testing.T) {
+	ctx := context.Background()
+	ct, f := childEnvCommand(t)
+	mgr, outcomes := NewManager(ctx, []mcpconfig.ServerConfig{{Name: "s", Type: "stdio"}},
+		[]func(context.Context) (mcpsdk.Transport, error){staticDial(ct)})
+	defer mgr.Close()
+	if len(outcomes) != 1 || outcomes[0].Stage != "connect" {
+		t.Fatalf("NewManager: %+v", outcomes)
+	}
+	assertChildEnvFdReleased(t, ct, f)
+}
+
+// TestReconnectReleasesParentChildEnvFd covers the lazy redial: reconnect
+// builds a fresh confined command with its own private child-env fd, and its
+// parent copy was previously never closed — one leaked fd per redial.
+func TestReconnectReleasesParentChildEnvFd(t *testing.T) {
+	ctx := context.Background()
+	_, live := newReconnectTestServer(t, "s", "probe", "reply")
+	mgr, outcomes := NewManager(ctx, []mcpconfig.ServerConfig{{Name: "s", Type: "stdio"}},
+		[]func(context.Context) (mcpsdk.Transport, error){staticDial(live)})
+	defer mgr.Close()
+	if len(outcomes) != 0 {
+		t.Fatalf("NewManager: %+v", outcomes)
+	}
+
+	ct, f := childEnvCommand(t)
+	c := &mgr.conns[0]
+	c.mu.Lock()
+	c.dial = staticDial(ct)
+	c.mu.Unlock()
+	if _, ok := c.reconnect(ctx); ok {
+		t.Fatal("a command that never speaks MCP must not connect")
+	}
+	assertChildEnvFdReleased(t, ct, f)
 }

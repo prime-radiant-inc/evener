@@ -332,26 +332,26 @@ func TestConfineWithChildEnvUnsetsFloorRemovedNames(t *testing.T) {
 	}
 }
 
-// TestChildEnvArgvSeatbeltUsesShellAfterSeparator pins the Seatbelt half: that
-// backend has no args-from-fd flag, so a fixed shell script on the confined side
-// of the "--" reads the private fd and applies the assignments. sandbox-exec
-// itself keeps the launcher env, and no value reaches the argv.
-func TestChildEnvArgvSeatbeltUsesShellAfterSeparator(t *testing.T) {
+// TestChildEnvArgvSeatbeltUsesReaderAfterSeparator pins the Seatbelt half: that
+// backend has no args-from-fd flag, so a fixed reader on the confined side of
+// the "--" applies the assignments from the private fd. sandbox-exec itself
+// keeps the launcher env, and no value reaches the argv.
+func TestChildEnvArgvSeatbeltUsesReaderAfterSeparator(t *testing.T) {
 	argv := []string{"/usr/bin/sandbox-exec", "-p", "(version 1)", "--", "/bin/bash", "-c", "echo hi"}
 	got := childEnvArgv(BackendSeatbelt, argv, 3, 3)
 	want := []string{
 		"/usr/bin/sandbox-exec", "-p", "(version 1)", "--",
-		"/bin/bash", "-c", childEnvScript(3), "/bin/bash",
+		childEnvReader, "-e", childEnvScript(3),
 		"/bin/bash", "-c", "echo hi",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("childEnvArgv =\n%v\nwant\n%v", got, want)
 	}
-	if script := childEnvScript(3); !strings.Contains(script, "<&3") || !strings.Contains(script, "exec 3<&-") {
-		t.Errorf("seatbelt helper must read the private fd and keep it out of the server: %q", script)
+	if script := childEnvScript(3); !strings.Contains(script, "my $fd = 3;") || !strings.Contains(script, "close $fh;") || !strings.Contains(script, "exec { $ARGV[0] } @ARGV;") {
+		t.Errorf("seatbelt reader must read the private fd, close it, and exec the original command: %q", script)
 	}
-	if script := childEnvScript(7); !strings.Contains(script, "<&7") || !strings.Contains(script, "exec 7<&-") {
-		t.Errorf("seatbelt helper must use the fd it is given: %q", script)
+	if script := childEnvScript(7); !strings.Contains(script, "my $fd = 7;") {
+		t.Errorf("seatbelt reader must use the fd it is given: %q", script)
 	}
 	// Nothing from the delta can reach this argv, because it carries none.
 	if joined := strings.Join(got, "\x00"); strings.Contains(joined, "LD_PRELOAD") {
@@ -388,28 +388,117 @@ func TestChildEnvPayloadRecords(t *testing.T) {
 }
 
 // TestChildEnvScriptAppliesTheFdWithoutEvaluatingValues proves the Seatbelt
-// helper applies assignments from the private fd and treats a value as data: a
-// value carrying shell syntax must arrive unchanged. It runs the same script
-// macOS's bash 3.2 executes, using the host bash.
+// reader applies assignments from the private fd and treats a value as data: a
+// value carrying shell syntax must arrive unchanged, a dotted name (legal for a
+// process environment but not for a shell builtin) must be set, an empty value
+// must stay empty, and an unset name must be gone. It runs the same script
+// macOS's /usr/bin/perl executes, using the host perl.
 func TestChildEnvScriptAppliesTheFdWithoutEvaluatingValues(t *testing.T) {
+	reader, err := exec.LookPath(childEnvReader)
+	if err != nil {
+		t.Skipf("child-env reader %s not installed: %v", childEnvReader, err)
+	}
 	const value = "line1\nline2 $HOME $(id) `id`"
 	f, err := childEnvFile(BackendSeatbelt, ChildEnvDelta{
-		Set:   map[string]string{"SECRET_VALUE": value},
+		Set: map[string]string{
+			"SECRET_VALUE":       value,
+			"logging.level.root": "debug",
+			"EMPTY_VALUE":        "",
+		},
 		Unset: []string{"AMBIENT_SECRET"},
 	})
 	if err != nil {
 		t.Fatalf("childEnvFile: %v", err)
 	}
 	t.Cleanup(func() { _ = f.Close() })
-	cmd := exec.Command("/bin/bash", "-c", childEnvScript(3), "bash", "/bin/sh", "-c", `printf '%s|%s' "$SECRET_VALUE" "${AMBIENT_SECRET-<unset>}"`)
-	cmd.Env = []string{"AMBIENT_SECRET=ambient"}
+	cmd := exec.Command(reader, "-e", childEnvScript(3), "/usr/bin/env")
+	cmd.Env = []string{"AMBIENT_SECRET=ambient", "PATH=/usr/bin:/bin"}
 	cmd.ExtraFiles = []*os.File{f}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("child-env script: %v: %s", err, out)
 	}
-	if want := value + "|<unset>"; string(out) != want {
-		t.Errorf("child-env script delivered %q, want %q", out, want)
+	env := string(out)
+	for _, want := range []string{
+		"SECRET_VALUE=" + value + "\n",
+		"logging.level.root=debug\n",
+		"EMPTY_VALUE=\n",
+	} {
+		if !strings.Contains(env, want) {
+			t.Errorf("child environment is missing %q:\n%s", want, env)
+		}
+	}
+	if strings.Contains(env, "AMBIENT_SECRET=") {
+		t.Errorf("unset name must not reach the child:\n%s", env)
+	}
+	// The reader closes the private fd before exec, so the server inherits no
+	// extra descriptor.
+	if _, err := os.Stat("/dev/fd"); err == nil {
+		probe, err := childEnvFile(BackendSeatbelt, ChildEnvDelta{Set: map[string]string{"PROBE": "x"}})
+		if err != nil {
+			t.Fatalf("childEnvFile: %v", err)
+		}
+		t.Cleanup(func() { _ = probe.Close() })
+		fdCheck := exec.Command(reader, "-e", childEnvScript(3), "/bin/sh", "-c", `if [ -e /dev/fd/3 ]; then echo open; else echo closed; fi`)
+		fdCheck.ExtraFiles = []*os.File{probe}
+		fdOut, err := fdCheck.CombinedOutput()
+		if err != nil {
+			t.Fatalf("fd check: %v: %s", err, fdOut)
+		}
+		if strings.TrimSpace(string(fdOut)) != "closed" {
+			t.Errorf("child inherited the private fd: %s", fdOut)
+		}
+	}
+}
+
+// TestChildEnvRejectsEmbeddedNUL is the review fix for the private channel's
+// framing: the payload is NUL-delimited, so a configured name or value carrying
+// a NUL byte would split one record into several and let the trailing bytes be
+// read as launcher flags by bwrap's --args (or as another assignment by the
+// Seatbelt reader). The spawn is refused before anything is encoded, the
+// command is left untouched, and the error names the variable without echoing
+// its value.
+func TestChildEnvRejectsEmbeddedNUL(t *testing.T) {
+	rp, cwd, _ := resolveFixture(t, ModeWorkspaceWrite, true)
+	w, err := NewWrapper(rp, "/usr/bin/bwrap", "/tmp/evener-session")
+	if err != nil {
+		t.Fatalf("NewWrapper: %v", err)
+	}
+	const injected = "fixture-value-before-the-nul"
+	cases := []struct {
+		name     string
+		delta    ChildEnvDelta
+		wantName string
+	}{
+		{"set value", ChildEnvDelta{Set: map[string]string{"MCP_TOKEN": injected + "\x00--args"}}, "MCP_TOKEN"},
+		{"set name", ChildEnvDelta{Set: map[string]string{"MCP\x00TOKEN": "x"}}, "MCP"},
+		{"unset name", ChildEnvDelta{Unset: []string{"MCP\x00TOKEN"}}, "MCP"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command("/bin/bash", "-c", "echo hi") //nolint:noctx // test-only cmd, never run
+			orig := slices.Clone(cmd.Args)
+			err := w.ConfineWithChildEnv(cmd, cwd, tc.delta)
+			if err == nil {
+				t.Fatal("a child env carrying a NUL byte must be refused")
+			}
+			if !strings.Contains(err.Error(), tc.wantName) {
+				t.Errorf("error must name the offending variable: %v", err)
+			}
+			if strings.Contains(err.Error(), injected) {
+				t.Errorf("error must not echo the value: %v", err)
+			}
+			if !slices.Equal(cmd.Args, orig) || cmd.ExtraFiles != nil {
+				t.Errorf("a refused spawn must leave the command untouched: args=%v extraFiles=%v", cmd.Args, cmd.ExtraFiles)
+			}
+		})
+	}
+	// The unconfined path frames no records, but a NUL still cannot survive an
+	// exec, so it refuses there too rather than half-applying the delta.
+	var nilWrapper *Wrapper
+	cmd := exec.Command("/bin/echo", "hi") //nolint:noctx // test-only cmd, never run
+	if err := nilWrapper.ConfineWithChildEnv(cmd, "", ChildEnvDelta{Set: map[string]string{"MCP_TOKEN": injected + "\x00x"}}); err == nil {
+		t.Error("a NUL byte must be refused on the unconfined path too")
 	}
 }
 
@@ -429,7 +518,7 @@ func TestChildEnvFdRoundTripsThroughRealBwrap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWrapper: %v", err)
 	}
-	const secret = "sk-live-child-env-4e11"
+	const secret = "child-env-fixture-value-4e11"
 	cmd := exec.Command("/bin/sh", "-c", `printf '%s' "$MCP_SERVER_TOKEN"`)
 	cmd.Env = []string{"PATH=/usr/bin:/bin"}
 	if err := w.ConfineWithChildEnv(cmd, cwd, ChildEnvDelta{Set: map[string]string{"MCP_SERVER_TOKEN": secret}}); err != nil {
