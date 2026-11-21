@@ -578,7 +578,7 @@ func TestEditFileBatch_CRLFMixedEndingsAndBOM(t *testing.T) {
 		}
 	})
 
-	t.Run("mixed endings preserves untouched LF and CRLF verbatim", func(t *testing.T) {
+	t.Run("CRLF-first mixed endings normalize to CRLF", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		env := NewLocalExecutionEnvironment(dir)
@@ -592,7 +592,7 @@ func TestEditFileBatch_CRLFMixedEndingsAndBOM(t *testing.T) {
 			t.Fatalf("mixed ending edit failed: %v", err)
 		}
 		got, _ := os.ReadFile(filepath.Join(dir, "mixed.txt"))
-		want := "A1\r\nA2\r\nb\nc\r\n"
+		want := "A1\r\nA2\r\nb\r\nc\r\n"
 		if string(got) != want {
 			t.Fatalf("got %q, want %q", got, want)
 		}
@@ -618,21 +618,21 @@ func TestEditFileBatch_CRLFMixedEndingsAndBOM(t *testing.T) {
 		}
 	})
 
-	t.Run("mixed endings preserves untouched LF segment when editing LF slice", func(t *testing.T) {
+	t.Run("LF-first mixed endings normalize to LF", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		env := NewLocalExecutionEnvironment(dir)
-		orig := "a\r\nb\nc\r\n"
+		orig := "a\nb\r\nc\n"
 		if err := os.WriteFile(filepath.Join(dir, "mixed2.txt"), []byte(orig), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := env.EditFileBatchCtx(context.Background(), "mixed2.txt", []FileEdit{
-			{OldString: "b\n", NewString: "B1\r\nB2\r\n"},
+			{OldString: "b\r\n", NewString: "B1\r\nB2\r\n"},
 		}); err != nil {
 			t.Fatalf("mixed2 edit failed: %v", err)
 		}
 		got, _ := os.ReadFile(filepath.Join(dir, "mixed2.txt"))
-		want := "a\r\nB1\nB2\nc\r\n"
+		want := "a\nB1\nB2\nc\n"
 		if string(got) != want {
 			t.Fatalf("got %q, want %q", got, want)
 		}

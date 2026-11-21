@@ -410,19 +410,14 @@ func (e *LocalExecutionEnvironment) EditFileBatchCtx(ctx context.Context, path s
 }
 
 type preparedEdit struct {
-	oldLF   string
-	newLF   string
-	lenLF   int64
-	lenCRLF int64
+	oldLF string
+	newLF string
 }
 
 type editSpan struct {
-	lfStart   int
-	lfEnd     int
-	origStart int
-	origEnd   int
+	start     int
+	end       int
 	editIndex int
-	useCRLF   bool
 }
 
 // EditFileBatchWithCtx is EditFileBatchCtx, except that finish, when not nil,
@@ -469,36 +464,22 @@ func (e *LocalExecutionEnvironment) EditFileBatchWithCtx(ctx context.Context, pa
 		return "", err
 	}
 
-	bomLen := 0
+	bom := ""
 	if bytes.HasPrefix(origBytes, []byte{0xEF, 0xBB, 0xBF}) {
-		bomLen = 3
+		bom = "\xEF\xBB\xBF"
 	}
-	body := origBytes[bomLen:]
-
-	hasCRLF := bytes.Contains(body, []byte("\r\n"))
-	var lfText string
-	if !hasCRLF {
-		lfText = string(body)
-	} else {
-		lfText = strings.ReplaceAll(string(body), "\r\n", "\n")
+	raw := string(origBytes[len(bom):])
+	useCRLF := false
+	if idx := strings.IndexByte(raw, '\n'); idx > 0 && raw[idx-1] == '\r' {
+		useCRLF = true
 	}
-
-	defaultCRLF := false
-	if idx := bytes.IndexByte(body, '\n'); idx > 0 && body[idx-1] == '\r' {
-		defaultCRLF = true
-	}
+	lfText := strings.ReplaceAll(raw, "\r\n", "\n")
 
 	prepared := make([]preparedEdit, len(edits))
 	for i, ed := range edits {
-		oldLF := strings.ReplaceAll(ed.OldString, "\r\n", "\n")
-		newLF := strings.ReplaceAll(ed.NewString, "\r\n", "\n")
-		lenLF := int64(len(newLF))
-		lenCRLF := lenLF + int64(strings.Count(newLF, "\n"))
 		prepared[i] = preparedEdit{
-			oldLF:   oldLF,
-			newLF:   newLF,
-			lenLF:   lenLF,
-			lenCRLF: lenCRLF,
+			oldLF: strings.ReplaceAll(ed.OldString, "\r\n", "\n"),
+			newLF: strings.ReplaceAll(ed.NewString, "\r\n", "\n"),
 		}
 	}
 
@@ -532,8 +513,8 @@ matchLoop:
 					break matchLoop
 				}
 				spans = append(spans, editSpan{
-					lfStart:   idx,
-					lfEnd:     idx + len(pe.oldLF),
+					start:     idx,
+					end:       idx + len(pe.oldLF),
 					editIndex: i,
 				})
 				continue
@@ -545,8 +526,8 @@ matchLoop:
 					break matchLoop
 				}
 				spans = append(spans, editSpan{
-					lfStart:   pos,
-					lfEnd:     pos + len(pe.oldLF),
+					start:     pos,
+					end:       pos + len(pe.oldLF),
 					editIndex: i,
 				})
 				nextStart := pos + len(pe.oldLF)
@@ -609,8 +590,8 @@ matchLoop:
 		usedFuzzy = true
 		for _, fs := range fuzzySpans {
 			spans = append(spans, editSpan{
-				lfStart:   fs.start,
-				lfEnd:     fs.end,
+				start:     fs.start,
+				end:       fs.end,
 				editIndex: i,
 			})
 		}
@@ -621,90 +602,54 @@ matchLoop:
 	}
 
 	slices.SortFunc(spans, func(a, b editSpan) int {
-		if a.lfStart != b.lfStart {
-			return a.lfStart - b.lfStart
+		if a.start != b.start {
+			return a.start - b.start
 		}
-		if a.lfEnd != b.lfEnd {
-			return a.lfEnd - b.lfEnd
+		if a.end != b.end {
+			return a.end - b.end
 		}
 		return a.editIndex - b.editIndex
 	})
 
 	for k := 1; k < len(spans); k++ {
-		if spans[k-1].lfEnd > spans[k].lfStart {
+		if spans[k-1].end > spans[k].start {
 			return "", fmt.Errorf("edits[%d] and edits[%d] match overlapping text; merge overlapping or nearby edits into a single edit",
 				spans[k-1].editIndex, spans[k].editIndex)
 		}
 	}
 
-	if !hasCRLF {
-		for k := range spans {
-			spans[k].origStart = bomLen + spans[k].lfStart
-			spans[k].origEnd = bomLen + spans[k].lfEnd
-		}
-	} else {
-		origPos := 0
-		lfPos := 0
-		advanceTo := func(targetLF int) int {
-			for lfPos < targetLF {
-				if body[origPos] == '\r' && origPos+1 < len(body) && body[origPos+1] == '\n' {
-					origPos += 2
-				} else {
-					origPos++
-				}
-				lfPos++
-			}
-			return origPos
-		}
-		for k := range spans {
-			spans[k].origStart = bomLen + advanceTo(spans[k].lfStart)
-			spans[k].origEnd = bomLen + advanceTo(spans[k].lfEnd)
-		}
-	}
-
-	for k := range spans {
-		origSlice := origBytes[spans[k].origStart:spans[k].origEnd]
-		if bytes.Contains(origSlice, []byte("\r\n")) {
-			spans[k].useCRLF = true
-		} else if bytes.IndexByte(origSlice, '\n') >= 0 {
-			spans[k].useCRLF = false
-		} else {
-			spans[k].useCRLF = defaultCRLF
-		}
-	}
-
-	outLen := int64(len(origBytes))
+	lfOutLen := int64(len(lfText))
 	for _, sp := range spans {
-		pe := prepared[sp.editIndex]
-		replLen := pe.lenLF
-		if sp.useCRLF {
-			replLen = pe.lenCRLF
-		}
-		outLen += replLen - int64(sp.origEnd-sp.origStart)
+		lfOutLen += int64(len(prepared[sp.editIndex].newLF)) - int64(sp.end-sp.start)
 	}
-	if outLen > MaxEditFileOutputBytes {
-		return "", fmt.Errorf("edited output for %s would be %d bytes, exceeding the %d-byte edit limit", path, outLen, MaxEditFileOutputBytes)
+	if int64(len(bom))+lfOutLen > MaxEditFileOutputBytes {
+		return "", fmt.Errorf("edited output for %s would be %d bytes, exceeding the %d-byte edit limit", path, int64(len(bom))+lfOutLen, MaxEditFileOutputBytes)
 	}
 
-	crlfCache := make([]string, len(prepared))
-	edited := make([]byte, 0, int(outLen))
+	var outLF strings.Builder
+	outLF.Grow(int(lfOutLen))
 	cursor := 0
 	for _, sp := range spans {
-		edited = append(edited, origBytes[cursor:sp.origStart]...)
-		pe := prepared[sp.editIndex]
-		if sp.useCRLF && pe.lenCRLF != pe.lenLF {
-			repl := crlfCache[sp.editIndex]
-			if repl == "" {
-				repl = strings.ReplaceAll(pe.newLF, "\n", "\r\n")
-				crlfCache[sp.editIndex] = repl
-			}
-			edited = append(edited, repl...)
-		} else {
-			edited = append(edited, pe.newLF...)
-		}
-		cursor = sp.origEnd
+		outLF.WriteString(lfText[cursor:sp.start])
+		outLF.WriteString(prepared[sp.editIndex].newLF)
+		cursor = sp.end
 	}
-	edited = append(edited, origBytes[cursor:]...)
+	outLF.WriteString(lfText[cursor:])
+
+	restored := outLF.String()
+	finalLen := int64(len(bom)) + int64(len(restored))
+	if useCRLF {
+		finalLen += int64(strings.Count(restored, "\n"))
+	}
+	if finalLen > MaxEditFileOutputBytes {
+		return "", fmt.Errorf("edited output for %s would be %d bytes, exceeding the %d-byte edit limit", path, finalLen, MaxEditFileOutputBytes)
+	}
+	if useCRLF {
+		restored = strings.ReplaceAll(restored, "\n", "\r\n")
+	}
+	edited := make([]byte, len(bom)+len(restored))
+	copy(edited, bom)
+	copy(edited[len(bom):], restored)
 
 	if bytes.Equal(edited, origBytes) {
 		return "", fmt.Errorf("no changes made to %s: replacement produces identical file content", path)
