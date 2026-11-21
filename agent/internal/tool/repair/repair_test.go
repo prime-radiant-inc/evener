@@ -3,7 +3,6 @@ package repair
 import (
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
 )
 
@@ -882,18 +881,17 @@ func TestRepairArgs_CompetingAliases(t *testing.T) {
 		}
 	})
 
-	t.Run("differing values at root preserved deterministically", func(t *testing.T) {
+	t.Run("differing top-level edit aliases not folded", func(t *testing.T) {
 		t.Parallel()
 		args := map[string]any{
-			"path":     "/a",
-			"filepath": "/b",
+			"file_path":  "a.go",
+			"old_string": "a",
+			"new_str":    "x",
+			"newText":    "y",
 		}
-		out, _ := RepairArgs(readFileParams(), args)
-		if _, hasCanon := out["file_path"]; hasCanon {
-			t.Fatalf("conflicting root aliases should not pick an arbitrary winner: %#v", out)
-		}
-		if out["path"] != "/a" || out["filepath"] != "/b" {
-			t.Fatalf("competing root aliases must be preserved past dropUnknown: %#v", out)
+		out, _ := RepairArgs(multiEditParams(), args)
+		if _, hasEdits := out["edits"]; hasEdits {
+			t.Fatalf("conflicting top-level edit aliases should not fold into edits: %#v", out)
 		}
 	})
 
@@ -967,16 +965,6 @@ func TestRepairArgs_ObjectArrayEdgeCasesAndNonMutation(t *testing.T) {
 			if len(changes) != 0 {
 				t.Fatalf("raw=%q recorded unexpected changes: %+v", raw, changes)
 			}
-		}
-	})
-
-	t.Run("deeply nested JSON string exceeds depth guard and stays untouched", func(t *testing.T) {
-		t.Parallel()
-		deep := strings.Repeat("[", 66) + `{"old_str":"a","new_str":"b"}` + strings.Repeat("]", 66)
-		args := map[string]any{"file_path": "a.go", "edits": deep}
-		out, _ := RepairArgs(multiEditParams(), args)
-		if out["edits"] != deep {
-			t.Fatalf("overly deep JSON string should be left untouched")
 		}
 	})
 
