@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/internal/testfs"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // startHeldRun starts the evener-dev binary against the fixture with one shard
@@ -83,16 +84,10 @@ func startHeldRun(t *testing.T, extraEnv ...string) (*exec.Cmd, int, string, str
 // awaitFile waits for a path to appear, failing with label if it never does.
 func awaitFile(t *testing.T, path, label string) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		if _, err := os.Stat(path); err == nil {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: %s never appeared", label, path)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Until(t, label+": "+path+" to appear", func() bool {
+		_, err := os.Stat(path)
+		return err == nil
+	})
 }
 
 // releaseHold unblocks a held shard by opening the write end of its FIFO.
@@ -109,16 +104,9 @@ func releaseHold(t *testing.T, holdDir string) {
 
 func awaitPidGone(t *testing.T, pid int, label string) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		if err := syscall.Kill(pid, 0); err == syscall.ESRCH {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: pid %d still alive", label, pid)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Until(t, fmt.Sprintf("%s: pid %d to disappear", label, pid), func() bool {
+		return syscall.Kill(pid, 0) == syscall.ESRCH
+	})
 }
 
 // TestAgentShardsHungTestFailsItsRunAndIsNamed pins what the test timeout is
