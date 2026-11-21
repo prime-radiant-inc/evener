@@ -96,7 +96,7 @@ func snapshotConfigHomeForkError() error {
 	if err != nil {
 		// The go command cannot resolve a config home either, so it has no
 		// telemetry directory to write into.
-		return nil
+		return nil //nolint:nilerr // unresolved config home leaves go env with no telemetry dir
 	}
 	return configHomeForkRefusal(testSnapshotConfigHome, current)
 }
