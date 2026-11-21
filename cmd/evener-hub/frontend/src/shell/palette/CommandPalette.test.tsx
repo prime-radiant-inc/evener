@@ -1422,7 +1422,7 @@ test("choosing a thought or action row in In session hands Find the words and th
   await waitFor(() => expect(screen.getByTestId("find-request").getAttribute("data-item")).toBe("call1"));
 });
 
-test("a Tools-preset call's rationale is not offered In session, because no row shows it", async () => {
+test("a Tools-preset call's own lines are offered In session and hand Find the call", async () => {
   const user = userEvent.setup();
   scriptSearch({ live: [], past: [] });
   transcriptDisplayStore
@@ -1443,13 +1443,17 @@ test("a Tools-preset call's rationale is not offered In session, because no row 
   act(() => openPalette());
   await user.type(screen.getByRole("combobox"), "frobnitz");
 
-  // The call's output is on screen and stays listed; its rationale is not, so
-  // no result here would close the palette without opening Find on anything.
-  await waitFor(() => expect(paletteRowsOfKind("insession")).toHaveLength(1));
-  expect(paletteRowsOfKind("insession")[0]?.textContent).toContain("frobnitz log");
-  expect(paletteRowsOfKind("insession")[0]?.textContent).not.toContain("grep for");
-  // The probe always mounts; an empty item means Find was never sent there.
-  expect(screen.getByTestId("find-request").getAttribute("data-item")).toBe("");
+  // At the tools level the call renders its intent line and its body, so both
+  // are on screen and both are listed - each as its own snippet.
+  await waitFor(() => expect(paletteRowsOfKind("insession")).toHaveLength(2));
+  const snippets = paletteRowsOfKind("insession").map((row) => row.textContent);
+  expect(snippets.some((text) => text?.includes("grep for frobnitz"))).toBe(true);
+  expect(snippets.some((text) => text?.includes("frobnitz log"))).toBe(true);
+
+  // Choosing either hands the session's Find the words and the call itself.
+  await user.click(paletteRowsOfKind("insession")[0] as HTMLElement);
+  await waitFor(() => expect(screen.getByTestId("find-request").getAttribute("data-item")).toBe("call1"));
+  expect(screen.getByTestId("find-request").getAttribute("data-query")).toBe("frobnitz");
 });
 
 // FIX 2 (real-user report): a user hunting for the keyboard shortcut legend

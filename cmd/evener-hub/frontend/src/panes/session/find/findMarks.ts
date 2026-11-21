@@ -20,6 +20,13 @@ const MAX_RANGES = 1500;
  * entry's own anchor and the span of rows the virtual list has mounted. */
 interface MountedTranscript {
   entries: Map<string, HTMLElement>;
+  /** The call rows mounted by their own item id: a hit inside an open run
+   * resolves to the row that holds its words, not the anchor around it. */
+  rows: Map<string, HTMLElement>;
+  /** The entries a folded anchor stands in for (a tool run), each mapped to
+   * that anchor: a hit on a folded call resolves to the row that holds it
+   * once the fold opens. */
+  folds: Map<string, HTMLElement>;
   firstRow: number;
   lastRow: number;
 }
@@ -27,6 +34,8 @@ interface MountedTranscript {
 function readMounted(port: HTMLElement): MountedTranscript {
   const mounted: MountedTranscript = {
     entries: new Map(),
+    rows: new Map(),
+    folds: new Map(),
     firstRow: Number.POSITIVE_INFINITY,
     lastRow: Number.NEGATIVE_INFINITY,
   };
@@ -36,7 +45,14 @@ function readMounted(port: HTMLElement): MountedTranscript {
       mounted.firstRow = Math.min(mounted.firstRow, row);
       mounted.lastRow = Math.max(mounted.lastRow, row);
     }
-    mounted.entries.set(anchor.getAttribute("data-view-anchor-id") ?? "", anchor);
+    const id = anchor.getAttribute("data-view-anchor-id") ?? "";
+    mounted.entries.set(id, anchor);
+    for (const member of (anchor.getAttribute("data-view-anchor-members") ?? "").split(",")) {
+      if (member !== "") mounted.folds.set(member, anchor);
+    }
+  }
+  for (const row of port.querySelectorAll<HTMLElement>("[data-item-id]")) {
+    mounted.rows.set(row.getAttribute("data-item-id") ?? "", row);
   }
   return mounted;
 }
@@ -222,7 +238,14 @@ export function markTranscript(
     const markHit = (hit: FindHit): HTMLElement | null => {
       // Hits far outside the mounted window cost nothing.
       if (hit.rowIndex < mounted.firstRow || hit.rowIndex > mounted.lastRow) return null;
-      const entry = mounted.entries.get(hit.key);
+      // A call inside a folded run has no anchor of its own: the run's anchor
+      // lists it as a member. Once Find opens the run the call's own row is
+      // what holds the words, and it is preferred over the anchor around it.
+      const entry =
+        mounted.entries.get(hit.key) ??
+        mounted.rows.get(hit.itemId) ??
+        mounted.folds.get(hit.key) ??
+        mounted.folds.get(hit.itemId);
       if (entry === undefined) return null;
       const isCurrent = hit.key === currentKey;
       if (!registry && !isCurrent) return entry;

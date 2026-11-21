@@ -458,6 +458,7 @@ function LiveConversationBody({
     paneId: seat.viewFallbackId,
     rows: renderRows,
     config: displayConfig,
+    cwd: model?.cwd,
     disclosureScope: seat.readView?.id ?? seat.viewFallbackId,
     listRef: virtualListRef,
     ownerDocument,

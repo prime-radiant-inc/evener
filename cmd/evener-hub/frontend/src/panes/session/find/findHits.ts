@@ -1,8 +1,11 @@
 // Which entries hold the words being looked for: a message's words, a
-// thought's summaries and an action row's rationale (tool calls, steers and
-// system notices are not searched). A hit is one projected entry, and its
-// words are on screen once its row mounts: a message never folds, a thought's
-// or an action's words sit behind a disclosure Find opens before it lands.
+// thought's summaries, an action row's rationale and a tool call's own lines
+// (steers and system notices are not searched by this slice). A hit is one
+// projected entry, and its words are on screen once its row mounts: a message
+// never folds, and whatever hides the matching words - a thought's or an
+// action group's disclosure, a tool run, a call's summary line or body - Find
+// opens before it lands. Text a tool body folds or clips away is shown by the
+// row's own excerpt (toolCallHits.ts), never counted and left unseen.
 import {
   entryDisplayKey,
   findNeedle,
@@ -20,8 +23,9 @@ import { mermaidRenderVersion } from "../../../widgets/mermaid/renderState";
 import { displayedIntentOf } from "../transcript/ToolCallItem";
 import { type TranscriptBodyRow, transcriptRowsForProjection } from "../transcript/TranscriptBody";
 import { toolRendererFor } from "../transcript/toolRenderers";
-import { intentGroupId, intentRunAt } from "../transcript/toolRuns";
+import { foldTurnEntries, intentGroupId, intentRunAt } from "../transcript/toolRuns";
 import { messageAsShown, reasoningSummariesAsRead } from "./messageText";
+import { holdsNeedle, toolCallTexts } from "./toolCallHits";
 
 export interface FindHit {
   /** The entry's display key: its identity across paging and re-projection,
@@ -35,9 +39,10 @@ export interface FindHit {
   readonly callId?: string;
   /** The model round the message came from, when it has one. */
   readonly roundId?: string;
-  /** The one disclosure that hides the matching words, omitted for a message:
-   * a thought names its own, an action row its group. */
-  readonly opens?: string;
+  /** The disclosures that stand between the reader and the matching words,
+   * outermost first: the fold hiding the entry (a tool run or an action
+   * group), then the call's own summary line or body. A message has none. */
+  readonly opens?: readonly string[];
 }
 
 /** What the view shows, which decides what Find counts: one that hides
@@ -46,6 +51,8 @@ export interface FindView {
   readonly config?: TranscriptDisplayConfigV1;
   /** The diagram render state the text is read at. */
   readonly version?: number;
+  /** The session's working directory, which a tool call's summary reads at. */
+  readonly cwd?: string;
 }
 
 // A reply still arriving is an overlay item until it is recorded: a streamed
@@ -119,6 +126,13 @@ function thoughtHaystack(item: ItemModel, version: number, live: boolean): reado
   return text;
 }
 
+// A tool call's own lines, as its row paints them: the intent line, the
+// descriptor's summary, and what only the body holds. The intent is the same
+// rule ToolCallItem paints (a delegate's clipped brief included).
+function toolCall(entry: Extract<ProjectedEntry, { kind: "item" }>, cwd: string | undefined) {
+  return toolCallTexts(entry.item, { intent: displayedIntentOf(entry.item), cwd });
+}
+
 // What an action row actually says: the same intent line ToolCallItem paints
 // (a delegate's clipped brief included), and nothing where the row renders
 // none. The projector's neutral rationale is a fallback for rows whose
@@ -130,6 +144,23 @@ function intentText(entry: Extract<ProjectedEntry, { kind: "intent" }>): string 
   return displayedIntentOf(entry.item) ?? null;
 }
 
+/** Where a tool call holds the needle, and what hides that text - or null
+ * where it holds none. A summary-line match opens that line; a body match
+ * opens the body, and the row shows an excerpt of it where the body's own fold
+ * or clip keeps the words off screen. */
+function toolCallOpens(
+  entry: Extract<ProjectedEntry, { kind: "item" }>,
+  needle: string,
+  view: FindView,
+): readonly string[] | null {
+  const texts = toolCall(entry, view.cwd);
+  if (texts === null) return null;
+  if (holdsNeedle(texts.intent, needle)) return [];
+  if (holdsNeedle(texts.summary, needle)) return [`summary:${entry.item.id}`];
+  if (texts.body.some((text) => holdsNeedle(text, needle))) return [entry.item.id];
+  return null;
+}
+
 /** The text an entry shows that Find searches, as written: empty where the view
  * shows none of it. Find and the palette read every entry through this one
  * rule, so neither can offer text the other would not land on. `turn` is
@@ -139,10 +170,15 @@ function shownTexts(
   turn: TurnModel | undefined,
   config: TranscriptDisplayConfigV1 | undefined,
   version: number,
+  cwd: string | undefined,
 ): readonly string[] {
   if (entry.kind === "intent") {
     const text = intentText(entry);
     return text === null ? [] : [text];
+  }
+  if (entry.kind === "item" && entry.item.type === "commandExecution") {
+    const texts = toolCall(entry, cwd);
+    return texts === null ? [] : [texts.intent, texts.summary, ...texts.body].filter((text) => text !== "");
   }
   if (entry.item.type === "reasoning") {
     // A chat view shows only the placeholder before a live thought: its
@@ -174,7 +210,7 @@ export function projectedSearchTexts(
   for (const row of transcriptRowsForProjection(projectThread(model, config))) {
     const turn = row.kind === "intentGroup" ? undefined : row.turn.source;
     for (const entry of row.kind === "intentGroup" ? row.entries : row.turn.entries) {
-      const texts = shownTexts(entry, turn, config, version);
+      const texts = shownTexts(entry, turn, config, version, model.cwd);
       if (texts.length > 0) shown.set(entry.item.id, texts);
     }
   }
@@ -189,9 +225,7 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string, view
   if (needle === "") return [];
   const version = view.version ?? mermaidRenderVersion();
   const hits: FindHit[] = [];
-  const add = (entry: ProjectedEntry, rowIndex: number, turn: TurnModel | undefined, opens?: string) => {
-    const texts = shownTexts(entry, turn, view.config, version);
-    if (!texts.some((text) => readable(text).includes(needle))) return;
+  const push = (entry: ProjectedEntry, rowIndex: number, opens: readonly string[]) => {
     const { id, callId, roundId } = entry.item;
     const itemId = entry.kind === "intent" ? entry.sourceItemId : id;
     hits.push({
@@ -200,29 +234,47 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string, view
       rowIndex,
       ...(callId ? { callId } : {}),
       ...(roundId ? { roundId } : {}),
-      ...(opens ? { opens } : {}),
+      ...(opens.length > 0 ? { opens } : {}),
     });
+  };
+  // A tool call's own lines are classified by where they sit (its intent line,
+  // its summary line, its body); every other entry is a single test over the
+  // texts the view shows.
+  const add = (entry: ProjectedEntry, rowIndex: number, turn: TurnModel | undefined, outer: readonly string[]) => {
+    if (entry.kind === "item" && entry.item.type === "commandExecution") {
+      const own = toolCallOpens(entry, needle, view);
+      if (own !== null) push(entry, rowIndex, [...outer, ...own]);
+      return;
+    }
+    const texts = shownTexts(entry, turn, view.config, version, view.cwd);
+    if (!texts.some((text) => readable(text).includes(needle))) return;
+    push(entry, rowIndex, outer);
   };
   rows.forEach((row, rowIndex) => {
     if (row.kind === "intentGroup") {
-      for (const entry of row.entries) add(entry, rowIndex, undefined, row.id);
+      for (const entry of row.entries) add(entry, rowIndex, undefined, [row.id]);
       return;
     }
-    // The turn's own entries: folding tool calls cannot change which action
-    // rows are consecutive, and Slice 1 searches no tool text.
-    const laidOut = row.turn.entries;
+    // The turn's own entries, laid out the one way the transcript renders them
+    // (toolRuns.ts): a folded run is one row, so a hit inside it knows which
+    // disclosure opens it.
+    const laidOut = foldTurnEntries(row.turn);
     for (let index = 0; index < laidOut.length; index += 1) {
       const entry = laidOut[index];
       if (entry === undefined) continue;
+      if (entry.kind === "run") {
+        for (const member of entry.entries) add(member, rowIndex, row.turn.source, [entry.id]);
+        continue;
+      }
       if (entry.kind === "intent") {
         // TurnBlock groups consecutive action rows under the first one's id.
         const run = intentRunAt(laidOut, index);
         const group = intentGroupId(run.entries[0]?.id);
-        for (const member of run.entries) add(member, rowIndex, row.turn.source, group);
+        for (const member of run.entries) add(member, rowIndex, row.turn.source, [group]);
         index = run.end - 1;
         continue;
       }
-      add(entry, rowIndex, row.turn.source, entry.item.type === "reasoning" ? entryDisplayKey(entry) : undefined);
+      add(entry, rowIndex, row.turn.source, entry.item.type === "reasoning" ? [entryDisplayKey(entry)] : []);
     }
   });
   return hits;
@@ -232,5 +284,5 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string, view
  * the items a caller outside the transcript can send Find to. */
 export function findableItemIds(model: ThreadModel, config: TranscriptDisplayConfigV1, query: string): Set<string> {
   const rows = transcriptRowsForProjection(projectThread(model, config));
-  return new Set(findHits(rows, query, { config }).map((found) => found.itemId));
+  return new Set(findHits(rows, query, { config, cwd: model.cwd }).map((found) => found.itemId));
 }

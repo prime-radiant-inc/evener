@@ -668,8 +668,8 @@ function PaletteBody({
       // A message, thought or action the conversation shows is handed to its
       // own Find, which opens on these words, lands on that entry, opens what
       // hides it, and from there steps through the rest. A row Find cannot
-      // land on (tool output this slice leaves out, a thought the view hides)
-      // stays a listing and only closes the palette.
+      // land on (a call's plain text, a thought the view hides) stays a
+      // listing and only closes the palette.
       const { sessionRef, sessionPaneId } = runContext();
       const words = query.trim();
       const model = focusedModel(sessionRef);

@@ -315,9 +315,10 @@ test("choosing an in-session result from a companion pane brings up the conversa
 test("an in-session row Find cannot land on is listed and only closes the palette", async () => {
   const user = userEvent.setup();
   scriptSearch({ live: [], past: [] });
-  // Find searches messages; a tool's output is listed here but is not a place
-  // Find can go.
-  const call: ItemModel = { ...item("c1", ""), type: "commandExecution", output: "search term in output" };
+  // A call's plain `text` is not what its row paints - no intent, summary,
+  // body or error holds these words - so Find could not land on the hit the
+  // palette lists.
+  const call: ItemModel = { ...item("c1", "search term in text"), type: "commandExecution" };
   focusSession("ref_a", { turns: [turn([call])] });
   const paneId = workspaceStore.getState().focusedPaneId ?? "";
   const request = renderHook(() => useFindRequest("ref_a", paneId));

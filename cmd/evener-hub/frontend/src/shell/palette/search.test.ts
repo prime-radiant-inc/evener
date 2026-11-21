@@ -127,15 +127,65 @@ function itemWith(id: string, fields: Partial<ItemModel>): ItemModel {
 }
 
 test("findInSessionMatches scans tool output", () => {
-  const model = modelWithTurns([turn("t1", [itemWith("i1", { type: "tool", output: "result: frobnitz found" })])]);
-  const hits = findInSessionMatches(model, "frobnitz", VIEW);
+  const model = modelWithTurns([
+    turn("t1", [
+      itemWith("i1", {
+        type: "commandExecution",
+        toolName: "shell",
+        argumentsJSON: '{"command":"ls"}',
+        output: "result: frobnitz found",
+      }),
+    ]),
+  ]);
+  const hits = findInSessionMatches(model, "frobnitz", TOOLS);
   expect(hits).toHaveLength(1);
   expect(hits[0]?.turn).toBe(1);
 });
 
 test("findInSessionMatches scans tool error text", () => {
-  const model = modelWithTurns([turn("t1", [itemWith("i1", { type: "tool", error: "frobnitz not permitted" })])]);
-  expect(findInSessionMatches(model, "frobnitz", VIEW)).toHaveLength(1);
+  const model = modelWithTurns([
+    turn("t1", [
+      itemWith("i1", {
+        type: "commandExecution",
+        toolName: "shell",
+        argumentsJSON: '{"command":"ls"}',
+        error: "frobnitz not permitted",
+      }),
+    ]),
+  ]);
+  expect(findInSessionMatches(model, "frobnitz", TOOLS)).toHaveLength(1);
+});
+
+// The palette lists what the session's own Find counts. A call whose
+// descriptor suppresses its row renders nothing, so neither offers it; and at
+// a level that shows calls as action rows, only the rationale is on screen.
+test("findInSessionMatches does not offer a suppressed call or text its row hides", () => {
+  const suppressed = modelWithTurns([
+    turn("t1", [
+      itemWith("i1", {
+        type: "commandExecution",
+        toolName: "task_list",
+        argumentsJSON: '{"action":"view"}',
+        output: "frobnitz tasks",
+      }),
+    ]),
+  ]);
+  expect(findInSessionMatches(suppressed, "frobnitz", TOOLS)).toEqual([]);
+
+  const actionRow = modelWithTurns([
+    turn("t1", [
+      itemWith("i1", {
+        type: "commandExecution",
+        toolName: "shell",
+        description: "grep for frobnitz",
+        argumentsJSON: '{"command":"ls"}',
+        output: "frobnitz log",
+      }),
+    ]),
+  ]);
+  const listed = findInSessionMatches(actionRow, "frobnitz", VIEW);
+  expect(listed).toHaveLength(1);
+  expect(listed[0]?.snippet.map((part) => part.text).join("")).toContain("grep for frobnitz");
 });
 
 test("findInSessionMatches scans reasoning summaries (joined chunks)", () => {
@@ -246,13 +296,13 @@ test("findInSessionMatches scans an action's rationale", () => {
   expect(findInSessionMatches(model, "frobnitz", VIEW).map((hit) => hit.itemId)).toEqual(["call"]);
 });
 
-test("findInSessionMatches reads a rationale only where the view shows an action row", () => {
+test("findInSessionMatches reads a call's intent line wherever a row paints it", () => {
   const model = modelWithTurns([
     turn("t1", [itemWith("call", { type: "commandExecution", toolName: "shell", description: "grep for frobnitz" })]),
   ]);
-  // Tools projects the call as a plain tool row, so no row shows this text and
-  // Find could not land on the hit the palette would offer.
-  expect(findInSessionMatches(model, "frobnitz", TOOLS)).toEqual([]);
+  // Tools paints the call as a tool row and the intent level as an action row;
+  // both show the intent line, so Find can land on either level's hit.
+  expect(findInSessionMatches(model, "frobnitz", TOOLS).map((hit) => hit.itemId)).toEqual(["call"]);
   expect(findInSessionMatches(model, "frobnitz", VIEW).map((hit) => hit.itemId)).toEqual(["call"]);
 });
 
@@ -289,9 +339,19 @@ test("findInSessionMatches reads a delegate's brief only where the row shows it"
   expect(findInSessionMatches(model, clippedOff, VIEW)).toEqual([]);
 });
 
-test("a match in both text and output yields two hits sharing the turn label", () => {
-  const model = modelWithTurns([turn("t1", [itemWith("i1", { text: "frobnitz here", output: "frobnitz there" })])]);
-  const hits = findInSessionMatches(model, "frobnitz", VIEW);
+test("a match in both a call's intent line and its output yields two hits sharing the turn label", () => {
+  const model = modelWithTurns([
+    turn("t1", [
+      itemWith("call", {
+        type: "commandExecution",
+        toolName: "shell",
+        description: "grep frobnitz",
+        argumentsJSON: '{"command":"grep"}',
+        output: "frobnitz there",
+      }),
+    ]),
+  ]);
+  const hits = findInSessionMatches(model, "frobnitz", TOOLS);
   expect(hits).toHaveLength(2);
   expect(hits.every((h) => h.turn === 1)).toBe(true);
 });
