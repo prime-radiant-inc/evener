@@ -1,11 +1,12 @@
 // Which entries hold the words being looked for: a message's words, a
-// thought's summaries, an action row's rationale and a tool call's own lines
-// (steers and system notices are not searched by this slice). A hit is one
-// projected entry, and its words are on screen once its row mounts: a message
-// never folds, and whatever hides the matching words - a thought's or an
-// action group's disclosure, a tool run, a call's summary line or body - Find
-// opens before it lands. Text a tool body folds or clips away is shown by the
-// row's own excerpt (toolCallHits.ts), never counted and left unseen.
+// thought's summaries, an action row's rationale, a steer's visible text, a
+// memory refresh's index and a tool call's own lines (other system notices are
+// not searched by this slice). A hit is one projected entry, and its words are
+// on screen once its row mounts: a message never folds, and whatever hides the
+// matching words - a thought's or an action group's disclosure, a steer's or a
+// refresh's divider, a tool run, a call's summary line or body - Find opens
+// before it lands. Text a tool body folds or clips away is shown by the row's
+// own excerpt (toolCallHits.ts), never counted and left unseen.
 import {
   entryDisplayKey,
   findNeedle,
@@ -13,8 +14,15 @@ import {
   hidesThinkingTraces,
   type ItemModel,
   isLiveCurrentReasoning,
+  isParentSteer,
+  isSuppressedSteeringKind,
+  MEMORY_CONTEXT_EVENT_KIND,
+  memoryContextEmptyText,
   type ProjectedEntry,
+  parseMemoryContext,
   projectThread,
+  steeringNotificationFragments,
+  stripSystemReminder,
   type ThreadModel,
   type TranscriptDisplayConfigV1,
   type TurnModel,
@@ -24,7 +32,7 @@ import { displayedIntentOf } from "../transcript/ToolCallItem";
 import { type TranscriptBodyRow, transcriptRowsForProjection } from "../transcript/TranscriptBody";
 import { toolRendererFor } from "../transcript/toolRenderers";
 import { foldTurnEntries, intentGroupId, intentRunAt } from "../transcript/toolRuns";
-import { messageAsShown, reasoningSummariesAsRead } from "./messageText";
+import { markdownAsRead, messageAsShown, reasoningSummariesAsRead } from "./messageText";
 import { holdsNeedle, toolCallTexts } from "./toolCallHits";
 
 export interface FindHit {
@@ -43,6 +51,10 @@ export interface FindHit {
    * outermost first: the fold hiding the entry (a tool run or an action
    * group), then the call's own summary line or body. A message has none. */
   readonly opens?: readonly string[];
+  /** The session-scoped dividers that hide the matching words: a steer's and a
+   * memory refresh's body folds by the session ref plus its own id
+   * (SteeringDivider's key), not by the view's disclosure scope. */
+  readonly opensSession?: readonly string[];
 }
 
 /** What the view shows, which decides what Find counts: one that hides
@@ -133,6 +145,64 @@ function toolCall(entry: Extract<ProjectedEntry, { kind: "item" }>, cwd: string 
   return toolCallTexts(entry.item, { intent: displayedIntentOf(entry.item), cwd });
 }
 
+/** One span of a steer's or a memory refresh's row: the exact words it puts on
+ * screen, and the session-scoped divider that folds them (absent for a steer
+ * the human typed, which is a prompt bubble). */
+interface ShownSpan {
+  readonly text: string;
+  readonly divider?: string;
+}
+
+// What a steer's or a memory refresh's row shows, read through the same
+// helpers its renderer routes with (SteeringItem's source/kind order and
+// MemoryContextItem's body), so Find, the palette and the row cannot disagree.
+// Null for any other entry.
+function dividerSpans(item: ItemModel): readonly ShownSpan[] | null {
+  if (item.type === "steering") {
+    // The human-note kind routes before source: it renders the labeled divider.
+    if (item.steeringKind === "human-note") return item.text ? [{ text: item.text, divider: item.id }] : [];
+    // A steer the human typed is a prompt bubble: plain visible text.
+    if (item.source === "user") return item.text ? [{ text: item.text }] : [];
+    if (!item.text || isSuppressedSteeringKind(item.steeringKind)) return [];
+    // A parent's message is conversation: quoted notification tags in it are
+    // text, never cards. Any other steer renders one divider per interstitial
+    // text span, and its cards render no words of their own.
+    const parent = isParentSteer(item.source);
+    const fragments = parent ? null : steeringNotificationFragments(item.text);
+    if (fragments === null) {
+      return [{ text: parent ? item.text : stripSystemReminder(item.text), divider: item.id }];
+    }
+    return fragments.flatMap((fragment, index) =>
+      fragment.kind === "notification" ? [] : [{ text: fragment.text, divider: `${item.id}:${index}` }],
+    );
+  }
+  if (item.type === "systemMessage" && item.eventKind === MEMORY_CONTEXT_EVENT_KIND) {
+    const observation = parseMemoryContext(item.raw);
+    // A raw that did not decode shows its complete original Text; a decoded one
+    // shows its index as Markdown, or the state's own note for an empty one.
+    // The meta line and the folded Source are chrome the row keeps out of the
+    // body, so neither is text a match could land on.
+    if (observation === undefined) return item.text === "" ? [] : [{ text: item.text, divider: item.id }];
+    const text =
+      observation.content.trim() === ""
+        ? memoryContextEmptyText(observation.state)
+        : markdownAsRead(observation.content);
+    return text === "" ? [] : [{ text, divider: item.id }];
+  }
+  return null;
+}
+
+/** Whether a steer's, a memory refresh's or a tool call's row decides what its
+ * words are, so its raw `text` is never one of them. Other rows show their own
+ * text. */
+export function rowShowsOwnText(item: ItemModel): boolean {
+  return (
+    item.type === "steering" ||
+    item.type === "commandExecution" ||
+    (item.type === "systemMessage" && item.eventKind === MEMORY_CONTEXT_EVENT_KIND)
+  );
+}
+
 // What an action row actually says: the same intent line ToolCallItem paints
 // (a delegate's clipped brief included), and nothing where the row renders
 // none. The projector's neutral rationale is a fallback for rows whose
@@ -176,6 +246,8 @@ function shownTexts(
     const text = intentText(entry);
     return text === null ? [] : [text];
   }
+  const spans = dividerSpans(entry.item);
+  if (spans !== null) return spans.map((span) => span.text);
   if (entry.kind === "item" && entry.item.type === "commandExecution") {
     const texts = toolCall(entry, cwd);
     return texts === null ? [] : [texts.intent, texts.summary, ...texts.body].filter((text) => text !== "");
@@ -225,7 +297,12 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string, view
   if (needle === "") return [];
   const version = view.version ?? mermaidRenderVersion();
   const hits: FindHit[] = [];
-  const push = (entry: ProjectedEntry, rowIndex: number, opens: readonly string[]) => {
+  const push = (
+    entry: ProjectedEntry,
+    rowIndex: number,
+    opens: readonly string[],
+    opensSession: readonly string[] = [],
+  ) => {
     const { id, callId, roundId } = entry.item;
     const itemId = entry.kind === "intent" ? entry.sourceItemId : id;
     hits.push({
@@ -235,6 +312,7 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string, view
       ...(callId ? { callId } : {}),
       ...(roundId ? { roundId } : {}),
       ...(opens.length > 0 ? { opens } : {}),
+      ...(opensSession.length > 0 ? { opensSession } : {}),
     });
   };
   // A tool call's own lines are classified by where they sit (its intent line,
@@ -246,9 +324,14 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string, view
       if (own !== null) push(entry, rowIndex, [...outer, ...own]);
       return;
     }
-    const texts = shownTexts(entry, turn, view.config, version, view.cwd);
+    const spans = dividerSpans(entry.item);
+    const texts =
+      spans === null ? shownTexts(entry, turn, view.config, version, view.cwd) : spans.map((span) => span.text);
     if (!texts.some((text) => readable(text).includes(needle))) return;
-    push(entry, rowIndex, outer);
+    const opensSession = spans?.flatMap((span) =>
+      span.divider !== undefined && readable(span.text).includes(needle) ? [span.divider] : [],
+    );
+    push(entry, rowIndex, outer, opensSession);
   };
   rows.forEach((row, rowIndex) => {
     if (row.kind === "intentGroup") {

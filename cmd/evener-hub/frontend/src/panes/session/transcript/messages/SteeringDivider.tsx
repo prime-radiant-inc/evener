@@ -75,7 +75,13 @@ export function SteeringDivider({
         </>
       }
     >
-      {body ?? <pre className={CLASS.body}>{text}</pre>}
+      {/* data-message-body: Find paints the steered words here, never the
+          summary's label. */}
+      {body ?? (
+        <pre className={CLASS.body} data-message-body="">
+          {text}
+        </pre>
+      )}
     </Disclosure>
   );
 }

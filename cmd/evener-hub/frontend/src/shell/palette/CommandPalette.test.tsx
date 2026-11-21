@@ -1456,6 +1456,58 @@ test("a Tools-preset call's own lines are offered In session and hand Find the c
   expect(screen.getByTestId("find-request").getAttribute("data-query")).toBe("frobnitz");
 });
 
+test("In session offers steers, human notes and memory refreshes, and hands one to Find", async () => {
+  const user = userEvent.setup();
+  scriptSearch({ live: [], past: [] });
+  transcriptDisplayStore
+    .getState()
+    .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }));
+  focusSession("ref_a", {
+    turns: [
+      turn([
+        { id: "steer1", turnId: "t1", type: "steering", text: "rethink the frobnitz", source: "user" },
+        {
+          id: "note1",
+          turnId: "t1",
+          type: "steering",
+          text: "whiteboard: frobnitz plan",
+          source: "user",
+          steeringKind: "human-note",
+        },
+        {
+          id: "mem1",
+          turnId: "t1",
+          type: "systemMessage",
+          eventKind: "memory-context",
+          text: "recorded text",
+          raw: {
+            memoryContext: { scope: "personal", state: "current", truncated: false, content: "- frobnitz index" },
+          },
+        },
+        // The tasks surfaces own this one: it renders nothing, so it is no
+        // result the palette may offer.
+        { id: "task1", turnId: "t1", type: "steering", text: "frobnitz task", steeringKind: "task-list" },
+      ]),
+    ],
+  });
+
+  render(
+    <>
+      <NeedsYouProvider>
+        <CommandPalette />
+      </NeedsYouProvider>
+      <FindProbe />
+    </>,
+  );
+  act(() => openPalette());
+  await user.type(screen.getByRole("combobox"), "frobnitz");
+  await waitFor(() => expect(paletteRowsOfKind("insession")).toHaveLength(3));
+
+  await user.click(paletteRowsOfKind("insession")[2] as HTMLElement);
+  await waitFor(() => expect(screen.getByTestId("find-request").getAttribute("data-item")).toBe("mem1"));
+  expect(screen.getByTestId("find-request").getAttribute("data-query")).toBe("frobnitz");
+});
+
 // FIX 2 (real-user report): a user hunting for the keyboard shortcut legend
 // tried typing "?" in the palette (not "/help" or "/?" - a bare "?", the
 // conventional "show me help" gesture) and, since "?" alone stays in search
