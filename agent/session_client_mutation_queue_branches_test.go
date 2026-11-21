@@ -1342,9 +1342,5 @@ func TestRejectClientMutationWithInvalidParams(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Ensure no unused imports
-// ---------------------------------------------------------------------------
-
 var _ = fmt.Sprintf
 var _ = errors.New

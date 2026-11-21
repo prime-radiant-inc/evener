@@ -629,10 +629,6 @@ func TestDeliveryReceiptIsInlineWrongToken(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// helper: contains
-// ---------------------------------------------------------------------------
-
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || containsByte(s, substr))
 }
@@ -645,10 +641,6 @@ func containsByte(s, substr string) bool {
 	}
 	return false
 }
-
-// ---------------------------------------------------------------------------
-// fmt usage
-// ---------------------------------------------------------------------------
 
 var _ = fmt.Sprintf
 var _ = sync.Once{}

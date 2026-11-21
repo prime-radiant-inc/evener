@@ -415,9 +415,5 @@ func TestResolveDelegateAttentionDurablyNilRuntimeInvalidRef(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// fmt usage
-// ---------------------------------------------------------------------------
-
 var _ = fmt.Sprintf
 var _ = json.Marshal
