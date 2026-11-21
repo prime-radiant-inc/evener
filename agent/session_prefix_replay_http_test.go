@@ -188,24 +188,15 @@ func pxLaunch(t *testing.T, req pxReq) {
 	t.Fatalf("first request's tools do not name probe: %s", req.Tools)
 }
 
-// pxNonEmpty reports whether raw is a JSON value carrying content: absent,
-// null, a blank string and empty containers do not.
+// pxNonEmpty reports whether raw is a nonblank JSON string: both request
+// builders serialize the launch prompt as a string, so another shape is not a
+// launch prompt.
 func pxNonEmpty(raw json.RawMessage) bool {
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
 		return false
 	}
-	switch v := v.(type) {
-	case nil:
-		return false
-	case string:
-		return strings.TrimSpace(v) != ""
-	case []any:
-		return len(v) > 0
-	case map[string]any:
-		return len(v) > 0
-	}
-	return true
+	return strings.TrimSpace(s) != ""
 }
 
 // pxHas fails unless body carries every fragment verbatim.
