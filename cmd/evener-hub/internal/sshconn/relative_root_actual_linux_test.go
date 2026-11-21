@@ -94,14 +94,17 @@ func TestRemoteRelativeStateRootActualDisposableHub(t *testing.T) {
 			}
 			// This also cleans up a healthy bootstrap whose successor proof failed.
 			t.Cleanup(func() {
-				report, err := endpoint(context.Background())
+				probeCtx, cancelProbe := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancelProbe()
+				report, err := endpoint(probeCtx)
 				if err == nil && report.Running != nil {
 					_ = syscall.Kill(report.Running.PID, syscall.SIGTERM)
-					deadline := time.Now().Add(5 * time.Second)
-					ctx, cancel := context.WithDeadline(context.Background(), deadline)
-					defer cancel()
-					for time.Now().Before(deadline) {
-						report, err = endpoint(ctx)
+					// The 5s grace is the shutdown promptness bound under test, so it
+					// stays package-local: testwait's shared ceiling would widen it.
+					graceCtx, cancelGrace := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancelGrace()
+					for graceCtx.Err() == nil {
+						report, err = endpoint(graceCtx)
 						if err == nil && report.State == "stopped" {
 							return
 						}

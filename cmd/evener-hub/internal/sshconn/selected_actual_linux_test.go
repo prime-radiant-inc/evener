@@ -108,10 +108,14 @@ func TestRemoteRestartActualDisposableHub(t *testing.T) {
 	})
 	// Kill only PIDs independently returned by this private selected endpoint.
 	t.Cleanup(func() {
-		report, err := endpoint(context.Background())
+		probeCtx, cancelProbe := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelProbe()
+		report, err := endpoint(probeCtx)
 		if err == nil && report.Running != nil {
 			pid := report.Running.PID
 			_ = syscall.Kill(pid, syscall.SIGTERM)
+			// The 5s grace is the shutdown promptness bound under test, and the
+			// SIGKILL below is why this stays a local loop rather than testwait.
 			deadline := time.Now().Add(5 * time.Second)
 			for time.Now().Before(deadline) {
 				if err := syscall.Kill(pid, 0); err != nil {
