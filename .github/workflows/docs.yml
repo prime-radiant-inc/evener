@@ -14,6 +14,11 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    # go-cache-save deletes the docs kind's superseded entry before saving
+    # (#7025).
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7

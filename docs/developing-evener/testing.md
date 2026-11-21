@@ -1114,16 +1114,18 @@ pull request in the merge queue, which still runs every lane.
 GitHub gives the repository 10GB of Actions cache. Past that it evicts the
 least recently accessed entries, whatever they are, so an over-budget cache
 evicts entries lanes are still restoring, and those lanes run cold and slow.
-Keep the steady state under 6GB: the
-headroom absorbs the second generation each main push writes before
-`cache-prune` deletes the first.
+Each saving job deletes the entry its save supersedes before it saves, so a
+main push never holds two generations of a kind and its peak is the steady
+state plus that push's own growth. Keep the steady state under 6GB: that
+headroom is what keeps a push's growth clear of the line.
 
 What is cached, and where it is saved:
 
 - **Go build cache, one entry per kind.** `.github/actions/go-cache-restore`
   restores the newest `go-<kind>-<os>-<arch>-<go version>-<commit>` entry by
-  prefix; `.github/actions/go-cache-save` saves this commit's entry on pushes to
-  main only. Jobs whose compiled output differs (race and non-race, lint, vet,
+  prefix; `.github/actions/go-cache-save` deletes the entries that save
+  supersedes and then saves this commit's entry, on pushes to main only. Jobs
+  whose compiled output differs (race and non-race, lint, vet,
   tags) use different kinds; jobs that compile nearly the same thing share one,
   saved by the one that compiles the most (the `web-browser` shards share
   `web-browser`, saved by the cascade shard; the two agent race shards share
@@ -1165,21 +1167,37 @@ What is cached, and where it is saved:
 
 The rules that keep the budget:
 
-- **One generation on main.** CI's `cache-prune` job runs after every lane of a
-  ci.yml main push and deletes each `go-*`, `gomod-*`, `golangci-lint-*` and
+- **One generation on main.** Every job that saves through `go-cache-save`,
+  and the iOS lane's DerivedData save, deletes the entries its save supersedes
+  before saving, so a main push keeps one entry per kind through the whole save
+  window instead of two generations (issue #7025). Deleting before the save
+  rather than after it matters: `race-agent` alone is about 1.7GiB, enough to
+  cross the line while both copies of that one kind exist. A restore only ever
+  takes the newest entry of a prefix, so the predecessor is dead weight the
+  moment the new entry saves; a save that fails after the delete costs that
+  kind one cold run, while leaving the predecessor costs whichever entry the
+  eviction picks. The delete needs `actions: write`, held by each saving job
+  (skipped wherever the save is) and by `cache-prune` below, and
+  `TestCacheSavesReplaceTheirPredecessor` pins the grant, the main-push guard
+  on each delete, the keys it names, and that the delete precedes the save.
+
+  CI's `cache-prune` job remains the backstop: after every lane of a ci.yml
+  main push it deletes each `go-*`, `gomod-*`, `golangci-lint-*` and
   `ios-deriveddata-*` entry on main that a newer entry of the same kind
-  supersedes. A key's Go version and linter-config components belong to the
-  generation too: a toolchain or config bump makes every older entry dead
-  weight, so the job strips those components as well and the bump leaves one
-  generation instead of two fleets for 7 days. The iOS lock hashes name a
-  different build rather than a newer generation of one key, so they stay part
-  of its prefix. It never deletes a kind's newest entry, so a lane that saved
-  nothing keeps its last one. The iOS lane saves from its own workflow, possibly
-  after that push's ci.yml prune already ran, so a superseded iOS entry can sit
-  on main until the next main-push prune. An entry left by a renamed kind or a
-  changed pod or package lock is its kind's newest, so the job keeps it until
-  it expires after 7 days; the former `race-agent-1` and `race-agent-2` kinds
-  are the exception, folded into `race-agent` so their entries are pruned with
+  supersedes. It collects what a lane's own delete skipped: an exact-hit
+  re-run, a failed save, the golangci-lint analysis caches (a few MB, left to
+  the prune rather than given their own delete steps), and the iOS entry when
+  its own workflow's delete did not run. A key's Go version and linter-config
+  components belong to the generation too: a toolchain or config bump makes
+  every older entry dead weight, so the job strips those components as well
+  and the bump leaves one generation instead of two fleets for 7 days. The iOS
+  lock hashes name a different build rather than a newer generation of one
+  key, so they stay part of its prefix. It never deletes a kind's newest
+  entry, so a lane that saved nothing keeps its last one. An entry left by a
+  renamed kind or a changed pod or package lock is its kind's newest, so the
+  job keeps it until it expires after 7 days; the former `race-agent-1` and
+  `race-agent-2` kinds are the exception, folded into `race-agent` so their
+  entries are pruned with
   it.
 - **A saved entry is one job's build.** go-cache-restore dates every restored
   build cache entry two hours back on main, Go refreshes the mtime of an entry
@@ -1211,10 +1229,14 @@ it: on 2026-11-20 the Go, module and lint kinds measured 8,315,126,220 bytes,
 and sharing `race-agent` projects them at 7,562,333,972 bytes once agent-2
 saves the shared kind; the iOS DerivedData tree adds about 605MB. Every kind in
 that total keeps a lane warm, so it does not shrink further without a lane
-building cold. Both generations at this size exceed the 10GB limit while a main
-push saves, so an entry the push never restored can still be evicted before
-`cache-prune` deletes the first generation; the arithmetic lives in the
-cache-budget issue (#6985).
+building cold. With one generation live, a main push peaks at ~8.9GB: one
+generation's entries summed to 7,933MiB (8.32GB) in the 2026-11-21 cache list,
+plus about 605MB of iOS DerivedData, plus the push's own growth. Before the
+replace-on-save rule the same push peaked at 16,019,565,696B (16.02GB) and
+GitHub evicted the iOS entry before any run restored it (#7025). The 6GB
+target is still unmet; the difference is that the headroom above the steady
+state no longer has to hold a whole second generation. The arithmetic lives in
+the cache-budget issue (#6985).
 
 To read the budget, list the entries and the total:
 

@@ -60,8 +60,9 @@ type cacheWorkflowStep struct {
 }
 
 type cacheWorkflowJob struct {
-	If       string `yaml:"if"`
-	Strategy struct {
+	If          string            `yaml:"if"`
+	Permissions map[string]string `yaml:"permissions"`
+	Strategy    struct {
 		Matrix map[string]any `yaml:"matrix"`
 	} `yaml:"strategy"`
 	Steps []cacheWorkflowStep `yaml:"steps"`
@@ -625,5 +626,121 @@ func TestCachePruneCoversTheDerivedDataKind(t *testing.T) {
 		if filter.MatchString(key) {
 			t.Errorf("cache-prune filter %q matches unkeyed entry %q", match[1], key)
 		}
+	}
+}
+
+// readWorkflowGrants parses a workflow's top-level permissions.
+func readWorkflowGrants(t *testing.T, path string) map[string]string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Permissions map[string]string `yaml:"permissions"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	return workflow.Permissions
+}
+
+// grantOf is the scope's permission at job level, or the workflow's when the
+// job declares no block of its own.
+func grantOf(job cacheWorkflowJob, workflow map[string]string, scope string) string {
+	if value, ok := job.Permissions[scope]; ok {
+		return value
+	}
+	return workflow[scope]
+}
+
+// Every job that saves through go-cache-save deletes the entry its save
+// supersedes first, so a main push holds one generation per kind instead of
+// two: at this fleet's size that is the difference between ~8.9GB and the
+// 16.02GB peak that made GitHub evict entries no run had restored, the iOS
+// DerivedData tree among them (issue #7025). Deleting needs actions: write,
+// and go-cache-save downgrades a refused delete to a warning, so a missing
+// grant silently restores the two-generation peak. The delete must also
+// precede the save, in the action and in the iOS lane.
+func TestCacheSavesReplaceTheirPredecessor(t *testing.T) {
+	index := func(steps []cacheWorkflowStep, name string) int {
+		for i, step := range steps {
+			if step.Name == name {
+				return i
+			}
+		}
+		return -1
+	}
+	saving := 0
+	for _, path := range goCacheWorkflows {
+		workflowGrants := readWorkflowGrants(t, path)
+		for name, job := range readCacheWorkflow(t, path) {
+			for _, step := range job.Steps {
+				if step.Uses != "./.github/actions/go-cache-save" {
+					continue
+				}
+				saving++
+				if got := grantOf(job, workflowGrants, "actions"); got != "write" {
+					t.Errorf("%s %s: go-cache-save deletes a predecessor, actions %q, want write", path, name, got)
+				}
+				// A job-level permissions block replaces every scope, so the
+				// grant must keep the checkout's contents access too.
+				if got := grantOf(job, workflowGrants, "contents"); got != "read" && got != "write" {
+					t.Errorf("%s %s: go-cache-save job needs contents to check out, contents %q", path, name, got)
+				}
+			}
+		}
+	}
+	if saving == 0 {
+		t.Fatal("no job saves through go-cache-save, so the grants below are unchecked")
+	}
+
+	steps := readActionSteps(t, ".github/actions/go-cache-save/action.yml")
+	deleted := index(steps, "Delete the cache entries these saves supersede")
+	if deleted == -1 {
+		t.Fatal("go-cache-save has no delete step")
+	}
+	if got := steps[deleted].If; !strings.Contains(got, "github.event_name == 'push'") || !strings.Contains(got, "refs/heads/main") {
+		t.Errorf("go-cache-save delete if = %q, want a main-push guard", got)
+	}
+	// The delete has to name the keys go-cache-restore exported, or it lists
+	// nothing and deletes nothing while the pipeline stays green.
+	for variable, want := range map[string]string{
+		"BUILD_PREFIX":   "${{ env.GO_CACHE_PREFIX }}",
+		"BUILD_KEY":      "${{ env.GO_CACHE_KEY }}",
+		"MODULES_PREFIX": "${{ env.GO_MODULES_PREFIX }}",
+		"MODULES_KEY":    "${{ env.GO_MODULES_CACHE_KEY }}",
+	} {
+		if got := steps[deleted].Env[variable]; got != want {
+			t.Errorf("go-cache-save delete %s = %q, want %q", variable, got, want)
+		}
+	}
+	for _, save := range []string{"Save Go build cache", "Save Go module cache"} {
+		at := index(steps, save)
+		if at == -1 {
+			t.Errorf("go-cache-save has no %q step", save)
+		} else if at < deleted {
+			t.Errorf("go-cache-save saves %q at step %d, before the delete at %d", save, at, deleted)
+		}
+	}
+
+	ios := readCacheWorkflow(t, ".github/workflows/ios-qualification.yml")["simulator-build"]
+	deleted = index(ios.Steps, "Delete the DerivedData cache entry this save supersedes")
+	save := index(ios.Steps, "Save the DerivedData build cache")
+	if deleted == -1 || save == -1 {
+		t.Fatalf("ios-qualification simulator-build: delete step %d, save step %d, want both", deleted, save)
+	}
+	if save < deleted {
+		t.Errorf("ios-qualification simulator-build: save at %d runs before the delete at %d", save, deleted)
+	}
+	if got := ios.Permissions["actions"]; got != "write" {
+		t.Errorf("ios-qualification simulator-build: actions %q, want write for the delete", got)
+	}
+	if got := ios.Steps[deleted].If; !strings.Contains(got, "github.event_name == 'push'") || !strings.Contains(got, "refs/heads/main") {
+		t.Errorf("ios-qualification delete if = %q, want a main-push guard", got)
+	}
+	if env := ios.Steps[deleted].Env; env["PREFIX"] != "${{ steps.deriveddata-cache.outputs.prefix }}" ||
+		env["KEPT_KEY"] != "${{ steps.deriveddata-cache.outputs.prefix }}${{ github.sha }}" {
+		t.Errorf("ios-qualification delete env = %v, want the restore prefix and this commit's key", env)
 	}
 }

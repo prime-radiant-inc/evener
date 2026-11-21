@@ -59,6 +59,11 @@ runs:
           echo "GO_MOD_CACHE_DIR=$(go env GOMODCACHE)"
           echo "GO_CACHE_KEY=${prefix}${GITHUB_SHA}"
           echo "GO_MODULES_CACHE_KEY=${modules_prefix}${GITHUB_SHA}"
+          # The prefixes name every entry a restore of this kind could pick,
+          # which is exactly the set go-cache-save collapses to one entry by
+          # deleting the predecessors before it saves (issue #7025).
+          echo "GO_CACHE_PREFIX=${prefix}"
+          echo "GO_MODULES_PREFIX=${modules_prefix}"
           echo "GO_CACHE_RESTORED_AT=$(date +%s)"
         } >> "$GITHUB_ENV"
 
