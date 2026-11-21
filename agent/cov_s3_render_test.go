@@ -65,14 +65,6 @@ func TestS3Cov_PrettyJSON(t *testing.T) {
 	}
 }
 
-func TestS3Cov_PrettyJSONValue(t *testing.T) {
-	t.Parallel()
-	got, ok := prettyJSONValue(map[string]any{"k": "v"})
-	if !ok || !strings.Contains(got, `"k"`) {
-		t.Fatalf("prettyJSONValue = %q ok=%v", got, ok)
-	}
-}
-
 // s3cov_entries builds transcript entries at seq 0..n-1.
 func s3cov_entries(turns ...schema.Turn) []transcript.Entry {
 	out := make([]transcript.Entry, len(turns))

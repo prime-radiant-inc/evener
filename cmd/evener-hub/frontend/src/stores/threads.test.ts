@@ -980,6 +980,39 @@ describe("reconnect resubscribe", () => {
     expect(forA?.params).toEqual(expectedParams("ref_a"));
     expect(forB?.params).toEqual(expectedParams("ref_b"));
   });
+
+  // A watched ref whose first read failed before publishing a
+  // model is held only by its watch count, with no pending attempt left.
+  test("a ready fan-out refreshes a watched ref whose only holder is its watch count", async () => {
+    const fake = connectFakeClient();
+    const firstRead = deferred<ThreadReadResponse>();
+    fake.on("thread/read", () => firstRead.promise);
+    const watching = threadsStore
+      .getState()
+      .watchThread("ref_a")
+      .catch(() => undefined);
+    await flushUntil(() => fake.calls.some((call) => call.method === "thread/read"));
+
+    // The first read fails, arming the retry; the connection then goes away, so
+    // the ready generation that retires that retry is the one that must carry it.
+    firstRead.reject(new Error("connection dropped"));
+    await flushUntil(() => scheduledHydrationRetries.length === 1);
+    connectionStore.setState({ client: null });
+    await watching;
+    expect(scheduledHydrationRetries[0]?.cancelled).toBe(true);
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+
+    const next = connectFakeClient("ready", (client) => {
+      client.on("thread/read", () => readResponse("ref_a", { name: "Recovered" }));
+    });
+    await flushUntil(() => next.calls.some((call) => call.method === "thread/read"), 5);
+
+    expect(next.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+    await flushUntil(() => threadsStore.getState().watchedThreads.has("ref_a"));
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.name).toBe("Recovered");
+    threadsStore.getState().releaseWatchedThread("ref_a");
+  });
 });
 
 test.each([false, true])(

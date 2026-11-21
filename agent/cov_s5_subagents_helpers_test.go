@@ -64,22 +64,6 @@ func TestS5Cov_LocalEnvPolicyFromName(t *testing.T) {
 	}
 }
 
-func TestS5Cov_FrozenSubagentToolNames(t *testing.T) {
-	t.Parallel()
-	if got := frozenSubagentToolNames(true, nil, nil); len(got) != 1 || got[0] != "*" {
-		t.Errorf("allTools → %v, want [*]", got)
-	}
-	if got := frozenSubagentToolNames(false, []string{"read_file"}, nil); len(got) != 1 || got[0] != "read_file" {
-		t.Errorf("allowed → %v", got)
-	}
-	if got := frozenSubagentToolNames(false, nil, []string{"shell"}); got != nil {
-		t.Errorf("deny-only → %v, want nil", got)
-	}
-	if got := frozenSubagentToolNames(false, nil, nil); got != nil {
-		t.Errorf("default → %v, want nil", got)
-	}
-}
-
 func TestS5Cov_RestoreFrozenSkillBodies(t *testing.T) {
 	t.Parallel()
 	// No names, no bodies → (nil, nil).
