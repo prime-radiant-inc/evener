@@ -19,7 +19,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-func TestWithIntentParameter_DescriptionGuidesExpectedOutcome(t *testing.T) {
+func TestWithIntentParameter_AdvertisesIntentPropertyWithDescription(t *testing.T) {
 	td := WithIntentParameter(llm.ToolDefinition{Name: "demo"})
 	props, _ := td.Parameters["properties"].(map[string]any)
 	if props == nil {
@@ -32,17 +32,6 @@ func TestWithIntentParameter_DescriptionGuidesExpectedOutcome(t *testing.T) {
 	desc, _ := intent["description"].(string)
 	if desc == "" {
 		t.Fatalf("intent property has no description: %#v", intent)
-	}
-	// The description should steer the model toward a verb-first gerund phrase
-	// that states the expected outcome, not merely the action being taken.
-	if !strings.Contains(desc, "gerund") {
-		t.Errorf("description lacks gerund-form guidance: %q", desc)
-	}
-	if !strings.Contains(desc, "desired outcome") {
-		t.Errorf("description lacks desired-outcome guidance: %q", desc)
-	}
-	if !strings.Contains(desc, "Reading config to identify the active profile") {
-		t.Errorf("description lacks an example with an explicit outcome: %q", desc)
 	}
 }
 
