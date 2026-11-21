@@ -258,20 +258,22 @@ func TestMergeEnqueueRejectsWaitBeyondTheLargestDuration(t *testing.T) {
 	}
 }
 
-// TestMergeEnqueueUsageNamesTheRunnableBinary pins issue #6943: the end-user
-// `evener` binary does not dispatch merge-enqueue; the command runs as
-// `evener-dev dev merge-enqueue`. The parse error prints the error line and then
-// the usage line, so one run pins both spellings.
+// TestMergeEnqueueUsageNamesTheRunnableBinary pins that both lines the --wait
+// parse error prints, the diagnostic and the usage line, name `evener-dev`, the
+// executable that dispatches merge-enqueue. Plain `evener` does not dispatch it.
 func TestMergeEnqueueUsageNamesTheRunnableBinary(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr strings.Builder
 	if code := runMergeEnqueue([]string{"--pr", "6499", "--wait", "5x"}, &stubQueue{}, pausedClock(), &stdout, &stderr); code != 2 {
 		t.Fatalf("runMergeEnqueue(--wait 5x) = %d, want 2", code)
 	}
-	if !strings.Contains(stderr.String(), "evener-dev dev merge-enqueue") {
-		t.Fatalf("stderr %q does not name `evener-dev dev merge-enqueue`", stderr.String())
+	lines := strings.Split(strings.TrimSpace(stderr.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("stderr has %d lines, want the diagnostic and the usage line: %q", len(lines), stderr.String())
 	}
-	if strings.Contains(stderr.String(), "evener dev merge-enqueue") {
-		t.Fatalf("stderr %q names `evener dev merge-enqueue`, which the end-user binary does not dispatch", stderr.String())
+	for _, line := range lines {
+		if !strings.Contains(line, "evener-dev") {
+			t.Fatalf("stderr line %q does not name the evener-dev executable that dispatches merge-enqueue", line)
+		}
 	}
 }
