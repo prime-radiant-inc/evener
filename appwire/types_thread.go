@@ -948,7 +948,7 @@ type EvenerDelegateInfo struct {
 	// the same reason as the job hold, so a pushed frame and a read row agree.
 	DrainHeldBySubagents bool `json:"drainHeldBySubagents,omitempty"`
 	RunningSubagentCount int  `json:"runningSubagentCount,omitempty"`
-	// HoldSequence orders DrainHeldByJobs against every other sample of the same
+	// HoldSequence orders the whole hold against every other sample of the same
 	// delegate's hold. The source bumps it under the controller lock when the
 	// sampled hold changes, so a consumer applies the highest sequence and
 	// rejects a sample a slower publisher delivered late. Absent when no sample
