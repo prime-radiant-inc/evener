@@ -22,7 +22,7 @@ import (
 // on which a third arm could run. Every other GOOS — the Unix ones included —
 // takes session_livelock_other.go's not-applied arm, which is why that file's
 // tag excludes these two rather than testing !unix. A build tag on a caller
-// must be no broader than the tags on the symbols it calls (issue #6796).
+// must be no broader than the tags on the symbols it calls.
 
 // AcquireSessionLivelock takes the exclusive flock a root session's process
 // holds for its lifetime on <dir>/sessions/<id>.livelock, creating the file
