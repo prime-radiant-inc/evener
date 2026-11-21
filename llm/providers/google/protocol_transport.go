@@ -280,19 +280,24 @@ func (p *Protocol) completeOnce(ctx context.Context, req llm.Request, res regist
 
 // Stream implements llm.Protocol.
 func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Resolved) (llm.Stream, error) {
-	s1, policy, err := p.openStream(ctx, req, res, false)
+	body, policy, err := buildBodyWithPolicy(req, res, true, false)
 	if err != nil {
-		if policy.anchorID == "" && policy.hasUnsignedNonNativeCalls && isSignatureValidation400(err) {
-			s2, _, err2 := p.openStream(ctx, req, res, true)
-			return s2, err2
-		}
-		return nil, err
+		return nil, llm.RewriteErrorProvider(err, res.Instance)
 	}
 	if policy.anchorID != "" || !policy.hasUnsignedNonNativeCalls {
-		return s1, nil
+		return p.openStreamWithBody(ctx, req, res, body, policy)
 	}
 
 	cancelCtx, cancelAll := context.WithCancel(ctx)
+	s1, err := p.openStreamWithBody(cancelCtx, req, res, body, policy)
+	if err != nil {
+		cancelAll()
+		if isSignatureValidation400(err) {
+			return p.openStream(ctx, req, res, true)
+		}
+		return nil, err
+	}
+
 	outer := llm.NewChanStream(cancelAll)
 	go func() {
 		defer func() {
@@ -301,9 +306,21 @@ func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Res
 		}()
 		emittedStart := false
 		sawOutput := false
-		relay := func(st llm.Stream) bool {
+		relay := func(st llm.Stream, allowRetry bool) bool {
 			defer func() { _ = st.Close() }()
-			for ev := range st.Events() {
+			for {
+				var (
+					ev llm.StreamEvent
+					ok bool
+				)
+				select {
+				case <-cancelCtx.Done():
+					return false
+				case ev, ok = <-st.Events():
+					if !ok {
+						return false
+					}
+				}
 				switch ev.Type {
 				case llm.StreamEventStreamStart:
 					if !emittedStart {
@@ -316,7 +333,7 @@ func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Res
 					sawOutput = true
 					outer.Send(ev)
 				case llm.StreamEventError:
-					if !sawOutput && isSignatureValidation400(ev.Err) {
+					if allowRetry && !sawOutput && isSignatureValidation400(ev.Err) {
 						return true
 					}
 					outer.Send(ev)
@@ -325,34 +342,38 @@ func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Res
 					outer.Send(ev)
 				}
 			}
-			return false
 		}
-		if relay(s1) {
-			s2, _, err2 := p.openStream(cancelCtx, req, res, true)
+		if relay(s1, true) {
+			s2, err2 := p.openStream(cancelCtx, req, res, true)
 			if err2 != nil {
-				outer.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.RewriteErrorProvider(err2, res.Instance)})
+				if cancelCtx.Err() == nil {
+					outer.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.RewriteErrorProvider(err2, res.Instance)})
+				}
 				return
 			}
-			relay(s2)
+			relay(s2, false)
 		}
 	}()
 	return outer, nil
 }
 
-func (p *Protocol) openStream(ctx context.Context, req llm.Request, res registry.Resolved, fallbackUnsignedCalls bool) (llm.Stream, interactionBodyPolicy, error) {
+func (p *Protocol) openStream(ctx context.Context, req llm.Request, res registry.Resolved, fallbackUnsignedCalls bool) (llm.Stream, error) {
 	body, policy, err := buildBodyWithPolicy(req, res, true, fallbackUnsignedCalls)
 	if err != nil {
-		return nil, policy, llm.RewriteErrorProvider(err, res.Instance)
+		return nil, llm.RewriteErrorProvider(err, res.Instance)
 	}
+	return p.openStreamWithBody(ctx, req, res, body, policy)
+}
+
+func (p *Protocol) openStreamWithBody(ctx context.Context, req llm.Request, res registry.Resolved, body map[string]any, policy interactionBodyPolicy) (llm.Stream, error) {
 	summariesDisabled := policy.summariesDisabled
 	call, err := p.completionCall(ctx, "interactions.create(stream)", "google_interactions_stream", http.MethodPost, protocolhttp.URL(res, res.Transport.StreamEndpoint), body, policy, req, res, &summariesDisabled)
 	if err != nil {
-		return nil, policy, llm.RewriteErrorProvider(err, res.Instance)
+		return nil, llm.RewriteErrorProvider(err, res.Instance)
 	}
-	st, err := protocolhttp.Stream(ctx, call, func(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, r *protocolhttp.Result, attempt *transport.APIAttemptCapture) {
+	return protocolhttp.Stream(ctx, call, func(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, r *protocolhttp.Result, attempt *transport.APIAttemptCapture) {
 		decodeInteractionStream(sctx, cancel, resp, s, req, res.Instance, res.WireID, r.EndpointURL, r.Material, attempt, summariesDisabled, p.Hasher)
 	})
-	return st, policy, err
 }
 
 // ListModels implements llm.Protocol.

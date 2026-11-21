@@ -9,7 +9,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/apilog"
@@ -445,4 +447,141 @@ func TestProtocolIncompleteStreamNamesTheInstanceAndDistinguishesQueuedEOF(t *te
 			t.Fatalf("queued EOF error = %v, want non-retryable stamped with %q", streamErr, res.Instance)
 		}
 	})
+}
+
+func TestProtocolStreamWrapperCloseDuringS1DoesNotDeadlock(t *testing.T) {
+	t.Parallel()
+	legacyReq := llm.Request{
+		Model: "gemini-3.8-flash",
+		Messages: []llm.Message{
+			llm.User("check files"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+					ID: "c1", Name: "glob", Arguments: json.RawMessage(`{"pattern":"*.go"}`),
+					ThoughtSignature: "legacy_sig", GoogleInteraction: false,
+				}},
+			}},
+			llm.ToolResult("c1", "main.go", false),
+			llm.User("summarize"),
+		},
+	}
+
+	releaseServer := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("event: interaction.created\n" + `data: {"event_type":"interaction.created","interaction":{"id":"int_open","status":"in_progress"}}` + "\n\n"))
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
+		select {
+		case <-r.Context().Done():
+		case <-releaseServer:
+		}
+	}))
+	defer srv.Close()
+	defer close(releaseServer)
+
+	st, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), legacyReq, protoLive(srv))
+	if err != nil {
+		t.Fatalf("Stream open failed: %v", err)
+	}
+
+	select {
+	case ev, ok := <-st.Events():
+		if !ok || ev.Type != llm.StreamEventStreamStart {
+			t.Fatalf("first event = (%+v, ok=%v), want StreamEventStreamStart", ev, ok)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for StreamEventStreamStart")
+	}
+
+	closed := make(chan error, 1)
+	go func() {
+		closed <- st.Close()
+	}()
+	select {
+	case cerr := <-closed:
+		if cerr != nil {
+			t.Fatalf("st.Close() = %v, want nil", cerr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("outer.Close() deadlocked while s1 remained open")
+	}
+}
+
+func TestProtocolStreamWrapperRetryS2InBandSignature400SurfacesError(t *testing.T) {
+	t.Parallel()
+	legacyReq := llm.Request{
+		Model: "gemini-3.8-flash",
+		Messages: []llm.Message{
+			llm.User("check files"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+					ID: "c1", Name: "glob", Arguments: json.RawMessage(`{"pattern":"*.go"}`),
+					ThoughtSignature: "legacy_sig", GoogleInteraction: false,
+				}},
+			}},
+			llm.ToolResult("c1", "main.go", false),
+			llm.User("summarize"),
+		},
+	}
+
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: error\ndata: {\"event_type\":\"error\",\"error\":{\"code\":\"invalid_argument\",\"message\":\"missing thought_signature\"}}\n\n"))
+	}))
+	defer srv.Close()
+
+	res := protoLive(srv)
+	st, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), legacyReq, res)
+	if err != nil {
+		t.Fatalf("Stream open failed: %v", err)
+	}
+	var starts int
+	var streamErr error
+	for ev := range st.Events() {
+		if ev.Type == llm.StreamEventStreamStart {
+			starts++
+		}
+		if ev.Type == llm.StreamEventError {
+			streamErr = ev.Err
+		}
+	}
+	if got := attempts.Load(); got != 2 {
+		t.Fatalf("attempts = %d, want 2", got)
+	}
+	if starts != 1 {
+		t.Fatalf("StreamEventStreamStart count = %d, want 1", starts)
+	}
+	le, ok := errors.AsType[llm.Error](streamErr)
+	if !ok || le.StatusCode() != http.StatusBadRequest || le.Provider() != res.Instance {
+		t.Fatalf("s2 streamErr = %v, want 400 llm.Error with Provider()=%q", streamErr, res.Instance)
+	}
+
+	// Also confirm CompleteViaStream preserves the 400 llm.Error instead of dropping it.
+	// (Uses the same AuthOAuthOpenAICodex override gate as llm/auth_override.go.)
+	completeViaStreamCheck(t, srv, legacyReq, res)
+}
+
+type callScopedStreamingPreparer struct{}
+
+func (callScopedStreamingPreparer) Apply(context.Context, *http.Request, registry.Resolved) error {
+	return nil
+}
+func (callScopedStreamingPreparer) PrepareRequest(context.Context, *http.Request, map[string]any, llm.Request, registry.Resolved) error {
+	return nil
+}
+func (callScopedStreamingPreparer) RequiresStreamingComplete() bool { return true }
+
+func completeViaStreamCheck(t *testing.T, srv *httptest.Server, legacyReq llm.Request, res registry.Resolved) {
+	t.Helper()
+	res.Transport.Auth = registry.AuthOAuthOpenAICodex
+	ctx := llm.WithAuthenticatorOverride(context.Background(), callScopedStreamingPreparer{})
+	_, cerr := (&Protocol{Client: srv.Client()}).Complete(ctx, legacyReq, res)
+	if le, ok := errors.AsType[llm.Error](cerr); !ok || le.StatusCode() != http.StatusBadRequest || le.Provider() != res.Instance {
+		t.Fatalf("CompleteViaStream err = %v, want 400 llm.Error with Provider()=%q", cerr, res.Instance)
+	}
 }
