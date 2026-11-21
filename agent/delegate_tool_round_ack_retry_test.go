@@ -85,9 +85,16 @@ func TestDelegateToolRoundAckAppendFailureLeavesReceiptRetryable(t *testing.T) {
 		}
 	})
 
+	// Cleanup runs LIFO, so this release runs before newMessagingRoot's sess.Close.
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(releaseChild) })
+	})
+
 	ackFailure := errors.New("test: acknowledgment append failed")
 	var faultMu sync.Mutex
 	var faultedIDs []string
+	var ackSnapshotTaken bool
+	var ackCommitSnapshot map[string]string
 	faultFired := func() int {
 		faultMu.Lock()
 		defer faultMu.Unlock()
@@ -100,8 +107,24 @@ func TestDelegateToolRoundAckAppendFailureLeavesReceiptRetryable(t *testing.T) {
 			if event.Kind != delegatestore.EventDelegateDeliveryAcknowledged || event.DeliveryAcknowledged == nil {
 				continue
 			}
+			// The acknowledgment is appended under controller.mu and may run off
+			// the test goroutine, so read the root's fold directly rather than
+			// through rootAttentionFold (which calls t.Fatalf) and keep the error
+			// reportable. This snapshot is taken when the acknowledgment is
+			// attempted, so it proves the tool-result turn carrying both delivery
+			// commits was already durable at that moment.
+			fold, foldErr := readDelegateAttentionFold(transcriptPath(root.stateDir, root.ID()), root.ID())
+			if foldErr != nil {
+				t.Errorf("read the root's attention fold at the acknowledgment: %v", foldErr)
+			}
 			faultMu.Lock()
 			faultedIDs = append(faultedIDs, event.DeliveryAcknowledged.DeliveryID)
+			if !ackSnapshotTaken {
+				// Keep the first attempt's snapshot: a later retry must not
+				// overwrite it and mask an early acknowledgment.
+				ackSnapshotTaken = true
+				ackCommitSnapshot = fold.deliveryCommits
+			}
 			faultMu.Unlock()
 			return ackFailure
 		}
@@ -156,6 +179,13 @@ func TestDelegateToolRoundAckAppendFailureLeavesReceiptRetryable(t *testing.T) {
 		t.Fatalf("the send's reply left %d receipts, want the deferred first generation and the send's own: %#v",
 			len(receipts), receipts)
 	}
+	faultMu.Lock()
+	atAckCommit := ackCommitSnapshot
+	faultMu.Unlock()
+	if len(atAckCommit) == 0 {
+		t.Errorf("the acknowledgment snapshot captured no delivery commits: the fault fired but the root's " +
+			"transcript showed no committed delivery when the acknowledgment was appended")
+	}
 	fold := rootAttentionFold(t, root)
 	for _, receipt := range receipts {
 		if !receipt.inline {
@@ -168,6 +198,11 @@ func TestDelegateToolRoundAckAppendFailureLeavesReceiptRetryable(t *testing.T) {
 		if callID := fold.deliveryCommits[receipt.deliveryID]; callID != "send" {
 			t.Errorf("delivery %q has no durable delivery commit in the root transcript: "+
 				"the turn was not durable before the acknowledgment failed (commit %q)", receipt.deliveryID, callID)
+		}
+		if callID := atAckCommit[receipt.deliveryID]; callID != "send" {
+			t.Errorf("delivery %q had no durable send commit in the root transcript when its acknowledgment "+
+				"was appended: the acknowledgment did not follow the durable tool-result turn (commit %q)",
+				receipt.deliveryID, callID)
 		}
 	}
 	faultMu.Lock()
@@ -218,6 +253,13 @@ func TestDelegateToolRoundAckAppendFailureLeavesReceiptRetryable(t *testing.T) {
 		if !delegateEventsAcknowledgeDelivery(stored, receipt.deliveryID) {
 			t.Errorf("delivery %q has no durable acknowledgment after the stop retried it", receipt.deliveryID)
 		}
+	}
+	// The stop marks itself complete before its reconciliation driver publishes
+	// the final warning batch, so join the driver before draining: an early
+	// drain could pass on an empty queue and miss a lost-result warning from
+	// that batch.
+	if joined, err := root.delegateController.joinStopReconcileDriver(tripwireCtx(t)); !joined || err != nil {
+		t.Fatalf("join the stop's reconciliation driver before draining warnings: joined=%v err=%v", joined, err)
 	}
 	for _, warning := range drainSessionWarnings(root) {
 		if warning.Code == events.WarningCodeDelegateDeliveryResultLost && warning.DelegateID == createdID {
