@@ -6,6 +6,7 @@ import path from "node:path";
 import { Driver } from "../skillguard/run.mjs";
 import { evaluate, navigateTo, queryAccessibilityTree, REFUSED_BUTTON_SELECTOR } from "../browserGuardCdp.mjs";
 import { revealControlStep, revealReadyExpr } from "./revealControl.mjs";
+import { pressRowExpr } from "./pressRow.mjs";
 import { retainsNewerReadingPoint } from "./releaseRetained.mjs";
 import { attentionJourney } from "./attention.mjs";
 import { isHistoryReadMethod } from "../lib/historyMethods.mjs";
@@ -54,7 +55,8 @@ const drilledTrack = (level) => {
   return { columns: rendered.slice(-2), spines: rendered.slice(0, -2) };
 };
 const column = (ref) => `${inspectorRoot} [data-testid="cascade-column"][data-scope-ref=${q(ref)}]`;
-const row = (edge) => `[data-activity-anchor=${q(`delegate:${JSON.stringify([edge.childRef, edge.delegateId])}`)}]`;
+const activityAnchor = (edge) => `delegate:${JSON.stringify([edge.childRef, edge.delegateId])}`;
+const row = (edge) => `[data-activity-anchor=${q(activityAnchor(edge))}]`;
 const scopeRefs = (testid) => `JSON.stringify([...document.querySelectorAll('[data-testid=${q(testid)}]')].map(node => node.dataset.scopeRef))`;
 const wait = (expression, label, options = {}) => {
   new Function(`return (${expression})`);
@@ -1832,10 +1834,18 @@ async function reconnect({ expectRefs } = {}) {
   return after;
 }
 
+// pressRow presses the revealed row in one page turn (see pressRowExpr) and
+// proves it pressed the named delegate, so a displaced or covered row fails
+// here by name instead of timing out 15s later on another delegate's column.
+async function pressRow(edge, level) {
+  const pressed = await wait(pressRowExpr(`[data-testid="activity-sidebar"] ${row(edge)}`), `drill ${level}'s delegate row is exposed and pressed`);
+  assert.equal(pressed, activityAnchor(edge), `drill ${level} pressed the row it names`);
+}
+
 async function drill(edge, level) {
   await wait(sidebarEntranceSettled, `sidebar entrance settled before drill ${level}`);
-  const selector = await reveal(edge, '[data-testid="activity-sidebar"]');
-  await driver.click(selector);
+  await reveal(edge, '[data-testid="activity-sidebar"]');
+  await pressRow(edge, level);
   await wait(`document.querySelector(${q(column(edge.childRef))}) !== null`, `selected column at level ${level}`);
   const track = drilledTrack(level);
   await wait(`${scopeRefs("cascade-column")} === ${q(JSON.stringify(track.columns))} && ${scopeRefs("cascade-spine")} === ${q(JSON.stringify(track.spines))}`, `exact column and spine sets ${level}`);
