@@ -42,7 +42,7 @@ Run from `mobile-native`:
 node modules/evener-voice/ensure-model.mjs
 ```
 
-The same check runs during `npm ci` postinstall. It downloads pinned Silero when absent and copies the custom wake assets from the tracked `resources/wake-word/` export. It verifies SHA-256 before writing, refuses to replace a bad existing file and verifies every selected file. Installed root-level ONNX copies and the generated `resources/wake-models.json` are ignored in Git. The three trainer originals are tracked and each fits the repository's 1 MiB file limit.
+The same check runs during `npm ci` postinstall with `--skip-if-excluded`, so while `mobile-native/package.json` lists `evener-voice` under `expo.autolinking.ios.exclude` postinstall prints the skip and downloads nothing. `npm test` runs the installer without that flag first because the installer tests need the pinned asset. Removing the exclusion restores the postinstall download. It downloads pinned Silero when absent and copies the custom wake assets from the tracked `resources/wake-word/` export. It verifies SHA-256 before writing, refuses to replace a bad existing file and verifies every selected file. Installed root-level ONNX copies and the generated `resources/wake-models.json` are ignored in Git. The three trainer originals are tracked and each fits the repository's 1 MiB file limit.
 
 Wake manifests must have non-empty IDs/phrases and satisfy the Swift settings
 limits before any assets are installed. Generated JSON is replaced atomically;

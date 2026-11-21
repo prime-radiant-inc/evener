@@ -57,30 +57,50 @@ async function ensureAsset(asset, base) {
 	return { file: asset.file, sha256: asset.sha256 };
 }
 
-const args = process.argv.slice(2);
-if (args.length && (args.length !== 2 || args[0] !== "--wake-manifest"))
-	throw new Error("usage: node ensure-model.mjs [--wake-manifest PATH]");
-const manifestURL = args.length
-	? pathToFileURL(resolve(args[1]))
-	: new URL("./wake-models.custom.json", import.meta.url);
-const manifest = JSON.parse(await readFile(manifestURL, "utf8"));
-validateWakeManifest(manifest);
-await ensureAsset({
-	file: "silero_vad.onnx",
-	sha256: "6b99cbfd39246b6706f98ec13c7c50c6b299181f2474fa05cbc8046acc274396",
-	url: "https://raw.githubusercontent.com/snakers4/silero-vad/5cd2ba54db059f961e7545d4f211b44f005a6dfb/files/silero_vad.onnx",
-});
-const packaged = { id: manifest.id, phrase: manifest.phrase, settings: manifest.settings };
-for (const key of ["melspectrogram", "embedding", "classifier"])
-	packaged[key] = await ensureAsset(manifest[key], manifestURL);
-// This is a generated build input. Training artifacts are only read, never moved
-// or rewritten. Do not package source URLs or a developer's absolute paths.
-const output = new URL("./resources/wake-models.json", import.meta.url);
-const temporary = new URL(`./resources/.wake-models-${randomUUID()}.tmp`, import.meta.url);
-try {
-	await writeFile(temporary, `${JSON.stringify(packaged, null, 2)}\n`, { flag: "wx" });
-	await rename(temporary, output);
-} finally {
-	await rm(temporary, { force: true });
+// Postinstall passes --skip-if-excluded so an app build that excludes this module
+// does not download models it never ships.
+async function appExcludesVoiceModule() {
+	let appPackage;
+	try {
+		appPackage = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"));
+	} catch (error) {
+		if (error.code === "ENOENT") return false;
+		throw error;
+	}
+	const exclude = appPackage?.expo?.autolinking?.ios?.exclude;
+	return Array.isArray(exclude) && exclude.includes("evener-voice");
 }
-console.log(`Wake model packaged: ${manifest.id} (${manifest.phrase})`);
+
+const args = process.argv.slice(2);
+const skipIfExcluded = args.includes("--skip-if-excluded");
+const installArgs = args.filter((arg) => arg !== "--skip-if-excluded");
+if (installArgs.length && (installArgs.length !== 2 || installArgs[0] !== "--wake-manifest"))
+	throw new Error("usage: node ensure-model.mjs [--wake-manifest PATH] [--skip-if-excluded]");
+if (skipIfExcluded && (await appExcludesVoiceModule())) {
+	console.log("evener-voice is excluded from the iOS build; skipping the wake-model install");
+} else {
+	const manifestURL = installArgs.length
+		? pathToFileURL(resolve(installArgs[1]))
+		: new URL("./wake-models.custom.json", import.meta.url);
+	const manifest = JSON.parse(await readFile(manifestURL, "utf8"));
+	validateWakeManifest(manifest);
+	await ensureAsset({
+		file: "silero_vad.onnx",
+		sha256: "6b99cbfd39246b6706f98ec13c7c50c6b299181f2474fa05cbc8046acc274396",
+		url: "https://raw.githubusercontent.com/snakers4/silero-vad/5cd2ba54db059f961e7545d4f211b44f005a6dfb/files/silero_vad.onnx",
+	});
+	const packaged = { id: manifest.id, phrase: manifest.phrase, settings: manifest.settings };
+	for (const key of ["melspectrogram", "embedding", "classifier"])
+		packaged[key] = await ensureAsset(manifest[key], manifestURL);
+	// This is a generated build input. Training artifacts are only read, never moved
+	// or rewritten. Do not package source URLs or a developer's absolute paths.
+	const output = new URL("./resources/wake-models.json", import.meta.url);
+	const temporary = new URL(`./resources/.wake-models-${randomUUID()}.tmp`, import.meta.url);
+	try {
+		await writeFile(temporary, `${JSON.stringify(packaged, null, 2)}\n`, { flag: "wx" });
+		await rename(temporary, output);
+	} finally {
+		await rm(temporary, { force: true });
+	}
+	console.log(`Wake model packaged: ${manifest.id} (${manifest.phrase})`);
+}
