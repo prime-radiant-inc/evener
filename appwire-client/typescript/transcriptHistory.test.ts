@@ -1476,12 +1476,12 @@ function liveQuotaWaitOnBootOne(): ThreadModel {
   );
 }
 
-// A restarted daemon mints wait stamps from 1 again, so a wait-free first
-// read after the restart must retire the previous runtime's whole wait —
-// deadline, stamp and chip. The runtime-change guard therefore reads the
-// held wait's own stamp BEFORE the stamp comparisons zero it: against the
-// zeroed value the guard sees no held wait and carries the old deadline and
-// chip into the new turn.
+// A runtime change voids every stamp the previous runtime left, so a
+// wait-free first read after a restart must retire the previous runtime's
+// whole wait — deadline, stamp and chip. The runtime-change guard therefore
+// reads the held wait's own stamp BEFORE the stamp comparisons zero it:
+// against the zeroed value the guard sees no held wait and carries the old
+// deadline and chip into the new turn.
 test("a wait-free read after a daemon restart retires the previous runtime's held wait", () => {
   const model = liveQuotaWaitOnBootOne();
   expect(model.history?.bootGeneration).toBe("1");
