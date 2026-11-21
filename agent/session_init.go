@@ -1803,6 +1803,15 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			// durability.
 			s.maybeAutoSave()
 		}
+		// The transcript header of a role- or plugin-changing fork records no
+		// prompt, so the session meta is the only place a reader can find the one this
+		// session launched with. Persist a freshly rendered one now, before the
+		// restored session is exposed: a history index opened on the first read
+		// computes its prelude once, at open, so a periodic or first-turn save
+		// would arrive too late for that handle.
+		if s.persistFallbackPrompt && s.systemPromptFrozen && s.cachedSystemPrompt != meta.LaunchSystemPrompt {
+			s.maybeAutoSave()
+		}
 	}
 	restoreComplete = true
 	return s, nil
