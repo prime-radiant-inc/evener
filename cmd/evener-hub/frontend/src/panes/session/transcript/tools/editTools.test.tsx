@@ -1,8 +1,22 @@
+import type { ItemModel } from "@evener/appwire-client";
 import { render, screen } from "@testing-library/react";
 import { expect, test } from "vitest";
+import rawDiffStyles from "../../../../widgets/diffblock/diffblock.module.css";
+import { requireClass } from "../../../../widgets/internal/requireClass";
 import { toolRendererFor } from "../toolRenderers";
 import "./editTools";
-import type { ItemModel } from "@evener/appwire-client";
+
+const diffStyles = {
+  line: requireClass(rawDiffStyles.line, "diffblock.module.css", "line"),
+  content: requireClass(rawDiffStyles.content, "diffblock.module.css", "content"),
+  header: requireClass(rawDiffStyles.header, "diffblock.module.css", "header"),
+  add: requireClass(rawDiffStyles.add, "diffblock.module.css", "add"),
+  del: requireClass(rawDiffStyles.del, "diffblock.module.css", "del"),
+};
+
+function diffLines(container: HTMLElement): Element[] {
+  return Array.from(container.querySelectorAll(`.${diffStyles.line}`));
+}
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
@@ -55,6 +69,96 @@ test("edit_file: old_string/new_string read straight from a settled item's own a
   const args = JSON.stringify({ file_path: "a.ts", old_string: "one\ntwo", new_string: "uno" });
   const settled = item({ toolName: "edit_file", argumentsJSON: args, output: "edited a.ts: 1 replacement" });
   expect(d.summary(settled)).toBe("Edited a.ts · +1 -2");
+});
+
+test("edit_file: body renders multi-edit edits[] with all hunks and @@ edit N @@ headers", () => {
+  const d = toolRendererFor("edit_file");
+  const Body = d.body!;
+  const args = JSON.stringify({
+    file_path: "a.ts",
+    edits: [
+      { old_string: "first old", new_string: "first new" },
+      { old_string: "second old", new_string: "second new" },
+    ],
+  });
+  render(<Body item={item({ toolName: "edit_file", argumentsJSON: args })} live={false} />);
+  expect(screen.getByText("@@ edit 1 @@")).toBeTruthy();
+  expect(screen.getByText("@@ edit 2 @@")).toBeTruthy();
+  expect(screen.getByText("first old")).toBeTruthy();
+  expect(screen.getByText("first new")).toBeTruthy();
+  expect(screen.getByText("second old")).toBeTruthy();
+  expect(screen.getByText("second new")).toBeTruthy();
+});
+
+test("edit_file: body renders stringified pre-repair edits", () => {
+  const d = toolRendererFor("edit_file");
+  const Body = d.body!;
+  const args = JSON.stringify({
+    file_path: "a.ts",
+    edits: JSON.stringify([
+      { old_str: "alpha", new_str: "beta" },
+      { oldText: "gamma", newText: "delta" },
+    ]),
+  });
+  render(<Body item={item({ toolName: "edit_file", argumentsJSON: args })} live={false} />);
+  expect(screen.getByText("@@ edit 1 @@")).toBeTruthy();
+  expect(screen.getByText("@@ edit 2 @@")).toBeTruthy();
+  expect(screen.getByText("alpha")).toBeTruthy();
+  expect(screen.getByText("beta")).toBeTruthy();
+  expect(screen.getByText("gamma")).toBeTruthy();
+  expect(screen.getByText("delta")).toBeTruthy();
+});
+
+test("edit_file: malformed edit_file renders null", () => {
+  const d = toolRendererFor("edit_file");
+  const Body = d.body!;
+  for (const malformed of [
+    { file_path: "a.ts" },
+    { file_path: "a.ts", edits: [] },
+    { file_path: "a.ts", edits: [{ old_string: "a", new_string: "b" }], old_string: "c" },
+  ]) {
+    const { container, unmount } = render(
+      <Body item={item({ toolName: "edit_file", argumentsJSON: JSON.stringify(malformed) })} live={false} />,
+    );
+    expect(container.firstChild).toBeNull();
+    unmount();
+  }
+});
+
+test("edit_file: removing a Markdown --- line renders with del class in flat single-edit and multi-edit diffs", () => {
+  const d = toolRendererFor("edit_file");
+  const Body = d.body!;
+
+  const flatArgs = JSON.stringify({ file_path: "doc.md", old_string: "--", new_string: "++" });
+  const flat = render(<Body item={item({ toolName: "edit_file", argumentsJSON: flatArgs })} live={false} />);
+  const flatLines = diffLines(flat.container);
+  expect(flatLines).toHaveLength(4);
+  expect(flatLines[0]!.classList.contains(diffStyles.header)).toBe(true);
+  expect(flatLines[1]!.classList.contains(diffStyles.header)).toBe(true);
+  expect(flatLines[2]!.classList.contains(diffStyles.del)).toBe(true);
+  expect(flatLines[2]!.querySelector(`.${diffStyles.content}`)?.textContent).toBe("--");
+  expect(flatLines[3]!.classList.contains(diffStyles.add)).toBe(true);
+  expect(flatLines[3]!.querySelector(`.${diffStyles.content}`)?.textContent).toBe("++");
+  flat.unmount();
+
+  const batchArgs = JSON.stringify({
+    file_path: "doc.md",
+    edits: [
+      { old_string: "--", new_string: "kept" },
+      { old_string: "old", new_string: "++" },
+    ],
+  });
+  const batch = render(<Body item={item({ toolName: "edit_file", argumentsJSON: batchArgs })} live={false} />);
+  const batchLines = diffLines(batch.container);
+  expect(batchLines).toHaveLength(8);
+  expect(batchLines[0]!.classList.contains(diffStyles.header)).toBe(true);
+  expect(batchLines[1]!.classList.contains(diffStyles.header)).toBe(true);
+  expect(batchLines[2]!.classList.contains(diffStyles.header)).toBe(true);
+  expect(batchLines[3]!.classList.contains(diffStyles.del)).toBe(true);
+  expect(batchLines[3]!.querySelector(`.${diffStyles.content}`)?.textContent).toBe("--");
+  expect(batchLines[5]!.classList.contains(diffStyles.header)).toBe(true);
+  expect(batchLines[7]!.classList.contains(diffStyles.add)).toBe(true);
+  expect(batchLines[7]!.querySelector(`.${diffStyles.content}`)?.textContent).toBe("++");
 });
 
 // --- write_file -------------------------------------------------------
