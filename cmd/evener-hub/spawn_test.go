@@ -147,6 +147,22 @@ func TestBuildResumeArgsOmitAmbientModelKnobs(t *testing.T) {
 			t.Fatalf("resume args missing %q: %v", required, args)
 		}
 	}
+	// An explicit pick is the one model a resume launches with: the strip
+	// above keeps the meta-reconstructed model out of the child's arguments,
+	// and the override names the model the resumed daemon starts on.
+	req.ModelOverride = "work/house-model"
+	args = buildResumeArgs(req)
+	// pairsToMap misaligns on buildResumeArgs's odd argv (its literal "serve"
+	// prefix), so read the flag positionally.
+	pick := ""
+	for i, arg := range args {
+		if arg == "--model" && i+1 < len(args) {
+			pick = args[i+1]
+		}
+	}
+	if pick != "work/house-model" {
+		t.Fatalf("resume args --model=%q, want the pick work/house-model: %v", pick, args)
+	}
 }
 
 func TestHubSpawnerResumeLaunchCheckOmitsAmbientModel(t *testing.T) {
@@ -194,6 +210,49 @@ exit 2
 	args := strings.Fields(string(data))
 	if hasArg(args, "--model") {
 		t.Fatalf("resume launch-check must not pass ambient --model: %v", args)
+	}
+	// An explicit pick is the one model launch-check judges on resume: an
+	// unlisted pick is refused there, before any child starts, by the same
+	// live-listing judgment a fresh launch's model gets — the whole resume
+	// fails with it instead of starting the session on a model the instance
+	// cannot serve.
+	serveMarker := filepath.Join(dir, "serve-ran")
+	t.Setenv("SERVE_MARKER", serveMarker)
+	refusingBin := filepath.Join(dir, "fake-evener-refusing")
+	refusingScript := `#!/bin/sh
+if [ "$1" = "launch-check" ]; then
+  if printf '%s' "$@" | grep -q "openai/not-listed"; then
+    printf 'model openai/not-listed is not available from provider openai\n' >&2
+    exit 1
+  fi
+  printf '{"protocol":"evener-appwire-v7","launch_flags":["api-log"]}\n'
+  exit 0
+fi
+if [ "$1" = "serve" ]; then
+  : > "$SERVE_MARKER"
+  mkdir -p "$EVENER_RUN_DIR"
+  cat > "$EVENER_RUN_DIR/$$.json" <<EOF
+{"pid":$$,"address":"127.0.0.1:1","started_at":"2999-01-01T00:00:00Z"}
+EOF
+  sleep 1
+  exit 0
+fi
+exit 2
+`
+	writeFakeEvener(t, refusingBin, refusingScript)
+	refusingSpawner := HubSpawner{Cfg: cfg, EvenerBinary: refusingBin, RunDir: filepath.Join(dir, "run-refused"), HubToken: "generated-token"}
+	if _, err := refusingSpawner.Resume(context.Background(), hubcore.ResumeRequest{
+		SessionID:     "01JRESUME",
+		ModelOverride: "openai/not-listed",
+		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{
+			Model: "openrouter/stale-model",
+		}},
+		WorkingDir: dir,
+	}); err == nil {
+		t.Fatal("resume with an unlisted pick launched, want the launch-check refusal")
+	}
+	if _, statErr := os.Stat(serveMarker); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatal("the refused resume still started a child")
 	}
 }
 

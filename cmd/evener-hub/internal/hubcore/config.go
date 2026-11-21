@@ -313,6 +313,12 @@ type ResumeRequest struct {
 	AppReplaySize int
 	Env           []string // populated by ToEnv during Resume
 	Provider      string   // instance the launch selected; gated against the registry before spawning
+	// ModelOverride is the qualified "provider/model" an explicit pick resumes
+	// the session on: the resumed daemon starts with it. Empty keeps the model
+	// the session persisted; Resolved.Effective.Model stays a historical
+	// reconstruction that buildResumeArgs strips from the child's arguments,
+	// so only this field names a model the resume launches with.
+	ModelOverride string
 
 	// CompletionOwned is set only by explicit thread/resume. Automatic resume
 	// retains the configured startup budget; explicit restore awaits readiness,
