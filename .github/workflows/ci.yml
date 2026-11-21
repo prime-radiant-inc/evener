@@ -95,8 +95,14 @@ jobs:
     if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'web-unit') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    # go-cache-save deletes this kind's superseded entry before saving (#7025).
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v7.1.0
         with:
@@ -169,8 +175,14 @@ jobs:
         shard: [overflow, skill, cascade]
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    # go-cache-save deletes this kind's superseded entry before saving (#7025).
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v7.1.0
         with:
@@ -301,8 +313,14 @@ jobs:
     if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'static-build') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    # go-cache-save deletes this kind's superseded entry before saving (#7025).
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: ./.github/actions/setup-toolchain
         with:
@@ -334,8 +352,14 @@ jobs:
     if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'lint-golangci') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
+    # go-cache-save deletes this kind's superseded entry before saving (#7025).
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@v7
         with:
@@ -398,8 +422,14 @@ jobs:
     if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'lint-tagged') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    # go-cache-save deletes this kind's superseded entry before saving (#7025).
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@v7
         with:
@@ -448,8 +478,14 @@ jobs:
   lint-repository:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    # go-cache-save deletes this kind's superseded entry before saving (#7025).
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@v7
         with:
@@ -507,8 +543,14 @@ jobs:
     if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'fuzz-checks') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    # go-cache-save deletes this kind's superseded entry before saving (#7025).
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@v7
         with:
@@ -546,11 +588,14 @@ jobs:
       contents: read
       # Reads the PR's labels and reviews for the acknowledgement gate.
       pull-requests: read
+      # go-cache-save deletes this kind's superseded entry before saving (#7025).
+      actions: write
     steps:
       - uses: actions/checkout@v7
         with:
           # The base revision is read in a detached worktree.
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: ./.github/actions/setup-toolchain
         with:
@@ -669,6 +714,10 @@ jobs:
         exclude: ${{ fromJSON(needs.changes.outputs.exclude_race_root_parts || '[]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    # go-cache-save deletes this kind's superseded entry before saving (#7025).
+    permissions:
+      contents: read
+      actions: write
     steps:
       - name: Record pull request candidate identity
         if: github.event_name == 'pull_request'
@@ -682,6 +731,8 @@ jobs:
           echo "PR_MERGE_SHA=$PR_MERGE_SHA"
 
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: ./.github/actions/setup-toolchain
         with:
@@ -751,8 +802,14 @@ jobs:
         exclude: ${{ fromJSON(needs.changes.outputs.exclude_race_module_shards || '[]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
+    # go-cache-save deletes this kind's superseded entry before saving (#7025).
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: ./.github/actions/setup-toolchain
         if: ${{ matrix.scope != 'nonagent' }}
@@ -827,8 +884,14 @@ jobs:
         exclude: ${{ fromJSON(needs.changes.outputs.exclude_tests_parts || '[]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    # go-cache-save deletes this kind's superseded entry before saving (#7025).
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: ./.github/actions/setup-toolchain
         with:
@@ -966,8 +1029,14 @@ jobs:
     if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'fuzz') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    # go-cache-save deletes this kind's superseded entry before saving (#7025).
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: ./.github/actions/setup-toolchain
         with:
@@ -986,23 +1055,25 @@ jobs:
   # cache kind, the golangci-lint analysis caches, the shared module cache and
   # the iOS qualification workflow's DerivedData build tree, all keyed by
   # commit, and runs restore only the newest entry per key prefix. This job
-  # keeps main at that one generation: once every lane of this workflow has
-  # finished it deletes each such entry on main that a newer entry of the same
-  # kind supersedes. A key's Go version and linter-config components belong to
-  # the generation, so a toolchain or config bump supersedes the whole older
-  # kind instead of leaving it to expire; the iOS key's lock hashes name a
-  # different build, so they stay part of its kind. A separate workflow's save
-  # may land after this job; the next main push trims that generation. It never
-  # deletes the newest entry of a kind, so a lane that saved nothing this run
-  # keeps its last entry; an entry another main run deleted first is already
-  # gone, which is not a failure.
+  # is the backstop for that one generation: each saving job already deletes
+  # its kind's predecessor before it saves (#7025), and this job collects what
+  # those deletes skipped, such as an exact-hit re-run or a failed save. Once
+  # every lane of this workflow has finished it deletes each such entry on main
+  # that a newer entry of the same kind supersedes. A key's Go version and
+  # linter-config components belong to the generation, so a toolchain or config
+  # bump supersedes the whole older kind instead of leaving it to expire; the
+  # iOS key's lock hashes name a different build, so they stay part of its
+  # kind. A separate workflow's save may land after this job; the next main
+  # push trims that generation. It never deletes the newest entry of a kind, so
+  # a lane that saved nothing this run keeps its last entry; an entry another
+  # main run deleted first is already gone, which is not a failure.
   cache-prune:
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     needs: [web, tests, static, race-root, race-modules, fuzz]
     runs-on: ubuntu-24.04
     permissions:
-      # Lists and deletes cache entries. No other job in this workflow gets
-      # write access to Actions.
+      # Lists and deletes cache entries; the saving jobs above hold the same
+      # grant for their own predecessor delete (#7025).
       actions: write
     steps:
       - name: Delete superseded cache entries on main
