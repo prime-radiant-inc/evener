@@ -252,13 +252,20 @@ func TestLoadCachedJobRecords_SecondRequestReadsOnlyTheAppendedDelta(t *testing.
 		t.Fatalf("calls after first load = %+v, want exactly one call reading from offset 0 with 2 events", calls)
 	}
 
-	// mtime resolution on some filesystems is coarse (1s); sleep to
-	// guarantee the append moves mtime forward so the cache can't mistake
-	// this for "nothing changed" and skip the read entirely.
-	time.Sleep(1100 * time.Millisecond)
+	// mtime resolution on some filesystems is coarse (1s), so pin the
+	// appended file's mtime strictly ahead of the one the cache recorded
+	// rather than waiting for the clock to move.
+	before, err := os.Stat(jobsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	s1cov_writeJobLog(t, stateDir, sessID,
 		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started.Add(time.Second), JobID: "job_c", Type: jobstore.JobShell, OwnerSessionID: sessID, VisibleToSession: sessID, StartedAt: &started},
 	)
+	later := before.ModTime().Add(2 * time.Second)
+	if err := os.Chtimes(jobsPath, later, later); err != nil {
+		t.Fatal(err)
+	}
 
 	second, _, _, err := loadCachedJobRecords(context.Background(), jobsPath)
 	if err != nil {
@@ -302,7 +309,10 @@ func TestLoadCachedJobRecords_RewrittenJournalForcesFullRescanWithCorrectResult(
 		t.Fatalf("first load = %d records, want 3", first.len())
 	}
 
-	time.Sleep(1100 * time.Millisecond)
+	before, err := os.Stat(jobsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// A genuine rewrite: remove and recreate rather than append, so this is
 	// not the same Store instance's own further writes — a repair tool or a
 	// different process replacing the file entirely.
@@ -313,6 +323,10 @@ func TestLoadCachedJobRecords_RewrittenJournalForcesFullRescanWithCorrectResult(
 	s1cov_writeJobLog(t, stateDir, sessID,
 		jobstore.Event{Kind: jobstore.EventJobStarted, TS: newStarted, JobID: "job_new_x", Type: jobstore.JobShell, OwnerSessionID: sessID, VisibleToSession: sessID, StartedAt: &newStarted},
 	)
+	later := before.ModTime().Add(2 * time.Second)
+	if err := os.Chtimes(jobsPath, later, later); err != nil {
+		t.Fatal(err)
+	}
 
 	second, secondEpoch, _, err := loadCachedJobRecords(context.Background(), jobsPath)
 	if err != nil {
