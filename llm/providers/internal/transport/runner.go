@@ -109,14 +109,18 @@ func (r *StreamRunner) Run(ctx context.Context) {
 	}, r.SSEOpts...)
 
 	terminalEvent := r.final
-	adapterTimeout := r.adapterTimeoutSource(ctx)
+	ctxErr := ctx.Err()
+	var adapterTimeout llm.APITimeoutSource
+	if ctxErr != nil {
+		adapterTimeout = r.adapterTimeoutSource(ctx)
+	}
 	var terminalErr error
 	if !*r.Finished {
-		if err := ctx.Err(); err != nil {
+		if ctxErr != nil {
 			if adapterTimeout != llm.APITimeoutNone && r.TerminalError != nil {
-				terminalErr = r.TerminalError(err)
+				terminalErr = r.TerminalError(ctxErr)
 			} else {
-				terminalErr = llm.WrapContextError(r.Provider, err)
+				terminalErr = llm.WrapContextError(r.Provider, ctxErr)
 			}
 		} else if fatal, ok := errors.AsType[*FatalStreamError](parseErr); ok {
 			terminalErr = fatal.Err
@@ -137,10 +141,10 @@ func (r *StreamRunner) Run(ctx context.Context) {
 	}
 	timeoutSource := llm.APITimeoutSourceForSSE(parseErr)
 	if timeoutSource == llm.APITimeoutNone {
-		timeoutSource = adapterTimeout
+		timeoutSource = cmp.Or(adapterTimeout, r.Attempt.TimeoutSource())
 	}
 	outcome := apilog.AttemptOutcomeClass("")
-	if !*r.Finished && ctx.Err() == context.Canceled {
+	if !*r.Finished && ctxErr == context.Canceled {
 		outcome = apilog.AttemptCallerCancel
 	}
 	r.Attempt.Complete(llm.APIAttemptResult{
