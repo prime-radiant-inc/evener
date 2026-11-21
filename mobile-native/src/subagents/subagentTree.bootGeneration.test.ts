@@ -171,6 +171,9 @@ test("a relay resync's replacement generation outlives the client swap that foll
 	await vi.waitFor(() => expect(heldSequence(subject)).toBe(9));
 	expect(heldSequence(subject)).toBe(9);
 
+	// The screen lets go before the next connection arrives.
+	await subject.setClient(null);
+
 	// The client is swapped. The new store is handed the retained rows, whose
 	// samples generation 2 published -- not generation 1, which is the last
 	// generation the follow read named. Its own page is held back, so the follow
