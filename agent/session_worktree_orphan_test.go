@@ -1384,9 +1384,10 @@ func captureDue(t *testing.T, start time.Time) bool {
 
 // awaitActivityPublishFloor waits out the activity coalescer's window on the
 // delegate's row: a report inside it advances the activity clock but publishes
-// nothing, so its lane-evidence refresh rides the next publication. A test that
-// injects one report as the lane owner's ongoing evidence waits here first, so
-// the freshness it then observes is that report's and not a ticker's.
+// nothing, so its lane-evidence refresh rides the next publication. Waiting
+// here establishes only that a later report is publication-eligible; it does
+// not prove the freshness a test then observes is that report's, because the
+// evidence ticker can refresh the same mtime.
 func awaitActivityPublishFloor(t *testing.T, controller *delegateTreeController, delegateID string) {
 	t.Helper()
 	testwait.UntilSeen(t, "the delegate's activity publication floor to clear", func() (bool, string) {
@@ -1565,27 +1566,26 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 	// row, and the parent's attention turn — the turn that presents the
 	// report — wedges inside its first model call. The tree is alive, the
 	// parent runs a turn, and the lane's own marker parent stays idle. The
-	// drive keeps retrying that parent's wake-edge because the owed attention
-	// arms asynchronously: an attempt that reads it once can miss it, and
-	// exiting on the first attempt would strand the wedge turn on the owner's
-	// slow quiet-watch retry. The loop drives the same attention primitive the
-	// owner's wake-edge uses, so the scripted step is the presentation turn
-	// itself and never an empty notification drive. The loop and the tripwire
-	// below share one deadline: a loop budget shorter than the tripwire
-	// strands an arm that lands in the gap — nothing drives the turn again
-	// until the owner's quiet-watch, past the tripwire.
-	// The report can be classified while the root is processing and deferred
-	// to the root's delivery queue, where only the background retry would
-	// pump it. driveUntil flushes the queue before each of its wake-edge
-	// passes, so a deferred report is appended deterministically; an empty
-	// queue makes it a no-op.
+	// drive retries that parent's wake-edge on each wake the lane's notify
+	// callbacks signal, because the owed attention arms asynchronously: an
+	// attempt that reads it once can miss it, and exiting on the first
+	// attempt would strand the wedge turn on the owner's slow quiet-watch
+	// retry. Those retries end when the presentation turn enters or the test
+	// ends, not with the tripwire below. The loop drives the same attention
+	// primitive the owner's wake-edge uses, so the scripted step is the
+	// presentation turn itself and never an empty notification drive. The
+	// report can be classified while the root is processing and deferred to
+	// the lane-owning delegate's delivery queue, where only the background
+	// retry would pump it: each drive pass flushes that queue while the
+	// delegate is idle, so a deferred report is appended deterministically
+	// and an empty queue is a no-op.
 	flushErr := lane.driveUntil(entered)
 	select {
 	case <-entered:
 	// TRIPWIRE: the armed attention turns over within seconds of the send
-	// settling; the shared deadline only fires on a genuine hang. It covers a
-	// shard loaded with the rest of this package's parallel tests, where spawn
-	// and the arm both stretch.
+	// settling; this bound only fires on a genuine hang. It covers a shard
+	// loaded with the rest of this package's parallel tests, where spawn and
+	// the arm both stretch.
 	case <-time.After(30 * time.Second):
 		// Reproduce the drive's own preconditions, in its order, so the
 		// failure names the one that declined: the drive's boolean cannot.
@@ -1657,16 +1657,6 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 	if got, _ := wedgedSession.Load().(string); got != lane.delegateSess.id {
 		t.Fatalf("the presentation turn ran on session %q, want the lane-owning delegate %q", got, lane.delegateSess.id)
 	}
-
-	// The injected report below must be publication-eligible. The wedged turn
-	// reported awaiting-model activity just before the model call, and the
-	// report a live lease carries inside delegateActivityPublishInterval of a
-	// publication is coalesced away — its evidence refresh rides the next one
-	// instead. Let the floor clear before the backdate (never between the
-	// backdate and the assertion, where a turn-ticker refresh would satisfy the
-	// stat without the injected report doing anything), the same way the
-	// running-delegate test does.
-	awaitActivityPublishFloor(t, lane.root.delegateController, lane.sharedDelegateID)
 
 	// The parent has now been idle past the operator's threshold: the wake
 	// refreshed its evidence once at launch, and nothing since.
@@ -1775,10 +1765,11 @@ func (l *sharedDescendantLane) driveUntil(stop <-chan struct{}) func() error {
 
 // startDrive starts one drive worker and returns the flush-error reader plus a
 // channel that closes when the worker exits. The worker drives once up front
-// for rows already presentable, then on each wake edge the lane's notify
-// callbacks signal: the daemon reaches a presentation on its wake edge, not on
-// a cadence, and a refused drive arms the root's paced retry. A callback the
-// test itself wired is its own driver and is left alone. stop outranks a
+// for rows already presentable — in the worker, so startDrive does not run
+// that pass inline — then on each wake edge the lane's notify callbacks signal:
+// the daemon reaches a presentation on its wake edge, not on a cadence, and a
+// refused drive arms the root's paced retry. A callback the test itself wired
+// is its own driver and is left alone. stop outranks a
 // buffered wake: once the caller closes it, no new pass starts. A pass already
 // admitted when stop closes can still be in flight, so a caller that must not
 // drive a runtime it has moved past joins the returned done channel. The worker
@@ -1814,13 +1805,20 @@ func (l *sharedDescendantLane) startDrive(stop <-chan struct{}) (func() error, <
 			sess.SetNotifyFunc(l.signal)
 		}
 	}
-	drive()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		stopped := func() bool {
 			return channelClosed(stop) || channelClosed(l.testDone)
 		}
+		// The first pass rides the worker so a caller blocked in a drive hook
+		// cannot outrun the timeout it starts after this call returns. A wake
+		// wired to another driver can close stop first; then the test has
+		// moved on and this pass must not flush or drive.
+		if stopped() {
+			return
+		}
+		drive()
 		for {
 			if stopped() {
 				return
@@ -3983,12 +3981,16 @@ func TestDelegateAttentionUserStopHoldSurvivesIdleReleaseRestore(t *testing.T) {
 	// flipped short grace. The reclaim is the state the cold restore rides —
 	// the live map drops the resident runtime pointer the same way the
 	// release's own tests observe it.
-	testwait.Until(t, "the idle release to reclaim the stopped delegate's runtime", func() bool {
+	testwait.UntilSeen(t, "the idle release to reclaim the stopped delegate's runtime", func() (bool, string) {
 		tree.mu.Lock()
 		live := tree.live[lane.fixture.delegateID]
 		released := live == nil || live.runtime == nil
+		runtimeSet := live != nil && live.runtime != nil
 		tree.mu.Unlock()
-		return released
+		if released {
+			return true, ""
+		}
+		return false, fmt.Sprintf("runtimeSet=%t (%s)", runtimeSet, stateDump())
 	})
 	select {
 	case <-releaseSettled:
@@ -4006,10 +4008,17 @@ func TestDelegateAttentionUserStopHoldSurvivesIdleReleaseRestore(t *testing.T) {
 	// pass through the cold restore; the release unhooked the resident sub
 	// record the earlier drives used, so the pass is the wake-path drive
 	// that owns the restore.
-	testwait.Until(t, "the released delegate's cold-restored drive to present the other row", func() bool {
+	testwait.UntilSeen(t, "the released delegate's cold-restored drive to present the other row", func() (bool, string) {
 		lane.root.drivePendingDelegateAttention()
 		live, err := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
-		return err == nil && live.resolutions[otherID] != ""
+		if err != nil {
+			return false, fmt.Sprintf("transcript read err=%v (%s)", err, stateDump())
+		}
+		if live.resolutions[otherID] != "" {
+			return true, ""
+		}
+		return false, fmt.Sprintf("resolutions=%v order=%v gens=%v (%s)",
+			live.resolutions, live.order, live.resumeGenerations, stateDump())
 	})
 
 	// The proof the presentation rode the cold restore: the delegate's live
@@ -4035,10 +4044,17 @@ func TestDelegateAttentionUserStopHoldSurvivesIdleReleaseRestore(t *testing.T) {
 	// attention — presents it on a generation of its own. The wait tolerates
 	// the recovery having fired before the other row's resolution was even
 	// observed; the generation comparison separates the two either way.
-	testwait.Until(t, "the reopened report to resolve after the cold-restored presentation", func() bool {
+	testwait.UntilSeen(t, "the reopened report to resolve after the cold-restored presentation", func() (bool, string) {
 		lane.root.drivePendingDelegateAttention()
 		live, err := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
-		return err == nil && live.resolutions[reopenedID] != ""
+		if err != nil {
+			return false, fmt.Sprintf("transcript read err=%v (%s)", err, stateDump())
+		}
+		if live.resolutions[reopenedID] != "" {
+			return true, ""
+		}
+		return false, fmt.Sprintf("resolutions=%v order=%v gens=%v (%s)",
+			live.resolutions, live.order, live.resumeGenerations, stateDump())
 	})
 	fold, foldErr = readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
 	if foldErr != nil {
@@ -4131,18 +4147,28 @@ func TestDelegateAttentionStopAdmittedDuringReopenResolvesFreshRow(t *testing.T)
 	// Drive the presentation: the busy arm reopens the consumed report, the
 	// seam admits the stop mid-window, and the first drive is enough — its
 	// flush pumps the delivery the spawn deferred past its last drain cut, so
-	// a stranded deferred row still presents.
-	flushErr := lane.driveUntil(stopAdmitted)
+	// a stranded deferred row still presents. The pass runs in the worker, so
+	// a hook stall cannot keep the test from reaching the tripwire below.
+	flushErr, driveDone := lane.startDrive(stopAdmitted)
 	select {
 	case <-stopAdmitted:
 	// TRIPWIRE: the seam admits the stop inside the first reopen window, a
 	// couple of drive passes in; the bound only fires on a genuine hang.
-	case <-time.After(30 * time.Second):
+	case <-time.After(testwait.Budget(t)):
 		lastFlushErr := flushErr()
 		deferred := lane.delegateSess.hasPendingDelegateDeliveries()
 		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
 		t.Fatalf("the reopen window never admitted the stop (pending attention=%d (%v); deferred deliveries=%v flush=%v)",
 			len(pending), pendErr, deferred, lastFlushErr)
+	}
+	// Join the worker before reading the fold: the first pass is the reopen
+	// itself, and its append and re-check must land before the reads below.
+	select {
+	case <-driveDone:
+	// TRIPWIRE: a drive that already admitted the stop returns just after its
+	// append and re-check; the bound only fires on a wedged worker.
+	case <-time.After(testwait.Budget(t)):
+		t.Fatalf("the admitted stop's first drive never returned (flush=%v)", flushErr())
 	}
 
 	// The re-check's contract: the stop owns the freshly appended row, so
@@ -4401,6 +4427,13 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileCoordinatorDrainsForDescendant(t 
 		coordinatorSub.mu.Lock()
 		defer coordinatorSub.mu.Unlock()
 		return coordinatorSub.finalizing
+	})
+	// The coordinator sets finalizing before it starts its drain ticker and
+	// sets the drain hold. Waiting for the hold orders the backdate below
+	// after the drain exists; either the coordinator's or a descendant's
+	// ticker can still refresh the root transcript afterwards.
+	testwait.Until(t, "the coordinator's finalization drain hold", func() bool {
+		return coordinatorSub.sess.drainHeld.Load()
 	})
 
 	// The lane's marker parent — the root — has now been idle past the
