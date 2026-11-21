@@ -146,6 +146,7 @@ describe("the model chip (spec 8.5)", () => {
 			modelChipLabel(
 				{
 					modelProvider: "lunaroute/glm-5.3-vision",
+					model: "lunaroute/glm-5.3-vision",
 					reasoningEffort: "xhigh",
 					reasoningEffortLevels: ["low", "high", "xhigh"],
 					supportsReasoning: true,
@@ -159,6 +160,7 @@ describe("the model chip (spec 8.5)", () => {
 		// Board row's model_name is the same name model/list gives.
 		const session = {
 			modelProvider: "deepseek/deepseek-4.1-flash",
+			model: "deepseek/deepseek-4.1-flash",
 			reasoningEffort: "xhigh",
 			reasoningEffortLevels: ["high", "xhigh"],
 			supportsReasoning: true,
@@ -181,6 +183,7 @@ describe("the model chip (spec 8.5)", () => {
 			modelChipLabel(
 				{
 					modelProvider: "deepseek/deepseek-4.1-flash",
+					model: "deepseek/deepseek-4.1-flash",
 					reasoningEffort: "xhigh",
 					reasoningEffortLevels: ["high", "xhigh"],
 					supportsReasoning: true,
@@ -194,6 +197,7 @@ describe("the model chip (spec 8.5)", () => {
 			modelChipLabel(
 				{
 					modelProvider: "meta/muse-spark-1.3",
+					model: "meta/muse-spark-1.3",
 					reasoningEffort: undefined,
 					reasoningEffortLevels: [],
 					supportsReasoning: false,
@@ -205,6 +209,7 @@ describe("the model chip (spec 8.5)", () => {
 			modelChipLabel(
 				{
 					modelProvider: "lunaroute/glm-5.3-vision",
+					model: "lunaroute/glm-5.3-vision",
 					reasoningEffort: "",
 					reasoningEffortLevels: ["high"],
 					supportsReasoning: true,
@@ -212,6 +217,25 @@ describe("the model chip (spec 8.5)", () => {
 				catalog,
 			),
 		).toBe("GLM 5.3 Vision · Default");
+	});
+	it("names the announced model in the acceptance window, not the Board row's previous model", () => {
+		// A live thread/model/changed announces its model with the provider
+		// instance in modelProvider; the Board row still names the model the
+		// last read saw until the next read lands.
+		const session = {
+			modelProvider: "lunaroute",
+			model: "glm-5.3-vision",
+			modelProfile: undefined,
+			reasoningEffort: "xhigh",
+			reasoningEffortLevels: ["low", "high", "xhigh"],
+			supportsReasoning: true,
+		};
+		// The catalog lookup must run on the qualified identity, so the chip
+		// names the announced model the way the catalog does.
+		expect(modelChipLabel(session, catalog, "DeepSeek 4.1 Flash")).toBe(`GLM 5.3 Vision · ${effortName("xhigh")}`);
+		// While the catalog is away, the announced id wins over the Board row,
+		// which still refers to the previous model.
+		expect(modelChipLabel(session, undefined, "DeepSeek 4.1 Flash")).toBe("glm-5.3-vision · XHigh");
 	});
 	it.each([
 		["minimal", "Minimal"],
