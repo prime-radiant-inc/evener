@@ -1,11 +1,14 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/llm"
 )
 
@@ -91,5 +94,70 @@ func TestRecordResponseUsageKeepsAMeasurementAcrossAppends(t *testing.T) {
 	want := 600 + fresh.EstimateUsage(appended, 0).Used
 	if got := sess.contextMgr.EstimateUsage(sess.history, 0).Used; got != want {
 		t.Fatalf("context meter with two appended turns = %d, want %d (the saved count plus the appended delta)", got, want)
+	}
+}
+
+// TestRequestMeasurementCoversTurnsAppendedByAPreDispatchRebuild pins the other
+// append site: the final-dispatch skill reload appends a typed notification to
+// resident history and rebuilds the request before it goes out. The provider's
+// input count therefore covers the appended turn, and a measurement still
+// pointing at the pre-rebuild snapshot prices it a second time as a delta.
+func TestRequestMeasurementCoversTurnsAppendedByAPreDispatchRebuild(t *testing.T) {
+	sess := newSession(t, withStateDir(t.TempDir()))
+	profile := sess.currentProfile()
+	if sess.skillAvailableToSession(skill.GardeningMemorySkillName) {
+		t.Fatal("fixture needs a session that cannot follow the gardening-memory skill")
+	}
+
+	sess.mu.Lock()
+	sess.history = append([]schema.Turn{}, pricedTurns(3, 40)...)
+	// An obligation whose skill this session cannot follow appends a typed
+	// failure notification and sets appendedNotifications, so the final
+	// dispatch rebuilds the request through rebuildForAppendedSkillTurns.
+	sess.skillLifecycle.Obligations = append(sess.skillLifecycle.Obligations, schema.SkillDeliveryObligation{
+		InvocationID: "inv-7154-rebuild",
+		Identity:     schema.SkillContentIdentity{Name: skill.GardeningMemorySkillName},
+		Route:        "model_tool",
+	})
+	sess.skillLifecycle.Revision++
+	before := len(sess.history)
+	sess.mu.Unlock()
+
+	var timings events.RoundTimings
+	if _, _, _, _, _, _, err := sess.prepareModelRequestWithError(context.Background(), 0, &timings); err != nil {
+		t.Fatalf("prepare model request: %v", err)
+	}
+
+	sess.mu.Lock()
+	resident := append([]schema.Turn{}, sess.history...)
+	sess.mu.Unlock()
+	if len(resident) <= before {
+		t.Fatalf("history has %d turns, want more than the %d it held before the request: the delivery notification never landed, so this proof is vacuous", len(resident), before)
+	}
+	// Positive control by outcome identity, not wording: the appended turn
+	// carries the failed delivery outcome for the obligation.
+	appended := resident[len(resident)-1]
+	carried := false
+	if appended.SkillState != nil {
+		for _, outcome := range appended.SkillState.Outcomes {
+			if outcome.InvocationID == "inv-7154-rebuild" {
+				carried = true
+			}
+		}
+	}
+	if !carried {
+		t.Fatalf("the appended turn carries no delivery outcome for inv-7154-rebuild: %#v", appended)
+	}
+
+	// The rebuilt request presents the whole resident history, so the count the
+	// provider returns covers every resident turn and the meter reads it back
+	// exactly, with no delta for the appended turn.
+	sess.recordResponseUsage(llm.Response{Usage: llm.Usage{InputTokens: 1000}}, llm.Request{}, profile)
+	if got := sess.contextMgr.LastInputTokens(); got != 1000 {
+		t.Fatalf("LastInputTokens = %d, want 1000", got)
+	}
+	if got := sess.contextMgr.EstimateUsage(resident, 0).Used; got != 1000 {
+		fresh := contextmgr.NewManager(profile, nil, nil)
+		t.Fatalf("context meter after the rebuilt request = %d, want 1000: the appended turn was priced twice as a %d-token delta", got, fresh.EstimateUsage(resident[before:], 0).Used)
 	}
 }

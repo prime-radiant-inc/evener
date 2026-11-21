@@ -491,6 +491,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	rebuildForAppendedSkillTurns := func() (bool, error) {
 		s.mu.Lock()
 		var appended []schema.Turn
+		priorMeasurement := s.requestMeasurement
 		// Measure against the snapshot this request projected (presentedTurns),
 		// not the round snapshot (historyTurns): a leased delegate round
 		// projects the controller's later snapshot, which can already hold the
@@ -502,6 +503,17 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// history, and moving it down with the drop below would make every
 			// withheld row look like a fresh append on the next rebuild.
 			presentedBoundary = len(s.history)
+			// The rebuilt request presents these appended turns, so the input
+			// count the provider returns for it covers them. Move the
+			// measurement up with the request; left on the pre-rebuild
+			// snapshot, the reader prices the appended turns a second time as
+			// a delta past the measured prefix (roborev's twenty-third round).
+			s.requestMeasurement = requestMeasurement{
+				ok:       true,
+				length:   presentedBoundary,
+				anchor:   contextmgr.PrefixAnchor(s.history, presentedBoundary),
+				revision: s.historyRevision,
+			}
 		}
 		historyTurns = append([]schema.Turn{}, s.history...)
 		s.mu.Unlock()
@@ -534,6 +546,12 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// The boundary already advanced past the withheld steer, so it stays
 			// outside every later rebuild window this round; the next claim binds it.
 			if len(appended) == 0 {
+				// Nothing is rebuilt, so the request still presents the
+				// pre-rebuild snapshot: the advance above would claim coverage
+				// of turns the provider never sees.
+				s.mu.Lock()
+				s.requestMeasurement = priorMeasurement
+				s.mu.Unlock()
 				return false, nil
 			}
 		}
