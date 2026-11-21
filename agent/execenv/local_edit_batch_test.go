@@ -577,7 +577,27 @@ func TestEditFileBatch_CRLFMixedEndingsAndBOM(t *testing.T) {
 		}
 	})
 
-	t.Run("CRLF-first mixed endings normalize to CRLF", func(t *testing.T) {
+	t.Run("editing one line in a mixed file keeps untouched line endings", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		env := NewLocalExecutionEnvironment(dir)
+		orig := "a\r\nb\nc\r\n"
+		if err := os.WriteFile(filepath.Join(dir, "mixed.txt"), []byte(orig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFileBatchCtx(context.Background(), "mixed.txt", []FileEdit{
+			{OldString: "a", NewString: "A"},
+		}); err != nil {
+			t.Fatalf("mixed ending edit failed: %v", err)
+		}
+		got, _ := os.ReadFile(filepath.Join(dir, "mixed.txt"))
+		want := "A\r\nb\nc\r\n"
+		if string(got) != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("CRLF-first mixed endings use CRLF for replacements only", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		env := NewLocalExecutionEnvironment(dir)
@@ -591,7 +611,7 @@ func TestEditFileBatch_CRLFMixedEndingsAndBOM(t *testing.T) {
 			t.Fatalf("mixed ending edit failed: %v", err)
 		}
 		got, _ := os.ReadFile(filepath.Join(dir, "mixed.txt"))
-		want := "A1\r\nA2\r\nb\r\nc\r\n"
+		want := "A1\r\nA2\r\nb\nc\r\n"
 		if string(got) != want {
 			t.Fatalf("got %q, want %q", got, want)
 		}
@@ -617,7 +637,7 @@ func TestEditFileBatch_CRLFMixedEndingsAndBOM(t *testing.T) {
 		}
 	})
 
-	t.Run("LF-first mixed endings normalize to LF", func(t *testing.T) {
+	t.Run("LF-first mixed endings use LF for replacements only", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		env := NewLocalExecutionEnvironment(dir)
@@ -626,12 +646,12 @@ func TestEditFileBatch_CRLFMixedEndingsAndBOM(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, err := env.EditFileBatchCtx(context.Background(), "mixed2.txt", []FileEdit{
-			{OldString: "b\r\n", NewString: "B1\r\nB2\r\n"},
+			{OldString: "b", NewString: "B1\nB2"},
 		}); err != nil {
 			t.Fatalf("mixed2 edit failed: %v", err)
 		}
 		got, _ := os.ReadFile(filepath.Join(dir, "mixed2.txt"))
-		want := "a\nB1\nB2\nc\n"
+		want := "a\nB1\nB2\r\nc\n"
 		if string(got) != want {
 			t.Fatalf("got %q, want %q", got, want)
 		}
