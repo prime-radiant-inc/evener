@@ -433,6 +433,10 @@ inject_environment EVENER_QUALIFICATION_HUB_TOKEN "$hub_token"
 chmod 600 "$private_run"
 
 xcresult="$output/ui.xcresult"
+# Issue #5992's diagnostic: the uploaded set carried no device or app system
+# log, so record the measured window and read the device's unified log for it
+# back below.
+run_start="$(date '+%Y-%m-%d %H:%M:%S')"
 log "running the qualification journeys"
 set +e
 run_xcodebuild "$output/xcodebuild-test.log" \
@@ -446,6 +450,15 @@ test_exit=$?
 set -e
 echo "$test_exit" >"$output/xcodebuild-test.exit"
 log "xcodebuild exit: $test_exit"
+
+# Issue #5992's diagnostic: the measured window just ended; capture it at the
+# default level into the uploaded set so a slow first launch can be compared
+# with a normal one. It covers the fixture-only simulator this run created; a
+# failed capture must not fail an otherwise green run.
+xcrun simctl spawn "$sim_udid" log show \
+	--start "$run_start" --end "$(date '+%Y-%m-%d %H:%M:%S')" \
+	--style compact >"$output/simulator-system.log" 2>"$output/simulator-system-capture.log" ||
+	log "simulator system log capture failed, see $output/simulator-system-capture.log"
 
 # Validate the result bundle: every intended test identity must have
 # actually executed, none skipped, zero failures. An unreadable or partial
