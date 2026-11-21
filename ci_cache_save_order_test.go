@@ -782,10 +782,14 @@ func TestCacheSavesReplaceTheirPredecessor(t *testing.T) {
 // workflow level. The cache step is skipped on pull_request and merge_group,
 // but the token still carries the scope through every run of the workflow, so
 // a grant on an unrelated job hands candidate code a write-capable Actions
-// token for no gain (PR #7434 review).
+// token for no gain. The checkout must also leave that token out of
+// .git/config: candidate build and test code runs after it, and on
+// pull_request and merge_group that code is what the branch author wrote
+// (PR #7434 review).
 func TestActionsWriteStaysOnSavingJobs(t *testing.T) {
-	granted := 0
-	for _, path := range goCacheWorkflows {
+	workflows := append(slices.Clone(goCacheWorkflows), ".github/workflows/ios-qualification.yml")
+	granted, checkouts := 0, 0
+	for _, path := range workflows {
 		if got := readWorkflowGrants(t, path)["actions"]; got != "" && got != "none" {
 			t.Errorf("%s: workflow-level actions %q, want the grant on the saving jobs alone", path, got)
 		}
@@ -796,8 +800,21 @@ func TestActionsWriteStaysOnSavingJobs(t *testing.T) {
 			granted++
 			saves := false
 			for _, step := range job.Steps {
-				if step.Uses == "./.github/actions/go-cache-save" {
+				// The iOS lane saves its DerivedData tree with a plain
+				// actions/cache/save step instead of go-cache-save.
+				if step.Uses == "./.github/actions/go-cache-save" || step.Uses == "actions/cache/save@v6" {
 					saves = true
+				}
+				if !strings.HasPrefix(step.Uses, "actions/checkout@") {
+					continue
+				}
+				if name == "cache-prune" {
+					t.Errorf("%s %s: cache-prune checks out candidate code", path, name)
+					continue
+				}
+				checkouts++
+				if got := step.With["persist-credentials"]; got != "false" {
+					t.Errorf("%s %s: checkout persist-credentials = %q, want false", path, name, got)
 				}
 			}
 			if !saves && name != "cache-prune" {
@@ -807,5 +824,8 @@ func TestActionsWriteStaysOnSavingJobs(t *testing.T) {
 	}
 	if granted == 0 {
 		t.Fatal("no job holds actions write, so no grant was checked")
+	}
+	if checkouts == 0 {
+		t.Fatal("no checkout under an actions write grant was checked")
 	}
 }

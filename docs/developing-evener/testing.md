@@ -1192,7 +1192,11 @@ The rules that keep the budget:
   against a stub `gh` and shows each predecessor deleted, the key this run
   saves kept, and exact-hit, unset-prefix and failed-listing runs deleting
   nothing. `TestActionsWriteStaysOnSavingJobs` keeps the scope off every job
-  that does not save a cache.
+  that does not save a cache, and requires each of those jobs' checkout to set
+  `persist-credentials: false`: a pull request or merge group runs the branch
+  author's steps after the checkout, and a persisted credential would leave
+  the write-capable token in `.git/config` for any of them to read. The
+  checkout still authenticates its own fetch and then removes the token.
 
   CI's `cache-prune` job remains the backstop: after every lane of a ci.yml
   main push it deletes each `go-*`, `gomod-*`, `golangci-lint-*` and

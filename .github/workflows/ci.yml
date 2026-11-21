@@ -101,6 +101,8 @@ jobs:
       actions: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v7.1.0
         with:
@@ -179,6 +181,8 @@ jobs:
       actions: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v7.1.0
         with:
@@ -315,6 +319,8 @@ jobs:
       actions: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: ./.github/actions/setup-toolchain
         with:
@@ -352,6 +358,8 @@ jobs:
       actions: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@v7
         with:
@@ -420,6 +428,8 @@ jobs:
       actions: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@v7
         with:
@@ -474,6 +484,8 @@ jobs:
       actions: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@v7
         with:
@@ -537,6 +549,8 @@ jobs:
       actions: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@v7
         with:
@@ -581,6 +595,7 @@ jobs:
         with:
           # The base revision is read in a detached worktree.
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: ./.github/actions/setup-toolchain
         with:
@@ -716,6 +731,8 @@ jobs:
           echo "PR_MERGE_SHA=$PR_MERGE_SHA"
 
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: ./.github/actions/setup-toolchain
         with:
@@ -791,6 +808,8 @@ jobs:
       actions: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: ./.github/actions/setup-toolchain
         if: ${{ matrix.scope != 'nonagent' }}
@@ -871,6 +890,8 @@ jobs:
       actions: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: ./.github/actions/setup-toolchain
         with:
@@ -1014,6 +1035,8 @@ jobs:
       actions: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: ./.github/actions/setup-toolchain
         with:
