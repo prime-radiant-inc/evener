@@ -98,6 +98,13 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
   // The line holds the count itself whether or not a turn runs, so a starting
   // turn has it without relying on another surface holding it.
   const runningSubagents = useSubagentCounts(sessionRef ?? null)?.active ?? turnRunning;
+  // A retry is in progress once its wait is over: a frame landed since it was
+  // reported, or its delay ran out on the pane's clock. A zero-delay retry
+  // (the quota wake's announcement) has no wait, so it is in progress on
+  // arrival without consulting that clock: the pane ticks on its own
+  // schedule, the announcement can land between ticks with `now` still
+  // behind `receivedAt`, and the clock test then read as a 0-second
+  // countdown until the next tick.
   const retryWait: RetryWait | undefined = retry && {
     attempt: retry.attempt,
     attemptCap: retry.attemptCap,
@@ -105,7 +112,7 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
     errorClass: retry.errorClass,
     model: retry.model && retry.model !== primaryModel ? retry.model : undefined,
     groupElapsedMs: retry.groupElapsedMs,
-    inProgress: lastFrameAt > retry.receivedAt || now - retry.receivedAt >= retry.delayMs,
+    inProgress: retry.delayMs <= 0 || lastFrameAt > retry.receivedAt || now - retry.receivedAt >= retry.delayMs,
   };
   // The countdown rule is the shared tri-state one every surface reads, so
   // the pane and the row agree on the wait's state. The deadline the model
@@ -191,6 +198,14 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
         level === "quota" && quotaWait?.elapsedMs !== undefined ? String(quotaWait.elapsedMs) : undefined
       }
       data-model={level === "quota" && quotaWait?.model !== undefined ? quotaWait.model : undefined}
+      // Whether the retry the line reports is under way or still waiting out
+      // its delay, as a fact rather than the "in progress" / "retrying in"
+      // words.
+      data-retry-in-progress={
+        retryWait !== undefined && (level === "retrying" || level === "stalled")
+          ? String(retryWait.inProgress)
+          : undefined
+      }
       className={level === "stalled" ? `${CLASS.line} ${CLASS.stalled}` : CLASS.line}
     >
       {text}
