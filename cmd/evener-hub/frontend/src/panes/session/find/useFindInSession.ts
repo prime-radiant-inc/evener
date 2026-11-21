@@ -221,6 +221,7 @@ export function useFindInSession({
           before.itemId === hit.itemId &&
           before.rowIndex === hit.rowIndex &&
           before.opens === hit.opens &&
+          before.opensIgnoreBaseline === hit.opensIgnoreBaseline &&
           (before.opensSession ?? []).join("\0") === (hit.opensSession ?? []).join("\0")
         );
       });
@@ -424,7 +425,11 @@ export function useFindInSession({
     // and show them. They stay open, as a reader's own toggle would.
     if (current.opens !== undefined) {
       const scoped = scopedDisclosureId(disclosureScope, current.opens);
-      if (!isDisclosureOpenNow(scoped, false)) setDisclosureOpen(scoped, true);
+      // A notes snapshot ignores the expand-all baseline, so the baseline's
+      // "open" is not what its row shows: open it explicitly in that case too.
+      if (current.opensIgnoreBaseline) {
+        if (!isDisclosureOpenExplicitly(scoped)) setDisclosureOpen(scoped, true);
+      } else if (!isDisclosureOpenNow(scoped, false)) setDisclosureOpen(scoped, true);
     }
     // A steer's or a memory refresh's body folds by the session ref plus its
     // own id (SteeringDivider's key). Its owner may keep it closed through an

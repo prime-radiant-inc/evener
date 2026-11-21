@@ -6,7 +6,7 @@
 // "Retry turn" and a "Reconnect & retry" action; this reproduces that decision
 // purely from the TurnError the reducer already maps onto TurnModel.error
 // (reducer.ts:216, wireToTurnScalars).
-import { isTurnError, type TurnError } from "@evener/appwire-client";
+import { echoesTurnError, type ItemModel, isTurnError, type TurnError, type TurnModel } from "@evener/appwire-client";
 
 // The reconnect-class message substrings the legacy hub-recovery button keyed
 // off (renderer.js:4463-4471) - a daemon/session that went away, where the
@@ -50,6 +50,27 @@ export interface TurnFailureInfo {
 // carrying a real error object renders the end-cap and anything else is ignored.
 export function asTurnError(error: unknown): TurnError | undefined {
   return isTurnError(error) ? error : undefined;
+}
+
+// FAILURE_FALLBACK_LABEL names a failure the wire described with neither a
+// message nor a description. It is the same category-label-over-invisible-row
+// rule a quiet notice follows, worded for the one event where the generic
+// "System event" would be worst: a row that says a failure happened beats one
+// that files it under nothing in particular.
+export const FAILURE_FALLBACK_LABEL = "Turn failed";
+
+// What a failure row says. The end cap that closes a failed turn already states
+// the message with its taxonomy chip, hint and recovery action, so the row that
+// echoes that error (echoesTurnError, the check the phone uses to drop it) names
+// the event and lets the cap carry the detail. Any other error row leads with
+// its own message, since the cap speaks only for the turn's failure: with no cap
+// at all, or an earlier, distinct error in the same turn, nothing else carries
+// it, and a failure is never left unstated.
+export function failureText(item: ItemModel, turn: TurnModel): string | undefined {
+  const named = item.description?.trim();
+  const message = item.text.trim();
+  const preferred = echoesTurnError(item, asTurnError(turn.error)) ? [named, message] : [message, named];
+  return preferred.find((candidate) => candidate);
 }
 
 export function classifyTurnError(error: TurnError): TurnFailureInfo {
