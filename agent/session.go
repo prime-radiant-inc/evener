@@ -1297,6 +1297,14 @@ type Session struct {
 	// advance it, so a rejected pick cannot cancel an earlier accepted one.
 	// Guarded by s.mu.
 	modelPickAccepted uint64
+	// modelValidating is the pick the boundary has popped and is applying:
+	// accepted, but in neither pendingModels nor the profile until the
+	// application settles (commit, re-queue, drop, or retraction), every
+	// outcome of which replaces the advertised pair itself. ReportedModelRef
+	// keeps naming it through that window so a synchronous read racing the
+	// boundary cannot regress to the pre-pick model after the acceptance was
+	// published. Guarded by s.mu.
+	modelValidating *pendingModelSwitch
 	// modelSwitchPublishMu serializes a switch application's commit through
 	// its publication - the profile swap, the marker record, and the
 	// EventModelChanged emit - so publications land in the order their swaps
@@ -2084,15 +2092,20 @@ func (s *Session) Profile() *provider.Profile { return s.currentProfile() }
 
 // ReportedModelRef is the model a client should be shown for this session
 // right now: the newest pick accepted for the turn boundary when one is
-// queued, else the committed profile's pair. thread/model/set's hook samples
-// it inside the server's critical section, so a pick accepted mid-turn is
-// readable from thread/read before its boundary commits it - the read half of
-// the acceptance SetModelOn publishes as EventNextModelChanged.
+// queued, else the pick whose boundary application is still validating, else
+// the committed profile's pair. thread/model/set's hook samples it inside the
+// server's critical section, so a pick accepted mid-turn is readable from
+// thread/read before its boundary commits it - the read half of the acceptance
+// SetModelOn publishes as EventNextModelChanged - and stays readable through
+// the application itself, whose settle is what replaces the pair.
 func (s *Session) ReportedModelRef() (model, provider string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if newest := s.newestPendingModelIndexLocked(); newest >= 0 {
 		return s.pendingModels[newest].resolvedModel, s.pendingModels[newest].resolvedProvider
+	}
+	if validating := s.modelValidating; validating != nil {
+		return validating.resolvedModel, validating.resolvedProvider
 	}
 	p := s.profile
 	return p.Model(), p.ID()
@@ -2407,7 +2420,12 @@ func (s *Session) queueModelSwitch(target modelSwitchTarget, pickSeq uint64) err
 	client := s.client
 	s.mu.Unlock()
 
-	_, primedInstance, primedListing, err = resolveModelSwitchTarget(client, nextProfile, s.id, *s.providerAdapterTimeout(), primedInstance, primedListing)
+	// The returned profile is the one the enumeration enriched with the live
+	// listing's rows - the same profile the at-rest path commits, and the one
+	// the accepted pick advertises: a gateway's live listing is the only place
+	// a model's reasoning tiers may appear, and announcing the pre-listing
+	// profile would show the composer an empty ladder until the boundary.
+	nextProfile, primedInstance, primedListing, err = resolveModelSwitchTarget(client, nextProfile, s.id, *s.providerAdapterTimeout(), primedInstance, primedListing)
 	if err != nil {
 		return err
 	}
@@ -2472,12 +2490,7 @@ func (s *Session) popNewestPendingModelLocked() (pendingModelSwitch, bool) {
 		live = append(live, entry)
 	}
 	s.pendingModels = live
-	newest := -1
-	for i, entry := range s.pendingModels {
-		if newest < 0 || entry.seq > s.pendingModels[newest].seq {
-			newest = i
-		}
-	}
+	newest := s.newestPendingModelIndexLocked()
 	if newest < 0 {
 		s.pendingModels = nil
 		return pendingModelSwitch{}, false
@@ -2487,10 +2500,11 @@ func (s *Session) popNewestPendingModelLocked() (pendingModelSwitch, bool) {
 	return entry, true
 }
 
-// newestPendingModelIndexLocked is popNewestPendingModelLocked's peek: the
-// entry the next boundary would apply - newest by issue, skipping the picks a
-// committed newer one superseded - without dequeuing anything. It mirrors the
-// pop's selection; callers hold s.mu.
+// newestPendingModelIndexLocked is the one selection rule for which pending
+// pick owns the session's next turn: newest by issue, skipping the picks a
+// committed newer one superseded. popNewestPendingModelLocked applies it after
+// pruning superseded entries; ReportedModelRef applies it without touching the
+// queue. Callers hold s.mu.
 func (s *Session) newestPendingModelIndexLocked() int {
 	newest := -1
 	for i, entry := range s.pendingModels {
@@ -2537,12 +2551,28 @@ func (s *Session) applyQueuedModelSwitches(inWaitingCall bool) {
 		if !ok {
 			return
 		}
+		// The popped pick is accepted but in neither the queue nor the profile
+		// for the whole application, so hold it as the advertised pair through
+		// that window: the thread/model/set hook's synchronous refresh can
+		// sample exactly here when a pick races the end of its turn, and
+		// sampling the pre-pick model would regress thread/read after the
+		// acceptance was published. Every settle below replaces the advertised
+		// pair itself - the committed profile, a re-queued entry, or the
+		// retraction.
+		s.mu.Lock()
+		s.modelValidating = &pending
+		s.mu.Unlock()
+		if hook := s.cfg.testOnly.beforeQueuedModelApply; hook != nil {
+			hook()
+		}
 		release, admissionErr := s.beginRetirementMutation("admission")
 		if admissionErr != nil {
+			s.clearModelValidating()
 			return
 		}
 		err := s.applyModelSwitch(pending.target, pending.primedInstance, pending.primedListing, modelSwitchFence{pickSeq: pending.seq})
 		release()
+		s.clearModelValidating()
 		if err != nil {
 			s.emit(events.WarningData{
 				Message: "queued model switch to " + pending.target.ref() + " did not apply: " + err.Error(),
@@ -2561,6 +2591,16 @@ func (s *Session) applyQueuedModelSwitches(inWaitingCall bool) {
 			}
 		}
 	}
+}
+
+// clearModelValidating retires the validating pick's hold on the advertised
+// pair. The caller has settled that application, and its outcome - the
+// committed profile, a re-queued entry, or the retraction announcement - now
+// owns the advertised pair on its own.
+func (s *Session) clearModelValidating() {
+	s.mu.Lock()
+	s.modelValidating = nil
+	s.mu.Unlock()
 }
 
 // announceNextModel publishes the session's next-turn model as an

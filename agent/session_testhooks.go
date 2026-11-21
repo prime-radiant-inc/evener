@@ -48,6 +48,13 @@ type testConfig struct {
 	// concurrent at-rest pick can commit and publish in, so it is the only
 	// place a test can make that interleaving deterministic. Nil in production.
 	beforeModelSwitchPublish func()
+	// beforeQueuedModelApply observes a queued pick's boundary application at
+	// its start: the boundary has popped the entry out of the queue and is
+	// about to validate and apply it. The accepted pick is in neither the
+	// queue nor the profile for the whole application, so this is the only
+	// place a test can sample the advertised pair deterministically inside
+	// that window. Nil in production.
+	beforeQueuedModelApply func()
 	// driveLaunching observes a notification drive on a parent at the point
 	// its child is marked driving and the drive's turn has not started: the
 	// window a concurrent runtime reclamation could select the child in.

@@ -131,11 +131,11 @@ func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, l
 		// window (G2): the bridge's EventModelChanged effect refreshes it on
 		// its drain goroutine, so a switch that committed at RPC time would
 		// read stale from thread/read until that drain runs. ReportedModelRef
-		// reads inside the write's critical section and is queue-aware: a
-		// pick accepted mid-turn samples as the queued pair, so thread/read
-		// reflects the acceptance now rather than first at its boundary, and
-		// the boundary commit racing this refresh cannot install a stale
-		// snapshot after the projection already installed the model.
+		// reads inside the write's critical section and is acceptance-aware:
+		// a pick accepted mid-turn samples as the queued pair, and one whose
+		// boundary application is mid-validation keeps sampling as that pick,
+		// so thread/read reflects the acceptance now and holds it through the
+		// boundary, never regressing to the pre-pick model between the two.
 		srv.UpdateSessionInfoFrom(sess.ID(), func() (string, string) {
 			return sess.ReportedModelRef()
 		})

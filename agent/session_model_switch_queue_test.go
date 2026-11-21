@@ -1034,6 +1034,252 @@ func TestACommittedSwitchPublishesEvenWhenANewerQueuedPickLaterFails(t *testing.
 	}
 }
 
+// TestAcceptedPickStaysAdvertisedWhileItsBoundaryApplicationValidates pins the
+// advertised pair through the window between the boundary's pop and its
+// application: the accepted pick is in neither the queue nor the profile, yet
+// the thread/model/set hook's synchronous refresh can sample exactly there
+// when a pick races the end of its turn. ReportedModelRef must keep naming the
+// pick until the application settles - the committed profile, a re-queued
+// entry, or the retraction is what replaces the advertised pair - or
+// thread/read regresses to the pre-pick model after the acceptance was already
+// published, which reads to a subscriber as the pick flipping back.
+func TestAcceptedPickStaysAdvertisedWhileItsBoundaryApplicationValidates(t *testing.T) {
+	dir := t.TempDir()
+	listModels := attemptRecordingLiveModels("openai", "gpt-5.2", "gpt-5.4")
+	openaiAdapter := &fakeAdapter{
+		name:       "openai",
+		liveModels: listModels,
+	}
+	s := newSession(t,
+		withAdapter(openaiAdapter),
+		withDir(dir),
+		withConfig(SessionConfig{
+			StateDir:         dir,
+			MaxSubagentDepth: 1,
+			ResolveProfile:   testResolver,
+			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+		}))
+	applyParked := make(chan struct{}, 1)
+	releaseApply := make(chan struct{})
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.beforeQueuedModelApply = func() {
+			select {
+			case applyParked <- struct{}{}:
+				<-releaseApply
+			default:
+			}
+		}
+	})
+	openaiAdapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			if err := s.SetModel("gpt-5.4"); err != nil {
+				t.Errorf("mid-turn pick: %v", err)
+			}
+			return agenttest.CommunicateResponse(true, "first turn done")
+		},
+	})
+
+	inputDone := make(chan error, 1)
+	go func() {
+		_, err := s.ProcessInput(context.Background(), "the only turn", nil)
+		inputDone <- err
+	}()
+	<-applyParked
+	model, instance := s.ReportedModelRef()
+	if model != "gpt-5.4" || instance != "openai" {
+		t.Fatalf("advertised pair while the pick's application validates = %s/%s, want the accepted pick gpt-5.4/openai",
+			instance, model)
+	}
+	close(releaseApply)
+	if err := <-inputDone; err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	model, instance = s.ReportedModelRef()
+	if model != "gpt-5.4" || instance != "openai" {
+		t.Fatalf("advertised pair after the application settled = %s/%s, want the committed gpt-5.4/openai",
+			instance, model)
+	}
+}
+
+// stagedLadderProtocol is an instance whose live listing names the target's
+// effort tiers only from its second listing on: the session's startup capture
+// saw the model reason without naming tiers, and the pick's own fetch is what
+// carries them. The listing must run through the transport protocol - a
+// registered adapter override's rows are never applied to the registry's live
+// layer - for the tiers to reach a later resolve.
+type stagedLadderProtocol struct {
+	id       string
+	instance string
+	mu       sync.Mutex
+	calls    int
+}
+
+func (p *stagedLadderProtocol) ID() string { return p.id }
+func (*stagedLadderProtocol) PrunablePaths() []string {
+	return nil
+}
+func (*stagedLadderProtocol) BuildBody(llm.Request, registry.Resolved) (map[string]any, error) {
+	return map[string]any{}, nil
+}
+func (*stagedLadderProtocol) Complete(context.Context, llm.Request, registry.Resolved) (llm.Response, error) {
+	return llm.Response{}, nil
+}
+func (*stagedLadderProtocol) Stream(context.Context, llm.Request, registry.Resolved) (llm.Stream, error) {
+	return nil, llm.ErrStreamUnsupported
+}
+func (p *stagedLadderProtocol) ListModels(_ context.Context, res registry.Resolved) ([]registry.Model, error) {
+	if res.Instance != p.instance {
+		return []registry.Model{{ID: "gpt-launch"}}, nil
+	}
+	p.mu.Lock()
+	p.calls++
+	call := p.calls
+	p.mu.Unlock()
+	if call < 2 {
+		return []registry.Model{{ID: "gpt-tier", Caps: registry.Caps{Reasoning: new(true)}}}, nil
+	}
+	return []registry.Model{{ID: "gpt-tier", Caps: registry.Caps{Reasoning: new(true), EffortValues: []string{"low", "high"}}}}, nil
+}
+func (*stagedLadderProtocol) CountTokens(context.Context, llm.Request, registry.Resolved) (int, error) {
+	return 0, llm.ErrInputTokenCountUnsupported
+}
+
+// newStagedLadderProtocol returns the id's registered ladder protocol,
+// resetting its listing counter for a repeated test run, or registers a new
+// one serving instance.
+func newStagedLadderProtocol(id, instance string) *stagedLadderProtocol {
+	if existing, ok := llm.ProtocolFor(id); ok {
+		p, ok := existing.(*stagedLadderProtocol)
+		if !ok {
+			panic("staged ladder protocol registered with another type")
+		}
+		p.mu.Lock()
+		p.calls = 0
+		p.mu.Unlock()
+		return p
+	}
+	p := &stagedLadderProtocol{id: id, instance: instance}
+	llm.RegisterProtocol(p)
+	return p
+}
+
+func (p *stagedLadderProtocol) listingCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
+}
+
+// TestQueuedPickAnnouncementCarriesTheLiveListedReasoningLadder pins the
+// acceptance against the profile the pick-time enumeration enriched: the
+// target's static registry row reasons but names no effort tiers, and the
+// instance's live listing is the only place the tiers appear. The acceptance
+// must publish the enriched ladder - what the boundary's commit frame already
+// carries - or the composer's effort ladder is empty between the pick and its
+// boundary.
+func TestQueuedPickAnnouncementCarriesTheLiveListedReasoningLadder(t *testing.T) {
+	const protocolID = "test-proto-agent-queue-ladder"
+	proto := newStagedLadderProtocol(protocolID, "lunaroute")
+	dir := t.TempDir()
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(map[string]registry.Provider{
+			"home": {
+				Base: "openai-compatible", APIKey: "test",
+				Transport: registry.Transport{BaseURL: "https://home.example.com/v1"},
+				Models:    map[string]registry.Model{"gpt-launch": {}},
+			},
+			"lunaroute": {
+				Base: "openai-compatible", APIKey: "test",
+				Transport: registry.Transport{BaseURL: "https://lunaroute.example.com/v1"},
+				Protocol:  protocolID,
+				Models: map[string]registry.Model{
+					// The static row reasons but names no ladder; only the
+					// instance's live listing carries the tiers.
+					"gpt-tier": {Caps: registry.Caps{Reasoning: new(true)}},
+				},
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	client := llm.NewClient(llm.WithRegistry(r))
+	homeAdapter := &fakeAdapter{
+		name:       "home",
+		liveModels: func(context.Context) ([]registry.Model, error) { return []registry.Model{{ID: "gpt-launch"}}, nil },
+	}
+	client.Register(homeAdapter)
+	// Every other instance gets a scripted adapter so the session's startup
+	// enumeration stays offline; lunaroute keeps none, so its listings run
+	// through the staged transport protocol.
+	for _, inst := range r.Instances() {
+		if inst.Name != "home" && inst.Name != "lunaroute" {
+			client.Register(&fakeAdapter{name: inst.Name})
+		}
+	}
+	launch, err := provider.Resolve(r, "home/gpt-launch")
+	if err != nil {
+		t.Fatalf("launch profile: %v", err)
+	}
+	s := newSession(t,
+		withClient(client),
+		withProfile(launch),
+		withDir(dir),
+		withConfig(SessionConfig{
+			StateDir:         dir,
+			MaxSubagentDepth: 1,
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				return provider.Resolve(r, ref)
+			},
+			testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+		}))
+	homeAdapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			if err := s.SetModel("lunaroute/gpt-tier"); err != nil {
+				t.Errorf("mid-turn pick: %v", err)
+			}
+			return agenttest.CommunicateResponse(true, "first turn done")
+		},
+	})
+
+	var evMu sync.Mutex
+	evs := []events.SessionEvent{}
+	drained := make(chan struct{})
+	s.ConsumeEventsLossless(func(ev events.SessionEvent) {
+		evMu.Lock()
+		evs = append(evs, ev)
+		evMu.Unlock()
+	}, func() { close(drained) })
+	if _, err := s.ProcessInput(context.Background(), "the only turn", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	s.Close()
+	<-drained
+
+	var acceptance *events.NextModelChangedData
+	evMu.Lock()
+	for _, ev := range evs {
+		if d, ok := ev.Data.(events.NextModelChangedData); ok {
+			acceptance = &d
+		}
+	}
+	evMu.Unlock()
+	if acceptance == nil {
+		t.Fatal("no acceptance announcement for the queued pick")
+	}
+	if acceptance.Provider != "lunaroute" || acceptance.Model != "gpt-tier" {
+		t.Fatalf("acceptance = %s/%s, want lunaroute/gpt-tier", acceptance.Provider, acceptance.Model)
+	}
+	if len(acceptance.ReasoningEffortLevels) != 2 || acceptance.ReasoningEffortLevels[0] != "low" || acceptance.ReasoningEffortLevels[1] != "high" {
+		t.Fatalf("acceptance ladder = %v, want the live listing's [low high]", acceptance.ReasoningEffortLevels)
+	}
+	if got := proto.listingCount(); got < 2 {
+		t.Fatalf("lunaroute listed %d times, want the pick's fetch among them", got)
+	}
+}
+
 // TestRejectedDeferredPickDoesNotCancelAnEarlierValidPick pins the ordering in
 // issue #6621: pick A is valid, pick B is later and fails only the boundary's
 // deferred history check. B's rejection must not take A's accepted choice with
