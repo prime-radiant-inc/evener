@@ -10,6 +10,7 @@ import {
 import { notificationWireItem } from "@evener/appwire-client/testing/notificationWireFixtures";
 import { act } from "@testing-library/react";
 import { beforeEach, expect, test } from "vitest";
+import { makeTranscriptPreviewModel } from "../../../transcriptDisplay/previewFixture";
 import { type TranscriptBodyRow, transcriptRowsForProjection } from "../transcript/TranscriptBody";
 import "../transcript/tools";
 import { noteMermaidRender, resetMermaidRenderStateForTests } from "../../../widgets/mermaid/renderState";
@@ -230,9 +231,10 @@ test("an in-progress reply searches auto-closed Markdown as its live row reads",
 
 // The invariant the rest of Find leans on: a counted match is one Find can
 // land on with its words on screen. A thought's summaries and an action's
-// rationale are readable once their disclosure opens; tool output, steers,
-// notes, notices and warnings are not searched by this slice.
-test("messages, thought summaries and action rationales are searched", () => {
+// rationale are readable once their disclosure opens, and so are a steer's
+// visible text and a human note's divider body; tool output, notices and
+// warnings are not searched by this slice.
+test("messages, thought summaries, action rationales and steers are searched", () => {
   const items = [
     { id: "u", type: "userMessage", text: "find the needle" },
     { id: "think", type: "reasoning", text: "needle", reasoningSummaries: [["a needle thought"]] },
@@ -254,8 +256,9 @@ test("messages, thought summaries and action rationales are searched", () => {
   for (const level of ["chat", "tools", "full"] as const) {
     const config = makeTranscriptDisplayConfig({ kind: "preset", level });
     const rows = transcriptRowsForProjection(projectThread(model, config));
-    // Chat hides a settled thought; the other levels show its summary.
-    const expected = level === "chat" ? ["u", "a"] : ["u", "think", "a"];
+    // Chat hides a settled thought; the other levels show its summary. A
+    // parent's steer and a human note show at every level.
+    const expected = level === "chat" ? ["u", "steer", "note", "a"] : ["u", "think", "steer", "note", "a"];
     expect(findHits(rows, "needle", { config }).map((hit) => hit.itemId)).toEqual(expected);
     expect([...findableItemIds(model, config, "needle")].sort()).toEqual([...expected].sort());
   }
@@ -522,13 +525,83 @@ test("a thought's failed diagram source becomes searchable when it falls back to
   expect(findHits(rows, "thoughtNode", { config: TOOLS })).toEqual([]);
 });
 
+// A steer and a memory refresh fold their words behind a divider keyed by the
+// session ref plus the row's own id (SteeringDivider), not by the view's
+// disclosure scope, so a hit names those ids for Find to open.
+function projectedRows(items: ItemModel[]): readonly TranscriptBodyRow[] {
+  const model = {
+    ...makeTranscriptPreviewModel(),
+    ref: "ref_a",
+    turns: [{ id: "t1", status: "completed", items } as TurnModel],
+  };
+  return transcriptRowsForProjection(projectThread(model, TOOLS));
+}
+
+function steerItem(id: string, fields: Partial<ItemModel> = {}): ItemModel {
+  return { id, turnId: "t1", type: "steering", text: "", status: "completed", ...fields };
+}
+
+test("a steer's hit names the session-scoped divider that folds its words", () => {
+  const rows = projectedRows([steerItem("s1", { text: "the brass widget" })]);
+  expect(findHits(rows, "brass", { config: TOOLS }).map((hit) => [hit.itemId, hit.opensSession])).toEqual([
+    ["s1", ["s1"]],
+  ]);
+  // A steer the human typed is a prompt bubble with no fold to open.
+  const prompt = projectedRows([steerItem("s2", { text: "the brass widget", source: "user" })]);
+  expect(findHits(prompt, "brass", { config: TOOLS }).map((hit) => hit.opensSession)).toEqual([undefined]);
+});
+
+test("a suppressed task steer is not a hit at all", () => {
+  const rows = projectedRows([steerItem("sup", { text: "the brass widget", steeringKind: "task-list" })]);
+  expect(findHits(rows, "brass", { config: TOOLS })).toEqual([]);
+});
+
+test("a steer's interstitial text span opens only its own divider", () => {
+  const card = `<job-notification job_id="j5" event="failed" job_type="shell" status="failed" reason="bad" output_bytes="1" exit_code="3">
+Job job_5 failed.
+</job-notification>`;
+  const rows = projectedRows([steerItem("mix", { text: `first brass\n\n${card}\n\nsecond brass` })]);
+  expect(findHits(rows, "second brass", { config: TOOLS }).map((hit) => hit.opensSession)).toEqual([["mix:2"]]);
+});
+
+function memoryItem(id: string, text: string, content: string): ItemModel {
+  return {
+    id,
+    turnId: "t1",
+    type: "systemMessage",
+    eventKind: "memory-context",
+    text,
+    status: "completed",
+    raw: { memoryContext: { scope: "personal", state: "current", truncated: false, content } },
+  };
+}
+
+test("a memory refresh is searched by its index, never by its folded source", () => {
+  const rows = projectedRows([memoryItem("m1", "sourceOnlyWord", "- brass widget")]);
+  expect(findHits(rows, "brass widget", { config: TOOLS }).map((hit) => [hit.itemId, hit.opensSession])).toEqual([
+    ["m1", ["m1"]],
+  ]);
+  expect(findHits(rows, "sourceOnlyWord", { config: TOOLS })).toEqual([]);
+});
+
+test("a memory refresh's failed diagram source is counted once it falls back", () => {
+  const fence = "```";
+  const source = "flowchart TD\n  A --> memoryNode";
+  const rows = projectedRows([memoryItem("m1", "recorded", `The index:\n\n${fence}mermaid\n${source}\n${fence}\n`)]);
+  expect(findHits(rows, "memoryNode", { config: TOOLS })).toEqual([]);
+  act(() => noteMermaidRender(source, "error"));
+  expect(findHits(rows, "memoryNode", { config: TOOLS }).map((hit) => hit.itemId)).toEqual(["m1"]);
+  act(() => noteMermaidRender(source, "ok"));
+  expect(findHits(rows, "memoryNode", { config: TOOLS })).toEqual([]);
+});
+
 // --- A steer's notification cards ------------------------------------------
 // A card is searched by the words it paints: the head, the report or the
 // excerpt it shows, and - only where nothing on its face holds the words - the
 // raw frame behind the one disclosure that hides it. Markup and attributes a
 // reader never sees are never a match (#6351 finding 3).
 
-function steerItem(id: string, text: string, extra: Partial<ItemModel> = {}): ItemModel {
+function cardSteerItem(id: string, text: string, extra: Partial<ItemModel> = {}): ItemModel {
   return { id, turnId: "t", type: "steering", text, ...extra } as ItemModel;
 }
 
@@ -561,7 +634,7 @@ test("a delegate card is searched by its report and opens the card, never by its
 
 test("a delegate card's structured result table is searched by its rendered labels and cells", () => {
   const rows = steerRows([
-    steerItem(
+    cardSteerItem(
       "steer",
       delegateCard({
         kind: "reported",
@@ -583,7 +656,7 @@ test("a delegate card's structured result table is searched by its rendered labe
 
 test("a static delegate head is searched by its visible words and opens no disclosure", () => {
   const rows = steerRows([
-    steerItem(
+    cardSteerItem(
       "steer",
       delegateCard({ kind: "reported", message: "", metadata: { outcome: "stopped", reason: "stopped_by_parent" } }),
     ),
@@ -595,7 +668,7 @@ test("a static delegate head is searched by its visible words and opens no discl
 test("a job card's preview opens the card alone, and its raw frame opens only for a word the preview cut", () => {
   const filler = "padding line\n".repeat(60);
   const rows = steerRows([
-    steerItem(
+    cardSteerItem(
       "steer",
       jobCard(
         'job_id="job_9" event="completed" job_type="shell" status="completed" reason="exit_zero" intent="Tail the log" exit_code="0"',
@@ -618,7 +691,7 @@ test("a job card's preview opens the card alone, and its raw frame opens only fo
 
 test("a shell excerpt is searched as its ANSI text renders, not as its escape sequences", () => {
   const rows = steerRows([
-    steerItem(
+    cardSteerItem(
       "steer",
       jobCard(
         'job_id="job_1" event="completed" job_type="shell" intent="Colour run"',
@@ -634,7 +707,7 @@ test("a shell excerpt is searched as its ANSI text renders, not as its escape se
 test("only the cards of a steer that hold the words open, and their siblings stay closed", () => {
   const first = jobCard('job_id="job_1" event="completed" intent="First card"', "first output");
   const second = jobCard('job_id="job_2" event="completed" intent="Second card"', "second output");
-  const rows = steerRows([steerItem("steer", `${first}\n${second}`)]);
+  const rows = steerRows([cardSteerItem("steer", `${first}\n${second}`)]);
   expect(findHits(rows, "second output", { config: TOOLS, sessionRef: "ref_a" }).map((hit) => hit.opens)).toEqual([
     ["notification:ref_a:job_2:steer:1"],
   ]);
@@ -644,10 +717,13 @@ test("only the cards of a steer that hold the words open, and their siblings sta
   ]);
 });
 
-test("a parent's steer and a suppressed steer are never parsed for cards", () => {
+test("a parent's steer and a human note show their own words and parse no cards", () => {
   const card = jobCard('job_id="job_1" event="completed"', "quokka");
   for (const extra of [{ source: "parent" }, { steeringKind: "human-note", source: "user" }] as Partial<ItemModel>[]) {
-    expect(findHits(steerRows([steerItem("steer", card, extra)]), "quokka", { config: TOOLS })).toEqual([]);
+    // The row paints its text verbatim, so the word is a match; no card is
+    // parsed from it, so no card disclosure opens on the hit.
+    const hits = findHits(steerRows([cardSteerItem("steer", card, extra)]), "quokka", { config: TOOLS });
+    expect(hits.map((hit) => hit.opens)).toEqual([undefined]);
   }
 });
 
@@ -655,7 +731,7 @@ test("a delegate report's failed diagram becomes searchable when it falls back t
   const fence = "```";
   const source = "flowchart TD\n  A --> reportNode";
   const rows = steerRows([
-    steerItem(
+    cardSteerItem(
       "steer",
       delegateCard({
         kind: "reported",

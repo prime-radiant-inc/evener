@@ -58,11 +58,6 @@ function fragmentsOf(item: ItemModel): readonly SteeringFragment[] | null {
   return fragments;
 }
 
-/** Whether this item's row renders notification cards at all. */
-export function rendersNotificationCards(item: ItemModel): boolean {
-  return fragmentsOf(item)?.some((fragment) => fragment.kind === "notification") ?? false;
-}
-
 /** The head: the title, the warning chip's word, and the label beside the
  * title - a delegate's name with the ending a failed or stopped run appends,
  * or the parser's own secondary composition. */
