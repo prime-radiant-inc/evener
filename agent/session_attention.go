@@ -1358,7 +1358,7 @@ func (s *Session) moveHeldDelegateAttentionTurnsToTail(released []string) {
 	// resolved row a restart still owes a position is the exact trigger of the
 	// generation it recovers, and that row is moved where its identity is
 	// known — after its turn is back in history — by
-	// admitRecoveredDelegateAttentionTrigger.
+	// restoreAcceptedTrigger.
 	for _, attentionID := range pending {
 		if _, ok := releasable[attentionID]; !ok {
 			continue
@@ -1503,7 +1503,7 @@ func (s *Session) stopQuietedDelegateAttentionRowsLocked(fold delegateAttentionF
 	// that trigger behind the very quiet its own generation exists to end: the
 	// recovered request filters it out, the run settles successfully, and the
 	// report stays durably consumed with the model never having read it. The
-	// trigger's own restore releases it (releaseRecoveredDelegateAttentionTrigger),
+	// trigger's own restore releases it (restoreAcceptedTrigger),
 	// where the exact identity is known and the turn is already back in history.
 	for _, id := range fold.pendingIDs() {
 		source, _, ok := cutDelegateAttentionReopenSegment(id)
