@@ -316,12 +316,24 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 						if order := details.assembledMirror(); order != "" {
 							if extra, ok := assembledOrderExtension(s, order); ok {
 								diverged, assembled = false, true
-								if structuredContent > sentContent {
+								// A newline the items appended without changing
+								// their content count is still provider text the
+								// pane has not shown.
+								if structuredContent > sentContent || structuredContent == sentContent && dSent < len(d) {
 									send = flushStructured()
 								}
 								if extra != "" {
-									send += extra
-									sentContent += len(extra) - strings.Count(extra, "\n")
+									// Text the pane already shows beyond the
+									// assembled items is not new: the scalar may
+									// have run ahead before the items caught up.
+									if shown := sentContent - structuredContent; shown > 0 {
+										raw, _ := advanceContent(extra, 0, 0, shown)
+										extra = extra[raw:]
+									}
+									if extra != "" {
+										send += extra
+										sentContent += len(extra) - strings.Count(extra, "\n")
+									}
 									sSent, sSentContent = len(s), scalarContent
 								}
 							}
