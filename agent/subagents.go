@@ -2110,6 +2110,17 @@ func (a *subagent) notificationDriveBlockedLocked(s *Session) bool {
 // (a successful handoff) and false when the live/idle guard skips the child
 // (closed, mid-run, or already being driven). The caller uses the handoff result
 // to settle the parent's forwarded drive signal (spec §3 settle).
+//
+// The turn is an admitted INPUT on the resident runtime, not a delegate
+// generation, so no delegate lease rides its context. That is the documented
+// exception in docs/subagent-management/11-delegate-resource-model.md
+// ("Notification drives are input turns", issue #6797): the controller has no
+// generation to admit a notification drive into, and its bounds are the runtime
+// input claim, the one tree-wide drive counter the root mints and every
+// descendant inherits, the drive's hung-turn bound, the stop that cancels it,
+// and the unleased watch-notice split that keeps watch notices out of it (the
+// turn credits no attention row, because only a leased generation commits a
+// presentation).
 func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 	if sub == nil {
 		return false
@@ -2227,6 +2238,10 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 			s.redriveChildIfAttentionRemains(driveCtx, sub, childSess)
 		}()
 		defer drive.end()
+		// No lease on this ctx by design (see the function comment and #6797).
+		// The unleased predicate this turn sees is what withholds watch
+		// notices and defers them to a leased generation; the turn itself
+		// credits no attention row.
 		_, err := childSess.ProcessInputKind(withDriveTurn(driveCtx, drive), "", nil, EntryNotification)
 		// A Stop of the delegate (stopDrive) cancelled the turn: that is the
 		// ordinary nonfatal end of a stopped run, so the work the delegate
