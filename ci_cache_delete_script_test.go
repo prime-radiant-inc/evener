@@ -72,7 +72,7 @@ func runCacheDeleteScript(t *testing.T, script string, vars map[string]string) (
 		t.Fatalf("reading the stub gh log: %v\n%s", err, out)
 	}
 	var calls []string
-	for _, line := range strings.Split(string(raw), "\n") {
+	for line := range strings.SplitSeq(string(raw), "\n") {
 		if line != "" {
 			calls = append(calls, line)
 		}

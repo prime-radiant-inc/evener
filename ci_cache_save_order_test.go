@@ -736,7 +736,7 @@ func TestCacheSavesReplaceTheirPredecessor(t *testing.T) {
 			t.Errorf("go-cache-restore does not export %s from %s; a rename would leave the delete listing nothing:\n%s", variable, want, resolved)
 		}
 	}
-	for _, line := range strings.Split(resolved, "\n") {
+	for line := range strings.SplitSeq(resolved, "\n") {
 		if !strings.HasPrefix(strings.TrimSpace(line), "delete_prefix=") &&
 			!strings.HasPrefix(strings.TrimSpace(line), "modules_delete_prefix=") {
 			continue
