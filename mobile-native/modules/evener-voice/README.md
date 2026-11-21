@@ -57,8 +57,13 @@ a truncated output from an earlier install does not prevent recovery.
 
 `Podfile.lock` records the module and both ONNX pods when the app builds the
 module. The app build excludes `evener-voice` through `mobile-native/package.json`,
-so the committed lock lists neither; remove that exclusion and update the lock
-through the normal [full-app prebuild and pod installation flow](../../../docs/design/mobile/ios-build-distribution.md).
+so the committed lock lists neither; remove that exclusion, provision the wake
+models, and update the lock through the normal
+[full-app prebuild and pod installation flow](../../../docs/design/mobile/ios-build-distribution.md).
+Removing the exclusion does not rerun postinstall, and the podspec reads the
+generated `resources/wake-models.json`, so run `npm ci` (or
+`node modules/evener-voice/ensure-model.mjs`, adding `--wake-manifest` for a
+custom model) before regenerating the lock.
 
 ### Swapping the wake model
 
