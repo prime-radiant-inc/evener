@@ -1,9 +1,9 @@
 package agent
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -46,8 +46,8 @@ func TestSnapshotConfigHomeForkRefusesAConfigHomeTheTestMoved(t *testing.T) {
 	if err == nil {
 		t.Fatal("NewSession must refuse the launch snapshot in a config home the test moved to its own temp dir")
 	}
-	if !strings.Contains(err.Error(), "config home") {
-		t.Errorf("refusal must name the config home, got %q", err)
+	if !errors.Is(err, errSnapshotConfigHomeFork) {
+		t.Errorf("refusal = %v, want errSnapshotConfigHomeFork", err)
 	}
 }
 
@@ -95,11 +95,14 @@ func TestConfigHomeForkRefusal(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := configHomeForkRefusal(tc.baseline, tc.current)
-			if tc.refused && err == nil {
-				t.Fatalf("configHomeForkRefusal(%q, %q) must refuse", tc.baseline, tc.current)
+			if !tc.refused {
+				if err != nil {
+					t.Fatalf("configHomeForkRefusal(%q, %q) must allow: %v", tc.baseline, tc.current, err)
+				}
+				return
 			}
-			if !tc.refused && err != nil {
-				t.Fatalf("configHomeForkRefusal(%q, %q) must allow: %v", tc.baseline, tc.current, err)
+			if !errors.Is(err, errSnapshotConfigHomeFork) {
+				t.Fatalf("configHomeForkRefusal(%q, %q) = %v, want errSnapshotConfigHomeFork", tc.baseline, tc.current, err)
 			}
 		})
 	}

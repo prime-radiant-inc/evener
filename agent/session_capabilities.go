@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -65,6 +66,10 @@ var gitProbeTimeout = 10 * time.Second
 // down.
 var testSnapshotConfigHome string
 
+// errSnapshotConfigHomeFork is the refusal snapshotConfigHomeForkError returns.
+// A test asserts it with errors.Is, so the refusal's prose stays free to change.
+var errSnapshotConfigHomeFork = errors.New("launch snapshot refused")
+
 // snapshotConfigHomeForkError refuses the launch-time environment snapshot under
 // `go test` when the running test moved the config home away from the one the
 // test binary established.
@@ -103,12 +108,12 @@ func configHomeForkRefusal(baseline, current string) error {
 	if baseline == "" || sameConfigHome(baseline, current) {
 		return nil
 	}
-	return fmt.Errorf("the launch-time environment snapshot is on while this test moved its config home from %q to %q: "+
-		"the snapshot's `go env` probe would spawn the Go telemetry sidecar there, and the sidecar keeps writing after "+
-		"`go env` exits, racing the test's temp-dir cleanup (\"unlinkat …: directory not empty\", #1527). "+
-		"Build the session with newSession and no withEnvironmentSnapshot(), or pass "+
-		"SessionConfig{testOnly: testConfig{skipGitSnapshot: true}} (RestoreSessionConfig likewise)",
-		baseline, current)
+	return fmt.Errorf("%w: this test moved the config home from %q to %q, so the snapshot's `go env` probe would spawn "+
+		"the Go telemetry sidecar there; the sidecar keeps writing after `go env` exits, racing the test's temp-dir "+
+		"cleanup (\"unlinkat …: directory not empty\", #1527). Build the session with newSession and no "+
+		"withEnvironmentSnapshot(), or pass SessionConfig{testOnly: testConfig{skipGitSnapshot: true}} "+
+		"(RestoreSessionConfig likewise)",
+		errSnapshotConfigHomeFork, baseline, current)
 }
 
 // sameConfigHome reports whether two config homes name the same directory,
