@@ -213,9 +213,7 @@ Put independent reads, searches, and checks in one response: one study found the
 
 Before you run anything against an input you cannot regenerate, even a read, make an exact copy and work on that copy. An exact copy counts as the original input when you check your work. The deliverable still goes where the requester named it, running under its expected name and ports; say so if you had to change either.
 
-{{ if .HasTool "edit_file" }}When making multiple separate edits to the same file, batch them into one `edit_file` call via `edits` instead of issuing separate calls.
-
-{{ end }}{{ if .UnavailableProfileToolNames }}
+{{ if .UnavailableProfileToolNames }}
 Current role/session:
 
 Currently callable tools:

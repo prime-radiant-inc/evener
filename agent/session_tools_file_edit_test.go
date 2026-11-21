@@ -372,8 +372,8 @@ func TestEditFile_AndApplyPatch_NeverBothAdvertisedInSession(t *testing.T) {
 					t.Fatalf("%s: prompt HasTool(edit_file) = %v, want %v", tc.name, got, tc.wantEditFile)
 				}
 				toolUsage := systemPromptSection(t, prompt, "## Tool usage")
-				if got := strings.Contains(toolUsage, "`edit_file`"); got != tc.wantEditFile {
-					t.Fatalf("%s: Tool usage mentions edit_file = %v, want %v\n%s", tc.name, got, tc.wantEditFile, toolUsage)
+				if strings.Contains(toolUsage, "`edit_file`") {
+					t.Fatalf("%s: frozen Tool usage must not hardcode edit_file guidance\n%s", tc.name, toolUsage)
 				}
 				if tc.adapter == "openai" && !strings.Contains(toolUsage, "`apply_patch`") {
 					t.Fatalf("%s: Tool usage should mention apply_patch\n%s", tc.name, toolUsage)
@@ -422,6 +422,33 @@ func TestEditFile_AndApplyPatch_NeverBothAdvertisedInSession(t *testing.T) {
 			t.Fatalf("SetModel(openai): %v", err)
 		}
 		assertExclusive(true, false, "after switch back to openai")
+	})
+
+	t.Run("switching anthropic to openai leaves no stale edit_file guidance in frozen prompt", func(t *testing.T) {
+		t.Parallel()
+		sess := newSession(t,
+			withProfile(newAnthropicProfile("claude-test")),
+			withAdapter(&fakeAdapter{name: "anthropic"}),
+			withAdapter(&fakeAdapter{name: "openai"}),
+			withConfig(SessionConfig{
+				ResolveProfile: testResolver,
+				testOnly:       testConfig{skipGitSnapshot: true},
+			}),
+		)
+		if err := sess.SetModel("openai/gpt-5.4"); err != nil {
+			t.Fatalf("SetModel(openai): %v", err)
+		}
+		defs := sess.ToolDefinitions()
+		if !hasTool(defs, "apply_patch") || hasTool(defs, "edit_file") {
+			t.Fatalf("after switch to openai: apply_patch=%v edit_file=%v, want true/false", hasTool(defs, "apply_patch"), hasTool(defs, "edit_file"))
+		}
+		sess.mu.Lock()
+		frozenPrompt := sess.cachedSystemPrompt
+		sess.mu.Unlock()
+		toolUsage := systemPromptSection(t, frozenPrompt, "## Tool usage")
+		if strings.Contains(toolUsage, "`edit_file`") {
+			t.Fatalf("frozen launch prompt still recommends edit_file after switching to openai:\n%s", toolUsage)
+		}
 	})
 }
 

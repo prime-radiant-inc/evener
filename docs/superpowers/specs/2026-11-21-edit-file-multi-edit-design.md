@@ -141,11 +141,7 @@ func DefMemoryEdit() llm.ToolDefinition {
 
 ### 2. System Prompt Guidance (`agent/prompts/system.md.tmpl`)
 
-*(Proposal)* Under `## Tool usage`, add a single sentence gated on `{{ if .HasTool "edit_file" }}`:
-
-> When making multiple separate edits to the same file, batch them into one `edit_file` call via `edits` instead of issuing separate calls.
-
-All detailed matching, overlap, and line-prefix rules stay in `DefEditFile.Description` alone so they are never duplicated.
+Keep `edit_file` batching guidance in `DefEditFile.Description` alone (never in the frozen launch system prompt `system.md.tmpl`), so mid-session model switches across `edit_file` and `apply_patch` surfaces never leave stale editor instructions in the cached launch prompt. All detailed matching, overlap, batching, and line-prefix rules live once in `DefEditFile.Description`.
 
 ### 3. Schema-Generic Argument Repair (`agent/internal/tool/repair/repair.go`)
 
