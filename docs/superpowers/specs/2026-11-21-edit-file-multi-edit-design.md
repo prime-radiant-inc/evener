@@ -1,7 +1,7 @@
 # Atomic Multi-Edit for `edit_file`
 
 **Date:** 2026-11-21
-**Status:** Ready for design review and approval
+**Status:** Approved (ready for implementation planning)
 
 ## Intent and Why
 
@@ -152,6 +152,7 @@ All detailed matching, overlap, and line-prefix rules stay in `DefEditFile.Descr
 
 1. **Extend `aliasTable` (`repair.go:46`):**
    Add `oldText` -> `old_string`, `old_text` -> `old_string`, `newText` -> `new_string`, `new_text` -> `new_string`, `replaceAll` -> `replace_all` alongside existing `old_str` -> `old_string` and `new_str` -> `new_string`. The safe-apply rule (rename only when canonical is declared on the active object schema, alias is not declared, alias is present, canonical is absent) prevents collisions on unrelated tools.
+   - **Deterministic alias conflict rule (shared with transcript readers):** iterate alias keys in sorted order, never raw Go map iteration order. Canonical keys always take precedence over aliases. When the canonical key is absent and **two or more aliases targeting the same canonical key are present with different values** (e.g. both `new_str: "a"` and `newText: "b"` with `new_string` absent), do **not** pick an arbitrary winner; preserve the competing alias keys past `dropUnknown` so schema validation rejects the ambiguous call and leaves the file unchanged. If competing aliases carry identical values, promote once and drop the duplicate. Both Go `transcript_render.go` and TypeScript `editOperationsOf` apply the same canonical-first, reject-conflicting-aliases rule.
 2. **Phase 1 (Root aliases):** Run existing top-level `applyAliases` on root `args` against root `params` (e.g. `path` -> `file_path`).
 3. **Phase 2 (Single-item array promotion and mixed-form conflict detection):**
    Inspect every required property `K` of root `params` whose schema is `"type": "array"` with an object `items` schema carrying a non-empty `required` list. Identify root keys in `args` that are **not** declared on root `params` and map (directly or via `aliasTable`) to a declared property of `K.items`:
@@ -210,11 +211,11 @@ Package-level resource caps (variables like `MaxWholeFileReadBytes` in `agent/ex
 flowchart TD
     A[Acquire fileTarget + checkWritable] --> B[Validate edits non-empty and old_string non-empty]
     B --> C[Read original file bytes once with ctx]
-    C --> D[Build LF view + optional CR-offset index + detect BOM]
+    C --> D[Build LF view + detect BOM and default line ending]
     D --> E[Match all edits against LF view, enforcing span budget on every path]
     E --> F{Any miss, ambiguity, or span-cap error?}
     F -- Yes --> G[Return all edit errors with line numbers + nearest regions, write nothing]
-    F -- No --> H[Map LF spans to original byte spans, sort, check overlap]
+    F -- No --> H[Sort LF spans, check overlap, translate endpoints in one O(1)-extra-memory pass]
     H --> I{Any overlap?}
     I -- Yes --> J[Return error naming both edit indices, write nothing]
     I -- No --> K[Compute final byte length from scalar lengths and check output byte cap]
@@ -231,34 +232,36 @@ Walkthrough:
 2. **Input guard:** Reject `len(edits) == 0`. Reject any entry with `edits[i].OldString == ""`, collecting all empty-`old_string` errors (naming `edits[i]` when `len(edits) > 1`) before doing file I/O.
 3. **Single read + LF view with exact original-byte offset mapping:** Read raw bytes `origBytes` once via `t.sfs.readFileCtx` (sandboxed) or `readFileCappedCtx` (unconfined).
    - Detect an optional leading UTF-8 BOM (`\xEF\xBB\xBF`, `bomLen = 3` or `0`) and treat `body := origBytes[bomLen:]` as the matchable body so an invisible BOM never breaks an edit touching line 1 and stays untouched in `origBytes[:bomLen]` on splice.
-   - Build the LF view `lfText` of `body` together with a lightweight offset map of stripped `\r` positions (`crOrigOffsets []int`, storing the byte index in `body` of each `\r` dropped from a `\r\n` pair):
-     - On pure LF files (no `\r\n`), `crOrigOffsets` is `nil` and `lfText` is `string(body)` with **zero extra allocation or offset translation**.
-     - On CRLF or mixed-ending files, any LF offset `p` maps to its exact byte offset in `origBytes` in O(log R) via `bomLen + p + countCRsBeforeLF(crOrigOffsets, p)`.
+   - Build the LF view `lfText` of `body` without allocating a per-line offset index:
+     - On pure LF files (`!bytes.Contains(body, []byte("\r\n"))`), `hasCRLF = false` and `lfText` is `string(body)` with **zero extra allocation or offset translation**.
+     - On CRLF or mixed-ending files (`hasCRLF = true`), `lfText = strings.ReplaceAll(string(body), "\r\n", "\n")`. No per-CRLF offset table is stored; only the accepted sorted LF span endpoints are translated back to `origBytes` offsets in a single O(N) forward pass over `body` with O(1) extra memory (Step 5).
    - Normalize each `ed.OldString` and `ed.NewString` `\r\n` -> `\n` (`oldLF`, `newLF`) once per edit, and precompute the scalar lengths `lenLF := len(newLF)` and `lenCRLF := lenLF + strings.Count(newLF, "\n")` (zero CRLF string allocation yet!).
    - Compute `defaultCRLF`: `true` if the file's first line ending is CRLF, else `false`.
 4. **Match ALL edits against `lfText` (single-scan per edit, enforce span budget on EVERY path, collect all errors):**
    For each `i, ed := range edits`:
    - Call `idx := strings.Index(lfText, oldLF)` **once**.
    - **Exact-match path (`idx >= 0`):**
-     - If `!ed.ReplaceAll`: check `second := strings.Index(lfText[idx+len(oldLF):], oldLF)`. If `second >= 0`, record an ambiguity error for `edits[i]` listing the 1-based line numbers of occurrences (capped at 10) and continue. Otherwise check `len(spans)+1 > MaxEditFileSpans`; if exceeded, record a recoverable span-limit error and stop collecting further spans (returning the error without writing). Otherwise append span `{lfStart: idx, lfEnd: idx + len(oldLF), editIndex: i}`.
-     - If `ed.ReplaceAll`: loop with `strings.Index(lfText[pos:], oldLF)` starting at `idx`, checking `len(spans)+1 > MaxEditFileSpans` **before** every append; if exceeded, record a recoverable span-limit error and stop immediately.
+     - If `!ed.ReplaceAll`: check for a second occurrence starting at **`idx + 1`** (`second := strings.Index(lfText[idx+1:], oldLF)`). Using `idx + 1` catches self-overlapping needles such as `old_string: "ana"` in `"banana"` as ambiguous rather than silently picking the first occurrence. If `second >= 0`, record an ambiguity error for `edits[i]` listing the 1-based line numbers of occurrences (capped at 10) and continue. Otherwise check `len(spans)+1 > MaxEditFileSpans`; if exceeded, record a recoverable span-limit error and stop collecting further spans (returning the error without writing). Otherwise append span `{lfStart: idx, lfEnd: idx + len(oldLF), editIndex: i}`.
+     - If `ed.ReplaceAll`: use standard left-to-right non-overlapping matches (matching `strings.ReplaceAll`), advancing `pos` by `len(oldLF)` after each match and checking `len(spans)+1 > MaxEditFileSpans` **before** every append; if exceeded, record a recoverable span-limit error and stop immediately.
    - **Fuzzy fallback (`idx < 0`):**
      - Compute `remaining := MaxEditFileSpans - len(spans)`.
-     - Call `fuzzySpans, ambiguous, limitExceeded := findFuzzyMatchSpans(lfText, oldLF, ed.ReplaceAll, remaining)` (which checks `remaining` before appending any single-line or multi-line hit, including `remaining == 0` when `!ed.ReplaceAll`).
+     - Call `fuzzySpans, ambigLines, limitExceeded := findFuzzyMatchSpans(lfText, oldLF, ed.ReplaceAll, remaining)` (which rejects an empty normalized needle `normalizeWS(oldLF) == ""`, enforces `end > start` on every matched span, checks `remaining` before appending any single-line or multi-line hit including `remaining == 0` when `!ed.ReplaceAll`, and returns up to 10 candidate 1-based line numbers in `ambigLines` on ambiguity without rescanning).
      - If `limitExceeded`: record a recoverable span-limit error and stop immediately.
-     - If `ambiguous`: record an ambiguity error for `edits[i]` (noting multiple whitespace-normalized matches and advising more context or `replace_all: true`) and continue.
+     - If `len(ambigLines) > 0`: record an ambiguity error for `edits[i]` naming those 1-based candidate line numbers (advising more context or `replace_all: true`) and continue.
      - If `len(fuzzySpans) == 0`: record a not-found error for `edits[i]`, truthfully stating that exact and whitespace-normalized matching ran and attaching `nearestFileRegion(lfText, oldLF)` with 1-based line numbers (capping nearest-region snippets to the first 3 missed edits), then continue.
      - **Substring ambiguity guard for `!ed.ReplaceAll`:** for a single fuzzy match `[start, end)`, verify that the verbatim matched text `lfText[start:end]` does not also appear elsewhere in `lfText` as an exact substring (`strings.Index(lfText[:start], matched) >= 0 || strings.Index(lfText[end:], matched) >= 0`). If it does, record an ambiguity error instead of silently editing either location.
      - Mark `usedFuzzy = true` and append each returned fuzzy span directly (using its own `(start, end)` offsets, never diverting to an earlier substring).
    - If any errors were collected across `edits`, return them joined together without writing anything to disk.
-5. **Map spans to original byte offsets, choose per-span newline flag, and check overlap:**
-   - Convert every span's `(lfStart, lfEnd)` to exact `(origStart, origEnd)` byte offsets in `origBytes`.
-   - Set each span's boolean `useCRLF` from the original replaced slice `origBytes[origStart:origEnd]` (`true` if it contains `\r\n`, `false` if it contains `\n` without `\r\n`, else `defaultCRLF`). No per-span string or byte-slice allocation happens here.
-   - Sort `spans` by `origStart` ascending, then `origEnd` ascending, then `editIndex` ascending.
+5. **Sort LF spans, check overlap, translate endpoints in O(1) extra memory, and choose per-span newline flag:**
+   - Sort `spans` by `lfStart` ascending, then `lfEnd` ascending, then `editIndex` ascending.
    - For `k := 1; k < len(spans); k++`:
-     - If `spans[k-1].origEnd > spans[k].origStart`: fail the whole call naming `edits[spans[k-1].editIndex]` and `edits[spans[k].editIndex]` and instructing the model to merge overlapping or nearby edits into one entry.
-     - Adjacent touching spans (`spans[k-1].origEnd == spans[k].origStart`) are disjoint and allowed.
-     - Identical duplicate edits automatically fail overlap because `len(old) > 0` guarantees `origEnd > origStart`.
+     - If `spans[k-1].lfEnd > spans[k].lfStart`: fail the whole call naming `edits[spans[k-1].editIndex]` and `edits[spans[k].editIndex]` and instructing the model to merge overlapping or nearby edits into one entry.
+     - Adjacent touching spans (`spans[k-1].lfEnd == spans[k].lfStart`) are disjoint and allowed.
+     - Every accepted span satisfies `lfEnd > lfStart` (enforced by non-empty `old_string` and non-empty normalized fuzzy needle), so identical duplicate edits always trigger overlap.
+   - Translate sorted, non-overlapping `(lfStart, lfEnd)` endpoints to `(origStart, origEnd)` in `origBytes`:
+     - When `!hasCRLF`, `origStart = bomLen + lfStart` and `origEnd = bomLen + lfEnd` directly.
+     - When `hasCRLF`, walk `body` once in forward order tracking `(origPos, lfPos)` and filling `origStart`/`origEnd` for each sorted span in order (O(len(body)) time, O(1) extra memory, independent of line count).
+   - Set each span's boolean `useCRLF` from the original replaced slice `origBytes[origStart:origEnd]` (`true` if it contains `\r\n`, `false` if it contains `\n` without `\r\n`, else `defaultCRLF`). No per-span string or byte-slice allocation happens here.
 6. **Output cap check BEFORE expansion, single-pass pre-sized splice, and exact no-op guard:**
    - Compute exact `outLen := int64(len(origBytes))` plus, for each span, `(lenCRLF or lenLF for sp.editIndex) - int64(sp.origEnd - sp.origStart)` using only the precomputed scalar lengths. If `outLen > MaxEditFileOutputBytes`, return a recoverable size-limit error **before** expanding any CRLF replacement string or allocating the output buffer.
    - Allocate `edited := make([]byte, 0, outLen)` once. Lazily cache at most one CRLF-converted string per `edits[i]` (only if at least one span for `edits[i]` has `useCRLF && lenCRLF != lenLF`), or stream `newLF` replacing `\n` with `\r\n` directly into `edited`. Copy untouched `origBytes[cursor:sp.origStart]` verbatim, append the span's replacement, then append trailing `origBytes[cursor:]`. Untouched lines in mixed-ending files stay 100% byte-for-byte intact.
@@ -278,12 +281,13 @@ Walkthrough:
 
 #### Offset-Returning Fuzzy Matcher (`agent/execenv/local_edit_match.go`)
 
-Replace string-returning `findFuzzyMatch` with an offset-returning matcher `findFuzzyMatchSpans(content, oldString string, replaceAll bool, maxSpans int) (spans []byteSpan, ambiguous bool, limitExceeded bool)`:
+Replace string-returning `findFuzzyMatch` with an offset-returning matcher `findFuzzyMatchSpans(content, oldString string, replaceAll bool, maxSpans int) (spans []byteSpan, ambigLines []int, limitExceeded bool)`:
+- Reject an empty normalized needle immediately (`if normalizeWS(oldString) == "" { return nil, nil, false }`), carrying forward the existing guard so whitespace-only `old_string` values never match empty lines on the fuzzy path. Require every accepted span to satisfy `end > start`.
 - Walks `content` with byte offsets tracked across `\n`-delimited lines (streaming, no whole-file line-slice allocation per issue `#4556`).
 - Single-line `oldString`: checks `normalizeWS(line) == normOld` and records exact `(lineStart, lineEnd)`.
 - Multi-line `oldString`: tracks a sliding window of `(lineStart, lineEnd)` pairs of size `wSize` and records exact `(window[0].start, window[wSize-1].end)`.
-- Before recording any match: if `len(spans) >= maxSpans`, stop immediately and return `(nil, false, true)` (covers `maxSpans <= 0` for `!replaceAll` too!).
-- When `!replaceAll`: stops immediately and returns `(nil, true, false)` upon finding a second matching line/window; otherwise returns the single `[]byteSpan{{start, end}}`.
+- Before recording any match: if `len(spans) >= maxSpans`, stop immediately and return `(nil, nil, true)` (covers `maxSpans <= 0` for `!replaceAll` too!).
+- When `!replaceAll`: records the first match's 1-based line number; if a second matching line/window is found, collects up to 10 candidate 1-based line numbers in `ambigLines` and returns `(nil, ambigLines, false)` without rescanning the file; otherwise returns the single `[]byteSpan{{start, end}}`.
 - When `replaceAll`: collects all non-overlapping matching line/window spans (advancing past the matched window on multi-line hits so sliding windows do not overlap themselves).
 - Update `nearestFileRegion` to include the 1-based starting line number (`L<n>:`) so missed edits tell the model where in the file the nearest region sits.
 
@@ -385,6 +389,7 @@ All four consumers switch to `editOperationsOf(args)` + `editBatchDiffText(path,
 
 1. **Stage 1: Backend batch engine + dual-shape transcript consumers (no schema switch yet).**
    - Add `FileEdit`, `BatchFileEditor`, `EditFileBatchCtx`, `EditFileBatchWithCtx` (with `EditFileWithCtx` delegating to it), offset-returning `findFuzzyMatchSpans`, mixed-ending/BOM byte-faithful splicing, `writeFileAtomic` for unconfined writes (staying inside `fsys`'s namespace and preserving target write admission), and `MaxEditFileSpans`/`MaxEditFileOutputBytes` bounds across every match path.
+  - Update `FuzzEditFile`'s byte-level oracle in the same stage: retain the raw `strings.Replace` / `strings.ReplaceAll` oracle for LF inputs, and assert CRLF-preserving expected bytes for CRLF / BOM / mixed-ending inputs.
    - Update `agent/transcript_render.go`, `@evener/appwire-client` (`editOperationsOf`, `editBatchDiffText`, shared header-aware diff line classification + `diffStats`, `toolSummaries.ts`, `memorySteps.ts`), web `DiffBlock`/`bodies.tsx`/`memoryTools.tsx`, and mobile `evidence.ts`/`StepEvidence.tsx` to render canonical `edits[]`, accepted pre-repair shapes, and legacy top-level calls.
    - Existing single-edit calls and every existing test remain green at this boundary.
 2. **Stage 2: Schema, prompt, 5-phase repair, dispatch, fixtures, and evergreen docs together.**
@@ -408,7 +413,8 @@ Follow `docs/developing-evener/testing.md` (behavior assertions only, never phra
     - `MaxEditFileSpans`: a batch at the exact limit succeeds; one additional span via unique exact, exact `replace_all`, unique fuzzy, or fuzzy `replace_all` fails cleanly before splicing or writing.
     - `MaxEditFileOutputBytes`: a CRLF `replace_all` batch whose expanded size exceeds the cap fails before allocating the expansion or writing.
   - Byte-faithful line endings & BOM: pure CRLF + BOM file preserves CRLF and BOM; mixed-ending file (`a\r\nb\nc\r\n`) edited on line 1 preserves untouched LF after `b` byte-for-byte.
-  - Offset-returning fuzzy matching: single fuzzy match on line 2 (`  alpha   beta`) when line 1 has `prefix  alpha   beta` rejects the substring ambiguity rather than silently editing line 1; unique fuzzy match succeeds; fuzzy ambiguity across two whitespace variants fails when `!replace_all`; fuzzy `replace_all: true` replaces all whitespace-variant lines directly by offset.
+  - Self-overlapping needle: `old_string: "ana"` in `"banana"` fails as ambiguous when `replace_all: false`, while `replace_all: true` applies left-to-right non-overlapping replacement (`"bXna"`).
+  - Offset-returning fuzzy matching: single fuzzy match on line 2 (`  alpha   beta`) when line 1 has `prefix  alpha   beta` rejects the substring ambiguity rather than silently editing line 1; unique fuzzy match succeeds; fuzzy ambiguity across two whitespace variants fails when `!replace_all` and reports candidate 1-based line numbers with file bytes unchanged; whitespace-only fuzzy miss (e.g. tab-only `old_string` with `replace_all: true` on a file with empty lines and no tabs) fails cleanly without modifying the file; fuzzy `replace_all: true` replaces all whitespace-variant lines directly by offset.
   - Exact no-op guard: single no-op AND adjacent cancelling edits (`abc` with `a`->`ab` and `bc`->`c`) return an error without calling `finish` or writing; fuzzy whitespace-cleanup edit (`old_string == new_string` matching differently indented bytes) succeeds.
   - Sandboxed (`NewConfinedFileEnvironment` / read-only / masked path) write-denial precedes read/match on multi-edit, and confined atomic write preserves all edits.
   - Update / extend `FuzzEditFile` and `FuzzEditFileDifferential` to verify atomicity and prove a real successful edit produces identical expected bytes in both `MemMapFs` and `BasePathFs-over-OsFs` lanes.
@@ -418,6 +424,7 @@ Follow `docs/developing-evener/testing.md` (behavior assertions only, never phra
   - `repair.RepairArgs` tests:
     - Legacy-only top-level `{old_string, new_string, replace_all}` and `{old_str, new_str}` (with `edits` key absent) promote to `edits[0]`.
     - Mixed calls carrying `edits` alongside top-level `old_string`/`new_string` (both `edits: [...]` AND explicit `edits: null`) are **rejected before dispatch**, leaving the file unchanged.
+    - Competing aliases for the same field with different values (`new_str: "a"`, `newText: "b"`, `new_string` absent) are deterministically rejected before dispatch, leaving the file unchanged; canonical key always takes precedence when present.
     - Combined quirk test: stringified JSON array (or bare object) `edits` containing nested `old_str`/`new_str`/`replaceAll: "true"` plus invented trailing key `"notes"` decodes, aliases, coerces, drops `"notes"`, and reaches executor with canonical fields.
     - Non-JSON string `edits` is NOT wrapped into `[string]`; typo `old_sting` leaving `old_string` missing fails validation; non-mutation of input map/slices verified by `FuzzRepairArgs`.
   - `agent` session tests: `edit_file` multi-edit end-to-end, `memory_edit` multi-edit on LF and CRLF/BOM pages (verifying scope confinement, stamped LF output, and refreshed index; plus write failure leaving stored page and index unchanged), single-edit fallback on minimal `ExecutionEnvironment` fake, explicit error on multi-edit against a fake without `BatchFileEditor`, `readGuard` warning emitted once.
@@ -438,3 +445,36 @@ Follow `docs/developing-evener/testing.md` (behavior assertions only, never phra
 
 - **Strict grammar-constrained tool decoding for `edit_file`:** Armin Ronacher's July 2026 findings showed enabling strict tool schemas eliminated ~20% `edits[]` schema errors on Opus 4.8 / Sonnet 5. Enabling strict mode on `DefEditFile()` (making `replace_all` nullable/required or opting into Anthropic's strict tool mode) is a clean follow-up orthogonal to this spec.
 - **Hash-anchored edits (`hashline`):** Benchmarks in 2026 (Can Bölük, Lamberti `arXiv:2607.12713`, Oh My Pi) showed strong gains on non-Claude/non-OpenAI models by annotating `read_file` lines with short hashes/tags, at the cost of ~6% read token overhead and cross-cutting `read_file` wire changes. Worth evaluating separately if non-Claude/non-OpenAI edit reliability becomes a bottleneck.
+
+### 11. Live Multi-Model Evaluation Plan (`tools/tool-fluency`)
+
+After implementation, evaluate the change empirically across available models using Evener's existing `tools/tool-fluency/cmd/evener-fluency` harness (`matrix` + `--system-prompt-append`) before deciding whether to ship `edits[]` globally or adjust per surface.
+
+#### Three-Arm Comparison (3 Repetitions per Cell)
+
+| Arm | Binary / Prompt | Hypothesis Tested |
+| --- | --- | --- |
+| **Arm A (Baseline)** | `main` binary (single-edit `edit_file`, existing prompt) | Current behavior |
+| **Arm B (Prompted parallel calls)** | `main` binary + `--system-prompt-append` instructing the model to emit multiple `edit_file` calls in one response for disjoint edits in one file | Whether parallel single-edit calls match or beat a schema change without risking RL drift |
+| **Arm C (Atomic `edits[]`)** | `edit-file-multi-edit` binary (`edits[]`-only schema, 5-phase repair, CRLF/BOM fidelity, multi-error diagnostics) | Whether atomic single-call batching reduces turns/tokens and improves reliability |
+
+#### Probe Suite (Extending `tools/tool-fluency/probes/edit_file.yaml`)
+
+1. `edit_file.single_edit`: 1-hunk edit regression check.
+2. `edit_file.disjoint_multi_edit`: 4 disjoint edits across a ~120-line file (primary batching efficiency test).
+3. `edit_file.atomicity_recovery`: 3 edits where one target is stale/mismatched (measures partial-mutation risk in Arm B vs atomic all-or-nothing recovery in Arm C).
+4. `edit_file.rename_plus_targeted`: `replace_all: true` rename plus a separate import/comment edit in one file.
+5. `edit_file.ambiguous_context_recovery`: 3 similar blocks requiring disambiguation (tests line-numbered ambiguity diagnostics).
+6. `edit_file.crlf_bom_multi_edit`: 2 edits on a CRLF + UTF-8 BOM file (tests byte-faithful preservation).
+7. `edit_file.large_file_no_padding`: 2 distant edits in a ~300-line file (checks token waste from context padding and `read_file` line-prefix leakage).
+
+#### Model Panel and Metrics
+
+Run `evener-fluency catalog --model <id>` first to confirm each model exposes `edit_file` (Anthropic/Google surfaces; OpenAI/Codex surfaces use `apply_patch`). Target a diverse panel across available providers:
+- **Google surface:** `vertex-arc/gemini-4-neon`, `vertex-arc/gemini-3.8-flash`, `vertex-arc/gemini-4-argon` (or `shisa/gemini-2.5-pro`).
+- **Anthropic surface:** `kimi/kimi-for-coding`, `kimi/k3.1-pro`, plus any active Claude model.
+- **Open-weight / stress-test models (where `edit_file` is exposed):** `lunaroute/deepseek-4.1-flash`, `lunaroute/glm-5.3`, `shisa/qwen3.8-max`, `ollama/gemma4:latest`.
+
+Extract metrics directly from `results.jsonl` and `evener doctor`: pass rate (exact file bytes, zero shell escapes), turns to completion, total `edit_file` calls, tool error/retry rate, partial-mutation incidents, `EventToolCallRepaired` rate broken down by repair kind, and output/total tokens.
+
+**Decision rule:** Ship Arm C if it matches or beats Arm A and Arm B on pass rate while reducing turns/tokens across the panel. If Arm B outperforms Arm C on key models, keep Stage 1's engine/diagnostic/CRLF/atomic-write improvements and evaluate keeping single-edit + parallel-call prompting on affected surfaces.
