@@ -23,6 +23,10 @@ var (
 
 const (
 	authDirName = "auth"
+	// authFileSuffix names an auth record: auth/<instance>.json. A record's
+	// refresh-rejection note appends its own suffix, so it does not end in this
+	// one and can never be read as a record.
+	authFileSuffix = ".json"
 )
 
 var (
@@ -63,7 +67,7 @@ type AuthRecord struct {
 // check let evener/instance/remove delete arbitrary .json files — see the
 // ValidateInstanceName fix in cmd/evener-hub/app_instances.go).
 func AuthFilePath(stateDir, instanceName string) string {
-	return filepath.Join(stateDir, authDirName, filepath.Base(instanceName)+".json")
+	return filepath.Join(stateDir, authDirName, filepath.Base(instanceName)+authFileSuffix)
 }
 
 // DefaultStateDir returns the default Evener state directory, resolving the state

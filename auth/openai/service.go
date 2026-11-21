@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -572,13 +573,32 @@ func (s *Service) refreshExpiredRecord(ctx context.Context, stateDir, instanceNa
 // replaced on disk while its token refresh was in flight.
 var errAuthRecordChanged = errors.New("auth record changed while its token was refreshed")
 
+// sameAuthRecord reports whether a and b are the same credential record. It
+// compares the timestamps by instant: time.Time's == also compares the location
+// pointer, and every JSON decode of a fixed-offset timestamp allocates its own
+// *time.Location, so == would call an unchanged record changed. Provider is
+// left out because it names the instance the record is filed under, which a
+// rename rewrites.
+func sameAuthRecord(a, b AuthRecord) bool {
+	if !a.ObtainedAt.Equal(b.ObtainedAt) || !a.Expiry.Equal(b.Expiry) {
+		return false
+	}
+	a.ObtainedAt, a.Expiry = time.Time{}, time.Time{}
+	b.ObtainedAt, b.Expiry = time.Time{}, time.Time{}
+	a.Provider, b.Provider = "", ""
+	return a == b
+}
+
 // commitRefreshedRecord persists refreshed over the record it was derived from.
 // It holds the store's cross-process lock across a re-read of the record and
 // the write, so a record renamed or deleted while the refresh was in flight is
-// never written back under its old name (the caller gets ErrLoginRequired), and
-// a record another process saved in the meantime is not overwritten: a usable
-// one is returned instead, and one that still needs refreshing is reported as a
-// transient change for the caller to retry against.
+// never written back under its old name, and a record another process saved in
+// the meantime is not overwritten: a usable one is returned instead, and one
+// that still needs refreshing is reported as a transient change for the caller
+// to retry against. When the old name is gone but exactly one other record is
+// the one this refresh redeemed a token for, the rename's destination, the
+// rotated credentials land there rather than being discarded (the issuer has
+// already burned the token they replace).
 //
 // The returned record is the one the caller should use, and it is the one on
 // disk. The lock wait deliberately does not take ctx: once the refresh token has
@@ -594,10 +614,22 @@ func commitRefreshedRecord(stateDir, instanceName string, loaded, refreshed Auth
 			// The instance was renamed or signed out while the refresh was in
 			// flight. Writing here would recreate a record under a name nothing
 			// owns, which the registry can surface as a phantom instance.
-			return loginRequiredError(ErrAuthNotFound)
+			dest, ok, err := renamedAuthDestination(stateDir, loaded)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return loginRequiredError(ErrAuthNotFound)
+			}
+			refreshed.Provider = dest
+			if err := saveAuthRecordLocked(stateDir, dest, refreshed); err != nil {
+				return err
+			}
+			committed = refreshed
+			return nil
 		case loadErr != nil && !errors.Is(loadErr, ErrAuthCorrupt):
 			return loadErr
-		case loadErr == nil && onDisk != loaded:
+		case loadErr == nil && !sameAuthRecord(onDisk, loaded):
 			// Another writer got there first. Reuse its record when it is
 			// usable; otherwise let the caller retry against it rather than
 			// overwrite a record this refresh never saw.
@@ -623,6 +655,43 @@ func commitRefreshedRecord(stateDir, instanceName string, loaded, refreshed Auth
 		return AuthRecord{}, err
 	}
 	return committed, nil
+}
+
+// renamedAuthDestination finds the one record filed under another instance name
+// that is the record loaded was read from: the record a rename moved while this
+// refresh was in flight. Exactly one match is a destination. No match means the
+// name was signed out rather than renamed, and more than one means the
+// destination cannot be told from another instance holding the same credential;
+// both report false so the caller writes nothing.
+func renamedAuthDestination(stateDir string, loaded AuthRecord) (string, bool, error) {
+	entries, err := os.ReadDir(filepath.Join(stateDir, authDirName))
+	if err != nil {
+		return "", false, fmt.Errorf("list auth records: %w", err)
+	}
+	dest := ""
+	for _, entry := range entries {
+		// Only an auth record can be the destination: a refusal note beside one
+		// does not end in authFileSuffix, and a subdirectory or symlink is not
+		// a record.
+		if !entry.Type().IsRegular() || !strings.HasSuffix(entry.Name(), authFileSuffix) {
+			continue
+		}
+		name := strings.TrimSuffix(entry.Name(), authFileSuffix)
+		candidate, err := LoadAuth(stateDir, name)
+		if err != nil {
+			// Missing, corrupt, or unreadable: not the record this refresh
+			// redeemed a token for.
+			continue
+		}
+		if !sameAuthRecord(candidate, loaded) {
+			continue
+		}
+		if dest != "" {
+			return "", false, nil
+		}
+		dest = name
+	}
+	return dest, dest != "", nil
 }
 
 // NeedsLogin reports whether the user has to sign in again to recover r: its
