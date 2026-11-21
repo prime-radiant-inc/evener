@@ -114,8 +114,43 @@ export function runLabel(run: ToolRun, descriptorFor: FoldOptions["descriptorFor
  * (the projector reads the same one).
  */
 export function foldTurnEntries(turn: ProjectedTurn): (ProjectedEntry | ToolRun)[] {
-  return foldToolRuns(turn.entries, {
-    turnSettled: turn.source.status !== "inProgress",
-    descriptorFor: toolRendererFor,
-  });
+  let folded = foldedTurns.get(turn);
+  if (folded === undefined) {
+    folded = foldToolRuns(turn.entries, {
+      turnSettled: turn.source.status !== "inProgress",
+      descriptorFor: toolRendererFor,
+    });
+    foldedTurns.set(turn, folded);
+  }
+  return folded;
+}
+
+// A projection is immutable, so a turn's layout is folded once and shared by
+// the renderer and by Find, which reads it on every query.
+const foldedTurns = new WeakMap<ProjectedTurn, (ProjectedEntry | ToolRun)[]>();
+
+/** The consecutive action rows starting at `index`: TurnBlock renders them as
+ * one group, TranscriptBody names a cross-turn group for them, and Find opens
+ * that same group to reveal a member's rationale. `end` is the first index
+ * after the run. */
+export function intentRunAt(
+  entries: readonly (ProjectedEntry | ToolRun)[],
+  index: number,
+): { entries: Extract<ProjectedEntry, { kind: "intent" }>[]; end: number } {
+  const run: Extract<ProjectedEntry, { kind: "intent" }>[] = [];
+  let end = index;
+  for (;;) {
+    const entry = entries[end];
+    if (entry?.kind !== "intent") break;
+    run.push(entry);
+    end += 1;
+  }
+  return { entries: run, end };
+}
+
+/** The disclosure id a run of action rows is folded under: the row id both
+ * TurnBlock and TranscriptBody give the group, and the one Find opens to
+ * reveal a member's rationale. */
+export function intentGroupId(firstEntryId: string | undefined): string {
+  return `intent-group:${firstEntryId ?? "empty"}`;
 }

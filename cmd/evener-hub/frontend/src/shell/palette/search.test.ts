@@ -135,6 +135,31 @@ test("findInSessionMatches scans reasoning summaries (joined chunks)", () => {
   expect(findInSessionMatches(model, "frobnitz")).toHaveLength(1);
 });
 
+test("findInSessionMatches reads a thought's summaries as rendered Markdown", () => {
+  const model = modelWithTurns([
+    turn("t1", [itemWith("think", { type: "reasoning", reasoningSummaries: [["the **frobnitz** plan"]] })]),
+  ]);
+  expect(findInSessionMatches(model, "frobnitz plan").map((hit) => hit.itemId)).toEqual(["think"]);
+  // The summary's formatting marks are not words on the page.
+  expect(findInSessionMatches(model, "**frobnitz**")).toEqual([]);
+});
+
+test("findInSessionMatches does not scan a thought's raw trace", () => {
+  const model = modelWithTurns([
+    turn("t1", [
+      itemWith("think", { type: "reasoning", text: "raw frobnitz trace", reasoningSummaries: [["a plan"]] }),
+    ]),
+  ]);
+  expect(findInSessionMatches(model, "raw frobnitz")).toEqual([]);
+});
+
+test("findInSessionMatches scans an action's rationale", () => {
+  const model = modelWithTurns([
+    turn("t1", [itemWith("call", { type: "commandExecution", toolName: "shell", description: "grep for frobnitz" })]),
+  ]);
+  expect(findInSessionMatches(model, "frobnitz").map((hit) => hit.itemId)).toEqual(["call"]);
+});
+
 test("a match in both text and output yields two hits sharing the turn label", () => {
   const model = modelWithTurns([turn("t1", [itemWith("i1", { text: "frobnitz here", output: "frobnitz there" })])]);
   const hits = findInSessionMatches(model, "frobnitz");

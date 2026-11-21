@@ -665,10 +665,11 @@ function PaletteBody({
       return;
     }
     if (item.kind === "insession") {
-      // A message the conversation shows is handed to its own Find, which
-      // opens on these words, lands on that message, and from there steps
-      // through the rest. Find searches messages only, so any other row (a
-      // tool's output, a thought) stays a listing and only closes the palette.
+      // A message, thought or action the conversation shows is handed to its
+      // own Find, which opens on these words, lands on that entry, opens what
+      // hides it, and from there steps through the rest. A row Find cannot
+      // land on (tool output this slice leaves out, a thought the view hides)
+      // stays a listing and only closes the palette.
       const { sessionRef, sessionPaneId } = runContext();
       const words = query.trim();
       const model = focusedModel(sessionRef);

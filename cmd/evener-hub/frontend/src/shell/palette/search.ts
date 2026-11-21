@@ -3,7 +3,8 @@
 //   - fetchSearch: the backend session search over the typed AppWire method.
 //   - findInSessionMatches: the "In session · N" section, scanning the focused
 //     session's loaded ThreadModel (turns -> items -> text). Choosing a
-//     message row opens the session's own Find on it (panes/session/find).
+//     message, thought or action row opens the session's own Find on it
+//     (panes/session/find).
 //   - buildSnippet / highlightParts: the <mark>-highlighted context strings.
 //     Returned as structured parts (not HTML) so the React overlay renders
 //     <mark> without dangerouslySetInnerHTML - React escapes for us, so the
@@ -17,7 +18,7 @@ import {
   type SearchResponse,
   type ThreadModel,
 } from "@evener/appwire-client";
-import { messageAsShown } from "../../panes/session/find/messageText";
+import { messageAsShown, reasoningSummariesAsRead } from "../../panes/session/find/messageText";
 
 // One text run of a highlighted string: `mark` true means it is the matched
 // substring (rendered inside <mark>), false means surrounding context.
@@ -56,13 +57,15 @@ function itemSearchTexts(item: ItemModel): string[] {
   // can land on.
   const message = messageAsShown(item);
   if (message !== null) texts.push(message);
-  else if (item.text) texts.push(item.text);
+  // A thought's `text` is its trace, which no row shows, so only the
+  // summaries below are read for it.
+  else if (item.type !== "reasoning" && item.text) texts.push(item.text);
+  // An action row's rationale: the same words the session's Find lands on.
+  if (item.description) texts.push(item.description);
   if (item.output) texts.push(item.output);
   if (item.error) texts.push(item.error);
-  for (const summary of item.reasoningSummaries ?? []) {
-    const joined = summary.join("");
-    if (joined) texts.push(joined);
-  }
+  // A thought renders Markdown, so its summaries are read as the page reads.
+  for (const paragraph of reasoningSummariesAsRead(item)) texts.push(paragraph);
   return texts;
 }
 
@@ -76,7 +79,7 @@ export function findInSessionMatches(model: ThreadModel, query: string): InSessi
   for (const turn of model.turns) {
     turnNumber += 1;
     for (const item of turn.items) {
-      for (const raw of itemSearchTexts(item)) {
+      for (const raw of new Set(itemSearchTexts(item))) {
         const text = normalizeWhitespace(raw);
         if (!text) continue;
         const hit = findIndexIn(text, q);
