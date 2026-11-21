@@ -11,24 +11,35 @@ import (
 // assembleOutputDigest renders a head+tail line digest: the head slice, an
 // elision marker describing what sits between, then the tail slice. total is the
 // lifetime output byte count and dropped is the bytes permanently evicted past
-// the retention cap. The marker states the EXACT elided byte count plus the
-// transcript-read hint — never a line estimate: the store is byte-oriented and does not
-// track total lines, and estimating from the shown lines' average length is
-// unreliable (the head/tail sample is biased toward short lines, so a guess can
-// exceed the true total).
+// the retention cap, which is also the lifetime offset where the retained output
+// starts. The marker states the EXACT elided byte count, the omitted lifetime
+// byte range, and the offset_bytes continuation — never a line estimate: the
+// store is byte-oriented and does not track total lines, and estimating from the
+// shown lines' average length is unreliable (the head/tail sample is biased
+// toward short lines, so a guess can exceed the true total).
 func assembleOutputDigest(head, tail []byte, total, dropped int64) string {
-	elidedBytes := max(total-int64(len(head))-int64(len(tail)), 0)
+	total = max(total, 0)
+	retainedStart := min(max(dropped, 0), total)
+	// The head slice is a prefix of the retained output and the tail slice is a
+	// suffix, so these are the lifetime offsets of the first and last bytes the
+	// digest omits.
+	omitStart := total
+	if total-retainedStart >= int64(len(head)) {
+		omitStart = retainedStart + int64(len(head))
+	}
+	omitEnd := max(total-int64(len(tail)), omitStart)
+	elidedBytes := omitEnd - omitStart
 	var b strings.Builder
 	b.Write(head)
 	if len(head) > 0 && head[len(head)-1] != '\n' {
 		b.WriteByte('\n')
 	}
 	if dropped > 0 {
-		fmt.Fprintf(&b, "…[%s elided, %s of them permanently dropped past the retention cap — inspect retained output with read_transcript using the returned job transcript_ref]…\n",
-			humanBytes(elidedBytes), humanBytes(dropped))
+		fmt.Fprintf(&b, "…[%s elided; %s permanently dropped past the retention cap; omitted [%d,%d); read more with read_transcript(offset_bytes=%d) via the returned job transcript_ref]…\n",
+			humanBytes(elidedBytes), humanBytes(dropped), omitStart, omitEnd, omitStart)
 	} else {
-		fmt.Fprintf(&b, "…[%s elided — read more with read_transcript using the returned job transcript_ref]…\n",
-			humanBytes(elidedBytes))
+		fmt.Fprintf(&b, "…[%s elided; omitted [%d,%d); read more with read_transcript(offset_bytes=%d) via the returned job transcript_ref]…\n",
+			humanBytes(elidedBytes), omitStart, omitEnd, omitStart)
 	}
 	b.Write(tail)
 	return b.String()
