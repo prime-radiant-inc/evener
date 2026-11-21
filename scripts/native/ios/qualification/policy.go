@@ -22,6 +22,9 @@ var (
 	errLockMismatch = errors.New("CocoaPods resolution differs from the committed lock")
 	errIdentity     = errors.New("native bundle identity or capability is invalid")
 	errMacRequired  = errors.New("iOS qualification requires macOS, Xcode, simctl, codesign and CocoaPods")
+	// errSimulatorGone reports a device the pre-boot step created that the
+	// runner can no longer see, so the run fails before the journey child.
+	errSimulatorGone = errors.New("the pre-booted simulator is no longer installed")
 	// errPodRefusalName is a changed-local-podspec refusal naming a pod the
 	// committed lock does not declare under EXTERNAL SOURCES. Unlocking it
 	// would move a registry pod, so the resolver surfaces it instead.
