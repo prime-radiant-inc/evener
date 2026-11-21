@@ -767,6 +767,10 @@ gh_private_dir=""
 # already at the channel name -- leaves the directory set but never this path, so
 # finish removes a file only when the create that made it succeeded.
 gh_private_file=""
+# The inode of the channel file above, read when its create succeeded. finish
+# unlinks the path only while it still resolves to this inode: an entry another
+# writer put at the same name after a swap is left alone.
+gh_private_ident=""
 # The scratch directory the helper was built in, or empty on the prebuilt path.
 #
 # Declared and assigned here, never read from the environment. scratch_dir writes
@@ -1183,9 +1187,13 @@ finish() {
   # creation and removal, or the mint could not remove it, and it holds nothing
   # this script needs.
   if [ -n "$gh_private_dir" ]; then
-    # Only the channel this script created. A refused create leaves an entry
-    # that is not this script's to unlink.
-    rm -f "${gh_private_file:-}" 2>/dev/null || true
+    # Only the channel this script created, and only while the path still names
+    # it: a refused create leaves an entry that is not this script's, and a
+    # replacement put there after a swap has another inode.
+    if [ -n "${gh_private_file:-}" ] && [ -n "${gh_private_ident:-}" ] &&
+      [ "$(ls -di "$gh_private_file" 2>/dev/null | awk '{print $1}')" = "$gh_private_ident" ]; then
+      rm -f "$gh_private_file" 2>/dev/null || true
+    fi
     rmdir "$gh_private_dir" 2>/dev/null || true
   fi
   # Under set -e a failing scratch_rm would abort this handler before the
@@ -1293,8 +1301,10 @@ mint_gh_group_channel() {
     if [ -z "$scratch" ] && rmdir "$dir" 2>/dev/null; then gh_private_dir=""; fi
     return 0
   fi
-  # The create succeeded, so the file is this script's own until the unlink below.
+  # The create succeeded, so the file is this script's own until the unlink
+  # below. Its inode is what proves the path still names it at exit.
   gh_private_file="$channel"
+  gh_private_ident=$(ls -di "$channel" 2>/dev/null | awk '{print $1}') || gh_private_ident=""
   # The opens are contained: a file that cannot be opened leaves the run without
   # a channel rather than ending it. Under set -e a bare redirection failure here
   # would end the script through the EXIT trap with a launcher status.
@@ -1313,6 +1323,7 @@ mint_gh_group_channel() {
     { exec 3>&- 4<&-; } 2>/dev/null || true
     rm -f "$channel" 2>/dev/null || true
     gh_private_file=""
+    gh_private_ident=""
     if [ -z "$scratch" ] && rmdir "$dir" 2>/dev/null; then gh_private_dir=""; fi
     return 0
   fi
@@ -1321,6 +1332,7 @@ mint_gh_group_channel() {
   # here is left to the EXIT trap.
   rm -f "$channel" 2>/dev/null || true
   gh_private_file=""
+  gh_private_ident=""
   if [ -z "$scratch" ] && rmdir "$dir" 2>/dev/null; then gh_private_dir=""; fi
   gh_group_fd=3
   gh_group_read_fd=4
