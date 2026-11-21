@@ -814,6 +814,54 @@ func TestEditFileBatch_ResourceBounds(t *testing.T) {
 			t.Fatalf("file mutated on output-cap refusal: %q", got)
 		}
 	})
+
+	t.Run("mixed CRLF/LF restored length decides the cap before writing", func(t *testing.T) {
+		MaxEditFileSpans = 100
+		MaxEditFileOutputBytes = 20
+		dir := t.TempDir()
+		env := NewLocalExecutionEnvironment(dir)
+
+		// The LF-normalized output is 15 bytes, but restoring each line's own
+		// terminator (two of the three are CRLF) makes it exactly 20, so the
+		// edit fits the cap.
+		origAtCap := "x\r\nx\nx\r\n"
+		if err := os.WriteFile(filepath.Join(dir, "atcap.txt"), []byte(origAtCap), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFileBatchCtx(context.Background(), "atcap.txt", []FileEdit{
+			{OldString: "x", NewString: "1\n23", ReplaceAll: true},
+		}); err != nil {
+			t.Fatalf("edit at the restored-length cap failed: %v", err)
+		}
+		wantAtCap := "1\r\n23\r\n1\r\n23\n1\r\n23\r\n"
+		if got, _ := os.ReadFile(filepath.Join(dir, "atcap.txt")); string(got) != wantAtCap {
+			t.Fatalf("at-cap output = %q, want %q", got, wantAtCap)
+		}
+
+		// A third CRLF terminator pushes the restored output to 21 bytes, one
+		// over the cap, though the LF-normalized output is still 15 bytes. The
+		// refusal must name the restored length and happen before writing.
+		origOver := "x\r\nx\r\nx\r\n"
+		if err := os.WriteFile(filepath.Join(dir, "over.txt"), []byte(origOver), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		finishCalled := false
+		_, err := env.EditFileBatchWithCtx(context.Background(), "over.txt", []FileEdit{
+			{OldString: "x", NewString: "1\n23", ReplaceAll: true},
+		}, func(b []byte) []byte {
+			finishCalled = true
+			return b
+		})
+		if err == nil || !strings.Contains(err.Error(), "would be 21 bytes") {
+			t.Fatalf("expected a 21-byte restored-length cap error, got %v", err)
+		}
+		if finishCalled {
+			t.Fatal("finish must not be called when the restored-length cap is exceeded")
+		}
+		if got, _ := os.ReadFile(filepath.Join(dir, "over.txt")); string(got) != origOver {
+			t.Fatalf("over-cap file mutated: %q", got)
+		}
+	})
 }
 
 func TestEditFileBatch_UnconfinedAtomicWriteAndPermissions(t *testing.T) {
