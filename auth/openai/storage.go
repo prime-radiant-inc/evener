@@ -1,7 +1,6 @@
 package openai
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -127,7 +126,7 @@ func SaveAuth(stateDir, instanceName string, record AuthRecord) error {
 	if err := authMkdirAll(filepath.Join(stateDir, authDirName), 0o755); err != nil {
 		return fmt.Errorf("create auth directory: %w", err)
 	}
-	return withAuthStoreLock(context.Background(), stateDir, func() error {
+	return withAuthStoreLock(stateDir, func() error {
 		return saveAuthRecordLocked(stateDir, instanceName, record)
 	})
 }
@@ -169,7 +168,7 @@ func WriteAuthFile(path string, data []byte) error {
 // cannot land between the lock's check and its delete.
 func DeleteAuth(stateDir, instanceName string) (bool, error) {
 	var deleted bool
-	err := withAuthStoreLock(context.Background(), stateDir, func() error {
+	err := withAuthStoreLock(stateDir, func() error {
 		var err error
 		deleted, err = deleteAuthRecordLocked(stateDir, instanceName)
 		return err

@@ -1,9 +1,6 @@
 package openai
 
-import (
-	"context"
-	"sync"
-)
+import "sync"
 
 // AuthStoreLock is a held exclusive cross-process lock over the OAuth records
 // under one state directory. A caller that must keep one record operation
@@ -27,11 +24,12 @@ type AuthStoreLock interface {
 }
 
 // LockAuthStore takes the store's cross-process lock and returns it held. The
-// wait honors ctx, so a caller with a deadline returns instead of parking
-// behind another process; every holder in this package holds it only across
-// one or two file writes, never across a network call.
-func LockAuthStore(ctx context.Context, stateDir string) (AuthStoreLock, error) {
-	release, err := acquireAuthStoreLock(ctx, stateDir)
+// wait is a blocking flock with no deadline: every holder in this package holds
+// the lock across one or two file writes only, never across a network call, so
+// the wait is short, and a caller holding credentials the issuer already
+// rotated must let its write land rather than abandon it.
+func LockAuthStore(stateDir string) (AuthStoreLock, error) {
+	release, err := acquireAuthStoreLock(stateDir)
 	if err != nil {
 		return nil, err
 	}
@@ -60,8 +58,8 @@ func (l *authStoreLock) Release() {
 }
 
 // withAuthStoreLock runs fn holding the store lock.
-func withAuthStoreLock(ctx context.Context, stateDir string, fn func() error) error {
-	lock, err := LockAuthStore(ctx, stateDir)
+func withAuthStoreLock(stateDir string, fn func() error) error {
+	lock, err := LockAuthStore(stateDir)
 	if err != nil {
 		return err
 	}

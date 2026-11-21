@@ -95,6 +95,13 @@ type RuntimeCredentials struct {
 	// Expiry is the token expiry for OAuth-sourced credentials; zero for
 	// env-sourced credentials.
 	Expiry time.Time
+	// AccountID is the ChatGPT account id the token authenticates as, read from
+	// the same record the token came from. A caller must send it with the
+	// bearer rather than re-reading the record by instance name: a rename lands
+	// a refreshed record under its new name while the request is in flight, so
+	// the name it asked for can be gone by the time the header is set. Empty for
+	// env-sourced credentials and for a record that names no account.
+	AccountID string
 }
 
 type callbackServer interface {
@@ -484,11 +491,7 @@ func (s *Service) ResolveRuntimeCredentials(ctx context.Context, stateDir, insta
 	}
 
 	if !needsRefresh(s.now(), record.Expiry) {
-		return RuntimeCredentials{
-			BearerToken: record.AccessToken,
-			Source:      AuthSourceOAuth,
-			Expiry:      record.Expiry,
-		}, nil
+		return credentialsFromRecord(record), nil
 	}
 
 	if strings.TrimSpace(record.RefreshToken) == "" {
@@ -526,11 +529,7 @@ func (s *Service) refreshExpiredRecord(ctx context.Context, stateDir, instanceNa
 		return RuntimeCredentials{}, err
 	}
 	if !needsRefresh(s.now(), current.Expiry) {
-		return RuntimeCredentials{
-			BearerToken: current.AccessToken,
-			Source:      AuthSourceOAuth,
-			Expiry:      current.Expiry,
-		}, nil
+		return credentialsFromRecord(current), nil
 	}
 	// The pre-lock guard checked the record loaded before the lock; the record
 	// may have been rewritten since, so re-check the re-read record before
@@ -562,11 +561,25 @@ func (s *Service) refreshExpiredRecord(ctx context.Context, stateDir, instanceNa
 	if err != nil {
 		return RuntimeCredentials{}, err
 	}
+	return credentialsFromRecord(committed), nil
+}
+
+// credentialsFromRecord returns the runtime credentials a stored OAuth record
+// supplies. AccountID falls back to the id token's claims for a record written
+// before the account id was persisted as its own field.
+func credentialsFromRecord(record AuthRecord) RuntimeCredentials {
+	accountID := record.AccountID
+	if accountID == "" {
+		if claims, err := ParseIDTokenClaims(record.IDToken); err == nil {
+			accountID = claims.AccountID
+		}
+	}
 	return RuntimeCredentials{
-		BearerToken: committed.AccessToken,
+		BearerToken: record.AccessToken,
 		Source:      AuthSourceOAuth,
-		Expiry:      committed.Expiry,
-	}, nil
+		Expiry:      record.Expiry,
+		AccountID:   accountID,
+	}
 }
 
 // errAuthRecordChanged reports that the record a refresh was derived from was
@@ -601,13 +614,13 @@ func sameAuthRecord(a, b AuthRecord) bool {
 // already burned the token they replace).
 //
 // The returned record is the one the caller should use, and it is the one on
-// disk. The lock wait deliberately does not take ctx: once the refresh token has
+// disk. The lock wait has no deadline on purpose: once the refresh token has
 // been redeemed the rotated record has to land, or the token it replaced is
 // lost. Every holder of this lock holds it across file writes only, never a
 // network call, so the wait is short.
 func commitRefreshedRecord(stateDir, instanceName string, loaded, refreshed AuthRecord, now time.Time) (AuthRecord, error) {
 	var committed AuthRecord
-	err := withAuthStoreLock(context.Background(), stateDir, func() error {
+	err := withAuthStoreLock(stateDir, func() error {
 		onDisk, loadErr := LoadAuth(stateDir, instanceName)
 		switch {
 		case errors.Is(loadErr, ErrAuthNotFound):

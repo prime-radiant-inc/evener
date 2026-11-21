@@ -1,7 +1,6 @@
 package hub
 
 import (
-	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -68,7 +67,7 @@ func TestInstances_EditRenameMovesTheOAuthRecordInsideTheStoreLock(t *testing.T)
 	var acquireOnce, resumeOnce sync.Once
 	resume := func() { resumeOnce.Do(func() { close(lock.resume) }) }
 	defer resume()
-	f.ctl.auth.lockAuthStore = func(context.Context, string) (authopenai.AuthStoreLock, error) {
+	f.ctl.auth.lockAuthStore = func(string) (authopenai.AuthStoreLock, error) {
 		acquireOnce.Do(func() { close(lock.acquired) })
 		<-lock.resume
 		return lock, nil

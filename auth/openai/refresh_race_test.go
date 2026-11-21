@@ -152,7 +152,7 @@ func TestRefreshFollowsARecordRenamedWhileItWasInFlight(t *testing.T) {
 
 	// The rename, as the hub performs it: read the old record, write it under
 	// the new name and delete the old one in one locked section.
-	lock, err := LockAuthStore(context.Background(), stateDir)
+	lock, err := LockAuthStore(stateDir)
 	if err != nil {
 		t.Fatalf("LockAuthStore() error = %v", err)
 	}
@@ -179,6 +179,11 @@ func TestRefreshFollowsARecordRenamedWhileItWasInFlight(t *testing.T) {
 	if got.creds.BearerToken != "refreshed-access" {
 		t.Fatalf("BearerToken = %q, want the refreshed token", got.creds.BearerToken)
 	}
+	// The account has to travel with the credentials: by the time the caller
+	// sets a header, the instance name it asked for files no record.
+	if got.creds.AccountID != "acct_123" {
+		t.Fatalf("AccountID = %q, want the account of the record the refresh redeemed", got.creds.AccountID)
+	}
 	if _, err := LoadAuth(stateDir, "work"); !errors.Is(err, ErrAuthNotFound) {
 		t.Fatalf("the refresh recreated the record under the renamed-away name (LoadAuth = %v)", err)
 	}
@@ -192,6 +197,47 @@ func TestRefreshFollowsARecordRenamedWhileItWasInFlight(t *testing.T) {
 	if kept.Provider != "personal" {
 		t.Fatalf("Provider = %q, want the destination instance's name", kept.Provider)
 	}
+}
+
+// The account id a request authenticates as must come from the same record as
+// its bearer, not from a second read of the record by instance name: a refresh
+// that followed a rename leaves the name the caller used filed with nothing.
+// A record written before the account id was persisted on its own still names
+// its account in the id token.
+func TestRuntimeCredentialsCarryTheRecordsAccount(t *testing.T) {
+	now := time.Date(2026, 5, 8, 0, 0, 0, 0, time.UTC)
+	t.Run("persisted account id", func(t *testing.T) {
+		stateDir := t.TempDir()
+		fresh := sampleAuthRecord()
+		fresh.Expiry = now.Add(time.Hour)
+		if err := SaveAuth(stateDir, "openai", fresh); err != nil {
+			t.Fatalf("SaveAuth() error = %v", err)
+		}
+		creds, err := newTestService(now).ResolveRuntimeCredentials(context.Background(), stateDir, "openai")
+		if err != nil {
+			t.Fatalf("ResolveRuntimeCredentials() error = %v", err)
+		}
+		if creds.AccountID != fresh.AccountID {
+			t.Fatalf("AccountID = %q, want %q", creds.AccountID, fresh.AccountID)
+		}
+	})
+	t.Run("id token claims of a record written before the field", func(t *testing.T) {
+		stateDir := t.TempDir()
+		legacy := sampleAuthRecord()
+		legacy.AccountID = ""
+		legacy.IDToken = testJWT(t, map[string]any{"chatgpt_account_id": "acct_legacy"})
+		legacy.Expiry = now.Add(time.Hour)
+		if err := SaveAuth(stateDir, "openai", legacy); err != nil {
+			t.Fatalf("SaveAuth() error = %v", err)
+		}
+		creds, err := newTestService(now).ResolveRuntimeCredentials(context.Background(), stateDir, "openai")
+		if err != nil {
+			t.Fatalf("ResolveRuntimeCredentials() error = %v", err)
+		}
+		if creds.AccountID != "acct_legacy" {
+			t.Fatalf("AccountID = %q, want the id token's account claim", creds.AccountID)
+		}
+	})
 }
 
 // The same race with a sign-out instead of a rename: the record is deleted

@@ -49,7 +49,7 @@ type hubAuthController struct {
 	// neither land between those two steps nor be overwritten by one of them.
 	// It is a seam like the record functions above so a test can park the
 	// rename inside its locked section.
-	lockAuthStore   func(context.Context, string) (authopenai.AuthStoreLock, error)
+	lockAuthStore   func(string) (authopenai.AuthStoreLock, error)
 	setCredential   func(string, string) error
 	clearCredential func(string) error
 	// reg is the live registry every auth answer is derived from: which
@@ -252,7 +252,7 @@ func (c *hubAuthController) refuseAuthRecordsWithoutStateDir(stateErr error) {
 	}
 	c.saveAuth = func(string, string, authopenai.AuthRecord) error { return stateErr }
 	c.deleteAuth = func(string, string) (bool, error) { return false, nil }
-	c.lockAuthStore = func(context.Context, string) (authopenai.AuthStoreLock, error) {
+	c.lockAuthStore = func(string) (authopenai.AuthStoreLock, error) {
 		return nil, stateErr
 	}
 }

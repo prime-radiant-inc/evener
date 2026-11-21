@@ -2,7 +2,6 @@ package openai
 
 import (
 	"bufio"
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -24,7 +23,7 @@ func TestAuthStoreLockMakesTwoHoldersTakeTurns(t *testing.T) {
 		t.Fatalf("SaveAuth() error = %v", err)
 	}
 
-	first, err := LockAuthStore(context.Background(), stateDir)
+	first, err := LockAuthStore(stateDir)
 	if err != nil {
 		t.Fatalf("LockAuthStore() error = %v", err)
 	}
@@ -41,7 +40,7 @@ func TestAuthStoreLockMakesTwoHoldersTakeTurns(t *testing.T) {
 	}
 	second := make(chan acquisition, 1)
 	go func() {
-		lock, err := LockAuthStore(context.Background(), stateDir)
+		lock, err := LockAuthStore(stateDir)
 		second <- acquisition{lock, err}
 	}()
 
@@ -96,7 +95,7 @@ func TestSaveAuthWaitsForAHolderInAnotherProcess(t *testing.T) {
 	if err := SaveAuth(stateDir, "openai", sampleAuthRecord()); err != nil {
 		t.Fatalf("SaveAuth() error = %v", err)
 	}
-	holder, err := LockAuthStore(context.Background(), stateDir)
+	holder, err := LockAuthStore(stateDir)
 	if err != nil {
 		t.Fatalf("LockAuthStore() error = %v", err)
 	}

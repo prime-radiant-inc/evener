@@ -3,18 +3,12 @@
 package openai
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
-	"time"
 )
-
-// authStoreLockPollInterval paces acquisition: a non-blocking try plus a short
-// wait keeps the wait cancellable, where a blocking flock would ignore ctx.
-const authStoreLockPollInterval = 20 * time.Millisecond
 
 // acquireAuthStoreLock takes an exclusive advisory flock on the auth directory
 // under stateDir and returns the release. The directory itself is the lock
@@ -26,38 +20,41 @@ const authStoreLockPollInterval = 20 * time.Millisecond
 // across a token refresh's network call: a refresh re-checks the record under
 // the lock before writing, which is what keeps a renamed or deleted record
 // from being resurrected without making a slow issuer block other instances.
-func acquireAuthStoreLock(ctx context.Context, stateDir string) (func(), error) {
+func acquireAuthStoreLock(stateDir string) (func(), error) {
 	dir := filepath.Join(stateDir, authDirName)
 	f, err := os.Open(dir)
 	if err != nil {
 		return nil, fmt.Errorf("open auth store for locking: %w", err)
 	}
-	notify := installedAuthStoreLockWaiting()
-	notified := false
-	for {
-		flockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-		if flockErr == nil {
-			return func() {
-				_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-				_ = f.Close()
-			}, nil
+	// A test uses the contention seam to learn that an acquisition has parked
+	// instead of guessing with a window. One non-blocking probe reports the
+	// contention before the blocking call below waits; production leaves the
+	// seam nil and pays no probe.
+	if notify := installedAuthStoreLockWaiting(); notify != nil {
+		switch probeErr := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); {
+		case probeErr == nil:
+			return releaseAuthStoreLock(f), nil
+		case errors.Is(probeErr, syscall.EWOULDBLOCK):
+			notify()
 		}
-		// Only contention retries: a bad descriptor or any other error fails
-		// fast rather than polling to the caller's deadline. EWOULDBLOCK is
-		// EAGAIN on both GOOS this file builds for.
-		if !errors.Is(flockErr, syscall.EWOULDBLOCK) {
+	}
+	for {
+		flockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
+		if flockErr == nil {
+			return releaseAuthStoreLock(f), nil
+		}
+		// A blocking flock is interrupted by a signal; retry it. Any other
+		// error is the answer, not something to wait out.
+		if !errors.Is(flockErr, syscall.EINTR) {
 			_ = f.Close()
 			return nil, fmt.Errorf("flock auth store: %w", flockErr)
 		}
-		if notify != nil && !notified {
-			notified = true
-			notify()
-		}
-		select {
-		case <-ctx.Done():
-			_ = f.Close()
-			return nil, ctx.Err()
-		case <-time.After(authStoreLockPollInterval):
-		}
+	}
+}
+
+func releaseAuthStoreLock(f *os.File) func() {
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
 	}
 }

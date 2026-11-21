@@ -1853,7 +1853,7 @@ func (c *hubInstancesController) moveOAuthRecord(oldName, newName string) []erro
 	// The record is filed, so the directory exists: take the store's
 	// cross-process lock, then re-read under it, because a refresh or a delete
 	// may have landed since the read above.
-	lock, err := c.auth.lockAuthStore(context.Background(), c.auth.stateDir)
+	lock, err := c.auth.lockAuthStore(c.auth.stateDir)
 	if err != nil {
 		return []error{fmt.Errorf("OAuth record not moved: %w", err)}
 	}
