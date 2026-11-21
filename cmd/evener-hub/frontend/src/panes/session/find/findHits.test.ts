@@ -7,6 +7,7 @@ import {
   type ThreadModel,
   type TurnModel,
 } from "@evener/appwire-client";
+import { notificationWireItem } from "@evener/appwire-client/testing/notificationWireFixtures";
 import { act } from "@testing-library/react";
 import { beforeEach, expect, test } from "vitest";
 import { type TranscriptBodyRow, transcriptRowsForProjection } from "../transcript/TranscriptBody";
@@ -266,7 +267,7 @@ test("messages, thought summaries and action rationales are searched", () => {
 test("a thought is searched by its rendered summary and its hit opens the thought", () => {
   const rows = [turnRow("t", [reasoningEntry("r1", [["the **needle** sits here"]])])];
   expect(findHits(rows, "needle sits here", { config: TOOLS })).toEqual([
-    { key: "r1", itemId: "r1", rowIndex: 0, opens: "r1" },
+    { key: "r1", itemId: "r1", rowIndex: 0, opens: ["r1"] },
   ]);
   // The summary's own formatting marks are not words on the page.
   expect(findHits(rows, "**needle**", { config: TOOLS })).toEqual([]);
@@ -286,7 +287,7 @@ test("a full-verbosity thought is searched by its summary", () => {
   const full = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
   const rows = [turnRow("t", [reasoningEntry("r1", [["a needle thought"]], "item")])];
   expect(findHits(rows, "needle thought", { config: full })).toEqual([
-    { key: "r1", itemId: "r1", rowIndex: 0, opens: "r1" },
+    { key: "r1", itemId: "r1", rowIndex: 0, opens: ["r1"] },
   ]);
 });
 
@@ -309,7 +310,7 @@ test("a redacted thought is searched by its rendered label and summaries", () =>
 test("an action is searched by its rationale and the hit opens its collapsed group", () => {
   const rows = [turnRow("t", [intentEntry("c1", "list the repo"), intentEntry("c2", "grep for the needle")])];
   expect(findHits(rows, "grep for the needle", { config: COLLAPSED_INTENT })).toEqual([
-    { key: "intent:c2", itemId: "c2", rowIndex: 0, opens: "intent-group:intent:c1" },
+    { key: "intent:c2", itemId: "c2", rowIndex: 0, opens: ["intent-group:intent:c1"] },
   ]);
   // A cross-turn action group names its own row id.
   const entries: IntentEntry[] = [intentEntry("c1", "list the repo"), intentEntry("c2", "grep for the needle")];
@@ -321,7 +322,7 @@ test("an action is searched by its rationale and the hit opens its collapsed gro
     sourceTurnIds: ["t"],
   };
   expect(findHits([group], "needle", { config: COLLAPSED_INTENT }).map((hit) => hit.opens)).toEqual([
-    "intent-group:intent:c1",
+    ["intent-group:intent:c1"],
   ]);
 });
 
@@ -346,7 +347,7 @@ test("a delegate's clipped brief is searched where the intent line shows it", ()
   const rows = [turnRow("t", [delegateAction("c1", prompt)])];
 
   expect(findHits(rows, shown, { config: COLLAPSED_INTENT }).map((hit) => [hit.itemId, hit.opens])).toEqual([
-    ["c1", "intent-group:intent:c1"],
+    ["c1", ["intent-group:intent:c1"]],
   ]);
   // Past the preview the row shows an ellipsis, so the clipped-off words are
   // not text a match could land on.
@@ -519,4 +520,154 @@ test("a thought's failed diagram source becomes searchable when it falls back to
   expect(findHits(rows, "thoughtNode", { config: TOOLS }).map((hit) => hit.key)).toEqual(["r1"]);
   act(() => noteMermaidRender(source, "ok"));
   expect(findHits(rows, "thoughtNode", { config: TOOLS })).toEqual([]);
+});
+
+// --- A steer's notification cards ------------------------------------------
+// A card is searched by the words it paints: the head, the report or the
+// excerpt it shows, and - only where nothing on its face holds the words - the
+// raw frame behind the one disclosure that hides it. Markup and attributes a
+// reader never sees are never a match (#6351 finding 3).
+
+function steerItem(id: string, text: string, extra: Partial<ItemModel> = {}): ItemModel {
+  return { id, turnId: "t", type: "steering", text, ...extra } as ItemModel;
+}
+
+function steerRows(items: ItemModel[], config = TOOLS): readonly TranscriptBodyRow[] {
+  const model = { ref: "r", turns: [{ id: "t", status: "completed", items }] } as unknown as ThreadModel;
+  return transcriptRowsForProjection(projectThread(model, config));
+}
+
+function jobCard(attrs: string, excerpt: string): string {
+  return `<job-notification ${attrs}>\nJob completed.\nexcerpt:\n${excerpt}</job-notification>`;
+}
+
+function delegateCard(body: Record<string, unknown>): string {
+  return `<delegate-notification delegate_id="dlg_7" name="Ledger audit" kind="report">${JSON.stringify(body)}</delegate-notification>`;
+}
+
+test("a delegate card is searched by its report and opens the card, never by its frame's markup", () => {
+  const item = { ...(notificationWireItem("delegate-reported") as unknown as ItemModel), id: "steer", turnId: "t" };
+  const rows = steerRows([item]);
+  expect(findHits(rows, "the settle pass now waits for the drain", { config: TOOLS, sessionRef: "ref_a" })).toEqual([
+    { key: "steer", itemId: "steer", rowIndex: 0, opens: ["notification:ref_a:dlg_1:steer:0"] },
+  ]);
+  // Markdown marks are not words on the page.
+  expect(findHits(rows, "**settle**", { config: TOOLS })).toEqual([]);
+  // A delegate card renders no raw disclosure, so nothing only the verbatim
+  // frame holds is a match.
+  expect(findHits(rows, 'delegate_id="dlg_1"', { config: TOOLS })).toEqual([]);
+  expect(findHits(rows, '"outcome":"completed"', { config: TOOLS })).toEqual([]);
+});
+
+test("a delegate card's structured result table is searched by its rendered labels and cells", () => {
+  const rows = steerRows([
+    steerItem(
+      "steer",
+      delegateCard({
+        kind: "reported",
+        message: "Audited the ledger.",
+        metadata: { outcome: "completed", name: "Ledger audit" },
+        structured_result: { finding_verdict: "looks fine", ledger_rows: 42 },
+        structured_result_valid: true,
+      }),
+    ),
+  ]);
+  const opens = (query: string) =>
+    findHits(rows, query, { config: TOOLS, sessionRef: "ref_a" }).map((hit) => hit.opens);
+  expect(opens("finding verdict")).toEqual([["notification:ref_a:dlg_7:steer:0"]]);
+  expect(opens("looks fine")).toEqual([["notification:ref_a:dlg_7:steer:0"]]);
+  expect(opens("42")).toEqual([["notification:ref_a:dlg_7:steer:0"]]);
+  // The schema key as written is not on screen; its words are.
+  expect(opens("finding_verdict")).toEqual([]);
+});
+
+test("a static delegate head is searched by its visible words and opens no disclosure", () => {
+  const rows = steerRows([
+    steerItem(
+      "steer",
+      delegateCard({ kind: "reported", message: "", metadata: { outcome: "stopped", reason: "stopped_by_parent" } }),
+    ),
+  ]);
+  expect(findHits(rows, "Ledger audit", { config: TOOLS })).toEqual([{ key: "steer", itemId: "steer", rowIndex: 0 }]);
+  expect(findHits(rows, 'delegate_id="dlg_7"', { config: TOOLS })).toEqual([]);
+});
+
+test("a job card's preview opens the card alone, and its raw frame opens only for a word the preview cut", () => {
+  const filler = "padding line\n".repeat(60);
+  const rows = steerRows([
+    steerItem(
+      "steer",
+      jobCard(
+        'job_id="job_9" event="completed" job_type="shell" status="completed" reason="exit_zero" intent="Tail the log" exit_code="0"',
+        `quokkaAtHead\n${filler}`,
+      ),
+    ),
+  ]);
+  const opens = (query: string) =>
+    findHits(rows, query, { config: TOOLS, sessionRef: "ref_a" }).map((hit) => hit.opens);
+  // A word the preview shows opens the card alone.
+  expect(opens("padding line")).toEqual([["notification:ref_a:job_9:steer:0"]]);
+  // A word the 500-character tail cut away opens the card AND its raw frame.
+  expect(opens("quokkaAtHead")).toEqual([["notification:ref_a:job_9:steer:0", "notification:ref_a:job_9:steer:0:raw"]]);
+  // A word only the frame carries lands behind the disclosure, never as if the
+  // card showed it - the same opening both uses.
+  expect(opens('event="completed"')).toEqual([
+    ["notification:ref_a:job_9:steer:0", "notification:ref_a:job_9:steer:0:raw"],
+  ]);
+});
+
+test("a shell excerpt is searched as its ANSI text renders, not as its escape sequences", () => {
+  const rows = steerRows([
+    steerItem(
+      "steer",
+      jobCard(
+        'job_id="job_1" event="completed" job_type="shell" intent="Colour run"',
+        "starting\n\u001b[31mneedleRed\u001b[0m\n",
+      ),
+    ),
+  ]);
+  const opens = (query: string) =>
+    findHits(rows, query, { config: TOOLS, sessionRef: "ref_a" }).map((hit) => hit.opens);
+  expect(opens("needleRed")).toEqual([["notification:ref_a:job_1:steer:0"]]);
+});
+
+test("only the cards of a steer that hold the words open, and their siblings stay closed", () => {
+  const first = jobCard('job_id="job_1" event="completed" intent="First card"', "first output");
+  const second = jobCard('job_id="job_2" event="completed" intent="Second card"', "second output");
+  const rows = steerRows([steerItem("steer", `${first}\n${second}`)]);
+  expect(findHits(rows, "second output", { config: TOOLS, sessionRef: "ref_a" }).map((hit) => hit.opens)).toEqual([
+    ["notification:ref_a:job_2:steer:1"],
+  ]);
+  // Both cards' words in one query open both cards.
+  expect(findHits(rows, "card", { config: TOOLS, sessionRef: "ref_a" }).map((hit) => hit.opens)).toEqual([
+    ["notification:ref_a:job_1:steer:0", "notification:ref_a:job_2:steer:1"],
+  ]);
+});
+
+test("a parent's steer and a suppressed steer are never parsed for cards", () => {
+  const card = jobCard('job_id="job_1" event="completed"', "quokka");
+  for (const extra of [{ source: "parent" }, { steeringKind: "human-note", source: "user" }] as Partial<ItemModel>[]) {
+    expect(findHits(steerRows([steerItem("steer", card, extra)]), "quokka", { config: TOOLS })).toEqual([]);
+  }
+});
+
+test("a delegate report's failed diagram becomes searchable when it falls back to code", () => {
+  const fence = "```";
+  const source = "flowchart TD\n  A --> reportNode";
+  const rows = steerRows([
+    steerItem(
+      "steer",
+      delegateCard({
+        kind: "reported",
+        message: `The flow:\n\n${fence}mermaid\n${source}\n${fence}\n\nDone.`,
+        metadata: { outcome: "completed" },
+      }),
+    ),
+  ]);
+  // The first read warms the card's cache while the diagram still renders.
+  expect(findHits(rows, "reportNode", { config: TOOLS })).toEqual([]);
+  act(() => noteMermaidRender(source, "error"));
+  expect(findHits(rows, "reportNode", { config: TOOLS }).map((hit) => hit.itemId)).toEqual(["steer"]);
+  act(() => noteMermaidRender(source, "ok"));
+  expect(findHits(rows, "reportNode", { config: TOOLS })).toEqual([]);
 });

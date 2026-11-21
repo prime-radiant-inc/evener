@@ -21,6 +21,7 @@ import {
 } from "@evener/appwire-client";
 import { projectedSearchTexts } from "../../panes/session/find/findHits";
 import { messageAsShown } from "../../panes/session/find/messageText";
+import { rendersNotificationCards } from "../../panes/session/find/notificationHits";
 
 // One text run of a highlighted string: `mark` true means it is the matched
 // substring (rendered inside <mark>), false means surrounding context.
@@ -60,8 +61,10 @@ function itemSearchTexts(item: ItemModel, projected: ReadonlyMap<string, readonl
   const message = messageAsShown(item);
   if (message !== null) texts.push(message);
   // A thought's `text` is its trace, which no row shows, so only the
-  // summaries below are read for it.
-  else if (item.type !== "reasoning" && item.text) texts.push(item.text);
+  // summaries below are read for it. A steer that renders notification cards
+  // is read by the words its cards paint, below; its `text` is the frame
+  // markup those cards were built from, which no row shows.
+  else if (item.type !== "reasoning" && item.text && !rendersNotificationCards(item)) texts.push(item.text);
   // What the view shows this item as - an action row's rationale, a thought's
   // summaries where the view shows the thought. Find's own rule, shared, so a
   // hit here is always one Find can land on.

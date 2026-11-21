@@ -154,6 +154,13 @@ function matchOf(hit: FindHit | undefined): Pick<FindState, "key" | "item" | "ro
   return hit === undefined ? NO_MATCH : { key: hit.key, item: hit.itemId, round: hit.roundId ?? null };
 }
 
+// What hides a hit's words, as one comparable value: a hit can open more than
+// one disclosure (a steer with several matching cards, or a card whose words
+// sit inside its raw frame), and the landing reruns only when the list changes.
+function opensKey(hit: FindHit): string {
+  return hit.opens?.join("\u0000") ?? "";
+}
+
 export function useFindInSession({
   ref,
   paneId,
@@ -204,7 +211,7 @@ export function useFindInSession({
   // being redone for nothing.
   const lastHits = useRef<FindHit[]>([]);
   const hits = useMemo(() => {
-    const next = isOpen ? findHits(rows, query, { config, version: renderVersion }) : [];
+    const next = isOpen ? findHits(rows, query, { config, version: renderVersion, sessionRef: ref }) : [];
     const previous = lastHits.current;
     const same =
       next.length === previous.length &&
@@ -215,12 +222,12 @@ export function useFindInSession({
           before.key === hit.key &&
           before.itemId === hit.itemId &&
           before.rowIndex === hit.rowIndex &&
-          before.opens === hit.opens
+          opensKey(before) === opensKey(hit)
         );
       });
     if (!same) lastHits.current = next;
     return lastHits.current;
-  }, [isOpen, rows, query, renderVersion, config]);
+  }, [isOpen, rows, query, renderVersion, config, ref]);
   const currentIndex =
     find == null || find.key === null || find.item === null
       ? -1
@@ -403,7 +410,7 @@ export function useFindInSession({
   // group). A match that only goes by a new key or item is the same match:
   // the reader may have scrolled on, and is not pulled back to it. Rows
   // prepending above it are not a landing either.
-  const currentOpens = current?.opens ?? "";
+  const currentOpens = current === null ? "" : opensKey(current);
   // biome-ignore lint/correctness/useExhaustiveDependencies: the dependencies are the landing's causes, listed above
   useEffect(() => {
     if (current === null) {
@@ -416,8 +423,10 @@ export function useFindInSession({
     }
     // Whatever hides the matching words opens first, so the entry can mount
     // and show them. They stay open, as a reader's own toggle would.
-    if (current.opens !== undefined) {
-      const scoped = scopedDisclosureId(disclosureScope, current.opens);
+    // Every disclosure holding the words opens: the card and, when the words
+    // only sit there, its raw frame.
+    for (const disclosure of current.opens ?? []) {
+      const scoped = scopedDisclosureId(disclosureScope, disclosure);
       if (!isDisclosureOpenNow(scoped, false)) setDisclosureOpen(scoped, true);
     }
     const before = landed.current;

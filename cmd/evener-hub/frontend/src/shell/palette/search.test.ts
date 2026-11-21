@@ -6,6 +6,7 @@ import {
   type TurnModel,
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { notificationWireItem } from "@evener/appwire-client/testing/notificationWireFixtures";
 import { expect, test } from "vitest";
 import { ALL_CAPABILITIES } from "../../threadTestUtils";
 import { buildSnippet, fetchSearch, findInSessionMatches, highlightParts } from "./search";
@@ -348,4 +349,28 @@ test("a reply is searched as it reads, the way the session's Find reads it", () 
   const model = { turns: [{ id: "t", status: "completed", items: [reply] }] } as unknown as ThreadModel;
   expect(findInSessionMatches(model, "build failed", VIEW)).toHaveLength(1);
   expect(findInSessionMatches(model, "**fail**", VIEW)).toHaveLength(0);
+});
+
+// A steer's notification cards are offered by the words they show, never by
+// the markup behind them, so every row the palette lists is one Find lands on.
+test("findInSessionMatches reads a steer's notification card as its words, not its markup", () => {
+  const card = notificationWireItem("delegate-reported") as unknown as ItemModel;
+  const model = modelWithTurns([turn("t1", [{ ...card, id: "steer", turnId: "t1" }])]);
+  expect(findInSessionMatches(model, "the settle pass now waits for the drain", VIEW).map((hit) => hit.itemId)).toEqual(
+    ["steer"],
+  );
+  // The verbatim frame's attributes are not on the card.
+  expect(findInSessionMatches(model, 'delegate_id="dlg_1"', VIEW)).toEqual([]);
+  expect(findInSessionMatches(model, '"outcome":"completed"', VIEW)).toEqual([]);
+});
+
+test("findInSessionMatches reads a job card's rendered fields and excerpt, not its frame", () => {
+  const text =
+    '<job-notification job_id="job_7" event="completed" job_type="shell" status="completed" reason="exit_zero" intent="Run the agent tests">\nJob job_7 completed.\nexcerpt:\nok  \t12.3s\n</job-notification>';
+  const model = modelWithTurns([turn("t1", [itemWith("steer", { type: "steering", text })])]);
+  // The head's intent and the excerpt are on screen.
+  expect(findInSessionMatches(model, "Run the agent tests", VIEW).map((hit) => hit.itemId)).toEqual(["steer"]);
+  expect(findInSessionMatches(model, "12.3s", VIEW).map((hit) => hit.itemId)).toEqual(["steer"]);
+  // The frame's own words are not.
+  expect(findInSessionMatches(model, 'event="completed"', VIEW)).toEqual([]);
 });

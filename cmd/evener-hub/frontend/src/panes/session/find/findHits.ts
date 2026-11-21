@@ -1,8 +1,9 @@
 // Which entries hold the words being looked for: a message's words, a
-// thought's summaries and an action row's rationale (tool calls, steers and
-// system notices are not searched). A hit is one projected entry, and its
-// words are on screen once its row mounts: a message never folds, a thought's
-// or an action's words sit behind a disclosure Find opens before it lands.
+// thought's summaries, an action row's rationale and a steer's notification
+// cards (tool calls and system notices are not searched). A hit is one
+// projected entry, and its words are on screen once its row mounts: a message
+// never folds, a thought's, an action's or a card's words sit behind a
+// disclosure Find opens before it lands.
 import {
   entryDisplayKey,
   findNeedle,
@@ -17,11 +18,17 @@ import {
   type TurnModel,
 } from "@evener/appwire-client";
 import { mermaidRenderVersion } from "../../../widgets/mermaid/renderState";
+import {
+  notificationDisclosureId,
+  notificationRendersBody,
+  rawDisclosureId,
+} from "../transcript/messages/notificationText";
 import { displayedIntentOf } from "../transcript/ToolCallItem";
 import { type TranscriptBodyRow, transcriptRowsForProjection } from "../transcript/TranscriptBody";
 import { toolRendererFor } from "../transcript/toolRenderers";
 import { intentGroupId, intentRunAt } from "../transcript/toolRuns";
 import { messageAsShown, reasoningSummariesAsRead } from "./messageText";
+import { notificationCardsFor, notificationShownTexts } from "./notificationHits";
 
 export interface FindHit {
   /** The entry's display key: its identity across paging and re-projection,
@@ -35,9 +42,11 @@ export interface FindHit {
   readonly callId?: string;
   /** The model round the message came from, when it has one. */
   readonly roundId?: string;
-  /** The one disclosure that hides the matching words, omitted for a message:
-   * a thought names its own, an action row its group. */
-  readonly opens?: string;
+  /** The disclosures that hide the matching words, omitted for a message: a
+   * thought names its own, an action row its group, and a steer names the
+   * card(s) that hold the words - plus a card's raw frame when that is the
+   * only place they sit. */
+  readonly opens?: readonly string[];
 }
 
 /** What the view shows, which decides what Find counts: one that hides
@@ -46,6 +55,9 @@ export interface FindView {
   readonly config?: TranscriptDisplayConfigV1;
   /** The diagram render state the text is read at. */
   readonly version?: number;
+  /** The session the entries belong to: a notification card's disclosure is
+   * keyed by it, so Find opens the one the card mounted. */
+  readonly sessionRef?: string;
 }
 
 // A reply still arriving is an overlay item until it is recorded: a streamed
@@ -159,6 +171,9 @@ function shownTexts(
     texts.push(...thoughtHaystack(entry.item, version, live));
     return texts;
   }
+  // A steer's notification cards are searched by the words they paint; a
+  // plain steer, note or notice is not searched by this slice.
+  if (entry.item.type === "steering") return notificationShownTexts(entry.item, version);
   const text = entry.kind === "item" && entry.isMessage ? haystack(entry.item, version) : null;
   return text === null ? [] : [text];
 }
@@ -191,7 +206,34 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string, view
   const hits: FindHit[] = [];
   const add = (entry: ProjectedEntry, rowIndex: number, turn: TurnModel | undefined, opens?: string) => {
     const texts = shownTexts(entry, turn, view.config, version);
-    if (!texts.some((text) => readable(text).includes(needle))) return;
+    const shownHere = texts.some((text) => readable(text).includes(needle));
+    // A steer's cards open one by one: only a card whose painted words hold
+    // the needle opens, and a card's raw frame opens only when its face does
+    // not - two matches in one card open the one disclosure that shows them.
+    const cards = notificationCardsFor(entry.item, version) ?? [];
+    const disclosures: string[] = [];
+    for (const card of cards) {
+      if (!card.shown.some((text) => readable(text).includes(needle))) continue;
+      // A static head has no disclosure to open; its words are the row.
+      if (!notificationRendersBody(card.notification)) continue;
+      const disclosure = notificationDisclosureId(card.notification, view.sessionRef, `${entry.item.id}:${card.index}`);
+      disclosures.push(disclosure);
+    }
+    if (!shownHere) {
+      // Nothing on a card's face holds the words: a raw frame may, and then it
+      // is the one place they are - open the card and that frame.
+      for (const card of cards) {
+        if (card.raw === undefined || !readable(card.raw).includes(needle)) continue;
+        const disclosure = notificationDisclosureId(
+          card.notification,
+          view.sessionRef,
+          `${entry.item.id}:${card.index}`,
+        );
+        disclosures.push(disclosure, rawDisclosureId(disclosure));
+      }
+      if (disclosures.length === 0) return;
+    }
+    if (opens !== undefined) disclosures.push(opens);
     const { id, callId, roundId } = entry.item;
     const itemId = entry.kind === "intent" ? entry.sourceItemId : id;
     hits.push({
@@ -200,7 +242,7 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string, view
       rowIndex,
       ...(callId ? { callId } : {}),
       ...(roundId ? { roundId } : {}),
-      ...(opens ? { opens } : {}),
+      ...(disclosures.length > 0 ? { opens: disclosures } : {}),
     });
   };
   rows.forEach((row, rowIndex) => {
