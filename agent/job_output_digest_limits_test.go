@@ -19,7 +19,18 @@ import (
 // registry keep its own head and tail and cut the marker out of the middle.
 func TestShellToolDigestFitsAConstrainedCharLimit(t *testing.T) {
 	t.Parallel()
-	full := strings.Repeat("status line ..............................\n", 300)
+	const first = "STATUS FIRST: boot .\n"
+	diagnostic := "FINAL DIAGNOSTIC: " + strings.Repeat("D", 251)
+	var log strings.Builder
+	log.WriteString(first)
+	for i := 1; i < 450; i++ {
+		fmt.Fprintf(&log, "status %03d ........\n", i)
+	}
+	log.WriteString(diagnostic + "\n")
+	if got, want := len(diagnostic)+1, 270; got != want {
+		t.Fatalf("diagnostic line is %d bytes, want %d", got, want)
+	}
+	full := log.String()
 	path := filepath.Join(t.TempDir(), "big.log")
 	if err := os.WriteFile(path, []byte(full), 0o600); err != nil {
 		t.Fatalf("write output fixture: %v", err)
@@ -50,6 +61,12 @@ func TestShellToolDigestFitsAConstrainedCharLimit(t *testing.T) {
 	}
 	if got := len([]rune(res.Output)); got > 800 {
 		t.Fatalf("rendered result has %d characters, want at most 800", got)
+	}
+	if !strings.HasPrefix(*out.Output, "STATUS FIRST:") {
+		t.Fatalf("digest dropped the first line under the 800-character limit:\n%s", *out.Output)
+	}
+	if !strings.Contains(*out.Output, diagnostic) {
+		t.Fatalf("digest dropped the 270-byte final diagnostic under the 800-character limit:\n%s", *out.Output)
 	}
 	if !strings.Contains(*out.Output, "offset_bytes=") {
 		t.Fatalf("digest lost its offset_bytes hint under the 800-character limit:\n%s", *out.Output)

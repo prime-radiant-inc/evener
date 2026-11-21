@@ -81,14 +81,13 @@ func shellInlineDigest(full string, total, dropped int64) string {
 // shellInlineDigestWithin is shellInlineDigest bounded by the registry's
 // rendered limits: lineBudget counts the digest plus its one-line footer
 // (0 = unbounded), and charBudget bounds the digest's runes (0 = unbounded).
-// It first splits lineBudget between the two previews, reserving one line for
-// the omission marker and one for the job footer, so a line bound is satisfied
-// by whole lines rather than by byte cuts that can discard a long final
-// diagnostic line. It then shrinks the head and tail byte budgets together,
-// halving the larger one each step, until charBudget fits. Neither end is
-// dropped while the other still fits alone, and the registry's own truncator
-// never keeps its head and tail and cuts the marker out of the middle. Each
-// candidate renders its omission range from the slices it actually shows.
+// It first bounds the head and tail previews to lineBudget (reserving one line
+// each for the omission marker and job footer), then trims whole lines from the
+// inner edges of whichever preview is longer so both the first line and final
+// diagnostic survive tight character budgets. Only if each end is down to a
+// single oversized line does it fall back to shrinking the longer slice by
+// bytes, preserving valid UTF-8. Each candidate computes the omitted lifetime
+// range from the slices actually shown.
 func shellInlineDigestWithin(full string, total, dropped int64, lineBudget, charBudget int) string {
 	headLines, tailLines := shellDigestLines, shellDigestLines
 	if lineBudget > 0 {
@@ -104,19 +103,29 @@ func shellInlineDigestWithin(full string, total, dropped int64, lineBudget, char
 			headLines, tailLines = min(avail/2, shellDigestLines), min(avail-avail/2, shellDigestLines)
 		}
 	}
-	headBudget, tailBudget := shellDigestHalfBytes, shellDigestHalfBytes
+	head, headCount, tail, tailCount := shellInlineDigestSlices(full, shellDigestHalfBytes, shellDigestHalfBytes, headLines, tailLines)
 	for {
-		digest := shellInlineDigestSlices(full, headBudget, tailBudget, headLines, tailLines, total, dropped)
+		digest := assembleOutputDigest(head, tail, total, dropped)
 		if digestFits(digest, lineBudget, charBudget) {
 			return digest
 		}
 		switch {
-		case headBudget == 0 && tailBudget == 0:
+		case headCount > 1 && (tailCount <= 1 || len(head) >= len(tail)):
+			head, headCount, _ = firstLineBytes(head, headCount-1)
+		case tailCount > 1:
+			tail, tailCount, _ = lastLineBytes(tail, tailCount-1)
+		case len(head) == 0 && len(tail) == 0:
 			return digest
-		case headBudget >= tailBudget:
-			headBudget /= 2
+		case len(head) >= len(tail):
+			head = runetrim.TrimTrailingPartial(head[:len(head)/2])
+			if len(head) == 0 {
+				headCount = 0
+			}
 		default:
-			tailBudget /= 2
+			tail = runetrim.TrimLeadingPartial(tail[len(tail)-len(tail)/2:])
+			if len(tail) == 0 {
+				tailCount = 0
+			}
 		}
 	}
 }
@@ -134,13 +143,12 @@ func digestFits(digest string, lineBudget, charBudget int) bool {
 	return true
 }
 
-// shellInlineDigestSlices renders the digest for one pair of preview byte
-// budgets bounded by a line count at each end; a zero budget shows none of that
-// end.
-func shellInlineDigestSlices(full string, headBudget, tailBudget, headLines, tailLines int, total, dropped int64) string {
+// shellInlineDigestSlices selects the initial head and tail byte slices and
+// their line counts for one pair of preview byte and line budgets.
+func shellInlineDigestSlices(full string, headBudget, tailBudget, headLines, tailLines int) (head []byte, headCount int, tail []byte, tailCount int) {
 	b := []byte(full)
 	var headRaw []byte
-	if headBudget > 0 {
+	if headBudget > 0 && headLines > 0 {
 		headRaw = b
 		if len(headRaw) > headBudget {
 			headRaw = headRaw[:headBudget]
@@ -155,7 +163,7 @@ func shellInlineDigestSlices(full string, headBudget, tailBudget, headLines, tai
 		}
 	}
 	var tailRaw []byte
-	if tailBudget > 0 {
+	if tailBudget > 0 && tailLines > 0 {
 		tailRaw = b
 		if len(tailRaw) > tailBudget {
 			tailRaw = tailRaw[len(tailRaw)-tailBudget:]
@@ -167,9 +175,9 @@ func shellInlineDigestSlices(full string, headBudget, tailBudget, headLines, tai
 			tailRaw = runetrim.TrimLeadingPartial(tailRaw)
 		}
 	}
-	head, _, _ := firstLineBytes(headRaw, headLines)
-	tail, _, _ := lastLineBytes(tailRaw, tailLines)
-	return assembleOutputDigest(head, tail, total, dropped)
+	head, headCount, _ = firstLineBytes(headRaw, headLines)
+	tail, tailCount, _ = lastLineBytes(tailRaw, tailLines)
+	return head, headCount, tail, tailCount
 }
 
 // textLineCount counts rendered lines: newline separators plus a non-terminated
