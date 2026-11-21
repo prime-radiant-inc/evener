@@ -11,7 +11,11 @@ import { act } from "@testing-library/react";
 import { beforeEach, expect, test } from "vitest";
 import { type TranscriptBodyRow, transcriptRowsForProjection } from "../transcript/TranscriptBody";
 import "../transcript/tools";
-import { noteMermaidRender, resetMermaidRenderStateForTests } from "../../../widgets/mermaid/renderState";
+import {
+  mermaidRenderVersion,
+  noteMermaidRender,
+  resetMermaidRenderStateForTests,
+} from "../../../widgets/mermaid/renderState";
 import { findableItemIds, findHits, indexOfMatch, isOverlay } from "./findHits";
 import { messageAsShown } from "./messageText";
 
@@ -229,9 +233,10 @@ test("an in-progress reply searches auto-closed Markdown as its live row reads",
 
 // The invariant the rest of Find leans on: a counted match is one Find can
 // land on with its words on screen. A thought's summaries and an action's
-// rationale are readable once their disclosure opens; tool output, steers,
-// notes, notices and warnings are not searched by this slice.
-test("messages, thought summaries and action rationales are searched", () => {
+// rationale are readable once their disclosure opens; a system notice's line
+// and a warning's words are rows of their own. Tool output, steers and shared
+// notes are not searched.
+test("messages, thought summaries, action rationales, notices and warnings are searched", () => {
   const items = [
     { id: "u", type: "userMessage", text: "find the needle" },
     { id: "think", type: "reasoning", text: "needle", reasoningSummaries: [["a needle thought"]] },
@@ -253,8 +258,9 @@ test("messages, thought summaries and action rationales are searched", () => {
   for (const level of ["chat", "tools", "full"] as const) {
     const config = makeTranscriptDisplayConfig({ kind: "preset", level });
     const rows = transcriptRowsForProjection(projectThread(model, config));
-    // Chat hides a settled thought; the other levels show its summary.
-    const expected = level === "chat" ? ["u", "a"] : ["u", "think", "a"];
+    // Chat hides a settled thought; the other levels show its summary. A
+    // routine notice and an uncoded warning are rows at every level.
+    const expected = level === "chat" ? ["u", "notice", "warn", "a"] : ["u", "think", "notice", "warn", "a"];
     expect(findHits(rows, "needle", { config }).map((hit) => hit.itemId)).toEqual(expected);
     expect([...findableItemIds(model, config, "needle")].sort()).toEqual([...expected].sort());
   }
@@ -287,6 +293,51 @@ test("a full-verbosity thought is searched by its summary", () => {
   const rows = [turnRow("t", [reasoningEntry("r1", [["a needle thought"]], "item")])];
   expect(findHits(rows, "needle thought", { config: full })).toEqual([
     { key: "r1", itemId: "r1", rowIndex: 0, opens: "r1" },
+  ]);
+});
+
+// A run of 3+ notices folds into one group rendered only by its leader. Every
+// matching member is one hit, all naming the leader's anchor and opening the
+// group - and grouping reads the rendered items, so a hidden successful hook
+// between them does not split the run (the #6351 open finding).
+test("a folded notice run is searched over the rendered items and lands every member on the leader", () => {
+  const config = makeTranscriptDisplayConfig(
+    { kind: "preset", level: "tools" },
+    { systemEvents: true, hookExits: "none" },
+  );
+  const items = [
+    { id: "a", type: "systemMessage", text: "alpha needle" },
+    { id: "h", type: "systemMessage", text: "hook ok", eventKind: "hook_completed", exitCode: 0 },
+    { id: "b", type: "systemMessage", text: "beta needle" },
+    { id: "c", type: "systemMessage", text: "gamma needle" },
+  ].map((item) => ({ turnId: "t1", status: "completed", ...item })) as ItemModel[];
+  const model = { ref: "r", turns: [{ id: "t1", status: "completed", items }] } as unknown as ThreadModel;
+  const rows = transcriptRowsForProjection(projectThread(model, config));
+
+  expect(findHits(rows, "needle", { config })).toEqual([
+    { key: "a", itemId: "a", rowIndex: 0, opens: "a" },
+    { key: "a", itemId: "b", rowIndex: 0, opens: "a" },
+    { key: "a", itemId: "c", rowIndex: 0, opens: "a" },
+  ]);
+});
+
+test("a scaffold is searched by its rendered Markdown, and a failed diagram follows the render version", () => {
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }, { promptEvents: true });
+  const source = "# Notes\n\nA **bold** instruction.\n\n```mermaid\ngraph TD; A-->B\n```\n";
+  const items = [
+    { id: "p", turnId: "t1", type: "systemMessage", text: source, eventKind: "system_prompt" },
+  ] as ItemModel[];
+  const model = { ref: "r", turns: [{ id: "t1", status: "completed", items }] } as unknown as ThreadModel;
+  const rows = transcriptRowsForProjection(projectThread(model, config));
+
+  expect(findHits(rows, "bold instruction", { config })).toEqual([{ key: "p", itemId: "p", rowIndex: 0, opens: "p" }]);
+  // The Markdown formatting marks are not words on the page.
+  expect(findHits(rows, "**bold**", { config })).toEqual([]);
+  // A rendered diagram is a picture; Find reads its source only after it fails.
+  expect(findHits(rows, "A-->B", { config, version: mermaidRenderVersion() })).toEqual([]);
+  act(() => noteMermaidRender("graph TD; A-->B", "error"));
+  expect(findHits(rows, "A-->B", { config, version: mermaidRenderVersion() })).toEqual([
+    { key: "p", itemId: "p", rowIndex: 0, opens: "p" },
   ]);
 });
 

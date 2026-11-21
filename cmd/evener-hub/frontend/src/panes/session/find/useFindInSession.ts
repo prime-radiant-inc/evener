@@ -215,7 +215,8 @@ export function useFindInSession({
           before.key === hit.key &&
           before.itemId === hit.itemId &&
           before.rowIndex === hit.rowIndex &&
-          before.opens === hit.opens
+          before.opens === hit.opens &&
+          before.opensIgnoreBaseline === hit.opensIgnoreBaseline
         );
       });
     if (!same) lastHits.current = next;
@@ -418,7 +419,10 @@ export function useFindInSession({
     // and show them. They stay open, as a reader's own toggle would.
     if (current.opens !== undefined) {
       const scoped = scopedDisclosureId(disclosureScope, current.opens);
-      if (!isDisclosureOpenNow(scoped, false)) setDisclosureOpen(scoped, true);
+      // A notes snapshot ignores the expand-all baseline, so the baseline's
+      // "open" is not what its row shows: open it explicitly in that case too.
+      const read = current.opensIgnoreBaseline ? { ignoreBaseline: true } : undefined;
+      if (!isDisclosureOpenNow(scoped, false, read)) setDisclosureOpen(scoped, true);
     }
     const before = landed.current;
     if (before !== null && before.item === current.itemId && before.needle === needle && before.epoch === jumpEpoch) {

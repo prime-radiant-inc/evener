@@ -15,6 +15,7 @@ import {
   findIndexIn,
   findNeedle,
   type ItemModel,
+  MEMORY_CONTEXT_EVENT_KIND,
   type SearchResponse,
   type ThreadModel,
   type TranscriptDisplayConfigV1,
@@ -58,10 +59,18 @@ function itemSearchTexts(item: ItemModel, projected: ReadonlyMap<string, readonl
   // way the session's own Find reads it, so a message row here is one Find
   // can land on.
   const message = messageAsShown(item);
-  if (message !== null) texts.push(message);
+  // A system notice or warning is read the way its row shows it (projected
+  // below), not from the raw wire text: a scaffold's raw Markdown and a
+  // failure's echoed line are not what is on screen. A memory refresh stays on
+  // its raw text until its own slice.
+  const projectedByNotice =
+    item.type === "warning" || (item.type === "systemMessage" && item.eventKind !== MEMORY_CONTEXT_EVENT_KIND);
   // A thought's `text` is its trace, which no row shows, so only the
   // summaries below are read for it.
-  else if (item.type !== "reasoning" && item.text) texts.push(item.text);
+  if (message !== null) texts.push(message);
+  else if (item.type !== "reasoning" && !projectedByNotice && item.text) {
+    texts.push(item.text);
+  }
   // What the view shows this item as - an action row's rationale, a thought's
   // summaries where the view shows the thought. Find's own rule, shared, so a
   // hit here is always one Find can land on.

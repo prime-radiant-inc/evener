@@ -96,7 +96,9 @@ export function useDisclosureSnapshot<T>(selector: (state: DisclosureState) => T
 }
 export const setDisclosureOpen = store.setOpen;
 /** Non-reactive read, for a caller outside a render (a find landing). */
-export const isDisclosureOpenNow = store.isOpen;
+export function isDisclosureOpenNow(id: string, fallback: boolean, options?: DisclosureReadOptions): boolean {
+  return isDisclosureOpenIn(store.getState(), id, fallback, options);
+}
 export const toggleDisclosure = store.toggle;
 export const beginDisclosureBaseline = store.beginBaseline;
 export const disclosureDefault = store.defaultFor;

@@ -1,6 +1,7 @@
 // Which entries hold the words being looked for: a message's words, a
-// thought's summaries and an action row's rationale (tool calls, steers and
-// system notices are not searched). A hit is one projected entry, and its
+// thought's summaries, an action row's rationale, and a system notice's or
+// warning's words as its row paints them (tool calls and steers are not
+// searched). A hit is one projected entry, and its
 // words are on screen once its row mounts: a message never folds, a thought's
 // or an action's words sit behind a disclosure Find opens before it lands.
 import {
@@ -11,6 +12,7 @@ import {
   type ItemModel,
   isLiveCurrentReasoning,
   type ProjectedEntry,
+  type ProjectedTurn,
   projectThread,
   type ThreadModel,
   type TranscriptDisplayConfigV1,
@@ -22,6 +24,12 @@ import { type TranscriptBodyRow, transcriptRowsForProjection } from "../transcri
 import { toolRendererFor } from "../transcript/toolRenderers";
 import { intentGroupId, intentRunAt } from "../transcript/toolRuns";
 import { messageAsShown, reasoningSummariesAsRead } from "./messageText";
+import {
+  type SystemNoticePlacement,
+  systemMessageTexts,
+  systemNoticePlacement,
+  warningTexts,
+} from "./systemNoticeHits";
 
 export interface FindHit {
   /** The entry's display key: its identity across paging and re-projection,
@@ -38,6 +46,9 @@ export interface FindHit {
   /** The one disclosure that hides the matching words, omitted for a message:
    * a thought names its own, an action row its group. */
   readonly opens?: string;
+  /** The disclosure ignores the expand-all baseline (a notes snapshot), so
+   * Find must open it explicitly even when the baseline reads open. */
+  readonly opensIgnoreBaseline?: boolean;
 }
 
 /** What the view shows, which decides what Find counts: one that hides
@@ -144,6 +155,10 @@ function shownTexts(
     const text = intentText(entry);
     return text === null ? [] : [text];
   }
+  if (entry.item.type === "warning") return warningTexts(entry.item);
+  if (entry.item.type === "systemMessage") {
+    return config === undefined ? [] : systemMessageTexts(entry.item, turn, config, version);
+  }
   if (entry.item.type === "reasoning") {
     // A chat view shows only the placeholder before a live thought: its
     // summaries are not on screen, so they are not a match there.
@@ -189,18 +204,27 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string, view
   if (needle === "") return [];
   const version = view.version ?? mermaidRenderVersion();
   const hits: FindHit[] = [];
-  const add = (entry: ProjectedEntry, rowIndex: number, turn: TurnModel | undefined, opens?: string) => {
-    const texts = shownTexts(entry, turn, view.config, version);
+  const add = (entry: ProjectedEntry, rowIndex: number, turn: ProjectedTurn | undefined, groupId?: string) => {
+    const texts = shownTexts(entry, turn?.source, view.config, version);
     if (!texts.some((text) => readable(text).includes(needle))) return;
+    // Where the words sit is read only for a matched row: grouping a notice
+    // run costs a scan, and Find runs on every keystroke.
+    let placement: SystemNoticePlacement | null = null;
+    if (groupId !== undefined) placement = { opens: groupId };
+    // A thought opens its own row; no other rule applies to it.
+    else if (entry.item.type === "reasoning") placement = { opens: entryDisplayKey(entry) };
+    else if (turn !== undefined && view.config !== undefined)
+      placement = systemNoticePlacement(entry, turn, view.config);
     const { id, callId, roundId } = entry.item;
     const itemId = entry.kind === "intent" ? entry.sourceItemId : id;
     hits.push({
-      key: entryDisplayKey(entry),
+      key: placement?.key ?? entryDisplayKey(entry),
       itemId,
       rowIndex,
       ...(callId ? { callId } : {}),
       ...(roundId ? { roundId } : {}),
-      ...(opens ? { opens } : {}),
+      ...(placement?.opens ? { opens: placement.opens } : {}),
+      ...(placement?.opensIgnoreBaseline ? { opensIgnoreBaseline: true } : {}),
     });
   };
   rows.forEach((row, rowIndex) => {
@@ -218,11 +242,11 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string, view
         // TurnBlock groups consecutive action rows under the first one's id.
         const run = intentRunAt(laidOut, index);
         const group = intentGroupId(run.entries[0]?.id);
-        for (const member of run.entries) add(member, rowIndex, row.turn.source, group);
+        for (const member of run.entries) add(member, rowIndex, row.turn, group);
         index = run.end - 1;
         continue;
       }
-      add(entry, rowIndex, row.turn.source, entry.item.type === "reasoning" ? entryDisplayKey(entry) : undefined);
+      add(entry, rowIndex, row.turn);
     }
   });
   return hits;
