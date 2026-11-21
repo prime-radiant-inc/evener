@@ -48,32 +48,32 @@ func TestAppendUniqueStrings(t *testing.T) {
 	t.Parallel()
 	t.Run("new items added", func(t *testing.T) {
 		result := appendUniqueStrings([]string{"a"}, "b", "c")
-		if len(result) != 3 || result[1] != "b" || result[2] != "c" {
-			t.Fatalf("result = %v", result)
+		if want := []string{"a", "b", "c"}; !slices.Equal(result, want) {
+			t.Fatalf("result = %v, want %v", result, want)
 		}
 	})
 	t.Run("duplicates skipped", func(t *testing.T) {
 		result := appendUniqueStrings([]string{"a", "b"}, "b", "c")
-		if len(result) != 3 {
-			t.Fatalf("expected 3, got %d", len(result))
+		if want := []string{"a", "b", "c"}; !slices.Equal(result, want) {
+			t.Fatalf("result = %v, want %v", result, want)
 		}
 	})
-	t.Run("empty strings skipped", func(t *testing.T) {
-		result := appendUniqueStrings([]string{"a"}, "", "b", "")
-		if len(result) != 2 {
-			t.Fatalf("expected 2, got %d", len(result))
+	t.Run("empty and duplicate extras skipped", func(t *testing.T) {
+		result := appendUniqueStrings([]string{"a"}, "", "a", "b", "")
+		if want := []string{"a", "b"}; !slices.Equal(result, want) {
+			t.Fatalf("result = %v, want %v", result, want)
 		}
 	})
 	t.Run("nil base", func(t *testing.T) {
 		result := appendUniqueStrings(nil, "a", "b")
-		if len(result) != 2 {
-			t.Fatalf("expected 2, got %d", len(result))
+		if want := []string{"a", "b"}; !slices.Equal(result, want) {
+			t.Fatalf("result = %v, want %v", result, want)
 		}
 	})
 	t.Run("no extras", func(t *testing.T) {
 		result := appendUniqueStrings([]string{"a"})
-		if len(result) != 1 || result[0] != "a" {
-			t.Fatalf("result = %v", result)
+		if want := []string{"a"}; !slices.Equal(result, want) {
+			t.Fatalf("result = %v, want %v", result, want)
 		}
 	})
 }
