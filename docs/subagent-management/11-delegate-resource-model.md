@@ -809,8 +809,11 @@ The controller is also the tree-wide delegate-turn capacity authority. A
 starting reservation holds capacity immediately so concurrent constructors
 cannot overbook the tree. delegate_run_started converts that reservation into
 the running generation; abort releases it, and delegate_run_finished releases
-the running slot. Notification/attention drives are normal generations and use
-the existing separately bounded drive capacity.
+the running slot. Attention drives are normal generations and use the existing
+separately bounded drive capacity. The notification drive of a resident stable
+child is the one drive that takes no controller capacity: it is admitted as an
+input on that runtime, not as a generation (see "Notification drives are input
+turns").
 
 ### Delegate reservations and shell admission receipts
 
@@ -1646,8 +1649,52 @@ is ignored even on a resumable delegate, and anything still pending blocks
 through the fold. The non-blocking retirement snapshot, which deliberately
 skips transcript reads, keeps the wakes as its conservative proxy.
 
-There are no recordless model-bearing drive turns. A drive is not a JobRecord,
-but it is an exact delegate generation governed by the same lease.
+An attention drive is not a JobRecord, but it is an exact delegate generation
+governed by the same lease.
+
+#### Notification drives are input turns
+
+The notification drive is the one model-bearing drive that is not a generation.
+It exists to run a resident stable child's own `EntryNotification` queue -- the
+remainder after every watch notice was deferred to leased attention -- on a
+child whose last generation has already finished, and the controller has nothing
+of its own to admit it into:
+
+- `ReserveAttention` needs a pending attention ID and a `PhaseIdle`, resumable
+  delegate, and starts a generation that consumes that row;
+- `ReserveStart` refuses a delegate whose previous generation is still
+  finalizing and takes owner-input capacity for a public send; and
+- `idleDelegateRestoreCommit` commits only on `PhaseIdle` plus `Resumable` and
+  builds its own cold runtime.
+
+Issue #6797 records why each existing lease path refuses this drive. Until the
+resource model gains a notification generation, the drive is admitted as an
+input and its bounds are these:
+
+- **Admission is the runtime input claim.** `admitIdleRuntimeInput` delegates to
+  the controller's `admitRuntimeInput`, which takes the controller mutex,
+  refuses while a reclamation claim covers the delegate, and counts the drive in
+  `inputsInFlight`. A claim and an admission are therefore ordered: neither can
+  tear down a runtime the other holds.
+- **Spawning is bounded by the launching session's drive budget**, separate from
+  delegate fan-out, and the turn by the drive's hung-turn bound, which pauses
+  while a model call waits out a usage limit and gives the slot back for the
+  wait.
+- **A Stop reaches it through the drive's own cancellation context**, not a
+  generation fence: the turn ends as a cancelled turn, not a fatal run, and the
+  work the delegate owns survives.
+- **It presents no attention that needs a lease.** An unleased stable-child turn
+  withholds every unresolved durable watch row and defers the notice to leased
+  attention, so a drive never consumes, credits, or double-presents a durable
+  attention row.
+
+A drive mints no JobRecord and settles no delegate result. A notification turn
+is not report-requiring; the delegate's own generations remain the only thing
+that finishes or reports it. A drive turn that fails for any reason other than
+a stop gates the child's automatic drives as a fatal run and stops the work it
+owns; the gate clears when an explicit send or an attention launch takes the
+child. A failed drive is therefore visible on the delegate without being
+settled as its result.
 
 Attention does not use a public delegate actor, because an idle resource has no
 active generation lease to authenticate. The controller instead verifies that
