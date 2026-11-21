@@ -408,7 +408,7 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 	if s.persistFallbackPrompt && s.systemPromptFrozen {
 		fallbackPrompt = s.cachedSystemPrompt
 	}
-	lastInputTokens, lastInputMeasuredLen, lastInputAnchor := s.contextMgr.LastInputMeasurement()
+	lastInputTokens, lastInputMeasuredLen, lastInputAnchor := s.contextMgr.LastInputMeasurement(s.profile)
 	return schema.SessionMeta{
 		ID:                       s.id,
 		ProfileID:                s.profile.ID(),

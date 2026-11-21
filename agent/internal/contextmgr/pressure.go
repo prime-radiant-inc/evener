@@ -41,6 +41,24 @@ func (cm *Manager) recordInputTokensLocked(tokens, historyLen int, anchor string
 	cm.lastInputTokens = tokens
 	cm.historyLenAtMeasure = historyLen
 	cm.measuredAnchor = anchor
+	cm.measuredTarget = targetOf(cm.profile)
+}
+
+// measurementTarget names the profile that reported a count. The manager keeps
+// it beside the measurement so a persistable copy can be withheld when a
+// fallback model answered the request but the session's configured model is
+// what a resume will use.
+type measurementTarget struct {
+	profileID string
+	model     string
+	protocol  string
+}
+
+func targetOf(profile *provider.Profile) measurementTarget {
+	if profile == nil {
+		return measurementTarget{}
+	}
+	return measurementTarget{profileID: profile.ID(), model: profile.Model(), protocol: profile.Protocol()}
 }
 
 // PrefixAnchor returns a cheap identity for the turn at measuredLen-1, the last
@@ -57,13 +75,14 @@ func PrefixAnchor(history []schema.Turn, measuredLen int) string {
 }
 
 // turnAnchor picks one identity a live turn and its restored transcript entry
-// share. TurnID is deliberately not first: the transcript writer stamps it on
-// its persisted copy, not on the live turn, so preferring it would reject an
-// unchanged prefix every time a session resumed. The stable fields are written
-// to both copies by the turn's own producer (a client mutation's StableTurnID, a
-// user input's conversation input id, an assistant response's ResponseID, or a
-// tool result's call id), and an unusual turn falls back to its timestamp, which
-// is persisted with it.
+// share. TurnID is deliberately not first: a PlaceSession write mints a fresh
+// TurnID and stamps it on its persisted copy, not on the live turn, so
+// preferring it would reject an unchanged prefix every time a session resumed.
+// The stable fields are written to both copies by the turn's own producer (a
+// client mutation's StableTurnID, a user input's conversation input id, an
+// assistant response's ResponseID, or a tool result's call id); after those, the
+// timestamp is the same on both copies because the writer persists it unchanged,
+// so it precedes TurnID.
 func turnAnchor(t schema.Turn) string {
 	var id string
 	switch {
@@ -75,10 +94,10 @@ func turnAnchor(t schema.Turn) string {
 		id = "response:" + t.ResponseID
 	case t.Message.ToolCallID != "":
 		id = "call:" + t.Message.ToolCallID
-	case t.TurnID != "":
-		id = "turn:" + t.TurnID
 	case !t.Timestamp.IsZero():
 		id = "at:" + t.Timestamp.UTC().Format(time.RFC3339Nano)
+	case t.TurnID != "":
+		id = "turn:" + t.TurnID
 	default:
 		return ""
 	}
@@ -98,6 +117,7 @@ func (cm *Manager) SetProfile(profile *provider.Profile) {
 		cm.lastInputTokens = 0
 		cm.historyLenAtMeasure = 0
 		cm.measuredAnchor = ""
+		cm.measuredTarget = measurementTarget{}
 		// The unknown-window disclosure names the model it assumed for, so
 		// it belongs to the outgoing target: a different model — still
 		// unknown — discloses its own assumption on its first fold.
@@ -167,10 +187,17 @@ func (cm *Manager) LastInputTokens() int {
 // LastInputMeasurement returns the recorded count together with the history
 // length and prefix anchor it was measured at, for persistence. The three travel
 // together so a restore cannot pair a count with another save's length or
-// anchor.
-func (cm *Manager) LastInputMeasurement() (tokens, historyLen int, anchor string) {
+// anchor. It answers only when the given configured profile is the target that
+// reported the count: a --model-fallback request leaves its count on the
+// fallback profile, and persisting that beside the session's configured model
+// would charge the fallback's count to the primary on reopen. The live manager
+// keeps the fallback measurement for its own pressure estimates either way.
+func (cm *Manager) LastInputMeasurement(configured *provider.Profile) (tokens, historyLen int, anchor string) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
+	if !ProfileTargetMatches(cm.measuredTarget.profileID, cm.measuredTarget.model, cm.measuredTarget.protocol, configured) {
+		return 0, 0, ""
+	}
 	return cm.lastInputTokens, cm.historyLenAtMeasure, cm.measuredAnchor
 }
 

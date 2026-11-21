@@ -58,6 +58,7 @@ func (cm *Manager) resetMeasurement() {
 	cm.lastInputTokens = 0
 	cm.historyLenAtMeasure = 0
 	cm.measuredAnchor = ""
+	cm.measuredTarget = measurementTarget{}
 	cm.mu.Unlock()
 }
 

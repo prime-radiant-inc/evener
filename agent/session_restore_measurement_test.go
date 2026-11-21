@@ -14,11 +14,37 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
+// placeSessionRoundTrip writes turns the way a live session does: Record with
+// PlaceSession mints a transcript TurnID and stamps it on the persisted copy,
+// unlike Append, which leaves the turn verbatim. It returns the history a
+// resume rebuilds from those entries.
+func placeSessionRoundTrip(t *testing.T, turns []schema.Turn) []schema.Turn {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "round-trip.jsonl")
+	writer, err := transcript.NewWriter(path, transcript.Header{SessionID: "anchor-round-trip"})
+	if err != nil {
+		t.Fatalf("new writer: %v", err)
+	}
+	for _, turn := range turns {
+		if _, err := writer.Record(turn, transcript.RecordOptions{Door: transcript.DoorDeferred, Place: transcript.PlaceSession}); err != nil {
+			t.Fatalf("record turn: %v", err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	_, entries, _, err := readTranscript(context.Background(), path, "")
+	if err != nil {
+		t.Fatalf("read transcript: %v", err)
+	}
+	return ResumeHistory(entries)
+}
+
 // TestPrefixAnchorSurvivesATranscriptRoundTrip pins the anchor against the two
 // turn shapes a session actually holds. Live history turns carry only what their
 // producer stamped (a user input's conversation id, an assistant response's id,
-// a tool result's call id, or just the timestamp NewTurn sets); the transcript
-// writer adds a TurnID to its persisted copy, and restore rebuilds history from
+// a tool result's call id, or just the timestamp NewTurn sets); a PlaceSession
+// write adds a TurnID to its persisted copy, and restore rebuilds history from
 // that stamped entry. Every prefix must anchor to the same value before and
 // after the round trip, or a resume would discard a count that still covers the
 // history it restored.
@@ -43,28 +69,14 @@ func TestPrefixAnchorSurvivesATranscriptRoundTrip(t *testing.T) {
 	// leave behind must be the anchor on both sides too, not just a fallback.
 	live[0].StableTurnID = "stable_1"
 	live[1].ResponseID = "resp_1"
-	path := filepath.Join(t.TempDir(), "round-trip.jsonl")
-	writer, err := transcript.NewWriter(path, transcript.Header{SessionID: "anchor-round-trip"})
-	if err != nil {
-		t.Fatalf("new writer: %v", err)
-	}
-	for _, turn := range live {
-		if err := writer.Append(turn); err != nil {
-			t.Fatalf("append turn: %v", err)
-		}
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatalf("close writer: %v", err)
-	}
-	_, entries, _, err := readTranscript(context.Background(), path, "")
-	if err != nil {
-		t.Fatalf("read transcript: %v", err)
-	}
-	restored := ResumeHistory(entries)
+	restored := placeSessionRoundTrip(t, live)
 	if len(restored) != len(live) {
 		t.Fatalf("restored %d turns, want %d", len(restored), len(live))
 	}
 	for i := range live {
+		if restored[i].TurnID == "" {
+			t.Fatalf("restored turn %d has no TurnID: the fixture did not exercise PlaceSession stamping", i)
+		}
 		liveAnchor := contextmgr.PrefixAnchor(live, i+1)
 		if liveAnchor == "" {
 			t.Fatalf("live anchor at %d is empty: nothing names the measured prefix", i+1)
@@ -72,6 +84,66 @@ func TestPrefixAnchorSurvivesATranscriptRoundTrip(t *testing.T) {
 		if got := contextmgr.PrefixAnchor(restored, i+1); got != liveAnchor {
 			t.Fatalf("anchor at %d after restore = %q, want %q: the transcript's TurnID must not change the measured prefix's identity", i+1, got, liveAnchor)
 		}
+	}
+}
+
+// TestSavedInputCountSurvivesResumeOfPlaceSessionTurns pins the count, not just
+// the anchor: a measurement taken over live turns must still price a history
+// rebuilt from the PlaceSession-stamped transcript entries. The boundary turn is
+// a parallel tool-results turn, which has no producer id, so the timestamp is
+// what carries the identity across the round trip.
+func TestSavedInputCountSurvivesResumeOfPlaceSessionTurns(t *testing.T) {
+	const saved = 600
+	profile := NewOpenAIProfile("gpt-5.2")
+	live := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("hi")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("answer")),
+		schema.NewTurn(schema.TurnToolResults, llm.Message{
+			Role: llm.RoleTool,
+			Content: []llm.ContentPart{{
+				Kind:       llm.ContentToolResult,
+				ToolResult: &llm.ToolResultData{ToolCallID: "call_2", Content: "body"},
+			}},
+		}),
+	}
+	cm := contextmgr.NewManager(profile, nil, nil)
+	if !cm.RecordInputTokensFor(profile, saved, len(live), contextmgr.PrefixAnchor(live, len(live))) {
+		t.Fatal("the manager's own profile was refused")
+	}
+	restored := placeSessionRoundTrip(t, live)
+	if got := cm.EstimateUsage(restored, 0).Used; got != saved {
+		t.Fatalf("EstimateUsage after resume = %d, want %d: the saved count no longer names the restored prefix", got, saved)
+	}
+}
+
+// TestMetaWithholdsAFallbackModelsMeasurement pins which target a persisted count
+// may name. A --model-fallback request answers on a fallback model and records
+// its count under that profile; the session's configured model is what a resume
+// will use, so the count must not be written into its meta. The live manager
+// keeps the measurement for its own pressure estimate.
+func TestMetaWithholdsAFallbackModelsMeasurement(t *testing.T) {
+	sess := newSession(t)
+	fallback := NewOpenAIProfile("gpt-5.2-mini")
+	sess.contextMgr.SetProfile(fallback)
+	if !sess.contextMgr.RecordInputTokensFor(fallback, 600, 3, "response:resp_1|ASSISTANT") {
+		t.Fatal("the fallback profile was refused")
+	}
+	if got := sess.contextMgr.LastInputTokens(); got != 600 {
+		t.Fatalf("live LastInputTokens = %d, want 600: the fallback's count still prices this session", got)
+	}
+
+	meta := sess.Meta()
+	if meta.LastInputTokens != 0 {
+		t.Fatalf("LastInputTokens = %d, want 0: the fallback's count must not be persisted under the configured model", meta.LastInputTokens)
+	}
+	if meta.LastInputMeasuredLen == nil || *meta.LastInputMeasuredLen != 0 {
+		t.Fatalf("LastInputMeasuredLen = %v, want 0", meta.LastInputMeasuredLen)
+	}
+	if meta.LastInputAnchor != "" {
+		t.Fatalf("LastInputAnchor = %q, want empty", meta.LastInputAnchor)
+	}
+	if got, want := meta.Model, sess.currentProfile().Model(); got != want {
+		t.Fatalf("Model = %q, want the configured %q", got, want)
 	}
 }
 
