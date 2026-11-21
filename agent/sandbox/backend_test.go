@@ -162,7 +162,14 @@ func childEnvRecords(t *testing.T, cmd *exec.Cmd) []string {
 	if len(cmd.ExtraFiles) != 1 {
 		t.Fatalf("confined command must carry exactly one private child-env fd, got %d", len(cmd.ExtraFiles))
 	}
-	f := cmd.ExtraFiles[0]
+	return fdRecords(t, cmd.ExtraFiles[0])
+}
+
+// fdRecords reads one private child-env fd and returns its NUL-separated
+// records. The fd is closed at test end: a unit test never starts the launcher
+// that would consume it.
+func fdRecords(t *testing.T, f *os.File) []string {
+	t.Helper()
 	t.Cleanup(func() { _ = f.Close() })
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		t.Fatalf("seek private child-env fd: %v", err)
@@ -176,6 +183,32 @@ func childEnvRecords(t *testing.T, cmd *exec.Cmd) []string {
 		records = records[:n-1]
 	}
 	return records
+}
+
+// seatbeltChildEnv decodes the Seatbelt reader's "-NAME"/"+NAME=VALUE" records
+// from the private fd at index i of cmd.ExtraFiles.
+func seatbeltChildEnv(t *testing.T, cmd *exec.Cmd, i int) (map[string]string, []string) {
+	t.Helper()
+	if i >= len(cmd.ExtraFiles) {
+		t.Fatalf("command carries %d extra files, want the child-env fd at index %d", len(cmd.ExtraFiles), i)
+	}
+	set := map[string]string{}
+	var unset []string
+	for _, rec := range fdRecords(t, cmd.ExtraFiles[i]) {
+		switch {
+		case strings.HasPrefix(rec, "-"):
+			unset = append(unset, rec[1:])
+		case strings.HasPrefix(rec, "+"):
+			name, value, ok := strings.Cut(rec[1:], "=")
+			if !ok {
+				t.Fatalf("malformed seatbelt child-env record %q", rec)
+			}
+			set[name] = value
+		default:
+			t.Fatalf("unexpected seatbelt child-env record %q", rec)
+		}
+	}
+	return set, unset
 }
 
 // bwrapChildEnv decodes the bwrap --args records the private fd carries.
@@ -499,6 +532,81 @@ func TestChildEnvRejectsEmbeddedNUL(t *testing.T) {
 	cmd := exec.Command("/bin/echo", "hi") //nolint:noctx // test-only cmd, never run
 	if err := nilWrapper.ConfineWithChildEnv(cmd, "", ChildEnvDelta{Set: map[string]string{"MCP_TOKEN": injected + "\x00x"}}); err == nil {
 		t.Error("a NUL byte must be refused on the unconfined path too")
+	}
+}
+
+// TestConfineWithChildEnvWiresSeatbeltReader proves the production Seatbelt
+// wiring on a host that cannot run sandbox-exec: it drives the real
+// ConfineWithChildEnv, so the test fails if the wrapper stops attaching the
+// payload fd or stops splicing the reader at the fd the payload actually landed
+// on. Only the platform-specific policy rendering is stubbed (wrapSeatbelt is
+// the package's existing seam); the same argv builder the darwin path uses still
+// produces the sandbox-exec command. The live darwin suite proves the whole
+// thing against the real kernel.
+func TestConfineWithChildEnvWiresSeatbeltReader(t *testing.T) {
+	rp, cwd, _ := resolveFixture(t, ModeRestricted, true)
+	rp.Backend = BackendSeatbelt
+	sessionTmp := t.TempDir()
+	realWrap := wrapSeatbelt
+	wrapSeatbelt = func(argv []string, stubPolicy ResolvedPolicy, stubTmp, _ string) ([]string, error) {
+		text, params := SeatbeltPolicy(stubPolicy, stubTmp, nil)
+		return seatbeltArgs("/usr/bin/sandbox-exec", text, params, argv), nil
+	}
+	t.Cleanup(func() { wrapSeatbelt = realWrap })
+	w, err := NewWrapper(rp, "/usr/bin/sandbox-exec", sessionTmp)
+	if err != nil {
+		t.Fatalf("NewWrapper: %v", err)
+	}
+
+	const secret = "seatbelt-fixture-secret-value-7009"
+	cmd := exec.Command("/usr/bin/env") //nolint:noctx // test-only cmd, never run
+	cmd.Env = []string{"PATH=/usr/bin:/bin"}
+	orig := slices.Clone(cmd.Args)
+	// A pre-existing extra file makes the payload land on child fd 4, so the
+	// reader script must name the fd ConfineWithChildEnv computed, not a
+	// hardcoded 3.
+	prior, err := os.CreateTemp(t.TempDir(), "prior-fd-*")
+	if err != nil {
+		t.Fatalf("create prior extra fd: %v", err)
+	}
+	t.Cleanup(func() { _ = prior.Close() })
+	cmd.ExtraFiles = []*os.File{prior}
+
+	if err := w.ConfineWithChildEnv(cmd, cwd, ChildEnvDelta{
+		Set:   map[string]string{"logging.level.root": "debug", "MCP_SERVER_TOKEN": secret},
+		Unset: []string{"SSH_AUTH_SOCK"},
+	}); err != nil {
+		t.Fatalf("ConfineWithChildEnv: %v", err)
+	}
+
+	if len(cmd.ExtraFiles) != 2 {
+		t.Fatalf("confined command must gain exactly one private env fd, got %d extra files", len(cmd.ExtraFiles))
+	}
+	set, unset := seatbeltChildEnv(t, cmd, 1)
+	if set["MCP_SERVER_TOKEN"] != secret || set["logging.level.root"] != "debug" {
+		t.Errorf("private child-env fd did not carry the assignments: set=%v unset=%v", set, unset)
+	}
+	if !slices.Equal(unset, []string{"SSH_AUTH_SOCK"}) {
+		t.Errorf("private child-env fd unsets = %v, want [SSH_AUTH_SOCK]", unset)
+	}
+
+	reader := slices.Index(cmd.Args, childEnvReader)
+	if reader < 0 || reader+2 >= len(cmd.Args) || cmd.Args[reader+1] != "-e" {
+		t.Fatalf("seatbelt wrapper must invoke the fd reader with a script: %v", cmd.Args)
+	}
+	if want := "my $fd = 4;"; !strings.Contains(cmd.Args[reader+2], want) {
+		t.Errorf("reader script must name the fd the payload landed on (%q): %q", want, cmd.Args[reader+2])
+	}
+	if !slices.Equal(cmd.Args[reader+3:], orig) {
+		t.Errorf("original command must follow the reader untouched: %v", cmd.Args)
+	}
+	// The assignments are on the far side of the launcher: neither its argv nor
+	// its environment may carry the secret.
+	assertNoArgvValue(t, cmd.Args, secret)
+	for _, kv := range cmd.Env {
+		if strings.Contains(kv, secret) {
+			t.Errorf("configured secret is in the launcher environment: %q", kv)
+		}
 	}
 }
 
