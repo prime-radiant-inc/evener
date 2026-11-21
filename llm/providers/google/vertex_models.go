@@ -13,13 +13,12 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-// Vertex publisher-model discovery (spec 2026-09-04-google-vertex-express-and-
-// discovery §2.3-§2.4). The listing is served by ModelGardenService on
-// v1beta1 at a host-relative path with no project or location — it does not
-// exist on the project-scoped v1 base URL the overlay builds — and it
-// returns ids and a launch stage only, no capability data. So the URL is
-// composed from the base URL's scheme and host, and "is this a text model"
-// is a heuristic on the id, pinned by testdata/vertex_publisher_models.json.
+// Vertex publisher-model discovery. The listing is served by ModelGardenService
+// on v1beta1 at a host-relative path with no project or location — it does not
+// exist on the project-scoped v1 base URL the overlay builds — and it returns
+// ids and a launch stage only, no capability data. So the URL is composed from
+// the base URL's scheme and host, and "is this a text model" is a heuristic on
+// the id combined with registry.VertexSupportsGeminiModel.
 
 // vertexListingVersion is the API version that serves the listing.
 const vertexListingVersion = "/v1beta1"
@@ -44,13 +43,9 @@ type vertexPublisherModelsPage struct {
 	NextPageToken   string                 `json:"nextPageToken"`
 }
 
-// isVertexTransport reports whether res reaches Vertex: Vertex serves Gemini
-// as publisher models, so the completion endpoint's path is the
-// discriminator (the Gemini API serves the same models under /models/). A
-// custom provider built on the vertex-gemini preset with its own base URL
-// and no host rule lists the Vertex way too.
+// isVertexTransport reports whether res uses the Vertex Gemini preset.
 func isVertexTransport(res registry.Resolved) bool {
-	return strings.HasPrefix(res.Transport.Endpoint, "/publishers/google/models/")
+	return res.Transport.Preset == registry.PresetVertexGemini
 }
 
 // vertexModelsURL is scheme://host of the resolved base URL + /v1beta1 +
@@ -67,9 +62,9 @@ func vertexModelsURL(res registry.Resolved, pageToken string) (string, error) {
 	return u.Scheme + "://" + u.Host + vertexListingVersion + res.Transport.ModelsEndpoint + "?" + q.Encode(), nil
 }
 
-// vertexTextModel is the spec §2.4 filter.
+// vertexTextModel filters publisher-model entries to Vertex Interactions text models.
 func vertexTextModel(id, launchStage string) bool {
-	if !strings.HasPrefix(id, "gemini-") || !vertexLaunchStages[launchStage] {
+	if !strings.HasPrefix(id, "gemini-") || !registry.VertexSupportsGeminiModel(id) || !vertexLaunchStages[launchStage] {
 		return false
 	}
 	for _, token := range vertexTextModelDenylist {

@@ -13,10 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/google"
 	"primeradiant.com/evener/llm/providers/responses"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -247,17 +250,43 @@ func TestExpandHistory_EmptyProvenance_ThinkingReplays(t *testing.T) {
 	}
 }
 
-// --- thinking, google target (same-provider only) ---
+// --- thinking, google target ((Instance, WireID) provenance) ---
 
-func TestExpandHistory_Google_SameProviderDifferentModel_ThinkingReplays(t *testing.T) {
+func TestExpandHistory_Google_InstanceAndWireIDProvenance(t *testing.T) {
 	t.Parallel()
-	turns := []schema.Turn{assistantThinkingTurn("google", "gemini-2.5-pro", "gemini-2.5-pro")}
-	out := expandHistory(turns, replayScope{
-		Instance: "google", Model: "gemini-3-pro", Protocol: registry.ProtocolGoogle,
+	googleTurn := func(instance, wireModel string) schema.Turn {
+		return schema.Turn{
+			Kind: schema.TurnAssistant,
+			Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{
+					GoogleInteraction: true,
+					GoogleInstance:    instance,
+					GoogleModel:       wireModel,
+					Text:              "thought",
+					Summary:           []string{"thought"},
+					Signature:         "sig-g",
+				}},
+				{Kind: llm.ContentText, Text: "answer"},
+			}},
+			ResponseProvider: instance,
+			ResponseProtocol: registry.ProtocolGoogle,
+			ResponseModel:    wireModel,
+		}
+	}
+	turns := []schema.Turn{googleTurn("google", "gemini-3.8-flash")}
+	same := expandHistory(turns, replayScope{
+		Instance: "google", Model: "alias-to-38", WireID: "gemini-3.8-flash", Protocol: registry.ProtocolGoogle,
 		InFlightFrom: len(turns), protocolOf: replayProtocolOf,
 	})
-	if !hasContentKind(out, llm.ContentThinking) {
-		t.Fatal("google enforces same-provider only; same-provider thinking must replay across models")
+	if !hasContentKind(same, llm.ContentThinking) {
+		t.Fatal("same (Instance, WireID) including alias must replay GoogleInteraction thinking")
+	}
+	diffWire := expandHistory(turns, replayScope{
+		Instance: "google", Model: "gemini-4-neon", WireID: "gemini-4-neon", Protocol: registry.ProtocolGoogle,
+		InFlightFrom: len(turns), protocolOf: replayProtocolOf,
+	})
+	if hasContentKind(diffWire, llm.ContentThinking) {
+		t.Fatal("different WireID on same Google instance must strip GoogleInteraction thinking")
 	}
 }
 
@@ -619,5 +648,262 @@ func TestCrossInstanceResponsesStripsOpaqueBlobKeepsNativePlaintext(t *testing.T
 	// The issuer keeps its own blobs, so the strip is bound to provenance.
 	if issuer, _ := responsesWire(t, turns, "openai-a", len(turns)); issuer == wireNativePlain {
 		t.Fatalf("the issuer must keep its own blobs, not the bare plaintext: %s", issuer)
+	}
+}
+
+// TestModelFallbacks_RebindsGoogleWireIDProvenance verifies that falling back
+// from Google Model A to Google Model B rebinds scope.WireID so Model B keeps
+// its own prior thoughts/signatures while dropping Model A's, and same-WireID
+// aliases retain signatures.
+func TestModelFallbacks_RebindsGoogleWireIDProvenance(t *testing.T) {
+	t.Parallel()
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(k string) (string, bool) {
+			if k == "GEMINI_API_KEY" {
+				return "k-test", true
+			}
+			return "", false
+		}),
+		registry.WithInstances(map[string]registry.Provider{
+			"google": {
+				Models: map[string]registry.Model{
+					"alias-b": {AliasOf: "gemini-3.5-flash", WireID: "gemini-3.5-flash"},
+				},
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("registry.Load: %v", err)
+	}
+
+	var captured []llm.Request
+	adapter := newFakeErrAdapter("google", []func(llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			captured = append(captured, req)
+			return llm.Response{}, llm.ErrorFromHTTPStatus("google", 404, "primary model missing", nil, nil)
+		},
+		func(req llm.Request) (llm.Response, error) {
+			captured = append(captured, req)
+			return agenttest.FinalResponse("ok from fallback"), nil
+		},
+	})
+	client := llm.NewClient(llm.WithRegistry(r))
+	client.Register(adapter)
+
+	primaryRes, err := r.Resolve("google/gemini-3.8-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := newSession(t,
+		withClient(client),
+		withProfile(provider.FromResolved(primaryRes, r)),
+		withConfig(SessionConfig{
+			ModelFallbacks: []string{"alias-b"},
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				return provider.Resolve(r, ref)
+			},
+		}),
+	)
+	// Seed prior turns from Model A (gemini-3.8-flash) and Model B (gemini-3.5-flash).
+	sess.history = append(sess.history, schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{
+				GoogleInteraction: true, GoogleInstance: "google", GoogleModel: "gemini-3.8-flash",
+				Text: "thought-A", Summary: []string{"thought-A"}, Signature: "sig-A",
+			}},
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+				GoogleInteraction: true, GoogleInstance: "google", GoogleModel: "gemini-3.8-flash",
+				ID: "call_A", Name: "glob", Arguments: json.RawMessage(`{"pattern":"*"}`), ThoughtSignature: "tc-sig-A",
+			}},
+		}},
+		ResponseProvider: "google", ResponseProtocol: registry.ProtocolGoogle, ResponseModel: "gemini-3.8-flash",
+	})
+	sess.appendTurn(schema.TurnToolResults, llm.ToolResult("call_A", "ok", false))
+	sess.history = append(sess.history, schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{
+				GoogleInteraction: true, GoogleInstance: "google", GoogleModel: "gemini-3.5-flash",
+				Text: "thought-B", Summary: []string{"thought-B"}, Signature: "sig-B",
+			}},
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+				GoogleInteraction: true, GoogleInstance: "google", GoogleModel: "gemini-3.5-flash",
+				ID: "call_B", Name: "glob", Arguments: json.RawMessage(`{"pattern":"*"}`), ThoughtSignature: "tc-sig-B",
+			}},
+		}},
+		ResponseProvider: "google", ResponseProtocol: registry.ProtocolGoogle, ResponseModel: "gemini-3.5-flash",
+	})
+	sess.appendTurn(schema.TurnToolResults, llm.ToolResult("call_B", "ok", false))
+
+	if _, err := sess.ProcessInput(context.Background(), "go", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if len(captured) != 2 {
+		t.Fatalf("captured = %d, want 2 (primary + fallback)", len(captured))
+	}
+	// Primary (gemini-3.8-flash) keeps thought-A and drops thought-B.
+	if !hasSignedThinking(captured[0].Messages, "thought-A", "sig-A") || hasSignedThinking(captured[0].Messages, "thought-B", "sig-B") {
+		t.Fatalf("primary messages did not isolate (google, gemini-3.8-flash): %+v", captured[0].Messages)
+	}
+	// Fallback (alias-b -> WireID gemini-3.5-flash) keeps thought-B and drops thought-A, and BuildBody emits only tc-sig-B.
+	if hasSignedThinking(captured[1].Messages, "thought-A", "sig-A") || !hasSignedThinking(captured[1].Messages, "thought-B", "sig-B") {
+		t.Fatalf("fallback messages did not rebind WireID to gemini-3.5-flash: %+v", captured[1].Messages)
+	}
+	fbRes, err := r.Resolve("google/alias-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wireBody, err := (&google.Protocol{}).BuildBody(llm.ShapeRequest(captured[1], fbRes), fbRes)
+	if err != nil {
+		t.Fatalf("BuildBody(fallback): %v", err)
+	}
+	steps := wireBody["input"].([]any)
+	var sawThoughtB, sawSigB, sawSigA bool
+	for _, rawStep := range steps {
+		s, _ := rawStep.(map[string]any)
+		if s["type"] == "thought" && s["signature"] == "sig-B" {
+			sawThoughtB = true
+		}
+		if s["type"] == "function_call" && s["signature"] == "tc-sig-B" {
+			sawSigB = true
+		}
+		if s["type"] == "function_call" && s["signature"] == "tc-sig-A" {
+			sawSigA = true
+		}
+	}
+	if !sawThoughtB || !sawSigB || sawSigA {
+		t.Fatalf("fallback wire steps provenance mismatch: thoughtB=%v sigB=%v sigA=%v", sawThoughtB, sawSigB, sawSigA)
+	}
+}
+
+// TestVertexSupportsGeminiModel_SwitchAndStartupRejections verifies that
+// resolveModelSwitchTarget, validateModelSwitchMembership, and
+// resolveStartupModelProfile reject unsupported Vertex Gemini models locally
+// before live discovery or committing.
+func TestVertexSupportsGeminiModel_SwitchAndStartupRejections(t *testing.T) {
+	t.Parallel()
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(k string) (string, bool) {
+			switch k {
+			case "GOOGLE_VERTEX_PROJECT":
+				return "p", true
+			case "GOOGLE_VERTEX_LOCATION":
+				return "global", true
+			}
+			return "", false
+		}),
+	)
+	if err != nil {
+		t.Fatalf("registry.Load: %v", err)
+	}
+	client := llm.NewClient(llm.WithRegistry(r))
+	for _, unsupported := range []string{"gemini-2.5-flash", "gemini-3-flash-preview", "gemini-3-pro-preview"} {
+		res, err := r.Resolve("google-vertex/" + unsupported)
+		if err != nil {
+			t.Fatalf("Resolve(%s): %v", unsupported, err)
+		}
+		prof := provider.FromResolved(res, r)
+		if _, _, _, err := resolveModelSwitchTarget(client, prof, "", llm.DefaultAdapterTimeout(), "", nil); err == nil {
+			t.Errorf("resolveModelSwitchTarget(%s) = nil, want rejection", unsupported)
+		}
+		if err := validateModelSwitchMembership(client, prof, llm.ModelListing{Usable: false}); err == nil {
+			t.Errorf("validateModelSwitchMembership(%s) = nil, want rejection", unsupported)
+		}
+		if _, _, err := resolveStartupModelProfile(client, prof, "", llm.DefaultAdapterTimeout(), nil); err == nil {
+			t.Errorf("resolveStartupModelProfile(%s) = nil, want rejection", unsupported)
+		}
+	}
+}
+
+// TestRestoreSession_PrunesRetiredCheapModelAndModelFallbacks verifies that
+// restoring a pre-cutover session prunes saved ModelFallbacks and saved
+// CheapModel targeting retired google-vertex-express or unsupported
+// google-vertex/gemini-2.5-* with a warning, while keeping explicit
+// RestoreSessionConfig.ModelFallbacks strict.
+func TestRestoreSession_PrunesRetiredCheapModelAndModelFallbacks(t *testing.T) {
+	t.Parallel()
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(k string) (string, bool) {
+			switch k {
+			case "GEMINI_API_KEY":
+				return "k-gem", true
+			case "GOOGLE_VERTEX_PROJECT":
+				return "p", true
+			case "GOOGLE_VERTEX_LOCATION":
+				return "global", true
+			}
+			return "", false
+		}),
+	)
+	if err != nil {
+		t.Fatalf("registry.Load: %v", err)
+	}
+	client := llm.NewClient(llm.WithRegistry(r))
+	client.Register(&fakeAdapter{name: "google"})
+	client.Register(&fakeAdapter{name: "google-vertex"})
+
+	gRes, err := r.Resolve("google/gemini-3.8-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prof := provider.FromResolved(gRes, r)
+
+	stateDir := t.TempDir()
+	meta := schema.SessionMeta{
+		ID:         "0123456789ABCDEFGHJKMNPQRS",
+		CreatedAt:  time.Now(),
+		Model:      "gemini-3.8-flash",
+		ProfileID:  "google",
+		CheapModel: "google-vertex-express/gemini-2.5-flash-lite",
+		Config: schema.ConfigSnapshot{
+			ModelFallbacks: []string{"google-vertex-express/gemini-3.8-flash", "google-vertex/gemini-2.5-flash", "google-vertex/gemini-3.8-flash"},
+		},
+	}
+	sess, err := RestoreSessionFromMetaWithConfig(client, prof, execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{
+		StateDir: stateDir,
+		ResolveProfile: func(ref string) (*provider.Profile, error) {
+			return provider.Resolve(r, ref)
+		},
+	})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+
+	if got := sess.profile.ConfiguredCheapModel(); got != "" {
+		t.Fatalf("saved retired CheapModel was not pruned: %q", got)
+	}
+	if got := sess.profile.CheapModel(); got != "gemini-3.5-flash-lite" {
+		t.Fatalf("CheapModel fallback = %q, want gemini-3.5-flash-lite", got)
+	}
+	if len(sess.cfg.ModelFallbacks) != 1 || sess.cfg.ModelFallbacks[0] != "google-vertex/gemini-3.8-flash" {
+		t.Fatalf("saved ModelFallbacks = %v, want [google-vertex/gemini-3.8-flash]", sess.cfg.ModelFallbacks)
+	}
+	sess.Close()
+	var warnings []string
+	for ev := range sess.Events() {
+		if d, ok := ev.Data.(events.WarningData); ok {
+			warnings = append(warnings, d.Message)
+		}
+	}
+	if len(warnings) < 2 {
+		t.Fatalf("expected warning diagnostics for pruned CheapModel and ModelFallbacks, got %v", warnings)
+	}
+
+	// Explicit CLI --model-fallback stays strict and fails restore.
+	if _, err := RestoreSessionFromMetaWithConfig(client, prof, execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{
+		StateDir:       t.TempDir(),
+		ModelFallbacks: []string{"google-vertex/gemini-2.5-flash"},
+		ResolveProfile: func(ref string) (*provider.Profile, error) {
+			return provider.Resolve(r, ref)
+		},
+	}); err == nil {
+		t.Fatal("expected explicit ModelFallbacks override targeting unsupported Vertex 2.5 model to fail restore")
 	}
 }

@@ -63,34 +63,40 @@ func encodeAnthropic(lr logicalResponse) []byte {
 	return []byte(b.String())
 }
 
-// ---- Google Gemini (streamGenerateContent, alt=sse) ----
+// ---- Google Gemini Interactions SSE ----
 
 func encodeGoogle(lr logicalResponse) []byte {
-	var parts []string
+	var b strings.Builder
+	frame := func(event, data string) { fmt.Fprintf(&b, "event: %s\ndata: %s\n\n", event, data) }
+	frame("interaction.created", `{"event_type":"interaction.created","interaction":{"id":"int_diff","model":"diff-model","status":"in_progress"}}`)
+	idx := 0
 	if lr.Reasoning != "" {
-		parts = append(parts, fmt.Sprintf(`{"thought":true,"text":%s}`, qs(lr.Reasoning)))
+		frame("step.start", fmt.Sprintf(`{"event_type":"step.start","index":%d,"step":{"type":"thought"}}`, idx))
+		frame("step.delta", fmt.Sprintf(`{"event_type":"step.delta","index":%d,"delta":{"type":"thought_summary","content":{"type":"text","text":%s}}}`, idx, qs(lr.Reasoning)))
+		frame("step.stop", fmt.Sprintf(`{"event_type":"step.stop","index":%d}`, idx))
+		idx++
 	}
 	if lr.Text != "" {
-		parts = append(parts, fmt.Sprintf(`{"text":%s}`, qs(lr.Text)))
+		frame("step.start", fmt.Sprintf(`{"event_type":"step.start","index":%d,"step":{"type":"model_output"}}`, idx))
+		frame("step.delta", fmt.Sprintf(`{"event_type":"step.delta","index":%d,"delta":{"type":"text","text":%s}}`, idx, qs(lr.Text)))
+		frame("step.stop", fmt.Sprintf(`{"event_type":"step.stop","index":%d}`, idx))
+		idx++
 	}
-	for _, tc := range lr.Tools {
-		parts = append(parts, fmt.Sprintf(`{"functionCall":{"name":%s,"args":%s}}`, qs(tc.Name), tc.argsJSON()))
+	for i, tc := range lr.Tools {
+		frame("step.start", fmt.Sprintf(`{"event_type":"step.start","index":%d,"step":{"type":"function_call","id":"call_%d","name":%s,"arguments":{}}}`, idx, i, qs(tc.Name)))
+		frame("step.delta", fmt.Sprintf(`{"event_type":"step.delta","index":%d,"delta":{"type":"arguments_delta","arguments":%s}}`, idx, qs(tc.argsJSON())))
+		frame("step.stop", fmt.Sprintf(`{"event_type":"step.stop","index":%d}`, idx))
+		idx++
 	}
 
-	finish := map[string]string{"stop": "STOP", "length": "MAX_TOKENS", "tool_calls": "STOP"}[lr.Finish]
-
-	// usageMetadata is emitted in its own chunk BEFORE the finishReason chunk.
-	// The Gemini stream decoder builds the final response and returns the moment
-	// it sees a finishReason, parsing usageMetadata only on a chunk that lacks a
-	// finish reason; this separate-chunk shape matches how the decoder is fed (and
-	// the provider's metamorphic seed). See report: usage carried on the SAME
-	// chunk as finishReason is dropped by the decoder (lower-confidence finding).
-	var b strings.Builder
-	fmt.Fprintf(&b, "data: {\"candidates\":[{\"content\":{\"parts\":[%s]}}]}\n\n", strings.Join(parts, ","))
-	fmt.Fprintf(&b,
-		"data: {\"usageMetadata\":{\"promptTokenCount\":%d,\"candidatesTokenCount\":%d,\"totalTokenCount\":%d}}\n\n",
-		lr.InTok, lr.OutTok, lr.totalTok())
-	fmt.Fprintf(&b, "data: {\"candidates\":[{\"finishReason\":%s}]}\n\n", qs(finish))
+	status := map[string]string{"stop": "completed", "length": "incomplete", "tool_calls": "requires_action"}[lr.Finish]
+	if len(lr.Tools) > 0 && lr.Finish == "stop" {
+		status = "completed"
+	}
+	frame("interaction.completed", fmt.Sprintf(
+		`{"event_type":"interaction.completed","interaction":{"id":"int_diff","model":"diff-model","status":%s,"usage":{"total_input_tokens":%d,"total_output_tokens":%d,"total_tokens":%d}}}`,
+		qs(status), lr.InTok, lr.OutTok, lr.totalTok()))
+	frame("done", "[DONE]")
 	return []byte(b.String())
 }
 

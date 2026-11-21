@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
 	_ "primeradiant.com/evener/llm/providers/all"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // llmcall is a minimal single-call CLI for the unified llm client.
@@ -46,6 +47,7 @@ var (
 	errInvalidFormat      = errors.New("invalid --format")
 	errInvalidMetadata    = errors.New("invalid --meta")
 	errToolCallsForbidden = errors.New("tool calls are not allowed")
+	errWebSearchGoogle    = errors.New("--web-search is unsupported on Google Interactions targets in llmcall")
 )
 
 type stringSliceFlag = cmdutil.StringSliceFlag
@@ -236,6 +238,11 @@ func runLLMCall(ctx context.Context, cfg llmCallConfig) error {
 	}
 	if cfg.provider == "" {
 		return fmt.Errorf("%w: use --provider or set %s/%s", errNoProvider, envvars.LLMProvider.Name, envvars.EVENERProvider.Name)
+	}
+	if cfg.webSearch {
+		if res, err := client.Resolve(cfg.provider + "/" + cfg.model); err == nil && res.Protocol == registry.ProtocolGoogle {
+			return errWebSearchGoogle
+		}
 	}
 
 	system := ""

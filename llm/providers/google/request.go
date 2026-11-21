@@ -1,217 +1,594 @@
 package google
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"maps"
 	"os"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/internal/openaichat"
 	"primeradiant.com/evener/llm/providers/internal/requestutil"
 	"primeradiant.com/evener/llm/registry"
 )
 
-// generateContentBody assembles generationConfig, systemInstruction,
-// tools (google_search only when webSearch is on and there are no
-// function declarations), toolConfig, and the caller's options.
-func generateContentBody(req llm.Request, caps registry.Caps, system string, contents []map[string]any, webSearch bool, options map[string]any) (map[string]any, error) {
+type interactionBodyPolicy struct {
+	stream                    bool
+	wireModel                 string
+	combinedTools             bool
+	anchorID                  string
+	storeOmitted              bool
+	effectiveStore            bool
+	summariesDisabled         bool
+	hasUnsignedNonNativeCalls bool
+}
+
+var protectedTransportBodyRoots = map[string]bool{
+	"input":                   true,
+	"model":                   true,
+	"tools":                   true,
+	"response_format":         true,
+	"agent":                   true,
+	"previous_interaction_id": true,
+	"store":                   true,
+	"continuation_token":      true,
+	"cached_content":          true,
+	"background":              true,
+}
+
+var retiredGenerateContentKeys = map[string]string{
+	"generationConfig":  `replace with "generation_config"`,
+	"safetySettings":    `replace with "safety_settings"`,
+	"toolConfig":        `replace with "generation_config.tool_choice"`,
+	"cachedContent":     `remove "cachedContent" (not supported on Interactions)`,
+	"contents":          `remove "contents" (owned by Interactions "input")`,
+	"systemInstruction": `remove "systemInstruction" (owned by Interactions "system_instruction")`,
+}
+
+func validateGoogleTransportAndBodyConstants(res registry.Resolved) error {
+	for _, ep := range []string{res.Transport.Endpoint, res.Transport.StreamEndpoint} {
+		if strings.Contains(ep, ":generateContent") || strings.Contains(ep, ":streamGenerateContent") {
+			return &llm.ConfigurationError{
+				ProviderInstance: res.Instance,
+				Message:          fmt.Sprintf("instance %q: legacy generateContent/streamGenerateContent endpoint override %q is incompatible with Google Interactions API; remove endpoint/stream_endpoint overrides", res.Instance, ep),
+			}
+		}
+	}
+	if isVertexTransport(res) && !registry.VertexSupportsGeminiModel(res.WireID) {
+		return &llm.ConfigurationError{
+			ProviderInstance: res.Instance,
+			Message:          fmt.Sprintf("instance %q: model %q is not supported on Vertex /interactions; switch the session to a Vertex Interactions-supported model such as gemini-3.8-flash", res.Instance, res.WireID),
+		}
+	}
+	for k := range res.Transport.Body {
+		root, _, _ := strings.Cut(k, ".")
+		if protectedTransportBodyRoots[root] {
+			return &llm.ConfigurationError{
+				ProviderInstance: res.Instance,
+				Message:          fmt.Sprintf("instance %q: transport.body.%s cannot override Interactions-owned field %q", res.Instance, k, root),
+			}
+		}
+		if hint, retired := retiredGenerateContentKeys[root]; retired {
+			return &llm.ConfigurationError{
+				ProviderInstance: res.Instance,
+				Message:          fmt.Sprintf("instance %q: transport.body.%s uses retired generateContent key %q (%s)", res.Instance, k, root, hint),
+			}
+		}
+	}
+	return nil
+}
+
+func buildBodyWithPolicy(req llm.Request, res registry.Resolved, stream, fallbackUnsignedCalls bool) (map[string]any, interactionBodyPolicy, error) {
+	var policy interactionBodyPolicy
+	if err := validateGoogleTransportAndBodyConstants(res); err != nil {
+		return nil, policy, err
+	}
+	caps := res.Caps
+	if caps.Reasoning != nil && !*caps.Reasoning {
+		req.ReasoningEffort = nil
+	}
+
+	var options map[string]any
+	if rawOpts, exists := req.ProviderOptions[registry.ProtocolGoogle]; exists && rawOpts != nil {
+		m, ok := rawOpts.(map[string]any)
+		if !ok {
+			return nil, policy, &llm.ConfigurationError{Message: "provider_options.google must be an object"}
+		}
+		options = m
+	}
+
+	for k := range options {
+		switch k {
+		case "input", "model", "tools", "response_format":
+			return nil, policy, &llm.ConfigurationError{Message: fmt.Sprintf("provider_options.google.%s cannot override request-owned field", k)}
+		}
+	}
+	if err := validateInteractionBodyGuards(options, "", false); err != nil {
+		return nil, policy, err
+	}
+	if req.Background != nil && *req.Background {
+		return nil, policy, &llm.ConfigurationError{Message: "google interactions foreground calls do not support background=true"}
+	}
+	serviceTier := strings.TrimSpace(req.ServiceTier)
+	if rawTier, exists := options["service_tier"]; exists && rawTier != nil {
+		if s, ok := rawTier.(string); ok && serviceTier == "" {
+			serviceTier = strings.TrimSpace(s)
+		}
+	}
+	if strings.EqualFold(serviceTier, "deferred") {
+		return nil, policy, &llm.ConfigurationError{Message: `google interactions foreground calls do not support service_tier="deferred"`}
+	}
+
+	// Anchor and store resolution.
+	anchorID := strings.TrimSpace(req.PreviousResponseID)
+	if rawPrev, exists := options["previous_interaction_id"]; exists && rawPrev != nil {
+		s, ok := rawPrev.(string)
+		if !ok {
+			return nil, policy, &llm.ConfigurationError{Message: "provider_options.google.previous_interaction_id must be a string"}
+		}
+		if anchorID == "" {
+			anchorID = strings.TrimSpace(s)
+		}
+	}
+	var explicitStore *bool
+	if req.Store != nil {
+		v := *req.Store
+		explicitStore = &v
+	} else if rawStore, exists := options["store"]; exists && rawStore != nil {
+		b, ok := rawStore.(bool)
+		if !ok {
+			return nil, policy, &llm.ConfigurationError{Message: "provider_options.google.store must be a boolean"}
+		}
+		explicitStore = &b
+	}
+
+	storeSendable := requestutil.WireFieldEnabled(caps, "store", res.Protocol)
+	if anchorID == "" {
+		if !storeSendable {
+			if explicitStore != nil {
+				return nil, policy, &llm.ConfigurationError{Message: "google provider disables sending store; explicit store override is not permitted"}
+			}
+			policy.storeOmitted = true
+		} else {
+			policy.storeOmitted = false
+			policy.effectiveStore = false
+			if explicitStore != nil {
+				policy.effectiveStore = *explicitStore
+			}
+		}
+	} else {
+		if !caps.Fields["previous_interaction_id"] || !storeSendable {
+			return nil, policy, &llm.ConfigurationError{Message: "google provider row does not enable previous_interaction_id and store"}
+		}
+		if explicitStore != nil && !*explicitStore {
+			return nil, policy, &llm.ConfigurationError{Message: "google previous_interaction_id requires store=true"}
+		}
+		policy.anchorID = anchorID
+		policy.storeOmitted = false
+		policy.effectiveStore = true
+	}
+
+	policy.stream = stream
+	policy.wireModel = res.WireID
+
+	system, steps, hasUnsigned, err := toInteractionInput(res, req.Messages, registry.BoolValue(caps.MultimodalToolResults), fallbackUnsignedCalls)
+	if err != nil {
+		return nil, policy, err
+	}
+	policy.hasUnsignedNonNativeCalls = hasUnsigned
+
+	body := map[string]any{
+		"model": res.WireID,
+		"input": steps,
+	}
+	if stream {
+		body["stream"] = true
+	}
+	if !policy.storeOmitted {
+		body["store"] = policy.effectiveStore
+	}
+	if policy.anchorID != "" {
+		body["previous_interaction_id"] = policy.anchorID
+	}
+	if system != "" {
+		body["system_instruction"] = system
+	}
+	if serviceTier != "" {
+		body["service_tier"] = serviceTier
+	}
+
+	// Labels from req.Metadata (silent invalid-key filter) + strict ProviderOptions["google"]["labels"].
+	labels := filterGoogleLabelsFromMetadata(req.Metadata)
+	if rawLabels, exists := options["labels"]; exists && rawLabels != nil {
+		validated, err := validateAndCloneGoogleLabels(rawLabels)
+		if err != nil {
+			return nil, policy, err
+		}
+		if len(validated) > 0 {
+			if labels == nil {
+				labels = validated
+			} else {
+				maps.Copy(labels, validated)
+				if len(labels) > 64 {
+					return nil, policy, &llm.ConfigurationError{Message: "google labels exceed maximum of 64 entries"}
+				}
+			}
+		}
+	}
+	if len(labels) > 0 {
+		body["labels"] = labels
+	}
+
+	// Tools and google_search.
+	toolsSupported := caps.Tools == nil || *caps.Tools
+	if len(req.Tools) > 0 && !toolsSupported {
+		return nil, policy, &llm.ConfigurationError{Message: fmt.Sprintf("google model %q does not support function tools", res.WireID)}
+	}
+	var toolEntries []map[string]any
+	if len(req.Tools) > 0 {
+		for _, t := range req.Tools {
+			if openaichat.CyclicSchema(t.Parameters) {
+				return nil, policy, &llm.ConfigurationError{Message: fmt.Sprintf("tool %q schema contains a cycle", t.Name), Cause: openaichat.ErrCyclicSchema}
+			}
+			params := t.Parameters
+			if params == nil {
+				params = map[string]any{"type": "object", "properties": map[string]any{}}
+			}
+			toolEntries = append(toolEntries, map[string]any{
+				"type":        "function",
+				"name":        t.Name,
+				"description": t.Description,
+				"parameters":  sanitizeGeminiSchema(params),
+			})
+		}
+	}
+	webSearch := req.WebSearch && (caps.WebSearch == nil || *caps.WebSearch) && !registry.IsVertexGeminiOmni(res.Transport.Preset, res.WireID)
+	if webSearch {
+		if len(req.Tools) == 0 {
+			toolEntries = append(toolEntries, map[string]any{"type": "google_search"})
+		} else if toolsSupported && registry.BoolValue(caps.CombinedSearchAndFunctions) {
+			if !policy.effectiveStore || !storeSendable || !caps.Fields["previous_interaction_id"] || !requestutil.WireFieldEnabled(caps, "generation_config.tool_choice", res.Protocol) {
+				return nil, policy, &llm.ConfigurationError{Message: "google combined google_search and function tools require store=true, previous_interaction_id, and generation_config.tool_choice enabled"}
+			}
+			toolEntries = append(toolEntries, map[string]any{"type": "google_search"})
+			policy.combinedTools = true
+		}
+	}
+	if len(toolEntries) > 0 {
+		body["tools"] = toolEntries
+	}
+
+	// generation_config.
 	genCfg := map[string]any{}
 	if req.Temperature != nil {
 		genCfg["temperature"] = *req.Temperature
 	}
 	if req.TopP != nil {
-		genCfg["topP"] = *req.TopP
+		genCfg["top_p"] = *req.TopP
 	}
 	if req.MaxTokens != nil && *req.MaxTokens > 0 {
-		genCfg["maxOutputTokens"] = *req.MaxTokens
+		genCfg["max_output_tokens"] = *req.MaxTokens
 	}
 	if len(req.StopSequences) > 0 {
-		genCfg["stopSequences"] = req.StopSequences
+		genCfg["stop_sequences"] = append([]string(nil), req.StopSequences...)
 	}
-	if req.ResponseFormat != nil {
-		switch strings.ToLower(strings.TrimSpace(req.ResponseFormat.Type)) {
-		case "json":
-			genCfg["responseMimeType"] = "application/json"
-		case "json_schema":
-			genCfg["responseMimeType"] = "application/json"
-			if req.ResponseFormat.JSONSchema != nil {
-				genCfg["responseSchema"] = sanitizeGeminiSchema(req.ResponseFormat.JSONSchema)
-			}
-		}
+	if !caps.ReasoningDisabled() {
+		applyInteractionThinkingConfig(genCfg, req.ReasoningEffort, caps)
 	}
-	if req.ReasoningEffort != nil {
-		if thinking := thinkingConfig(*req.ReasoningEffort, caps); thinking != nil {
-			genCfg["thinkingConfig"] = thinking
-		}
-	}
+	policy.summariesDisabled = caps.ReasoningDisabled() || genCfg["thinking_summaries"] == "none"
 
-	body := map[string]any{
-		"contents":         contents,
-		"generationConfig": genCfg,
-	}
-	if system != "" {
-		body["systemInstruction"] = map[string]any{
-			"parts": []map[string]any{{"text": system}},
-		}
-	}
-	if len(req.Tools) > 0 || webSearch {
-		var toolEntries []map[string]any
-		if len(req.Tools) > 0 {
-			toolEntries = append(toolEntries, map[string]any{
-				"functionDeclarations": toGeminiFunctionDecls(req.Tools),
-			})
-		}
-		// Gemini does not support google_search combined with functionDeclarations.
-		if webSearch && len(req.Tools) == 0 {
-			toolEntries = append(toolEntries, map[string]any{
-				"google_search": map[string]any{},
-			})
-		}
-		body["tools"] = toolEntries
+	autoMode := "auto"
+	if policy.combinedTools {
+		autoMode = "validated"
 	}
 	if req.ToolChoice != nil {
 		mode := strings.ToLower(strings.TrimSpace(req.ToolChoice.Mode))
-		cfg := map[string]any{}
 		switch mode {
 		case "", "auto":
-			cfg["mode"] = "AUTO"
+			genCfg["tool_choice"] = autoMode
 		case "none":
-			cfg["mode"] = "NONE"
+			genCfg["tool_choice"] = "none"
 		case "required":
-			cfg["mode"] = "ANY"
+			if caps.ToolChoiceForcing != nil && !*caps.ToolChoiceForcing {
+				genCfg["tool_choice"] = autoMode
+			} else {
+				genCfg["tool_choice"] = "any"
+			}
 		case "named":
 			if strings.TrimSpace(req.ToolChoice.Name) == "" {
-				return nil, &llm.ConfigurationError{Message: "tool_choice mode=named requires name"}
+				return nil, policy, &llm.ConfigurationError{Message: "tool_choice mode=named requires name"}
 			}
-			cfg["mode"] = "ANY"
-			cfg["allowedFunctionNames"] = []string{req.ToolChoice.Name}
+			genCfg["tool_choice"] = map[string]any{
+				"allowed_tools": map[string]any{
+					"mode":  "any",
+					"tools": []string{req.ToolChoice.Name},
+				},
+			}
 		default:
-			return nil, llm.NewUnsupportedToolChoiceError("google", req.ToolChoice.Mode)
+			return nil, policy, llm.NewUnsupportedToolChoiceError("google", req.ToolChoice.Mode)
 		}
-		body["toolConfig"] = map[string]any{"functionCallingConfig": cfg}
+	} else if policy.combinedTools {
+		genCfg["tool_choice"] = "validated"
 	}
-	maps.Copy(body, options)
-	if raw, exists := options["generationConfig"]; exists {
-		overlaid, ok := raw.(map[string]any)
+
+	// response_format (top-level).
+	if req.ResponseFormat != nil {
+		switch strings.ToLower(strings.TrimSpace(req.ResponseFormat.Type)) {
+		case "json":
+			body["response_format"] = map[string]any{
+				"type":      "text",
+				"mime_type": "application/json",
+			}
+		case "json_schema":
+			rf := map[string]any{
+				"type":      "text",
+				"mime_type": "application/json",
+			}
+			if req.ResponseFormat.JSONSchema != nil {
+				if openaichat.CyclicSchema(req.ResponseFormat.JSONSchema) {
+					return nil, policy, &llm.ConfigurationError{Message: "response_format json_schema contains a cycle", Cause: openaichat.ErrCyclicSchema}
+				}
+				rf["schema"] = sanitizeInteractionResponseSchema(req.ResponseFormat.JSONSchema)
+			}
+			body["response_format"] = rf
+		}
+	}
+
+	// Merge ProviderOptions["google"] with deep-cloned copies.
+	for k, v := range options {
+		switch k {
+		case "generation_config", "labels", "agent", "stream", "store", "previous_interaction_id", "continuation_token", "cached_content", "background", "service_tier":
+			continue
+		default:
+			body[k] = cloneJSONValue(v)
+		}
+	}
+	if rawGen, exists := options["generation_config"]; exists {
+		overlaid, ok := rawGen.(map[string]any)
 		if !ok || overlaid == nil {
-			return nil, &llm.ConfigurationError{Message: "provider_options.google.generationConfig must be an object"}
+			return nil, policy, &llm.ConfigurationError{Message: "provider_options.google.generation_config must be an object"}
 		}
-		body["generationConfig"] = maps.Clone(overlaid)
+		for k, v := range overlaid {
+			genCfg[k] = cloneJSONValue(v)
+		}
 	}
-	if err := reconcileOutputField(body, req.MaxTokens, caps.MaxOutputTokens); err != nil {
-		return nil, err
+	if len(genCfg) > 0 {
+		body["generation_config"] = genCfg
 	}
-	return body, nil
+	if err := reconcileOutputField(body, req.MaxTokens, caps.MaxOutputTokens, caps, res.Protocol); err != nil {
+		return nil, policy, err
+	}
+	return body, policy, nil
 }
 
-// thinkingConfig builds the generationConfig.thinkingConfig object for a
-// reasoning effort, or nil when the row vouches no thinking shape. Gemini has
-// two wire shapes, selected by the row's derived ThinkingShape: "level"
-// (Gemini 3.x, catalog rows that vouch effort) spells thinkingLevel, and
-// "budget" (the 2.5 family, rows recording budget_tokens) spells the numeric
-// thinkingBudget. Sending one shape to a model that takes the other is a wire
-// 400, so a row with no vouched shape — a toggle-only row, or an uncataloged
-// live listing — sends no thinking object at all. includeThoughts asks Gemini
-// to return thought summaries; without it the model thinks internally but
-// streams no thought parts, so the live-thinking backend has nothing to
-// render.
-func thinkingConfig(effort string, caps registry.Caps) map[string]any {
-	// Normalize first: a non-canonical off ("NONE", " off ") or an empty
-	// effort names no thinking on either shape, where before the shape split
-	// ReasoningBudget swallowed them by returning zero.
-	effort = llm.NormalizeReasoningEffort(effort)
-	if effort == "" || effort == llm.ReasoningEffortNone {
-		return nil
-	}
-	// Only "budget" and "level" are google wire shapes; a shape from another
-	// protocol's vocabulary (adaptive, budget+effort) sends nothing.
-	shape := registry.StringValue(caps.ThinkingShape)
-	if shape != "budget" && shape != "level" {
-		return nil
-	}
-	thinking := map[string]any{"includeThoughts": true}
-	if shape == "budget" {
-		budget := llm.ReasoningBudget(effort)
-		if budget <= 0 {
-			return nil
+func validateInteractionBodyGuards(m map[string]any, instance string, stripEmpty bool) error {
+	for _, key := range []string{"agent", "continuation_token", "cached_content"} {
+		if v, exists := m[key]; exists && v != nil {
+			s, ok := v.(string)
+			if !ok || strings.TrimSpace(s) != "" {
+				return &llm.ConfigurationError{ProviderInstance: instance, Message: "google interactions does not support " + key}
+			}
+			if stripEmpty {
+				delete(m, key)
+			}
 		}
-		thinking["thinkingBudget"] = budget
-		return thinking
+	}
+	if v, exists := m["background"]; exists && v != nil {
+		b, ok := v.(bool)
+		if !ok || b {
+			return &llm.ConfigurationError{ProviderInstance: instance, Message: "google interactions foreground calls do not support background=true"}
+		}
+		if stripEmpty {
+			delete(m, "background")
+		}
+	}
+	if v, exists := m["service_tier"]; exists && v != nil {
+		s, ok := v.(string)
+		if !ok || strings.EqualFold(strings.TrimSpace(s), "deferred") {
+			return &llm.ConfigurationError{ProviderInstance: instance, Message: `google interactions foreground calls do not support service_tier="deferred"`}
+		}
+	}
+	for retired, hint := range retiredGenerateContentKeys {
+		if _, exists := m[retired]; exists {
+			return &llm.ConfigurationError{ProviderInstance: instance, Message: fmt.Sprintf("retired generateContent body key %q (%s)", retired, hint)}
+		}
+	}
+	return nil
+}
+
+func applyInteractionThinkingConfig(genCfg map[string]any, reqEffort *string, caps registry.Caps) {
+	if reqEffort != nil && llm.NormalizeReasoningEffort(*reqEffort) == llm.ReasoningEffortNone {
+		genCfg["thinking_summaries"] = "none"
+		return
+	}
+	summaryMode := "auto"
+	if caps.ReasoningSummary != nil {
+		s := strings.ToLower(strings.TrimSpace(*caps.ReasoningSummary))
+		if s == "auto" || s == "none" {
+			summaryMode = s
+		}
+	}
+	genCfg["thinking_summaries"] = summaryMode
+
+	if reqEffort == nil || registry.StringValue(caps.ThinkingShape) != "level" || registry.BoolValue(caps.EffortParameterUnsupported) {
+		return
+	}
+	effort := llm.NormalizeReasoningEffort(*reqEffort)
+	if effort == "" || effort == llm.ReasoningEffortNone {
+		return
 	}
 	level := effort
-	// A row stating the no-effort verdict spells no level, but still reasons:
-	// keep the config so includeThoughts survives and the backend still gets
-	// thought parts to render. The budget shape above is unaffected — a numeric
-	// budget is not an effort name.
-	if registry.BoolValue(caps.EffortParameterUnsupported) {
-		return thinking
-	}
 	if len(caps.EffortValues) > 0 {
-		// A row with a ladder spells only a level the ladder vouches for.
 		level = llm.VouchedEffort(effort, caps.EffortValues)
-		if level == "" {
-			return nil
-		}
+	} else if level == "max" {
+		level = "high"
 	}
-	// The wire enum is uppercase (the Discovery document's
-	// ThinkingConfig.thinkingLevel: MINIMAL | LOW | MEDIUM | HIGH); catalogs
-	// and flags spell it lowercase. Evener's xhigh and max rank above the
-	// enum's ceiling, so they clamp down to HIGH; anything else unrecognized
-	// sends no thinking object at all.
-	wire := strings.ToUpper(level)
+	wire := strings.ToLower(level)
 	switch wire {
-	case "MINIMAL", "LOW", "MEDIUM", "HIGH":
-	case "XHIGH", "MAX":
-		wire = "HIGH"
-	default:
-		return nil
+	case "minimal", "low", "medium", "high", "xhigh":
+		genCfg["thinking_level"] = wire
 	}
-	thinking["thinkingLevel"] = wire
-	return thinking
 }
 
-func reconcileOutputField(body map[string]any, admitted, outputCap *int) error {
+func reconcileOutputField(body map[string]any, admitted, outputCap *int, caps registry.Caps, protocol string) error {
+	if !requestutil.WireFieldEnabled(caps, "generation_config.max_output_tokens", protocol) {
+		if genCfg, ok := body["generation_config"].(map[string]any); ok {
+			delete(genCfg, "max_output_tokens")
+			if len(genCfg) == 0 {
+				delete(body, "generation_config")
+			}
+		}
+		return nil
+	}
+	if body["generation_config"] != nil {
+		if _, ok := body["generation_config"].(map[string]any); !ok {
+			return &llm.ConfigurationError{Message: "google generation_config must be an object"}
+		}
+	}
 	ceiling := requestutil.MinPositiveInt(requestutil.PositivePointerInt(admitted), requestutil.PositivePointerInt(outputCap))
 	if ceiling == 0 {
 		return nil
 	}
-	genCfg, ok := body["generationConfig"].(map[string]any)
-	if !ok && body["generationConfig"] != nil {
-		return &llm.ConfigurationError{Message: "google generationConfig must be an object"}
-	}
+	genCfg, _ := body["generation_config"].(map[string]any)
 	if genCfg == nil {
 		genCfg = map[string]any{}
-		body["generationConfig"] = genCfg
+		body["generation_config"] = genCfg
 	}
-	genCfg["maxOutputTokens"] = requestutil.MinPositiveInt(requestutil.PositiveInt(genCfg["maxOutputTokens"]), ceiling)
+	genCfg["max_output_tokens"] = requestutil.MinPositiveInt(requestutil.PositiveInt(genCfg["max_output_tokens"]), ceiling)
 	return nil
 }
 
-func toGeminiFunctionDecls(tools []llm.ToolDefinition) []map[string]any {
-	out := make([]map[string]any, 0, len(tools))
-	for _, t := range tools {
-		params := t.Parameters
-		if params == nil {
-			params = map[string]any{"type": "object", "properties": map[string]any{}}
+func cloneJSONValue(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, vv := range x {
+			out[k] = cloneJSONValue(vv)
 		}
-		out = append(out, map[string]any{
-			"name":        t.Name,
-			"description": t.Description,
-			// Gemini's Schema is a restricted subset; strip JSON-schema-only fields
-			// (e.g., additionalProperties) so requests don't fail validation.
-			"parameters": sanitizeGeminiSchema(params),
-		})
+		return out
+	case map[string]string:
+		out := make(map[string]any, len(x))
+		for k, vv := range x {
+			out[k] = vv
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i := range x {
+			out[i] = cloneJSONValue(x[i])
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+func isGoogleLabelLetter(r rune) bool {
+	return unicode.IsLower(r) || (unicode.IsLetter(r) && !unicode.IsUpper(r))
+}
+
+func isGoogleLabelRune(r rune) bool {
+	return isGoogleLabelLetter(r) || unicode.IsNumber(r) || r == '_' || r == '-'
+}
+
+func isValidGoogleLabelKey(k string) bool {
+	n := utf8.RuneCountInString(k)
+	if n < 1 || n > 63 {
+		return false
+	}
+	first := true
+	for _, r := range k {
+		if first {
+			first = false
+			if !isGoogleLabelLetter(r) {
+				return false
+			}
+			continue
+		}
+		if !isGoogleLabelRune(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func isValidGoogleLabelValue(v string) bool {
+	if utf8.RuneCountInString(v) > 63 {
+		return false
+	}
+	for _, r := range v {
+		if !isGoogleLabelRune(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func filterGoogleLabelsFromMetadata(meta map[string]string) map[string]any {
+	if len(meta) == 0 {
+		return nil
+	}
+	var out map[string]any
+	for k, v := range meta {
+		if !isValidGoogleLabelKey(k) || !isValidGoogleLabelValue(v) {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]any, len(meta))
+		}
+		if len(out) >= 64 {
+			break
+		}
+		out[k] = v
 	}
 	return out
 }
 
-// geminiSchemaMetaKeys are JSON Schema's document-metadata keywords (draft-07
-// and 2020-12). They carry no validation semantics, but Gemini's Schema proto
-// has no field for them and rejects the request ("Unknown name \"$schema\"").
-// MCP servers emit them: a tool schema generated from a Zod shape starts with
-// $schema, so a single MCP tool otherwise fails every Gemini request.
+func validateAndCloneGoogleLabels(raw any) (map[string]any, error) {
+	out := map[string]any{}
+	switch m := raw.(type) {
+	case map[string]any:
+		if len(m) > 64 {
+			return nil, &llm.ConfigurationError{Message: "google labels exceed maximum of 64 entries"}
+		}
+		for k, v := range m {
+			if !isValidGoogleLabelKey(k) {
+				return nil, &llm.ConfigurationError{Message: fmt.Sprintf("google label key %q violates Google label rules", k)}
+			}
+			s, ok := v.(string)
+			if !ok {
+				return nil, &llm.ConfigurationError{Message: fmt.Sprintf("google label %q value must be a string", k)}
+			}
+			if !isValidGoogleLabelValue(s) {
+				return nil, &llm.ConfigurationError{Message: fmt.Sprintf("google label %q value %q violates Google label rules", k, s)}
+			}
+			out[k] = s
+		}
+	case map[string]string:
+		if len(m) > 64 {
+			return nil, &llm.ConfigurationError{Message: "google labels exceed maximum of 64 entries"}
+		}
+		for k, s := range m {
+			if !isValidGoogleLabelKey(k) {
+				return nil, &llm.ConfigurationError{Message: fmt.Sprintf("google label key %q violates Google label rules", k)}
+			}
+			if !isValidGoogleLabelValue(s) {
+				return nil, &llm.ConfigurationError{Message: fmt.Sprintf("google label %q value %q violates Google label rules", k, s)}
+			}
+			out[k] = s
+		}
+	default:
+		return nil, &llm.ConfigurationError{Message: "google labels must be a string map"}
+	}
+	return out, nil
+}
+
 var geminiSchemaMetaKeys = map[string]bool{
 	"$schema":        true,
 	"$id":            true,
@@ -221,21 +598,46 @@ var geminiSchemaMetaKeys = map[string]bool{
 	"$vocabulary":    true,
 }
 
+func sanitizeInteractionResponseSchema(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, vv := range x {
+			if geminiSchemaMetaKeys[k] {
+				continue
+			}
+			if k == "properties" {
+				if pm, ok := vv.(map[string]any); ok {
+					cleaned := make(map[string]any, len(pm))
+					for name, sub := range pm {
+						cleaned[name] = sanitizeInteractionResponseSchema(sub)
+					}
+					out[k] = cleaned
+					continue
+				}
+			}
+			out[k] = sanitizeInteractionResponseSchema(vv)
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i := range x {
+			out[i] = sanitizeInteractionResponseSchema(x[i])
+		}
+		return out
+	default:
+		return v
+	}
+}
+
 func sanitizeGeminiSchema(v any) any {
 	switch x := v.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(x))
 		for k, vv := range x {
-			// The Gemini Schema proto accepts neither JSON Schema's
-			// additionalProperties field nor its $ document metadata.
-			// Omitting them preserves compatibility while keeping the rest
-			// of the schema useful.
 			if k == "additionalProperties" || geminiSchemaMetaKeys[k] {
 				continue
 			}
-			// A schema's "properties" maps property *names* to schemas, and a
-			// name is data: a tool may declare an argument called "$id". Only
-			// the schemas on the right are sanitized, never the names.
 			if k == "properties" {
 				out[k] = sanitizeGeminiNamedSchemas(vv)
 				continue
@@ -267,10 +669,6 @@ func sanitizeGeminiSchema(v any) any {
 	}
 }
 
-// sanitizeGeminiNamedSchemas sanitizes a map whose keys are names rather than
-// schema keywords (the value of a schema's "properties"): each value is
-// sanitized as a schema, but no key is filtered, so a property legitimately
-// named "$schema" or "additionalProperties" survives.
 func sanitizeGeminiNamedSchemas(v any) any {
 	m, ok := v.(map[string]any)
 	if !ok {
@@ -338,7 +736,7 @@ func geminiNullableType(v any) (string, bool, bool) {
 	return typ, true, true
 }
 
-func geminiImagePart(p llm.ContentPart) (map[string]any, error) {
+func interactionImageItem(p llm.ContentPart) (map[string]any, error) {
 	u := strings.TrimSpace(p.Image.URL)
 	mt := strings.TrimSpace(p.Image.MediaType)
 	if len(p.Image.Data) > 0 || llm.IsLocalPath(u) {
@@ -361,10 +759,9 @@ func geminiImagePart(p llm.ContentPart) (map[string]any, error) {
 			return nil, err
 		}
 		return map[string]any{
-			"inlineData": map[string]any{
-				"mimeType": mt,
-				"data":     llm.CachedBase64(b),
-			},
+			"type":      "image",
+			"mime_type": mt,
+			"data":      llm.CachedBase64(b),
 		}, nil
 	}
 	if u != "" {
@@ -372,19 +769,14 @@ func geminiImagePart(p llm.ContentPart) (map[string]any, error) {
 			mt = "image/png"
 		}
 		return map[string]any{
-			"fileData": map[string]any{
-				"mimeType": mt,
-				"fileUri":  u,
-			},
+			"type":      "image",
+			"mime_type": mt,
+			"uri":       u,
 		}, nil
 	}
 	return nil, nil
 }
 
-// googleInlineImageMediaType returns the canonical media type Gemini accepts
-// for an inline image, or "" when v is outside that set. Gemini accepts
-// png/jpeg/webp/heic/heif inline; unlike the Anthropic and OpenAI image blocks,
-// it does not accept gif.
 func googleInlineImageMediaType(v string) string {
 	switch mt := llm.ImageBlockMediaType(v); mt {
 	case "image/png", "image/jpeg", "image/webp":
@@ -400,12 +792,6 @@ func googleInlineImageMediaType(v string) string {
 	}
 }
 
-// googleInlineImageBytes returns bytes and a media type Gemini accepts in
-// inlineData. A claimed type already in the set keeps its bytes: Gemini
-// validates them, and the local decoder cannot read every raster the wire
-// accepts. Any other type is decoded and re-encoded as PNG (BMP and TIFF reads,
-// and GIF attachments, would otherwise be rejected and fail the whole turn,
-// #4584); bytes that are not a decodable raster are refused loudly.
 func googleInlineImageBytes(data []byte, claimedMediaType string) ([]byte, string, error) {
 	return llm.NormalizeImageForWire(
 		data,
@@ -415,9 +801,7 @@ func googleInlineImageBytes(data []byte, claimedMediaType string) ([]byte, strin
 	)
 }
 
-// geminiDocumentPart represents user document input without fetching or
-// rewriting it. FileName is not part of Gemini's media-part schema.
-func geminiDocumentPart(doc *llm.DocumentData) map[string]any {
+func interactionDocumentItem(doc *llm.DocumentData) map[string]any {
 	if doc == nil {
 		return nil
 	}
@@ -426,210 +810,270 @@ func geminiDocumentPart(doc *llm.DocumentData) map[string]any {
 		mt = "application/pdf"
 	}
 	if len(doc.Data) > 0 {
-		return map[string]any{"inlineData": map[string]any{
-			"mimeType": mt,
-			"data":     base64.StdEncoding.EncodeToString(doc.Data),
-		}}
+		return map[string]any{
+			"type":      "document",
+			"mime_type": mt,
+			"data":      base64.StdEncoding.EncodeToString(doc.Data),
+		}
 	}
 	if u := strings.TrimSpace(doc.URL); u != "" {
-		return map[string]any{"fileData": map[string]any{"mimeType": mt, "fileUri": u}}
+		return map[string]any{
+			"type":      "document",
+			"mime_type": mt,
+			"uri":       u,
+		}
 	}
 	return nil
 }
 
-func toGeminiContents(model string, msgs []llm.Message, multimodalToolResults bool) (system string, contents []map[string]any, _ error) {
+func toInteractionInput(res registry.Resolved, msgs []llm.Message, multimodalToolResults, fallbackUnsignedCalls bool) (system string, steps []any, hasUnsignedNonNative bool, _ error) {
 	var sysParts []string
-	appendContent := func(role string, parts []map[string]any) {
-		if len(parts) == 0 {
-			return
-		}
-		contents = append(contents, map[string]any{
-			"role":  role,
-			"parts": parts,
-		})
-	}
+	callIDToName := map[string]string{}
+	var syntheticCallIDs []string
+	unsignedCallIDs := map[string]bool{}
 
-	// Consecutive tool-result messages accumulate into one user turn: Gemini
-	// requires the function response parts to sit in the single user turn
-	// that answers the function call turn, not spread across separate turns.
-	var pendingToolParts []map[string]any
-	flushToolParts := func() {
-		if len(pendingToolParts) > 0 {
-			appendContent("user", pendingToolParts)
-			pendingToolParts = nil
+	var pendingUser []any
+	pendingModelStep := -1
+	var pendingModelContent []any
+
+	flushModelOutput := func() {
+		if len(pendingModelContent) > 0 {
+			steps = append(steps, map[string]any{
+				"type":    "model_output",
+				"content": pendingModelContent,
+			})
+			pendingModelContent = nil
+			pendingModelStep = -1
 		}
+	}
+	flushUser := func() {
+		if len(pendingUser) > 0 {
+			steps = append(steps, map[string]any{
+				"type":    "user_input",
+				"content": pendingUser,
+			})
+			pendingUser = nil
+		}
+	}
+	appendNonUserStep := func(step map[string]any) {
+		flushModelOutput()
+		flushUser()
+		steps = append(steps, step)
+	}
+	appendModelContent := func(googleStep int, item map[string]any) {
+		flushUser()
+		if len(pendingModelContent) > 0 && pendingModelStep != googleStep {
+			flushModelOutput()
+		}
+		pendingModelStep = googleStep
+		pendingModelContent = append(pendingModelContent, item)
 	}
 
 	for _, m := range msgs {
-		if m.Role != llm.RoleTool {
-			flushToolParts()
-		}
 		switch m.Role {
 		case llm.RoleSystem, llm.RoleDeveloper:
 			if t := m.Text(); t != "" {
 				sysParts = append(sysParts, t)
 			}
 		case llm.RoleUser:
-			var parts []map[string]any
+			flushModelOutput()
 			for _, p := range m.Content {
 				switch p.Kind {
 				case llm.ContentText:
 					if p.Text != "" {
-						parts = append(parts, map[string]any{"text": p.Text})
+						pendingUser = append(pendingUser, map[string]any{"type": "text", "text": p.Text})
 					}
 				case llm.ContentImage:
 					if p.Image == nil {
 						continue
 					}
-					part, err := geminiImagePart(p)
+					item, err := interactionImageItem(p)
 					if err != nil {
-						return "", nil, err
+						return "", nil, false, err
 					}
-					if part != nil {
-						parts = append(parts, part)
+					if item != nil {
+						pendingUser = append(pendingUser, item)
 					}
 				case llm.ContentDocument:
-					if part := geminiDocumentPart(p.Document); part != nil {
-						parts = append(parts, part)
+					if item := interactionDocumentItem(p.Document); item != nil {
+						pendingUser = append(pendingUser, item)
 					}
 				case llm.ContentAudio:
-					return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for google: %s", p.Kind)}
-				default:
-					// ignore
+					return "", nil, false, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for google: %s", p.Kind)}
 				}
 			}
-			appendContent("user", parts)
 		case llm.RoleAssistant:
-			var parts []map[string]any
 			for _, p := range m.Content {
 				switch p.Kind {
 				case llm.ContentText:
-					if strings.TrimSpace(p.Text) != "" {
-						parts = append(parts, map[string]any{"text": p.Text})
+					if p.Text != "" {
+						appendModelContent(p.GoogleStep, map[string]any{"type": "text", "text": p.Text})
 					}
 				case llm.ContentImage:
 					if p.Image == nil {
 						continue
 					}
-					part, err := geminiImagePart(p)
+					item, err := interactionImageItem(p)
 					if err != nil {
-						return "", nil, err
+						return "", nil, false, err
 					}
-					if part != nil {
-						parts = append(parts, part)
+					if item != nil {
+						appendModelContent(p.GoogleStep, item)
 					}
+				case llm.ContentThinking:
+					if !p.Thinking.ReplayableGoogleThoughtFor(res.Instance, res.WireID) {
+						continue
+					}
+					step := map[string]any{"type": "thought"}
+					if sig := strings.TrimSpace(p.Thinking.Signature); sig != "" {
+						step["signature"] = sig
+					}
+					if len(p.Thinking.Summary) > 0 {
+						summaryItems := make([]map[string]any, 0, len(p.Thinking.Summary))
+						for _, s := range p.Thinking.Summary {
+							if s != "" {
+								summaryItems = append(summaryItems, map[string]any{"type": "text", "text": s})
+							}
+						}
+						if len(summaryItems) > 0 {
+							step["summary"] = summaryItems
+						}
+					}
+					appendNonUserStep(step)
+				case llm.ContentWebSearch:
+					return "", nil, false, &llm.ConfigurationError{Message: "google interactions forbids replaying ContentWebSearch history"}
 				case llm.ContentToolCall:
 					if p.ToolCall == nil {
 						continue
 					}
-					args := map[string]any{}
-					if len(p.ToolCall.Arguments) > 0 {
-						_ = json.Unmarshal(p.ToolCall.Arguments, &args)
-						if args == nil {
-							args = map[string]any{}
+					tc := p.ToolCall
+					callID := strings.TrimSpace(tc.ID)
+					if callID == "" {
+						callID = identifier.MustNewSyntheticCallID()
+						syntheticCallIDs = append(syntheticCallIDs, callID)
+					}
+					callIDToName[callID] = strings.TrimSpace(tc.Name)
+
+					rawArgs := []byte(tc.WireArguments())
+					trimmed := bytes.TrimSpace(rawArgs)
+					wireArgs := json.RawMessage("{}")
+					if len(trimmed) > 0 && trimmed[0] == '{' && json.Valid(trimmed) {
+						wireArgs = json.RawMessage(trimmed)
+					}
+
+					nativeMatched := tc.GoogleInteraction && res.Instance != "" && res.WireID != "" &&
+						tc.GoogleInstance == res.Instance && tc.GoogleModel == res.WireID
+					if !nativeMatched {
+						hasUnsignedNonNative = true
+						unsignedCallIDs[callID] = true
+						if fallbackUnsignedCalls {
+							appendModelContent(p.GoogleStep, map[string]any{
+								"type": "text",
+								"text": fmt.Sprintf("[historical tool call: %s(id=%s, arguments=%s)]", tc.Name, callID, string(wireArgs)),
+							})
+							continue
 						}
 					}
-					part := map[string]any{
-						"functionCall": map[string]any{
-							"name": p.ToolCall.Name,
-							"args": args,
-						},
+
+					step := map[string]any{
+						"type":      "function_call",
+						"id":        callID,
+						"name":      tc.Name,
+						"arguments": wireArgs,
 					}
-					if sig := strings.TrimSpace(p.ToolCall.ThoughtSignature); sig != "" {
-						// Gemini requires replaying the thought signature that accompanied prior tool calls.
-						part["thoughtSignature"] = sig
+					if nativeMatched {
+						if sig := strings.TrimSpace(tc.ThoughtSignature); sig != "" {
+							step["signature"] = sig
+						}
 					}
-					parts = append(parts, part)
+					appendNonUserStep(step)
 				case llm.ContentDocument:
-					// Document input is user-only, not generated-document replay.
-					return "", nil, &llm.ConfigurationError{Message: "unsupported assistant document content for google"}
+					return "", nil, false, &llm.ConfigurationError{Message: "unsupported assistant document content for google"}
 				case llm.ContentAudio:
-					return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for google: %s", p.Kind)}
-				default:
-					// ignore
+					return "", nil, false, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for google: %s", p.Kind)}
 				}
 			}
-			appendContent("model", parts)
 		case llm.RoleTool:
-			var parts []map[string]any
 			for _, p := range m.Content {
 				if p.Kind != llm.ContentToolResult || p.ToolResult == nil {
 					continue
 				}
-				// The functionResponse name must match the functionCall's
-				// wire name, which the call carries — the result's Name is
-				// the canonical name, which the wire edge may have renamed
-				// (e.g. list_dir → list_directory on the google surface).
-				name := toolNameFromCallID(msgs, p.ToolResult.ToolCallID)
-				if name == "" {
-					name = strings.TrimSpace(p.ToolResult.Name)
+				tr := p.ToolResult
+				callID := strings.TrimSpace(tr.ToolCallID)
+				if callID == "" && len(syntheticCallIDs) > 0 {
+					callID = syntheticCallIDs[0]
+					syntheticCallIDs = syntheticCallIDs[1:]
 				}
+				name := callIDToName[callID]
 				if name == "" {
-					name = p.ToolResult.ToolCallID
+					name = strings.TrimSpace(tr.Name)
 				}
-				// Gemini expects a functionResponse part.
-				var respObj map[string]any
-				switch v := p.ToolResult.Content.(type) {
-				case map[string]any:
-					respObj = v
+				var textStr string
+				switch v := tr.Content.(type) {
 				case string:
-					respObj = map[string]any{"result": v}
+					textStr = v
 				default:
 					b, _ := json.Marshal(v)
-					respObj = map[string]any{"result": string(b)}
+					textStr = string(b)
 				}
-				if p.ToolResult.IsError {
-					respObj["error"] = true
-				}
-				funcResp := map[string]any{
-					"name":     name,
-					"response": respObj,
-				}
-				// Documents take the describing side-channel as user-message
-				// documents. Sending them here too would duplicate their delivery
-				// (llm.DeliversToolResultMedia deliberately remains image-only).
-				if len(p.ToolResult.ImageData) > 0 {
-					mediaType := strings.ToLower(strings.TrimSpace(p.ToolResult.ImageMediaType))
+
+				var imageItem map[string]any
+				if len(tr.ImageData) > 0 {
+					mediaType := strings.ToLower(strings.TrimSpace(tr.ImageMediaType))
 					if mediaType == "" || strings.HasPrefix(mediaType, "image/") {
 						if !multimodalToolResults {
-							return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("google model %q does not support tool-result images: multimodal function responses require a Gemini 3 series model", model)}
+							return "", nil, false, &llm.ConfigurationError{Message: fmt.Sprintf("google model %q does not support tool-result images: multimodal tool results require a Gemini 3+ model", res.WireID)}
 						}
-						imageBytes, imageType, err := googleInlineImageBytes(p.ToolResult.ImageData, p.ToolResult.ImageMediaType)
+						imageBytes, imageType, err := googleInlineImageBytes(tr.ImageData, tr.ImageMediaType)
 						if err != nil {
-							return "", nil, err
+							return "", nil, false, err
 						}
-						// Media belongs inside the functionResponse it came from; a sibling
-						// content part would leave the image unassociated with the tool call.
-						funcResp["parts"] = []map[string]any{{
-							"inlineData": map[string]any{
-								"mimeType": imageType,
-								"data":     llm.CachedBase64(imageBytes),
-							},
-						}}
+						imageItem = map[string]any{
+							"type":      "image",
+							"mime_type": imageType,
+							"data":      llm.CachedBase64(imageBytes),
+						}
 					}
 				}
-				parts = append(parts, map[string]any{"functionResponse": funcResp})
-			}
-			pendingToolParts = append(pendingToolParts, parts...)
-		default:
-			// ignore
-		}
-	}
-	flushToolParts()
-	return strings.Join(sysParts, "\n\n"), contents, nil
-}
 
-func toolNameFromCallID(msgs []llm.Message, callID string) string {
-	callID = strings.TrimSpace(callID)
-	if callID == "" {
-		return ""
-	}
-	for _, m := range msgs {
-		for _, p := range m.Content {
-			if p.Kind == llm.ContentToolCall && p.ToolCall != nil && strings.TrimSpace(p.ToolCall.ID) == callID {
-				return strings.TrimSpace(p.ToolCall.Name)
+				if fallbackUnsignedCalls && unsignedCallIDs[callID] {
+					flushModelOutput()
+					pendingUser = append(pendingUser, map[string]any{
+						"type": "text",
+						"text": fmt.Sprintf("[historical tool result: %s(id=%s, is_error=%t): %s]", name, callID, tr.IsError, textStr),
+					})
+					if imageItem != nil {
+						pendingUser = append(pendingUser, imageItem)
+					}
+					continue
+				}
+
+				var wireResult any = textStr
+				if imageItem != nil {
+					wireResult = []map[string]any{
+						{"type": "text", "text": textStr},
+						imageItem,
+					}
+				}
+				step := map[string]any{
+					"type":    "function_result",
+					"call_id": callID,
+					"result":  wireResult,
+				}
+				if name != "" {
+					step["name"] = name
+				}
+				if tr.IsError {
+					step["is_error"] = true
+				}
+				appendNonUserStep(step)
 			}
 		}
 	}
-	return ""
+	flushModelOutput()
+	flushUser()
+	if len(steps) == 0 {
+		return "", nil, false, &llm.ConfigurationError{Message: "google interactions require at least one non-empty input step"}
+	}
+	return strings.Join(sysParts, "\n\n"), steps, hasUnsignedNonNative, nil
 }

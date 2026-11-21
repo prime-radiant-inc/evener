@@ -808,6 +808,50 @@ func TestGoogleInteractionThinkingZeroTokensOnNonGoogleTargets(t *testing.T) {
 	}
 }
 
+func TestGoogleInteractionThinkingAndSignatureProvenanceBilling(t *testing.T) {
+	t.Parallel()
+	res := registry.Resolved{
+		Instance: "google",
+		ModelID:  "gemini-3.8-flash",
+		WireID:   "gemini-3.8-flash",
+		Protocol: registry.ProtocolGoogle,
+	}
+	sig := strings.Repeat("s", 40)
+	sum := strings.Repeat("a", 20)
+	matchMsgs := []Message{{
+		Role: RoleAssistant,
+		Content: []ContentPart{
+			{Kind: ContentThinking, Thinking: &ThinkingData{
+				GoogleInteraction: true,
+				GoogleInstance:    "google",
+				GoogleModel:       "gemini-3.8-flash",
+				Signature:         sig,
+				Summary:           []string{sum},
+				Text:              sum,
+			}},
+			{Kind: ContentToolCall, ToolCall: &ToolCallData{
+				GoogleInteraction: true,
+				GoogleInstance:    "google",
+				GoogleModel:       "gemini-3.8-flash",
+				ID:                "c1",
+				Name:              "f",
+				Arguments:         []byte(`{}`),
+				ThoughtSignature:  sig,
+			}},
+		},
+	}}
+	matched := EstimateMessagesInputTokensForResolved(res, matchMsgs).Tokens
+
+	otherRes := res
+	otherRes.WireID = "gemini-4-neon"
+	mismatched := EstimateMessagesInputTokensForResolved(otherRes, matchMsgs).Tokens
+
+	// Matched target bills thought Signature + Summary + tool ThoughtSignature (40 + 20 + 40 = 100 chars = 25 tokens more than mismatched).
+	if matched-mismatched != 25 {
+		t.Fatalf("matched=%d mismatched=%d, want delta=25 (thought sig+summary + tool sig)", matched, mismatched)
+	}
+}
+
 // The model's own family is the more particular fact: a row that records claude
 // while carrying an OpenAI provider surface still bills Anthropic's image rules,
 // because the surface describes where the row was reached, not what the model is.

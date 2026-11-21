@@ -166,11 +166,7 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) []string 
 		c.ThinkingShape = nil
 	}
 	if in.Protocol == ProtocolGoogle && !reasoningOff && c.ThinkingShape == nil && !in.Synthesized && !shapeSettledByAlias {
-		var shape string
-		switch {
-		case slices.Contains(c.ReasoningControls, "budget_tokens"):
-			shape = "budget"
-		case slices.Contains(c.ReasoningControls, "effort") && !controlsWereEmpty && effortWasPresent:
+		if slices.Contains(c.ReasoningControls, "effort") && !controlsWereEmpty && effortWasPresent {
 			// The effort control must be recorded evidence: one derivation
 			// invented for an empty list (here or on the alias's target) or
 			// the pass-through above appended for a ladder says nothing about
@@ -185,12 +181,10 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) []string 
 			// the control.
 			aliasInherited := in.Aliased && prov["ReasoningControls"] == provAlias
 			if !aliasInherited {
-				shape = "level"
+				shape := "level"
+				c.ThinkingShape = &shape
+				prov["ThinkingShape"] = provDerived
 			}
-		}
-		if shape != "" {
-			c.ThinkingShape = &shape
-			prov["ThinkingShape"] = provDerived
 		}
 	}
 

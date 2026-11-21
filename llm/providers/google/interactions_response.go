@@ -439,6 +439,69 @@ func normalizeGoogleSearchResultStep(step map[string]any) map[string]any {
 	return out
 }
 
+func normalizeJSONNumbers(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, vv := range x {
+			out[k] = normalizeJSONNumbers(vv)
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i := range x {
+			out[i] = normalizeJSONNumbers(x[i])
+		}
+		return out
+	case json.Number:
+		if n, err := x.Int64(); err == nil {
+			return n
+		}
+		if f, err := x.Float64(); err == nil {
+			return f
+		}
+		return x.String()
+	default:
+		return v
+	}
+}
+
+// rawArgsBodyDecode is the focused raw-args body decode. Tests replace it to
+// count focused decodes per response body or streamed event body.
+var rawArgsBodyDecode = json.Unmarshal
+
+// classifyGeminiError reclassifies an ambiguous HTTP 400/422 using a Gemini
+// gRPC status in the error response body.
+func classifyGeminiError(httpStatus int, body []byte, retryAfter *time.Duration, httpErr error) error {
+	if httpStatus != 400 && httpStatus != 422 {
+		return httpErr
+	}
+	var errResp struct {
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+			Status  string `json:"status"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &errResp); err != nil || errResp.Error.Status == "" {
+		return httpErr
+	}
+	var syntheticHTTP int
+	switch errResp.Error.Status {
+	case "RESOURCE_EXHAUSTED":
+		syntheticHTTP = http.StatusTooManyRequests
+	case "DEADLINE_EXCEEDED":
+		syntheticHTTP = http.StatusRequestTimeout
+	case "UNAVAILABLE", "INTERNAL":
+		syntheticHTTP = http.StatusServiceUnavailable
+	default:
+		return httpErr
+	}
+	var raw map[string]any
+	_ = json.Unmarshal(body, &raw)
+	return llm.ErrorFromHTTPStatus("google", syntheticHTTP, errResp.Error.Message, raw, retryAfter)
+}
+
 func settleInteractionStatus(r *llm.Response, raw map[string]any, stepErrMap map[string]any, nonTextModalities []string) error {
 	status := strings.TrimSpace(stringVal(raw["status"]))
 	emptyTextAndCalls := len(r.ToolCalls()) == 0 && !hasTextPart(r.Message)

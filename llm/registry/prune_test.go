@@ -28,9 +28,12 @@ func TestPrunableTable_MatchesSpec(t *testing.T) {
 			"metadata": false, "service_tier": false, "fallbacks": false, "container": false,
 		},
 		ProtocolGoogle: {
-			"generationConfig.temperature": true, "generationConfig.topP": true, "generationConfig.stopSequences": true,
-			"generationConfig.thinkingConfig": true,
-			"toolConfig":                      true, "safetySettings": true, "cachedContent": false, "labels": false,
+			"generation_config.temperature": true, "generation_config.top_p": true,
+			"generation_config.stop_sequences": true, "generation_config.max_output_tokens": true,
+			FieldGoogleThinkingLevel: true, FieldGoogleThinkingSummaries: true,
+			"generation_config.tool_choice": true, "safety_settings": true, "store": true,
+			"generation_config.seed": false, "previous_interaction_id": false,
+			"service_tier": false, "labels": false,
 		},
 	}
 	for proto, table := range want {
@@ -57,14 +60,28 @@ func TestValidateFields(t *testing.T) {
 	if err := ValidateFields(map[string]bool{"store": true, "text.verbosity": false}, ProtocolOpenAIResponses, "providers.x"); err != nil {
 		t.Fatal(err)
 	}
-	// A user or catalog row may suppress a model's thinking entirely by
-	// clearing the whole thinkingConfig object.
-	if err := ValidateFields(map[string]bool{"generationConfig.thinkingConfig": false}, ProtocolGoogle, "providers.vertex-arc.models.gemini-4-argon"); err != nil {
+	if err := ValidateFields(map[string]bool{FieldGoogleThinkingLevel: false, FieldGoogleThinkingSummaries: false}, ProtocolGoogle, "providers.vertex-arc.models.gemini-4-argon"); err != nil {
 		t.Fatal(err)
 	}
 	err := ValidateFields(map[string]bool{"stream_options": false}, ProtocolOpenAIResponses, "providers.x")
 	if err == nil || !strings.Contains(err.Error(), "stream_options") || !strings.Contains(err.Error(), ProtocolOpenAIResponses) || !strings.Contains(err.Error(), "providers.x") {
 		t.Fatalf("error must name key, protocol, and record: %v", err)
+	}
+	// Retired camelCase Google fields keys must fail ValidateFields naming the quoted TOML replacement(s).
+	for _, tc := range []struct {
+		retired string
+		wants   []string
+	}{
+		{"generationConfig.thinkingConfig", []string{`"generation_config.thinking_level"`, `"generation_config.thinking_summaries"`}},
+		{"toolConfig", []string{`"generation_config.tool_choice"`}},
+		{"cachedContent", []string{"remove"}},
+	} {
+		gerr := ValidateFields(map[string]bool{tc.retired: false}, ProtocolGoogle, "providers.google")
+		for _, w := range tc.wants {
+			if gerr == nil || !strings.Contains(gerr.Error(), tc.retired) || !strings.Contains(gerr.Error(), w) {
+				t.Fatalf("retired key %q error = %v, want mention of %q", tc.retired, gerr, w)
+			}
+		}
 	}
 }
 
@@ -122,21 +139,20 @@ func TestPrune_RemovesOnlyFalsePaths(t *testing.T) {
 	}
 }
 
-// Clearing generationConfig.thinkingConfig drops the object and leaves the
-// rest of generationConfig standing; it is how a row declares a model that
-// takes no thinking fields at all.
-func TestPrune_GoogleThinkingConfig(t *testing.T) {
+// Clearing generation_config.thinking_level drops only that leaf and leaves
+// sibling generation_config fields standing.
+func TestPrune_GoogleThinkingLevel(t *testing.T) {
 	t.Parallel()
-	body := map[string]any{"generationConfig": map[string]any{"temperature": 0.2, "thinkingConfig": map[string]any{"thinkingLevel": "high"}}}
-	pruned := Prune(body, Caps{Fields: map[string]bool{"generationConfig.thinkingConfig": false}}, ProtocolGoogle)
-	if !reflect.DeepEqual(pruned, []string{"generationConfig.thinkingConfig"}) {
+	body := map[string]any{"generation_config": map[string]any{"temperature": 0.2, "thinking_level": "high", "thinking_summaries": "auto"}}
+	pruned := Prune(body, Caps{Fields: map[string]bool{FieldGoogleThinkingLevel: false}}, ProtocolGoogle)
+	if !reflect.DeepEqual(pruned, []string{FieldGoogleThinkingLevel}) {
 		t.Fatalf("pruned = %v", pruned)
 	}
-	gen := body["generationConfig"].(map[string]any)
-	if _, ok := gen["thinkingConfig"]; ok {
-		t.Fatalf("thinkingConfig survived the prune: %v", gen)
+	gen := body["generation_config"].(map[string]any)
+	if _, ok := gen["thinking_level"]; ok {
+		t.Fatalf("thinking_level survived the prune: %v", gen)
 	}
-	if _, ok := gen["temperature"]; !ok {
+	if _, ok := gen["temperature"]; !ok || gen["thinking_summaries"] != "auto" {
 		t.Fatalf("sibling fields must survive: %v", gen)
 	}
 }
@@ -206,7 +222,7 @@ func TestTemperaturePath(t *testing.T) {
 		{ProtocolOpenAIChat, "temperature"},
 		{ProtocolOpenAIResponses, "temperature"},
 		{ProtocolAnthropic, "temperature"},
-		{ProtocolGoogle, "generationConfig.temperature"},
+		{ProtocolGoogle, "generation_config.temperature"},
 		{"unknown-protocol", ""},
 		{"", ""},
 	}
@@ -288,9 +304,9 @@ func TestTemperatureSupported(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "google row keys generationConfig.temperature",
+			name: "google row keys generation_config.temperature",
 			res: Resolved{Protocol: ProtocolGoogle, Provenance: catalogRow("row", "gemini-x"),
-				Caps: Caps{Fields: map[string]bool{"generationConfig.temperature": true}}},
+				Caps: Caps{Fields: map[string]bool{"generation_config.temperature": true}}},
 			want: true,
 		},
 		{
@@ -380,6 +396,7 @@ func TestApplyBodyConstants_DeepClonesNestedMapsAcrossCalls(t *testing.T) {
 	constants := map[string]any{
 		"generation_config":      map[string]any{"max_output_tokens": 1000},
 		"generation_config.seed": 7,
+		"safety_settings":        []any{map[string]any{"type": "harassment", "threshold": "block_only_high"}},
 	}
 	body1 := map[string]any{}
 	ApplyBodyConstants(body1, constants)
@@ -391,6 +408,9 @@ func TestApplyBodyConstants_DeepClonesNestedMapsAcrossCalls(t *testing.T) {
 		t.Fatalf("generation_config = %T, want a map", body1["generation_config"])
 	}
 	gen1["max_output_tokens"] = 200
+	ss1 := body1["safety_settings"].([]any)
+	ss1[0].(map[string]any)["threshold"] = "block_none"
+	ss1[0] = "mutated"
 
 	if got := constants["generation_config"].(map[string]any)["max_output_tokens"]; got != 1000 {
 		t.Fatalf("shared constant mutated: max_output_tokens = %v, want 1000", got)
@@ -404,5 +424,9 @@ func TestApplyBodyConstants_DeepClonesNestedMapsAcrossCalls(t *testing.T) {
 	}
 	if gen2["seed"] != 7 {
 		t.Fatalf("second body seed = %v, want 7", gen2["seed"])
+	}
+	ss2 := body2["safety_settings"].([]any)
+	if ss2[0].(map[string]any)["threshold"] != "block_only_high" {
+		t.Fatalf("second body shares safety_settings slice/map with first: %v", ss2)
 	}
 }

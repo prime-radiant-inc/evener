@@ -1025,6 +1025,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		// belongs to this delegate; the first inherited input belongs to its parent.
 		cfg.spawn.subagentTask = meta.OriginalPrompt
 	}
+	savedModelFallbacks := restoreCfg.ModelFallbacks == nil && len(cfg.ModelFallbacks) > 0
 	if restoreCfg.ModelFallbacks != nil {
 		cfg.ModelFallbacks = append([]string(nil), restoreCfg.ModelFallbacks...)
 	}
@@ -1114,12 +1115,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	if err := env.Initialize(); err != nil {
 		return nil, fmt.Errorf("env initialize: %w", err)
-	}
-	// Restore the cheap/fast model routing from the persisted meta. On resume the
-	// caller's profile carries no cheap model (the launch arg is intentionally
-	// not re-passed), so this is the only place it is re-applied.
-	if meta.CheapModel != "" {
-		profile = provider.WithCheapModel(profile, meta.CheapModel)
 	}
 
 	// Reconcile the typed compaction handoff receipts from ALL decoded
@@ -1290,6 +1285,31 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// of letting it fall into the shared unattributed bucket.
 	profile, selectedModels := resolveStartupModelProfileWithReuse(client, profile, s.id, *s.providerAdapterTimeout(), restoreCfg.StartupModelListing)
 	s.profile = profile
+	// Restore the cheap/fast model routing from the persisted meta, pruning any
+	// retired provider (e.g. google-vertex-express) or unsupported Vertex model.
+	if meta.CheapModel != "" {
+		candidate := provider.WithCheapModel(s.profile, meta.CheapModel)
+		if err := s.validateSavedCheapModel(candidate); err != nil {
+			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{
+				Message: fmt.Sprintf("restore: ignored saved cheap_model %q: %v", meta.CheapModel, err),
+			})
+		} else {
+			s.profile = candidate
+		}
+	}
+	if savedModelFallbacks {
+		kept := make([]string, 0, len(s.cfg.ModelFallbacks))
+		for _, fbModel := range s.cfg.ModelFallbacks {
+			if err := s.validateModelFallbackEntry(fbModel); err != nil {
+				s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{
+					Message: fmt.Sprintf("restore: pruned saved model_fallbacks entry %q: %v", fbModel, err),
+				})
+				continue
+			}
+			kept = append(kept, fbModel)
+		}
+		s.cfg.ModelFallbacks = kept
+	}
 	s.captureModelAvailability(selectedModels)
 	defer func() {
 		if !restoreComplete {
@@ -1961,9 +1981,12 @@ func (s *Session) validateModelFallbacks() error {
 func (s *Session) validateModelFallbackEntry(fbModel string) error {
 	parts := strings.SplitN(fbModel, "/", 2)
 	if len(parts) != 2 || !s.profile.CrossProviderRef(fbModel) {
-		// A ref reaching this point is same-instance. resolveProfileForRef only
-		// invokes the injected resolver for cross-instance refs, so a
-		// same-instance ref is a direct WithModel projection.
+		if s.profile != nil {
+			fbProfile := s.profile.WithModel(fbModel)
+			if err := validateVertexInteractionsModel(fbProfile); err != nil {
+				return fmt.Errorf("model_fallbacks entry %q: %w", fbModel, err)
+			}
+		}
 		return nil
 	}
 	fbProfile, crossProvider, err := s.resolveProfileForRef(s.profile, fbModel)
@@ -1978,6 +2001,9 @@ func (s *Session) validateModelFallbackEntry(fbModel string) error {
 	}
 	if fbProfile.Surface() != s.profile.Surface() {
 		return fmt.Errorf("model_fallbacks entry %q switches surface from %q to %q; cross-surface fallbacks are not supported because prompt/tool surfaces differ", fbModel, s.profile.Surface(), fbProfile.Surface())
+	}
+	if err := validateVertexInteractionsModel(fbProfile); err != nil {
+		return fmt.Errorf("model_fallbacks entry %q: %w", fbModel, err)
 	}
 	return nil
 }

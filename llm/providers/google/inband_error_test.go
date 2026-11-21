@@ -9,8 +9,6 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// collectStream serves body as an SSE response and drains the stream the
-// protocol decodes from it, returning the text and the terminal error.
 func collectStream(t *testing.T, body string) (text string, streamErr error) {
 	t.Helper()
 	srv, _ := protoServer(t, 200, body)
@@ -29,12 +27,9 @@ func collectStream(t *testing.T, body string) (text string, streamErr error) {
 	return text, streamErr
 }
 
-// Gemini reports a mid-stream rejection as its standard error envelope inside
-// an HTTP 200 stream. It must surface as a typed provider error carrying the
-// envelope's status, not as the generic incomplete-stream error.
 func TestInbandError_ResourceExhausted_TypedRateLimit(t *testing.T) {
 	t.Parallel()
-	body := "data: {\"error\":{\"code\":429,\"message\":\"Resource has been exhausted (e.g. check quota).\",\"status\":\"RESOURCE_EXHAUSTED\"}}\n\n"
+	body := "event: error\ndata: {\"event_type\":\"error\",\"error\":{\"code\":\"resource_exhausted\",\"message\":\"Resource has been exhausted (e.g. check quota).\"}}\n\n"
 	_, streamErr := collectStream(t, body)
 	if streamErr == nil {
 		t.Fatal("expected a terminal stream error, got none")
@@ -54,28 +49,24 @@ func TestInbandError_ResourceExhausted_TypedRateLimit(t *testing.T) {
 	}
 }
 
-// Gemini can report a rate limit as an ambiguous 400 whose gRPC status names
-// the real cause; the in-band path reclassifies it exactly like the non-2xx
-// path does.
-func TestInbandError_AmbiguousCode_ReclassifiedByGRPCStatus(t *testing.T) {
+func TestInbandError_GatewayTimeout_TypedTimeout(t *testing.T) {
 	t.Parallel()
-	body := "data: {\"error\":{\"code\":400,\"message\":\"quota exceeded\",\"status\":\"RESOURCE_EXHAUSTED\"}}\n\n"
+	body := "event: error\ndata: {\"event_type\":\"error\",\"error\":{\"code\":\"gateway_timeout\",\"message\":\"deadline exceeded\"}}\n\n"
 	_, streamErr := collectStream(t, body)
 	if streamErr == nil {
 		t.Fatal("expected a terminal stream error, got none")
 	}
-	if llm.Kind(streamErr) != llm.KindRateLimit {
-		t.Fatalf("Kind = %v, want KindRateLimit: %v", llm.Kind(streamErr), streamErr)
+	if llm.Kind(streamErr) != llm.KindTimeout {
+		t.Fatalf("Kind = %v, want KindTimeout: %v", llm.Kind(streamErr), streamErr)
 	}
 }
 
-// An error envelope arriving after real content must still terminate with the
-// typed error; the already-delivered deltas stay delivered.
 func TestInbandError_AfterContent(t *testing.T) {
 	t.Parallel()
-	body := "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial \"}]}}]}\n\n" +
-		"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"answer\"}]}}]}\n\n" +
-		"data: {\"error\":{\"code\":503,\"message\":\"The model is overloaded\",\"status\":\"UNAVAILABLE\"}}\n\n"
+	body := "event: step.start\ndata: {\"event_type\":\"step.start\",\"index\":0,\"step\":{\"type\":\"model_output\"}}\n\n" +
+		"event: step.delta\ndata: {\"event_type\":\"step.delta\",\"index\":0,\"delta\":{\"type\":\"text\",\"text\":\"partial \"}}\n\n" +
+		"event: step.delta\ndata: {\"event_type\":\"step.delta\",\"index\":0,\"delta\":{\"type\":\"text\",\"text\":\"answer\"}}\n\n" +
+		"event: error\ndata: {\"event_type\":\"error\",\"error\":{\"code\":\"unavailable\",\"message\":\"The model is overloaded\"}}\n\n"
 	text, streamErr := collectStream(t, body)
 	if text != "partial answer" {
 		t.Fatalf("delivered text = %q, want %q", text, "partial answer")
@@ -92,12 +83,11 @@ func TestInbandError_AfterContent(t *testing.T) {
 	}
 }
 
-// Unparseable line noise keeps today's behavior: forwarded raw, and a stream
-// that then ends without a finishReason still reports the generic error.
 func TestInbandError_LineNoiseStillSkipped(t *testing.T) {
 	t.Parallel()
 	body := "data: this is not json\n\n" +
-		"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"x\"}]}}]}\n\n"
+		"event: step.start\ndata: {\"event_type\":\"step.start\",\"index\":0,\"step\":{\"type\":\"model_output\"}}\n\n" +
+		"event: step.delta\ndata: {\"event_type\":\"step.delta\",\"index\":0,\"delta\":{\"type\":\"text\",\"text\":\"x\"}}\n\n"
 	text, streamErr := collectStream(t, body)
 	if text != "x" {
 		t.Fatalf("delivered text = %q, want %q", text, "x")

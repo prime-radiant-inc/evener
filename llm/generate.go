@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"primeradiant.com/evener/llm/registry"
+
 	"github.com/santhosh-tekuri/jsonschema/v5"
 )
 
@@ -228,6 +230,37 @@ func prepareGeneration(opts GenerateOptions) (*generationState, error) {
 		if t.Execute != nil {
 			hasActiveTool = true
 			break
+		}
+	}
+
+	if maxToolRounds > 0 && hasActiveTool {
+		providerName := normalizeProviderName(opts.Provider)
+		if providerName == "" {
+			providerName = client.DefaultProvider()
+		}
+		if providerName != "" {
+			if res, rErr := client.Resolve(providerName + "/" + opts.Model); rErr == nil && res.Protocol == registry.ProtocolGoogle {
+				anchor := strings.TrimSpace(opts.PreviousResponseID)
+				if gOpts, ok := opts.ProviderOptions[registry.ProtocolGoogle].(map[string]any); ok {
+					if rawAnchor, exists := gOpts["previous_interaction_id"]; exists {
+						s, ok := rawAnchor.(string)
+						if !ok {
+							return nil, &ConfigurationError{ProviderInstance: res.Instance, Message: "google provider_options.previous_interaction_id must be a string"}
+						}
+						if anchor == "" {
+							anchor = strings.TrimSpace(s)
+						}
+					}
+				}
+				if anchor != "" {
+					return nil, &ConfigurationError{ProviderInstance: res.Instance, Message: "google interactions with previous_interaction_id cannot use automatic Generate/StreamGenerate tool loops; use Client.Complete/Client.Stream or set MaxToolRounds=0"}
+				}
+				toolsSupported := res.Caps.Tools == nil || *res.Caps.Tools
+				webSearch := opts.WebSearch && (res.Caps.WebSearch == nil || *res.Caps.WebSearch) && !registry.IsVertexGeminiOmni(res.Transport.Preset, res.WireID)
+				if webSearch && len(toolDefs) > 0 && toolsSupported && registry.BoolValue(res.Caps.CombinedSearchAndFunctions) {
+					return nil, &ConfigurationError{ProviderInstance: res.Instance, Message: "google interactions combining web_search with active function tools cannot use automatic Generate/StreamGenerate tool loops; use Client.Complete/Client.Stream or set MaxToolRounds=0"}
+				}
+			}
 		}
 	}
 

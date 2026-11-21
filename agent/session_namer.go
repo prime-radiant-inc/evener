@@ -161,7 +161,7 @@ func sessionNamerModel(profile *provider.Profile) string {
 // which requires a catalog row (a live-only or synthesized row inherits the
 // protocol's send-by-default baseline without any catalog fact) and reads the
 // protocol-keyed temperature path, so Google rows are judged on
-// generationConfig.temperature.
+// generation_config.temperature.
 func sessionNamerTemperature(client *llm.Client, profile *provider.Profile, model string) *float64 {
 	if client == nil || profile == nil || model == "" {
 		return nil

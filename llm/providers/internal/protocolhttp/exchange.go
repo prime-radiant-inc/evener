@@ -160,6 +160,12 @@ func CompleteViaStream(ctx context.Context, instance string, open func(context.C
 // RequiresStreamingComplete reports whether the instance's transport
 // answers Complete through Stream (spec §8.1 RequestPreparer).
 func RequiresStreamingComplete(res registry.Resolved) bool {
-	p, ok := llm.RequestPreparerFor(res.Transport.Auth)
+	return RequiresStreamingCompleteContext(context.Background(), res)
+}
+
+// RequiresStreamingCompleteContext resolves the effective authenticator for ctx
+// (including call-scoped overrides) and reports whether Complete must stream.
+func RequiresStreamingCompleteContext(ctx context.Context, res registry.Resolved) bool {
+	p, ok := llm.AuthenticatorForContext(ctx, res.Transport.Auth).(llm.RequestPreparer)
 	return ok && p.RequiresStreamingComplete()
 }

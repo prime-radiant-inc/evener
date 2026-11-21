@@ -22,7 +22,6 @@ type interactionStreamSlot struct {
 	stepMap        map[string]any
 	spanStarted    bool
 	spanEnded      bool
-	stepStopped    bool
 	deferredEvents []llm.StreamEvent
 
 	// thought
@@ -224,27 +223,40 @@ func (a *interactionStreamAccumulator) handleStepStart(idx int, step map[string]
 			slot.stepError = errMap
 		}
 		if content, ok := step["content"].([]any); ok {
-			texts, citations, modalities := extractModelOutputContent(content, true)
-			slot.citations = appendUniqueSources(slot.citations, citations)
-			slot.nonTextModalities = appendUniqueStrings(slot.nonTextModalities, modalities...)
-			if len(modalities) > 0 {
-				slot.textNeedsNewBuilder = true
-			}
-			for _, t := range texts {
-				b := new(strings.Builder)
-				b.WriteString(t)
-				slot.textBuilders = append(slot.textBuilders, b)
-				slot.textNeedsNewBuilder = false
-				slot.hadStreamedText = true
-				if !slot.spanStarted {
-					slot.spanStarted = true
-					a.emit(slot, llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: slot.textID})
+			for _, itemAny := range content {
+				item, ok := itemAny.(map[string]any)
+				if !ok {
+					continue
 				}
-				a.emit(slot, llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: slot.textID, Delta: t})
+				itemType := stringVal(item["type"])
+				switch itemType {
+				case "text":
+					if ann := item["annotations"]; ann != nil {
+						slot.citations = appendUniqueSources(slot.citations, extractCitationAnnotations(ann))
+					}
+					if t := stringVal(item["text"]); t != "" {
+						b := new(strings.Builder)
+						b.WriteString(t)
+						slot.textBuilders = append(slot.textBuilders, b)
+						slot.textNeedsNewBuilder = false
+						slot.hadStreamedText = true
+						if !slot.spanStarted {
+							slot.spanStarted = true
+							a.emit(slot, llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: slot.textID})
+						}
+						a.emit(slot, llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: slot.textID, Delta: t})
+					}
+				case "image", "audio", "video", "document":
+					slot.nonTextModalities = appendUniqueStrings(slot.nonTextModalities, itemType)
+					slot.textNeedsNewBuilder = true
+				}
 			}
 		}
 	case "function_call":
 		slot.callID = cmp.Or(stringVal(step["id"]), slot.callID)
+		if slot.callID == "" {
+			slot.callID = identifier.MustNewSyntheticCallID()
+		}
 		slot.callName = cmp.Or(stringVal(step["name"]), slot.callName)
 		if sig := strings.TrimSpace(stringVal(step["signature"])); sig != "" {
 			slot.signature = sig
@@ -431,7 +443,6 @@ func (a *interactionStreamAccumulator) handleStepStop(idx int, payload map[strin
 	if !ok {
 		return
 	}
-	slot.stepStopped = true
 	switch slot.stepType {
 	case "thought":
 		if slot.hadStreamedSummary {
@@ -761,6 +772,7 @@ func decodeInteractionStream(
 	material llm.APILogCredentialMaterial,
 	attempt *transport.APIAttemptCapture,
 	summariesDisabled bool,
+	hasher *llm.ContinuationHasher,
 ) {
 	defer func() {
 		_ = resp.Body.Close()
@@ -833,6 +845,7 @@ func decodeInteractionStream(
 					return &transport.FatalStreamError{Err: llm.RewriteErrorProvider(err, provider)}
 				}
 				llm.StampEndpointURL(&r, llm.FinalResponseEndpointURL(resp, endpointURL), material)
+				llm.StampContinuationIDHash(sctx, &r, hasher)
 				runner.Finish(r)
 			case "error":
 				errObj, _ := payload["error"].(map[string]any)

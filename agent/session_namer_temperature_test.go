@@ -128,7 +128,7 @@ func TestNameSession_OmitsTemperatureForLiveOnlyRows(t *testing.T) {
 }
 
 // TestNameSession_SendsTemperatureForGoogleRows: Google rows key their
-// temperature capability on generationConfig.temperature, not temperature;
+// temperature capability on generation_config.temperature, not temperature;
 // a supported Google model must still receive the parameter (roborev on
 // #835: the fixed key read as missing and dropped it for all Google models).
 func TestNameSession_SendsTemperatureForGoogleRows(t *testing.T) {
@@ -339,24 +339,24 @@ func TestIsTemperatureUnsupported(t *testing.T) {
 	// Google rejections use the nested spelling; the protocol stamped on the
 	// error selects it, and an unattributed error accepts either spelling.
 	googleRes := registry.Resolved{Instance: "google", Protocol: registry.ProtocolGoogle}
-	googleErr := llm.ClassifyHTTPError("generateContent", 400, nil,
-		[]byte(`{"error":{"message":"Unsupported","code":"unsupported_parameter","status":"INVALID_ARGUMENT","param":"generationConfig.temperature"}}`),
+	googleErr := llm.ClassifyHTTPError("interactions.create", 400, nil,
+		[]byte(`{"error":{"message":"Unsupported","code":"unsupported_parameter","status":"INVALID_ARGUMENT","param":"generation_config.temperature"}}`),
 		googleRes)
 	if !isTemperatureUnsupported(googleErr) {
-		t.Error("Google-protocol rejection naming generationConfig.temperature must trigger the retry")
+		t.Error("Google-protocol rejection naming generation_config.temperature must trigger the retry")
 	}
 	// An invalid-value error pointing at temperature must not trigger it.
-	googleValueErr := llm.ClassifyHTTPError("generateContent", 400, nil,
-		[]byte(`{"error":{"message":"Invalid value for 'generationConfig.temperature': must be between 0 and 2.","code":"invalid_value","status":"INVALID_ARGUMENT","param":"generationConfig.temperature"}}`),
+	googleValueErr := llm.ClassifyHTTPError("interactions.create", 400, nil,
+		[]byte(`{"error":{"message":"Invalid value for 'generation_config.temperature': must be between 0 and 2.","code":"invalid_value","status":"INVALID_ARGUMENT","param":"generation_config.temperature"}}`),
 		googleRes)
 	if isTemperatureUnsupported(googleValueErr) {
-		t.Error("Google invalid-value error naming generationConfig.temperature must not trigger the retry")
+		t.Error("Google invalid-value error naming generation_config.temperature must not trigger the retry")
 	}
-	plainGoogleErr := llm.ErrorFromHTTPStatus("anyone", 400, "Unsupported parameter: 'generationConfig.temperature'", nil, nil)
+	plainGoogleErr := llm.ErrorFromHTTPStatus("anyone", 400, "Unsupported parameter: 'generation_config.temperature'", nil, nil)
 	if !isTemperatureUnsupported(plainGoogleErr) {
-		t.Error("unattributed rejection naming generationConfig.temperature must trigger the retry")
+		t.Error("unattributed rejection naming generation_config.temperature must trigger the retry")
 	}
-	googlePlainTemp := llm.ClassifyHTTPError("generateContent", 400, nil,
+	googlePlainTemp := llm.ClassifyHTTPError("interactions.create", 400, nil,
 		[]byte(`{"error":{"message":"Unsupported parameter: 'temperature'","code":400,"status":"INVALID_ARGUMENT"}}`),
 		googleRes)
 	if isTemperatureUnsupported(googlePlainTemp) {

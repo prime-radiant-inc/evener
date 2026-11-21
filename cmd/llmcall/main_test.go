@@ -243,3 +243,26 @@ func TestRunLLMCall_Schema_ValidatesAndPrints(t *testing.T) {
 		t.Fatalf("expected JSON output, got %q", stdout.String())
 	}
 }
+
+func TestRunLLMCall_WebSearchRejectedOnProtocolGoogleBeforeHTTP(t *testing.T) {
+	called := false
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name:  "google",
+		check: func(llm.Request) { called = true },
+	})
+	var stdout, stderr bytes.Buffer
+	err := runLLMCall(context.Background(), llmCallConfig{
+		prompt:    "search something",
+		provider:  "google",
+		model:     "gemini-3.8-flash",
+		format:    "text",
+		webSearch: true,
+		stdout:    &stdout,
+		stderr:    &stderr,
+		client:    c,
+	})
+	if err == nil || called {
+		t.Fatalf("expected pre-HTTP error for --web-search on ProtocolGoogle; err=%v called=%v", err, called)
+	}
+}

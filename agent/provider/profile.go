@@ -424,11 +424,11 @@ func (p *Profile) ProviderOptions() map[string]any {
 	case registry.ProtocolOpenAIResponses:
 		return map[string]any{registry.ProtocolOpenAIResponses: map[string]any{"parallel_tool_calls": true}}
 	case registry.ProtocolGoogle:
-		return map[string]any{registry.ProtocolGoogle: map[string]any{"safetySettings": []map[string]any{
-			{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
-			{"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
-			{"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"},
-			{"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
+		return map[string]any{registry.ProtocolGoogle: map[string]any{"safety_settings": []map[string]any{
+			{"type": "harassment", "threshold": "block_only_high"},
+			{"type": "hate_speech", "threshold": "block_only_high"},
+			{"type": "sexually_explicit", "threshold": "block_only_high"},
+			{"type": "dangerous_content", "threshold": "block_only_high"},
 		}}}
 	}
 	return nil

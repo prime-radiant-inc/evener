@@ -1840,8 +1840,8 @@ func TestProviderOptions_PassedToLLMRequest(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected %s key in ProviderOptions, got %v", registry.ProtocolGoogle, reqs[0].ProviderOptions)
 	}
-	if google["safetySettings"] == nil {
-		t.Fatalf("expected safetySettings in the google provider options, got %v", google)
+	if google["safety_settings"] == nil {
+		t.Fatalf("expected safety_settings in the google provider options, got %v", google)
 	}
 }
 

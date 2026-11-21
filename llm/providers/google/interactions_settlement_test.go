@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providers/internal/transport"
 )
 
 func decodeJSONForTest(t *testing.T, body []byte) map[string]any {
@@ -36,7 +35,7 @@ func runInteractionsSSETest(t *testing.T, sse string, instance, wireModel string
 		Body:       io.NopCloser(strings.NewReader(sse)),
 	}
 	stream := llm.NewChanStream(cancel)
-	go decodeInteractionStream(ctx, cancel, httpResp, stream, llm.Request{Model: wireModel}, instance, wireModel, "", llm.APILogCredentialMaterial{}, nil, summariesDisabled)
+	go decodeInteractionStream(ctx, cancel, httpResp, stream, llm.Request{Model: wireModel}, instance, wireModel, "", llm.APILogCredentialMaterial{}, nil, summariesDisabled, nil)
 
 	var events []llm.StreamEvent
 	var final llm.Response
@@ -444,7 +443,7 @@ func TestInteraction_SSE_SlotQueueSummariesAndUnstoppedSpans(t *testing.T) {
 		pr, pw := io.Pipe()
 		httpResp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: pr}
 		stream := llm.NewChanStream(cancel)
-		go decodeInteractionStream(ctx, cancel, httpResp, stream, llm.Request{Model: "gemini-4-neon"}, "gemini-prod", "gemini-4-neon", "", llm.APILogCredentialMaterial{}, nil, true)
+		go decodeInteractionStream(ctx, cancel, httpResp, stream, llm.Request{Model: "gemini-4-neon"}, "gemini-prod", "gemini-4-neon", "", llm.APILogCredentialMaterial{}, nil, true, nil)
 
 		go func() {
 			_, _ = io.WriteString(pw, buildSSE(
@@ -862,5 +861,4 @@ func TestExtractRecordedResponse_Interactions(t *testing.T) {
 	if _, err := ExtractRecordedResponse([]byte(`{"candidates":[{"content":{"parts":[{"text":"x"}]}}]}`), "m"); err == nil {
 		t.Fatal("expected error for mis-filed generateContent JSON")
 	}
-	_ = transport.StreamRunner{}
 }

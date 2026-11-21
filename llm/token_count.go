@@ -396,6 +396,10 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 				if t.protocol == registry.ProtocolOpenAIResponses {
 					chars += len(strings.TrimSpace(p.ToolCall.ItemID))
 				}
+				if t.protocol == registry.ProtocolGoogle && p.ToolCall.GoogleInteraction &&
+					t.instance != "" && t.wireID != "" && p.ToolCall.GoogleInstance == t.instance && p.ToolCall.GoogleModel == t.wireID {
+					chars += len(strings.TrimSpace(p.ToolCall.ThoughtSignature))
+				}
 			}
 		case ContentToolResult:
 			if p.ToolResult != nil {
@@ -492,6 +496,15 @@ func thinkingReplayChars(target targetInfo, p ContentPart) int {
 				return 0
 			}
 			return responsesReasoningChars(t)
+		case registry.ProtocolGoogle:
+			if p.Kind != ContentThinking || !t.ReplayableGoogleThoughtFor(target.instance, target.wireID) {
+				return 0
+			}
+			chars := len(strings.TrimSpace(t.Signature))
+			for _, s := range t.Summary {
+				chars += len(s)
+			}
+			return chars
 		default:
 			// The Google adapter and every other protocol along this path emit
 			// no thinking shape.
@@ -640,10 +653,11 @@ func (r chatReasoningEstimate) chars(target targetInfo) int {
 // names the media estimates key on, and whether the target's adapter replays a
 // thinking part that carries text and no replay metadata.
 type targetInfo struct {
-	provider, model string
-	protocol        string
-	surface         string
-	family          string
+	instance, wireID string
+	provider, model  string
+	protocol         string
+	surface          string
+	family           string
 	// resolved marks a target built from a registry row. The row's instance is
 	// an alias it was reached through, not vendor identity, so the media-family
 	// name rule reads a resolved target's model name alone -- unless the caller
@@ -802,6 +816,7 @@ func targetFromResolved(res registry.Resolved, provider, model string) targetInf
 		fallbackProvider = ""
 	}
 	return targetInfo{
+		instance: res.Instance, wireID: res.WireID,
 		provider: provider, model: model,
 		protocol: res.Protocol, surface: res.Surface, family: res.Model.Family,
 		resolved: true, providerFromCaller: providerFromCaller,

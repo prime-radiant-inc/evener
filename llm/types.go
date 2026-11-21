@@ -322,6 +322,16 @@ type ResponsesReasoningPart struct {
 	Text string `json:"text"`
 }
 
+// ReplayableGoogleThoughtFor reports whether t is a Google Interactions
+// thought step issued by the exact (instance, wireModel) target.
+func (t *ThinkingData) ReplayableGoogleThoughtFor(instance, wireModel string) bool {
+	return t != nil && t.GoogleInteraction && !t.Redacted && t.EncryptedContent == "" &&
+		!IsOpenAICompatReasoningField(t.Signature) &&
+		(strings.TrimSpace(t.Signature) != "" || len(t.Summary) > 0) &&
+		instance != "" && wireModel != "" &&
+		t.GoogleInstance == instance && t.GoogleModel == wireModel
+}
+
 // ReplayableResponsesPlaintext reports a finished Responses item with native
 // typed parts. A bare Text projection is display-only and never replays.
 func (t *ThinkingData) ReplayableResponsesPlaintext() bool {
@@ -1159,37 +1169,25 @@ func EffortReachesWire(tier string, res registry.Resolved) bool {
 		}
 		return false
 	case registry.ProtocolGoogle:
-		// registry.Prune runs after the builder and deletes the whole
-		// thinkingConfig object, whichever shape spelled into it, so a row that
-		// turns the field off carries neither a level nor a budget.
-		if sends, pinned := caps.Fields[registry.FieldGoogleThinkingConfig]; pinned && !sends {
+		if sends, pinned := caps.Fields[registry.FieldGoogleThinkingLevel]; pinned && !sends {
 			return false
 		}
-		switch shape {
-		case "budget":
-			return budgetSized
-		case "level":
-			// A gateway's no-effort verdict keeps includeThoughts but spells no
-			// level, whatever the row's ladder lists.
-			if registry.BoolValue(caps.EffortParameterUnsupported) {
-				return false
-			}
-			// The builder spells the tier through a row with no ladder and only
-			// a vouched level through a row that names one.
-			spelled := tier
-			if len(caps.EffortValues) != 0 {
-				spelled = vouched
-			}
-			// It then writes its wire enum: only the four tiers that enum spells
-			// are on the wire. Evener's top two are renamed onto the ceiling and
-			// anything else is dropped, so neither carries the tier that was
-			// asked for — reporting either would name a tier the body never
-			// spells, which is the defect this predicate exists to prevent.
-			switch strings.ToUpper(spelled) {
-			case "MINIMAL", "LOW", "MEDIUM", "HIGH":
-				return true
-			}
+		if shape != "level" {
 			return false
+		}
+		if registry.BoolValue(caps.EffortParameterUnsupported) {
+			return false
+		}
+		if strings.EqualFold(tier, "max") {
+			return false
+		}
+		spelled := tier
+		if len(caps.EffortValues) != 0 {
+			spelled = vouched
+		}
+		switch strings.ToUpper(spelled) {
+		case "MINIMAL", "LOW", "MEDIUM", "HIGH", "XHIGH":
+			return true
 		}
 		return false
 	case registry.ProtocolOpenAIResponses:

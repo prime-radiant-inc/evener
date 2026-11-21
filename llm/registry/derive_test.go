@@ -18,8 +18,8 @@ func TestDerive_GoogleThinkingShapes(t *testing.T) {
 		want     string
 	}{
 		{"cataloged 3.x effort-only", []string{"effort"}, false, "level"},
-		{"cataloged 2.5 budget", []string{"budget_tokens"}, false, "budget"},
-		{"cataloged 2.5 budget+toggle", []string{"budget_tokens", "toggle"}, false, "budget"},
+		{"cataloged 2.5 budget-only derives no level", []string{"budget_tokens"}, false, ""},
+		{"cataloged 2.5 budget+toggle derives no level", []string{"budget_tokens", "toggle"}, false, ""},
 		{"cataloged reasoning, options unrecorded", nil, false, ""},
 		{"toggle-only row", []string{"toggle"}, false, ""},
 		{"uncataloged live-listed", nil, true, ""},
@@ -273,6 +273,9 @@ combined_search_and_functions = false
 	t.Run("IsVertexGeminiOmni", func(t *testing.T) {
 		if !IsVertexGeminiOmni(PresetVertexGemini, "gemini-omni-1.2-flash") {
 			t.Fatal("a Vertex preset with a gemini-omni id is Vertex Gemini Omni")
+		}
+		if !IsVertexGeminiOmni(PresetVertexGemini, " Gemini-Omni-1.2-Flash ") {
+			t.Fatal("IsVertexGeminiOmni must trim whitespace and match case-insensitively")
 		}
 		if IsVertexGeminiOmni("", "acme-omni-chat") || IsVertexGeminiOmni("", "gemini-omni-1.2-flash") {
 			t.Fatal("the predicate needs both the Vertex preset and the gemini-omni prefix")

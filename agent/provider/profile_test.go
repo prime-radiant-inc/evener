@@ -173,7 +173,7 @@ func TestProfileProviderOptionsByProtocol(t *testing.T) {
 		t.Fatalf("responses extras: %+v", openai.ProviderOptions())
 	}
 	google := mustResolve(t, r, "google/gemini-3-pro")
-	if opts, _ := google.ProviderOptions()[registry.ProtocolGoogle].(map[string]any); opts["safetySettings"] == nil {
+	if opts, _ := google.ProviderOptions()[registry.ProtocolGoogle].(map[string]any); opts["safety_settings"] == nil {
 		t.Fatalf("google extras: %+v", google.ProviderOptions())
 	}
 	anthropic := mustResolve(t, r, "anthropic/claude-opus-5")

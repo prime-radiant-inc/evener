@@ -367,7 +367,7 @@ openai/gpt-5.6` work on a machine with no key set.
 | `anthropic` | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL` (`https://api.anthropic.com/v1`) | surface `anthropic`, family `claude`; `default_model = claude-opus-5`, `cheap_model = claude-haiku-4-5` |
 | `openai-codex` | none — OAuth only, `api_key_env = []` so a bare `OPENAI_API_KEY` never yields this instance | `OPENAI_CODEX_BASE_URL` (`https://chatgpt.com/backend-api/codex`) | see [The Codex transport](#the-codex-transport) below; `default_model = gpt-5.6`, `cheap_model = gpt-5.6-luna` |
 | `openai` | `OPENAI_API_KEY` | `OPENAI_BASE_URL` (`https://api.openai.com/v1`) | surface `openai`; `default_model = gpt-5.6`, `cheap_model = gpt-4.1-nano`; `strict_tools = true` (strict JSON-schema tool calls on the native Responses path). A tool is certified for strict mode only when **every** node of its schema can be verified: every object explicitly sets `additionalProperties: false` (an omission is implicitly open, and closing it would forbid every key the object never declared), every object's `required` names only keys it declares, and every node states a constraint at all — an empty schema, an array without `items`, and an open object with no declared properties all admit values the projection cannot bound, so all are refused; so is a typeless node whose only keywords annotate it (`description`, `title`) or bound one type (`minLength: 0`, `pattern: ""`), because such a node still accepts every value of every other type. Root-level `anyOf` falls back to non-strict per OpenAI's root-schema rule, while a property-level `anyOf` qualifies for strict mode when every branch is strict-expressible and the emitted schema satisfies the resolved route's requirements (on Codex Responses Lite, where every node requires an explicit `type`, unions that need a container or multi-type enclosing `type` fall back to `strict: false` with that enclosing type stated). A tool with a documented-optional argument is also sent non-strict, because strict mode would make that argument mandatory. So is a shape the projection cannot verify: a nullable `["object", "null"]` type list that is not already strict-valid, anything behind a `$ref` or `$defs`, a `properties` on a node the rewrite does not treat as an object — only a literal `type: "object"` is closed, and any other node's declared properties reach the provider unchecked — and a schema-valued `additionalProperties` whose nested object leaves one of its own properties optional, which strict enforcement still validates. Every refused tool keeps its advertised schema and is sent with `strict: false` on any route whose catalog states the capability (including `strict_tools = false`, because the native endpoint normalizes an omitted flag into strict enforcement), with one exception that changes no accepted value: a typeless node whose closed value set (`enum` or `const`) or union (`anyOf`/`oneOf`) implies a guaranteed type gets that type stated, because the provider requires an explicit type on every node even when strict enforcement is off, and one typeless node rejects the whole request |
-| `google` | `GEMINI_API_KEY`, then `GOOGLE_API_KEY` | `GOOGLE_BASE_URL` (`https://generativelanguage.googleapis.com/v1beta`) | surface `google`; `default_model = gemini-3.8-flash`, `cheap_model = gemini-2.5-flash-lite` |
+| `google` | `GEMINI_API_KEY`, then `GOOGLE_API_KEY` | `GOOGLE_BASE_URL` (`https://generativelanguage.googleapis.com/v1beta`) | surface `google`; Interactions API (`POST /interactions`); `default_model = gemini-3.8-flash`, `cheap_model = gemini-3.5-flash-lite`, `web_search = false` by default |
 | `groq` | `GROQ_API_KEY` | `GROQ_BASE_URL` (`https://api.groq.com/openai/v1`) | `default_model = openai/gpt-oss-120b`, `cheap_model = llama-3.1-8b-instant` |
 | `zai` | `ZHIPU_API_KEY` | `ZAI_BASE_URL` (`https://api.z.ai/api/paas/v4`) | `thinking_format = zai`; `default_model = glm-5.3`, `cheap_model = glm-4.7-flash` |
 | `deepseek` | `DEEPSEEK_API_KEY` | `DEEPSEEK_BASE_URL` (`https://api.deepseek.com` — no version segment, a documented exception) | `thinking_format = deepseek`; `default_model = deepseek-v4-pro`, `cheap_model = deepseek-v4-flash` |
@@ -381,8 +381,7 @@ openai/gpt-5.6` work on a machine with no key set.
 | `minimax` | `MINIMAX_API_KEY` | `MINIMAX_BASE_URL` (`https://api.minimax.io/anthropic/v1`) | anthropic protocol, surface `anthropic`; `default_model = MiniMax-M3`, `cheap_model = MiniMax-M2.7` |
 | `zai-coding-plan` | `ZHIPU_API_KEY` (the same key as `zai`) | `ZAI_CODING_PLAN_BASE_URL` (`https://api.z.ai/api/coding/paas/v4`) | `thinking_format = zai`; `default_model = glm-5.3`, `cheap_model = glm-5.3-flash` |
 | `google-vertex-anthropic` | none — `gcp-adc`, or a credential JSON stored under the instance name (see below) | n/a — host derived from `GOOGLE_VERTEX_LOCATION` | also needs `GOOGLE_VERTEX_PROJECT` to exist at all; surface `anthropic`, family `claude`; `default_model = claude-opus-5`, `cheap_model = claude-haiku-4-5@20251001` |
-| `google-vertex` | none — `gcp-adc`, or a credential JSON stored under the instance name (see below) | n/a — same host derivation | also needs `GOOGLE_VERTEX_PROJECT`; surface `google`; `default_model = gemini-3.8-flash`, `cheap_model = gemini-2.5-flash-lite` |
-| `google-vertex-express` | `GOOGLE_VERTEX_API_KEY` (a Google Cloud API key, `AQ.…`; sent as `x-goog-api-key`) | `GOOGLE_VERTEX_EXPRESS_BASE_URL` (`https://aiplatform.googleapis.com/v1`) | Vertex AI in express mode: `google`'s Gemini rows on the `vertex-gemini` endpoints, no project or location; surface `google`; `default_model = gemini-3.8-flash`, `cheap_model = gemini-2.5-flash-lite`. Listing is catalog-only — API keys cannot call the publisher-model listing |
+| `google-vertex` | none — `gcp-adc`, or a credential JSON stored under the instance name (see below) | n/a — same host derivation | also needs `GOOGLE_VERTEX_PROJECT`; surface `google`; Vertex Interactions API (`POST .../interactions`, Gemini 3.1+/4); `default_model = gemini-3.8-flash`, `cheap_model = gemini-3.5-flash-lite`, `web_search = false` by default |
 | `amazon-bedrock` | `AWS_BEARER_TOKEN_BEDROCK` | n/a — host built from `AWS_REGION` | surface `anthropic`, family `claude`; `default_model = anthropic.claude-opus-5`, `cheap_model = anthropic.claude-haiku-4-5` (unprefixed — see [Cloud transports](#cloud-transports-azure-bedrock-vertex) below) |
 | `azure` | `AZURE_API_KEY` | n/a — needs `AZURE_RESOURCE_NAME` | no curated `default_model` (deployment names are per-tenant) — a bare `azure` reference can't resolve without one, and a real deployment needs its own `providers.toml` row (`alias_of`; see [Cloud transports](#cloud-transports-azure-bedrock-vertex) below). With just the key and resource name set, `azure` still exists as an instance, addressable as `azure/<deployment>` |
 | `ollama` | none required; `auth = optional-bearer`, `OLLAMA_API_KEY` optional | `OLLAMA_HOST` (default `localhost`, normalized by the `ollama-host` rule) or `OLLAMA_BASE_URL` (wins when set) | no curated `default_model` — see [`ollama.md`](ollama.md) for the "never the default" rule; no curated window: a live-only model with no listed window budgets against the assumed window (see [`ollama.md`](ollama.md#context-length)) |
@@ -475,7 +474,7 @@ model cannot 400 a provider that rejects it. Two exemptions keep working:
 `openrouter` passes the requested effort through unconditionally because
 OpenRouter normalizes the level itself and its model listing often omits
 supported efforts; and rows that map the effort to a numeric budget (Anthropic
-`budget_tokens`/`budget+effort`, budget-shaped Google rows) still consume the
+`budget_tokens`/`budget+effort`) still consume the
 effort even with an empty ladder, because the row declares that control. On
 the Responses protocol the encrypted-reasoning `include` and a configured
 summary survive an unvouched effort: no level is sent, but replay stays intact.
@@ -496,7 +495,7 @@ into a budget. The verdict records `Caps.EffortParameterUnsupported` and
 derivation clears the ladder, so `EffortCapable` answers false and no dialect
 spells a level. Everything else about thinking survives: an effort-only Claude
 row keeps its `adaptive` shape, a budget row keeps `budget_tokens` and its
-derived shape, Google's `thinkingConfig` keeps `includeThoughts`, and the
+derived shape, Google's Interactions `generation_config` keeps `thinking_summaries`, and the
 Responses builder keeps its summary and encrypted-reasoning `include`. The
 value travels through the live layer, alias seeding, and `Provider` views like
 the other compat facts, and a gateway stating `true` clears a rejection an
@@ -509,22 +508,18 @@ and the ladder vouches for it; `budget` → `thinking: {type: enabled,
 budget_tokens}`, only when an effort is set; `budget+effort` (Opus 4.5, Kimi
 K3) → both. An unset shape sends no thinking object at all.
 
-**google.** Gemini has two thinking wire shapes: `thinkingLevel` (Gemini 3.x
-and later) and `thinkingBudget` (2.5 era); sending one shape to a model that
-takes the other is a wire 400. The registry derives a row's `ThinkingShape`
-from its catalog facts: a row recording `budget_tokens` is `budget`, a row
-whose catalog itself records `effort` is `level`, and anything else — a
-toggle-only row, a reasoning row whose catalog recorded no
-`reasoning_options`, or an uncataloged live listing — has no vouched shape and
-sends no thinking object at all, since the field it would guess at is exactly
-the one such a model may reject. The builder then spells
-`generationConfig.thinkingConfig.thinkingLevel` or `.thinkingBudget` from the
-shape; a ladder on the row gates the spelled level through the vouch rule
-above, and a level row with no ladder spells the requested effort as-is. A
-model row may also set `thinking_shape` directly (a custom level-model needs
-no catalog entry). Either shape carries `includeThoughts: true`. Clearing
-`fields."generationConfig.thinkingConfig"` on a row prunes the object
-entirely, for a model that takes no thinking fields at all.
+**google.** On the Interactions API (`POST /interactions`), reasoning uses
+`generation_config.thinking_level` (`minimal`, `low`, `medium`, `high`, `xhigh`)
+and `generation_config.thinking_summaries` (`"auto"` or `"none"`). The registry
+derives `ThinkingShape = "level"` only when `effort` is vouched by non-alias
+catalog/layer evidence (or curated in `providers_overlay.toml`, including
+Gemini 2.5 rows on the Gemini Developer API). A model row may also set
+`thinking_shape = "level"` directly; any unrecognized shape (such as `"budget"`)
+omits `thinking_level` while still sending `thinking_summaries`. Setting an
+explicit off effort (`none`) omits `thinking_level` and sends
+`thinking_summaries = "none"`. Clearing `fields."generation_config.thinking_level"`
+or `fields."generation_config.thinking_summaries"` on a row prunes the
+corresponding field; clearing both disables Interactions thinking controls.
 
 **Replay.** Chat replays its full-history display reasoning by default. A
 `reasoning = false` row sends none; `thinking_as_text` merges it into content.
@@ -633,8 +628,8 @@ curated overlay and `providers.toml`.
 
 `inherit_models_matching = ["<glob>", …]` keeps only the inherited rows
 whose id matches a glob (`*` as in `[providers.X.models."<glob>"]`); the
-provider's own rows are always kept. The curated `google-vertex-express` row
-uses it to carry only google's `gemini-*` rows.
+provider's own rows are always kept (for example, narrowing an inherited catalog
+to `gemini-*` rows).
 
 Auxiliary calls (session naming, summarization) resolve an explicitly
 configured route first, then the instance's `cheap_model`, and otherwise run
@@ -780,24 +775,137 @@ for calls that have no project in their path (the model listing).
 Service-account credentials are attributed to their own project and send no
 such header. `google-vertex-anthropic` uses the `vertex-anthropic`
 transport preset (`:rawPredict`/`:streamRawPredict`, `body.anthropic_version =
-"vertex-2023-10-16"`); `google-vertex` uses `vertex-gemini`, whose
-`models_endpoint` lists the project's Gemini publisher models live: `GET
-{host}/v1beta1/publishers/google/models` (host-relative, not project-scoped),
-kept to `gemini-*` ids at launch stage GA or PUBLIC_PREVIEW whose id contains
-none of `tts`, `embedding`, `image`, `live`, `transcribe`, `translate`,
-`omni`, `audio` — the listing carries no capability data, so this is a
-heuristic; the catalog supplies metadata for known ids and unknown ids appear
-as bare rows. A non-`global`/`us`/`eu` region paired with a model newer than
-Sonnet 4.6 gets a `Warnings` entry.
+"vertex-2023-10-16"`).
 
-**Vertex express mode** (`google-vertex-express`) is the same Gemini
-publisher endpoints addressed without a project or location and
-authenticated with a Google Cloud API key (`x-goog-api-key`). It is built on
-`google` and narrowed to its `gemini-*` rows (`inherit_models_matching`):
-google's catalog also carries Gemma, Lyria, and Deep Research rows, which the
-express endpoint does not serve, and Claude is not reachable this way. API
-keys are rejected by the publisher-model listing, so express instances never
-list live.
+**Google / Vertex Interactions API, storage, IAM, and residency.** Both `google`
+and `google-vertex` speak Google's Interactions API (`POST /interactions` and
+`POST .../projects/{project}/locations/{location}/interactions`).
+
+- **Storage (`store = false` default) and retention windows:** Evener sends
+  `"store": false` by default on unanchored `/interactions` requests so
+  conversations stay stateless and are not retained as stored Interactions
+  state. Direct `llm.Client` callers that opt into `store = true` (or
+  `previous_interaction_id` chaining) are subject to distinct upstream retention
+  windows:
+  - **Gemini Developer API (`google`):** 55-day Paid Tier default (customizable
+    to 7, 14, 28, or 55 days), 1-day Free Tier default, plus separate
+    abuse-monitoring rules.
+  - **Vertex AI (`google-vertex`):** 7-day interaction retention.
+  - **Custom `google-compatible` gateways:** must serve
+    `POST {BASE_URL}/interactions`. If a gateway rejects the `"store"` field,
+    set `"store" = false` under `[providers.<name>.fields]` to omit `"store"`
+    and delegate retention to that gateway's own policy.
+- **Grounding with Google Search (`web_search = false` default):** Both `google`
+  and `google-vertex` default `web_search = false`. Built-in `Session` never
+  enables Google Grounding (nor does `cmd/llmcall --web-search`, which rejects
+  `ProtocolGoogle` targets before HTTP). Direct `llm.Client` callers may opt in
+  via `web_search = true` in `providers.toml`, subject to Google's Search
+  Suggestions display, storage (`store = true` with
+  `generation_config.tool_choice = "validated"` when combined with function
+  tools), and non-replay obligations under Gemini Developer API or Vertex AI
+  Service Specific Terms.
+- **Vertex AI IAM prerequisites:** Vertex `/interactions` requires the
+  `aiplatform.interactions.create` IAM permission on
+  `projects/{project}/locations/{location}` (included in `roles/aiplatform.user`
+  and `roles/aiplatform.admin`). Custom ADC roles that previously granted only
+  `aiplatform.endpoints.predict` (for legacy `generateContent`) fail with HTTP
+  403 `PERMISSION_DENIED` until `aiplatform.interactions.create` is added.
+- **Vertex AI supported models and regional residency:** Vertex `/interactions`
+  supports Gemini 3.1+/4 text-chat models (`gemini-3.1-pro-preview`,
+  `gemini-3.1-flash-lite`, `gemini-3.5*`–`gemini-3.8*`, `gemini-4*`), and
+  rejects `gemini-1*`, `gemini-2*`, `gemini-3-flash-preview`, and
+  `gemini-3-pro-preview` (hidden from `google-vertex` listings and refused at
+  switch/startup/call time; `google` continues serving `gemini-3-flash-preview`).
+  `google-vertex`'s `models_endpoint` lists `GET
+  {host}/v1beta1/publishers/google/models` (kept to supported `gemini-*` text
+  ids excluding `tts`, `embedding`, `image`, `live`, `transcribe`, `translate`,
+  `omni`, `audio`). Vertex `/interactions` also requires `GOOGLE_VERTEX_LOCATION`
+  to be `global`, `us` (United States multi-region residency), or `eu` (European
+  Union multi-region residency) — single-region locations such as `us-central1`
+  or `europe-west1` warn at resolve time and 404 at call time. **Residency
+  notice:** switching from a single-region location (especially non-US/non-EU
+  locations such as `europe-west2`, `europe-west6`, `asia-*`, `australia-*`,
+  `northamerica-*`, `southamerica-*`, `me-*`, or `africa-*`) to `us`, `eu`, or
+  `global` (`global` carries no data-residency guarantee) changes your
+  geographic data-residency boundary.
+- **Legacy `providers.toml` migrations (after the Interactions cutover):**
+  Legacy camelCase `generateContent` keys and endpoint overrides are rejected
+  at load or call time rather than silently ignored:
+  - Remove `:generateContent` or `:streamGenerateContent` `endpoint` /
+    `stream_endpoint` overrides on `ProtocolGoogle` (call-time `ConfigurationError`).
+  - Migrate `[providers.<name>.body]` legacy keys (`"generationConfig.*"`,
+    `"safetySettings"`, `"toolConfig"`, `"cachedContent"`, `"contents"`,
+    `"systemInstruction"`) to snake_case `"generation_config.*"`,
+    `"safety_settings"`, or remove them (`ConfigurationError` if left).
+  - Migrate `[providers.<name>.fields]` to quoted snake_case Interactions keys
+    (dotted keys **must** be quoted because `fields` is a flat `map[string]bool`,
+    not nested TOML tables):
+
+    | Legacy key | Interactions key | Notes |
+    |---|---|---|
+    | `"generationConfig.temperature"` | `"generation_config.temperature"` | |
+    | `"generationConfig.topP"` | `"generation_config.top_p"` | |
+    | `"generationConfig.stopSequences"` | `"generation_config.stop_sequences"` | |
+    | `"generationConfig.thinkingConfig" = false` | `"generation_config.thinking_level" = false` **and** `"generation_config.thinking_summaries" = false` | replace with both keys |
+    | `"toolConfig"` | `"generation_config.tool_choice"` | |
+    | `"safetySettings"` | `safety_settings` | `google-vertex` defaults `safety_settings = false` |
+    | `labels` | `labels` | unchanged |
+    | `"cachedContent"` | *(remove)* | no Interactions field; replaced by implicit caching and `previous_interaction_id` |
+
+    ```toml
+    [providers.my-google.fields]
+    "generation_config.temperature" = false
+    "generation_config.thinking_level" = false
+    "generation_config.thinking_summaries" = false
+    "generation_config.tool_choice" = true
+    safety_settings = false
+    store = false
+    ```
+- **Retiring `google-vertex-express` (migrations):** `google-vertex-express`,
+  `GOOGLE_VERTEX_API_KEY`, and `GOOGLE_VERTEX_EXPRESS_BASE_URL` are retired.
+  Pre-cutover `providers.toml` entries fail load with
+  `providers.<name>: base "google-vertex-express" is not a registry id` (on
+  custom child stanzas) or `providers.google-vertex-express: no protocol` (on
+  bare override stanzas), and `default = "google-vertex-express"` must be
+  updated to a surviving instance. Never put literal secret key values in
+  `providers.toml`; because a custom `base_url` stops `api_key_env`
+  inheritance, bind credentials explicitly with `api_key_env` or store them
+  under `<name>` in Settings → Credentials / `evener auth`:
+  1. **Keep a projectless Vertex Express API key** via a custom
+     `google-compatible` stanza pointing at Vertex's `v1beta1` Express
+     `/interactions` base URL (note `models_endpoint = "-"` carries no inherited
+     catalog rows, so define `default_model` and static `alias_of` rows):
+     ```toml
+     [providers.vertex-express]
+     base = "google-compatible"
+     base_url = "https://aiplatform.googleapis.com/v1beta1/locations/global"
+     auth = "header"
+     auth_header = "x-goog-api-key"
+     api_key_env = ["GOOGLE_VERTEX_API_KEY"]
+     models_endpoint = "-"
+     default_model = "gemini-3.8-flash"
+
+     [providers.vertex-express.models."gemini-3.8-flash"]
+     alias_of = "google/gemini-3.8-flash"
+     ```
+     Resume saved sessions with `evener --resume <session-id> --model vertex-express/gemini-3.8-flash`
+     or select `vertex-express/gemini-3.8-flash` in the UI picker.
+  2. **Use a project-scoped Vertex API key** via a custom `google-vertex` stanza
+     (`POST https://aiplatform.googleapis.com/v1/projects/{GOOGLE_VERTEX_PROJECT}/locations/global/interactions`):
+     ```toml
+     [providers.vertex-key]
+     base = "google-vertex"
+     auth = "header"
+     auth_header = "x-goog-api-key"
+     api_key_env = ["GOOGLE_VERTEX_API_KEY"]
+
+     [providers.vertex-key.vars]
+     GOOGLE_VERTEX_PROJECT = "my-project"
+     GOOGLE_VERTEX_LOCATION = "global"
+     ```
+  3. **Use Google AI Studio (`google`):** issue a separate Google AI Studio key
+     (`GEMINI_API_KEY` or `GOOGLE_API_KEY`, distinct from a Google Cloud Express
+     key) and use the built-in `google` instance (`--model google/gemini-3.8-flash`).
 
 ## The Codex transport
 
@@ -920,7 +1028,7 @@ The provider's own message is always included verbatim alongside the hint.
 | `openai-chat` | `/chat/completions` | same (stream flag in body) | `/models` | unsupported |
 | `openai-responses` | `/responses` | same | `/models` | `/responses/input_tokens` on the `openai` instance |
 | `anthropic` | `/messages` | same | `/models` | `/messages/count_tokens` |
-| `google` | `/models/{model}:generateContent` | `/models/{model}:streamGenerateContent?alt=sse` | `/models` | `/models/{model}:countTokens` |
+| `google` | `/interactions` | `/interactions` (`stream: true`) | `/models` | unsupported |
 
 Every curated base URL carries its version segment (`…/v1`,
 `…/anthropic/v1`, `…/paas/v4`); DeepSeek's `https://api.deepseek.com` is a

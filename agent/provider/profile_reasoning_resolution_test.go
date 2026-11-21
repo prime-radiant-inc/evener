@@ -28,9 +28,9 @@ func TestProfile_ReasoningFactsResolvedFromTheRegistry(t *testing.T) {
 		{"openai/gpt-5.5", true, true},
 		{"anthropic/claude-opus-4-6", true, true},
 		{"google/gemini-3.1-pro-preview", true, true},
+		{"google/gemini-2.5-pro", true, true},
 		// A budget-only reasoning row reasons but takes no effort: the
 		// ladder is empty and EffortCapable() is false for it (spec §7.4).
-		{"google/gemini-2.5-pro", true, false},
 		{"anthropic/claude-sonnet-4-5", true, false},
 		// Uncataloged, on a gateway that serves anything.
 		{"work/glm-5.3", true, false},
@@ -158,7 +158,8 @@ func TestProfile_WithModel_RederivesReasoningFacts(t *testing.T) {
 func TestProfile_TaskListEffortEnumFollowsTheLadder(t *testing.T) {
 	r := fixtureRegistry(t)
 	assertTaskListEffortEnum(t, mustResolve(t, r, "openai/gpt-4.1"), nil)
-	assertTaskListEffortEnum(t, mustResolve(t, r, "google/gemini-2.5-pro"), nil)
+	assertTaskListEffortEnum(t, mustResolve(t, r, "anthropic/claude-sonnet-4-5"), nil)
+	assertTaskListEffortEnum(t, mustResolve(t, r, "google/gemini-2.5-pro"), []string{"low", "medium", "high"})
 	assertTaskListEffortEnum(t, mustResolve(t, r, "openai/gpt-5.5"), mustResolve(t, r, "openai/gpt-5.5").ReasoningEffortLevels())
 }
 

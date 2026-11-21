@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/internal/openaichat"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -14,7 +15,19 @@ func protoRes(mutate func(c *registry.Caps)) registry.Resolved {
 	if mutate != nil {
 		mutate(&caps)
 	}
-	return registry.Resolved{Instance: "gemini-prod", Protocol: registry.ProtocolGoogle, ModelID: "gemini-x", WireID: "gemini-x", Transport: registry.Transport{Endpoint: "/models/{model}:generateContent", StreamEndpoint: "/models/{model}:streamGenerateContent?alt=sse"}, Caps: caps}
+	return registry.Resolved{
+		Instance: "gemini-prod",
+		Protocol: registry.ProtocolGoogle,
+		ModelID:  "gemini-x",
+		WireID:   "gemini-x",
+		Transport: registry.Transport{
+			Endpoint:            "/interactions",
+			StreamEndpoint:      "/interactions",
+			ModelsEndpoint:      "/models",
+			CountTokensEndpoint: registry.EndpointUnsupported,
+		},
+		Caps: caps,
+	}
 }
 
 func protoReq(effort string) llm.Request {
@@ -48,14 +61,6 @@ func TestProtocolPrunablePathsMatchRegistry(t *testing.T) {
 	}
 }
 
-// A row stating the no-effort verdict takes no effort parameter, so the level
-// shape must spell no thinkingLevel even when the ladder is empty. The budget
-// shape is unaffected: a numeric budget is not an effort name.
-//
-// The verdict rejects the level NAME, not thinking itself: the row still
-// reasons, so the config keeps includeThoughts and the live-thinking backend
-// still gets thought parts to render. Dropping the whole object would remove
-// the summaries as well.
 func TestBuildBody_NoEffortVerdictSendsNoLevel(t *testing.T) {
 	t.Parallel()
 	unsupported := true
@@ -66,16 +71,15 @@ func TestBuildBody_NoEffortVerdictSendsNoLevel(t *testing.T) {
 		c.EffortParameterUnsupported = &unsupported
 	}
 	body := protoBuild(t, protoReq("high"), protoRes(levelShape))
-	gen, _ := body["generationConfig"].(map[string]any)
-	cfg, _ := gen["thinkingConfig"].(map[string]any)
-	if cfg == nil {
-		t.Fatal("thinkingConfig missing: the row still reasons and still asks for thought summaries")
+	gen, _ := body["generation_config"].(map[string]any)
+	if gen == nil {
+		t.Fatal("generation_config missing")
 	}
-	if _, has := cfg["thinkingLevel"]; has {
-		t.Fatalf("thinkingConfig = %v, want no level on a no-effort row", cfg)
+	if _, has := gen["thinking_level"]; has {
+		t.Fatalf("generation_config = %v, want no thinking_level on a no-effort row", gen)
 	}
-	if cfg["includeThoughts"] != true {
-		t.Fatalf("thinkingConfig = %v, want includeThoughts kept", cfg)
+	if gen["thinking_summaries"] != "auto" {
+		t.Fatalf("generation_config = %v, want thinking_summaries=auto kept", gen)
 	}
 }
 
@@ -84,65 +88,82 @@ func TestProtocolBuildBody(t *testing.T) {
 	req := protoReq("high")
 	req.WebSearch = true
 	req.Temperature = new(0.2)
-	req.ProviderOptions = map[string]any{"google": map[string]any{"safetySettings": []any{map[string]any{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"}}}}
+	req.ProviderOptions = map[string]any{"google": map[string]any{"safety_settings": []any{map[string]any{"type": "harassment", "threshold": "block_none"}}}}
 	levelShape := func(c *registry.Caps) { c.ThinkingShape = new("level") }
 	body := protoBuild(t, req, protoRes(levelShape))
-	if _, has := body["model"]; has {
-		t.Fatal("the model rides in the URL, never the body")
+	if body["model"] != "gemini-x" {
+		t.Fatalf("model = %v, want gemini-x unconditionally in body", body["model"])
 	}
-	gen := body["generationConfig"].(map[string]any)
-	thinking := gen["thinkingConfig"].(map[string]any)
-	// The row is level-shaped with no ladder, so the builder spells the
-	// requested effort as a thinkingLevel, not a budget — in the wire's
-	// uppercase enum spelling (the Discovery document's ThinkingConfig).
-	if gen["temperature"] != 0.2 || thinking["thinkingLevel"] != "HIGH" {
-		t.Fatalf("generationConfig = %v", gen)
+	if body["store"] != false {
+		t.Fatalf("unanchored default store = %v, want false", body["store"])
 	}
-	if _, has := thinking["thinkingBudget"]; has {
-		t.Fatalf("a level-shaped row never sends thinkingBudget: %v", gen)
+	gen := body["generation_config"].(map[string]any)
+	if gen["temperature"] != 0.2 || gen["thinking_level"] != "high" || gen["thinking_summaries"] != "auto" {
+		t.Fatalf("generation_config = %v", gen)
 	}
-	if tools := body["tools"].([]map[string]any); len(tools) != 1 || tools[0]["google_search"] == nil {
+	if tools := body["tools"].([]map[string]any); len(tools) != 1 || tools[0]["type"] != "google_search" {
 		t.Fatalf("google_search expected without function tools: %v", body["tools"])
 	}
-	if body["safetySettings"] == nil || body["systemInstruction"] == nil {
-		t.Fatalf("provider options and system instruction: %v", body)
+	if body["safety_settings"] == nil || body["system_instruction"] != "sys" {
+		t.Fatalf("provider options and system_instruction: %v", body)
 	}
 
+	// Without CombinedSearchAndFunctions, function tools omit google_search.
 	req.Tools = []llm.ToolDefinition{{Name: "f", Parameters: map[string]any{"type": "object"}}}
-	if tools := protoBuild(t, req, protoRes(nil))["tools"].([]map[string]any); len(tools) != 1 || tools[0]["functionDeclarations"] == nil {
-		t.Fatalf("google_search never rides with function declarations: %v", tools)
+	if tools := protoBuild(t, req, protoRes(nil))["tools"].([]map[string]any); len(tools) != 1 || tools[0]["type"] != "function" {
+		t.Fatalf("google_search omitted when CombinedSearchAndFunctions=false: %v", tools)
 	}
+
+	// With CombinedSearchAndFunctions=true and store=true, both google_search and function tools ride with tool_choice=validated.
+	reqStore := req
+	reqStore.Store = new(true)
+	combinedRes := protoRes(func(c *registry.Caps) {
+		c.CombinedSearchAndFunctions = new(true)
+		c.Fields["previous_interaction_id"] = true
+	})
+	combinedBody := protoBuild(t, reqStore, combinedRes)
+	if tools := combinedBody["tools"].([]map[string]any); len(tools) != 2 || tools[0]["type"] != "function" || tools[1]["type"] != "google_search" {
+		t.Fatalf("combined tools = %v", tools)
+	}
+	if combinedGen := combinedBody["generation_config"].(map[string]any); combinedGen["tool_choice"] != "validated" {
+		t.Fatalf("combined tool_choice = %v, want validated", combinedGen["tool_choice"])
+	}
+
+	// Combined search + functions without store=true fails locally.
+	if _, err := (&Protocol{}).BuildBody(llm.ShapeRequest(req, combinedRes), combinedRes); err == nil {
+		t.Fatal("combined search + functions with store=false must fail")
+	}
+
 	req.Tools = nil
 	if _, has := protoBuild(t, req, protoRes(func(c *registry.Caps) { c.WebSearch = new(false) }))["tools"]; has {
 		t.Fatal("WebSearch=false drops google_search")
 	}
 
 	none := protoReq("none")
-	if _, has := protoBuild(t, none, protoRes(nil))["generationConfig"].(map[string]any)["thinkingConfig"]; has {
-		t.Fatal("none sends no thinkingConfig")
+	noneGen := protoBuild(t, none, protoRes(levelShape))["generation_config"].(map[string]any)
+	if _, has := noneGen["thinking_level"]; has || noneGen["thinking_summaries"] != "none" {
+		t.Fatalf("none must omit thinking_level and set thinking_summaries=none, got %v", noneGen)
 	}
 	off := protoBuild(t, protoReq("high"), protoRes(func(c *registry.Caps) { c.Reasoning = new(false) }))
-	if _, has := off["generationConfig"].(map[string]any)["thinkingConfig"]; has {
-		t.Fatal("Reasoning=false sends no thinkingConfig")
+	if genOff, ok := off["generation_config"].(map[string]any); ok {
+		if _, has := genOff["thinking_level"]; has {
+			t.Fatalf("Reasoning=false must not send thinking_level: %v", genOff)
+		}
+		if _, has := genOff["thinking_summaries"]; has {
+			t.Fatalf("Reasoning=false must not send thinking_summaries: %v", genOff)
+		}
 	}
 }
 
-// Gemini has two thinking wire shapes: thinkingLevel (Gemini 3.x) and
-// thinkingBudget (2.5 era). The registry derives a row's ThinkingShape from
-// its catalog facts; sending a budget to a level-only model is a wire 400.
 func TestProtocolBuildBody_ThinkingShape(t *testing.T) {
 	t.Parallel()
 	level := func(t *testing.T, body map[string]any) any {
 		t.Helper()
-		gen, _ := body["generationConfig"].(map[string]any)
-		thinking, ok := gen["thinkingConfig"].(map[string]any)
-		if !ok {
-			t.Fatalf("expected a thinkingConfig, body: %v", body)
+		gen, _ := body["generation_config"].(map[string]any)
+		if gen == nil {
+			t.Fatalf("expected generation_config, body: %v", body)
 		}
-		if _, has := thinking["thinkingBudget"]; has {
-			t.Fatalf("level-shaped row sent thinkingBudget: %v", thinking)
-		}
-		return thinking["thinkingLevel"]
+		return gen["thinking_level"]
 	}
 	levelRow := func(mutate func(c *registry.Caps)) registry.Resolved {
 		return protoRes(func(c *registry.Caps) {
@@ -153,83 +174,46 @@ func TestProtocolBuildBody_ThinkingShape(t *testing.T) {
 		})
 	}
 
-	// A level-shaped row with a ladder sends the vouched level. ShapeRequest
-	// clamps the request to the ladder first, so the builder spells what the
-	// row lists.
-	row := levelRow(func(c *registry.Caps) { c.EffortValues = []string{"low", "medium", "high"} })
-	if got := level(t, protoBuild(t, protoReq("medium"), row)); got != "MEDIUM" {
-		t.Fatalf("thinkingLevel = %v", got)
-	}
-	if got := level(t, protoBuild(t, protoReq("xhigh"), row)); got != "HIGH" {
-		t.Fatalf("xhigh must clamp down to the ladder's top level, got %v", got)
-	}
-
-	// A cataloged level-shaped row with no ladder spells the requested effort
-	// as-is: there is no ladder to clamp against and the row vouches the
-	// shape.
-	if got := level(t, protoBuild(t, protoReq("high"), levelRow(nil))); got != "HIGH" {
-		t.Fatalf("level row without a ladder thinkingLevel = %v", got)
-	}
-
-	// Evener's higher tiers have no Google wire enum; a ladderless row clamps
-	// them to the enum's top level rather than emitting an unknown value.
-	for _, effort := range []string{"xhigh", "max"} {
-		if got := level(t, protoBuild(t, protoReq(effort), levelRow(nil))); got != "HIGH" {
-			t.Fatalf("ladderless %q must clamp to HIGH, got %v", effort, got)
+	row := levelRow(func(c *registry.Caps) { c.EffortValues = []string{"minimal", "low", "medium", "high", "xhigh"} })
+	for _, want := range []string{"minimal", "low", "medium", "high", "xhigh"} {
+		if got := level(t, protoBuild(t, protoReq(want), row)); got != want {
+			t.Fatalf("thinking_level = %v, want %q", got, want)
 		}
 	}
-	// An unrecognized effort on a ladderless row sends no thinking object:
-	// the row vouches the shape but not the value.
+	if got := level(t, protoBuild(t, protoReq("max"), row)); got != "xhigh" {
+		t.Fatalf("max must clamp down to the ladder's ceiling xhigh, got %v", got)
+	}
+
+	// Ladderless row clamps max -> high and drops unrecognized values.
+	if got := level(t, protoBuild(t, protoReq("max"), levelRow(nil))); got != "high" {
+		t.Fatalf("ladderless max must clamp to high, got %v", got)
+	}
 	for _, effort := range []string{"unknown", "extreme"} {
 		body := protoBuild(t, protoReq(effort), levelRow(nil))
-		if _, has := body["generationConfig"].(map[string]any)["thinkingConfig"]; has {
-			t.Fatalf("unrecognized effort %q must not send thinkingConfig: %v", effort, body["generationConfig"])
+		if _, has := body["generation_config"].(map[string]any)["thinking_level"]; has {
+			t.Fatalf("unrecognized effort %q must not send thinking_level: %v", effort, body["generation_config"])
 		}
 	}
 
-	// A configured model can vouch the level shape itself, with its own
-	// ladder, without a cataloged Reasoning verdict.
-	configured := protoRes(func(c *registry.Caps) {
-		c.Reasoning = nil
-		c.ThinkingShape = new("level")
-		c.EffortValues = []string{"low", "high"}
-	})
-	if got := level(t, protoBuild(t, protoReq("high"), configured)); got != "HIGH" {
-		t.Fatalf("configured level row thinkingLevel = %v", got)
-	}
-
-	// A budget-shaped row (gemini-2.5 family) keeps the numeric budget.
-	budget := protoBuild(t, protoReq("high"), protoRes(func(c *registry.Caps) {
-		c.ReasoningControls = []string{"budget_tokens"}
-		c.ThinkingShape = new("budget")
-	}))
-	thinking := budget["generationConfig"].(map[string]any)["thinkingConfig"].(map[string]any)
-	if thinking["thinkingBudget"] != llm.ReasoningBudget("high") {
-		t.Fatalf("thinkingBudget = %v", thinking)
-	}
-	if _, has := thinking["thinkingLevel"]; has {
-		t.Fatalf("a budget-shaped row never sends thinkingLevel: %v", thinking)
-	}
-
-	// A row with no vouched shape — toggle-only, an uncataloged live
-	// listing, or a shape from another protocol's vocabulary — sends no
-	// thinking object at all.
+	// Unrecognized thinking_shape values (e.g. legacy "budget", "adaptive") omit thinking_level while keeping thinking_summaries.
 	for name, mutate := range map[string]func(*registry.Caps){
 		"toggle-only":   func(c *registry.Caps) { c.ReasoningControls = []string{"toggle"} },
 		"uncataloged":   func(c *registry.Caps) { c.Reasoning = nil; c.ReasoningControls = []string{"effort"} },
+		"budget":        func(c *registry.Caps) { c.ThinkingShape = new("budget") },
 		"adaptive":      func(c *registry.Caps) { c.ThinkingShape = new("adaptive") },
 		"budget+effort": func(c *registry.Caps) { c.ThinkingShape = new("budget+effort") },
 	} {
 		body := protoBuild(t, protoReq("high"), protoRes(mutate))
-		if _, has := body["generationConfig"].(map[string]any)["thinkingConfig"]; has {
-			t.Fatalf("%s row must not send thinkingConfig: %v", name, body["generationConfig"])
+		gen := body["generation_config"].(map[string]any)
+		if _, has := gen["thinking_level"]; has {
+			t.Fatalf("%s row must not send thinking_level: %v", name, gen)
+		}
+		if gen["thinking_summaries"] != "auto" {
+			t.Fatalf("%s row must still send thinking_summaries=auto: %v", name, gen)
 		}
 	}
 }
 
-// A catalog row resolved through the real registry drives the shape: the
-// 2.5-era computer-use row records reasoning with no reasoning_options, so it
-// must not spell a level the model rejects (roborev round 2).
 func TestProtocolBuildBody_CatalogRowThinkingShape(t *testing.T) {
 	t.Parallel()
 	r, err := registry.Load(registry.WithNoUserLayer(), registry.WithoutCache(), registry.WithOffline(true))
@@ -237,9 +221,10 @@ func TestProtocolBuildBody_CatalogRowThinkingShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, ref := range []string{
-		"google/gemini-2.5-computer-use-preview-10-2025", // reasoning, options unrecorded
-		"google/gemini-2.5-flash",                        // budget_tokens
-		"google/gemini-3.1-pro-preview",                  // effort ladder
+		"google/gemini-2.5-computer-use-preview-10-2025",
+		"google/gemini-2.5-flash",
+		"google/gemini-3.1-pro-preview",
+		"google/gemini-4-neon",
 	} {
 		res, err := r.Resolve(ref)
 		if err != nil {
@@ -249,61 +234,21 @@ func TestProtocolBuildBody_CatalogRowThinkingShape(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", ref, err)
 		}
-		thinking, _ := body["generationConfig"].(map[string]any)["thinkingConfig"].(map[string]any)
+		gen, _ := body["generation_config"].(map[string]any)
 		switch ref {
 		case "google/gemini-2.5-computer-use-preview-10-2025":
-			if thinking != nil {
-				t.Fatalf("%s must send no thinking object, got %v", ref, thinking)
+			if _, has := gen["thinking_level"]; has {
+				t.Fatalf("%s must omit thinking_level, got %v", ref, gen)
 			}
-		case "google/gemini-2.5-flash":
-			if thinking["thinkingBudget"] != llm.ReasoningBudget("high") {
-				t.Fatalf("%s thinkingBudget = %v", ref, thinking)
-			}
-		case "google/gemini-3.1-pro-preview":
-			if thinking["thinkingLevel"] != "HIGH" {
-				t.Fatalf("%s thinkingLevel = %v", ref, thinking)
+		case "google/gemini-2.5-flash", "google/gemini-3.1-pro-preview", "google/gemini-4-neon":
+			if gen["thinking_level"] != "high" {
+				t.Fatalf("%s thinking_level = %v, want high", ref, gen["thinking_level"])
 			}
 		}
 	}
 }
 
-// Off and empty efforts never reach the wire as a thinking object on either
-// shape, while an enabled effort on the same row does — the guard, not the
-// absent shape, is what omits the object.
-func TestProtocolBuildBody_ThinkingOffAndEmpty(t *testing.T) {
-	t.Parallel()
-	shapes := map[string]func(*registry.Caps){
-		"level": func(c *registry.Caps) { c.ThinkingShape = new("level") },
-		"budget": func(c *registry.Caps) {
-			c.ReasoningControls = []string{"budget_tokens"}
-			c.ThinkingShape = new("budget")
-		},
-	}
-	for name, mutate := range shapes {
-		for _, effort := range []string{"", "none", "NONE", " null ", "off"} {
-			req := protoReq("high")
-			// Set the pointer directly: protoReq("") would leave it nil and
-			// never reach the helper's normalization.
-			req.ReasoningEffort = new(effort)
-			body := protoBuild(t, req, protoRes(mutate))
-			if _, has := body["generationConfig"].(map[string]any)["thinkingConfig"]; has {
-				t.Fatalf("%s row effort %q must not send thinkingConfig: %v", name, effort, body["generationConfig"])
-			}
-		}
-		// The same row with a real effort emits thinking, proving the cases
-		// above exercised the guard rather than an absent shape.
-		if body := protoBuild(t, protoReq("high"), protoRes(mutate)); body["generationConfig"].(map[string]any)["thinkingConfig"] == nil {
-			t.Fatalf("%s row with a real effort must send thinkingConfig", name)
-		}
-	}
-}
-
-// An MCP server's tool schema arrives as JSON Schema, and its document
-// metadata ($schema, $id, $comment) has no field in Gemini's restricted
-// Schema proto: Vertex rejects the whole request with "Unknown name
-// \"$schema\"". The sanitizer must drop those keys at every level while
-// keeping the validation keywords.
-func TestProtocolBuildBody_DropsGeminiSchemaMetaKeys(t *testing.T) {
+func TestProtocolBuildBody_DropsGeminiSchemaMetaKeysAndPreservesJSONSchemaResponseFormat(t *testing.T) {
 	t.Parallel()
 	req := protoReq("")
 	req.Tools = []llm.ToolDefinition{{
@@ -313,133 +258,300 @@ func TestProtocolBuildBody_DropsGeminiSchemaMetaKeys(t *testing.T) {
 			"$id":     "https://example.test/use_browser.json",
 			"type":    "object",
 			"properties": map[string]any{
-				"action": map[string]any{
-					"$comment": "the action to run",
-					"type":     "string",
-				},
+				"$id":    map[string]any{"type": "string"},
+				"action": map[string]any{"$comment": "the action to run", "type": "string"},
 			},
-			"required": []any{"action"},
+			"required": []any{"$id", "action"},
 		},
 	}}
+	req.ResponseFormat = &llm.ResponseFormat{
+		Type: "json_schema",
+		JSONSchema: map[string]any{
+			"$schema":              "https://json-schema.org/draft/2020-12/schema",
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"nullable_str": map[string]any{"type": []any{"string", "null"}},
+				"tuple":        map[string]any{"type": "array", "prefixItems": []any{map[string]any{"type": "string"}}, "minItems": 1},
+				"$id":          map[string]any{"type": "string"},
+			},
+		},
+	}
 
-	tools := protoBuild(t, req, protoRes(nil))["tools"].([]map[string]any)
-	params := tools[0]["functionDeclarations"].([]map[string]any)[0]["parameters"].(map[string]any)
+	body := protoBuild(t, req, protoRes(nil))
+	tools := body["tools"].([]map[string]any)
+	params := tools[0]["parameters"].(map[string]any)
 	for _, key := range []string{"$schema", "$id"} {
 		if _, ok := params[key]; ok {
-			t.Fatalf("Gemini parameters must not carry %q: %#v", key, params)
+			t.Fatalf("parameters must not carry %q: %#v", key, params)
 		}
 	}
-	action := params["properties"].(map[string]any)["action"].(map[string]any)
-	if _, ok := action["$comment"]; ok {
-		t.Fatalf("nested $comment must be dropped: %#v", action)
-	}
-	if action["type"] != "string" || params["required"] == nil {
-		t.Fatalf("validation keywords must survive sanitizing: %#v", params)
-	}
-}
-
-// A property *name* is data, not a schema keyword. A tool may legitimately
-// declare an argument named "$id" or "$comment", and the sanitizer must keep
-// it while still stripping a keyword of the same name at a schema position
-// (otherwise the schema loses a parameter that "required" still names).
-func TestProtocolBuildBody_KeepsPropertyNamesThatLookLikeMetaKeys(t *testing.T) {
-	t.Parallel()
-	req := protoReq("")
-	req.Tools = []llm.ToolDefinition{{
-		Name: "t",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"$id":      map[string]any{"type": "string"},
-				"$comment": map[string]any{"type": "string"},
-				"ok":       map[string]any{"type": "string"},
-			},
-			"required": []any{"$id", "ok"},
-		},
-	}}
-
-	params := protoBuild(t, req, protoRes(nil))["tools"].([]map[string]any)[0]["functionDeclarations"].([]map[string]any)[0]["parameters"].(map[string]any)
 	props := params["properties"].(map[string]any)
-	for _, name := range []string{"$id", "$comment", "ok"} {
-		if _, ok := props[name]; !ok {
-			t.Fatalf("property %q must survive sanitizing: %#v", name, props)
-		}
+	if _, ok := props["$id"]; !ok {
+		t.Fatalf("property named $id must survive: %#v", props)
+	}
+	if _, ok := props["action"].(map[string]any)["$comment"]; ok {
+		t.Fatalf("nested $comment must be dropped")
+	}
+
+	rf := body["response_format"].(map[string]any)
+	if rf["type"] != "text" || rf["mime_type"] != "application/json" {
+		t.Fatalf("response_format = %#v", rf)
+	}
+	schema := rf["schema"].(map[string]any)
+	if _, ok := schema["$schema"]; ok {
+		t.Fatalf("response_format schema must drop $schema: %#v", schema)
+	}
+	if schema["additionalProperties"] != false {
+		t.Fatalf("response_format schema must preserve additionalProperties: %#v", schema)
+	}
+	rfProps := schema["properties"].(map[string]any)
+	if _, ok := rfProps["$id"]; !ok {
+		t.Fatalf("response_format schema must keep property named $id: %#v", rfProps)
+	}
+	if ntype := rfProps["nullable_str"].(map[string]any)["type"]; !reflect.DeepEqual(ntype, []any{"string", "null"}) {
+		t.Fatalf("response_format schema must preserve type array, got %#v", ntype)
+	}
+	if tuple := rfProps["tuple"].(map[string]any); tuple["prefixItems"] == nil || tuple["minItems"] != 1 {
+		t.Fatalf("response_format schema must preserve prefixItems/minItems: %#v", tuple)
 	}
 }
 
-func TestProtocolBuildBody_NullableSchemasOnGeminiWire(t *testing.T) {
+func TestProtocolBuildBody_RejectsCyclicToolAndResponseSchemas(t *testing.T) {
+	t.Parallel()
+	cyclic := map[string]any{"type": "object"}
+	cyclic["self"] = cyclic
+
+	reqTool := protoReq("")
+	reqTool.Tools = []llm.ToolDefinition{{Name: "cyc", Parameters: cyclic}}
+	if _, err := (&Protocol{}).BuildBody(reqTool, protoRes(nil)); !errors.Is(err, openaichat.ErrCyclicSchema) {
+		t.Fatalf("cyclic tool schema err = %v, want ErrCyclicSchema", err)
+	}
+
+	reqRF := protoReq("")
+	reqRF.ResponseFormat = &llm.ResponseFormat{Type: "json_schema", JSONSchema: cyclic}
+	if _, err := (&Protocol{}).BuildBody(reqRF, protoRes(nil)); !errors.Is(err, openaichat.ErrCyclicSchema) {
+		t.Fatalf("cyclic response_format err = %v, want ErrCyclicSchema", err)
+	}
+}
+
+func TestProtocolBuildBody_AnchorStoreAndExecutionModeGuards(t *testing.T) {
+	t.Parallel()
+	// Anchored call with fields.previous_interaction_id=true sets store=true and previous_interaction_id.
+	resAnchored := protoRes(func(c *registry.Caps) { c.Fields["previous_interaction_id"] = true })
+	req := protoReq("")
+	req.PreviousResponseID = "int_prev"
+	body := protoBuild(t, req, resAnchored)
+	if body["previous_interaction_id"] != "int_prev" || body["store"] != true {
+		t.Fatalf("anchored body = %v", body)
+	}
+
+	// Anchored with explicit store=false fails.
+	reqBadStore := req
+	reqBadStore.Store = new(false)
+	if _, err := (&Protocol{}).BuildBody(reqBadStore, resAnchored); err == nil {
+		t.Fatal("anchored call with store=false must fail")
+	}
+
+	// Anchored when fields.previous_interaction_id=false fails.
+	if _, err := (&Protocol{}).BuildBody(req, protoRes(nil)); err == nil {
+		t.Fatal("anchored call with fields.previous_interaction_id=false must fail")
+	}
+
+	// Unanchored with fields.store=false omits store, and rejects explicit req.Store.
+	resNoStore := protoRes(func(c *registry.Caps) { c.Fields["store"] = false })
+	bodyNoStore := protoBuild(t, protoReq(""), resNoStore)
+	if _, has := bodyNoStore["store"]; has {
+		t.Fatalf("fields.store=false must omit store: %v", bodyNoStore)
+	}
+	reqExplicitStore := protoReq("")
+	reqExplicitStore.Store = new(true)
+	if _, err := (&Protocol{}).BuildBody(reqExplicitStore, resNoStore); err == nil {
+		t.Fatal("explicit store with fields.store=false must fail")
+	}
+
+	// Unsupported modes: agent, background=true, continuation_token, cached_content, service_tier=deferred, retired camelCase options.
+	for name, mutate := range map[string]func(*llm.Request){
+		"agent": func(r *llm.Request) {
+			r.ProviderOptions = map[string]any{"google": map[string]any{"agent": "deep-research"}}
+		},
+		"background": func(r *llm.Request) { r.Background = new(true) },
+		"continuation": func(r *llm.Request) {
+			r.ProviderOptions = map[string]any{"google": map[string]any{"continuation_token": "tok"}}
+		},
+		"cached_content": func(r *llm.Request) {
+			r.ProviderOptions = map[string]any{"google": map[string]any{"cached_content": "cc/1"}}
+		},
+		"deferred tier": func(r *llm.Request) { r.ServiceTier = "Deferred" },
+		"retired camelCase": func(r *llm.Request) {
+			r.ProviderOptions = map[string]any{"google": map[string]any{"generationConfig": map[string]any{}}}
+		},
+		"owned model": func(r *llm.Request) { r.ProviderOptions = map[string]any{"google": map[string]any{"model": "other"}} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := protoReq("")
+			mutate(&r)
+			if _, err := (&Protocol{}).BuildBody(r, resAnchored); err == nil {
+				t.Fatalf("%s must fail BuildBody", name)
+			}
+		})
+	}
+}
+
+func TestProtocolBuildBody_LabelsUnicodeAndProviderOptionsDeepClone(t *testing.T) {
 	t.Parallel()
 	req := protoReq("")
-	req.Tools = []llm.ToolDefinition{{
-		Name: "read_transcript",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"format": map[string]any{
-					"type": []any{"string", "null"},
-					"enum": []any{"outline", "markdown", nil},
-				},
-				"output_match":  map[string]any{"type": []any{"string", "null"}},
-				"context_lines": map[string]any{"type": []any{"integer", "null"}},
-			},
-		},
-	}}
+	origMeta := map[string]string{
+		"équipe":   "alpha-1",
+		"team/id":  "bad-slash",
+		"trace_id": "trace/123",
+		"EmptyVal": "ok", // uppercase first char invalid for Google labels
+	}
+	req.Metadata = origMeta
+	body := protoBuild(t, req, protoRes(nil))
+	labels, _ := body["labels"].(map[string]any)
+	if len(labels) != 1 || labels["équipe"] != "alpha-1" {
+		t.Fatalf("filtered labels = %#v, want map[équipe:alpha-1]", labels)
+	}
+	if len(origMeta) != 4 {
+		t.Fatalf("req.Metadata was mutated: %#v", origMeta)
+	}
 
-	tools := protoBuild(t, req, protoRes(nil))["tools"].([]map[string]any)
-	params := tools[0]["functionDeclarations"].([]map[string]any)[0]["parameters"].(map[string]any)
-	format := params["properties"].(map[string]any)["format"].(map[string]any)
-	if got, want := format["type"], "string"; got != want {
-		t.Fatalf("Gemini format type = %#v, want %q", got, want)
+	// Explicit invalid label in ProviderOptions fails with ConfigurationError.
+	badReq := protoReq("")
+	badReq.ProviderOptions = map[string]any{"google": map[string]any{
+		"labels": map[string]string{"team/id": "ok"},
+	}}
+	if _, err := (&Protocol{}).BuildBody(badReq, protoRes(nil)); err == nil {
+		t.Fatal("invalid explicit labels in ProviderOptions must fail")
 	}
-	if got, want := format["nullable"], true; got != want {
-		t.Fatalf("Gemini format nullable = %#v, want %t", got, want)
+
+	// Deep clone check on ProviderOptions["google"].
+	opts := map[string]any{
+		"generation_config": map[string]any{"max_output_tokens": 1000},
+		"labels":            map[string]string{"env": "prod"},
 	}
-	if got, want := format["enum"], []any{"outline", "markdown"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("Gemini format enum = %#v, want %#v", got, want)
+	cloneReq := protoReq("")
+	cloneReq.MaxTokens = new(100)
+	cloneReq.ProviderOptions = map[string]any{"google": opts}
+	cloneBody := protoBuild(t, cloneReq, protoRes(nil))
+	cloneBody["labels"].(map[string]any)["env"] = "mutated"
+	if opts["labels"].(map[string]string)["env"] != "prod" {
+		t.Fatal("ProviderOptions labels mutated")
 	}
-	outputMatch := params["properties"].(map[string]any)["output_match"].(map[string]any)
-	if got, want := outputMatch["type"], "string"; got != want {
-		t.Fatalf("Gemini output_match type = %#v, want %q", got, want)
-	}
-	if got, want := outputMatch["nullable"], true; got != want {
-		t.Fatalf("Gemini output_match nullable = %#v, want %t", got, want)
-	}
-	contextLines := params["properties"].(map[string]any)["context_lines"].(map[string]any)
-	if got, want := contextLines["type"], "integer"; got != want {
-		t.Fatalf("Gemini context_lines type = %#v, want %q", got, want)
-	}
-	if got, want := contextLines["nullable"], true; got != want {
-		t.Fatalf("Gemini context_lines nullable = %#v, want %t", got, want)
+	if opts["generation_config"].(map[string]any)["max_output_tokens"] != 1000 {
+		t.Fatal("ProviderOptions generation_config mutated")
 	}
 }
 
-// TestProtocolBuildBody_WebSearchNilCapsIsFailOpen pins the mechanism
-// behind issue #738's endpoint gate on this protocol too (the Responses
-// and Anthropic twins share the name): the gate here,
-// req.WebSearch && (caps.WebSearch == nil || *caps.WebSearch)
-// (protocol.go), treats an unset capability as permissive - trust the
-// caller's own req.WebSearch - so the registry's endpoint gate
-// (llm/registry/resolve.go, gateWebSearch) can never represent "denied
-// because this endpoint is not the vendor's first-party API" as a bare
-// nil: a caller setting req.WebSearch = true without consulting
-// registry.Caps would still get google_search sent to an endpoint that
-// rejects it. The registry closes this by carrying an explicit false,
-// never nil; this test pins why that is necessary at this layer and that
-// the explicit false actually holds the tool back.
+func TestProtocolBuildBody_LazyUserInputCoalescingAndStepBoundaries(t *testing.T) {
+	t.Parallel()
+	req := llm.Request{
+		Model: "gemini-3.8-flash",
+		Messages: []llm.Message{
+			llm.User("first user"),
+			// Assistant message with only skipped non-Interactions thinking must NOT split user_input!
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "foreign", Signature: "sig-other"}},
+			}},
+			llm.User("second user"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentText, Text: "step1", GoogleStep: 1},
+				{Kind: llm.ContentImage, Image: &llm.ImageData{URL: "https://example.test/a.png"}, GoogleStep: 1},
+				{Kind: llm.ContentText, Text: "step2", GoogleStep: 2},
+			}},
+		},
+	}
+	body := protoBuild(t, req, protoRes(nil))
+	steps := body["input"].([]any)
+	if len(steps) != 3 {
+		t.Fatalf("steps len = %d, want 3 (1 coalesced user_input + 2 model_output): %#v", len(steps), steps)
+	}
+	u0 := steps[0].(map[string]any)
+	if u0["type"] != "user_input" || len(u0["content"].([]any)) != 2 {
+		t.Fatalf("coalesced user_input = %#v", u0)
+	}
+	m1 := steps[1].(map[string]any)
+	m2 := steps[2].(map[string]any)
+	if m1["type"] != "model_output" || len(m1["content"].([]any)) != 2 || m2["type"] != "model_output" || len(m2["content"].([]any)) != 1 {
+		t.Fatalf("model_output step boundaries = %#v %#v", m1, m2)
+	}
+}
+
+func TestProtocolBuildBody_InstanceWireIDProvenanceAndWebSearchRefusal(t *testing.T) {
+	t.Parallel()
+	res := protoRes(func(c *registry.Caps) { c.Reasoning = new(false) }) // Decoupled from reasoning=false!
+	req := llm.Request{
+		Model: "gemini-x",
+		Messages: []llm.Message{
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{
+					GoogleInteraction: true, GoogleInstance: "gemini-prod", GoogleModel: "gemini-x",
+					Signature: "sig_match", Summary: []string{"plan"}, Text: "plan",
+				}},
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{
+					GoogleInteraction: true, GoogleInstance: "gemini-prod", GoogleModel: "other-model",
+					Signature: "sig_wrong_model", Summary: []string{"wrong"}, Text: "wrong",
+				}},
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{
+					GoogleInteraction: false, Signature: "sig_legacy", Text: "legacy",
+				}},
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+					GoogleInteraction: true, GoogleInstance: "gemini-prod", GoogleModel: "gemini-x",
+					ID: "c_match", Name: "f", Arguments: []byte(`{}`), ThoughtSignature: "tc_sig_match",
+				}},
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+					GoogleInteraction: true, GoogleInstance: "other-inst", GoogleModel: "gemini-x",
+					ID: "c_wrong_inst", Name: "f", Arguments: []byte(`{}`), ThoughtSignature: "tc_sig_wrong_inst",
+				}},
+			}},
+		},
+	}
+	body := protoBuild(t, req, res)
+	steps := body["input"].([]any)
+	if len(steps) != 3 {
+		t.Fatalf("steps = %#v, want 1 matching thought + 2 function_calls", steps)
+	}
+	if steps[0].(map[string]any)["type"] != "thought" || steps[0].(map[string]any)["signature"] != "sig_match" {
+		t.Fatalf("step 0 = %#v", steps[0])
+	}
+	if steps[1].(map[string]any)["signature"] != "tc_sig_match" {
+		t.Fatalf("step 1 missing matching signature: %#v", steps[1])
+	}
+	if _, has := steps[2].(map[string]any)["signature"]; has {
+		t.Fatalf("step 2 must drop mismatched-instance signature: %#v", steps[2])
+	}
+
+	// RoleAssistant carrying ContentWebSearch must be rejected with ConfigurationError.
+	wsReq := llm.Request{
+		Model: "gemini-x",
+		Messages: []llm.Message{
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Query: "q"}}}},
+		},
+	}
+	if _, err := (&Protocol{}).BuildBody(wsReq, res); err == nil {
+		t.Fatal("ContentWebSearch replay must be rejected with ConfigurationError")
+	}
+}
+
 func TestProtocolBuildBody_WebSearchNilCapsIsFailOpen(t *testing.T) {
 	t.Parallel()
 	req := protoReq("")
 	req.WebSearch = true
-	res := protoRes(nil) // Caps.WebSearch left nil, the state a gated instance must never carry
-	if res.Caps.WebSearch != nil {
-		t.Fatal("test setup: protoRes(nil) must leave WebSearch nil")
-	}
+	res := protoRes(nil)
 	tools, _ := protoBuild(t, req, res)["tools"].([]map[string]any)
-	if len(tools) != 1 || tools[0]["google_search"] == nil {
-		t.Fatalf("nil Caps.WebSearch is fail-open at this layer: a caller setting req.WebSearch still gets google_search: %v", tools)
+	if len(tools) != 1 || tools[0]["type"] != "google_search" {
+		t.Fatalf("nil Caps.WebSearch is fail-open: %v", tools)
 	}
 	if _, has := protoBuild(t, req, protoRes(func(c *registry.Caps) { c.WebSearch = new(false) }))["tools"]; has {
-		t.Fatal("an explicit false must hold google_search back")
+		t.Fatal("explicit false must hold google_search back")
+	}
+	// Vertex Gemini Omni drops google_search even when WebSearch=true.
+	omniRes := protoRes(func(c *registry.Caps) { c.WebSearch = new(true) })
+	omniRes.Transport.Preset = registry.PresetVertexGemini
+	omniRes.WireID = "gemini-omni-1.2-flash"
+	if _, has := protoBuild(t, req, omniRes)["tools"]; has {
+		t.Fatal("Vertex Gemini Omni must omit google_search")
 	}
 }
 
@@ -456,10 +568,10 @@ func TestProtocolBuildBody_MultimodalToolResultsCap(t *testing.T) {
 		c.InputModalities = []string{"text", "image"}
 		c.MultimodalToolResults = new(true)
 	}))
-	parts := body["contents"].([]map[string]any)[1]["parts"].([]map[string]any)
-	fr := parts[0]["functionResponse"].(map[string]any)
-	if fr["parts"] == nil {
-		t.Fatalf("inlineData must nest inside functionResponse: %v", fr)
+	fr := body["input"].([]any)[1].(map[string]any)
+	sub, ok := fr["result"].([]map[string]any)
+	if !ok || len(sub) != 2 || sub[1]["type"] != "image" {
+		t.Fatalf("subcontent image expected inside function_result.result: %#v", fr)
 	}
 }
 
@@ -477,57 +589,17 @@ func TestProtocolBuildBody_ProviderOptionMaxOutputTokensRespectsCapsAndLowerWire
 			req := protoReq("")
 			req.MaxTokens = new(100)
 			req.ProviderOptions = map[string]any{registry.ProtocolGoogle: map[string]any{
-				"generationConfig": map[string]any{"maxOutputTokens": tc.wire},
+				"generation_config": map[string]any{"max_output_tokens": tc.wire},
 			}}
 			body := protoBuild(t, req, protoRes(func(c *registry.Caps) { c.MaxOutputTokens = new(50) }))
-			gen := body["generationConfig"].(map[string]any)
-			if got := gen["maxOutputTokens"]; got != tc.want {
-				t.Fatalf("generationConfig.maxOutputTokens = %v, want %d", got, tc.want)
+			gen := body["generation_config"].(map[string]any)
+			if got := gen["max_output_tokens"]; got != tc.want {
+				t.Fatalf("generation_config.max_output_tokens = %v, want %d", got, tc.want)
 			}
 		})
 	}
 }
 
-func TestProtocolBuildBody_GenerationConfigProviderOptionsAreNotMutated(t *testing.T) {
-	t.Parallel()
-	options := map[string]any{"generationConfig": map[string]any{"maxOutputTokens": 1000}}
-	buildWith := func(admitted int) int {
-		req := protoReq("")
-		req.MaxTokens = new(admitted)
-		req.ProviderOptions = map[string]any{registry.ProtocolGoogle: options}
-		body := protoBuild(t, req, protoRes(nil))
-		return body["generationConfig"].(map[string]any)["maxOutputTokens"].(int)
-	}
-	if got := buildWith(100); got != 100 {
-		t.Fatalf("first maxOutputTokens = %d, want 100", got)
-	}
-	if got := buildWith(500); got != 500 {
-		t.Fatalf("second maxOutputTokens = %d, want 500", got)
-	}
-	if got := options["generationConfig"].(map[string]any)["maxOutputTokens"]; got != 1000 {
-		t.Fatalf("provider options mutated: maxOutputTokens = %v, want 1000", got)
-	}
-}
-
-func TestProtocolBuildBody_RejectsMalformedGenerationConfigProviderOption(t *testing.T) {
-	t.Parallel()
-	for _, malformed := range []any{nil, "not-an-object"} {
-		req := protoReq("")
-		req.ProviderOptions = map[string]any{registry.ProtocolGoogle: map[string]any{
-			"generationConfig": malformed,
-		}}
-		body, err := (&Protocol{}).BuildBody(llm.ShapeRequest(req, protoRes(nil)), protoRes(nil))
-		if body != nil {
-			t.Fatalf("generationConfig %T produced body %v, want no request", malformed, body)
-		}
-		if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok {
-			t.Fatalf("generationConfig %T error = %v, want *llm.ConfigurationError", malformed, err)
-		}
-	}
-}
-
-// TestProtocolUnsupportedToolChoiceCarriesTheInstance pins the spec §7.5
-// rule that every error stamp is res.Instance, not a provider literal.
 func TestProtocolUnsupportedToolChoiceCarriesTheInstance(t *testing.T) {
 	t.Parallel()
 	res := protoRes(nil)

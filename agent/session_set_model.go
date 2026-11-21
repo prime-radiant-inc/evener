@@ -91,6 +91,9 @@ const modelSwitchEnumerationTimeout = 8 * time.Second
 // selection) runs on an already-existing session, so sessionID is always that
 // session's own id.
 func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, sessionID string, timeout llm.AdapterTimeout, primedInstance string, primed *llm.ModelListing) (resolved *provider.Profile, listedInstance string, listing *llm.ModelListing, err error) {
+	if err := validateVertexInteractionsModel(profile); err != nil {
+		return profile, "", nil, err
+	}
 	if primed != nil && primedInstance == profile.ID() {
 		// SetModel already listed this instance before it took the session
 		// lock. Reuse that listing: a second fetch could return empty and clear
@@ -98,6 +101,9 @@ func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, ses
 		// enumeration budget.
 		if res, err := client.Resolve(profile.ID() + "/" + profile.Model()); err == nil {
 			profile = profile.WithResolved(res)
+		}
+		if err := validateVertexInteractionsModel(profile); err != nil {
+			return profile, primedInstance, primed, err
 		}
 		if err := validateModelSwitchMembership(client, profile, *primed); err != nil {
 			return profile, primedInstance, primed, err
@@ -112,6 +118,9 @@ func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, ses
 	}
 	filled, enumeration := fillLiveModelMetadata(ctx, client, profile)
 	if enumeration.err != nil {
+		if err := validateVertexInteractionsModel(filled); err != nil {
+			return filled, "", nil, err
+		}
 		// Fail open unconditionally: an instance that cannot be listed at all
 		// and any listing failure (timeout, auth error, etc.) both accept the
 		// switch, with no live metadata to fill and no listing to carry.
@@ -133,6 +142,9 @@ func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, ses
 // pass runs here; fail-open-on-listing-error is handled by the caller, before
 // this is called.
 func validateModelSwitchMembership(client *llm.Client, profile *provider.Profile, listing llm.ModelListing) error {
+	if err := validateVertexInteractionsModel(profile); err != nil {
+		return err
+	}
 	if client == nil || profile == nil {
 		return nil
 	}
@@ -147,6 +159,51 @@ func validateModelSwitchMembership(client *llm.Client, profile *provider.Profile
 		return nil
 	}
 	return fmt.Errorf("model %s is not available from instance %s (available: %s)", profile.Model(), profile.ID(), formatModelAlternatives(listing.Models))
+}
+
+func validateVertexInteractionsModel(profile *provider.Profile) error {
+	if profile == nil {
+		return nil
+	}
+	res := profile.Resolved()
+	if res.Transport.Preset == registry.PresetVertexGemini && !registry.VertexSupportsGeminiModel(res.WireID) {
+		return fmt.Errorf("model %q on %s is not supported by Vertex AI Interactions API (use a Gemini 3.1+/4 model such as gemini-3.8-flash)", profile.Model(), profile.ID())
+	}
+	return nil
+}
+
+// validateSavedCheapModel checks a persisted SessionMeta.CheapModel candidate
+// against active registry/provider availability and Vertex Interactions support.
+func (s *Session) validateSavedCheapModel(candidate *provider.Profile) error {
+	if candidate == nil {
+		return nil
+	}
+	cheapProv, cheapModel := candidate.CheapModelRef()
+	if cheapProv == candidate.ID() {
+		return validateVertexInteractionsModel(candidate.WithModel(cheapModel))
+	}
+	if s.resolveProfile != nil {
+		resolved, err := s.resolveProfile(cheapProv + "/" + cheapModel)
+		if err != nil {
+			return err
+		}
+		return validateVertexInteractionsModel(resolved)
+	}
+	if strings.EqualFold(cheapProv, "google-vertex-express") {
+		return fmt.Errorf("provider %q is retired", cheapProv)
+	}
+	reg := candidate.Registry()
+	if reg == nil && s.client != nil {
+		reg = s.client.Registry()
+	}
+	if reg != nil {
+		if res, err := reg.Resolve(cheapProv + "/" + cheapModel); err == nil {
+			if res.Transport.Preset == registry.PresetVertexGemini && !registry.VertexSupportsGeminiModel(res.WireID) {
+				return fmt.Errorf("model %q on %s is not supported by Vertex AI Interactions API (use a Gemini 3.1+/4 model such as gemini-3.8-flash)", cheapModel, cheapProv)
+			}
+		}
+	}
+	return nil
 }
 
 // maxModelAlternatives caps how many live-list alternatives

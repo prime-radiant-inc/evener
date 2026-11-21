@@ -80,7 +80,13 @@ func fillLiveModelMetadata(ctx context.Context, client *llm.Client, profile *pro
 // resolveLiveModelProfileWithEnumerationTimeout for API-log attribution; see
 // its doc comment.
 func resolveLiveModelProfileValidated(client *llm.Client, profile *provider.Profile, sessionID string, timeout llm.AdapterTimeout) (*provider.Profile, liveModelEnumeration, error) {
+	if err := validateVertexInteractionsModel(profile); err != nil {
+		return profile, liveModelEnumeration{}, err
+	}
 	filled, enumeration := resolveLiveModelProfileWithEnumerationTimeout(client, profile, sessionID, timeout)
+	if err := validateVertexInteractionsModel(filled); err != nil {
+		return filled, enumeration, err
+	}
 	if enumeration.err == nil {
 		if err := validateModelSwitchMembership(client, filled, enumeration.listing); err != nil {
 			return filled, enumeration, err
@@ -93,11 +99,17 @@ func resolveLiveModelProfileValidated(client *llm.Client, profile *provider.Prof
 // launcher already listed this instance, reuse that listing for the metadata
 // fill and the membership check instead of fetching again.
 func resolveStartupModelProfile(client *llm.Client, profile *provider.Profile, sessionID string, timeout llm.AdapterTimeout, primed *StartupModelListing) (*provider.Profile, liveModelEnumeration, error) {
+	if err := validateVertexInteractionsModel(profile); err != nil {
+		return profile, liveModelEnumeration{}, err
+	}
 	if primed == nil || primed.Instance != profile.ID() || !primed.Listing.Usable {
 		return resolveLiveModelProfileValidated(client, profile, sessionID, timeout)
 	}
 	if res, err := client.Resolve(profile.ID() + "/" + profile.Model()); err == nil {
 		profile = profile.WithResolved(res)
+	}
+	if err := validateVertexInteractionsModel(profile); err != nil {
+		return profile, liveModelEnumeration{listing: primed.Listing}, err
 	}
 	enumeration := liveModelEnumeration{listing: primed.Listing}
 	if err := validateModelSwitchMembership(client, profile, primed.Listing); err != nil {

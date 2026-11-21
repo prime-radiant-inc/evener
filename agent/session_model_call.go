@@ -242,6 +242,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	scope := replayScope{
 		Instance:       profile.ID(),
 		Model:          profile.Model(),
+		WireID:         profile.Resolved().WireID,
 		Protocol:       profile.Protocol(),
 		InFlightFrom:   inFlightFrom,
 		ResultToolName: s.resultToolName(),
@@ -1711,7 +1712,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			// test that seeds no turns keeps the round's history.
 			if len(fallbackSource.turns) > 0 {
 				scope := fallbackSource.scope
-				scope.Instance, scope.Model, scope.Protocol = fbProfile.ID(), fbProfile.Model(), fbProfile.Protocol()
+				scope.Instance, scope.Model, scope.WireID, scope.Protocol = fbProfile.ID(), fbProfile.Model(), fbProfile.Resolved().WireID, fbProfile.Protocol()
 				scope.canonicalModel = func(model string) string { return s.canonicalModelID(fbProfile.ID(), model) }
 				fallbackHistory = s.requestMessages(fallbackSource.system, expandHistory(fallbackSource.turns, scope))
 			}
@@ -1984,6 +1985,7 @@ func (s *Session) forceCompactForModelRecovery(ctx context.Context) {
 type replayScope struct {
 	Instance       string // outgoing instance (req.Provider)
 	Model          string // outgoing requested model (req.Model)
+	WireID         string // outgoing resolved wire model id (res.WireID)
 	Protocol       string // outgoing wire protocol; empty ⇒ no filtering
 	ResultToolName string // session's configured result tool name (empty defaults != "web_search")
 
@@ -2126,24 +2128,29 @@ func projectThinkingForTarget(profile *provider.Profile, messages []llm.Message)
 // thinkingReplayEligible reports whether a completed prior turn's
 // thinking/redacted_thinking blocks may replay into the outgoing request.
 // Empty provenance (legacy transcripts) is always eligible. An anthropic
-// target requires an exact (instance, requested model) match — the requested
-// model taken from ResponseRequestModel, or canonicalized ResponseModel when
-// the request-model field is empty (closes G12). google and openai-responses
-// targets require the same instance: google's builder must replay prior
-// tool-call thought signatures regardless of model, and openai Responses
-// carries an opaque encrypted_content blob that only its issuing deployment
-// can decrypt (a cross-deployment replay yields "Encrypted content is not
-// supported"). An openai-chat target takes the default branch and replays
-// verbatim; unknown protocols keep their builder guard.
+// target requires an exact (instance, requested model) match (closes G12). A
+// Google-produced turn is only eligible for a ProtocolGoogle target matching
+// the same instance (and individual GoogleInteraction thought parts are gated
+// on ReplayableGoogleThoughtFor(Instance, WireID) in projectThinkingPart).
+// openai-responses targets require the same instance. An openai-chat target
+// takes the default branch and replays verbatim; unknown protocols keep their
+// builder guard.
 func (rs replayScope) thinkingReplayEligible(t schema.Turn) bool {
 	if strings.TrimSpace(t.ResponseProvider) == "" {
 		return true
 	}
 	producer := rs.producerProtocol(t)
+	if producer == registry.ProtocolGoogle {
+		return rs.Protocol == registry.ProtocolGoogle &&
+			rs.Instance != "" && rs.WireID != "" &&
+			rs.Instance == t.ResponseProvider
+	}
 	switch rs.Protocol {
 	case registry.ProtocolAnthropic:
 		return producer == rs.Protocol && rs.Instance == t.ResponseProvider && rs.requestedModelMatches(t)
-	case registry.ProtocolGoogle, registry.ProtocolOpenAIResponses:
+	case registry.ProtocolGoogle:
+		return false
+	case registry.ProtocolOpenAIResponses:
 		return producer == rs.Protocol && rs.Instance == t.ResponseProvider
 	default:
 		return true
@@ -2213,6 +2220,15 @@ func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps boo
 	if p.Kind != llm.ContentThinking && p.Kind != llm.ContentRedThinking {
 		return p, false
 	}
+	if rs.active() && p.Thinking != nil && p.Thinking.GoogleInteraction {
+		if rs.Protocol != registry.ProtocolGoogle || p.Kind != llm.ContentThinking || !p.Thinking.ReplayableGoogleThoughtFor(rs.Instance, rs.WireID) {
+			return p, true
+		}
+		return llm.TrimThinkingForReplay(p, rs.DropThinking)
+	}
+	if rs.active() && rs.Protocol == registry.ProtocolGoogle {
+		return p, true
+	}
 	if !provenanceKeeps {
 		if rs.Protocol != registry.ProtocolOpenAIResponses {
 			return p, true
@@ -2226,8 +2242,11 @@ func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps boo
 // filtered per the N4 rules for the scope, plus the target's own thinking
 // policy. An inactive scope passes through unchanged (identical to legacy
 // expansion) unless the target policy drops thinking. In-flight turns keep the
-// N4 exemption but still lose thinking the target does not want.
-// tool_call/tool_result and text/image content is never touched.
+// N4 exemption for non-Google producers but still lose thinking the target does
+// not want, and Google Interactions thoughts always require matching
+// (Instance, WireID) provenance. Completed ProtocolGoogle Grounding outputs,
+// web_search parts, and legacy unprefixed web_search tool pairs are omitted
+// when projecting prior turns.
 func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Message {
 	t.Message = projectVoicePresentation(t)
 	if !rs.active() && !rs.DropThinking {
