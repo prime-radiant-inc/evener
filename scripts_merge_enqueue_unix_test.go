@@ -256,6 +256,7 @@ while :; do sleep 0.05; done
 		"FAKE_STOPPED_FILE=" + stopped,
 	}, "--pr", "42")
 	helperPID := waitForHelperPID(t, pidFile)
+	stopGroupOnCleanup(t, helperPID)
 	if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatalf("signal launcher: %v", err)
 	}
@@ -291,6 +292,7 @@ while :; do sleep 0.05; done
 		"FAKE_TERMS_FILE=" + terms,
 	}, "--pr", "42")
 	helperPID := waitForHelperPID(t, pidFile)
+	stopGroupOnCleanup(t, helperPID)
 	if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatalf("signal launcher: %v", err)
 	}
@@ -340,7 +342,9 @@ while :; do sleep 0.05; done
 		"TMPDIR=" + scratchRoot,
 	}, "--pr", "42")
 	helperPID := waitForHelperPID(t, pidFile)
+	stopGroupOnCleanup(t, helperPID)
 	ghPID := readPublishedGHGroup(t, scratchRoot)
+	stopGroupOnCleanup(t, ghPID)
 	if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatalf("signal launcher: %v", err)
 	}
@@ -408,6 +412,19 @@ func waitForProcessGone(t *testing.T, pid int) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// stopGroupOnCleanup kills a process group this test's own fixtures started, so
+// a failure after readiness cannot leave a helper, or the gh call it started,
+// running past the test. The launcher puts the helper in its own group and the
+// helper does the same for a gh call, so each published pid is a group leader.
+func stopGroupOnCleanup(t *testing.T, pgid int) {
+	t.Helper()
+	t.Cleanup(func() {
+		if syscall.Kill(pgid, 0) == nil {
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		}
+	})
 }
 
 func waitForHelperPID(t *testing.T, path string) int {
