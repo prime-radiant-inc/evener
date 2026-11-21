@@ -296,19 +296,19 @@ func TestStoreOpenTruncatesTrailingPartialLine(t *testing.T) {
 	// The repaired journal must accept an append on its own line: a leftover
 	// fragment would make the next record join it rather than decode.
 	appendEvent(t, s, Event{Kind: EventJobFinished, JobID: "job_A"})
-	events, err := s.LoadEvents()
-	if err != nil {
-		t.Fatalf("LoadEvents after append: %v", err)
-	}
-	if len(events) != 2 || events[0].Seq != 1 || events[1].Seq != 2 {
-		t.Fatalf("events after append = %+v, want seqs 1,2", events)
-	}
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read journal after append: %v", err)
 	}
 	if lines := strings.Count(string(after), "\n"); lines != 2 {
 		t.Fatalf("journal holds %d lines after append, want one line per event", lines)
+	}
+	events, err := s.LoadEvents()
+	if err != nil {
+		t.Fatalf("LoadEvents after append: %v", err)
+	}
+	if len(events) != 2 || events[0].Seq != 1 || events[1].Seq != 2 {
+		t.Fatalf("events after append = %+v, want seqs 1,2", events)
 	}
 }
 
