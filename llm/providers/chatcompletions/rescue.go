@@ -8,6 +8,8 @@ import (
 	"slices"
 	"unicode/utf16"
 	"unicode/utf8"
+
+	"primeradiant.com/evener/llm"
 )
 
 // claudeXMLParamOpenRE matches the OPEN of an Anthropic-style parameter tag.
@@ -54,16 +56,27 @@ const claudeXMLParamCloseTag = "</parameter>"
 // If the input contains neither rescue shape, it is returned unchanged. If
 // rescue is not possible, the original input is returned so the usual
 // schema-validation error path can surface the problem.
-// One exception: when a top-level field's string value is itself a JSON
-// array or object (parsedAnyJSONString), that field is inlined and the
-// result is re-marshaled even without XML, since the parsed form differs
-// from the original string.
+//
+// The bare form has no tool schema, so it never inlines a JSON-shaped string
+// value. Callers that know the called tool's parameters use
+// rescueClaudeXMLArgsWithSchema.
 //
 // rescueClaudeXMLArgsHook, when non-nil, runs at each call. Tests use it to
 // prove a decode path rescues once per tool call.
 var rescueClaudeXMLArgsHook func()
 
 func rescueClaudeXMLArgs(raw string) string {
+	return rescueClaudeXMLArgsWithSchema(raw, nil)
+}
+
+// rescueClaudeXMLArgsWithSchema is rescueClaudeXMLArgs with the called tool's
+// root parameter schema (llm.ToolDefinition.Parameters). The schema gates the
+// second-order rescue: a top-level field's string value that is itself a JSON
+// array or object is inlined only when that field's property schema declares
+// an array or object. A field declared string — write_file's content holding a
+// JSON file — keeps its JSON text, and an absent schema or undeclared field is
+// left alone.
+func rescueClaudeXMLArgsWithSchema(raw string, params map[string]any) string {
 	if rescueClaudeXMLArgsHook != nil {
 		rescueClaudeXMLArgsHook()
 	}
@@ -79,9 +92,14 @@ func rescueClaudeXMLArgs(raw string) string {
 	// that looks like a JSON array or object (starts with `[` or `{`), try
 	// parsing it. Models sometimes emit JSON-encoded strings for array/object
 	// fields instead of the parsed value. This is a separate bug from the
-	// Claude-XML corruption but benefits from the same rescue path.
+	// Claude-XML corruption but benefits from the same rescue path. The field's
+	// declared schema decides: inlining a value the schema types as a string
+	// corrupts legitimate content (a JSON file written through write_file).
 	parsedAnyJSONString := false
 	for k, v := range fields {
+		if !schemaDeclaresContainer(fieldSchema(params, k)) {
+			continue
+		}
 		content, ok := decodeJSONStringContent(v)
 		if !ok {
 			continue
@@ -199,6 +217,61 @@ func rescueClaudeXMLArgs(raw string) string {
 	}
 
 	return string(appendJSONObject(nil, fields))
+}
+
+// fieldSchema returns the property schema params declares for name, or nil
+// when the schema is absent, malformed, or does not declare the field.
+func fieldSchema(params map[string]any, name string) map[string]any {
+	props, _ := params["properties"].(map[string]any)
+	schema, _ := props[name].(map[string]any)
+	return schema
+}
+
+// schemaDeclaresContainer reports whether a property schema declares an array
+// or object type, including through a nullable type list such as
+// ["object","null"]. Go-built schemas spell that list []string; JSON-decoded
+// schemas spell it []any, so both are handled. Other shapes ($ref, anyOf,
+// oneOf) stay unrecognized on purpose: the rescue unwraps only what the schema
+// plainly types.
+func schemaDeclaresContainer(schema map[string]any) bool {
+	switch typ := schema["type"].(type) {
+	case string:
+		return isContainerType(typ)
+	case []string:
+		for _, s := range typ {
+			if isContainerType(s) {
+				return true
+			}
+		}
+	case []any:
+		for _, v := range typ {
+			if s, ok := v.(string); ok && isContainerType(s) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isContainerType(typ string) bool {
+	return typ == "array" || typ == "object"
+}
+
+// toolParamsByName returns the Parameters schema of the named tool in tools,
+// or nil when no such tool is declared.
+func toolParamsByName(tools []llm.ToolDefinition, name string) map[string]any {
+	for i := range tools {
+		if tools[i].Name == name {
+			return tools[i].Parameters
+		}
+	}
+	return nil
+}
+
+// rescueToolArgs is the decode sites' single call into the rescue: it looks up
+// the called tool's schema in the request and gates JSON-string inlining on it.
+func rescueToolArgs(raw string, tools []llm.ToolDefinition, name string) string {
+	return rescueClaudeXMLArgsWithSchema(raw, toolParamsByName(tools, name))
 }
 
 // decodeJSONStringContent returns the content bytes of a JSON string token

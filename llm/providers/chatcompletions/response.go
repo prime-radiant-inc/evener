@@ -317,6 +317,15 @@ func extractScalarReasoning(reasoningContent, reasoning, reasoningText string) (
 // response into an llm.Response. finishMap applies the row's
 // Caps.FinishReasonMap before normalization; the caller (Complete) stamps
 // Response.Provider from res.Instance after this returns.
+// It carries no tool definitions, so the argument rescue cannot inline
+// JSON-shaped strings; Complete uses fromChatCompletionResponseWithTools.
+func fromChatCompletionResponse(raw map[string]any, finishMap map[string]string, body []byte) (llm.Response, error) {
+	return fromChatCompletionResponseWithTools(raw, finishMap, body, nil)
+}
+
+// fromChatCompletionResponseWithTools is fromChatCompletionResponse with the
+// request's tool definitions, so rescueClaudeXMLArgsWithSchema can gate
+// JSON-string inlining on each called tool's declared field schema.
 //
 // body is the raw response body bytes; when non-nil, a focused decode
 // captures tool-call arguments as json.RawMessage so rawStringContent can
@@ -324,7 +333,7 @@ func extractScalarReasoning(reasoningContent, reasoning, reasoningText string) (
 // the map[string]any decode coerces. When nil, the existing string-form
 // path is used (args come from the lossy map, already U+FFFD-coerced for
 // invalid UTF-8).
-func fromChatCompletionResponse(raw map[string]any, finishMap map[string]string, body []byte) (llm.Response, error) {
+func fromChatCompletionResponseWithTools(raw map[string]any, finishMap map[string]string, body []byte, tools []llm.ToolDefinition) (llm.Response, error) {
 	var parsed chatCompletionResponse
 	err := json.Unmarshal(body, &parsed)
 	if len(body) == 0 || err != nil {
@@ -379,7 +388,7 @@ func fromChatCompletionResponse(raw map[string]any, finishMap map[string]string,
 		// Pick the raw or fallback string first, then rescue once: rescuing
 		// both candidates parses large argument objects twice and throws the
 		// first result away.
-		args = rescueClaudeXMLArgs(args)
+		args = rescueToolArgs(args, tools, tc.Function.Name)
 		canonical, spelling := llm.NormalizeToolArguments([]byte(args))
 		parts = append(parts, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
 			ID: tc.ID, Name: tc.Function.Name, Arguments: canonical, Type: "function",
