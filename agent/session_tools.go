@@ -262,9 +262,9 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	// The rule is enforced one level up instead: a tool call exists only as the
 	// answer to a model request, and every model request passes admission in
 	// prepareModelRequestWithError. There, dropUnleasedWatchAttentionTurns
-	// withholds a stable child's still-pending watch rows from an unleased
-	// turn's presented history, so the notice never reaches a provider. Tools of
-	// a leased request keep their BeginTool accounting above.
+	// omits a stable child's watch rows that the attention fold identifies as
+	// pending from an unleased turn's presented history. Tools of a leased
+	// request keep their BeginTool accounting above.
 
 	// Self-heal off-distribution tool calls before hooks/dispatch. Snapshot the
 	// provider name-map here (execTool runs outside s.mu) — never lock inside
