@@ -398,6 +398,26 @@ func TestResponsesStreamDisambiguatesCallReferences(t *testing.T) {
 				{"call_b", "fc_b", "beta", `{"beta":2}`},
 			})
 	})
+
+	t.Run("item-only terminal records keep their own stream state", func(t *testing.T) {
+		check(t,
+			[]string{
+				`{"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\"one\":1}"}`,
+				`{"type":"response.output_item.done","item":{"type":"function_call","id":"fc_1"}}`,
+				`{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_2","name":"beta"}}`,
+				`{"type":"response.function_call_arguments.delta","item_id":"fc_2","delta":"{\"two\":2}"}`,
+				`{"type":"response.output_item.done","item":{"type":"function_call","id":"fc_2"}}`,
+				`{"type":"response.completed","response":{"status":"completed","output":[{"type":"function_call","id":"fc_1"},{"type":"function_call","id":"fc_2"}]}}`,
+			},
+			[]settledCall{
+				{"", "fc_1", "", `{"one":1}`},
+				{"", "fc_2", "beta", `{"two":2}`},
+			},
+			[]settledCall{
+				{"fc_1", "fc_1", "", `{"one":1}`},
+				{"fc_2", "fc_2", "beta", `{"two":2}`},
+			})
+	})
 }
 
 // TestResponsesInbandErrorDecoding drives responsesInbandError's shape arms

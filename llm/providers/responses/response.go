@@ -304,47 +304,22 @@ func adoptTerminalPhases(streamed []any, streamedRaw []json.RawMessage, terminal
 	return streamed, streamedRaw
 }
 
-// fillSparseTerminalCalls lets a terminal record that omits a call's name or
-// arguments inherit them from the stream state for that same call. A record's
-// own non-empty name or arguments stays authoritative.
-func (acc *responsesOutputAccumulator) fillSparseTerminalCalls(r *llm.Response, terminal []any) {
-	byID := make(map[string]*llm.ToolCallData, len(r.Message.Content))
-	byItem := make(map[string]*llm.ToolCallData, len(r.Message.Content))
+// fillSparseTerminalCalls lets a settled call that omits its name or arguments
+// inherit them from the stream state for that same call. The settled call's own
+// non-empty name or arguments stays authoritative. A call with no issued ID
+// resolves through its item ID; a shared, ambiguous item ID resolves to no
+// state, so one call's stream state never bleeds into another.
+func (acc *responsesOutputAccumulator) fillSparseTerminalCalls(r *llm.Response) {
 	for i := range r.Message.Content {
-		if call := r.Message.Content[i].ToolCall; call != nil {
-			if _, ok := byID[call.ID]; !ok {
-				byID[call.ID] = call
-			}
-			if _, ok := byItem[call.ItemID]; !ok {
-				byItem[call.ItemID] = call
-			}
-		}
-	}
-	for _, raw := range terminal {
-		item, _ := raw.(map[string]any)
-		if kind, _ := item["type"].(string); kind != "function_call" || responsesFunctionCallUnfinished(item) {
+		call := r.Message.Content[i].ToolCall
+		if call == nil {
 			continue
 		}
-		callID, _ := item["call_id"].(string)
-		itemID, _ := item["id"].(string)
-		if itemID == "" {
-			itemID, _ = item["item_id"].(string)
-		}
-		if callID == "" && itemID == "" {
-			continue
-		}
-		st := acc.toolStates[callID]
-		if st == nil && callID == "" {
-			st = acc.toolStates[itemID]
+		st := acc.toolStates[call.ID]
+		if call.ID == "" {
+			st = acc.toolStates[call.ItemID]
 		}
 		if st == nil {
-			continue
-		}
-		call := byID[callID]
-		if call == nil && callID == "" {
-			call = byItem[itemID]
-		}
-		if call == nil {
 			continue
 		}
 		if call.Name == "" {
@@ -403,7 +378,7 @@ func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, acc 
 		if settledItems == 0 {
 			return
 		}
-		acc.fillSparseTerminalCalls(r, terminalOutput)
+		acc.fillSparseTerminalCalls(r)
 		// The stream accumulator holds only settled items.
 		count := len(terminalOutput)
 		for _, rawItem := range terminalOutput {
