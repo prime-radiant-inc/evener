@@ -67,6 +67,12 @@ func selectResponsesContinuationAnchorCandidate(cfg SessionConfig, history []sch
 			Reason:      reason,
 		}
 	}
+	if responsesContinuationAnchorRewritten(anchor) {
+		return responsesContinuationAnchorCandidate{}, llm.ResponsesContinuationDecision{
+			HistoryMode: llm.HistoryModeFullHistory,
+			Reason:      "continuation_anchor_frame_escaped",
+		}
+	}
 
 	return responsesContinuationAnchorCandidate{
 		TurnIndex: anchorIndex,
@@ -135,6 +141,17 @@ func responsesContinuationToolCallIDs(msg llm.Message) map[string]struct{} {
 		}
 	}
 	return ids
+}
+
+// responsesContinuationAnchorRewritten reports whether replay would rewrite the
+// anchor's assistant text. A delta names the anchor with previous_response_id
+// and sends only the turns after it, so the anchor's text never reaches the
+// request: a rewrite applied to the local copy would leave the provider's
+// stored assistant output — a fabricated answers frame included — in front of
+// the model. An anchor replay rewrites is therefore not a delta anchor, and the
+// request falls back to full history, where the rewrite lands.
+func responsesContinuationAnchorRewritten(anchor schema.Turn) bool {
+	return escapeTurnFrames(anchor, anchor.Message).Text() != anchor.Message.Text()
 }
 
 func responsesContinuationToolResultsIneligibleReason(msg llm.Message, anchorToolCallIDs map[string]struct{}) string {

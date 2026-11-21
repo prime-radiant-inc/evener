@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/plugin"
@@ -2548,19 +2549,23 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 // reaches the model as the reply it is.
 //
 // Model prose is escaped whole, since any frame opener in it is a forgery. A
-// turn the harness composes — a compaction artifact, a skill carrier, a
-// runtime reminder block, a notification block — may carry the harness's own
-// opener on any line, so only its answers markers are escaped: rewriting an
-// opener there would corrupt the frame the harness delivered.
+// turn the harness composes — a skill carrier, a runtime reminder block, a
+// notification block — may carry the harness's own opener on any line, so only
+// its answers markers are escaped: rewriting an opener there would corrupt the
+// frame the harness delivered. A compaction artifact is both: its own framing
+// is the harness's, and the fenced bodies it carries are the model's
+// (contextmgr.EscapeModelAuthoredBodies).
 func escapeTurnFrames(t schema.Turn, msg llm.Message) llm.Message {
 	var escape func(string) string
 	switch t.Kind {
-	case schema.TurnCheckpoint, schema.TurnSummary, schema.TurnSystem:
+	case schema.TurnCheckpoint, schema.TurnSummary:
+		escape = contextmgr.EscapeModelAuthoredBodies
+	case schema.TurnSystem:
 		escape = sysmsg.EscapeAnswersMarker
 	case schema.TurnAssistant:
 		escape = sysmsg.EscapeModelAuthoredFrames
 	case schema.TurnUserInput:
-		if t.Authorship == nil || t.Authorship.Author.Kind == schema.TranscriptAuthorHuman {
+		if !isAgentAuthoredInput(t) {
 			return msg
 		}
 		escape = sysmsg.EscapeModelAuthoredFrames
