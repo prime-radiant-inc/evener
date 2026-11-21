@@ -1,4 +1,3 @@
-import { classifyDiffLineKinds, type DiffLineKind } from "@evener/appwire-client";
 import { useMemo } from "react";
 import { requireClass } from "../internal/requireClass";
 import styles from "./diffblock.module.css";
@@ -6,6 +5,8 @@ import styles from "./diffblock.module.css";
 export interface DiffBlockProps {
   unified: string;
 }
+
+type DiffLineKind = "header" | "add" | "del" | "context" | "meta";
 
 interface DiffLine {
   kind: DiffLineKind;
@@ -33,40 +34,72 @@ const KIND_CLASS: Record<DiffLineKind, string> = {
   meta: CLASS.meta,
 };
 
+// Git's exact, unlocalized wording for "this line has no trailing
+// newline in the file" - not a context line (it describes the diff, it
+// isn't part of either file's content), so it gets its own muted tone
+// rather than reading as an unchanged line of code.
+const NO_NEWLINE_MARKER = "\\ No newline at end of file";
+
 /**
- * Parses unified-diff text into DiffLine records using @evener/appwire-client's
- * shared classifyDiffLineKinds classifier so DiffBlock agrees 100% with
- * diffStats and mobile StepEvidence.
+ * Classifies each line of unified-diff text. "---"/"+++" file-header lines
+ * are recognized as headers while `inHeader` is true: `inHeader` turns false on
+ * the first "@@" hunk header, or immediately after a "+++" line following a
+ * "---" line (`seenOldHeader`) so flat single-edit diffs with no "@@" still
+ * classify subsequent "---"/"+++" content lines as deletions/additions. A
+ * "diff --git" or "index " line re-arms header detection for the next file.
+ * Mirrors appwire-client/typescript/editDiff.ts's `classifyDiffLineKinds` so
+ * DiffBlock stays self-contained while matching diffStats and mobile StepEvidence.
  */
 function parseUnifiedDiff(unified: string): DiffLine[] {
   if (unified === "") return [];
 
-  // Strip a trailing \r from every line so CRLF diffs do not carry \r into
-  // rendered content.
+  // Strip a trailing \r from every line before anything else looks at it -
+  // a CRLF-diff's raw lines otherwise carry it into rendered content, AND
+  // (more subtly) into the bare "---"/"+++" exact-match check just below,
+  // which would silently fail on "---\r" and misclassify a CRLF file's own
+  // header pair as a deletion/addition instead.
   const rawLines = unified.split("\n").map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
   // A single trailing newline is a formatting artifact, not a blank line
   // of real diff content.
   if (rawLines[rawLines.length - 1] === "") rawLines.pop();
 
-  const kinds = classifyDiffLineKinds(unified);
-  return rawLines.map((raw, i) => {
-    const kind = kinds[i] ?? "context";
-    switch (kind) {
-      case "header":
-      case "meta":
-        return { kind, marker: "", content: raw };
-      case "add":
-        return { kind, marker: "+", content: raw.slice(1) };
-      case "del":
-        return { kind, marker: "-", content: raw.slice(1) };
-      default: {
-        // A context line's marker is a single leading space per the unified
-        // diff format; a genuinely blank line has no marker to strip.
-        const content = raw.startsWith(" ") ? raw.slice(1) : raw;
-        return { kind, marker: " ", content };
+  const lines: DiffLine[] = [];
+  let inHeader = true;
+  let seenOldHeader = false;
+
+  for (const raw of rawLines) {
+    if (raw.startsWith("diff --git") || raw.startsWith("index ")) {
+      lines.push({ kind: "header", marker: "", content: raw });
+      inHeader = true;
+      seenOldHeader = false;
+    } else if (raw.startsWith("@@")) {
+      lines.push({ kind: "header", marker: "", content: raw });
+      inHeader = false;
+      seenOldHeader = false;
+    } else if (inHeader && (raw.startsWith("--- ") || raw === "---")) {
+      lines.push({ kind: "header", marker: "", content: raw });
+      seenOldHeader = true;
+    } else if (inHeader && (raw.startsWith("+++ ") || raw === "+++")) {
+      lines.push({ kind: "header", marker: "", content: raw });
+      if (seenOldHeader) {
+        inHeader = false;
+        seenOldHeader = false;
       }
+    } else if (raw === NO_NEWLINE_MARKER) {
+      lines.push({ kind: "meta", marker: "", content: raw });
+    } else if (raw.startsWith("+")) {
+      lines.push({ kind: "add", marker: "+", content: raw.slice(1) });
+    } else if (raw.startsWith("-")) {
+      lines.push({ kind: "del", marker: "-", content: raw.slice(1) });
+    } else {
+      // A context line's marker is a single leading space per the unified
+      // diff format; a genuinely blank line has no marker to strip.
+      const content = raw.startsWith(" ") ? raw.slice(1) : raw;
+      lines.push({ kind: "context", marker: " ", content });
     }
-  });
+  }
+
+  return lines;
 }
 
 /**
