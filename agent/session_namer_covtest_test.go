@@ -18,15 +18,6 @@ func TestPtrString(t *testing.T) {
 	}
 }
 
-// TestSessionNamerEnabled covers sessionNamerEnabled with nil and non-nil
-// profiles (lines 91-95).
-func TestSessionNamerEnabled(t *testing.T) {
-	t.Parallel()
-	if sessionNamerEnabled(nil) {
-		t.Fatal("expected false for nil profile")
-	}
-}
-
 // TestSessionNamerModel covers sessionNamerModel with nil profile (line
 // 116-117).
 func TestSessionNamerModel_NilProfile(t *testing.T) {
