@@ -49,7 +49,7 @@ any remaining production findings before using this as a reviewed preview.
 For the three hands-on panel roles: **phone workflow** owns the phone row plus
 Send/answer and direct-child Open/Back; **tool/delegate** owns native evidence,
 lifecycle distinctions and both nested-route paths; **workspace/accessibility**
-owns keyboard/settings, actual Details/Tasks/Activity, and wide versus narrow
+owns keyboard/settings, actual Details/Tasks, and wide versus narrow
 pane comparison. Automation is not the still-separate hands-on panel endorsement.
 
 ## Verification
