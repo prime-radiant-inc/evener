@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // TestExecArgvCancellationTerminatesEntireProcessGroupNotJustLeader is the
@@ -52,16 +54,13 @@ func TestExecArgvCancellationTerminatesEntireProcessGroupNotJustLeader(t *testin
 
 	// Wait for the heartbeat child to actually start writing before canceling,
 	// so a slow-starting child can't produce a false pass.
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if info, statErr := os.Stat(heartbeat); statErr == nil && info.Size() > 0 {
-			break
+	testwait.UntilSeen(t, "the heartbeat child to start writing", func() (bool, string) {
+		info, statErr := os.Stat(heartbeat)
+		if statErr != nil {
+			return false, statErr.Error()
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("heartbeat child never started")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return info.Size() > 0, fmt.Sprintf("size=%d", info.Size())
+	})
 
 	cancel()
 	select {

@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // drainingCommandRuntime models the SAFE-06 hazard deterministically: Wait stays
@@ -196,11 +198,11 @@ func TestExecCommandBufferedReturnsWhenChildHoldsOutputPipe(t *testing.T) {
 		t.Fatal("did not capture the backgrounded child pid")
 	}
 	t.Cleanup(func() { _ = syscall.Kill(childPID, syscall.SIGKILL) })
-	deadline := time.Now().Add(2 * time.Second)
-	for syscall.Kill(childPID, 0) != syscall.ESRCH && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if err := syscall.Kill(childPID, 0); err != syscall.ESRCH {
-		t.Fatalf("backgrounded child %d survived after buffered Wait returned: same-group writers must be reclaimed, not abandoned", childPID)
-	}
+	testwait.UntilSeen(t, "the backgrounded child to be reclaimed after buffered Wait", func() (bool, string) {
+		err := syscall.Kill(childPID, 0)
+		if err == nil {
+			return false, "still alive"
+		}
+		return err == syscall.ESRCH, err.Error()
+	})
 }

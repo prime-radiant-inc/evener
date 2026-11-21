@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -199,26 +200,14 @@ func TestEmitWarning_ConcurrentIndependentWarningsEachFireNotificationHook(t *te
 	// simultaneously) or until the deadline. A session-wide guard that drops the
 	// second invocation means only one hook ever starts, so the sentinel stays at
 	// one entry and we time out — catching the bug regardless of scheduler ordering.
-	const pollInterval = 20 * time.Millisecond
-	const hookStartTimeout = 5 * time.Second
-	deadline := time.Now().Add(hookStartTimeout)
-	var bothStarted bool
-	for time.Now().Before(deadline) {
+	testwait.UntilSeen(t, "both concurrent Notification hooks to start", func() (bool, string) {
 		data, _ := os.ReadFile(started)
-		if strings.Count(string(data), "x") >= 2 {
-			bothStarted = true
-			break
-		}
-		time.Sleep(pollInterval)
-	}
+		count := strings.Count(string(data), "x")
+		return count >= 2, fmt.Sprintf("%d of 2 hooks started; a session-wide guard is likely dropping the second concurrent invocation", count)
+	})
 
 	wg.Wait() // wait for all hook subprocesses to finish
 
-	if !bothStarted {
-		data, _ := os.ReadFile(started)
-		t.Fatalf("only %d of 2 Notification hooks started within %s; a session-wide guard is likely dropping the second concurrent invocation",
-			strings.Count(string(data), "x"), hookStartTimeout)
-	}
 	data, _ := os.ReadFile(counter)
 	if got := strings.Count(string(data), "x"); got != 2 {
 		t.Fatalf("two concurrent independent warnings fired the Notification hook %d time(s), want 2 (the second was dropped by an over-broad guard); counter=%q", got, string(data))
