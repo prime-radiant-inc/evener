@@ -11,6 +11,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -288,16 +290,9 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 // compares against.
 func waitForQueueDepth(t *testing.T, sess *agent.Session, want int) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
+	testwait.UntilSeen(t, fmt.Sprintf("the durable queue depth to reach %d", want), func() (bool, string) {
 		durable, _ := sess.ClientMutationProjection()
 		got := len(durable.IDs)
-		if got == want {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("durable queue depth = %d, want %d", got, want)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return got == want, fmt.Sprintf("durable queue depth = %d, want %d", got, want)
+	})
 }
