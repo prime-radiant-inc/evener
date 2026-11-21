@@ -8,6 +8,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // TestMustWriteHoldsForkLockAcrossTheWrite pins the guard that keeps a sibling
@@ -29,7 +31,7 @@ func TestMustWriteHoldsForkLockAcrossTheWrite(t *testing.T) {
 	// Open the read end before the writer exists, so the writer's
 	// open(O_WRONLY) always pairs and no later open can fail and leave the
 	// writer blocked holding the lock. Non-blocking so the drain below never
-	// blocks and the writer's failure is caught by the loop's deadline.
+	// blocks and the writer's failure is caught by the drain's wait.
 	rfd, err := syscall.Open(fifo, syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -69,36 +71,37 @@ func TestMustWriteHoldsForkLockAcrossTheWrite(t *testing.T) {
 // drainUntilWritten reads a non-blocking FIFO fd until writeFixture returns. A
 // read of 0 before then only means the writer has not connected yet (the
 // readiness hook fires before its open); EAGAIN means it is writing but the
-// buffer is empty. Neither blocks, so the deadline and written channel are
-// polled every iteration.
+// buffer is empty. Neither blocks, so each check drains what is readable and
+// then polls the written channel.
 func drainUntilWritten(t *testing.T, fd int, written <-chan error) {
 	t.Helper()
 	buf := make([]byte, 1<<16)
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		n, err := syscall.Read(fd, buf)
-		switch {
-		case n > 0:
-			continue
-		case err == nil, err == syscall.EAGAIN: // no writer yet, or no data yet
-		case err == syscall.EINTR:
-			continue
-		default:
-			t.Fatalf("drain FIFO: %v", err)
+	testwait.UntilSeen(t, "writeFixture to return while its write was drained", func() (bool, string) {
+		// Drain without yielding while data is available, or the 4 MiB
+		// payload pays the poll backoff per 64 KiB read.
+		for {
+			n, err := syscall.Read(fd, buf)
+			switch {
+			case n > 0:
+				continue
+			case err == nil, err == syscall.EAGAIN: // no writer yet, or no data yet
+			case err == syscall.EINTR:
+				continue
+			default:
+				t.Fatalf("drain FIFO: %v", err)
+			}
+			break
 		}
 		select {
 		case werr := <-written:
 			if werr != nil {
 				t.Fatalf("writeFixture: %v", werr)
 			}
-			return
+			return true, ""
 		default:
+			return false, "writeFixture has not returned"
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("writeFixture did not return while its write was drained")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	})
 }
 
 // acquireFree reports whether it can take and immediately release ForkLock
