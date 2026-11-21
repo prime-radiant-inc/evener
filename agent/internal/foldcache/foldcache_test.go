@@ -244,11 +244,7 @@ func TestCache_ShrunkFileForcesFullRescanAndBumpsEpoch(t *testing.T) {
 		t.Fatalf("first sum = %d, want 15", first.Value.sum)
 	}
 
-	laterMTime := mustStat(t, path).ModTime().Add(2 * time.Second)
 	writeLines(t, path, []int{9}) // shrink + wholly different content
-	if err := os.Chtimes(path, laterMTime, laterMTime); err != nil {
-		t.Fatal(err)
-	}
 
 	second, err := c.Get(ctx, path, extend)
 	if err != nil {
@@ -621,11 +617,7 @@ func TestCache_EvictionDoesNotHideAnInterveningRewriteFromEpoch(t *testing.T) {
 		t.Fatalf("Stats().Evictions = 0, want pathA evicted by touching pathB under a 1-entry bound")
 	}
 
-	laterMTime := mustStat(t, pathA).ModTime().Add(2 * time.Second)
 	writeLines(t, pathA, []int{9}) // shrink + wholly different content, WHILE evicted
-	if err := os.Chtimes(pathA, laterMTime, laterMTime); err != nil {
-		t.Fatal(err)
-	}
 
 	second, err := c.Get(ctx, pathA, extend)
 	if err != nil {
