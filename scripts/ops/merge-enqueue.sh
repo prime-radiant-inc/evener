@@ -19,7 +19,8 @@
 # merge-enqueue`. Every argument is forwarded to it unchanged, and so are its
 # output and its exit status. The helper is $EVENER_DEV_BIN when it is set, else
 # an `evener-dev` on PATH that resolves inside this checkout, else one built into
-# a temp directory this run owns and removes.
+# a temp directory this run owns and removes. That directory also holds the gh
+# process group the helper publishes while a call is in flight.
 #
 # Output (last line is the outcome):
 #   MERGEQ queued position=P            (no --wait)
@@ -30,7 +31,7 @@
 #         built or started.
 # Exit 130: the wait was interrupted (SIGINT, SIGTERM or SIGHUP). The helper
 #         leads its own process group; one signal asks it to cancel and stop the
-#         `gh` call behind it, a second stops the whole group.
+#         `gh` call behind it, a second kills that group and the `gh` group too.
 #
 # Cancelling a background run: send SIGTERM to this script's PID; bash cannot
 # install an INT trap in a job started with `&` from a non-interactive shell.
@@ -80,12 +81,15 @@ installed_helper() {
 child=""
 stops=0
 term_sent=0
+gh_group_file=""
 
-# stop_child starts the helper's stop, or ends it. The first signal asks the
-# helper to cancel: it stops the `gh` call it waits on and reports 130, the
-# status passed through. A second signal does not wait: the helper leads its own
-# process group, so the group is signalled and `gh` goes with it. A signal before
-# the helper starts is remembered, and the run stops before launching it.
+# stop_child starts the tracked child's stop, or ends it. The first signal asks
+# it to cancel: for the helper that means stopping the `gh` call it waits on and
+# reporting 130, the status passed through. A second signal does not wait: the
+# child leads its own process group, so the group is signalled, and so is the gh
+# group the helper published, because a `gh` call runs in a group of its own and
+# would otherwise outlive the helper. A signal before the child starts is
+# remembered, and the run stops before launching it.
 stop_child() {
   stops=$((stops + 1))
   if [ -z "$child" ] || [ "$child" -le 1 ] || ! kill -0 "$child" 2>/dev/null; then
@@ -97,6 +101,42 @@ stop_child() {
     return 0
   fi
   kill -KILL -- "-$child" 2>/dev/null || true
+  # internal/devtool/mergeq publishes the live gh group here while a call is in
+  # flight (EVENER_MERGEQ_GH_GROUP_FILE). A value that is not a whole number
+  # above 1 is not one, and is left alone.
+  if [ -n "$gh_group_file" ] && [ -r "$gh_group_file" ]; then
+    gh_pgid=$(cat -- "$gh_group_file" 2>/dev/null) || gh_pgid=""
+    case "$gh_pgid" in
+      '' | *[!0-9]*) ;;
+      *) [ "$gh_pgid" -gt 1 ] && kill -KILL -- "-$gh_pgid" 2>/dev/null || true ;;
+    esac
+  fi
+}
+
+# start_tracked CMD... — run CMD as the tracked child, in a process group of its
+# own so the stop above reaches it and what it starts. The group is fixed at the
+# fork, so monitor mode ends at the next line.
+start_tracked() {
+  set -m
+  "$@" &
+  set +m
+  child=$!
+  # A signal that arrived between the fork and the record above was
+  # remembered; the child is addressable now, so deliver the stop.
+  [ "$stops" -eq 0 ] || stop_child
+}
+
+# wait_tracked — wait for the tracked child, leaving its status in status. A
+# trapped signal interrupts wait with 128+signal while the child is only being
+# stopped, so the loop re-waits until the child is gone. `child` is cleared so a
+# stop after this cannot signal a pid this run has already reaped.
+wait_tracked() {
+  status=0
+  while :; do
+    wait "$child" || status=$?
+    kill -0 "$child" 2>/dev/null || break
+  done
+  child=""
 }
 
 . "$root/scripts/lib/scratch-lib.sh"
@@ -109,6 +149,22 @@ trap 'stop_child' INT
 trap 'stop_child' TERM
 trap 'stop_child' HUP
 
+# scratch_dir reports an unusable TMPDIR by exiting 1, which the contract reads
+# as a queue drop. Choose a writable root first, so that case is the launcher
+# failure it is (2). A directory this user can write is the whole test: no ACL or
+# symlink walk is needed for a directory this run creates itself.
+for scratch_root in "${TMPDIR:-}" "${XDG_RUNTIME_DIR:-}" "${XDG_CACHE_HOME:-${HOME:+$HOME/.cache}}" /tmp; do
+  [ -n "$scratch_root" ] && [ -d "$scratch_root" ] && [ -w "$scratch_root" ] || continue
+  TMPDIR=$scratch_root
+  export TMPDIR
+  break
+done
+[ -d "${TMPDIR:-}" ] && [ -w "${TMPDIR:-}" ] ||
+  fail "no writable directory for scratch (TMPDIR, XDG_RUNTIME_DIR, XDG_CACHE_HOME and /tmp are all unusable)"
+
+scratch_dir work merge-enqueue
+gh_group_file="$work/gh-group"
+
 if [ -n "${EVENER_DEV_BIN:-}" ]; then
   # A relative override belongs to the caller's directory, not the checkout.
   case "$EVENER_DEV_BIN" in
@@ -120,40 +176,31 @@ elif helper_bin=$(installed_helper); then
   :
 else
   # Built, not `go run`: `go run` reports every child status as 1, which would
-  # erase both the drop/timeout 1 and the refusal 2. GOOS/GOARCH ask for a helper
-  # this host can run, and GOFLAGS= keeps an inherited GOFLAGS out of the build
-  # (a value saved with `go env -w` still applies). An interruption during the
-  # build reports 130 rather than a build error.
-  scratch_dir work merge-enqueue
+  # erase both the drop/timeout 1 and the refusal 2. The build is tracked like
+  # the helper, so a signal stops and reaps it rather than leaving it behind.
+  # GOOS/GOARCH ask for a helper this host can run, GOFLAGS= keeps an inherited
+  # one out (a `go env -w` value still applies), GOWORK pins this checkout's
+  # workspace over a caller's GOWORK=off or foreign one, and GOTMPDIR keeps the
+  # build's work directory in this scratch rather than the operator's TMPDIR.
   helper_bin="$work/evener-dev"
-  build_status=0
-  GOOS= GOARCH= GOFLAGS= go build -o "$helper_bin" ./cmd/evener-dev/bin || build_status=$?
+  start_tracked env GOOS= GOARCH= GOFLAGS= GOWORK="$root/go.work" GOTMPDIR="$work" go build -o "$helper_bin" ./cmd/evener-dev/bin
+  wait_tracked
   [ "$stops" -eq 0 ] || exit 130
-  [ "$build_status" -eq 0 ] || fail "building the evener-dev helper failed"
+  [ "$status" -eq 0 ] || fail "building the evener-dev helper failed"
   [ -x "$helper_bin" ] || fail "the built helper is not executable: $helper_bin"
 fi
+[ "$stops" -eq 0 ] || exit 130
 
-# Monitor mode puts the helper in its own process group, so a terminal Ctrl-C
-# reaches this script and not the helper's `gh`: the helper's own cancellation
-# stops the call, where a `gh` killed mid-submit would read as a GitHub failure
-# and print a drop verdict. It also makes `-$child` the group to stop.
-set -m
-"$helper_bin" dev merge-enqueue "$@" &
-set +m
-child=$!
+start_tracked env EVENER_MERGEQ_GH_GROUP_FILE="$gh_group_file" "$helper_bin" dev merge-enqueue "$@"
+wait_tracked
 
-# A signal that arrived between the fork and the PID record above was
-# remembered; the helper is addressable now, so deliver the stop.
-[ "$stops" -eq 0 ] || stop_child
+# An interrupted run reports the interruption, not whatever the helper's group
+# died with: a wait broken by a trapped signal answers 128+signal even when the
+# signal's own handler then killed the child, and which of the two statuses the
+# loop collects depends on timing. The pid assertions in the tests, not a death
+# status, are what show a forced stop reached the group.
+[ "$stops" -eq 0 ] || exit 130
 
-# wait returns 128+signal when a trapped signal interrupts it, and stop_child has
-# already started stopping the helper, so the loop re-waits until the helper is
-# gone. A helper that reports its own outcome -- 0, 1, 2 or 130 -- keeps it.
-status=0
-while :; do
-  wait "$child" || status=$?
-  kill -0 "$child" 2>/dev/null || break
-done
 # A helper the shell could not execute reports 126 or 127, which the contract
 # does not define and which would read as "command not executable" rather than
 # the launcher failure it is.
