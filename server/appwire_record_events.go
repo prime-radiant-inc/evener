@@ -496,6 +496,15 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 		history := s.ensureDescendantHistory(ownerThreadID, threadID)
 		// A descendant's motion is its root's too: the meter shows the whole tree.
 		s.appActivity.observe(event.Kind)
+		// A prior turn's end may still be queued when a newer execution has
+		// already published its start. Dropping the end whole is what keeps
+		// the newer execution addressable: the projector would clear the
+		// running turn it no longer owns, and the newer turn's own end would
+		// then be discarded, leaving the thread active forever.
+		if event.Kind == events.EventSessionEnd && !sessionEventClosesSession(event) && s.descendantRunningTurnID(threadID) != "" {
+			s.mu.Unlock()
+			return nil
+		}
 		projected := projection.projector.Project(event)
 		start, _ := event.Data.(events.SessionStartData)
 		pending := make([]pendingAppNotification, 0, len(projected))
