@@ -1806,12 +1806,17 @@ func (l *sharedDescendantLane) startDrive(stop <-chan struct{}) (func() error, <
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		// The first pass rides the worker so a caller blocked in a drive hook
-		// cannot outrun the timeout it starts after this call returns.
-		drive()
 		stopped := func() bool {
 			return channelClosed(stop) || channelClosed(l.testDone)
 		}
+		// The first pass rides the worker so a caller blocked in a drive hook
+		// cannot outrun the timeout it starts after this call returns. A wake
+		// wired to another driver can close stop first; then the test has
+		// moved on and this pass must not flush or drive.
+		if stopped() {
+			return
+		}
+		drive()
 		for {
 			if stopped() {
 				return
@@ -4147,7 +4152,7 @@ func TestDelegateAttentionStopAdmittedDuringReopenResolvesFreshRow(t *testing.T)
 	case <-stopAdmitted:
 	// TRIPWIRE: the seam admits the stop inside the first reopen window, a
 	// couple of drive passes in; the bound only fires on a genuine hang.
-	case <-time.After(30 * time.Second):
+	case <-time.After(testwait.Budget(t)):
 		lastFlushErr := flushErr()
 		deferred := lane.delegateSess.hasPendingDelegateDeliveries()
 		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
@@ -4160,7 +4165,7 @@ func TestDelegateAttentionStopAdmittedDuringReopenResolvesFreshRow(t *testing.T)
 	case <-driveDone:
 	// TRIPWIRE: a drive that already admitted the stop returns just after its
 	// append and re-check; the bound only fires on a wedged worker.
-	case <-time.After(30 * time.Second):
+	case <-time.After(testwait.Budget(t)):
 		t.Fatalf("the admitted stop's first drive never returned (flush=%v)", flushErr())
 	}
 
