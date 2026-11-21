@@ -257,3 +257,21 @@ func TestMergeEnqueueRejectsWaitBeyondTheLargestDuration(t *testing.T) {
 		t.Fatalf("--wait 9223372036 = %d seconds, want %d", got, math.MaxInt64/int64(time.Second))
 	}
 }
+
+// TestMergeEnqueueUsageNamesTheRunnableBinary pins issue #6943: the end-user
+// `evener` binary does not dispatch merge-enqueue; the command runs as
+// `evener-dev dev merge-enqueue`. The parse error prints the error line and then
+// the usage line, so one run pins both spellings.
+func TestMergeEnqueueUsageNamesTheRunnableBinary(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr strings.Builder
+	if code := runMergeEnqueue([]string{"--pr", "6499", "--wait", "5x"}, &stubQueue{}, pausedClock(), &stdout, &stderr); code != 2 {
+		t.Fatalf("runMergeEnqueue(--wait 5x) = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "evener-dev dev merge-enqueue") {
+		t.Fatalf("stderr %q does not name `evener-dev dev merge-enqueue`", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "evener dev merge-enqueue") {
+		t.Fatalf("stderr %q names `evener dev merge-enqueue`, which the end-user binary does not dispatch", stderr.String())
+	}
+}
