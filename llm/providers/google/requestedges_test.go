@@ -100,7 +100,7 @@ func TestSanitizeGeminiSchemaExplicitNullableWinsOverUnion(t *testing.T) {
 	t.Parallel()
 	in := map[string]any{"type": []any{"string", "null"}, "nullable": false}
 	want := map[string]any{"type": "string", "nullable": false}
-	for i := 0; i < 200; i++ {
+	for i := range 200 {
 		got := sanitizeGeminiSchema(in)
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("iteration %d: sanitizeGeminiSchema(%#v) = %#v, want %#v", i, in, got, want)
