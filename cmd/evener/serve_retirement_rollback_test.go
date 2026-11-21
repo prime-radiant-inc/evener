@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -12,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener/internal/rvreg"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -193,8 +195,7 @@ func TestServeRetirementAutomaticFailureReachesStatus(t *testing.T) {
 	attemptAt := clk.Now()
 	clk.fire(t)
 	rec.await(t, "prepared")
-	deadline := time.Now().Add(15 * time.Second)
-	for {
+	testwait.UntilSeen(t, "the failed automatic retirement attempt", func() (bool, string) {
 		out, err := dispatchDaemonRPC(state.srv, appwire.MethodEvenerDaemonStatus, appwire.DaemonStatusParams{})
 		if err != nil {
 			t.Fatalf("status: %v", err)
@@ -208,13 +209,10 @@ func TestServeRetirementAutomaticFailureReachesStatus(t *testing.T) {
 			if lifecycle.Phase != "resident" || lifecycle.Failure != "prepare_failed" {
 				t.Fatalf("lifecycle = %+v, want resident with prepare_failed", lifecycle)
 			}
-			break
+			return true, ""
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("status never reported the failed automatic attempt: %+v", lifecycle)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return false, fmt.Sprintf("%+v", lifecycle)
+	})
 
 	state.srv.shutdown()
 	if err := <-done; err != nil {
