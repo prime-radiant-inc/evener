@@ -405,13 +405,14 @@ func TestProtocolCompleteKeepsWriteFileJSONContentString(t *testing.T) {
 }
 
 // TestProtocolCompleteKeepsWriteFileLiteralXMLContent pins the Claude-XML
-// scanner off legitimate file data: write_file content that is itself a
-// well-formed `<parameter>` element is a valid JSON string, not a corrupt XML
+// scanner off legitimate file data: write_file content that is complete valid
+// JSON text holding a `<parameter>` element (with the `">` that used to look
+// like a corruption boundary) is a JSON string field, not a corrupt XML
 // carrier, and must reach the tool verbatim.
 func TestProtocolCompleteKeepsWriteFileLiteralXMLContent(t *testing.T) {
 	t.Parallel()
-	content := `<parameter name='content'>example</parameter>`
-	args := `{"file_path":"literal.xml.json","content":"` + content + `"}`
+	content := `{"xml":"<tool name=\"write_file\"><parameter name='content'>example</parameter></tool>"}`
+	args := jsonOf(t, map[string]string{"file_path": "literal.xml.json", "content": content})
 	got := completeWithTools(t, rawArgsBody(t, args), writeFileToolParams())
 	var decoded struct {
 		FilePath string `json:"file_path"`
@@ -496,24 +497,31 @@ func TestRescueClaudeXMLArgsCarrierWithoutQuoteBoundary(t *testing.T) {
 	wantToken(t, fields, "note", `"ok"`)
 }
 
-// TestRescueClaudeXMLArgsStringFieldParameterTagIsData pins the schema-typed
-// string half of the XML gate: a string field holding a literal
-// <parameter> element is data unless the model's `">` corruption boundary is
-// present. Without a schema the legacy fallback still rescues it.
-func TestRescueClaudeXMLArgsStringFieldParameterTagIsData(t *testing.T) {
+// TestRescueClaudeXMLArgsJSONTextFieldSkipsXMLScan pins the per-field XML gate:
+// a field whose value is complete valid JSON object or array text is the
+// field's own string content when the schema does not type it as a container,
+// so its <parameter> text is data and is never scanned — even when it contains
+// a `">` that looks like a corruption boundary. A carrier that is not
+// complete JSON text still rescues, with or without the legacy `">` boundary.
+func TestRescueClaudeXMLArgsJSONTextFieldSkipsXMLScan(t *testing.T) {
 	t.Parallel()
 	params := fieldParams("content", "string")
-	literal := `{"file_path":"a.json","content":"<parameter name=\"x\">y"}`
-	if got := rescueClaudeXMLArgs(literal, params); got != literal {
-		t.Fatalf("literal parameter tag in a string field was rescued\n in=%s\nout=%s", literal, got)
+	for _, content := range []string{
+		`{"xml":"<tool name=\"write_file\"><parameter name='content'>example</parameter></tool>"}`,
+		`["<parameter name='content'>example</parameter>"]`,
+	} {
+		raw := jsonOf(t, map[string]string{"file_path": "a.json", "content": content})
+		if got := rescueClaudeXMLArgs(raw, params); got != raw {
+			t.Fatalf("JSON text field was scanned for XML carriers\n in=%s\nout=%s", raw, got)
+		}
 	}
-
-	// The model's quote-close boundary is corruption evidence, so the same
-	// string-typed field is still rescued when it carries one.
-	corrupt := `{"content":"pre\">\n<parameter name=\"x\">y"}`
-	fields := fieldsOf(t, rescueClaudeXMLArgs(corrupt, params))
-	wantToken(t, fields, "content", `"pre"`)
-	wantToken(t, fields, "x", `"y"`)
+	for _, raw := range []string{
+		`{"action":"<parameter name=\"x\">1"}`,
+		`{"action":"go\">\n<parameter name=\"x\">1"}`,
+	} {
+		fields := fieldsOf(t, rescueClaudeXMLArgs(raw, params))
+		wantToken(t, fields, "x", `1`)
+	}
 }
 
 // TestRescueClaudeXMLArgsControlBytesRoundTrip pins the byte-preserving

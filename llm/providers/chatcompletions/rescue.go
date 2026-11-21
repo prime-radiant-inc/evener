@@ -59,10 +59,11 @@ const claudeXMLParamCloseTag = "</parameter>"
 //
 // params is the called tool's root parameter schema
 // (llm.ToolDefinition.Parameters), or nil when the caller has none (offline
-// recompute). The schema gates both rescues: a JSON-shaped string value is
-// inlined only when its field is declared an array or object, and a string
-// field with no `">` corruption boundary is treated as data rather than an
-// XML carrier.
+// recompute). A top-level string value that is itself complete JSON object or
+// array text is inlined when the field's schema declares an array or object.
+// Otherwise that text is the field's own string content — a JSON file written
+// through write_file — and is preserved verbatim, never scanned for XML
+// carriers.
 //
 // rescueClaudeXMLArgsHook, when non-nil, runs at each call. Tests use it to
 // prove a decode path rescues once per tool call.
@@ -80,35 +81,37 @@ func rescueClaudeXMLArgs(raw string, params map[string]any) string {
 		return raw
 	}
 
-	// Second-order rescue: for any top-level field whose value is a string
-	// that looks like a JSON array or object (starts with `[` or `{`), try
-	// parsing it. Models sometimes emit JSON-encoded strings for array/object
-	// fields instead of the parsed value. This is a separate bug from the
-	// Claude-XML corruption but benefits from the same rescue path. The field's
-	// declared schema decides: inlining a value the schema types as a string
-	// corrupts legitimate content (a JSON file written through write_file).
+	// Second-order rescue: for any top-level field whose value is complete JSON
+	// object or array text, inline it when the field's schema declares an array
+	// or object. Models sometimes emit JSON-encoded strings for those fields
+	// instead of the parsed value. When the schema does not type the field as a
+	// container, the text is the field's own string content, so it is recorded
+	// in jsonTextFields and excluded from the XML carrier scan below: inlining
+	// or truncating it corrupts legitimate content (a JSON file written
+	// through write_file, including one holding literal <parameter> tags).
 	parsedAnyJSONString := false
+	jsonTextFields := make(map[string]bool)
 	for k, v := range fields {
-		if !schemaDeclaresContainer(fieldSchema(params, k)) {
-			continue
-		}
 		content, ok := decodeJSONStringContent(v)
 		if !ok {
 			continue
 		}
 		trimmed := bytes.TrimSpace(content)
-		if len(trimmed) == 0 || (trimmed[0] != '[' && trimmed[0] != '{') {
+		if len(trimmed) == 0 || (trimmed[0] != '[' && trimmed[0] != '{') || !json.Valid(trimmed) {
 			continue
 		}
-		var asJSON any
-		if err := json.Unmarshal(trimmed, &asJSON); err != nil {
-			continue
+		if schemaDeclaresContainer(fieldSchema(params, k)) {
+			var asJSON any
+			if err := json.Unmarshal(trimmed, &asJSON); err == nil {
+				switch asJSON.(type) {
+				case []any, map[string]any:
+					fields[k] = json.RawMessage(trimmed)
+					parsedAnyJSONString = true
+					continue
+				}
+			}
 		}
-		switch asJSON.(type) {
-		case []any, map[string]any:
-			fields[k] = json.RawMessage(trimmed)
-			parsedAnyJSONString = true
-		}
+		jsonTextFields[k] = true
 	}
 
 	// Quick exit: if no string value contains an XML parameter hint, nothing
@@ -136,6 +139,11 @@ func rescueClaudeXMLArgs(raw string, params map[string]any) string {
 	changed := false
 	extracted := make(map[string]json.RawMessage)
 	for _, k := range sortedFieldKeys(fields) {
+		if jsonTextFields[k] {
+			// Complete JSON object or array text the schema does not type as a
+			// container: its <parameter> tags are data, not a carrier.
+			continue
+		}
 		content, ok := decodeJSONStringContent(fields[k])
 		if !ok {
 			continue
@@ -149,15 +157,6 @@ func rescueClaudeXMLArgs(raw string, params map[string]any) string {
 		// splitting at the `<` of the parameter tag.
 		idx := bytes.Index(content[:openMatch[0]], []byte(`">`))
 		if idx < 0 {
-			// Without the quote-close boundary there is no evidence the model
-			// reverted from JSON to XML mid-generation. When the schema types
-			// this field as a string, the tag is the field's own text — a JSON
-			// file written through write_file that happens to contain a
-			// <parameter> element — so leave it for the tool to receive
-			// verbatim. Callers without a schema keep the legacy fallback.
-			if schemaTypeDeclares(fieldSchema(params, k), "string") {
-				continue
-			}
 			idx = openMatch[0]
 		}
 		fields[k] = json.RawMessage(appendJSONString(nil, content[:idx]))
@@ -266,7 +265,8 @@ func toolParamsByName(tools []llm.ToolDefinition, name string) map[string]any {
 }
 
 // rescueToolArgs is the decode sites' single call into the rescue: it looks up
-// the called tool's schema in the request and gates both rescues on it.
+// the called tool's schema in the request so the JSON-text inline can be gated
+// on the field's declared type.
 func rescueToolArgs(raw string, tools []llm.ToolDefinition, name string) string {
 	return rescueClaudeXMLArgs(raw, toolParamsByName(tools, name))
 }
