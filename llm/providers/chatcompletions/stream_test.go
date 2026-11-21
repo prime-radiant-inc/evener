@@ -22,6 +22,11 @@ func TestStreamMixedReasoningMatchesNonStreaming(t *testing.T) {
 	const mirrorMsg = `{"reasoning_content":"hello world","reasoning_details":[{"type":"reasoning.text","text":"hello world"}]}`
 	const mirrorScalar = `{"reasoning_content":"hello world"}`
 	const mirrorStructured = `{"reasoning_details":[{"type":"reasoning.text","text":"hello "}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"world"}]}`
+	// Two indexed items whose scalar mirror omits the separator the preview
+	// synthesizes between them.
+	const multiItemMsg = `{"reasoning_content":"planfore","reasoning_details":[{"type":"reasoning.text","text":"plan","index":0},{"type":"reasoning.text","text":"fore","index":1}]}`
+	const pairAB = `[{"type":"reasoning.text","text":"a","index":0},{"type":"reasoning.text","text":"b","index":1}]`
+	const tripletABC = `[{"type":"reasoning.text","text":"a","index":0},{"type":"reasoning.text","text":"b","index":1},{"type":"reasoning.text","text":"c","index":0}]`
 	for _, tc := range []struct{ name, msg, text, emits, deltas string }{
 		{"single-chunk-mixed", mixed, "step one", "step one", mixed},
 		{"scalar-then-structured", mixed, "step one", "scalar reasoning|step one", `{"reasoning_content":"scalar reasoning"}` + "\x00" + `{"reasoning_details":` + details + `}`},
@@ -40,6 +45,21 @@ func TestStreamMixedReasoningMatchesNonStreaming(t *testing.T) {
 		// A multi-item structured preview shows its items joined by a newline;
 		// a scalar frame mirroring that joined text must not repeat it.
 		{"mirror-multi-item-scalar", `{"reasoning_content":"plan\nfore","reasoning_details":[{"type":"reasoning.text","text":"plan","index":0},{"type":"reasoning.text","text":"fore","index":1}]}`, "plan\nfore", "plan\nfore", `{"reasoning_details":[{"type":"reasoning.text","text":"plan","index":0},{"type":"reasoning.text","text":"fore","index":1}]}` + "\x00" + `{"reasoning_content":"plan\nfore"}`},
+		// A scalar mirror that omits the synthesized separator still matches the
+		// provider content, so the pane must not repeat the preview text.
+		{"mirror-multi-item-scalar-without-separator", multiItemMsg, "plan\nfore", "plan\nfore", plan + "\x00" + `{"reasoning_content":"planfore"}`},
+		// The same mirror may arrive as scalar fragments; each must be suppressed
+		// against the provider text the preview already shows, separator aside.
+		{"mirror-multi-item-scalar-fragments", multiItemMsg, "plan\nfore", "plan\nfore", plan + "\x00" + `{"reasoning_content":"plan"}` + "\x00" + `{"reasoning_content":"fore"}`},
+		// A scalar extension already on the pane must not be emitted again when a
+		// later structured item makes the preview the same byte length.
+		{"mirror-extension-then-structured-item", `{"reasoning_content":"abcd","reasoning_details":` + tripletABC + `}`, "ac\nb", "a\nb|cd", `{"reasoning_details":` + pairAB + `}` + "\x00" + `{"reasoning_content":"abcd"}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"c","index":0}]}`},
+		// Each synthesized separator is optional independently: a scalar mirror
+		// that keeps the first and omits the second still matches the content.
+		{"mirror-partial-separators", `{"reasoning_content":"a\nbc","reasoning_details":` + tripletABC + `}`, "ac\nb", "a\nb\nc", `{"reasoning_details":` + tripletABC + `}` + "\x00" + `{"reasoning_content":"a\nbc"}`},
+		// A scalar stream that already showed more than the structured preview
+		// keeps its spelling; the arriving preview must not repeat the tail.
+		{"mirror-scalar-first-keeps-its-spelling", `{"reasoning_content":"planfore!","reasoning_details":[{"type":"reasoning.text","text":"plan","index":0},{"type":"reasoning.text","text":"fore","index":1}]}`, "plan\nfore", "planfore!", `{"reasoning_content":"planfore!"}` + "\x00" + plan},
 		// Differing text is not a mirror: the live pane keeps both, and the
 		// settled text comes from the structured item.
 		{"near-miss-sends-unseen-suffix", `{"reasoning_content":"hello world","reasoning_details":[{"type":"reasoning.text","text":"hello world!"}]}`, "hello world!", "hello world|!", `{"reasoning_content":"hello world"}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"hello world!"}]}`},
