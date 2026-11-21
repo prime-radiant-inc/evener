@@ -752,13 +752,14 @@ model produced a reply. Stop may linearize immediately afterward and cancel
 the generation. A failed transcript append returns a delivery error and leaves
 no accepted steer.
 
-At each model boundary, BeginModelRequest validates the exact lease and claims
-the current pending steering admissions under the controller mutex. The child
-then snapshots its transcript after unlock. CompleteModelRequest re-enters the
-controller with that exact process claim, revalidates stop/lease, consumes only
-the claimed entries present in the snapshot, and returns the immutable provider
-history. No transcript/history lock is acquired under the controller. The
-provider call starts only after claim completion and runs outside the mutex.
+At each model boundary of a leased generation, BeginModelRequest validates the
+exact lease and claims the current pending steering admissions under the
+controller mutex. The child then snapshots its transcript after unlock.
+CompleteModelRequest re-enters the controller with that exact process claim,
+revalidates stop/lease, consumes only the claimed entries present in the
+snapshot, and returns the immutable provider history. No transcript/history
+lock is acquired under the controller. The provider call starts only after
+claim completion and runs outside the mutex.
 
 Normal settlement cannot strand an accepted steer. Before ordinary completion
 or communicate(end_turn=true) changes running to settling, BeginSettlement
@@ -790,10 +791,11 @@ outcome; it does not delete either process claim to manufacture progress.
 
 ### Model and tool admission
 
-Before each provider call and before each new tool execution, the child Session
-asks the controller to validate its exact lease. BeginModelRequest also binds
-all pending steering admissions to the request. The validation checks in one
-locked operation that:
+A turn that runs inside a delegate generation carries that generation's lease.
+Before each provider call and before each new tool execution of such a turn,
+the child Session asks the controller to validate its exact lease.
+BeginModelRequest also binds all pending steering admissions to the request.
+The validation checks in one locked operation that:
 
 - the delegate and every ancestor remain open;
 - the generation is current;
@@ -804,6 +806,15 @@ The provider call or tool execution then runs outside the controller lock.
 Stop owns the current generation's cancellation context, so work that was
 admitted immediately before stop is cancelled/drained through the existing
 context rather than requiring the lock to cover external execution.
+
+A model-bearing turn with no lease in context is not admitted against a
+generation, because it has none: the notification drive of a resident stable
+child runs this way (see "Notification drives are input turns" below). Only a
+stable child holds durable delegate attention, so on that child the request
+instead passes the unleased projection filter, which omits every watch row the
+attention fold still resolves as pending. The turn therefore cannot present
+attention that only a leased generation could credit. Ordinary queued
+completions are not attention and ride the turn unchanged.
 
 The controller is also the tree-wide delegate-turn capacity authority. A
 starting reservation holds capacity immediately so concurrent constructors
