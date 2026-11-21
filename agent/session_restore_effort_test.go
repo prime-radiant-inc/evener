@@ -97,6 +97,9 @@ func TestRestoreSessionWithModelChange_RevalidatesFallbacksPerEntry(t *testing.T
 	if got := restored.cfg.ModelFallbacks; len(got) != 1 || got[0] != "anthropic/claude-haiku-test" {
 		t.Fatalf("restored model_fallbacks = %v, want only the compatible anthropic/claude-haiku-test", got)
 	}
+	if got := restored.lastDroppedModelFallbacks; len(got) != 1 || got[0] != "openai/gpt-4o-mini" {
+		t.Fatalf("dropped fallbacks = %v, want the incompatible openai/gpt-4o-mini surfaced in the session diagnostics", got)
+	}
 
 	ordinary := schema.SessionMeta{
 		ID:        "01RESTOREMODELFB0000002",
@@ -139,6 +142,46 @@ func TestRestoreWithModelChangeRefusesUnlistedPick(t *testing.T) {
 	if err == nil {
 		t.Fatal("restore accepted a picked model the instance's live listing does not carry, want the pick refused before the session starts")
 	}
+}
+
+// TestRestoreWithSelectedSavedModelRefusesUnlistedPick pins the picker's
+// re-selection shape: the web picker submits its row even when it equals the
+// saved model, so an explicit selection runs the membership judgment on the
+// identity it selected — the instance's usable live listing may have dropped
+// a model the static catalog still offers. An ordinary resume that supplies
+// no model keeps the fail-open form.
+func TestRestoreWithSelectedSavedModelRefusesUnlistedPick(t *testing.T) {
+	t.Parallel()
+	client := llm.NewClient()
+	// The instance's usable live listing no longer carries the saved model.
+	client.Register(newFakeEnumerableAdapter("openai", "gpt-5.5"))
+	meta := schema.SessionMeta{
+		ID:        "01PICKSAVEDMODELUNLIST01",
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		TurnCount: 1,
+	}
+	_, err := RestoreSessionFromMetaWithConfig(
+		client,
+		withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()),
+		meta,
+		RestoreSessionConfig{SelectedModel: true},
+	)
+	if err == nil {
+		t.Fatal("re-selecting the saved model accepted a pick the instance's live listing no longer carries, want the restore refused")
+	}
+	relived, err := RestoreSessionFromMetaWithConfig(
+		client,
+		withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()),
+		meta,
+		RestoreSessionConfig{},
+	)
+	if err != nil {
+		t.Fatalf("ordinary resume without a model was refused: %v", err)
+	}
+	relived.Close()
 }
 
 // TestRestorePersistsModelChangeBeforeAck pins that the picked model reaches

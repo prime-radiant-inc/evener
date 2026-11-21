@@ -44,6 +44,9 @@ func setThreadModelWithResume(ctx context.Context, cfg hubcore.WebConfig, source
 		if err := relays.startRelayForThread(ctx, resumed.Thread); err != nil {
 			return err
 		}
+		// A pane that first opened the stopped session rides the relay only
+		// now, so give it the re-read signal after the attach has settled.
+		relays.resyncThreadView(ctx, resumed.Thread)
 	}
 	return nil
 }

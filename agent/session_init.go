@@ -830,6 +830,11 @@ type RestoreSessionConfig struct {
 	// this session's model instance instead of fetching it again.
 	StartupModelListing     *StartupModelListing
 	AcquireSessionOwnership func(sessionID string) error
+	// SelectedModel reports that this resume named a model explicitly — a
+	// user pick — rather than keeping the persisted one. The web picker
+	// submits its row even when it equals the saved model, so the identity
+	// alone cannot tell a pick from an ordinary resume.
+	SelectedModel bool
 	// OwnershipAlreadyAcquired keeps a host reservation alive across restore
 	// failure while still carrying AcquireSessionOwnership into the session.
 	OwnershipAlreadyAcquired    bool
@@ -1345,15 +1350,16 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// call: attribute this listing's canonical API-log attempt to it instead
 	// of letting it fall into the shared unattributed bucket.
 	//
-	// An explicit model change re-decides the startup resolution: the pick
-	// faces the same live-listing membership judgment NewSession applies, so a
-	// model the instance's usable live listing does not carry refuses the
-	// whole restore before the session starts — the hub's launch preflight
-	// cannot run that judgment without executing a command-backed credential.
-	// An ordinary resume keeps the fail-open restore behavior.
+	// An explicit model selection re-decides the startup resolution: the pick
+	// faces the same live-listing membership judgment NewSession applies —
+	// even when the selected model equals the saved one, because the web
+	// picker submits its row either way and the instance's live listing may
+	// have dropped it — and the hub's launch preflight cannot run that
+	// judgment without executing a command-backed credential. An ordinary
+	// resume that supplies no model keeps the fail-open restore behavior.
 	modelChanged := meta.ProfileID != profile.ID() || meta.Model != profile.Model()
 	var selectedModels liveModelEnumeration
-	if modelChanged {
+	if restoreCfg.SelectedModel || modelChanged {
 		var resolveErr error
 		profile, selectedModels, resolveErr = resolveStartupModelProfile(client, profile, s.id, *s.providerAdapterTimeout(), restoreCfg.StartupModelListing)
 		if resolveErr != nil {
@@ -1521,8 +1527,15 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// pick. An ordinary resume revalidates nothing and keeps the strict check.
 	if modelChanged {
 		s.mu.Lock()
-		s.revalidateModelFallbacksLocked()
+		dropped := s.revalidateModelFallbacksLocked()
+		s.lastDroppedModelFallbacks = dropped
 		s.mu.Unlock()
+		if len(dropped) > 0 {
+			// The live switch warns the same names in its marker turn; a
+			// restore writes no marker, so the warning is the user-visible
+			// line naming what the pick removed.
+			s.emit(events.WarningData{Message: fmt.Sprintf("the resumed model dropped %s from the saved model fallbacks", strings.Join(dropped, ", "))})
+		}
 	}
 	promptSources, err := s.initSessionState(cfg.SessionStartKind, !restoreCfg.deferRestoreSideEffects, restoredPrompt)
 	if err != nil {

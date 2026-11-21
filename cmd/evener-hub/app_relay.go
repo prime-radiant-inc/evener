@@ -95,20 +95,26 @@ func (r *hubRelay) startTurn(ctx context.Context, source appsource.Source, param
 	})
 }
 
-func (r *hubRelay) startRelayForThread(ctx context.Context, thread appwire.Thread) error {
+// relayThreadRef normalizes the thread's delivery ref the relay attaches
+// under: the evener ref when present, else the thread's source and id.
+func relayThreadRef(thread appwire.Thread) (ref, threadID string) {
 	if thread.ID == "" {
 		thread.ID = thread.SessionID
 	}
-	if thread.ID == "" {
-		return nil
+	if thread.Evener.Ref != "" {
+		return thread.Evener.Ref, thread.ID
 	}
-	ref := thread.Evener.Ref
-	if ref == "" {
-		sourceID := strings.TrimSpace(thread.Source)
-		if sourceID == "" {
-			sourceID = "local"
-		}
-		ref = appwire.Ref{SourceID: sourceID, ThreadID: thread.ID}.String()
+	sourceID := strings.TrimSpace(thread.Source)
+	if sourceID == "" {
+		sourceID = "local"
+	}
+	return appwire.Ref{SourceID: sourceID, ThreadID: thread.ID}.String(), thread.ID
+}
+
+func (r *hubRelay) startRelayForThread(ctx context.Context, thread appwire.Thread) error {
+	ref, threadID := relayThreadRef(thread)
+	if threadID == "" {
+		return nil
 	}
 	source, err := sourceForThreadWithDeletionFence(ctx, r.cfg, r.sources, ref, thread.ID)
 	if err != nil {
@@ -127,4 +133,30 @@ func (r *hubRelay) startRelayForThread(ctx context.Context, thread appwire.Threa
 		return relayErr
 	}
 	return nil
+}
+
+// resyncThreadView publishes the per-thread resync after a cold pick's relay
+// attach commits. A pane whose first subscription was to saved history rides
+// the relay only once the attach adopts the capture onto the relay key, so
+// the relay session's own startup resync can have been published first and
+// missed; the pane re-reads instead of keeping the pre-pick model and
+// reasoning controls until some other read. Members that already saw the
+// startup resync re-read once more — the signal is idempotent.
+func (r *hubRelay) resyncThreadView(ctx context.Context, thread appwire.Thread) {
+	ref, threadID := relayThreadRef(thread)
+	if threadID == "" {
+		return
+	}
+	source, err := sourceForThreadWithDeletionFence(ctx, r.cfg, r.sources, ref, threadID)
+	if err != nil {
+		return // best-effort: an unresolvable source means nothing to signal
+	}
+	relayKey, _, err := threadRelayTarget(source, appwire.ThreadReadParams{Ref: ref, ThreadID: threadID})
+	if err != nil {
+		return
+	}
+	r.server.Broadcast(relayKey, appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
+		ThreadID: threadID,
+		Ref:      ref,
+	})
 }

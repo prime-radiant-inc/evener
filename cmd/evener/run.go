@@ -448,6 +448,7 @@ func run(ctx context.Context, cfg runConfig) error {
 			StartupModelListing:         startupListing,
 			AcquireSessionOwnership:     reserveSession,
 			OwnershipAlreadyAcquired:    true,
+			SelectedModel:               strings.TrimSpace(cfg.model) != "",
 			OpenAIResponsesContinuation: settings.openAIResponsesContinuation,
 			ProviderIdleTimeout:         cfg.providerIdleTimeout,
 			CompactAtPercent:            cfg.compactAtPercent,
