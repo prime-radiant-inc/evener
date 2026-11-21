@@ -1147,7 +1147,8 @@ func newStagedLadderProtocol(id, instance string) *stagedLadderProtocol {
 		p.mu.Unlock()
 		return p
 	}
-	p := &stagedLadderProtocol{windowListingProtocol: windowListingProtocol{id: id}, instance: instance}
+	p := &stagedLadderProtocol{instance: instance}
+	p.id = id
 	llm.RegisterProtocol(p)
 	return p
 }
