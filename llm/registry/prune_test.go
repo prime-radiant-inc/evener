@@ -74,13 +74,16 @@ func TestValidateFields(t *testing.T) {
 	}{
 		{"generationConfig.thinkingConfig", []string{`"generation_config.thinking_level"`, `"generation_config.thinking_summaries"`}},
 		{"toolConfig", []string{`"generation_config.tool_choice"`}},
-		{"cachedContent", []string{"remove"}},
+		{"cachedContent", nil},
 	} {
 		gerr := ValidateFields(map[string]bool{tc.retired: false}, ProtocolGoogle, "providers.google")
 		for _, w := range tc.wants {
 			if gerr == nil || !strings.Contains(gerr.Error(), tc.retired) || !strings.Contains(gerr.Error(), w) {
 				t.Fatalf("retired key %q error = %v, want mention of %q", tc.retired, gerr, w)
 			}
+		}
+		if gerr == nil || !strings.Contains(gerr.Error(), tc.retired) {
+			t.Fatalf("retired key %q error = %v, want rejection naming key", tc.retired, gerr)
 		}
 	}
 }

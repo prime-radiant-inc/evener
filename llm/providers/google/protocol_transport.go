@@ -251,24 +251,27 @@ func (p *Protocol) Complete(ctx context.Context, req llm.Request, res registry.R
 	if protocolhttp.RequiresStreamingCompleteContext(ctx, res) {
 		return protocolhttp.CompleteViaStream(ctx, res.Instance, func(ctx context.Context) (llm.Stream, error) { return p.Stream(ctx, req, res) })
 	}
-	resp, policy, err := p.completeOnce(ctx, req, res, false)
-	if err != nil && policy.anchorID == "" && policy.hasUnsignedNonNativeCalls && isSignatureValidation400(err) {
-		retryResp, _, retryErr := p.completeOnce(ctx, req, res, true)
+	resp, policy, settledFrom2xx, err := p.completeOnce(ctx, req, res, false)
+	allowRetry := !settledFrom2xx || (!policy.storeOmitted && !policy.effectiveStore)
+	if err != nil && allowRetry && policy.anchorID == "" && policy.hasUnsignedNonNativeCalls && isSignatureValidation400(err) {
+		retryResp, _, _, retryErr := p.completeOnce(ctx, req, res, true)
 		return retryResp, retryErr
 	}
 	return resp, err
 }
 
-func (p *Protocol) completeOnce(ctx context.Context, req llm.Request, res registry.Resolved, fallbackUnsignedCalls bool) (llm.Response, interactionBodyPolicy, error) {
+func (p *Protocol) completeOnce(ctx context.Context, req llm.Request, res registry.Resolved, fallbackUnsignedCalls bool) (llm.Response, interactionBodyPolicy, bool, error) {
 	body, policy, err := buildBodyWithPolicy(req, res, false, fallbackUnsignedCalls)
 	if err != nil {
-		return llm.Response{}, policy, llm.RewriteErrorProvider(err, res.Instance)
+		return llm.Response{}, policy, false, llm.RewriteErrorProvider(err, res.Instance)
 	}
 	call, err := p.completionCall(ctx, "interactions.create", "google_interactions", http.MethodPost, protocolhttp.URL(res, res.Transport.Endpoint), body, policy, req, res, nil)
 	if err != nil {
-		return llm.Response{}, policy, llm.RewriteErrorProvider(err, res.Instance)
+		return llm.Response{}, policy, false, llm.RewriteErrorProvider(err, res.Instance)
 	}
+	settledFrom2xx := false
 	resp, err := protocolhttp.Complete(ctx, call, func(r *protocolhttp.Result) (llm.Response, error) {
+		settledFrom2xx = true
 		decoded, derr := fromInteraction(r.Raw, req.Model, r.Body, res.Instance, res.WireID)
 		if derr != nil {
 			return llm.Response{}, llm.RewriteErrorProvider(derr, res.Instance)
@@ -276,7 +279,7 @@ func (p *Protocol) completeOnce(ctx context.Context, req llm.Request, res regist
 		llm.StampContinuationIDHash(ctx, &decoded, p.Hasher)
 		return decoded, nil
 	})
-	return resp, policy, err
+	return resp, policy, settledFrom2xx, err
 }
 
 // Stream implements llm.Protocol.

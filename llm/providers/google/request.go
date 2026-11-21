@@ -2,11 +2,13 @@ package google
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"maps"
 	"os"
+	"reflect"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -340,13 +342,25 @@ func buildBodyWithPolicy(req llm.Request, res registry.Resolved, stream, fallbac
 		}
 	}
 
+	active := map[cloneContainerKey]bool{}
+	if options != nil {
+		if key, ok := cloneContainerIdentity(options); ok {
+			active[key] = true
+			defer delete(active, key)
+		}
+	}
+
 	// Merge ProviderOptions["google"] with deep-cloned copies.
 	for k, v := range options {
 		switch k {
 		case "generation_config", "labels", "agent", "stream", "store", "previous_interaction_id", "continuation_token", "cached_content", "background", "service_tier":
 			continue
 		default:
-			body[k] = cloneJSONValue(v)
+			cloned, err := cloneJSONValueWithPath(v, active, res.Instance)
+			if err != nil {
+				return nil, policy, err
+			}
+			body[k] = cloned
 		}
 	}
 	if rawGen, exists := options["generation_config"]; exists {
@@ -354,8 +368,16 @@ func buildBodyWithPolicy(req llm.Request, res registry.Resolved, stream, fallbac
 		if !ok || overlaid == nil {
 			return nil, policy, &llm.ConfigurationError{Message: "provider_options.google.generation_config must be an object"}
 		}
+		if key, ok := cloneContainerIdentity(overlaid); ok {
+			active[key] = true
+			defer delete(active, key)
+		}
 		for k, v := range overlaid {
-			genCfg[k] = cloneJSONValue(v)
+			cloned, err := cloneJSONValueWithPath(v, active, res.Instance)
+			if err != nil {
+				return nil, policy, err
+			}
+			genCfg[k] = cloned
 		}
 	}
 	if len(genCfg) > 0 {
@@ -464,28 +486,130 @@ func reconcileOutputField(body map[string]any, admitted, outputCap *int, caps re
 	return nil
 }
 
+type cloneContainerKey struct {
+	addr   uintptr
+	length int
+}
+
+func cloneContainerIdentity(v any) (cloneContainerKey, bool) {
+	if v == nil {
+		return cloneContainerKey{}, false
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Map:
+		if rv.IsNil() {
+			return cloneContainerKey{}, false
+		}
+		return cloneContainerKey{addr: rv.Pointer(), length: -1}, true
+	case reflect.Slice:
+		if rv.Len() == 0 {
+			return cloneContainerKey{}, false
+		}
+		return cloneContainerKey{addr: rv.Pointer(), length: rv.Len()}, true
+	default:
+		return cloneContainerKey{}, false
+	}
+}
+
+func cyclicOptionsError(instance string) error {
+	return &llm.ConfigurationError{
+		ProviderInstance: cmp.Or(strings.TrimSpace(instance), "google"),
+		Message:          "provider_options.google contains a cyclic reference",
+		Cause:            openaichat.ErrCyclicSchema,
+	}
+}
+
+func checkValueCycle(v any, active map[cloneContainerKey]bool, instance string) error {
+	key, tracked := cloneContainerIdentity(v)
+	if tracked {
+		if active[key] {
+			return cyclicOptionsError(instance)
+		}
+		active[key] = true
+		defer delete(active, key)
+	}
+	if v == nil {
+		return nil
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Map:
+		for iter := rv.MapRange(); iter.Next(); {
+			if err := checkValueCycle(iter.Value().Interface(), active, instance); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice:
+		for i := 0; i < rv.Len(); i++ {
+			if err := checkValueCycle(rv.Index(i).Interface(), active, instance); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func cloneJSONValue(v any) any {
+	cloned, _ := cloneJSONValueWithPath(v, map[cloneContainerKey]bool{}, "")
+	return cloned
+}
+
+func cloneJSONValueWithPath(v any, active map[cloneContainerKey]bool, instance string) (any, error) {
+	key, tracked := cloneContainerIdentity(v)
+	if tracked {
+		if active[key] {
+			return nil, cyclicOptionsError(instance)
+		}
+		active[key] = true
+		defer delete(active, key)
+	}
 	switch x := v.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(x))
 		for k, vv := range x {
-			out[k] = cloneJSONValue(vv)
+			cloned, err := cloneJSONValueWithPath(vv, active, instance)
+			if err != nil {
+				return nil, err
+			}
+			out[k] = cloned
 		}
-		return out
+		return out, nil
 	case map[string]string:
 		out := make(map[string]any, len(x))
 		for k, vv := range x {
 			out[k] = vv
 		}
-		return out
+		return out, nil
 	case []any:
 		out := make([]any, len(x))
 		for i := range x {
-			out[i] = cloneJSONValue(x[i])
+			cloned, err := cloneJSONValueWithPath(x[i], active, instance)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = cloned
 		}
-		return out
+		return out, nil
 	default:
-		return v
+		if v != nil {
+			rv := reflect.ValueOf(v)
+			switch rv.Kind() {
+			case reflect.Map:
+				for iter := rv.MapRange(); iter.Next(); {
+					if err := checkValueCycle(iter.Value().Interface(), active, instance); err != nil {
+						return nil, err
+					}
+				}
+			case reflect.Slice:
+				for i := 0; i < rv.Len(); i++ {
+					if err := checkValueCycle(rv.Index(i).Interface(), active, instance); err != nil {
+						return nil, err
+					}
+				}
+			}
+		}
+		return v, nil
 	}
 }
 

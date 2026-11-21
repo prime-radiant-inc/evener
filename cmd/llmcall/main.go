@@ -240,7 +240,7 @@ func runLLMCall(ctx context.Context, cfg llmCallConfig) error {
 		return fmt.Errorf("%w: use --provider or set %s/%s", errNoProvider, envvars.LLMProvider.Name, envvars.EVENERProvider.Name)
 	}
 	if cfg.webSearch {
-		if res, err := client.Resolve(cfg.provider + "/" + cfg.model); err == nil && res.Protocol == registry.ProtocolGoogle {
+		if res, err := client.Registry().ResolveInstanceModelFacts(cfg.provider, cfg.model); err == nil && res.Protocol == registry.ProtocolGoogle {
 			return errWebSearchGoogle
 		}
 	}

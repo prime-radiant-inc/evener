@@ -223,6 +223,101 @@ func TestProtocolCompletionFinalizesOutputBudgetAfterTransportOverlay(t *testing
 	}
 }
 
+func TestProtocolCompleteStorePolicyBlocks2xxFailedSignatureRetry(t *testing.T) {
+	t.Parallel()
+	legacyReq := llm.Request{
+		Model: "gemini-3.8-flash",
+		Messages: []llm.Message{
+			llm.User("check files"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+					ID: "c1", Name: "glob", Arguments: json.RawMessage(`{"pattern":"*.go"}`),
+					ThoughtSignature: "legacy_sig", GoogleInteraction: false,
+				}},
+			}},
+			llm.ToolResult("c1", "main.go", false),
+			llm.User("summarize"),
+		},
+	}
+
+	const failed2xxSig400 = `{"id":"int_failed","model":"gemini-3.8-flash","status":"failed","errors":[{"code":"invalid_argument","message":"missing thought_signature"}]}`
+
+	for _, tc := range []struct {
+		name         string
+		reqMod       func(*llm.Request)
+		resMod       func(*registry.Resolved)
+		pre2xx400    bool
+		wantAttempts int32
+		wantSuccess  bool
+	}{
+		{
+			name:         "store=true blocks retry on HTTP 200 failed signature error",
+			reqMod:       func(r *llm.Request) { r.Store = new(true) },
+			wantAttempts: 1,
+		},
+		{
+			name:         "fields.store=false (omitted store) blocks retry on HTTP 200 failed signature error",
+			resMod:       func(res *registry.Resolved) { res.Caps.Fields = map[string]bool{"store": false} },
+			wantAttempts: 1,
+		},
+		{
+			name:         "store=true still recovers on pre-2xx HTTP 400 signature rejection",
+			reqMod:       func(r *llm.Request) { r.Store = new(true) },
+			pre2xx400:    true,
+			wantAttempts: 2,
+			wantSuccess:  true,
+		},
+		{
+			name:         "explicit store=false still retries once on HTTP 200 failed signature error",
+			reqMod:       func(r *llm.Request) { r.Store = new(false) },
+			wantAttempts: 2,
+			wantSuccess:  true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var attempts atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				n := attempts.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				if n == 1 && tc.pre2xx400 {
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write([]byte(`{"error":{"code":400,"message":"missing thought_signature","status":"INVALID_ARGUMENT"}}`))
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+				if n == 1 {
+					_, _ = w.Write([]byte(failed2xxSig400))
+					return
+				}
+				_, _ = w.Write([]byte(interactionsJSON))
+			}))
+			defer srv.Close()
+
+			req := legacyReq
+			if tc.reqMod != nil {
+				tc.reqMod(&req)
+			}
+			res := protoLive(srv)
+			if tc.resMod != nil {
+				tc.resMod(&res)
+			}
+			resp, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), req, res)
+			if got := attempts.Load(); got != tc.wantAttempts {
+				t.Fatalf("attempts = %d, want %d", got, tc.wantAttempts)
+			}
+			if tc.wantSuccess {
+				if err != nil || resp.Text() != "hello" {
+					t.Fatalf("expected recovered completion, resp=%+v err=%v", resp, err)
+				}
+			} else {
+				if le, ok := errors.AsType[llm.Error](err); !ok || le.StatusCode() != http.StatusBadRequest {
+					t.Fatalf("err = %T %v, want 400 llm.Error", err, err)
+				}
+			}
+		})
+	}
+}
+
 func TestProtocolReclassifiesGRPCStatus(t *testing.T) {
 	t.Parallel()
 	srv, _ := protoServer(t, 400, `{"error":{"code":400,"message":"Resource has been exhausted (e.g. check quota).","status":"RESOURCE_EXHAUSTED"}}`)

@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 type fakeAdapter struct {
@@ -264,5 +266,85 @@ func TestRunLLMCall_WebSearchRejectedOnProtocolGoogleBeforeHTTP(t *testing.T) {
 	})
 	if err == nil || called {
 		t.Fatalf("expected pre-HTTP error for --web-search on ProtocolGoogle; err=%v called=%v", err, called)
+	}
+}
+
+func TestRunLLMCall_WebSearchPreflightSkipsCommandCredential(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	googleMarker := filepath.Join(dir, "google-cred-ran")
+	openaiMarker := filepath.Join(dir, "openai-cred-ran")
+	cfgPath := filepath.Join(dir, "providers.toml")
+	cfg := fmt.Sprintf(
+		"[providers.google-cmd]\nbase = \"google\"\napi_key = '''$(sh -c 'printf x >> %q; printf test-key')'''\n\n[providers.openai-cmd]\nbase = \"openai\"\napi_key = '''$(sh -c 'printf x >> %q; printf test-key')'''\nweb_search = true\n",
+		googleMarker,
+		openaiMarker,
+	)
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
+	}
+	r, err := registry.Load(
+		registry.WithOffline(true),
+		registry.WithoutCache(),
+		registry.WithConfigPath(cfgPath),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+	)
+	if err != nil {
+		t.Fatalf("registry.Load: %v", err)
+	}
+	credRuns := func(marker string) int {
+		b, err := os.ReadFile(marker)
+		if err != nil {
+			return 0
+		}
+		return len(b)
+	}
+
+	googleCalled := false
+	openaiCalled := false
+	c := llm.NewClient(llm.WithRegistry(r))
+	c.Register(&fakeAdapter{
+		name:  "google-cmd",
+		check: func(llm.Request) { googleCalled = true },
+	})
+	c.Register(&fakeAdapter{
+		name:  "openai-cmd",
+		check: func(llm.Request) { openaiCalled = true },
+	})
+
+	var stdout, stderr bytes.Buffer
+	err = runLLMCall(context.Background(), llmCallConfig{
+		prompt:    "search something",
+		provider:  "google-cmd",
+		model:     "gemini-3.8-flash",
+		format:    "text",
+		webSearch: true,
+		stdout:    &stdout,
+		stderr:    &stderr,
+		client:    c,
+	})
+	if !errors.Is(err, errWebSearchGoogle) || googleCalled {
+		t.Fatalf("expected errWebSearchGoogle before dispatch; err=%v called=%v", err, googleCalled)
+	}
+	if runs := credRuns(googleMarker); runs != 0 {
+		t.Fatalf("google --web-search rejection executed credential command %d times, want 0", runs)
+	}
+
+	err = runLLMCall(context.Background(), llmCallConfig{
+		prompt:    "search something",
+		provider:  "openai-cmd",
+		model:     "gpt-5.6",
+		format:    "text",
+		webSearch: true,
+		stdout:    &stdout,
+		stderr:    &stderr,
+		client:    c,
+	})
+	if err != nil || !openaiCalled {
+		t.Fatalf("allowed openai --web-search dispatch failed: err=%v called=%v", err, openaiCalled)
+	}
+	if runs := credRuns(openaiMarker); runs != 1 {
+		t.Fatalf("allowed openai --web-search dispatch executed credential command %d times, want 1", runs)
 	}
 }

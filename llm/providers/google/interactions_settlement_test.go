@@ -442,6 +442,48 @@ func TestInteraction_SSE_ToolCallPlaceholderVsDeltaConfirmedAndTerminalBackfill(
 			t.Fatalf("ToolCallEnd Arguments = %q, want '{bad_json'", sawEndArgs)
 		}
 	})
+
+	t.Run("empty arguments_delta preserves non-empty step.start arguments", func(t *testing.T) {
+		sse := buildSSE(
+			[2]string{"step.start", `{"event_type":"step.start","index":0,"step":{"type":"function_call","id":"fc_empty_start","name":"echo","arguments":{"x":1}}}`},
+			[2]string{"step.delta", `{"event_type":"step.delta","index":0,"delta":{"type":"arguments_delta","arguments":""}}`},
+			[2]string{"step.stop", `{"event_type":"step.stop","index":0}`},
+			[2]string{"interaction.completed", `{"event_type":"interaction.completed","interaction":{"id":"i_empty_delta_start","status":"requires_action"}}`},
+		)
+		resp, events, err := runInteractionsSSETest(t, sse, "gemini-prod", "gemini-4-neon", false)
+		if err != nil {
+			t.Fatalf("SSE decode: %v", err)
+		}
+		if calls := resp.ToolCalls(); len(calls) != 1 || string(calls[0].Arguments) != `{"x":1}` {
+			t.Fatalf("settled calls = %+v, want Arguments='{\"x\":1}'", calls)
+		}
+		for _, ev := range events {
+			if ev.Type == llm.StreamEventToolCallDelta && ev.ToolCall != nil && len(ev.ToolCall.Arguments) == 0 {
+				t.Fatalf("unexpected empty ToolCallDelta emitted: %+v", ev)
+			}
+		}
+	})
+
+	t.Run("empty arguments_delta does not block interaction.completed backfill", func(t *testing.T) {
+		sse := buildSSE(
+			[2]string{"step.start", `{"event_type":"step.start","index":0,"step":{"type":"function_call","id":"fc_empty_backfill","name":"read_file","arguments":{}}}`},
+			[2]string{"step.delta", `{"event_type":"step.delta","index":0,"delta":{"type":"arguments_delta","arguments":""}}`},
+			[2]string{"step.stop", `{"event_type":"step.stop","index":0}`},
+			[2]string{"interaction.completed", `{"event_type":"interaction.completed","interaction":{"id":"i_empty_delta_backfill","status":"requires_action","steps":[{"type":"function_call","id":"fc_empty_backfill","name":"read_file","arguments":{"path":"a.go"}}]}}`},
+		)
+		resp, events, err := runInteractionsSSETest(t, sse, "gemini-prod", "gemini-4-neon", false)
+		if err != nil {
+			t.Fatalf("SSE decode: %v", err)
+		}
+		if calls := resp.ToolCalls(); len(calls) != 1 || string(calls[0].Arguments) != `{"path":"a.go"}` {
+			t.Fatalf("settled calls = %+v, want Arguments='{\"path\":\"a.go\"}'", calls)
+		}
+		for _, ev := range events {
+			if ev.Type == llm.StreamEventToolCallDelta && ev.ToolCall != nil && len(ev.ToolCall.Arguments) == 0 {
+				t.Fatalf("unexpected empty ToolCallDelta emitted: %+v", ev)
+			}
+		}
+	})
 }
 
 func TestInteraction_SSE_SlotQueueSummariesAndUnstoppedSpans(t *testing.T) {

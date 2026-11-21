@@ -364,6 +364,9 @@ func (a *interactionStreamAccumulator) handleStepDelta(idx int, delta map[string
 		slot.textNeedsNewBuilder = true
 	case "arguments_delta":
 		frag := extractDeltaArgFragment(delta, evData)
+		if len(frag) == 0 {
+			break
+		}
 		slot.receivedArgFragments = true
 		slot.argBuf = append(slot.argBuf, frag...)
 		if !slot.spanStarted {
