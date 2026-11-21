@@ -17,10 +17,15 @@ import { createKeybindingDispatcher } from "../../../keybindings/dispatcher";
 import { installKeybindings } from "../../../shell/installKeybindings";
 import { paletteStore } from "../../../shell/palette/paletteController";
 import type { VirtualListHandle } from "../../../widgets";
-import { isDisclosureOpenNow, setDisclosureOpen } from "../../../widgets/disclosure/disclosureStore";
+import {
+  isDisclosureOpenExplicitly,
+  isDisclosureOpenNow,
+  setDisclosureOpen,
+} from "../../../widgets/disclosure/disclosureStore";
 import { mermaidRenderVersion, subscribeMermaidRender } from "../../../widgets/mermaid/renderState";
 import { requestComposerFocus } from "../composer/composerFocus";
 import type { TranscriptBodyRow } from "../transcript/TranscriptBody";
+import { itemScopeKey } from "../transcript/tools/subagentModuleStore";
 import { type FindHit, findHits, indexOfMatch, isOverlay } from "./findHits";
 import { landingScrollTop, markTranscript } from "./findMarks";
 import { consumeFindRequest, useFindRequest } from "./findRequest";
@@ -215,7 +220,8 @@ export function useFindInSession({
           before.key === hit.key &&
           before.itemId === hit.itemId &&
           before.rowIndex === hit.rowIndex &&
-          before.opens === hit.opens
+          before.opens === hit.opens &&
+          (before.opensSession ?? []).join("\0") === (hit.opensSession ?? []).join("\0")
         );
       });
     if (!same) lastHits.current = next;
@@ -419,6 +425,13 @@ export function useFindInSession({
     if (current.opens !== undefined) {
       const scoped = scopedDisclosureId(disclosureScope, current.opens);
       if (!isDisclosureOpenNow(scoped, false)) setDisclosureOpen(scoped, true);
+    }
+    // A steer's or a memory refresh's body folds by the session ref plus its
+    // own id (SteeringDivider's key). Its owner may keep it closed through an
+    // expand-all baseline, so only the reader's own choice says it is open.
+    for (const id of current.opensSession ?? []) {
+      const scoped = itemScopeKey(ref, id);
+      if (!isDisclosureOpenExplicitly(scoped)) setDisclosureOpen(scoped, true);
     }
     const before = landed.current;
     if (before !== null && before.item === current.itemId && before.needle === needle && before.epoch === jumpEpoch) {
