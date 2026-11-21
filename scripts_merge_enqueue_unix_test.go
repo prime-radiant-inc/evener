@@ -406,12 +406,25 @@ func waitForFile(t *testing.T, path string) {
 func waitForProcessGone(t *testing.T, pid int) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
-	for syscall.Kill(pid, 0) == nil {
+	for processRunning(pid) {
 		if time.Now().After(deadline) {
 			t.Fatalf("process %d is still running", pid)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// processRunning reports whether pid is still running. A killed child whose
+// parent is gone is reparented, and a zombie counts as terminated: kill -0 still
+// succeeds for one, and PID 1 in a container need not reap it (the same call
+// gatebounded_test.go's poll_gone makes).
+func processRunning(pid int) bool {
+	out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return false
+	}
+	stat := strings.TrimSpace(string(out))
+	return stat != "" && !strings.HasPrefix(stat, "Z")
 }
 
 // stopGroupOnCleanup kills a process group this test's own fixtures started, so
@@ -477,6 +490,90 @@ func assertDirEmpty(t *testing.T, dir string) {
 		names = append(names, entry.Name())
 	}
 	t.Errorf("the run left these behind in %s: %v", dir, names)
+}
+
+// TestMergeEnqueueStopsTheBuildGroupOnTermination gives the build a child of its
+// own: a `go` stand-in that leaves a long-running process behind. One signal must
+// stop that child too, or a compiler keeps writing into a scratch directory the
+// launcher is about to remove.
+func TestMergeEnqueueStopsTheBuildGroupOnTermination(t *testing.T) {
+	dir := t.TempDir()
+	childFile := filepath.Join(dir, "build-child")
+	groupFile := filepath.Join(dir, "build-group")
+	childStopped := filepath.Join(dir, "build-child-stopped")
+	// `go build` is preceded by `go env GOHOSTOS`/`GOHOSTARCH`, so the stand-in
+	// answers that first and only then stands in for the build.
+	binDir := filepath.Join(dir, "bin")
+	if err := os.Mkdir(binDir, 0o755); err != nil {
+		t.Fatalf("make PATH stub dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "go"), []byte(`#!/usr/bin/env bash
+if [ "$1" = env ]; then exit 0; fi
+( trap 'printf stopped > "$FAKE_BUILD_CHILD_STOPPED"; exit 0' TERM
+  while :; do sleep 0.05; done ) &
+printf '%s\n' "$!" > "$FAKE_BUILD_CHILD.tmp"
+mv -- "$FAKE_BUILD_CHILD.tmp" "$FAKE_BUILD_CHILD"
+printf '%s\n' "$$" > "$FAKE_BUILD_GROUP.tmp"
+mv -- "$FAKE_BUILD_GROUP.tmp" "$FAKE_BUILD_GROUP"
+wait
+`), 0o755); err != nil {
+		t.Fatalf("write go stand-in: %v", err)
+	}
+	tmp := t.TempDir()
+	p := startLauncher(t, []string{
+		"EVENER_DEV_BIN=",
+		"TMPDIR=" + tmp,
+		"FAKE_BUILD_CHILD=" + childFile,
+		"FAKE_BUILD_GROUP=" + groupFile,
+		"FAKE_BUILD_CHILD_STOPPED=" + childStopped,
+		"PATH=" + binDir + ":/usr/bin:/bin",
+	})
+	buildChild := waitForHelperPID(t, childFile)
+	stopGroupOnCleanup(t, waitForHelperPID(t, groupFile))
+	if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signal launcher: %v", err)
+	}
+
+	if status := p.waitExit(t); status != 130 {
+		t.Fatalf("exit = %d, want 130 (stderr: %q)", status, p.stderr.String())
+	}
+	waitForProcessGone(t, buildChild)
+	// The child records the TERM itself, so this fails if the first signal reached
+	// only the `go` process and left its children to the KILL at the end.
+	waitForFile(t, childStopped)
+	assertDirEmpty(t, tmp)
+}
+
+// TestMergeEnqueueReportsAScratchSetupFailureAsRefusal covers the mint failing
+// after a root was chosen, as a full filesystem does: scratch_dir exits 1 there,
+// which the contract reads as a dropped PR, so the launcher must report 2.
+func TestMergeEnqueueReportsAScratchSetupFailureAsRefusal(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeHelper(t, dir, "#!/usr/bin/env bash\nexit 0\n")
+	stub := filepath.Join(dir, "bin")
+	if err := os.Mkdir(stub, 0o755); err != nil {
+		t.Fatalf("make PATH stub dir: %v", err)
+	}
+	// The chosen root is writable and the mint is not, which is what a full
+	// tmpfs looks like from here.
+	if err := os.WriteFile(filepath.Join(stub, "mktemp"),
+		[]byte("#!/usr/bin/env bash\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write mktemp stub: %v", err)
+	}
+	_, stderr, status := runMergeEnqueue(t,
+		[]string{
+			"EVENER_DEV_BIN=" + bin,
+			"TMPDIR=" + t.TempDir(),
+			"PATH=" + stub + ":/usr/bin:/bin",
+		},
+		"--pr", "42")
+
+	if status != 2 {
+		t.Fatalf("exit = %d, want 2 (stderr: %q)", status, stderr)
+	}
+	if !strings.Contains(stderr, "mktemp -d under") {
+		t.Errorf("stderr = %q, want the scratch failure named", stderr)
+	}
 }
 
 // goToolPath is a PATH that supplies the go toolchain and nothing else: a PATH

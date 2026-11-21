@@ -27,8 +27,8 @@
 #   MERGEQ merged sha=SHA               (exit 0)
 #   MERGEQ dropped: <reason>            (exit 1: left the queue unmerged)
 #   MERGEQ timeout position=P state=S   (exit 1: still queued after --wait)
-# Exit 2: usage error, a failed enqueue call, or a helper that could not be
-#         built or started.
+# Exit 2: usage error, a failed enqueue call, a scratch directory that could not
+#         be set up, or a helper that could not be built or started.
 # Exit 130: the wait was interrupted (SIGINT, SIGTERM or SIGHUP). The helper
 #         leads its own process group; one signal asks it to cancel and stop the
 #         `gh` call behind it, a second kills that group and the `gh` group too.
@@ -66,11 +66,15 @@ fail() {
 }
 
 # installed_helper prints an `evener-dev` from PATH only when it resolves inside
-# this checkout; nothing proves a foreign one carries these queue decisions.
+# this checkout; nothing proves a foreign one carries these queue decisions. The
+# resolved file is what is judged, so a symlink out of the checkout is refused.
 installed_helper() {
   local found dir
   found=$(command -v evener-dev 2>/dev/null) || return 1
   case "$found" in /*) ;; *) return 1 ;; esac
+  # realpath takes no `--` on BSD userlands; $found is absolute, so no argv
+  # element here can read as an option.
+  found=$(realpath "$found" 2>/dev/null) || return 1
   dir=$(cd -- "$(dirname -- "$found")" 2>/dev/null && pwd -P) || return 1
   case "$dir/" in
     "$root"/*) printf '%s\n' "$dir/$(basename -- "$found")" ;;
@@ -81,6 +85,7 @@ installed_helper() {
 child=""
 stops=0
 term_sent=0
+group_stop=""
 gh_group_file=""
 
 # stop_child starts the tracked child's stop, or ends it. The first signal asks
@@ -97,7 +102,14 @@ stop_child() {
   fi
   if [ "$term_sent" -eq 0 ]; then
     term_sent=1
-    kill -TERM "$child" 2>/dev/null || true
+    # A build has no cancellation of its own and its compilers are children in
+    # its group, so the whole group is signalled. The helper takes the signal
+    # itself, so it can stop the gh call it waits on and report 130.
+    if [ -n "$group_stop" ]; then
+      kill -TERM -- "-$child" 2>/dev/null || true
+    else
+      kill -TERM "$child" 2>/dev/null || true
+    fi
     return 0
   fi
   kill -KILL -- "-$child" 2>/dev/null || true
@@ -140,31 +152,24 @@ wait_tracked() {
 }
 
 . "$root/scripts/lib/scratch-lib.sh"
+. "$root/scripts/lib/gate-scratch-root.sh"
 
 # The cleanup trap is armed before anything is minted, so a signal in between
 # still removes the directory; scratch_rm takes no argument and removes only what
-# scratch_dir registered for this run.
-trap 'scratch_rm' EXIT
+# scratch_dir registered for this run. scratch_dir exits 1 when it cannot mint,
+# which the contract reads as a queue drop, so a setup failure reports 2.
+in_scratch_setup=""
+cleanup() {
+  scratch_rm
+  [ -z "$in_scratch_setup" ] || exit 2
+}
+trap 'cleanup' EXIT
 trap 'stop_child' INT
 trap 'stop_child' TERM
 trap 'stop_child' HUP
 
-# scratch_dir reports an unusable TMPDIR by exiting 1, which the contract reads
-# as a queue drop. Choose a writable root first, so that case is the launcher
-# failure it is (2). A directory this user can write is the whole test: no ACL or
-# symlink walk is needed for a directory this run creates itself.
-for scratch_root in "${TMPDIR:-}" "${XDG_RUNTIME_DIR:-}" "${XDG_CACHE_HOME:-${HOME:+$HOME/.cache}}" /tmp; do
-  [ -n "$scratch_root" ] && [ -d "$scratch_root" ] && [ -w "$scratch_root" ] || continue
-  TMPDIR=$scratch_root
-  export TMPDIR
-  break
-done
-[ -d "${TMPDIR:-}" ] && [ -w "${TMPDIR:-}" ] ||
-  fail "no writable directory for scratch (TMPDIR, XDG_RUNTIME_DIR, XDG_CACHE_HOME and /tmp are all unusable)"
-
-scratch_dir work merge-enqueue
-gh_group_file="$work/gh-group"
-
+# The helper is resolved first: only a build needs a root that can execute.
+need_build=""
 if [ -n "${EVENER_DEV_BIN:-}" ]; then
   # A relative override belongs to the caller's directory, not the checkout.
   case "$EVENER_DEV_BIN" in
@@ -172,20 +177,49 @@ if [ -n "${EVENER_DEV_BIN:-}" ]; then
     *) helper_bin=$caller_pwd/$EVENER_DEV_BIN ;;
   esac
   [ -x "$helper_bin" ] || fail "EVENER_DEV_BIN is not an executable file: $EVENER_DEV_BIN"
-elif helper_bin=$(installed_helper); then
-  :
 else
-  # Built, not `go run`: `go run` reports every child status as 1, which would
-  # erase both the drop/timeout 1 and the refusal 2. The build is tracked like
-  # the helper, so a signal stops and reaps it rather than leaving it behind.
-  # GOOS/GOARCH ask for a helper this host can run, GOFLAGS= keeps an inherited
-  # one out (a `go env -w` value still applies), GOWORK pins this checkout's
-  # workspace over a caller's GOWORK=off or foreign one, and GOTMPDIR keeps the
-  # build's work directory in this scratch rather than the operator's TMPDIR.
+  helper_bin=$(installed_helper) || need_build=1
+fi
+
+# Choose a usable root first: a writable directory is enough for a prebuilt
+# helper, and a build also needs one that executes what is written there, or a
+# noexec mount fails `go build` at the last moment instead.
+for scratch_root in "${TMPDIR:-}" "${XDG_RUNTIME_DIR:-}" "${XDG_CACHE_HOME:-${HOME:+$HOME/.cache}}" /tmp; do
+  [ -n "$scratch_root" ] && [ -d "$scratch_root" ] && [ -w "$scratch_root" ] || continue
+  [ -z "$need_build" ] || gate_scratch_root_executes "$scratch_root" || continue
+  TMPDIR=$scratch_root
+  export TMPDIR
+  break
+done
+[ -d "${TMPDIR:-}" ] && [ -w "${TMPDIR:-}" ] ||
+  fail "no writable directory for scratch (TMPDIR, XDG_RUNTIME_DIR, XDG_CACHE_HOME and /tmp are all unusable)"
+[ -z "$need_build" ] || gate_scratch_root_executes "${TMPDIR:-}" ||
+  fail "no scratch directory can execute the helper built into it (a noexec mount?)"
+
+in_scratch_setup=1
+scratch_dir work merge-enqueue
+in_scratch_setup=""
+gh_group_file="$work/gh-group"
+
+if [ -n "$need_build" ]; then
+  # Built, not `go run`, which reports every child status as 1 and would erase
+  # both the drop/timeout 1 and the refusal 2. The build is tracked like the
+  # helper, so a signal stops and reaps it. GOOS/GOARCH name this host over an
+  # inherited or `go env -w` pair, GOFLAGS is cleared, GOWORK pins this
+  # checkout's workspace, and GOTMPDIR keeps the build's work directory in this
+  # scratch rather than the operator's TMPDIR.
   helper_bin="$work/evener-dev"
-  start_tracked env GOOS= GOARCH= GOFLAGS= GOWORK="$root/go.work" GOTMPDIR="$work" go build -o "$helper_bin" ./cmd/evener-dev/bin
+  group_stop=1
+  start_tracked env GOOS="$(go env GOHOSTOS)" GOARCH="$(go env GOHOSTARCH)" GOFLAGS= GOWORK="$root/go.work" GOTMPDIR="$work" go build -o "$helper_bin" ./cmd/evener-dev/bin
+  build_pgid=$child
   wait_tracked
-  [ "$stops" -eq 0 ] || exit 130
+  group_stop=""
+  if [ "$stops" -ne 0 ]; then
+    # Build children run in the build's group; stopping it again leaves nothing
+    # writing into a scratch directory that is about to be removed.
+    [ -z "$build_pgid" ] || kill -KILL -- "-$build_pgid" 2>/dev/null || true
+    exit 130
+  fi
   [ "$status" -eq 0 ] || fail "building the evener-dev helper failed"
   [ -x "$helper_bin" ] || fail "the built helper is not executable: $helper_bin"
 fi
@@ -194,16 +228,13 @@ fi
 start_tracked env EVENER_MERGEQ_GH_GROUP_FILE="$gh_group_file" "$helper_bin" dev merge-enqueue "$@"
 wait_tracked
 
-# An interrupted run reports the interruption, not whatever the helper's group
+# An interrupted run reports the interruption, not whatever the killed group
 # died with: a wait broken by a trapped signal answers 128+signal even when the
-# signal's own handler then killed the child, and which of the two statuses the
-# loop collects depends on timing. The pid assertions in the tests, not a death
-# status, are what show a forced stop reached the group.
+# handler then killed the child, so the collected status depends on timing.
 [ "$stops" -eq 0 ] || exit 130
 
 # A helper the shell could not execute reports 126 or 127, which the contract
-# does not define and which would read as "command not executable" rather than
-# the launcher failure it is.
+# does not define; that is the launcher failure, not "command not executable".
 if [ "$status" -eq 126 ] || [ "$status" -eq 127 ]; then
   fail "the helper could not be started: $helper_bin"
 fi
