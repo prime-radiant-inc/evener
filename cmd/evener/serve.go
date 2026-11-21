@@ -214,7 +214,11 @@ type serveDeps struct {
 	// Injectable so a failure-injection fixture can own the sink and assert on
 	// the diagnostics it deliberately provokes instead of leaking them into test
 	// output.
-	serveLogOut     io.Writer
+	serveLogOut io.Writer
+	// serveDiag is where the daemon's own [serve] lines go once the run has
+	// installed its bounded spool. Nil falls back to diagnosticOut, which is
+	// what a helper called directly by a test uses.
+	serveDiag       io.Writer
 	subscriberCount func(serveServer, string) int
 	notifyContext   func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
 	// runContext derives the run's lifetime from the signal context. Its cancel
@@ -274,6 +278,15 @@ func (d serveDeps) diagnosticOut() io.Writer {
 		return d.serveLogOut
 	}
 	return os.Stderr
+}
+
+// serveDiagnosticOut is where a [serve] line is written: the run's bounded
+// spool when it installed one, otherwise the raw sink as diagnosticOut.
+func (d serveDeps) serveDiagnosticOut() io.Writer {
+	if d.serveDiag != nil {
+		return d.serveDiag
+	}
+	return d.diagnosticOut()
 }
 
 func defaultServeDeps() serveDeps {
@@ -413,6 +426,14 @@ func armInterruptRunner(setRunner, setCancel func()) {
 
 func runServeWithDeps(args []string, deps serveDeps) error {
 	logOut := deps.diagnosticOut()
+	// Every [serve] line goes through a bounded spool. The daemon's stderr is a
+	// pipe it does not own, and the two goroutines that emit these lines are the
+	// input loop and the teardown that joins it; a synchronous write parks one
+	// of them on whatever reads the pipe. See serveDiagnosticSpool.
+	diag := newServeDiagnosticSpool(logOut)
+	defer diag.Close()
+	diagOut := diag.Writer()
+	deps.serveDiag = diagOut
 	fs := deps.newFlagSet("serve", flag.ExitOnError)
 	lf := registerLaunchFlags(fs)
 	addr := fs.String("addr", "127.0.0.1:9131", "listen address")
@@ -780,7 +801,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 				return fmt.Errorf("set reasoning effort: %w", err)
 			}
 		}
-		reportServeResume(logOut, resumedMeta, modelRef, resumeProvider, resumeModel, strings.TrimSpace(*lf.model) != "")
+		reportServeResume(diagOut, resumedMeta, modelRef, resumeProvider, resumeModel, strings.TrimSpace(*lf.model) != "")
 	} else {
 		sess, err = deps.newSession(client, profile, env, sessionCfg)
 		if err != nil {
@@ -872,7 +893,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	bridge := newServeBridge(srv, deps, eventObserver, closeEventObserver)
 	defer bridge.awaitDrains()
 
-	envelopeSource := bindServerCallbacks(ctx, srv, deps, live, bridge, retiring, rvRegistration, sessionCfg, client, profile, wd, sd, logOut, workspaceRef, &servedBootGeneration, cancel)
+	envelopeSource := bindServerCallbacks(ctx, srv, deps, live, bridge, retiring, rvRegistration, sessionCfg, client, profile, wd, sd, workspaceRef, &servedBootGeneration, cancel)
 
 	// Seed the envelope from the live session before its bridge starts. Every
 	// envelope value changes at once when the session behind them changes, and
@@ -1025,7 +1046,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			close(runnerDone)
 			bridge.clearMutationRunner(runnerDone)
 			if processErr != nil {
-				serveLogf(logOut, sess.ID(), "error: %s", turnFailureSummary(processErr))
+				serveLogf(diagOut, sess.ID(), "error: %s", turnFailureSummary(processErr))
 			}
 			_ = result
 			return processed
@@ -1043,7 +1064,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}()
 
 	// Start HTTP server.
-	serveLogf(logOut, live.session().ID(), "listening on %s", listener.Addr())
+	serveLogf(diagOut, live.session().ID(), "listening on %s", listener.Addr())
 
 	spawnedBy := "user"
 	if envvars.EVENERHubSpawned.Getenv() == "1" {
@@ -1073,11 +1094,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// loop was started, so the shutdown path has nothing to join.
 	var retirementLoopDone chan struct{}
 	if err := deps.register(rvRegistration, runDir, rvEntry); err != nil {
-		serveLogf(logOut, live.session().ID(), "rendezvous write failed: %v", err)
+		serveLogf(diagOut, live.session().ID(), "rendezvous write failed: %v", err)
 	} else {
 		defer func() {
 			removeRendezvousAtShutdown(rvRegistration.Remove, deps.rendezvousRetryPause, func(err error) {
-				serveLogf(logOut, live.session().ID(), "rendezvous removal failed after %d attempts, entry may be stale: %v", rendezvousRemovalAttempts, err)
+				serveLogf(diagOut, live.session().ID(), "rendezvous removal failed after %d attempts, entry may be stale: %v", rendezvousRemovalAttempts, err)
 			})
 		}()
 		// The idle clock may only start once the daemon has published its
@@ -1092,7 +1113,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		go func() {
 			defer close(retirementLoopDone)
 			_ = retiring.retirement.Run(ctx, retiring.consumeClaim, func(attempt agent.RetirementAttempt) {
-				serveLogf(logOut, live.session().ID(), "%s", retirementAttemptSummary(attempt))
+				serveLogf(diagOut, live.session().ID(), "%s", retirementAttemptSummary(attempt))
 			})
 		}()
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -26,7 +25,7 @@ import (
 // server, including thread/clear. Each hook resolves the live session per call,
 // so a thread/clear replacement is never pinned. It returns the envelope
 // source it installed, whose PendingEscalations the startup write reports.
-func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, live *liveSession, bridge *serveBridge, retiring *serveRetirement, rvRegistration *rvreg.Registration, sessionCfg agent.SessionConfig, client *llm.Client, profile *provider.Profile, wd, sd string, logOut io.Writer, workspaceRef string, servedBootGeneration *atomic.Uint64, cancel context.CancelFunc) liveThreadEnvelopeSource {
+func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, live *liveSession, bridge *serveBridge, retiring *serveRetirement, rvRegistration *rvreg.Registration, sessionCfg agent.SessionConfig, client *llm.Client, profile *provider.Profile, wd, sd string, workspaceRef string, servedBootGeneration *atomic.Uint64, cancel context.CancelFunc) liveThreadEnvelopeSource {
 	srv.SetSandboxEscalationResolveFunc(func(id string, approve bool) error {
 		return live.session().ResolveSandboxEscalation(id, approve)
 	})
@@ -343,7 +342,7 @@ func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, l
 		// since the top of this func keeps the controller resident, so this
 		// cannot fail; the idle interval restarts against the new root.
 		if err := retiring.retirement.AttachRoot(newSess); err != nil {
-			serveLogf(logOut, newSess.ID(), "retirement root re-attach failed: %v", err)
+			serveLogf(deps.serveDiagnosticOut(), newSess.ID(), "retirement root re-attach failed: %v", err)
 		}
 		retiring.observe("root_published", newSess.ID())
 		// The commit above zeroed the envelope with the identity it described.
