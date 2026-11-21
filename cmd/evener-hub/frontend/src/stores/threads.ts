@@ -2125,6 +2125,19 @@ function discoveryReadIsCurrent(ref: string): boolean {
 // arm is not proof that a concurrent enqueue is outstanding. This count is that
 // proof, and only the fallback's ordering guard reads it.
 const inflightDurableEnqueues = new Map<string, number>();
+// Bumped by resetThreadsStoreForTests, which throws this store away between
+// tests (no production code resets it). Async work captures the generation it
+// started under and settles into nothing when it no longer matches: the count,
+// the arm and the claim that work holds were discarded with the old store, so
+// releasing them would look like a bookkeeping bug here and would consume a
+// hold the reset's successor owns. One leftover write or claim from a prior
+// test settling into the fresh one is issue #7236.
+let storeGeneration = 0;
+
+/** The store generation async work started under; see storeGeneration. */
+export function currentStoreGeneration(): number {
+  return storeGeneration;
+}
 
 // Pane, watch and durable outbox holders share one local lease. Activity views
 // hold their own leases on the same routing ref and actual client identity.
@@ -5159,7 +5172,8 @@ function admitDirectSend(
 // trackOutboxWrite, on both the settle and the throw path. A release with no
 // matching acquire is a bookkeeping bug, not a normal case, so it throws rather
 // than defaulting the missing entry to 1 - that default would also hide a
-// double release or a mid-flight reset.
+// double release. A settle whose store was reset under it never gets here - see
+// storeGeneration.
 function releaseInflightDurableEnqueue(ref: string): void {
   const current = inflightDurableEnqueues.get(ref);
   if (current === undefined) {
@@ -5203,13 +5217,17 @@ async function trackOutboxWriteRows<T>(
   write: () => Promise<T>,
   committedRows: (result: T) => Array<{ clientMutationId: string; undelivered: boolean }>,
 ): Promise<T> {
+  const generation = storeGeneration;
   inflightDurableEnqueues.set(ref, (inflightDurableEnqueues.get(ref) ?? 0) + 1);
   try {
     const result = await write();
-    noteCommittedOutboxRows(ref, committedRows(result));
+    // A reset threw this write's store away while it was in flight: the commit
+    // belongs to that discarded store, so it neither registers rows nor
+    // releases a count the reset already dropped.
+    if (generation === storeGeneration) noteCommittedOutboxRows(ref, committedRows(result));
     return result;
   } finally {
-    releaseInflightDurableEnqueue(ref);
+    if (generation === storeGeneration) releaseInflightDurableEnqueue(ref);
   }
 }
 
@@ -5334,14 +5352,34 @@ async function enqueueMutationIntent(
   // below. It stays counted until the write settles, so a concurrent enqueue
   // the fallback must not jump stays visible even though it has not committed
   // (and so has not pinned, and its arm a refresh can clear).
+  //
+  // The generation is taken with the count, so a reset after this point (tests
+  // only - see storeGeneration) is what makes the settle inert; a reset before
+  // it belongs to a click that started under the fresh store.
+  const generation = storeGeneration;
   inflightDurableEnqueues.set(ref, (inflightDurableEnqueues.get(ref) ?? 0) + 1);
   let record: MutationOutboxRecord;
   try {
+    // The outbox announces a commit from inside its own write (see
+    // #announceCommit), before this await returns and so before the fence below
+    // can run. Fence the announcement itself as well: a callback that publishes
+    // notes or a cleared thread into the store a reset installed belongs to the
+    // store that was discarded (see storeGeneration).
+    const announceCommitted = onCommitted
+      ? (committed: MutationOutboxRecord) => {
+          if (generation === storeGeneration) onCommitted(committed);
+        }
+      : undefined;
     // The click-time capture, awaited at the write it fences, and the durable
     // enqueue behind it, retried once on a storage timeout (see
     // enqueueDurableMutation).
-    record = await enqueueDurableMutation(runtime, intent, onCommitted, durableWrite, barrierRead);
+    record = await enqueueDurableMutation(runtime, intent, announceCommitted, durableWrite, barrierRead);
   } catch (error) {
+    // This click's store was reset out from under the write: its count is gone
+    // with it, and the fallback's admission and dispatch read a store this
+    // click no longer belongs to. Surface the failure to the caller, whose
+    // own bookkeeping is already discarded, and stop.
+    if (generation !== storeGeneration) throw error;
     // This click's write has settled; only OTHER enqueues remain counted.
     releaseInflightDurableEnqueue(ref);
     // The direct fallback answers ONLY a durable enqueue whose method is one of
@@ -5451,6 +5489,11 @@ async function enqueueMutationIntent(
   // try means a throw from it can no longer re-enter a release (the
   // double-release bug), and this release is unreachable from an error path
   // because the only other exit from the try is the catch above.
+  //
+  // A reset that landed while the write was in flight released none of this:
+  // the count, the pin and the persistence notification all belong to the
+  // discarded store, so the settle ends with the record (see storeGeneration).
+  if (generation !== storeGeneration) return record;
   releaseInflightDurableEnqueue(ref);
   // Every commit bumps the generation refreshes check against: a born-canceled
   // row's pin must survive a stale refresh just as an undelivered row's markers
@@ -10075,6 +10118,10 @@ export function resetThreadsStoreForTests(): void {
     });
   };
   retireAllOwnedHydrations();
+  // Bump before the clears below so leftover settles see a moved generation and
+  // stay inert instead of releasing into (or publishing into) the state this
+  // reset installs; see storeGeneration.
+  storeGeneration += 1;
   inflightDurableEnqueues.clear();
   undeliveredMutationIds.clear();
   mutationStateGenerations.clear();

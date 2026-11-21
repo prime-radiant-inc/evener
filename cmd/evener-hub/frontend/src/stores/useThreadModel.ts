@@ -8,7 +8,7 @@ import { useEffect } from "react";
 import type { TranscriptReadView } from "../panes/session/transcript/transcriptReadView";
 import { connectionStore } from "./connection";
 import { hasConversationHandoff, registerConversationClaim } from "./conversationClaimHandoff";
-import { threadsStore, useThreadsStore } from "./threads";
+import { currentStoreGeneration, threadsStore, useThreadsStore } from "./threads";
 
 // useThreadClaim holds one ensureThread(ref) claim while the caller is
 // mounted, starting it once the connection is ready, and releases it on
@@ -69,12 +69,19 @@ export interface ThreadClaimLease {
  * released anyway would consume another foreground reader's claim and retire
  * its subscription or hydration lifecycle. */
 export async function acquireUnreadThreadClaim(ref: string): Promise<ThreadClaimLease> {
+  // The claim this lease will release belongs to the store that exists when
+  // ensureThread takes it, which is now - before the await. A reset that lands
+  // while that await is pending (tests only - see storeGeneration) discards
+  // that store, and releasing its hold afterwards would consume a hold the
+  // reset's successor owns and retire the model under it (issue #7236).
+  const generation = currentStoreGeneration();
   await threadsStore.getState().ensureThread(ref);
   let released = false;
   return {
     release() {
       if (released) return;
       released = true;
+      if (generation !== currentStoreGeneration()) return;
       threadsStore.getState().releaseThread(ref);
     },
   };
