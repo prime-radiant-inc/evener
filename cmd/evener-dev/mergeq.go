@@ -37,7 +37,7 @@ func mergeEnqueueMain(args []string) int {
 }
 
 func runMergeEnqueue(args []string, c mergeq.Client, clock mergeq.Clock, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("evener dev merge-enqueue", flag.ContinueOnError)
+	fs := flag.NewFlagSet("evener-dev dev merge-enqueue", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	repo := fs.String("repo", "prime-radiant-inc/evener", "repository, OWNER/NAME")
 	pr := fs.String("pr", "", "pull request number")
@@ -48,14 +48,14 @@ func runMergeEnqueue(args []string, c mergeq.Client, clock mergeq.Clock, stdout,
 	waitSeconds := fs.String("wait", "0", "seconds to poll after enqueueing; 0 reports the position and stops")
 	jump := fs.Bool("jump", false, "put the PR at the front of the queue (admins only); refuses an already queued PR")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintln(stderr, "usage: evener dev merge-enqueue --pr N [--wait SECONDS] [--jump] [--repo OWNER/NAME]")
+		_, _ = fmt.Fprintln(stderr, "usage: evener-dev dev merge-enqueue --pr N [--wait SECONDS] [--jump] [--repo OWNER/NAME]")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	wait, err := parseWaitSeconds(*waitSeconds)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "evener dev merge-enqueue: --wait %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "evener-dev dev merge-enqueue: --wait %v\n", err)
 		fs.Usage()
 		return 2
 	}
