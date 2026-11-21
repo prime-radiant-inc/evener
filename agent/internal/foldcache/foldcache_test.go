@@ -3,6 +3,7 @@ package foldcache
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -184,11 +185,11 @@ func TestCache_SecondGetReadsOnlyTheAppendedDelta(t *testing.T) {
 		t.Fatalf("first Get: %v", err)
 	}
 
-	// mtime resolution on some filesystems is coarse (1s); sleep to
-	// guarantee the append moves mtime forward so the cache can't mistake
-	// this for "nothing changed."
-	time.Sleep(1100 * time.Millisecond)
+	laterMTime := mustStat(t, path).ModTime().Add(2 * time.Second)
 	appendLines(t, path, []int{4, 5})
+	if err := os.Chtimes(path, laterMTime, laterMTime); err != nil {
+		t.Fatal(err)
+	}
 
 	second, err := c.Get(ctx, path, extend)
 	if err != nil {
@@ -243,8 +244,11 @@ func TestCache_ShrunkFileForcesFullRescanAndBumpsEpoch(t *testing.T) {
 		t.Fatalf("first sum = %d, want 15", first.Value.sum)
 	}
 
-	time.Sleep(1100 * time.Millisecond)
+	laterMTime := mustStat(t, path).ModTime().Add(2 * time.Second)
 	writeLines(t, path, []int{9}) // shrink + wholly different content
+	if err := os.Chtimes(path, laterMTime, laterMTime); err != nil {
+		t.Fatal(err)
+	}
 
 	second, err := c.Get(ctx, path, extend)
 	if err != nil {
@@ -275,8 +279,11 @@ func TestCache_SameSizeDifferentMTimeRewriteForcesFullRescanAndBumpsEpoch(t *tes
 		t.Fatalf("first Get: %v", err)
 	}
 
-	time.Sleep(1100 * time.Millisecond)
+	laterMTime := mustStat(t, path).ModTime().Add(2 * time.Second)
 	writeLines(t, path, []int{3, 4}) // "3\n4\n" -- same 4 bytes, different content
+	if err := os.Chtimes(path, laterMTime, laterMTime); err != nil {
+		t.Fatal(err)
+	}
 
 	second, err := c.Get(ctx, path, extend)
 	if err != nil {
@@ -372,19 +379,11 @@ func TestCache_ConcurrentGetsCoalesceToOneExtendCall(t *testing.T) {
 	// coalescing, making the test's own Coalesced assertion racy rather
 	// than the implementation. Registration (Get's flights-map check,
 	// under c.mu) is a fast, syscall-free critical section, so polling
-	// Stats() is a tight loop, not a real wait, once the scheduler has
-	// actually run all n goroutines.
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	// Stats() is cheap, and the wait ends as soon as all n have registered.
+	testwait.UntilSeen(t, "all n Get calls to register", func() (bool, string) {
 		stats := c.Stats()
-		if stats.Misses+stats.Coalesced >= n {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for all %d Get calls to register (stats=%+v)", n, stats)
-		}
-		time.Sleep(time.Millisecond)
-	}
+		return stats.Misses+stats.Coalesced >= n, fmt.Sprintf("stats=%+v", stats)
+	})
 	close(release)
 	wg.Wait()
 
@@ -622,8 +621,11 @@ func TestCache_EvictionDoesNotHideAnInterveningRewriteFromEpoch(t *testing.T) {
 		t.Fatalf("Stats().Evictions = 0, want pathA evicted by touching pathB under a 1-entry bound")
 	}
 
-	time.Sleep(1100 * time.Millisecond)
+	laterMTime := mustStat(t, pathA).ModTime().Add(2 * time.Second)
 	writeLines(t, pathA, []int{9}) // shrink + wholly different content, WHILE evicted
+	if err := os.Chtimes(pathA, laterMTime, laterMTime); err != nil {
+		t.Fatal(err)
+	}
 
 	second, err := c.Get(ctx, pathA, extend)
 	if err != nil {
@@ -678,13 +680,10 @@ func TestCache_CanceledOwnerDoesNotPoisonAHealthyWaiter(t *testing.T) {
 	// before canceling anything, so this test proves the coalesced case,
 	// not a race where the waiter happened to start its own separate
 	// flight.
-	deadline := time.Now().Add(10 * time.Second)
-	for c.Stats().Coalesced < 1 {
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for the waiter to coalesce onto the owner's flight")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	testwait.UntilSeen(t, "the waiter to coalesce onto the owner's flight", func() (bool, string) {
+		stats := c.Stats()
+		return stats.Coalesced >= 1, fmt.Sprintf("stats=%+v", stats)
+	})
 
 	cancelOwner()
 	close(release)
