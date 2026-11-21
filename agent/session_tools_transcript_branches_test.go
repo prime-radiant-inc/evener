@@ -3417,10 +3417,6 @@ func TestParseReadSessionTranscriptArgsMaxBytesWithBody(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// compile to ensure no unused import
-// ---------------------------------------------------------------------------
-
 var _ = fmt.Sprintf
 
 // TestApiLogResultTranscriptPlaceholder_LegacyBucketCarriesCallTranscriptRef
