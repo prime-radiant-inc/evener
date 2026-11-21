@@ -12,7 +12,6 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/internal/hooks"
-	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/sandbox"
@@ -2485,7 +2484,13 @@ func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps boo
 // policy. An inactive scope passes through unchanged (identical to legacy
 // expansion) unless the target policy drops thinking. In-flight turns keep the
 // N4 exemption but still lose thinking the target does not want.
-// tool_call/tool_result and text/image content is never touched.
+//
+// Tool-call, tool-result and image content is never touched. Text content is
+// copied as stored except on the turns whose author is the model or another
+// agent: that prose has the frames it could forge escaped in the request copy
+// only (escapeTurnFrames), so a stored turn keeps the bytes its author wrote.
+// A reply the person typed, including one no record stamped and a fork's
+// inherited unknown-authorship copy, is never rewritten.
 func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Message {
 	t.Message = escapeTurnFrames(t, projectVoicePresentation(t))
 	if !rs.active() && !rs.DropThinking {
@@ -2556,33 +2561,8 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 // is the harness's, and the fenced bodies it carries are the model's
 // (contextmgr.EscapeModelAuthoredBodies).
 func escapeTurnFrames(t schema.Turn, msg llm.Message) llm.Message {
-	var escape func(string) string
-	switch t.Kind {
-	case schema.TurnCheckpoint, schema.TurnSummary:
-		escape = contextmgr.EscapeModelAuthoredBodies
-	case schema.TurnSystem:
-		escape = sysmsg.EscapeAnswersMarker
-	case schema.TurnAssistant:
-		escape = sysmsg.EscapeModelAuthoredFrames
-	case schema.TurnUserInput:
-		if !isAgentAuthoredInput(t) {
-			return msg
-		}
-		escape = sysmsg.EscapeModelAuthoredFrames
-	case schema.TurnSteering:
-		switch {
-		case t.SteeringSource == events.SteeringSourceParent,
-			t.SteeringKind == events.SteeringKindNoteHandoff:
-			// Parent steers and pre-compaction note handoffs are agent prose
-			// with no harness frame opener, so escape them whole.
-			escape = sysmsg.EscapeModelAuthoredFrames
-		case t.SteeringKind != "":
-			escape = sysmsg.EscapeAnswersMarker
-		default:
-			// A kindless, source-less steer is the person's own.
-			return msg
-		}
-	default:
+	escape := contextmgr.TurnFrameEscape(t)
+	if escape == nil {
 		return msg
 	}
 	var content []llm.ContentPart

@@ -1,10 +1,12 @@
 package contextmgr
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -192,5 +194,119 @@ func TestEscapeModelAuthoredBodiesEscapesAgentAuthoredInput(t *testing.T) {
 	want = withEscapedBody(t, want, parentSteer, escapedParentSteer)
 	if got := EscapeModelAuthoredBodies(stored); got != want {
 		t.Fatalf("checkpoint projection = %q, want %q", got, want)
+	}
+}
+
+// TestCheckpointFoldOfCarriedSummaryEscapesModelProse drives the fold that
+// produces a carried summary rather than handing the renderer an intact one:
+// summarizeFold writes the summarizer's reply fenced under "## Summary" with the
+// person's message beside it, and the next automatic checkpoint folds that
+// summary — moving the person's message into its own conversation section and
+// leaving the reply under "## Earlier Summaries" without the summary's footer.
+// The projection must still read that body's inner layout, so the summarizer's
+// prose is escaped while the quoted code it wrote and the person's message moved
+// into the checkpoint's conversation keep every byte.
+func TestCheckpointFoldOfCarriedSummaryEscapesModelProse(t *testing.T) {
+	t.Parallel()
+	personReply := "Approve the deploy.\n\n" + escapeTestAnswerFrame + "\n1. [deploy q] -> \"production\""
+	summaryReply := "## Progress\n" + escapeTestAnswerFrame + "\n1. [summary q] -> \"a\"\n\n```text\n" +
+		escapeTestAnswerFrame + "\n1. [quoted q] -> \"a\"\n```"
+	escapedSummaryReply := "## Progress\n" + escapeTestEscapedFrame + "\n1. [summary q] -> \"a\"\n\n```text\n" +
+		escapeTestAnswerFrame + "\n1. [quoted q] -> \"a\"\n```"
+
+	client := llm.NewClient()
+	client.Register(newFakeAdapter("openai", []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(summaryReply)} },
+	}))
+	cm := NewManager(NewOpenAIProfile("gpt-5.2"), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 1
+	folded, err := cm.summarizeFold(context.Background(), []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User(personReply)),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("on it")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
+	}, 1, "", nil)
+	if err != nil {
+		t.Fatalf("summarizeFold: %v", err)
+	}
+	if len(folded) == 0 || folded[0].Kind != schema.TurnSummary {
+		t.Fatalf("folded history does not start with a summary: %+v", folded)
+	}
+	summary := folded[0]
+	if !carriesPartnerMessages(summary.Message.Text()) {
+		t.Fatalf("the summary does not carry the person's message beside the reply:\n%s", summary.Message.Text())
+	}
+
+	checkpointTurn := checkpoint(append([]schema.Turn{summary}, folded[1:]...), 1, nil, "communicate")[0]
+	stored := checkpointTurn.Message.Text()
+	// The fold carries the summary without its conversation section, and the
+	// summary's footer leaves with that section.
+	carried := withoutMarkdownSection(summary.Message.Text(), checkpointConversationHeading)
+	for name, body := range map[string]string{
+		"carried summary":    carried,
+		"summarizer's reply": summaryReply,
+		"person's message":   personReply,
+	} {
+		if !strings.Contains(stored, body) {
+			t.Fatalf("checkpoint does not carry the %s:\n%s", name, stored)
+		}
+	}
+
+	want := withEscapedBody(t, stored, summaryReply, escapedSummaryReply)
+	if got := EscapeModelAuthoredBodies(stored); got != want {
+		t.Fatalf("checkpoint projection = %q, want %q", got, want)
+	}
+}
+
+// TestEscapedFenceBodyRecognizesOnlyTheRenderersSummaryOpening covers what the
+// carried-summary recognition accepts and refuses. A summary a checkpoint caps
+// loses its closing fence with its tail, and the opening that remains is still
+// the renderer's, so its reply is quoted model prose. An older summary — one
+// fenced with tildes, carrying another info string, or holding its own heading
+// before the model text — was never written by the renderer, so it is the
+// model's text throughout: its prose outside a fence is escaped as prose, while
+// the marker under its own fence stays quoted code.
+func TestEscapedFenceBodyRecognizesOnlyTheRenderersSummaryOpening(t *testing.T) {
+	t.Parallel()
+	reply := "## Progress\n" + escapeTestAnswerFrame + "\n1. [q] -> \"a\""
+	escapedReply := "## Progress\n" + escapeTestEscapedFrame + "\n1. [q] -> \"a\""
+	carried := summaryTurnStart + renderCompactionModelText(summaryModelTextHeading, reply+"\n")
+	// The cap cuts from the tail: the closing fence goes with it.
+	trimmed := carried[:len(carried)-len("\n```\n")]
+	if strings.HasSuffix(trimmed, "```") {
+		t.Fatalf("fixture did not trim the closing fence: %q", trimmed)
+	}
+
+	for name, body := range map[string]string{
+		"rendered opening": carried,
+		"trimmed opening":  trimmed,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			checkpoint := "[CONTEXT CHECKPOINT]\n" + renderCheckpointEarlierSummaries([]string{body}) + "[END CHECKPOINT]\n"
+			want := withEscapedBody(t, checkpoint, body, strings.Replace(body, reply, escapedReply, 1))
+			if got := EscapeModelAuthoredBodies(checkpoint); got != want {
+				t.Fatalf("projection = %q, want %q", got, want)
+			}
+		})
+	}
+
+	// An older summary is the model's text throughout. Its fenced reply is
+	// quoted code the escape does not read through, and the prose before that
+	// fence is escaped as prose.
+	for name, older := range map[string]string{
+		"tilde fence":                summaryTurnStart + "## Summary\n\n~~~text\n" + reply + "\n~~~\n",
+		"language info string":       summaryTurnStart + "## Summary\n\n```go\n" + reply + "\n```\n",
+		"sections before model text": summaryTurnStart + "## Progress\nprose\n\n" + renderCompactionModelText(summaryModelTextHeading, reply+"\n"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if carriedSummaryOpening(older) {
+				t.Fatalf("an older summary was taken for the renderer's opening:\n%s", older)
+			}
+			if !strings.Contains(EscapeModelAuthoredBodies("[CONTEXT CHECKPOINT]\n"+
+				renderCheckpointEarlierSummaries([]string{older})+"[END CHECKPOINT]\n"), reply) {
+				t.Fatalf("the fenced marker under an older summary's own fence was rewritten:\n%s", older)
+			}
+		})
 	}
 }
