@@ -120,9 +120,11 @@ type IntentStated struct {
 // settled stop ended the user-stop quiet on this delegate's pending rows. The
 // quiet itself is in-memory, so without this record a cold restore cannot tell
 // a stop whose quiet is still current from one a newer event already released.
-// Generation names the settled generation whose stop the release superseded: a
-// release may be journaled later for a delivery admitted at that generation,
-// and the fold accepts any nonzero sample at or below the latest settled one.
+// Generation is the newest settled generation at admission: the sample the
+// release covers, carried unchanged by a wake or an earlier delivery
+// acknowledgment. A release may be journaled later, and the fold accepts any
+// nonzero sample at or below the latest settled one, covering every eligible
+// attention-stop hold through it.
 type AttentionHoldReleased struct {
 	Generation uint64 `json:"generation"`
 }
