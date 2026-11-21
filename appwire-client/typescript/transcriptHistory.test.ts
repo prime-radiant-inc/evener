@@ -1301,6 +1301,142 @@ test("a read still naming an ended wait's stamp does not resurrect it", () => {
   expect(after.quotaWaitEndedStamp).toBe(5);
 });
 
+// The held state issue #6936 reports: boot generation "1" has a stamped quota
+// wait (stamp 5) that its zero-delay wake already ended, so the model carries
+// the retirement marker into whatever read applies next.
+function endedQuotaWaitOnBootOne(): ThreadModel {
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  let model = hydrateThread(
+    {
+      thread: testThread({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } }),
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+    },
+    "ref_t",
+    1000,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: 21_600_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 0,
+        waitStartedAt: 5,
+        resumesAt: deadline,
+      },
+    },
+    1500,
+  );
+  return applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: 0,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 0,
+        waitStartedAt: 5,
+      },
+    },
+    1600,
+  );
+}
+
+// Issue #6936: the first accepted read after a daemon restart can already
+// show the new boot's wait. The merge spreads the reconciliation's fields
+// over the held model, and nothing in the read names the previous boot's
+// retirement marker, so the marker must be cleared explicitly or it outlives
+// the runtime that minted it and hides the new boot's later waits.
+test("a boot-restart read that installs the new boot's first wait clears the previous boot's retirement marker", () => {
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  const model = endedQuotaWaitOnBootOne();
+  expect(model.history?.bootGeneration).toBe("1");
+  expect(model.quotaWaitEndedStamp).toBe(5);
+
+  const restarted = testThread({
+    status: { type: "active" },
+    evener: {
+      activeTurnId: "turn_1",
+      failure: { title: "Usage limit reached", resumesAt: deadline, waitStartedAt: 1 },
+    },
+  });
+  const after = applyReadResponse(model, { thread: restarted, bootGeneration: "2" }, 2000);
+
+  expect(after.quotaWaitStartedAt).toBe(1);
+  expect(after.quotaWaitEndedStamp).toBeUndefined();
+});
+
+// The same hazard through applyReadModel, where the runtime change is the
+// instance id (a restored delegate behind a new daemon) rather than the boot
+// generation. The fresh hydrated read names boot generation "1" too, so only
+// the instance comparison can void the previous runtime's marker.
+test("a read that installs a new instance's first wait clears the previous instance's retirement marker", () => {
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  const held: ThreadModel = { ...endedQuotaWaitOnBootOne(), instanceId: "a" };
+  expect(held.quotaWaitEndedStamp).toBe(5);
+
+  const restarted = testThread({
+    status: { type: "active" },
+    evener: {
+      activeTurnId: "turn_1",
+      failure: { title: "Usage limit reached", resumesAt: deadline, waitStartedAt: 1 },
+    },
+  });
+  const fresh: ThreadModel = {
+    ...hydrateThread(
+      { thread: restarted, bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 } },
+      "ref_t",
+      2000,
+    ),
+    instanceId: "b",
+  };
+  const after = applyReadModel(held, fresh);
+
+  expect(after.quotaWaitStartedAt).toBe(1);
+  expect(after.quotaWaitEndedStamp).toBeUndefined();
+});
+
+// The other side of #6936: a same-runtime read that installs a newer wait
+// must keep the retirement marker. The marker refuses a later delayed read
+// that still names an ended wait, and it orders only the stamps of the
+// runtime that minted it.
+test("a same-runtime read that installs a newer wait keeps the retirement marker", () => {
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  const model = endedQuotaWaitOnBootOne();
+  expect(model.quotaWaitEndedStamp).toBe(5);
+
+  const sameRuntime = testThread({
+    status: { type: "active" },
+    evener: {
+      activeTurnId: "turn_1",
+      failure: { title: "Usage limit reached", resumesAt: deadline, waitStartedAt: 7 },
+    },
+  });
+  const after = applyReadResponse(
+    model,
+    { thread: sameRuntime, bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 } },
+    2000,
+  );
+
+  expect(after.quotaWaitStartedAt).toBe(7);
+  expect(after.quotaWaitEndedStamp).toBe(5);
+});
+
 // A mid-wait read refreshes the instant and keeps everything the live
 // announcement gave the chip — the read carries no chip metadata of its own,
 // so the model tag, elapsed sample, and receipt instant survive the refresh
