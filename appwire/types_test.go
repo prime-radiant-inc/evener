@@ -87,13 +87,6 @@ func TestThreadResumeParamsRemainSelectionFree(t *testing.T) {
 	if strings.Contains(string(raw), "enabledPlugins") || strings.Contains(string(raw), "launchOverrides") {
 		t.Fatalf("resume wire gained launch selection fields: %s", raw)
 	}
-	var picked ThreadResumeParams
-	if err := json.Unmarshal([]byte(`{"ref":"local:session","modelProvider":"fake","model":"fake-switch-target"}`), &picked); err != nil {
-		t.Fatal(err)
-	}
-	if picked.ModelProvider != "fake" || picked.Model != "fake-switch-target" {
-		t.Fatalf("model pick round trip = %+v", picked)
-	}
 }
 
 func TestArchiveResponseNavigationDeferredWireShape(t *testing.T) {

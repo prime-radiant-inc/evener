@@ -255,13 +255,15 @@ func TestHubRPCThreadReasoningEffortSetReachesSubscriberAfterColdModelSet(t *tes
 	}
 }
 
-// TestHubRPCThreadModelSetCarriesReasoningProfileToColdSubscriber pins the
-// profile half of a cold model switch: the resumed daemon's thread/model/changed
-// carries ReasoningEffortLevels and SupportsReasoning, and the web footer needs
-// that frame to show or hide the effort control for the new model. Without a
-// relay on the resumed daemon the frame is lost, so switching from a
-// non-reasoning model to a reasoning one leaves the control hidden.
-func TestHubRPCThreadModelSetCarriesReasoningProfileToColdSubscriber(t *testing.T) {
+// TestHubRPCThreadModelSetResumesOnThePickedProfile pins the cold fold's
+// startup contract: the pick rides the resume the hub launches, so the
+// resumed session serves the picked model's reasoning profile — the data the
+// web footer needs to show or hide the effort control — and no second
+// model/set runs against the fresh service to deliver it. The delivery to a
+// pane subscribed while the session was cold (the relay's resync, then the
+// pane's re-read) is pinned end-to-end against a real daemon by
+// TestE2E_ModelSwitchOnColdSessionReachesTheResumedSubscriber.
+func TestHubRPCThreadModelSetResumesOnThePickedProfile(t *testing.T) {
 	root := t.TempDir()
 	workingDir := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
@@ -272,42 +274,33 @@ func TestHubRPCThreadModelSetCarriesReasoningProfileToColdSubscriber(t *testing.
 	}
 
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
-	var supportsReasoning atomic.Bool
-	supportsReasoning.Store(false)
+	sets := make(chan appwire.ThreadModelSetParams, 1)
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
-			ID:        sessionID,
-			SessionID: sessionID,
-			Source:    "local",
+			ID:            sessionID,
+			SessionID:     sessionID,
+			Source:        "local",
+			ModelProvider: "gpt-6-luna",
 			Evener: appwire.EvenerThread{
 				Ref:                   params.Ref,
 				Capabilities:          appwire.ThreadCapabilities{ChangeModel: true},
-				ReasoningEffortLevels: nil,
-				SupportsReasoning:     supportsReasoning.Load(),
+				ReasoningEffortLevels: []string{"low", "medium", "high", "xhigh", "max"},
+				SupportsReasoning:     true,
 			},
 		}}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadModelSet, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
-		if params.Model != "gpt-6-luna" {
-			return appwire.EmptyResponse{}, nil
-		}
-		supportsReasoning.Store(true)
-		daemon.BroadcastAll(appwire.NotifyThreadModelChanged, appwire.ThreadModelChangedParams{
-			ThreadID:              sessionID,
-			Ref:                   "local:" + sessionID,
-			ModelProvider:         "openai-codex",
-			Model:                 params.Model,
-			ReasoningEffortLevels: []string{"low", "medium", "high", "xhigh", "max"},
-			SupportsReasoning:     true,
-		})
+		sets <- params
 		return appwire.EmptyResponse{}, nil
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
 	defer daemonHTTP.Close()
 
 	runDir := t.TempDir()
+	launched := make(chan hubcore.ResumeRequest, 1)
 	spawner := &fakeRPCSpawner{
-		resume: func(_ context.Context, _ hubcore.ResumeRequest) (rendezvous.Entry, error) {
+		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			launched <- req
 			entry := rendezvous.Entry{
 				PID:        106,
 				Protocol:   appwire.ProtocolVersion,
@@ -328,15 +321,6 @@ func TestHubRPCThreadModelSetCarriesReasoningProfileToColdSubscriber(t *testing.
 	defer client.Close()
 
 	mustInitializeHubClient(t, client)
-	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, Subscribe: true}); err != nil {
-		t.Fatalf("thread/read subscribe on the cold session: %v", err)
-	}
-	notifications := make(chan appwire.Notification, 32)
-	go func() {
-		for notification := range client.Notifications() {
-			notifications <- notification
-		}
-	}()
 
 	if err := client.ThreadModelSet(context.Background(), appwire.ThreadModelSetParams{
 		Ref:           "local:" + sessionID,
@@ -345,28 +329,30 @@ func TestHubRPCThreadModelSetCarriesReasoningProfileToColdSubscriber(t *testing.
 	}); err != nil {
 		t.Fatalf("ThreadModelSet on the cold session: %v", err)
 	}
+	var req hubcore.ResumeRequest
+	select {
+	case req = <-launched:
+	default:
+		t.Fatal("the cold model pick launched no resume")
+	}
+	if req.Provider != "openai-codex" || req.ModelOverride != "openai-codex/gpt-6-luna" || req.Resolved.Effective.Model != "openai-codex/gpt-6-luna" {
+		t.Fatalf("resume request pick: provider=%q override=%q effective=%q", req.Provider, req.ModelOverride, req.Resolved.Effective.Model)
+	}
 
-	deadline := time.After(10 * time.Second)
-	for {
-		select {
-		case notification := <-notifications:
-			if notification.Method != appwire.NotifyThreadModelChanged {
-				continue
-			}
-			var params appwire.ThreadModelChangedParams
-			if err := json.Unmarshal(notification.Params, &params); err != nil {
-				t.Fatalf("decode thread/model/changed: %v", err)
-			}
-			if params.Model != "gpt-6-luna" {
-				continue
-			}
-			if !params.SupportsReasoning || len(params.ReasoningEffortLevels) == 0 {
-				t.Fatalf("model-changed profile = %+v, want the reasoning ladder", params)
-			}
-			return
-		case <-deadline:
-			t.Fatal("thread/model/changed never reached the subscriber that attached while the session was cold")
-		}
+	read, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID})
+	if err != nil {
+		t.Fatalf("thread/read after the cold model pick: %v", err)
+	}
+	if read.Thread.ModelProvider != "gpt-6-luna" {
+		t.Fatalf("thread/read model after the cold model pick = %q, want gpt-6-luna", read.Thread.ModelProvider)
+	}
+	if !read.Thread.Evener.SupportsReasoning || len(read.Thread.Evener.ReasoningEffortLevels) == 0 {
+		t.Fatalf("read profile = %+v, want the reasoning ladder for the picked model", read.Thread.Evener)
+	}
+	select {
+	case params := <-sets:
+		t.Fatalf("the resumed daemon took a second model/set: %+v", params)
+	default:
 	}
 }
 

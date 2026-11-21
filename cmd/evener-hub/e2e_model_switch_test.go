@@ -167,13 +167,14 @@ func TestE2E_ModelSwitchOnColdSessionReachesTheResumedSubscriber(t *testing.T) {
 	}
 }
 
-// TestE2E_ResumeWithModelStartsTheSessionOnIt pins the pick-is-the-resume
-// contract end to end against a real daemon: a stopped session resumed with a
-// model comes up already on it at session start, with no post-resume
-// thread/model/set to race the fresh service (issue #6696's shape). An invalid
-// model refuses the whole resume, so the session stays down rather than
+// TestE2E_ModelSetOnColdSessionStartsItOnThePick pins the cold model/set
+// contract end to end against a real daemon: a set on a stopped session folds
+// its pick into the resume the hub launches for it, so the session comes up
+// already on the picked model at session start, with no post-resume
+// thread/model/set to race the fresh service (issue #6696's shape). An
+// invalid model refuses the whole set, so the session stays down rather than
 // silently starting on its old model.
-func TestE2E_ResumeWithModelStartsTheSessionOnIt(t *testing.T) {
+func TestE2E_ModelSetOnColdSessionStartsItOnThePick(t *testing.T) {
 	stack, provider := startE2EHubStack(t)
 	provider.AdvertiseModels(fakellm.ModelID, fakellm.SwitchTargetID)
 
@@ -227,14 +228,14 @@ func TestE2E_ResumeWithModelStartsTheSessionOnIt(t *testing.T) {
 		return !still
 	})
 
-	// An invalid model refuses the whole resume: the session stays down and
-	// the refusal names the pick, not a silent start on the old model.
-	if _, err := clientRequest[appwire.ThreadResumeResponse](ctx, client, appwire.MethodThreadResume, appwire.ThreadResumeParams{
+	// An invalid model refuses the whole set: the session stays down and the
+	// refusal names the pick, not a silent start on the old model.
+	if _, err := clientRequest[appwire.EmptyResponse](ctx, client, appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
 		Ref:           ref,
 		ModelProvider: "fake",
 		Model:         "no-such-model",
 	}); err == nil {
-		t.Fatal("resume with an unlisted model succeeded, want the whole resume refused")
+		t.Fatal("model/set with an unlisted model on the cold session succeeded, want the whole set refused")
 	}
 	read, err := clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref})
 	if err != nil {
@@ -244,25 +245,21 @@ func TestE2E_ResumeWithModelStartsTheSessionOnIt(t *testing.T) {
 		t.Fatalf("after the refused pick the session is %q, want it still down", read.Thread.Status.Type)
 	}
 
-	// The pick IS the resume: the session comes up already on the new model,
-	// and no thread/model/set follows it.
-	resumed, err := clientRequest[appwire.ThreadResumeResponse](ctx, client, appwire.MethodThreadResume, appwire.ThreadResumeParams{
+	// The pick folds into the set's own resume: the session comes up already
+	// on the new model, and no second thread/model/set follows it.
+	if _, err := clientRequest[appwire.EmptyResponse](ctx, client, appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
 		Ref:           ref,
 		ModelProvider: "fake",
 		Model:         fakellm.SwitchTargetID,
-	})
-	if err != nil {
-		t.Fatalf("thread/resume with the picked model: %v", err)
-	}
-	if resumed.Thread.ModelProvider != fakellm.SwitchTargetID {
-		t.Fatalf("resumed thread model=%q, want %q at session start", resumed.Thread.ModelProvider, fakellm.SwitchTargetID)
+	}); err != nil {
+		t.Fatalf("thread/model/set with the picked model on the cold session: %v", err)
 	}
 	read, err = clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref})
 	if err != nil {
-		t.Fatalf("thread/read after the resume-with-model: %v", err)
+		t.Fatalf("thread/read after the cold model/set: %v", err)
 	}
 	if read.Thread.ModelProvider != fakellm.SwitchTargetID {
-		t.Fatalf("thread/read after the resume-with-model model=%q, want %q", read.Thread.ModelProvider, fakellm.SwitchTargetID)
+		t.Fatalf("thread/read after the cold model/set model=%q, want %q", read.Thread.ModelProvider, fakellm.SwitchTargetID)
 	}
 }
 

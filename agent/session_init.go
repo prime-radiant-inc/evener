@@ -1497,6 +1497,16 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// meta is the only place a header that carries no prompt can record the one
 	// this session renders, so a later restore does not re-render from live inputs.
 	s.persistFallbackPrompt = persistFallbackPrompt
+	// A resume that starts the session on a different model than it persisted
+	// re-decides the saved fallback list the way a mid-session switch does:
+	// entries that no longer validate against the picked profile drop per
+	// entry, before initSessionState's all-or-nothing check can strand a valid
+	// pick. An ordinary resume revalidates nothing and keeps the strict check.
+	if meta.ProfileID != profile.ID() || meta.Model != profile.Model() {
+		s.mu.Lock()
+		s.revalidateModelFallbacksLocked()
+		s.mu.Unlock()
+	}
 	promptSources, err := s.initSessionState(cfg.SessionStartKind, !restoreCfg.deferRestoreSideEffects, restoredPrompt)
 	if err != nil {
 		return nil, err

@@ -69,3 +69,44 @@ func TestRestoreSession_SanitizesReasoningEffort(t *testing.T) {
 		})
 	}
 }
+
+// TestRestoreSessionWithModelChange_RevalidatesFallbacksPerEntry pins the
+// resume-with-a-different-model fallback contract: the saved list was
+// validated against a model the session no longer runs, so the same
+// per-entry revalidation a mid-session switch applies runs before the
+// all-or-nothing startup check — compatible entries stay, incompatible ones
+// drop, and a valid pick no longer strands the session. An ordinary resume
+// (the persisted model unchanged) keeps the strict all-or-nothing validation.
+func TestRestoreSessionWithModelChange_RevalidatesFallbacksPerEntry(t *testing.T) {
+	t.Parallel()
+	c := llm.NewClient()
+
+	changed := schema.SessionMeta{
+		ID:        "01RESTOREMODELFB0000001",
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config: schema.ConfigSnapshot{
+			ModelFallbacks: []string{"openai/gpt-4o-mini", "anthropic/claude-haiku-test"},
+		},
+	}
+	restored, err := RestoreSessionFromMetaWithConfig(c, withTestSessionNamer(c, newAnthropicProfile("claude-pick")), execenv.NewLocalExecutionEnvironment(t.TempDir()), changed, RestoreSessionConfig{})
+	if err != nil {
+		t.Fatalf("restore with an explicit model change: %v", err)
+	}
+	defer restored.Close()
+	if got := restored.cfg.ModelFallbacks; len(got) != 1 || got[0] != "anthropic/claude-haiku-test" {
+		t.Fatalf("restored model_fallbacks = %v, want only the compatible anthropic/claude-haiku-test", got)
+	}
+
+	ordinary := schema.SessionMeta{
+		ID:        "01RESTOREMODELFB0000002",
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config: schema.ConfigSnapshot{
+			ModelFallbacks: []string{"anthropic/claude-haiku-test"},
+		},
+	}
+	if _, err := RestoreSessionFromMetaWithConfig(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), ordinary, RestoreSessionConfig{}); err == nil {
+		t.Fatal("ordinary restore accepted a cross-surface fallback, want the strict all-or-nothing validation")
+	}
+}

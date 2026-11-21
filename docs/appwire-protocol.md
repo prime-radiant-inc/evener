@@ -214,7 +214,7 @@ no router (reserved).
 | `evener/thread/history/turns/list` | both | [ThreadTurnsListParams](#threadturnslistparams) | [ThreadHistoryTurnsListResponse](#threadhistoryturnslistresponse) | Pages history with serving facts and the whole served view's execution frontier, not the page's newest item. |
 | `thread/turns/items/list` | unimplemented | [ThreadTurnItemsListParams](#threadturnitemslistparams) | [ThreadTurnItemsListResponse](#threadturnitemslistresponse) | Codex-parity: paginated items for one turn. Experimental even in Codex (returns method-not-supported) and served by no evener router. |
 | `thread/start` | hub | [ThreadStartParams](#threadstartparams) | [ThreadStartResponse](#threadstartresponse) | Starts a new thread and attaches a live-update relay. |
-| `thread/resume` | hub | [ThreadResumeParams](#threadresumeparams) | [ThreadResumeResponse](#threadresumeresponse) | Resumes an existing session and attaches its relay. Model and modelProvider, named together, start the resumed session on that model: it comes up already on it, and an invalid model refuses the whole resume. |
+| `thread/resume` | hub | [ThreadResumeParams](#threadresumeparams) | [ThreadResumeResponse](#threadresumeresponse) | Resumes an existing session and attaches its relay. |
 | `thread/fork` | hub | [ThreadForkParams](#threadforkparams) | [ThreadForkResponse](#threadforkresponse) | Forks a thread from a source item (sourceItemKey), either replacing the turn with edited input or deferring the original input back to the client for editing (deferInput, mutually exclusive with editedInput). With `aside: true` (local evener threads only; mutually exclusive with sourceItemKey/editedInput/deferInput/label), forks the session at its tip into a side thread that inherits the parent's permissions and config. |
 | `thread/clear` | both | [ThreadClearParams](#threadclearparams) | [ThreadClearResponse](#threadclearresponse) | Clears the thread's conversation when no turn, queued, or approval work is unresolved. |
 | `thread/model/set` | both | [ThreadModelSetParams](#threadmodelsetparams) | [EmptyResponse](#emptyresponse) | Changes the session's model/provider. |
@@ -5039,8 +5039,6 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `ref` | string | yes |  |
 | `sessionId` | string | yes |  |
-| `modelProvider` | string | yes |  |
-| `model` | string | yes |  |
 
 
 ### `ThreadResumeResponse`

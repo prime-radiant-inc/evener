@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -271,96 +272,192 @@ func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
 	}
 }
 
-// TestHubRPCThreadResumePassesModelPickToLaunch pins the pick-is-the-resume
-// contract: the model a cold pick names reaches the launch as the model the
-// resumed daemon starts on, so the session never comes up on the model the
-// pick was replacing.
-func TestHubRPCThreadResumePassesModelPickToLaunch(t *testing.T) {
-	resumed := appwire.Thread{ID: "th_resumed", SessionID: "th_resumed", Evener: appwire.EvenerThread{Ref: "local:th_resumed"}}
+// TestHubRPCModelSetOnColdSessionFoldsPickIntoResume pins the cold model/set
+// contract: a set that finds the session exited folds its pick into the
+// resume it launches, so the session starts on the picked model and no
+// second model/set runs against the fresh service (#6696's shape).
+func TestHubRPCModelSetOnColdSessionFoldsPickIntoResume(t *testing.T) {
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
+
+	var sets atomic.Int32
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
-	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
-		return appwire.ThreadListResponse{Data: []appwire.Thread{resumed}}, nil
-	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		return appwire.ThreadReadResponse{Thread: resumed}, nil
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{
+			Ref:          params.Ref,
+			Capabilities: appwire.ThreadCapabilities{ChangeModel: true},
+		}}}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadModelSet, func(context.Context, appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+		sets.Add(1)
+		return appwire.EmptyResponse{}, nil
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
 	defer daemonHTTP.Close()
 
-	var launched *hubcore.ResumeRequest
 	runDir := t.TempDir()
+	// The launcher runs on the WebSocket worker; the buffered channel hands
+	// the captured request to the test goroutine after the RPC reply, so the
+	// read never races the write.
+	launched := make(chan hubcore.ResumeRequest, 1)
 	spawner := &fakeRPCSpawner{
-		resume: func(ctx context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
-			captured := req
-			launched = &captured
+		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			launched <- req
 			entry := rendezvous.Entry{
-				PID:       os.Getpid(),
-				Protocol:  appwire.ProtocolVersion,
-				Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
-				SourceID:  "local",
-				ThreadID:  "th_resumed",
-				SessionID: "th_resumed",
+				PID:        112,
+				Protocol:   appwire.ProtocolVersion,
+				Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
+				SourceID:   "local",
+				ThreadID:   sessionID,
+				SessionID:  sessionID,
+				WorkingDir: workingDir,
 			}
 			writeRendezvous(t, runDir, entry)
 			return entry, nil
 		},
 	}
-
-	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner}))
+	roster := hubcore.NewRoster(runDir, nil)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
-	if _, err := appwiretest.ThreadResume(context.Background(), client, appwire.ThreadResumeParams{
-		Session:       "sess_old",
+	var out appwire.EmptyResponse
+	if err := client.Request(context.Background(), appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
+		Ref:           "local:" + sessionID,
 		ModelProvider: "fake",
 		Model:         "fake-switch-target",
-	}); err != nil {
-		t.Fatalf("ThreadResume with a model pick: %v", err)
+	}, &out); err != nil {
+		t.Fatalf("thread/model/set on the cold session: %v", err)
 	}
-	if launched == nil {
-		t.Fatal("the resume never launched")
+	var launchedReq hubcore.ResumeRequest
+	select {
+	case launchedReq = <-launched:
+	default:
+		t.Fatal("the cold model/set never launched a resume")
 	}
-	if launched.Provider != "fake" {
-		t.Errorf("launch provider=%q, want the pick's instance fake", launched.Provider)
+	if launchedReq.SessionID != sessionID {
+		t.Errorf("launch session=%q, want the resumed session %s", launchedReq.SessionID, sessionID)
 	}
-	if launched.ModelOverride != "fake/fake-switch-target" {
-		t.Errorf("launch model override=%q, want fake/fake-switch-target", launched.ModelOverride)
+	if launchedReq.Provider != "fake" {
+		t.Errorf("launch provider=%q, want the pick's instance fake", launchedReq.Provider)
 	}
-	if launched.Resolved.Effective.Model != "fake/fake-switch-target" {
-		t.Errorf("launch effective model=%q, want the credential gate to judge fake/fake-switch-target", launched.Resolved.Effective.Model)
+	if launchedReq.ModelOverride != "fake/fake-switch-target" {
+		t.Errorf("launch model override=%q, want fake/fake-switch-target", launchedReq.ModelOverride)
+	}
+	if launchedReq.Resolved.Effective.Model != "fake/fake-switch-target" {
+		t.Errorf("launch effective model=%q, want the credential gate to judge fake/fake-switch-target", launchedReq.Resolved.Effective.Model)
+	}
+	if got := sets.Load(); got != 0 {
+		t.Fatalf("the resumed daemon took %d model/set calls, want none: the pick applied at session start", got)
 	}
 }
 
-// TestHubRPCThreadResumeValidatesModelPick pins the wire contract that the
-// model pair is named together: a half-specified pick is refused before any
-// lock is taken or a child is launched, so a malformed pick can never resume
-// a session onto an ambiguous model identity.
-func TestHubRPCThreadResumeValidatesModelPick(t *testing.T) {
-	for name, params := range map[string]appwire.ThreadResumeParams{
-		"model without provider": {Session: "sess_old", Model: "fake-switch-target"},
-		"provider without model": {Session: "sess_old", ModelProvider: "fake"},
+// TestHubRPCModelSetOnColdSessionRefusesHalfSpecifiedPick pins that the cold
+// fold refuses a pick naming only one of model/modelProvider before any child
+// starts: a half-specified pick names no unambiguous model identity, so it
+// must never resume a session onto a guess.
+func TestHubRPCModelSetOnColdSessionRefusesHalfSpecifiedPick(t *testing.T) {
+	for name, setParams := range map[string]appwire.ThreadModelSetParams{
+		"model without provider": {Model: "fake-switch-target"},
+		"provider without model": {ModelProvider: "fake"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			launched := false
-			runDir := t.TempDir()
+			root := t.TempDir()
+			stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+			sessionID := buildRPCParentSession(t, stateDir)
+			past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
+			var launched atomic.Bool
 			spawner := &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
-				launched = true
-				return rendezvous.Entry{}, errors.New("malformed pick reached the launcher")
+				launched.Store(true)
+				return rendezvous.Entry{}, errors.New("half-specified pick reached the launcher")
 			}}
-			hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, ResumeLocks: hubcore.NewResumeLocks()}))
+			hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: t.TempDir(), Spawner: spawner, ResumeLocks: hubcore.NewResumeLocks(), Past: past})
 			defer hub.Close()
 			client := dialHubRPCInitialized(t, hub)
-			_, err := appwiretest.ThreadResume(context.Background(), client, params)
+			var out appwire.EmptyResponse
+			err := client.Request(context.Background(), appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
+				Ref:           "local:" + sessionID,
+				ModelProvider: setParams.ModelProvider,
+				Model:         setParams.Model,
+			}, &out)
 			if err == nil {
-				t.Fatal("malformed model pick resumed, want a refusal")
+				t.Fatal("half-specified pick on a cold session succeeded, want a refusal")
 			}
 			var wire appwire.WireError
 			if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
-				t.Fatalf("malformed pick error=%v, want an invalid-params refusal", err)
+				t.Fatalf("half-specified pick error=%v, want an invalid-params refusal", err)
 			}
-			if launched {
-				t.Fatal("malformed pick launched a child")
+			if launched.Load() {
+				t.Fatal("half-specified pick launched a child")
 			}
 		})
+	}
+}
+
+// TestHubRPCModelSetPickOverLiveOwnerConflicts pins the race the fold cannot
+// satisfy: the direct set found the session unavailable, but by the time the
+// fold's resume runs another caller has already started it. The pick is a
+// start-time property — a resume that starts no session cannot apply it — so
+// the set refuses with a conflict instead of silently leaving the session on
+// the old model or running a post-resume set against the fresh service.
+func TestHubRPCModelSetPickOverLiveOwnerConflicts(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSession(t, stateDir)
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
+
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+		return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: sessionID, SessionID: sessionID, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}}}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}, Evener: appwire.EvenerThread{
+			Ref:          "local:" + sessionID,
+			Capabilities: appwire.ThreadCapabilities{ChangeModel: true},
+		}}}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadModelSet, func(context.Context, appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+		// The direct attempt fails the way a session service that just closed
+		// does, sending the set down the cold path while the roster still
+		// lists this daemon as the live owner.
+		return appwire.EmptyResponse{}, appwire.SessionUnavailable("session service is closed")
+	})
+	peer := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer peer.Close()
+	runDir := t.TempDir()
+	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       os.Getpid(),
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + strings.TrimPrefix(peer.URL, "http"),
+		SourceID:  "local",
+		ThreadID:  sessionID,
+		SessionID: sessionID,
+	})
+	roster.Refresh()
+	if _, ok := roster.Find(sessionID); !ok {
+		t.Fatal("owner was not confirmed live")
+	}
+	spawner := &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+		return rendezvous.Entry{}, errors.New("the fold must not launch over a live owner")
+	}}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, ResumeLocks: hubcore.NewResumeLocks(), Past: past})
+	defer hub.Close()
+	client := dialHubRPCInitialized(t, hub)
+	var out appwire.EmptyResponse
+	err := client.Request(context.Background(), appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
+		Ref:           "local:" + sessionID,
+		ModelProvider: "fake",
+		Model:         "fake-switch-target",
+	}, &out)
+	if err == nil {
+		t.Fatal("model pick over a live owner succeeded, want a conflict refusal")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+		t.Fatalf("model pick over a live owner error=%v, want a conflict refusal", err)
 	}
 }
 
@@ -529,22 +626,6 @@ func TestHubRPCThreadResumeVerifiesExistingOwnerWhenDiscoveryFails(t *testing.T)
 				}
 				if response.Thread.ID != sessionID {
 					t.Fatalf("thread=%+v", response.Thread)
-				}
-				// A model pick rides only a resume that starts the session: a
-				// resume that finds a live owner has no session start to apply
-				// the model at, so the pick is refused rather than silently
-				// dropped.
-				_, pickErr := appwiretest.ThreadResume(context.Background(), client, appwire.ThreadResumeParams{
-					Session:       sessionID,
-					ModelProvider: "fake",
-					Model:         "fake-switch-target",
-				})
-				if pickErr == nil {
-					t.Fatal("model pick over a live owner resumed, want a conflict refusal")
-				}
-				var pickWire appwire.WireError
-				if !errors.As(pickErr, &pickWire) || pickWire.Code != appwire.CodeConflict {
-					t.Fatalf("model pick over a live owner error=%v, want a conflict refusal", pickErr)
 				}
 			} else if err == nil {
 				t.Fatal("resume succeeded without a verified owner")
