@@ -158,16 +158,14 @@ func (s *Session) resolveDelegateRestoreProfileRef(base *provider.Profile, profi
 
 func (s *Session) sandboxHostFacts() sandbox.HostFacts {
 	if s == nil {
-		return sandbox.RealProber{SessionPATH: execenv.LoginShellPATH()}.Probe()
+		return sandbox.RealProber{}.Probe()
 	}
 	s.sandboxHostFactsOnce.Do(func() {
 		if s.cfg.testOnly.sandboxProber != nil {
 			s.sandboxHostFactsValue = s.cfg.testOnly.sandboxProber.Probe()
 			return
 		}
-		// The Go toolchain grant must cover the go spawned commands resolve,
-		// and those run with the login-shell PATH rather than the daemon's.
-		s.sandboxHostFactsValue = sandbox.RealProber{SessionPATH: execenv.LoginShellPATH()}.Probe()
+		s.sandboxHostFactsValue = sandbox.RealProber{}.Probe()
 	})
 	return s.sandboxHostFactsValue
 }

@@ -11,6 +11,21 @@ import (
 	"primeradiant.com/evener/agent/sandbox"
 )
 
+// WithGoToolchainGrant fills the session's Go toolchain grant: the GOROOT roots
+// of the go the environment's login-shell PATH selects, which is the PATH
+// spawned commands run with. The daemon-level host probe cannot see those
+// entries, so every sandbox provisioning path applies this before resolving;
+// worktree is the tree the grant is discovered against, so a launcher it
+// controls is never executed. An env without a login PATH keeps the host-fact
+// fallback (the daemon PATH and the standard install prefixes).
+func WithGoToolchainGrant(host sandbox.HostFacts, env *execenv.LocalExecutionEnvironment, worktree string) sandbox.HostFacts {
+	if env == nil || env.LoginPATH == "" {
+		return host
+	}
+	host.GoToolchainRoots, host.GoToolchainGoBin = sandbox.ProbeGoToolchain(env.LoginPATH, worktree)
+	return host
+}
+
 // SessionInfraRoots returns the session's hook and MCP-server paths: the read/
 // exec roots a sandboxed session needs so its SessionStart (and every other) hook
 // script and its stdio MCP-server programs can actually run. Ruled 2026-08-06:
