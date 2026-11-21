@@ -1,6 +1,6 @@
 import type { AnyNotification, ThreadReadResponse } from "@evener/appwire-client";
 import { makeTranscriptDisplayConfig, WireError } from "@evener/appwire-client";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
@@ -476,6 +476,21 @@ test("falls back to the navigation location title as the header when no thread n
   );
 
   await waitFor(() => expect(screen.getByText("Fix the flaky CI job")).toBeTruthy());
+});
+
+test("session inspection actions occupy the desktop pane header", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_header_actions"));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_header_actions" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  const actions = await screen.findByTestId("pane-actions");
+  await waitFor(() => expect(within(actions).getByRole("button", { name: "Find in session" })).toBeTruthy());
+  expect(within(actions).getByRole("button", { name: "Overview" })).toBeTruthy();
 });
 
 // An empty transcript is two different situations wearing one face, and the

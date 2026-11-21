@@ -82,6 +82,8 @@ export interface SessionMenuProps {
   session?: NavigationSessionModel;
   /** Compatibility input for rail rows; the pane chrome uses `session`. */
   treeNode?: NavigationSessionModel;
+  /** Ordinary session headers own Overview; rail and non-header menus retain it. */
+  showOverview?: boolean;
   overviewOpen: boolean;
   overviewLabel?: string; // e.g. "Overview · 2 active"; defaults to "Overview"
   /** Pane-only action. Rail/sidebar callers omit it. */
@@ -114,6 +116,7 @@ export function SessionMenu({
   stopped,
   session,
   treeNode,
+  showOverview = true,
   overviewOpen,
   overviewLabel,
   onOpenVerbosity,
@@ -166,13 +169,15 @@ export function SessionMenu({
   // Groups joined by separators: inspection / organize / destructive. Both
   // separators always render because Rename and Shut down are always present;
   // the eligible-only items slot into their groups without orphaning a rule.
-  const inspectionItems: MenuEntry[] = [
-    {
-      id: "overview",
-      label: checked(overviewLabel ?? "Overview", overviewOpen),
-      onSelect: actions.onOpenOverview,
-    },
-  ];
+  const inspectionItems: MenuEntry[] = showOverview
+    ? [
+        {
+          id: "overview",
+          label: checked(overviewLabel ?? "Overview", overviewOpen),
+          onSelect: actions.onOpenOverview,
+        },
+      ]
+    : [];
   if (onFind) {
     inspectionItems.push({ id: "find", label: "Find in session…", onSelect: onFind });
   }
