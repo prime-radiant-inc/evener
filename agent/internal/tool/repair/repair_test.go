@@ -3,6 +3,7 @@ package repair
 import (
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -618,4 +619,411 @@ func TestRepairArgs_NullOnApplicatorPropertyFollowsItsBranches(t *testing.T) {
 			}
 		})
 	}
+}
+
+// multiEditParams mirrors the edits[]-only edit_file schema (additionalProperties: false on root and items).
+func multiEditParams() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"file_path": map[string]any{"type": "string"},
+			"edits": map[string]any{
+				"type":     "array",
+				"minItems": 1,
+				"items": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"old_string":  map[string]any{"type": "string"},
+						"new_string":  map[string]any{"type": "string"},
+						"replace_all": map[string]any{"type": "boolean"},
+					},
+					"required": []string{"old_string", "new_string"},
+				},
+			},
+		},
+		"required": []string{"file_path", "edits"},
+	}
+}
+
+func cloneTestValue(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		cp := make(map[string]any, len(x))
+		for k, val := range x {
+			cp[k] = cloneTestValue(val)
+		}
+		return cp
+	case []any:
+		cp := make([]any, len(x))
+		for i, val := range x {
+			cp[i] = cloneTestValue(val)
+		}
+		return cp
+	default:
+		return v
+	}
+}
+
+func TestRepairArgs_SingleItemArrayPromotion_LegacyTopLevel(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+		want map[string]any
+	}{
+		{
+			name: "canonical top-level fields",
+			args: map[string]any{
+				"file_path":   "a.go",
+				"old_string":  "old",
+				"new_string":  "new",
+				"replace_all": true,
+			},
+			want: map[string]any{
+				"file_path": "a.go",
+				"edits": []any{
+					map[string]any{
+						"old_string":  "old",
+						"new_string":  "new",
+						"replace_all": true,
+					},
+				},
+			},
+		},
+		{
+			name: "aliased top-level fields",
+			args: map[string]any{
+				"path":    "b.go",
+				"old_str": "old",
+				"new_str": "new",
+			},
+			want: map[string]any{
+				"file_path": "b.go",
+				"edits": []any{
+					map[string]any{
+						"old_string": "old",
+						"new_string": "new",
+					},
+				},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			before := cloneTestValue(tc.args)
+			out, changes := RepairArgs(multiEditParams(), tc.args)
+			if !reflect.DeepEqual(tc.args, before) {
+				t.Fatalf("input mutated: before=%#v after=%#v", before, tc.args)
+			}
+			if !reflect.DeepEqual(out, tc.want) {
+				t.Fatalf("got %#v, want %#v", out, tc.want)
+			}
+			if len(changes) == 0 {
+				t.Fatal("expected recorded changes for promoted call")
+			}
+		})
+	}
+}
+
+func TestRepairArgs_SingleItemArrayPromotion_IncompleteRequiredNotPromoted(t *testing.T) {
+	t.Parallel()
+	args := map[string]any{
+		"file_path":  "a.go",
+		"old_string": "only_old",
+	}
+	out, _ := RepairArgs(multiEditParams(), args)
+	if _, hasEdits := out["edits"]; hasEdits {
+		t.Fatalf("incomplete top-level fields should not promote to edits: %#v", out)
+	}
+}
+
+func TestRepairArgs_MixedFormPreservesConflictingRootKeys(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		editsVal  any
+		extraKeys map[string]any
+	}{
+		{
+			name:      "edits array plus top-level old_string and new_string",
+			editsVal:  []any{map[string]any{"old_string": "x", "new_string": "y"}},
+			extraKeys: map[string]any{"old_string": "a", "new_string": "b"},
+		},
+		{
+			name:      "edits null plus top-level old_string and new_string",
+			editsVal:  nil,
+			extraKeys: map[string]any{"old_string": "a", "new_string": "b"},
+		},
+		{
+			name:      "edits null plus single aliased conflict",
+			editsVal:  nil,
+			extraKeys: map[string]any{"old_str": "a"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			args := map[string]any{
+				"file_path": "a.go",
+				"edits":     tc.editsVal,
+			}
+			for k, v := range tc.extraKeys {
+				args[k] = v
+			}
+			before := cloneTestValue(args)
+			out, _ := RepairArgs(multiEditParams(), args)
+			if !reflect.DeepEqual(args, before) {
+				t.Fatalf("input mutated: before=%#v after=%#v", before, args)
+			}
+			if _, hasEdits := out["edits"]; !hasEdits {
+				t.Fatalf("edits key was removed: %#v", out)
+			}
+			for k, wantV := range tc.extraKeys {
+				gotV, present := out[k]
+				if !present || !reflect.DeepEqual(gotV, wantV) {
+					t.Fatalf("conflicting root key %q was dropped or altered: got=(%#v, %t), want=%#v, out=%#v", k, gotV, present, wantV, out)
+				}
+			}
+		})
+	}
+}
+
+func TestRepairArgs_CombinedQuirk_StringifiedAndBareObject(t *testing.T) {
+	t.Parallel()
+	want := map[string]any{
+		"file_path": "a.go",
+		"edits": []any{
+			map[string]any{
+				"old_string":  "a",
+				"new_string":  "b",
+				"replace_all": true,
+			},
+		},
+	}
+	for _, tc := range []struct {
+		name  string
+		edits any
+	}{
+		{
+			name:  "stringified JSON array",
+			edits: `[{"old_str":"a","newText":"b","replaceAll":"true","notes":"x"}]`,
+		},
+		{
+			name:  "stringified single JSON object",
+			edits: `{"old_str":"a","newText":"b","replaceAll":"true","notes":"x"}`,
+		},
+		{
+			name: "bare object",
+			edits: map[string]any{
+				"old_str":    "a",
+				"newText":    "b",
+				"replaceAll": "true",
+				"notes":      "x",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			args := map[string]any{
+				"file_path": "a.go",
+				"edits":     tc.edits,
+			}
+			before := cloneTestValue(args)
+			out, changes := RepairArgs(multiEditParams(), args)
+			if !reflect.DeepEqual(args, before) {
+				t.Fatalf("input mutated: before=%#v after=%#v", before, args)
+			}
+			if !reflect.DeepEqual(out, want) {
+				t.Fatalf("got %#v, want %#v", out, want)
+			}
+			fields := map[string]bool{}
+			for _, c := range changes {
+				fields[c.Field] = true
+			}
+			for _, requiredField := range []string{"edits", "edits[0].old_string", "edits[0].new_string", "edits[0].replace_all", "edits[0].notes"} {
+				if !fields[requiredField] {
+					t.Fatalf("expected change on %q, got changes=%+v", requiredField, changes)
+				}
+			}
+		})
+	}
+}
+
+func TestRepairArgs_CompetingAliases(t *testing.T) {
+	t.Parallel()
+	t.Run("differing values inside edits item preserved deterministically", func(t *testing.T) {
+		t.Parallel()
+		args := map[string]any{
+			"file_path": "a.go",
+			"edits": []any{
+				map[string]any{
+					"old_string": "a",
+					"new_str":    "x",
+					"newText":    "y",
+				},
+			},
+		}
+		before := cloneTestValue(args)
+		out, _ := RepairArgs(multiEditParams(), args)
+		if !reflect.DeepEqual(args, before) {
+			t.Fatalf("input mutated: before=%#v after=%#v", before, args)
+		}
+		item := out["edits"].([]any)[0].(map[string]any)
+		if _, hasCanon := item["new_string"]; hasCanon {
+			t.Fatalf("conflicting aliases should not pick an arbitrary winner: %#v", item)
+		}
+		if item["new_str"] != "x" || item["newText"] != "y" {
+			t.Fatalf("competing aliases must be preserved past dropUnknown: %#v", item)
+		}
+		outAgain, _ := RepairArgs(multiEditParams(), args)
+		if !reflect.DeepEqual(outAgain, out) {
+			t.Fatalf("non-deterministic output: first=%#v second=%#v", out, outAgain)
+		}
+	})
+
+	t.Run("differing values at root preserved deterministically", func(t *testing.T) {
+		t.Parallel()
+		args := map[string]any{
+			"path":     "/a",
+			"filepath": "/b",
+		}
+		out, _ := RepairArgs(readFileParams(), args)
+		if _, hasCanon := out["file_path"]; hasCanon {
+			t.Fatalf("conflicting root aliases should not pick an arbitrary winner: %#v", out)
+		}
+		if out["path"] != "/a" || out["filepath"] != "/b" {
+			t.Fatalf("competing root aliases must be preserved past dropUnknown: %#v", out)
+		}
+	})
+
+	t.Run("identical values promote once and drop duplicate", func(t *testing.T) {
+		t.Parallel()
+		args := map[string]any{
+			"file_path": "a.go",
+			"edits": []any{
+				map[string]any{
+					"old_string": "a",
+					"new_str":    "same",
+					"newText":    "same",
+				},
+			},
+		}
+		out, _ := RepairArgs(multiEditParams(), args)
+		want := map[string]any{
+			"file_path": "a.go",
+			"edits": []any{
+				map[string]any{
+					"old_string": "a",
+					"new_string": "same",
+				},
+			},
+		}
+		if !reflect.DeepEqual(out, want) {
+			t.Fatalf("got %#v, want %#v", out, want)
+		}
+	})
+
+	t.Run("canonical key wins when present alongside competing aliases", func(t *testing.T) {
+		t.Parallel()
+		args := map[string]any{
+			"file_path": "a.go",
+			"edits": []any{
+				map[string]any{
+					"old_string": "a",
+					"new_string": "canonical",
+					"new_str":    "x",
+					"newText":    "y",
+				},
+			},
+		}
+		out, _ := RepairArgs(multiEditParams(), args)
+		want := map[string]any{
+			"file_path": "a.go",
+			"edits": []any{
+				map[string]any{
+					"old_string": "a",
+					"new_string": "canonical",
+				},
+			},
+		}
+		if !reflect.DeepEqual(out, want) {
+			t.Fatalf("got %#v, want %#v", out, want)
+		}
+	})
+}
+
+func TestRepairArgs_ObjectArrayEdgeCasesAndNonMutation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("plain non-JSON string is not wrapped", func(t *testing.T) {
+		t.Parallel()
+		for _, raw := range []string{"not json", "123", "true", "null"} {
+			args := map[string]any{"file_path": "a.go", "edits": raw}
+			out, changes := RepairArgs(multiEditParams(), args)
+			if out["edits"] != raw {
+				t.Fatalf("raw=%q was wrapped or changed: %#v", raw, out["edits"])
+			}
+			if len(changes) != 0 {
+				t.Fatalf("raw=%q recorded unexpected changes: %+v", raw, changes)
+			}
+		}
+	})
+
+	t.Run("deeply nested JSON string exceeds depth guard and stays untouched", func(t *testing.T) {
+		t.Parallel()
+		deep := strings.Repeat("[", 66) + `{"old_str":"a","new_str":"b"}` + strings.Repeat("]", 66)
+		args := map[string]any{"file_path": "a.go", "edits": deep}
+		out, _ := RepairArgs(multiEditParams(), args)
+		if out["edits"] != deep {
+			t.Fatalf("overly deep JSON string should be left untouched")
+		}
+	})
+
+	t.Run("malformed array items do not panic and valid siblings still repair", func(t *testing.T) {
+		t.Parallel()
+		args := map[string]any{
+			"file_path": "a.go",
+			"edits": []any{
+				nil,
+				"str",
+				map[string]any{"old_str": "a", "new_str": "b", "notes": "x"},
+			},
+		}
+		before := cloneTestValue(args)
+		out, _ := RepairArgs(multiEditParams(), args)
+		if !reflect.DeepEqual(args, before) {
+			t.Fatalf("input mutated: before=%#v after=%#v", before, args)
+		}
+		edits := out["edits"].([]any)
+		if edits[0] != nil || edits[1] != "str" {
+			t.Fatalf("malformed items altered unexpectedly: %#v", edits)
+		}
+		wantThird := map[string]any{"old_string": "a", "new_string": "b"}
+		if !reflect.DeepEqual(edits[2], wantThird) {
+			t.Fatalf("valid sibling item = %#v, want %#v", edits[2], wantThird)
+		}
+	})
+
+	t.Run("typo old_sting drops unknown and leaves old_string missing", func(t *testing.T) {
+		t.Parallel()
+		args := map[string]any{
+			"file_path": "a.go",
+			"edits": []any{
+				map[string]any{"old_sting": "a", "new_string": "b"},
+			},
+		}
+		before := cloneTestValue(args)
+		out, _ := RepairArgs(multiEditParams(), args)
+		if !reflect.DeepEqual(args, before) {
+			t.Fatalf("input mutated: before=%#v after=%#v", before, args)
+		}
+		item := out["edits"].([]any)[0].(map[string]any)
+		if _, hasOld := item["old_string"]; hasOld {
+			t.Fatalf("typo old_sting must not heal to old_string: %#v", item)
+		}
+		if _, hasTypo := item["old_sting"]; hasTypo {
+			t.Fatalf("typo old_sting should be dropped by additionalProperties:false: %#v", item)
+		}
+	})
 }
