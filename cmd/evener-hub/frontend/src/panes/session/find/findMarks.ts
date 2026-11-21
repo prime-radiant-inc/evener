@@ -226,10 +226,20 @@ export function markTranscript(
       if (entry === undefined) return null;
       const isCurrent = hit.key === currentKey;
       if (!registry && !isCurrent) return entry;
-      // A message row also carries its speaker and time; only what the
-      // message says is searched, so only that is painted and scrolled to.
-      const body = entry.querySelector<HTMLElement>(`[${FIND_BODY_ATTRIBUTE}]`) ?? entry;
-      const found = rangesIn(body, needle, registry ? MAX_RANGES - all.length - mine.length : 1);
+      // A row also carries chrome - a speaker and time, a thought's
+      // "Thought · ~N tokens" heading; only what it says is searched, so only
+      // those regions are painted and scrolled to. A redacted thought says
+      // two things (its neutral label and its unfolded body), so every marked
+      // region is read, in DOM order.
+      const bodies = entry.querySelectorAll<HTMLElement>(`[${FIND_BODY_ATTRIBUTE}]`);
+      const regions = bodies.length > 0 ? Array.from(bodies) : [entry];
+      const found: Range[] = [];
+      for (const region of regions) {
+        const budget = registry ? MAX_RANGES - all.length - mine.length - found.length : 1;
+        if (budget <= 0) break;
+        found.push(...rangesIn(region, needle, budget));
+        if (!registry && found.length > 0) break;
+      }
       if (isCurrent) focus = found[0] ?? null;
       if (registry) (isCurrent ? mine : all).push(...found);
       return entry;
