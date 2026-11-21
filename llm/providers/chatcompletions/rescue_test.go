@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -34,7 +35,7 @@ func wantToken(t *testing.T, fields map[string]json.RawMessage, key, want string
 
 func wantUnchanged(t *testing.T, raw string) {
 	t.Helper()
-	if got := rescueClaudeXMLArgs(raw); got != raw {
+	if got := rescueClaudeXMLArgs(raw, nil); got != raw {
 		t.Fatalf("rescue changed input\n in=%q\nout=%q", raw, got)
 	}
 }
@@ -66,7 +67,7 @@ func writeFileToolParams() []llm.ToolDefinition {
 func TestRescueClaudeXMLArgsPreservesUntouchedRawBytes(t *testing.T) {
 	t.Parallel()
 	raw := `{"action":"update\">\n<parameter name=\"tasks\">[{\"id\":2}]</parameter>","note":"bad` + "\xfe" + `","n":1.50}`
-	fields := fieldsOf(t, rescueClaudeXMLArgs(raw))
+	fields := fieldsOf(t, rescueClaudeXMLArgs(raw, nil))
 	wantToken(t, fields, "action", `"update"`)
 	wantToken(t, fields, "tasks", `[{"id":2}]`)
 	wantToken(t, fields, "note", `"bad`+"\xfe"+`"`)
@@ -76,12 +77,12 @@ func TestRescueClaudeXMLArgsPreservesUntouchedRawBytes(t *testing.T) {
 func TestRescueClaudeXMLArgsParsedAnyJSONStringPreservesRawBytes(t *testing.T) {
 	t.Parallel()
 	raw := `{"payload":"{\"n\":1.50,\"s\":\"bad` + "\xfe" + `\"}","other":"x` + "\xfe" + `"}`
-	fields := fieldsOf(t, rescueClaudeXMLArgsWithSchema(raw, fieldParams("payload", "object")))
+	fields := fieldsOf(t, rescueClaudeXMLArgs(raw, fieldParams("payload", "object")))
 	wantToken(t, fields, "payload", `{"n":1.50,"s":"bad`+"\xfe"+`"}`)
 	wantToken(t, fields, "other", `"x`+"\xfe"+`"`)
 
 	raw = `{"payload":"[1.50,\"\\u0041\",\"bad` + "\xfe" + `\"]","other":"x` + "\xfe" + `"}`
-	fields = fieldsOf(t, rescueClaudeXMLArgsWithSchema(raw, fieldParams("payload", "array")))
+	fields = fieldsOf(t, rescueClaudeXMLArgs(raw, fieldParams("payload", "array")))
 	wantToken(t, fields, "payload", `[1.50,"\u0041","bad`+"\xfe"+`"]`)
 	wantToken(t, fields, "other", `"x`+"\xfe"+`"`)
 }
@@ -100,36 +101,36 @@ func TestRescueClaudeXMLArgsNoRescueReturnsInputUnchanged(t *testing.T) {
 func TestRescueClaudeXMLArgsOrdinaryXMLSemantics(t *testing.T) {
 	t.Parallel()
 	raw := `{"action":"go\">\n<parameter name='x'>1.50</parameter><parameter name='action'>child</parameter>","note":"ok"}`
-	fields := fieldsOf(t, rescueClaudeXMLArgs(raw))
+	fields := fieldsOf(t, rescueClaudeXMLArgs(raw, nil))
 	wantToken(t, fields, "action", `"go"`)
 	wantToken(t, fields, "x", `1.50`)
 	wantToken(t, fields, "note", `"ok"`)
 
 	raw = `{"action":"update\">\n<parameter name=\"x\">plain text","q":"v"}`
-	fields = fieldsOf(t, rescueClaudeXMLArgs(raw))
+	fields = fieldsOf(t, rescueClaudeXMLArgs(raw, nil))
 	wantToken(t, fields, "action", `"update"`)
 	wantToken(t, fields, "x", `"plain text"`)
 	wantToken(t, fields, "q", `"v"`)
 
 	raw = `{"action":"a\">\n<parameter name=\"v\">  plain text  </parameter>","q":"v"}`
-	fields = fieldsOf(t, rescueClaudeXMLArgs(raw))
+	fields = fieldsOf(t, rescueClaudeXMLArgs(raw, nil))
 	wantToken(t, fields, "v", `"plain text"`)
 
 	raw = `{"action":"a\">\n<parameter name=\"v\">\u00a0 1 \u00a0</parameter>","q":"v"}`
-	fields = fieldsOf(t, rescueClaudeXMLArgs(raw))
+	fields = fieldsOf(t, rescueClaudeXMLArgs(raw, nil))
 	wantToken(t, fields, "v", `1`)
 
 	raw = `{"action":"a\">\n<parameter name=\"a\">1<parameter name=\"b\">two"}`
-	fields = fieldsOf(t, rescueClaudeXMLArgs(raw))
+	fields = fieldsOf(t, rescueClaudeXMLArgs(raw, nil))
 	wantToken(t, fields, "a", `1`)
 	wantToken(t, fields, "b", `"two"`)
 
 	raw = `{"action":"a\">\n<parameter name=\"v\">x</parameter></parameter>","q":"v"}`
-	fields = fieldsOf(t, rescueClaudeXMLArgs(raw))
+	fields = fieldsOf(t, rescueClaudeXMLArgs(raw, nil))
 	wantToken(t, fields, "v", `"x`+closeTag+`"`)
 
 	raw = `{"action":"a\">b\">\n<parameter name=\"x\">1</parameter>","note":"ok"}`
-	fields = fieldsOf(t, rescueClaudeXMLArgs(raw))
+	fields = fieldsOf(t, rescueClaudeXMLArgs(raw, nil))
 	wantToken(t, fields, "action", `"a"`)
 	wantToken(t, fields, "x", `1`)
 }
@@ -137,7 +138,7 @@ func TestRescueClaudeXMLArgsOrdinaryXMLSemantics(t *testing.T) {
 func TestRescueClaudeXMLArgsCarrierPrefixInvalidByte(t *testing.T) {
 	t.Parallel()
 	raw := `{"action":"up` + "\xfe" + `da\">\n<parameter name=\"x\">1","note":"ok"}`
-	fields := fieldsOf(t, rescueClaudeXMLArgs(raw))
+	fields := fieldsOf(t, rescueClaudeXMLArgs(raw, nil))
 	wantToken(t, fields, "action", `"up`+"\xfe"+`da"`)
 	wantToken(t, fields, "x", `1`)
 }
@@ -145,7 +146,7 @@ func TestRescueClaudeXMLArgsCarrierPrefixInvalidByte(t *testing.T) {
 func TestRescueClaudeXMLArgsPreservesUntouchedEscapedSpellings(t *testing.T) {
 	t.Parallel()
 	raw := `{"action":"a\">\n<parameter name=\"x\">1</parameter>","emoji":"\ud83d\ude00","html":"a<b&c"}`
-	fields := fieldsOf(t, rescueClaudeXMLArgs(raw))
+	fields := fieldsOf(t, rescueClaudeXMLArgs(raw, nil))
 	wantToken(t, fields, "emoji", `"\ud83d\ude00"`)
 	wantToken(t, fields, "html", `"a<b&c"`)
 }
@@ -153,7 +154,7 @@ func TestRescueClaudeXMLArgsPreservesUntouchedEscapedSpellings(t *testing.T) {
 func TestRescueClaudeXMLArgsBothShapes(t *testing.T) {
 	t.Parallel()
 	raw := `{"payload":"{\"n\":1.50,\"s\":\"bad` + "\xfe" + `\"}","action":"go\">\n<parameter name=\"x\">1</parameter>","note":"x` + "\xfe" + `"}`
-	fields := fieldsOf(t, rescueClaudeXMLArgsWithSchema(raw, fieldParams("payload", "object")))
+	fields := fieldsOf(t, rescueClaudeXMLArgs(raw, fieldParams("payload", "object")))
 	wantToken(t, fields, "payload", `{"n":1.50,"s":"bad`+"\xfe"+`"}`)
 	wantToken(t, fields, "action", `"go"`)
 	wantToken(t, fields, "x", `1`)
@@ -163,7 +164,7 @@ func TestRescueClaudeXMLArgsBothShapes(t *testing.T) {
 func TestRescueClaudeXMLArgsCarrierAndExtractedBytes(t *testing.T) {
 	t.Parallel()
 	raw := `{"action":"up` + "\xfe" + `da\">\n<parameter name=\"n\">1.50</parameter><parameter name=\"s\">bad` + "\xfe" + `</parameter><parameter name=\"h\">a<b&c</parameter>","note":"ok"}`
-	fields := fieldsOf(t, rescueClaudeXMLArgs(raw))
+	fields := fieldsOf(t, rescueClaudeXMLArgs(raw, nil))
 	wantToken(t, fields, "action", `"up`+"\xfe"+`da"`)
 	wantToken(t, fields, "n", `1.50`)
 	wantToken(t, fields, "s", `"bad`+"\xfe"+`"`)
@@ -174,7 +175,7 @@ func TestRescueClaudeXMLArgsCarrierAndExtractedBytes(t *testing.T) {
 func TestRescueClaudeXMLArgsMultiCarrierPrecedence(t *testing.T) {
 	t.Parallel()
 	raw := `{"a":"go\">\n<parameter name=\"x\">1</parameter>","b":"go\">\n<parameter name=\"x\">2</parameter>"}`
-	fields := fieldsOf(t, rescueClaudeXMLArgs(raw))
+	fields := fieldsOf(t, rescueClaudeXMLArgs(raw, nil))
 	wantToken(t, fields, "x", `2`)
 }
 
@@ -182,7 +183,7 @@ func TestRescueClaudeXMLArgsXMLGateSemantics(t *testing.T) {
 	t.Parallel()
 	wantUnchanged(t, `{"x":"\u003cparameter\r\nname=\"x\"\u003e1"}`)
 	wantUnchanged(t, `{"payload":"{\"a\":1}","b":"\u003cparameter foo\u003e"}`)
-	out := rescueClaudeXMLArgsWithSchema(`{"payload":"{\"a\":1}","b":"plain"}`, fieldParams("payload", "object"))
+	out := rescueClaudeXMLArgs(`{"payload":"{\"a\":1}","b":"plain"}`, fieldParams("payload", "object"))
 	fields := fieldsOf(t, out)
 	wantToken(t, fields, "payload", `{"a":1}`)
 }
@@ -190,40 +191,40 @@ func TestRescueClaudeXMLArgsXMLGateSemantics(t *testing.T) {
 func TestRescueClaudeXMLArgsParsedAnyPreservesInnerEscapeSpelling(t *testing.T) {
 	t.Parallel()
 	raw := `{"payload":"{\"s\":\"\\u0041\",\"n\":1.50}","other":"x"}`
-	fields := fieldsOf(t, rescueClaudeXMLArgsWithSchema(raw, fieldParams("payload", "object")))
+	fields := fieldsOf(t, rescueClaudeXMLArgs(raw, fieldParams("payload", "object")))
 	wantToken(t, fields, "payload", `{"s":"\u0041","n":1.50}`)
 }
 
 func TestRescueClaudeXMLArgsExtractedValidJSONKeepsEscapeSpelling(t *testing.T) {
 	t.Parallel()
 	raw := `{"action":"go\">\n<parameter name=\"j\">{\"s\":\"\\u0041\"}</parameter>","note":"ok"}`
-	fields := fieldsOf(t, rescueClaudeXMLArgs(raw))
+	fields := fieldsOf(t, rescueClaudeXMLArgs(raw, nil))
 	wantToken(t, fields, "j", `{"s":"\u0041"}`)
 }
 
 func TestRescueClaudeXMLArgsClosingTagByteOffsets(t *testing.T) {
 	t.Parallel()
 	raw := `{"action":"go\">\n<parameter name=\"x\">İ</parameter>","note":"ok"}`
-	fields := fieldsOf(t, rescueClaudeXMLArgs(raw))
+	fields := fieldsOf(t, rescueClaudeXMLArgs(raw, nil))
 	wantToken(t, fields, "x", `"İ"`)
 
 	raw = `{"action":"go\">\n` + "<parameter name=\\\"x\\\">" + "\u212A" + closeTag + `","note":"ok"}`
-	fields = fieldsOf(t, rescueClaudeXMLArgs(raw))
+	fields = fieldsOf(t, rescueClaudeXMLArgs(raw, nil))
 	wantToken(t, fields, "x", "\"\u212A\"")
 
 	raw = `{"action":"go\">\n<parameter name=\"x\">` + "\xfe\xfe\xfe\xfe\xfe\xfe\xfe" + `</parameter>","note":"ok"}`
-	fields = fieldsOf(t, rescueClaudeXMLArgs(raw))
+	fields = fieldsOf(t, rescueClaudeXMLArgs(raw, nil))
 	wantToken(t, fields, "x", `"`+"\xfe\xfe\xfe\xfe\xfe\xfe\xfe"+`"`)
 }
 
 func TestRescueClaudeXMLArgsExtractedOverflowNumberStaysString(t *testing.T) {
 	t.Parallel()
 	raw := `{"action":"go\">\n` + "<parameter name=\\\"x\\\">1e999" + closeTag + `","note":"ok"}`
-	fields := fieldsOf(t, rescueClaudeXMLArgs(raw))
+	fields := fieldsOf(t, rescueClaudeXMLArgs(raw, nil))
 	wantToken(t, fields, "x", `"1e999"`)
 
 	raw = `{"action":"go\">\n` + "<parameter name=\\\"x\\\">{\\\"a\\\":1e999}" + closeTag + `","note":"ok"}`
-	fields = fieldsOf(t, rescueClaudeXMLArgs(raw))
+	fields = fieldsOf(t, rescueClaudeXMLArgs(raw, nil))
 	wantToken(t, fields, "x", `"{\"a\":1e999}"`)
 }
 
@@ -234,7 +235,7 @@ func TestRescueClaudeXMLArgsReplacedFieldWithCompleteOpenIsNotInspected(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	fields := fieldsOf(t, rescueClaudeXMLArgsWithSchema(string(rawBytes), fieldParams("p", "object")))
+	fields := fieldsOf(t, rescueClaudeXMLArgs(string(rawBytes), fieldParams("p", "object")))
 	wantToken(t, fields, "p", inner)
 	if _, ok := fields["x"]; ok {
 		t.Fatalf("replaced field was inspected for XML: %v", fields)
@@ -285,7 +286,7 @@ func TestFromChatCompletionResponseRescuePreservesNonCanonicalJSON(t *testing.T)
 // circuit: nothing to inspect means nothing to change.
 func TestRescueClaudeXMLArgsEmptyReturnsEmpty(t *testing.T) {
 	t.Parallel()
-	if got := rescueClaudeXMLArgs(""); got != "" {
+	if got := rescueClaudeXMLArgs("", nil); got != "" {
 		t.Fatalf("rescue of empty arguments = %q, want empty", got)
 	}
 }
@@ -301,7 +302,7 @@ func TestRescueClaudeXMLArgsKeepsStringFieldJSONText(t *testing.T) {
 		`{"file_path":"list.json","content":"[1,2,3]","note":"ok"}`,
 		`{"file_path":"nested.json","content":"{\"a\":{\"b\":[true,null]}}"}`,
 	} {
-		if got := rescueClaudeXMLArgs(raw); got != raw {
+		if got := rescueClaudeXMLArgs(raw, nil); got != raw {
 			t.Fatalf("rescue rewrote string field JSON text\n in=%s\nout=%s", raw, got)
 		}
 		// The callers' schema says content is a string, so the same input
@@ -311,7 +312,7 @@ func TestRescueClaudeXMLArgsKeepsStringFieldJSONText(t *testing.T) {
 			"content":   map[string]any{"type": "string"},
 			"note":      map[string]any{"type": "string"},
 		}}
-		if got := rescueClaudeXMLArgsWithSchema(raw, params); got != raw {
+		if got := rescueClaudeXMLArgs(raw, params); got != raw {
 			t.Fatalf("rescue rewrote a string-typed field\n in=%s\nout=%s", raw, got)
 		}
 	}
@@ -333,7 +334,7 @@ func TestRescueClaudeXMLArgsSecondOrderSchemaGate(t *testing.T) {
 		"flag":    map[string]any{"type": "boolean"},
 	}}
 	raw := `{"obj":"{\"a\":1}","arr":"[1,2]","nullarr":"[true]","nullobj":"{\"c\":3}","str":"{\"a\":1}","num":"[9]","flag":"{\"b\":2}","other":"[3]"}`
-	fields := fieldsOf(t, rescueClaudeXMLArgsWithSchema(raw, params))
+	fields := fieldsOf(t, rescueClaudeXMLArgs(raw, params))
 	wantToken(t, fields, "obj", `{"a":1}`)
 	wantToken(t, fields, "arr", `[1,2]`)
 	wantToken(t, fields, "nullarr", `[true]`)
@@ -345,52 +346,82 @@ func TestRescueClaudeXMLArgsSecondOrderSchemaGate(t *testing.T) {
 
 	// Already-typed arguments are never rewritten.
 	typed := `{"n":42,"b":true,"arr":[1,2],"obj":{"k":"v"},"s":"text"}`
-	if got := rescueClaudeXMLArgsWithSchema(typed, params); got != typed {
+	if got := rescueClaudeXMLArgs(typed, params); got != typed {
 		t.Fatalf("typed arguments rewritten\n in=%s\nout=%s", typed, got)
 	}
 }
 
-// TestFromChatCompletionResponseKeepsWriteFileJSONContentString pins #7426 at
-// the wire decode: a chatcompletions tool call whose arguments carry a JSON
-// file as write_file's string content must reach the tool with content still a
-// string. The object-typed metadata field must still be unwrapped, which proves
-// the decode passed the tool schema to the rescue rather than merely skipping
-// the rescue.
-func TestFromChatCompletionResponseKeepsWriteFileJSONContentString(t *testing.T) {
-	t.Parallel()
-	args := `{"file_path":"forbidden.json","content":"{\"value\":42}\n","metadata":"{\"owner\":\"ci\"}"}`
-	raw := chatResponseRaw(map[string]any{
-		"role": "assistant",
-		"tool_calls": []any{map[string]any{
-			"id":   "call_1",
-			"type": "function",
-			"function": map[string]any{
-				"name":      "write_file",
-				"arguments": args,
-			},
-		}},
-	}, "tool_calls")
-	tools := writeFileToolParams()
-	resp, err := fromChatCompletionResponseWithTools(raw, nil, nil, tools)
+// completeWithTools runs the production Protocol.Complete path for a scripted
+// response body with the given tools on the request, returning the decoded
+// tool call arguments. Running through Complete is what proves the adapter
+// forwards req.Tools to the decode, not just that the decoder honors tools.
+func completeWithTools(t *testing.T, body []byte, tools []llm.ToolDefinition) []byte {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	res := resolved(func(c *registry.Caps) { c.FinishReasonMap = map[string]string{"tool_calls": "tool_calls"} })
+	res.Transport = registry.Transport{Auth: registry.AuthBearer, BaseURL: srv.URL + "/v1", Endpoint: "/chat/completions", StreamEndpoint: "/chat/completions", ModelsEndpoint: "/models", CountTokensEndpoint: registry.EndpointUnsupported}
+	res.Credential = registry.Credential{Value: "k-1", Source: "api_key"}
+	p := &Protocol{Client: srv.Client()}
+	req := userReq("hi")
+	req.Tools = tools
+	resp, err := p.Complete(context.Background(), llm.ShapeRequest(req, res), res)
 	if err != nil {
-		t.Fatalf("decode: %v", err)
+		t.Fatalf("Complete: %v", err)
 	}
 	calls := resp.ToolCalls()
 	if len(calls) != 1 {
 		t.Fatalf("got %d tool calls, want 1", len(calls))
 	}
-	var got struct {
+	return []byte(calls[0].Arguments)
+}
+
+// TestProtocolCompleteKeepsWriteFileJSONContentString pins #7426 at the wire
+// decode: a chatcompletions tool call whose arguments carry a JSON file as
+// write_file's string content must reach the tool with content still a
+// string. The object-typed metadata field must still be unwrapped, which
+// proves Complete forwarded the tool schema to the rescue rather than merely
+// skipping the rescue.
+func TestProtocolCompleteKeepsWriteFileJSONContentString(t *testing.T) {
+	t.Parallel()
+	args := `{"file_path":"forbidden.json","content":"{\"value\":42}\n","metadata":"{\"owner\":\"ci\"}"}`
+	argsJSON := completeWithTools(t, rawArgsBody(t, args), writeFileToolParams())
+	var decoded struct {
 		FilePath string `json:"file_path"`
 		Content  string `json:"content"`
 		Metadata struct {
 			Owner string `json:"owner"`
 		} `json:"metadata"`
 	}
-	if err := json.Unmarshal(calls[0].Arguments, &got); err != nil {
-		t.Fatalf("arguments no longer decode with content as a string: %v\n%s", err, calls[0].Arguments)
+	if err := json.Unmarshal(argsJSON, &decoded); err != nil {
+		t.Fatalf("arguments no longer decode with content as a string: %v\n%s", err, argsJSON)
 	}
-	if got.FilePath != "forbidden.json" || got.Content != "{\"value\":42}\n" || got.Metadata.Owner != "ci" {
-		t.Fatalf("arguments = %+v, want the JSON file text preserved", got)
+	if decoded.FilePath != "forbidden.json" || decoded.Content != "{\"value\":42}\n" || decoded.Metadata.Owner != "ci" {
+		t.Fatalf("arguments = %+v, want the JSON file text preserved", decoded)
+	}
+}
+
+// TestProtocolCompleteKeepsWriteFileLiteralXMLContent pins the Claude-XML
+// scanner off legitimate file data: write_file content that is itself a
+// well-formed `<parameter>` element is a valid JSON string, not a corrupt XML
+// carrier, and must reach the tool verbatim.
+func TestProtocolCompleteKeepsWriteFileLiteralXMLContent(t *testing.T) {
+	t.Parallel()
+	content := `<parameter name='content'>example</parameter>`
+	args := `{"file_path":"literal.xml.json","content":"` + content + `"}`
+	got := completeWithTools(t, rawArgsBody(t, args), writeFileToolParams())
+	var decoded struct {
+		FilePath string `json:"file_path"`
+		Content  string `json:"content"`
+	}
+	if err := json.Unmarshal(got, &decoded); err != nil {
+		t.Fatalf("arguments no longer decode with content as a string: %v\n%s", err, got)
+	}
+	if decoded.FilePath != "literal.xml.json" || decoded.Content != content {
+		t.Fatalf("arguments = %+v, want the literal XML content preserved", decoded)
 	}
 }
 
@@ -447,7 +478,7 @@ func TestRescueClaudeXMLArgsSecondOrderInvalidJSONKept(t *testing.T) {
 	t.Parallel()
 	params := fieldParams("payload", "object")
 	for _, raw := range []string{`{"payload":"[oops"}`, `{"payload":"{oops"}`} {
-		if got := rescueClaudeXMLArgsWithSchema(raw, params); got != raw {
+		if got := rescueClaudeXMLArgs(raw, params); got != raw {
 			t.Fatalf("rescue changed invalid JSON text\n in=%q\nout=%q", raw, got)
 		}
 	}
@@ -459,10 +490,30 @@ func TestRescueClaudeXMLArgsSecondOrderInvalidJSONKept(t *testing.T) {
 func TestRescueClaudeXMLArgsCarrierWithoutQuoteBoundary(t *testing.T) {
 	t.Parallel()
 	raw := `{"action":"<parameter name=\"x\">1","note":"ok"}`
-	fields := fieldsOf(t, rescueClaudeXMLArgs(raw))
+	fields := fieldsOf(t, rescueClaudeXMLArgs(raw, nil))
 	wantToken(t, fields, "action", `""`)
 	wantToken(t, fields, "x", `1`)
 	wantToken(t, fields, "note", `"ok"`)
+}
+
+// TestRescueClaudeXMLArgsStringFieldParameterTagIsData pins the schema-typed
+// string half of the XML gate: a string field holding a literal
+// <parameter> element is data unless the model's `">` corruption boundary is
+// present. Without a schema the legacy fallback still rescues it.
+func TestRescueClaudeXMLArgsStringFieldParameterTagIsData(t *testing.T) {
+	t.Parallel()
+	params := fieldParams("content", "string")
+	literal := `{"file_path":"a.json","content":"<parameter name=\"x\">y"}`
+	if got := rescueClaudeXMLArgs(literal, params); got != literal {
+		t.Fatalf("literal parameter tag in a string field was rescued\n in=%s\nout=%s", literal, got)
+	}
+
+	// The model's quote-close boundary is corruption evidence, so the same
+	// string-typed field is still rescued when it carries one.
+	corrupt := `{"content":"pre\">\n<parameter name=\"x\">y"}`
+	fields := fieldsOf(t, rescueClaudeXMLArgs(corrupt, params))
+	wantToken(t, fields, "content", `"pre"`)
+	wantToken(t, fields, "x", `"y"`)
 }
 
 // TestRescueClaudeXMLArgsControlBytesRoundTrip pins the byte-preserving
@@ -473,7 +524,7 @@ func TestRescueClaudeXMLArgsCarrierWithoutQuoteBoundary(t *testing.T) {
 func TestRescueClaudeXMLArgsControlBytesRoundTrip(t *testing.T) {
 	t.Parallel()
 	raw := `{"action":"go\">\n<parameter name=\"x\">a\nb\bc\fd\re\tf` + `\u0001` + `g</parameter>","note":"ok"}`
-	fields := fieldsOf(t, rescueClaudeXMLArgs(raw))
+	fields := fieldsOf(t, rescueClaudeXMLArgs(raw, nil))
 	wantToken(t, fields, "action", `"go"`)
 	wantToken(t, fields, "x", `"a\nb\bc\fd\re\tf\u0001g"`)
 	wantToken(t, fields, "note", `"ok"`)
@@ -486,11 +537,11 @@ func TestRescueClaudeXMLArgsControlBytesRoundTrip(t *testing.T) {
 func TestRescueClaudeXMLArgsUnpairedSurrogates(t *testing.T) {
 	t.Parallel()
 	raw := `{"action":"go\">\n<parameter name=\"hi\">` + `\ud800` + `\udb00` + `x</parameter>","note":"ok"}`
-	fields := fieldsOf(t, rescueClaudeXMLArgs(raw))
+	fields := fieldsOf(t, rescueClaudeXMLArgs(raw, nil))
 	wantToken(t, fields, "hi", "\"\uFFFD\uFFFDx\"")
 
 	raw = `{"action":"go\">\n<parameter name=\"lo\">` + `\udc00` + `y</parameter>","note":"ok"}`
-	fields = fieldsOf(t, rescueClaudeXMLArgs(raw))
+	fields = fieldsOf(t, rescueClaudeXMLArgs(raw, nil))
 	wantToken(t, fields, "lo", "\"\uFFFDy\"")
 }
 
@@ -500,6 +551,6 @@ func TestRescueClaudeXMLArgsUnpairedSurrogates(t *testing.T) {
 func TestRescueClaudeXMLArgsUppercaseHexEscape(t *testing.T) {
 	t.Parallel()
 	raw := `{"action":"go\">\n<parameter name=\"up\">` + `\uABCD` + `z</parameter>","note":"ok"}`
-	fields := fieldsOf(t, rescueClaudeXMLArgs(raw))
+	fields := fieldsOf(t, rescueClaudeXMLArgs(raw, nil))
 	wantToken(t, fields, "up", "\"\uABCDz\"")
 }

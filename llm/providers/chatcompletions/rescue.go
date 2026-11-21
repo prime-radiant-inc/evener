@@ -57,26 +57,18 @@ const claudeXMLParamCloseTag = "</parameter>"
 // rescue is not possible, the original input is returned so the usual
 // schema-validation error path can surface the problem.
 //
-// The bare form has no tool schema, so it never inlines a JSON-shaped string
-// value. Callers that know the called tool's parameters use
-// rescueClaudeXMLArgsWithSchema.
+// params is the called tool's root parameter schema
+// (llm.ToolDefinition.Parameters), or nil when the caller has none (offline
+// recompute). The schema gates both rescues: a JSON-shaped string value is
+// inlined only when its field is declared an array or object, and a string
+// field with no `">` corruption boundary is treated as data rather than an
+// XML carrier.
 //
 // rescueClaudeXMLArgsHook, when non-nil, runs at each call. Tests use it to
 // prove a decode path rescues once per tool call.
 var rescueClaudeXMLArgsHook func()
 
-func rescueClaudeXMLArgs(raw string) string {
-	return rescueClaudeXMLArgsWithSchema(raw, nil)
-}
-
-// rescueClaudeXMLArgsWithSchema is rescueClaudeXMLArgs with the called tool's
-// root parameter schema (llm.ToolDefinition.Parameters). The schema gates the
-// second-order rescue: a top-level field's string value that is itself a JSON
-// array or object is inlined only when that field's property schema declares
-// an array or object. A field declared string — write_file's content holding a
-// JSON file — keeps its JSON text, and an absent schema or undeclared field is
-// left alone.
-func rescueClaudeXMLArgsWithSchema(raw string, params map[string]any) string {
+func rescueClaudeXMLArgs(raw string, params map[string]any) string {
 	if rescueClaudeXMLArgsHook != nil {
 		rescueClaudeXMLArgsHook()
 	}
@@ -157,6 +149,15 @@ func rescueClaudeXMLArgsWithSchema(raw string, params map[string]any) string {
 		// splitting at the `<` of the parameter tag.
 		idx := bytes.Index(content[:openMatch[0]], []byte(`">`))
 		if idx < 0 {
+			// Without the quote-close boundary there is no evidence the model
+			// reverted from JSON to XML mid-generation. When the schema types
+			// this field as a string, the tag is the field's own text — a JSON
+			// file written through write_file that happens to contain a
+			// <parameter> element — so leave it for the tool to receive
+			// verbatim. Callers without a schema keep the legacy fallback.
+			if schemaTypeDeclares(fieldSchema(params, k), "string") {
+				continue
+			}
 			idx = openMatch[0]
 		}
 		fields[k] = json.RawMessage(appendJSONString(nil, content[:idx]))
@@ -229,32 +230,28 @@ func fieldSchema(params map[string]any, name string) map[string]any {
 
 // schemaDeclaresContainer reports whether a property schema declares an array
 // or object type, including through a nullable type list such as
-// ["object","null"]. Go-built schemas spell that list []string; JSON-decoded
-// schemas spell it []any, so both are handled. Other shapes ($ref, anyOf,
-// oneOf) stay unrecognized on purpose: the rescue unwraps only what the schema
-// plainly types.
+// ["object","null"]. Other shapes ($ref, anyOf, oneOf) stay unrecognized on
+// purpose: the rescue unwraps only what the schema plainly types.
 func schemaDeclaresContainer(schema map[string]any) bool {
-	switch typ := schema["type"].(type) {
-	case string:
-		return isContainerType(typ)
-	case []string:
-		for _, s := range typ {
-			if isContainerType(s) {
-				return true
-			}
-		}
-	case []any:
-		for _, v := range typ {
-			if s, ok := v.(string); ok && isContainerType(s) {
-				return true
-			}
-		}
-	}
-	return false
+	return schemaTypeDeclares(schema, "array") || schemaTypeDeclares(schema, "object")
 }
 
-func isContainerType(typ string) bool {
-	return typ == "array" || typ == "object"
+// schemaTypeDeclares reports whether a property schema's type keyword declares
+// typ. Go-built schemas spell a union type []string; JSON-decoded schemas
+// spell it []any, so both are handled.
+func schemaTypeDeclares(schema map[string]any, typ string) bool {
+	switch declared := schema["type"].(type) {
+	case string:
+		return declared == typ
+	case []string:
+		return slices.Contains(declared, typ)
+	case []any:
+		return slices.ContainsFunc(declared, func(v any) bool {
+			s, ok := v.(string)
+			return ok && s == typ
+		})
+	}
+	return false
 }
 
 // toolParamsByName returns the Parameters schema of the named tool in tools,
@@ -269,9 +266,9 @@ func toolParamsByName(tools []llm.ToolDefinition, name string) map[string]any {
 }
 
 // rescueToolArgs is the decode sites' single call into the rescue: it looks up
-// the called tool's schema in the request and gates JSON-string inlining on it.
+// the called tool's schema in the request and gates both rescues on it.
 func rescueToolArgs(raw string, tools []llm.ToolDefinition, name string) string {
-	return rescueClaudeXMLArgsWithSchema(raw, toolParamsByName(tools, name))
+	return rescueClaudeXMLArgs(raw, toolParamsByName(tools, name))
 }
 
 // decodeJSONStringContent returns the content bytes of a JSON string token

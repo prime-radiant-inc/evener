@@ -324,7 +324,7 @@ func fromChatCompletionResponse(raw map[string]any, finishMap map[string]string,
 }
 
 // fromChatCompletionResponseWithTools is fromChatCompletionResponse with the
-// request's tool definitions, so rescueClaudeXMLArgsWithSchema can gate
+// request's tool definitions, so rescueClaudeXMLArgs can gate
 // JSON-string inlining on each called tool's declared field schema.
 //
 // body is the raw response body bytes; when non-nil, a focused decode
