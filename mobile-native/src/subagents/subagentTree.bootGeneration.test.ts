@@ -9,7 +9,7 @@ import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { SubagentTree } from "./subagentTree";
-import { installActivityFixture } from "./sessionActivityTestUtils";
+import { activityFixture, installActivityFixture } from "./sessionActivityTestUtils";
 
 /** A coordinator hub whose delegate page reports `holdSequence: 7` while
  * `held`, the replacement daemon's own live hold of 9 while `replacement`, and
@@ -88,6 +88,50 @@ function hub(options: HubOptions = {}): FakeClient {
 		},
 	}));
 	serveDelegates(client, options);
+	return client;
+}
+
+/** A hub whose summary response lands while both membership lists stay in
+ * flight: context and counts exist, and no collection has returned. */
+function summaryOnlyHub(gate: Promise<void>): FakeClient {
+	const client = new FakeClient("ready");
+	const fixture = () =>
+		activityFixture(
+			{
+				revision: 1,
+				root: {
+					kind: "session",
+					sessionId: "coord",
+					ref: "local:coord",
+					label: "Coordinator",
+					aggregate: "working",
+					counts: { active: 0, failed: 0, completed: 0, complete: true },
+					branch: {},
+					entries: [],
+				},
+			},
+			{ ref: "local:coord", scope: "subtree" },
+		);
+	client.on("evener/thread/activity/read", async () => fixture().summary);
+	client.on("evener/thread/delegates/list", async ({ scope }) => {
+		await gate;
+		return {
+			context: fixture().context,
+			scope: scope ?? "subtree",
+			delegates: [],
+			page: { complete: true, issues: [] },
+		};
+	});
+	client.on("evener/thread/jobs/list", async ({ scope }) => {
+		await gate;
+		return {
+			context: fixture().context,
+			scope: scope ?? "subtree",
+			jobs: [],
+			page: { complete: true, issues: [] },
+		};
+	});
+	client.on("thread/unsubscribe", () => ({}));
 	return client;
 }
 
@@ -241,6 +285,27 @@ test("a page-served hold the replacement generation did not publish is not retai
 	await subject.follow();
 
 	expect(heldSequence(subject)).toBeUndefined();
+});
+
+test("a disconnect before any collection returns keeps the tree unset", async () => {
+	const subject = new SubagentTree("local:coord", "coord");
+	subject.observeActivity();
+	const gate = deferred<void>();
+	const client = summaryOnlyHub(gate.promise);
+	answerReads(client, "1");
+	void subject.setClient(client);
+	await vi.waitFor(() => expect(subject.getSnapshot().summary).not.toBeNull());
+	// Context and counts arrived; membership has not, so no tree is accepted yet.
+	expect(subject.getSnapshot().tree).toBeNull();
+
+	// The phone disconnects before either list answers. No row lost a hold, so
+	// the cached presentation stays as it was: projecting the context-only state
+	// would publish an empty tree, and the lists hide their loading skeleton once
+	// a tree exists -- blank for the whole offline period.
+	await subject.setClient(null);
+	expect(subject.getSnapshot().tree).toBeNull();
+	expect(subject.getSnapshot().pages).toBeNull();
+	gate.resolve();
 });
 
 test("a follow read answered from saved history keeps the live hold", async () => {

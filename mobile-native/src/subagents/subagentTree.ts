@@ -67,6 +67,9 @@ export class SubagentTree {
 		this.stopActivity.forEach((stop) => stop());
 		this.stopActivity = [];
 		this.retained = this.store?.retainedSnapshot() ?? this.retained;
+		// retainedSnapshot() returns the store's own state when it strips no
+		// hold; a distinct snapshot means a row lost an unattributable wait.
+		const strippedUnresolvedHold = this.store !== null && this.retained !== this.store.getSnapshot();
 		// The rows the new store retains wear samples the outgoing store
 		// attributed to the generation it adopted -- which can be a replacement
 		// relay recovery announced to the store directly, one no follow read ever
@@ -83,10 +86,12 @@ export class SubagentTree {
 		this.client = client;
 		if (!client) {
 			// The Agents list renders the cached presentation, not the store's
-			// pages, so the sanitized snapshot has to reach it: a row whose
-			// unresolved wait was stripped above must not keep displaying it for
-			// the whole disconnect.
-			if (this.retained) this.presentation = projectSessionActivity(this.retained);
+			// pages, so a row whose unresolved wait was stripped above must not
+			// keep displaying it for the whole disconnect. Only such a snapshot is
+			// reprojected: projecting a context-only state would fabricate an empty
+			// tree before any collection returned, and the lists show no loading
+			// skeleton once a tree exists.
+			if (strippedUnresolvedHold && this.retained) this.presentation = projectSessionActivity(this.retained);
 			this.publish();
 			return Promise.resolve();
 		}

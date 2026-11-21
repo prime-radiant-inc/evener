@@ -634,12 +634,23 @@ removes absent rows. Explicit paging during recovery extends the displayed
 boundary; provisional refresh rows do not. Source issues remain pending across
 clean continuation pages until a fresh root walk reconciles them.
 
-When a binding replaces its client object, it can pass its already loaded
-`SessionActivitySnapshot` through the store's `retained` constructor option.
-Only matching requested refs and scopes retain evidence. Rows, context, issues
-and summary survive in memory while the new owner recovers; read flags reset to
-pending, and runtime metadata, cursors and in-flight requests never transfer.
-The existing fresh walk restores the displayed boundary with new cursors.
+When a binding replaces its client object, it passes the snapshot a fresh store
+should retain: `retainedSnapshot()` returns the loaded state with any row whose
+hold sample a page served before the latest boot transition stripped. The row
+keeps its durable fields and reports no wait, because the transition left the
+sample unattributable to either daemon, until a page of the adopted source
+settles it; a state with no such row is returned as it stands. Pass that
+snapshot through the store's `retained` constructor option. Only matching
+requested refs and scopes retain evidence. Rows, context, issues and summary
+survive in memory while the new owner recovers; read flags reset to pending,
+and runtime metadata, cursors and in-flight requests never transfer.
+The rows also wear the boot generation the outgoing store adopted, which relay
+recovery can learn without a follow read naming it: tell the fresh store
+`store.bootGeneration` with `adoptBootGeneration` before its first page. Omitting
+it walks the rows back to the older generation the binding last read, and the
+replacement's own naming would then retire the very waits the replacement
+published. The existing fresh walk restores the displayed boundary with new
+cursors, and a page that never re-publishes an omitted hold leaves it omitted.
 Resolved-session replacement still retires the former evidence together.
 
 Refresh continuations yield for 100 ms between pages and stop when their view
@@ -827,8 +838,11 @@ combines its terminal outcomes in its quiet Done segment and disappears when
 none of its rows is running.
 
 The native binding retains shared membership across disconnection and client
-replacement. Its shared store owns paging, retries and later-page replay; the
-screen owns filter, search, independent disclosures and visible page demand.
+replacement, passing the filtered snapshot and its adopted boot generation to
+the next store as [shared client responsibilities](#shared-client-responsibilities)
+describes; the disconnected Agents list renders that sanitized tree. Its shared
+store owns paging, retries and later-page replay; the screen owns filter,
+search, independent disclosures and visible page demand.
 A successful page that only changes a closed fold's count keeps the observed
 end demand, because the native list emits its end callback once per content
 length. Each resource's shared loading/error state gates that demand. New visible
