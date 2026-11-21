@@ -16,8 +16,17 @@ import (
 // has pointed HOME and XDG_CONFIG_HOME at a directory that outlives the tests and
 // before m.Run.
 func pinTestSnapshotConfigHome() {
-	if dir, err := os.UserConfigDir(); err == nil {
-		testSnapshotConfigHome = dir
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return
+	}
+	testSnapshotConfigHome = dir
+	// Disable Go telemetry in TestMain's isolated config home so a launch
+	// snapshot that forks `go env` there cannot leave a background telemetry
+	// sidecar writing into testHome during TestMain's teardown.
+	telDir := filepath.Join(dir, "go", "telemetry")
+	if os.MkdirAll(telDir, 0o700) == nil {
+		_ = os.WriteFile(filepath.Join(telDir, "mode"), []byte("off\n"), 0o600)
 	}
 }
 
@@ -73,6 +82,13 @@ func TestSnapshotConfigHomeForkAllowsThePinnedConfigHome(t *testing.T) {
 	sess := newSession(t, withEnvironmentSnapshot())
 	if !sess.capabilities.toolsProbed || !sess.capabilities.onPath["go"] {
 		t.Fatalf("the snapshot in the pinned config home must still measure the toolchain: %+v", sess.capabilities)
+	}
+	mode, err := os.ReadFile(filepath.Join(testSnapshotConfigHome, "go", "telemetry", "mode"))
+	if err != nil || string(mode) != "off\n" {
+		t.Fatalf("pinned config home telemetry mode = %q (err=%v), want %q", string(mode), err, "off\n")
+	}
+	if _, err := os.Stat(filepath.Join(testSnapshotConfigHome, "go", "telemetry", "local")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("telemetry local dir must not be created when telemetry is off, stat err = %v", err)
 	}
 }
 
