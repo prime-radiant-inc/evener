@@ -16,6 +16,7 @@ import { findableItemIds, findHits, indexOfMatch, isOverlay } from "./findHits";
 import { messageAsShown } from "./messageText";
 
 type ItemEntry = Extract<ProjectedEntry, { kind: "item" }>;
+type IntentEntry = Extract<ProjectedEntry, { kind: "intent" }>;
 
 function message(id: string, text: string, type = "agentMessage"): ItemEntry {
   return {
@@ -28,11 +29,77 @@ function message(id: string, text: string, type = "agentMessage"): ItemEntry {
   };
 }
 
+function reasoningEntry(id: string, summaries: string[][], kind: "thinking" | "item" = "thinking"): ProjectedEntry {
+  const item = {
+    id,
+    turnId: "t",
+    type: "reasoning",
+    text: "",
+    status: "completed",
+    reasoningSummaries: summaries,
+  } as ItemModel;
+  return kind === "thinking"
+    ? { kind, id, turnId: "t", sourceIndex: 0, item, live: false }
+    : { kind: "item", id, turnId: "t", sourceIndex: 0, item, isMessage: false };
+}
+
+function redactedReasoning(id: string, summary: string, summaries: string[][], text = ""): ProjectedEntry {
+  return {
+    kind: "critical",
+    id,
+    turnId: "t",
+    sourceIndex: 0,
+    sourceItemId: id,
+    item: {
+      id,
+      turnId: "t",
+      type: "reasoning",
+      text,
+      status: "failed",
+      reasoningSummaries: summaries,
+    } as ItemModel,
+    summary,
+    redacted: true,
+  };
+}
+
+function intentEntry(id: string, rationale: string): IntentEntry {
+  return {
+    kind: "intent",
+    id: `intent:${id}`,
+    turnId: "t",
+    sourceIndex: 0,
+    sourceItemId: id,
+    rationale,
+    failed: false,
+    item: {
+      id,
+      turnId: "t",
+      type: "commandExecution",
+      text: "",
+      toolName: "shell",
+      description: rationale,
+      status: "completed",
+    } as ItemModel,
+  };
+}
+
 function turnRow(id: string, entries: ProjectedEntry[]): TranscriptBodyRow {
   const source = { id, status: "completed", items: [] } as unknown as TurnModel;
   const turn: ProjectedTurn = { id, source, entries, visibleItems: [] };
   return { kind: "turn", id, turn, sourceTurnIndex: 0, showTurnSeparator: true };
 }
+
+const TOOLS = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+const CHAT = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
+const COLLAPSED_INTENT = makeTranscriptDisplayConfig({
+  kind: "custom",
+  toolIntent: true,
+  toolCalls: false,
+  reasoning: false,
+  expandByDefault: false,
+  thinkingOpenByDefault: false,
+});
 
 test("hits are the messages holding the words, oldest first, each on its row", () => {
   const rows = [
@@ -85,9 +152,10 @@ test("an in-progress reply searches auto-closed Markdown as its live row reads",
 });
 
 // The invariant the rest of Find leans on: a counted match is one Find can
-// land on with its words on screen. Only a message's own text is ever read,
-// so nothing folded, cut short, suppressed or behind a disclosure can count.
-test("only the conversation's messages are searched", () => {
+// land on with its words on screen. A thought's summaries and an action's
+// rationale are readable once their disclosure opens; tool output, steers,
+// notes, notices and warnings are not searched by this slice.
+test("messages, thought summaries and action rationales are searched", () => {
   const items = [
     { id: "u", type: "userMessage", text: "find the needle" },
     { id: "think", type: "reasoning", text: "needle", reasoningSummaries: [["a needle thought"]] },
@@ -109,12 +177,80 @@ test("only the conversation's messages are searched", () => {
   for (const level of ["chat", "tools", "full"] as const) {
     const config = makeTranscriptDisplayConfig({ kind: "preset", level });
     const rows = transcriptRowsForProjection(projectThread(model, config));
-    expect(findHits(rows, "needle").map((hit) => hit.itemId)).toEqual(["u", "a"]);
-    expect([...findableItemIds(model, config, "needle")].sort()).toEqual(["a", "u"]);
+    // Chat hides a settled thought; the other levels show its summary.
+    const expected = level === "chat" ? ["u", "a"] : ["u", "think", "a"];
+    expect(findHits(rows, "needle", { config }).map((hit) => hit.itemId)).toEqual(expected);
+    expect([...findableItemIds(model, config, "needle")].sort()).toEqual([...expected].sort());
   }
   for (const item of items) {
     expect(messageAsShown(item) !== null).toBe(item.id === "u" || item.id === "a");
   }
+});
+
+test("a thought is searched by its rendered summary and its hit opens the thought", () => {
+  const rows = [turnRow("t", [reasoningEntry("r1", [["the **needle** sits here"]])])];
+  expect(findHits(rows, "needle sits here", { config: TOOLS })).toEqual([
+    { key: "r1", itemId: "r1", rowIndex: 0, opens: ["r1"] },
+  ]);
+  // The summary's own formatting marks are not words on the page.
+  expect(findHits(rows, "**needle**", { config: TOOLS })).toEqual([]);
+});
+
+// A view that hides thinking traces shows only a placeholder, so the thought's
+// summary is not a match there (the chat preset).
+test("a thought is not searched where the chat view hides thinking traces", () => {
+  const rows = [turnRow("t", [reasoningEntry("r1", [["a hidden needle"]])])];
+  expect(findHits(rows, "needle", { config: CHAT })).toEqual([]);
+  expect(findHits(rows, "needle", { config: TOOLS }).map((hit) => hit.key)).toEqual(["r1"]);
+});
+
+// Reasoning rendered with its content flag on is an item entry rather than a
+// compact trace; it is read the same way and opens the same disclosure.
+test("a full-verbosity thought is searched by its summary", () => {
+  const full = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
+  const rows = [turnRow("t", [reasoningEntry("r1", [["a needle thought"]], "item")])];
+  expect(findHits(rows, "needle thought", { config: full })).toEqual([
+    { key: "r1", itemId: "r1", rowIndex: 0, opens: ["r1"] },
+  ]);
+});
+
+// A redacted critical thought shows its neutral label and can unfold its
+// summaries. Its raw `text` never renders, so it is not searched.
+test("a redacted thought is searched by its rendered label and summaries", () => {
+  const rows = [
+    turnRow("t", [
+      redactedReasoning(
+        "r1",
+        "Thought **failed** in `main.go`",
+        [["the *needle* body"]],
+        "raw needle that never renders",
+      ),
+    ]),
+  ];
+  const keys = (query: string) => findHits(rows, query, { config: TOOLS }).map((hit) => hit.key);
+  expect(keys("failed in main.go")).toEqual(["r1"]);
+  expect(keys("**failed**")).toEqual([]);
+  expect(keys("needle body")).toEqual(["r1"]);
+  expect(keys("raw needle")).toEqual([]);
+});
+
+test("an action is searched by its rationale and the hit opens its collapsed group", () => {
+  const rows = [turnRow("t", [intentEntry("c1", "list the repo"), intentEntry("c2", "grep for the needle")])];
+  expect(findHits(rows, "grep for the needle", { config: COLLAPSED_INTENT })).toEqual([
+    { key: "intent:c2", itemId: "c2", rowIndex: 0, opens: ["intent-group:intent:c1"] },
+  ]);
+  // A cross-turn action group names its own row id.
+  const entries: IntentEntry[] = [intentEntry("c1", "list the repo"), intentEntry("c2", "grep for the needle")];
+  const group: TranscriptBodyRow = {
+    kind: "intentGroup",
+    id: "intent-group:intent:c1",
+    entries,
+    sourceTurnIndexes: [0],
+    sourceTurnIds: ["t"],
+  };
+  expect(findHits([group], "needle", { config: COLLAPSED_INTENT }).map((hit) => hit.opens)).toEqual([
+    ["intent-group:intent:c1"],
+  ]);
 });
 
 test("a diagram's source is not searched once the reply shows the diagram instead", () => {

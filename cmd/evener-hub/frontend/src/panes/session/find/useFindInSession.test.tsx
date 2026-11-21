@@ -94,6 +94,8 @@ function Harness() {
     ref: REF,
     paneId: "pane_a",
     rows,
+    config: CONFIG,
+    disclosureScope: "find-test",
     listRef: list,
     ownerDocument,
     jumpToRow: (index) => jumps.push(index),
