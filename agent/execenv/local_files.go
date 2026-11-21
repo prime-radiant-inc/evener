@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -479,9 +478,17 @@ func (e *LocalExecutionEnvironment) EditFileBatchWithCtx(ctx context.Context, pa
 
 	prepared := make([]preparedEdit, len(edits))
 	for i, ed := range edits {
+		oldLF := strings.ReplaceAll(ed.OldString, "\r\n", "\n")
+		newLF := strings.ReplaceAll(ed.NewString, "\r\n", "\n")
+		if bom != "" {
+			if trimmed, ok := strings.CutPrefix(oldLF, bom); ok && trimmed != "" {
+				oldLF = trimmed
+				newLF = strings.TrimPrefix(newLF, bom)
+			}
+		}
 		prepared[i] = preparedEdit{
-			oldLF: strings.ReplaceAll(ed.OldString, "\r\n", "\n"),
-			newLF: strings.ReplaceAll(ed.NewString, "\r\n", "\n"),
+			oldLF: oldLF,
+			newLF: newLF,
 		}
 	}
 
@@ -627,7 +634,11 @@ matchLoop:
 	cursor := 0
 	for _, sp := range spans {
 		outLF.WriteString(lfText[cursor:sp.start])
-		outLF.WriteString(prepared[sp.editIndex].newLF)
+		rep := prepared[sp.editIndex].newLF
+		if bom != "" && sp.start == 0 {
+			rep = strings.TrimPrefix(rep, bom)
+		}
+		outLF.WriteString(rep)
 		cursor = sp.end
 	}
 	outLF.WriteString(lfText[cursor:])
@@ -656,7 +667,7 @@ matchLoop:
 		if werr := t.sfs.writeFile("edit_file", t.abs, edited, 0o644); werr != nil {
 			return "", werr
 		}
-	} else if werr := writeFileAtomic(e.filesystem(), t.abs, edited); werr != nil {
+	} else if werr := afero.WriteFile(e.filesystem(), t.abs, edited, 0o644); werr != nil {
 		return "", werr
 	}
 
@@ -709,59 +720,6 @@ func formatLineNumbers(lines []int) string {
 		b.WriteString(strconv.Itoa(ln))
 	}
 	return b.String()
-}
-
-// writeFileAtomic writes data to targetAbs via sibling temp file + rename
-// inside fsys's namespace, preserving target write admission and file mode.
-func writeFileAtomic(fsys afero.Fs, targetAbs string, data []byte) error {
-	resolvedTarget := targetAbs
-	if _, isOs := fsys.(*afero.OsFs); isOs {
-		if r, err := filepath.EvalSymlinks(targetAbs); err == nil {
-			resolvedTarget = r
-		}
-	}
-	probe, err := fsys.OpenFile(resolvedTarget, os.O_WRONLY, 0)
-	if err != nil {
-		return err
-	}
-	_ = probe.Close()
-
-	mode := os.FileMode(0o644)
-	if info, err := fsys.Stat(resolvedTarget); err == nil {
-		if perm := info.Mode().Perm(); perm != 0 {
-			mode = perm
-		}
-	}
-
-	dir := filepath.Dir(resolvedTarget)
-	tmp, err := afero.TempFile(fsys, dir, ".evener-edit-*.tmp")
-	if err != nil {
-		return fmt.Errorf("atomic write requires creating a temp file in %s: %w", dir, err)
-	}
-	tmpName := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = fsys.Remove(tmpName)
-		}
-	}()
-
-	if _, werr := io.Copy(tmp, bytes.NewReader(data)); werr != nil {
-		_ = tmp.Close()
-		return werr
-	}
-	if cerr := fsys.Chmod(tmpName, mode); cerr != nil {
-		_ = tmp.Close()
-		return cerr
-	}
-	if cerr := tmp.Close(); cerr != nil {
-		return cerr
-	}
-	if rerr := fsys.Rename(tmpName, resolvedTarget); rerr != nil {
-		return rerr
-	}
-	cleanup = false
-	return nil
 }
 
 // detectImageFormat checks file extension and magic bytes to identify image files.

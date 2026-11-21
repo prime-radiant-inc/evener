@@ -13,7 +13,6 @@ import (
 
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/sandbox"
-	"primeradiant.com/evener/fuzz/fault"
 )
 
 func TestEditFileBatch_DisjointForwardReverseAdjacent(t *testing.T) {
@@ -637,6 +636,45 @@ func TestEditFileBatch_CRLFMixedEndingsAndBOM(t *testing.T) {
 			t.Fatalf("got %q, want %q", got, want)
 		}
 	})
+
+	t.Run("read_file line 1 with leading UTF-8 BOM round-trips cleanly", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		env := NewLocalExecutionEnvironment(dir)
+		orig := "\xEF\xBB\xBFfirst\r\nsecond\r\n"
+		if err := os.WriteFile(filepath.Join(dir, "bom_read.txt"), []byte(orig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		readOut, err := env.ReadFile("bom_read.txt", nil, nil)
+		if err != nil {
+			t.Fatalf("ReadFile: %v", err)
+		}
+		// Extract line 1 payload after the "   1\t" prefix just as a model does.
+		firstLine, _, _ := strings.Cut(readOut, "\n")
+		_, line1Body, ok := strings.Cut(firstLine, "\t")
+		if !ok || !strings.HasPrefix(line1Body, "\xEF\xBB\xBF") {
+			t.Fatalf("expected ReadFile line 1 to carry leading BOM, got %q", firstLine)
+		}
+		if _, err := env.EditFileBatchCtx(context.Background(), "bom_read.txt", []FileEdit{
+			{OldString: line1Body, NewString: "\xEF\xBB\xBFFIRST"},
+		}); err != nil {
+			t.Fatalf("EditFileBatchCtx with BOM copied from ReadFile failed: %v", err)
+		}
+		got, err := os.ReadFile(filepath.Join(dir, "bom_read.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "\xEF\xBB\xBFFIRST\r\nsecond\r\n"
+		if string(got) != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+		// Bare BOM alone must never be stripped into an empty match.
+		if _, err := env.EditFileBatchCtx(context.Background(), "bom_read.txt", []FileEdit{
+			{OldString: "\xEF\xBB\xBF", NewString: "X"},
+		}); err == nil {
+			t.Fatal("expected bare BOM OldString to fail rather than match empty text")
+		}
+	})
 }
 
 // Not parallel: mutates package-level MaxEditFileSpans and MaxEditFileOutputBytes.
@@ -761,46 +799,37 @@ func TestEditFileBatch_ResourceBounds(t *testing.T) {
 func TestEditFileBatch_UnconfinedAtomicWriteAndPermissions(t *testing.T) {
 	t.Parallel()
 
-	t.Run("fault-injected write error leaves original intact and cleans temp", func(t *testing.T) {
+	t.Run("unconfined edit writes in place preserving inode identity and mode", func(t *testing.T) {
 		t.Parallel()
-		seed := map[string]string{"e.txt": "alpha\nbeta\n"}
-		// Probe which step index hits inside writeFileAtomic after read succeeds.
-		var sawWriteFault bool
-		for k := 3; k < 15; k++ {
-			base := afero.NewMemMapFs()
-			root := "/root"
-			if err := base.MkdirAll(root, 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := afero.WriteFile(base, filepath.Join(root, "e.txt"), []byte(seed["e.txt"]), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			env := NewLocalExecutionEnvironment(root).SetFs(fault.FS(base, faultOnly(k)))
-			_, err := env.EditFileBatchCtx(context.Background(), "e.txt", []FileEdit{
-				{OldString: "alpha", NewString: "ALPHA"},
-				{OldString: "beta", NewString: "BETA"},
-			})
-			if err != nil {
-				sawWriteFault = true
-				got, _ := afero.ReadFile(base, filepath.Join(root, "e.txt"))
-				if string(got) != seed["e.txt"] {
-					t.Fatalf("fault k=%d mutated original bytes: %q", k, got)
-				}
-				entries, derr := afero.ReadDir(base, root)
-				if derr != nil {
-					t.Fatal(derr)
-				}
-				if len(entries) != 1 || entries[0].Name() != "e.txt" {
-					var names []string
-					for _, e := range entries {
-						names = append(names, e.Name())
-					}
-					t.Fatalf("fault k=%d left leftover temp files: %v", k, names)
-				}
-			}
+		dir := t.TempDir()
+		env := NewLocalExecutionEnvironment(dir)
+		p := filepath.Join(dir, "tagged.txt")
+		if err := os.WriteFile(p, []byte("alpha\nbeta\n"), 0o750); err != nil {
+			t.Fatal(err)
 		}
-		if !sawWriteFault {
-			t.Fatal("expected at least one fault schedule index to hit writeFileAtomic")
+		beforeInfo, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFileBatchCtx(context.Background(), "tagged.txt", []FileEdit{
+			{OldString: "alpha", NewString: "ALPHA"},
+			{OldString: "beta", NewString: "BETA"},
+		}); err != nil {
+			t.Fatalf("EditFileBatchCtx: %v", err)
+		}
+		afterInfo, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !os.SameFile(beforeInfo, afterInfo) {
+			t.Fatal("unconfined edit replaced the file inode instead of writing in place")
+		}
+		if afterInfo.Mode().Perm() != beforeInfo.Mode().Perm() {
+			t.Fatalf("mode changed: got %o, want %o", afterInfo.Mode().Perm(), beforeInfo.Mode().Perm())
+		}
+		got, _ := os.ReadFile(p)
+		if string(got) != "ALPHA\nBETA\n" {
+			t.Fatalf("got %q, want %q", got, "ALPHA\nBETA\n")
 		}
 	})
 
@@ -824,38 +853,6 @@ func TestEditFileBatch_UnconfinedAtomicWriteAndPermissions(t *testing.T) {
 		got, _ := os.ReadFile(p)
 		if string(got) != orig {
 			t.Fatalf("0444 file mutated: %q", got)
-		}
-	})
-
-	t.Run("read-only parent dir refuses without modifying target", func(t *testing.T) {
-		t.Parallel()
-		if runtime.GOOS == "windows" || os.Geteuid() == 0 {
-			t.Skip("POSIX non-root chmod permissions required")
-		}
-		dir := t.TempDir()
-		sub := filepath.Join(dir, "locked")
-		if err := os.MkdirAll(sub, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		p := filepath.Join(sub, "t.txt")
-		orig := "keep\n"
-		if err := os.WriteFile(p, []byte(orig), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chmod(sub, 0o555); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = os.Chmod(sub, 0o755) })
-
-		env := NewLocalExecutionEnvironment(dir)
-		if _, err := env.EditFileBatchCtx(context.Background(), "locked/t.txt", []FileEdit{
-			{OldString: "keep", NewString: "changed"},
-		}); err == nil {
-			t.Fatal("expected error when parent directory is read-only")
-		}
-		got, _ := os.ReadFile(p)
-		if string(got) != orig {
-			t.Fatalf("target modified despite read-only parent: %q", got)
 		}
 	})
 

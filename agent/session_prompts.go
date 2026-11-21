@@ -261,9 +261,27 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	data.ManagerDiscovery = s.hubEnabled && s.reg.Get("job_list") != nil
 	data.ManagerStatus = s.hubEnabled && s.reg.Get("job_status") != nil
 
-	// The section-facing tool-availability set, canonical names straight from
-	// the registry (see promptData.HasTool).
-	data.CallableTools = s.reg.RegisteredNames()
+	// The section-facing tool-availability set: canonical names that are both
+	// registered and advertised on this session's wire tool list (e.g. OpenAI
+	// advertises apply_patch rather than edit_file while both remain registered
+	// for mid-session model switching).
+	callable := s.reg.RegisteredNames()
+	if len(actualDefs) > 0 {
+		var nameMap map[string]string
+		if s.profile != nil {
+			nameMap = s.profile.ToolNameMap()
+		}
+		advertised := make(map[string]bool, len(actualDefs))
+		for _, def := range actualDefs {
+			advertised[canonicalToolName(def.Name, nameMap)] = true
+		}
+		for name := range callable {
+			if !advertised[name] {
+				delete(callable, name)
+			}
+		}
+	}
+	data.CallableTools = callable
 
 	// ask_user's registration IS the interactive-root gate itself (spec §7
 	// point 1); reading it back from the registry avoids a second predicate

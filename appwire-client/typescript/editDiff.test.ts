@@ -34,8 +34,8 @@ test("editOperationsOf decodes canonical edits[] and legacy single-edit shapes",
       ],
     }),
   ).toEqual<EditOperation[]>([
-    { oldString: "a", newString: "b", replaceAll: true },
-    { oldString: "c", newString: "d", replaceAll: false },
+    { oldString: "a", newString: "b" },
+    { oldString: "c", newString: "d" },
   ]);
 
   expect(
@@ -45,7 +45,7 @@ test("editOperationsOf decodes canonical edits[] and legacy single-edit shapes",
       new_string: "legacy-new",
       replace_all: true,
     }),
-  ).toEqual<EditOperation[]>([{ oldString: "legacy-old", newString: "legacy-new", replaceAll: true }]);
+  ).toEqual<EditOperation[]>([{ oldString: "legacy-old", newString: "legacy-new" }]);
 
   expect(editOperationsOf({ file_path: "a.md", old_string: "only-old" })).toEqual<EditOperation[]>([
     { oldString: "only-old", newString: "" },

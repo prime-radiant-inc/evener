@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
@@ -136,21 +135,8 @@ func parseFileEdits(args map[string]any) ([]execenv.FileEdit, error) {
 	if !exists || rawEdits == nil {
 		return nil, errors.New("edit_file: edits is required")
 	}
-	var items []any
-	switch v := rawEdits.(type) {
-	case []any:
-		items = v
-	case []map[string]any:
-		items = make([]any, len(v))
-		for i, m := range v {
-			items[i] = m
-		}
-	case []execenv.FileEdit:
-		if len(v) == 0 {
-			return nil, errors.New("edit_file: edits must not be empty")
-		}
-		return slices.Clone(v), nil
-	default:
+	items, ok := rawEdits.([]any)
+	if !ok {
 		return nil, errors.New("edit_file: edits must be an array")
 	}
 	if len(items) == 0 {

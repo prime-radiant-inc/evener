@@ -358,6 +358,26 @@ func TestEditFile_AndApplyPatch_NeverBothAdvertisedInSession(t *testing.T) {
 				if got := hasTool(defs, "edit_file"); got != tc.wantEditFile {
 					t.Fatalf("%s: edit_file advertised = %v, want %v", tc.name, got, tc.wantEditFile)
 				}
+				sess.mu.Lock()
+				data, _ := sess.buildPromptData(sess.env)
+				prompt, warning, _ := sess.renderSystemPrompt(sess.env)
+				sess.mu.Unlock()
+				if warning != "" {
+					t.Fatalf("%s: renderSystemPrompt warning: %s", tc.name, warning)
+				}
+				if got := data.HasTool("apply_patch"); got != tc.wantApplyPatch {
+					t.Fatalf("%s: prompt HasTool(apply_patch) = %v, want %v", tc.name, got, tc.wantApplyPatch)
+				}
+				if got := data.HasTool("edit_file"); got != tc.wantEditFile {
+					t.Fatalf("%s: prompt HasTool(edit_file) = %v, want %v", tc.name, got, tc.wantEditFile)
+				}
+				toolUsage := systemPromptSection(t, prompt, "## Tool usage")
+				if got := strings.Contains(toolUsage, "`edit_file`"); got != tc.wantEditFile {
+					t.Fatalf("%s: Tool usage mentions edit_file = %v, want %v\n%s", tc.name, got, tc.wantEditFile, toolUsage)
+				}
+				if tc.adapter == "openai" && !strings.Contains(toolUsage, "`apply_patch`") {
+					t.Fatalf("%s: Tool usage should mention apply_patch\n%s", tc.name, toolUsage)
+				}
 			})
 		}
 	})
@@ -496,12 +516,13 @@ func TestEditFile_RepairedStringifiedEditsExecutesAndRendersLiveAndReopened(t *t
 			if item.Type != "commandExecution" || item.CallID != "c_repaired" || item.ToolName != "edit_file" {
 				continue
 			}
-			if item.Status == "inProgress" {
+			switch item.Status {
+			case "inProgress":
 				sawProjectedStart = true
 				if summary := toolInputSummary("edit_file", json.RawMessage(item.ArgumentsJSON)); summary != "code.txt" {
 					t.Fatalf("reopened toolInputSummary = %q, want %q", summary, "code.txt")
 				}
-			} else if item.Status == "completed" {
+			case "completed":
 				sawProjectedDone = true
 			}
 		}

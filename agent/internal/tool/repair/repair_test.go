@@ -1,6 +1,7 @@
 package repair
 
 import (
+	"maps"
 	"reflect"
 	"slices"
 	"testing"
@@ -767,9 +768,7 @@ func TestRepairArgs_MixedFormPreservesConflictingRootKeys(t *testing.T) {
 				"file_path": "a.go",
 				"edits":     tc.editsVal,
 			}
-			for k, v := range tc.extraKeys {
-				args[k] = v
-			}
+			maps.Copy(args, tc.extraKeys)
 			before := cloneTestValue(args)
 			out, _ := RepairArgs(multiEditParams(), args)
 			if !reflect.DeepEqual(args, before) {

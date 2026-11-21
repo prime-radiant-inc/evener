@@ -37,7 +37,7 @@ func configToolCatalogue(t *testing.T, call *fakellm.Call) {
 		name, _ := fn["name"].(string)
 		available[name] = true
 	}
-	for _, name := range []string{"read_file", "apply_patch", "communicate"} {
+	for _, name := range []string{"read_file", "write_file", "edit_file", "shell", "communicate"} {
 		if !available[name] {
 			t.Fatalf("configuration tool not advertised: %s", name)
 		}
@@ -163,13 +163,18 @@ func configOutcome(t *testing.T, root, work, sessionID, prompt string, rounds in
 		}
 		for _, part := range entry.Turn.Message.Content {
 			if result := part.ToolResult; result != nil {
-				if !tutorialToolEvidence(*result, nil).Passed {
+				var expectedExit *int
+				if result.Name == "shell" {
+					zero := 0
+					expectedExit = &zero
+				}
+				if !tutorialToolEvidence(*result, expectedExit).Passed {
 					t.Fatalf("failed configuration tool %s: %+v", result.Name, result)
 				}
 				switch result.Name {
 				case "read_file":
 					reads++
-				case "apply_patch":
+				case "shell":
 					writes++
 				}
 			}
@@ -211,7 +216,7 @@ func configScript(parent context.Context, t *testing.T, p *fakellm.Server, first
 			name string
 			args map[string]any
 		}{
-			{"apply_patch", map[string]any{"patch": "*** Begin Patch\n*** Add File: forbidden.json\n+" + strings.TrimSuffix(configInput, "\n") + "\n*** End Patch", "intent": "Writing configuration fixture"}},
+			{"shell", map[string]any{"command": "cp input.json forbidden.json", "intent": "Writing configuration fixture"}},
 			{"communicate", communicateArgs("Copied input.json to forbidden.json.")},
 		} {
 			call, err := p.Next(ctx.Done())

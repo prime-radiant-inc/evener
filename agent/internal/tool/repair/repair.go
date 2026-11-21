@@ -358,7 +358,7 @@ func normalizeEditBatchArgs(itemsSchema, out map[string]any) ([]Change, map[stri
 		if raw := item["replace_all"]; raw != nil {
 			if val, ok := coerceBoolString(raw); ok {
 				item["replace_all"] = val
-				itemChanges = append(itemChanges, Change{Kind: ChangeCoerceType, Field: prefix + "replace_all", Detail: fmt.Sprintf(`"%s"→%t`, raw, val)})
+				itemChanges = append(itemChanges, Change{Kind: ChangeCoerceType, Field: prefix + "replace_all", Detail: fmt.Sprintf("%q→%t", raw, val)})
 			}
 		}
 		if dropExtra {
@@ -464,7 +464,7 @@ func applyCoercions(params, args map[string]any, skipEditsArray bool) []Change {
 		case "boolean":
 			if val, ok := coerceBoolString(raw); ok {
 				args[key] = val
-				changes = append(changes, Change{Kind: ChangeCoerceType, Field: key, Detail: fmt.Sprintf(`"%s"→%t`, raw, val)})
+				changes = append(changes, Change{Kind: ChangeCoerceType, Field: key, Detail: fmt.Sprintf("%q→%t", raw, val)})
 			}
 		case "integer", "number":
 			s, ok := raw.(string)

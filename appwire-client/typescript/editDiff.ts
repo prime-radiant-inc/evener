@@ -10,7 +10,6 @@ import { str } from "./toolCallText";
 export interface EditOperation {
   readonly oldString: string;
   readonly newString: string;
-  readonly replaceAll?: boolean;
 }
 
 export type DiffLineKind = "header" | "add" | "del" | "context" | "meta";
@@ -29,24 +28,14 @@ export function editOperationsOf(args: Record<string, unknown>): EditOperation[]
       const newString = str(item, "new_string");
       if (oldString === undefined || newString === undefined) return null;
       if (item.replace_all !== undefined && typeof item.replace_all !== "boolean") return null;
-      ops.push(
-        item.replace_all !== undefined
-          ? { oldString, newString, replaceAll: item.replace_all }
-          : { oldString, newString },
-      );
+      ops.push({ oldString, newString });
     }
     return ops;
   }
   const old = str(args, "old_string");
   const next = str(args, "new_string");
   if (old === undefined && next === undefined) return null;
-  return [
-    {
-      oldString: old ?? "",
-      newString: next ?? "",
-      ...(typeof args.replace_all === "boolean" ? { replaceAll: args.replace_all } : {}),
-    },
-  ];
+  return [{ oldString: old ?? "", newString: next ?? "" }];
 }
 
 // Single diff-synthesis implementation for one or more edits to a single file.

@@ -80,9 +80,10 @@ func promptConfigs() []promptConfig {
 			checkPromptInput(t, "an available agent with tasks", withTasks, true)
 			checkPromptInput(t, "an available agent without tasks", withoutTasks, true)
 			checkPromptInput(t, "a task that inserts parent tasks", insertsParentTasks, true)
-			for _, name := range []string{"read_transcript", "find_session_transcripts", "job_watch", "compact_context", "apply_patch"} {
+			for _, name := range []string{"read_transcript", "find_session_transcripts", "job_watch", "compact_context", "edit_file"} {
 				checkPromptInput(t, "HasTool "+name, d.HasTool(name), true)
 			}
+			checkPromptInput(t, "HasTool apply_patch", d.HasTool("apply_patch"), false)
 		}},
 		{"root headless openai coordinator", buildRootHeadlessCoordinatorSession, func(t *testing.T, d promptData) {
 			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")

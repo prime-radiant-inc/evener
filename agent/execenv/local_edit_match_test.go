@@ -94,7 +94,7 @@ func TestFindFuzzyMatchSpans_AmbiguousLineNumbers(t *testing.T) {
 
 	// The candidate list stops at ten lines even when more variants match.
 	var many strings.Builder
-	for i := 0; i < 12; i++ {
+	for i := range 12 {
 		if i > 0 {
 			many.WriteString("middle\n")
 		}

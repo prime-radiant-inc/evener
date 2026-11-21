@@ -11,35 +11,36 @@ An audit of `pi` (`@earendil-works/pi-coding-agent` 0.85.1), Claude Code (`Edit`
 
 1. **One `edits[]`-only tool beats dual-mode schemas (`pi` `#2639`):** exposing both top-level `old_string`/`new_string` and `edits[]` produces frequent invalid calls, and Anthropic strips root-level `oneOf`/`anyOf`/`allOf`. Making `edits[]` the sole schema makes batching disjoint changes in one file the model's default habit.
 2. **RL priors require schema-generic argument healing (Armin Ronacher, July 2026):** frontier models heavily RL-trained on Claude Code's `str_replace` sometimes send top-level `old_string`/`new_string`, stringify `edits` as a JSON string (Opus 4.6, GLM-5.1), wrap a bare edit object, or append invented trailing keys inside `edits[]` (`type`, `unique`, `notes`) even when `old_string`/`new_string` are byte-correct. Keeping Claude/Gemini field names (`file_path`, `old_string`, `new_string`, `replace_all`) and healing those shapes in `agent/internal/tool/repair` eliminates retry loops without loosening execution semantics.
-3. **Byte-faithful CRLF, mixed-ending, and BOM handling:** LLMs always emit LF (`\n`) and never emit a UTF-8 BOM, and Evener's `read_file` already strips `\r` from CRLF lines (`agent/execenv/local_files.go:296`). Matching in LF space while mapping matched spans back to exact original byte offsets preserves untouched bytes verbatim (including mixed line endings and leading BOM) and applies the replaced span's line ending only to inserted text.
+3. **Pi-style CRLF and UTF-8 BOM handling:** LLMs always emit LF (`\n`), while Evener's `read_file` strips `\r` from CRLF lines (`agent/execenv/local_files.go:296`) and keeps any leading UTF-8 BOM on line 1. Strip a leading UTF-8 BOM and detect CRLF from the first line ending before matching in LF space (accepting line 1 with or without the leading BOM), splice once, then restore CRLF and prepend the original BOM once.
 4. **Tight fuzzy matching beats deep fallback ladders (OpenCode `#32559`, `#44996`):** deep Levenshtein/block-anchor cascades silently bind to the wrong block in repetitive code and contradict exact-match error copy. Evener's whitespace-normalized fallback stays narrow and safe when it returns exact matched byte offsets, checks uniqueness (including exact-substring ambiguity outside the matched line/window), and reports truthfully what matchers ran.
 5. **Errors are recovery prompts, and tool descriptions stay concise (OpenCode `edit.txt`, Amp, `pi`):** collecting all edit misses/ambiguities in one pass, naming 1-based line numbers for duplicate hits and nearest regions, telling the model never to copy `read_file` line-number prefixes (`12\t`), and stating rules once without repetition cuts retry turns and per-turn schema tokens.
 
-This design brings atomic single-file multi-edit, clean repair, byte-faithful line endings, and actionable diagnostics to Evener's `edit_file` (and `memory_edit`, which shares the same schema builder and executor).
+This design brings atomic single-file multi-edit, clean repair, CRLF/BOM preservation, single-edit-tool-per-session advertisement, and actionable diagnostics to Evener's `edit_file` (and `memory_edit`, which shares the same schema builder and executor).
 
 ## Goals, Non-Goals, and Anti-Goals
 
 ### Goals
-- Support atomic, all-or-nothing multi-edit on a single file in `edit_file` via an `edits[]`-only schema, including atomic publication on disk (temp file + rename) for both confined and unconfined writes.
+- Support atomic, all-or-nothing multi-edit on a single file in `edit_file` via an `edits[]`-only schema: every edit validates, matches, overlap-checks, and splices in memory before touching disk.
 - Match every edit against the original file text and reject overlapping or nested spans cleanly before writing.
-- Preserve per-edit `replace_all` (with explicit span and expanded-output bounds across every match path), Evener's whitespace-normalized fuzzy matching (returning exact byte offsets with uniqueness checking), CRLF/mixed-ending/BOM preservation for workspace files, and nearest-region failure diagnostics with 1-based line numbers.
+- Preserve per-edit `replace_all` (with explicit span and expanded-output bounds across every match path), Evener's whitespace-normalized fuzzy matching (returning exact byte offsets with uniqueness checking), Pi-style CRLF and UTF-8 BOM preservation (accepting line 1 copied from `read_file` with or without leading BOM), and nearest-region failure diagnostics with 1-based line numbers.
+- Expose only one file-editing tool per session (`apply_patch` on `SurfaceOpenAI`, `edit_file` on `SurfaceAnthropic`, `SurfaceGoogle`, and `SurfaceGeneric`, keeping both registered for mid-session model switching and gating system prompt tool guidance on advertised tools).
 - Let `memory_edit` inherit atomic multi-edit through the shared builder (`DefMemoryEdit()`) and `execFileEditWith`, while referencing `memory_read`/`memory_write` in its description, preserving the memory guide's LF stamping contract, and updating `docs/tools/memory.md` in the same change.
-- Generalize `agent/internal/tool/repair` to handle legacy-only single-item array promotion, mixed-form conflict rejection (including explicit `edits: null`), stringified JSON arrays, bare-object wrapping, and recursive nested aliasing, coercion, and unknown-key stripping in the right phase order without hardcoding `edit_file` field names.
+- Add a focused edit-batch helper in `agent/internal/tool/repair` for legacy top-level `{old_string, new_string}` promotion (rejecting mixed calls carrying both `edits` and top-level fields), stringified JSON arrays/objects, bare-object wrapping, and item-level aliasing, boolean coercion, and unknown-key stripping.
 - Tighten the `edit_file` tool description and add a one-line batching nudge in `agent/prompts/system.md.tmpl`.
-- Render multi-edit diffs (including calls accepted via argument repair and historical single-edit transcripts) with consistent header-vs-content line classification across `@evener/appwire-client`, web UI, mobile-native, and Go transcript rendering.
+- Render multi-edit diffs (canonical `edits[]` and historical single-edit `{old_string, new_string}` transcripts) with consistent header-vs-content line classification across `@evener/appwire-client`, web UI, mobile-native, and Go transcript rendering.
 
 ### Non-Goals
 - Multi-file edits inside `edit_file`. Cross-file patching remains `apply_patch`'s job (keeping `edit_file` single-file preserves sandbox escalation, `memory_edit` reuse, and web "open beside").
-- Changing which providers expose `edit_file` vs `apply_patch` (`agent/provider/profile.go` stays unchanged).
+- Per-span mixed CRLF/LF offset translation or unconfined temp+rename replacement (unconfined writes stay in-place via `afero.WriteFile`, matching `WriteFile` and `WriteFileRaw`, which preserves inode identity, permissions, symlinks, and OS extended attributes / macOS Finder tags; sandboxed writes continue using `t.sfs.writeFile`).
 - Hash-anchored editing (`hashline`) or changing `read_file`'s wire format (noted separately as a potential future direction for non-Claude/non-OpenAI models).
 - Positional/occurrence-index matching or deep Levenshtein fuzzy cascades.
 
 ### Anti-Goals
 - **Partial writes or truncation on failure:**
   - Any validation, match, ambiguity, overlap, resource-bound, or no-op refusal fails before invoking any `finish` (`stamp`) callback and writes nothing.
-  - Any mid-write I/O failure during publication leaves the original file bytes on disk (and, for `memory_edit`, the stored page and session memory index) unchanged, even if `finish` already computed stamped bytes in memory before the write attempt.
+  - Under sandboxed confinement (`t.sfs != nil`), publication uses `t.sfs.writeFile` (atomic temp+`renameat`), leaving the stored page and session memory index unchanged on write failure.
 - **Silent discard of mixed calls:** any call carrying both `edits` (present with any value, including `null`) and top-level `old_string`/`new_string` must be rejected before dispatch, never promoted or partially executed after `dropUnknown` strips the top-level keys.
-- **Ambiguous dual-mode schemas:** never expose both top-level `old_string`/`new_string` and `edits[]` in the advertised schema.
+- **Ambiguous dual-mode schemas or dual edit tools:** never expose both top-level `old_string`/`new_string` and `edits[]` in the advertised schema, and never advertise both `apply_patch` and `edit_file` in the same session.
 - **Silent non-atomic fallback:** if an `ExecutionEnvironment` does not support batch editing, a multi-edit call (`len(edits) > 1`) must error rather than loop over single-edit calls.
 - **Misleading error copy:** never tell the model "must match exact whitespace" when whitespace-normalized fuzzy matching also ran.
 
@@ -205,43 +206,20 @@ Package-level resource caps (variables like `MaxWholeFileReadBytes` in `agent/ex
 - `EditFileBatchWithCtx(ctx context.Context, path string, edits []FileEdit, finish func(edited []byte) []byte) (string, error)`
 - Existing `EditFileWithCtx(ctx, path, oldString, newString, replaceAll, finish)` delegates directly to `EditFileBatchWithCtx(ctx, path, []FileEdit{{OldString: oldString, NewString: newString, ReplaceAll: replaceAll}}, finish)` so there is one engine and zero duplicated matching/writing logic.
 
-#### Atomic Matching, Byte-Faithful Splicing, and Publication Algorithm (`agent/execenv/local_files.go`)
-
-```mermaid
-flowchart TD
-    A[Acquire fileTarget + checkWritable] --> B[Validate edits non-empty and old_string non-empty]
-    B --> C[Read original file bytes once with ctx]
-    C --> D[Build LF view + detect BOM and default line ending]
-    D --> E[Match all edits against LF view, enforcing span budget on every path]
-    E --> F{Any miss, ambiguity, or span-cap error?}
-    F -- Yes --> G[Return all edit errors with line numbers + nearest regions, write nothing]
-    F -- No --> H[Sort LF spans, check overlap, translate endpoints in one O(1)-extra-memory pass]
-    H --> I{Any overlap?}
-    I -- Yes --> J[Return error naming both edit indices, write nothing]
-    I -- No --> K[Compute final byte length from scalar lengths and check output byte cap]
-    K --> L{Within cap?}
-    L -- No --> M[Return output-cap error before allocating, write nothing]
-    L -- Yes --> N[Single-pass splice into pre-sized buffer preserving untouched bytes]
-    N --> O{Spliced bytes equal original bytes?}
-    O -- Yes --> P[Return no-op error without calling finish, write nothing]
-    O -- No --> Q[Run optional finish hook, verify write admission, atomic temp+rename publish]
-```
+#### Atomic Matching, Pi-Style CRLF/BOM Splicing, and Publication (`agent/execenv/local_files.go`)
 
 Walkthrough:
 1. **Target & write preflight:** Call `e.fileTarget("edit_file", path, targetWrite)` and defer `t.release()`. Under sandbox (`t.sfs != nil`), run `t.sfs.checkWritable("edit_file", t.abs)` first so a non-writable path always returns a clean sandbox denial (enabling human escalation on containment denials) rather than an input or match error.
 2. **Input guard:** Reject `len(edits) == 0`. Reject any entry with `edits[i].OldString == ""`, collecting all empty-`old_string` errors (naming `edits[i]` when `len(edits) > 1`) before doing file I/O.
-3. **Single read + LF view with exact original-byte offset mapping:** Read raw bytes `origBytes` once via `t.sfs.readFileCtx` (sandboxed) or `readFileCappedCtx` (unconfined).
-   - Detect an optional leading UTF-8 BOM (`\xEF\xBB\xBF`, `bomLen = 3` or `0`) and treat `body := origBytes[bomLen:]` as the matchable body so an invisible BOM never breaks an edit touching line 1 and stays untouched in `origBytes[:bomLen]` on splice.
-   - Build the LF view `lfText` of `body` without allocating a per-line offset index:
-     - On pure LF files (`!bytes.Contains(body, []byte("\r\n"))`), `hasCRLF = false` and `lfText` is `string(body)` with **zero extra allocation or offset translation**.
-     - On CRLF or mixed-ending files (`hasCRLF = true`), `lfText = strings.ReplaceAll(string(body), "\r\n", "\n")`. No per-CRLF offset table is stored; only the accepted sorted LF span endpoints are translated back to `origBytes` offsets in a single O(N) forward pass over `body` with O(1) extra memory (Step 5).
-   - Normalize each `ed.OldString` and `ed.NewString` `\r\n` -> `\n` (`oldLF`, `newLF`) once per edit, and precompute the scalar lengths `lenLF := len(newLF)` and `lenCRLF := lenLF + strings.Count(newLF, "\n")` (zero CRLF string allocation yet!).
-   - Compute `defaultCRLF`: `true` if the file's first line ending is CRLF, else `false`.
+3. **Single read + Pi-style BOM/LF view:** Read raw bytes `origBytes` once via `t.sfs.readFileCtx` (sandboxed) or `readFileCappedCtx` (unconfined).
+   - Detect an optional leading UTF-8 BOM (`\xEF\xBB\xBF`) and strip it into `bom` before matching.
+   - Detect `useCRLF` from the first line ending in the body (`\r\n` vs `\n`), and normalize `\r\n` -> `\n` into `lfText`.
+   - Normalize each `ed.OldString` and `ed.NewString` `\r\n` -> `\n` (`oldLF`, `newLF`). When `bom != ""` and `oldLF` begins with `bom` (with remaining non-empty text, as when copied verbatim from `read_file` line 1), strip `bom` from `oldLF` and `newLF` so first-line edits match cleanly and emit the BOM exactly once.
 4. **Match ALL edits against `lfText` (single-scan per edit, enforce span budget on EVERY path, collect all errors):**
    For each `i, ed := range edits`:
    - Call `idx := strings.Index(lfText, oldLF)` **once**.
    - **Exact-match path (`idx >= 0`):**
-     - If `!ed.ReplaceAll`: check for a second occurrence starting at **`idx + 1`** (`second := strings.Index(lfText[idx+1:], oldLF)`). Using `idx + 1` catches self-overlapping needles such as `old_string: "ana"` in `"banana"` as ambiguous rather than silently picking the first occurrence. If `second >= 0`, record an ambiguity error for `edits[i]` listing the 1-based line numbers of occurrences (capped at 10) and continue. Otherwise check `len(spans)+1 > MaxEditFileSpans`; if exceeded, record a recoverable span-limit error and stop collecting further spans (returning the error without writing). Otherwise append span `{lfStart: idx, lfEnd: idx + len(oldLF), editIndex: i}`.
+     - If `!ed.ReplaceAll`: check for a second occurrence starting at **`idx + 1`** (`second := strings.Index(lfText[idx+1:], oldLF)`). Using `idx + 1` catches self-overlapping needles such as `old_string: "ana"` in `"banana"` as ambiguous rather than silently picking the first occurrence. If `second >= 0`, record an ambiguity error for `edits[i]` listing the 1-based line numbers of occurrences (capped at 10) and continue. Otherwise check `len(spans)+1 > MaxEditFileSpans`; if exceeded, record a recoverable span-limit error and stop collecting further spans (returning the error without writing). Otherwise append span `{start: idx, end: idx + len(oldLF), editIndex: i}`.
      - If `ed.ReplaceAll`: use standard left-to-right non-overlapping matches (matching `strings.ReplaceAll`), advancing `pos` by `len(oldLF)` after each match and checking `len(spans)+1 > MaxEditFileSpans` **before** every append; if exceeded, record a recoverable span-limit error and stop immediately.
    - **Fuzzy fallback (`idx < 0`):**
      - Compute `remaining := MaxEditFileSpans - len(spans)`.
@@ -252,29 +230,19 @@ Walkthrough:
      - **Substring ambiguity guard for `!ed.ReplaceAll`:** for a single fuzzy match `[start, end)`, verify that the verbatim matched text `lfText[start:end]` does not also appear elsewhere in `lfText` as an exact substring (`strings.Index(lfText[:start], matched) >= 0 || strings.Index(lfText[end:], matched) >= 0`). If it does, record an ambiguity error instead of silently editing either location.
      - Mark `usedFuzzy = true` and append each returned fuzzy span directly (using its own `(start, end)` offsets, never diverting to an earlier substring).
    - If any errors were collected across `edits`, return them joined together without writing anything to disk.
-5. **Sort LF spans, check overlap, translate endpoints in O(1) extra memory, and choose per-span newline flag:**
-   - Sort `spans` by `lfStart` ascending, then `lfEnd` ascending, then `editIndex` ascending.
+5. **Sort spans and reject overlaps:**
+   - Sort `spans` by `start` ascending, then `end` ascending, then `editIndex` ascending.
    - For `k := 1; k < len(spans); k++`:
-     - If `spans[k-1].lfEnd > spans[k].lfStart`: fail the whole call naming `edits[spans[k-1].editIndex]` and `edits[spans[k].editIndex]` and instructing the model to merge overlapping or nearby edits into one entry.
-     - Adjacent touching spans (`spans[k-1].lfEnd == spans[k].lfStart`) are disjoint and allowed.
-     - Every accepted span satisfies `lfEnd > lfStart` (enforced by non-empty `old_string` and non-empty normalized fuzzy needle), so identical duplicate edits always trigger overlap.
-   - Translate sorted, non-overlapping `(lfStart, lfEnd)` endpoints to `(origStart, origEnd)` in `origBytes`:
-     - When `!hasCRLF`, `origStart = bomLen + lfStart` and `origEnd = bomLen + lfEnd` directly.
-     - When `hasCRLF`, walk `body` once in forward order tracking `(origPos, lfPos)` and filling `origStart`/`origEnd` for each sorted span in order (O(len(body)) time, O(1) extra memory, independent of line count).
-   - Set each span's boolean `useCRLF` from the original replaced slice `origBytes[origStart:origEnd]` (`true` if it contains `\r\n`, `false` if it contains `\n` without `\r\n`, else `defaultCRLF`). No per-span string or byte-slice allocation happens here.
-6. **Output cap check BEFORE expansion, single-pass pre-sized splice, and exact no-op guard:**
-   - Compute exact `outLen := int64(len(origBytes))` plus, for each span, `(lenCRLF or lenLF for sp.editIndex) - int64(sp.origEnd - sp.origStart)` using only the precomputed scalar lengths. If `outLen > MaxEditFileOutputBytes`, return a recoverable size-limit error **before** expanding any CRLF replacement string or allocating the output buffer.
-   - Allocate `edited := make([]byte, 0, outLen)` once. Lazily cache at most one CRLF-converted string per `edits[i]` (only if at least one span for `edits[i]` has `useCRLF && lenCRLF != lenLF`), or stream `newLF` replacing `\n` with `\r\n` directly into `edited`. Copy untouched `origBytes[cursor:sp.origStart]` verbatim, append the span's replacement, then append trailing `origBytes[cursor:]`. Untouched lines in mixed-ending files stay 100% byte-for-byte intact.
-   - Check `bytes.Equal(edited, origBytes)` **before** calling `finish` or writing. If equal, return a no-op error without calling `finish` or writing to disk. (Catches both single-edit no-ops and adjacent cancelling edits like `a`->`ab` + `bc`->`c` on `abc`, while still permitting intentional whitespace cleanup via fuzzy match.)
-7. **Finish hook (`memory_edit` formatting contract) and atomic publication:**
-   - **Formatting contract for `finish != nil` (`memory_edit`):** `finish` (`stamp` in `agent/session_tools_memory.go`) computes stamped bytes in memory from `edited` right before publication. When `memory_edit` stamps a Markdown page, `frontmatter.SetField` produces LF without a leading BOM, matching `docs/product/memory.md` (which states that stamped pages accept LF/CRLF/CR input and normalize frontmatter on stamp). Workspace `edit_file` calls pass `finish == nil` and preserve original BOM and per-line endings verbatim.
-   - **Atomic publication:**
-     - Sandboxed (`t.sfs != nil`): `t.sfs.writeFile("edit_file", t.abs, edited, 0o644)` already publishes atomically via temp file + `renameat` under the directory fd (preserving regular-file permissions and refusing symlinks).
-     - Unconfined (`t.sfs == nil`): publish atomically inside `e.filesystem()` via `writeFileAtomic(fsys, targetAbs, edited)` instead of `afero.WriteFile` (`O_TRUNC`):
-       1. **Stay in `fsys`'s namespace:** resolve symlinks ONLY when `fsys` is a real OS filesystem (never call host `filepath.EvalSymlinks` against `MemMapFs` or `BasePathFs` logical paths such as `/fuzzroot/target.txt`). On `OsFs`, resolve the symlink target so the sibling temp file is created in the resolved target's directory and `Rename` updates the symlink target rather than replacing the symlink itself (preserving existing unconfined symlink behavior).
-       2. **Preserve target write admission:** before creating a temp file or renaming, verify the existing target file is writable by opening it with `fsys.OpenFile(resolvedTarget, os.O_WRONLY, 0)` (no `O_TRUNC`!) and closing it immediately. A read-only target file (`0o444`) in a writable directory is therefore refused just as `O_TRUNC` would refuse it, instead of being bypassed by `rename`.
-       3. **Capture mode and publish atomically:** `Stat` `resolvedTarget` for its existing file mode (default `0o644`). Create a unique sibling temp file in `filepath.Dir(resolvedTarget)` via `afero.TempFile` (noting that atomic rename requires write access to the target's parent directory; if parent directory access is denied, return an actionable error without modifying the target). Write all bytes, `Chmod` to the captured mode, `Close`, and `fsys.Rename(tmpName, resolvedTarget)`.
-       4. **Cleanup on failure:** on any write, chmod, close, or rename error, remove the temp file and return the error, leaving the original file bytes untouched.
+     - If `spans[k-1].end > spans[k].start`: fail the whole call naming `edits[spans[k-1].editIndex]` and `edits[spans[k].editIndex]` and instructing the model to merge overlapping or nearby edits into one entry.
+     - Adjacent touching spans (`spans[k-1].end == spans[k].start`) are disjoint and allowed.
+6. **Output cap check, single-pass splice, CRLF+BOM restore, and exact no-op guard:**
+   - Check the pre-expansion LF output length against `MaxEditFileOutputBytes`, splice into a pre-sized `strings.Builder` (stripping any redundant leading `bom` at `sp.start == 0`), check the post-CRLF final byte length against `MaxEditFileOutputBytes`, restore `\r\n` when `useCRLF`, and prepend `bom`.
+   - Check `bytes.Equal(edited, origBytes)` **before** calling `finish` or writing. If equal, return a no-op error without calling `finish` or writing to disk.
+7. **Finish hook (`memory_edit` formatting contract) and write:**
+   - **Formatting contract for `finish != nil` (`memory_edit`):** `finish` (`stamp` in `agent/session_tools_memory.go`) computes stamped bytes in memory from `edited` right before writing.
+   - **Write path:**
+     - Sandboxed (`t.sfs != nil`): `t.sfs.writeFile("edit_file", t.abs, edited, 0o644)` publishes atomically via temp file + `renameat` under the directory fd (preserving regular-file permissions and refusing symlinks).
+     - Unconfined (`t.sfs == nil`): `afero.WriteFile(e.filesystem(), t.abs, edited, 0o644)` writes in place, matching `WriteFile`, `WriteFileRaw`, and prior `EditFile` — preserving inode identity, file mode, symlink targets, OS extended attributes / macOS Finder tags, and read-only (`0o444`) target refusals.
 8. **Confirmation summary:**
    - Single edit (`len(edits) == 1`): `edited <path>: <n> replacement[s][fuzzyNote]`.
    - Multiple edits (`len(edits) > 1`): `edited <path>: <totalSpans> replacement[s] across <len(edits)> edits[fuzzyNote]`.
