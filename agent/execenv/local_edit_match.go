@@ -31,11 +31,13 @@ func findFuzzyMatch(content, oldString string) string {
 // findFuzzyMatchSpans scans the file content for exact byte ranges that match
 // oldString when whitespace is normalized. replaceAll collects every
 // non-overlapping match; otherwise the single match is returned, or its
-// candidate 1-based lines in ambigLines when the needle is ambiguous. More
-// than maxSpans accepted matches reports limitExceeded and discards the
-// spans. The content is scanned segment by segment: a line-heavy file at the
-// whole-file read cap would otherwise allocate ~16 bytes of slice header per
-// line for every line in it (issue #4556).
+// candidate 1-based lines in ambigLines when the needle is ambiguous. An
+// accepted match past the maxSpans budget reports limitExceeded and discards
+// the spans; ambiguity does not consume the budget, so a distinct second match
+// reports ambigLines even at maxSpans == 1. The content is scanned segment by
+// segment: a line-heavy file at the whole-file read cap would otherwise
+// allocate ~16 bytes of slice header per line for every line in it
+// (issue #4556).
 func findFuzzyMatchSpans(content, oldString string, replaceAll bool, maxSpans int) (spans []byteSpan, ambigLines []int, limitExceeded bool) {
 	normOld := normalizeWS(oldString)
 	if normOld == "" {
@@ -61,11 +63,11 @@ func findFuzzyMatchSpans(content, oldString string, replaceAll bool, maxSpans in
 		if len(spans) > 0 && span.start < lastEnd {
 			return false
 		}
-		if len(spans) >= maxSpans {
-			overflow = true
-			return true
-		}
 		if replaceAll || len(spans) == 0 {
+			if len(spans) >= maxSpans {
+				overflow = true
+				return true
+			}
 			if len(spans) == 0 {
 				firstLine = atLine
 			}

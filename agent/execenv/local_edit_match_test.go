@@ -174,6 +174,21 @@ func TestFindFuzzyMatchSpans_MaxSpansLimit(t *testing.T) {
 			t.Fatalf("maxSpans=2 with three matches = (%v, %v, %v), want (nil, nil, true)", spans, ambigLines, limitExceeded)
 		}
 	})
+
+	// Single-match mode never adds a second span, so a one-span budget must
+	// not turn a second distinct match into an overflow: ambiguity outranks
+	// the budget and reports its candidate lines instead.
+	t.Run("one span budget two matches reports ambiguity", func(t *testing.T) {
+		t.Parallel()
+		content := "  foo bar\nmiddle\n\tfoo\tbar\n"
+		spans, ambigLines, limitExceeded := findFuzzyMatchSpans(content, "foo bar", false, 1)
+		if limitExceeded || spans != nil {
+			t.Fatalf("maxSpans=1 with two matches = (%v, %v, %v), want ambiguity without overflow", spans, ambigLines, limitExceeded)
+		}
+		if want := []int{1, 3}; !slices.Equal(ambigLines, want) {
+			t.Fatalf("ambiguous line numbers = %v, want %v", ambigLines, want)
+		}
+	})
 }
 
 // TestNearestFileRegion_IncludesOneBasedLineNumber pins the near-miss

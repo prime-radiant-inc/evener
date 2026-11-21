@@ -2253,6 +2253,12 @@ func extractRenderedEditOps(m map[string]any) []renderedEditOp {
 		}
 		return nil
 	}
+	// Mixed-form calls (edits[] plus top-level edit fields) are ambiguous, and
+	// the TypeScript renderer rejects them; match it rather than guessing that
+	// the root fields are stale.
+	if hasRenderedRootEditField(m) {
+		return nil
+	}
 	items, ok := renderedEditItems(raw)
 	if !ok || len(items) == 0 {
 		return nil
@@ -2270,6 +2276,22 @@ func extractRenderedEditOps(m map[string]any) []renderedEditOp {
 		ops = append(ops, op)
 	}
 	return ops
+}
+
+// hasRenderedRootEditField reports whether m carries any top-level single-edit
+// field, canonical or alias alike.
+func hasRenderedRootEditField(m map[string]any) bool {
+	for canonical, aliases := range renderedEditAliases {
+		if _, ok := m[canonical]; ok {
+			return true
+		}
+		for _, alias := range aliases {
+			if _, ok := m[alias]; ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // renderedEditItems normalizes an edits value, unwrapping JSON-stringified ones.

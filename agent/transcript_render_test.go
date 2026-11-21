@@ -1251,6 +1251,16 @@ func TestTranscriptRenderEditFileSummary(t *testing.T) {
 			want: "a.go",
 		},
 		{
+			name: "mixed edits and root keys fall back to path",
+			args: `{"file_path":"a.go","edits":[{"old_string":"aaaa","new_string":"bbbbbb"}],"old_string":"zzzz","new_string":"yyyy"}`,
+			want: "a.go",
+		},
+		{
+			name: "mixed edits and root alias falls back to path",
+			args: `{"file_path":"a.go","edits":[{"old_string":"aaaa","new_string":"bbbbbb"}],"replaceAll":true}`,
+			want: "a.go",
+		},
+		{
 			name: "legacy top-level edit preserved",
 			args: `{"file_path":"a.go","old_string":"aaaa","new_string":"bbbbbb"}`,
 			want: "a.go (replace 4→6 chars)",
