@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -758,7 +759,7 @@ func (a *interactionStreamAccumulator) finishOpenSlot(slot *interactionStreamSlo
 }
 
 func decodeInteractionStream(
-	sctx context.Context,
+	sctx, parentCtx context.Context,
 	cancel context.CancelFunc,
 	resp *http.Response,
 	s *llm.ChanStream,
@@ -784,6 +785,7 @@ func decodeInteractionStream(
 		Resp:          resp,
 		Stream:        s,
 		Attempt:       attempt,
+		ParentCtx:     parentCtx,
 		StatusCode:    resp.StatusCode,
 		Cancel:        cancel,
 		Finished:      &finished,
@@ -798,6 +800,9 @@ func decodeInteractionStream(
 					raw:      map[string]any{"status": status, "interaction_id": acc.id},
 					cause:    parseErr,
 				}
+			}
+			if errors.Is(parseErr, context.DeadlineExceeded) || errors.Is(parseErr, llm.ErrResponseIdleTimeout) {
+				return llm.WrapContextError(provider, parseErr)
 			}
 			return llm.NewStreamError(provider, runner.IncompleteMsg, parseErr)
 		},

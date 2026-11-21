@@ -48,7 +48,7 @@ func replayRecordedInteractionStream(body []byte, requestedModel string) (llm.Re
 		Body:       io.NopCloser(bytes.NewReader(body)),
 	}
 	stream := llm.NewChanStream(nil)
-	go decodeInteractionStream(ctx, cancel, resp, stream, llm.Request{Model: requestedModel}, "", "", "", llm.APILogCredentialMaterial{}, nil, false, false, nil)
+	go decodeInteractionStream(ctx, nil, cancel, resp, stream, llm.Request{Model: requestedModel}, "", "", "", llm.APILogCredentialMaterial{}, nil, false, false, nil)
 
 	var final *llm.Response
 	var streamErr error

@@ -359,7 +359,7 @@ func (p *Protocol) openStreamWithBody(ctx context.Context, req llm.Request, res 
 		return nil, llm.RewriteErrorProvider(err, res.Instance)
 	}
 	return protocolhttp.Stream(ctx, call, func(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, r *protocolhttp.Result, attempt *transport.APIAttemptCapture) {
-		decodeInteractionStream(sctx, cancel, resp, s, req, res.Instance, res.WireID, r.EndpointURL, r.Material, attempt, summariesDisabled, stored, p.Hasher)
+		decodeInteractionStream(sctx, r.ParentCtx, cancel, resp, s, req, res.Instance, res.WireID, r.EndpointURL, r.Material, attempt, summariesDisabled, stored, p.Hasher)
 	})
 }
 

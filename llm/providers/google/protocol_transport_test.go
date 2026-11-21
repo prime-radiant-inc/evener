@@ -725,6 +725,220 @@ func TestProtocolIncompleteStreamNamesTheInstanceAndDistinguishesQueuedEOF(t *te
 			t.Fatalf("omitted-store in_progress EOF raw = %#v, want interaction_id=int_omitted_1", leOmitted.Raw())
 		}
 	})
+
+	t.Run("stored post-acceptance adapter deadlines are permanent and preserve interaction ID through StreamGenerate", func(t *testing.T) {
+		noSleep := func(context.Context, time.Duration) error { return nil }
+		createdFrame := "event: interaction.created\n" +
+			`data: {"event_type":"interaction.created","interaction":{"id":"int_deadline_1","status":"in_progress"}}` + "\n\n"
+
+		for _, tc := range []struct {
+			name    string
+			timeout *llm.AdapterTimeout
+		}{
+			{"adapter Request deadline", &llm.AdapterTimeout{Request: 40 * time.Millisecond}},
+			{"adapter StreamRead deadline", &llm.AdapterTimeout{StreamRead: 40 * time.Millisecond}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				var hits atomic.Int32
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					n := hits.Add(1)
+					w.Header().Set("Content-Type", "text/event-stream")
+					w.WriteHeader(http.StatusOK)
+					if n == 1 {
+						_, _ = w.Write([]byte(createdFrame))
+						w.(http.Flusher).Flush()
+						<-r.Context().Done()
+						return
+					}
+					_, _ = w.Write([]byte(interactionsSSE))
+				}))
+				t.Cleanup(srv.Close)
+
+				reg, err := registry.Load(
+					registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+					registry.WithStateRoot(t.TempDir()),
+					registry.WithEnv(func(string) (string, bool) { return "", false }),
+					registry.WithInstances(map[string]registry.Provider{
+						"google": {Base: "google", APIKey: "k", Transport: registry.Transport{BaseURL: srv.URL + "/v1beta"}},
+					}),
+				)
+				if err != nil {
+					t.Fatalf("registry.Load: %v", err)
+				}
+				c := llm.NewClient(llm.WithRegistry(reg))
+				sr, err := llm.StreamGenerate(context.Background(), llm.GenerateOptions{
+					Client:         c,
+					Provider:       "google",
+					Model:          "gemini-3.8-flash",
+					Prompt:         new("hello"),
+					Store:          new(true),
+					AdapterTimeout: tc.timeout,
+					Sleep:          noSleep,
+				})
+				if err != nil {
+					t.Fatalf("StreamGenerate open: %v", err)
+				}
+				var gotErr error
+				for ev := range sr.Events() {
+					if ev.Type == llm.StreamEventError {
+						gotErr = ev.Err
+					}
+				}
+				if hits.Load() != 1 {
+					t.Fatalf("stored %s HTTP POSTs = %d, want 1", tc.name, hits.Load())
+				}
+				le, ok := errors.AsType[llm.Error](gotErr)
+				if !ok || le.Retryable() || !errors.Is(gotErr, ErrPendingInteractionStatus) {
+					t.Fatalf("stored %s error = %T %v, want non-retryable ErrPendingInteractionStatus", tc.name, gotErr, gotErr)
+				}
+				rawMap, _ := le.Raw().(map[string]any)
+				if rawMap["interaction_id"] != "int_deadline_1" {
+					t.Fatalf("stored %s raw = %#v, want interaction_id=int_deadline_1", tc.name, le.Raw())
+				}
+			})
+		}
+
+		// Stateless stream with adapter Request deadline after interaction.created still retries automatically and succeeds on POST #2.
+		var statelessHits atomic.Int32
+		srvStateless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			n := statelessHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			if n == 1 {
+				_, _ = w.Write([]byte(createdFrame))
+				w.(http.Flusher).Flush()
+				<-r.Context().Done()
+				return
+			}
+			_, _ = w.Write([]byte(interactionsSSE))
+		}))
+		t.Cleanup(srvStateless.Close)
+		regStateless, err := registry.Load(
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+			registry.WithInstances(map[string]registry.Provider{
+				"google": {Base: "google", APIKey: "k", Transport: registry.Transport{BaseURL: srvStateless.URL + "/v1beta"}},
+			}),
+		)
+		if err != nil {
+			t.Fatalf("registry.Load: %v", err)
+		}
+		srStateless, err := llm.StreamGenerate(context.Background(), llm.GenerateOptions{
+			Client:         llm.NewClient(llm.WithRegistry(regStateless)),
+			Provider:       "google",
+			Model:          "gemini-3.8-flash",
+			Prompt:         new("hello"),
+			AdapterTimeout: &llm.AdapterTimeout{Request: 40 * time.Millisecond},
+			Sleep:          noSleep,
+		})
+		if err != nil {
+			t.Fatalf("stateless StreamGenerate open: %v", err)
+		}
+		var statelessErr error
+		for ev := range srStateless.Events() {
+			if ev.Type == llm.StreamEventError {
+				statelessErr = ev.Err
+			}
+		}
+		if statelessErr != nil || statelessHits.Load() != 2 {
+			t.Fatalf("stateless adapter Request deadline err=%v hits=%d, want nil and 2 POSTs", statelessErr, statelessHits.Load())
+		}
+
+		// Stored stream with adapter Request deadline BEFORE interaction.created supplies an ID still retries automatically and succeeds on POST #2.
+		var preIDHits atomic.Int32
+		srvPreID := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			n := preIDHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			if n == 1 {
+				w.(http.Flusher).Flush()
+				<-r.Context().Done()
+				return
+			}
+			_, _ = w.Write([]byte(interactionsSSE))
+		}))
+		t.Cleanup(srvPreID.Close)
+		regPreID, err := registry.Load(
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+			registry.WithInstances(map[string]registry.Provider{
+				"google": {Base: "google", APIKey: "k", Transport: registry.Transport{BaseURL: srvPreID.URL + "/v1beta"}},
+			}),
+		)
+		if err != nil {
+			t.Fatalf("registry.Load: %v", err)
+		}
+		srPreID, err := llm.StreamGenerate(context.Background(), llm.GenerateOptions{
+			Client:         llm.NewClient(llm.WithRegistry(regPreID)),
+			Provider:       "google",
+			Model:          "gemini-3.8-flash",
+			Prompt:         new("hello"),
+			Store:          new(true),
+			AdapterTimeout: &llm.AdapterTimeout{Request: 40 * time.Millisecond},
+			Sleep:          noSleep,
+		})
+		if err != nil {
+			t.Fatalf("pre-ID stored StreamGenerate open: %v", err)
+		}
+		var preIDErr error
+		for ev := range srPreID.Events() {
+			if ev.Type == llm.StreamEventError {
+				preIDErr = ev.Err
+			}
+		}
+		if preIDErr != nil || preIDHits.Load() != 2 {
+			t.Fatalf("pre-ID stored adapter Request deadline err=%v hits=%d, want nil and 2 POSTs", preIDErr, preIDHits.Load())
+		}
+
+		// Caller cancellation after client decoded interaction.created on a stored stream stays AbortError (context.Canceled).
+		srvCancel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(createdFrame))
+			_, _ = w.Write([]byte("event: custom.ping\ndata: {\"ok\":true}\n\n"))
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		}))
+		t.Cleanup(srvCancel.Close)
+		regCancel, err := registry.Load(
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+			registry.WithInstances(map[string]registry.Provider{
+				"google": {Base: "google", APIKey: "k", Transport: registry.Transport{BaseURL: srvCancel.URL + "/v1beta"}},
+			}),
+		)
+		if err != nil {
+			t.Fatalf("registry.Load: %v", err)
+		}
+		callerCtx, callerCancel := context.WithCancel(context.Background())
+		defer callerCancel()
+		srCancel, err := llm.StreamGenerate(callerCtx, llm.GenerateOptions{
+			Client:   llm.NewClient(llm.WithRegistry(regCancel)),
+			Provider: "google",
+			Model:    "gemini-3.8-flash",
+			Prompt:   new("hello"),
+			Store:    new(true),
+			Sleep:    noSleep,
+		})
+		if err != nil {
+			t.Fatalf("caller-cancel StreamGenerate open: %v", err)
+		}
+		var cancelErr error
+		for ev := range srCancel.Events() {
+			if ev.Type == llm.StreamEventProviderEvent {
+				callerCancel()
+			}
+			if ev.Type == llm.StreamEventError {
+				cancelErr = ev.Err
+			}
+		}
+		if _, ok := errors.AsType[*llm.AbortError](cancelErr); !ok || !errors.Is(cancelErr, context.Canceled) {
+			t.Fatalf("caller cancellation error = %T %v, want *llm.AbortError wrapping context.Canceled", cancelErr, cancelErr)
+		}
+	})
 }
 
 func TestProtocolStreamWrapperCloseDuringS1DoesNotDeadlock(t *testing.T) {

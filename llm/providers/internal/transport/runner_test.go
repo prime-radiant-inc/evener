@@ -322,14 +322,32 @@ func TestRun_TerminalErrorHookIsNotConsultedOnCancelOrFatal(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "caller deadline",
+			ctx: func(t *testing.T) context.Context {
+				t.Helper()
+				ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Millisecond))
+				t.Cleanup(cancel)
+				return ctx
+			},
+			onEvent: func(llm.SSEEvent) error { return nil },
+			want: func(t *testing.T, err error) {
+				t.Helper()
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("terminal error = %v, want wrapped context.DeadlineExceeded", err)
+				}
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			finished := false
 			hookCalls := 0
+			runCtx := tc.ctx(t)
 			r := &StreamRunner{
 				Provider:      "responses",
 				Resp:          respFrom("data: {\"a\":1}\n\n"),
 				Stream:        llm.NewChanStream(nil),
+				ParentCtx:     runCtx,
 				OnEvent:       tc.onEvent,
 				Finished:      &finished,
 				IncompleteMsg: "responses stream ended without completion",
@@ -338,7 +356,7 @@ func TestRun_TerminalErrorHookIsNotConsultedOnCancelOrFatal(t *testing.T) {
 					return errors.New("the hook must not run here")
 				},
 			}
-			got := drain(tc.ctx(t), t, r)
+			got := drain(runCtx, t, r)
 			if hookCalls != 0 {
 				t.Fatalf("TerminalError ran %d times for %s", hookCalls, tc.name)
 			}
@@ -348,6 +366,37 @@ func TestRun_TerminalErrorHookIsNotConsultedOnCancelOrFatal(t *testing.T) {
 			tc.want(t, got[0].Err)
 		})
 	}
+
+	t.Run("adapter-owned deadline consults TerminalError", func(t *testing.T) {
+		parentCtx := context.Background()
+		attemptCtx, cancel := context.WithDeadline(parentCtx, time.Now().Add(-time.Millisecond))
+		defer cancel()
+		sentinel := errors.New("stored stream accepted before adapter deadline")
+		finished := false
+		hookCalls := 0
+		var sawCause error
+		r := &StreamRunner{
+			Provider:      "google",
+			Resp:          respFrom("data: {\"a\":1}\n\n"),
+			Stream:        llm.NewChanStream(nil),
+			ParentCtx:     parentCtx,
+			OnEvent:       func(llm.SSEEvent) error { return nil },
+			Finished:      &finished,
+			IncompleteMsg: "google stream ended without completion",
+			TerminalError: func(parseErr error) error {
+				hookCalls++
+				sawCause = parseErr
+				return sentinel
+			},
+		}
+		got := drain(attemptCtx, t, r)
+		if hookCalls != 1 || !errors.Is(sawCause, context.DeadlineExceeded) {
+			t.Fatalf("hookCalls=%d sawCause=%v, want 1 and context.DeadlineExceeded", hookCalls, sawCause)
+		}
+		if len(got) != 1 || got[0].Type != llm.StreamEventError || !errors.Is(got[0].Err, sentinel) {
+			t.Fatalf("events = %+v, want TerminalError sentinel", got)
+		}
+	})
 }
 
 // TestFinish_PublishesFinishEventOnceAndStopsParse pins Finish for both attempt

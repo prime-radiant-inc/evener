@@ -36,7 +36,7 @@ func runInteractionsSSETest(t *testing.T, sse string, instance, wireModel string
 		Body:       io.NopCloser(strings.NewReader(sse)),
 	}
 	stream := llm.NewChanStream(cancel)
-	go decodeInteractionStream(ctx, cancel, httpResp, stream, llm.Request{Model: wireModel}, instance, wireModel, "", llm.APILogCredentialMaterial{}, nil, summariesDisabled, false, nil)
+	go decodeInteractionStream(ctx, nil, cancel, httpResp, stream, llm.Request{Model: wireModel}, instance, wireModel, "", llm.APILogCredentialMaterial{}, nil, summariesDisabled, false, nil)
 
 	var events []llm.StreamEvent
 	var final llm.Response
@@ -567,7 +567,7 @@ func TestInteraction_SSE_SlotQueueSummariesAndUnstoppedSpans(t *testing.T) {
 		pr, pw := io.Pipe()
 		httpResp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: pr}
 		stream := llm.NewChanStream(cancel)
-		go decodeInteractionStream(ctx, cancel, httpResp, stream, llm.Request{Model: "gemini-4-neon"}, "gemini-prod", "gemini-4-neon", "", llm.APILogCredentialMaterial{}, nil, true, false, nil)
+		go decodeInteractionStream(ctx, nil, cancel, httpResp, stream, llm.Request{Model: "gemini-4-neon"}, "gemini-prod", "gemini-4-neon", "", llm.APILogCredentialMaterial{}, nil, true, false, nil)
 
 		go func() {
 			_, _ = io.WriteString(pw, buildSSE(
@@ -604,7 +604,7 @@ func TestInteraction_SSE_SlotQueueSummariesAndUnstoppedSpans(t *testing.T) {
 		prAuto, pwAuto := io.Pipe()
 		httpRespAuto := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: prAuto}
 		streamAuto := llm.NewChanStream(cancelAuto)
-		go decodeInteractionStream(ctxAuto, cancelAuto, httpRespAuto, streamAuto, llm.Request{Model: "gemini-4-neon"}, "gemini-prod", "gemini-4-neon", "", llm.APILogCredentialMaterial{}, nil, false, false, nil)
+		go decodeInteractionStream(ctxAuto, nil, cancelAuto, httpRespAuto, streamAuto, llm.Request{Model: "gemini-4-neon"}, "gemini-prod", "gemini-4-neon", "", llm.APILogCredentialMaterial{}, nil, false, false, nil)
 
 		unblockTimer := time.AfterFunc(250*time.Millisecond, func() { _ = pwAuto.Close() })
 		defer unblockTimer.Stop()
@@ -769,7 +769,7 @@ func TestInteraction_SSE_SparseLargeStepIndexAndGap(t *testing.T) {
 		defer stop()
 		httpResp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: pr}
 		stream := llm.NewChanStream(cancel)
-		go decodeInteractionStream(ctx, cancel, httpResp, stream, llm.Request{Model: "gemini-4-neon"}, "gemini-prod", "gemini-4-neon", "", llm.APILogCredentialMaterial{}, nil, false, false, nil)
+		go decodeInteractionStream(ctx, nil, cancel, httpResp, stream, llm.Request{Model: "gemini-4-neon"}, "gemini-prod", "gemini-4-neon", "", llm.APILogCredentialMaterial{}, nil, false, false, nil)
 
 		go func() {
 			_, _ = io.WriteString(pw, buildSSE(
