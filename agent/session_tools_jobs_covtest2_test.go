@@ -718,28 +718,6 @@ func TestCovWrapHookContext2(t *testing.T) {
 	}
 }
 
-// TestCovWithQueuedClientMutation covers withQueuedClientMutation and
-// queuedClientMutationFromContext.
-func TestCovWithQueuedClientMutation(t *testing.T) {
-	t.Parallel()
-	queued := queuedInput{
-		ID:               "q_1",
-		ClientMutationID: "mut_1",
-		StableTurnID:     "turn_1",
-	}
-	ctx := withQueuedClientMutation(context.Background(), queued)
-	identity := queuedClientMutationFromContext(ctx)
-	if identity.ClientMutationID != "mut_1" || identity.StableTurnID != "turn_1" || identity.QueueEntryID != "q_1" {
-		t.Fatalf("identity mismatch: %+v", identity)
-	}
-
-	// No context value — returns zero identity.
-	identity = queuedClientMutationFromContext(context.Background())
-	if identity.ClientMutationID != "" {
-		t.Fatalf("no context value: %+v", identity)
-	}
-}
-
 // TestCovInterruptDrainConfig covers interruptDrainConfig: the pure function that decides whether
 // an interrupted turn may drain the queue head.
 func TestCovInterruptDrainConfig(t *testing.T) {

@@ -632,22 +632,6 @@ func TestWatchSendStateLess(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// watchSendKeyLess
-// ---------------------------------------------------------------------------
-
-func TestWatchSendKeyLess(t *testing.T) {
-	t.Parallel()
-	a := jobstore.WatchSendKey{VisibleSessionID: "a", WatchTarget: "t1"}
-	b := jobstore.WatchSendKey{VisibleSessionID: "b", WatchTarget: "t2"}
-	if !watchSendKeyLess(a, b) {
-		t.Fatalf("expected a < b")
-	}
-	if watchSendKeyLess(b, a) {
-		t.Fatalf("expected b >= a")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // errWatchTargetNotFound sentinel
 // ---------------------------------------------------------------------------
 

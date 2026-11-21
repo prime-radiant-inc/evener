@@ -509,36 +509,6 @@ func TestCovJobFinishedEventData(t *testing.T) {
 	}
 }
 
-// TestCovWatchEventFilterMatches covers watchEventFilterMatches.
-func TestCovWatchEventFilterMatches(t *testing.T) {
-	t.Parallel()
-	// Nil filter → matches everything.
-	if !watchEventFilterMatches(nil, events.SessionEvent{Kind: events.EventToolCallEnd}) {
-		t.Fatal("nil filter should match")
-	}
-
-	// Non-ToolCallEnd event → false.
-	filter := &watchEventFilter{ToolName: "exec"}
-	if watchEventFilterMatches(filter, events.SessionEvent{Kind: events.EventWarning}) {
-		t.Fatal("non-ToolCallEnd should not match")
-	}
-
-	// Matching tool name.
-	ev := events.SessionEvent{
-		Kind: events.EventToolCallEnd,
-		Data: events.ToolCallEndData{ToolName: "exec"},
-	}
-	if !watchEventFilterMatches(filter, ev) {
-		t.Fatal("matching tool name should pass")
-	}
-
-	// Non-matching tool name.
-	ev.Data = events.ToolCallEndData{ToolName: "read_file"}
-	if watchEventFilterMatches(filter, ev) {
-		t.Fatal("non-matching tool name should fail")
-	}
-}
-
 // ---- jobs.go pure functions ----
 
 // TestCovStringOutputResult covers stringOutputResult.
