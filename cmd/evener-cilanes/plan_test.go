@@ -110,7 +110,7 @@ var _, _ = os.ReadFile(filepath.Join("..", "mobile-native", "app.json"))
 		".tool-versions":                                  "golang 1.27.0\n",
 		"go.sum":                                          "",
 		"cmd/evener-hub/frontend/scripts/guard/run.mjs":   "export {};\n",
-		"cmd/evener-hub/frontend/src/dev/copyonly/tsv.go": "package copyonly\n",
+		"cmd/evener-hub/frontend/src/dev/fixtures/tsv.go": "package fixtures\n",
 	}
 }
 
@@ -370,7 +370,7 @@ func TestPackageRelativeReadRunsTheReadersLanes(t *testing.T) {
 // Go source inside a TypeScript tree is both: a root module package's source
 // and a change to the tree.
 func TestGoSourceInsideATypeScriptTreeIsAPackageAndATreeChange(t *testing.T) {
-	requireRuns(t, planFixture(t, "cmd/evener-hub/frontend/src/dev/copyonly/tsv.go"), append(append([]string{
+	requireRuns(t, planFixture(t, "cmd/evener-hub/frontend/src/dev/fixtures/tsv.go"), append(append([]string{
 		"fuzz",
 		"tests-parts/root",
 		"race-root-parts/rest",

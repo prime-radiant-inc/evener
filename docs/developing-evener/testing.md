@@ -91,48 +91,6 @@ When the text really is the contract (an enum token, a wire field, a CLI flag,
 a file format), assert it through its structured form, as above. When it is
 copy a person reads, review it in the diff and test the behavior around it.
 
-Two audits enforce the rule against tests whose whole claim is that some copy
-exists. Each fails on a test whose name says it shows, renders or says
-something and whose every check compares output with production copy:
-
-- `make lint-repo-audit`'s `copy-only-tests` check (part of `make lint`) runs
-  `internal/devtool/copyonly` over every tracked Go test. Its allowlist is
-  `internal/devtool/copyonly/allowlist.tsv`.
-- `cmd/evener-hub/frontend/src/dev/copyonly/copyonlyAudit.test.ts` (part of
-  `make test-web`) reads every tracked TypeScript test in the frontend,
-  `mobile-native` and `appwire-client/typescript` with the
-  TypeScript compiler. Its allowlist is
-  `cmd/evener-hub/frontend/src/dev/copyonly/allowlist.tsv`.
-
-Both skip expected errors, counts, attribute and state reads, spy assertions,
-role queries, machine-contract tokens, and text the test supplied itself. When
-an audit flags your test, assert the behavior instead. If the copy must stay
-the oracle (model-facing text whose conversion is deferred, or a false
-positive), add a row to that language's allowlist: the file, the test name,
-and the reason it is kept, tab-separated. Rows are keyed by file and test name,
-not line. Each audit also fails on a row whose test is no longer flagged, so
-remove the row when you convert, delete or rename the test.
-
-A third audit, `lint-repo-audit`'s `error-text-assertions` check, covers Go
-tests that are not named for wording. It counts the
-checks of an error's text against a phrase from production source
-(`strings.Contains(err.Error(), "not found")`) anywhere in a test file. Its
-allowlist, `internal/devtool/copyonly/errstring_allowlist.tsv`, has one row per
-test file: the file and how many such checks it holds. A file may hold no more
-than its row, and a file with no row may hold none, so a new test matches a
-sentinel with `errors.Is`, a type with `errors.As`, or a code. The counts only
-go down: when you convert checks in a file, lower its count (delete the row at
-zero), because the audit also fails on a file that holds fewer than its row.
-
-To find what is left to convert, `go run ./cmd/evener-dev/bin dev copy-oracle`
-inventories every assertion whose oracle is production copy, per package and
-category, using the same two scanners. `--hits FILE` writes each one as TSV,
-`--copy-only FILE` lists the copy-only tests instead, and `--path PREFIX` and
-`--only ts|go` narrow the scan. The TypeScript half runs under `node` with the
-frontend's install, so run `make web-preflight` first, or pass `--only go`.
-After converting a test, `tools/copy-oracle/mutate.sh` breaks the behavior it
-now checks and confirms the test fails.
-
 ## Flakes and Timeouts
 
 Two rules.
@@ -225,15 +183,9 @@ Pick the first of these that fits:
    module, so the root and `agent` modules can import it; `llm`, `auth` and
    the other leaf modules cannot without a new module edge.
 
-Never use a fixed `time.Sleep` to wait for work to happen. `make lint`'s
-`test-sleeps-within-baseline` check (in `make lint-repo-audit`) counts the
-`time.Sleep` calls in tracked Go tests and fails when the count rises above
-`testSleepBaseline` in `internal/devtool/repoaudit/testsleeps.go`. When a
-change brings the count down, the check passes and prints a `NOTE` with the new
-count; set the constant to that number in the same change. The count leaves out every
-file that imports `testing/synctest`, since a sleep in a bubble is free, and
-files under `testdata`. It reads imports rather than following calls, so a
-sleep outside the bubble in a synctest file goes uncounted.
+Never use a fixed `time.Sleep` to wait for work to happen. Wait on the
+condition the work changes with `testwait.Until`, or run the test under
+`testing/synctest` so a sleep advances a fake clock.
 
 ## Agent Tests Run in Parallel by Default
 

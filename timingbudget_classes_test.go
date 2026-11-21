@@ -107,8 +107,8 @@ func ceilingDeclarations(t *testing.T, names, extraEnv []string) map[string]map[
 //   - a name defined in more than one package would classify tests in a package
 //     the class never meant, enforcing the wrong number against them.
 //
-// git grep is a real external tool, not a faked one (the copy-only audits read
-// git the same way): it pins each name to the single *_test.go that defines it.
+// git grep is a real external tool, not a faked one: it pins each name to the
+// single *_test.go that defines it.
 func TestTimingBudgetClassMapNamesMatchTheTree(t *testing.T) {
 	names := ceilingMapNames(t)
 	defined := ceilingDeclarations(t, names, nil)

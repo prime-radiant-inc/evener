@@ -17,7 +17,6 @@ var subcommands = map[string]func(args []string) int{
 	"agent-shards":       runAgentShards,
 	"check-gate-flags":   checkGateFlagsMain,
 	"cli-shards":         runCLIShards,
-	"copy-oracle":        copyOracleMain,
 	"covstmt":            covstmtMain,
 	"gate-surface":       gateSurfaceMain,
 	"hub-shards":         runHubShards,
