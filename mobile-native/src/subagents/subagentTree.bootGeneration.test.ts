@@ -101,6 +101,14 @@ function answerReads(client: FakeClient, bootGeneration: string | undefined): vo
 
 const heldSequence = (subject: SubagentTree) => subject.getSnapshot().pages?.delegates.rows[0]?.holdSequence;
 
+/** The delegate row the cached presentation renders while no store is
+ * connected -- what the Agents list shows during an offline period. */
+function cachedDelegate(subject: SubagentTree) {
+	const entries = subject.getSnapshot().tree?.root.entries ?? [];
+	for (const entry of entries) if (entry.kind === "delegate") return entry.delegate;
+	return undefined;
+}
+
 async function opened(): Promise<SubagentTree> {
 	const subject = new SubagentTree("local:coord", "coord");
 	subject.observeActivity();
@@ -213,6 +221,16 @@ test("a page-served hold the replacement generation did not publish is not retai
 
 	// The screen lets go before the replacement's page lands.
 	await subject.setClient(null);
+
+	// The disconnected binding renders the tree it cached, not the store's
+	// pages. The sanitized snapshot must reach that tree before the
+	// disconnect publishes, so the row keeps its durable fields and loses the
+	// wait nothing can attribute -- otherwise the Agents list reports it as
+	// waiting on subagents for the whole offline period.
+	const offline = cachedDelegate(subject);
+	expect(offline?.delegateId).toBe("a");
+	expect(offline?.lifecycle).toBe("running");
+	expect(offline?.holdSequence).toBeUndefined();
 
 	// The new store inherits the rows. Its page is held back, and the follow read
 	// names generation 2; the unresolved sample must not be read as 2's own.

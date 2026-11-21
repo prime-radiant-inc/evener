@@ -82,6 +82,11 @@ export class SubagentTree {
 		this.followLease = null;
 		this.client = client;
 		if (!client) {
+			// The Agents list renders the cached presentation, not the store's
+			// pages, so the sanitized snapshot has to reach it: a row whose
+			// unresolved wait was stripped above must not keep displaying it for
+			// the whole disconnect.
+			if (this.retained) this.presentation = projectSessionActivity(this.retained);
 			this.publish();
 			return Promise.resolve();
 		}
