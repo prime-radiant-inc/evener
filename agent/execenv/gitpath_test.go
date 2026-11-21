@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -86,5 +87,25 @@ func TestGitRootOrEmptyLocalNonRepoDoesNotForkGit(t *testing.T) {
 	}
 	if n := count(); n != 0 {
 		t.Fatalf("GitRootOrEmpty forked git %d times for a local non-repo, want 0", n)
+	}
+}
+
+// TestFreshGitRootRefusesAnOversizedPointer pins that the FRESH structural
+// lookup reads a ".git" pointer with the pointer reader, not the generic
+// whole-file reader. A pointer is one path line, so a file past the pointer cap
+// is not a pointer: it must be refused rather than loaded and parsed. The
+// padding follows a valid, parseable pointer line, so only the size cap can
+// produce the refusal.
+func TestFreshGitRootRefusesAnOversizedPointer(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	pointer := "gitdir: " + filepath.Join(dir, ".git", "worktrees", "lane") + "\n" +
+		strings.Repeat("x", gitPointerMaxBytes)
+	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte(pointer), 0o600); err != nil {
+		t.Fatalf("write .git pointer: %v", err)
+	}
+
+	if root, ok := structuralWorktreeRoot(dir); ok || root != "" {
+		t.Fatalf("structural root = %q, %v, want unresolved: an oversized .git pointer must be refused by the pointer reader", root, ok)
 	}
 }
