@@ -99,6 +99,18 @@ type HostFacts struct {
 	// toolchain grant.
 	DeveloperToolBinDir string
 
+	// GoToolchainRoots are the Go toolchain root (GOROOT) the host's go
+	// command resolves, when that root is knowable. Restricted mode grants it
+	// READ access to spawned processes because the go command can run from a
+	// granted path while its tool directory (GOROOT/pkg/tool) sits outside every
+	// system read root — a version-manager toolchain, a golang.org/dl SDK, or a
+	// GOTOOLCHAIN-selected toolchain — and `go test` then dies with
+	// `no such tool "vet"` (issue #4235). Read-only, spawned layer only, and
+	// only consulted by restricted mode. Empty on non-darwin hosts, when go is
+	// not on PATH, or when the probe has no answer; that never fails session
+	// start.
+	GoToolchainRoots []string
+
 	// GitGlobalConfigPaths are the user's GLOBAL git config FILES that exist on
 	// this host. git-config(1) FILES names two of them —
 	// $XDG_CONFIG_HOME/git/config (with $HOME/.config standing in for an unset or
@@ -519,6 +531,7 @@ func probeHost(system probeSystem) HostFacts {
 		}
 		facts.DeveloperToolRoots = probeDeveloperToolRoots(system)
 		facts.DeveloperToolBinDir = probeDeveloperToolBinDir(system)
+		facts.GoToolchainRoots = probeGoToolchainRoots(system)
 	}
 
 	return facts
@@ -1170,6 +1183,34 @@ func probeDeveloperToolRoots(system probeSystem) []string {
 	add(enclosingAppBundle(activeDeveloperDir(system)))
 	add(commandLineToolsRoot)
 	return out
+}
+
+// probeGoToolchainRoots returns the GOROOT the host's go command resolves, or
+// nil when go is absent or the probe has no answer.
+//
+// The answer is probed with `go env -C / GOROOT` rather than read from the go
+// env file, because GOROOT is not one of the settings that file reliably names:
+// it can also come from the environment or from the toolchain go selected. -C /
+// runs the query outside any module, so a project's go/toolchain line cannot
+// make this probe select (and download) a different toolchain before the
+// sandbox exists; -C needs Go 1.20+, and an older go simply contributes no
+// root. The output is admitted only when it is an existing directory.
+func probeGoToolchainRoots(system probeSystem) []string {
+	goBin, err := system.lookPath("go")
+	if err != nil || goBin == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), probeCommandTimeout)
+	defer cancel()
+	out, err := system.output(ctx, goBin, "env", "-C", "/", "GOROOT")
+	if err != nil {
+		return nil
+	}
+	root := CanonicalDir(strings.TrimSpace(string(trimTrailingNewline(out))))
+	if root == "" {
+		return nil
+	}
+	return []string{root}
 }
 
 // probeDeveloperToolBinDir returns the active developer directory's bin

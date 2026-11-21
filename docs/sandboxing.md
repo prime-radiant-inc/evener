@@ -222,7 +222,7 @@ An individual filesystem call already in progress may still block until it retur
 | `off` (default) | anywhere | anywhere | anywhere | anywhere | unrestricted |
 | `read-only` | anywhere minus the denylist | denied (temp only) | anywhere minus the denylist | temp only | all outbound (permissive) |
 | `workspace-write` | anywhere minus the denylist | worktree + temp + contained caches | anywhere minus the denylist | worktree + temp + caches + git metadata (not config/hooks) | all outbound (permissive) |
-| `restricted` | worktree + Evener content (read-only) | worktree + temp | worktree + system read roots + developer toolchain + global git config files + hook/MCP paths + Evener content + temp | worktree + temp + git metadata (not config/hooks) | TCP/UDP + mDNSResponder socket, AF_UNIX only under granted read roots |
+| `restricted` | worktree + Evener content (read-only) | worktree + temp | worktree + system read roots + developer and language toolchains (Xcode/CLT, Go GOROOT) + global git config files + hook/MCP paths + Evener content + temp | worktree + temp + git metadata (not config/hooks) | TCP/UDP + mDNSResponder socket, AF_UNIX only under granted read roots |
 
 - **`off`** applies no sandbox confinement.
 - **`read-only`** cannot commit or write project files; only the session temp is
@@ -258,6 +258,18 @@ An individual filesystem call already in progress may still block until it retur
   refused. That is why a `$DEVELOPER_DIR` pointing at `/Users` cannot gut
   `restricted` mode: the denylist alone could not stop it, since it drops roots at
   or *beneath* a masked path and such a root sits above them.
+
+  **The host's resolved Go toolchain root (`GOROOT`) joins that set on macOS,
+  read-only** (ruled 2026-11-21, #4235). A GOROOT outside the system roots — a
+  version-manager install, a `golang.org/dl` SDK, or a `GOTOOLCHAIN`-selected
+  toolchain under `$HOME` — left a sandboxed `go test` dying with
+  `go: no such tool "vet"`, because the go command can run from a granted path
+  while `GOROOT/pkg/tool` is unreadable. It is probed once with a bounded
+  `go env -C / GOROOT` query run outside any module. The value passes through the
+  same shared-tree guard as the developer-toolchain grant, so a GOROOT at or
+  above `$HOME`, the worktree, or a temp root is refused; the denylist still wins
+  over it; it adds nothing to any write surface; and it reaches the spawned layer
+  only.
 
   The toolchain grant alone was **necessary but not sufficient**. On a host with a
   global git config, `git` still died under `restricted` with
@@ -625,7 +637,10 @@ persistent write roots are redirected into session scratch, as detailed below.
   then a `go env -w` setting in the go env file `$GOENV` names,
   `<user config dir>/go/env` by default, then `$HOME/go`). Evener reads that file
   rather than running `go env`, which would run whichever go is first on PATH, and
-  any toolchain it downloads, before the sandbox exists. A spawn whose environment
+  any toolchain it downloads, before the sandbox exists. (The one `go env` call
+  Evener makes at session start is the bounded `-C /` GOROOT path probe described
+  under [`restricted`](#modes); it reads a directory path and grants only reads.)
+  A spawn whose environment
   gives go no way to find those settings (no `HOME`, `XDG_CONFIG_HOME` or `GOENV`)
   gets the scratch alone, as does `restricted`, which cannot read it.
 - `restricted` always uses the session-private redirect.
