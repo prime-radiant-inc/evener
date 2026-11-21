@@ -970,7 +970,7 @@ func (s *Session) planResponsesContinuation(ctx context.Context, profile *provid
 			DeltaTurnKinds:          responsesContinuationTurnKinds(candidate.Delta),
 			EndpointFamily:          string(plan.EndpointFamily),
 			RequestFingerprint:      plan.RequestFingerprint,
-			ContextMarker:           responseContextMarkerV1,
+			ContextMarker:           responseContextMarkerV2,
 			StoragePolicyLabel:      plan.StoragePolicyLabel,
 			StorageScopeFingerprint: plan.StorageScopeFingerprint,
 		}
@@ -986,7 +986,7 @@ func responsesContinuationFullHistoryRequestForPlan(route roundRoute, req llm.Re
 	req.Continuation = &llm.ContinuationMetadata{
 		EndpointFamily:          string(plan.EndpointFamily),
 		RequestFingerprint:      plan.RequestFingerprint,
-		ContextMarker:           responseContextMarkerV1,
+		ContextMarker:           responseContextMarkerV2,
 		StoragePolicyLabel:      plan.StoragePolicyLabel,
 		StorageScopeFingerprint: plan.StorageScopeFingerprint,
 	}
@@ -1078,7 +1078,7 @@ func responsesContinuationCandidateMatchesPlan(candidate responsesContinuationAn
 	return strings.TrimSpace(candidate.Turn.ResponseID) != "" &&
 		candidate.Turn.ResponseRequestFingerprint == plan.RequestFingerprint &&
 		candidate.Turn.ResponseStorageScopeFingerprint == plan.StorageScopeFingerprint &&
-		candidate.Turn.ResponseContextMarker == responseContextMarkerV1
+		candidate.Turn.ResponseContextMarker == responseContextMarkerV2
 }
 
 func responsesContinuationDeltaMessages(base []llm.Message, deltaTurns []schema.Turn, dropsMedia func(string) bool) []llm.Message {
@@ -2571,8 +2571,10 @@ func escapeTurnFrames(t schema.Turn, msg llm.Message) llm.Message {
 		escape = sysmsg.EscapeModelAuthoredFrames
 	case schema.TurnSteering:
 		switch {
-		case t.SteeringSource == events.SteeringSourceParent:
-			// A parent's message is agent prose with no harness framing.
+		case t.SteeringSource == events.SteeringSourceParent,
+			t.SteeringKind == events.SteeringKindNoteHandoff:
+			// Parent steers and pre-compaction note handoffs are agent prose
+			// with no harness frame opener, so escape them whole.
 			escape = sysmsg.EscapeModelAuthoredFrames
 		case t.SteeringKind != "":
 			escape = sysmsg.EscapeAnswersMarker

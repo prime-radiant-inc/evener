@@ -422,8 +422,41 @@ func responsesContinuationEligibleAssistantTurn(responseID string) schema.Turn {
 	turn.ResponseEndpoint = "https://api.openai.com/v1/responses"
 	turn.ResponseStorageScopeFingerprint = "cont-scope-v1:storage_scope:" + responseID
 	turn.ResponseRequestFingerprint = "cont-req-v1:" + responseID
-	turn.ResponseContextMarker = responseContextMarkerV1
+	turn.ResponseContextMarker = responseContextMarkerV2
 	return turn
+}
+
+// TestResponsesContinuationAnchorCandidateRejectsPriorContextMarker covers the
+// session a pre-upgrade version wrote: its stored prefix may hold model text the
+// current replay escapes, and a delta names the anchor by id instead of resending
+// it. Only the marker the current version stamps is anchor-eligible; a turn the
+// prior version stamped sends full history once, and a turn the current version
+// stamps anchors the delta.
+func TestResponsesContinuationAnchorCandidateRejectsPriorContextMarker(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		marker   string
+		wantMode llm.HistoryMode
+	}{
+		"prior version marker": {marker: "cont-ctx-v1", wantMode: llm.HistoryModeFullHistory},
+		"current marker":       {marker: responseContextMarkerV2, wantMode: llm.HistoryModeResponsesDelta},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			anchor := responsesContinuationEligibleAssistantTurn("resp_1")
+			anchor.ResponseContextMarker = tc.marker
+			history := []schema.Turn{
+				schema.NewTurn(schema.TurnUserInput, llm.User("first")),
+				anchor,
+				schema.NewTurn(schema.TurnUserInput, llm.User("next")),
+			}
+
+			_, decision := selectResponsesContinuationAnchorCandidate(SessionConfig{}, history)
+			if decision.HistoryMode != tc.wantMode {
+				t.Fatalf("decision = %+v, want mode %v", decision, tc.wantMode)
+			}
+		})
+	}
 }
 
 // TestResponsesContinuationAnchorCandidateRejectsFrameBearingAnchor covers the

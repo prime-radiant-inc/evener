@@ -16,10 +16,11 @@ import (
 //
 // The renderer fences the model's text under "## Working Notes", under each
 // "## Earlier Summaries" block, under a "## Conversation" "### Agent" block,
-// and under "## Summary" for the summarizer's own reply; the session-log
-// strategy fences its log of model-written action summaries. Everything fenced
-// is model text except the "## Conversation" "### User" blocks and the
-// "Original prompt:" block, which hold what the person wrote.
+// under the agent-authored entry heading, and under "## Summary" for the
+// summarizer's own reply; the session-log strategy fences its log of
+// model-written action summaries. Everything fenced is model text except the
+// "## Conversation" "### User" blocks and the "Original prompt:" block, which
+// hold what the person wrote.
 func EscapeModelAuthoredBodies(text string) string {
 	if !strings.ContainsAny(text, "[<") {
 		return text
@@ -48,7 +49,7 @@ func EscapeModelAuthoredBodies(text string) string {
 				body.WriteString(line)
 				continue
 			}
-			out.WriteString(sysmsg.EscapeModelAuthoredFrames(body.String()))
+			out.WriteString(escapedFenceBody(owner, body.String()))
 			body.Reset()
 			inBody = false
 		case !wasInside && delim && fence.Inside():
@@ -74,9 +75,34 @@ func EscapeModelAuthoredBodies(text string) string {
 	}
 	if inBody {
 		// An artifact cut off inside a body still holds that body's text.
-		out.WriteString(sysmsg.EscapeModelAuthoredFrames(body.String()))
+		out.WriteString(escapedFenceBody(owner, body.String()))
 	}
 	return out.String()
+}
+
+// escapedFenceBody escapes one fenced body. A body is model prose escaped whole
+// — its own fenced code is quoted content and stays as written — except when it
+// is a carried earlier summary: that body is itself a compaction turn, and the
+// renderer fences the summarizer's reply under "## Summary" and the person's
+// carried messages under "## Conversation" inside it. Read as a body of its
+// own, its inner structure selects what is model prose, so the summarizer's
+// reply is escaped in place instead of being skipped as nested quoted code.
+//
+// The body is recognised by the layout the renderer writes, not by a heading a
+// model may have written: an older summary, which predates that layout and is
+// the model's text throughout, keeps its own "## Summary" heading as the text
+// it is. Only a body that reproduces the renderer's framing is read through.
+func escapedFenceBody(owner, body string) string {
+	if !strings.ContainsAny(body, "[<") {
+		return body
+	}
+	if owner == "Earlier Summaries" {
+		trimmed := strings.TrimSuffix(body, "\n")
+		if carriesPartnerMessages(trimmed) || (trimmed != body && carriesPartnerMessages(body)) {
+			return EscapeModelAuthoredBodies(body)
+		}
+	}
+	return sysmsg.EscapeModelAuthoredFrames(body)
 }
 
 // humanBody reports whether the fence opened under owner/block holds text the

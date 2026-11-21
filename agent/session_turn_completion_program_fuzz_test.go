@@ -278,7 +278,7 @@ func tfpSeedContinuationHistory(sess *Session) {
 		ResponseEndpoint:                "https://offline.invalid/v1/responses",
 		ResponseStorageScopeFingerprint: "tfp-storage-scope",
 		ResponseRequestFingerprint:      "tfp-request-fingerprint",
-		ResponseContextMarker:           responseContextMarkerV1,
+		ResponseContextMarker:           responseContextMarkerV2,
 	}
 	sess.mu.Lock()
 	sess.history = []schema.Turn{

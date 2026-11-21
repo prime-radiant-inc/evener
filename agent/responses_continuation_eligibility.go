@@ -9,7 +9,15 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-const responseContextMarkerV1 = "cont-ctx-v1"
+// responseContextMarkerV2 gates Responses continuation anchor eligibility. The
+// marker is stamped on each turn the continuation-aware schema writes, and a
+// turn is an anchor only when it carries this exact value. It is bumped
+// whenever replay's projection of a stored turn changes: an anchor's text never
+// reaches a delta request, so a prefix written before the change could hold
+// model text the current replay escapes, and a turn the earlier version stamped
+// must send full history once — where the projection lands — before a turn this
+// version stamped anchors a delta again.
+const responseContextMarkerV2 = "cont-ctx-v2"
 
 type responsesContinuationAnchorCandidate struct {
 	TurnIndex int
@@ -223,5 +231,5 @@ func turnHasResponsesContinuationMetadata(turn schema.Turn) bool {
 		strings.TrimSpace(turn.ResponseEndpoint) != "" &&
 		strings.TrimSpace(turn.ResponseStorageScopeFingerprint) != "" &&
 		strings.TrimSpace(turn.ResponseRequestFingerprint) != "" &&
-		strings.TrimSpace(turn.ResponseContextMarker) == responseContextMarkerV1
+		strings.TrimSpace(turn.ResponseContextMarker) == responseContextMarkerV2
 }
