@@ -2,7 +2,7 @@ package dev
 
 import (
 	"bytes"
-	"math"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -153,7 +153,7 @@ func TestTimingCompareMalformedBudgets(t *testing.T) {
 		"package bool":         {`{"packages":{"slowpkg":true}}`, []string{"slowpkg"}},
 		"package null":         {`{"packages":{"slowpkg":null}}`, []string{"slowpkg"}},
 		"package infinity":     {`{"packages":{"slowpkg":1e309}}`, []string{"slowpkg", "Infinity"}},
-		"package NaN":          {`{"packages":{"slowpkg":NaN}}`, []string{"slowpkg", "NaN"}},
+		"package NaN":          {`{"packages":{"slowpkg":NaN}}`, []string{"could not be parsed"}},
 		"package huge integer": {`{"packages":{"slowpkg":` + strings.Repeat("9", 400) + `}}`, []string{"slowpkg", "too large for a float"}},
 		"duplicate test":       {`{"perTestCeiling":{"TestX":30,"TestX":20},"packages":{"pkg":100}}`, []string{"TestX", "more than once"}},
 		"ceiling map null":     {`{"perTestCeiling":null,"packages":{"pkg":100}}`, []string{"perTestCeiling"}},
@@ -180,11 +180,11 @@ func TestTimingCompareMalformedBudgets(t *testing.T) {
 	}
 }
 
-// TestTimingCompareBlessMatchesPythonFormat pins the whole blessed file: key
+// TestTimingCompareBlessKeepsTheCheckedInLayout pins the whole blessed file: key
 // order follows the checked-in file, new keys are sorted, Go budgets floor at
-// 2.0, web keeps its own number, and the layout is json.dump(indent=1) — the
-// format that keeps a rebaseline from reformatting the file.
-func TestTimingCompareBlessMatchesPythonFormat(t *testing.T) {
+// 2.0, web keeps its own number, and the layout is the file's one-space indent —
+// the format that keeps a rebaseline from reformatting the file.
+func TestTimingCompareBlessKeepsTheCheckedInLayout(t *testing.T) {
 	const budget = `{"metric":"package-cpu-seconds","perTestCeilingSeconds":3,` +
 		`"perTestCeiling":{"TestClassed":20},` +
 		`"packages":{"recorded":1},` +
@@ -287,81 +287,10 @@ func TestTimingCompareDuplicateKeysKeepTheLast(t *testing.T) {
 	}
 }
 
-// TestPythonValues pins the formatting conversions the bless path depends on.
-func TestPythonValues(t *testing.T) {
-	for _, tc := range []struct {
-		in   float64
-		want string
-	}{
-		{2.0, "2.0"},
-		{2.5, "2.5"},
-		{math.Copysign(0, -1), "-0.0"},
-		{0.0001, "0.0001"},
-		{0.00001, "1e-05"},
-		{1e300, "1e+300"},
-		{math.Inf(1), "Infinity"},
-		{math.Inf(-1), "-Infinity"},
-		{math.NaN(), "NaN"},
-	} {
-		if got := pythonFloat(tc.in); got != tc.want {
-			t.Errorf("pythonFloat(%v) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-	for _, tc := range []struct {
-		raw, want string
-	}{
-		{"3", "3"},
-		{"2.0", "2.0"},
-		{"1e2", "100.0"},
-		{"1e309", "Infinity"},
-		{"-0", "0"},
-	} {
-		if got := pythonJSONNumber(tc.raw); got != tc.want {
-			t.Errorf("pythonJSONNumber(%q) = %q, want %q", tc.raw, got, tc.want)
-		}
-	}
-}
-
-// TestParseJSONDocumentKeepsObjectOrderAndDuplicates pins the structural parse
-// the duplicate-ceiling check relies on.
-func TestParseJSONDocumentKeepsObjectOrderAndDuplicates(t *testing.T) {
-	v, err := parseJSONDocument([]byte(`{"a":1,"b":2,"a":3}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(v.obj) != 3 || v.obj[0].key != "a" || v.obj[1].key != "b" || v.obj[2].key != "a" {
-		t.Fatalf("members = %+v, want a, b, a in file order", v.obj)
-	}
-	if got, _ := v.member("a"); got == nil || got.num != "3" {
-		t.Fatalf("member(a) = %+v, want the last value 3", got)
-	}
-}
-
-// TestParseJSONDocumentReadsNestedValuesAndEscapes pins the parser's other
-// value shapes, and the writer's Python-compatible rendering of them.
-func TestParseJSONDocumentReadsNestedValuesAndEscapes(t *testing.T) {
-	v, err := parseJSONDocument([]byte(`{"s":"a\tb\u00e9\ud83d\ude00","a":[1,true,null,"x"],"n":-2.5e-3}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := `{
- "s": "a\tb\u00e9\ud83d\ude00",
- "a": [
-  1,
-  true,
-  null,
-  "x"
- ],
- "n": -0.0025
-}`
-	if got := v.jsonString(); got != want {
-		t.Fatalf("rendered value:\n%s\nwant:\n%s", got, want)
-	}
-}
-
-// TestParseJSONDocumentRejectsMalformedInput pins the syntax failures that must
-// make the budget a malformed config rather than an empty one.
-func TestParseJSONDocumentRejectsMalformedInput(t *testing.T) {
+// TestTimingBudgetJSONRejectsMalformedDocuments pins the syntax failures that
+// must make the budget a malformed config rather than an empty one, including
+// the Python-only NaN and Infinity literals the old parser accepted.
+func TestTimingBudgetJSONRejectsMalformedDocuments(t *testing.T) {
 	for name, doc := range map[string]string{
 		"empty":            ``,
 		"unterminated":     `{"a":`,
@@ -370,9 +299,104 @@ func TestParseJSONDocumentRejectsMalformedInput(t *testing.T) {
 		"leading zero":     `01`,
 		"trailing comma":   `[1,]`,
 		"extra data":       `{"a":1} garbage`,
+		"NaN literal":      `{"a":NaN}`,
+		"Infinity literal": `{"a":Infinity}`,
 	} {
-		if _, err := parseJSONDocument([]byte(doc)); err == nil {
-			t.Errorf("%s: parseJSONDocument accepted malformed JSON", name)
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseJSONDocument([]byte(doc)); err == nil {
+				t.Fatalf("parseJSONDocument accepted malformed JSON %q", doc)
+			}
+		})
+	}
+}
+
+// TestTimingBudgetJSONKeepsOrderAndLastDuplicate pins the two structural
+// properties the bless path and the duplicate-ceiling check rely on: members
+// stay in file order, and a lookup by key returns the last occurrence.
+func TestTimingBudgetJSONKeepsOrderAndLastDuplicate(t *testing.T) {
+	doc, err := parseJSONDocument([]byte(`{"a":1,"b":2,"a":3}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj, ok := doc.(*jsonObject)
+	if !ok {
+		t.Fatalf("document = %T, want *jsonObject", doc)
+	}
+	if len(obj.members) != 3 || obj.members[0].key != "a" || obj.members[1].key != "b" || obj.members[2].key != "a" {
+		t.Fatalf("members = %+v, want a, b, a in file order", obj.members)
+	}
+	got, _ := obj.member("a")
+	if value, ok := got.(json.Number); !ok || value != "3" {
+		t.Fatalf("member(a) = %v, want the last value 3", got)
+	}
+}
+
+// TestTimingBudgetJSONRoundTripsTheCheckedInFile pins the bless format against
+// the real budget: decoding and re-encoding testing-budget.json must reproduce
+// it byte for byte, so a rebaseline rewrites numbers and never reformats or
+// reorders the hand-edited file.
+func TestTimingBudgetJSONRoundTripsTheCheckedInFile(t *testing.T) {
+	path := filepath.Join("..", "..", "testing-budget.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := parseJSONDocument(raw)
+	if err != nil {
+		t.Fatalf("testing-budget.json does not parse: %v", err)
+	}
+	budget, ok := doc.(*jsonObject)
+	if !ok {
+		t.Fatalf("testing-budget.json top level = %s, want an object", typeName(doc))
+	}
+	out := filepath.Join(t.TempDir(), "testing-budget.json")
+	if err := writeTimingBudget(out, budget); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, raw) {
+		at := 0
+		for at < len(got) && at < len(raw) && got[at] == raw[at] {
+			at++
 		}
+		end := at + 40
+		if end > len(got) {
+			end = len(got)
+		}
+		t.Fatalf("re-encoding testing-budget.json changed its bytes at byte %d:\ngot  %q", at, got[at:end])
+	}
+}
+
+// TestTimingBudgetBlessRefusesNonFiniteMeasurement pins the encoding/json
+// boundary: the budget file no longer accepts Python's Infinity/NaN literals, so
+// a bless whose measurement carries one refuses to write rather than emitting a
+// budget the next run would reject.
+func TestTimingBudgetBlessRefusesNonFiniteMeasurement(t *testing.T) {
+	dir := t.TempDir()
+	measuredPath := filepath.Join(dir, "measured.tsv")
+	budgetPath := filepath.Join(dir, "budget.json")
+	if err := os.WriteFile(measuredPath, []byte("SUM\tpkg\tNaN\nCPU\tpkg\tNaN\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const original = "{}\n"
+	if err := os.WriteFile(budgetPath, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := runTimingCompare([]string{"--measured", measuredPath, "--budget", budgetPath, "--bless"}, &stdout, &stderr); code != 1 {
+		t.Fatalf("bless over a non-finite measurement = exit %d, want 1:\n%s%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "non-finite") {
+		t.Fatalf("the refusal does not name the non-finite budget:\n%s", stderr.String())
+	}
+	got, err := os.ReadFile(budgetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != original {
+		t.Fatalf("--bless rewrote the budget from a non-finite measurement:\n%s", got)
 	}
 }

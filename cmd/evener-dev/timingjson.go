@@ -1,596 +1,268 @@
 package dev
 
 // The budget file is hand-edited and a bless rewrites it, so timing-compare
-// needs the same JSON semantics the retired inline Python comparator had:
-// duplicate keys keep the last value, NaN/Infinity literals are accepted (as
-// Python's json module accepts them), and a bless reproduces Python's
-// json.dump(indent=1) layout instead of Go's map ordering and float formatting.
-// A large enough integer is no more usable as seconds than Infinity is, so the
-// parser keeps the literal and lets the comparator reject it by name.
+// reads it through encoding/json with two additions the standard decoder does
+// not offer: it preserves each object's members in file order with duplicates
+// intact (a bless rewrites the budget where the hand edit put each key, and the
+// duplicate-ceiling check needs to see both occurrences), and it refuses the
+// Python-only NaN and Infinity literals the file must not carry. A lookup by
+// key returns the last occurrence, the rule a standard JSON parser applies.
+//
+// Nothing here mimics Python's number or string formatting. The encoder writes
+// the checked-in one-space indent, a measured duration keeps a .0 when it is
+// whole so the file stays in its float shape, and a non-finite duration is
+// refused rather than written as a literal the next run would reject.
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
-	"slices"
+	"os"
 	"strconv"
 	"strings"
-	"unicode/utf16"
-	"unicode/utf8"
 )
 
-type jsonKind uint8
-
-const (
-	jsonNull jsonKind = iota
-	jsonBool
-	jsonNumber
-	jsonString
-	jsonArray
-	jsonObject
-)
-
+// jsonMember is one object member in file order.
 type jsonMember struct {
 	key   string
-	value *jsonValue
+	value any
 }
 
-// jsonValue is one JSON value. Objects keep their member list in file order
-// with duplicates preserved; a lookup by key uses the last occurrence, which is
-// what Python's json.load keeps.
-type jsonValue struct {
-	kind jsonKind
-	b    bool
-	num  string // the value's canonical json.dump() form, already Python-formatted
-	str  string
-	arr  []*jsonValue
-	obj  []jsonMember
+// jsonObject is a JSON object that keeps its members in file order with
+// duplicates preserved. A lookup by key returns the last occurrence.
+type jsonObject struct {
+	members []jsonMember
 }
 
-func newJSONObject() *jsonValue         { return &jsonValue{kind: jsonObject} }
-func newJSONString(s string) *jsonValue { return &jsonValue{kind: jsonString, str: s} }
-func newJSONNumber(f float64) *jsonValue {
-	return &jsonValue{kind: jsonNumber, num: pythonFloat(f)}
-}
+func newJSONObject() *jsonObject { return &jsonObject{} }
 
-// member returns the last value stored under key, matching json.load's
-// last-occurrence-wins rule.
-func (v *jsonValue) member(key string) (*jsonValue, bool) {
-	if v == nil || v.kind != jsonObject {
-		return nil, false
-	}
-	for i := range slices.Backward(v.obj) {
-		if v.obj[i].key == key {
-			return v.obj[i].value, true
+func (o *jsonObject) member(key string) (any, bool) {
+	for i := len(o.members) - 1; i >= 0; i-- {
+		if o.members[i].key == key {
+			return o.members[i].value, true
 		}
 	}
 	return nil, false
 }
 
-func (v *jsonValue) has(key string) bool {
-	_, ok := v.member(key)
+func (o *jsonObject) has(key string) bool {
+	_, ok := o.member(key)
 	return ok
 }
 
-// set updates the first occurrence in place (Python dict update keeps the
-// original position) or appends a new member.
-func (v *jsonValue) set(key string, value *jsonValue) {
-	for i := range v.obj {
-		if v.obj[i].key == key {
-			v.obj[i].value = value
+// set updates the first occurrence in place, so a bless rewrites a member where
+// the hand edit put it, or appends a new member.
+func (o *jsonObject) set(key string, value any) {
+	for i := range o.members {
+		if o.members[i].key == key {
+			o.members[i].value = value
 			return
 		}
 	}
-	v.obj = append(v.obj, jsonMember{key: key, value: value})
+	o.members = append(o.members, jsonMember{key: key, value: value})
 }
 
-// typeName is the Python type name seconds_error reports for a value.
-func (v *jsonValue) typeName() string {
-	switch v.kind {
-	case jsonBool:
-		return "bool"
-	case jsonNumber:
-		if strings.ContainsAny(v.num, ".eE") || v.num == "NaN" || v.num == "Infinity" || v.num == "-Infinity" {
-			return "float"
+// MarshalJSON writes the members in file order. The caller indents with
+// encoding/json, so these compact bytes become the checked-in layout.
+func (o *jsonObject) MarshalJSON() ([]byte, error) {
+	var b bytes.Buffer
+	b.WriteByte('{')
+	for i, m := range o.members {
+		if i > 0 {
+			b.WriteByte(',')
 		}
-		return "int"
-	case jsonString:
-		return "str"
-	case jsonArray:
-		return "list"
-	case jsonObject:
-		return "dict"
-	default:
-		return "NoneType"
-	}
-}
-
-// float returns the value as a float64. Callers validate with secondsError
-// first; an out-of-range literal still yields its IEEE infinity.
-func (v *jsonValue) float() (float64, bool) {
-	if v.kind != jsonNumber {
-		return 0, false
-	}
-	f, err := strconv.ParseFloat(v.num, 64)
-	if err != nil && !errors.Is(err, strconv.ErrRange) {
-		return 0, false
-	}
-	return f, true
-}
-
-// secondsError is the one definition of "cannot serve as a number of seconds",
-// shared by package budgets, wall budgets, the flat ceiling and per-test
-// ceilings. It matches the Python comparator's cases: bools, strings, nulls,
-// containers, non-finite numbers, and integers too large to convert to a float.
-func secondsError(v *jsonValue) string {
-	switch v.kind {
-	case jsonBool:
-		return "got bool"
-	case jsonString:
-		return "got str"
-	case jsonNull:
-		return "got NoneType"
-	case jsonArray:
-		return "got list"
-	case jsonObject:
-		return "got dict"
-	case jsonNumber:
-		switch v.num {
-		case "NaN":
-			return "got NaN"
-		case "Infinity":
-			return "got Infinity"
-		case "-Infinity":
-			return "got -Infinity"
-		}
-		f, err := strconv.ParseFloat(v.num, 64)
+		key, err := marshalJSON(m.key)
 		if err != nil {
-			if errors.Is(err, strconv.ErrRange) {
-				if !strings.ContainsAny(v.num, ".eE") {
-					return "too large for a float"
-				}
-				if f < 0 {
-					return "got -Infinity"
-				}
-				return "got Infinity"
-			}
-			return "got " + v.num
+			return nil, err
 		}
-		switch {
-		case math.IsNaN(f):
-			return "got NaN"
-		case math.IsInf(f, 1):
-			return "got Infinity"
-		case math.IsInf(f, -1):
-			return "got -Infinity"
+		b.Write(key)
+		b.WriteByte(':')
+		value, err := marshalJSON(m.value)
+		if err != nil {
+			return nil, err
 		}
+		b.Write(value)
 	}
-	return ""
+	b.WriteByte('}')
+	return b.Bytes(), nil
 }
 
-// jsonString renders v as Python's json.dump would, for the bless path.
-func (v *jsonValue) jsonString() string {
-	var b strings.Builder
-	v.appendJSON(&b, 0)
-	return b.String()
+// marshalJSON encodes one value without escaping HTML, so a hand-edited string
+// round-trips unchanged.
+func marshalJSON(v any) ([]byte, error) {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(b.Bytes(), []byte("\n")), nil
 }
 
-func (v *jsonValue) appendJSON(b *strings.Builder, depth int) {
-	switch v.kind {
-	case jsonNull:
-		b.WriteString("null")
-	case jsonBool:
-		if v.b {
-			b.WriteString("true")
-		} else {
-			b.WriteString("false")
+// parseJSONDocument decodes one JSON value. encoding/json supplies the syntax,
+// so the Python-only NaN and Infinity literals are rejected; UseNumber keeps
+// every numeric literal as written so a bless preserves the file's floats.
+func parseJSONDocument(data []byte) (any, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	doc, err := decodeJSONValue(dec)
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil, errors.New("unexpected end of JSON input")
 		}
-	case jsonNumber:
-		b.WriteString(v.num)
-	case jsonString:
-		b.WriteString(jsonQuote(v.str))
-	case jsonArray:
-		if len(v.arr) == 0 {
-			b.WriteString("[]")
-			return
-		}
-		b.WriteString("[\n")
-		for i, item := range v.arr {
-			b.WriteString(strings.Repeat(" ", depth+1))
-			item.appendJSON(b, depth+1)
-			if i < len(v.arr)-1 {
-				b.WriteByte(',')
-			}
-			b.WriteByte('\n')
-		}
-		b.WriteString(strings.Repeat(" ", depth))
-		b.WriteByte(']')
-	case jsonObject:
-		if len(v.obj) == 0 {
-			b.WriteString("{}")
-			return
-		}
-		b.WriteString("{\n")
-		for i, m := range v.obj {
-			b.WriteString(strings.Repeat(" ", depth+1))
-			b.WriteString(jsonQuote(m.key))
-			b.WriteString(": ")
-			m.value.appendJSON(b, depth+1)
-			if i < len(v.obj)-1 {
-				b.WriteByte(',')
-			}
-			b.WriteByte('\n')
-		}
-		b.WriteString(strings.Repeat(" ", depth))
-		b.WriteByte('}')
+		return nil, err
+	}
+	switch _, err := dec.Token(); {
+	case errors.Is(err, io.EOF):
+		return doc, nil
+	case err != nil:
+		return nil, err
+	default:
+		return nil, errors.New("extra data after the JSON value")
 	}
 }
 
-// pythonFloat formats a float the way Python's repr does, which is what
-// json.dump writes: 2.0 keeps its .0, and a value outside the fixed-point
-// window uses an exponent.
-func pythonFloat(f float64) string {
-	switch {
-	case math.IsNaN(f):
-		return "NaN"
-	case math.IsInf(f, 1):
-		return "Infinity"
-	case math.IsInf(f, -1):
-		return "-Infinity"
-	}
-	abs := math.Abs(f)
-	var s string
-	if abs != 0 && (abs < 1e-4 || abs >= 1e16) {
-		s = strconv.FormatFloat(f, 'e', -1, 64)
-	} else {
-		s = strconv.FormatFloat(f, 'f', -1, 64)
-	}
-	if !strings.ContainsAny(s, ".eE") {
-		s += ".0"
-	}
-	return s
-}
-
-// pythonJSONNumber canonicalises one number literal the way json.load followed
-// by json.dump would: an integer literal stays an integer, a float literal
-// becomes Python's float representation.
-func pythonJSONNumber(raw string) string {
-	switch raw {
-	case "NaN", "Infinity", "-Infinity":
-		return raw
-	}
-	if !strings.ContainsAny(raw, ".eE") {
-		if raw == "-0" {
-			return "0"
-		}
-		return raw
-	}
-	f, err := strconv.ParseFloat(raw, 64)
-	if err != nil && !errors.Is(err, strconv.ErrRange) {
-		return raw
-	}
-	return pythonFloat(f)
-}
-
-// jsonQuote renders a string the way Python's json.dumps does with its default
-// ensure_ascii=True: non-ASCII runes become lower-case \u escapes.
-func jsonQuote(s string) string {
-	var b strings.Builder
-	b.WriteByte('"')
-	for _, r := range s {
-		switch r {
-		case '"':
-			b.WriteString(`\"`)
-		case '\\':
-			b.WriteString(`\\`)
-		case '\b':
-			b.WriteString(`\b`)
-		case '\f':
-			b.WriteString(`\f`)
-		case '\n':
-			b.WriteString(`\n`)
-		case '\r':
-			b.WriteString(`\r`)
-		case '\t':
-			b.WriteString(`\t`)
-		default:
-			switch {
-			case r < 0x20 || r > 0x7e:
-				if r > 0xffff {
-					r -= 0x10000
-					hi, lo := uint16(0xd800+(r>>10)), uint16(0xdc00+(r&0x3ff))
-					fmt.Fprintf(&b, `\u%04x\u%04x`, hi, lo)
-				} else {
-					fmt.Fprintf(&b, `\u%04x`, r)
-				}
-			default:
-				b.WriteRune(r)
-			}
-		}
-	}
-	b.WriteByte('"')
-	return b.String()
-}
-
-// parseJSONDocument parses one JSON value, accepting Python's NaN and
-// Infinity literals and preserving duplicate object keys.
-func parseJSONDocument(data []byte) (*jsonValue, error) {
-	p := jsonParser{s: string(data)}
-	p.skipSpace()
-	if p.i >= len(p.s) {
-		return nil, p.errorf("expecting value")
-	}
-	v, err := p.parseValue()
+// decodeJSONValue reads one value from dec as a jsonObject, []any, or the
+// scalar token the decoder returns. Objects keep their members in file order.
+func decodeJSONValue(dec *json.Decoder) (any, error) {
+	tok, err := dec.Token()
 	if err != nil {
 		return nil, err
 	}
-	p.skipSpace()
-	if p.i != len(p.s) {
-		return nil, p.errorf("extra data")
+	delim, ok := tok.(json.Delim)
+	if !ok {
+		return tok, nil
 	}
-	return v, nil
-}
-
-type jsonParser struct {
-	s string
-	i int
-}
-
-type jsonSyntaxError struct {
-	offset int
-	msg    string
-}
-
-func (e *jsonSyntaxError) Error() string { return fmt.Sprintf("%s at offset %d", e.msg, e.offset) }
-
-func (p *jsonParser) errorf(msg string) error { return &jsonSyntaxError{offset: p.i, msg: msg} }
-
-func (p *jsonParser) skipSpace() {
-	for p.i < len(p.s) {
-		switch p.s[p.i] {
-		case ' ', '\t', '\n', '\r':
-			p.i++
-		default:
-			return
+	switch delim {
+	case '{':
+		obj := newJSONObject()
+		for dec.More() {
+			keyTok, err := dec.Token()
+			if err != nil {
+				return nil, err
+			}
+			key, ok := keyTok.(string)
+			if !ok {
+				return nil, fmt.Errorf("object key is %v, not a string", keyTok)
+			}
+			value, err := decodeJSONValue(dec)
+			if err != nil {
+				return nil, err
+			}
+			obj.members = append(obj.members, jsonMember{key: key, value: value})
 		}
-	}
-}
-
-func (p *jsonParser) parseValue() (*jsonValue, error) {
-	if p.i >= len(p.s) {
-		return nil, p.errorf("expecting value")
-	}
-	switch c := p.s[p.i]; {
-	case c == '{':
-		return p.parseObject()
-	case c == '[':
-		return p.parseArray()
-	case c == '"':
-		s, err := p.parseString()
-		if err != nil {
+		if _, err := dec.Token(); err != nil {
 			return nil, err
 		}
-		return newJSONString(s), nil
-	case strings.HasPrefix(p.s[p.i:], "true"):
-		p.i += len("true")
-		return &jsonValue{kind: jsonBool, b: true}, nil
-	case strings.HasPrefix(p.s[p.i:], "false"):
-		p.i += len("false")
-		return &jsonValue{kind: jsonBool}, nil
-	case strings.HasPrefix(p.s[p.i:], "null"):
-		p.i += len("null")
-		return &jsonValue{kind: jsonNull}, nil
-	case strings.HasPrefix(p.s[p.i:], "NaN"):
-		p.i += len("NaN")
-		return &jsonValue{kind: jsonNumber, num: "NaN"}, nil
-	case strings.HasPrefix(p.s[p.i:], "Infinity"):
-		p.i += len("Infinity")
-		return &jsonValue{kind: jsonNumber, num: "Infinity"}, nil
-	case strings.HasPrefix(p.s[p.i:], "-Infinity"):
-		p.i += len("-Infinity")
-		return &jsonValue{kind: jsonNumber, num: "-Infinity"}, nil
-	case c == '-' || (c >= '0' && c <= '9'):
-		return p.parseNumber()
-	}
-	return nil, p.errorf("expecting value")
-}
-
-func (p *jsonParser) parseObject() (*jsonValue, error) {
-	p.i++ // {
-	obj := newJSONObject()
-	p.skipSpace()
-	if p.i < len(p.s) && p.s[p.i] == '}' {
-		p.i++
 		return obj, nil
-	}
-	for {
-		p.skipSpace()
-		if p.i >= len(p.s) || p.s[p.i] != '"' {
-			return nil, p.errorf("expecting property name")
+	case '[':
+		var arr []any
+		for dec.More() {
+			item, err := decodeJSONValue(dec)
+			if err != nil {
+				return nil, err
+			}
+			arr = append(arr, item)
 		}
-		key, err := p.parseString()
-		if err != nil {
+		if _, err := dec.Token(); err != nil {
 			return nil, err
 		}
-		p.skipSpace()
-		if p.i >= len(p.s) || p.s[p.i] != ':' {
-			return nil, p.errorf("expecting ':'")
-		}
-		p.i++
-		p.skipSpace()
-		value, err := p.parseValue()
-		if err != nil {
-			return nil, err
-		}
-		obj.obj = append(obj.obj, jsonMember{key: key, value: value})
-		p.skipSpace()
-		if p.i >= len(p.s) {
-			return nil, p.errorf("expecting ',' or '}'")
-		}
-		switch p.s[p.i] {
-		case ',':
-			p.i++
-		case '}':
-			p.i++
-			return obj, nil
-		default:
-			return nil, p.errorf("expecting ',' or '}'")
-		}
-	}
-}
-
-func (p *jsonParser) parseArray() (*jsonValue, error) {
-	p.i++ // [
-	arr := &jsonValue{kind: jsonArray}
-	p.skipSpace()
-	if p.i < len(p.s) && p.s[p.i] == ']' {
-		p.i++
 		return arr, nil
 	}
-	for {
-		p.skipSpace()
-		item, err := p.parseValue()
-		if err != nil {
-			return nil, err
+	return nil, fmt.Errorf("unexpected %v", delim)
+}
+
+// typeName is the type name the malformed-budget messages report.
+func typeName(v any) string {
+	switch t := v.(type) {
+	case bool:
+		return "bool"
+	case json.Number:
+		if strings.ContainsAny(string(t), ".eE") {
+			return "float"
 		}
-		arr.arr = append(arr.arr, item)
-		p.skipSpace()
-		if p.i >= len(p.s) {
-			return nil, p.errorf("expecting ',' or ']'")
-		}
-		switch p.s[p.i] {
-		case ',':
-			p.i++
-		case ']':
-			p.i++
-			return arr, nil
-		default:
-			return nil, p.errorf("expecting ',' or ']'")
-		}
+		return "int"
+	case string:
+		return "str"
+	case []any:
+		return "list"
+	case *jsonObject:
+		return "dict"
+	case nil:
+		return "NoneType"
+	default:
+		return fmt.Sprintf("%T", v)
 	}
 }
 
-func (p *jsonParser) parseString() (string, error) {
-	if p.i >= len(p.s) || p.s[p.i] != '"' {
-		return "", p.errorf("expecting string")
+// secondsValue parses v as a number of seconds, or names why it cannot: bools,
+// strings, nulls, containers and non-finite numbers are not a duration. It is
+// the one definition shared by package budgets, wall budgets, the flat ceiling
+// and per-test ceilings.
+func secondsValue(v any) (float64, string) {
+	n, ok := v.(json.Number)
+	if !ok {
+		return 0, "got " + typeName(v)
 	}
-	p.i++
-	var b strings.Builder
-	for p.i < len(p.s) {
-		c := p.s[p.i]
-		switch {
-		case c == '"':
-			p.i++
-			return b.String(), nil
-		case c == '\\':
-			p.i++
-			if p.i >= len(p.s) {
-				return "", p.errorf("unterminated escape")
-			}
-			switch p.s[p.i] {
-			case '"', '\\', '/':
-				b.WriteByte(p.s[p.i])
-				p.i++
-			case 'b':
-				b.WriteByte('\b')
-				p.i++
-			case 'f':
-				b.WriteByte('\f')
-				p.i++
-			case 'n':
-				b.WriteByte('\n')
-				p.i++
-			case 'r':
-				b.WriteByte('\r')
-				p.i++
-			case 't':
-				b.WriteByte('\t')
-				p.i++
-			case 'u':
-				r, err := p.parseUnicodeEscape()
-				if err != nil {
-					return "", err
-				}
-				if utf16.IsSurrogate(r) && r >= 0xd800 && r <= 0xdbff {
-					save := p.i
-					if p.i+1 < len(p.s) && p.s[p.i] == '\\' && p.s[p.i+1] == 'u' {
-						p.i++
-						lo, err := p.parseUnicodeEscape()
-						if err == nil && lo >= 0xdc00 && lo <= 0xdfff {
-							r = utf16.DecodeRune(r, lo)
-						} else {
-							p.i = save
-						}
-					}
-				}
-				b.WriteRune(r)
-			default:
-				return "", p.errorf("invalid escape")
-			}
-		case c < 0x20:
-			return "", p.errorf("invalid control character")
-		default:
-			r, size := utf8.DecodeRuneInString(p.s[p.i:])
-			if r == utf8.RuneError && size == 1 {
-				b.WriteByte(c)
-				p.i++
-			} else {
-				b.WriteRune(r)
-				p.i += size
-			}
-		}
-	}
-	return "", p.errorf("unterminated string")
-}
-
-func (p *jsonParser) parseUnicodeEscape() (rune, error) {
-	// p.i is at 'u'.
-	if p.i+5 > len(p.s) {
-		return 0, p.errorf("invalid \\u escape")
-	}
-	n, err := strconv.ParseUint(p.s[p.i+1:p.i+5], 16, 16)
+	f, err := n.Float64()
 	if err != nil {
-		return 0, p.errorf("invalid \\u escape")
+		if errors.Is(err, strconv.ErrRange) {
+			if !strings.ContainsAny(string(n), ".eE") {
+				return 0, "too large for a float"
+			}
+			if f < 0 {
+				return 0, "got -Infinity"
+			}
+			return 0, "got Infinity"
+		}
+		return 0, "got " + string(n)
 	}
-	p.i += 5
-	return rune(n), nil
+	switch {
+	case math.IsNaN(f):
+		return 0, "got NaN"
+	case math.IsInf(f, 1):
+		return 0, "got Infinity"
+	case math.IsInf(f, -1):
+		return 0, "got -Infinity"
+	}
+	return f, ""
 }
 
-func (p *jsonParser) parseNumber() (*jsonValue, error) {
-	start := p.i
-	if p.s[p.i] == '-' {
-		p.i++
-	}
-	if p.i >= len(p.s) {
-		return nil, p.errorf("invalid number")
-	}
-	digits := func() int {
-		n := 0
-		for p.i < len(p.s) && p.s[p.i] >= '0' && p.s[p.i] <= '9' {
-			p.i++
-			n++
+// secondsMap validates every member of a budget object as seconds and returns
+// them keyed by name. A non-empty problem names the first offending member.
+func secondsMap(object *jsonObject) (map[string]float64, string) {
+	out := make(map[string]float64, len(object.members))
+	for _, m := range object.members {
+		seconds, problem := secondsValue(m.value)
+		if problem != "" {
+			return nil, "[" + strconv.Quote(m.key) + "] must be a number of seconds (" + problem + ")"
 		}
-		return n
+		out[m.key] = seconds
 	}
-	if p.s[p.i] == '0' {
-		p.i++
-	} else if digits() == 0 {
-		return nil, p.errorf("invalid number")
+	return out, ""
+}
+
+// budgetNumber renders one measured duration. A whole number keeps a .0 so the
+// file's float-shaped entries stay floats (2.0, not 2).
+func budgetNumber(seconds float64) json.Number {
+	s := strconv.FormatFloat(seconds, 'f', -1, 64)
+	if !strings.ContainsAny(s, ".eE") {
+		s += ".0"
 	}
-	if p.i < len(p.s) && p.s[p.i] == '.' {
-		p.i++
-		if digits() == 0 {
-			return nil, p.errorf("invalid number")
-		}
+	return json.Number(s)
+}
+
+// writeTimingBudget writes the budget in the checked-in one-space indent.
+func writeTimingBudget(path string, budget *jsonObject) error {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", " ")
+	if err := enc.Encode(budget); err != nil {
+		return err
 	}
-	if p.i < len(p.s) && (p.s[p.i] == 'e' || p.s[p.i] == 'E') {
-		p.i++
-		if p.i < len(p.s) && (p.s[p.i] == '+' || p.s[p.i] == '-') {
-			p.i++
-		}
-		if digits() == 0 {
-			return nil, p.errorf("invalid number")
-		}
-	}
-	return &jsonValue{kind: jsonNumber, num: pythonJSONNumber(p.s[start:p.i])}, nil
+	return os.WriteFile(path, b.Bytes(), 0o644)
 }
