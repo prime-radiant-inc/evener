@@ -127,6 +127,25 @@ function intentText(entry: Extract<ProjectedEntry, { kind: "intent" }>): string 
   return statedIntentOf(entry.item) ?? null;
 }
 
+/** The action rows `config` shows, as source item id -> the rationale each one
+ * states. A call the view projects as a plain tool row, and a suppressed one,
+ * is absent: no row shows its description, so Find could never land there. */
+export function actionRationales(model: ThreadModel, config: TranscriptDisplayConfigV1): Map<string, string> {
+  const rationales = new Map<string, string>();
+  const take = (entries: readonly ProjectedEntry[]) => {
+    for (const entry of entries) {
+      if (entry.kind !== "intent") continue;
+      const text = intentText(entry);
+      if (text !== null) rationales.set(entry.sourceItemId, text);
+    }
+  };
+  for (const row of transcriptRowsForProjection(projectThread(model, config))) {
+    if (row.kind === "intentGroup") take(row.entries);
+    else take(row.turn.entries);
+  }
+  return rationales;
+}
+
 function matches(entry: ProjectedEntry, needle: string, view: FindView, version: number, live: boolean): boolean {
   if (entry.kind === "intent") {
     const text = intentText(entry);

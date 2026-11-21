@@ -77,7 +77,7 @@ function readFile(id: string, path: string): TurnModel["items"][number] {
     text: "",
     status: "completed",
     toolName: "read_file",
-    argumentsJson: JSON.stringify({ file_path: path }),
+    argumentsJSON: JSON.stringify({ file_path: path }),
   } as TurnModel["items"][number];
 }
 
@@ -89,7 +89,7 @@ function taskListView(id: string, rationale: string): TurnModel["items"][number]
     text: "",
     status: "completed",
     toolName: "task_list",
-    argumentsJson: JSON.stringify({ action: "view" }),
+    argumentsJSON: JSON.stringify({ action: "view" }),
     description: rationale,
   } as TurnModel["items"][number];
 }
@@ -171,10 +171,14 @@ test("a thought summary match lands with its words visible in the mounted row", 
   await waitFor(() => expect(count()).toBe(1));
   await waitFor(() => expect(currentAnchor()?.getAttribute("data-view-anchor-id")).toBe("r1"));
   // The thought's body is behind its disclosure: landing opens it, so the
-  // counted words are on screen rather than in an unopened fold.
-  expect(currentAnchor()?.querySelector("details")?.open).toBe(true);
-  expect(currentAnchor()?.textContent).toContain("needle sits");
-  expect(painted("evener-find-current")).toContain("needle sits");
+  // counted words are on screen rather than in an unopened fold. The body
+  // mounts lazily and the highlight paints on the following frame, so wait for
+  // both instead of reading them the instant the anchor is stamped.
+  await waitFor(() => {
+    expect(currentAnchor()?.querySelector("details")?.open).toBe(true);
+    expect(currentAnchor()?.textContent).toContain("needle sits");
+    expect(painted("evener-find-current")).toContain("needle sits");
+  });
 });
 
 test("a thought is not counted where the chat view hides thinking traces", async () => {
@@ -196,8 +200,10 @@ test("a streaming thought's unclosed Markdown lands on the words its live row sh
 
   await waitFor(() => expect(count()).toBe(1));
   await waitFor(() => expect(currentAnchor()?.getAttribute("data-view-anchor-id")).toBe("r1"));
-  expect(currentAnchor()?.textContent).toContain("check the assumptions");
-  expect(currentAnchor()?.textContent).not.toContain("**");
+  await waitFor(() => {
+    expect(currentAnchor()?.textContent).toContain("check the assumptions");
+    expect(currentAnchor()?.textContent).not.toContain("**");
+  });
 });
 
 test("an action row with no stated rationale never matches the projector's fallback text", async () => {
@@ -252,7 +258,9 @@ test("an action rationale match opens the collapsed action group and lands on it
   act(() => requestFindInSession(REF, { query: "grep for the needle" }));
   await waitFor(() => expect(count()).toBe(1));
   await waitFor(() => expect(currentAnchor()?.getAttribute("data-view-anchor-id")).toBe("intent:c2"));
-  expect(group().open).toBe(true);
-  expect(currentAnchor()?.textContent).toContain("grep for the needle");
-  expect(painted("evener-find-current")).toContain("grep for the needle");
+  await waitFor(() => {
+    expect(group().open).toBe(true);
+    expect(currentAnchor()?.textContent).toContain("grep for the needle");
+    expect(painted("evener-find-current")).toContain("grep for the needle");
+  });
 });

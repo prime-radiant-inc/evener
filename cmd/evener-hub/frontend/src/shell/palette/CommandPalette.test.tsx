@@ -1422,6 +1422,36 @@ test("choosing a thought or action row in In session hands Find the words and th
   await waitFor(() => expect(screen.getByTestId("find-request").getAttribute("data-item")).toBe("call1"));
 });
 
+test("a Tools-preset call's rationale is not offered In session, because no row shows it", async () => {
+  const user = userEvent.setup();
+  scriptSearch({ live: [], past: [] });
+  transcriptDisplayStore
+    .getState()
+    .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }));
+  focusSession("ref_a", {
+    turns: [turn([{ ...actionItem("call1", "grep for frobnitz"), output: "frobnitz log" }])],
+  });
+
+  render(
+    <>
+      <NeedsYouProvider>
+        <CommandPalette />
+      </NeedsYouProvider>
+      <FindProbe />
+    </>,
+  );
+  act(() => openPalette());
+  await user.type(screen.getByRole("combobox"), "frobnitz");
+
+  // The call's output is on screen and stays listed; its rationale is not, so
+  // no result here would close the palette without opening Find on anything.
+  await waitFor(() => expect(paletteRowsOfKind("insession")).toHaveLength(1));
+  expect(paletteRowsOfKind("insession")[0]?.textContent).toContain("frobnitz log");
+  expect(paletteRowsOfKind("insession")[0]?.textContent).not.toContain("grep for");
+  // The probe always mounts; an empty item means Find was never sent there.
+  expect(screen.getByTestId("find-request").getAttribute("data-item")).toBe("");
+});
+
 // FIX 2 (real-user report): a user hunting for the keyboard shortcut legend
 // tried typing "?" in the palette (not "/help" or "/?" - a bare "?", the
 // conventional "show me help" gesture) and, since "?" alone stays in search

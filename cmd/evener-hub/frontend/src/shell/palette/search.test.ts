@@ -1,6 +1,10 @@
-// @vitest-environment node
-
-import type { ItemModel, SearchResponse, ThreadModel, TurnModel } from "@evener/appwire-client";
+import {
+  type ItemModel,
+  makeTranscriptDisplayConfig,
+  type SearchResponse,
+  type ThreadModel,
+  type TurnModel,
+} from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { expect, test } from "vitest";
 import { ALL_CAPABILITIES } from "../../threadTestUtils";
@@ -85,12 +89,17 @@ function modelWithTurns(turns: TurnModel[]): ThreadModel {
   };
 }
 
+// The palette reads the session's active display config to know which calls
+// project as action rows; messages and thoughts read the same at any level.
+const VIEW = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" });
+const TOOLS = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+
 test("findInSessionMatches finds case-insensitive hits and labels each with a 1-based turn number", () => {
   const model = modelWithTurns([
     turn("t1", [item("i1", "Hello world"), item("i2", "tool output")]),
     turn("t2", [item("i3", "Goodbye WORLD")]),
   ]);
-  const hits = findInSessionMatches(model, "world");
+  const hits = findInSessionMatches(model, "world", VIEW);
   expect(hits.map((h) => ({ turn: h.turn, itemId: h.itemId }))).toEqual([
     { turn: 1, itemId: "i1" },
     { turn: 2, itemId: "i3" },
@@ -99,13 +108,13 @@ test("findInSessionMatches finds case-insensitive hits and labels each with a 1-
 
 test("findInSessionMatches returns [] for an empty query and never matches empty-text items", () => {
   const model = modelWithTurns([turn("t1", [item("i1", ""), item("i2", "content")])]);
-  expect(findInSessionMatches(model, "")).toEqual([]);
-  expect(findInSessionMatches(model, "zzz")).toEqual([]);
+  expect(findInSessionMatches(model, "", VIEW)).toEqual([]);
+  expect(findInSessionMatches(model, "zzz", VIEW)).toEqual([]);
 });
 
 test("findInSessionMatches normalizes runs of whitespace before matching", () => {
   const model = modelWithTurns([turn("t1", [item("i1", "multi\n\n   line")])]);
-  const hits = findInSessionMatches(model, "multi line");
+  const hits = findInSessionMatches(model, "multi line", VIEW);
   expect(hits).toHaveLength(1);
 });
 
@@ -118,30 +127,30 @@ function itemWith(id: string, fields: Partial<ItemModel>): ItemModel {
 
 test("findInSessionMatches scans tool output", () => {
   const model = modelWithTurns([turn("t1", [itemWith("i1", { type: "tool", output: "result: frobnitz found" })])]);
-  const hits = findInSessionMatches(model, "frobnitz");
+  const hits = findInSessionMatches(model, "frobnitz", VIEW);
   expect(hits).toHaveLength(1);
   expect(hits[0]?.turn).toBe(1);
 });
 
 test("findInSessionMatches scans tool error text", () => {
   const model = modelWithTurns([turn("t1", [itemWith("i1", { type: "tool", error: "frobnitz not permitted" })])]);
-  expect(findInSessionMatches(model, "frobnitz")).toHaveLength(1);
+  expect(findInSessionMatches(model, "frobnitz", VIEW)).toHaveLength(1);
 });
 
 test("findInSessionMatches scans reasoning summaries (joined chunks)", () => {
   const model = modelWithTurns([
     turn("t1", [itemWith("i1", { type: "reasoning", reasoningSummaries: [["thinking about ", "frobnitz"]] })]),
   ]);
-  expect(findInSessionMatches(model, "frobnitz")).toHaveLength(1);
+  expect(findInSessionMatches(model, "frobnitz", VIEW)).toHaveLength(1);
 });
 
 test("findInSessionMatches reads a thought's summaries as rendered Markdown", () => {
   const model = modelWithTurns([
     turn("t1", [itemWith("think", { type: "reasoning", reasoningSummaries: [["the **frobnitz** plan"]] })]),
   ]);
-  expect(findInSessionMatches(model, "frobnitz plan").map((hit) => hit.itemId)).toEqual(["think"]);
+  expect(findInSessionMatches(model, "frobnitz plan", VIEW).map((hit) => hit.itemId)).toEqual(["think"]);
   // The summary's formatting marks are not words on the page.
-  expect(findInSessionMatches(model, "**frobnitz**")).toEqual([]);
+  expect(findInSessionMatches(model, "**frobnitz**", VIEW)).toEqual([]);
 });
 
 test("findInSessionMatches does not scan a thought's raw trace", () => {
@@ -150,7 +159,7 @@ test("findInSessionMatches does not scan a thought's raw trace", () => {
       itemWith("think", { type: "reasoning", text: "raw frobnitz trace", reasoningSummaries: [["a plan"]] }),
     ]),
   ]);
-  expect(findInSessionMatches(model, "raw frobnitz")).toEqual([]);
+  expect(findInSessionMatches(model, "raw frobnitz", VIEW)).toEqual([]);
 });
 
 test("findInSessionMatches reads a streaming thought's unclosed Markdown live", () => {
@@ -163,12 +172,12 @@ test("findInSessionMatches reads a streaming thought's unclosed Markdown live", 
       }),
     ]),
   ]);
-  expect(findInSessionMatches(live, "check the assumptions").map((hit) => hit.itemId)).toEqual(["think"]);
+  expect(findInSessionMatches(live, "check the assumptions", VIEW).map((hit) => hit.itemId)).toEqual(["think"]);
   // Settled text shows the unbalanced marker literally.
   const settled = modelWithTurns([
     turn("t1", [itemWith("think", { type: "reasoning", reasoningSummaries: [["check **the assumptions"]] })]),
   ]);
-  expect(findInSessionMatches(settled, "check the assumptions")).toEqual([]);
+  expect(findInSessionMatches(settled, "check the assumptions", VIEW)).toEqual([]);
 });
 
 test("findInSessionMatches scans an action's rationale but not a system notice's description", () => {
@@ -178,19 +187,43 @@ test("findInSessionMatches scans an action's rationale but not a system notice's
       itemWith("note", { type: "systemMessage", description: "frobnicate the frobnitz" }),
     ]),
   ]);
-  expect(findInSessionMatches(model, "frobnitz").map((hit) => hit.itemId)).toEqual(["call"]);
+  expect(findInSessionMatches(model, "frobnitz", VIEW).map((hit) => hit.itemId)).toEqual(["call"]);
 });
 
 test("findInSessionMatches scans an action's rationale", () => {
   const model = modelWithTurns([
     turn("t1", [itemWith("call", { type: "commandExecution", toolName: "shell", description: "grep for frobnitz" })]),
   ]);
-  expect(findInSessionMatches(model, "frobnitz").map((hit) => hit.itemId)).toEqual(["call"]);
+  expect(findInSessionMatches(model, "frobnitz", VIEW).map((hit) => hit.itemId)).toEqual(["call"]);
+});
+
+test("findInSessionMatches reads a rationale only where the view shows an action row", () => {
+  const model = modelWithTurns([
+    turn("t1", [itemWith("call", { type: "commandExecution", toolName: "shell", description: "grep for frobnitz" })]),
+  ]);
+  // Tools projects the call as a plain tool row, so no row shows this text and
+  // Find could not land on the hit the palette would offer.
+  expect(findInSessionMatches(model, "frobnitz", TOOLS)).toEqual([]);
+  expect(findInSessionMatches(model, "frobnitz", VIEW).map((hit) => hit.itemId)).toEqual(["call"]);
+});
+
+test("findInSessionMatches does not read the rationale of a suppressed action row", () => {
+  const model = modelWithTurns([
+    turn("t1", [
+      itemWith("call", {
+        type: "commandExecution",
+        toolName: "task_list",
+        argumentsJSON: JSON.stringify({ action: "view" }),
+        description: "view the frobnitz list",
+      }),
+    ]),
+  ]);
+  expect(findInSessionMatches(model, "frobnitz", VIEW)).toEqual([]);
 });
 
 test("a match in both text and output yields two hits sharing the turn label", () => {
   const model = modelWithTurns([turn("t1", [itemWith("i1", { text: "frobnitz here", output: "frobnitz there" })])]);
-  const hits = findInSessionMatches(model, "frobnitz");
+  const hits = findInSessionMatches(model, "frobnitz", VIEW);
   expect(hits).toHaveLength(2);
   expect(hits.every((h) => h.turn === 1)).toBe(true);
 });
@@ -236,7 +269,7 @@ test("highlightParts returns a single unmarked part when there is no match or no
 // copy is not an offset into the text a snippet or a highlight is cut from.
 test("a hit after a character its lower case makes longer still marks the match", () => {
   const text = "İ needle";
-  const hits = findInSessionMatches(modelWithTurns([turn("t1", [item("i1", text)])]), "needle");
+  const hits = findInSessionMatches(modelWithTurns([turn("t1", [item("i1", text)])]), "needle", VIEW);
   expect(hits).toHaveLength(1);
   expect(hits[0]?.snippet.filter((part) => part.mark)).toEqual([{ text: "needle", mark: true }]);
   expect(highlightParts(text, "needle").filter((part) => part.mark)).toEqual([{ text: "needle", mark: true }]);
@@ -245,6 +278,6 @@ test("a hit after a character its lower case makes longer still marks the match"
 test("a reply is searched as it reads, the way the session's Find reads it", () => {
   const reply: ItemModel = { id: "i1", turnId: "t", type: "agentMessage", text: "the build **fail**ed" };
   const model = { turns: [{ id: "t", status: "completed", items: [reply] }] } as unknown as ThreadModel;
-  expect(findInSessionMatches(model, "build failed")).toHaveLength(1);
-  expect(findInSessionMatches(model, "**fail**")).toHaveLength(0);
+  expect(findInSessionMatches(model, "build failed", VIEW)).toHaveLength(1);
+  expect(findInSessionMatches(model, "**fail**", VIEW)).toHaveLength(0);
 });

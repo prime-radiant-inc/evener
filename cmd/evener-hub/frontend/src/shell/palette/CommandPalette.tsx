@@ -964,7 +964,7 @@ function buildView(args: {
     pushCommandMatches(query);
     const grouped = groupSearchResults(searchResp?.live ?? [], searchResp?.past ?? []);
     const model = focusedModel(ctx.sessionRef);
-    const inSession = model ? findInSessionMatches(model, trimmed) : [];
+    const inSession = model ? findInSessionMatches(model, trimmed, transcriptDisplayStore.getState().effective()) : [];
     if (grouped.live.length) {
       entries.push({ type: "header", section: "live", label: "Live" });
       for (const row of grouped.live) {
