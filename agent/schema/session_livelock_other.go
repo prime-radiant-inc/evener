@@ -6,9 +6,10 @@ package schema
 // the arms with a real primitive covers — every Unix other than linux/darwin
 // (freebsd, openbsd, netbsd, dragonfly, solaris, aix) and the non-Unix,
 // non-Windows ports. Not-applied means the caller runs without a livelock:
-// probes get no livelock evidence, and callers must weigh the rendezvous and
-// inactivity evidence they do have. It costs liveness visibility, never
-// correctness. Same shape and caveat as snapshot_flock_other.go.
+// probes get no livelock evidence, so callers weigh the rendezvous and
+// inactivity evidence they do have, and an explicitly requested orphan prune
+// can release a lane whose owner is alive but has no remaining live signal.
+// Same shape and caveat as snapshot_flock_other.go.
 //
 // The tag names the three GOOS this file must not cover, rather than testing
 // !unix, to stay exhaustive against session_livelock_unix.go's narrowed

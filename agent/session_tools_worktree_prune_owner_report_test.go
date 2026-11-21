@@ -12,6 +12,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/worktree"
@@ -49,22 +50,25 @@ func seedOwnerRootSession(t *testing.T, stateDir, sid string) {
 	}
 }
 
-// requireSessionLivelock skips on GOOS whose arm is the not-applied
-// fallback, or whose inspection errors: the verdicts below read livelock
-// evidence, which only exists where the lock does and can be inspected.
+// requireSessionLivelock skips where the lock is not applied, and fails where
+// it is: linux and darwin are session_livelock_unix.go's arm, so the verdicts
+// below read livelock evidence there and a failed acquisition or inspection is
+// a regression, not a reason to skip.
 func requireSessionLivelock(t *testing.T) {
 	t.Helper()
-	dir := t.TempDir()
-	release, applied, err := schema.AcquireSessionLivelock(dir, "probe")
-	if err != nil {
-		t.Fatalf("probe livelock support: %v", err)
-	}
-	if !applied {
+	switch runtime.GOOS {
+	case "linux", "darwin":
+	default:
 		t.Skip("session livelock is unavailable on this platform")
 	}
+	dir := t.TempDir()
+	release, applied, err := schema.AcquireSessionLivelock(dir, "probe")
+	if err != nil || !applied {
+		t.Fatalf("acquire a livelock on %s: applied=%v err=%v", runtime.GOOS, applied, err)
+	}
 	defer release()
-	if held, _, err := schema.SessionLivelockHeld(dir, "probe"); err != nil || !held {
-		t.Skip("session livelock inspection is unavailable on this platform")
+	if held, exists, err := schema.SessionLivelockHeld(dir, "probe"); err != nil || !held || !exists {
+		t.Fatalf("a livelock this test just acquired reads held=%v exists=%v err=%v", held, exists, err)
 	}
 }
 
