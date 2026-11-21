@@ -362,8 +362,8 @@ func TestTimingBudgetJSONRoundTripsTheCheckedInFile(t *testing.T) {
 		for at < len(got) && at < len(raw) && got[at] == raw[at] {
 			at++
 		}
-			end := min(at+40, len(got))
-			t.Fatalf("re-encoding testing-budget.json changed its bytes at byte %d:\ngot  %q", at, got[at:end])
+		end := min(at+40, len(got))
+		t.Fatalf("re-encoding testing-budget.json changed its bytes at byte %d:\ngot  %q", at, got[at:end])
 	}
 }
 
