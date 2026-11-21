@@ -10,7 +10,7 @@ import (
 // row echoes its own pair.
 func TestOperationsNotFoundDetailMatchesMirroredAndUnmirroredHosts(t *testing.T) {
 	mirrored, _ := openTestStore(t)
-	mirrorCursorBoundary(t, mirrored, "m1", 2, "inc-m1", 3)
+	mirrorTestBoundary(t, mirrored, "m1", 2, "inc-m1", 3)
 	miss, err := mirrored.ReadOperations(OperationsQuery{Host: "m1", ID: "00000000000000000009"})
 	if err != nil {
 		t.Fatalf("mirrored not-found detail: %v", err)

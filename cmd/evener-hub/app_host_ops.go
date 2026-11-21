@@ -657,8 +657,8 @@ func (m *hubHostManager) registerOpsHandlers(server *appserver.Server) {
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostOperations, hostManageHandler(m.Operations))
 }
 
-// Operations implements evener/host/operations (§8, §10): the read-only page of
-// the operation store's records. It is a read in every sense — no gate, no
+// Operations implements evener/host/operations (§8, §10): the read-only bounded
+// listing of the operation store's records. It is a read in every sense — no gate, no
 // dial, no write, no registry resolution — so a removed host's retained history
 // stays readable, and a read never attaches anything (the same
 // no-lazy-attachment rule `list`/`status` carry). Admission is the host
@@ -698,7 +698,6 @@ func operationsQuery(params appwire.HostOperationsParams) (hostops.OperationsQue
 		IncarnationID:     params.IncarnationID,
 		ID:                params.ID,
 		Limit:             params.Limit,
-		Cursor:            params.Cursor,
 	}
 	if params.State != "" {
 		state, err := validOperationState(params.State)
@@ -724,48 +723,19 @@ func validOperationState(state appwire.OperationState) (appwire.OperationState, 
 }
 
 // operationsRefusal maps the store's read refusals onto §11's envelopes:
-// stale-entry (a cursor pin drifted), cursor-invalidated (a mid-pagination
-// compaction), cursor-too-large (the over-cap first page), and invalid params
-// for a malformed query. Anything else — a record host without its mirrored
-// boundary included — is an internal error.
+// invalid params for a malformed query, anything else is an internal error.
 func operationsRefusal(err error) error {
-	if stale, ok := errors.AsType[*hostops.CursorStaleError](err); ok {
-		return appwire.StaleEntry(appwire.StaleEntryBinding(stale.Binding), err.Error())
-	}
-	if invalidated, ok := errors.AsType[*hostops.CursorInvalidatedError](err); ok {
-		return appwire.CursorInvalidated(invalidated.CompactSeq, invalidated.Host,
-			cursorBoundWire(invalidated.Bound), err.Error())
-	}
-	if tooLarge, ok := errors.AsType[*hostops.CursorTooLargeError](err); ok {
-		return appwire.CursorTooLarge(tooLarge.CapBytes, err.Error())
-	}
 	if errors.Is(err, hostops.ErrInvalidOperationsQuery) {
 		return appwire.InvalidParams(err.Error())
 	}
 	return appwire.InternalError(fmt.Sprintf("reading the operation store failed: %v", err))
 }
 
-// cursorBoundWire renders one cursor bounds entry as §11's value union: the
-// {generation, incarnationId, presenceEpoch} object, or the literal "absent"
-// the hostBoundaries map also carries.
-func cursorBoundWire(bound hostops.CursorBound) any {
-	if bound.Absent {
-		return appwire.HostBoundaryAbsent
-	}
-	return appwire.HostBoundary{
-		Generation:    bound.Boundary.Generation,
-		IncarnationID: bound.Boundary.IncarnationID,
-		PresenceEpoch: bound.Boundary.PresenceEpoch,
-	}
-}
-
-// operationsResponse renders one store page as §10's response: the records
-// field-for-field, the top-level pair exactly on host-pinned pages, and the
-// hostBoundaries value union exactly on unfiltered cross-host pages.
+// operationsResponse renders one store listing as §10's response: the records
+// field-for-field, and the top-level pair exactly on host-pinned pages.
 func operationsResponse(page hostops.OperationsPage) (appwire.HostOperationsResponse, error) {
 	response := appwire.HostOperationsResponse{
 		Operations: make([]appwire.OperationRecord, 0, len(page.Records)),
-		NextCursor: page.NextCursor,
 	}
 	for _, record := range page.Records {
 		wire, err := operationRecordWire(record)
@@ -778,20 +748,6 @@ func operationsResponse(page hostops.OperationsPage) (appwire.HostOperationsResp
 		response.Generation = *page.Generation
 	}
 	response.IncarnationID = page.IncarnationID
-	if page.HostBoundaries != nil {
-		response.HostBoundaries = make(map[string]any, len(page.HostBoundaries))
-		for host, bound := range page.HostBoundaries {
-			if bound.Absent {
-				response.HostBoundaries[host] = appwire.HostBoundaryAbsent
-				continue
-			}
-			response.HostBoundaries[host] = appwire.HostBoundary{
-				Generation:    bound.Boundary.Generation,
-				IncarnationID: bound.Boundary.IncarnationID,
-				PresenceEpoch: bound.Boundary.PresenceEpoch,
-			}
-		}
-	}
 	return response, nil
 }
 
