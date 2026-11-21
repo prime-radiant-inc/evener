@@ -206,6 +206,31 @@ test("a streaming thought's unclosed Markdown lands on the words its live row sh
   });
 });
 
+// The wire never completes a reasoning item: once a reply starts in the same
+// in-progress turn, the thought is no longer the tail and ThinkBlock renders it
+// settled, with the unclosed marker literal.
+test("a thought a later streaming reply overtook lands on its literal markers", async () => {
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  const reply = {
+    id: "a1",
+    turnId: "t1",
+    type: "agentMessage",
+    text: "Answering now",
+    status: "inProgress",
+  } as TurnModel["items"][number];
+  const model = modelOf([turn([reasoning("r1", "check **the assumptions", "inProgress"), reply], "inProgress")]);
+  requestFindInSession(REF, { query: "check the assumptions" });
+  render(<Harness model={model} config={config} />);
+
+  await waitFor(() => expect(bar().getAttribute("data-find-status")).toBe("none"));
+  expect(count()).toBe(0);
+
+  act(() => requestFindInSession(REF, { query: "check **the assumptions" }));
+  await waitFor(() => expect(count()).toBe(1));
+  await waitFor(() => expect(currentAnchor()?.getAttribute("data-view-anchor-id")).toBe("r1"));
+  await waitFor(() => expect(currentAnchor()?.textContent).toContain("check **the assumptions"));
+});
+
 test("an action row with no stated rationale never matches the projector's fallback text", async () => {
   const config = makeTranscriptDisplayConfig({
     kind: "custom",

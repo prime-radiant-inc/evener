@@ -136,7 +136,9 @@ function suppressedAction(id: string, rationale: string, argumentsJson: string):
 }
 
 function turnRow(id: string, entries: ProjectedEntry[], status = "completed"): TranscriptBodyRow {
-  const source = { id, status, items: [] } as unknown as TurnModel;
+  // The source turn knows the items it projected, which is how the live rule
+  // tells a thought still at the turn's tail from one a later item overtook.
+  const source = { id, status, items: entries.map((entry) => entry.item) } as unknown as TurnModel;
   const turn: ProjectedTurn = { id, source, entries, visibleItems: [] };
   return { kind: "turn", id, turn, sourceTurnIndex: 0, showTurnSeparator: true };
 }
@@ -319,6 +321,21 @@ test("a streaming thought's unclosed Markdown is read as its live row shows it",
   // without it is not on screen.
   const settled = [turnRow("t", [reasoningEntry("r1", [["check **the assumptions"]])])];
   expect(findHits(settled, "check the assumptions", { config: TOOLS })).toEqual([]);
+});
+
+// The wire never completes a reasoning item, so a thought reads live only
+// while it is still the turn's tail, as ThinkBlock decides it: once a reply
+// starts in the same in-progress turn, the thought renders settled.
+test("a thought a later item has overtaken is read settled, not live", () => {
+  const thought = reasoningEntry("r1", [["check **the assumptions"]], "thinking", true);
+  const reply = message("a1", "Answering now");
+  const streaming: ProjectedEntry = { ...reply, item: { ...reply.item, status: "inProgress" } };
+  const overtaken = [turnRow("t", [thought, streaming], "inProgress")];
+  expect(findHits(overtaken, "check the assumptions", { config: TOOLS })).toEqual([]);
+  expect(findHits(overtaken, "check **the assumptions", { config: TOOLS }).map((hit) => hit.key)).toEqual(["r1"]);
+  // While the thought is still the turn's tail it reads live.
+  const tail = [turnRow("t", [thought], "inProgress")];
+  expect(findHits(tail, "check the assumptions", { config: TOOLS }).map((hit) => hit.key)).toEqual(["r1"]);
 });
 
 test("a diagram's source is not searched once the reply shows the diagram instead", () => {

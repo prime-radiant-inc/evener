@@ -9,6 +9,7 @@ import {
   findReadable,
   hidesThinkingTraces,
   type ItemModel,
+  isLiveCurrentReasoning,
   type ProjectedEntry,
   projectThread,
   type ThreadModel,
@@ -194,7 +195,6 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string, view
     // The turn's own entries: folding tool calls cannot change which action
     // rows are consecutive, and Slice 1 searches no tool text.
     const laidOut = row.turn.entries;
-    const turnSettled = row.turn.source.status !== "inProgress";
     for (let index = 0; index < laidOut.length; index += 1) {
       const entry = laidOut[index];
       if (entry === undefined) continue;
@@ -206,9 +206,10 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string, view
         index = run.end - 1;
         continue;
       }
-      // A thought reads live only while its turn is still running; ThinkBlock
-      // renders a stale in-progress thought on a completed turn as settled.
-      const live = entry.kind === "thinking" ? entry.live : !turnSettled && entry.item.status === "inProgress";
+      // A thought reads live only while it is the turn's current tail, as
+      // ThinkBlock decides it: the wire never completes a reasoning item, so a
+      // later item in the same in-progress turn settles the thought.
+      const live = entry.item.type === "reasoning" && isLiveCurrentReasoning(entry.item, row.turn.source);
       add(entry, rowIndex, live, entry.item.type === "reasoning" ? entryDisplayKey(entry) : undefined);
     }
   });

@@ -51,8 +51,8 @@ test("fetchSearch propagates an AppWire failure", async () => {
 function item(id: string, text: string): ItemModel {
   return { id, turnId: "t", type: "message", text };
 }
-function turn(id: string, items: ItemModel[]): TurnModel {
-  return { id, status: "completed", items };
+function turn(id: string, items: ItemModel[], status: TurnModel["status"] = "completed"): TurnModel {
+  return { id, status, items };
 }
 function modelWithTurns(turns: TurnModel[]): ThreadModel {
   return {
@@ -164,13 +164,17 @@ test("findInSessionMatches does not scan a thought's raw trace", () => {
 
 test("findInSessionMatches reads a streaming thought's unclosed Markdown live", () => {
   const live = modelWithTurns([
-    turn("t1", [
-      itemWith("think", {
-        type: "reasoning",
-        status: "inProgress",
-        reasoningSummaries: [["check **the assumptions"]],
-      }),
-    ]),
+    turn(
+      "t1",
+      [
+        itemWith("think", {
+          type: "reasoning",
+          status: "inProgress",
+          reasoningSummaries: [["check **the assumptions"]],
+        }),
+      ],
+      "inProgress",
+    ),
   ]);
   expect(findInSessionMatches(live, "check the assumptions", VIEW).map((hit) => hit.itemId)).toEqual(["think"]);
   // Settled text shows the unbalanced marker literally.
@@ -178,6 +182,23 @@ test("findInSessionMatches reads a streaming thought's unclosed Markdown live", 
     turn("t1", [itemWith("think", { type: "reasoning", reasoningSummaries: [["check **the assumptions"]] })]),
   ]);
   expect(findInSessionMatches(settled, "check the assumptions", VIEW)).toEqual([]);
+});
+
+// A thought reads live only while it is the turn's tail: once a reply starts in
+// the same in-progress turn, ThinkBlock renders the thought settled.
+test("findInSessionMatches reads a thought a later item overtook as settled", () => {
+  const thought = itemWith("think", {
+    type: "reasoning",
+    status: "inProgress",
+    reasoningSummaries: [["check **the assumptions"]],
+  });
+  const reply = itemWith("reply", { type: "agentMessage", text: "Answering now", status: "inProgress" });
+  const overtaken = modelWithTurns([turn("t1", [thought, reply], "inProgress")]);
+  expect(findInSessionMatches(overtaken, "check the assumptions", VIEW)).toEqual([]);
+  expect(findInSessionMatches(overtaken, "check **the assumptions", VIEW).map((hit) => hit.itemId)).toEqual(["think"]);
+  // Still the tail, so it reads live.
+  const tail = modelWithTurns([turn("t1", [thought], "inProgress")]);
+  expect(findInSessionMatches(tail, "check the assumptions", VIEW).map((hit) => hit.itemId)).toEqual(["think"]);
 });
 
 test("findInSessionMatches scans an action's rationale but not a system notice's description", () => {
