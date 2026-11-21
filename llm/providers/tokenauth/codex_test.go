@@ -120,6 +120,65 @@ func TestCodexAccountIDDropsAfterLogout(t *testing.T) {
 	}
 }
 
+// TestCodexApplyKeepsTheAccountHeaderWhenTheRecordIsRenamedMidRefresh pins the
+// rename half of #1045. ResolveRuntimeCredentials can land a rotated record
+// under the name its instance was renamed to while the refresh was in flight,
+// leaving nothing filed under the name the request asked for. Apply must send
+// the account id carried by the credentials it just used rather than re-reading
+// the record by that name, or a request with a valid bearer loses the required
+// ChatGPT-Account-ID header.
+func TestCodexApplyKeepsTheAccountHeaderWhenTheRecordIsRenamedMidRefresh(t *testing.T) {
+	t.Parallel()
+	dir := codexState(t, "old", "acct_123")
+	c := &Codex{StateDir: dir, Credentials: func(_ context.Context, stateDir, instance string) (authopenai.RuntimeCredentials, error) {
+		rec, err := authopenai.LoadAuth(stateDir, instance)
+		if err != nil {
+			return authopenai.RuntimeCredentials{}, err
+		}
+		// The verbatim rename the real service performs for a record that moved
+		// while its token refresh was in flight.
+		refreshed := rec
+		refreshed.Provider = "new"
+		refreshed.AccessToken = "refreshed-access"
+		refreshed.RefreshToken = "refreshed-refresh"
+		lock, err := authopenai.LockAuthStore(stateDir)
+		if err != nil {
+			return authopenai.RuntimeCredentials{}, err
+		}
+		defer lock.Release()
+		if err := lock.Save("new", refreshed); err != nil {
+			return authopenai.RuntimeCredentials{}, err
+		}
+		if _, err := lock.Delete("old"); err != nil {
+			return authopenai.RuntimeCredentials{}, err
+		}
+		// What the real service returns for this record: the bearer and the
+		// account of the record it was refreshed from.
+		return authopenai.RuntimeCredentials{BearerToken: refreshed.AccessToken, Source: authopenai.AuthSourceOAuth, Expiry: refreshed.Expiry, AccountID: refreshed.AccountID}, nil
+	}}
+
+	req, _ := http.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil)
+	if err := c.Apply(context.Background(), req, codexRes("old")); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer refreshed-access" {
+		t.Fatalf("Authorization = %q, want the refreshed bearer", got)
+	}
+	if got := req.Header.Get("ChatGPT-Account-ID"); got != "acct_123" {
+		t.Fatalf("ChatGPT-Account-ID = %q, want acct_123 from the credentials the bearer came from", got)
+	}
+	if _, err := authopenai.LoadAuth(dir, "old"); !errors.Is(err, authopenai.ErrAuthNotFound) {
+		t.Fatalf("the rename did not leave the old name absent (LoadAuth = %v)", err)
+	}
+	kept, err := authopenai.LoadAuth(dir, "new")
+	if err != nil {
+		t.Fatalf("LoadAuth(new) error = %v", err)
+	}
+	if kept.AccessToken != "refreshed-access" || kept.RefreshToken != "refreshed-refresh" {
+		t.Fatalf("the renamed record did not receive the rotated credentials: %+v", kept)
+	}
+}
+
 func TestCodexApplyRequiresLogin(t *testing.T) {
 	t.Parallel()
 	c := &Codex{StateDir: t.TempDir(), Credentials: func(context.Context, string, string) (authopenai.RuntimeCredentials, error) {

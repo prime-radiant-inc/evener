@@ -42,8 +42,16 @@ type hubAuthController struct {
 	loadAuth          func(string, string) (authopenai.AuthRecord, error)
 	saveAuth          func(string, string, authopenai.AuthRecord) error
 	deleteAuth        func(string, string) (bool, error)
-	setCredential     func(string, string) error
-	clearCredential   func(string) error
+	// lockAuthStore takes the cross-process lock over the state dir's OAuth
+	// records. An instance rename holds it across the record's move — the
+	// write under the new name and the delete under the old one — so a runtime
+	// refresh in another process (a child daemon or the credential probe) can
+	// neither land between those two steps nor be overwritten by one of them.
+	// It is a seam like the record functions above so a test can park the
+	// rename inside its locked section.
+	lockAuthStore   func(string) (authopenai.AuthStoreLock, error)
+	setCredential   func(string, string) error
+	clearCredential func(string) error
 	// reg is the live registry every auth answer is derived from: which
 	// instances exist, how each authenticates, and which credential source
 	// resolved for it. Credentials and OAuth state are keyed by instance
@@ -202,6 +210,7 @@ func newHubAuthController(launchEnv ...map[string]string) *hubAuthController {
 		loadAuth:             authopenai.LoadAuth,
 		saveAuth:             authopenai.SaveAuth,
 		deleteAuth:           authopenai.DeleteAuth,
+		lockAuthStore:        authopenai.LockAuthStore,
 		flows:                map[string]hubAuthFlow{},
 		deviceFlows:          map[string]deviceFlow{},
 		credentialTestLoader: loadCredentialTestClient,
@@ -243,6 +252,9 @@ func (c *hubAuthController) refuseAuthRecordsWithoutStateDir(stateErr error) {
 	}
 	c.saveAuth = func(string, string, authopenai.AuthRecord) error { return stateErr }
 	c.deleteAuth = func(string, string) (bool, error) { return false, nil }
+	c.lockAuthStore = func(string) (authopenai.AuthStoreLock, error) {
+		return nil, stateErr
+	}
 }
 
 // hubCredentialStore resolves the one credentials store every credential
@@ -357,6 +369,7 @@ func newHubAuthControllerWithStore(stateRoot string, store *credentials.Store) *
 		loadAuth:             authopenai.LoadAuth,
 		saveAuth:             authopenai.SaveAuth,
 		deleteAuth:           authopenai.DeleteAuth,
+		lockAuthStore:        authopenai.LockAuthStore,
 		flows:                map[string]hubAuthFlow{},
 		deviceFlows:          map[string]deviceFlow{},
 		credentialTestLoader: loadCredentialTestClient,
