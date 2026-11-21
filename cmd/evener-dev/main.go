@@ -40,14 +40,14 @@ func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	}
 	run, ok := subcommands[args[0]]
 	if !ok {
-		_, _ = fmt.Fprintf(stderr, "evener dev: unknown subcommand %q\n", args[0])
+		_, _ = fmt.Fprintf(stderr, "evener-dev dev: unknown subcommand %q\n", args[0])
 		usage(stderr)
 		return 2
 	}
 	return run(args[1:])
 }
 
-// Subcommands is every `evener dev` subcommand, sorted: the one list both
+// Subcommands is every `evener-dev dev` subcommand, sorted: the one list both
 // usage texts print, so neither can drift from what Run dispatches.
 func Subcommands() []string {
 	names := make([]string, 0, len(subcommands))
@@ -59,5 +59,5 @@ func Subcommands() []string {
 }
 
 func usage(w io.Writer) {
-	_, _ = fmt.Fprintf(w, "usage: evener dev <subcommand> [args]\nsubcommands: %s\n", strings.Join(Subcommands(), " "))
+	_, _ = fmt.Fprintf(w, "usage: evener-dev dev <subcommand> [args]\nsubcommands: %s\n", strings.Join(Subcommands(), " "))
 }

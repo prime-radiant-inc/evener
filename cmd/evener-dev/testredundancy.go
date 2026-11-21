@@ -18,7 +18,7 @@ import (
 	"primeradiant.com/evener/internal/devtool/testredundancy"
 )
 
-const testRedundancyUsage = `usage: evener dev test-redundancy COMMAND -pkg DIR [flags]
+const testRedundancyUsage = `usage: evener-dev dev test-redundancy COMMAND -pkg DIR [flags]
 
 Finds tests a Go package can lose without losing behavior coverage, and builds
 the proof docs/developing-evener/testing.md ("Deleting and Consolidating
@@ -74,7 +74,7 @@ func testRedundancyRun(ctx context.Context, args []string, stdout, stderr io.Wri
 		return 2
 	}
 	command := args[0]
-	fs := flag.NewFlagSet("evener dev test-redundancy "+command, flag.ContinueOnError)
+	fs := flag.NewFlagSet("evener-dev dev test-redundancy "+command, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { _, _ = fmt.Fprint(stderr, testRedundancyUsage) }
 	pkg := fs.String("pkg", "", "package directory")
