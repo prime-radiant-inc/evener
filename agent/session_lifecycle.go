@@ -2444,12 +2444,10 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 			s.mu.Lock()
 			s.promptHookStop = reason
 			s.mu.Unlock()
-		} else {
+		} else if launchNamer {
 			// Naming is a model call, so it waits for the hook's verdict: a
 			// stopped prompt must not reach the naming provider either.
-			if launchNamer {
-				s.launchInitialPromptNamerUnlessStopped(input)
-			}
+			s.launchInitialPromptNamerUnlessStopped(input)
 		}
 	} else if launchNamer {
 		s.launchInitialPromptNamerUnlessStopped(input)
