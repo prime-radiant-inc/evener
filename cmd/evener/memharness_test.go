@@ -23,6 +23,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -629,20 +630,16 @@ func TestMemHarness(t *testing.T) {
 	}
 	queuedTurnID := func(mutationID string) string {
 		t.Helper()
-		deadline := time.Now().Add(5 * time.Minute)
-		for {
-			turnID, found, err := memHarnessTranscriptMutationTurn(transcriptPath, mutationID)
+		var turnID string
+		testwait.UntilSeen(t, "queued input "+mutationID+" to be recorded in the transcript", func() (bool, string) {
+			id, found, err := memHarnessTranscriptMutationTurn(transcriptPath, mutationID)
 			if err != nil {
 				t.Fatalf("queued input %s transcript read: %v", mutationID, err)
 			}
-			if found {
-				return turnID
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("queued input %s was never recorded in the transcript", mutationID)
-			}
-			time.Sleep(50 * time.Millisecond)
-		}
+			turnID = id
+			return found, fmt.Sprintf("transcript turn=%q", id)
+		})
+		return turnID
 	}
 	// requireNoRunOwnedPending believes absence only from an authoritative live
 	// read, and only for the mutations this run sent. The mutation can leave the
@@ -650,8 +647,7 @@ func TestMemHarness(t *testing.T) {
 	// healthy run on one read; another producer's queue entry is not this run's.
 	requireNoRunOwnedPending := func(what string) {
 		t.Helper()
-		deadline := time.Now().Add(10 * time.Second)
-		for {
+		testwait.UntilSeen(t, what+": run-owned pending input to clear", func() (bool, string) {
 			resp := memHarnessAuthoritativeRead(ctx, t, client, ref, false, 0)
 			owned := ""
 			for _, id := range resp.Thread.Evener.Queue.ClientMutationIDs {
@@ -674,14 +670,8 @@ func TestMemHarness(t *testing.T) {
 					}
 				}
 			}
-			if owned == "" {
-				return
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("%s: run-owned %s is still queued or pending", what, owned)
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
+			return owned == "", owned
+		})
 	}
 	sample := func(label string) {
 		requireNoRunOwnedPending(label)
