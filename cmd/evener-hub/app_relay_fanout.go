@@ -361,6 +361,10 @@ func (r *hubRelay) startAcknowledgedFanout(
 				stillPending := serveDaemonGone(&pending)
 				acknowledge(delivery)
 				if stillPending {
+					// The acknowledgement already fired; the retained copy
+					// is the hub's own, and the shutdown defer must not
+					// deliver the source's callback a second time.
+					pending.delivery.Acknowledge = nil
 					pendingDeliveries = append(pendingDeliveries, pending)
 					recordPending()
 				}
