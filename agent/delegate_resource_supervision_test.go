@@ -4867,8 +4867,7 @@ func TestStableSupervisionQuiescenceWaitsForTheChildNamer(t *testing.T) {
 }
 
 // TestDelegateResourceSupervision_WatchFilteredFoldDoesNotDuplicateHistory pins
-// the HIGH the branch review found in the projection drop itself (LIFE-01,
-// #2340).
+// that filtering the fold's input must not move the publication merge boundary.
 //
 // Withholding a pending watch row from the fold's input shortens the slice the
 // summarizer sees. That shortened length is NOT the publication merge boundary:
