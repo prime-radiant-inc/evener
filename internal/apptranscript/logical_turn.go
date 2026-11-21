@@ -1,6 +1,7 @@
 package apptranscript
 
 import (
+	"slices"
 	"sort"
 
 	"primeradiant.com/evener/agent/events"
@@ -301,7 +302,8 @@ func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, t
 		// and a NOTICE there — so project it and attach what it shows to the
 		// turn it names. A completion or reopen names its turn's status.
 		if project != nil && turn.TurnID != "" {
-			if items := project(turn, turn.TurnID, entryIndex); len(items) > 0 {
+			items := project(turn, turn.TurnID, entryIndex)
+			if len(items) > 0 {
 				for i := len(acc.turns) - 1; i >= 0; i-- {
 					if acc.turns[i].turnID != turn.TurnID {
 						continue
@@ -312,6 +314,8 @@ func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, t
 					}
 					break
 				}
+			} else {
+				stampEchoedCommunicateCall(acc, &turn)
 			}
 		}
 		if turn.Kind == schema.TurnCompletion && turn.Format == schema.TurnFormatIdentity && turn.TurnID != "" {
@@ -335,6 +339,48 @@ func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, t
 		items = project(turn, turnID, entryIndex)
 	}
 	acc.appendEntry(turn, entryIndex, items)
+}
+
+// stampEchoedCommunicateCall binds an echoed delivery's call id to the visible
+// message it repeats. ProjectEntryParts suppresses such a delivery because its
+// message is already shown as the turn's agentMessage, and the index stamps the
+// call on that row (build.go's attachCommunicationEcho); without the same stamp
+// here a client reconciling by call id cannot find the call on the row that is
+// the delivery's only visible record (#7150).
+//
+// The empty projection is not proof of suppression on its own: a projector is
+// free to render nothing for a delivery it cannot show. The text comparison is
+// what makes the stamp safe for any projector, so it stays even though
+// ProjectEntryParts has already made the same decision.
+func stampEchoedCommunicateCall(acc *logicalTurnAccumulator, turn *schema.Turn) {
+	if turn.Format != schema.TurnFormatIdentity || turn.Kind != schema.TurnCommunicate || turn.Communicate == nil {
+		return
+	}
+	callID := turn.Communicate.CallID
+	if callID == "" {
+		return
+	}
+	// The turn's latest agentMessage is the row the delivery replaced. Groups
+	// are in file order and their items within a group, so walking both
+	// backwards finds it across a turn the file records in several runs.
+	for i := range slices.Backward(acc.turns) {
+		group := &acc.turns[i]
+		if group.turnID != turn.TurnID {
+			continue
+		}
+		for j := range slices.Backward(group.items) {
+			item := &group.items[j]
+			if item.Type != "agentMessage" {
+				continue
+			}
+			// Only the message the delivery repeats may take its call id; any
+			// other text means the delivery rendered a row of its own.
+			if item.CallID == "" && EchoesAssistantText(item.Text, turn.Communicate.Message) {
+				item.CallID = callID
+			}
+			return
+		}
+	}
 }
 
 // groupedAppTurnProjection flushes the accumulator into AppWire turns under

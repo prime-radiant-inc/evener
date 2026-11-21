@@ -780,9 +780,18 @@ func TestFullReadSettlesADuplicatedCallIDLikeTheIndex(t *testing.T) {
 // session.
 func fullReadTurns(t testing.TB, fx fixture) []appwire.Turn {
 	t.Helper()
+	return fullReadTurnsWith(t, fx, func(turn schema.Turn, turnID string, entryIndex int, reg *apptranscript.ToolCallRegistry) []appwire.ThreadItem {
+		return apptranscript.ProjectTurn(turnID, entryIndex, turn, reg, nil, nil)
+	})
+}
+
+// fullReadTurnsWith is fullReadTurns with the caller's projector, threading
+// one registry across the whole file read.
+func fullReadTurnsWith(t testing.TB, fx fixture, project func(turn schema.Turn, turnID string, entryIndex int, reg *apptranscript.ToolCallRegistry) []appwire.ThreadItem) []appwire.Turn {
+	t.Helper()
 	reg := apptranscript.NewToolCallRegistry()
 	turns, err := apptranscript.ItemTurnsFromFile(writeFixture(t, fx), testMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
-		return apptranscript.ProjectTurn(turnID, entryIndex, turn, reg, nil, nil)
+		return project(turn, turnID, entryIndex, reg)
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -799,4 +808,39 @@ func fullReadTurn(t testing.TB, turns []appwire.Turn, id string) *appwire.Turn {
 	}
 	t.Fatalf("full read has no %s: %s", id, dump(turns))
 	return nil
+}
+
+// fullReadEntryTurns is fullReadTurns with the read model's entry projector,
+// which is the one the hub's replay read uses (appItemsFromReplayTurn).
+func fullReadEntryTurns(t testing.TB, fx fixture) []appwire.Turn {
+	t.Helper()
+	return fullReadTurnsWith(t, fx, func(turn schema.Turn, turnID string, entryIndex int, reg *apptranscript.ToolCallRegistry) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+}
+
+// TestFullReadStampsTheEchoedDeliveryCallIDLikeTheIndex covers #7150: the
+// index binds an echoed communicate delivery to the visible agentMessage it
+// repeats (build.go's attachCommunicationEcho), and the full read must name
+// the same call on the same row so a client reconciling by call id finds it.
+func TestFullReadStampsTheEchoedDeliveryCallIDLikeTheIndex(t *testing.T) {
+	fx := newFormatFixture(t, "communicate echoes")
+	full := fullReadTurn(t, fullReadEntryTurns(t, fx), "turn_m20")
+	var fullMessages []string
+	for _, item := range full.Items {
+		if item.Type == "agentMessage" {
+			fullMessages = append(fullMessages, item.Text+"|"+item.CallID)
+		}
+	}
+	var indexedMessages []string
+	indexed := indexedCandidates(t, fx, -1)
+	for _, item := range itemsOf(indexed, "turn_m20") {
+		if item.Type == "agentMessage" {
+			indexedMessages = append(indexedMessages, item.Text+"|"+item.CallID)
+		}
+	}
+	if !reflect.DeepEqual(fullMessages, indexedMessages) {
+		t.Fatalf("full read messages = %q, indexed = %q", fullMessages, indexedMessages)
+	}
 }
