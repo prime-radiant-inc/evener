@@ -204,6 +204,56 @@ test("shows provider/model once a live thread/model/changed has actually split t
   expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5");
 });
 
+// A live switch to an equal provider/model pair (the bundled
+// kimi-for-coding/kimi-for-coding instance) must keep the running row marked
+// after the notification, not only once a snapshot supplies a profile. The
+// trigger keeps its collapsed single-string label either way.
+test("keeps the picker's running row marked after a live switch to an equal provider/model pair", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => ({ data: [{ provider: "kimi-for-coding", model: "kimi-for-coding" }] }));
+
+  const hydrated = hydrateThread(
+    {
+      thread: {
+        id: "thr_a",
+        sessionId: "sess_a",
+        preview: "",
+        ephemeral: false,
+        modelProvider: "kimi-for-coding",
+        createdAt: 1000,
+        updatedAt: 1000,
+        status: { type: "idle" },
+        cwd: "/tmp/project",
+        cliVersion: "1.0.0",
+        source: "evener",
+        evener: {
+          ref: "ref_a",
+          capabilities: CAPABILITIES,
+          queue: { revision: 0 },
+          profile: "kimi-for-coding",
+        },
+      },
+    },
+    "ref_a",
+    1000,
+  );
+  const switched = applyNotification(
+    hydrated,
+    {
+      method: "thread/model/changed",
+      params: { threadId: "thr_a", ref: "ref_a", modelProvider: "kimi-for-coding", model: "kimi-for-coding" },
+    },
+    2000,
+  );
+
+  render(<StatusRow sessionRef="ref_a" model={switched} now={2000} />);
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("kimi-for-coding");
+  await user.click(screen.getByTestId("model-switch-trigger"));
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
+  expect(screen.getByRole("option", { name: /kimi-for-coding/i }).getAttribute("aria-selected")).toBe("true");
+});
+
 // composition proof only - ModelSwitch.test.tsx owns the full picker
 // behavior (loading/filter/pick/failure); this just confirms StatusRow
 // actually wires the ModelSwitch trigger in, for the SAME sessionRef.
