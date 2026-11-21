@@ -207,17 +207,18 @@ func TestTheSessionBudgetLeavesAnOverrideServedRouteUnpriced(t *testing.T) {
 	advertised := llm.ToolsJSONBytes(defs)
 	req.ToolsJSONBytes = advertised
 
-	// The route has to be one the deriver would price, or the guard above is
-	// invisible and the test passes for the wrong reason.
-	if projected := llm.EstimateInputTokensForRoute(row, req, false).Tokens; projected == advertised {
-		t.Fatal("fixture does not distinguish the routes: the deriver left the count unchanged")
+	// The two routes have to price this request differently, or the assertion
+	// below is invisible and the test passes for the wrong reason.
+	overrideWant := llm.EstimateInputTokensForRoute(row, req, true).Tokens
+	if projected := llm.EstimateInputTokensForRoute(row, req, false).Tokens; projected == overrideWant {
+		t.Fatalf("fixture does not distinguish the routes: the deriver's %d equals the override's %d",
+			projected, overrideWant)
 	}
 
 	budgeted, budget, err := sess.priceRoundRoute(profile, req).admit(req)
 	if err != nil {
 		t.Fatalf("budgetModelDispatchRequestForSession: %v", err)
 	}
-	overrideWant := llm.EstimateInputTokensForRoute(row, req, true).Tokens
 	if got, wantTotal := budget.InputTokens, overrideWant+budget.SafetyTokens; got != wantTotal {
 		t.Fatalf("override-served budget priced the input at %d, want the catalog's %d plus the %d reserve = %d: "+
 			"an override marshals the definition it was handed, so a built-in deriver bills a list the wire never "+
@@ -307,20 +308,19 @@ func TestContinuationShadowLeavesAnOverrideServedRouteUnpriced(t *testing.T) {
 		Tools:       tools,
 		HistoryMode: llm.HistoryModeResponsesDelta,
 	}
-	advertised := llm.ToolsJSONBytes(tools)
-
 	// The guard has to be doing something: the same request priced through the
-	// deriver is larger than the catalog.
-	if projected := llm.EstimateInputTokensForRoute(row, req, false).Tokens; projected <= advertised {
-		t.Fatal("fixture does not distinguish the prices: the deriver left the count unchanged")
+	// deriver is larger than the override's own wire list.
+	overrideWant := llm.EstimateInputTokensForRoute(row, req, true).Tokens
+	if projected := llm.EstimateInputTokensForRoute(row, req, false).Tokens; projected <= overrideWant {
+		t.Fatalf("fixture does not distinguish the prices: the deriver's %d is not above the override's %d",
+			projected, overrideWant)
 	}
 
 	got := sess.applyResponsesContinuationShadowEstimate(sess.priceRoundRoute(profile, req), req)
 
-	if got.FullHistoryInputTokensEstimate != llm.EstimateInputTokensForRoute(row, req, true).Tokens {
+	if got.FullHistoryInputTokensEstimate != overrideWant {
 		t.Fatalf("override-served shadow reading = %d, want the catalog's own %d: an override marshals the "+
-			"definition it was handed", got.FullHistoryInputTokensEstimate,
-			llm.EstimateInputTokensForRoute(row, req, true).Tokens)
+			"definition it was handed", got.FullHistoryInputTokensEstimate, overrideWant)
 	}
 }
 
