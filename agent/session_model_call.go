@@ -325,11 +325,15 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// held-attention filter can shrink the projected list without reopening
 	// that window.
 	presentedBoundary := len(historyTurns)
+	// roundLease is the lease this request was admitted under: the skill
+	// rebuild must withhold a steer the completed claim never saw (#7205).
+	var roundLease *delegateLease
 	// heldDropped reports that this request's projection kept a held row out
 	// — a nonstandard view of the resident history that must not seed or
 	// continue from a stored anchor.
 	heldDropped := false
 	if lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok && s.delegateController != nil {
+		roundLease = &lease
 		claim, claimErr := s.delegateController.BeginModelRequest(lease)
 		if claimErr != nil {
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
@@ -370,6 +374,13 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		if claimErr != nil {
 			_ = s.delegateController.AbortModelRequest(claim)
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
+		}
+		// A test can land a steer between the completed claim and the rebuild (#7205).
+		s.mu.Lock()
+		afterDelegateSnapshot := s.cfg.testOnly.afterDelegateModelSnapshot
+		s.mu.Unlock()
+		if afterDelegateSnapshot != nil {
+			afterDelegateSnapshot()
 		}
 		history = expandHistory(presentedTurns, scope)
 	} else {
@@ -460,7 +471,9 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// inventory reminders) joined, projects them as-is past the in-flight
 	// boundary, and rebuilds and re-budgets the request. Shared by the
 	// final-dispatch delivery reload path and the compacted-skill reload path.
-	// It reports whether any turn had actually been appended.
+	// Its tail also obeys the late-steer predicate (#7205), so a steer appended
+	// after the round's controller claim stays out of the rebuilt request and
+	// the fallback source. It reports whether any turn had actually been appended.
 	rebuildForAppendedSkillTurns := func() (bool, error) {
 		s.mu.Lock()
 		var appended []schema.Turn
@@ -494,6 +507,21 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			boundary = shiftBoundaryForDrops(boundary, droppedAt)
 			historyTurns = filtered
 			appended = filtered[boundary:]
+		}
+		// The tail also obeys the late-steer predicate (#7205): a steer that
+		// landed after the claim completed is in no claim, so CompleteModelRequest
+		// never filtered this re-read. The planning copy is filtered with the
+		// tail so the full-history estimate prices only what the request shows.
+		if roundLease != nil {
+			if owed := s.delegateController.unpresentedSteeringIDs(*roundLease); len(owed) > 0 {
+				historyTurns, _, _ = projectDelegatePendingSteers(historyTurns, nil, owed)
+				appended, _, _ = projectDelegatePendingSteers(appended, nil, owed)
+			}
+			// The boundary already advanced past the withheld steer, so it stays
+			// outside every later rebuild window this round; the next claim binds it.
+			if len(appended) == 0 {
+				return false, nil
+			}
 		}
 		// The appended turns land after the in-flight boundary and project
 		// as-is; append them rather than re-running the delegate claim.
