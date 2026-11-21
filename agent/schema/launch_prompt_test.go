@@ -1,4 +1,4 @@
-package agent
+package schema
 
 import "testing"
 
@@ -19,8 +19,8 @@ func TestValidSavedSystemPromptRejectsOnlyTheLegacyRenderFailureProse(t *testing
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := validSavedSystemPrompt(tc.in); got != tc.want {
-				t.Fatalf("validSavedSystemPrompt(%q) = %q, want %q", tc.in, got, tc.want)
+			if got := ValidSavedSystemPrompt(tc.in); got != tc.want {
+				t.Fatalf("ValidSavedSystemPrompt(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
 	}

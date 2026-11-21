@@ -51,26 +51,6 @@ func prependSystemPromptToUserMessage(systemPrompt string, user llm.Message) llm
 
 const restoredSystemPromptLabel = "transcript:system_prompt" // PROMPT_LOADED source of a restored prompt
 
-// The render-failure diagnostic is prose, not a prompt. It is assembled from
-// these halves so its readers can match the whole shape rather than its opening
-// words: a custom prompt may legitimately start with "Template rendering
-// failed:".
-const (
-	renderFailurePromptPrefix = "Template rendering failed: "
-	renderFailurePromptSuffix = ". Please report this bug."
-)
-
-// validSavedSystemPrompt reports the prompt a saved field holds, or "" when what
-// it holds is render-failure prose rather than a prompt. Such a field is no
-// answer to "what did this session launch with", so every reader treats it as
-// empty and renders a fresh one.
-func validSavedSystemPrompt(p string) string {
-	if strings.HasPrefix(p, renderFailurePromptPrefix) && strings.HasSuffix(p, renderFailurePromptSuffix) {
-		return ""
-	}
-	return p
-}
-
 // rebuildPromptCache caches system prompt components that don't change between
 // renders. env is the execution environment to render against: callers that
 // already hold s.mu (e.g. SetModel) must pass s.env directly; callers that
@@ -389,7 +369,7 @@ func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) (string, 
 	if err != nil {
 		// The template parsed at package initialization, so an execution error
 		// is a bug. Report it and hand the model a minimal prompt that says so.
-		return renderFailurePromptPrefix + err.Error() + renderFailurePromptSuffix,
+		return schema.RenderFailureSystemPrompt(err),
 			fmt.Sprintf("template render failed: %v", err), true
 	}
 	sources := make([]promptSource, 0, len(inputSources)+2)

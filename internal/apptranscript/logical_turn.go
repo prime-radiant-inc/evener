@@ -346,11 +346,11 @@ func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, t
 // Items get their Position/TranscriptKey here — the full item read, the
 // bounded readers, and the item-window path must all agree on these keys (PR
 // #822 F3).
-func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Header) (ItemTurnProjection, error) {
+func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Header, launchPrompt string) (ItemTurnProjection, error) {
 	turns := []appwire.Turn{}
 	entryOrdinal := uint64(0)
 	var prelude *appwire.Turn
-	if p := PreludeTurn(header); p != nil {
+	if p := PreludeTurn(header, launchPrompt); p != nil {
 		positioned, err := positionPreludeItems(p.Items)
 		if err != nil {
 			return ItemTurnProjection{}, err

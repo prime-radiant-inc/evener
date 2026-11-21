@@ -9,6 +9,7 @@ import (
 	"os"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -290,7 +291,11 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 		}
 	}
 	var out []referenceTurn
-	if prelude := apptranscript.PreludeTurn(header); prelude != nil {
+	launchPrompt := ""
+	if strings.TrimSpace(header.SystemPrompt) == "" {
+		launchPrompt = schema.LaunchSystemPromptBesideTranscript(path)
+	}
+	if prelude := apptranscript.PreludeTurn(header, launchPrompt); prelude != nil {
 		for i := range prelude.Items {
 			position := appwire.ThreadItemPosition{Entry: 0, Item: uint32(i)}
 			prelude.Items[i].Position = &position

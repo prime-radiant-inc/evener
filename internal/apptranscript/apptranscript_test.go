@@ -18,7 +18,7 @@ import (
 )
 
 func TestPreludeTurnUsesSemanticHeaderOnly(t *testing.T) {
-	turn := PreludeTurn(transcript.Header{SystemPrompt: "You are Evener."})
+	turn := PreludeTurn(transcript.Header{SystemPrompt: "You are Evener."}, "")
 	if turn == nil || len(turn.Items) != 1 {
 		t.Fatalf("prelude=%+v, want only system prompt", turn)
 	}
@@ -66,7 +66,7 @@ func TestMemoryContextProjection(t *testing.T) {
 // classifies it by wire type instead of guessing from the item's char count
 // (kata ckgw); ThreadItemEventKindSystemPrompt is that stable signal.
 func TestPreludeTurnTagsSystemPromptEventKind(t *testing.T) {
-	turn := PreludeTurn(transcript.Header{SystemPrompt: "You are Evener."})
+	turn := PreludeTurn(transcript.Header{SystemPrompt: "You are Evener."}, "")
 	if turn == nil || len(turn.Items) != 1 {
 		t.Fatalf("prelude=%+v, want only system prompt", turn)
 	}
@@ -1087,10 +1087,10 @@ func TestScanPrelude(t *testing.T) {
 }
 
 func TestPreludeTurn(t *testing.T) {
-	if got := PreludeTurn(transcript.Header{}); got != nil {
+	if got := PreludeTurn(transcript.Header{}, ""); got != nil {
 		t.Errorf("empty prelude = %+v, want nil", got)
 	}
-	turn := PreludeTurn(transcript.Header{SystemPrompt: "You are Evener."})
+	turn := PreludeTurn(transcript.Header{SystemPrompt: "You are Evener."}, "")
 	if turn == nil || len(turn.Items) != 1 || turn.Items[0].Text != "You are Evener." {
 		t.Errorf("system prompt only = %+v", turn)
 	}

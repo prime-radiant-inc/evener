@@ -21,7 +21,7 @@ func TestCov_NormalizeProviderHandleMode(t *testing.T) {
 }
 
 func TestCov_BuildRootExtra(t *testing.T) {
-	if extra := buildRootExtra(transcript.Header{}); len(extra) != 0 {
+	if extra := buildRootExtra(transcript.Header{}, ""); len(extra) != 0 {
 		t.Errorf("empty header should yield empty extra, got %v", extra)
 	}
 	h := transcript.Header{
@@ -32,7 +32,7 @@ func TestCov_BuildRootExtra(t *testing.T) {
 		Task:             "do it",
 		SystemPrompt:     "be good",
 	}
-	extra := buildRootExtra(h)
+	extra := buildRootExtra(h, "")
 	for _, k := range []string{"working_dir", "parent_session_id", "parent_tool_call_id", "depth", "task", "system_prompt"} {
 		if _, ok := extra[k]; !ok {
 			t.Errorf("extra missing key %q: %v", k, extra)

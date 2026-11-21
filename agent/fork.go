@@ -237,10 +237,10 @@ func forkInheritsParentPrompt(parentMeta schema.SessionMeta, childCfg schema.Con
 // chain (while LaunchSystemPrompt == "") finds no unrecovered fork boundary
 // where !forkInheritsParentPrompt.
 func resolveEffectiveSavedSystemPrompt(loadMeta func(id string) (schema.SessionMeta, error), meta schema.SessionMeta, headerPrompt string) (prompt string, legacyMismatched bool) {
-	if recovered := validSavedSystemPrompt(meta.LaunchSystemPrompt); recovered != "" {
+	if recovered := schema.ValidSavedSystemPrompt(meta.LaunchSystemPrompt); recovered != "" {
 		return recovered, false
 	}
-	header := validSavedSystemPrompt(headerPrompt)
+	header := schema.ValidSavedSystemPrompt(headerPrompt)
 	if header == "" {
 		return "", false
 	}
@@ -258,7 +258,7 @@ func resolveEffectiveSavedSystemPrompt(loadMeta func(id string) (schema.SessionM
 		if !forkInheritsParentPrompt(parentMeta, cur.Config) {
 			return "", true
 		}
-		if recovered := validSavedSystemPrompt(parentMeta.LaunchSystemPrompt); recovered != "" {
+		if recovered := schema.ValidSavedSystemPrompt(parentMeta.LaunchSystemPrompt); recovered != "" {
 			if header == recovered {
 				return header, false
 			}
