@@ -194,13 +194,16 @@ func TestGoToolchainRootLosesToTheDenylist(t *testing.T) {
 // shared stub.
 type goToolchainProbeSystem struct {
 	stubProbeSystem
-	goBin      string
-	goBinErr   error
-	gorootOut  string
-	gorootErr  error
-	outputName string
-	outputArgs []string
+	goBin       string
+	goBinErr    error
+	prefixFiles map[string]bool
+	gorootOut   string
+	gorootErr   error
+	outputName  string
+	outputArgs  []string
 }
+
+func (s *goToolchainProbeSystem) nonDirectoryFile(path string) bool { return s.prefixFiles[path] }
 
 func (s *goToolchainProbeSystem) lookPath(name string) (string, error) {
 	if name != "go" {
@@ -217,8 +220,8 @@ func (s *goToolchainProbeSystem) output(_ context.Context, name string, args ...
 
 // TestProbeGoToolchainRoots pins the probe contract: one bounded
 // `go env -C / GOROOT` query outside any module, admitted only when the answer
-// is an existing directory. Every failure contributes no root rather than a
-// bogus grant.
+// is an absolute path naming an existing directory. Every failure contributes
+// no root rather than a bogus grant.
 func TestProbeGoToolchainRoots(t *testing.T) {
 	t.Parallel()
 	validDir := goToolchainDir(t)
@@ -254,6 +257,12 @@ func TestProbeGoToolchainRoots(t *testing.T) {
 			system: &goToolchainProbeSystem{goBin: "/usr/local/go/bin/go", gorootOut: "relative/not/absolute\n"},
 		},
 		{
+			// Clean(".") stays relative; canonicalizing it would have named
+			// the test's own working directory and granted that instead.
+			name:   "relative output naming an existing directory",
+			system: &goToolchainProbeSystem{goBin: "/usr/local/go/bin/go", gorootOut: ".\n"},
+		},
+		{
 			name:   "nonexistent directory",
 			system: &goToolchainProbeSystem{goBin: "/usr/local/go/bin/go", gorootOut: absent + "\n"},
 		},
@@ -276,6 +285,42 @@ func TestProbeGoToolchainRoots(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestProbeGoToolchainRootsKeepsTheLiteralSymlinkSpelling: go reports the
+// spelling GOROOT names, so the probe must return it as-is; the Seatbelt read
+// emitter derives the canonical alias from that spelling, and a child opening
+// the link path needs the literal grant.
+func TestProbeGoToolchainRootsKeepsTheLiteralSymlinkSpelling(t *testing.T) {
+	t.Parallel()
+	target := goToolchainDir(t)
+	link := filepath.Join(filepath.Dir(target), "go-current")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	system := &goToolchainProbeSystem{goBin: "/usr/local/bin/go", gorootOut: link + "\n"}
+	if got := probeGoToolchainRoots(system); !slices.Equal(got, []string{link}) {
+		t.Errorf("probeGoToolchainRoots = %v, want the literal spelling %q", got, link)
+	}
+}
+
+// TestProbeGoToolchainRootsFallsBackToAnInstallPrefix: a daemon launched by
+// launchd inherits a PATH without the shell rc chain, so Homebrew's go is
+// invisible to lookPath. The probe must still find a standard install prefix.
+func TestProbeGoToolchainRootsFallsBackToAnInstallPrefix(t *testing.T) {
+	t.Parallel()
+	dir := goToolchainDir(t)
+	system := &goToolchainProbeSystem{
+		goBinErr:    errors.New("not found"),
+		prefixFiles: map[string]bool{"/opt/homebrew/bin/go": true},
+		gorootOut:   dir + "\n",
+	}
+	if got := probeGoToolchainRoots(system); !slices.Equal(got, []string{dir}) {
+		t.Errorf("probeGoToolchainRoots = %v, want %v", got, []string{dir})
+	}
+	if system.outputName != "/opt/homebrew/bin/go" {
+		t.Errorf("probe ran %q, want the Homebrew install prefix", system.outputName)
 	}
 }
 
@@ -312,5 +357,13 @@ func TestSeatbeltProfileGrantsGoToolchainRoot(t *testing.T) {
 	}
 	if !strings.Contains(block, subpathParam(key)) {
 		t.Errorf("the file-read allow must reference %s:\n%s", subpathParam(key), text)
+	}
+	// The restricted unix-socket allow is derived from read roots, but a
+	// toolchain read grant is not a socket surface: it must not appear there.
+	if socket := "(allow network-outbound (remote unix-socket " + subpathParam(key) + "))"; strings.Contains(text, socket) {
+		t.Errorf("the Go toolchain root must not earn a unix-socket allow:\n%s", text)
+	}
+	if !strings.Contains(text, "(remote unix-socket") {
+		t.Errorf("the restricted policy lost its ordinary unix-socket grants:\n%s", text)
 	}
 }

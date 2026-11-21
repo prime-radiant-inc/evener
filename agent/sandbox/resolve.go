@@ -143,6 +143,13 @@ type ResolvedPolicy struct {
 	// Spawned is the kernel-wrapped process layer's grants (M3/M6 satisfy).
 	Spawned AccessScope
 
+	// SocketExemptReadRoots are spawned read roots granted only to reach a
+	// toolchain's tools. The file-read rule covers them, but restricted mode's
+	// unix-socket allow -- derived from the read roots -- skips them: a
+	// toolchain directory is a read surface, not a socket surface, and a socket
+	// grant there would widen host-socket reach beyond the read fix.
+	SocketExemptReadRoots []string
+
 	// MaskedPaths are absolute paths denied in BOTH layers (the secrets +
 	// pseudo-fs denylist). Enforcement treats each as a subtree prefix (masking
 	// /proc masks /proc/<pid>/environ; masking ~/.ssh masks its whole tree).
@@ -559,7 +566,7 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		resolveInputs:       policy,
 		resolveHost:         host,
 	}
-	rp.FileTool, rp.Spawned = scopesFor(policy, host, layout, worktree)
+	rp.FileTool, rp.Spawned, rp.SocketExemptReadRoots = scopesFor(policy, host, layout, worktree)
 	rp.configMasks = configMasks
 	// The masks' state is recorded before admission judges them, so a mask
 	// that changes in between differs from this record and is judged again
@@ -1043,7 +1050,7 @@ func cacheStrategyFor(mode Mode, backend Backend, host HostFacts) CacheStrategy 
 }
 
 // scopesFor builds the file-tool and spawned-process access scopes for a mode.
-func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree string) (fileTool, spawned AccessScope) {
+func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree string) (fileTool, spawned AccessScope, socketExempt []string) {
 	switch policy.Mode {
 	case ModeOff, ModeReadOnly:
 		// Reads anywhere (minus masked); no writes (session tmp is the only scratch).
@@ -1109,12 +1116,13 @@ func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree 
 		writeSpawn := dedupeRoots(slices.Concat(writeFile, layout.WritablePaths))
 		fileTool = AccessScope{Read: ReadWorktreeOnly, ReadRoots: readFile, WriteRoots: writeFile}
 		spawned = AccessScope{Read: ReadWorktreeOnly, ReadRoots: readSpawn, WriteRoots: writeSpawn}
+		socketExempt = goRoots
 	}
 	if policy.WriteBlocked {
 		fileTool.WriteRoots = nil
 		spawned.WriteRoots = nil
 	}
-	return fileTool, spawned
+	return fileTool, spawned, socketExempt
 }
 
 // dedupeRoots cleans, drops empty/whitespace-only entries, and de-duplicates a

@@ -20,6 +20,7 @@ import (
 
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/envvars/userdirs"
+	"primeradiant.com/evener/execsupport/orphanpipe"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -458,15 +459,29 @@ func (hostProbeSystem) run(ctx context.Context, name string, args ...string) err
 }
 
 func (hostProbeSystem) combinedOutput(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = probeWaitDelay
+	out, err := cmd.CombinedOutput()
+	return out, orphanpipe.ChildErr(cmd, err)
 }
 
 func (hostProbeSystem) output(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).Output()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = probeWaitDelay
+	out, err := cmd.Output()
+	return out, orphanpipe.ChildErr(cmd, err)
 }
 
 // probeCommandTimeout bounds each capability-probe subprocess.
 var probeCommandTimeout = 3 * time.Second
+
+// probeWaitDelay bounds how long a probe waits for a captured output pipe to
+// close after its child exits or is killed. A launcher shim (a version-manager
+// wrapper, a shell rc hook) can hand the pipe to a background descendant that
+// outlives the child, and exec otherwise waits for that descendant before
+// Output returns -- past probeCommandTimeout. orphanpipe.ChildErr folds the
+// drain-only exec.ErrWaitDelay back into the child's own answer.
+const probeWaitDelay = time.Second
 
 // Probe gathers host capabilities. The bwrap capability and overlay probes are
 // intentionally conservative here (presence + version); M3 hardens BwrapCapable
@@ -1185,32 +1200,72 @@ func probeDeveloperToolRoots(system probeSystem) []string {
 	return out
 }
 
+// goInstallPrefixLaunchers are the install-prefix go binaries the GOROOT probe
+// falls back to when the daemon's inherited PATH does not name go. A daemon
+// started by launchd or a GUI session inherits a PATH that skips the shell rc
+// chain -- the reason spawned commands get the login PATH -- so Homebrew's go
+// can be reachable in a session and invisible to this probe.
+var goInstallPrefixLaunchers = []string{
+	"/usr/local/go/bin/go",
+	"/opt/homebrew/bin/go",
+	"/usr/local/bin/go",
+	"/opt/local/bin/go",
+}
+
 // probeGoToolchainRoots returns the GOROOT the host's go command resolves, or
-// nil when go is absent or the probe has no answer.
+// nil when no launcher answers.
 //
 // The answer is probed with `go env -C / GOROOT` rather than read from the go
 // env file, because GOROOT is not one of the settings that file reliably names:
 // it can also come from the environment or from the toolchain go selected. -C /
 // runs the query outside any module, so a project's go/toolchain line cannot
 // make this probe select (and download) a different toolchain before the
-// sandbox exists; -C needs Go 1.20+, and an older go simply contributes no
-// root. The output is admitted only when it is an existing directory.
+// sandbox exists; an explicit GOTOOLCHAIN pin is host configuration and the
+// spawned go honours it too. GOWORK is not consulted outside a module. -C needs
+// Go 1.20+, and an older go simply contributes no root.
 func probeGoToolchainRoots(system probeSystem) []string {
-	goBin, err := system.lookPath("go")
-	if err != nil || goBin == "" {
-		return nil
+	for _, goBin := range goLaunchers(system) {
+		if root := goEnvGOROOT(system, goBin); root != "" {
+			return []string{root}
+		}
 	}
+	return nil
+}
+
+// goLaunchers lists the go binaries the probe may run, most specific first:
+// the one PATH resolves, then the install-prefix fallbacks present on disk.
+func goLaunchers(system probeSystem) []string {
+	var out []string
+	if goBin, err := system.lookPath("go"); err == nil && goBin != "" {
+		out = append(out, goBin)
+	}
+	for _, goBin := range goInstallPrefixLaunchers {
+		if system.nonDirectoryFile(goBin) && !slices.Contains(out, goBin) {
+			out = append(out, goBin)
+		}
+	}
+	return out
+}
+
+// goEnvGOROOT runs the bounded `go env -C / GOROOT` query and returns the
+// answer only when it is an absolute path naming an existing directory.
+func goEnvGOROOT(system probeSystem, goBin string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), probeCommandTimeout)
 	defer cancel()
 	out, err := system.output(ctx, goBin, "env", "-C", "/", "GOROOT")
 	if err != nil {
-		return nil
+		return ""
 	}
-	root := CanonicalDir(strings.TrimSpace(string(trimTrailingNewline(out))))
-	if root == "" {
-		return nil
+	root := filepath.Clean(strings.TrimSpace(string(trimTrailingNewline(out))))
+	// A relative answer names a directory under Evener's own working directory,
+	// not a toolchain root: filepath.Clean(".", "relative/...") stays relative.
+	if !filepath.IsAbs(root) || CanonicalDir(root) == "" {
+		return ""
 	}
-	return []string{root}
+	// Keep the spelling go reported. Seatbelt judges the path a process actually
+	// names, and the read emitter adds the canonical alias for a symlinked
+	// spelling (paramSet.defineRead).
+	return root
 }
 
 // probeDeveloperToolBinDir returns the active developer directory's bin
