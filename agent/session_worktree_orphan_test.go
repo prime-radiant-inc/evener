@@ -1564,9 +1564,10 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileRetainedChildNotifies(t *testing.
 	// primitive the owner's wake-edge uses, so the scripted step is the
 	// presentation turn itself and never an empty notification drive. The
 	// report can be classified while the root is processing and deferred to
-	// the root's delivery queue, where only the background retry would pump
-	// it: driveUntil flushes that queue before each pass, so a deferred
-	// report is appended deterministically and an empty queue is a no-op.
+	// the lane-owning delegate's delivery queue, where only the background
+	// retry would pump it: each drive pass flushes that queue while the
+	// delegate is idle, so a deferred report is appended deterministically
+	// and an empty queue is a no-op.
 	flushErr := lane.driveUntil(entered)
 	select {
 	case <-entered:
@@ -4412,9 +4413,9 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileCoordinatorDrainsForDescendant(t 
 		return coordinatorSub.finalizing
 	})
 	// The coordinator sets finalizing before it starts its drain ticker and
-	// sets the drain hold. Wait for the hold itself: until then a descendant
-	// tick can refresh the root transcript, and the backdate below would be
-	// undone before the drain wait it is meant to observe exists.
+	// sets the drain hold. Waiting for the hold orders the backdate below
+	// after the drain exists; either the coordinator's or a descendant's
+	// ticker can still refresh the root transcript afterwards.
 	testwait.Until(t, "the coordinator's finalization drain hold", func() bool {
 		return coordinatorSub.sess.drainHeld.Load()
 	})
