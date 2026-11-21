@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -63,17 +64,12 @@ func stableSupervisionStateWithin(t *testing.T, root *Session, sub *subagent) st
 // source lock briefly right after it quiesces; the report never waits for them.
 func uncontendedStableSupervisionState(t *testing.T, root *Session, sub *subagent) string {
 	t.Helper()
-	deadline := time.Now().Add(supervisionSnapshotUncontendedTripwire)
-	for {
-		state := stableSupervisionState(root, sub)
-		if !strings.Contains(state, "_lock_busy") {
-			return state
-		}
-		if !time.Now().Before(deadline) {
-			t.Fatalf("report sources still busy after %s: %q", supervisionSnapshotUncontendedTripwire, state)
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
+	var state string
+	testwait.UntilSeen(t, "the supervision report to read no busy source", func() (bool, string) {
+		state = stableSupervisionState(root, sub)
+		return !strings.Contains(state, "_lock_busy"), state
+	})
+	return state
 }
 
 // TestStableSupervisionStatePrintsWhileControllerLockHeld pins the timeout
@@ -218,14 +214,14 @@ func TestStableSupervisionRefusalReturnsQuiescentWhenEverySourceIsFree(t *testin
 	// TRIPWIRE: the fixture is quiesced, so a free source reads quiesced at
 	// once; this only bounds a regression that never reads quiesced.
 	deadline := time.Now().Add(stableSupervisionRefusalDeadline)
-	for {
-		if got := stableSupervisionRefusalWithin(t, sub); got == "" {
-			return
-		}
-		if !time.Now().Before(deadline) {
-			t.Fatal("predicate never read quiesced with every source free")
-		}
-		time.Sleep(2 * time.Millisecond)
+	var refusal string
+	testwait.UntilSeen(t, "the predicate to read quiesced with every source free", func() (bool, string) {
+		refusal = stableSupervisionRefusalWithin(t, sub)
+		return refusal == "" || !time.Now().Before(deadline), refusal
+	})
+	if refusal != "" {
+		t.Fatalf("predicate never read quiesced with every source free within %s: %q",
+			stableSupervisionRefusalDeadline, refusal)
 	}
 }
 
@@ -255,14 +251,14 @@ func TestStableSupervisionQuiescenceWaitKeepsWaitingWhileASourceLockIsHeld(t *te
 	// TRIPWIRE: the fixture is quiesced and every source is free, so the same
 	// predicate reads quiesced at once; this only bounds a regression.
 	deadline := time.Now().Add(stableSupervisionRefusalDeadline)
-	for {
-		if got := stableSupervisionRefusalWithin(t, sub); got == "" {
-			return
-		}
-		if !time.Now().Before(deadline) {
-			t.Fatal("the wait never read quiesced after sub.mu was released")
-		}
-		time.Sleep(2 * time.Millisecond)
+	var refusal string
+	testwait.UntilSeen(t, "the wait to read quiesced after sub.mu was released", func() (bool, string) {
+		refusal = stableSupervisionRefusalWithin(t, sub)
+		return refusal == "" || !time.Now().Before(deadline), refusal
+	})
+	if refusal != "" {
+		t.Fatalf("the wait never read quiesced after sub.mu was released within %s: %q",
+			stableSupervisionRefusalDeadline, refusal)
 	}
 }
 

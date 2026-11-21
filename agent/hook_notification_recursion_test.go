@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -175,6 +176,8 @@ func TestEmitWarning_ConcurrentIndependentWarningsEachFireNotificationHook(t *te
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
+	var wg sync.WaitGroup
+	defer wg.Wait() // join the emitters even if UntilSeen gives up first
 	defer sess.Close()
 	drainEvents(sess) // keep the event channel moving; emit is best-effort anyway
 
@@ -182,7 +185,6 @@ func TestEmitWarning_ConcurrentIndependentWarningsEachFireNotificationHook(t *te
 	// the Notification hook synchronously in the calling goroutine, so both hook
 	// runs are in flight together — the collision the guard used to lose.
 	start := make(chan struct{})
-	var wg sync.WaitGroup
 	for i := range 2 {
 		wg.Add(1)
 		go func(n int) {
@@ -199,25 +201,23 @@ func TestEmitWarning_ConcurrentIndependentWarningsEachFireNotificationHook(t *te
 	// simultaneously) or until the deadline. A session-wide guard that drops the
 	// second invocation means only one hook ever starts, so the sentinel stays at
 	// one entry and we time out — catching the bug regardless of scheduler ordering.
-	const pollInterval = 20 * time.Millisecond
 	const hookStartTimeout = 5 * time.Second
 	deadline := time.Now().Add(hookStartTimeout)
-	var bothStarted bool
-	for time.Now().Before(deadline) {
-		data, _ := os.ReadFile(started)
-		if strings.Count(string(data), "x") >= 2 {
-			bothStarted = true
-			break
+	var startedCount int
+	testwait.UntilSeen(t, "both concurrent Notification hooks to start", func() (bool, string) {
+		if !time.Now().Before(deadline) {
+			return true, fmt.Sprintf("%d of 2 hooks started", startedCount)
 		}
-		time.Sleep(pollInterval)
-	}
+		data, _ := os.ReadFile(started)
+		startedCount = strings.Count(string(data), "x")
+		return startedCount >= 2, fmt.Sprintf("%d of 2 hooks started", startedCount)
+	})
 
 	wg.Wait() // wait for all hook subprocesses to finish
 
-	if !bothStarted {
-		data, _ := os.ReadFile(started)
+	if startedCount < 2 {
 		t.Fatalf("only %d of 2 Notification hooks started within %s; a session-wide guard is likely dropping the second concurrent invocation",
-			strings.Count(string(data), "x"), hookStartTimeout)
+			startedCount, hookStartTimeout)
 	}
 	data, _ := os.ReadFile(counter)
 	if got := strings.Count(string(data), "x"); got != 2 {
