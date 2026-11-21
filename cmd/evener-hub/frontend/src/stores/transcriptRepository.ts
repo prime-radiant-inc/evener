@@ -1285,10 +1285,10 @@ export class TranscriptRepository {
           errorClass?: string;
           waitStartedAt?: number;
         };
-        if (params.errorClass !== "quota_exceeded") {
-          admitted.add(notification);
-          continue;
-        }
+        // Ordinary retries belong to the live and post-cut paths: a duplicate
+        // over a snapshot already holding the retry's clearing output changes
+        // no recorded history, so a replayed chip would stand.
+        if (params.errorClass !== "quota_exceeded") continue;
         const stamp = params.waitStartedAt ?? 0;
         const heldStamp = snapshot.quotaWaitStartedAt ?? 0;
         const snapshotHoldsWait = snapshot.quotaResumesAt !== undefined || heldStamp > 0;
