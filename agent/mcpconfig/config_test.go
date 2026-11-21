@@ -1487,7 +1487,6 @@ func TestAbsentLayerTurnsStaleWithoutReadingTheFileThatAppeared(t *testing.T) {
 // A previously present layer answers by size when the size differs, and falls
 // through to the digest only when it does not.
 func TestPresentLayerAnswersBySizeBeforeComparingDigest(t *testing.T) {
-	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mcp.json")
 	data := []byte(`{"mcpServers":{}}`)

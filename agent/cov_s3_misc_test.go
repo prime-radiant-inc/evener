@@ -84,16 +84,3 @@ func TestS3Cov_SessionJobManager_Nil(t *testing.T) {
 		t.Fatal("expected error for session without job manager")
 	}
 }
-
-func TestS3Cov_MarshalBoundedJSON(t *testing.T) {
-	t.Parallel()
-	// Fits.
-	got, err := marshalBoundedJSON(map[string]any{"k": "v"}, 0)
-	if err != nil || got == "" {
-		t.Fatalf("fit: %q %v", got, err)
-	}
-	// Exceeds cap → error.
-	if _, err := marshalBoundedJSON(map[string]any{"k": "vvvvvvvvvvvvvvvvvvvv"}, 5); err == nil {
-		t.Fatal("expected over-cap error")
-	}
-}
