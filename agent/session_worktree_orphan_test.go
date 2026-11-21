@@ -4148,6 +4148,8 @@ func TestDelegateAttentionStopAdmittedDuringReopenResolvesFreshRow(t *testing.T)
 	// itself, and its append and re-check must land before the reads below.
 	select {
 	case <-driveDone:
+	// TRIPWIRE: a drive that already admitted the stop returns just after its
+	// append and re-check; the bound only fires on a wedged worker.
 	case <-time.After(30 * time.Second):
 		t.Fatalf("the admitted stop's first drive never returned (flush=%v)", flushErr())
 	}
