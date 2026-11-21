@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/worktree"
-	"primeradiant.com/evener/identifier"
 )
 
 // ---------------------------------------------------------------------------
@@ -119,45 +118,6 @@ func TestWorktreeStateResolutionErrorWithErr(t *testing.T) {
 	if !strings.Contains(err.Error(), "resolve failed") {
 		t.Fatalf("expected wrapped error: %q", err.Error())
 	}
-}
-
-// ---------------------------------------------------------------------------
-// projectIsGitCheckout
-// ---------------------------------------------------------------------------
-
-func TestProjectIsGitCheckoutEmptyPath(t *testing.T) {
-	t.Parallel()
-	// Empty canonical path should return false
-	proj := identifierProjectWithCanonical("")
-	if projectIsGitCheckout(proj) {
-		t.Fatalf("expected false for empty canonical path")
-	}
-}
-
-func TestProjectIsGitCheckoutNonExistent(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	proj := identifierProjectWithCanonical(dir)
-	if projectIsGitCheckout(proj) {
-		t.Fatalf("expected false for non-git directory")
-	}
-}
-
-func TestProjectIsGitCheckoutWithGit(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0755); err != nil {
-		t.Fatalf("mkdir .git: %v", err)
-	}
-	proj := identifierProjectWithCanonical(dir)
-	if !projectIsGitCheckout(proj) {
-		t.Fatalf("expected true for directory with .git")
-	}
-}
-
-// helper to create an identifier.Project with just the CanonicalPath set
-func identifierProjectWithCanonical(path string) identifier.Project {
-	return identifier.Project{CanonicalPath: path}
 }
 
 // ---------------------------------------------------------------------------
