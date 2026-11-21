@@ -1988,6 +1988,54 @@ func TestRetirementDelegateStopDriverHandoff(t *testing.T) {
 	}
 }
 
+// TestRetirementDelegateStopDriverPublishSerializesHandoff pins the lock order
+// behind #7159's fix. The driver must release its handoff lease inside the owner
+// lock whose scan the retirement evidence read takes, and publish done in the
+// same critical section: a claim then either meets the lease and is refused
+// before admission closes, or observes done closed and the lease gone. Releasing
+// outside that lock let a claim enter preparing against a pending driver that
+// would refuse it, closing input admission for a refusal.
+func TestRetirementDelegateStopDriverPublishSerializesHandoff(t *testing.T) {
+	t.Parallel()
+	root, tree, _ := newRetirementDelegateController(t)
+	defer root.Close()
+	stop := &delegateStopState{done: make(chan struct{})}
+	close(stop.done) // the drain returns at once; this test is about publication
+	driver := newDelegateStopDriver()
+	handoff, err := tree.beginRetirementMutation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var released, releasedAfterDone, releasedOutsideLock bool
+	release := func() {
+		released = true
+		select {
+		case <-driver.done:
+			releasedAfterDone = true
+		default:
+		}
+		if tree.mu.TryLock() {
+			releasedOutsideLock = true
+			tree.mu.Unlock()
+		}
+		handoff()
+	}
+	tree.runStopReconcileDriver(stop, driver, nil, release)
+	retirementAwait(t, driver.done)
+	if !released {
+		t.Fatal("driver published done without releasing its handoff lease")
+	}
+	if releasedAfterDone {
+		t.Error("handoff lease released after done was published")
+	}
+	if releasedOutsideLock {
+		t.Error("handoff lease released outside the owner lock the retirement evidence scan takes")
+	}
+	if driver.err != nil {
+		t.Fatal(driver.err)
+	}
+}
+
 func TestRetirementDelegateTerminalCloseHandoff(t *testing.T) {
 	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
