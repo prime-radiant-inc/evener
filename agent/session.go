@@ -2547,7 +2547,23 @@ func (s *Session) applyQueuedModelSwitches(inWaitingCall bool) {
 		}
 		release, admissionErr := s.beginRetirementMutation("admission")
 		if admissionErr != nil {
-			s.clearModelValidating()
+			// The pop ran before the lease, so a refused lease must not consume
+			// the pick: admission reopens when the retirement window closes,
+			// and the next applier call lands this entry then. One hold settles
+			// both ends: the entry goes back only when nothing newer owns the
+			// outcome - a committed pick's watermark, or a pick a concurrent
+			// applier (the quota wait's call) is validating - and the hold is
+			// retired only while it is still this pick's, not the other
+			// applier's.
+			s.mu.Lock()
+			newerValidating := s.modelValidating != nil && s.modelValidating.seq > pending.seq
+			if pending.seq >= s.modelPickAccepted && !newerValidating {
+				s.enqueuePendingModelLocked(pending)
+			}
+			if s.modelValidating != nil && s.modelValidating.seq == pending.seq {
+				s.modelValidating = nil
+			}
+			s.mu.Unlock()
 			return
 		}
 		err := s.applyModelSwitch(pending.target, pending.primedInstance, pending.primedListing, modelSwitchFence{pickSeq: pending.seq})
