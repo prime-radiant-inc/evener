@@ -11,19 +11,20 @@ import (
 // journaled, not one it samples itself after the acknowledgment lands. A stop
 // that settles in between is newer evidence than the delivery, and its quiet
 // must survive the delivery's release. The sample is taken under the controller
-// lock where the funnel journals the release, so it cannot move afterwards.
+// lock when the claim is created, so it cannot move afterwards.
 func TestDeliveryAckCarriesTheGenerationItJournaled(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 2, 1)
 	seedDelegateControllerIdle(t, c, "dlg_hold", "")
 	seedDelegateControllerIdle(t, c, "dlg_child", "dlg_hold")
 	seedDelegateControllerDelivery(t, c, "dlg_child")
+	// The owner rests at a settled generation whose quiet stands: the newest
+	// evidence a wake claimed now supersedes. It settles before the report's
+	// claim is created, so the claim belongs to it.
+	journalDeriveHeldStopWithTrigger(t, c, delegatestore.TriggerAttention, delegatestore.OutcomeCancelled, "cancelled")
 	plans := c.ReplayDeliveries()
 	if len(plans) != 1 || plans[0].delegateID != "dlg_child" || plans[0].ownerDelegateID != "dlg_hold" {
 		t.Fatalf("replayed delivery plans = %#v, want one report from dlg_child to dlg_hold", plans)
 	}
-	// The owner rests at a settled generation whose quiet stands: the newest
-	// evidence a wake published now supersedes.
-	journalStopAtGeneration(t, c, "dlg_hold", 1)
 
 	token, admitted, err := c.BeginDelivery(plans[0])
 	if err != nil || !admitted {
@@ -54,12 +55,12 @@ func TestDeliveryAckCarriesTheGenerationItJournaled(t *testing.T) {
 	}
 }
 
-// A delivery's claim belongs to the generation it was admitted in. A stop that
-// settles between the admission and its acknowledgment is newer evidence than
-// the report, so the acknowledgment's release must not cover it: a reader of
-// the journal would otherwise treat the report as delivered in the run that
+// A delivery's claim belongs to the generation it was created in. A stop that
+// settles between the claim's creation and its acknowledgment is newer evidence
+// than the report, so the acknowledgment's release must not cover it: a reader
+// of the journal would otherwise treat the report as delivered in the run that
 // stop ended.
-func TestDeliveryAckReleasesThroughTheGenerationItsClaimWasAdmittedIn(t *testing.T) {
+func TestDeliveryAckReleasesThroughTheGenerationItsClaimWasCreatedIn(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 2, 1)
 	seedDelegateControllerIdle(t, c, "dlg_hold", "")
 	seedDelegateControllerIdle(t, c, "dlg_child", "dlg_hold")
@@ -91,17 +92,16 @@ func TestDeliveryAckReleasesThroughTheGenerationItsClaimWasAdmittedIn(t *testing
 		t.Fatalf("the acknowledgment released generation %d, want 0: the delivery was admitted before generation 1 settled, so the stop that settled it is newer evidence and a reader treats the report as delivered in the run that stop ended", released)
 	}
 	if acked.ackWakeGeneration != 0 {
-		t.Fatalf("the acknowledgment carried generation %d, want the admission generation 0: a sample taken at acknowledgment time supersedes the stop that settled after the delivery", acked.ackWakeGeneration)
+		t.Fatalf("the acknowledgment carried generation %d, want the claim generation 0: a sample taken at acknowledgment time supersedes the stop that settled after the delivery", acked.ackWakeGeneration)
 	}
 }
 
-// A carried admission sample can trail the owner's latest settled generation
-// when the queued report starts a successor run and a stop settles it before
-// the acknowledgment lands. The journal must still record the release the
-// admission named: refusing it rejects the acknowledgment's whole batch, and
-// the stop drain retries the same receipt forever. The newer stop's quiet must
-// stand, which the monotonic record already guarantees.
-func TestDeliveryAckRecordsAnAdmissionSampleBehindTheSettledGeneration(t *testing.T) {
+// A plan's claim is created when the plan is built, and a deferred delivery can
+// wait a whole owner turn before BeginDelivery admits it. A stop that settles
+// while it waits is newer evidence than the delivery, so the acknowledgment's
+// release must carry the generation the claim was created in, not the one
+// visible at admission (#7226).
+func TestDeferredDeliveryAckReleasesThroughItsClaimGeneration(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 2, 1)
 	seedDelegateControllerIdle(t, c, "dlg_hold", "")
 	seedDelegateControllerIdle(t, c, "dlg_child", "dlg_hold")
@@ -110,10 +110,49 @@ func TestDeliveryAckRecordsAnAdmissionSampleBehindTheSettledGeneration(t *testin
 	if len(plans) != 1 || plans[0].delegateID != "dlg_child" || plans[0].ownerDelegateID != "dlg_hold" {
 		t.Fatalf("replayed delivery plans = %#v, want one report from dlg_child to dlg_hold", plans)
 	}
+	// The plan waits, unadmitted, while a user stop settles the owner's
+	// generation 1.
+	journalStopAtGeneration(t, c, "dlg_hold", 1)
+
+	token, admitted, err := c.BeginDelivery(plans[0])
+	if err != nil || !admitted {
+		t.Fatalf("BeginDelivery = admitted:%t err:%v", admitted, err)
+	}
+	acked, err := c.CompleteDelivery(token, true)
+	if err != nil {
+		t.Fatalf("CompleteDelivery: %v", err)
+	}
+
+	c.mu.Lock()
+	released := c.durable["dlg_hold"].AttentionHoldReleasedGeneration
+	c.mu.Unlock()
+	if released != 0 {
+		t.Fatalf("the acknowledgment released generation %d, want 0: the delivery's claim predates the stop that settled generation 1, so the stop is newer evidence and a reader treats the report as delivered in the run that stop ended", released)
+	}
+	if acked.ackWakeGeneration != 0 {
+		t.Fatalf("the acknowledgment carried generation %d, want the claim generation 0: sampling at admission covers the stop that settled while the plan waited", acked.ackWakeGeneration)
+	}
+}
+
+// A carried claim sample can trail the owner's latest settled generation
+// when the queued report starts a successor run and a stop settles it before
+// the acknowledgment lands. The journal must still record the release the
+// claim named: refusing it rejects the acknowledgment's whole batch, and
+// the stop drain retries the same receipt forever. The newer stop's quiet must
+// stand, which the monotonic record already guarantees.
+func TestDeliveryAckRecordsAClaimSampleBehindTheSettledGeneration(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 2, 1)
+	seedDelegateControllerIdle(t, c, "dlg_hold", "")
+	seedDelegateControllerIdle(t, c, "dlg_child", "dlg_hold")
+	seedDelegateControllerDelivery(t, c, "dlg_child")
 	// Generation 1 is an attention stop whose quiet stands. Generation 2 is the
-	// successor run the stop's own queued row started, and it is still open when
-	// the report is admitted.
+	// successor run the stop's own queued row started. It opens after the
+	// report's claim, which names the generation before it.
 	journalDeriveHeldStopWithTrigger(t, c, delegatestore.TriggerAttention, delegatestore.OutcomeCancelled, "cancelled")
+	plans := c.ReplayDeliveries()
+	if len(plans) != 1 || plans[0].delegateID != "dlg_child" || plans[0].ownerDelegateID != "dlg_hold" {
+		t.Fatalf("replayed delivery plans = %#v, want one report from dlg_child to dlg_hold", plans)
+	}
 	c.mu.Lock()
 	_, err := c.appendLocked(delegatestore.Event{
 		Kind:       delegatestore.EventDelegateRunStarted,
@@ -160,7 +199,7 @@ func TestDeliveryAckRecordsAnAdmissionSampleBehindTheSettledGeneration(t *testin
 
 	acked, err := c.CompleteDelivery(token, true)
 	if err != nil {
-		t.Fatalf("CompleteDelivery: %v: the acknowledgment's release names its admission generation, and a successor stop settling after it must not reject the batch", err)
+		t.Fatalf("CompleteDelivery: %v: the acknowledgment's release names its claim generation, and a successor stop settling after it must not reject the batch", err)
 	}
 
 	c.mu.Lock()
@@ -176,13 +215,13 @@ func TestDeliveryAckRecordsAnAdmissionSampleBehindTheSettledGeneration(t *testin
 		t.Fatalf("the acknowledgment did not land (tracked %t, %d pending): the stop drain retries the same receipt forever", tracked, pending)
 	}
 	if released != 1 {
-		t.Fatalf("the acknowledgment recorded release generation %d, want 1: the report superseded the generation 1 stop it was admitted after", released)
+		t.Fatalf("the acknowledgment recorded release generation %d, want 1: the report's claim superseded the generation 1 stop it was created after", released)
 	}
 	if released >= settled {
 		t.Fatalf("the acknowledgment's release reached generation %d: the stop that settled after the delivery is newer evidence, and its quiet must stand", released)
 	}
 	if acked.ackWakeGeneration != 1 {
-		t.Fatalf("the acknowledgment carried generation %d, want the admission generation 1", acked.ackWakeGeneration)
+		t.Fatalf("the acknowledgment carried generation %d, want the claim generation 1", acked.ackWakeGeneration)
 	}
 }
 

@@ -98,6 +98,12 @@ type delegateDeliveryClaim struct {
 	ownerID    string
 	waiter     *delegateInlineWaiter
 	cold       bool
+	// wakeGeneration is the owner's settled generation when the claim was
+	// created. A deferred claim can wait a whole owner turn before
+	// BeginDelivery admits it, and a stop that settles while it waits is newer
+	// evidence than the delivery, so the acknowledgment's release carries this
+	// sample rather than one taken at admission (#7226).
+	wakeGeneration uint64
 	// held marks a plan its receiver deferred to its next round because it
 	// was mid-turn.
 	held bool
@@ -290,23 +296,27 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (_ del
 	}
 	delete(c.deliveryClaims, plan.deliveryID)
 	cold := claim.cold
-	admit := func(claim delegateDeliveryClaimToken) *delegateDeliveryAdmission {
+	// wakeGeneration is the release sample the receipt carries: the one the
+	// delivery's claim took when it was created, or the generation sampled here
+	// for a carried delivery that was never planned (#7226).
+	admit := func(claimToken delegateDeliveryClaimToken, wakeGeneration uint64) *delegateDeliveryAdmission {
 		c.nextToken++
 		inline := plan.waiter != nil || plan.callerCommitted
 		receipt := &delegateDeliveryAdmission{
-			token:           delegateDeliveryToken{processID: c.nextToken, deliveryID: claim.deliveryID},
+			token:           delegateDeliveryToken{processID: c.nextToken, deliveryID: claimToken.deliveryID},
 			delegateID:      plan.delegateID,
 			ownerID:         plan.ownerDelegateID,
-			claim:           claim,
+			claim:           claimToken,
 			cold:            cold,
 			inline:          inline,
 			callerCommitted: plan.callerCommitted,
 		}
 		// Only a non-inline acknowledgment publishes a wake to the owner, and
-		// it must release against this sample: sampling at acknowledgment time
-		// would supersede a stop that settled after the claim was admitted.
+		// it releases through the sample passed here rather than one read when
+		// the acknowledgment lands, so a stop that settled while a deferred
+		// claim waited is not cleared by the release (#7226).
 		if !inline {
-			receipt.wakeGeneration = c.attentionWakeGenerationLocked(plan.ownerDelegateID)
+			receipt.wakeGeneration = wakeGeneration
 		}
 		c.deliveries[receipt.token.processID] = receipt
 		return receipt
@@ -316,13 +326,14 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (_ del
 		// The held head is admitted under the receiver's own claim token, so
 		// a retry of it is planned as that delivery's. The deliveries behind
 		// it were never planned, so each gets a claim token of its own.
-		admit(plan.heldClaim.token).heldClaim = plan.heldClaim
+		admit(plan.heldClaim.token, plan.heldClaim.wakeGeneration).heldClaim = plan.heldClaim
+		admissionWakeGeneration := c.attentionWakeGenerationLocked(plan.ownerDelegateID)
 		for _, behind := range plan.carried[1:] {
 			c.nextToken++
-			admit(delegateDeliveryClaimToken{processID: c.nextToken, deliveryID: behind.DeliveryID})
+			admit(delegateDeliveryClaimToken{processID: c.nextToken, deliveryID: behind.DeliveryID}, admissionWakeGeneration)
 		}
 	}
-	token := admit(plan.claim).token
+	token := admit(plan.claim, claim.wakeGeneration).token
 	c.evidenceVersion++
 	return token, true, nil
 }
@@ -368,11 +379,9 @@ type delegateDeliveryAck struct {
 	ownerID      string
 	delegateID   string
 	ownerChanged bool
-	// wakeGeneration is the settled generation the acknowledged delivery's wake
-	// supersedes, sampled under the controller lock at delivery admission, not where the wake was
-	// journaled. A callback that sampled the generation itself would read it
-	// after the acknowledgment landed, so a stop that settled in between would
-	// be cleared by a delivery older than it.
+	// wakeGeneration is the claim-creation sample the acknowledgment's release
+	// carries. See delegateDeliveryClaim.wakeGeneration for why it is not
+	// sampled here (#7226).
 	wakeGeneration uint64
 }
 
@@ -757,10 +766,10 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 		return plans, err
 	}
 	// plans carries the generation the acknowledgment's release superseded,
-	// sampled at delivery admission, not where that release was journaled. The
-	// callback releases against that sample rather than reading the generation
-	// again, so a stop that settles between the acknowledgment and this wake
-	// keeps its quiet.
+	// sampled when that delivery's claim was created, not where that release was
+	// journaled. The callback releases against that sample rather than reading
+	// the generation again, so a stop that settles between the acknowledgment and
+	// this wake keeps its quiet.
 	return plans, plan.controller.wakeDeliveryReceiverAt(receiver, []string{attentionID}, plans.ackWakeGeneration)
 }
 
@@ -887,11 +896,12 @@ func (c *delegateTreeController) newHeadDeliveryPlanLocked(delegateID, deliveryI
 		waiter = c.claimDelegateWaiterLocked(delegateID, head.Generation)
 	}
 	claim := &delegateDeliveryClaim{
-		token:      claimToken,
-		delegateID: delegateID,
-		ownerID:    head.OwnerDelegateID,
-		waiter:     waiter,
-		cold:       cold,
+		token:          claimToken,
+		delegateID:     delegateID,
+		ownerID:        head.OwnerDelegateID,
+		waiter:         waiter,
+		cold:           cold,
+		wakeGeneration: c.attentionWakeGenerationLocked(head.OwnerDelegateID),
 	}
 	c.deliveryClaims[deliveryID] = claim
 	if len(carried) > 0 {
