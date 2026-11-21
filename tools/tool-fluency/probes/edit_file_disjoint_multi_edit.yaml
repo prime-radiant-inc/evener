@@ -7,6 +7,7 @@ prompt: |
   RETRY_LIMIT = 2 becomes RETRY_LIMIT = 4;
   LOG_LEVEL = "info" becomes LOG_LEVEL = "debug";
   CACHE_TTL_SECONDS = 60 becomes CACHE_TTL_SECONDS = 120.
+  Use only read_file and edit_file (do not run shell commands).
   Finish with RESULT_DISJOINT_MULTI_EDIT.
 fixture:
   files:

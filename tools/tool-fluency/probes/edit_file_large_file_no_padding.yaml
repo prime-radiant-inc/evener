@@ -4,6 +4,7 @@ tool: edit_file
 prompt: |
   Read pipeline.py, then use edit_file to change VERSION = "1.0.0" to VERSION = "1.1.0"
   and DEFAULT_TIMEOUT = 30 to DEFAULT_TIMEOUT = 60.
+  Use only read_file and edit_file (do not run shell commands).
   Finish with RESULT_LARGE_FILE_NO_PADDING.
 fixture:
   files:

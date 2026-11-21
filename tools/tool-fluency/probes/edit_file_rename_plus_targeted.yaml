@@ -6,6 +6,7 @@ prompt: |
   of oldName to newName. Also change the package comment
   "// Package widget builds demo widgets." to
   "// Package widget builds production widgets."
+  Use only read_file and edit_file (do not run shell commands).
   Finish with RESULT_RENAME_PLUS_TARGETED.
 fixture:
   files:

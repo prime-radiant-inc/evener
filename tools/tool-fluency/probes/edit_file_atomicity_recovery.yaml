@@ -9,6 +9,7 @@ prompt: |
   The file may already be partly in the requested state: if an edit's old text
   is missing, verify the intended value is already present and leave it correct
   instead of forcing a change or damaging the block.
+  Use only read_file and edit_file (do not run shell commands).
   Finish with RESULT_ATOMICITY_RECOVERY.
 fixture:
   files:

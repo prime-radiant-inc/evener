@@ -6,6 +6,7 @@ prompt: |
   endings; keep both unchanged. Use edit_file to change color=red to color=blue,
   and change the consecutive lines size=small and mode=fast to size=large and
   mode=safe respectively.
+  Use only read_file and edit_file (do not run shell commands).
   Finish with RESULT_CRLF_BOM_MULTI_EDIT.
 fixture:
   files:
