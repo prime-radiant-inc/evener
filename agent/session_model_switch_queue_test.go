@@ -330,6 +330,15 @@ func TestSupersededPendingApplicationDoesNotOverwriteANewerPick(t *testing.T) {
 	// application then resumes against the newer choice.
 	go func() {
 		<-tailFetchCalled
+		// The queued pick's application is parked inside its boundary listing
+		// fetch - popped from the queue, not yet committed, nothing newer
+		// committed - so the read sample must keep naming the validating pick
+		// itself: the thread/model/set hook's synchronous refresh can run
+		// exactly here when a pick races the end of its turn.
+		model, instance := s.ReportedModelRef()
+		if model != "gpt-5.4" || instance != "openai" {
+			t.Errorf("advertised pair while the pick's application validates = %s/%s, want the accepted pick gpt-5.4/openai", instance, model)
+		}
 		if err := s.SetModel("gpt-4.1-mini"); err != nil {
 			t.Errorf("newer SetModel: %v", err)
 		}
@@ -339,7 +348,7 @@ func TestSupersededPendingApplicationDoesNotOverwriteANewerPick(t *testing.T) {
 		// model-set's synchronous refresh runs exactly here, and reporting
 		// the parked pick would overwrite the committed choice in thread/read
 		// for as long as the superseded application takes to drop.
-		model, instance := s.ReportedModelRef()
+		model, instance = s.ReportedModelRef()
 		if model != "gpt-4.1-mini" || instance != "openai" {
 			t.Errorf("advertised pair while the superseded pick validates = %s/%s, want the committed newer pick gpt-4.1-mini/openai", instance, model)
 		}
@@ -396,7 +405,17 @@ func TestConcurrentMidTurnPicksLastAcceptedChoiceWins(t *testing.T) {
 		},
 		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "queued turn done") },
 	})
-	serveSessionWithMutationStore(t, s)
+	var evMu sync.Mutex
+	evs := []events.SessionEvent{}
+	drained := make(chan struct{})
+	s.ConsumeEventsLossless(func(ev events.SessionEvent) {
+		evMu.Lock()
+		evs = append(evs, ev)
+		evMu.Unlock()
+	}, func() { close(drained) })
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
 	queueOneMutation(t, s, "cm-last-accepted", "the queued message")
 	// The boundary hook is the rendezvous: it fires after the first turn's
 	// boundary and before the loop applies the pending switch, so it can
@@ -428,6 +447,23 @@ func TestConcurrentMidTurnPicksLastAcceptedChoiceWins(t *testing.T) {
 	}
 	if requests[1].Model != "gpt-4.1-mini" {
 		t.Fatalf("the queued message ran on model %q; the newer pick's accepted choice must survive the earlier pick's late store (%q)", requests[1].Model, "gpt-4.1-mini")
+	}
+	s.Close()
+	<-drained
+	// The earlier pick's preflight finished after the newer pick queued and
+	// announced, so its late arrival must not move the visible choice back to
+	// itself: the queue selects the newer pick, and the announcement the
+	// composer last saw must still name it.
+	evMu.Lock()
+	var lastAnnounce events.NextModelChangedData
+	for _, ev := range evs {
+		if d, ok := ev.Data.(events.NextModelChangedData); ok {
+			lastAnnounce = d
+		}
+	}
+	evMu.Unlock()
+	if lastAnnounce.Model != "gpt-4.1-mini" {
+		t.Fatalf("the last acceptance announcement named %q; the earlier pick's late arrival must not announce itself over the newer pick the queue selects (%q)", lastAnnounce.Model, "gpt-4.1-mini")
 	}
 }
 
@@ -1045,187 +1081,27 @@ func TestACommittedSwitchPublishesEvenWhenANewerQueuedPickLaterFails(t *testing.
 			t.Fatalf("next-model announcement %d = %s/%s, want %s/%s", i, nextModel[i].Provider, nextModel[i].Model, want.provider, want.model)
 		}
 	}
-}
-
-// TestCommittedSwitchPublicationReassertsANewerAcceptedPick pins the visible
-// selection through the window a commit publication opens: a pick accepted
-// while the previous switch was publishing is the queue's newest choice, and
-// its acceptance was already published, but the commit frame that follows
-// names the model the session runs now. Without re-announcing the accepted
-// pick at the publication, a subscriber's label and the status cache rest on
-// the committed model until the pick's own application - burying the
-// acceptance the way a rejected pick's retraction exists to unbury.
-func TestCommittedSwitchPublicationReassertsANewerAcceptedPick(t *testing.T) {
-	dir := t.TempDir()
-	openaiAdapter := &fakeAdapter{
-		name: "openai",
-		liveModels: func(context.Context) ([]registry.Model, error) {
-			return []registry.Model{{ID: "gpt-5.2"}, {ID: "gpt-5.4"}, {ID: "gpt-4.1-mini"}}, nil
-		},
-	}
-	s := newSession(t,
-		withAdapter(openaiAdapter),
-		withDir(dir),
-		withConfig(SessionConfig{
-			StateDir:         dir,
-			MaxSubagentDepth: 1,
-			ResolveProfile:   testResolver,
-			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
-		}))
-	releaseAPublish := make(chan struct{})
-	aPublishEntered := make(chan struct{}, 1)
-	hookOnce := make(chan struct{}, 1)
-	updateSessionTestConfig(s, func(cfg *testConfig) {
-		cfg.beforeModelSwitchPublish = func() {
-			select {
-			case hookOnce <- struct{}{}:
-				aPublishEntered <- struct{}{}
-				<-releaseAPublish
-			default:
-			}
-		}
-	})
-	openaiAdapter.setSteps([]func(llm.Request) llm.Response{
-		// Turn 1: pick A mid-turn; the pick queues for this turn's boundary.
-		func(llm.Request) llm.Response {
-			if err := s.SetModel("gpt-5.4"); err != nil {
-				t.Errorf("mid-turn pick of A: %v", err)
-			}
-			return agenttest.CommunicateResponse(true, "first turn done")
-		},
-		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "queued turn done") },
-	})
-	var evMu sync.Mutex
-	evs := []events.SessionEvent{}
-	drained := make(chan struct{})
-	s.ConsumeEventsLossless(func(ev events.SessionEvent) {
-		evMu.Lock()
-		evs = append(evs, ev)
-		evMu.Unlock()
-	}, func() { close(drained) })
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
-	queueOneMutation(t, s, "cm-reassert-publish", "the message queued behind the first turn")
-
-	// While A's application sits between its swap and its publication, the
-	// newer pick arrives and queues for a later boundary: the queue's order
-	// makes B the session's next-turn choice from this moment.
-	go func() {
-		<-aPublishEntered
-		if err := s.SetModel("gpt-4.1-mini"); err != nil {
-			t.Errorf("queued pick of B: %v", err)
-		}
-		close(releaseAPublish)
-	}()
-
-	if _, err := s.ProcessInput(context.Background(), "the first message", nil); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-	s.Close()
-	<-drained
-
-	// The commit publication lands after B's acceptance, so the model frames
-	// must end on B: the first model frame after A's commit names B, and the
-	// session's final committed model is B.
+	// Commit-relative order: B's acceptance precedes A's commit publication,
+	// and the re-assertion follows it - the commit frame names the model the
+	// session runs now, so the re-assertion is what keeps a subscriber's
+	// label from resting on the committed model until B's own boundary.
 	evMu.Lock()
-	defer evMu.Unlock()
-	aCommit := -1
-	lastCommit := events.ModelChangedData{}
+	bAccept, aCommit, bReassert := -1, -1, -1
 	for i, ev := range evs {
-		if d, ok := ev.Data.(events.ModelChangedData); ok {
-			if d.NewModel == "gpt-5.4" {
-				aCommit = i
-			}
-			lastCommit = d
-		}
-	}
-	if aCommit < 0 {
-		t.Fatal("no commit frame for A's applied switch")
-	}
-	for _, ev := range evs[aCommit+1:] {
-		if d, ok := ev.Data.(events.NextModelChangedData); ok {
-			if d.Model != "gpt-4.1-mini" {
-				t.Fatalf("the first model frame after A's commit announces %q, want the newer accepted pick gpt-4.1-mini", d.Model)
-			}
-			break
-		}
-		if d, ok := ev.Data.(events.ModelChangedData); ok {
-			t.Fatalf("the first model frame after A's commit is a commit of %q; the newer accepted pick's announcement must be reasserted before any later commit can own the visible selection", d.NewModel)
-		}
-	}
-	if lastCommit.NewModel != "gpt-4.1-mini" {
-		t.Fatalf("the last commit names %q, want B (gpt-4.1-mini) applied at a boundary", lastCommit.NewModel)
-	}
-	if got := s.Profile().Model(); got != "gpt-4.1-mini" {
-		t.Fatalf("profile model = %q, want B (gpt-4.1-mini)", got)
-	}
-}
-
-// TestAcceptedPickStaysAdvertisedWhileItsBoundaryApplicationValidates pins the
-// advertised pair through the window between the boundary's pop and its
-// application: the accepted pick is in neither the queue nor the profile, yet
-// the thread/model/set hook's synchronous refresh can sample exactly there
-// when a pick races the end of its turn. ReportedModelRef must keep naming the
-// pick until the application settles - the committed profile, a re-queued
-// entry, or the retraction is what replaces the advertised pair - or
-// thread/read regresses to the pre-pick model after the acceptance was already
-// published, which reads to a subscriber as the pick flipping back.
-func TestAcceptedPickStaysAdvertisedWhileItsBoundaryApplicationValidates(t *testing.T) {
-	dir := t.TempDir()
-	listModels := attemptRecordingLiveModels("openai", "gpt-5.2", "gpt-5.4")
-	openaiAdapter := &fakeAdapter{
-		name:       "openai",
-		liveModels: listModels,
-	}
-	s := newSession(t,
-		withAdapter(openaiAdapter),
-		withDir(dir),
-		withConfig(SessionConfig{
-			StateDir:         dir,
-			MaxSubagentDepth: 1,
-			ResolveProfile:   testResolver,
-			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
-		}))
-	applyParked := make(chan struct{}, 1)
-	releaseApply := make(chan struct{})
-	updateSessionTestConfig(s, func(cfg *testConfig) {
-		cfg.beforeQueuedModelApply = func() {
-			select {
-			case applyParked <- struct{}{}:
-				<-releaseApply
-			default:
+		if d, ok := ev.Data.(events.NextModelChangedData); ok && d.Model == "glm-test" {
+			if bAccept < 0 {
+				bAccept = i
+			} else if aCommit >= 0 && bReassert < 0 {
+				bReassert = i
 			}
 		}
-	})
-	openaiAdapter.setSteps([]func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response {
-			if err := s.SetModel("gpt-5.4"); err != nil {
-				t.Errorf("mid-turn pick: %v", err)
-			}
-			return agenttest.CommunicateResponse(true, "first turn done")
-		},
-	})
-
-	inputDone := make(chan error, 1)
-	go func() {
-		_, err := s.ProcessInput(context.Background(), "the only turn", nil)
-		inputDone <- err
-	}()
-	<-applyParked
-	model, instance := s.ReportedModelRef()
-	if model != "gpt-5.4" || instance != "openai" {
-		t.Fatalf("advertised pair while the pick's application validates = %s/%s, want the accepted pick gpt-5.4/openai",
-			instance, model)
+		if d, ok := ev.Data.(events.ModelChangedData); ok && d.NewModel == "gpt-5.4" {
+			aCommit = i
+		}
 	}
-	close(releaseApply)
-	if err := <-inputDone; err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-	model, instance = s.ReportedModelRef()
-	if model != "gpt-5.4" || instance != "openai" {
-		t.Fatalf("advertised pair after the application settled = %s/%s, want the committed gpt-5.4/openai",
-			instance, model)
+	evMu.Unlock()
+	if bAccept < 0 || aCommit <= bAccept || bReassert <= aCommit {
+		t.Fatalf("commit-relative order = B accepted at %d, A committed at %d, B re-asserted at %d; the acceptance must precede the commit that would bury it and the re-assertion must follow that commit", bAccept, aCommit, bReassert)
 	}
 }
 
@@ -1234,27 +1110,15 @@ func TestAcceptedPickStaysAdvertisedWhileItsBoundaryApplicationValidates(t *test
 // saw the model reason without naming tiers, and the pick's own fetch is what
 // carries them. The listing must run through the transport protocol - a
 // registered adapter override's rows are never applied to the registry's live
-// layer - for the tiers to reach a later resolve.
+// layer - for the tiers to reach a later resolve. The transport stubs come
+// from windowListingProtocol; only the staged ListModels is this test's own.
 type stagedLadderProtocol struct {
-	id       string
+	windowListingProtocol
 	instance string
 	mu       sync.Mutex
 	calls    int
 }
 
-func (p *stagedLadderProtocol) ID() string { return p.id }
-func (*stagedLadderProtocol) PrunablePaths() []string {
-	return nil
-}
-func (*stagedLadderProtocol) BuildBody(llm.Request, registry.Resolved) (map[string]any, error) {
-	return map[string]any{}, nil
-}
-func (*stagedLadderProtocol) Complete(context.Context, llm.Request, registry.Resolved) (llm.Response, error) {
-	return llm.Response{}, nil
-}
-func (*stagedLadderProtocol) Stream(context.Context, llm.Request, registry.Resolved) (llm.Stream, error) {
-	return nil, llm.ErrStreamUnsupported
-}
 func (p *stagedLadderProtocol) ListModels(_ context.Context, res registry.Resolved) ([]registry.Model, error) {
 	if res.Instance != p.instance {
 		return []registry.Model{{ID: "gpt-launch"}}, nil
@@ -1267,9 +1131,6 @@ func (p *stagedLadderProtocol) ListModels(_ context.Context, res registry.Resolv
 		return []registry.Model{{ID: "gpt-tier", Caps: registry.Caps{Reasoning: new(true)}}}, nil
 	}
 	return []registry.Model{{ID: "gpt-tier", Caps: registry.Caps{Reasoning: new(true), EffortValues: []string{"low", "high"}}}}, nil
-}
-func (*stagedLadderProtocol) CountTokens(context.Context, llm.Request, registry.Resolved) (int, error) {
-	return 0, llm.ErrInputTokenCountUnsupported
 }
 
 // newStagedLadderProtocol returns the id's registered ladder protocol,
@@ -1286,7 +1147,7 @@ func newStagedLadderProtocol(id, instance string) *stagedLadderProtocol {
 		p.mu.Unlock()
 		return p
 	}
-	p := &stagedLadderProtocol{id: id, instance: instance}
+	p := &stagedLadderProtocol{windowListingProtocol: windowListingProtocol{id: id}, instance: instance}
 	llm.RegisterProtocol(p)
 	return p
 }

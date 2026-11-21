@@ -2109,10 +2109,11 @@ func (s *Session) ReportedModelRef() (model, provider string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if newest := s.newestPendingModelIndexLocked(); newest >= 0 {
-		return s.pendingModels[newest].resolvedModel, s.pendingModels[newest].resolvedProvider
+		queued := s.pendingModels[newest].profile
+		return queued.Model(), queued.ID()
 	}
 	if validating := s.modelValidating; validating != nil && validating.seq > s.modelPickAccepted {
-		return validating.resolvedModel, validating.resolvedProvider
+		return validating.profile.Model(), validating.profile.ID()
 	}
 	p := s.profile
 	return p.Model(), p.ID()
@@ -2303,16 +2304,13 @@ type pendingModelSwitch struct {
 	primedInstance string
 	primedListing  *llm.ModelListing
 	seq            uint64
-	// resolvedModel/resolvedProvider are the pair the pick resolved to at
-	// queue time - the model id and the instance a client should be shown for
-	// the session while the pick waits for its boundary (ReportedModelRef).
-	resolvedModel    string
-	resolvedProvider string
 	// profile is the enriched profile the pick resolved to, the same one the
-	// at-rest path commits. A commit publication that lands after this pick's
-	// acceptance re-announces from it, so the visible selection moves back to
-	// the queue's newest choice instead of resting on the just-committed
-	// model until the pick's own boundary.
+	// at-rest path commits, and the one source of the pick's identity: the
+	// pair a client is shown while the pick waits for its boundary
+	// (ReportedModelRef) and the profile a commit publication that lands after
+	// this pick's acceptance re-announces from, so the visible selection moves
+	// back to the queue's newest choice instead of resting on the
+	// just-committed model until the pick's own boundary.
 	profile *provider.Profile
 }
 
@@ -2461,21 +2459,28 @@ func (s *Session) queueModelSwitch(target modelSwitchTarget, pickSeq uint64) err
 	// already committed; ordering is the pop's job (see
 	// popNewestPendingModelLocked), so a slow older pick still queues and can
 	// apply if the newer one fails its deferred check.
-	queued := false
+	var announce *provider.Profile
 	if pickSeq > s.modelPickAccepted {
-		s.enqueuePendingModelLocked(pendingModelSwitch{target: target, primedInstance: primedInstance, primedListing: primedListing, seq: pickSeq, resolvedModel: nextProfile.Model(), resolvedProvider: nextProfile.ID(), profile: nextProfile})
+		s.enqueuePendingModelLocked(pendingModelSwitch{target: target, primedInstance: primedInstance, primedListing: primedListing, seq: pickSeq, profile: nextProfile})
 		// A call waiting out the old model's usage limit retries on this
 		// one now rather than at the turn boundary it is waiting to reach.
 		s.wakeQuotaWaitLocked()
-		queued = true
+		// The queue owns the visible choice, so only the entry the queue would
+		// pop next is announced: an older pick whose preflight finishes after a
+		// newer one queued announces nothing, because the newer pick's own
+		// announcement still stands and the late arrival must not move the
+		// composer's label backwards.
+		if newest := s.newestPendingModelIndexLocked(); newest >= 0 && s.pendingModels[newest].seq == pickSeq {
+			announce = s.pendingModels[newest].profile
+		}
 	}
 	s.mu.Unlock()
-	if queued {
+	if announce != nil {
 		// The pick is accepted: the next turn runs on it, and a subscriber's
 		// label plus thread/read must say so now - the same accept-time
 		// reflection an effort change gets - instead of first at the
 		// boundary's commit publication.
-		s.announceNextModel(nextProfile)
+		s.announceNextModel(announce)
 	}
 	return nil
 }
@@ -2574,9 +2579,6 @@ func (s *Session) applyQueuedModelSwitches(inWaitingCall bool) {
 		s.mu.Unlock()
 		if !ok {
 			return
-		}
-		if hook := s.cfg.testOnly.beforeQueuedModelApply; hook != nil {
-			hook()
 		}
 		release, admissionErr := s.beginRetirementMutation("admission")
 		if admissionErr != nil {
@@ -2740,7 +2742,7 @@ func (s *Session) applyModelSwitch(target modelSwitchTarget, primedInstance stri
 		// rejected there and must not cancel an older one in the meantime.
 		// The pop orders entries by issue, so it still applies before any
 		// older queued pick that survives.
-		s.enqueuePendingModelLocked(pendingModelSwitch{target: target, primedInstance: listedInstance, primedListing: listing, seq: fence.pickSeq, resolvedModel: nextProfile.Model(), resolvedProvider: nextProfile.ID(), profile: nextProfile})
+		s.enqueuePendingModelLocked(pendingModelSwitch{target: target, primedInstance: listedInstance, primedListing: listing, seq: fence.pickSeq, profile: nextProfile})
 		s.wakeQuotaWaitLocked()
 		s.mu.Unlock()
 		// Queued is accepted for the next boundary, so the pick is published
