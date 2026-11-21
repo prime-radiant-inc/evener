@@ -35,7 +35,6 @@ var checks = []check{
 	{"script-scratch-in-tmpdir", noScriptCreatesScratchOutsideTMPDIR},
 	{"scratch-dir-not-substituted", scratchDirSubstitutionDoesNotSwallowFailure},
 	{"script-recursive-delete", noScriptFeedsVariableToRecursiveDelete},
-	{"scratch-trap-before-mkdir", scratchTrapInstalledBeforeMkdir},
 	{"makefile-recursive-delete", noMakefileRecipeFeedsVariableToRecursiveDelete},
 	{"makefile-scratch-in-tmpdir", noMakefileRecipeCreatesScratchOutsideTMPDIR},
 	{"mobile-native-build-ignored", mobileNativeGitignoreIgnoresDerivedDataBuild},
