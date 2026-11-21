@@ -14,20 +14,6 @@ type byteSpan struct {
 // reports for an ambiguous single match.
 const maxAmbiguousLines = 10
 
-// findFuzzyMatch returns the file's first whitespace-normalized match for
-// oldString, or "" if no match. It delegates to findFuzzyMatchSpans so
-// existing direct test callers (line_window_test.go,
-// local_edge_program_fuzz_test.go) continue to exercise findFuzzyMatchSpans.
-func findFuzzyMatch(content, oldString string) string {
-	// Every accepted span is non-empty and non-overlapping, so content cannot
-	// hold more than len(content) of them.
-	spans, _, _ := findFuzzyMatchSpans(content, oldString, true, len(content)+1)
-	if len(spans) == 0 {
-		return ""
-	}
-	return content[spans[0].start:spans[0].end]
-}
-
 // findFuzzyMatchSpans scans the file content for exact byte ranges that match
 // oldString when whitespace is normalized. replaceAll collects every
 // non-overlapping match; otherwise the single match is returned, or its

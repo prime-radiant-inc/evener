@@ -8,6 +8,7 @@ import {
 	formatByteCount,
 	isKnownTaskStatus,
 	lineCount,
+	splitDiffLines,
 } from "@evener/appwire-client";
 import { type ReactNode, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
@@ -162,9 +163,8 @@ function Diff({ text, added, removed }: { text: string; added: number; removed: 
 	// Go source is tab-indented: a tab expands to its stop, the +/- column
 	// counting as column 0, as a terminal draws a diff.
 	const lines = useMemo(() => {
-		if (text === "") return [];
-		const rawLines = text.split("\n").map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
-		if (rawLines[rawLines.length - 1] === "") rawLines.pop();
+		const rawLines = splitDiffLines(text);
+		if (rawLines.length === 0) return [];
 		const kinds = classifyDiffLineKinds(text);
 		return keyedByOffset(
 			rawLines.map((raw, i) => ({ text: expandTabs(raw), kind: kinds[i] ?? ("context" as const) })),

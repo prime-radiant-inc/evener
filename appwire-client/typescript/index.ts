@@ -260,6 +260,7 @@ export {
   editBatchDiffText,
   editDiffText,
   editOperationsOf,
+  splitDiffLines,
 } from "./editDiff";
 export type { EntityIdMatch, EntityKind } from "./entityIds";
 export { entityKindOf, findEntityIds, jobOwnerSessionId } from "./entityIds";

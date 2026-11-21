@@ -13,6 +13,7 @@
 
 import {
   clip,
+  type EditOperation,
   editBatchDiffText,
   editOperationsOf,
   filePathOf,
@@ -59,6 +60,10 @@ export function TailFoldedOutputBody({ item, live }: OutputBodyProps) {
   return <CodeBlock text={text} copyLabel="Copy output" />;
 }
 
+export function EditDiffBody({ path, ops }: { path: string; ops: readonly EditOperation[] }) {
+  return <DiffBlock unified={editBatchDiffText(path, ops)} />;
+}
+
 // EditFileBody synthesizes an edit's diff from its edits[] or legacy
 // old_string/new_string input args: the wire carries no diff of its own for edit_file or
 // memory_edit, both of which share this shape.
@@ -66,8 +71,7 @@ export function EditFileBody({ item }: ToolRenderProps) {
   const args = parseArgs(item.argumentsJSON);
   const ops = editOperationsOf(args);
   if (ops === null) return null;
-  const path = filePathOf(args) ?? "";
-  return <DiffBlock unified={editBatchDiffText(path, ops)} />;
+  return <EditDiffBody path={filePathOf(args) ?? ""} ops={ops} />;
 }
 
 // WriteFileBody renders a plain confirmation string ("wrote N bytes to X" —

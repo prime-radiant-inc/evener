@@ -440,14 +440,16 @@ func (e *LocalExecutionEnvironment) EditFileBatchWithCtx(ctx context.Context, pa
 	if len(edits) == 0 {
 		return "", errors.New("edit_file: edits must not be empty")
 	}
+	editPrefix := func(i int) string {
+		if len(edits) == 1 {
+			return ""
+		}
+		return fmt.Sprintf("edits[%d]: ", i)
+	}
 	var inputErrs []error
 	for i, ed := range edits {
 		if ed.OldString == "" {
-			if len(edits) == 1 {
-				inputErrs = append(inputErrs, errors.New("old_string must not be empty"))
-			} else {
-				inputErrs = append(inputErrs, fmt.Errorf("edits[%d]: old_string must not be empty", i))
-			}
+			inputErrs = append(inputErrs, fmt.Errorf("%sold_string must not be empty", editPrefix(i)))
 		}
 	}
 	if len(inputErrs) > 0 {
@@ -489,12 +491,6 @@ func (e *LocalExecutionEnvironment) EditFileBatchWithCtx(ctx context.Context, pa
 		usedFuzzy    bool
 		nearestCount int
 	)
-	editPrefix := func(i int) string {
-		if len(edits) == 1 {
-			return ""
-		}
-		return fmt.Sprintf("edits[%d]: ", i)
-	}
 
 matchLoop:
 	for i, ed := range edits {
@@ -647,9 +643,7 @@ matchLoop:
 	if useCRLF {
 		restored = strings.ReplaceAll(restored, "\n", "\r\n")
 	}
-	edited := make([]byte, len(bom)+len(restored))
-	copy(edited, bom)
-	copy(edited[len(bom):], restored)
+	edited := append([]byte(bom), restored...)
 
 	if bytes.Equal(edited, origBytes) {
 		return "", fmt.Errorf("no changes made to %s: replacement produces identical file content", path)
@@ -752,17 +746,9 @@ func writeFileAtomic(fsys afero.Fs, targetAbs string, data []byte) error {
 		}
 	}()
 
-	for written := 0; written < len(data); {
-		n, werr := tmp.Write(data[written:])
-		written += n
-		if werr != nil {
-			_ = tmp.Close()
-			return werr
-		}
-		if n == 0 {
-			_ = tmp.Close()
-			return io.ErrShortWrite
-		}
+	if _, werr := io.Copy(tmp, bytes.NewReader(data)); werr != nil {
+		_ = tmp.Close()
+		return werr
 	}
 	if cerr := fsys.Chmod(tmpName, mode); cerr != nil {
 		_ = tmp.Close()

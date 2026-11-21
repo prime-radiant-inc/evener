@@ -58,6 +58,8 @@ var aliasTable = map[string]string{
 	"cmd":      "command",
 }
 
+var aliasTableKeys = slices.Sorted(maps.Keys(aliasTable))
+
 // editItemAliases maps off-distribution edit-item parameter names inside
 // edit_file / memory_edit's edits[] (and legacy top-level edit calls).
 var editItemAliases = map[string]string{
@@ -69,6 +71,8 @@ var editItemAliases = map[string]string{
 	"new_text":   "new_string",
 	"replaceAll": "replace_all",
 }
+
+var editItemAliasKeys = slices.Sorted(maps.Keys(editItemAliases))
 
 // RepairArgs normalizes args against the tool's JSON-Schema parameter object.
 // It applies, in order, aliasing, edit-batch normalization (only when params
@@ -100,7 +104,7 @@ func RepairArgs(params, args map[string]any, keep ...string) (map[string]any, []
 // and Y is absent.
 func applyAliases(params, args map[string]any) []Change {
 	var changes []Change
-	for _, alias := range slices.Sorted(maps.Keys(aliasTable)) {
+	for _, alias := range aliasTableKeys {
 		canonical := aliasTable[alias]
 		if _, hasAlias := args[alias]; !hasAlias {
 			continue
@@ -240,7 +244,7 @@ func resolveEditItemAliases(item map[string]any, fieldPrefix string) ([]Change, 
 	var preserve map[string]bool
 	for _, canonical := range []string{"old_string", "new_string", "replace_all"} {
 		var present []string
-		for _, alias := range slices.Sorted(maps.Keys(editItemAliases)) {
+		for _, alias := range editItemAliasKeys {
 			if editItemAliases[alias] != canonical {
 				continue
 			}
@@ -351,14 +355,10 @@ func normalizeEditBatchArgs(itemsSchema, out map[string]any) ([]Change, map[stri
 		item := maps.Clone(orig)
 		prefix := fmt.Sprintf("edits[%d].", i)
 		itemChanges, preserveItem := resolveEditItemAliases(item, prefix)
-		if s, ok := item["replace_all"].(string); ok {
-			switch strings.ToLower(strings.TrimSpace(s)) {
-			case "true":
-				item["replace_all"] = true
-				itemChanges = append(itemChanges, Change{Kind: ChangeCoerceType, Field: prefix + "replace_all", Detail: `"` + s + `"→true`})
-			case "false":
-				item["replace_all"] = false
-				itemChanges = append(itemChanges, Change{Kind: ChangeCoerceType, Field: prefix + "replace_all", Detail: `"` + s + `"→false`})
+		if raw := item["replace_all"]; raw != nil {
+			if val, ok := coerceBoolString(raw); ok {
+				item["replace_all"] = val
+				itemChanges = append(itemChanges, Change{Kind: ChangeCoerceType, Field: prefix + "replace_all", Detail: fmt.Sprintf(`"%s"→%t`, raw, val)})
 			}
 		}
 		if dropExtra {
@@ -433,6 +433,20 @@ func additionalPropsFalse(params map[string]any) bool {
 	return ok && !ap
 }
 
+func coerceBoolString(raw any) (value bool, matched bool) {
+	s, ok := raw.(string)
+	if !ok {
+		return false, false
+	}
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "true":
+		return true, true
+	case "false":
+		return false, true
+	}
+	return false, false
+}
+
 // applyCoercions converts unambiguously-mistyped scalar args to the declared
 // type. Numbers become float64 (JSON's native map type). It never coerces an
 // ambiguous value (e.g. a non-numeric string against a number schema).
@@ -448,17 +462,9 @@ func applyCoercions(params, args map[string]any, skipEditsArray bool) []Change {
 		typ := coercibleScalarType(p["type"])
 		switch typ {
 		case "boolean":
-			s, ok := raw.(string)
-			if !ok {
-				continue
-			}
-			switch strings.ToLower(strings.TrimSpace(s)) {
-			case "true":
-				args[key] = true
-				changes = append(changes, Change{Kind: ChangeCoerceType, Field: key, Detail: `"` + s + `"→true`})
-			case "false":
-				args[key] = false
-				changes = append(changes, Change{Kind: ChangeCoerceType, Field: key, Detail: `"` + s + `"→false`})
+			if val, ok := coerceBoolString(raw); ok {
+				args[key] = val
+				changes = append(changes, Change{Kind: ChangeCoerceType, Field: key, Detail: fmt.Sprintf(`"%s"→%t`, raw, val)})
 			}
 		case "integer", "number":
 			s, ok := raw.(string)

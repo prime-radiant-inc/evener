@@ -1,6 +1,7 @@
 import {
   clip,
   editOperationsOf,
+  filePathOf,
   memoryDeleteSummary,
   memoryEditSummary,
   memoryReadSummary,
@@ -12,7 +13,7 @@ import {
 import { Markdown } from "../../../../widgets";
 import { defaultToolBody, registerToolRenderer, type ToolRenderProps } from "../toolRenderers";
 import {
-  EditFileBody,
+  EditDiffBody,
   HeadClippedOutputBody,
   TailFoldedOutputBody,
   TOOL_BODY_MAX_CHARS,
@@ -36,8 +37,9 @@ function MemoryWriteBody({ item, live }: ToolRenderProps) {
 // than an empty diff.
 function MemoryEditBody(props: ToolRenderProps) {
   const args = parseArgs(props.item.argumentsJSON);
-  if (editOperationsOf(args) === null) return defaultToolBody(props);
-  return <EditFileBody {...props} />;
+  const ops = editOperationsOf(args);
+  if (ops === null) return defaultToolBody(props);
+  return <EditDiffBody path={filePathOf(args) ?? ""} ops={ops} />;
 }
 
 registerToolRenderer({

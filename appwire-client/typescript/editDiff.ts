@@ -5,6 +5,7 @@
 // content anywhere on the wire, so it has no diff.
 
 import { isPlainObject } from "./plainObject";
+import { str } from "./toolCallText";
 
 export interface EditOperation {
   readonly oldString: string;
@@ -24,18 +25,20 @@ export function editOperationsOf(args: Record<string, unknown>): EditOperation[]
     const ops: EditOperation[] = [];
     for (const item of args.edits) {
       if (!isPlainObject(item)) return null;
-      if (typeof item.old_string !== "string" || typeof item.new_string !== "string") return null;
+      const oldString = str(item, "old_string");
+      const newString = str(item, "new_string");
+      if (oldString === undefined || newString === undefined) return null;
       if (item.replace_all !== undefined && typeof item.replace_all !== "boolean") return null;
       ops.push(
         item.replace_all !== undefined
-          ? { oldString: item.old_string, newString: item.new_string, replaceAll: item.replace_all }
-          : { oldString: item.old_string, newString: item.new_string },
+          ? { oldString, newString, replaceAll: item.replace_all }
+          : { oldString, newString },
       );
     }
     return ops;
   }
-  const old = typeof args.old_string === "string" ? args.old_string : undefined;
-  const next = typeof args.new_string === "string" ? args.new_string : undefined;
+  const old = str(args, "old_string");
+  const next = str(args, "new_string");
   if (old === undefined && next === undefined) return null;
   return [
     {
@@ -68,14 +71,20 @@ export function editDiffText(path: string, oldString: string, newString: string)
   return editBatchDiffText(path, [{ oldString, newString }]);
 }
 
+// Splits unified-diff text into lines, stripping trailing CR and one trailing empty line.
+export function splitDiffLines(unified: string): string[] {
+  if (unified === "") return [];
+  const lines = unified.split("\n").map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
+  if (lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
+
 // Classifies each line of unified-diff text using DiffBlock's exact line kinds
 // while ending header mode immediately after the leading --- / +++ pair on
 // flat single-edit diffs with no @@.
 export function classifyDiffLineKinds(unified: string): DiffLineKind[] {
-  if (unified === "") return [];
-
-  const rawLines = unified.split("\n").map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
-  if (rawLines[rawLines.length - 1] === "") rawLines.pop();
+  const rawLines = splitDiffLines(unified);
+  if (rawLines.length === 0) return [];
 
   const kinds: DiffLineKind[] = [];
   let inHeader = true;

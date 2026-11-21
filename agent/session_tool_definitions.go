@@ -416,10 +416,7 @@ func (s *Session) rebuildToolDefsCache() {
 		}
 		// Never expose both apply_patch and edit_file in the same session; both
 		// stay registered in s.reg for mid-session model switching.
-		if td.Name == "apply_patch" && included["edit_file"] {
-			continue
-		}
-		if td.Name == "edit_file" && included["apply_patch"] {
+		if (td.Name == "apply_patch" && included["edit_file"]) || (td.Name == "edit_file" && included["apply_patch"]) {
 			continue
 		}
 		if td.Name == "update_goal" && !s.hasGoalConfigured() {

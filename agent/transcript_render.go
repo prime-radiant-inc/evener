@@ -14,6 +14,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/runetrim"
 
 	"primeradiant.com/evener/agent/internal/mdfence"
@@ -2229,21 +2230,15 @@ func formatNumber(f float64) string {
 	return strconv.FormatFloat(f, 'g', -1, 64)
 }
 
-// renderedEditOp is one edit_file replacement decoded for transcript display.
-type renderedEditOp struct {
-	OldString, NewString string
-	ReplaceAll           bool
-}
-
 // extractRenderedEditOps decodes a stored edit_file call's edit operations from
 // canonical edits[] or falls back to historical top-level fields.
-func extractRenderedEditOps(m map[string]any) []renderedEditOp {
+func extractRenderedEditOps(m map[string]any) []execenv.FileEdit {
 	if raw, hasEdits := m["edits"]; hasEdits {
 		items, ok := raw.([]any)
 		if !ok || len(items) == 0 {
 			return nil
 		}
-		ops := make([]renderedEditOp, 0, len(items))
+		ops := make([]execenv.FileEdit, 0, len(items))
 		for _, item := range items {
 			obj, ok := item.(map[string]any)
 			if !ok {
@@ -2255,11 +2250,11 @@ func extractRenderedEditOps(m map[string]any) []renderedEditOp {
 				return nil
 			}
 			replaceAll, _ := obj["replace_all"].(bool)
-			ops = append(ops, renderedEditOp{OldString: oldStr, NewString: newStr, ReplaceAll: replaceAll})
+			ops = append(ops, execenv.FileEdit{OldString: oldStr, NewString: newStr, ReplaceAll: replaceAll})
 		}
 		return ops
 	}
-	return []renderedEditOp{{
+	return []execenv.FileEdit{{
 		OldString:  scalarString(m["old_string"]),
 		NewString:  scalarString(m["new_string"]),
 		ReplaceAll: scalarString(m["replace_all"]) == "true",
@@ -2267,7 +2262,7 @@ func extractRenderedEditOps(m map[string]any) []renderedEditOp {
 }
 
 // editFileSummary renders the single-edit summary or the batch aggregate.
-func editFileSummary(path string, edits []renderedEditOp) string {
+func editFileSummary(path string, edits []execenv.FileEdit) string {
 	if len(edits) == 0 {
 		return path
 	}
