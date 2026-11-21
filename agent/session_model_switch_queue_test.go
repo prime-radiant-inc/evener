@@ -1225,11 +1225,17 @@ func TestQueuedPickAnnouncementCarriesTheLiveListedReasoningLadder(t *testing.T)
 			},
 			testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 		}))
+	var pickUsage ContextMetrics
+	var pickPressure float64
 	homeAdapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			if err := s.SetModel("lunaroute/gpt-tier"); err != nil {
 				t.Errorf("mid-turn pick: %v", err)
 			}
+			// Sampled in the same step as the pick: the acceptance frame
+			// describes this same session state, so what thread/read would
+			// answer here is what the frame must carry.
+			pickUsage, pickPressure = s.ContextStatus()
 			return agenttest.CommunicateResponse(true, "first turn done")
 		},
 	})
@@ -1264,6 +1270,18 @@ func TestQueuedPickAnnouncementCarriesTheLiveListedReasoningLadder(t *testing.T)
 	}
 	if len(acceptance.ReasoningEffortLevels) != 2 || acceptance.ReasoningEffortLevels[0] != "low" || acceptance.ReasoningEffortLevels[1] != "high" {
 		t.Fatalf("acceptance ladder = %v, want the live listing's [low high]", acceptance.ReasoningEffortLevels)
+	}
+	// The frame's context figures are the status sample's for this same
+	// state: a subscriber's meter and thread/read must never disagree about
+	// the running model's context.
+	if acceptance.ContextUsed != pickUsage.Used ||
+		acceptance.ContextWindow != pickUsage.Window ||
+		acceptance.ContextPressure != pickPressure ||
+		acceptance.ContextAssumed != pickUsage.Assumed ||
+		acceptance.CompactionThreshold != pickUsage.CompactionThreshold {
+		t.Fatalf("acceptance context = used %d window %d pressure %.4f assumed %t threshold %d, want the status sample's used %d window %d pressure %.4f assumed %t threshold %d",
+			acceptance.ContextUsed, acceptance.ContextWindow, acceptance.ContextPressure, acceptance.ContextAssumed, acceptance.CompactionThreshold,
+			pickUsage.Used, pickUsage.Window, pickPressure, pickUsage.Assumed, pickUsage.CompactionThreshold)
 	}
 	if got := proto.listingCount(); got < 2 {
 		t.Fatalf("lunaroute listed %d times, want the pick's fetch among them", got)

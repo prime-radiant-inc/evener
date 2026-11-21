@@ -2632,15 +2632,11 @@ func (s *Session) announceNextModel(profile *provider.Profile) {
 		s.mu.Unlock()
 		return
 	}
-	var usage ContextMetrics
-	if s.contextMgr != nil {
-		usage = s.contextMgr.EstimateUsage(s.history, len(s.cachedSystemPrompt))
-	}
 	s.mu.Unlock()
-	var pressure float64
-	if usage.Window > 0 {
-		pressure = float64(usage.Used) / float64(usage.Window)
-	}
+	// The figures are what thread/read answers for this same state
+	// (ContextStatus): one memoized sample, so a subscriber's meter and the
+	// status projection can never disagree about the running model's context.
+	usage, pressure := s.ContextStatus()
 	s.emit(events.NextModelChangedData{
 		Provider:               profile.ID(),
 		Model:                  profile.Model(),
