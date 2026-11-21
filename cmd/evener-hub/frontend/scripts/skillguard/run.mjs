@@ -44,6 +44,7 @@ import {
   parseChromeDevToolsAnnouncement,
   requestBrowserClose,
 } from "../browserGuardProcess.mjs";
+import { uncoveredCenter } from "../lib/pressPoint.mjs";
 import { ReactionBudget } from "./budgets.mjs";
 
 const FRONTEND = path.resolve(path.dirname(import.meta.url), "..", "..");
@@ -231,17 +232,6 @@ function editorText(root) {
   return [...root.childNodes]
     .map((node, index) => (index > 0 && node.nodeName === "P" ? "\n" : "") + read(node))
     .join("");
-}
-
-// Runs in the page. Scrolls el into view and returns its center while el is
-// topmost there, else null: a press at a point that something else covers
-// would land on that something, as a real press would.
-function uncoveredCenter(el, block) {
-  el.scrollIntoView({ block });
-  const r = el.getBoundingClientRect(),
-    x = r.x + r.width / 2,
-    y = r.y + r.height / 2;
-  return el.contains(document.elementFromPoint(x, y)) ? { x, y } : null;
 }
 
 // Offset selection for single-line editing cases. Never place a caret inside

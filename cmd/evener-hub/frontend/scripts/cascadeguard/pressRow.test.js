@@ -75,10 +75,10 @@ function anchorRow(root, id) {
   return el;
 }
 
-test("a plain row presses the anchor's own button and names it", () => {
+test("a plain row presses the anchor's own button and reports it pressed", () => {
   const root = sidebar(`<button id="a">cascade-1</button>`);
   rects.set(anchorRow(root, "a"), at(700, 160));
-  expect(press(ROW("a"))).toBe(anchor("a"));
+  expect(press(ROW("a"))).toBe(true);
   expect(pressed).toEqual(["a"]);
 });
 
@@ -91,8 +91,19 @@ test("a split row presses its main button, not the toggle over its container's c
   rects.set(root.querySelector("#main"), at(700, 160, 125, 32));
   // The container's own centre (x 842.5) sits over the trailing toggle.
   rects.set(root.querySelector("#toggle"), at(830, 160, 25, 32));
-  expect(press(ROW("b"))).toBe(anchor("b"));
+  expect(press(ROW("b"))).toBe(true);
   expect(pressed).toEqual(["main"]);
+});
+
+test("a split row whose main button is covered at its own centre is refused", () => {
+  const root = sidebar(`<div id="row"><button id="main">cascade-9</button>
+    <span><button id="toggle" aria-label="Collapse cascade-9"></button></span></div>`);
+  root.querySelector("#row").dataset.activityAnchor = anchor("i");
+  rects.set(root.querySelector("#main"), at(700, 160, 125, 32));
+  // The hit test is the pressed control's own centre (762.5), not the row's.
+  rects.set(root.querySelector("#toggle"), at(750, 160, 25, 32));
+  expect(press(ROW("i"))).toBeNull();
+  expect(pressed).toEqual([]);
 });
 
 test("a row below the fold is scrolled into view before it is measured and pressed", () => {
@@ -100,30 +111,18 @@ test("a row below the fold is scrolled into view before it is measured and press
   const row = anchorRow(root, "h");
   rects.set(row, at(700, 2000));
   row.scrollIntoView = () => rects.set(row, at(700, 400));
-  expect(press(ROW("h"))).toBe(anchor("h"));
+  expect(press(ROW("h"))).toBe(true);
   expect(hits).toEqual([middle(at(700, 400))]);
   expect(pressed).toEqual(["h"]);
 });
 
-test("a press that unmounts its row still names the row it pressed", () => {
+test("a press that unmounts its row still reports the row was pressed", () => {
   const root = sidebar(`<button id="c">cascade-3</button>`);
   const row = anchorRow(root, "c");
   rects.set(row, at(700, 160));
   row.addEventListener("click", () => row.remove());
-  expect(press(ROW("c"))).toBe(anchor("c"));
+  expect(press(ROW("c"))).toBe(true);
   expect(pressed).toEqual(["c"]);
-});
-
-test("a row whose anchor its own press clears still names what it pressed", () => {
-  const root = sidebar(`<button id="x">cascade-8</button>`);
-  const row = anchorRow(root, "x");
-  rects.set(row, at(700, 160));
-  row.addEventListener("click", () => delete row.dataset.activityAnchor);
-  // The driver retries a null result, which would press a second row; reading
-  // the anchor before the press keeps the result non-null.
-  expect(press(ROW("x"))).toBe(anchor("x"));
-  expect(hits).toHaveLength(1);
-  expect(pressed).toEqual(["x"]);
 });
 
 test("the press point comes from the row's current box, not a stale one", () => {
@@ -137,7 +136,7 @@ test("the press point comes from the row's current box, not a stale one", () => 
   // browser drill's one-turn press relies on.
   rects.set(row, at(700, 620));
   rects.set(root.querySelector("#e"), at(700, 160));
-  expect(press(ROW("d"))).toBe(anchor("d"));
+  expect(press(ROW("d"))).toBe(true);
   expect(hits).toEqual([middle(at(700, 620))]);
   expect(pressed).toEqual(["d"]);
 });
@@ -160,7 +159,8 @@ test("a row with no layout is not pressed", () => {
   const root = sidebar(`<button id="g">cascade-6</button>`);
   const row = anchorRow(root, "g");
   expect(press(ROW("g"))).toBeNull();
+  expect(hits).toEqual([]);
   rects.set(row, at(700, 160));
-  expect(press(ROW("g"))).toBe(anchor("g"));
+  expect(press(ROW("g"))).toBe(true);
   expect(pressed).toEqual(["g"]);
 });
