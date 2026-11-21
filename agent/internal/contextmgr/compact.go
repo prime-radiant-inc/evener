@@ -57,6 +57,7 @@ func (cm *Manager) resetMeasurement() {
 	cm.mu.Lock()
 	cm.lastInputTokens = 0
 	cm.historyLenAtMeasure = 0
+	cm.measuredAnchor = ""
 	cm.mu.Unlock()
 }
 
@@ -137,7 +138,7 @@ func (cm *Manager) compactWithCheckpoint(
 	// One profile snapshot covers the window check and every diagnostic below:
 	// a model switch landing mid-compaction would otherwise bill one layer's
 	// numbers by another model's thinking rule and image family.
-	prof, _, _, _ := cm.profileSnapshot()
+	prof, _, _, _, _ := cm.profileSnapshot()
 	cw, _ := effectiveWindowOf(prof)
 	if cw <= 0 {
 		return
@@ -313,7 +314,7 @@ func (cm *Manager) forceCompact(
 
 	// One profile snapshot covers every diagnostic below, for the same reason as
 	// MaybeCompact: the readings describe one model's rules, not two half-read.
-	prof, _, _, _ := cm.profileSnapshot()
+	prof, _, _, _, _ := cm.profileSnapshot()
 
 	// Layer 1: Deterministic checkpoint.
 	var checkpointed []schema.Turn

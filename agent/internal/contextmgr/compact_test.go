@@ -200,7 +200,7 @@ func TestContextManager_ResetsAfterCompaction(t *testing.T) {
 	cm.PreserveRecentTurns = 2
 
 	// Record high token count.
-	cm.RecordInputTokens(700, 5)
+	cm.RecordInputTokens(700, 5, "")
 
 	// After compaction modifies history, the measurement should reset.
 	// Build a history that's big enough to trigger compaction.
@@ -618,7 +618,7 @@ func TestMaybeCompact_CompactionThresholdLayersAndStrategies(t *testing.T) {
 
 			// At 240,000 tokens (below 250,000), no fold occurs.
 			hist240 := bulkHistory(6, 100)
-			mgr.RecordInputTokens(240_000, len(hist240))
+			mgr.RecordInputTokens(240_000, len(hist240), "")
 			spy240 := &emitSpy{}
 			tc.run(t, mgr, &hist240, spy240.fn)
 			if len(spy240.compaction) != 0 || len(hist240) != 6 {
@@ -627,7 +627,7 @@ func TestMaybeCompact_CompactionThresholdLayersAndStrategies(t *testing.T) {
 
 			// At 250,000 tokens with a small preserved tail, Layer 1 checkpoint fires without Layer 2 summarize.
 			hist250 := bulkHistory(6, 100)
-			mgr.RecordInputTokens(250_000, len(hist250))
+			mgr.RecordInputTokens(250_000, len(hist250), "")
 			spy250 := &emitSpy{}
 			tc.run(t, mgr, &hist250, spy250.fn)
 			if len(spy250.compaction) != 1 || spy250.compaction[0].Layer != tc.wantCheckpoint {
@@ -676,7 +676,7 @@ func TestMaybeCompact_CompactionThresholdSmallAndAboveDefault(t *testing.T) {
 	}
 
 	hist910 := bulkHistory(6, 100)
-	highCM.RecordInputTokens(910_000, len(hist910))
+	highCM.RecordInputTokens(910_000, len(hist910), "")
 	spy910 := &emitSpy{}
 	highCM.MaybeCompact(context.Background(), &hist910, 0, spy910.fn)
 	if len(spy910.compaction) != 0 {
@@ -684,7 +684,7 @@ func TestMaybeCompact_CompactionThresholdSmallAndAboveDefault(t *testing.T) {
 	}
 
 	hist920 := bulkHistory(6, 100)
-	highCM.RecordInputTokens(920_000, len(hist920))
+	highCM.RecordInputTokens(920_000, len(hist920), "")
 	spy920 := &emitSpy{}
 	highCM.MaybeCompact(context.Background(), &hist920, 0, spy920.fn)
 	if len(spy920.compaction) != 1 || spy920.compaction[0].Layer != "checkpoint" {
@@ -730,7 +730,7 @@ func TestMaybeCompact_CompactionThresholdUnknownWindow(t *testing.T) {
 	// At 210,000 tokens (above UnknownWindowInputTripwire=200,000, below 250,000):
 	// neither the tripwire nor the assumed-window disclosure fires.
 	hist210 := bulkHistory(6, 100)
-	cm.RecordInputTokens(210_000, len(hist210))
+	cm.RecordInputTokens(210_000, len(hist210), "")
 	spy210 := &emitSpy{}
 	cm.MaybeCompact(context.Background(), &hist210, 0, spy210.fn)
 	if len(spy210.compaction) != 0 {
@@ -742,7 +742,7 @@ func TestMaybeCompact_CompactionThresholdUnknownWindow(t *testing.T) {
 
 	// At 250,000 tokens: checkpoint fires, still without WarningCodeContextWindowAssumed.
 	hist250 := bulkHistory(6, 100)
-	cm.RecordInputTokens(250_000, len(hist250))
+	cm.RecordInputTokens(250_000, len(hist250), "")
 	spy250 := &emitSpy{}
 	cm.MaybeCompact(context.Background(), &hist250, 0, spy250.fn)
 	if len(spy250.compaction) != 1 || spy250.compaction[0].Layer != "checkpoint" {

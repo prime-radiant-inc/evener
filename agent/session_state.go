@@ -408,10 +408,12 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 	if s.persistFallbackPrompt && s.systemPromptFrozen {
 		fallbackPrompt = s.cachedSystemPrompt
 	}
+	lastInputTokens, lastInputMeasuredLen, lastInputAnchor := s.contextMgr.LastInputMeasurement()
 	return schema.SessionMeta{
 		ID:                       s.id,
 		ProfileID:                s.profile.ID(),
 		Model:                    s.profile.Model(),
+		Protocol:                 s.profile.Protocol(),
 		CheapModel:               s.profile.CheapModelRefString(),
 		VisionModel:              s.cfg.VisionModel,
 		Manager:                  s.cfg.Manager,
@@ -423,7 +425,9 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		TurnCount:                s.modelResponses,
 		AcceptedInputTurns:       s.turns,
 		TurnBudgetWarningEmitted: s.turnBudgetWarningEmitted,
-		LastInputTokens:          s.contextMgr.LastInputTokens(),
+		LastInputTokens:          lastInputTokens,
+		LastInputMeasuredLen:     &lastInputMeasuredLen,
+		LastInputAnchor:          lastInputAnchor,
 		ContextWindow:            contextWindow,
 		ContextWindowSource:      contextWindowSource,
 		Name:                     s.naming.value,
