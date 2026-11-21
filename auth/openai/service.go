@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -556,14 +557,72 @@ func (s *Service) refreshExpiredRecord(ctx context.Context, stateDir, instanceNa
 		applyClaims(&refreshed, claims)
 	}
 
-	if err := SaveAuth(stateDir, instanceName, refreshed); err != nil {
+	committed, err := commitRefreshedRecord(stateDir, instanceName, current, refreshed, s.now())
+	if err != nil {
 		return RuntimeCredentials{}, err
 	}
 	return RuntimeCredentials{
-		BearerToken: refreshed.AccessToken,
+		BearerToken: committed.AccessToken,
 		Source:      AuthSourceOAuth,
-		Expiry:      refreshed.Expiry,
+		Expiry:      committed.Expiry,
 	}, nil
+}
+
+// errAuthRecordChanged reports that the record a refresh was derived from was
+// replaced on disk while its token refresh was in flight.
+var errAuthRecordChanged = errors.New("auth record changed while its token was refreshed")
+
+// commitRefreshedRecord persists refreshed over the record it was derived from.
+// It holds the store's cross-process lock across a re-read of the record and
+// the write, so a record renamed or deleted while the refresh was in flight is
+// never written back under its old name (the caller gets ErrLoginRequired), and
+// a record another process saved in the meantime is not overwritten: a usable
+// one is returned instead, and one that still needs refreshing is reported as a
+// transient change for the caller to retry against.
+//
+// The returned record is the one the caller should use, and it is the one on
+// disk. The lock wait deliberately does not take ctx: once the refresh token has
+// been redeemed the rotated record has to land, or the token it replaced is
+// lost. Every holder of this lock holds it across file writes only, never a
+// network call, so the wait is short.
+func commitRefreshedRecord(stateDir, instanceName string, loaded, refreshed AuthRecord, now time.Time) (AuthRecord, error) {
+	var committed AuthRecord
+	err := withAuthStoreLock(context.Background(), stateDir, func() error {
+		onDisk, loadErr := LoadAuth(stateDir, instanceName)
+		switch {
+		case errors.Is(loadErr, ErrAuthNotFound):
+			// The instance was renamed or signed out while the refresh was in
+			// flight. Writing here would recreate a record under a name nothing
+			// owns, which the registry can surface as a phantom instance.
+			return loginRequiredError(ErrAuthNotFound)
+		case loadErr != nil && !errors.Is(loadErr, ErrAuthCorrupt):
+			return loadErr
+		case loadErr == nil && onDisk != loaded:
+			// Another writer got there first. Reuse its record when it is
+			// usable; otherwise let the caller retry against it rather than
+			// overwrite a record this refresh never saw.
+			if !needsRefresh(now, onDisk.Expiry) {
+				committed = onDisk
+				return nil
+			}
+			return errAuthRecordChanged
+		}
+		// The record is unchanged, or unreadable: there is nothing on disk to
+		// reuse, and a refresh whose token was redeemed must land.
+		if err := saveAuthRecordLocked(stateDir, instanceName, refreshed); err != nil {
+			return err
+		}
+		committed = refreshed
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			// The auth directory itself is gone, so every record in it is too.
+			return AuthRecord{}, loginRequiredError(ErrAuthNotFound)
+		}
+		return AuthRecord{}, err
+	}
+	return committed, nil
 }
 
 // NeedsLogin reports whether the user has to sign in again to recover r: its
