@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -119,6 +120,79 @@ func TestShellToolDigestFitsAConstrainedLineLimit(t *testing.T) {
 		t.Fatalf("digest lost its offset_bytes hint under the 10-line limit:\n%s", *out.Output)
 	}
 	// The registry must not have re-truncated the digest.
+	if res.Output != formatShellResult(out) {
+		t.Fatalf("registry changed the rendered shell result:\nwant:\n%s\ngot:\n%s", formatShellResult(out), res.Output)
+	}
+}
+
+// A line limit is a line budget, not a byte budget: short status lines must not
+// crowd out a long final diagnostic line when the byte previews shrink.
+func TestShellToolDigestLineLimitKeepsLongFinalDiagnostic(t *testing.T) {
+	t.Parallel()
+	// 20-byte status lines and a 180-byte newline-terminated diagnostic. At a
+	// 10-line limit the old byte-halving loop dropped the tail at 128 bytes,
+	// which discards a 180-byte line whole.
+	diagnostic := "FINAL DIAGNOSTIC: " + strings.Repeat("E", 161)
+	var log strings.Builder
+	log.WriteString("STATUS FIRST: boot ........\n")
+	for i := 1; i < 500; i++ {
+		fmt.Fprintf(&log, "status %03d ........\n", i)
+	}
+	log.WriteString(diagnostic + "\n")
+	if got, want := len(diagnostic)+1, 180; got != want {
+		t.Fatalf("diagnostic line is %d bytes, want %d", got, want)
+	}
+	full := log.String()
+	path := filepath.Join(t.TempDir(), "build.log")
+	if err := os.WriteFile(path, []byte(full), 0o600); err != nil {
+		t.Fatalf("write output fixture: %v", err)
+	}
+	cfg := minimalTestSessionConfig(t)
+	cfg.ToolOutputLimits = map[string]schema.ToolOutputLimit{
+		"shell": {MaxChars: 100_000, MaxLines: 10, Strategy: schema.TruncHeadTail},
+	}
+	s := newSession(t, withConfig(cfg))
+	args, err := json.Marshal(map[string]string{"command": "cat -- " + shellSingleQuote(path)})
+	if err != nil {
+		t.Fatalf("marshal shell args: %v", err)
+	}
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "digest-long-final",
+		Name:      "shell",
+		Arguments: args,
+	})
+	if res.IsError {
+		t.Fatalf("shell returned error: %s", res.Output)
+	}
+	var out shellToolResult
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
+		t.Fatalf("unmarshal shell result: %v (output: %s)", err, res.Output)
+	}
+	if out.Output == nil {
+		t.Fatal("large output result carries no inline digest")
+	}
+	if got := strings.Count(res.Output, "\n") + 1; got > 10 {
+		t.Fatalf("rendered result has %d lines, want at most 10", got)
+	}
+	if !strings.HasPrefix(*out.Output, "STATUS FIRST:") {
+		t.Fatalf("digest dropped the first line:\n%s", *out.Output)
+	}
+	if !strings.Contains(*out.Output, "FINAL DIAGNOSTIC:") {
+		t.Fatalf("digest dropped the long final diagnostic line:\n%s", *out.Output)
+	}
+	if !strings.Contains(*out.Output, "offset_bytes=") {
+		t.Fatalf("digest lost its offset_bytes hint under the 10-line limit:\n%s", *out.Output)
+	}
+	marker := regexp.MustCompile(`omitted \[(\d+),(\d+)\); read more with read_transcript\(offset_bytes=(\d+)\)`).FindStringSubmatch(*out.Output)
+	if marker == nil {
+		t.Fatalf("digest marker lacks its omitted lifetime range:\n%s", *out.Output)
+	}
+	if marker[1] != marker[3] {
+		t.Fatalf("offset_bytes=%s does not point at the first omitted byte %s:\n%s", marker[3], marker[1], *out.Output)
+	}
+	if marker[2] <= marker[1] {
+		t.Fatalf("omitted range [%s,%s) is empty:\n%s", marker[1], marker[2], *out.Output)
+	}
 	if res.Output != formatShellResult(out) {
 		t.Fatalf("registry changed the rendered shell result:\nwant:\n%s\ngot:\n%s", formatShellResult(out), res.Output)
 	}

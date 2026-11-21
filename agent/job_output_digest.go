@@ -81,16 +81,32 @@ func shellInlineDigest(full string, total, dropped int64) string {
 // shellInlineDigestWithin is shellInlineDigest bounded by the registry's
 // rendered limits: lineBudget counts the digest plus its one-line footer
 // (0 = unbounded), and charBudget bounds the digest's runes (0 = unbounded).
-// It shrinks the head and tail previews together, halving the larger budget
-// each step, until the omission marker and its offset_bytes hint fit, so the
-// registry's own truncator never keeps its head and tail and cuts the marker
-// out of the middle. Neither end is dropped while the other still fits alone,
-// which keeps a log's final diagnostic line alongside its first. Each candidate
-// renders its omission range from the slices it actually shows.
+// It first splits lineBudget between the two previews, reserving one line for
+// the omission marker and one for the job footer, so a line bound is satisfied
+// by whole lines rather than by byte cuts that can discard a long final
+// diagnostic line. It then shrinks the head and tail byte budgets together,
+// halving the larger one each step, until charBudget fits. Neither end is
+// dropped while the other still fits alone, and the registry's own truncator
+// never keeps its head and tail and cuts the marker out of the middle. Each
+// candidate renders its omission range from the slices it actually shows.
 func shellInlineDigestWithin(full string, total, dropped int64, lineBudget, charBudget int) string {
+	headLines, tailLines := shellDigestLines, shellDigestLines
+	if lineBudget > 0 {
+		// The digest path always renders a job footer line. Keep at least one
+		// line at each end when the allowance holds two; otherwise give the one
+		// remaining line to the head.
+		switch avail := lineBudget - 2; {
+		case avail <= 0:
+			headLines, tailLines = 0, 0
+		case avail == 1:
+			headLines, tailLines = 1, 0
+		default:
+			headLines, tailLines = min(avail/2, shellDigestLines), min(avail-avail/2, shellDigestLines)
+		}
+	}
 	headBudget, tailBudget := shellDigestHalfBytes, shellDigestHalfBytes
 	for {
-		digest := shellInlineDigestSlices(full, headBudget, tailBudget, total, dropped)
+		digest := shellInlineDigestSlices(full, headBudget, tailBudget, headLines, tailLines, total, dropped)
 		if digestFits(digest, lineBudget, charBudget) {
 			return digest
 		}
@@ -119,8 +135,9 @@ func digestFits(digest string, lineBudget, charBudget int) bool {
 }
 
 // shellInlineDigestSlices renders the digest for one pair of preview byte
-// budgets; a zero budget shows none of that end.
-func shellInlineDigestSlices(full string, headBudget, tailBudget int, total, dropped int64) string {
+// budgets bounded by a line count at each end; a zero budget shows none of that
+// end.
+func shellInlineDigestSlices(full string, headBudget, tailBudget, headLines, tailLines int, total, dropped int64) string {
 	b := []byte(full)
 	var headRaw []byte
 	if headBudget > 0 {
@@ -150,8 +167,8 @@ func shellInlineDigestSlices(full string, headBudget, tailBudget int, total, dro
 			tailRaw = runetrim.TrimLeadingPartial(tailRaw)
 		}
 	}
-	head, _, _ := firstLineBytes(headRaw, shellDigestLines)
-	tail, _, _ := lastLineBytes(tailRaw, shellDigestLines)
+	head, _, _ := firstLineBytes(headRaw, headLines)
+	tail, _, _ := lastLineBytes(tailRaw, tailLines)
 	return assembleOutputDigest(head, tail, total, dropped)
 }
 
