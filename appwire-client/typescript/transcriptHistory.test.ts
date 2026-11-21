@@ -1437,6 +1437,233 @@ test("a same-runtime read that installs a newer wait keeps the retirement marker
   expect(after.quotaWaitEndedStamp).toBe(5);
 });
 
+// The held state for the restart tests below: boot generation "1" still
+// holds a stamped quota wait (stamp 1) with the live chip its start
+// announcement installed. The wait has NOT ended, so the model carries no
+// retirement marker yet.
+function liveQuotaWaitOnBootOne(): ThreadModel {
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  const model = hydrateThread(
+    {
+      thread: testThread({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } }),
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+    },
+    "ref_t",
+    1000,
+  );
+  return applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: 21_600_000,
+        errorClass: "quota_exceeded",
+        model: "wait/model",
+        groupElapsedMs: 5_000,
+        attemptCap: 0,
+        waitStartedAt: 1,
+        resumesAt: deadline,
+      },
+    },
+    1500,
+  );
+}
+
+// A restarted daemon mints wait stamps from 1 again, so a wait-free first
+// read after the restart must retire the previous runtime's whole wait —
+// deadline, stamp and chip. The runtime-change guard therefore reads the
+// held wait's own stamp BEFORE the stamp comparisons zero it: against the
+// zeroed value the guard sees no held wait and carries the old deadline and
+// chip into the new turn.
+test("a wait-free read after a daemon restart retires the previous runtime's held wait", () => {
+  const model = liveQuotaWaitOnBootOne();
+  expect(model.history?.bootGeneration).toBe("1");
+  expect(model.quotaWaitStartedAt).toBe(1);
+  expect(model.quotaResumesAt).toBeDefined();
+  expect(model.modelRetry).toBeDefined();
+
+  const resumed = testThread({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
+  const after = applyReadResponse(model, { thread: resumed, bootGeneration: "2" }, 2000);
+  // The read applied as a replacement; the assertions below are about the
+  // reconciliation that ran with it, not about a discarded read.
+  expect(after.history?.bootGeneration).toBe("2");
+
+  expect(after.quotaResumesAt).toBeUndefined();
+  expect(after.quotaWaitStartedAt).toBeUndefined();
+  expect(after.modelRetry).toBeUndefined();
+});
+
+// The same rule on a SECOND restart. The read that installed boot 2's first
+// wait cleared boot 1's retirement marker, so a guard that checked only the
+// marker would miss the wait boot 2 still holds: the original held stamp is
+// what the guard must read.
+test("a wait-free read after a second restart retires the new runtime's held wait", () => {
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  const restarted = testThread({
+    status: { type: "active" },
+    evener: {
+      activeTurnId: "turn_1",
+      failure: { title: "Usage limit reached", resumesAt: deadline, waitStartedAt: 1 },
+    },
+  });
+  const afterRestart = applyReadResponse(endedQuotaWaitOnBootOne(), { thread: restarted, bootGeneration: "2" }, 2000);
+  expect(afterRestart.quotaResumesAt).toBeDefined();
+  expect(afterRestart.quotaWaitStartedAt).toBe(1);
+  expect(afterRestart.quotaWaitEndedStamp).toBeUndefined();
+
+  const resumed = testThread({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
+  const after = applyReadResponse(afterRestart, { thread: resumed, bootGeneration: "3" }, 2500);
+  expect(after.history?.bootGeneration).toBe("3");
+
+  expect(after.quotaResumesAt).toBeUndefined();
+  expect(after.quotaWaitStartedAt).toBeUndefined();
+  expect(after.modelRetry).toBeUndefined();
+});
+
+// A saved-history fallback is not a runtime change: the fallback was served
+// without the daemon, so its daemonless token says nothing about whether the
+// live daemon still serves the held wait. The read leaves the pane's quota
+// state exactly as it stands — deadline, stamp and chip alike.
+test("a saved-history fallback read keeps the held quota wait and chip", () => {
+  const model = liveQuotaWaitOnBootOne();
+  const deadline = model.quotaResumesAt;
+  expect(model.quotaWaitStartedAt).toBe(1);
+  expect(model.modelRetry).toBeDefined();
+
+  const fallbackRead = {
+    thread: testThread({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } }),
+    bootGeneration: "",
+    epoch: 0,
+    snapshot: { incarnation: "saved-inc", length: 1 },
+    servedFrom: "saved-index",
+    fallbackReason: "live-read-failed",
+    asOf: "2026-11-08T00:00:01Z",
+  };
+  const after = applyReadResponse(model, fallbackRead, 2000);
+  expect(after.lastFrameAt).toBe(2000);
+
+  expect(after.quotaResumesAt).toBe(deadline);
+  expect(after.quotaWaitStartedAt).toBe(1);
+  expect(after.modelRetry).toBe(model.modelRetry);
+});
+
+// The same fallback through the hydrated-model entry point: the fresh read
+// names the saved index and its daemonless (empty) boot token differs from
+// the held live token, which must not read as a runtime change.
+test("a saved-history fallback merged through applyReadModel keeps the held quota wait and chip", () => {
+  const model = liveQuotaWaitOnBootOne();
+  const deadline = model.quotaResumesAt;
+  const fallbackRead = {
+    thread: testThread({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } }),
+    bootGeneration: "",
+    epoch: 0,
+    snapshot: { incarnation: "saved-inc", length: 1 },
+    servedFrom: "saved-index",
+    fallbackReason: "live-read-failed",
+    asOf: "2026-11-08T00:00:01Z",
+  };
+  const fresh = hydrateThread(fallbackRead, "ref_t", 2000);
+  expect(fresh.servingFacts?.servedFrom).toBe("saved-index");
+
+  const after = applyReadModel(model, fresh);
+  expect(after.lastFrameAt).toBe(2000);
+
+  expect(after.quotaResumesAt).toBe(deadline);
+  expect(after.quotaWaitStartedAt).toBe(1);
+  expect(after.modelRetry).toBe(model.modelRetry);
+});
+
+// A SUCCESS the hub serves from the saved index without a fallback reason
+// carries the daemonless token too: it names recorded history, not the live
+// daemon. Against the held live token it looks like a runtime change, but it
+// may neither displace the live source nor retire what that source published
+// (bootGeneration.ts: a success carrying `daemonless` is saved-history
+// provenance).
+test("a daemonless saved-index read keeps the held quota wait and chip", () => {
+  const model = liveQuotaWaitOnBootOne();
+  const deadline = model.quotaResumesAt;
+  const savedRead = {
+    thread: testThread({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } }),
+    bootGeneration: "daemonless",
+    epoch: 9,
+    snapshot: { incarnation: "saved-inc", length: 1 },
+    servedFrom: "saved-index",
+    asOf: "2026-11-08T00:00:01Z",
+  };
+  const after = applyReadResponse(model, savedRead, 2000);
+  // The read applied as a replacement; the assertions below are about the
+  // reconciliation that ran with it, not about a discarded read.
+  expect(after.lastFrameAt).toBe(2000);
+  expect(after.history?.bootGeneration).toBe("daemonless");
+
+  expect(after.quotaResumesAt).toBe(deadline);
+  expect(after.quotaWaitStartedAt).toBe(1);
+  expect(after.modelRetry).toBe(model.modelRetry);
+});
+
+// The same-runtime control: a wait-free read on the runtime that minted the
+// held wait still retires it and records its stamp as the retirement marker,
+// so the runtime-change rule above does not swallow the ordinary retirement.
+test("a wait-free same-runtime read still records the held wait's retirement marker", () => {
+  const model = liveQuotaWaitOnBootOne();
+  const resumed = testThread({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
+  const after = applyReadResponse(
+    model,
+    { thread: resumed, bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 } },
+    2000,
+  );
+  expect(after.lastFrameAt).toBe(2000);
+
+  expect(after.quotaResumesAt).toBeUndefined();
+  expect(after.quotaWaitStartedAt).toBeUndefined();
+  expect(after.quotaWaitEndedStamp).toBe(1);
+  expect(after.modelRetry).toBeUndefined();
+});
+
+// A restart retires the previous runtime's QUOTA wait, never an ordinary
+// provider retry: a non-quota chip says nothing about the quota wait, and the
+// reconciliation is not its authority. The reducer installs such a chip
+// without clearing a held quota wait, so both can stand together.
+test("a wait-free restart read keeps an ordinary provider retry chip", () => {
+  let model = liveQuotaWaitOnBootOne();
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        attempt: 2,
+        maxAttempts: 3,
+        delayMs: 1_000,
+        errorClass: "rate_limit",
+        statusCode: 429,
+        groupElapsedMs: 10_000,
+        attemptCap: 3,
+      },
+    },
+    1600,
+  );
+  expect(model.modelRetry?.errorClass).toBe("rate_limit");
+  expect(model.quotaWaitStartedAt).toBe(1);
+
+  const resumed = testThread({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
+  const after = applyReadResponse(model, { thread: resumed, bootGeneration: "2" }, 2000);
+  expect(after.history?.bootGeneration).toBe("2");
+
+  expect(after.quotaResumesAt).toBeUndefined();
+  expect(after.quotaWaitStartedAt).toBeUndefined();
+  expect(after.modelRetry?.errorClass).toBe("rate_limit");
+});
+
 // A mid-wait read refreshes the instant and keeps everything the live
 // announcement gave the chip — the read carries no chip metadata of its own,
 // so the model tag, elapsed sample, and receipt instant survive the refresh
