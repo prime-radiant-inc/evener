@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"slices"
@@ -17,6 +18,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // hostAdminCall is one request the scripted remote hub received.
@@ -1062,20 +1064,18 @@ func TestHostAdminFanOutStopsBeforeItsTransportCloses(t *testing.T) {
 }
 
 // waitForHostNotificationSubscribers waits for the source's host-level
-// subscriber count to reach want, failing with why after a bounded wait.
+// subscriber count to reach want, failing with why, when given, after a
+// bounded wait.
 func waitForHostNotificationSubscribers(t *testing.T, source *appsource.RemoteHubSource, want int, why string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if got := source.HostNotificationSubscribers(); got == want {
-			return
+	testwait.UntilSeen(t, fmt.Sprintf("the host-notification subscriber count to reach %d", want), func() (bool, string) {
+		got := source.HostNotificationSubscribers()
+		seen := fmt.Sprintf("subscribers = %d, want %d", got, want)
+		if why != "" {
+			seen = why + ": " + seen
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: host-notification subscribers = %d, want %d",
-				why, source.HostNotificationSubscribers(), want)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return got == want, seen
+	})
 }
 
 // TestHostAdminAttachWakesBackoffSleepingFanOut pins the round-seven M1
@@ -1121,8 +1121,12 @@ func testHostAdminAttachWakesBackoffSleepingFanOut(t *testing.T) {
 	// The attach flips the host online and wakes the broker for it.
 	online.Store(true)
 	controller.hostAttached("m4")
-	waitForHostNotificationSubscribers(t, source, 1,
-		"the attach event did not wake the backoff-sleeping fan-out")
+	// Quiescence is the assertion: a missed wake leaves the loop in its 1s
+	// backoff, still at zero subscribers.
+	waitQuiescent()
+	if got := source.HostNotificationSubscribers(); got != 1 {
+		t.Fatalf("the attach event did not wake the backoff-sleeping fan-out: subscribers = %d, want 1", got)
+	}
 
 	cancel()
 	select {
@@ -1430,16 +1434,7 @@ func TestHostAdminFanOutStopSparesWakeRegisteredMidTeardown(t *testing.T) {
 	// The replacement winds down with its context, so the test leaves no
 	// goroutine behind.
 	cancel2()
-	deadline = time.Now().Add(5 * time.Second)
-	for {
-		if got := source.HostNotificationSubscribers(); got == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the replacement fan-out did not unwind after its context was canceled")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitHostSubscribers(t, source, 0)
 }
 
 // TestHostAdminFanOutStaleRemovalCallbackSparesReplacement pins the round-14
@@ -1544,16 +1539,7 @@ func TestHostAdminFanOutStaleRemovalCallbackSparesReplacement(t *testing.T) {
 	}
 
 	cancel()
-	deadline = time.Now().Add(5 * time.Second)
-	for {
-		if got := second.HostNotificationSubscribers(); got == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the replacement fan-out did not unwind after its context was canceled")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitHostSubscribers(t, second, 0)
 }
 
 // TestHostAdminFanOutStaleAddCallbackLaunchesNothing pins the round-14
@@ -2093,15 +2079,7 @@ func TestHostAdminFanOutStopsOnSourceRemoval(t *testing.T) {
 // replaced loop stood down".
 func waitHostSubscribers(t *testing.T, source *appsource.RemoteHubSource, want int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if got := source.HostNotificationSubscribers(); got == want {
-			return
-		} else if time.Now().After(deadline) {
-			t.Fatalf("subscribers = %d, want %d", got, want)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForHostNotificationSubscribers(t, source, want, "")
 }
 
 // expectOneHostNotification waits until exactly one host-tagged fan-out
@@ -2125,22 +2103,17 @@ func expectOneHostNotification(t *testing.T, recorder *recordingBroadcaster, hos
 		}
 		return found
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		switch got := count(); {
-		case got == 1:
-			// Settle: a second delivery from a duplicated loop would land
-			// immediately after the first.
-			time.Sleep(150 * time.Millisecond)
-			if got := count(); got != 1 {
-				t.Fatalf("host-tagged %s for %s delivered %d times, want exactly one", method, host, got)
-			}
-			return
-		case got > 1:
+	testwait.UntilSeen(t, fmt.Sprintf("one host-tagged %s for %s", method, host), func() (bool, string) {
+		got := count()
+		if got > 1 {
 			t.Fatalf("host-tagged %s for %s delivered %d times, want exactly one", method, host, got)
-		case time.Now().After(deadline):
-			t.Fatalf("timed out waiting for the host-tagged %s for %s; broadcasts = %+v", method, host, recorder.broadcasts())
 		}
-		time.Sleep(10 * time.Millisecond)
+		return got == 1, fmt.Sprintf("%d delivered so far", got)
+	})
+	// Settle: a second delivery from a duplicated loop would land
+	// immediately after the first.
+	time.Sleep(150 * time.Millisecond)
+	if got := count(); got != 1 {
+		t.Fatalf("host-tagged %s for %s delivered %d times, want exactly one", method, host, got)
 	}
 }
