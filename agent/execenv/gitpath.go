@@ -310,6 +310,16 @@ func structuralWorktreeRootDetailed(cwd string) (root string, outcome worktreeRo
 			// here, and a fallback would hand that unknown to the binary.
 			return "", worktreeRootRefused
 		}
+		// Stat reports ErrNotExist both for an absent entry and for an entry
+		// that exists but does not resolve (a dangling ".git" symlink). Only
+		// the entry's own absence may let the walk move on: the dangling link
+		// is a marker this directory carries, and walking past it would inherit
+		// an enclosing checkout's identity or record an absence that is not one.
+		if _, linkErr := os.Lstat(gitPath); linkErr == nil {
+			return "", worktreeRootRefused
+		} else if !errors.Is(linkErr, fs.ErrNotExist) {
+			return "", worktreeRootRefused
+		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
 			return "", worktreeRootAbsent

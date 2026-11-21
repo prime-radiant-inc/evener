@@ -180,3 +180,53 @@ func TestFreshGitRootRefusesAnUnresolvableEntry(t *testing.T) {
 		t.Fatal("unresolvable .git entry produced a definitive answer: it is unresolved, not an absence")
 	}
 }
+
+// TestFreshGitRootRefusesADanglingGitSymlink pins the entry shape Stat cannot
+// tell from absence: a ".git" symlink whose target is missing. The link is a
+// marker the directory carries, so the walk must not step past it — not to an
+// enclosing checkout, and not to a definitive absence it would memoize.
+func TestFreshGitRootRefusesADanglingGitSymlink(t *testing.T) {
+	// Not parallel: the PATH shim is process-wide.
+	shimDir, count := gitCountingShim(t, "/should/not/be/used")
+	t.Setenv("PATH", shimDir)
+
+	t.Run("does not inherit an enclosing checkout", func(t *testing.T) {
+		repo := filepath.Join(t.TempDir(), "repo")
+		work := filepath.Join(repo, "work")
+		if err := os.MkdirAll(work, 0o755); err != nil {
+			t.Fatalf("make work: %v", err)
+		}
+		if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+			t.Fatalf("make enclosing .git: %v", err)
+		}
+		if err := os.Symlink(filepath.Join(work, "missing"), filepath.Join(work, ".git")); err != nil {
+			t.Fatalf("make dangling .git symlink: %v", err)
+		}
+
+		root, definitive := GitRootOrEmptyFreshDefinitive(NewLocalExecutionEnvironment(work), work)
+		if root != "" {
+			t.Fatalf("fresh git root = %q, want empty: a dangling .git symlink must not inherit the enclosing root", root)
+		}
+		if n := count(); n != 0 {
+			t.Fatalf("fresh lookup forked git %d times, want 0: a dangling entry must not reach the binary", n)
+		}
+		if definitive {
+			t.Fatal("dangling .git symlink produced a definitive answer: it is unresolved, not an absence")
+		}
+	})
+
+	t.Run("does not record an absence", func(t *testing.T) {
+		work := t.TempDir()
+		if err := os.Symlink(filepath.Join(work, "missing"), filepath.Join(work, ".git")); err != nil {
+			t.Fatalf("make dangling .git symlink: %v", err)
+		}
+
+		root, definitive := GitRootOrEmptyFreshDefinitive(NewLocalExecutionEnvironment(work), work)
+		if root != "" {
+			t.Fatalf("fresh git root = %q, want empty", root)
+		}
+		if definitive {
+			t.Fatal("dangling .git symlink produced a definitive absence: the question is unresolved")
+		}
+	})
+}
