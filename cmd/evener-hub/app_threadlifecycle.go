@@ -469,11 +469,13 @@ var errResumeOwnerExitUnconfirmed = errors.New("resume owner exit is unconfirmed
 var errSpawnerNotConfigured = errors.New("spawner not configured")
 
 // modelPickNeedsStartError refuses a model-carrying resume that finds the
-// session already served by a live daemon. The pick is a start-time property:
-// a resume that starts no session has no session start to apply the model at,
-// and silently resuming on the old model is exactly the cold-pick failure the
-// fold exists to remove. The live session takes the pick through
-// thread/model/set's direct path instead.
+// session already served by a live daemon that can actually serve its read.
+// The pick is a start-time property: a resume that starts no session has no
+// session start to apply the model at, and silently resuming on the old model
+// is exactly the cold-pick failure the fold exists to remove. Callers run it
+// only after the owner's read succeeds, so an owner that appears in discovery
+// but cannot serve the read still reaches the replacement path. The live
+// session takes the pick through thread/model/set's direct path instead.
 func modelPickNeedsStartError(modelOverride string, sessionID string) error {
 	if modelOverride == "" {
 		return nil
@@ -696,10 +698,14 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 			if err := cfg.Roster.RefreshEntry(ctx, owner.Entry); err != nil {
 				return appwire.ThreadResumeResponse{}, appwire.Unavailable(errors.Join(discoveryErr, err).Error())
 			}
+			response, readErr := hubResumedThreadResponse(ctx, cfg, sources, owner.SessionID, owner.ThreadID)
+			if readErr != nil {
+				return appwire.ThreadResumeResponse{}, readErr
+			}
 			if err := modelPickNeedsStartError(modelOverride, owner.SessionID); err != nil {
 				return appwire.ThreadResumeResponse{}, err
 			}
-			return hubResumedThreadResponse(ctx, cfg, sources, owner.SessionID, owner.ThreadID)
+			return response, nil
 		}
 		return appwire.ThreadResumeResponse{}, appwire.Unavailable(discoveryErr.Error())
 	}
@@ -760,11 +766,11 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 		if cfg.Roster != nil {
 			if le, ok := liveDaemonForThread(cfg.Roster, sessionID); ok &&
 				le.Protocol == appwire.ProtocolVersion {
-				if err := modelPickNeedsStartError(modelOverride, le.SessionID); err != nil {
-					return appwire.ThreadResumeResponse{}, err
-				}
 				response, readErr := hubResumedThreadResponse(ctx, cfg, sources, le.SessionID, le.ThreadID)
 				if readErr == nil {
+					if err := modelPickNeedsStartError(modelOverride, le.SessionID); err != nil {
+						return appwire.ThreadResumeResponse{}, err
+					}
 					completeSupersededRetirement(ctx, cfg, sources, sessionID, nil)
 					cfg.ResumeLocks.ClearReplacementFailure(sessionID)
 					return response, nil

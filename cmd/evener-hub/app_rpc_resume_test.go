@@ -272,88 +272,6 @@ func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
 	}
 }
 
-// TestHubRPCModelSetOnColdSessionFoldsPickIntoResume pins the cold model/set
-// contract: a set that finds the session exited folds its pick into the
-// resume it launches, so the session starts on the picked model and no
-// second model/set runs against the fresh service (#6696's shape).
-func TestHubRPCModelSetOnColdSessionFoldsPickIntoResume(t *testing.T) {
-	root := t.TempDir()
-	workingDir := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
-	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
-	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
-
-	var sets atomic.Int32
-	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
-	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{
-			Ref:          params.Ref,
-			Capabilities: appwire.ThreadCapabilities{ChangeModel: true},
-		}}}, nil
-	})
-	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadModelSet, func(context.Context, appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
-		sets.Add(1)
-		return appwire.EmptyResponse{}, nil
-	})
-	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
-	defer daemonHTTP.Close()
-
-	runDir := t.TempDir()
-	// The launcher runs on the WebSocket worker; the buffered channel hands
-	// the captured request to the test goroutine after the RPC reply, so the
-	// read never races the write.
-	launched := make(chan hubcore.ResumeRequest, 1)
-	spawner := &fakeRPCSpawner{
-		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
-			launched <- req
-			entry := rendezvous.Entry{
-				PID:        112,
-				Protocol:   appwire.ProtocolVersion,
-				Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
-				SourceID:   "local",
-				ThreadID:   sessionID,
-				SessionID:  sessionID,
-				WorkingDir: workingDir,
-			}
-			writeRendezvous(t, runDir, entry)
-			return entry, nil
-		},
-	}
-	roster := hubcore.NewRoster(runDir, nil)
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
-	defer hub.Close()
-	client := dialHubRPCInitialized(t, hub)
-	var out appwire.EmptyResponse
-	if err := client.Request(context.Background(), appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
-		Ref:           "local:" + sessionID,
-		ModelProvider: "fake",
-		Model:         "fake-switch-target",
-	}, &out); err != nil {
-		t.Fatalf("thread/model/set on the cold session: %v", err)
-	}
-	var launchedReq hubcore.ResumeRequest
-	select {
-	case launchedReq = <-launched:
-	default:
-		t.Fatal("the cold model/set never launched a resume")
-	}
-	if launchedReq.SessionID != sessionID {
-		t.Errorf("launch session=%q, want the resumed session %s", launchedReq.SessionID, sessionID)
-	}
-	if launchedReq.Provider != "fake" {
-		t.Errorf("launch provider=%q, want the pick's instance fake", launchedReq.Provider)
-	}
-	if launchedReq.ModelOverride != "fake/fake-switch-target" {
-		t.Errorf("launch model override=%q, want fake/fake-switch-target", launchedReq.ModelOverride)
-	}
-	if launchedReq.Resolved.Effective.Model != "fake/fake-switch-target" {
-		t.Errorf("launch effective model=%q, want the credential gate to judge fake/fake-switch-target", launchedReq.Resolved.Effective.Model)
-	}
-	if got := sets.Load(); got != 0 {
-		t.Fatalf("the resumed daemon took %d model/set calls, want none: the pick applied at session start", got)
-	}
-}
-
 // TestHubRPCModelSetOnColdSessionRefusesHalfSpecifiedPick pins that the cold
 // fold refuses a pick naming only one of model/modelProvider before any child
 // starts: a half-specified pick names no unambiguous model identity, so it
@@ -458,6 +376,48 @@ func TestHubRPCModelSetPickOverLiveOwnerConflicts(t *testing.T) {
 	var wire appwire.WireError
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
 		t.Fatalf("model pick over a live owner error=%v, want a conflict refusal", err)
+	}
+}
+
+// TestModelPickResumeReplacesUnreadableOwner pins the pick-carrying resume's
+// live-owner guard: an owner that discovery still lists but that cannot
+// serve the session read must fall through to the replacement path exactly
+// as a model-free resume does. The pick's conflict is for an owner that can
+// actually serve the session, not for a corpse the roster has not cleared.
+func TestModelPickResumeReplacesUnreadableOwner(t *testing.T) {
+	const sessionID = "sess_unreadable"
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       104,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws://127.0.0.1:1/rpc",
+		SourceID:  "local",
+		ThreadID:  sessionID,
+		SessionID: sessionID,
+	})
+	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusIdle})
+	roster.Refresh()
+	launched := make(chan hubcore.ResumeRequest, 1)
+	spawner := &fakeRPCSpawner{resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+		launched <- req
+		return rendezvous.Entry{}, errors.New("replacement launcher observed")
+	}}
+	cfg := testWebConfig(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, ResumeLocks: hubcore.NewResumeLocks()})
+	hub := newHubRPCTestServer(t, cfg)
+	defer hub.Close()
+	sources := newHubSourceRegistry(cfg)
+	_, err := hubThreadAutoResumeWithModel(t.Context(), cfg, sources, appwire.ThreadResumeParams{Ref: "local:" + sessionID}, "openai/gpt-5.2")
+	if err == nil {
+		t.Fatal("resume succeeded, want the replacement refusal")
+	}
+	var wire appwire.WireError
+	if errors.As(err, &wire) && wire.Code == appwire.CodeConflict {
+		t.Fatal("a pick over an owner that cannot serve the read was refused as a conflict, want the replacement path")
+	}
+	select {
+	case <-launched:
+	default:
+		t.Fatal("the replacement launcher was never reached")
 	}
 }
 

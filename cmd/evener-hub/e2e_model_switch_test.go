@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
@@ -58,12 +57,14 @@ func awaitModelChanged(ctx context.Context, t *testing.T, ch <-chan appwire.Thre
 
 // TestE2E_ModelSwitchOnColdSessionReachesTheResumedSubscriber pins the
 // at-rest pick for the shape the live-stack tests cannot reach from a live
-// daemon: a session whose daemon has exited. The hub resumes the session
-// behind thread/model/set (app_model.go's setThreadModelWithResume), and the
-// pane that subscribed while the session was cold must learn the switch the
-// same way - thread/model/changed through the re-established relay - so the
-// label converges without a re-read. A frame lost across the resume cut reads
-// to the user as the switch silently flipping back to the old model.
+// daemon: a session whose daemon has exited. The hub folds the pick into the
+// resume it launches behind thread/model/set (app_model.go's
+// setThreadModelWithResume), so the session comes up already on the picked
+// model — an unlisted pick refuses the whole set before any child starts and
+// the session stays down — and the pane that subscribed while the session was
+// cold must learn the switch the same way - through the re-established relay -
+// so the label converges without a re-read. A frame lost across the resume cut
+// reads to the user as the switch silently flipping back to the old model.
 func TestE2E_ModelSwitchOnColdSessionReachesTheResumedSubscriber(t *testing.T) {
 	stack, provider := startE2EHubStack(t)
 	provider.AdvertiseModels(fakellm.ModelID, fakellm.SwitchTargetID)
@@ -127,6 +128,23 @@ func TestE2E_ModelSwitchOnColdSessionReachesTheResumedSubscriber(t *testing.T) {
 
 	// The pane subscribes while the session is cold, the way the session pane
 	// is open on an exited session.
+	// An invalid model refuses the whole set before any child starts: the
+	// session stays down instead of coming up on its old model.
+	if _, err := clientRequest[appwire.EmptyResponse](ctx, client, appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
+		Ref:           ref,
+		ModelProvider: "fake",
+		Model:         "no-such-model",
+	}); err == nil {
+		t.Fatal("model/set with an unlisted model on the cold session succeeded, want the whole set refused")
+	}
+	coldRead, err := clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref})
+	if err != nil {
+		t.Fatalf("thread/read after the refused pick: %v", err)
+	}
+	if coldRead.Thread.Status.Type != appwire.ThreadStatusNotLoaded {
+		t.Fatalf("after the refused pick the session is %q, want it still down", coldRead.Thread.Status.Type)
+	}
+
 	if _, err := clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref, Subscribe: true}); err != nil {
 		t.Fatalf("thread/read subscribe on the cold session: %v", err)
 	}
@@ -165,101 +183,8 @@ func TestE2E_ModelSwitchOnColdSessionReachesTheResumedSubscriber(t *testing.T) {
 	if read.Thread.ModelProvider != fakellm.SwitchTargetID {
 		t.Fatalf("thread/read ModelProvider after the cold-session switch = %q, want %q", read.Thread.ModelProvider, fakellm.SwitchTargetID)
 	}
-}
-
-// TestE2E_ModelSetOnColdSessionStartsItOnThePick pins the cold model/set
-// contract end to end against a real daemon: a set on a stopped session folds
-// its pick into the resume the hub launches for it, so the session comes up
-// already on the picked model at session start, with no post-resume
-// thread/model/set to race the fresh service (issue #6696's shape). An
-// invalid model refuses the whole set, so the session stays down rather than
-// silently starting on its old model.
-func TestE2E_ModelSetOnColdSessionStartsItOnThePick(t *testing.T) {
-	stack, provider := startE2EHubStack(t)
-	provider.AdvertiseModels(fakellm.ModelID, fakellm.SwitchTargetID)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
-	defer cancel()
-	client := stack.dialRPC(ctx, t)
-
-	const openingPrompt = "EVENER-E2E-RESUME-WITH-MODEL-OPENING"
-	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
-		Harness:         "evener",
-		CWD:             stack.workDir,
-		Input:           []appwire.InputItem{{Type: "text", Text: openingPrompt}},
-		Model:           stack.model,
-		LaunchOverrides: &appwire.LaunchConfigLayer{Sandbox: "off"},
-	})
-	if err != nil {
-		t.Fatalf("thread/start: %v", err)
-	}
-	ref := started.Thread.Evener.Ref
-	if ref == "" {
-		t.Fatalf("thread/start returned no evener ref: %+v", started.Thread)
-	}
-	t.Cleanup(func() {
-		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
-		defer cancelShutdown()
-		_, _ = clientRequest[appwire.EmptyResponse](shutdownCtx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: ref})
-	})
-
-	// One real turn, so the session has a settled turn and its meta on disk.
-	round1, err := provider.Next(ctx.Done())
-	if err != nil {
-		t.Fatalf("waiting for the opening model request: %v", err)
-	}
-	if !round1.Contains(openingPrompt) {
-		t.Fatalf("the opening prompt never reached the model")
-	}
-	round1.RespondToolCall("communicate", communicateArgs("opening turn done"))
-	awaitThread(ctx, t, client, ref, "the opening turn to finish", func(thread appwire.Thread) bool {
-		return thread.Status.Type != "active"
-	})
-
-	// Retire the daemon and wait until the roster no longer lists it: the
-	// pick below happens in the cold, exited state.
-	retireDaemonUntilAccepted(ctx, t, client, ref)
-	testwait.Until(t, "the retired daemon to leave the roster", func() bool {
-		list, err := clientRequest[appwire.DaemonListResponse](ctx, client, appwire.MethodEvenerDaemonList, appwire.DaemonListParams{})
-		if err != nil {
-			return false
-		}
-		_, still := residentIdentityForRef(list, ref)
-		return !still
-	})
-
-	// An invalid model refuses the whole set: the session stays down and the
-	// refusal names the pick, not a silent start on the old model.
-	if _, err := clientRequest[appwire.EmptyResponse](ctx, client, appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
-		Ref:           ref,
-		ModelProvider: "fake",
-		Model:         "no-such-model",
-	}); err == nil {
-		t.Fatal("model/set with an unlisted model on the cold session succeeded, want the whole set refused")
-	}
-	read, err := clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref})
-	if err != nil {
-		t.Fatalf("thread/read after the refused pick: %v", err)
-	}
-	if read.Thread.Status.Type != appwire.ThreadStatusNotLoaded {
-		t.Fatalf("after the refused pick the session is %q, want it still down", read.Thread.Status.Type)
-	}
-
-	// The pick folds into the set's own resume: the session comes up already
-	// on the new model, and no second thread/model/set follows it.
-	if _, err := clientRequest[appwire.EmptyResponse](ctx, client, appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
-		Ref:           ref,
-		ModelProvider: "fake",
-		Model:         fakellm.SwitchTargetID,
-	}); err != nil {
-		t.Fatalf("thread/model/set with the picked model on the cold session: %v", err)
-	}
-	read, err = clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref})
-	if err != nil {
-		t.Fatalf("thread/read after the cold model/set: %v", err)
-	}
-	if read.Thread.ModelProvider != fakellm.SwitchTargetID {
-		t.Fatalf("thread/read after the cold model/set model=%q, want %q", read.Thread.ModelProvider, fakellm.SwitchTargetID)
+	if !read.Thread.Evener.SupportsReasoning {
+		t.Fatal("thread/read after the cold-session switch lost the picked model's reasoning profile: SupportsReasoning=false, want the footer's effort-control verdict")
 	}
 }
 

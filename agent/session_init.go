@@ -1344,7 +1344,24 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// s.id is already known (meta.ID, set above), unlike a fresh NewSession
 	// call: attribute this listing's canonical API-log attempt to it instead
 	// of letting it fall into the shared unattributed bucket.
-	profile, selectedModels := resolveStartupModelProfileWithReuse(client, profile, s.id, *s.providerAdapterTimeout(), restoreCfg.StartupModelListing)
+	//
+	// An explicit model change re-decides the startup resolution: the pick
+	// faces the same live-listing membership judgment NewSession applies, so a
+	// model the instance's usable live listing does not carry refuses the
+	// whole restore before the session starts — the hub's launch preflight
+	// cannot run that judgment without executing a command-backed credential.
+	// An ordinary resume keeps the fail-open restore behavior.
+	modelChanged := meta.ProfileID != profile.ID() || meta.Model != profile.Model()
+	var selectedModels liveModelEnumeration
+	if modelChanged {
+		var resolveErr error
+		profile, selectedModels, resolveErr = resolveStartupModelProfile(client, profile, s.id, *s.providerAdapterTimeout(), restoreCfg.StartupModelListing)
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
+	} else {
+		profile, selectedModels = resolveStartupModelProfileWithReuse(client, profile, s.id, *s.providerAdapterTimeout(), restoreCfg.StartupModelListing)
+	}
 	s.profile = profile
 	s.captureModelAvailability(selectedModels)
 	defer func() {
@@ -1502,7 +1519,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// entries that no longer validate against the picked profile drop per
 	// entry, before initSessionState's all-or-nothing check can strand a valid
 	// pick. An ordinary resume revalidates nothing and keeps the strict check.
-	if meta.ProfileID != profile.ID() || meta.Model != profile.Model() {
+	if modelChanged {
 		s.mu.Lock()
 		s.revalidateModelFallbacksLocked()
 		s.mu.Unlock()
@@ -1736,6 +1753,15 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		// top-level, so they never run P3; arming only on the real-side-effects
 		// path keeps that guarantee explicit.
 		s.armLaneResidueSweepTimer()
+		if modelChanged {
+			// The fold acknowledges the pick when this restore reports ready,
+			// so the picked model must already be on disk: a daemon that dies
+			// before the next periodic save would otherwise silently revert an
+			// acknowledged choice on the next resume. The live setter's switch
+			// already flushes meta on commit; the restore earns the same
+			// durability.
+			s.maybeAutoSave()
+		}
 	}
 	restoreComplete = true
 	return s, nil
