@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // drainingCommandRuntime models the SAFE-06 hazard deterministically: Wait stays
@@ -169,7 +171,7 @@ func TestExecCommandBufferedReturnsWhenChildHoldsOutputPipe(t *testing.T) {
 	done := make(chan ExecResult, 1)
 	start := time.Now()
 	go func() {
-		res, _ := env.ExecCommand(context.Background(), `sleep 30 & echo CHILD=$!; printf 'LEADER\n'`, 30_000, "", nil)
+		res, _ := env.ExecCommand(context.Background(), `sleep 300 & echo CHILD=$!; printf 'LEADER\n'`, 30_000, "", nil)
 		done <- res
 	}()
 
@@ -186,7 +188,7 @@ func TestExecCommandBufferedReturnsWhenChildHoldsOutputPipe(t *testing.T) {
 			}
 		}
 		if elapsed := time.Since(start); elapsed > 5*time.Second {
-			t.Fatalf("buffered ExecCommand took %s; a child holding the pipe should be reclaimed within the grace, not run for its 30s lifetime", elapsed)
+			t.Fatalf("buffered ExecCommand took %s; a child holding the pipe should be reclaimed within the grace, not run for its 300s lifetime", elapsed)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("buffered ExecCommand did not return while a same-group child held the output pipe")
@@ -196,11 +198,11 @@ func TestExecCommandBufferedReturnsWhenChildHoldsOutputPipe(t *testing.T) {
 		t.Fatal("did not capture the backgrounded child pid")
 	}
 	t.Cleanup(func() { _ = syscall.Kill(childPID, syscall.SIGKILL) })
-	deadline := time.Now().Add(2 * time.Second)
-	for syscall.Kill(childPID, 0) != syscall.ESRCH && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if err := syscall.Kill(childPID, 0); err != syscall.ESRCH {
-		t.Fatalf("backgrounded child %d survived after buffered Wait returned: same-group writers must be reclaimed, not abandoned", childPID)
-	}
+	testwait.UntilSeen(t, "the backgrounded child to be reclaimed after buffered Wait", func() (bool, string) {
+		err := syscall.Kill(childPID, 0)
+		if err == nil {
+			return false, "still alive"
+		}
+		return err == syscall.ESRCH, err.Error()
+	})
 }
