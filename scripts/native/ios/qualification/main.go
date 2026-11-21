@@ -52,6 +52,12 @@ type runner struct {
 	identity    buildIdentity
 	statusReads int
 	unlockLogs  int
+	// hostSettings is the app target's resolved build settings, captured by
+	// generatedMetadata for the hoisted Metro bundle: the bundle runs outside
+	// xcodebuild and must see the values Xcode would have supplied.
+	hostSettings map[string]string
+	// hoist is the background Metro bundle started before the release build.
+	hoist *metroHoistRun
 }
 
 func main() {
@@ -163,9 +169,46 @@ func qualify(ctx context.Context, output, derivedData string) (result error) {
 	if err := r.generatedMetadata(ctx); err != nil {
 		return err
 	}
+	// Run the Metro phase's own script here, before the build, so the bundle
+	// overlaps the whole compile wave; the app phase copies it in.
+	if err := r.hoistMetroBundle(ctx); err != nil {
+		return err
+	}
+	// Every exit path joins the bundle: a failed simulator or build must not
+	// leave a node process writing into the run output after the run ended. The
+	// join is bounded so a hung bundle cannot hold the run past the failure that
+	// stopped the build, and it keeps the run's own cancellation so an
+	// interrupted run stops the bundle instead of waiting the bound out.
+	defer func() {
+		joinCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+		result = errors.Join(result, r.waitMetroHoist(joinCtx))
+	}()
+	hoist := r.hoist
 	return r.withOwnedSimulator(ctx, simulatorName(output), func(udid string) error {
 		derived := r.derivedDataDir()
-		if _, err := r.commandOutput(ctx, "xcodebuild-release", false, releaseBuildCommand(udid, derived)...); err != nil {
+		// A bundle that dies after the startup probe stops the build here, rather
+		// than letting the copy phase wait out its deadline before the run fails.
+		buildCtx, cancelBuild := context.WithCancel(ctx)
+		defer cancelBuild()
+		if hoist != nil {
+			go func() {
+				select {
+				case <-hoist.failed:
+					cancelBuild()
+				case <-buildCtx.Done():
+				}
+			}()
+		}
+		if _, err := r.commandOutput(buildCtx, "xcodebuild-release", false, releaseBuildCommand(udid, derived)...); err != nil {
+			// The bounded cleanup above joins the bundle's own error when there is
+			// one, so a build stopped by a failed bundle carries both diagnostics
+			// and an independently failed build is never replaced by a later one.
+			return err
+		}
+		// The build only succeeded if its copy phase found a complete bundle, but
+		// join here too so a failed bundle fails the run before verifyApp.
+		if err := r.waitMetroHoist(ctx); err != nil {
 			return err
 		}
 		r.identity.AppPath = filepath.Join(derived, "Build", "Products", "Release-iphonesimulator", "Evener.app")
@@ -779,6 +822,9 @@ func (r *runner) generatedMetadata(ctx context.Context) error {
 			return fmt.Errorf("%w: missing generated target %s", errIdentity, target)
 		}
 		settings := targets[0].BuildSettings
+		if target == "Evener" {
+			r.hostSettings = settings
+		}
 		info, err := r.plist(ctx, "generated-info-"+target, filepath.Join(r.native, "ios", settings["INFOPLIST_FILE"]))
 		if err != nil {
 			return err
@@ -902,6 +948,16 @@ func (r *runner) command(ctx context.Context, name string, args ...string) ([]by
 	return r.commandOutput(ctx, name, true, args...)
 }
 
+// commandEnv is the environment every qualification child runs with: the
+// runner's own environment plus the two values the app config reads. CI=1 keeps
+// prebuild in its non-interactive path, and APPLE_TEAM_ID is what makes
+// app.config.js emit the fixture team and the share-target plugins, so a child
+// started without them builds a different app than the one qualification
+// prebuilds.
+func commandEnv() []string {
+	return append(os.Environ(), "CI=1", "APPLE_TEAM_ID=EVENERCI01")
+}
+
 func (r *runner) commandOutput(ctx context.Context, name string, capture bool, args ...string) (output []byte, result error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -915,7 +971,7 @@ func (r *runner) commandOutput(ctx context.Context, name string, capture bool, a
 	fmt.Fprintf(os.Stderr, "iOS qualification: %s (%s)\n", name, logPath)
 	cmd := exec.Command(args[0], args[1:]...) //nolint:noctx // Cancellation below stops and reaps the whole owned process group, not just the direct child.
 	cmd.Dir = r.native
-	cmd.Env = append(os.Environ(), "CI=1", "APPLE_TEAM_ID=EVENERCI01")
+	cmd.Env = commandEnv()
 	var stdout bytes.Buffer
 	cmd.Stdout, cmd.Stderr = log, log
 	if capture {
