@@ -25,6 +25,7 @@ import {
   mergeTranscriptItemVersioned,
   mergeTranscriptTurnVersioned,
   olderFrontierOf,
+  pruneBackgroundHistoryBodies,
 } from "./transcriptHistory";
 import { markItemTextOmitted } from "./transcriptItems";
 import type { OverlayItem, ThreadHistoryTurnsListResponse, ThreadReadResponse, Turn } from "./types.gen";
@@ -1932,13 +1933,15 @@ function retryReadTurn(
 // The held state the new tests share: turn_1 running, holding the pre-wake
 // steer; the wait starts (stamp 4) and its wake leaves the zero-delay chip and
 // the ended stamp 4 — copied from the two tests above.
-function modelAwaitingRetriedOutput(): ThreadModel {
+function modelAwaitingRetriedOutput(start?: ThreadModel): ThreadModel {
   const deadline = Date.parse("2026-11-07T14:30:00Z");
-  let model = testHydrate({
-    status: { type: "active" },
-    evener: { activeTurnId: "turn_1" },
-    turns: [retryReadTurn([{ id: "item_user", type: "userMessage" }])],
-  });
+  let model =
+    start ??
+    testHydrate({
+      status: { type: "active" },
+      evener: { activeTurnId: "turn_1" },
+      turns: [retryReadTurn([{ id: "item_user", type: "userMessage" }])],
+    });
   // The wait starts...
   model = applyNotification(
     model,
@@ -2006,6 +2009,82 @@ test("a wait-free read that shows post-wake model output in the retrying turn re
   expect(after.modelRetry).toBeUndefined();
   expect(after.quotaWaitEndedStamp).toBe(4);
   expect(after.quotaResumesAt).toBeUndefined();
+});
+
+// A re-issued model-output item is output even though its identity is old: the
+// daemon raises the version when the entry that produced it grew.
+test("a wait-free read that re-issues a model-output item at a higher version retires the zero-delay chip", () => {
+  const model = modelAwaitingRetriedOutput(
+    testHydrate({
+      status: { type: "active" },
+      evener: { activeTurnId: "turn_1" },
+      turns: [
+        retryReadTurn([
+          { id: "item_user", type: "userMessage" },
+          { id: "item_out", type: "agentMessage", version: 3 },
+        ]),
+      ],
+    }),
+  );
+  const read = testThread({
+    status: { type: "active" },
+    evener: { activeTurnId: "turn_1" },
+    turns: [
+      retryReadTurn([
+        { id: "item_user", type: "userMessage" },
+        { id: "item_out", type: "agentMessage", version: 6 },
+      ]),
+    ],
+  });
+
+  const after = applyReadResponse(model, { thread: read }, 2000);
+
+  expect(after.modelRetry).toBeUndefined();
+  expect(after.quotaWaitEndedStamp).toBe(4);
+});
+
+// A pruned background model keeps identities and versions in recorded history
+// but drops the rows from its display turns. A read restoring the same
+// recorded row is not output, so the comparison must use the recorded side.
+test("a pruned background model keeps the zero-delay chip when the read restores an already-recorded row", () => {
+  const held = hydrateThread(
+    {
+      thread: testThread({
+        status: { type: "active" },
+        evener: { activeTurnId: "turn_1" },
+        turns: [
+          retryReadTurn([
+            { id: "item_user", type: "userMessage" },
+            { id: "item_out", type: "agentMessage", version: 3 },
+          ]),
+        ],
+      }),
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+    },
+    "ref_t",
+    1000,
+  );
+  const model = pruneBackgroundHistoryBodies(modelAwaitingRetriedOutput(held));
+  // The pruned display hides the row; recorded history still holds it.
+  expect(model.turns.flatMap((turn) => turn.items).map((item) => item.id)).not.toContain("item_out");
+  expect(model.history?.turns.flatMap((turn) => turn.items).map((item) => item.id)).toContain("item_out");
+
+  const read = testThread({
+    status: { type: "active" },
+    evener: { activeTurnId: "turn_1" },
+    turns: [
+      retryReadTurn([
+        { id: "item_user", type: "userMessage" },
+        { id: "item_out", type: "agentMessage", version: 3 },
+      ]),
+    ],
+  });
+  const after = applyReadResponse(model, { thread: read }, 2000);
+
+  expect(after.modelRetry?.delayMs).toBe(0);
+  expect(after.quotaWaitEndedStamp).toBe(4);
 });
 
 // The mobile shape (applyReadModel on a caller-hydrated model) gets the same

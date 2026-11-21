@@ -1188,8 +1188,13 @@ const MODEL_OUTPUT_ITEM_TYPES = new Set(["agentMessage", "reasoning", "commandEx
 function readCarriesNewModelOutput(held: ThreadModel, turns: readonly TurnModel[], turnId: string): boolean {
   const turn = turns.find((candidate) => candidate.id === turnId);
   if (turn === undefined) return false;
+  // Recorded history is the baseline when the model has it: a pruned
+  // background model keeps identities and versions there while its display
+  // turns drop the rows (pruneBackgroundHistoryBodies), so comparing against
+  // the display would call a restored, unchanged row new output.
+  const recorded = held.history?.turns ?? held.turns;
   const heldVersions = new Map(
-    (held.turns.find((candidate) => candidate.id === turnId)?.items ?? []).map((item) => [
+    (recorded.find((candidate) => candidate.id === turnId)?.items ?? []).map((item) => [
       itemIdentity(item),
       item.version,
     ]),
