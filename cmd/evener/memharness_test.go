@@ -630,16 +630,20 @@ func TestMemHarness(t *testing.T) {
 	}
 	queuedTurnID := func(mutationID string) string {
 		t.Helper()
-		var turnID string
-		testwait.UntilSeen(t, "queued input "+mutationID+" to be recorded in the transcript", func() (bool, string) {
-			id, found, err := memHarnessTranscriptMutationTurn(transcriptPath, mutationID)
+		deadline := time.Now().Add(5 * time.Minute)
+		for {
+			turnID, found, err := memHarnessTranscriptMutationTurn(transcriptPath, mutationID)
 			if err != nil {
 				t.Fatalf("queued input %s transcript read: %v", mutationID, err)
 			}
-			turnID = id
-			return found, fmt.Sprintf("transcript turn=%q", id)
-		})
-		return turnID
+			if found {
+				return turnID
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("queued input %s was never recorded in the transcript", mutationID)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
 	}
 	// requireNoRunOwnedPending believes absence only from an authoritative live
 	// read, and only for the mutations this run sent. The mutation can leave the

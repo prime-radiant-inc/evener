@@ -19,7 +19,6 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
-	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -314,10 +313,9 @@ func runVerboseE2EChild(t *testing.T) {
 			// empty buffer. The wait is an exact delivery count, not a
 			// deadline: the bridge is still unimpeded here, so it always
 			// catches up, however starved the machine.
-			testwait.UntilSeen(t, "the bridge to deliver every emitted effort event", func() (bool, string) {
-				delivered, total := effortDelivered.Load(), emitted.Load()
-				return delivered >= total, fmt.Sprintf("delivered=%d emitted=%d", delivered, total)
-			})
+			for effortDelivered.Load() < emitted.Load() {
+				time.Sleep(time.Millisecond)
+			}
 
 			gateNextObserver <- struct{}{}
 			teardownObserverArmed = true
