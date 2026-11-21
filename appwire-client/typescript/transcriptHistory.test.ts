@@ -28,7 +28,7 @@ import {
   pruneBackgroundHistoryBodies,
 } from "./transcriptHistory";
 import { markItemTextOmitted } from "./transcriptItems";
-import type { OverlayItem, ThreadHistoryTurnsListResponse, ThreadReadResponse, Turn } from "./types.gen";
+import type { OverlayItem, Thread, ThreadHistoryTurnsListResponse, ThreadReadResponse, Turn } from "./types.gen";
 
 // A v6 read response for the standard test thread. `olderCursor` absent is a
 // source read that named no older history; a value is the opaque continuation.
@@ -1987,6 +1987,38 @@ function modelAwaitingRetriedOutput(start?: ThreadModel): ThreadModel {
   return model;
 }
 
+// The retried call as a recovering read reports it: the pre-wake steer the
+// client already holds, plus the post-wake output it does not.
+function retriedOutputTurn(): Turn {
+  return retryReadTurn([
+    { id: "item_user", type: "userMessage" },
+    { id: "item_out", type: "agentMessage", version: 6 },
+  ]);
+}
+
+function liveReadOfRetriedOutput(): Thread {
+  return testThread({
+    status: { type: "active" },
+    evener: { activeTurnId: "turn_1" },
+    turns: [retriedOutputTurn()],
+  });
+}
+
+// A read the hub serves from the saved index because the live read failed. It
+// names no live daemon and may not retire the held wait (#7338), but it carries
+// the retried call's post-wake output all the same.
+function savedFallbackRead(turns: Turn[]) {
+  return {
+    thread: testThread({ status: { type: "active" }, evener: { activeTurnId: "turn_1" }, turns }),
+    bootGeneration: "",
+    epoch: 0,
+    snapshot: { incarnation: "saved-inc", length: 1 },
+    servedFrom: "saved-index",
+    fallbackReason: "live-read-failed",
+    asOf: "2026-11-08T00:00:01Z",
+  };
+}
+
 // The wake's zero-delay chip is the retry's PROGRESS state, so the read stops
 // being "not news" as soon as it carries model output the client does not
 // hold: the call has produced something after the wake, and the chip has
@@ -2112,6 +2144,67 @@ test("applyReadModel retires the zero-delay chip when the hydrated read shows ne
   );
 
   const after = applyReadModel(model, fresh);
+
+  expect(after.modelRetry).toBeUndefined();
+  expect(after.quotaWaitEndedStamp).toBe(4);
+});
+
+// A saved-index fallback carrying the retried call's post-wake output is not
+// authority on the wait (#7338), so its own arrival leaves the wake's
+// zero-delay chip standing — but its merge still adopts that output into held
+// history. Comparing the next live read against that enriched cache would call
+// the same version old and leave the chip saying a finished call is retrying
+// (#7391): the fallback merge must not consume the evidence the live read
+// retires the chip with.
+test("a saved-index fallback read cannot consume the post-wake output a later live read retires the chip with", () => {
+  const model = modelAwaitingRetriedOutput();
+  const afterFallback = applyReadResponse(model, savedFallbackRead([retriedOutputTurn()]), 2000);
+  // The saved read may not retire the live wait's chip...
+  expect(afterFallback.modelRetry?.delayMs).toBe(0);
+  // ...but its merge did adopt the post-wake output into held history.
+  expect(afterFallback.history?.turns.flatMap((turn) => turn.items).map((item) => item.id)).toContain("item_out");
+
+  const liveRead = liveReadOfRetriedOutput();
+  const after = applyReadResponse(afterFallback, { thread: liveRead }, 3000);
+
+  expect(after.modelRetry).toBeUndefined();
+  expect(after.quotaWaitEndedStamp).toBe(4);
+});
+
+// The mobile shape gets the same protection: the fallback merge through
+// applyReadModel must not hide the output its own hydration adopted.
+test("applyReadModel keeps the post-wake output evidence across a saved-index fallback merge", () => {
+  const model = modelAwaitingRetriedOutput(
+    hydrateThread(
+      {
+        thread: testThread({
+          status: { type: "active" },
+          evener: { activeTurnId: "turn_1" },
+          turns: [retryReadTurn([{ id: "item_user", type: "userMessage" }])],
+        }),
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+      },
+      "ref_t",
+      1000,
+    ),
+  );
+  const fallback = hydrateThread(savedFallbackRead([retriedOutputTurn()]), "ref_t", 2000);
+  const afterFallback = applyReadModel(model, fallback);
+  expect(afterFallback.modelRetry?.delayMs).toBe(0);
+
+  const live = hydrateThread(
+    {
+      thread: liveReadOfRetriedOutput(),
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+    },
+    "ref_t",
+    3000,
+  );
+  const after = applyReadModel(afterFallback, live);
 
   expect(after.modelRetry).toBeUndefined();
   expect(after.quotaWaitEndedStamp).toBe(4);

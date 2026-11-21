@@ -280,6 +280,22 @@ export interface ModelRetryState {
   receivedAt: number;
 }
 
+// The retrying call's recorded model output as the last LIVE observation left
+// it (transcriptHistory's readCarriesNewModelOutput). A saved-index /
+// failed-live fallback read may not retire the wake's zero-delay chip, but its
+// merge still adopts the output it carries into held history; comparing the
+// next live read against that enriched cache alone would call the same version
+// old and leave the chip standing (#7391). Keyed by the wait whose wake chip it
+// protects, so a later wait or turn never reads it.
+export interface QuotaRetryOutputBaseline {
+  // The ended stamp of the wait whose wake left the zero-delay chip.
+  waitStamp: number;
+  turnId: string;
+  // [itemIdentity, version] pairs; an absent wire version stays undefined,
+  // which the novelty comparison reads as the lowest.
+  versions: ReadonlyArray<readonly [string, number | undefined]>;
+}
+
 // CapabilitySource names the frame that last wrote ThreadModel.capabilities.
 // "read" is a thread/read snapshot, "statusFrame" a thread/status/changed that
 // carried a set, and "none" a model that has only ever held what its first read
@@ -543,6 +559,11 @@ export interface ThreadModel {
   // restamp a wait the daemon already ended. Monotonic: a later wait's wake
   // moves it forward, never back.
   quotaWaitEndedStamp?: number;
+  // The retrying call's output the last LIVE observation held, captured when a
+  // saved-index / failed-live fallback read is about to merge that call's
+  // post-wake output into held history (#7391). Only a zero-delay quota chip
+  // consults it, and only for the wait its own stamp names.
+  quotaRetryOutputBaseline?: QuotaRetryOutputBaseline;
   // Wave 5 T1: the following are all sourced from thread.evener
   // (appwire/types_thread.go's EvenerThread) and are SNAPSHOT-ONLY -
   // hydrateThread populates them, and applyNotification updates them ONLY
