@@ -15,14 +15,12 @@ import {
   findIndexIn,
   findNeedle,
   type ItemModel,
-  isLiveCurrentReasoning,
   type SearchResponse,
   type ThreadModel,
   type TranscriptDisplayConfigV1,
-  type TurnModel,
 } from "@evener/appwire-client";
-import { actionRationales } from "../../panes/session/find/findHits";
-import { messageAsShown, reasoningSummariesAsRead } from "../../panes/session/find/messageText";
+import { projectedSearchTexts } from "../../panes/session/find/findHits";
+import { messageAsShown } from "../../panes/session/find/messageText";
 
 // One text run of a highlighted string: `mark` true means it is the matched
 // substring (rendered inside <mark>), false means surrounding context.
@@ -54,7 +52,7 @@ function normalizeWhitespace(text: string): string {
 // `output` and `error`, and each live reasoning summary (its streamed chunks
 // joined). Each source that matches produces its own hit, all sharing the
 // item's turn label.
-function itemSearchTexts(item: ItemModel, turn: TurnModel, rationales: ReadonlyMap<string, string>): string[] {
+function itemSearchTexts(item: ItemModel, projected: ReadonlyMap<string, readonly string[]>): string[] {
   const texts: string[] = [];
   // A message is read as its row shows it (a reply's Markdown rendered), the
   // way the session's own Find reads it, so a message row here is one Find
@@ -64,17 +62,13 @@ function itemSearchTexts(item: ItemModel, turn: TurnModel, rationales: ReadonlyM
   // A thought's `text` is its trace, which no row shows, so only the
   // summaries below are read for it.
   else if (item.type !== "reasoning" && item.text) texts.push(item.text);
-  // An action row's stated rationale, but only where the view projects the call
-  // as an action row: elsewhere no row shows its description, so a hit here
-  // would close the palette without opening Find on anything.
-  const rationale = rationales.get(item.id);
-  if (rationale !== undefined) texts.push(rationale);
+  // What the view shows this item as - an action row's rationale, a thought's
+  // summaries where the view shows the thought. Find's own rule, shared, so a
+  // hit here is always one Find can land on.
+  const shown = projected.get(item.id);
+  if (shown !== undefined) texts.push(...shown);
   if (item.output) texts.push(item.output);
   if (item.error) texts.push(item.error);
-  // A thought renders Markdown, so its summaries are read as the page reads -
-  // live only while it is the turn's tail, as the thought row decides it.
-  const live = item.type === "reasoning" && isLiveCurrentReasoning(item, turn);
-  for (const paragraph of reasoningSummariesAsRead(item, live)) texts.push(paragraph);
   return texts;
 }
 
@@ -87,13 +81,13 @@ export function findInSessionMatches(
   // match, here or in the session's Find.
   const q = findNeedle(query);
   if (!q) return [];
-  const rationales = actionRationales(model, config);
+  const projected = projectedSearchTexts(model, config);
   const out: InSessionMatch[] = [];
   let turnNumber = 0;
   for (const turn of model.turns) {
     turnNumber += 1;
     for (const item of turn.items) {
-      for (const raw of new Set(itemSearchTexts(item, turn, rationales))) {
+      for (const raw of new Set(itemSearchTexts(item, projected))) {
         const text = normalizeWhitespace(raw);
         if (!text) continue;
         const hit = findIndexIn(text, q);

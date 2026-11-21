@@ -93,6 +93,7 @@ function modelWithTurns(turns: TurnModel[]): ThreadModel {
 // project as action rows; messages and thoughts read the same at any level.
 const VIEW = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" });
 const TOOLS = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+const CHAT = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
 
 test("findInSessionMatches finds case-insensitive hits and labels each with a 1-based turn number", () => {
   const model = modelWithTurns([
@@ -199,6 +200,33 @@ test("findInSessionMatches reads a thought a later item overtook as settled", ()
   // Still the tail, so it reads live.
   const tail = modelWithTurns([turn("t1", [thought], "inProgress")]);
   expect(findInSessionMatches(tail, "check the assumptions", VIEW).map((hit) => hit.itemId)).toEqual(["think"]);
+});
+
+// The chat preset shows only the placeholder before a live thought and hides a
+// settled one, so no thought summary is text Find could land on there.
+test("findInSessionMatches offers no thought summary the view hides", () => {
+  const settled = modelWithTurns([
+    turn("t1", [itemWith("think", { type: "reasoning", reasoningSummaries: [["check **the assumptions**"]] })]),
+  ]);
+  expect(findInSessionMatches(settled, "check the assumptions", CHAT)).toEqual([]);
+  // The tools view renders the thought, so its disclosure can open on the hit.
+  expect(findInSessionMatches(settled, "check the assumptions", VIEW).map((hit) => hit.itemId)).toEqual(["think"]);
+
+  const live = modelWithTurns([
+    turn(
+      "t1",
+      [itemWith("think", { type: "reasoning", status: "inProgress", reasoningSummaries: [["live thought needle"]] })],
+      "inProgress",
+    ),
+  ]);
+  expect(findInSessionMatches(live, "live thought needle", CHAT)).toEqual([]);
+  expect(findInSessionMatches(live, "live thought needle", VIEW).map((hit) => hit.itemId)).toEqual(["think"]);
+
+  // A failed thought is a critical row with a neutral label, shown in chat too.
+  const failed = modelWithTurns([
+    turn("t1", [itemWith("think", { type: "reasoning", status: "failed", reasoningSummaries: [["the plan"]] })]),
+  ]);
+  expect(findInSessionMatches(failed, "thought failed", CHAT).map((hit) => hit.itemId)).toEqual(["think"]);
 });
 
 test("findInSessionMatches scans an action's rationale but not a system notice's description", () => {
