@@ -348,16 +348,17 @@ lint-js-toolchain-pins:
 ##   have one source; projection-work test policy stays in the host; the
 ##   coverage scripts count through covstmt; the e2e and UI runners isolate
 ##   through the shared helpers; and no script or recipe mints scratch outside
-##   TMPDIR, before its trap, or deletes recursively from a variable beyond
-##   the reviewed allowlists; mobile-native/.gitignore keeps the
+##   TMPDIR or deletes recursively from a variable beyond the reviewed
+##   allowlists; mobile-native/.gitignore keeps the
 ##   mobile-native/build derived-data tree untracked; no TypeScript test or
 ##   Vitest config lets a fake clock follow wall time (shouldAdvanceTime); only
 ##   agent/internal/mcphttp builds an MCP http or sse transport; every
 ##   registered knob has a consumer; the execsupport packages stay library
 ##   packages covered by the revive exported rule; scenario cards cite source
-##   paths, symbols and lines that exist; runbooks isolate HOME through
-##   e2e_isolate_home; and every Makefile rule is .PHONY with a recipe, in a
-##   family file, with LINT_TARGETS defined once and naming every lint rule.
+##   paths and lines that exist and declare the Go symbols they anchor to;
+##   runbooks isolate HOME through e2e_isolate_home; and every Makefile rule is
+##   .PHONY with a recipe, in a family file, with LINT_TARGETS defined once and
+##   naming every lint rule.
 ## trigger: Required CI (via make lint); local pre-merge.
 ## requires: None beyond the Go toolchain and git.
 ## fails-when: Any check in internal/devtool/repoaudit reports a finding.
