@@ -87,6 +87,19 @@
   }
 }
 
+/* Compact settled and redacted summaries are intent-level chrome: the same
+ * railed label geometry as the full live row, but UI-sized like the live
+ * compact Loader and neighboring intent rows. The wrapper, not the icon, owns
+ * the pull; the text remains the flex item that yields to the chevron. */
+.compactSummary {
+  composes: label;
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-bottom: 0;
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-title);
+}
+
 /* The thinking body is ALWAYS italic (Jesse, 2026-08-03): a thought reads
  * as the agent's internal monologue in both states - in flight and inside
  * the settled disclosure. The ONE inversion: content the agent itself marked
@@ -122,6 +135,20 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.compactSummaryText {
+  composes: summaryText;
+}
+
+/* Loader owns the live label's UI font size; this wrapper owns the matching
+ * intent-line height without changing the widget or the expanded body. */
+.compactLiveSummary {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
+  line-height: var(--line-height-title);
 }
 
 /* A settled thought renders through the Markdown widget, which sets its own
