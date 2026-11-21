@@ -161,8 +161,10 @@ func ClassifyWorkspaceWithCeilings(cwd string, ceilings []string) (GitLayout, er
 		return withIncludeProtections(layout)
 	}
 
-	// .git is a pointer file: "gitdir: <path>".
-	content, err := os.ReadFile(entry)
+	// .git is a pointer file: "gitdir: <path>". The entry is workspace-controlled,
+	// so it is read through the guard that refuses a FIFO, a device, a pseudo
+	// stream, or a file larger than any pointer instead of blocking or over-reading.
+	content, err := identifier.ReadGitPointerFile(entry)
 	if err != nil {
 		return GitLayout{}, fmt.Errorf("reading .git pointer at %s: %w", holder, err)
 	}
