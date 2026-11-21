@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/llm"
@@ -725,37 +726,72 @@ func TestProtocolIncompleteStreamNamesTheInstanceAndDistinguishesQueuedEOF(t *te
 			t.Fatalf("omitted-store in_progress EOF raw = %#v, want interaction_id=int_omitted_1", leOmitted.Raw())
 		}
 	})
+}
 
-	t.Run("stored post-acceptance adapter deadlines are permanent and preserve interaction ID through StreamGenerate", func(t *testing.T) {
-		noSleep := func(context.Context, time.Duration) error { return nil }
-		createdFrame := "event: interaction.created\n" +
-			`data: {"event_type":"interaction.created","interaction":{"id":"int_deadline_1","status":"in_progress"}}` + "\n\n"
+// Not parallel: temporarily overrides DefaultProtocol.Client for deterministic in-memory StreamGenerate testing.
+func TestStreamGenerateStoredPostAcceptanceAdapterDeadlines(t *testing.T) {
+	prevClient := DefaultProtocol.Client
+	t.Cleanup(func() { DefaultProtocol.Client = prevClient })
 
-		runStream := func(t *testing.T, ctx context.Context, firstAttempt func(http.ResponseWriter, *http.Request), opts llm.GenerateOptions, onEvent func(llm.StreamEvent)) (int32, error) {
-			t.Helper()
-			var hits atomic.Int32
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				n := hits.Add(1)
-				w.Header().Set("Content-Type", "text/event-stream")
-				w.WriteHeader(http.StatusOK)
-				if n == 1 {
-					firstAttempt(w, r)
-					return
+	reg, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(map[string]registry.Provider{
+			"google": {Base: "google", APIKey: "k", Transport: registry.Transport{BaseURL: "https://example.invalid/v1beta"}},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("registry.Load: %v", err)
+	}
+
+	noSleep := func(context.Context, time.Duration) error { return nil }
+	createdFrame := "event: interaction.created\n" +
+		`data: {"event_type":"interaction.created","interaction":{"id":"int_deadline_1","status":"in_progress"}}` + "\n\n"
+
+	runBubbleStream := func(t *testing.T, makeCtx func() (context.Context, context.CancelFunc), firstPrefix string, opts llm.GenerateOptions, onEvent func(llm.StreamEvent)) (int32, error) {
+		t.Helper()
+		var hits atomic.Int32
+		var gotErr error
+		synctest.Test(t, func(t *testing.T) {
+			stall := make(chan struct{})
+			defer close(stall)
+			DefaultProtocol.Client = &http.Client{Transport: idleAttemptRoundTripper(func(req *http.Request) (*http.Response, error) {
+				if req.Body != nil {
+					_, _ = io.Copy(io.Discard, req.Body)
+					_ = req.Body.Close()
 				}
-				_, _ = w.Write([]byte(interactionsSSE))
-			}))
-			t.Cleanup(srv.Close)
-			reg, err := registry.Load(
-				registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
-				registry.WithStateRoot(t.TempDir()),
-				registry.WithEnv(func(string) (string, bool) { return "", false }),
-				registry.WithInstances(map[string]registry.Provider{
-					"google": {Base: "google", APIKey: "k", Transport: registry.Transport{BaseURL: srv.URL + "/v1beta"}},
-				}),
-			)
-			if err != nil {
-				t.Fatalf("registry.Load: %v", err)
-			}
+				n := hits.Add(1)
+				if n == 1 {
+					pr, pw := io.Pipe()
+					go func() {
+						if firstPrefix != "" {
+							_, _ = io.WriteString(pw, firstPrefix)
+						}
+						select {
+						case <-req.Context().Done():
+							_ = pw.CloseWithError(req.Context().Err())
+						case <-stall:
+							_ = pw.Close()
+						}
+					}()
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+						Body:       pr,
+						Request:    req,
+					}, nil
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+					Body:       io.NopCloser(strings.NewReader(interactionsSSE)),
+					Request:    req,
+				}, nil
+			})}
+
+			ctx, cancel := makeCtx()
+			defer cancel()
 			opts.Client = llm.NewClient(llm.WithRegistry(reg))
 			opts.Provider = "google"
 			opts.Model = "gemini-3.8-flash"
@@ -765,85 +801,83 @@ func TestProtocolIncompleteStreamNamesTheInstanceAndDistinguishesQueuedEOF(t *te
 			if err != nil {
 				t.Fatalf("StreamGenerate open: %v", err)
 			}
-			var streamErr error
 			for ev := range sr.Events() {
 				if onEvent != nil {
 					onEvent(ev)
 				}
 				if ev.Type == llm.StreamEventError {
-					streamErr = ev.Err
+					gotErr = ev.Err
 				}
 			}
-			return hits.Load(), streamErr
-		}
+		})
+		return hits.Load(), gotErr
+	}
 
-		createdThenHang := func(w http.ResponseWriter, r *http.Request) {
-			_, _ = w.Write([]byte(createdFrame))
-			w.(http.Flusher).Flush()
-			<-r.Context().Done()
-		}
+	bgCtx := func() (context.Context, context.CancelFunc) { return context.Background(), func() {} }
 
-		for _, tc := range []struct {
-			name    string
-			timeout *llm.AdapterTimeout
-		}{
-			{"adapter Request deadline", &llm.AdapterTimeout{Request: 40 * time.Millisecond}},
-			{"adapter StreamRead deadline", &llm.AdapterTimeout{StreamRead: 40 * time.Millisecond}},
-		} {
-			t.Run(tc.name, func(t *testing.T) {
-				hits, gotErr := runStream(t, context.Background(), createdThenHang, llm.GenerateOptions{
-					Store:          new(true),
-					AdapterTimeout: tc.timeout,
-				}, nil)
-				if hits != 1 {
-					t.Fatalf("stored %s HTTP POSTs = %d, want 1", tc.name, hits)
-				}
-				le, ok := errors.AsType[llm.Error](gotErr)
-				if !ok || le.Retryable() || !errors.Is(gotErr, ErrPendingInteractionStatus) {
-					t.Fatalf("stored %s error = %T %v, want non-retryable ErrPendingInteractionStatus", tc.name, gotErr, gotErr)
-				}
-				rawMap, _ := le.Raw().(map[string]any)
-				if rawMap["interaction_id"] != "int_deadline_1" {
-					t.Fatalf("stored %s raw = %#v, want interaction_id=int_deadline_1", tc.name, le.Raw())
-				}
-			})
-		}
+	for _, tc := range []struct {
+		name    string
+		timeout *llm.AdapterTimeout
+	}{
+		{"adapter Request deadline", &llm.AdapterTimeout{Request: time.Second}},
+		{"adapter StreamRead deadline", &llm.AdapterTimeout{StreamRead: time.Second}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hits, gotErr := runBubbleStream(t, bgCtx, createdFrame, llm.GenerateOptions{
+				Store:          new(true),
+				AdapterTimeout: tc.timeout,
+			}, nil)
+			if hits != 1 {
+				t.Fatalf("stored %s HTTP POSTs = %d, want 1", tc.name, hits)
+			}
+			le, ok := errors.AsType[llm.Error](gotErr)
+			if !ok || le.Retryable() || !errors.Is(gotErr, ErrPendingInteractionStatus) {
+				t.Fatalf("stored %s error = %T %v, want non-retryable ErrPendingInteractionStatus", tc.name, gotErr, gotErr)
+			}
+			rawMap, _ := le.Raw().(map[string]any)
+			if rawMap["interaction_id"] != "int_deadline_1" {
+				t.Fatalf("stored %s raw = %#v, want interaction_id=int_deadline_1", tc.name, le.Raw())
+			}
+		})
+	}
 
-		// Stateless stream with adapter Request deadline after interaction.created still retries automatically and succeeds on POST #2.
-		statelessHits, statelessErr := runStream(t, context.Background(), createdThenHang, llm.GenerateOptions{
-			AdapterTimeout: &llm.AdapterTimeout{Request: 40 * time.Millisecond},
+	t.Run("stateless adapter Request deadline after interaction.created retries and succeeds", func(t *testing.T) {
+		hits, gotErr := runBubbleStream(t, bgCtx, createdFrame, llm.GenerateOptions{
+			AdapterTimeout: &llm.AdapterTimeout{Request: time.Second},
 		}, nil)
-		if statelessErr != nil || statelessHits != 2 {
-			t.Fatalf("stateless adapter Request deadline err=%v hits=%d, want nil and 2 POSTs", statelessErr, statelessHits)
+		if gotErr != nil || hits != 2 {
+			t.Fatalf("stateless adapter Request deadline err=%v hits=%d, want nil and 2 POSTs", gotErr, hits)
 		}
+	})
 
-		// Stored stream with adapter Request deadline BEFORE interaction.created supplies an ID still retries automatically and succeeds on POST #2.
-		preIDHits, preIDErr := runStream(t, context.Background(), func(w http.ResponseWriter, r *http.Request) {
-			w.(http.Flusher).Flush()
-			<-r.Context().Done()
-		}, llm.GenerateOptions{
+	t.Run("stored adapter Request deadline before interaction.created retries and succeeds", func(t *testing.T) {
+		hits, gotErr := runBubbleStream(t, bgCtx, "", llm.GenerateOptions{
 			Store:          new(true),
-			AdapterTimeout: &llm.AdapterTimeout{Request: 40 * time.Millisecond},
+			AdapterTimeout: &llm.AdapterTimeout{Request: time.Second},
 		}, nil)
-		if preIDErr != nil || preIDHits != 2 {
-			t.Fatalf("pre-ID stored adapter Request deadline err=%v hits=%d, want nil and 2 POSTs", preIDErr, preIDHits)
+		if gotErr != nil || hits != 2 {
+			t.Fatalf("pre-ID stored adapter Request deadline err=%v hits=%d, want nil and 2 POSTs", gotErr, hits)
 		}
+	})
 
-		// Caller cancellation after client decoded interaction.created on a stored stream stays AbortError (context.Canceled).
-		callerCtx, callerCancel := context.WithCancel(context.Background())
-		defer callerCancel()
-		_, cancelErr := runStream(t, callerCtx, func(w http.ResponseWriter, r *http.Request) {
-			_, _ = w.Write([]byte(createdFrame))
-			_, _ = w.Write([]byte("event: custom.ping\ndata: {\"ok\":true}\n\n"))
-			w.(http.Flusher).Flush()
-			<-r.Context().Done()
-		}, llm.GenerateOptions{Store: new(true)}, func(ev llm.StreamEvent) {
+	t.Run("caller cancellation after interaction.created stays AbortError", func(t *testing.T) {
+		var callerCancel context.CancelFunc
+		hits, gotErr := runBubbleStream(t, func() (context.Context, context.CancelFunc) {
+			ctx, cancel := context.WithCancel(context.Background())
+			callerCancel = cancel
+			return ctx, cancel
+		}, createdFrame+"event: custom.ping\ndata: {\"ok\":true}\n\n", llm.GenerateOptions{
+			Store: new(true),
+		}, func(ev llm.StreamEvent) {
 			if ev.Type == llm.StreamEventProviderEvent {
 				callerCancel()
 			}
 		})
-		if _, ok := errors.AsType[*llm.AbortError](cancelErr); !ok || !errors.Is(cancelErr, context.Canceled) {
-			t.Fatalf("caller cancellation error = %T %v, want *llm.AbortError wrapping context.Canceled", cancelErr, cancelErr)
+		if hits != 1 {
+			t.Fatalf("caller cancellation HTTP POSTs = %d, want 1", hits)
+		}
+		if _, ok := errors.AsType[*llm.AbortError](gotErr); !ok || !errors.Is(gotErr, context.Canceled) {
+			t.Fatalf("caller cancellation error = %T %v, want *llm.AbortError wrapping context.Canceled", gotErr, gotErr)
 		}
 	})
 }
