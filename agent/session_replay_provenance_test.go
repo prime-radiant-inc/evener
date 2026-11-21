@@ -1161,7 +1161,7 @@ disabled = true
 		credMarker := filepath.Join(dir, "cred-ran")
 		cfgPath := filepath.Join(dir, "providers.toml")
 		tomlCfg := fmt.Sprintf(
-			"[providers.\"google-vertex-express\"]\nbase = \"google\"\napi_key = '''$(sh -c 'printf x >> %q; printf k-repl')'''\n",
+			"[providers.\"google-vertex-express\"]\nbase = \"google\"\nmodels_endpoint = \"-\"\napi_key = '''$(sh -c 'printf x >> %q; printf k-repl')'''\n",
 			credMarker,
 		)
 		if err := os.WriteFile(cfgPath, []byte(tomlCfg), 0o600); err != nil {
@@ -1183,7 +1183,6 @@ disabled = true
 		}
 		cRepl := llm.NewClient(llm.WithRegistry(rRepl))
 		cRepl.Register(&fakeAdapter{name: "google"})
-		cRepl.Register(&fakeAdapter{name: "google-vertex-express"})
 
 		gResRepl, err := rRepl.Resolve("google/gemini-3.8-flash")
 		if err != nil {
@@ -1192,6 +1191,8 @@ disabled = true
 		profRepl := provider.FromResolved(gResRepl, rRepl)
 
 		// Check CheapModel migration alone is credential-free via HasInstance + ResolveInstanceModelFacts.
+		// IsSubagent=true with MaxSubagentDepth=0 keeps delegate catalog enumeration out of startup so
+		// only CheapModel migration touches google-vertex-express.
 		metaCheapOnly := schema.SessionMeta{
 			ID:         "0123456789ABCDEFGHJKMNPQRU",
 			CreatedAt:  time.Now(),
@@ -1201,6 +1202,7 @@ disabled = true
 		}
 		sessCheap, err := RestoreSessionFromMetaWithConfig(cRepl, profRepl, execenv.NewLocalExecutionEnvironment(t.TempDir()), metaCheapOnly, RestoreSessionConfig{
 			StateDir: t.TempDir(),
+			testOnly: testConfig{minimalWorktreeToolRegistry: true, skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 			ResolveProfile: func(ref string) (*provider.Profile, error) {
 				return provider.Resolve(rRepl, ref)
 			},
@@ -1229,6 +1231,7 @@ disabled = true
 		}
 		sessBoth, err := RestoreSessionFromMetaWithConfig(cRepl, profRepl, execenv.NewLocalExecutionEnvironment(t.TempDir()), metaBoth, RestoreSessionConfig{
 			StateDir: t.TempDir(),
+			testOnly: testConfig{minimalWorktreeToolRegistry: true, skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 			ResolveProfile: func(ref string) (*provider.Profile, error) {
 				return provider.Resolve(rRepl, ref)
 			},
