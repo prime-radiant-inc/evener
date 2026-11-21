@@ -264,36 +264,6 @@ func TestReclaimDelegateRuntimeCapacityNilController(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// delegateRuntimeReclamationEntry struct
-// ---------------------------------------------------------------------------
-
-func TestDelegateRuntimeReclamationEntryStruct(t *testing.T) {
-	t.Parallel()
-	e := delegateRuntimeReclamationEntry{
-		delegateID:     "dlg_1",
-		childSessionID: "sess_1",
-	}
-	if e.delegateID != "dlg_1" || e.childSessionID != "sess_1" {
-		t.Fatalf("struct wrong: %+v", e)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// delegateRuntimeReclamationClaim struct
-// ---------------------------------------------------------------------------
-
-func TestDelegateRuntimeReclamationClaimStruct(t *testing.T) {
-	t.Parallel()
-	c := &delegateRuntimeReclamationClaim{
-		token:   42,
-		entries: []delegateRuntimeReclamationEntry{{delegateID: "dlg_1"}},
-	}
-	if c.token != 42 || len(c.entries) != 1 {
-		t.Fatalf("struct wrong: %+v", c)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // releaseRuntimeReclamationLocked
 // ---------------------------------------------------------------------------
 

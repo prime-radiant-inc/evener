@@ -9,7 +9,6 @@ import { resetActivitySidebarStoreForTests } from "../../../shell/activitybar/ac
 import { paletteStore } from "../../../shell/palette/paletteController";
 import { resetWorkspaceStoreForTests } from "../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
-import { resetActivityPanelStoreForTests } from "../../../stores/activityPanel";
 import { useCommandCatalog } from "../../../stores/commandCatalog";
 import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
@@ -56,7 +55,6 @@ beforeEach(() => {
   resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
-  resetActivityPanelStoreForTests();
   resetPendingTurnsStoreForTests();
   // askDockStore reconciles reactively off threadsStore (registered once at
   // module load - askDockStore.ts's own header comment), so its byRef map
@@ -86,7 +84,6 @@ afterEach(() => {
   vi.useRealTimers();
   resetActivitySidebarStoreForTests();
   resetWorkspaceStoreForTests();
-  resetActivityPanelStoreForTests();
   // A narrow-layout test leaves its stub installed; jsdom has no real
   // ResizeObserver, so the honest baseline for the next test is none at all.
   delete (globalThis as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver;
@@ -1332,4 +1329,45 @@ test("a staged skill on Send to a target without skillInput keeps the draft and 
   expect(await storage.listOutbox(ref)).toEqual([]);
   expect(await storage.listOptimistic(ref)).toEqual([]);
   expect(await storage.listRecovery(ref)).toEqual([]);
+});
+
+// A builtin commit rewrites exactly the token's own span, so it must say so:
+// the completion's before/after pair shares a prefix with an adopted marker
+// that ABUTS the token ("/go[image 1]" -> "/goal [image 1]" shares "/go"),
+// and inferring the edit from that pair would read it as spliced through the
+// marker and retire the missing reference - making Send available for a draft
+// whose image is gone.
+test("committing a builtin immediately before a missing reference keeps that reference adopted", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_slash_abutting_unbacked";
+  writeComposerDraft(ref, {
+    text: "[image 1]",
+    skillNames: [],
+    stagedImageMarkers: [1],
+    stagedImageRanges: [{ marker: 1, start: 0, end: 9 }],
+  });
+  await mountComposer(ref);
+  expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
+  await waitFor(() => expect(submitButton().disabled).toBe(true));
+
+  // Type the token's own run straight against the marker, then complete it:
+  // the token ends where the adopted literal begins.
+  selectEditorText(textarea(), 0);
+  await waitFor(() => expect(editorCursor(textarea())).toBe(0));
+  fireEvent.paste(textarea(), {
+    clipboardData: {
+      getData: (type: string) => (type === "text/plain" ? "/go" : ""),
+      types: ["text/plain"],
+      files: [],
+      items: [],
+    },
+  });
+  expect(textarea().textContent).toBe("/go[image 1]");
+  await waitFor(() => expect(editorCursor(textarea())).toBe(3));
+  await user.keyboard("{Tab}");
+
+  expect(textarea().textContent).toBe("/goal [image 1]");
+  // The abutting marker's provenance survived the completion.
+  expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
+  expect(submitButton().disabled).toBe(true);
 });

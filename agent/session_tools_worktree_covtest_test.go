@@ -141,23 +141,6 @@ func TestCovWorktreeRootForProject(t *testing.T) {
 	}
 }
 
-// TestCovManagedWorktreeExists covers managedWorktreeExists.
-func TestCovManagedWorktreeExists(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	// No .git — false.
-	if managedWorktreeExists(dir) {
-		t.Fatal("no .git should return false")
-	}
-	// With .git — true.
-	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if !managedWorktreeExists(dir) {
-		t.Fatal("with .git should return true")
-	}
-}
-
 // TestCovBranchExists covers branchExists: using a scripted git runner.
 func TestCovBranchExists(t *testing.T) {
 	t.Parallel()

@@ -45,7 +45,7 @@ func (callScopedMutatingPreparer) RequiresStreamingComplete() bool { return fals
 func TestFinalizeBodyLocksAndCallScopedPreparerSnapshot(t *testing.T) {
 	t.Parallel()
 	t.Run("protected Transport.Body keys rejected before HTTP", func(t *testing.T) {
-		for _, k := range []string{"input", "model", "tools", "response_format", "response_format.mime_type", "agent", "previous_interaction_id", "store", "continuation_token", "cached_content", "background", "generationConfig.temperature"} {
+		for _, k := range []string{"input", "model", "tools.0", "response_format", "response_format.mime_type", "agent", "previous_interaction_id", "store", "continuation_token", "cached_content", "background", "generationConfig.temperature"} {
 			res := protoRes(nil)
 			res.Transport.Body = map[string]any{k: "x"}
 			if _, err := (&Protocol{}).BuildBody(protoReq(""), res); err == nil {

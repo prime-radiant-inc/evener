@@ -1241,6 +1241,19 @@ func TestFind_ProjectName_CrossBucketParentNeedsLaneEvidence(t *testing.T) {
 	}
 }
 
+// discoverySnapshot is the bucket metadata snapshot discovery hands a resolver,
+// which is what activates the sibling evidence cache. Without it the resolver
+// reads live on every row, so a test about cached evidence would exercise only
+// the uncached path.
+func discoverySnapshot(t *testing.T, bucket string) map[string][]schema.SessionMeta {
+	t.Helper()
+	metas, err := schema.ListSessionMetas(bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return map[string][]schema.SessionMeta{bucket: metas}
+}
+
 // TestFind_ProjectName_CacheKeyedByEligibility covers the cache key. The
 // resolver is shared across result rows, and one bucket can answer differently
 // depending on the row: a session-owned lane with no project segment accepts any
@@ -1270,6 +1283,8 @@ func TestFind_ProjectName_CacheKeyedByEligibility(t *testing.T) {
 	if err := schema.SaveSessionMeta(bucket, other); err != nil {
 		t.Fatal(err)
 	}
+	// The snapshot is what puts the cache key this test covers under test.
+	snapshot := discoverySnapshot(t, bucket)
 
 	// The managed lane names repo A, so only evidence about A may answer for it,
 	// and there is none. Alone it must be labelled empty.
@@ -1281,13 +1296,13 @@ func TestFind_ProjectName_CacheKeyedByEligibility(t *testing.T) {
 	sessionLane := schema.SessionMeta{}
 	sessionLane.EnvInfo.WorkingDir = filepath.Join(bucket, "sessions", identifier.MustNewSessionID(), "worktrees", "dlg_session")
 
-	if got, want := newProjectNameResolver().projectName(managedLane, bucket), ""; got != want {
+	if got, want := newProjectNameResolver(snapshot).projectName(managedLane, bucket), ""; got != want {
 		t.Fatalf("projectName(managed lane for repo A, alone) = %q, want empty", got)
 	}
 
 	// Now the ordering that used to leak: the permissive row answers first and
 	// caches repo B under the bucket. The managed lane must not read that.
-	r := newProjectNameResolver()
+	r := newProjectNameResolver(snapshot)
 	if got, want := r.projectName(sessionLane, bucket), "repo-b"; got != want {
 		t.Fatalf("projectName(session-owned lane, no project segment) = %q, want the sibling's %q", got, want)
 	}
@@ -1297,7 +1312,7 @@ func TestFind_ProjectName_CacheKeyedByEligibility(t *testing.T) {
 
 	// The reverse order must also hold: a managed lane's answer is not served to
 	// the permissive row.
-	r2 := newProjectNameResolver()
+	r2 := newProjectNameResolver(snapshot)
 	if got := r2.projectName(managedLane, bucket); got != "" {
 		t.Fatalf("projectName(managed lane first) = %q, want empty", got)
 	}
@@ -1790,6 +1805,95 @@ func TestFind_ProjectName_BucketDecodedOnceAcrossRows(t *testing.T) {
 		if got, want := resolver.projectName(c.meta, bucket), "once-repo"; got != want {
 			t.Fatalf("projectName(row from a supplied snapshot) = %q, want %q (the bucket must be read once, not once per row)", got, want)
 		}
+	}
+}
+
+// TestFind_ProjectName_ReusesOneStructuralLookupPerDirectory covers the cost a
+// search pays for several results from one checkout: every row resolves its
+// recorded working directory through the same Git-layout walk, and the walk is
+// identical. The resolver keeps one complete answer per directory for the life
+// of one search, so the second row reuses the first row's lookup. The label
+// cannot tell one walk from two; the diagnostic counter can.
+func TestFind_ProjectName_ReusesOneStructuralLookupPerDirectory(t *testing.T) {
+	t.Run("live checkout", func(t *testing.T) {
+		checkout := newNamedCheckout(t, "same-checkout")
+		// Records point at a subdirectory, so the label cannot pass by echoing the
+		// recorded directory's own basename: only the checkout's root names the
+		// project, and the walk has to climb to it.
+		recorded := filepath.Join(checkout, "sub")
+		if err := os.MkdirAll(recorded, 0o755); err != nil {
+			t.Fatalf("mkdir sub: %v", err)
+		}
+		bucket := t.TempDir()
+		rowA := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+		rowA.EnvInfo.WorkingDir = recorded
+		rowB := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+		rowB.EnvInfo.WorkingDir = recorded
+
+		// One resolver per search: find labels every result row through it.
+		r := newProjectNameResolver()
+		if got := r.projectName(rowA, bucket); got != "same-checkout" {
+			t.Fatalf("projectName(first row recording %q) = %q, want same-checkout", recorded, got)
+		}
+		if got := r.projectName(rowB, bucket); got != "same-checkout" {
+			t.Fatalf("projectName(second row recording %q) = %q, want same-checkout", recorded, got)
+		}
+		if r.mainRootLookups != 1 {
+			t.Fatalf("two rows recording one directory took %d structural lookups, want 1: the second row repeated the first row's walk", r.mainRootLookups)
+		}
+	})
+
+	t.Run("refused entry is preserved", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "refused-checkout")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		// A .git entry that exists and cannot be used: a symlink to nothing. That
+		// is a refusal, not the absence of a repository.
+		if err := os.Symlink(filepath.Join(dir, "gone-git"), filepath.Join(dir, ".git")); err != nil {
+			t.Fatalf("symlink .git: %v", err)
+		}
+
+		r := newProjectNameResolver()
+		for i := range 2 {
+			root, refused := r.mainRootOutcome(dir)
+			if root != "" || !refused {
+				t.Fatalf("mainRootOutcome(refused checkout), call %d = (%q, %v), want (\"\", true): the memo must keep refusal as its own answer, not collapse it to absence", i+1, root, refused)
+			}
+		}
+		if r.mainRootLookups != 1 {
+			t.Fatalf("two lookups of one refused directory took %d structural lookups, want 1", r.mainRootLookups)
+		}
+	})
+}
+
+// TestFind_ProjectName_ResolvesFallbackSpellingBeforeTheWalk covers a recorded
+// path that cannot be resolved as a whole because a component in it was removed
+// after the record was written. identifier.ResolveClean then falls back to a
+// lexical Clean, and that spelling can still name a symlink: "alias/build/.."
+// cleans to "alias". A walk started from the alias climbs its lexical parents
+// and misses the checkout the link points into, so the fallback spelling must be
+// resolved once more before it becomes the memo key and the walk's start.
+func TestFind_ProjectName_ResolvesFallbackSpellingBeforeTheWalk(t *testing.T) {
+	base := t.TempDir()
+	checkout := filepath.Join(base, "real-checkout")
+	if err := os.MkdirAll(filepath.Join(checkout, "sub"), 0o755); err != nil {
+		t.Fatalf("mkdir checkout: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(checkout, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	alias := filepath.Join(base, "alias")
+	if err := os.Symlink(filepath.Join(checkout, "sub"), alias); err != nil {
+		t.Fatalf("symlink alias: %v", err)
+	}
+	// "build" never existed, so the whole path cannot resolve; Clean cancels
+	// "build/.." and leaves the alias's own spelling.
+	recorded := alias + string(filepath.Separator) + "build" + string(filepath.Separator) + ".."
+
+	got, _, ok, _, _ := newProjectNameResolver().projectAt(recorded, t.TempDir())
+	if !ok || got != identifier.ResolveClean(checkout) {
+		t.Fatalf("projectAt(recorded %q) = %q, ok=%v, want %q: the fallback spelling names a symlink and must be resolved before the walk", recorded, got, ok, identifier.ResolveClean(checkout))
 	}
 }
 
@@ -2845,11 +2949,13 @@ func TestFind_ProjectName_SiblingRestoreRootBasenameFallback(t *testing.T) {
 	}
 }
 
-// TestFind_ProjectName_RowAnswersIndependentOfOrder covers the property the
-// removed sibling cache used to break. The resolver is shared across result
-// rows, so a bucket-wide cached label could be served to a later row that had a
-// different answer of its own. With no cache, every row's label is decided only
-// by its own evidence and the bucket's, never by which rows preceded it.
+// TestFind_ProjectName_RowAnswersIndependentOfOrder covers the property a
+// bucket-wide sibling cache used to break. The resolver is shared across result
+// rows, so a cached label keyed by the bucket alone could be served to a later
+// row that had a different answer of its own. The resolver is given discovery's
+// snapshot here, so the cache is active and the row answers must still be
+// decided only by their own evidence and the bucket's, never by which rows
+// preceded them.
 func TestFind_ProjectName_RowAnswersIndependentOfOrder(t *testing.T) {
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
@@ -2872,6 +2978,7 @@ func TestFind_ProjectName_RowAnswersIndependentOfOrder(t *testing.T) {
 	if err := schema.SaveSessionMeta(bucket, other); err != nil {
 		t.Fatal(err)
 	}
+	snapshot := discoverySnapshot(t, bucket)
 
 	managed := schema.SessionMeta{}
 	managed.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", projectA.ID, "dlg_managed")
@@ -2881,14 +2988,14 @@ func TestFind_ProjectName_RowAnswersIndependentOfOrder(t *testing.T) {
 	// Alone first, then after the other row, then the reverse. Every row must
 	// return exactly what it returns alone.
 	const wantSession = "other-repo"
-	forward := newProjectNameResolver()
+	forward := newProjectNameResolver(snapshot)
 	if got, want := forward.projectName(session, bucket), wantSession; got != want {
 		t.Fatalf("projectName(session-owned row, first) = %q, want %q", got, want)
 	}
 	if got := forward.projectName(managed, bucket); got != "" {
 		t.Fatalf("projectName(managed lane after a session-owned row) = %q, want empty (the sibling names another project)", got)
 	}
-	backward := newProjectNameResolver()
+	backward := newProjectNameResolver(snapshot)
 	if got := backward.projectName(managed, bucket); got != "" {
 		t.Fatalf("projectName(managed lane, first) = %q, want empty", got)
 	}

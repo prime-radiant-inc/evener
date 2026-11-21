@@ -361,9 +361,14 @@ of the real onboarding typing does appear, truncated, in the uploaded test log
 and result bundle: recording that flow is the journey's purpose.
 
 The separate `iOS qualification` workflow runs the build in one job and these
-journeys in a second job that restores the build's uploaded products, on native
-pull requests without release credentials, so its green path always includes
-the installed-app journeys. Physical-device checks remain separate
+journeys in another that restores the build's uploaded products, with a third
+job that builds the journeys' runtime binaries beside the build and uploads
+them for the journeys job to verify and use; a head whose runner predates that
+handoff still builds its own pair inside the journeys job. It runs on native
+pull requests and main pushes that touch the same paths, without release
+credentials, so its green path always includes the installed-app journeys. The
+build job restores a DerivedData cache every run and saves it on main pushes
+only. Physical-device checks remain separate
 requirements. Neither a build nor its diagnostic artifact authorizes
 TestFlight publication or qualifies a physical-device update.
 

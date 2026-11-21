@@ -79,29 +79,43 @@ template. `make test-native` includes this check. Native compilation, actual
 launch, link delivery and background recovery require a simulator or device build;
 a successful `simctl launch` request alone does not prove the process stayed alive.
 
-### Non-publishing pull-request build
+### Non-publishing qualification build
 
-`.github/workflows/ios-qualification.yml` checks out the pull-request head when
-it carries the qualification scripts the workflow calls, and otherwise checks
-out the merge ref — the tree the workflow file itself comes from — so a head
-that predates those scripts is not run against a tree that lacks them. The
-checkout is read-only and persists no credential. It uses macOS 26, Xcode 26.6,
+`.github/workflows/ios-qualification.yml` runs on pull requests and on pushes
+to main that touch the same paths. A pull request checks out its head when it
+carries the qualification scripts the workflow calls, and otherwise checks out
+the merge ref — the tree the workflow file itself comes from — so a head that
+predates those scripts is not run against a tree that lacks them. The checkout
+is read-only and persists no credential. The build job restores a DerivedData
+build cache keyed by the runner image, Xcode version and both dependency locks,
+and saves it only on a main push, so every later pull request can read it
+through Actions' base-branch fallback. It uses macOS 26, Xcode 26.6,
 Node 22.13.1, Ruby 3.3.6, Bundler 2.7.2 and the locked CocoaPods 1.16.2. It is
 separate from TestFlight and has no release secrets
 or publishing step. Existing Linux native/API gates remain required. Its policy
 step also proves the bundle verification is real: a copied build whose share
 extension was removed fails verification while the untouched build still passes.
-The lane's green path always includes the installed-app journeys, in a second
-job. `simulator-build` builds Release and verifies the host and share
-extension, proves the red side before the generated
+The lane's green path always includes the installed-app journeys, in a setup
+job that runs beside the simulator build and a journeys job that waits for
+both. `simulator-build` builds Release and verifies the
+host and share extension, proves the red side before the generated
 `EvenerQualificationUITests` target exists, registers that target, and compiles
 the test products against the same DerivedData; it uploads those products as a
-tarball and deletes its own simulator. `ui-journeys` needs that job, restores
-the products layout into a fresh directory, and creates and later deletes its
-own simulator. `scripts/native/ios/run-ui-tests.sh` then builds the runtime
-pair, starts the scripted loopback provider and an isolated hub under private
-XDG directories with `HOME` inherited, and injects the fixture-only connection
-data into the restored test-run configuration in place. The result bundle must
+tarball and deletes its own simulator. `journey-setup` has no dependency on the
+build: it checks out the same tested tree, selects the same Xcode, runs `make
+build-runtime` so the embedded frontend is the one this tree builds, compiles
+the `evener` and `fixture-provider` binaries, and uploads them with the commit
+they were built from and a checksum manifest. `ui-journeys` needs both jobs,
+restores the products layout and the runtime pair into fresh directories,
+compares the pair's recorded commit with the build identity's `sourceRevision`
+and its binaries' bytes with the manifest shipped with the pair before running
+either binary, and creates and later deletes its own simulator.
+`scripts/native/ios/run-ui-tests.sh` then starts the scripted loopback provider
+and an isolated hub under private XDG directories with `HOME` inherited, and
+injects the fixture-only connection data into the restored test-run
+configuration in place; when the variable carrying the pair is unset (a local
+run) or the selected harness does not read it (a head older than the
+handoff), it builds the pair itself. The result bundle must
 show all three intended journeys executed with zero failures and none skipped;
 a partial, unreadable or absent result fails, and the child's exit is the job's
 own result. Each job is the sole owner of its own simulator, and cleanup runs

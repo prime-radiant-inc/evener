@@ -5332,14 +5332,16 @@ it("keeps the held body when a same-version merge supplies ask evidence", () => 
 // turn ownership AND wait presence. Pre-cut frames may only enrich.
 // ---------------------------------------------------------------------------
 
-// A quota retry frame: the wait's start (positive delay, stamp, instant) or
-// its wake (no delay, the same stamp).
+// A modelRetry frame: a quota wait's start (positive delay, stamp, instant) or
+// its wake (no delay, the same stamp), or an ordinary provider retry (any
+// other error class, no wait fields).
 function quotaRetryFrame(overrides: {
   delayMs?: number;
   waitStartedAt?: number;
   resumesAt?: number;
   turnId?: string;
   model?: string;
+  errorClass?: string;
 }): AnyNotification {
   return {
     method: "evener/thread/modelRetry",
@@ -5349,7 +5351,7 @@ function quotaRetryFrame(overrides: {
       attempt: 1,
       maxAttempts: 0,
       delayMs: overrides.delayMs ?? 21_600_000,
-      errorClass: "quota_exceeded",
+      errorClass: overrides.errorClass ?? "quota_exceeded",
       groupElapsedMs: 5_000,
       attemptCap: 0,
       ...(overrides.turnId !== undefined ? { turnId: overrides.turnId } : {}),
@@ -5842,6 +5844,43 @@ it("a pre-cut output update before a matching start does not strip the start's c
   expect(model?.modelRetry?.model).toBe("wait/model");
   expect(model?.quotaWaitStartedAt).toBe(31);
   expect(model?.quotaResumesAt).toBe(new Date(deadline).toISOString());
+  await owner.settled();
+  owner.dispose();
+});
+
+// An ordinary (non-quota) provider retry is not a pre-cut transition: a
+// snapshot already carrying the completed model output that ended the retry
+// is authoritative for both, and the buffered retry must not restore its
+// chip. The duplicate output changes no recorded history, so the reducer's
+// own chip-clearing rule has nothing to fire on — replaying the retry would
+// leave the obsolete chip standing.
+it("a pre-cut ordinary retry over a snapshot that already holds its clearing output installs no chip", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  // The read is accepted first and its snapshot already contains the
+  // completed model-output item, so the read is authoritative for that output.
+  expect(owner.acceptRead(read("cleared"), { lifetime: 1, readId: "cut-ordinary", boundary: "cut-ordinary" })).toBe(
+    true,
+  );
+  expect(
+    owner
+      .getSnapshot()
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.transcriptKey),
+  ).toContain("item-cleared");
+
+  owner.acceptBeforeReadCut(
+    [
+      // Buffered inside the cut: the ordinary retry, then the output that
+      // ended it (the same item and version the snapshot already holds).
+      quotaRetryFrame({ turnId: "turn_1", errorClass: "rate_limit", delayMs: 2_000 }),
+      historyUpdate("cleared", 1),
+    ],
+    { lifetime: 1, adoptedRead: true },
+  );
+
+  expect(owner.getSnapshot()?.modelRetry).toBeUndefined();
   await owner.settled();
   owner.dispose();
 });

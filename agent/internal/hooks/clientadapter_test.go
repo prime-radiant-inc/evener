@@ -9,10 +9,8 @@ import (
 
 // --- clientAdapter tests ---
 
-func TestClientAdapter_SatisfiesPromptHookClient(t *testing.T) {
-	// Verify that clientAdapter implements promptHookClient at compile time.
-	var _ promptHookClient = clientAdapter{}
-}
+// Verify that clientAdapter implements promptHookClient at compile time.
+var _ promptHookClient = clientAdapter{}
 
 // --- clientAdapter ---
 

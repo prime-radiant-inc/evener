@@ -370,6 +370,7 @@ func wppPromptDataAndRender(t *testing.T, token string) {
 	}
 
 	sess.cfg.testOnly.minimalSystemPrompt = false
+	sess.systemPromptFrozen = false // the shortcut froze a stand-in; this fixture means to render
 	sess.refreshSystemPromptCache(env)
 	prompt, warning, failed := sess.renderSystemPrompt(env)
 	// The fixture deliberately configures a missing append file: the render

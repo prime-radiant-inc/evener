@@ -224,11 +224,12 @@ func (tc *ToolCallData) WireArguments() string {
 	return string(tc.Arguments)
 }
 
-// SentArguments returns the argument bytes the model actually sent: the
-// preserved raw bytes for a call whose arguments were not valid JSON
-// (Arguments holds the replay-safe {} placeholder there), else the recorded
-// arguments. Byte-faithful in both branches; callers wanting tidy edges trim
-// presentation-side.
+// SentArguments returns the argument bytes recorded for a sent call:
+// RawArguments for a call whose arguments were not valid JSON (Arguments
+// holds the replay-safe {} placeholder there), else the recorded Arguments.
+// Both branches return the stored bytes unchanged; Arguments is canonical, so
+// callers needing the provider's original spelling of valid JSON use
+// WireArguments.
 func (tc *ToolCallData) SentArguments() string {
 	if tc.RawArguments != "" {
 		return tc.RawArguments
@@ -236,15 +237,14 @@ func (tc *ToolCallData) SentArguments() string {
 	return string(tc.Arguments)
 }
 
-// SentArgumentsBytes returns the argument bytes the model actually sent as a
-// []byte, avoiding the string copy SentArguments performs in the common case.
-// Same precedence and byte-faithful content as SentArguments: RawArguments
-// wins when set (copying the string), else the recorded Arguments are returned
-// directly (no copy). Callers that immediately feed the result to a []byte
-// consumer — json.RawMessage, a hash, json.Unmarshal — use this to elide the
-// []byte(SentArguments()) round trip; callers that need a string use
-// SentArguments. The returned slice aliases tc.Arguments when RawArguments is
-// empty, so callers must not mutate it.
+// SentArgumentsBytes returns SentArguments' bytes as a []byte, avoiding the
+// string copy SentArguments performs in the common case. Same precedence as
+// SentArguments: RawArguments wins when set (copying the string), else the
+// recorded Arguments are returned directly (no copy). Callers that immediately
+// feed the result to a []byte consumer — json.RawMessage, a hash, json.Unmarshal
+// — use this to elide the []byte(SentArguments()) round trip; callers that need
+// a string use SentArguments. The returned slice aliases tc.Arguments when
+// RawArguments is empty, so callers must not mutate it.
 func (tc *ToolCallData) SentArgumentsBytes() []byte {
 	if tc.RawArguments != "" {
 		return []byte(tc.RawArguments)
@@ -313,6 +313,9 @@ type ThinkingData struct {
 	ResponsesContentParts []ResponsesReasoningPart `json:"responses_content_parts,omitempty"`
 	ResponsesSummaryParts []ResponsesReasoningPart `json:"responses_summary_parts,omitempty"`
 	// ResponsesIncomplete marks a reasoning item the provider cut off.
+	// Older transcripts can carry typed ResponsesContentParts and
+	// ResponsesSummaryParts without this flag; those items decode as complete
+	// and replay as finished.
 	ResponsesIncomplete bool `json:"responses_incomplete,omitempty"`
 }
 
@@ -493,22 +496,27 @@ func TrimThinkingForReplayMessage(msg Message, dropPlain bool) Message {
 }
 
 // StripOpaqueThinkingForCrossProvider returns the thinking part an
-// openai-responses target may take from a foreign turn: the blob and a
-// cryptographic signature come off. It answers ReplayableResponsesPlaintext,
-// the rule reasoningItem applies, and dropped reports the part must go.
+// openai-responses target may take from a foreign turn: the blob, the
+// provider-issued item id and a cryptographic signature come off. It answers
+// ReplayableResponsesPlaintext, the rule reasoningItem applies, and dropped
+// reports the part must go.
 func StripOpaqueThinkingForCrossProvider(p ContentPart) (ContentPart, bool) {
 	if p.Kind != ContentThinking || p.Thinking == nil || p.Thinking.Redacted {
 		return p, true
 	}
 	kept := *p.Thinking
-	kept.EncryptedContent = ""
-	if !IsOpenAICompatReasoningField(kept.Signature) {
-		kept.Signature = ""
+	changed := kept.ID != ""
+	kept.ID = ""
+	if kept.EncryptedContent != "" {
+		kept.EncryptedContent, changed = "", true
+	}
+	if kept.Signature != "" && !IsOpenAICompatReasoningField(kept.Signature) {
+		kept.Signature, changed = "", true
 	}
 	if !kept.ReplayableResponsesPlaintext() {
 		return p, true
 	}
-	if kept.EncryptedContent == p.Thinking.EncryptedContent && kept.Signature == p.Thinking.Signature {
+	if !changed {
 		return p, false
 	}
 	p.Thinking = &kept
@@ -666,6 +674,12 @@ type Request struct {
 	// treat Tools and every element's Parameters as immutable: the stamp
 	// describes the bytes at stamping time, so a schema edited in place would
 	// drift the estimate silently. Rebuild the list and re-measure instead.
+	//
+	// The stamp is the catalog's own count and nothing else: a route whose
+	// builder rewrites a schema prices that emission in the estimator
+	// (EffectiveToolsJSONBytes, EstimateInputTokensForRoute) without writing
+	// the answer back here, so a request priced for one route and then served
+	// by another cannot carry the first route's charge.
 	ToolsJSONBytes int `json:"-"`
 
 	AdapterTimeout *AdapterTimeout `json:"adapter_timeout,omitempty"`

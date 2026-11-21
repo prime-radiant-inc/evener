@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -333,7 +334,7 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	}
 
 	var firstReplay []json.RawMessage
-	const wantReasoning = `{"encrypted_content":"opaque","id":"rs_mixed","summary":[{"text":"s_2","type":"summary_text"}],"type":"reasoning"}`
+	const wantReasoning = `{"encrypted_content":"opaque","id":"rs_mixed","summary":[{"text":" s_2 ","type":"summary_text"},{"text":"","type":"summary_text"}],"type":"reasoning"}`
 	for _, requestIndex := range []int{2, 3} {
 		var request struct {
 			Input []json.RawMessage `json:"input"`
@@ -353,9 +354,11 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 				}
 			}
 		}
-		var calls, reasoning int
+		var calls int
+		var reasoningIDs []string
 		for _, rawItem := range request.Input {
 			var item struct {
+				ID        string `json:"id"`
 				Type      string `json:"type"`
 				CallID    string `json:"call_id"`
 				Name      string `json:"name"`
@@ -365,7 +368,7 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 				t.Fatal(err)
 			}
 			if item.Type == "reasoning" {
-				reasoning++
+				reasoningIDs = append(reasoningIDs, item.ID)
 				if bytes.Contains(rawItem, []byte(`"id":"rs_mixed"`)) && string(rawItem) != wantReasoning {
 					t.Fatalf("request %d reasoning = %s, want %s", requestIndex+1, rawItem, wantReasoning)
 				}
@@ -381,8 +384,8 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 		if calls != 1 {
 			t.Fatalf("request %d replayed the corrected call %d times, want once", requestIndex+1, calls)
 		}
-		if reasoning != len(wantThinking)-1 {
-			t.Errorf("request %d replayed %d reasoning items, want every stored one that has typed parts", requestIndex+1, reasoning)
+		if want := []string{"rs_mixed", "rs_plain", "rs_blank", "rs_summary"}; !slices.Equal(reasoningIDs, want) {
+			t.Errorf("request %d replayed reasoning IDs = %q, want exactly %q", requestIndex+1, reasoningIDs, want)
 		}
 	}
 }

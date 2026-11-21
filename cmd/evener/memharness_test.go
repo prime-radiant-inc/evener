@@ -23,6 +23,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -650,8 +651,7 @@ func TestMemHarness(t *testing.T) {
 	// healthy run on one read; another producer's queue entry is not this run's.
 	requireNoRunOwnedPending := func(what string) {
 		t.Helper()
-		deadline := time.Now().Add(10 * time.Second)
-		for {
+		testwait.UntilSeen(t, what+": run-owned pending input to clear", func() (bool, string) {
 			resp := memHarnessAuthoritativeRead(ctx, t, client, ref, false, 0)
 			owned := ""
 			for _, id := range resp.Thread.Evener.Queue.ClientMutationIDs {
@@ -674,14 +674,8 @@ func TestMemHarness(t *testing.T) {
 					}
 				}
 			}
-			if owned == "" {
-				return
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("%s: run-owned %s is still queued or pending", what, owned)
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
+			return owned == "", owned
+		})
 	}
 	sample := func(label string) {
 		requireNoRunOwnedPending(label)

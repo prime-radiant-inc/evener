@@ -217,12 +217,12 @@ stops between bounded directory reads and before further removals; an incomplete
 listing does not authorize deletion, and a later pass can retry unfinished work.
 An individual filesystem call already in progress may still block until it returns.
 
-| Mode | File-tool reads | File-tool writes | Spawned-process reads | Spawned-process writes |
-|---|---|---|---|---|
-| `off` (default) | anywhere | anywhere | anywhere | anywhere |
-| `read-only` | anywhere minus the denylist | denied (temp only) | anywhere minus the denylist | temp only |
-| `workspace-write` | anywhere minus the denylist | worktree + temp + contained caches | anywhere minus the denylist | worktree + temp + caches + git metadata (not config/hooks) |
-| `restricted` | worktree + Evener content (read-only) | worktree + temp | worktree + system read roots + developer toolchain + global git config files + hook/MCP paths + Evener content + temp | worktree + temp + git metadata (not config/hooks) |
+| Mode | File-tool reads | File-tool writes | Spawned-process reads | Spawned-process writes | Network (`net=on`, macOS) |
+|---|---|---|---|---|---|
+| `off` (default) | anywhere | anywhere | anywhere | anywhere | unrestricted |
+| `read-only` | anywhere minus the denylist | denied (temp only) | anywhere minus the denylist | temp only | all outbound (permissive) |
+| `workspace-write` | anywhere minus the denylist | worktree + temp + contained caches | anywhere minus the denylist | worktree + temp + caches + git metadata (not config/hooks) | all outbound (permissive) |
+| `restricted` | worktree + Evener content (read-only) | worktree + temp | worktree + system read roots + developer toolchain + global git config files + hook/MCP paths + Evener content + temp | worktree + temp + git metadata (not config/hooks) | TCP/UDP + mDNSResponder socket, AF_UNIX only under granted read roots |
 
 - **`off`** applies no sandbox confinement.
 - **`read-only`** cannot commit or write project files; only the session temp is
@@ -441,11 +441,13 @@ paths only when they are outside its granted read roots. Relocated state roots
 must be checked against the effective policy too.
 
 Masking `/proc` is load-bearing: without it a `read_file("/proc/<evener-pid>/environ")`
-would leak Evener's own environment, including the provider API key. Masking the
+would leak Evener's own environment, including the provider API key. On Linux, masking the
 daemon sockets turns a `connect()` into `ECONNREFUSED`, so a session cannot drive a
 container daemon straight to host root even with `--sandbox-net off` (a read-only
 bind of `/` does not block a Unix-socket `connect()`, and `--unshare-net` does not
-affect `AF_UNIX`).
+affect `AF_UNIX`). On macOS, `restricted` mode with networking on denies
+`connect()` to masked sockets; `read-only` and `workspace-write` keep the
+permissive outbound policy.
 
 **One exception to "the mask wins", for the file tools: Evener's own content.**
 Installed plugins (the plugin store's `cache` and `bundled` directories under
@@ -672,6 +674,14 @@ LLM-API connection, not a credential fd.
 load-bearing guarantee, and egress denial is opt-in. (This deliberately differs from
 tools that default to deny.)
 
+On macOS, `restricted` mode with `net=on` narrows outbound further: a spawned
+process may use TCP and UDP, reach the mDNSResponder resolver socket
+(`/private/var/run/mDNSResponder`), and connect to AF_UNIX sockets only under its
+granted read roots — never every socket on the host. A socket under a masked
+path (for example a gpg-agent socket in `~/.gnupg` inside the worktree) stays
+unreachable even when its read root is granted. `read-only` and
+`workspace-write` keep the permissive-with-warnings outbound policy (#4224).
+
 `--sandbox-net off` governs the **tool plane**:
 
 - **Model-authored** spawned processes (the shell, `rg`, hook commands) lose
@@ -758,17 +768,42 @@ took the session's first steering input with it.
   granted — including staying network-severed under `net=off`.
 - **stdio MCP servers** are spawned under the session sandbox. Trusted
   configuration layers can add read/exec roots for their programs and scripts;
-  project configuration cannot. Unlike model-authored spawns, all configured MCP
-  server subprocesses retain network access under `net=off`, including servers
-  from project configuration. Filesystem confinement, the exec floor, and file
-  descriptor hygiene still apply.
-- **Remote (HTTP/SSE) MCP servers** are no longer refused under `net=off` — they
-  connect the same as under `net=on`.
+  project configuration cannot. Filesystem confinement, the exec floor, and file
+  descriptor hygiene always apply.
+- **Remote (HTTP/SSE) MCP servers** connect the same as under `net=on` when the
+  launch authorized them.
 
-The network exception includes project-configured MCP servers. Excluding project
-configuration from filesystem grants does not exclude those servers from discovery
-or connection. Model-directed egress (`web_fetch`/`web_search`) and model-spawned
-processes remain network-blocked under `net=off`.
+The network exception is granted to **launch-authorized** MCP servers only. An
+MCP server is trusted infrastructure — and so keeps egress under `net=off` when a
+model-authored spawn would lose it — when its config comes from a layer the model
+cannot write (the global config, `--mcp-config` files, `--mcp` inline specs, or a
+plugin directory), **or** when it is a project server the launch read and
+authorized:
+
+- **Launch-authorized project MCP servers keep the network exception.** The
+  launch is the trust decision: the user started a session against this
+  repository's `.evener/mcp.json`, so the entries it read at startup — and only
+  those, matched per server by their own bytes — are the ones the exception
+  covers. A server whose entry is unchanged since that read keeps it, including
+  when the same committed file resolves in a linked worktree of the same
+  repository.
+- **Newly discovered or modified project MCP servers on a sandboxed delegate
+  without launch authorization do NOT get it.** A delegate is constructed by a
+  running session in a shared workspace, possibly after a Git root and its
+  `.evener/mcp.json` appeared around that session. An entry the launch never
+  authorized is model-writable configuration, so it is treated like any other
+  model-influenced spawn:
+  - **Remote HTTP/SSE entries are skipped** under `net=off`, with a warning. They
+    are dialled by Evener's own process, which no sandbox wraps, so nothing else
+    could withhold the host network from them.
+  - **stdio entries run under ordinary sandbox confinement.** They are still
+    admitted — their local tools work — but with the ordinary confinement rather
+    than the trusted-infrastructure carve-out, so `net=off` severs their egress
+    (`--unshare-net` on Linux, the Seatbelt deny rule on macOS) while local
+    tooling keeps working.
+
+Model-directed egress (`web_fetch`/`web_search`) and model-spawned processes
+remain network-blocked under `net=off`.
 
 The grant is tightly bounded:
 
@@ -783,8 +818,11 @@ The grant is tightly bounded:
   sits inside the model's own write surface — a grant derived from it would let a
   session widen its own box (plant the file, spawn a delegate with
   `sandbox=restricted`, read whatever you named), breaking the rule that the policy
-  is fixed for the life of the session. A project-declared MCP server still connects
-  normally; it just cannot hand itself filesystem roots.
+  is fixed for the life of the session. This exclusion is only about filesystem
+  roots: a project-declared MCP server hands itself no roots either way, and
+  whether it connects at all is the [connection policy](#hooks-and-mcp-under-a-sandbox)
+  above, which withholds the network exception from entries the launch did not
+  authorize.
 - **Adds read and exec access, not write access.** Existing write permissions
   remain: a hook directory already under a writable root, such as the worktree
   in `workspace-write`, stays writable.

@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"html"
 	"strings"
 	"testing"
@@ -52,31 +51,5 @@ func TestDelegateQuietAttentionContent(t *testing.T) {
 	// HTML-escaped delegate ID.
 	if !strings.Contains(got, html.EscapeString("dlg_x<y>")) {
 		t.Fatalf("expected escaped delegate ID in content, got %q", got)
-	}
-}
-
-// TestDelegateInputWasPreseededCov covers delegateInputWasPreseeded
-// (lines 767-770).
-func TestDelegateInputWasPreseededCov(t *testing.T) {
-	t.Parallel()
-	// No context value: returns false.
-	if delegateInputWasPreseeded(context.Background(), "sess1", "hello") {
-		t.Fatal("expected false for background context")
-	}
-	// Matching context value: returns true.
-	ctx := context.WithValue(context.Background(), delegatePreseededInputContextKey{}, delegatePreseededInput{
-		sessionID: "sess1",
-		input:     "hello",
-	})
-	if !delegateInputWasPreseeded(ctx, "sess1", "hello") {
-		t.Fatal("expected true for matching preseeded input")
-	}
-	// Mismatched session ID: returns false.
-	if delegateInputWasPreseeded(ctx, "sess2", "hello") {
-		t.Fatal("expected false for mismatched session ID")
-	}
-	// Mismatched input: returns false.
-	if delegateInputWasPreseeded(ctx, "sess1", "world") {
-		t.Fatal("expected false for mismatched input")
 	}
 }

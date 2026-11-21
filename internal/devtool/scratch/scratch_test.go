@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // fixtureTMPDIR points TMPDIR at a fresh directory and returns its
@@ -329,17 +331,14 @@ func TestReclaimAfterSIGKILL(t *testing.T) {
 	defer func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() }()
 
 	var holderPath string
-	deadline := time.Now().Add(60 * time.Second)
-	for {
-		if raw, err := os.ReadFile(ready); err == nil && len(raw) > 0 {
-			holderPath = strings.TrimSpace(string(raw))
-			break
+	testwait.Until(t, "the helper to acquire scratch", func() bool {
+		raw, err := os.ReadFile(ready)
+		if err != nil || len(raw) == 0 {
+			return false
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("helper never acquired scratch")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		holderPath = strings.TrimSpace(string(raw))
+		return true
+	})
 
 	if err := cmd.Process.Kill(); err != nil {
 		t.Fatalf("SIGKILLing helper: %v", err)

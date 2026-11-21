@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -2420,5 +2421,187 @@ func TestPastEntryTurns_KeepsRecordedRoundOnSettledCall(t *testing.T) {
 	}
 	if shell.Output != shellOut {
 		t.Errorf("settled row output = %q, want the result's payload %q", shell.Output, shellOut)
+	}
+}
+
+// #6819: the whole-file replay and the index must list the same items for one
+// entry sequence — a command result with an explicit call id, then the
+// communicate delivery that answers the communicate call announced beside it.
+// The replay projects under the read model's entry rules, so the delivery
+// renders in the turn it names, at its own entry, like the index's item,
+// instead of being flushed into whatever turn comes last.
+func TestPastEntryTurnsRendersACommunicateDeliveryLikeTheIndex(t *testing.T) {
+	cases := map[string]struct {
+		assistantText string
+		message       string
+		wantMessage   bool
+	}{
+		"delivered": {assistantText: "working", message: "hi", wantMessage: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			stateDir := filepath.Join(root, "projects", "project-repo-0000000000")
+			sessionID := "02wMz5Txv5aIxgf9yVdd0N"
+			if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Unix(1700000000, 0).UTC()
+			if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+				ID:        sessionID,
+				ProfileID: "openai",
+				Model:     "gpt-5",
+				EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/tmp/project"},
+				CreatedAt: now,
+				UpdatedAt: now,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl")
+			w, err := transcript.NewWriter(path, transcript.Header{
+				SessionID: sessionID,
+				CreatedAt: now,
+				ProfileID: "openai",
+				Model:     "gpt-5",
+			})
+			if err != nil {
+				t.Fatalf("NewWriter: %v", err)
+			}
+			identity := func(turnID string, turn schema.Turn) schema.Turn {
+				turn.Format, turn.TurnID = schema.TurnFormatIdentity, turnID
+				return turn
+			}
+			opener := identity("turn_6819", schema.NewTurn(schema.TurnUserInput, llm.User("start")))
+			opener.TurnKind = schema.TurnSpanExecution
+			delivery := identity("turn_6819", schema.NewTurn(schema.TurnCommunicate, llm.User("")))
+			delivery.Communicate = &schema.CommunicateInfo{CallID: "com1", Message: tc.message, EndTurn: true}
+			next := identity("turn_after", schema.NewTurn(schema.TurnUserInput, llm.User("next")))
+			next.TurnKind = schema.TurnSpanExecution
+			entries := []schema.Turn{
+				opener,
+				identity("turn_6819", schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+					{Kind: llm.ContentText, Text: tc.assistantText},
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "cmd1", Name: "read_file", Arguments: json.RawMessage(`{}`)}},
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "com1", Name: "communicate", Arguments: mustJSON(map[string]string{"message": tc.message})}},
+				}}}),
+				identity("turn_6819", schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+					{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "cmd1", Name: "read_file", Content: "ok"}},
+				}}}),
+				delivery,
+				next,
+			}
+			for _, entry := range entries {
+				if err := w.Append(entry); err != nil {
+					t.Fatalf("Append: %v", err)
+				}
+			}
+			if err := w.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+
+			idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
+			pastEntry, ok := idx.Find(sessionID)
+			if !ok {
+				t.Fatal("past entry not found")
+			}
+			index, err := transcriptindex.Open(path, transcriptindex.DirFor(path))
+			if err != nil {
+				t.Fatalf("index open: %v", err)
+			}
+			t.Cleanup(func() { _ = index.Close() })
+			window, err := index.Latest(appwire.TranscriptItemPageLimit)
+			if err != nil {
+				t.Fatalf("index Latest: %v", err)
+			}
+			describe := func(turnID, itemType, callID, status, text string) string {
+				return turnID + "|" + itemType + "|" + callID + "|" + status + "|" + text
+			}
+			var indexed []string
+			for _, candidate := range window.Candidates {
+				indexed = append(indexed, describe(candidate.TurnID, candidate.Item.Type, candidate.Item.CallID, candidate.Item.Status, candidate.Item.Text))
+			}
+			var replayed []string
+			for _, turn := range requirePastEntryTurns(t, hubcore.WebConfig{Past: idx}, pastEntry) {
+				for _, item := range turn.Items {
+					replayed = append(replayed, describe(turn.ID, item.Type, item.CallID, item.Status, item.Text))
+				}
+			}
+			if !reflect.DeepEqual(replayed, indexed) {
+				t.Fatalf("replay items = %v, indexed = %v", replayed, indexed)
+			}
+			want := describe("turn_6819", "agentMessage", "com1", "completed", tc.message)
+			found := false
+			for _, got := range indexed {
+				found = found || got == want
+			}
+			if tc.wantMessage != found {
+				t.Fatalf("indexed items = %v, want the delivery message present=%v", indexed, tc.wantMessage)
+			}
+		})
+	}
+}
+
+// A recorded communicate whose tool result was never saved must render under
+// the turn it names, at the recorded entry — not flushed into a later
+// standalone steering turn that happens to come last. The index uses the
+// recorded entry, so both readers must agree on its turn, item and row.
+func TestPastEntryTurnsKeepsARecordedCommunicateOutOfALaterSteeringTurn(t *testing.T) {
+	identity := func(turnID string, turn schema.Turn) schema.Turn {
+		turn.Format, turn.TurnID = schema.TurnFormatIdentity, turnID
+		return turn
+	}
+	// The assistant call carries inherited authorship: that is the shape whose
+	// raw communicate arguments reach the pending-call flush, so clearing them
+	// on the recorded delivery is what the test must exercise.
+	call := identity("turn_6906", schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: llm.ContentText, Text: "working"},
+		{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "com1", Name: "communicate", Arguments: mustJSON(map[string]string{"message": "hi"})}},
+	}}})
+	call.Authorship = &schema.TranscriptAuthorship{Inherited: true}
+	delivery := identity("turn_6906", schema.NewTurn(schema.TurnCommunicate, llm.User("")))
+	delivery.Communicate = &schema.CommunicateInfo{CallID: "com1", Message: "hi", EndTurn: true}
+	steering := identity("turn_steer", schema.NewTurn(schema.TurnSteering, llm.User("steer elsewhere")))
+	steering.TurnKind, steering.SteeringSource = schema.TurnSpanDelivery, events.SteeringSourceUser
+	cfg, pastEntry, path := seedIndexedPastSession(t,
+		execution("turn_6906", schema.NewTurn(schema.TurnUserInput, llm.User("start"))),
+		call,
+		delivery,
+		completedExecution("turn_6906"),
+		steering,
+	)
+	describe := func(turnID string, item appwire.ThreadItem) string {
+		return turnID + "|" + item.ID + "|" + item.Type + "|" + item.CallID + "|" + item.Status + "|" + item.Text
+	}
+	var indexed []string
+	for _, candidate := range indexLatestWindow(t, path, appwire.TranscriptItemPageLimit).Candidates {
+		indexed = append(indexed, describe(candidate.TurnID, candidate.Item))
+	}
+	var replayed []string
+	for _, turn := range requirePastEntryTurns(t, cfg, pastEntry) {
+		for _, item := range turn.Items {
+			replayed = append(replayed, describe(turn.ID, item))
+		}
+	}
+	if !reflect.DeepEqual(replayed, indexed) {
+		t.Fatalf("replay items = %v, indexed = %v", replayed, indexed)
+	}
+	want := describe("turn_6906", appwire.ThreadItem{ID: "item_assistant_3_0", Type: "agentMessage", CallID: "com1", Status: appwire.TurnStatusCompleted, Text: "hi"})
+	deliveries, steeringRows := 0, 0
+	for _, got := range replayed {
+		if got == want {
+			deliveries++
+		}
+		if strings.HasPrefix(got, "turn_steer|") {
+			steeringRows++
+			if strings.Contains(got, "|agentMessage|") {
+				t.Fatalf("replay items = %v, want no delivery under the steering turn", replayed)
+			}
+		}
+	}
+	if deliveries != 1 {
+		t.Fatalf("replay items = %v, want the recorded delivery once under turn_6906", replayed)
+	}
+	if steeringRows != 1 {
+		t.Fatalf("replay items = %v, want the steering delivery's own single row", replayed)
 	}
 }

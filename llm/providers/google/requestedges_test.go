@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -55,6 +56,53 @@ func TestBuildBodyThinkingEffortWithoutVouchedLevel(t *testing.T) {
 	}
 }
 
+func TestSanitizeGeminiSchemaAdversarialTypeShapes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		in   map[string]any
+		want map[string]any
+	}{
+		{"nullable pair is collapsed", map[string]any{"type": []any{"string", "null"}}, map[string]any{"type": "string", "nullable": true}},
+		{"properties value that is not an object passes through", map[string]any{"properties": "not-a-map"}, map[string]any{"properties": "not-a-map"}},
+		{"enum that is not a list passes through", map[string]any{"type": []any{"string", "null"}, "enum": "nope"}, map[string]any{"type": "string", "nullable": true, "enum": "nope"}},
+		{"type list with a non-string member passes through", map[string]any{"type": []any{"string", 5}}, map[string]any{"type": []any{"string", 5}}},
+		{"one-element type list passes through", map[string]any{"type": []any{"string"}}, map[string]any{"type": []any{"string"}}},
+		{"three-element type list passes through", map[string]any{"type": []any{"string", "null", "x"}}, map[string]any{"type": []any{"string", "null", "x"}}},
+		{"empty-string type member passes through", map[string]any{"type": []any{"", "null"}}, map[string]any{"type": []any{"", "null"}}},
+		{"two non-null type members passes through", map[string]any{"type": []any{"string", "integer"}}, map[string]any{"type": []any{"string", "integer"}}},
+		{"all-null type list passes through", map[string]any{"type": []any{"null", "null"}}, map[string]any{"type": []any{"null", "null"}}},
+		{"explicit nullable wins over a collapsed union", map[string]any{"type": []any{"string", "null"}, "nullable": false}, map[string]any{"type": "string", "nullable": false}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sanitizeGeminiSchema(tc.in)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("sanitizeGeminiSchema(%#v) = %#v, want %#v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// Go randomizes map iteration order, so every call must agree on the result.
+func TestSanitizeGeminiSchemaExplicitNullableWinsOverUnion(t *testing.T) {
+	t.Parallel()
+	in := map[string]any{"type": []any{"string", "null"}, "nullable": false}
+	want := map[string]any{"type": "string", "nullable": false}
+	for i := range 200 {
+		got := sanitizeGeminiSchema(in)
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("iteration %d: sanitizeGeminiSchema(%#v) = %#v, want %#v", i, in, got, want)
+		}
+	}
+}
+
+// TestBuildBodyAssistantAndToolResultContents drives toInteractionInput through
+// BuildBody with one conversation whose assistant and tool messages select
+// every translation arm: assistant text, a nil image part (dropped), an image
+// URL part, a nil tool call (dropped), a tool call whose arguments are literal
+// JSON null (must become {}), a thought signature replay, tool results carrying
+// a map / a non-string non-map payload / no call id, a tool message with a
+// non-result part (dropped), and an unknown role (ignored).
 func TestBuildBodyAssistantAndToolResultContents(t *testing.T) {
 	t.Parallel()
 	req := llm.Request{Model: "gemini-x", Messages: []llm.Message{

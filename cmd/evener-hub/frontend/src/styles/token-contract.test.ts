@@ -462,15 +462,6 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // state reads at a glance; every piece of TEXT on the card stays on the
 // ink scale.
 //
-// activity-redesign task 7: panes/session/chrome/activitypanel.module.css
-// earns the same exception for the same structural reason - it lives under
-// panes/session/chrome/, not widgets/<name>/, so it can never match
-// WIDGET_STYLESHEET_RE either. Its one semantic reach is --danger on the
-// dense tree's failure text (.denseFailed: the terminal-row "failed" meta
-// suffix and the fold row's "· M failed" count), which the 2026-08-05
-// activity-view redesign spec assigns to the danger hue exactly the way
-// RailRow.module.css's failure signals already established.
-//
 // task-list-ui task 8: panes/session/chrome/taskspanel.module.css earns the
 // same exception for the same structural reason - it lives under
 // panes/session/chrome/, not widgets/<name>/, so it can never match
@@ -505,7 +496,6 @@ const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "panes/session/transcript/tools/subagentmodule.module.css",
   "panes/session/composer/currentwork.module.css",
   "panes/session/transcript/tools/taskcheck.module.css",
-  "panes/session/chrome/activitypanel.module.css",
   "panes/session/chrome/taskspanel.module.css",
   "panes/session/transcript/entityref.module.css",
   "panes/session/nextNeedsYou.module.css",

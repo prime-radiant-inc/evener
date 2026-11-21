@@ -4,6 +4,15 @@
   white-space: nowrap;
 }
 
+/* In prose the chip moves to the next line as one unit; inside a table cell
+ * it cannot, because the table owns the column's width (the markdown widget
+ * lays its GFM tables out fixed, and GFM has no width syntax). A nowrap chip
+ * wider than its column would paint over the neighboring cell, so there the
+ * chip wraps like any other long token instead. */
+table .group {
+  white-space: normal;
+}
+
 .trigger {
   border-radius: var(--radius-chip);
   color: var(--accent-ink);

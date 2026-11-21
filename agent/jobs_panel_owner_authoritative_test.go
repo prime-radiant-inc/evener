@@ -708,6 +708,83 @@ func TestLoadSessionJobGetKeepsStoredLegacyOwnerWhenForwardedCopyWins(t *testing
 	}
 }
 
+// TestLoadSessionJobGetLegacyOwnerJournalFinishDrivesTheRead pins the
+// corroborated half of the legacy-owner rule. A pre-owner job ID encodes no
+// owner, so the row's stored OwnerSessionID is only a HINT — until the journal
+// that hint names holds a row agreeing the hinted session owns the job. Then
+// that journal is the authority on what the job IS, and its finish must drive
+// the read: the corroborated record wins, its status and exit code answer, and
+// the launch facts only the forwarded start carries are preserved beside them.
+//
+// The existing legacy test covers an absent owner journal; this one covers the
+// journal that corroborates, which a regression skipping the hint would leave
+// untested while every owner-selection test still passed.
+func TestLoadSessionJobGetLegacyOwnerJournalFinishDrivesTheRead(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	ancestorSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	// A pre-owner id: not shaped as job_<owner>_<suffix>, so it encodes no owner.
+	jobID := "job_legacy"
+	started := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	ended := started.Add(90 * time.Second)
+	exit := 6
+
+	// The ancestor's forwarded copy carries the launch metadata. The command and
+	// description were declared in the start event, and this journal is the only
+	// place they survive when the owner's holds nothing but the lifecycle.
+	const (
+		command     = "make legacy-panel"
+		description = "forwarded legacy launch"
+	)
+	ancestorStore := openJobJournal(t, jobsDir(stateDir, ancestorSession))
+	appendJobEvent(t, ancestorStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: ancestorSession,
+		Command: command, Description: description, StartedAt: &started,
+	})
+	closeJobJournal(t, ancestorStore)
+
+	// The hinted owner's journal corroborates the claim and holds the finish the
+	// forwarded copy never got: a completed status, an exit code and the
+	// terminal generation. Its start leaves the launch fields empty, so the
+	// forwarded copy is the only source for them.
+	ownerStore := openJobJournal(t, jobsDir(stateDir, ownerSession))
+	appendJobEvent(t, ownerStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: ownerSession,
+		StartedAt: &started,
+	})
+	appendJobEvent(t, ownerStore, jobstore.Event{
+		Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID,
+		Status: jobstore.StatusCompleted, ExitCode: &exit, EndedAt: &ended, TerminalGen: "gen_legacy_owner",
+	})
+	closeJobJournal(t, ownerStore)
+
+	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the corroborated owner journal's completed record")
+	}
+	if job.Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("status = %q, want %q from the corroborated owner journal: the forwarded copy is stale running",
+			job.Status, jobstore.StatusCompleted)
+	}
+	if job.ExitCode == nil || *job.ExitCode != exit {
+		t.Fatalf("exitCode = %v, want %d from the owner journal's finish", job.ExitCode, exit)
+	}
+	if job.Command != command {
+		t.Fatalf("command = %q, want %q preserved from the forwarded start: a finish does not restate the launch",
+			job.Command, command)
+	}
+	if job.Description != description {
+		t.Fatalf("description = %q, want %q preserved from the forwarded start",
+			job.Description, description)
+	}
+}
+
 // TestLoadSessionJobOutputPageIgnoresContradictoryRecordsOutputPath pins the
 // read-side counterpart of that guard: an explicit path on a contradictory
 // record must not be honored either, because the record states where some other

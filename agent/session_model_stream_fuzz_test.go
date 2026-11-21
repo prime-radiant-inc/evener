@@ -33,7 +33,7 @@ import (
 //     implies a well-formed response (stamped model/provider) and attempt
 //     metadata.
 //
-//   - applyResponsesContinuationAnchorPlanning (session_model_call.go) — driven
+//   - planResponsesContinuation (session_model_call.go) — driven
 //     with a fuzzed request/config/plan against a matching anchor turn. Oracle:
 //     it never panics; the returned request always carries a non-empty
 //     HistoryMode; and whenever it selects the responses-delta continuation the
@@ -478,7 +478,7 @@ func FuzzMsfzCallModelWithFallback(f *testing.F) {
 	})
 }
 
-// --- applyResponsesContinuationAnchorPlanning fuzz -------------------------
+// --- planResponsesContinuation fuzz -------------------------
 
 // msfzPlanConfig is the fuzz-derived configuration for the continuation-planning
 // target: whether continuation is enabled, whether the plan permits storage,
@@ -504,7 +504,7 @@ func decodeMsfzPlanConfig(data []byte) msfzPlanConfig {
 	}
 }
 
-// FuzzMsfzContinuationAnchorPlanning drives applyResponsesContinuationAnchorPlanning
+// FuzzMsfzContinuationAnchorPlanning drives planResponsesContinuation
 // across the enabled/disabled, storage-allowed/denied, shadow-available/missing,
 // and anchor-present/absent branches. Oracle: never panics; the returned request
 // always carries a non-empty HistoryMode; a responses-delta selection is
@@ -537,17 +537,17 @@ func FuzzMsfzContinuationAnchorPlanning(f *testing.F) {
 			Messages: []llm.Message{llm.System("system"), llm.User("current user marker")},
 		}
 
-		// TRIPWIRE: applyResponsesContinuationAnchorPlanning is pure history
+		// TRIPWIRE: planResponsesContinuation is pure history
 		// bookkeeping with no I/O; this normally returns in well under a
 		// millisecond. 30s only fires on a genuine hang.
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		out, fullHistory, _ := sess.applyResponsesContinuationAnchorPlanning(ctx, sess.currentProfile(), req, history, cfg.stream, false)
+		out, fullHistory, _ := sess.planResponsesContinuation(ctx, sess.currentProfile(), sess.priceRoundRoute(sess.currentProfile(), req), req, history, cfg.stream, false)
 
 		// Invariant: every return path leaves a concrete history mode.
 		if out.HistoryMode == "" {
-			t.Fatalf("applyResponsesContinuationAnchorPlanning: returned empty HistoryMode: %+v", out)
+			t.Fatalf("planResponsesContinuation: returned empty HistoryMode: %+v", out)
 		}
 		// Invariant: a delta selection is internally consistent.
 		if out.HistoryMode == llm.HistoryModeResponsesDelta {
@@ -567,7 +567,7 @@ func FuzzMsfzContinuationAnchorPlanning(f *testing.F) {
 		}
 
 		// Determinism: the same session state + request yields the same decision.
-		again, _, _ := sess.applyResponsesContinuationAnchorPlanning(ctx, sess.currentProfile(), req, history, cfg.stream, false)
+		again, _, _ := sess.planResponsesContinuation(ctx, sess.currentProfile(), sess.priceRoundRoute(sess.currentProfile(), req), req, history, cfg.stream, false)
 		if again.HistoryMode != out.HistoryMode || again.PreviousResponseID != out.PreviousResponseID {
 			t.Fatalf("planning not deterministic:\n first  = mode=%q prev=%q\n second = mode=%q prev=%q",
 				out.HistoryMode, out.PreviousResponseID, again.HistoryMode, again.PreviousResponseID)

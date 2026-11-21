@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/internal/transcriptindex"
@@ -307,7 +308,7 @@ func TestNotificationTurnOwnsDirectRetrySteering(t *testing.T) {
 	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 		return apptranscript.ProjectTurn(turnID, turnIndex, turn, apptranscript.NewToolCallRegistry(), nil, nil)
 	}
-	coldTurns, err := apptranscript.ItemTurnsFromEntries(data.Header, data.Entries, project)
+	coldTurns, err := apptranscript.ItemTurnsFromFile(sess.TranscriptPath(), transcript.DefaultMaxLineBytes, project)
 	if err != nil {
 		t.Fatalf("cold projection: %v", err)
 	}
@@ -622,7 +623,7 @@ func TestNotificationTurnWithoutLaterArrivalsRunsItsOwnBatchOnly(t *testing.T) {
 // TestAcceptNotificationInput_PersistsNotificationKind verifies the durable
 // notification reminder turn carries SteeringKind on schema.Turn, not only on
 // the live SteeringInjectedData event, so a reload labels it the same way the
-// live transcript did (review round 2: this direct-append site bypasses the
+// live transcript did (this direct-append site bypasses the
 // steerKind/consumeSteeringMessage queue path that already persisted its
 // kind). Uses the same minimal durable-record construction as
 // TestAcceptNotificationInputAdoptsNotificationProvenance
@@ -1629,6 +1630,63 @@ func TestNotificationTurnOpeningBatchSurvivesLocalAdmissionFailure(t *testing.T)
 	}
 	if n := countHistoryNeedle(sess, fmt.Sprintf(`job_id=%q`, jobA)); n != 1 {
 		t.Errorf("job A appears in the transcript %d times, want 1", n)
+	}
+}
+
+func TestJobNotificationAfterIdleSetModelCarriesEnvironmentDiff(t *testing.T) {
+	t.Parallel()
+	launch := NewOpenAIProfile("gpt-5.4")
+	switched := newAnthropicProfile("claude-opus-4-6")
+	if launch.KnowledgeCutoff() == "" || switched.KnowledgeCutoff() == "" || launch.KnowledgeCutoff() == switched.KnowledgeCutoff() {
+		t.Fatalf("fixture profiles need distinct cutoffs: %q vs %q", launch.KnowledgeCutoff(), switched.KnowledgeCutoff())
+	}
+	openaiAdapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("turn 1 done") })
+	anthropicAdapter := newFakeAdapter("anthropic", func(llm.Request) llm.Response { return agenttest.FinalResponse("notif done") })
+	client := llm.NewClient()
+	client.Register(openaiAdapter)
+	client.Register(anthropicAdapter)
+	sess := newSession(t,
+		withClient(client),
+		withProfile(launch),
+		withConfig(SessionConfig{
+			ResolveProfile: testResolver,
+			testOnly:       testConfig{skipGitSnapshot: true},
+		}),
+	)
+	launchPrompt := sess.cachedSystemPrompt
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "start job", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	enqueueCompletedJobNotification(t, sess, "job_idle_model_switch")
+	if err := sess.SetModel("anthropic/claude-opus-4-6"); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+
+	reqs := anthropicAdapter.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("anthropic requests = %d, want 1", len(reqs))
+	}
+	if reqs[0].Messages[0].Text() != launchPrompt {
+		t.Fatalf("notification after idle SetModel mutated launch prompt")
+	}
+	envIdx, notifIdx := -1, -1
+	for i, msg := range reqs[0].Messages {
+		txt := msg.Text()
+		if strings.Contains(txt, "<environment_context>") && strings.Contains(txt, "model: claude-opus-4-6") && strings.Contains(txt, "knowledge cutoff: "+switched.KnowledgeCutoff()) {
+			envIdx = i
+		}
+		if strings.Contains(txt, "job_idle_model_switch") {
+			notifIdx = i
+		}
+	}
+	if envIdx < 0 || notifIdx < 0 || envIdx >= notifIdx {
+		t.Fatalf("expected <environment_context> with new model/cutoff before job notification (envIdx=%d notifIdx=%d); messages=%+v", envIdx, notifIdx, reqs[0].Messages)
 	}
 }
 

@@ -228,6 +228,9 @@ type SessionMeta struct {
 	// EnvContext is the environment-context tracker state (last emitted
 	// snapshot), persisted so resume stays silent when nothing changed.
 	EnvContext *envctx.State `json:"env_context,omitempty"`
+	// LaunchEnvBaseline is what the launch prompt stated, seeded before any replay.
+	LaunchEnvBaseline  envctx.Snapshot `json:"launch_env_baseline,omitzero"`
+	LaunchSystemPrompt string          `json:"launch_system_prompt,omitempty"` // when the transcript header has none
 	// ReasoningEffortEscalated records the sticky loop-detection escalation
 	// separately from Config so a resumed lower-effort task cannot undo it.
 	ReasoningEffortEscalated bool `json:"reasoning_effort_escalated,omitempty"`

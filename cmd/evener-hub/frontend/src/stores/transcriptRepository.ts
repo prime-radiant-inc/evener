@@ -16,6 +16,7 @@ import {
   invalidateHistory,
   itemIsIdentityOnly,
   itemTextPresence,
+  liveBootGeneration,
   mergeOlderItemPage,
   mergeSavedViewPage,
   mergeTranscriptItemVersioned,
@@ -25,6 +26,7 @@ import {
   pruneBackgroundHistoryBodies,
   readDisposition,
   resolvePendingEscalation,
+  retiresBootGeneration,
   type SnapshotIdentity,
   type ThreadItem,
   type ThreadItemPosition,
@@ -542,6 +544,9 @@ export class TranscriptRepository {
   #coverageReadId: string | undefined;
   #localReadContinuation: string | undefined;
   #continuityId: string | undefined;
+  // The source generation the last adopted read named, if it named one: the
+  // cut's own ordering for buffered `overlay/upserted` frames.
+  #cutBootGeneration: string | undefined;
   #coverageStart: { entry: number; item: number; sub?: number } | null = null;
   #coverageEnd: { entry: number; item: number; sub?: number } | null = null;
   #representedSnapshot = 0;
@@ -943,6 +948,15 @@ export class TranscriptRepository {
       this.#advanceSourceRevision();
     }
     this.#boundary = Math.max(this.#boundary + 1, response.snapshot?.length ?? 0);
+    // The buffered pre-cut window is judged against the source this read
+    // adopted: a token naming no owner leaves the previous ordering standing,
+    // exactly as the activity store's own adoption does. A success carrying
+    // `daemonless` is saved-history provenance, not proof the daemon exited, so
+    // it must not erase a live generation this cut is already comparing
+    // against: the still-running daemon's buffered frames would stop being
+    // filtered. With no baseline held the cut stays unnamed, which retires
+    // nothing rather than judging on a fallback token.
+    this.#cutBootGeneration = liveBootGeneration(response.bootGeneration) ?? this.#cutBootGeneration;
     this.#coverageBoundary = request.boundary;
     this.#suffixBoundaryBase = request.boundary;
     this.#coverageReadId = request.readId;
@@ -1192,7 +1206,11 @@ export class TranscriptRepository {
       notification.params.queue.revision > (this.#model?.queue?.revision ?? -1)
     ) {
       this.accept(notification, context);
-    } else if (notification.method === "overlay/upserted" && !responseOverlayKeys.has(notification.params.item.key)) {
+    } else if (
+      notification.method === "overlay/upserted" &&
+      !responseOverlayKeys.has(notification.params.item.key) &&
+      !this.#retiredCutOverlay(notification.params.bootGeneration)
+    ) {
       this.accept(notification, context);
     } else if (
       notification.method === "overlay/delta" &&
@@ -1201,6 +1219,16 @@ export class TranscriptRepository {
     ) {
       this.accept(notification, context);
     }
+  }
+
+  // Whether a buffered pre-cut overlay was published by a source generation
+  // the adopted read has left. Only the source this cut adopted can retire a
+  // frame: a token it ignores is a departed daemon's, and its overlay slot
+  // names a stream the replacement never published. A frame naming no
+  // generation — an older peer's, or a hub-synthesized one — is never retired,
+  // because absence says nothing about identity.
+  #retiredCutOverlay(bootGeneration: string | undefined): boolean {
+    return retiresBootGeneration(this.#cutBootGeneration, bootGeneration);
   }
 
   // Decides which of the buffer's quota-wait and turn-status frames the
@@ -1257,10 +1285,10 @@ export class TranscriptRepository {
           errorClass?: string;
           waitStartedAt?: number;
         };
-        if (params.errorClass !== "quota_exceeded") {
-          admitted.add(notification);
-          continue;
-        }
+        // Ordinary retries belong to the live and post-cut paths: a duplicate
+        // over a snapshot already holding the retry's clearing output changes
+        // no recorded history, so a replayed chip would stand.
+        if (params.errorClass !== "quota_exceeded") continue;
         const stamp = params.waitStartedAt ?? 0;
         const heldStamp = snapshot.quotaWaitStartedAt ?? 0;
         const snapshotHoldsWait = snapshot.quotaResumesAt !== undefined || heldStamp > 0;

@@ -743,7 +743,15 @@ export interface EvenerDelegateInfo {
   runningJobCount?: number;
   oldestRunningJobStartedAt?: string;
   /**
-   * HoldSequence orders DrainHeldByJobs against every other sample of the same
+   * DrainHeldBySubagents and RunningSubagentCount are the same hold for open
+   * descendant subagents: a coordinator parked in its finalization drain while
+   * its children run, so its stated intent is frozen. Carried on the frame for
+   * the same reason as the job hold, so a pushed frame and a read row agree.
+   */
+  drainHeldBySubagents?: boolean;
+  runningSubagentCount?: number;
+  /**
+   * HoldSequence orders the whole hold against every other sample of the same
    * delegate's hold. The source bumps it under the controller lock when the
    * sampled hold changes, so a consumer applies the highest sequence and
    * rejects a sample a slower publisher delivered late. Absent when no sample
@@ -779,6 +787,18 @@ export interface EvenerDelegateInfo {
 export interface EvenerDelegateParams {
   threadId: string;
   ref: string;
+  /**
+   * BootGeneration is the serving daemon's boot generation for the thread
+   * this frame is addressed to, exactly as history/updated carries it: the
+   * counter for the root, "<n>@<rootSessionID>" for a descendant
+   * (DescendantBootGeneration). See CompareBootGeneration.
+   *
+   * Unlike history/updated's field this one is omitted when empty: a peer
+   * too old to stamp it, and a hub-synthesized frame (such as the relay's
+   * own notice), may not carry it at all. Absence therefore means "this
+   * frame says nothing about identity", never "the generation is empty".
+   */
+  bootGeneration?: string;
   delegate: EvenerDelegateInfo;
 }
 
@@ -3181,6 +3201,19 @@ export interface OverlayResetParams {
 export interface OverlayUpsertedParams {
   threadId: string;
   ref: string;
+  /**
+   * BootGeneration is the serving daemon's boot generation for this
+   * thread, exactly as history/updated carries it: the counter for the
+   * root, "<n>@<rootSessionID>" for a descendant
+   * (DescendantBootGeneration). See CompareBootGeneration.
+   *
+   * Unlike history/updated's field this one is omitted when empty: a peer
+   * too old to stamp it, and a hub-synthesized frame (such as the relay's
+   * own give-up notice), may not carry it at all. Absence therefore means
+   * "this frame says nothing about identity", never "the generation is
+   * empty".
+   */
+  bootGeneration?: string;
   item: OverlayItem;
 }
 
@@ -4033,7 +4066,22 @@ export interface SessionDelegate {
    */
   oldestRunningJobStartedAt?: string;
   /**
-   * HoldSequence orders DrainHeldByJobs against the other samples of the same
+   * DrainHeldBySubagents is the same hold for descendant open subagents: this
+   * delegate's finalization drain is holding its run open on the delegates
+   * counted below, so its stated intent is frozen for the whole wait. A
+   * coordinator mid-turn with the same running children is NOT held. Like
+   * DrainHeldByJobs only the live read produces it, so an omission never
+   * reads as "known free".
+   */
+  drainHeldBySubagents?: boolean;
+  /**
+   * RunningSubagentCount is how many descendant delegates are open while that
+   * hold is set: the whole subtree the drain waits on, not just direct
+   * children. Absent whenever the hold is, so it never reports a count alone.
+   */
+  runningSubagentCount?: number;
+  /**
+   * HoldSequence orders the whole hold against every other sample of the same
    * delegate's hold. The hold is a per-row fact whose samples can reach a
    * client out of order — a publisher that sampled before another can send
    * after it — and the projection revision cannot order them, because both
@@ -4472,7 +4520,9 @@ export interface SettingsHubOverview {
   /**
    * OperationStoreQuarantine is present exactly when the hub's operation
    * store carries a quarantine signal: a corrupt store file took the
-   * custody-first quarantine and a custody file holds what it carried.
+   * custody-first quarantine and a custody file holds the selected recovery
+   * records used to build the replacement store, not a backup of the
+   * original journal.
    * Absent on a hub with no quarantine, and on an older hub that has no
    * field at all.
    *
@@ -6675,7 +6725,7 @@ export const WIRE_FIELD_KEYS = {
   OutputImage: ["source", "name", "mediaType", "size", "url", "sha", "path"],
   QueueState: ["depth", "revision", "preview", "ids", "clientMutationIds", "texts", "skillNames", "commandNames", "mentions", "imageCounts"],
   EvenerUsage: ["inputTokens", "outputTokens", "cacheReadTokens", "totalTokens"],
-  EvenerDelegateInfo: ["runGeneration", "delegateId", "ownerSessionId", "logicalOwnerSessionId", "rootSessionId", "childSessionId", "childRef", "transcriptRef", "parentDelegateId", "type", "lifecycle", "phase", "status", "outcome", "reason", "error", "terminal", "resumable", "needsAttention", "notResumableReason", "projectionRevision", "reportPreview", "reportPreviewTruncated", "task", "description", "agentType", "requestedModel", "resolvedProfileId", "resolvedModel", "model", "reasoningEffort", "originTurnId", "originToolCallId", "originItemId", "runStartedAt", "runEndedAt", "latestActivityAt", "drainHeldByJobs", "runningJobCount", "oldestRunningJobStartedAt", "holdSequence", "latestIntent", "runningForMs", "quietForMs", "durationMs", "packetKind", "message", "structuredResult", "structuredResultValid", "structuredResultReason", "warnings", "diagnostics", "exhaustionBudget", "exhaustionLimit", "exhaustionResumable", "delegationAllowance", "parentWatchGranted", "usage", "worktree"],
+  EvenerDelegateInfo: ["runGeneration", "delegateId", "ownerSessionId", "logicalOwnerSessionId", "rootSessionId", "childSessionId", "childRef", "transcriptRef", "parentDelegateId", "type", "lifecycle", "phase", "status", "outcome", "reason", "error", "terminal", "resumable", "needsAttention", "notResumableReason", "projectionRevision", "reportPreview", "reportPreviewTruncated", "task", "description", "agentType", "requestedModel", "resolvedProfileId", "resolvedModel", "model", "reasoningEffort", "originTurnId", "originToolCallId", "originItemId", "runStartedAt", "runEndedAt", "latestActivityAt", "drainHeldByJobs", "runningJobCount", "oldestRunningJobStartedAt", "drainHeldBySubagents", "runningSubagentCount", "holdSequence", "latestIntent", "runningForMs", "quietForMs", "durationMs", "packetKind", "message", "structuredResult", "structuredResultValid", "structuredResultReason", "warnings", "diagnostics", "exhaustionBudget", "exhaustionLimit", "exhaustionResumable", "delegationAllowance", "parentWatchGranted", "usage", "worktree"],
   JobActivityWorktree: ["path", "branch", "headSha", "ahead", "dirty"],
   CommandDescriptor: ["name", "pluginName", "description", "argumentHint", "source"],
   EvenerSkillInfo: ["name", "description", "disableModelInvocation", "userInvocable", "available", "allowedTools"],

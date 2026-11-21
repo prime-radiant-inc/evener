@@ -252,13 +252,20 @@ func TestLoadCachedJobRecords_SecondRequestReadsOnlyTheAppendedDelta(t *testing.
 		t.Fatalf("calls after first load = %+v, want exactly one call reading from offset 0 with 2 events", calls)
 	}
 
-	// mtime resolution on some filesystems is coarse (1s); sleep to
-	// guarantee the append moves mtime forward so the cache can't mistake
-	// this for "nothing changed" and skip the read entirely.
-	time.Sleep(1100 * time.Millisecond)
+	// mtime resolution on some filesystems is coarse (1s), so pin the
+	// appended file's mtime strictly ahead of the one the cache recorded
+	// rather than waiting for the clock to move.
+	before, err := os.Stat(jobsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	s1cov_writeJobLog(t, stateDir, sessID,
 		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started.Add(time.Second), JobID: "job_c", Type: jobstore.JobShell, OwnerSessionID: sessID, VisibleToSession: sessID, StartedAt: &started},
 	)
+	later := before.ModTime().Add(2 * time.Second)
+	if err := os.Chtimes(jobsPath, later, later); err != nil {
+		t.Fatal(err)
+	}
 
 	second, _, _, err := loadCachedJobRecords(context.Background(), jobsPath)
 	if err != nil {
@@ -302,7 +309,10 @@ func TestLoadCachedJobRecords_RewrittenJournalForcesFullRescanWithCorrectResult(
 		t.Fatalf("first load = %d records, want 3", first.len())
 	}
 
-	time.Sleep(1100 * time.Millisecond)
+	before, err := os.Stat(jobsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// A genuine rewrite: remove and recreate rather than append, so this is
 	// not the same Store instance's own further writes — a repair tool or a
 	// different process replacing the file entirely.
@@ -313,6 +323,10 @@ func TestLoadCachedJobRecords_RewrittenJournalForcesFullRescanWithCorrectResult(
 	s1cov_writeJobLog(t, stateDir, sessID,
 		jobstore.Event{Kind: jobstore.EventJobStarted, TS: newStarted, JobID: "job_new_x", Type: jobstore.JobShell, OwnerSessionID: sessID, VisibleToSession: sessID, StartedAt: &newStarted},
 	)
+	later := before.ModTime().Add(2 * time.Second)
+	if err := os.Chtimes(jobsPath, later, later); err != nil {
+		t.Fatal(err)
+	}
 
 	second, secondEpoch, _, err := loadCachedJobRecords(context.Background(), jobsPath)
 	if err != nil {
@@ -474,6 +488,13 @@ func seedLiveShellStarts(t *testing.T, s *Session, n int) {
 	// than the host's timestamp resolution.
 	// The journal's location comes from the store's own boundary read, which
 	// reports where it is without taking a cursor sample.
+	//
+	// Re-reading that boundary AFTER the pin books the pinned sample as the
+	// writer's own baseline, so the seed append grows from the pinned time rather
+	// than the journal's creation time; the second pin below does the same for the
+	// caller's append. Without the re-book the seed append can itself land in the
+	// creation tick with the length moved, which books the metadata-unreliable
+	// flag permanently before any pin can help.
 	located, err := s.jobManager.store.CommittedJournal(context.Background())
 	if err != nil {
 		t.Fatalf("locate the journal before seeding: %v", err)
@@ -482,6 +503,9 @@ func seedLiveShellStarts(t *testing.T, s *Session, n int) {
 		pinned := info.ModTime().Add(-time.Hour)
 		if err := os.Chtimes(located.Path, pinned, pinned); err != nil {
 			t.Fatalf("pin journal mtime before seeding: %v", err)
+		}
+		if _, err := s.jobManager.store.CommittedJournal(context.Background()); err != nil {
+			t.Fatalf("re-book the pinned journal baseline before seeding: %v", err)
 		}
 	}
 	if err := s.jobManager.store.AppendBatch(seed); err != nil {
@@ -2896,8 +2920,8 @@ func TestLiveActivityBase_UnreliableTimestampsRefoldASameLengthJournal(t *testin
 // Two lanes, side by side on the SAME journal, because the comparison is the
 // point and a single number would not show it:
 //
-//   - before: Store.LoadOrdered, the unbounded non-cancelable read the live
-//     path used, which re-decodes and re-folds every record on every call.
+//   - before: Store.Load, the cached whole-history read, which decodes nothing
+//     on an unchanged journal but still clones every record on each call.
 //   - after: the incremental fold, which reads only what was appended since the
 //     previous refresh.
 //
@@ -2921,7 +2945,7 @@ func TestLiveActivityBase_UnreliableTimestampsRefoldASameLengthJournal(t *testin
 func BenchmarkLiveActivityBase_RefreshRowsRead(b *testing.B) {
 	const total = 3 * activityMaxWorkUnits
 	for _, shape := range []string{"unchanged-journal", "after-one-append"} {
-		b.Run("load-ordered/"+shape, func(b *testing.B) {
+		b.Run("store-load/"+shape, func(b *testing.B) {
 			benchRefresh(b, total, shape, false)
 		})
 		b.Run("incremental-fold/"+shape, func(b *testing.B) {
@@ -2931,7 +2955,7 @@ func BenchmarkLiveActivityBase_RefreshRowsRead(b *testing.B) {
 }
 
 // benchRefresh seeds a session of total shell starts and then, per iteration,
-// refreshes its live activity base either through LoadOrdered (fold == false)
+// refreshes its live activity base either through Store.Load (fold == false)
 // or through the incremental fold (fold == true).
 //
 // shape "unchanged-journal" appends nothing between refreshes.
@@ -2947,7 +2971,7 @@ func benchRefresh(b *testing.B, total int, shape string, fold bool) {
 	// Count the events each refresh actually decodes, in BOTH lanes, and never
 	// the records it returns.
 	//
-	// Those are different numbers for the baseline. LoadOrdered serves its
+	// Those are different numbers for the baseline. Store.Load serves its
 	// cached fold once the journal is unchanged, so it decodes nothing and
 	// returns the whole history: a "rows" metric built from the returned slice
 	// would report the baseline at 6000 rows per refresh no matter what it cost,
@@ -2979,7 +3003,7 @@ func benchRefresh(b *testing.B, total int, shape string, fold bool) {
 	// subscription actually repeats, not a first cold read.
 	//
 	// The baseline must be primed for the comparison to mean anything. Its store
-	// keeps a fold cache, so a repeat LoadOrdered returns the cached records
+	// keeps a fold cache, so a repeat Store.Load returns the cached records
 	// without decoding a line; leaving the first, cold decode inside the timed
 	// loop would put the baseline's one-off read into an average of twenty and
 	// report a cost per refresh that no steady-state reader pays. Priming makes
@@ -2989,8 +3013,8 @@ func benchRefresh(b *testing.B, total int, shape string, fold bool) {
 			b.Fatalf("prime fold: %v", err)
 		}
 	} else {
-		if _, err := s.jobManager.store.LoadOrdered(); err != nil {
-			b.Fatalf("prime LoadOrdered: %v", err)
+		if _, err := s.jobManager.store.Load(); err != nil {
+			b.Fatalf("prime store.Load: %v", err)
 		}
 	}
 	if shape == "after-one-append" {
@@ -3004,7 +3028,7 @@ func benchRefresh(b *testing.B, total int, shape string, fold bool) {
 	}
 
 	// decodedRead counts journal records PARSED, through the one seam every lane
-	// reaches: the fold's scanner decodes what it reads, Store.LoadOrdered decodes
+	// reaches: the fold's scanner decodes what it reads, Store.Load decodes
 	// what it reads, and both are counted here rather than in the caller's own
 	// bookkeeping. Counting per-lane is how the earlier version came to report a
 	// full incremental rescan as zero decodes while counting the baseline's
@@ -3025,11 +3049,11 @@ func benchRefresh(b *testing.B, total int, shape string, fold bool) {
 			recordsReturned += int64(loaded.snapshot.Jobs.len())
 			return
 		}
-		ordered, err := s.jobManager.store.LoadOrdered()
+		records, err := s.jobManager.store.Load()
 		if err != nil {
-			b.Fatalf("LoadOrdered: %v", err)
+			b.Fatalf("store.Load: %v", err)
 		}
-		recordsReturned += int64(len(ordered))
+		recordsReturned += int64(len(records))
 	}
 
 	b.ReportAllocs()
@@ -3047,8 +3071,8 @@ func benchRefresh(b *testing.B, total int, shape string, fold bool) {
 	//   decoded/refresh — journal records actually parsed, which is the read cost
 	//   itself.
 	//
-	// The baseline now reports 0 decoded per refresh and still pays the
-	// records/refresh clone, which is the honest shape of the defect: the live
+	// The baseline (Store.Load) now reports 0 decoded per refresh and still pays
+	// the records/refresh clone, which is the honest shape of the defect: the live
 	// path's cost per refresh was never the decode alone.
 	b.ReportMetric(float64(recordsReturned)/float64(b.N), "records-returned/refresh")
 	b.ReportMetric(float64(decodedRead)/float64(b.N), "decoded/refresh")

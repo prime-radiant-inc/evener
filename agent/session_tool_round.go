@@ -167,7 +167,10 @@ func (s *Session) dispatchedToolArguments(call llm.ToolCallData) []byte {
 	if ok {
 		return raw
 	}
-	return call.Arguments
+	if call.ArgumentsSpelling == "" {
+		return call.Arguments
+	}
+	return []byte(call.WireArguments())
 }
 
 // batchToolInput decodes one dispatched call's arguments for PostToolBatch,
@@ -201,8 +204,11 @@ func (s *Session) batchToolCalls(calls []llm.ToolCallData, results []tool.ExecRe
 		}
 		// batchToolInput applies the same raw-argument bound and the same
 		// per-tool decoder as dispatch, so a rejected byte sequence yields no
-		// input and an exact integer keeps its value.
-		input := s.batchToolInput(llm.ToolCallData{Name: call.Name, ID: callID, Arguments: call.Arguments})
+		// input and an exact integer keeps its value. The full call rides so a
+		// denied call with no dispatch record falls back to its wire spelling,
+		// not the canonical bytes.
+		call.ID = callID
+		input := s.batchToolInput(call)
 		response := ""
 		if i < len(results) {
 			response = results[i].Output
@@ -508,6 +514,11 @@ func (s *Session) notifyStrategyAfterAction(ctx context.Context) error {
 	s.mu.Lock()
 	hist := append([]schema.Turn(nil), s.history...)
 	s.mu.Unlock()
+	// The strategy reasons over the same projection the next request will
+	// expand, so it obeys the same withholding rule: a still-pending watch row
+	// must not reach the strategy any more than it may reach an unleased
+	// request. A leased turn drops nothing.
+	hist, _ = s.dropUnleasedWatchAttentionTurns(ctx, hist)
 	afterErr := s.strategy.AfterAction(ctx, hist, s.client)
 	// Warn once per failing streak: a repeated failure is suppressed while a
 	// successful call clears the state so a later failure warns again.
@@ -595,6 +606,9 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 	// here would mark it incorporated in a result that ends the turn without a
 	// model request that can act on it.
 	if abortErr := s.withResponseSideEffects(ctx, func() {
+		if s.envContextDue() {
+			_ = s.maybeAppendEnvironmentContext()
+		}
 		if !s.communicated() {
 			if s.hasPendingSteering() {
 				yieldToObserverCallback = false

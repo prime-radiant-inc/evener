@@ -81,13 +81,92 @@ type groupedTurn struct {
 
 // logicalTurnAccumulator buffers entries across a scan and emits grouped
 // logical turns. It is the two-phase engine of the full read
-// (ItemTurnsFromFile/ItemTurnsFromEntries): entries are appended in file order,
+// (ItemTurnsFromFile/itemTurnsFromEntries): entries are appended in file order,
 // then groupedAppTurns produces the logical turns. The bounded index build
 // mirrors this state machine over persisted records
 // (TurnKind/GroupItems/GroupCalls) so both paths agree by construction.
 type logicalTurnAccumulator struct {
 	turns   []groupedTurn
 	grouper TurnGrouper
+	// stampedStatus holds, per stamped turn id, the status the file's
+	// transcript-only completion and reopen records fold in file order, the
+	// same fold the index makes: a completion sets the status, a reopen
+	// clears it to in progress, and the last record wins. They join no group,
+	// but the status belongs to the turn they name.
+	stampedStatus map[string]string
+	// stampedFailure holds, per stamped turn id, the file's latest
+	// TURN_FAILURE entry. The index keeps one diagnostic per execution, so a
+	// failed stamped turn reports it on every visible fragment, not only on
+	// the fragment whose entries carry it.
+	stampedFailure map[string]schema.Turn
+	// stampedKind holds, per stamped turn id, the span kind its opener
+	// recorded. The opener can be a transcript-only record (a gap's notice),
+	// which joins no group, so the group's own first entry may carry no kind;
+	// the index still classifies the turn by its opener (build.go's
+	// turnKindOf).
+	stampedKind map[string]schema.TurnSpanKind
+	// stampedCompletionAt holds, per stamped turn id, the entry indexes of the
+	// execution's completion records in file order. A completion ends the
+	// execution for the calls that were awaiting it (build.go's
+	// interruptAwaitedCalls), but a call announced after a later reopen is not
+	// its concern.
+	stampedCompletionAt map[string][]int
+}
+
+// foldStampedStatus folds a transcript-only TURN_COMPLETION or TURN_REOPEN
+// into its stamped turn's status, in file order. Only an identity-format
+// record carries a turn id to fold the status into.
+func (a *logicalTurnAccumulator) foldStampedStatus(turn *schema.Turn) {
+	if turn.Format != schema.TurnFormatIdentity || turn.TurnID == "" {
+		return
+	}
+	var status string
+	switch turn.Kind {
+	case schema.TurnCompletion:
+		status = appwire.TurnStatusCompleted
+		if turn.Completion != nil {
+			switch turn.Completion.Status {
+			case schema.TurnFailed:
+				status = appwire.TurnStatusFailed
+			case schema.TurnInterrupted:
+				status = appwire.TurnStatusInterrupted
+			}
+		}
+	case schema.TurnReopen:
+		status = appwire.TurnStatusInProgress
+	default:
+		return
+	}
+	if a.stampedStatus == nil {
+		a.stampedStatus = map[string]string{}
+	}
+	a.stampedStatus[turn.TurnID] = status
+}
+
+// foldStampedFailure records the file's latest TURN_FAILURE for a stamped
+// turn. The index overwrites one diagnostic per execution in entry order
+// (build.go's stampFold), and window.go surfaces it only while the folded
+// status is failed.
+func (a *logicalTurnAccumulator) foldStampedFailure(turn *schema.Turn) {
+	if turn.Kind != schema.TurnFailure || turn.Format != schema.TurnFormatIdentity || turn.TurnID == "" {
+		return
+	}
+	if a.stampedFailure == nil {
+		a.stampedFailure = map[string]schema.Turn{}
+	}
+	a.stampedFailure[turn.TurnID] = *turn
+}
+
+// stampedExecution reports whether a stamped turn is an execution. The index
+// opens every identity span as an execution unless its opener records a
+// prelude, gap or delivery (build.go's turnKindOf), and only an execution
+// starts in progress.
+func (a *logicalTurnAccumulator) stampedExecution(turnID string) bool {
+	switch a.stampedKind[turnID] {
+	case schema.TurnSpanGap, schema.TurnSpanDelivery, schema.TurnSpanPrelude:
+		return false
+	}
+	return true
 }
 
 // TurnGrouper applies the logical-turn grouping rule to entries in file order.
@@ -173,19 +252,57 @@ func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, 
 // in the same logical turn, so the healed-communicate echo check scopes
 // correctly on the full read (where per-entry IDs differ within a group).
 func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, turn schema.Turn, entryIndex int) {
-	if turn.Kind.TranscriptOnly() {
-		// Written for the history projection phase 3 introduces. Today's
-		// projection passes over it: it joins no group, closes none, and
-		// projects nothing, though its line still takes an entry index.
-		return
-	}
 	if turn.OriginalOrdinal != nil {
 		// A compaction fold copy is model history for resume; its original
 		// already projects and already contributes its usage, so buffering the
 		// copy would double a turn's usage (and a session's derived total). It
-		// joins no group, matching the reference projector and the index.
+		// joins no group, matching the reference projector and the index, and
+		// it must not re-fold a status or failure the original already folded.
 		return
 	}
+	// A span records its kind on its opener, and the opener can be a
+	// transcript-only record that joins no group; keep it for the group the
+	// span's later entries open. Fold copies are history for resume and are
+	// skipped above, like the index skips them.
+	if turn.Format == schema.TurnFormatIdentity && turn.TurnID != "" && turn.TurnKind != "" {
+		if acc.stampedKind == nil {
+			acc.stampedKind = map[string]schema.TurnSpanKind{}
+		}
+		if _, ok := acc.stampedKind[turn.TurnID]; !ok {
+			acc.stampedKind[turn.TurnID] = turn.TurnKind
+		}
+	}
+	if turn.Kind.TranscriptOnly() {
+		// Written for the history projection phase 3 introduces. Today's
+		// projection passes over it as an item: it joins no group and closes
+		// none, though its line still takes an entry index. A visible record
+		// still names its turn's item — the index lists a COMMUNICATE delivery
+		// and a NOTICE there — so project it and attach what it shows to the
+		// turn it names. A completion or reopen names its turn's status.
+		if project != nil && turn.TurnID != "" {
+			if items := project(turn, turn.TurnID, entryIndex); len(items) > 0 {
+				for i := len(acc.turns) - 1; i >= 0; i-- {
+					if acc.turns[i].turnID != turn.TurnID {
+						continue
+					}
+					acc.turns[i].items = append(acc.turns[i].items, items...)
+					for range items {
+						acc.turns[i].itemEntries = append(acc.turns[i].itemEntries, entryIndex)
+					}
+					break
+				}
+			}
+		}
+		if turn.Kind == schema.TurnCompletion && turn.Format == schema.TurnFormatIdentity && turn.TurnID != "" {
+			if acc.stampedCompletionAt == nil {
+				acc.stampedCompletionAt = map[string][]int{}
+			}
+			acc.stampedCompletionAt[turn.TurnID] = append(acc.stampedCompletionAt[turn.TurnID], entryIndex)
+		}
+		acc.foldStampedStatus(&turn)
+		return
+	}
+	acc.foldStampedFailure(&turn)
 	// Project under the id of the group appendEntry will buffer the entry
 	// into: the same grouping decision, made on a copy so appendEntry still
 	// places the entry itself. A steering opener takes its own group's id,
@@ -235,7 +352,7 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 	runItems := make(map[string]map[int][]appwire.ThreadItem, len(runsByTurn))
 	runStamps := make(map[string]executionStamp, len(runsByTurn))
 	for turnID, runs := range runsByTurn {
-		runItems[turnID] = executionItems(runs, acc.turns)
+		runItems[turnID] = executionItems(acc, turnID, runs, acc.turns)
 		runStamps[turnID] = stampOfRuns(runs, acc.turns)
 	}
 	// visibleRuns are, per stamped turn id, the runs that still emit items
@@ -245,6 +362,9 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 	// run must say so — each is a FRAGMENT of one turn, not a whole turn of its
 	// own, or a client keyed by turn id holds two complete turns the index
 	// reports as one (#1166).
+	//
+	// The list is in FILE order and the fragment block below reads it by
+	// position: both properties are load-bearing.
 	visibleRuns := map[string][]int{}
 	for turnID, runs := range runsByTurn {
 		for _, run := range runs {
@@ -293,6 +413,30 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 			// later fragment's partial total, and the saved turn underreported
 			// tokens and cost against the index (#1166 review).
 			runStamps[group.turnID].apply(&turn)
+			if acc.stampedExecution(group.turnID) {
+				// A stamped execution's status comes only from its completion
+				// and reopen records: the index opens it at in progress and
+				// leaves it there until one arrives, so a bare TURN_FAILURE is
+				// only a diagnostic for a later failed completion, not a
+				// terminal state. The index surfaces the failure diagnostic
+				// only while the folded status is failed.
+				turn.Status = appwire.TurnStatusInProgress
+				turn.Error = nil
+				if status, ok := acc.stampedStatus[group.turnID]; ok {
+					turn.Status = status
+					if status == appwire.TurnStatusFailed {
+						if failure, ok := acc.stampedFailure[group.turnID]; ok {
+							StampTurnFailure(&turn, failure)
+						}
+					}
+				}
+			} else {
+				// Only a legacy turn latches a failure or an interrupted
+				// steering marker; a stamped gap, prelude or delivery is
+				// completed, and a completion record never ends one.
+				turn.Status = appwire.TurnStatusCompleted
+				turn.Error = nil
+			}
 		}
 		if prelude != nil && !preludeEmitted {
 			// The header's items and a LEADING prelude run are ONE turn: the
@@ -332,13 +476,9 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 		// follows the header has an earlier fragment even when it is the only
 		// stamped run of its id.
 		if runs := visibleRuns[group.turnID]; group.stamped {
-			at := 0
-			for k, run := range runs {
-				if run == i {
-					at = k
-				}
-			}
-			visible, earlier := len(runs), at > 0
+			// This run emits items, so it is in runs.
+			first, last := i != runs[0], i != runs[len(runs)-1]
+			visible, earlier := len(runs), first
 			if headerStandalone && group.turnID == appwire.SystemPreludeTurnID {
 				visible++
 				earlier = true
@@ -346,7 +486,7 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 			if visible > 1 {
 				turn.ItemsView = appwire.TurnItemsViewFragment
 				turn.HasEarlierItems = earlier
-				turn.HasLaterItems = at < len(runs)-1
+				turn.HasLaterItems = last
 			}
 		}
 		turns = append(turns, turn)
@@ -400,7 +540,7 @@ func stampOfRuns(runs []int, groups []groupedTurn) executionStamp {
 // result's own entry — build.go's applyResults matches against the turn's
 // awaiting entry — so a delivery between an announcement and its result leaves
 // the match intact, and a reused id across a delivery keeps both rows.
-func executionItems(runs []int, groups []groupedTurn) map[int][]appwire.ThreadItem {
+func executionItems(acc *logicalTurnAccumulator, turnID string, runs []int, groups []groupedTurn) map[int][]appwire.ThreadItem {
 	// announcement is one item that OPENED a call: where it sits, and the entry
 	// that announced it.
 	type announcement struct {
@@ -411,10 +551,12 @@ func executionItems(runs []int, groups []groupedTurn) map[int][]appwire.ThreadIt
 	// and TOOL entries, never for an announcement), not from the item's status,
 	// so this asks the same question.
 	entryKind := map[int]schema.TurnKind{}
+	entryByIndex := map[int]schema.Turn{}
 	for _, run := range runs {
 		for k, entryIndex := range groups[run].entryIndexes {
 			if k < len(groups[run].entries) {
 				entryKind[entryIndex] = groups[run].entries[k].Kind
+				entryByIndex[entryIndex] = groups[run].entries[k]
 			}
 		}
 	}
@@ -446,10 +588,24 @@ func executionItems(runs []int, groups []groupedTurn) map[int][]appwire.ThreadIt
 
 	out := make(map[int][]appwire.ThreadItem, len(runs))
 	announcements := map[string][]announcement{}
+	// firstCallRow is the first row a call id opened in entry: the index
+	// addresses a call by its first content part, so a duplicated id means
+	// that row.
+	firstCallRow := func(callID string, entry int) (announcement, bool) {
+		for _, call := range announcements[callID] {
+			if call.entry == entry {
+				return call, true
+			}
+		}
+		return announcement{}, false
+	}
 	// settled marks the result items that merged into an announcement, by their
 	// position in the run's own item list, so they are dropped at the end
 	// without shifting any index that was already recorded.
 	settled := map[[2]int]bool{}
+	// answered marks the announcement rows a result merged into, so the
+	// completion that ends the execution leaves them alone.
+	answered := map[[2]int]bool{}
 	for _, run := range runs {
 		out[run] = make([]appwire.ThreadItem, 0, len(groups[run].items))
 		for j, item := range groups[run].items {
@@ -493,6 +649,11 @@ func executionItems(runs []int, groups []groupedTurn) map[int][]appwire.ThreadIt
 				continue // that entry opened no row for this call: keep the position
 			}
 			target := calls[at-1]
+			// The index addresses a call by its first content part in the
+			// announcing entry, so a duplicated id settles that row.
+			for k := at - 1; k > 0 && calls[k-1].entry == calls[k].entry; k-- {
+				target = calls[k-1]
+			}
 			// Keep the opener's item and round identity while merging the
 			// result's payload and status. The merge derives conversation
 			// provenance from the incoming item ID. The projected opener may
@@ -509,6 +670,37 @@ func executionItems(runs []int, groups []groupedTurn) map[int][]appwire.ThreadIt
 			merged.TurnID = opener.TurnID
 			out[target.run][target.at] = merged
 			settled[[2]int{run, j}] = true
+			answered[[2]int{target.run, target.at}] = true
+		}
+	}
+	// A completion ends the execution for its awaiting calls: the index makes
+	// the completion a contributor of every call of the latest announcing
+	// entry that no result answered, and window.go projects that contributor
+	// as interrupted (build.go's interruptAwaitedCalls). Calls announced after
+	// a reopen belong to a later completion, so each record is applied at its
+	// own place in the file.
+	for _, completionAt := range acc.stampedCompletionAt[turnID] {
+		awaiting := -1
+		for _, entryIndex := range announcing {
+			if entryIndex > completionAt {
+				break
+			}
+			awaiting = entryIndex
+		}
+		if awaiting < 0 {
+			continue
+		}
+		seen := map[string]bool{}
+		for _, part := range entryByIndex[awaiting].Message.Content {
+			if part.Kind != llm.ContentToolCall || part.ToolCall == nil || seen[part.ToolCall.ID] {
+				continue
+			}
+			seen[part.ToolCall.ID] = true
+			call, ok := firstCallRow(part.ToolCall.ID, awaiting)
+			if !ok || answered[[2]int{call.run, call.at}] {
+				continue
+			}
+			out[call.run][call.at].Status = appwire.TurnStatusInterrupted
 		}
 	}
 	for _, run := range runs {

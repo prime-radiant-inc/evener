@@ -31,6 +31,10 @@ func TestS1Cov_watchEventFilterMatches(t *testing.T) {
 	if watchEventFilterMatches(&watchEventFilter{ToolName: "edit_file"}, toolEnd("read_file", "")) {
 		t.Fatal("tool name mismatch must not match")
 	}
+	// Name-only filter (status omitted) still matches that tool's completion.
+	if !watchEventFilterMatches(&watchEventFilter{ToolName: "read_file"}, toolEnd("read_file", "")) {
+		t.Fatal("name-only filter must match a completion of that tool")
+	}
 	// Status mismatch (filter wants error, event is ok) → false.
 	if watchEventFilterMatches(&watchEventFilter{Status: "error"}, toolEnd("read_file", "")) {
 		t.Fatal("status mismatch must not match")

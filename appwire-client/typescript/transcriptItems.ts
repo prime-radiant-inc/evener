@@ -51,13 +51,17 @@ function mergeStableDelegate(current: EvenerDelegateInfo, incoming: EvenerDelega
     (joined.holdSequence ?? 0) === (newer.holdSequence ?? 0) &&
     (joined.drainHeldByJobs ?? false) === (newer.drainHeldByJobs ?? false) &&
     joined.runningJobCount === newer.runningJobCount &&
-    joined.oldestRunningJobStartedAt === newer.oldestRunningJobStartedAt
+    joined.oldestRunningJobStartedAt === newer.oldestRunningJobStartedAt &&
+    (joined.drainHeldBySubagents ?? false) === (newer.drainHeldBySubagents ?? false) &&
+    joined.runningSubagentCount === newer.runningSubagentCount
       ? joined
       : {
           ...joined,
           drainHeldByJobs: newer.drainHeldByJobs,
           runningJobCount: newer.runningJobCount,
           oldestRunningJobStartedAt: newer.oldestRunningJobStartedAt,
+          drainHeldBySubagents: newer.drainHeldBySubagents,
+          runningSubagentCount: newer.runningSubagentCount,
           holdSequence: newer.holdSequence,
         };
   return incomingWins ? cloneStableDelegate(held) : held;

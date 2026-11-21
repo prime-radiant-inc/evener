@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/execsupport/orphanpipe/orphanpipetest"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 type probeRun struct {
@@ -194,20 +195,20 @@ func TestWaitForProbeFixturePreservesAProbeThatFinishesAsTheFixtureStarts(t *tes
 
 func readShellPID(t *testing.T, path string) int {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if body, err := os.ReadFile(path); err == nil {
-			pid, convErr := strconv.Atoi(strings.TrimSpace(string(body)))
-			if convErr != nil {
-				t.Fatalf("shell pid file %q = %q: %v", path, body, convErr)
-			}
-			return pid
+	var pid int
+	testwait.UntilSeen(t, "the shell to write its pid to "+path, func() (bool, string) {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return false, err.Error()
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the shell never wrote its pid to %s", path)
+		got, convErr := strconv.Atoi(strings.TrimSpace(string(body)))
+		if convErr != nil || got <= 0 {
+			return false, fmt.Sprintf("%q: %v", body, convErr)
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		pid = got
+		return true, ""
+	})
+	return pid
 }
 
 func waitForProcessExit(t *testing.T, pid int) {

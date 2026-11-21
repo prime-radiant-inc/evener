@@ -81,6 +81,102 @@ func TestDescendantFrontierAddressedSpawn(t *testing.T) {
 	}
 }
 
+// TestDescendantFrontierAnnouncementFollowsPublication pins #6816: the
+// recorded-entry hook announces the execution only after the server's
+// recorded-entry hook staged it, so a subscriber that receives the event can
+// read the announced turn from the thread's history immediately. The seam
+// parks the recording goroutine at that wake — the point where the old order
+// announced before staging — and the read below is the subscriber's read on the
+// event.
+//
+// It drives the served root's own execution, whose first execution record
+// carries no conversation provenance or frontier delta here, so it pins the
+// hook's announcement. Deferred records are announced from the publication
+// handoff (publishTranscriptLocked) instead; that path and the descendant
+// announcement are not pinned here.
+func TestDescendantFrontierAnnouncementFollowsPublication(t *testing.T) {
+	t.Parallel()
+	p := &parityProvider{childRelease: make(chan struct{})}
+	close(p.childRelease)
+	p.script(step(parityCommunicate("announcement-root-done", "root-result", true)))
+	client := llm.NewClient()
+	client.Register(p)
+	dir := t.TempDir()
+	root, err := agent.NewSession(client, provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(ServerConfig{})
+	t.Cleanup(srv.Close)
+	wireTranscriptHistory(t, root, srv)
+	routed := make(chan events.SessionEvent, 8)
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		for ev := range root.Events() {
+			if ev.Kind == events.EventExecutionFirstRecorded {
+				routed <- ev
+			}
+		}
+	}()
+	t.Cleanup(func() { root.Close(); <-drained })
+
+	announced := make(chan string, 1)
+	resume := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(resume) }) }
+	t.Cleanup(release)
+	var once sync.Once
+	hook := func(sessionID, turnID string) {
+		if sessionID != root.ID() {
+			return
+		}
+		once.Do(func() {
+			announced <- turnID
+			<-resume
+		})
+	}
+	saved := agent.ObserveExecutionFrontierWake.Load()
+	agent.ObserveExecutionFrontierWake.Store(&hook)
+	t.Cleanup(func() { agent.ObserveExecutionFrontierWake.Store(saved) })
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second) // Hang tripwire, not synchronization.
+	defer cancel()
+	input := make(chan error, 1)
+	go func() {
+		_, err := root.ProcessInput(ctx, "announcement-root-input", nil)
+		input <- err
+	}()
+	var want string
+	select {
+	case want = <-announced:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	// The recording goroutine is parked at the wake, so this is the read a
+	// subscriber makes when the recorded-execution event reaches it.
+	history, err := srv.handleAppThreadRead(ctx, appwire.ThreadReadParams{ThreadID: root.ID(), IncludeTurns: true})
+	if err != nil {
+		release()
+		t.Fatal(err)
+	}
+	release()
+	if history.LatestExecutionTurnID != want {
+		t.Fatalf("announced execution=%q, history=%q", want, history.LatestExecutionTurnID)
+	}
+	select {
+	case ev := <-routed:
+		if got := ev.Data.(events.ExecutionFirstRecordedData).TurnID; got != want {
+			t.Fatalf("announced execution=%q, event=%q", want, got)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if err := <-input; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDescendantFrontierRegistrationFence(t *testing.T) {
 	t.Parallel()
 	for _, generation := range []bool{false, true} {

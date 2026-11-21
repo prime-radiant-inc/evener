@@ -47,9 +47,6 @@ func TestClosedStoreLoadOperationsReturnErrStoreClosed(t *testing.T) {
 	if err := s.AppendBatch([]Event{{Kind: EventJobStarted, JobID: "job_B"}}); !errors.Is(err, ErrStoreClosed) {
 		t.Errorf("AppendBatch after close = %v, want ErrStoreClosed", err)
 	}
-	if _, err := s.LoadOrdered(); !errors.Is(err, ErrStoreClosed) {
-		t.Errorf("LoadOrdered after close = %v, want ErrStoreClosed", err)
-	}
 	if _, err := s.LoadWatches(); !errors.Is(err, ErrStoreClosed) {
 		t.Errorf("LoadWatches after close = %v, want ErrStoreClosed", err)
 	}
@@ -622,7 +619,6 @@ func TestStoreLoadReadFaultsPropagate(t *testing.T) {
 		read func(*Store) error
 	}{
 		{name: "Load", read: func(s *Store) error { _, err := s.Load(); return err }},
-		{name: "LoadOrdered", read: func(s *Store) error { _, err := s.LoadOrdered(); return err }},
 		{name: "LoadWatches", read: func(s *Store) error { _, err := s.LoadWatches(); return err }},
 		{name: "LoadWatchSends", read: func(s *Store) error { _, err := s.LoadWatchSends(); return err }},
 		{name: "LoadEvents", read: func(s *Store) error { _, err := s.LoadEvents(); return err }},

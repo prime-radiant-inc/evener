@@ -2,10 +2,10 @@ import { WireError } from "@evener/appwire-client";
 import { createNavigationStore } from "@evener/appwire-client/state/navigation";
 import { memoryNavigationPersistence } from "@evener/appwire-client/testing/navigationPersistence";
 import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
-import { sessionActivitySnapshot } from "../../stores/sessionActivity";
+import { sessionActivitySnapshot, settleSessionActivityForTests } from "../../stores/sessionActivity";
 import {
   activityClient,
   activityContext,
@@ -19,6 +19,7 @@ import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosur
 import { deriveScope } from "../statusbar/statusScope";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { AgentsTab } from "./AgentsTab";
+import { ActivityBoundaryObserver } from "./activityPagingTestUtils";
 import { JobsTab } from "./JobsTab";
 import { WatchesTab } from "./WatchesTab";
 
@@ -356,8 +357,9 @@ it.each([
     act(() =>
       client.emitNotification(activityChangedNotification({ ref: "remote:owner", threadId: "owner" }, [resource])),
     );
+    const expectedScope = resource === "delegates" ? "subtree" : "session";
     await waitFor(() =>
-      expect(sessionActivitySnapshot(client, "remote:owner", "session")?.[resource].permanent).toBe(true),
+      expect(sessionActivitySnapshot(client, "remote:owner", expectedScope)?.[resource].permanent).toBe(true),
     );
     expect(screen.getByText(text)).toBeTruthy();
     expect(screen.queryByText(/updating/)).toBeNull();
@@ -414,6 +416,20 @@ const pushContext = () => ({ ...activityContext(), reportPreview: true });
 const delegateReads = (client: ReturnType<typeof activityClient>) =>
   client.calls.filter((call) => call.method === "evener/thread/delegates/list").length;
 
+// Find disclosures by their summary's structure, never by its copy: a
+// reader-facing wording change must not fail a behavior test.
+const disclosuresWhere = (container: HTMLElement, matches: (summary: string) => boolean): HTMLDetailsElement[] =>
+  [...container.querySelectorAll<HTMLDetailsElement>("details")].filter((details) =>
+    matches((details.querySelector("summary")?.textContent ?? "").trim()),
+  );
+
+/** The bottom inactive fold, found by the count its summary leads with. */
+const inactiveFold = (container: HTMLElement, count: number): HTMLDetailsElement => {
+  const [fold] = disclosuresWhere(container, (summary) => summary.startsWith(`${count} `));
+  if (!fold) throw new Error(`no inactive fold whose summary leads with ${count}`);
+  return fold;
+};
+
 it("a pushed delegate frame patches a loaded row with zero collection reads when the source advertises the preview", async () => {
   const client = activityClient();
   client.on("evener/thread/activity/read", ({ ref, scope }) => ({
@@ -460,7 +476,7 @@ it("a pushed delegate frame patches a loaded row with zero collection reads when
     });
   });
   expect(delegateReads(client)).toBe(before);
-  expect(sessionActivitySnapshot(client, activityRef, "session")?.delegates.rows[0]).toMatchObject({
+  expect(sessionActivitySnapshot(client, activityRef, "subtree")?.delegates.rows[0]).toMatchObject({
     status: "failed",
     reportPreview: "pushed report",
     description: "pushed row",
@@ -478,4 +494,693 @@ it("a source without the preview capability keeps reading delegates on an invali
     client.emitNotification(activityChangedNotification({ ref: activityRef, threadId: "owner" }, ["delegates"]));
   });
   await waitFor(() => expect(delegateReads(client)).toBe(before + 1));
+});
+
+it("reconciles a two-level subtree with collapsible branches, drain-hold suppression, cascade edges, and grouped inactive history", async () => {
+  const client = activityClient();
+  const coord = activityDelegate({
+    delegateId: "coord-1",
+    name: "coordinator",
+    ownerRef: activityRef,
+    rootRef: activityRef,
+    childRef: "remote:coord",
+    terminal: false,
+    drainHeldBySubagents: true,
+    runningSubagentCount: 1,
+    latestIntent: "STALE_COORD_INTENT",
+  });
+  const activeChild = activityDelegate({
+    delegateId: "worker-live",
+    name: "worker-live",
+    ownerRef: "remote:coord",
+    rootRef: activityRef,
+    childRef: "remote:worker-live",
+    parentDelegateId: "coord-1",
+    terminal: false,
+    latestIntent: "LIVE_CHILD_INTENT",
+  });
+  const settledChild = activityDelegate({
+    delegateId: "worker-done",
+    name: "worker-done",
+    ownerRef: "remote:coord",
+    rootRef: activityRef,
+    childRef: "remote:worker-done",
+    parentDelegateId: "coord-1",
+    terminal: true,
+    status: "completed",
+    outcome: "completed",
+    lifecycle: "idle",
+  });
+  const settledDirect = activityDelegate({
+    delegateId: "direct-done",
+    name: "direct-done",
+    ownerRef: activityRef,
+    rootRef: activityRef,
+    childRef: "remote:direct-done",
+    terminal: true,
+    status: "completed",
+    outcome: "completed",
+    lifecycle: "idle",
+  });
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    delegates: { known: true, total: 4, active: 2, completed: 2, failed: 0 },
+  }));
+  client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    delegates: [coord, activeChild, settledChild, settledDirect],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  const rootPane = workspaceStore.getState().openPane("session", { ref: activityRef });
+  const { container } = render(<AgentsTab now={NOW} scope={scope()} />);
+
+  const coordAnchorSelector = `[data-activity-anchor=${JSON.stringify('delegate:["remote:coord","coord-1"]')}]`;
+  const childAnchorSelector = `[data-activity-anchor=${JSON.stringify('delegate:["remote:worker-live","worker-live"]')}]`;
+  await waitFor(() => expect(document.querySelector(coordAnchorSelector)).not.toBeNull());
+  expect(document.querySelector(childAnchorSelector)).not.toBeNull();
+
+  // Expanded drain-held coordinator omits [data-activity-meta] and never leaks STALE_COORD_INTENT;
+  // active child shows LIVE_CHILD_INTENT.
+  const coordRow = document.querySelector<HTMLElement>(coordAnchorSelector)!;
+  const childRow = document.querySelector<HTMLElement>(childAnchorSelector)!;
+  expect(coordRow.querySelector("[data-activity-meta]")).toBeNull();
+  expect(coordRow.textContent).not.toContain("STALE_COORD_INTENT");
+  expect(childRow.querySelector("[data-activity-meta]")?.textContent).toBe("LIVE_CHILD_INTENT");
+
+  // Collapsing the coordinator hides the active child and reveals the wait meta (still excluding STALE_COORD_INTENT).
+  const toggle = screen.getByRole("button", { name: "Collapse coordinator" });
+  expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  fireEvent.click(toggle);
+  expect(screen.getByRole("button", { name: "Expand coordinator" }).getAttribute("aria-expanded")).toBe("false");
+  expect(document.querySelector(childAnchorSelector)).toBeNull();
+  const collapsedCoordRow = document.querySelector<HTMLElement>(coordAnchorSelector)!;
+  const collapsedMeta = collapsedCoordRow.querySelector("[data-activity-meta]")?.textContent;
+  expect(collapsedMeta).toBeTruthy();
+  expect(collapsedMeta).toContain("1");
+  expect(collapsedCoordRow.textContent).not.toContain("STALE_COORD_INTENT");
+
+  // Re-expanding restores the nested active child; clicking it drills the full two-hop cascade.
+  fireEvent.click(screen.getByRole("button", { name: "Expand coordinator" }));
+  const nestedChildButton = document.querySelector<HTMLElement>(childAnchorSelector)!;
+  await act(async () => fireEvent.click(nestedChildButton));
+  const cascade = workspaceStore.getState().panes.find((pane) => pane.type === "sessionZoom");
+  expect(cascade?.slot).toBe("secondary");
+  expect(cascade?.params).toEqual({
+    ref: "remote:worker-live",
+    source: { type: "session", params: { ref: activityRef } },
+    edges: [
+      { ownerRef: activityRef, childRef: "remote:coord", delegateId: "coord-1" },
+      { ownerRef: "remote:coord", childRef: "remote:worker-live", delegateId: "worker-live" },
+    ],
+    inspection: { origin: { paneId: rootPane, type: "session", ref: activityRef } },
+  });
+
+  // Bottom inactive fold reflects total - active (2) and groups settled direct + settled-under-coordinator runs.
+  const foldDetails = inactiveFold(container, 2);
+  expect(foldDetails.open).toBe(false);
+  expect(within(foldDetails).queryByRole("button", { name: /direct-done/ })).toBeNull();
+  fireEvent.click(foldDetails.querySelector("summary")!);
+  expect(foldDetails.open).toBe(true);
+  expect(within(foldDetails).getByRole("button", { name: /direct-done/ })).toBeTruthy();
+  expect(within(foldDetails).queryByRole("button", { name: /worker-done/ })).toBeNull();
+  const [groupDetails] = disclosuresWhere(
+    foldDetails,
+    (summary) => summary.includes("coordinator") && /\b1\b/.test(summary),
+  );
+  expect(groupDetails).toBeTruthy();
+  fireEvent.click(groupDetails!.querySelector("summary")!);
+  expect(within(foldDetails).getByRole("button", { name: /worker-done/ })).toBeTruthy();
+});
+
+it("renders an active child whose parent is on a later page, then nests it once the parent arrives", async () => {
+  const client = activityClient();
+  let intersect: (() => void) | undefined;
+  class Observer {
+    constructor(callback: IntersectionObserverCallback) {
+      intersect = () =>
+        callback([{ isIntersecting: true } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+    }
+    observe() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("IntersectionObserver", Observer);
+  const coord = activityDelegate({
+    delegateId: "coord-p2",
+    name: "parent-on-page-2",
+    ownerRef: activityRef,
+    rootRef: activityRef,
+    childRef: "remote:coord-p2",
+    terminal: false,
+  });
+  const child = activityDelegate({
+    delegateId: "child-p1",
+    name: "child-on-page-1",
+    ownerRef: "remote:coord-p2",
+    rootRef: activityRef,
+    childRef: "remote:child-p1",
+    parentDelegateId: "coord-p2",
+    terminal: false,
+  });
+  client.on("evener/thread/delegates/list", ({ ref, scope, cursor }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    delegates: cursor ? [coord] : [child],
+    page: cursor ? { complete: true, issues: [] } : { complete: false, nextCursor: "page-2", issues: [] },
+  }));
+  try {
+    connectionStore.getState().connect(client);
+    const rootPane = workspaceStore.getState().openPane("session", { ref: activityRef });
+    await act(async () => {
+      render(<AgentsTab now={NOW} scope={scope()} />);
+    });
+    const childAnchorSelector = `[data-activity-anchor=${JSON.stringify('delegate:["remote:child-p1","child-p1"]')}]`;
+    const coordAnchorSelector = `[data-activity-anchor=${JSON.stringify('delegate:["remote:coord-p2","coord-p2"]')}]`;
+    expect(document.querySelector(childAnchorSelector)).not.toBeNull();
+    expect(document.querySelector(coordAnchorSelector)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Collapse parent-on-page-2" })).toBeNull();
+
+    // Clicking the orphaned page-1 child before page 2 loads binds inspection.origin to the root pane.
+    await act(async () => fireEvent.click(document.querySelector<HTMLElement>(childAnchorSelector)!));
+    const earlyCascade = workspaceStore.getState().panes.find((pane) => pane.type === "sessionZoom");
+    expect(earlyCascade?.params).toMatchObject({
+      ref: "remote:child-p1",
+      source: { type: "session", params: { ref: activityRef } },
+      edges: [{ ownerRef: "remote:coord-p2", childRef: "remote:child-p1", delegateId: "child-p1" }],
+      inspection: { origin: { paneId: rootPane, type: "session", ref: activityRef } },
+    });
+
+    await act(async () => intersect?.());
+    expect(document.querySelector(coordAnchorSelector)).not.toBeNull();
+    expect(document.querySelector(childAnchorSelector)).not.toBeNull();
+    const collapseParent = screen.getByRole("button", { name: "Collapse parent-on-page-2" });
+    expect(collapseParent.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(collapseParent);
+    expect(document.querySelector(childAnchorSelector)).toBeNull();
+  } finally {
+    cleanup();
+    vi.unstubAllGlobals();
+  }
+});
+
+it("keeps a settled child revealed on an earlier page visible when a later page nests it under its settled parent", async () => {
+  const client = activityClient();
+  ActivityBoundaryObserver.reset();
+  vi.stubGlobal("IntersectionObserver", ActivityBoundaryObserver);
+  const parent = activityDelegate({
+    delegateId: "settled-parent-p2",
+    name: "settled-parent",
+    ownerRef: activityRef,
+    rootRef: activityRef,
+    childRef: "remote:settled-parent",
+    terminal: true,
+    status: "completed",
+    outcome: "completed",
+    lifecycle: "idle",
+  });
+  const child = activityDelegate({
+    delegateId: "settled-child-p1",
+    name: "settled-child",
+    ownerRef: "remote:settled-parent",
+    rootRef: activityRef,
+    childRef: "remote:settled-child",
+    parentDelegateId: "settled-parent-p2",
+    terminal: true,
+    status: "completed",
+    outcome: "completed",
+    lifecycle: "idle",
+  });
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    delegates: { known: true, total: 2, active: 0, completed: 2, failed: 0 },
+  }));
+  client.on("evener/thread/delegates/list", ({ ref, scope, cursor }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    delegates: cursor ? [parent] : [child],
+    page: cursor ? { complete: true, issues: [] } : { complete: false, nextCursor: "page-2", issues: [] },
+  }));
+  try {
+    connectionStore.getState().connect(client);
+    let container!: HTMLElement;
+    await act(async () => {
+      container = render(<AgentsTab now={NOW} scope={scope()} />).container;
+    });
+    const childAnchor = `[data-activity-anchor=${JSON.stringify('delegate:["remote:settled-child","settled-child-p1"]')}]`;
+    const parentAnchor = `[data-activity-anchor=${JSON.stringify('delegate:["remote:settled-parent","settled-parent-p2"]')}]`;
+    const fold = inactiveFold(container, 2);
+    fireEvent.click(fold.querySelector("summary")!);
+
+    // Page 1 settles the child without its parent, so the child is a visible
+    // top-level row in the inactive tree.
+    expect(document.querySelector(childAnchor)).not.toBeNull();
+    expect(document.querySelector(parentAnchor)).toBeNull();
+
+    // Page 2 supplies the settled parent. The row the reader already saw must
+    // stay visible under it instead of folding away behind a closed branch.
+    await act(async () => ActivityBoundaryObserver.intersect());
+    await waitFor(() => expect(document.querySelector(parentAnchor)).not.toBeNull());
+    expect(document.querySelector(childAnchor)).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Collapse settled-parent" }).getAttribute("aria-expanded")).toBe("true");
+  } finally {
+    cleanup();
+    vi.unstubAllGlobals();
+    ActivityBoundaryObserver.reset();
+  }
+});
+
+it.each(["refresh", "reconnect"] as const)(
+  "keeps an already-revealed grandchild when one page delivers both of its ancestors through %s",
+  async (recovery) => {
+    const client = activityClient();
+    ActivityBoundaryObserver.reset();
+    vi.stubGlobal("IntersectionObserver", ActivityBoundaryObserver);
+    const settled = { terminal: true, status: "completed", outcome: "completed", lifecycle: "idle" } as const;
+    const grandchild = activityDelegate({
+      delegateId: "settled-gc-p1",
+      name: "settled-grandchild",
+      ownerRef: "remote:settled-mid",
+      rootRef: activityRef,
+      childRef: "remote:settled-gc",
+      parentDelegateId: "settled-mid-p2",
+      ...settled,
+    });
+    const mid = activityDelegate({
+      delegateId: "settled-mid-p2",
+      name: "settled-mid",
+      ownerRef: "remote:settled-top",
+      rootRef: activityRef,
+      childRef: "remote:settled-mid",
+      parentDelegateId: "settled-top-p2",
+      ...settled,
+    });
+    const top = activityDelegate({
+      delegateId: "settled-top-p2",
+      name: "settled-top",
+      ownerRef: activityRef,
+      rootRef: activityRef,
+      childRef: "remote:settled-top",
+      ...settled,
+    });
+    client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+      ...activitySummary(ref, scope),
+      delegates: { known: true, total: 3, active: 0, completed: 3, failed: 0 },
+    }));
+    client.on("evener/thread/delegates/list", ({ ref, scope, cursor }) => ({
+      context: activityContext(ref),
+      scope: scope ?? "session",
+      delegates: cursor ? [mid, top] : [grandchild],
+      page: cursor ? { complete: true, issues: [] } : { complete: false, nextCursor: "page-2", issues: [] },
+    }));
+    try {
+      connectionStore.getState().connect(client);
+      const { container } = render(<AgentsTab now={NOW} scope={scope()} />);
+      const gcAnchor = `[data-activity-anchor=${JSON.stringify('delegate:["remote:settled-gc","settled-gc-p1"]')}]`;
+      const topAnchor = `[data-activity-anchor=${JSON.stringify('delegate:["remote:settled-top","settled-top-p2"]')}]`;
+      const fold = await waitFor(() => inactiveFold(container, 3));
+      fireEvent.click(fold.querySelector("summary")!);
+
+      // The grandchild is visible on page 1, with both of its ancestors still
+      // unloaded.
+      expect(document.querySelector(gcAnchor)).not.toBeNull();
+      expect(document.querySelector(topAnchor)).toBeNull();
+
+      // Page 2 delivers the middle and top rows together. Neither was rendered
+      // before, so only a rolled-up reveal keeps the grandchild in view.
+      await act(async () => ActivityBoundaryObserver.intersect());
+      await waitFor(() => expect(document.querySelector(topAnchor)).not.toBeNull());
+      expect(document.querySelector(gcAnchor)).not.toBeNull();
+
+      // A recovery re-reads every page while the tab stays mounted. The revealed
+      // row and the later page's row must both survive the rebuilt walk.
+      const readsBefore = client.calls.filter((call) => call.method === "evener/thread/delegates/list").length;
+      // Join the walk in the same synchronous window as the invalidation: the
+      // store registers the paced pages-to-the-boundary walk as one read span.
+      await act(async () => {
+        if (recovery === "refresh") {
+          client.emitNotification(activityChangedNotification({ ref: activityRef, threadId: "owner" }, ["delegates"]));
+        } else {
+          client.emitStateChange("reconnecting");
+          client.emitReady();
+        }
+        await settleSessionActivityForTests(client, activityRef, "subtree", "delegates");
+      });
+      const recoveryReads = client.calls
+        .filter((call) => call.method === "evener/thread/delegates/list")
+        .slice(readsBefore)
+        .map((call) => call.params);
+      expect(recoveryReads).toContainEqual({ ref: activityRef, scope: "subtree" });
+      expect(recoveryReads).toContainEqual({ ref: activityRef, scope: "subtree", cursor: "page-2" });
+      expect(document.querySelector(topAnchor)).not.toBeNull();
+      expect(document.querySelector(gcAnchor)).not.toBeNull();
+    } finally {
+      cleanup();
+      vi.unstubAllGlobals();
+      ActivityBoundaryObserver.reset();
+    }
+  },
+);
+
+it("collapses settled top-level nodes with settled descendants by default and caps indentation at depth 3", async () => {
+  const client = activityClient();
+  const settledParent = activityDelegate({
+    delegateId: "settled-p",
+    name: "settled-parent",
+    ownerRef: activityRef,
+    rootRef: activityRef,
+    childRef: "remote:settled-p",
+    terminal: true,
+    status: "completed",
+    outcome: "completed",
+    lifecycle: "idle",
+  });
+  const settledDescendant = activityDelegate({
+    delegateId: "settled-c",
+    name: "settled-descendant",
+    ownerRef: "remote:settled-p",
+    rootRef: activityRef,
+    childRef: "remote:settled-c",
+    parentDelegateId: "settled-p",
+    terminal: true,
+    status: "completed",
+    outcome: "completed",
+    lifecycle: "idle",
+  });
+  const deepChain = ["d0", "d1", "d2", "d3", "d4"].map((id, idx, arr) =>
+    activityDelegate({
+      delegateId: id,
+      name: id,
+      ownerRef: idx === 0 ? activityRef : `remote:${arr[idx - 1]}`,
+      rootRef: activityRef,
+      childRef: `remote:${id}`,
+      parentDelegateId: idx === 0 ? undefined : arr[idx - 1],
+      terminal: false,
+    }),
+  );
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    delegates: { known: true, total: 7, active: 5, completed: 2, failed: 0 },
+  }));
+  client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    delegates: [...deepChain, settledParent, settledDescendant],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  const { container } = render(<AgentsTab now={NOW} scope={scope()} />);
+
+  const deepestAnchor = `[data-activity-anchor=${JSON.stringify('delegate:["remote:d4","d4"]')}]`;
+  await waitFor(() => expect(document.querySelector(deepestAnchor)).not.toBeNull());
+  let branchDepth = 0;
+  let cursor: HTMLElement | null = document.querySelector<HTMLElement>(deepestAnchor);
+  while (cursor) {
+    if (cursor.className.includes("childBranch")) branchDepth += 1;
+    cursor = cursor.parentElement;
+  }
+  expect(branchDepth).toBe(3);
+
+  const foldDetails = inactiveFold(container, 2);
+  fireEvent.click(foldDetails.querySelector("summary")!);
+  expect(within(foldDetails).getByRole("button", { name: /^settled-parent/ })).toBeTruthy();
+  const expandSettled = within(foldDetails).getByRole("button", { name: "Expand settled-parent" });
+  expect(expandSettled.getAttribute("aria-expanded")).toBe("false");
+  expect(within(foldDetails).queryByRole("button", { name: /settled-descendant/ })).toBeNull();
+  fireEvent.click(expandSettled);
+  expect(within(foldDetails).getByRole("button", { name: /settled-descendant/ })).toBeTruthy();
+});
+
+it("keeps an open inactive-history group open when its coordinator settles", async () => {
+  const client = activityClient();
+  let coordSettled = false;
+  const coord = activityDelegate({
+    delegateId: "coord-settling",
+    name: "settling-coordinator",
+    ownerRef: activityRef,
+    rootRef: activityRef,
+    childRef: "remote:coord-settling",
+    terminal: false,
+  });
+  const settledCoord = activityDelegate({
+    ...coord,
+    terminal: true,
+    status: "completed",
+    outcome: "completed",
+    lifecycle: "idle",
+  });
+  const settledChild = activityDelegate({
+    delegateId: "settled-worker",
+    name: "settled-worker",
+    ownerRef: "remote:coord-settling",
+    rootRef: activityRef,
+    childRef: "remote:settled-worker",
+    parentDelegateId: "coord-settling",
+    terminal: true,
+    status: "completed",
+    outcome: "completed",
+    lifecycle: "idle",
+  });
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    delegates: {
+      known: true,
+      total: 2,
+      active: coordSettled ? 0 : 1,
+      completed: coordSettled ? 2 : 1,
+      failed: 0,
+    },
+  }));
+  client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    delegates: [coordSettled ? settledCoord : coord, settledChild],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  const { container } = render(<AgentsTab now={NOW} scope={scope()} />);
+
+  const coordAnchor = `[data-activity-anchor=${JSON.stringify('delegate:["remote:coord-settling","coord-settling"]')}]`;
+  await waitFor(() => expect(document.querySelector(coordAnchor)).not.toBeNull());
+  const fold = inactiveFold(container, 1);
+  fireEvent.click(fold.querySelector("summary")!);
+  const [group] = disclosuresWhere(fold, (summary) => summary.startsWith("settling-coordinator"));
+  expect(group).toBeTruthy();
+  expect(within(fold).queryByRole("button", { name: /settled-worker/ })).toBeNull();
+  fireEvent.click(group!.querySelector("summary")!);
+  expect(within(fold).getByRole("button", { name: /settled-worker/ })).toBeTruthy();
+
+  // Settlement moves the coordinator from the group header to a settled row.
+  // That row's branch toggle must carry the open state the reader left on the
+  // group instead of folding the settled child away.
+  coordSettled = true;
+  await act(async () => {
+    client.emitNotification(activityChangedNotification({ ref: activityRef, threadId: "owner" }, ["delegates"]));
+  });
+  await waitFor(() => expect(fold.contains(document.querySelector(coordAnchor))).toBe(true));
+  expect(within(fold).getByRole("button", { name: /settled-worker/ })).toBeTruthy();
+  expect(
+    within(fold).getByRole("button", { name: "Collapse settling-coordinator" }).getAttribute("aria-expanded"),
+  ).toBe("true");
+});
+
+it("keeps coordinator wait visible on partial pages until every held descendant is visible", async () => {
+  const client = activityClient();
+  ActivityBoundaryObserver.reset();
+  vi.stubGlobal("IntersectionObserver", ActivityBoundaryObserver);
+  const coord = activityDelegate({
+    delegateId: "coord-partial",
+    name: "coord-partial",
+    ownerRef: activityRef,
+    rootRef: activityRef,
+    childRef: "remote:coord-partial",
+    terminal: false,
+    drainHeldBySubagents: true,
+    runningSubagentCount: 2,
+    latestIntent: "STALE_PARTIAL_INTENT",
+  });
+  const worker1 = activityDelegate({
+    delegateId: "worker-1",
+    name: "worker-1",
+    ownerRef: "remote:coord-partial",
+    rootRef: activityRef,
+    childRef: "remote:worker-1",
+    parentDelegateId: "coord-partial",
+    terminal: false,
+  });
+  const worker2 = activityDelegate({
+    delegateId: "worker-2",
+    name: "worker-2",
+    ownerRef: "remote:coord-partial",
+    rootRef: activityRef,
+    childRef: "remote:worker-2",
+    parentDelegateId: "coord-partial",
+    terminal: false,
+  });
+  client.on("evener/thread/delegates/list", ({ ref, scope, cursor }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    delegates: cursor ? [worker2] : [coord, worker1],
+    page: cursor ? { complete: true, issues: [] } : { complete: false, nextCursor: "page-2", issues: [] },
+  }));
+  try {
+    connectionStore.getState().connect(client);
+    await act(async () => {
+      render(<AgentsTab now={NOW} scope={scope()} />);
+    });
+    const coordAnchorSelector = `[data-activity-anchor=${JSON.stringify('delegate:["remote:coord-partial","coord-partial"]')}]`;
+    const coordBefore = document.querySelector<HTMLElement>(coordAnchorSelector)!;
+    const metaBefore = coordBefore.querySelector("[data-activity-meta]")?.textContent;
+    expect(metaBefore).toBeTruthy();
+    expect(metaBefore).toContain("2");
+    expect(coordBefore.textContent).not.toContain("STALE_PARTIAL_INTENT");
+
+    await act(async () => ActivityBoundaryObserver.intersect());
+    const coordAfter = document.querySelector<HTMLElement>(coordAnchorSelector)!;
+    expect(coordAfter.querySelector("[data-activity-meta]")).toBeNull();
+    expect(coordAfter.textContent).not.toContain("STALE_PARTIAL_INTENT");
+  } finally {
+    cleanup();
+    vi.unstubAllGlobals();
+    ActivityBoundaryObserver.reset();
+  }
+});
+
+it("reveals ancestor wait when a nested child branch collapses and hides counted descendants", async () => {
+  const client = activityClient();
+  const nodeA = activityDelegate({
+    delegateId: "node-a",
+    name: "branch-a",
+    ownerRef: activityRef,
+    rootRef: activityRef,
+    childRef: "remote:node-a",
+    terminal: false,
+    drainHeldBySubagents: true,
+    runningSubagentCount: 2,
+    latestIntent: "STALE_A_INTENT",
+  });
+  const nodeB = activityDelegate({
+    delegateId: "node-b",
+    name: "branch-b",
+    ownerRef: "remote:node-a",
+    rootRef: activityRef,
+    childRef: "remote:node-b",
+    parentDelegateId: "node-a",
+    terminal: false,
+    drainHeldBySubagents: true,
+    runningSubagentCount: 1,
+    latestIntent: "STALE_B_INTENT",
+  });
+  const nodeC = activityDelegate({
+    delegateId: "node-c",
+    name: "leaf-c",
+    ownerRef: "remote:node-b",
+    rootRef: activityRef,
+    childRef: "remote:node-c",
+    parentDelegateId: "node-b",
+    terminal: false,
+  });
+  client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    delegates: [nodeA, nodeB, nodeC],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  render(<AgentsTab now={NOW} scope={scope()} />);
+
+  const anchorA = `[data-activity-anchor=${JSON.stringify('delegate:["remote:node-a","node-a"]')}]`;
+  const anchorB = `[data-activity-anchor=${JSON.stringify('delegate:["remote:node-b","node-b"]')}]`;
+  await waitFor(() => expect(document.querySelector(anchorA)).not.toBeNull());
+
+  // Both A and B expanded: all 2 descendants are visibly rendered, so A omits wait meta.
+  expect(document.querySelector<HTMLElement>(anchorA)?.querySelector("[data-activity-meta]")).toBeNull();
+  expect(document.querySelector<HTMLElement>(anchorB)?.querySelector("[data-activity-meta]")).toBeNull();
+
+  // Collapsing B leaves only 1 visible descendant row under A (< 2), so A reveals its wait meta.
+  fireEvent.click(screen.getByRole("button", { name: "Collapse branch-b" }));
+  const rowAAfterCollapse = document.querySelector<HTMLElement>(anchorA)!;
+  const metaAAfterCollapse = rowAAfterCollapse.querySelector("[data-activity-meta]")?.textContent;
+  expect(metaAAfterCollapse).toBeTruthy();
+  expect(metaAAfterCollapse).toContain("2");
+  expect(rowAAfterCollapse.textContent).not.toContain("STALE_A_INTENT");
+
+  const rowBAfterCollapse = document.querySelector<HTMLElement>(anchorB)!;
+  const metaBAfterCollapse = rowBAfterCollapse.querySelector("[data-activity-meta]")?.textContent;
+  expect(metaBAfterCollapse).toBeTruthy();
+  expect(metaBAfterCollapse).toContain("1");
+});
+
+it("keeps a settled coordinator as an active group header with its one selectable row in inactive history", async () => {
+  const client = activityClient();
+  const coord = activityDelegate({
+    delegateId: "settled-coord-id",
+    name: "settled-coord",
+    ownerRef: activityRef,
+    rootRef: activityRef,
+    childRef: "remote:settled-coord",
+    terminal: true,
+    outcome: "completed",
+    status: "completed",
+    lifecycle: "idle",
+  });
+  const resumed = activityDelegate({
+    delegateId: "resumed-worker-id",
+    name: "resumed-worker",
+    ownerRef: "remote:settled-coord",
+    rootRef: activityRef,
+    childRef: "remote:resumed-worker",
+    parentDelegateId: "settled-coord-id",
+    terminal: false,
+  });
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    delegates: { known: true, total: 2, active: 1, completed: 1, failed: 0 },
+  }));
+  client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    delegates: [coord, resumed],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  const rootPane = workspaceStore.getState().openPane("session", { ref: activityRef });
+  const { container } = render(<AgentsTab now={NOW} scope={scope()} />);
+
+  const coordAnchor = `[data-activity-anchor=${JSON.stringify('delegate:["remote:settled-coord","settled-coord-id"]')}]`;
+  const workerAnchor = `[data-activity-anchor=${JSON.stringify('delegate:["remote:resumed-worker","resumed-worker-id"]')}]`;
+  await waitFor(() => expect(container.querySelector(workerAnchor)).not.toBeNull());
+
+  // The settled run is selectable exactly once, and that one row lives in the
+  // history fold rather than being duplicated in the active section above it.
+  const fold = inactiveFold(container, 1);
+  expect(fold.open).toBe(false);
+  fireEvent.click(fold.querySelector("summary")!);
+  expect(fold.open).toBe(true);
+  expect(container.querySelectorAll(coordAnchor)).toHaveLength(1);
+  expect(fold.contains(container.querySelector(coordAnchor))).toBe(true);
+
+  // Above the fold the active section names the settled coordinator as a
+  // collapsible group header, open by default, holding its live descendant.
+  const [groupHeader] = disclosuresWhere(container, (summary) => summary.includes("settled-coord"));
+  expect(groupHeader).toBeTruthy();
+  expect(groupHeader!.open).toBe(true);
+  expect(groupHeader!.contains(container.querySelector(workerAnchor))).toBe(true);
+  fireEvent.click(groupHeader!.querySelector("summary")!);
+  expect(container.querySelector(workerAnchor)).toBeNull();
+  fireEvent.click(groupHeader!.querySelector("summary")!);
+  expect(container.querySelector(workerAnchor)).not.toBeNull();
+
+  // A descendant selected under the group header keeps the full cascade path.
+  await act(async () => fireEvent.click(container.querySelector<HTMLElement>(workerAnchor)!));
+  const cascade = workspaceStore.getState().panes.find((pane) => pane.type === "sessionZoom");
+  expect(cascade?.params).toEqual({
+    ref: "remote:resumed-worker",
+    source: { type: "session", params: { ref: activityRef } },
+    edges: [
+      { ownerRef: activityRef, childRef: "remote:settled-coord", delegateId: "settled-coord-id" },
+      { ownerRef: "remote:settled-coord", childRef: "remote:resumed-worker", delegateId: "resumed-worker-id" },
+    ],
+    inspection: { origin: { paneId: rootPane, type: "session", ref: activityRef } },
+  });
 });

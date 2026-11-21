@@ -11,16 +11,19 @@
 # private hub, provider and connection state; the simulator is created and
 # deleted by the qualification binary that starts this child, never here.
 #
-# WHAT IT DOES: builds the runtime pair and the evener binary, starts the
-# fixture provider and an isolated hub under private XDG directories with
-# HOME inherited, reads the fixture-only connection data from a mode-0600
-# private file, injects it into the generated test-run configuration in
-# place, runs the three journeys against the downloaded Release app, and
-# validates the xcresult: every intended test identity executed, none
-# skipped, zero failures. The private state never reaches the output
-# directory or any uploaded artifact, with two deliberate exceptions: this
-# run's own daemon logs, whose round diagnostics (steers, turn completions,
-# the reason a round stopped) are copied out before the state goes, and
+# WHAT IT DOES: installs the runtime pair the workflow's setup job built
+# beside the app build (revision and checksums verified first), or builds the
+# pair itself when none is supplied or the selected harness does not read the
+# variable — then starts the fixture provider and an isolated hub under
+# private XDG directories with HOME inherited, reads the fixture-only
+# connection data from a mode-0600 private file, injects it into the generated
+# test-run configuration in place, runs the three journeys against the
+# downloaded Release app, and validates the xcresult: every intended test
+# identity executed, none skipped, zero failures. The private state never
+# reaches the output directory or any uploaded artifact, with two deliberate
+# exceptions: this run's own daemon logs, whose round diagnostics (steers,
+# turn completions, the reason a round stopped) are copied out before the
+# state goes, and
 # XCTest's own activity record of the onboarding typing, which lands in the
 # uploaded test log and result bundle. Both carry only fixture-only data —
 # the connection data guards a throwaway loopback hub that dies with the run —
@@ -234,19 +237,80 @@ ln -sfn "$workspace" "$workspace_link"
 
 provider_binary="$run_dir/fixture-provider"
 evener_binary="$run_dir/evener"
+# The workflow's setup job builds this tree's runtime pair on its own runner
+# while the app build runs, and hands the directory over here. A pair built
+# from another revision must never run: the revision file is compared with
+# this tree before either binary is copied into the run directory.
+runtime_pair="${EVENER_QUALIFICATION_RUNTIME_BINARIES:-}"
 
 cd "$repo_root"
 
-log "building the runtime pair (make build-runtime)"
-make build-runtime >"$output/build-runtime.log" 2>&1 || {
-	echo "build-runtime failed; see $output/build-runtime.log" >&2
-	tail -30 "$output/build-runtime.log" >&2
+# Issue #5992: the first journey otherwise runs on a simulator that is still
+# settling from its first boot, paying it as a 19-74s first launch and slowed
+# UI queries, with every observed first-journey failure inside that window.
+# Start the boot here — unless the workflow's pre-boot step already started it
+# — so the device settles while the runtime pair is installed or built; after
+# that the app gets one launch of its own before xcodebuild
+# runs. This warms the device and the app's first-launch
+# caches only: every journey and every assertion below still runs unchanged,
+# and the warmup's own app instance is terminated before the measured run
+# starts.
+warmup_start="$(date +%s)"
+if ! bundle_id="$(plutil -extract CFBundleIdentifier raw -o - "$app_path/Info.plist" 2>"$output/simulator-warmup.log")" || [ -z "$bundle_id" ]; then
+	echo "$SCRIPT_NAME: cannot read CFBundleIdentifier from $app_path/Info.plist, see $output/simulator-warmup.log" >&2
 	exit 1
-}
+fi
+# The workflow's pre-boot step may have started this device already, and a
+# boot is asynchronous — Booting until bootstatus below says otherwise — so
+# asking simctl to boot it a second time would fail the run. Ask for the state
+# instead; a device nobody started is booted here exactly as before.
+sim_state="$(xcrun simctl list --json devices 2>/dev/null | jq -r --arg udid "$sim_udid" '[.devices[][] | select(.udid == $udid) | .state] | first // ""' 2>/dev/null || true)"
+case "$sim_state" in
+Booted | Booting) ;;
+*)
+	if ! xcrun simctl boot "$sim_udid" >>"$output/simulator-warmup.log" 2>&1; then
+		echo "$SCRIPT_NAME: simctl boot failed, inspect $output/simulator-warmup.log" >&2
+		exit 1
+	fi
+	;;
+esac
 
-log "building the evener and fixture-provider binaries"
-go build -o "$evener_binary" ./cmd/evener >"$output/build-evener.log" 2>&1
-go build -o "$provider_binary" ./scripts/native/ios/fixture-provider >>"$output/build-evener.log" 2>&1
+if [ -n "$runtime_pair" ]; then
+	# The hub's daemons are exec'd from $evener_binary and carry the run
+	# directory's basename in argv, which is how cleanup proves it owns them;
+	# the installer copies instead of running from the pair so that ownership
+	# tag stays. It refuses a pair from another revision, a pair without a
+	# manifest entry for either binary, and a pair whose bytes no longer match
+	# its manifest.
+	bash "$repo_root/scripts/native/ios/qualification/install-runtime-pair.sh" "$runtime_pair" "$identity" "$run_dir"
+	log "using the runtime pair built by the setup job at $runtime_pair"
+else
+	log "building the runtime pair (make build-runtime)"
+	make build-runtime >"$output/build-runtime.log" 2>&1 || {
+		echo "build-runtime failed; see $output/build-runtime.log" >&2
+		tail -30 "$output/build-runtime.log" >&2
+		exit 1
+	}
+
+	log "building the evener and fixture-provider binaries"
+	go build -o "$evener_binary" ./cmd/evener >"$output/build-evener.log" 2>&1
+	go build -o "$provider_binary" ./scripts/native/ios/fixture-provider >>"$output/build-evener.log" 2>&1
+fi
+
+# The device has had the pair install and the runtime builds' time to settle
+# since simctl boot; wait for boot to finish (normally already true), install
+# the app under test and give it its first launch. The settle is bounded
+# warmup time, never a pacing mechanism for an assertion.
+log "$(date -u +%FT%TZ) warmup: waiting for the run simulator's first boot"
+xcrun simctl bootstatus "$sim_udid" -b >>"$output/simulator-warmup.log" 2>&1
+log "$(date -u +%FT%TZ) warmup: boot finished $(( $(date +%s) - warmup_start ))s after warmup start"
+install_start="$(date +%s)"
+xcrun simctl install "$sim_udid" "$app_path" >>"$output/simulator-warmup.log" 2>&1
+xcrun simctl launch "$sim_udid" "$bundle_id" >>"$output/simulator-warmup.log" 2>&1
+sleep 15
+xcrun simctl terminate "$sim_udid" "$bundle_id" >>"$output/simulator-warmup.log" 2>&1 ||
+	log "$(date -u +%FT%TZ) warmup: simulator terminate failed, see $output/simulator-warmup.log"
+log "$(date -u +%FT%TZ) warmup: install, first launch and settle took $(( $(date +%s) - install_start ))s"
 
 # The operator's shell can carry EVENER_* overrides — an Evener agent session
 # exports them — and EVENER_STATE_DIR or EVENER_CREDENTIALS_CONFIG outrank the

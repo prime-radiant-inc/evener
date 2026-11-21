@@ -1173,8 +1173,13 @@ What is cached, and where it is saved:
   prefix; `.github/actions/go-cache-save` saves this commit's entry on pushes to
   main only. Jobs whose compiled output differs (race and non-race, lint, vet,
   tags) use different kinds; jobs that compile nearly the same thing share one,
-  saved by one of them (the `web-browser` shards share `web-browser`, saved by
-  the cascade shard).
+  saved by the one that compiles the most (the `web-browser` shards share
+  `web-browser`, saved by the cascade shard; the two agent race shards share
+  `race-agent`, saved by `agent-2`, whose part also compiles the module's
+  subpackage tests). A job whose kind replaced another restores the retired
+  prefix as a fallback (`go-cache-fallback-kind`) until the first save of the
+  new kind lands, so the reshape adds no cold run: both agent race shards
+  restore `race-agent-2`.
 - **Go module cache, one entry for every kind**, `gomod-…`, saved by
   `static-build` alone (go-cache-save's `modules: "true"`). A job that needs a
   module the entry lacks downloads it on each run.
@@ -1182,22 +1187,48 @@ What is cached, and where it is saved:
   `golangci-lint-tagged-…`, a few megabytes each, saved by the two lint lanes on
   main. With both it and the Go build cache warm, the whole golangci sweep takes
   seconds; with only the build cache, about four minutes.
+- **iOS DerivedData build tree**, `ios-deriveddata-…`, saved by the
+  `simulator-build` job of `ios-qualification.yml` on pushes to main (that
+  workflow's push trigger carries the same paths filter as its pull requests)
+  and restored by every run of that job. The key hashes the runner image, the
+  pinned Xcode version, `mobile-native/Podfile.lock` and
+  `mobile-native/package-lock.json`; a pull request that changes either lock
+  misses and builds cold, and one that leaves them alone restores main's newest
+  entry through Actions' base-branch fallback. It caches `DerivedData/Build`
+  only: 2.4GB raw, roughly 1GB compressed. `ModuleCache.noindex` (987MB raw)
+  stays out; if warm runs still spend material time in PrecompileModule,
+  measure it before adding the module cache, which would roughly double the
+  entry. A save also needs `xcodebuild-release.log`, which the runner creates
+  when xcodebuild starts, so a run that failed before the build does not
+  re-archive the restored tree under a new commit key. The products tarball
+  the journeys job downloads is unchanged.
 - **Nothing else.** setup-go's and setup-node's built-in caches stay off: they
   save from whichever ref first misses their key, pull requests and merge-queue
   branches included, an entry saved on a pull request's ref serves only that
   pull request, and a warm `~/.npm` does not make `npm ci` measurably faster
   here. `TestBuiltInToolchainCachesStayOff` pins this for every workflow that
-  runs on pull requests.
+  runs on pull requests. A documented kind saved through an explicit
+  `actions/cache` step on main, such as the iOS DerivedData tree above, is not
+  one of those built-in toolchain caches.
 
 The rules that keep the budget:
 
 - **One generation on main.** CI's `cache-prune` job runs after every lane of a
-  main push and deletes each `go-*`, `gomod-*` and `golangci-lint-*` entry on
-  main that a newer entry with the same prefix supersedes. It never deletes a
-  prefix's newest entry, so a lane that saved nothing keeps its last one.
-  Entries left by a renamed kind or an older Go version are their prefix's
-  newest, so the job keeps them; nothing
-  restores them, so eviction takes them first, and they expire after 7 days.
+  ci.yml main push and deletes each `go-*`, `gomod-*`, `golangci-lint-*` and
+  `ios-deriveddata-*` entry on main that a newer entry of the same kind
+  supersedes. A key's Go version and linter-config components belong to the
+  generation too: a toolchain or config bump makes every older entry dead
+  weight, so the job strips those components as well and the bump leaves one
+  generation instead of two fleets for 7 days. The iOS lock hashes name a
+  different build rather than a newer generation of one key, so they stay part
+  of its prefix. It never deletes a kind's newest entry, so a lane that saved
+  nothing keeps its last one. The iOS lane saves from its own workflow, possibly
+  after that push's ci.yml prune already ran, so a superseded iOS entry can sit
+  on main until the next main-push prune. An entry left by a renamed kind or a
+  changed pod or package lock is its kind's newest, so the job keeps it until
+  it expires after 7 days; the former `race-agent-1` and `race-agent-2` kinds
+  are the exception, folded into `race-agent` so their entries are pruned with
+  it.
 - **A saved entry is one job's build.** go-cache-restore dates every restored
   build cache entry two hours back on main, Go refreshes the mtime of an entry
   over an hour old whenever it uses it, and go-cache-save deletes every entry
@@ -1220,6 +1251,18 @@ that compiles the most. If the job needs its own kind, read the size of a
 comparable kind's newest entry, add it to the current total, and keep the total
 under 6GB. Restore with go-cache-restore (or setup-toolchain's
 `go-cache-kind`), and save with go-cache-save after the job's last Go step.
+The iOS DerivedData kind is the exception to that shape: no Go kind holds what
+xcodebuild compiled, so it has its own explicit `actions/cache` steps in
+`ios-qualification.yml`, and it caches `Build` alone because the module cache
+would roughly double a 1GB entry. The 6GB target stands, and the fleet is above
+it: on 2026-11-20 the Go, module and lint kinds measured 8,315,126,220 bytes,
+and sharing `race-agent` projects them at 7,562,333,972 bytes once agent-2
+saves the shared kind; the iOS DerivedData tree adds about 605MB. Every kind in
+that total keeps a lane warm, so it does not shrink further without a lane
+building cold. Both generations at this size exceed the 10GB limit while a main
+push saves, so an entry the push never restored can still be evicted before
+`cache-prune` deletes the first generation; the arithmetic lives in the
+cache-budget issue (#6985).
 
 To read the budget, list the entries and the total:
 
@@ -1454,7 +1497,13 @@ frontend defect is structurally invisible to `vitest`. The guards in
   reducer and asserts nothing inside it scrolls sideways, at four widths.
 - **`npm run shellguard`** renders the production AppShell (rail + workspace) with
   a scripted tall sidebar tree and asserts the PAGE never grows taller than the
-  viewport: the rail's own body is the scroll container, not the document. The
+  viewport: the rail's own body is the scroll container, not the document. A
+  live insertion that pushes a rail row's menu trigger out of the rail body
+  dismisses that menu, and the dismissal must return focus to the trigger
+  without moving the rail body's scroll offset; the fixture keeps that row's
+  actions visible so the hover-quiet fade cannot blur the trigger once focus
+  is restored.
+  The
   Overview sweep also opens the Tasks tab over a scripted task list taller than any
   swept viewport and asserts the tab's own scroller owns that list while the
   document stays at the viewport height. The floating fixture waits for the
@@ -1952,6 +2001,14 @@ the session served in one call, and `s.ensureClientMutationStore()` adds the
 mutation queue when the test needs it. After the inputs finish, `s.Close()`,
 then `<-drained`, then read the slice under the mutex. Never combine
 `captureEvents` with a serve helper in one test.
+
+## Provider Replay Prefix Byte Tests
+
+`agent/session_prefix_replay_http_test.go` drives the real Responses and Chat
+Completions clients against a loopback `httptest.Server` and compares the raw
+request bytes, so a change to request shaping names the exact item that moved.
+Across turns, a cold restore, an env swap, a model switch-back and a root fork,
+the launch prompt, the tools and every earlier item must go out unchanged.
 
 ## A Disposable Hub Needs Its Own HOME
 

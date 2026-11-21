@@ -173,27 +173,6 @@ func TestMetaDirForLane(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// WorktreeDisposeResult struct
-// ---------------------------------------------------------------------------
-
-func TestWorktreeDisposeResultStruct(t *testing.T) {
-	t.Parallel()
-	result := WorktreeDisposeResult{
-		DelegateID:      "dlg_1",
-		LanePath:        "/path",
-		Branch:          "dlg_1",
-		AlreadyDisposed: true,
-		Message:         "disposed",
-	}
-	if result.DelegateID != "dlg_1" || result.LanePath != "/path" || result.Branch != "dlg_1" {
-		t.Fatalf("struct fields wrong: %+v", result)
-	}
-	if !result.AlreadyDisposed || result.Message != "disposed" {
-		t.Fatalf("struct fields wrong: %+v", result)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // stableWorktreeDisposalReason constant
 // ---------------------------------------------------------------------------
 
@@ -236,10 +215,6 @@ func TestWatchesTargetingEmpty(t *testing.T) {
 		t.Fatalf("expected false with empty watches")
 	}
 }
-
-// ---------------------------------------------------------------------------
-// delegateDisposeControlEnv: requires a local env (tested via the error path)
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // laneAheadCount: whitespace trimming
@@ -364,9 +339,5 @@ func TestWorktreeDisposeValidDelegateID(t *testing.T) {
 		t.Fatalf("expected controller unavailable error, got %v", err)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// fmt usage verification
-// ---------------------------------------------------------------------------
 
 var _ = fmt.Sprintf

@@ -853,7 +853,7 @@ func TestDelegateResourceRuntime_ModelHistorySnapshotRunsAfterControllerUnlock(t
 	done := make(chan error, 1)
 	go func() {
 		close(started)
-		_, err := c.CompleteModelRequest(claim, runtime.delegateModelHistorySnapshot(), replayScope{})
+		_, _, err := c.CompleteModelRequest(claim, runtime.delegateModelHistorySnapshot(), replayScope{})
 		done <- err
 	}()
 	<-started

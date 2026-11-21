@@ -87,14 +87,3 @@ func TestLoadSessionMetaFS_BasePathFs_MemMapRoundTrip(t *testing.T) {
 		t.Fatalf("meta Name = %q, want %q (in-memory content did not round-trip)", got.Name, "from-mem")
 	}
 }
-
-// TestLoadSessionMetaFS_ReadOnlyFs_OsFs_GetsNoFollow pins F1's protection
-// (finding 1 of round 13): a ReadOnlyFs over an OsFs MUST still get the
-// no-follow open, because a symlinked leaf beneath a wrapper-over-OsFs is the
-// exact hole F1 closed. This strengthens the existing
-// TestLoadSessionMetaFS_ReadOnlyFs_SymlinkedLeafRefused by asserting the
-// unwrap still routes to readFileNoFollowOS (the OS-backed no-follow path)
-// for OsFs-backed wrappers, confirming the conditional unwrap keeps F1 green.
-func TestLoadSessionMetaFS_ReadOnlyFs_OsFs_GetsNoFollow(t *testing.T) {
-	t.Skip("unix-only: covered by TestLoadSessionMetaFS_ReadOnlyFs_SymlinkedLeafRefused which asserts the no-follow refusal on a real OS symlink; no portable way to plant a symlink")
-}

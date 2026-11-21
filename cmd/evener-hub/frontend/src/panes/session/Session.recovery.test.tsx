@@ -11,7 +11,6 @@ import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { urlToPane } from "../../shell/routing";
 import { resetMobileViewportForTests } from "../../shell/useIsMobile";
 import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
-import { activityPanelStore, resetActivityPanelStoreForTests } from "../../stores/activityPanel";
 import { resetConnectionStoreForTests } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { resetNavigationStoreForTests } from "../../stores/navigation/store";
@@ -150,7 +149,6 @@ beforeEach(() => {
   resetTranscriptPagingForTests();
   resetAskDockStoreForTests();
   resetNavigationStoreForTests();
-  resetActivityPanelStoreForTests();
   resetActivitySidebarStoreForTests();
   resetMobileViewportForTests();
   mutationStorage = new MutationOutboxIndexedDB();
@@ -165,7 +163,6 @@ afterEach(() => {
   cleanup();
   resetPendingTurnsStoreForTests();
   resetAskDockStoreForTests();
-  resetActivityPanelStoreForTests();
   resetActivitySidebarStoreForTests();
   resetMobileViewportForTests();
   resetWorkspaceStoreForTests();
@@ -1166,7 +1163,6 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
       <Toast />
     </ClientProvider>,
   );
-  expect(activityPanelStore.getState().entries.has(ref)).toBe(false);
   expect(sessionActivitySnapshot(fake, ref, "session")?.summary).toBeUndefined();
   // The fence must not hide the editor or its force-stop menu.
   await waitFor(() => expect(activityRefs).toEqual([ref]));
@@ -1205,8 +1201,8 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
 
 // RoboRev finding on the reduced branch (Medium): the composer's
 // `followUpEngaged = localNotLoaded || ...` mounts its placement="composer"
-// discoverActivity for every local:notLoaded snapshot, and Session.tsx mounts
-// its placement="menu" fallback for !controlsFor(model).send. The `!restartPending`
+// chrome for every local:notLoaded snapshot, and Session.tsx mounts its
+// placement="menu" fallback for !controlsFor(model).send. The `!restartPending`
 // precondition on that fallback is what keeps the two from co-mounting: a
 // recovery-fenced stopped session is owned by the composer card (whose menu is
 // how force stop stays reachable), and only a local snapshot with no card is

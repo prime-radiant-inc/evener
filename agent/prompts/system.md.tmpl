@@ -252,6 +252,7 @@ Sandbox: {{ .Sandbox }}
 {{- range .Capabilities }}
 {{ . }}
 {{- end }}
+Later `<environment_context>` updates in the conversation supersede the launch environment, model, tools, skills, run-lifetime, and commit-provenance values above.
 </environment>
 
 {{ if .GitSnapshotFailed }}<git>
@@ -310,11 +311,10 @@ Activated skill instructions:
 
 {{ if not .IsSubagent }}
 {{ if .AvailableAgents }}<available_agents>
-The following subagent types are available for `delegate` with the `agent_type` parameter:
+The following subagent types are available for `delegate` with the `agent_type` parameter. This block states what each role is for and which tasks it starts with. Each role's current callable tools are listed in the `delegate` tool's `agent_type` schema, which is authoritative: where this block and that schema disagree — for example an older launch prompt that still carries a role tool list — the schema wins.
 {{ range .AvailableAgents }}<agent>
 Name: `{{ .Name }}`
 Description: {{ .Description }}
-Capabilities: Default tools: {{ .DefaultTools }}
 Default task list:
 {{ if .TaskList }}{{ range .TaskList }}- `{{ .Title }}`: {{ .Description }}{{ if .ReplacedByParentTasks }} Include relevant parent task details in the `delegate` task prompt for this step.{{ end }}
 {{ end }}{{ else }}- none

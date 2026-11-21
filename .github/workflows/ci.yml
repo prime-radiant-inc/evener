@@ -734,8 +734,12 @@ jobs:
   # The agent module's race run is split across two runners, agent-1 and
   # agent-2, each running half of its eight equally weighted shards
   # (RACE_AGENT_PART); as one unsharded -race binary it was the longest lane.
-  # nonagent runs every other non-root module. `race-modules`, the required
-  # check, passes only when every lane does.
+  # Both agent parts compile the same agent -race test binary and the same
+  # evener-dev runner and differ only in which shards run; the subpackages
+  # ride with the last part. One `race-agent` kind saved by agent-2 therefore
+  # holds every entry agent-1 used, so the two do not save a duplicate build
+  # per main push. nonagent runs every other non-root module. `race-modules`,
+  # the required check, passes only when every lane does.
   race-module-shards:
     name: race-modules / ${{ matrix.scope }}
     needs: [changes]
@@ -751,8 +755,17 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: ./.github/actions/setup-toolchain
+        if: ${{ matrix.scope != 'nonagent' }}
         with:
-          go-cache-kind: race-${{ matrix.scope }}
+          go-cache-kind: race-agent
+          # agent-2 compiles every entry agent-1 uses, so the entries it wrote
+          # under race-agent-2 stand in until the first race-agent save exists.
+          go-cache-fallback-kind: race-agent-2
+
+      - uses: ./.github/actions/setup-toolchain
+        if: ${{ matrix.scope == 'nonagent' }}
+        with:
+          go-cache-kind: race-nonagent
 
       # Sized to the runner, as race-root's hub lane is: the load-aware
       # budgets would read a fresh runner's checkout load and start too few.
@@ -783,7 +796,7 @@ jobs:
             /tmp/evener-module-tests.*/tmp/agent/agent-test-shards.*/shard[0-9]*.log
 
       - uses: ./.github/actions/go-cache-save
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.scope != 'agent-1' }}
         with:
           job-status: ${{ job.status }}
 
@@ -970,13 +983,19 @@ jobs:
 
   # The repository's Actions cache holds 10GB and evicts the least recently
   # accessed entries beyond it. Every main push saves a new entry for each Go
-  # cache kind, the golangci-lint analysis caches and the shared module cache,
-  # all keyed by commit, and runs restore only the newest entry per key
-  # prefix. This job keeps main at that one generation: once every lane has
-  # finished it deletes each such entry on main that a newer entry with the
-  # same prefix supersedes. It never deletes the newest entry of a prefix, so
-  # a lane that saved nothing this run keeps its last entry; an entry another
-  # main run deleted first is already gone, which is not a failure.
+  # cache kind, the golangci-lint analysis caches, the shared module cache and
+  # the iOS qualification workflow's DerivedData build tree, all keyed by
+  # commit, and runs restore only the newest entry per key prefix. This job
+  # keeps main at that one generation: once every lane of this workflow has
+  # finished it deletes each such entry on main that a newer entry of the same
+  # kind supersedes. A key's Go version and linter-config components belong to
+  # the generation, so a toolchain or config bump supersedes the whole older
+  # kind instead of leaving it to expire; the iOS key's lock hashes name a
+  # different build, so they stay part of its kind. A separate workflow's save
+  # may land after this job; the next main push trims that generation. It never
+  # deletes the newest entry of a kind, so a lane that saved nothing this run
+  # keeps its last entry; an entry another main run deleted first is already
+  # gone, which is not a failure.
   cache-prune:
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     needs: [web, tests, static, race-root, race-modules, fuzz]
@@ -991,10 +1010,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # The agent race shards' two kinds became the one shared race-agent
+          # kind; an entry saved under either old name is that kind's older
+          # generation, not a renamed kind left to expire.
           entries="$(gh cache list --repo "$GITHUB_REPOSITORY" --ref refs/heads/main \
             --sort created_at --order desc --limit 1000 --json id,key \
-            --jq '.[] | select(.key | test("^(go|gomod|golangci-lint)-.*-[0-9a-f]{40}$")) | "\(.id) \(.key | sub("[0-9a-f]{40}$"; ""))"')"
-          # Newest first, so the first entry of each prefix is the one kept.
+            --jq '.[] | select(.key | test("^(go|gomod|golangci-lint|ios-deriveddata)-.*-[0-9a-f]{40}$")) | "\(.id) \(.key | sub("-race-agent-[12]-"; "-race-agent-") | sub("-go[0-9][^-]*-([0-9a-f]+-)?[0-9a-f]{40}$"; "") | sub("-[0-9a-f]{40}$"; ""))"')"
+          # Newest first, so the first entry of each kind is the one kept.
           superseded="$(printf '%s\n' "$entries" | awk 'NF == 2 && seen[$2]++ { print $1 }')"
           deleted=0
           for id in $superseded; do

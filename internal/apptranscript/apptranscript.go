@@ -449,6 +449,12 @@ func ProjectEntryParts(turnID string, entryIndex int, turn schema.Turn, reg *Too
 			delete(reg.CommAuthorship, turn.Communicate.CallID)
 		}
 		if item, ok := CommunicateItem(turnID, entryIndex, turn); ok {
+			// A delivery whose message repeats the assistant text already shown
+			// in this turn renders once, not twice — the index suppresses the
+			// same echo (build.go's echoesAwaiting).
+			if reg != nil && item.Text != "" && turnID == reg.LastAssistantTurnID && EchoesAssistantText(reg.LastAssistantText, item.Text) {
+				return nil, nil
+			}
 			return []appwire.ThreadItem{item}, []int{0}
 		}
 		return nil, nil
@@ -1312,23 +1318,17 @@ func itemTurnsFromFileContext(ctx context.Context, path string, maxLineBytes int
 	return projection.Turns, err
 }
 
-// ItemTurnProjectionFromEntries is the already-decoded form of
-// ItemTurnProjectionFromFile. The header and entries must come from the same
-// transcript.
-func ItemTurnProjectionFromEntries(header transcript.Header, entries []transcript.Entry, project EntryProjector) (ItemTurnProjection, error) {
+// itemTurnsFromEntries is the already-decoded form of ItemTurnsFromFile: the
+// header and entries must come from the same transcript. It is in-package
+// only, so a test outside this package cannot project a shape production never
+// reads; the guards drive the shared grouping engine through it without a file
+// scan.
+func itemTurnsFromEntries(header transcript.Header, entries []transcript.Entry, project EntryProjector) ([]appwire.Turn, error) {
 	var acc logicalTurnAccumulator
 	for i := range entries {
 		appendProjectedEntry(&acc, project, entries[i].Turn, i+1)
 	}
 	projection, err := groupedAppTurnProjection(&acc, header)
-	projection.Entries = len(entries)
-	return projection, err
-}
-
-// ItemTurnsFromEntries is the compatible turn-only form of
-// ItemTurnProjectionFromEntries.
-func ItemTurnsFromEntries(header transcript.Header, entries []transcript.Entry, project EntryProjector) ([]appwire.Turn, error) {
-	projection, err := ItemTurnProjectionFromEntries(header, entries, project)
 	return projection.Turns, err
 }
 

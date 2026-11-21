@@ -34,7 +34,6 @@ type interactionBodyPolicy struct {
 var protectedTransportBodyRoots = map[string]bool{
 	"input":                   true,
 	"model":                   true,
-	"tools":                   true,
 	"response_format":         true,
 	"agent":                   true,
 	"previous_interaction_id": true,
@@ -69,8 +68,8 @@ func validateGoogleTransportAndBodyConstants(res registry.Resolved) error {
 		}
 	}
 	for k := range res.Transport.Body {
-		root, _, _ := strings.Cut(k, ".")
-		if protectedTransportBodyRoots[root] {
+		root, _, hasDot := strings.Cut(k, ".")
+		if protectedTransportBodyRoots[root] || (root == "tools" && hasDot) {
 			return &llm.ConfigurationError{
 				ProviderInstance: res.Instance,
 				Message:          fmt.Sprintf("instance %q: transport.body.%s cannot override Interactions-owned field %q", res.Instance, k, root),
@@ -107,7 +106,7 @@ func buildBodyWithPolicy(req llm.Request, res registry.Resolved, stream, fallbac
 
 	for k := range options {
 		switch k {
-		case "input", "model", "tools", "response_format":
+		case "input", "model", "response_format":
 			return nil, policy, &llm.ConfigurationError{Message: fmt.Sprintf("provider_options.google.%s cannot override request-owned field", k)}
 		}
 	}
@@ -238,17 +237,8 @@ func buildBodyWithPolicy(req llm.Request, res registry.Resolved, stream, fallbac
 			if openaichat.CyclicSchema(t.Parameters) {
 				return nil, policy, &llm.ConfigurationError{Message: fmt.Sprintf("tool %q schema contains a cycle", t.Name), Cause: openaichat.ErrCyclicSchema}
 			}
-			params := t.Parameters
-			if params == nil {
-				params = map[string]any{"type": "object", "properties": map[string]any{}}
-			}
-			toolEntries = append(toolEntries, map[string]any{
-				"type":        "function",
-				"name":        t.Name,
-				"description": t.Description,
-				"parameters":  sanitizeGeminiSchema(params),
-			})
 		}
+		toolEntries = append(toolEntries, toInteractionFunctionDecls(req.Tools)...)
 	}
 	webSearch := req.WebSearch && (caps.WebSearch == nil || *caps.WebSearch) && !registry.IsVertexGeminiOmni(res.Transport.Preset, res.WireID)
 	if webSearch {
@@ -669,6 +659,22 @@ func filterGoogleLabelsFromMetadata(meta map[string]string) map[string]any {
 	return out
 }
 
+func toInteractionFunctionDecls(tools []llm.ToolDefinition) []map[string]any {
+	out := make([]map[string]any, 0, len(tools))
+	for _, t := range tools {
+		out = append(out, map[string]any{
+			"type":        "function",
+			"name":        t.Name,
+			"description": t.Description,
+			// Gemini's function-parameter Schema is a restricted subset;
+			// wireFunctionParameters strips JSON-schema-only fields (e.g.,
+			// additionalProperties) so requests and local pricing agree.
+			"parameters": wireFunctionParameters(t),
+		})
+	}
+	return out
+}
+
 func validateAndCloneGoogleLabels(raw any) (map[string]any, error) {
 	out := map[string]any{}
 	add := func(k, s string) error {
@@ -751,10 +757,23 @@ func sanitizeInteractionResponseSchema(v any) any {
 	}
 }
 
+// sanitizeGeminiSchema rewrites a JSON Schema into the restricted subset Gemini
+// accepts. The pricing pass and the dispatch pass both call it and must agree
+// byte for byte, so its output may not depend on map iteration order.
 func sanitizeGeminiSchema(v any) any {
 	switch x := v.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(x))
+		// Collapse a nullable type union before the rebuild, so each output key
+		// has one writer whatever order the map yields its keys; the schema's
+		// own nullable field wins over the synthesized one.
+		typ, _, union := geminiNullableType(x["type"])
+		if union {
+			out["type"] = typ
+			if _, hasNullable := x["nullable"]; !hasNullable {
+				out["nullable"] = true
+			}
+		}
 		for k, vv := range x {
 			if k == "additionalProperties" || geminiSchemaMetaKeys[k] {
 				continue
@@ -763,15 +782,11 @@ func sanitizeGeminiSchema(v any) any {
 				out[k] = sanitizeGeminiNamedSchemas(vv)
 				continue
 			}
-			if k == "type" {
-				if typ, nullable, ok := geminiNullableType(vv); ok {
-					out[k] = typ
-					out["nullable"] = nullable
-					continue
-				}
+			if k == "type" && union {
+				continue
 			}
 			if k == "enum" {
-				if _, nullable, ok := geminiNullableType(x["type"]); ok && nullable {
+				if union {
 					out[k] = geminiEnumWithoutNull(vv)
 					continue
 				}

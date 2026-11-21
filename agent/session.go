@@ -2,11 +2,14 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -107,13 +110,67 @@ func (s *Session) nextJobTreeRevision(kind events.EventKind) (string, uint64, bo
 // history, registered tools, context-management state, subagents, plugins, MCP
 // connections, and persistence settings.
 type Session struct {
-	conversation           conversationState
-	hubClient              SessionHubClient
-	hubGeneration          uint64
-	hubEnabled             bool
-	hubWatchSignal         chan struct{}
-	hubWatchCancels        map[string]context.CancelFunc
-	hubOrdinary            map[string]*tool.RegisteredTool
+	conversation    conversationState
+	hubClient       SessionHubClient
+	hubGeneration   uint64
+	hubEnabled      bool
+	hubWatchSignal  chan struct{}
+	hubWatchCancels map[string]context.CancelFunc
+	hubOrdinary     map[string]*tool.RegisteredTool
+	// managerOnlyTools names the tools Manager composition registered with no
+	// ordinary registration behind them (see composeHubRegistry). Every spawn
+	// path sets Manager=false, so a child never composes one, and the delegate
+	// tool ceiling must not advertise them.
+	managerOnlyTools map[string]bool
+	// cliMCPServers names the MCP servers only the CLI layers declare (see
+	// initMCP), and cliMCPToolNames the tools they registered. Every spawn path
+	// clears MCPConfigFiles and MCPInline, so a child never discovers those
+	// servers, and the delegate tool ceiling must not advertise their tools. The
+	// server names are kept so a retry that heals one re-derives the tools.
+	cliMCPServers   map[string]bool
+	cliMCPToolNames map[string]bool
+	// cliMCPEvidence is the project-configuration evidence the classification
+	// above was derived from: the file the layer-2 project config resolves to,
+	// what it contained, and whether it existed. The classification is only
+	// sound while this still describes the session's current workspace, so a
+	// probe re-verifies it and leaves MCP names eligible when it cannot (see
+	// probeCLIEvidenceFresh).
+	cliMCPEvidence cliMCPClassificationEvidence
+	// rosterExcludesCLIMCP is the ONE roster decision both cached surfaces read:
+	// the <available_agents> roster in the system prompt and the delegate tool
+	// definition's agent_type description are rendered from this boolean, so the
+	// two cannot disagree about which CLI-only MCP names a delegate may use.
+	//
+	// There is exactly one writer rule, and it is what replaced the shared
+	// verdict plus two cache version stamps: the value is set where a
+	// workspace-scoped probe outcome can be APPLIED to this session's roster —
+	// session init, the environment-swap reset, and request preparation
+	// (refreshCachesForExclusionChangeContext). The probe itself never writes
+	// here, so a caller whose workspace has moved on cannot erase the decision
+	// the installed workspace established.
+	//
+	// It is guarded by delegateExclusionsMu rather than s.mu because the ceiling
+	// is built on both paths: request preparation renders the roster already
+	// holding s.mu, and delegate creation derives a ceiling without it.
+	rosterExcludesCLIMCP bool
+	// delegateExclusionsMu guards the two sets above. They cannot ride s.mu:
+	// the delegate-create path computes the ceiling without holding s.mu, while
+	// the prompt-render path computes it already holding s.mu, and s.mu is not
+	// reentrant. Nothing takes s.mu while holding this lock.
+	delegateExclusionsMu sync.RWMutex
+	// evidenceProbes names the workspaces that have a CLI-MCP evidence check
+	// outstanding: at most one per key, so a workspace whose mount has stopped
+	// answering gets ONE parked check rather than one per model request. A
+	// request that finds its workspace's key taken answers unknown reachability
+	// immediately instead of starting a second check into the same stall, and the
+	// goroutine that claimed the key removes it when it finally answers.
+	//
+	// It is a lock of its own, not a ride on delegateExclusionsMu: an entry is
+	// added and removed around a check that takes no other lock, and sharing the
+	// read-mostly lock would make every ceiling build wait on map bookkeeping it
+	// never reads.
+	evidenceProbesMu       sync.Mutex
+	evidenceProbes         map[string]struct{}
 	hubRegistry            *tool.Registry
 	id                     string
 	cfg                    SessionConfig
@@ -156,6 +213,9 @@ type Session struct {
 	// input rather than a built message slice because only Messages depends on
 	// that input: the fallback lays out its own messages when it runs, so a
 	// round that never falls back builds one request instead of two (#6442).
+	// It carries the round's priced route too, because a round has one handoff,
+	// not two: every admission the round takes bills the tool list that handoff
+	// measured, and a later round cannot inherit this one's.
 	roundFallbackSource    roundFallbackSource
 	roundFallbackSourceSet bool
 	// rejectedToolResultDocuments holds tool-call IDs whose document payload a
@@ -269,6 +329,7 @@ type Session struct {
 	// tracker.
 	envContextState *envctx.State
 
+	launchEnvBaseline envctx.Snapshot // the runtime facts the launch prompt printed
 	// notesLastProjected is the last shared-notes block
 	// maybeAppendNotesContext appended as a NOTES_CONTEXT turn. The
 	// projection appends only when the rendered block differs from this
@@ -724,7 +785,11 @@ type Session struct {
 	executionFrontier   events.ExecutionFrontier
 	frontierWake        chan struct{}
 	frontierPending     []string
-	frontierStopped     bool
+	// frontierDeferred holds executions the history fenced behind a pending
+	// publication. They enter frontierPending only at that publication handoff,
+	// so a buffered wake cannot emit a turn the history cannot read yet.
+	frontierDeferred []string
+	frontierStopped  bool
 	// Armed only by constructors, never by bare Sessions or runtime writes.
 	frontierStartupPending bool
 	frontierEmitterWG      sync.WaitGroup // lifetime worker, joined at the event-stream close boundary
@@ -883,9 +948,11 @@ type Session struct {
 	// quotaWait is the model call waiting out a provider usage limit, nil
 	// while none waits (session_quota_wait.go). quotaWakes counts the asks
 	// (a user message, a model switch) for such a wait to retry now.
-	// quotaWaitStamps is the last wait identity the session issued, so a
-	// later wait of the same turn always compares greater than an earlier
-	// one even when wall-clock instants collide or step back.
+	// quotaWaitStamps counts the wait identities this runtime issued. Its
+	// value is the sequence part of the next stamp, minted inside the durable
+	// boot generation's range (session_quota_wait.go), so a wait always
+	// compares greater than an earlier one even when wall-clock instants
+	// collide or step back.
 	// steerArrivals counts accepted user steering and steerArrivalsDrained is
 	// its value as the latest steering drain began, so a wait can tell a
 	// steer that may not be in its request. Guarded by mu.
@@ -1082,6 +1149,14 @@ type Session struct {
 	// MCP server connections
 	mcpMgr   *mcp.Manager
 	mcpTools []llm.ToolDefinition
+	// startupMCPProjectEvidence is the project layer THIS session read at its
+	// own startup, populated by initMCP from the same discovery pass that
+	// supplied its servers. It is what a sandboxed delegate this session
+	// constructs may expand through the process environment: the layer the
+	// launch already read, and not one a repository wrote into the workspace
+	// afterwards. Written once, under mu, during construction; read when a child
+	// is built.
+	startupMCPProjectEvidence mcpconfig.LayerEvidence
 
 	// Plugin-provided components
 	plugins             []plugin.Instance
@@ -1127,6 +1202,11 @@ type Session struct {
 	pendingSessionStartWaitEntered func()
 	pluginAgents                   map[string]plugin.Agent
 	pluginMCPConfigs               []mcpconfig.ServerConfig
+	// cliMCPOtherNamespaces is the registered-name prefixes the NON-CLI config
+	// layers supply, recorded beside the CLI server sets it qualifies. A CLI
+	// tool whose full registered name starts with one of these can also be
+	// registered by a server the child keeps, so it is not CLI-only.
+	cliMCPOtherNamespaces []string
 	// unsupportedPluginHookEvents accumulates all Claude-recognized events
 	// declared by loaded plugins that evener does not currently fire.
 	// Populated by initPlugins; used by DetailedStatus for diagnostics.
@@ -1428,6 +1508,15 @@ type Session struct {
 	systemPromptOverride string
 	cachedSystemPrompt   string
 	promptSourceLog      []promptSource
+
+	envContextPending atomic.Bool // the next request owes an environment block
+	// envContextFoldRemoved is set by a fold that folded the last environment
+	// block out of history. That request owes the model a restatement of it, and
+	// only that request does: a fold that kept the block still deduplicates.
+	envContextFoldRemoved  atomic.Bool
+	envContextMCPConnected atomic.Bool // set when round-start MCP redial connects new tools
+	systemPromptFrozen     bool        // cachedSystemPrompt is the immutable launch prompt
+	persistFallbackPrompt  bool        // a restored header carries none, so meta records it
 }
 
 type sessionDetachedProcess struct {
@@ -1592,6 +1681,180 @@ func (s *Session) drainJobNotifications() []jobNotification {
 	drained := s.pendingJobNotifs
 	s.pendingJobNotifs = nil
 	return drained
+}
+
+// stableChildTurnNeedsLease reports whether this turn is running on a stable
+// delegate child without a run lease in context.
+//
+// Both notification deferral and the unleased projection filter ask it so they
+// cannot drift. A lease in context is not this predicate's business: admission
+// validates the lease itself against the controller, because a lease can be
+// stale or fenced while still being present.
+//
+// The delegate identity is the structural test, not a flag: owningDelegateID is
+// set exactly on a stable delegate's child session, and an ephemeral subagent
+// carries none, so the ephemeral notification drive keeps its fallback. The
+// controller check is what makes the refusal actionable -- without a controller
+// there is no generation to hold and no admission to consult.
+func (s *Session) stableChildTurnNeedsLease(ctx context.Context) bool {
+	if !stableDelegateChild(s) {
+		return false
+	}
+	if _, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok {
+		return false
+	}
+	return true
+}
+
+// THE RULE. A watch notice becomes model-visible only at a LEASED presentation.
+// Every path that would write one into a turn's reminder must therefore either
+// carry a lease or persist durable delegate attention and defer the notice, and
+// it must do so BEFORE the write.
+//
+// The rule is about the WRITE, not the queue. Admission that reads the queue is
+// blind by construction: a watch notice has no terminal generation, so
+// awaitRequestForJobNotifications settles it before the request is prepared.
+// Both writers -- the opening accept and the round-boundary inject -- ask here
+// instead, so the split lives in exactly one place.
+//
+// A refusal that stops the whole turn is wrong even when it is right about the
+// watch notice: a batch can hold a recovered shell completion beside a watch
+// notice, and the completion has no lease to inherit but is perfectly
+// deliverable. So the operation is a SPLIT, not a verdict: defer the watch
+// notices to durable attention, keep the rest, and let the ordinary turn carry
+// and settle what it legitimately owns.
+//
+// No flag distinguishes "this notice may run without a lease". The structural
+// predicate is the child's ownership (stableChildTurnNeedsLease) plus the
+// notice's kind (jobNotification.isWatch).
+
+// deferUnleasedWatchNotices is THE RULE's one split point. On a leased turn it
+// does nothing: the lease is the presentation a watch notice waits for, so the
+// whole batch rides the turn. On an unleased stable-delegate turn it partitions
+// the batch two ways:
+//
+//   - An ordinary notice stays in kept and proceeds normally. It has no lease to
+//     inherit but is perfectly deliverable, and it is the only half some turns
+//     own.
+//   - Every watch notice goes to durable leased attention under the deferral
+//     identity (persistDeferredWatchNotice). A leased generation then presents
+//     it.
+//
+// Order is persist-then-suppress. Suppressing first and persisting after leaves
+// a window in which the notice is neither queued nor durable, which loses it.
+// A notice whose append fails is NOT left in the deliverable set: the writer
+// would put it into this unleased reminder and settle it before a leased
+// generation could present it, which is the leak this split exists to close. It
+// goes back on the queue instead, owed and untouched, while the next attempt
+// retries the append. An error the child can see beats a silently swallowed
+// failure report, and the ordinary completions beside it still ride this turn.
+//
+// It returns the notices the turn may carry.
+func (s *Session) deferUnleasedWatchNotices(ctx context.Context, jobNotifs []deliverableJobNotification) []deliverableJobNotification {
+	if !s.stableChildTurnNeedsLease(ctx) {
+		return jobNotifs
+	}
+	var retry []jobNotification
+	kept := jobNotifs[:0:0]
+	for _, d := range jobNotifs {
+		if !d.notification.isWatch() {
+			kept = append(kept, d)
+			continue
+		}
+		appended, err := s.persistDeferredWatchNotice(d.notification)
+		if err != nil {
+			s.emit(warningDataFromError("persist deferred watch notice", err))
+			if !appended {
+				// Not durable, so it must not ride this reminder. Back on the
+				// queue, owed and untouched, for the next attempt to make it
+				// durable. A notice that IS durable is not re-offered here: that
+				// would present it unleased as well as to the leased run that
+				// row already waits for.
+				retry = append(retry, d.notification)
+				continue
+			}
+		}
+	}
+	s.requeueJobNotifications(retry)
+	return kept
+}
+
+// deferredWatchAttentionPrefix marks the durable attention rows this half
+// creates. An unleased projection reads it to hold exactly its own unresolved
+// watch rows out of a request (dropUnleasedWatchAttentionTurns).
+const deferredWatchAttentionPrefix = "watchdefer:"
+
+// deferredWatchAttentionID is the durable attention identity of a watch notice
+// this half defers (LIFE-01, #2340).
+//
+// It is derived from the notice's own durable facts so a retry of the SAME
+// delivery derives the SAME id: appendDelegateNotificationDurably treats an
+// identical identity and content as a no-op and a reused identity with different
+// content as corruption.
+//
+// The watch, the job and the reason are NOT enough to name a delivery. A
+// repeating timer fires the same watch, for the same job, for the same reason,
+// every interval; keyed on those three alone the second fire reuses the first
+// fire's resolved row, arms no wake, and the notice is silently dropped, while a
+// fire whose rendered body changed ('2 times since your last turn') instead
+// collides as conflicting content. So the identity carries the delivery: the
+// fire's own ordinal for a timer tick, or the delivery id on the notice's
+// lineage for a condition fire. A notice with neither -- a send-rail diagnostic
+// -- keeps the coarser identity, because one repeated failure really is one item
+// and it has no delivery of its own to tell apart.
+func deferredWatchAttentionID(n jobNotification) string {
+	scope := n.WatchID
+	if scope == "" {
+		scope = n.OriginWatchID
+	}
+	if scope == "" {
+		scope = n.JobID
+	}
+	sum := sha256.Sum256([]byte(n.Reason))
+	id := deferredWatchAttentionPrefix + scope + ":" + n.JobID + ":" + hex.EncodeToString(sum[:8])
+	if n.DeliveryOrdinal > 0 {
+		return id + ":" + strconv.Itoa(n.DeliveryOrdinal)
+	}
+	if deliveryID := provenance.LatestDeliveryID(n.Provenance); deliveryID != "" {
+		return id + ":" + deliveryID
+	}
+	return id
+}
+
+// persistDeferredWatchNotice makes one watch notice durable delegate attention
+// and arms its wake, so a leased generation presents it after this turn declines
+// to carry it. It is the deferral half of THE RULE above.
+//
+// The two steps are reported separately because they fail differently. A failed
+// APPEND means the notice is not durable, so the caller must keep it owed. A
+// failed ARM means the notice IS already durable -- the row exists and a leased
+// generation will present it when something arms it -- and returning it to the
+// deliverable set would be worse than useless: the next writer would put the
+// same notice into an unleased reminder while its durable row stayed pending, so
+// it would be presented unleased AND presented again by the leased run. The arm
+// retry owns that recovery; the caller must not re-offer the notice.
+func (s *Session) persistDeferredWatchNotice(n jobNotification) (appended bool, err error) {
+	attentionID := deferredWatchAttentionID(n)
+	content := s.formatJobNotificationReminder([]deliverableJobNotification{{notification: n}})
+	if s.delegateController != nil {
+		// Register the notice's cause before the item can be presented: a
+		// runaway-watch diagnostic carries the chain the breaker stopped, and the
+		// response event must descend from it or the breaker reads that response
+		// as a fresh trigger and fires again.
+		s.delegateController.attentionCauses.remember(attentionID, n.Provenance)
+	}
+	if n.JobID == "" {
+		s.jobStatusPolls.forgetAll()
+	} else {
+		s.jobStatusPolls.forget(n.JobID)
+	}
+	if _, err := s.appendDelegateNotificationDurably(attentionID, content); err != nil {
+		if s.delegateController != nil {
+			s.delegateController.attentionCauses.forget(attentionID)
+		}
+		return false, err
+	}
+	return true, s.armDelegateAttention(attentionID)
 }
 
 // peekNotifications reports how many notifications are still owed to the model
@@ -2771,15 +3034,91 @@ func (s *Session) appendTurn(kind schema.TurnKind, m llm.Message) {
 // goroutine concurrently with this method running on the turn-processing
 // goroutine — see the field's doc comment.
 func (s *Session) maybeAppendEnvironmentContext() error {
-	return s.appendEnvironmentContext(true)
+	return s.appendEnvironmentContextWithPlacement(true, false)
+}
+
+func (s *Session) maybeAppendEnvironmentContextBeforeTrailingSteering() error {
+	return s.appendEnvironmentContextWithPlacement(true, true)
+}
+
+func isTrailingSteeringTurn(turn schema.Turn) bool {
+	return turn.Kind == schema.TurnSteering
+}
+
+func insertBeforeTrailingSteering(history []schema.Turn, turn schema.Turn) ([]schema.Turn, bool) {
+	idx := len(history)
+	for i, h := range slices.Backward(history) {
+		if isTrailingSteeringTurn(h) {
+			idx = i
+			continue
+		}
+		if h.Kind != schema.TurnModelSwitch {
+			break
+		}
+	}
+	if idx == len(history) {
+		return append(history, turn), false
+	}
+	return slices.Insert(history, idx, turn), true
+}
+
+// envRuntimeDrifted reports whether a runtime fact the launch prompt stated has moved.
+func (s *Session) envRuntimeDrifted() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.envTracker != nil && s.envTracker.RuntimeDrifted(s.envRuntimeSnapshot(envctx.Snapshot{}))
+}
+
+// armEnvContext owes the next request a fresh environment block.
+func (s *Session) armEnvContext() { s.envContextPending.Store(true) }
+
+// needsFullInventoryBaseline reports whether launchEnvBaseline lacks runtime
+// tool/model inventory (legacy baselineless session, even if GitBranch was seeded).
+func (s *Session) needsFullInventoryBaseline() bool {
+	return s.launchEnvBaseline.Model == "" && s.launchEnvBaseline.CallableTools == ""
+}
+
+// envContextDue reports whether the next request owes an environment block:
+// an arm landed (a swap, a restore or a fold), or a stated fact moved.
+func (s *Session) envContextDue() bool {
+	if s.envContextPending.Load() {
+		return true
+	}
+	return s.envRuntimeDrifted()
+}
+
+// envRuntimeSnapshot fills the runtime facts the launch prompt states once. Callers hold s.mu.
+func (s *Session) envRuntimeSnapshot(snap envctx.Snapshot) envctx.Snapshot {
+	var skills []string
+	for _, d := range s.skills.ModelEntries() {
+		if s.skillAvailableToSession(d.CatalogName) {
+			skills = append(skills, d.CatalogName)
+		}
+	}
+	snap.Model, snap.KnowledgeCutoff, snap.CommitTrailer = s.profile.Model(), s.envInfo.KnowledgeCutoff, s.commitTrailerPrompt()
+	if s.cfg.TurnEndsProcess {
+		snap.RunLifetime = "one-shot (process exits when turn drains; background shell jobs require job_watch to survive the turn and are stopped at exit)"
+	} else {
+		snap.RunLifetime = "persistent"
+	}
+	if le, ok := s.env.(*execenv.LocalExecutionEnvironment); ok {
+		snap.ScratchDir = le.SessionScratchDir()
+	}
+	snap.CallableTools, snap.AvailableSkills = envctx.JoinNames(toolNamesFromDefinitions(s.cachedToolDefs)), envctx.JoinNames(skills)
+	return snap
 }
 
 // appendEnvironmentContext can persist recovery context without publishing a
 // live event: restore seeds its projection from the completed transcript.
 func (s *Session) appendEnvironmentContext(publishEvent bool) error {
+	return s.appendEnvironmentContextWithPlacement(publishEvent, false)
+}
+
+func (s *Session) appendEnvironmentContextWithPlacement(publishEvent, beforeTrailingGoal bool) error {
 	if s.envCollector == nil {
 		return nil
 	}
+	wasPending := s.envContextPending.Swap(false)
 	snap := s.envCollector.Collect(envctx.Inputs{
 		Cwd:     s.currentEnv().WorkingDirectory(),
 		Sandbox: s.cfg.Sandbox,
@@ -2798,9 +3137,13 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	if tracker == nil || s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		s.attentionMu.Unlock()
+		if wasPending {
+			s.envContextPending.Store(true)
+		}
 		return nil
 	}
-	before := tracker.State()
+	snap = s.envRuntimeSnapshot(snap)
+	before := *tracker
 	block := tracker.RenderDiff(snap)
 	var st envctx.State
 	if block != "" {
@@ -2808,6 +3151,7 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	}
 	s.mu.Unlock()
 	if block == "" {
+		// Nothing is owed: the last block still states every fact.
 		s.attentionMu.Unlock()
 		return nil
 	}
@@ -2837,13 +3181,26 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	err := s.appendTurnAfterTranscriptWriteLocked(
 		turn,
 		func() error { return s.writeTranscriptSyncedLocked(turn) },
-		func() { s.history = append(s.history, turn) },
+		func() {
+			if beforeTrailingGoal {
+				var inserted bool
+				s.history, inserted = insertBeforeTrailingSteering(s.history, turn)
+				if inserted {
+					s.bumpHistoryRevisionLocked()
+				}
+				return
+			}
+			s.history = append(s.history, turn)
+		},
 	)
 	committed := err == nil
 	if !committed {
 		s.mu.Lock()
-		s.envTracker = envctx.NewTracker(before)
+		s.envTracker = &before
 		s.mu.Unlock()
+		if wasPending {
+			s.envContextPending.Store(true)
+		}
 	}
 	if committed {
 		// Persist tracker state so resume stays silent when nothing changed.
@@ -2903,8 +3260,20 @@ func (s *Session) resetEnvContextTrackerLocked() bool {
 		return false
 	}
 	s.envTracker = envctx.NewTracker(envctx.State{})
+	s.envTracker.SeedRuntime(s.launchEnvBaseline)
+	if s.systemPromptFrozen && s.needsFullInventoryBaseline() {
+		s.envTracker.RequireFullInventory()
+	}
+	for _, turn := range s.history {
+		if turn.Kind == schema.TurnEnvironment {
+			s.envTracker.ReplayBlock(turn.Message.Text())
+		}
+	}
+	s.envTracker.ResetState()
 	state := envctx.State{}
 	s.envContextState = &state
+	s.armEnvContext()                   // the fold took the last block out of history
+	s.envContextFoldRemoved.Store(true) // and this request owes the restatement
 	return true
 }
 

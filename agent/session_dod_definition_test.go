@@ -883,7 +883,7 @@ func TestSession_AbortSignal_KeepsSessionAliveAndEmitsInterruptedSessionEnd(t *t
 		t.Fatalf("expected STEERING_INJECTED event for the interrupt transcript marker")
 	}
 
-	// (review round 2) The interrupt marker's SteeringKind must land on the
+	// The interrupt marker's SteeringKind must land on the
 	// persisted schema.Turn itself, not only on the live SteeringInjectedData
 	// event, so a reload labels it the same way the live transcript did.
 	sess.mu.Lock()
@@ -1524,6 +1524,8 @@ func TestSubAgentStatus_Values(t *testing.T) {
 		{SubagentRunning, `"running"`},
 		{SubagentCompleted, `"completed"`},
 		{SubagentFailed, `"failed"`},
+		{SubagentCancelled, `"cancelled"`},
+		{SubagentExhausted, `"exhausted"`},
 	} {
 		b, err := json.Marshal(tc.status)
 		if err != nil {

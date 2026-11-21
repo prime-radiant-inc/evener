@@ -15,7 +15,6 @@ import { paletteStore } from "../../../shell/palette/paletteController";
 import { MOBILE_QUERY } from "../../../shell/useIsMobile";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
-import { resetActivityPanelStoreForTests } from "../../../stores/activityPanel";
 import { useCommandCatalog } from "../../../stores/commandCatalog";
 import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
@@ -50,6 +49,7 @@ import {
   textarea,
 } from "./composerTestUtils";
 import { readDraft, writeComposerDraft } from "./draft";
+import { LANDSCAPE_PHONE_QUERY } from "./narrowComposer";
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 import { resetQuoteInsertStoreForTests } from "./quoteInsert";
@@ -156,6 +156,24 @@ test("a phone's folded composer is compact, and focus reveals the full row", asy
     cleanup();
     restoreViewport();
   }
+});
+
+test("a landscape phone's folded composer uses the compact one-line row", async ({ onTestFinished }) => {
+  onTestFinished(installMobileViewport(LANDSCAPE_PHONE_QUERY));
+  // The Duo's 951pt landscape viewport uses the desktop shell, while its
+  // session pane leaves the PromptCard below the desktop folded threshold.
+  installNarrowComposer(526);
+  await mountComposerWithHandle("ref_a");
+  const card = screen.getByTestId("composer-input-card");
+  expect(card.getAttribute("data-folded")).toBe("true");
+  expect(card.getAttribute("data-folded-compact")).toBe("true");
+  expect(screen.queryByTestId("composer-attach")).toBeNull();
+  expect(screen.queryByTestId("model-switch-trigger")).toBeNull();
+
+  act(() => textarea().focus());
+  await waitFor(() => expect(card.getAttribute("data-folded-compact")).toBeNull());
+  expect(screen.getByTestId("composer-attach")).toBeTruthy();
+  expect(screen.getByTestId("model-switch-trigger")).toBeTruthy();
 });
 
 test("the composer's inline status row packs its facts to the far end", async () => {
@@ -588,7 +606,6 @@ beforeEach(() => {
   resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
-  resetActivityPanelStoreForTests();
   resetPendingTurnsStoreForTests();
   // askDockStore reconciles reactively off threadsStore (registered once at
   // module load - askDockStore.ts's own header comment), so its byRef map
@@ -618,7 +635,6 @@ afterEach(() => {
   vi.useRealTimers();
   resetActivitySidebarStoreForTests();
   resetWorkspaceStoreForTests();
-  resetActivityPanelStoreForTests();
   // A narrow-layout test leaves its stub installed; jsdom has no real
   // ResizeObserver, so the honest baseline for the next test is none at all.
   delete (globalThis as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver;

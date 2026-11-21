@@ -3,7 +3,8 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/tool"
@@ -37,47 +38,65 @@ func (s *Session) defaultToolsForAgent(registered map[string]bool, agent plugin.
 	return s.providerVisibleToolNames(canonical)
 }
 
-func (s *Session) defaultToolSummaryForAgentFromRegistered(registered map[string]bool, agent plugin.Agent) string {
-	return formatToolNamesForPrompt(s.defaultToolsForAgent(registered, agent))
-}
-
-func (s *Session) availableAgentEntries() []agentEntry {
+// delegatableAgentNames returns the role names this session may offer through
+// delegate, sorted, or nil when it may offer none.
+//
+// It is the ONE answer to "which roles exist for this session": the prompt
+// roster, the schema enum, and the capability roster the schema's description
+// carries all read it, so they cannot list different roles.
+func (s *Session) delegatableAgentNames() []string {
 	allowance := s.delegationAllowance // read under caller's lock or during single-threaded init
 	if allowance <= 0 || !s.canPromptDelegation() {
 		return nil
 	}
-	var registered map[string]bool
-	if s.reg != nil {
-		registered = s.reg.RegisteredNames()
-	}
+	return slices.Sorted(maps.Keys(s.pluginAgents))
+}
 
-	names := make([]string, 0, len(s.pluginAgents))
-	for name := range s.pluginAgents {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
+// availableAgentEntries is the <available_agents> input: what each role is for
+// and which tasks it starts with.
+//
+// It deliberately carries NO tool list. That list used to be rendered here as
+// "Default tools:", computed at launch and then frozen with the rest of the
+// launch prompt (#6959), so a project MCP config edited mid-session left the
+// prompt advertising the launch-time capabilities while the delegate schema
+// advertised the current ones — two capability lists on one request, one of
+// them wrong. The delegate tool's agent_type description is the single source
+// for current per-role capabilities precisely because it is rebuilt per
+// request; keeping tools out of this data is what makes that source single.
+func (s *Session) availableAgentEntries() []agentEntry {
+	names := s.delegatableAgentNames()
 	entries := make([]agentEntry, 0, len(names))
 	for _, name := range names {
 		agent := s.pluginAgents[name]
 		entries = append(entries, agentEntry{
-			Name:         name,
-			Description:  agent.Description,
-			DefaultTools: s.defaultToolSummaryForAgentFromRegistered(registered, agent),
-			TaskList:     agentTaskEntries(agent.Tasks),
+			Name:        name,
+			Description: agent.Description,
+			TaskList:    agentTaskEntries(agent.Tasks),
 		})
 	}
 	return entries
 }
 
+// delegateCapabilityRoster is the per-role capability list the delegate
+// schema's agent_type description carries: the tool set a delegate of each role
+// receives with no delegation_allowance.
+//
+// This is the authoritative list. It is computed from the live registry and the
+// current exclusion verdict every time the schema is built, which is every
+// request, so it describes what a child spawned now can actually register.
 func (s *Session) delegateCapabilityRoster() string {
-	entries := s.availableAgentEntries()
-	if len(entries) == 0 {
+	names := s.delegatableAgentNames()
+	if len(names) == 0 {
 		return ""
 	}
-	capabilities := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		capabilities = append(capabilities, fmt.Sprintf("%s: %s", entry.Name, entry.DefaultTools))
+	var registered map[string]bool
+	if s.reg != nil {
+		registered = s.reg.RegisteredNames()
+	}
+	capabilities := make([]string, 0, len(names))
+	for _, name := range names {
+		tools := formatToolNamesForPrompt(s.defaultToolsForAgent(registered, s.pluginAgents[name]))
+		capabilities = append(capabilities, fmt.Sprintf("%s: %s", name, tools))
 	}
 	return strings.Join(capabilities, "; ")
 }
@@ -86,31 +105,94 @@ func (s *Session) delegateToolDefinition() llm.ToolDefinition {
 	sandboxSchema := s.delegateSandboxSchemaForEnv(s.env)
 	sandboxSchema.ModelDescription = s.delegateModelDescription
 	definition := tool.DefDelegateWithResultTool(s.delegateAgentTypeNames(), sandboxSchema, s.resultToolName())
-	roster := s.delegateCapabilityRoster()
-	if roster == "" {
-		return definition
-	}
-	definition.Description += " Role capabilities are listed in the agent_type schema and available-agents prompt."
-	if properties, ok := definition.Parameters["properties"].(map[string]any); ok {
-		if agentType, ok := properties["agent_type"].(map[string]any); ok {
-			agentType["description"] = "Role for the delegate. Choose from the enum; effective capabilities by role: " + roster + ". " + tool.DelegateRoleWriteNote
-		}
-	}
+	s.applyDelegateCapabilityRoster(&definition)
 	return definition
 }
 
-func (s *Session) delegateAgentTypeNames() []string {
-	allowance := s.delegationAllowance // read under caller's lock or during single-threaded init
-	if allowance <= 0 || !s.canPromptDelegation() {
-		return nil
+// applyDelegateCapabilityRoster writes the current role capabilities into a
+// delegate tool definition's agent_type description.
+//
+// It is the ONE writer of that description, called from both places that build a
+// delegate schema: the ordinary definition, and the Manager-composed one the hub
+// branch serves. Two writers is how the schema and the prompt roster came to
+// disagree — Manager composition saved the description before MCP initialization,
+// so serving its copy verbatim advertised the startup capability list on a
+// request whose prompt listed the current one. A config edit that makes a
+// CLI-only tool reachable refreshed the prompt and left the schema behind, and
+// the model saw the tool in the roster and not in the schema that grants it.
+//
+// It REPLACES the maps it writes rather than mutating them, because the
+// definition it is handed can be a copy of a published registration:
+// Registry.Get returns the tool struct by value while Parameters is the
+// registered map. Writing through to agent_type there would edit the schema
+// every other reader sees — including argument repair, on the very request
+// this call is preparing — so the write stays on the caller's own definition.
+func (s *Session) applyDelegateCapabilityRoster(definition *llm.ToolDefinition) {
+	if s == nil || definition == nil {
+		return
 	}
+	roster := s.delegateCapabilityRoster()
+	if roster == "" {
+		return
+	}
+	definition.Description += " Current per-role capabilities are listed in the agent_type schema, which is authoritative."
+	properties, ok := definition.Parameters["properties"].(map[string]any)
+	if !ok {
+		return
+	}
+	agentType, ok := properties["agent_type"].(map[string]any)
+	if !ok {
+		return
+	}
+	updated := maps.Clone(agentType)
+	clonedProperties := maps.Clone(properties)
+	clonedParameters := maps.Clone(definition.Parameters)
+	if updated == nil || clonedProperties == nil || clonedParameters == nil {
+		return
+	}
+	// The capability list is stated here, and ONLY here, because this schema is
+	// built fresh on every request. The launch system prompt is immutable
+	// (#6959), so a list rendered into it states what a role could call at
+	// launch — not now. A session restored from such a prompt carries the older
+	// list, which is why the precedence is spelled out rather than implied.
+	updated["description"] = "Role for the delegate. Choose from the enum; effective capabilities by role: " + roster +
+		". This capability list is authoritative. It supersedes any per-role tool list in an <available_agents> block in your system prompt, including one restored from an earlier launch. " +
+		tool.DelegateRoleWriteNote
+	clonedProperties["agent_type"] = updated
+	clonedParameters["properties"] = clonedProperties
+	definition.Parameters = clonedParameters
+}
 
-	names := make([]string, 0, len(s.pluginAgents))
-	for name := range s.pluginAgents {
-		names = append(names, name)
+func (s *Session) delegateAgentTypeNames() []string {
+	return s.delegatableAgentNames()
+}
+
+// withoutDelegateAllowance hides the delegation_allowance property when no legal
+// grant lets the child delegate, so the model is not offered a parameter it
+// cannot meaningfully set.
+//
+// It returns a definition whose property map is its OWN. The definition it is
+// handed can be a copy of a published registration — Manager composition's is —
+// and Registry.Get hands out the tool struct by value while Parameters is the
+// registered map. A delete through that copy would edit the schema every other
+// reader sees, including argument repair on the request being prepared.
+func withoutDelegateAllowance(td llm.ToolDefinition) llm.ToolDefinition {
+	properties, ok := td.Parameters["properties"].(map[string]any)
+	if !ok {
+		return td
 	}
-	sort.Strings(names)
-	return names
+	if _, present := properties["delegation_allowance"]; !present {
+		return td
+	}
+	clonedProperties := maps.Clone(properties)
+	clonedParameters := maps.Clone(td.Parameters)
+	if clonedProperties == nil || clonedParameters == nil {
+		return td
+	}
+	delete(clonedProperties, "delegation_allowance")
+	clonedParameters["properties"] = clonedProperties
+	td.Parameters = clonedParameters
+	return td
 }
 
 // sessionShellDefinition is the shell schema for this session's live
@@ -254,6 +336,9 @@ func (s *Session) rebuildToolDefsCache() {
 		if registered[td.Name] {
 			// Manager composition already owns both the ordinary and hub branches.
 			// Keep its parameters as well as its description on provider requests.
+			// Composition writes the capability roster too, on every rebuild, so
+			// there is one writer of this schema and nothing left to re-decorate
+			// here.
 			if _, composed := s.hubOrdinary[td.Name]; s.hubEnabled && composed {
 				td = s.reg.Get(td.Name).Definition
 			}
@@ -264,10 +349,13 @@ func (s *Session) rebuildToolDefsCache() {
 				// When no legal grant lets the child delegate, delegation_allowance has
 				// a single useful value — a no-op knob. Hide it so the model is not
 				// offered a parameter it cannot meaningfully set.
+				//
+				// The delete runs on a CLONE. In Manager mode td is composition's
+				// registered definition, whose Parameters map IS the registered one:
+				// a delete through it would edit the schema argument repair and every
+				// other reader see, on the very request this cache serves.
 				if !canGrantDelegation(s.delegationAllowance) {
-					if props, ok := td.Parameters["properties"].(map[string]any); ok {
-						delete(props, "delegation_allowance")
-					}
+					td = withoutDelegateAllowance(td)
 				}
 				if !s.hubEnabled && s.delegationAllowance > 0 && s.reg != nil && s.reg.Get("delegate") != nil {
 					regTool := s.reg.Get("delegate")

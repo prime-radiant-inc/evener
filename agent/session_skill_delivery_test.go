@@ -1265,7 +1265,7 @@ func TestSkillDelivery_FrozenPlusOrdinary(t *testing.T) {
 	}
 }
 
-// --- Dispatch-shape revalidation coverage (fix round 1, review finding I1) ---
+// --- Dispatch-shape revalidation coverage ---
 
 // TestSkillDelivery_ProjectionModelSwitch drives the projection shape: a
 // pending activation's carrier is projected through a mid-turn cross-provider

@@ -10,9 +10,9 @@ import (
 )
 
 // TestSessionLivelockProbeNeverTakesTheLock pins the non-contending
-// inspection (review round 6, finding 3): the probe must observe held-ness
-// WITHOUT taking the lock, because the mint's one non-blocking acquisition
-// must never be made to fail by a probe. The pin is constructive — a foreign
+// inspection: the probe must observe held-ness WITHOUT taking the lock,
+// because the mint's one non-blocking acquisition must never be made to fail
+// by a probe. The pin is constructive — a foreign
 // shared flock sits on the file, which an exclusive-taking probe cannot take
 // and would misreport as held; the F_GETLK inspection is not blocked by it
 // and answers that no livelock holder exists. Linux-only: it is Linux's

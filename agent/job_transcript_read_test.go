@@ -442,13 +442,11 @@ func TestLocateLocalJob_CorruptSiblingDirDoesNotBreakLookup(t *testing.T) {
 	}
 }
 
-// --- roborev fix round 3: RED test for finding 2 ---
-
 // TestLocateLocalJob_CorruptSiblingDirSurfacesErrorWhenTargetNotFound asserts
 // that when the target job lives ONLY in a corrupt sibling bucket (and is not
 // found elsewhere), the corruption error propagates instead of being masked
-// as "job not found". The round 2 fix skipped ALL sibling errors, so genuine
-// corruption was swallowed. The fix: retain the first sibling error; if the
+// as "job not found". Skipping ALL sibling errors swallowed genuine
+// corruption. The fix: retain the first sibling error; if the
 // lookup would finish not-found, return that retained error — this preserves
 // stray-dir tolerance when the target is found elsewhere and surfaces
 // corruption when it is not.
@@ -516,14 +514,12 @@ func TestLocateLocalJob_RejectsSymlinkedSessionsDir(t *testing.T) {
 	}
 }
 
-// --- roborev fix round 7: RED test ---
-
 // TestLocateLocalJob_SymlinkedSiblingBucketSurfacesJobNotFound asserts that
 // a lookup for a nonexistent job with an UNRELATED symlinked sibling bucket
 // returns "job not found" — not the symlink rejection error from the sibling.
-// The round-6 symlink guards make findLocalJobInProject return a non-nil
+// The symlink guards make findLocalJobInProject return a non-nil
 // "symlinks are not allowed" error for a symlinked sessions/ in a non-target
-// bucket; the round-3 retainedErr mechanism retains it and surfaces it
+// bucket; the retainedErr mechanism retains it and surfaces it
 // instead of the honest "job not found" result, masking the real outcome
 // with a misleading message.
 func TestLocateLocalJob_SymlinkedSiblingBucketSurfacesJobNotFound(t *testing.T) {

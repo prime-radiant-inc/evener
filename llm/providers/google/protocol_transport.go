@@ -64,6 +64,13 @@ func (p *Protocol) completionCall(
 		if err != nil {
 			return nil, err
 		}
+		if pinnedTools, hasPinned := res.Transport.Body["tools"]; hasPinned {
+			b, err := json.Marshal(pinnedTools)
+			if err != nil {
+				return nil, err
+			}
+			snap["tools"] = protectedSnapshot{present: true, raw: b}
+		}
 		preSnapshots = snap
 	}
 

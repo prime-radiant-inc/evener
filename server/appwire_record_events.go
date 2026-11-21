@@ -122,6 +122,9 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			// SetProcessingTurn already published. Do not publish its thread
 			// status or close frame over that newer active identity.
 			if supersededSessionEnd && (item.Method == appwire.NotifyThreadStatusChanged || item.Method == appwire.NotifyThreadClosed) {
+				if !appDeferredTerminalParamsValid(item.Method, item.Params) {
+					continue
+				}
 				s.appDeferredTerminalNotifications = append(s.appDeferredTerminalNotifications, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: item.Params})
 				continue
 			}
@@ -207,6 +210,32 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 	})
 }
 
+// appDeferredTerminalParamsValid reports whether one terminal notification
+// the SESSION_END gate may defer carries well-formed params. A status must be
+// the typed struct; a close is validated in its map form because the
+// projector emits that shape to keep the empty reason key (see
+// internal/appprojector/appwire_projection.go).
+func appDeferredTerminalParamsValid(method string, params any) bool {
+	switch method {
+	case appwire.NotifyThreadStatusChanged:
+		status, ok := params.(appwire.ThreadStatusChangedParams)
+		return ok && status.ThreadID != "" && status.Ref != "" && status.Status.Type != ""
+	case appwire.NotifyThreadClosed:
+		switch closed := params.(type) {
+		case appwire.ThreadClosedParams:
+			return closed.ThreadID != "" && closed.Ref != ""
+		case map[string]any:
+			threadID, _ := closed["threadId"].(string)
+			ref, _ := closed["ref"].(string)
+			_, reasonIsString := closed["reason"].(string)
+			return threadID != "" && ref != "" && reasonIsString
+		}
+		return false
+	default:
+		return false
+	}
+}
+
 // appRootIdentityLocked is the served root thread and its ref. Callers hold
 // s.mu.
 func (s *Server) appRootIdentityLocked() (threadID, ref string) {
@@ -229,6 +258,11 @@ func (s *Server) appRootIdentityLocked() (threadID, ref string) {
 func (s *Server) recordAppNotifications(rootThreadID string, pending []pendingAppNotification) []appserver.SequencedNotification {
 	committed := make([]appserver.SequencedNotification, 0, len(pending))
 	rootNotificationTarget := s.appNotificationTarget(rootThreadID)
+	// A batch can carry several stamped frames - an overlay and a delegate
+	// update for the same thread among them - and the thread's generation
+	// cannot change under a projection commit, so one lookup per thread
+	// answers for the whole batch.
+	bootGenerations := make(map[string]string, 1)
 	for _, item := range pending {
 		params := item.params
 		notificationTarget := item.threadID
@@ -238,6 +272,19 @@ func (s *Server) recordAppNotifications(rootThreadID string, pending []pendingAp
 			params = s.stampAskPendingOnStatusChange(item.method, params)
 			params = s.stampActiveTurnOnStatusChange(item.method, params)
 			notificationTarget = rootNotificationTarget
+		}
+		// The two frames a client keeps beside history/updated carry the same
+		// boot generation it does. Every caller of this method releases
+		// s.mu before recording, and bootGenerationFor takes its own read lock,
+		// so the memoized lookup below can never double-lock.
+		switch item.method {
+		case appwire.NotifyEvenerDelegateUpdated, appwire.NotifyOverlayUpserted:
+			generation, known := bootGenerations[item.threadID]
+			if !known {
+				generation = s.bootGenerationFor(item.threadID)
+				bootGenerations[item.threadID] = generation
+			}
+			params = stampBootGeneration(params, generation)
 		}
 		params = stampAppNotificationTarget(params, item.threadID, item.ref)
 		committed = append(committed, s.appNotifier.Record(notificationTarget, item.method, params))
@@ -290,8 +337,11 @@ func (s *Server) finishProcessing() {
 			if item.threadID != threadID || item.ref != ref {
 				continue
 			}
-			if params, ok := item.params.(appwire.ThreadStatusChangedParams); ok && item.method == appwire.NotifyThreadStatusChanged {
-				s.status.State = params.Status.Type
+			if !appDeferredTerminalParamsValid(item.method, item.params) {
+				continue
+			}
+			if status, ok := item.params.(appwire.ThreadStatusChangedParams); ok {
+				s.status.State = status.Status.Type
 				deferredRest = true
 			}
 			pending = append(pending, item)

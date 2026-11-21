@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -255,6 +256,19 @@ func TestModelSwitchWhileWaitingForQuotaRetriesOnTheNewModel(t *testing.T) {
 		}
 		t.Fatalf("requests ran on %v, want the limited one then one retry on gpt-5.4", models)
 	}
+	if len(reqs[0].Messages) == 0 || reqs[0].Messages[0].Role != llm.RoleSystem ||
+		len(reqs[1].Messages) == 0 || reqs[1].Messages[0].Role != llm.RoleSystem {
+		t.Fatalf("expected system message at index 0 in both requests: req0=%+v req1=%+v", reqs[0].Messages, reqs[1].Messages)
+	}
+	if reqs[1].Messages[0].Text() != reqs[0].Messages[0].Text() {
+		t.Fatalf("model switch during quota wait mutated launch SystemPrompt:\nfirst:\n%s\nretry:\n%s", reqs[0].Messages[0].Text(), reqs[1].Messages[0].Text())
+	}
+	if !slices.ContainsFunc(reqs[1].Messages, func(m llm.Message) bool {
+		txt := m.Text()
+		return strings.Contains(txt, "<environment_context>") && strings.Contains(txt, "model: gpt-5.4")
+	}) {
+		t.Fatalf("retry request to new model missing <environment_context> with model: gpt-5.4; messages=%+v", reqs[1].Messages)
+	}
 	// The switch is recorded inside the turn, before the answer the new
 	// model gave.
 	s.mu.Lock()
@@ -272,6 +286,53 @@ func TestModelSwitchWhileWaitingForQuotaRetriesOnTheNewModel(t *testing.T) {
 	s.mu.Unlock()
 	if switchAt < 0 || answerAt < switchAt {
 		t.Fatalf("history has the switch at %d and the last answer at %d, want the switch recorded before the new model's answer", switchAt, answerAt)
+	}
+}
+
+func TestModelSwitchWhileWaitingForGoalContinuationQuotaKeepsGoalPromptLast(t *testing.T) {
+	s, _, _, adapter := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
+	serveSession(t, s)
+	trip := tripwireCtx(t).Done()
+	const goalPrompt = "GOAL_QUOTA_CONTINUATION_MARKER_4e7b"
+	run := startInput(context.Background(), s, goalPrompt, EntryContinuation)
+	run.awaitQuotaWait(t, s)
+
+	recoverProvider(adapter)
+	if err := s.SetModel("gpt-5.4"); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+	run.awaitEnd(t, trip, "the switch resumes the goal continuation call")
+	if run.err != nil {
+		t.Fatalf("the continuation after the switch: %v", run.err)
+	}
+	reqs := adapterRequests(adapter)
+	if len(reqs) != 2 || reqs[1].Model != "gpt-5.4" {
+		t.Fatalf("requests = %d (retry model=%q), want 2 with retry on gpt-5.4", len(reqs), reqs[len(reqs)-1].Model)
+	}
+	msgs := reqs[1].Messages
+	if len(msgs) < 2 || !strings.Contains(msgs[len(msgs)-1].Text(), goalPrompt) || strings.Contains(msgs[len(msgs)-1].Text(), "<environment_context>") {
+		t.Fatalf("retry Messages[len-1] displaced driving goal prompt:\n%s", msgs[len(msgs)-1].Text())
+	}
+	envIdx, goalIdx := -1, -1
+	for i, m := range msgs {
+		txt := m.Text()
+		if strings.Contains(txt, "<environment_context>") && strings.Contains(txt, "model: gpt-5.4") {
+			envIdx = i
+		}
+		if strings.Contains(txt, goalPrompt) {
+			goalIdx = i
+		}
+	}
+	if envIdx < 0 || goalIdx < 0 || envIdx >= goalIdx {
+		t.Fatalf("expected <environment_context> with model: gpt-5.4 before goal prompt (envIdx=%d goalIdx=%d); messages=%+v", envIdx, goalIdx, msgs)
+	}
+	s.mu.Lock()
+	hasModelSwitch := slices.ContainsFunc(s.history, func(tn schema.Turn) bool {
+		return tn.Kind == schema.TurnModelSwitch && tn.ModelSwitch != nil && tn.ModelSwitch.NewModel == "gpt-5.4"
+	})
+	s.mu.Unlock()
+	if !hasModelSwitch {
+		t.Fatal("TurnModelSwitch marker missing from history")
 	}
 }
 
@@ -1460,6 +1521,105 @@ func TestQuotaWaitAnnouncementsCarryTheWaitIdentity(t *testing.T) {
 	recoverProvider(adapter)
 	reachReset(clk)
 	run.awaitEnd(t, trip, "the call resumes at the reset")
+}
+
+// A runtime restore mints a later durable boot generation, so the next wait's
+// stamp must compare greater than a wait an earlier runtime issued, and each
+// stamp must be its generation's first range value: the ordering rests on the
+// counter minted before each runtime serves input, not on any metadata write
+// between the usage limit and the wait.
+func TestQuotaWaitStampIncreasesAcrossARestore(t *testing.T) {
+	s, clk, _, adapter := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
+	if err := s.mintBootGeneration(); err != nil {
+		t.Fatalf("mintBootGeneration: %v", err)
+	}
+	firstGeneration, err := strconv.ParseUint(s.BootGeneration(), 10, 64)
+	if err != nil {
+		t.Fatalf("first boot generation: %v", err)
+	}
+	trip := tripwireCtx(t).Done()
+	run := startInput(context.Background(), s, "start the work", EntryUserInput)
+	run.awaitQuotaWait(t, s)
+	first := s.RestingFailure()
+	if first == nil || first.WaitStartedAt == 0 {
+		t.Fatalf("first wait's summary = %+v, want a stamped wait", first)
+	}
+	if want := firstGeneration*uint64(quotaWaitRangeWidth) + 1; first.WaitStartedAt != want {
+		t.Fatalf("first wait's stamp = %d, want generation %d's first range value %d", first.WaitStartedAt, firstGeneration, want)
+	}
+	recoverProvider(adapter)
+	reachReset(clk)
+	run.awaitEnd(t, trip, "the call resumes at the reset")
+	if err := s.autoSaveMeta(); err != nil {
+		t.Fatalf("autoSaveMeta: %v", err)
+	}
+	s.Close()
+	meta, err := schema.LoadSessionMeta(s.stateDir, s.ID())
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+
+	// The restored runtime keeps a real clock (a fake one is test state, not
+	// session state), so its usage limit must name a reset still ahead.
+	limit := usageLimitError(t, "openai", time.Unix(time.Now().Unix(), 0).Add(2*time.Hour))
+	restoredAdapter := &streamingAdapter{name: "openai", streamErr: limit}
+	restoredClient := llm.NewClient()
+	restoredClient.Register(restoredAdapter)
+	restored, err := RestoreSessionFromMeta(restoredClient, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(s.stateDir), meta, s.stateDir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	t.Cleanup(restored.Close)
+	if err := restored.mintBootGeneration(); err != nil {
+		t.Fatalf("mintBootGeneration after restore: %v", err)
+	}
+	restoredGeneration, err := strconv.ParseUint(restored.BootGeneration(), 10, 64)
+	if err != nil {
+		t.Fatalf("restored boot generation: %v", err)
+	}
+	if restoredGeneration <= firstGeneration {
+		t.Fatalf("restored boot generation %d did not rise above %d", restoredGeneration, firstGeneration)
+	}
+
+	secondTrip := tripwireCtx(t).Done()
+	secondRun := startInput(context.Background(), restored, "start the work again", EntryUserInput)
+	secondRun.awaitQuotaWait(t, restored)
+	second := restored.RestingFailure()
+	if second == nil || second.WaitStartedAt == 0 {
+		t.Fatalf("restored wait's summary = %+v, want a stamped wait", second)
+	}
+	if want := restoredGeneration*uint64(quotaWaitRangeWidth) + 1; second.WaitStartedAt != want {
+		t.Fatalf("restored wait's stamp = %d, want generation %d's first range value %d", second.WaitStartedAt, restoredGeneration, want)
+	}
+	if second.WaitStartedAt <= first.WaitStartedAt {
+		t.Fatalf("restored wait's stamp %d does not compare greater than the previous runtime's %d", second.WaitStartedAt, first.WaitStartedAt)
+	}
+	recoverProvider(restoredAdapter)
+	if _, err := restored.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-restored",
+		Input:            []appwire.InputItem{{Type: "text", Text: "is the quota back"}},
+	}); err != nil {
+		t.Fatalf("steer the restored wait: %v", err)
+	}
+	secondRun.awaitEnd(t, secondTrip, "the restored call retries after the steer")
+}
+
+// A Close that lands between the usage-limit error and the wait's publication
+// still ends the turn as an ordinary cancellation. A turn that ends on one lets
+// its goal resume; the provider's quota error would leave it blocked.
+func TestQuotaWaitClosedBeforePublicationIsACancellation(t *testing.T) {
+	s, _, _, _ := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
+	limit := usageLimitError(t, "openai", quotaResetAt)
+	s.mu.Lock()
+	s.closing = true
+	s.mu.Unlock()
+	retry, err := s.waitOutUsageLimit(context.Background(), limit, "openai", 0, 0)
+	if retry {
+		t.Fatal("a closed session retried its model call")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("wait error = %v, want context.Canceled", err)
+	}
 }
 
 // The elapsed sample is the RETRY GROUP's time, not the whole model-call

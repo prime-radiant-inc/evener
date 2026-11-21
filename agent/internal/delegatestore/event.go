@@ -116,14 +116,12 @@ type IntentStated struct {
 	Intent     string `json:"intent"`
 }
 
-// AttentionHoldReleased records that an event newer than the named generation's
-// settled stop ended the user-stop quiet on this delegate's pending rows. The
+// AttentionHoldReleased records that a newer event ended the quiet on this
+// delegate's pending rows for every hold through Generation, inclusive. The
 // quiet itself is in-memory, so without this record a cold restore cannot tell
 // a stop whose quiet is still current from one a newer event already released.
-// Generation names the settled generation whose stop the release superseded: a
-// release is only ever appended while the aggregate rests at that generation,
-// so generations only move the record forward and a release can never name a
-// stop that settles later.
+// Generation is the newest settled generation at admission, carried unchanged
+// by a wake or an ack. The fold accepts any nonzero sample at or below it.
 type AttentionHoldReleased struct {
 	Generation uint64 `json:"generation"`
 }

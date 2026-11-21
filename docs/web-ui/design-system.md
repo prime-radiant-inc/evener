@@ -126,7 +126,8 @@ losing the conversation that made the evidence relevant.
   counts. A count click focuses the owning pane before opening the matching Overview category.
   The shared sidebar retains its scope breadcrumb and an accessible, visually hidden
   “Overview kind” label. About is the fifth category and has no footer counter.
-  Phones keep one bottom surface: the pane renders no separate footer strip below the
+  At the narrow shell breakpoint (899px and below), phones keep one bottom surface:
+  the pane renders no separate footer strip below the
   composer, so the composer's own control row carries Attach, the model and reasoning
   chrome line, and Send or Stop. The activity counts sit on a quiet line below the card,
   where the desktop status bar puts them, and that line is the pane's bottom edge: on
@@ -134,9 +135,10 @@ losing the conversation that made the evidence relevant.
   space below them. The composer dock owns the home-indicator band, and that band is one
   token: `--dock-clearance` in `tokens.css` (`max(0px, env(safe-area-inset-bottom) -
   var(--keyboard-inset, 0px))`). Every dock reads that one value, and it yields when the
-  on-screen keyboard covers the band. The working-directory strip stays desktop-only: a phone
-  reads the session's working directory and branch through the session menu's Overview
-  (About) and never stacks a second strip below the composer. A phone chip shows its
+  on-screen keyboard covers the band. The working-directory strip follows that shell breakpoint:
+  the narrow phone reads the session's working directory and branch through the session menu's
+  Overview (About), while a primary-touch phone whose wider landscape viewport uses the desktop
+  shell retains the separate status footer. A phone chip shows its
   glyph and a single active count (settled for Tasks); its category name and the full
   active/total fraction stay in its accessible name and tooltip. While the card rests —
   empty, unfocused, no send in flight — a composer
@@ -155,8 +157,10 @@ losing the conversation that made the evidence relevant.
   was. A phone's
   resting composer is one line too, but it keeps only the session menu and Send
   there; engaging the editor restores the full row, including Attach and the model
-  picker. A desktop card under 620px keeps the stacked control row and the folded
-  one-line field. The phone's resting card sheds Attach, the model chrome and the
+  picker. This phone treatment also holds on a primary-touch landscape viewport up
+  to 1000px wide and 700px tall, including the Duo's 951×669pt inner display, even
+  though that width uses the desktop shell. A fine-pointer desktop card under 620px keeps the stacked
+  control row and the folded one-line field. The phone's resting card sheds Attach, the model chrome and the
   activity line: the folded card is the phone's smallest surface, and the counts come
   back with the expanded card. At the 466px Duo cover width the control row
   tightens; focus, drafts, attachments, and question/approval docks keep their writing
@@ -171,6 +175,11 @@ losing the conversation that made the evidence relevant.
   `--space-2` gap, with the matching dock gap in
   `composer.module.css`), while the activity count line keeps the 44px `--tap-min` floor
   (`composer.module.css` `.activityRow`).
+- **Let the lowest footer own the safe area.** A pane with a flush `edgeFooter`
+  below its padded composer footer gives that edge footer the home-indicator band
+  at every width. The composer footer keeps only its ordinary `--space-3` gap, so a
+  wide landscape phone cannot reserve the same band once above the status bar and
+  again inside it.
 - **Keep the loading face honest and seat-scoped.** A loading session pane shows a `Loader`
   status over a static four-line `Skeleton` and delays its force-stop recovery copy by
   eight seconds (`RECOVERY_HINT_DELAY_MS` in
@@ -201,8 +210,8 @@ losing the conversation that made the evidence relevant.
 - **Preserve useful saved placements.** Workspace restore omits retired Activity
   panes through its unknown-pane handling. Registered panes keep their bodies and
   reachable tabs; valid session routes win before Welcome. Overview restores its
-  own open/category choice independently. The retained recursive Activity Sheet
-  and inline discovery keep their existing scope and renderer.
+  own open/category choice independently. Inline discovery keeps its existing
+  scope and renderer.
 
 The provenance corrections and nested navigation/focus repairs change behavior. Folding,
 disclosure persistence, keyboard rules, preferences and semantic hue roles are retained
@@ -795,7 +804,7 @@ during implementation (noted inline); this table is the one to trust.
 | **ModelCatalog** (+ **ModelCatalogPanel**) | `{value: string; onChange(qualified); loadCatalog(): Promise<ModelCatalog>; revision?; onPickEntry?(entry); emptyLabel? ("(default)")}`; panel: `{loading; error; catalog; value; onPick(entry); variant?: "default"\|"sheet"}` | The rich model picker. `value` is a qualified `"provider/model"` or `""` for the harness default; `loadCatalog` is injected, so the widget is wire-free. The closed chip is the trigger and opens the panel in a Popover: an ARIA 1.2 combobox whose focus never leaves the search input, over one list of Recent, provider groups, and a dim line per unreachable provider. `ModelCatalogPanel` is the content alone, for a caller with its own trigger; `variant="sheet"` is the mobile bottom-sheet form (no search input, 48px rows). `ModelCatalog` is also the exported catalog shape type. |
 | **Dropzone** | `{children: ReactNode; onFiles(files: File[]); disabled?}` | A generic drag-and-drop file target around `children`: calls `onFiles` with every dropped File in order, shows an active state while a drag is over it. No type/count/size opinion — the caller filters. Pointer-only by nature, so every caller must also offer a keyboard-reachable file-picker button. |
 | **KeyHint** | `{keys: string[]; compact?: boolean}` | One `<kbd>` per key, "+"-separated, each drawn as a keycap: `--surface-1`, a 1px `--edge` hairline, `--radius-chip`, and a heavier `--edge-strong` foot drawn as a shadow so the cap keeps its box; the literal key name `"Mod"` renders as ⌘ on Apple platforms, `Ctrl` elsewhere. `compact` renders one bare glyph run (⇧↵) for a hint inside another control (a Send button), with the same words visually hidden so the enclosing name is unchanged. `chordLabel(keys)` is exported alongside. |
-| **Menu** | `{items: MenuEntry[]; triggerTabIndex?: number; variant?: "default"\|"quiet"} & ({trigger: ReactNode} \| {icon: ReactNode; label: string})` (`MenuEntry` = `{id; label; onSelect; disabled?}` \| `{kind: "separator"; id}`) | Trigger + popup; roving tabindex among items (skipping disabled), no typeahead. The default trigger is a raised control (`--surface-1`, `--edge`, `--shadow-card`); the popup is a `--radius-pane` overlay whose items sit `--space-1` inside its edge and round their own wash. Popup `role="menu"` gets `aria-labelledby` pointing at the trigger `<button>`'s own id (fix-wave — see §4). Traps focus (`FocusScope trap`). `trigger` is visible content that also names the button. The icon-only form takes `icon` (decorative, wrapped `aria-hidden`) and a required `label` that becomes the trigger's `aria-label`; it is square at IconButton's `sm` size (28px) with IconButton's tap floor (≤899px or a coarse pointer), so callers never pad, size or centre the trigger themselves (the rail's row and section "⋯", SessionMenu). `triggerTabIndex={-1}` when nested in a roving-tabindex row; `variant="quiet"` drops the trigger's border for dense rows. An open menu is anchored to its trigger's current position and to its current item set, not to a snapshot taken when something resized: a viewport resize re-anchors the popup and never closes it (closing on one swallowed the tap that opened the menu when that tap dismissed the software keyboard), for as long as its trigger stays mounted - crossing the mobile breakpoint swaps the workspace host, which unmounts the menu with its pane, and no menu can outlive its trigger, re-measuring after layout via the visual viewport's `resize` and `scroll`, and a `ResizeObserver` on the popup's own box and on every ancestor up to `body`, so a trigger that moves later still takes the popup with it. The popup asks for its label's `max-content` width and the visible viewport caps it, so a long label wraps only when the cap is what decided the width - never when the popup had room. When a placement pass shortens that scrollport, the row holding focus is scrolled back into view by moving the popup's own `scrollTop`, never `scrollIntoView`, which on a zoomed page can pan toward the popup's old coordinates. Keyboard activation resolves against the focused item's stable id, so an entry leaving the list cannot retarget Enter at its neighbour. |
+| **Menu** | `{items: MenuEntry[]; triggerTabIndex?: number; variant?: "default"\|"quiet"} & ({trigger: ReactNode} \| {icon: ReactNode; label: string})` (`MenuEntry` = `{id; label; onSelect; disabled?}` \| `{kind: "separator"; id}`) | Trigger + popup; roving tabindex among items (skipping disabled), no typeahead. The default trigger is a raised control (`--surface-1`, `--edge`, `--shadow-card`); the popup is a `--radius-pane` overlay whose items sit `--space-1` inside its edge and round their own wash. Popup `role="menu"` gets `aria-labelledby` pointing at the trigger `<button>`'s own id (fix-wave — see §4). Traps focus (`FocusScope trap`). `trigger` is visible content that also names the button. The icon-only form takes `icon` (decorative, wrapped `aria-hidden`) and a required `label` that becomes the trigger's `aria-label`; it is square at IconButton's `sm` size (28px) with IconButton's tap floor (≤899px or a coarse pointer), so callers never pad, size or centre the trigger themselves (the rail's row and section "⋯", SessionMenu). `triggerTabIndex={-1}` when nested in a roving-tabindex row; `variant="quiet"` drops the trigger's border for dense rows. An open menu is anchored to its trigger's current position and to its current item set, not to a snapshot taken when something resized: a viewport resize re-anchors the popup and never closes it (closing on one swallowed the tap that opened the menu when that tap dismissed the software keyboard), for as long as its trigger stays mounted - crossing the mobile breakpoint swaps the workspace host, which unmounts the menu with its pane, and no menu can outlive its trigger, re-measuring after layout via the visual viewport's `resize` and `scroll`, and a `ResizeObserver` on the popup's own box and on every ancestor up to `body`, so a trigger that moves later still takes the popup with it. The popup asks for its label's `max-content` width and the visible viewport caps it, so a long label wraps only when the cap is what decided the width - never when the popup had room. When a placement pass shortens that scrollport, the row holding focus is scrolled back by moving the popup's own `scrollTop`, never `scrollIntoView`, which on a zoomed page can pan toward the popup's old coordinates, but only when the pass took visible pixels away from it. A row that was already fully hidden gets no vertical reveal. Keyboard activation resolves against the focused item's stable id, so an entry leaving the list cannot retarget Enter at its neighbour. |
 | **Popover** | `{open; onClose; trigger: ReactElement; children; autoFocus? (true); closeOnScroll? (true); stretchTrigger? (false); "data-testid"?}` | The shared floating panel: `trigger` renders in flow and anchors a panel portaled to `document.body` at a fixed position (flip-then-clamp, shared with Menu), so opening never reflows the page. Outside click, Escape, and (unless `closeOnScroll={false}`) scroll or resize call `onClose`; toggling from the trigger is the caller's job. `autoFocus={false}` keeps focus in an anchoring input (the combobox pattern). |
 | **Dialog** | `{open; onClose; title; children; footer?; size?: "default"\|"large"}` | Modal: centered, enters and leaves on the Float recipe (§5), Escape/scrim-click close, trapped + restored focus. Shares its whole contract with Sheet via the internal `OverlayPanel`. `size="large"` fills almost the whole viewport for lightbox-style content. |
 | **ConfirmDialog** | `{open; title; children; confirmLabel: string; cancelLabel? ("Cancel"); destructive? (true); busy? (false); onConfirm(); onCancel()}` | A Dialog pre-composed for "every destructive action confirms": body copy plus a Cancel / confirm-verb footer, danger-toned unless `destructive={false}` (a consequential but non-destructive action like Install). Controlled — key `open` off one "what's pending" state. Escape and scrim-click call `onCancel`, never `onConfirm`; `busy` disables both buttons against a double submit. |

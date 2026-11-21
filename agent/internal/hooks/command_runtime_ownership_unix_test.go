@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/execsupport/shellquote"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // A hook is a user's shell command, so one that backgrounds a job leaves a
@@ -113,18 +114,20 @@ func TestSessionEndHookDescendantIsReapedWhileDiagnosticsRemain(t *testing.T) {
 // process scheduling, never the mechanism under test.
 func awaitRecordedPID(t *testing.T, path string) int {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if data, err := os.ReadFile(path); err == nil {
-			if pid, convErr := strconv.Atoi(strings.TrimSpace(string(data))); convErr == nil && pid > 0 {
-				return pid
-			}
+	var pid int
+	testwait.UntilSeen(t, "the process id file "+path+" to be written", func() (bool, string) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return false, err.Error()
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("process id file %s was not written", path)
+		got, convErr := strconv.Atoi(strings.TrimSpace(string(data)))
+		if convErr != nil || got <= 0 {
+			return false, fmt.Sprintf("%q: %v", data, convErr)
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		pid = got
+		return true, ""
+	})
+	return pid
 }
 
 // awaitProcessGone polls until pid names no process. A just-killed descendant

@@ -146,4 +146,165 @@ describe("skill document", () => {
     expect(textOffsetToDocumentPosition(doc, -1)).toBe(0);
     expect(textOffsetToDocumentPosition(doc, 100)).toBe(6);
   });
+  it("marks exactly the adopted occurrences and round trips them", () => {
+    // Only marker 2 is adopted: marker 1 is prose the same text spells, and a
+    // marker the caller did not name must never gain a mark.
+    const doc = parseSkillDocument({ text: "a [image 1] b [image 2]", skillNames: [], adoptedImageMarkers: [2] });
+    const marked = doc.content.content.filter((node) => node.marks.some((mark) => mark.type.name === "stagedAnchor"));
+    expect(marked.map((node) => node.text)).toEqual(["[image 2]"]);
+    expect(serializeSkillDocument(doc)).toEqual({
+      text: "a [image 1] b [image 2]",
+      skillNames: [],
+      adoptedImageMarkers: [2],
+      adoptedImageRanges: [{ marker: 2, start: 14, end: 23 }],
+    });
+  });
+
+  it("keeps the mark on the literal only, not on text that follows it", () => {
+    // A mark that leaked past its own occurrence would refuse a person's prose.
+    const doc = parseSkillDocument({ text: "[image 1] tail", skillNames: [], adoptedImageMarkers: [1] });
+    const runs = doc.content.content.map((node) => ({
+      text: node.text,
+      marked: node.marks.some((mark) => mark.type.name === "stagedAnchor"),
+    }));
+    expect(runs).toEqual([
+      { text: "[image 1]", marked: true },
+      { text: " tail", marked: false },
+    ]);
+  });
+
+  it("drops the adoption when the occurrence is gone and restores nothing it did not mark", () => {
+    // What a delete does to the document: no literal, so nothing to report.
+    expect(
+      serializeSkillDocument(parseSkillDocument({ text: "a b", skillNames: [], adoptedImageMarkers: [2] })),
+    ).toEqual({
+      text: "a b",
+      skillNames: [],
+    });
+    // A marker with no adoption is not provenance, whatever the number.
+    expect(serializeSkillDocument(parseSkillDocument({ text: "[image 2]", skillNames: [] }))).toEqual({
+      text: "[image 2]",
+      skillNames: [],
+    });
+  });
+
+  it("splits a run so an adopted occurrence between atoms keeps its mark", () => {
+    const doc = parseSkillDocument({
+      text: "/cleanup and [image 1] done",
+      skillNames: [],
+      commandNames: ["cleanup"],
+      adoptedImageMarkers: [1],
+    });
+    expect(serializeSkillDocument(doc)).toEqual({
+      text: "/cleanup and [image 1] done",
+      skillNames: [],
+      commandNames: ["cleanup"],
+      mentions: [{ kind: "command", name: "cleanup", offset: 0 }],
+      adoptedImageMarkers: [1],
+      adoptedImageRanges: [{ marker: 1, start: 13, end: 22 }],
+    });
+  });
+
+  it("keeps the adoption across a plain-text patch that leaves the occurrence alone", () => {
+    const value = { text: "kept [image 1]", skillNames: [], adoptedImageMarkers: [1] };
+    expect(patchSelectionText(value, "😀 kept [image 1]")).toEqual({
+      text: "😀 kept [image 1]",
+      skillNames: [],
+      adoptedImageMarkers: [1],
+      adoptedImageRanges: [{ marker: 1, start: 8, end: 17 }],
+    });
+    // The same patch with the occurrence deleted reflects that, because the
+    // patched document no longer holds the mark.
+    expect(patchSelectionText(value, "kept ")).toEqual({ text: "kept ", skillNames: [] });
+  });
+
+  // Two spellings of one number in one document. The ranges say WHICH one has
+  // no image behind it, so the literal the person typed stays unmarked - that
+  // distinction is the whole fix: without it any reader of the record has to
+  // guess, and deleting "the first [image 1]" removes the wrong one.
+  it("marks only the occurrence an explicit range names, not an identical literal", () => {
+    const text = "[image 1] tail [image 1]";
+    const doc = parseSkillDocument({
+      text,
+      skillNames: [],
+      adoptedImageMarkers: [1],
+      adoptedImageRanges: [{ marker: 1, start: 15, end: 24 }],
+    });
+    const marked = doc.content.content
+      .filter((node) => node.marks.some((mark) => mark.type.name === "stagedAnchor"))
+      .map((node) => node.text);
+    expect(marked).toEqual(["[image 1]"]);
+    // Round trip: the same ranges come back, still naming the adopted one.
+    expect(serializeSkillDocument(doc)).toEqual({
+      text,
+      skillNames: [],
+      adoptedImageMarkers: [1],
+      adoptedImageRanges: [{ marker: 1, start: 15, end: 24 }],
+    });
+  });
+
+  it("falls back to every occurrence of an adopted number when a value carries no ranges", () => {
+    // A record an older build wrote has numbers only. Marking all of them is
+    // the only honest reading of such a record - and the ranges it serializes
+    // back out name each one, so the next reader can be exact.
+    const text = "[image 1] tail [image 1]";
+    expect(serializeSkillDocument(parseSkillDocument({ text, skillNames: [], adoptedImageMarkers: [1] }))).toEqual({
+      text,
+      skillNames: [],
+      adoptedImageMarkers: [1],
+      adoptedImageRanges: [
+        { marker: 1, start: 0, end: 9 },
+        { marker: 1, start: 15, end: 24 },
+      ],
+    });
+  });
+
+  it("discards a range whose slice is not that marker", () => {
+    // A range is only a fact about the text when it still spells the marker.
+    // With nothing else to go on (no number list), the stale offset marks
+    // nothing - prose never becomes a refusal on the strength of a bad offset.
+    const doc = parseSkillDocument({
+      text: "[image 1] tail [image 1]",
+      skillNames: [],
+      adoptedImageMarkers: [],
+      adoptedImageRanges: [{ marker: 1, start: 2, end: 11 }],
+    });
+    const marked = doc.content.content.filter((node) => node.marks.some((mark) => mark.type.name === "stagedAnchor"));
+    expect(marked.map((node) => node.text)).toEqual([]);
+  });
+
+  it("shifts the ranges when a patch prepends text before them", () => {
+    const value = {
+      text: "[image 1] tail [image 1]",
+      skillNames: [],
+      adoptedImageMarkers: [1],
+      adoptedImageRanges: [{ marker: 1, start: 15, end: 24 }],
+    };
+    expect(patchSelectionText(value, "😀 [image 1] tail [image 1]")).toEqual({
+      text: "😀 [image 1] tail [image 1]",
+      skillNames: [],
+      adoptedImageMarkers: [1],
+      adoptedImageRanges: [{ marker: 1, start: 18, end: 27 }],
+    });
+  });
+
+  it("keeps an adopted occurrence across a splice the caller reports exactly", () => {
+    const value = {
+      text: "[image 1]",
+      skillNames: [],
+      adoptedImageMarkers: [1],
+      adoptedImageRanges: [{ marker: 1, start: 0, end: 9 }],
+    };
+    // An attachment gesture inserted "[image 2]" at the caret before the
+    // adopted literal. The inferred splice shares "[image " with it and reads
+    // as a replacement THROUGH the anchor; the gesture's own coordinates say
+    // it replaced nothing before the anchor, so the anchor survives.
+    expect(patchSelectionText(value, "[image 2][image 1]")).toEqual({ text: "[image 2][image 1]", skillNames: [] });
+    expect(patchSelectionText(value, "[image 2][image 1]", { start: 0, end: 0, insertedLength: 9 })).toEqual({
+      text: "[image 2][image 1]",
+      skillNames: [],
+      adoptedImageMarkers: [1],
+      adoptedImageRanges: [{ marker: 1, start: 9, end: 18 }],
+    });
+  });
 });

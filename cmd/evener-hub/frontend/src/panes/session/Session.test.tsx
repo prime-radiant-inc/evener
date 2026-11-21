@@ -12,7 +12,6 @@ import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import * as StatusBarModule from "../../shell/statusbar/StatusBar";
 import { resetMobileViewportForTests } from "../../shell/useIsMobile";
 import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
-import { resetActivityPanelStoreForTests } from "../../stores/activityPanel";
 import { resetConnectionStoreForTests } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { resetNavigationStoreForTests } from "../../stores/navigation/store";
@@ -38,6 +37,7 @@ import type { SessionPaneParams } from "./Session";
 import "./index";
 import { settleActivityDiscovery } from "./testing/activityDiscovery";
 import { CommittedSession as Session } from "./testing/CommittedSession";
+import { selectEditorText } from "./testing/editor";
 import { installControlledImageEncoding } from "./testing/imageEncoding";
 import { installMobileViewport } from "./testing/mobileViewport";
 import { captureTranscriptView } from "./transcript/flow/transcriptViewRegistry";
@@ -83,7 +83,6 @@ beforeEach(() => {
   resetTranscriptPagingForTests();
   resetAskDockStoreForTests();
   resetNavigationStoreForTests();
-  resetActivityPanelStoreForTests();
   resetActivitySidebarStoreForTests();
   resetMobileViewportForTests();
   mutationStorage = new MutationOutboxIndexedDB();
@@ -98,7 +97,6 @@ afterEach(() => {
   cleanup();
   resetPendingTurnsStoreForTests();
   resetAskDockStoreForTests();
-  resetActivityPanelStoreForTests();
   resetActivitySidebarStoreForTests();
   resetMobileViewportForTests();
   resetWorkspaceStoreForTests();
@@ -273,11 +271,7 @@ test("the real Session consumer retains its structured editor and pending images
     { name: "success.png", pending: true },
     { name: "failure.png", pending: true },
   ]);
-  const routeSelection = document.createRange();
-  routeSelection.setStart(editor.firstChild ?? editor, 5);
-  routeSelection.collapse(true);
-  window.getSelection()?.removeAllRanges();
-  window.getSelection()?.addRange(routeSelection);
+  selectEditorText(editor, 5);
 
   act(() => openAttentionSession("destination"));
   await screen.findByRole("textbox", { name: "Message" });

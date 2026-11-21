@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +20,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/llm"
 )
 
@@ -25,6 +28,13 @@ import (
 // reports, so a Snapshot's LocalDateHour never changes between calls within a
 // test (the unchanged-environment fast path depends on that).
 var envctxFixedTime = time.Date(2026, 8, 6, 14, 0, 0, 0, time.UTC)
+
+// fixedEnvProbes returns the deterministic probe set a test needs when it
+// asserts that no environment delta re-emits the block: the host clock may
+// cross a local-hour boundary between two turns.
+func fixedEnvProbes() *envctx.Probes {
+	return &envctx.Probes{Now: func() time.Time { return envctxFixedTime }}
+}
 
 // repeatFinalResponse builds n identical scripted "turn ends via communicate"
 // steps, since fakeAdapter falls back to a bare-text (non-communicate)
@@ -804,6 +814,8 @@ func TestEnvironmentContextRemovedFullBlockResetsAgainstRetainedChangedBlock(t *
 	}
 	seedNumberedSessionHistory(t, s, 8)
 	now = now.Add(time.Hour)
+	setProfile := func(model string) { s.mu.Lock(); s.profile = NewOpenAIProfile(model); s.mu.Unlock() }
+	setProfile("gpt-5.2-b") // a runtime fact newer than the prompt
 	if err := s.maybeAppendEnvironmentContext(); err != nil {
 		t.Fatal(err)
 	}
@@ -828,11 +840,12 @@ func TestEnvironmentContextRemovedFullBlockResetsAgainstRetainedChangedBlock(t *
 		t.Fatalf("retained environment IDs = %v, want only changed turn %s (old %s)", retainedIDs, changedID, oldID)
 	}
 	before := countEnvironmentTurns(s)
+	setProfile("gpt-5.2") // switching back is a change the prompt never stated
 	if err := s.maybeAppendEnvironmentContext(); err != nil {
 		t.Fatal(err)
 	}
-	if countEnvironmentTurns(s) != before+1 {
-		t.Fatalf("removed full context did not trigger full re-emission: before=%d after=%d", before, countEnvironmentTurns(s))
+	if b := lastTurnOfKind(t, s, schema.TurnEnvironment).Message.Text(); countEnvironmentTurns(s) != before+1 || !strings.Contains(b, "model: gpt-5.2\n") {
+		t.Fatalf("retained runtime diff did not report the switch back: before=%d after=%d\n%s", before, countEnvironmentTurns(s), b)
 	}
 }
 
@@ -887,5 +900,252 @@ func TestEnvironmentContextFirstAppendBetweenFoldSnapshotAndPublicationStaysSile
 	}
 	if got != 1 {
 		t.Fatalf("reloaded environment turns = %d, want 1", got)
+	}
+}
+
+func launchFactSession(t *testing.T, dir, provenance string) *Session {
+	return newSession(t, withDir(dir), withSteps(repeatFinalResponse(8, "ok")...), withConfig(SessionConfig{
+		StateDir: dir, CommitProvenance: provenance, AgentsDocPath: filepath.Join(dir, "AGENTS.md"),
+		testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true, envProbes: &envctx.Probes{Now: func() time.Time { return envctxFixedTime }}},
+	}))
+}
+func TestEnvironmentBlockStatesRuntimeFactsOnce(t *testing.T) {
+	t.Parallel()
+	s := launchFactSession(t, t.TempDir(), "coauthor")
+	sendOneUserInput(t, s, "hello")
+	if b := lastTurnOfKind(t, s, schema.TurnEnvironment).Message.Text(); !strings.Contains(b, "cwd: ") || strings.Contains(b, "model: ") || strings.Contains(b, "cutoff: ") || strings.Contains(b, "trailer: ") || strings.Contains(b, "dir: ") || strings.Contains(b, "tools: ") || strings.Contains(b, "skills: ") {
+		t.Fatalf("first block restated the prompt or lost the environment: %q", b)
+	}
+	s.Close()
+	restore := func(id string) *Session {
+		r := restoreQueuePersistTestSessionWith(t, s.stateDir, id, RestoreSessionConfig{CommitProvenance: "off", testOnly: s.cfg.testOnly})
+		r.client.Register(newFakeAdapter("openai", repeatFinalResponse(4, "resumed")...))
+		t.Cleanup(r.Close)
+		return r
+	}
+	first := restore(s.ID())
+	sendOneUserInput(t, first, "resume")
+	if b := lastTurnOfKind(t, first, schema.TurnEnvironment).Message.Text(); !strings.Contains(b, "commit trailer: (disabled)") {
+		t.Fatalf("opting out recorded no disable:\n%s", b)
+	}
+	second := restore(first.ID())
+	settled := countEnvironmentTurns(second)
+	sendOneUserInput(t, second, "resume again")
+	if countEnvironmentTurns(second) != settled {
+		t.Fatal("second restore appended an environment turn")
+	}
+	second.attentionMu.Lock()
+	second.mu.Lock()
+	second.profile, second.cfg.CommitProvenance = NewOpenAIProfile("gpt-5.2-changed"), "off"
+	second.resetEnvContextTrackerLocked()
+	second.mu.Unlock()
+	second.attentionMu.Unlock()
+	if err := second.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	if b := lastTurnOfKind(t, second, schema.TurnEnvironment).Message.Text(); !strings.Contains(b, "model: gpt-5.2-changed") || strings.Contains(b, "knowledge cutoff: ") {
+		t.Fatalf("post-compaction block is not a launch-relative diff:\n%s", b)
+	}
+	fresh := launchFactSession(t, t.TempDir(), "")
+	fresh.mu.Lock()
+	fresh.cachedToolDefs = append(append([]llm.ToolDefinition{}, fresh.cachedToolDefs...), llm.ToolDefinition{Name: "update_goal"})
+	fresh.mu.Unlock()
+	fresh.acceptContinuationInput(context.Background(), "keep going", "")
+	if b, n := lastTurnOfKind(t, fresh, schema.TurnEnvironment).Message.Text(), len(fresh.history); !strings.Contains(b, "added tools: update_goal") ||
+		fresh.history[n-2].Kind != schema.TurnEnvironment || fresh.history[n-1].Kind != schema.TurnSteering {
+		t.Fatalf("a tool that became callable crossed no turn, or the driving prompt is not last:\n%s", b)
+	}
+	steady := countEnvironmentTurns(fresh)
+	fresh.acceptContinuationInput(context.Background(), "keep going", "")
+	if countEnvironmentTurns(fresh) != steady {
+		t.Fatal("an unchanged continuation appended an environment turn")
+	}
+	fresh.Close()
+	forkID, err := AsideSession(fresh.stateDir, fresh.ID())
+	if err != nil {
+		t.Fatalf("AsideSession: %v", err)
+	}
+	aside := restoreQueuePersistTestSessionWith(t, fresh.stateDir, forkID, RestoreSessionConfig{testOnly: fresh.cfg.testOnly})
+	aside.client.Register(newFakeAdapter("openai", repeatFinalResponse(4, "aside")...))
+	t.Cleanup(aside.Close)
+	before := len(aside.history)
+	if err := aside.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(aside.history); n > before && strings.Contains(aside.history[n-1].Message.Text(), "added tools: ") {
+		t.Fatalf("the aside re-announced launch tools as added:\n%s", aside.history[n-1].Message.Text())
+	}
+}
+
+func TestOneShotResumeFromPersistentSessionEmitsRunLifetimeDiff(t *testing.T) {
+	t.Parallel()
+	s := launchFactSession(t, t.TempDir(), "")
+	sendOneUserInput(t, s, "hello")
+	if b := lastTurnOfKind(t, s, schema.TurnEnvironment).Message.Text(); strings.Contains(b, "run lifetime:") {
+		t.Fatalf("fresh persistent session restated run lifetime:\n%s", b)
+	}
+	launchPrompt := s.cachedSystemPrompt
+	s.Close()
+
+	// Resuming with TurnEndsProcess=true emits run lifetime diff once while
+	// keeping the launch prompt byte-identical.
+	oneShot := restoreQueuePersistTestSessionWith(t, s.stateDir, s.ID(), RestoreSessionConfig{
+		TurnEndsProcess: true,
+		testOnly:        s.cfg.testOnly,
+	})
+	oneShot.client.Register(newFakeAdapter("openai", repeatFinalResponse(4, "resumed")...))
+	t.Cleanup(oneShot.Close)
+	sendOneUserInput(t, oneShot, "one shot input")
+	if oneShot.cachedSystemPrompt != launchPrompt {
+		t.Fatal("one-shot resume mutated launch system prompt")
+	}
+	b := lastTurnOfKind(t, oneShot, schema.TurnEnvironment).Message.Text()
+	if !strings.Contains(b, "run lifetime: one-shot") {
+		t.Fatalf("one-shot resume did not emit run lifetime diff:\n%s", b)
+	}
+	countAfterFirst := countEnvironmentTurns(oneShot)
+	sendOneUserInput(t, oneShot, "second one shot input")
+	if countEnvironmentTurns(oneShot) != countAfterFirst {
+		t.Fatalf("second turn re-emitted run lifetime: got %d, want %d", countEnvironmentTurns(oneShot), countAfterFirst)
+	}
+	oneShot.Close()
+
+	// Legacy baselineless persistent session resumed via one-shot also receives
+	// the run lifetime correction once.
+	legacy := launchFactSession(t, t.TempDir(), "")
+	legacy.Close()
+	legacyMeta, err := schema.LoadSessionMeta(legacy.stateDir, legacy.ID())
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(legacy): %v", err)
+	}
+	legacyMeta.LaunchEnvBaseline = envctx.Snapshot{}
+	legacyMeta.EnvContext = nil
+	if err := schema.SaveSessionMeta(legacy.stateDir, legacyMeta); err != nil {
+		t.Fatalf("SaveSessionMeta(legacy): %v", err)
+	}
+	legacyOneShot := restoreQueuePersistTestSessionWith(t, legacy.stateDir, legacy.ID(), RestoreSessionConfig{
+		TurnEndsProcess: true,
+		testOnly:        legacy.cfg.testOnly,
+	})
+	legacyOneShot.client.Register(newFakeAdapter("openai", repeatFinalResponse(4, "legacy")...))
+	t.Cleanup(legacyOneShot.Close)
+	sendOneUserInput(t, legacyOneShot, "legacy one shot")
+	lb := lastTurnOfKind(t, legacyOneShot, schema.TurnEnvironment).Message.Text()
+	if !strings.Contains(lb, "run lifetime: one-shot") {
+		t.Fatalf("legacy baselineless one-shot resume did not emit run lifetime:\n%s", lb)
+	}
+	beforeSecond := countEnvironmentTurns(legacyOneShot)
+	sendOneUserInput(t, legacyOneShot, "legacy second")
+	if countEnvironmentTurns(legacyOneShot) != beforeSecond {
+		t.Fatalf("legacy second turn re-emitted environment: got %d, want %d", countEnvironmentTurns(legacyOneShot), beforeSecond)
+	}
+}
+
+func TestCompactedGitSessionResumedOutsideGitReportsNoRepo(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		mutateMeta func(m *schema.SessionMeta)
+	}{
+		{name: "current-baseline"},
+		{
+			name: "6968-nonempty-baseline-empty-git-branch",
+			mutateMeta: func(m *schema.SessionMeta) {
+				m.LaunchEnvBaseline.GitBranch = ""
+				m.EnvInfo.GitBranch = "main"
+			},
+		},
+		{
+			name: "legacy-saved-once-outside-git",
+			mutateMeta: func(m *schema.SessionMeta) {
+				m.LaunchEnvBaseline.GitBranch = ""
+				m.EnvInfo.GitBranch = ""
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			gitDir := t.TempDir()
+			gittest.Run(t, gitDir, "init")
+			if err := os.WriteFile(filepath.Join(gitDir, "README.md"), []byte("hello\n"), 0o644); err != nil {
+				t.Fatalf("write README.md: %v", err)
+			}
+			gittest.Run(t, gitDir, "add", "README.md")
+			gittest.Run(t, gitDir, "commit", "-m", "initial")
+
+			stateDir := t.TempDir()
+			client := llm.NewClient()
+			client.Register(newFakeAdapter("openai", repeatFinalResponse(4, "ok")...))
+			gitEnv := execenv.NewLocalExecutionEnvironment(gitDir)
+			gitProbes := fixedEnvProbes()
+			gitProbes.GitBranch = func(cwd string) string { return snapshotGitBranch(gitEnv, cwd) }
+			s, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), gitEnv, SessionConfig{
+				StateDir: stateDir,
+				testOnly: testConfig{noSyncJobStore: true, envProbes: gitProbes},
+			})
+			if err != nil {
+				t.Fatalf("NewSession: %v", err)
+			}
+			sendOneUserInput(t, s, "in git")
+			muteNoteElicitation(s)
+			s.contextMgr.SummarizeThreshold = 2.0
+			s.contextMgr.PreserveRecentTurns = 0
+			if err := s.Compact(context.Background()); err != nil {
+				t.Fatalf("Compact: %v", err)
+			}
+			id := s.ID()
+			s.Close()
+
+			meta, err := schema.LoadSessionMeta(stateDir, id)
+			if err != nil {
+				t.Fatalf("LoadSessionMeta: %v", err)
+			}
+			if tc.mutateMeta != nil {
+				tc.mutateMeta(&meta)
+			}
+			nonGitDir := t.TempDir()
+			rClient := llm.NewClient()
+			rClient.Register(newFakeAdapter("openai", repeatFinalResponse(16, "resumed")...))
+			nonGitEnv := execenv.NewLocalExecutionEnvironment(nonGitDir)
+			nonGitProbes := fixedEnvProbes()
+			nonGitProbes.GitBranch = func(cwd string) string { return snapshotGitBranch(nonGitEnv, cwd) }
+			r, err := RestoreSessionFromMetaWithConfig(rClient, NewOpenAIProfile("gpt-5.2"), nonGitEnv, meta, RestoreSessionConfig{
+				StateDir: stateDir,
+				testOnly: testConfig{noSyncJobStore: true, envProbes: nonGitProbes},
+			})
+			if err != nil {
+				t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+			}
+			defer r.Close()
+			sendOneUserInput(t, r, "outside git")
+			if b := lastTurnOfKind(t, r, schema.TurnEnvironment).Message.Text(); !strings.Contains(b, "git branch: (not in a git repository)") {
+				t.Fatalf("compacted git session resumed outside git missing git branch placeholder:\n%s", b)
+			}
+			settled := countEnvironmentTurns(r)
+			sendOneUserInput(t, r, "still outside git")
+			if countEnvironmentTurns(r) != settled {
+				t.Fatalf("second turn outside git re-emitted environment block: got %d, want %d", countEnvironmentTurns(r), settled)
+			}
+
+			// Compact again after resuming outside git: resetEnvContextTrackerLocked
+			// must still preserve the launch GitBranch on s.launchEnvBaseline.
+			muteNoteElicitation(r)
+			r.contextMgr.SummarizeThreshold = 2.0
+			r.contextMgr.PreserveRecentTurns = 0
+			if err := r.Compact(context.Background()); err != nil {
+				t.Fatalf("Compact after resume: %v", err)
+			}
+			if err := r.maybeAppendEnvironmentContext(); err != nil {
+				t.Fatalf("maybeAppendEnvironmentContext after resume compact: %v", err)
+			}
+			if b := lastTurnOfKind(t, r, schema.TurnEnvironment).Message.Text(); !strings.Contains(b, "git branch: (not in a git repository)") {
+				t.Fatalf("post-compaction replacement outside git missing git branch placeholder:\n%s", b)
+			}
+			afterCompact := countEnvironmentTurns(r)
+			sendOneUserInput(t, r, "after post-resume compact")
+			if countEnvironmentTurns(r) != afterCompact {
+				t.Fatalf("unchanged turn after post-resume compact re-emitted environment block: got %d, want %d", countEnvironmentTurns(r), afterCompact)
+			}
+		})
 	}
 }

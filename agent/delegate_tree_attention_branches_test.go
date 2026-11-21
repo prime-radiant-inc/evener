@@ -32,18 +32,6 @@ func attentionParkedOf(c *delegateTreeController, delegateID string) bool {
 }
 
 // ---------------------------------------------------------------------------
-// coldDelegateAttentionRef struct
-// ---------------------------------------------------------------------------
-
-func TestColdDelegateAttentionRefStruct(t *testing.T) {
-	t.Parallel()
-	r := coldDelegateAttentionRef{delegateID: "dlg_1", transcriptRef: "local:abc"}
-	if r.delegateID != "dlg_1" || r.transcriptRef != "local:abc" {
-		t.Fatalf("struct wrong: %+v", r)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // delegateAttentionProjectionEligible
 // ---------------------------------------------------------------------------
 
@@ -588,25 +576,6 @@ func TestNoteDelegateAttentionNil(t *testing.T) {
 	var c *delegateTreeController
 	if c.noteDelegateAttention("dlg_1", "att_1") {
 		t.Fatalf("expected false for nil controller")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// delegateFencedAttentionEscalation struct
-// ---------------------------------------------------------------------------
-
-func TestDelegateFencedAttentionEscalationStruct(t *testing.T) {
-	t.Parallel()
-	e := delegateFencedAttentionEscalation{
-		delegateID:    "dlg_1",
-		transcriptRef: "local:abc",
-		attentionIDs:  []string{"att_1", "att_2"},
-	}
-	if e.delegateID != "dlg_1" || e.transcriptRef != "local:abc" {
-		t.Fatalf("struct wrong: %+v", e)
-	}
-	if len(e.attentionIDs) != 2 {
-		t.Fatalf("expected 2 attention IDs")
 	}
 }
 

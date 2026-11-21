@@ -66,32 +66,6 @@ func TestApplyRunStartedWrongGeneration(t *testing.T) {
 	}
 }
 
-// TestApplyRunStartedNotResumable covers the not-resumable check. A delegate that is resumable but then has resumability
-// closed (still PhaseIdle) before starting.
-func TestApplyRunStartedNotResumable(t *testing.T) {
-	// Close resumability so delegate is PhaseClosed with Resumable=false.
-	// That triggers the phase check, not the not-resumable check.
-	// To reach the not-resumable check (line 128-129), we need Phase==Idle
-	// but Resumable==false. The only way to get that: apply created with
-	// Resumable=false, which sets Phase=PhaseClosed (not Idle). So the
-	// not-resumable check at line 128-129 is only reachable when Phase is
-	// Idle and Resumable is false — but applyCreated sets Phase=Closed
-	// when Resumable is false. This branch is effectively unreachable
-	// through normal event ordering.
-	// Document: unreachable — applyCreated sets Phase=Closed when
-	// Resumable=false, so Phase is never Idle when Resumable is false.
-	t.Skip("not-resumable check at fold.go:128-129 is unreachable: applyCreated sets Phase=Closed when Resumable=false")
-}
-
-// TestApplyRunStartedPendingStop covers pending stop check.
-// Document: unreachable — applySubtreeStopRequested sets Phase=Stopping,
-// so the Phase != PhaseIdle check at line 125 fires first. The pending
-// stop check at line 131 is only reachable when Phase==Idle AND
-// PendingStopSeq!=0, but stop requests always set Phase=Stopping.
-func TestApplyRunStartedPendingStop(t *testing.T) {
-	t.Skip("pending stop check at fold.go:131-132 is unreachable: stop request sets Phase=Stopping, so phase check fires first")
-}
-
 // TestApplyRunStartedInvalidTrigger covers invalid trigger.
 func TestApplyRunStartedInvalidTrigger(t *testing.T) {
 	state := applyEvents(t, createdEvent("dlg_a", ""))
@@ -149,14 +123,6 @@ func TestApplyTerminalPreparedBadPacket(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "terminal packet") {
 		t.Fatalf("expected terminal packet error, got %v", err)
 	}
-}
-
-// TestApplyRunFinishedBadPhase covers phase check.
-// Document: unreachable — requireExactOpenRun checks CurrentRunOpen before
-// the phase check, and CurrentRunOpen is only true when Phase is Running,
-// Settling, or Stopping, all of which pass the phase check.
-func TestApplyRunFinishedBadPhase(t *testing.T) {
-	t.Skip("phase check at fold.go:172-173 is unreachable: requireExactOpenRun ensures CurrentRunOpen, which is only true for Running/Settling/Stopping phases")
 }
 
 // TestApplyRunFinishedInvalidOutcome covers invalid outcome status.

@@ -133,6 +133,21 @@ except where a line says so itself.
   draft ownership and source-lifetime fences for detached continuations.
   The launch draft owns its restoration signal so a remounted editor receives
   the same mapped selections in the same render as the cleaned prompt.
+- A send never carries an image marker whose bytes the composer does not hold.
+  Draft text persists but image bytes do not, so a draft adopted from another
+  writer - on mount after a reload, or on a rebind under a live source - names
+  anchors whose attachments cannot arrive with it. The draft record marks which
+  markers a writer STAGED with that revision; a marker a person typed is absent
+  from that mark and stays ordinary prose, sending as the literal text it is.
+  While the outgoing text still spells a staged marker this composer holds no
+  image for, Send and Steer both refuse and the draft is kept. The refusal is
+  live against the text rather than remembered: deleting the reference clears
+  it, and any edit that restores the occurrence brings it back. The composer
+  offers the repair in place beside the draft - attach the replacement beside
+  the missing reference first, wait for its preview, then use Remove the
+  reference, before sending. Removing first drops the original reference and
+  the refusal that guards it, so a replacement that then fails to decode would
+  leave nothing to catch it.
 - Recovery updates retain stored mention locations when composer text is omitted.
   Replacing composer text replaces its locations too; omitted locations then
   clear the old set, and an explicit empty set clears all selections.

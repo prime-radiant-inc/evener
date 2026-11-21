@@ -192,6 +192,24 @@ func (c *delegateTreeController) AbortSteerPersistence(claim *delegateSteeringCl
 	return nil
 }
 
+// admitModelRequestLease reports whether lease is still an admitted generation
+// of a running delegate with no stop pending, using the same predicate every
+// other leased provider call goes through. Request preparation calls it before
+// the context-management phase, which reaches a provider through the compaction
+// note elicitor and the summarizer; the round's own BeginModelRequest comes
+// later and would otherwise refuse a fenced generation only after those calls
+// (LIFE-01, #2340).
+//
+// It takes no claim: the request's own BeginModelRequest still records the
+// provider claim and its steering snapshot. This is the earlier, cheaper gate
+// that a phase reaching a provider BEFORE that claim must not skip.
+func (c *delegateTreeController) admitModelRequestLease(lease delegateLease) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, _, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
+	return err
+}
+
 func (c *delegateTreeController) BeginModelRequest(lease delegateLease) (*delegateModelRequestClaim, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -224,21 +242,25 @@ func (c *delegateTreeController) BeginModelRequest(lease delegateLease) (*delega
 	return claim, nil
 }
 
-func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelRequestClaim, history []schema.Turn, scope replayScope) ([]llm.Message, error) {
+// CompleteModelRequest binds the claim's admitted steers, drops the steers that
+// landed after it, and returns the filtered turns with the in-flight boundary
+// moved into that projection's coordinates. The caller expands these turns and
+// records the same scope as the round's fallback source.
+func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelRequestClaim, history []schema.Turn, scope replayScope) ([]schema.Turn, replayScope, error) {
 	defer c.retirementChanged()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if claim == nil || c.modelClaims[claim.token] != claim {
-		return nil, errDelegateStaleLease
+		return nil, scope, errDelegateStaleLease
 	}
 	_, live, err := c.admitLeaseLocked(claim.lease, delegatestore.PhaseRunning)
 	if err != nil || live.binding.runtime != claim.runtime {
 		c.releaseModelClaimLocked(claim.token)
 		c.evidenceVersion++
 		if err != nil {
-			return nil, err
+			return nil, scope, err
 		}
-		return nil, errDelegateStaleLease
+		return nil, scope, errDelegateStaleLease
 	}
 	pending := make([]delegateSteeringAdmission, 0, len(claim.steeringIDs))
 	claimedIDs := make(map[string]struct{}, len(claim.steeringIDs))
@@ -259,12 +281,15 @@ func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelReques
 			}
 		}
 	}
-	history, bound := projectDelegatePendingSteers(history, pending, lateIDs)
+	presented, bound, removedAt := projectDelegatePendingSteers(history, pending, lateIDs)
+	// The boundary indexes the returned projection: each removed row before it
+	// shifts, whether the controller dropped a late steer or lifted a bound one.
+	scope.InFlightFrom = shiftBoundaryForDrops(scope.InFlightFrom, removedAt)
 	if len(bound) != 0 {
 		if err := c.escalateCompletionRequirementLocked(claim.lease); err != nil {
 			c.releaseModelClaimLocked(claim.token)
 			c.evidenceVersion++
-			return nil, err
+			return nil, scope, err
 		}
 	}
 	kept := live.pendingSteers[:0]
@@ -276,7 +301,7 @@ func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelReques
 	live.pendingSteers = kept
 	c.releaseModelClaimLocked(claim.token)
 	c.evidenceVersion++
-	return expandHistory(history, scope), nil
+	return presented, scope, nil
 }
 
 func (c *delegateTreeController) AbortModelRequest(claim *delegateModelRequestClaim) error {
@@ -338,7 +363,7 @@ func (c *delegateTreeController) dropRuntimeClaimsForMembersLocked(members map[s
 	}
 }
 
-func projectDelegatePendingSteers(history []schema.Turn, pending []delegateSteeringAdmission, excluded map[string]struct{}) ([]schema.Turn, map[string]struct{}) {
+func projectDelegatePendingSteers(history []schema.Turn, pending []delegateSteeringAdmission, excluded map[string]struct{}) ([]schema.Turn, map[string]struct{}, []int) {
 	order := make(map[string]int, len(pending))
 	for i, admission := range pending {
 		order[admission.entryID] = i
@@ -346,9 +371,11 @@ func projectDelegatePendingSteers(history []schema.Turn, pending []delegateSteer
 	projected := make([]schema.Turn, 0, len(history))
 	steers := make([]schema.Turn, len(pending))
 	found := make([]bool, len(pending))
-	for _, turn := range history {
+	var removedAt []int
+	for i, turn := range history {
 		if turn.Kind == schema.TurnSteering {
 			if _, exclude := excluded[turn.StableTurnID]; exclude {
+				removedAt = append(removedAt, i)
 				continue
 			}
 		}
@@ -356,6 +383,7 @@ func projectDelegatePendingSteers(history []schema.Turn, pending []delegateSteer
 		if waiting && turn.Kind == schema.TurnSteering && !found[index] {
 			steers[index] = turn
 			found[index] = true
+			removedAt = append(removedAt, i)
 			continue
 		}
 		projected = append(projected, turn)
@@ -368,7 +396,7 @@ func projectDelegatePendingSteers(history []schema.Turn, pending []delegateSteer
 		projected = append(projected, steers[i])
 		bound[admission.entryID] = struct{}{}
 	}
-	return projected, bound
+	return projected, bound, removedAt
 }
 
 func (c *delegateTreeController) BeginTool(lease delegateLease) error {

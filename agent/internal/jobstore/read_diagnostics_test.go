@@ -345,6 +345,69 @@ func TestFoldChecked_IgnoresNonJobKinds(t *testing.T) {
 	}
 }
 
+// TestFoldChecked_RejectsNotificationWithNoPrecedingFinish: a terminal
+// notification is evidence the job ended, so a retained journal that kept the
+// notification but lost the finish is a lifecycle gap. The fold still returns
+// the best-effort row — a start-only history is a job that may still be running —
+// and the verdict reports the missing end.
+func TestFoldChecked_RejectsNotificationWithNoPrecedingFinish(t *testing.T) {
+	t.Parallel()
+	started := diagTime()
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	events := []Event{
+		{Kind: EventJobStarted, Seq: 1, TS: started, JobID: jobID, Type: JobShell, OwnerSessionID: owner, StartedAt: &started},
+		{Kind: EventJobNotificationPending, Seq: 2, TS: started, JobID: jobID, TerminalGen: "gen"},
+	}
+	recs, err := FoldCheckedOrdered(events)
+	if !errors.Is(err, ErrIncompleteLifecycle) {
+		t.Fatalf("FoldCheckedOrdered error = %v, want ErrIncompleteLifecycle for a notification with no preceding finish", err)
+	}
+	var found *JobRecord
+	for _, rec := range recs {
+		if rec.JobID == jobID {
+			found = rec
+		}
+	}
+	if found == nil || found.Status != StatusRunning {
+		t.Fatalf("records = %+v, want the best-effort running record for %s alongside the damage", recs, jobID)
+	}
+}
+
+// TestFoldChecked_AcceptsNotificationAfterFinish guards the ordinary history:
+// the terminal notification follows the finish that gave it its generation, and
+// it must not be reported as a gap.
+func TestFoldChecked_AcceptsNotificationAfterFinish(t *testing.T) {
+	t.Parallel()
+	started := diagTime()
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	events := []Event{
+		{Kind: EventJobStarted, Seq: 1, TS: started, JobID: jobID, Type: JobShell, OwnerSessionID: owner, StartedAt: &started},
+		{Kind: EventJobFinished, Seq: 2, TS: started, JobID: jobID, Status: StatusCompleted, EndedAt: &started, TerminalGen: "gen"},
+		{Kind: EventJobNotificationPending, Seq: 3, TS: started, JobID: jobID, TerminalGen: "gen"},
+	}
+	if _, err := FoldCheckedOrdered(events); err != nil {
+		t.Fatalf("FoldCheckedOrdered on a notification after a terminal finish: %v", err)
+	}
+}
+
+// TestFoldChecked_AcceptsStartOnlyJob: the new gap is about evidence of an end
+// that lost its finish. A start with nothing after it is a job that may still be
+// running, and the check must keep accepting it.
+func TestFoldChecked_AcceptsStartOnlyJob(t *testing.T) {
+	t.Parallel()
+	started := diagTime()
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	events := []Event{
+		{Kind: EventJobStarted, Seq: 1, TS: started, JobID: jobID, Type: JobShell, OwnerSessionID: owner, StartedAt: &started},
+	}
+	if _, err := FoldCheckedOrdered(events); err != nil {
+		t.Fatalf("FoldCheckedOrdered on a start-only job: %v", err)
+	}
+}
+
 // TestFoldChecked_ReturnsRecordsWithDamage: validation finding damage must not
 // withhold the best-effort fold. A retained-history caller shows the row AND
 // reports the damage from one call, rather than folding the same events twice.

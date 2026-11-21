@@ -718,47 +718,6 @@ func TestCovWrapHookContext2(t *testing.T) {
 	}
 }
 
-// TestCovSteeringInjectedDataFromMessage covers steeringInjectedDataFromMessage.
-func TestCovSteeringInjectedDataFromMessage(t *testing.T) {
-	t.Parallel()
-	msg := steeringMessage{
-		Text:             "hello",
-		ClientMutationID: "mut_1",
-		StableTurnID:     "turn_1",
-		Source:           "user",
-		Kind:             "notification",
-	}
-	data := steeringInjectedDataFromMessage(msg)
-	if data.Text != "hello" || data.ClientMutationID != "mut_1" || data.StableTurnID != "turn_1" {
-		t.Fatalf("data mismatch: %+v", data)
-	}
-	if data.Source != "user" || data.Kind != "notification" {
-		t.Fatalf("source/kind mismatch: %+v", data)
-	}
-}
-
-// TestCovWithQueuedClientMutation covers withQueuedClientMutation and
-// queuedClientMutationFromContext.
-func TestCovWithQueuedClientMutation(t *testing.T) {
-	t.Parallel()
-	queued := queuedInput{
-		ID:               "q_1",
-		ClientMutationID: "mut_1",
-		StableTurnID:     "turn_1",
-	}
-	ctx := withQueuedClientMutation(context.Background(), queued)
-	identity := queuedClientMutationFromContext(ctx)
-	if identity.ClientMutationID != "mut_1" || identity.StableTurnID != "turn_1" || identity.QueueEntryID != "q_1" {
-		t.Fatalf("identity mismatch: %+v", identity)
-	}
-
-	// No context value — returns zero identity.
-	identity = queuedClientMutationFromContext(context.Background())
-	if identity.ClientMutationID != "" {
-		t.Fatalf("no context value: %+v", identity)
-	}
-}
-
 // TestCovInterruptDrainConfig covers interruptDrainConfig: the pure function that decides whether
 // an interrupted turn may drain the queue head.
 func TestCovInterruptDrainConfig(t *testing.T) {
@@ -1214,27 +1173,6 @@ func TestCovProjectDelegateListItem(t *testing.T) {
 	}
 	if entry.Reason == nil || *entry.Reason != "budget" || entry.EndedAt == nil || *entry.EndedAt != endedAt.Format(time.RFC3339Nano) || entry.ExhaustionBudget != string(delegatestore.ExhaustionBudgetTurns) || entry.ExhaustionLimit != 42 {
 		t.Fatalf("projected outcome = %+v", entry)
-	}
-}
-
-// TestCovWithQueuedInputDrainOnInterrupt covers WithQueuedInputDrainOnInterrupt.
-func TestCovWithQueuedInputDrainOnInterrupt(t *testing.T) {
-	t.Parallel()
-	rootCtx := context.Background()
-	ctx := WithQueuedInputDrainOnInterrupt(context.Background(), rootCtx)
-	cfg, ok := ctx.Value(queuedInputDrainContextKey{}).(queuedInputDrainConfig)
-	if !ok {
-		t.Fatal("should set drain config in context")
-	}
-	if cfg.rootCtx == nil {
-		t.Fatal("rootCtx should be set")
-	}
-
-	// nil rootCtx — replaced with Background.
-	ctx = WithQueuedInputDrainOnInterrupt(context.Background(), nil)
-	cfg, ok = ctx.Value(queuedInputDrainContextKey{}).(queuedInputDrainConfig)
-	if !ok || cfg.rootCtx == nil {
-		t.Fatal("nil rootCtx should be replaced with Background")
 	}
 }
 

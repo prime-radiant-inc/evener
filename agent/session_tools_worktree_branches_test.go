@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/worktree"
-	"primeradiant.com/evener/identifier"
 )
 
 // ---------------------------------------------------------------------------
@@ -119,45 +118,6 @@ func TestWorktreeStateResolutionErrorWithErr(t *testing.T) {
 	if !strings.Contains(err.Error(), "resolve failed") {
 		t.Fatalf("expected wrapped error: %q", err.Error())
 	}
-}
-
-// ---------------------------------------------------------------------------
-// projectIsGitCheckout
-// ---------------------------------------------------------------------------
-
-func TestProjectIsGitCheckoutEmptyPath(t *testing.T) {
-	t.Parallel()
-	// Empty canonical path should return false
-	proj := identifierProjectWithCanonical("")
-	if projectIsGitCheckout(proj) {
-		t.Fatalf("expected false for empty canonical path")
-	}
-}
-
-func TestProjectIsGitCheckoutNonExistent(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	proj := identifierProjectWithCanonical(dir)
-	if projectIsGitCheckout(proj) {
-		t.Fatalf("expected false for non-git directory")
-	}
-}
-
-func TestProjectIsGitCheckoutWithGit(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0755); err != nil {
-		t.Fatalf("mkdir .git: %v", err)
-	}
-	proj := identifierProjectWithCanonical(dir)
-	if !projectIsGitCheckout(proj) {
-		t.Fatalf("expected true for directory with .git")
-	}
-}
-
-// helper to create an identifier.Project with just the CanonicalPath set
-func identifierProjectWithCanonical(path string) identifier.Project {
-	return identifier.Project{CanonicalPath: path}
 }
 
 // ---------------------------------------------------------------------------
@@ -310,30 +270,6 @@ func TestPrunePolicy(t *testing.T) {
 	if policy.disposableBranch == nil {
 		t.Fatalf("expected non-nil disposableBranch")
 	}
-}
-
-// ---------------------------------------------------------------------------
-// branchExists (with mock runner)
-// ---------------------------------------------------------------------------
-
-func TestBranchExists(t *testing.T) {
-	t.Parallel()
-	t.Run("exists", func(t *testing.T) {
-		run := func(args ...string) (string, error) {
-			return "", nil // no error = branch exists
-		}
-		if !branchExists(worktree.GitRunner(run), "mybranch") {
-			t.Fatalf("expected true for existing branch")
-		}
-	})
-	t.Run("not exists", func(t *testing.T) {
-		run := func(args ...string) (string, error) {
-			return "", errors.New("not found")
-		}
-		if branchExists(worktree.GitRunner(run), "mybranch") {
-			t.Fatalf("expected false for non-existent branch")
-		}
-	})
 }
 
 // ---------------------------------------------------------------------------
@@ -804,38 +740,6 @@ func TestDisposableReasonGitError(t *testing.T) {
 	_, _, err := disposableReason(run, "abc", "def", "main")
 	if err == nil {
 		t.Fatalf("expected error from git failure")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// worktreeCreateCoreResult struct
-// ---------------------------------------------------------------------------
-
-func TestWorktreeCreateCoreResultStruct(t *testing.T) {
-	t.Parallel()
-	r := worktreeCreateCoreResult{
-		Path:     "/path",
-		Branch:   "branch",
-		BaseSHA:  "abc123",
-		MainRoot: "/root",
-	}
-	if r.Path != "/path" || r.Branch != "branch" {
-		t.Fatalf("struct wrong: %+v", r)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// managedEntry struct
-// ---------------------------------------------------------------------------
-
-func TestManagedEntryStruct(t *testing.T) {
-	t.Parallel()
-	e := managedEntry{
-		Path: "/path",
-		Name: "wt1",
-	}
-	if e.Name != "wt1" || e.Path != "/path" {
-		t.Fatalf("struct wrong: %+v", e)
 	}
 }
 

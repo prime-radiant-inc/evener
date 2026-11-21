@@ -79,32 +79,6 @@ func TestCovFormatQuietDuration(t *testing.T) {
 	}
 }
 
-// TestCovFormatQuietWindow covers formatQuietWindow.
-func TestCovFormatQuietWindow(t *testing.T) {
-	t.Parallel()
-	if got := formatQuietWindow(10 * time.Minute); got != "10m" {
-		t.Fatalf("10m = %q", got)
-	}
-	if got := formatQuietWindow(time.Minute); got != "1m" {
-		t.Fatalf("1m = %q", got)
-	}
-	if got := formatQuietWindow(90 * time.Second); got != "1m30s" {
-		t.Fatalf("1m30s = %q", got)
-	}
-	if got := formatQuietWindow(50 * time.Millisecond); got != "50ms" {
-		t.Fatalf("50ms = %q", got)
-	}
-}
-
-// TestCovWatchEndedUnfiredMessage covers watchEndedUnfiredMessage.
-func TestCovWatchEndedUnfiredMessage(t *testing.T) {
-	t.Parallel()
-	got := watchEndedUnfiredMessage("job_1", jobstore.StatusCompleted, "done", 4096)
-	if !strings.Contains(got, "job_1") || !strings.Contains(got, "completed") || !strings.Contains(got, "done") || !strings.Contains(got, "4096") {
-		t.Fatalf("watchEndedUnfiredMessage = %q", got)
-	}
-}
-
 // TestCovWatchArgsHasCondition covers watchArgsHasCondition.
 func TestCovWatchArgsHasCondition(t *testing.T) {
 	t.Parallel()
@@ -131,79 +105,6 @@ func TestCovWatchArgsHasCondition(t *testing.T) {
 	// Receiver session target → true (target must be a session target).
 	if !watchArgsHasCondition(watchArgs{ReceiverSessionID: "sess1", Target: "caller"}) {
 		t.Fatal("receiver session target should be a condition")
-	}
-}
-
-// TestCovWatchArgsIsOutputMatchOnly covers watchArgsIsOutputMatchOnly.
-func TestCovWatchArgsIsOutputMatchOnly(t *testing.T) {
-	t.Parallel()
-	if !watchArgsIsOutputMatchOnly(watchArgs{OutputMatch: "READY"}) {
-		t.Fatal("output_match only should be true")
-	}
-	if watchArgsIsOutputMatchOnly(watchArgs{OutputMatch: "READY", Events: []string{"assistant.tool"}}) {
-		t.Fatal("with events should be false")
-	}
-	if watchArgsIsOutputMatchOnly(watchArgs{OutputMatch: "READY", Clear: true}) {
-		t.Fatal("with clear should be false")
-	}
-	if watchArgsIsOutputMatchOnly(watchArgs{OutputMatch: "READY", Every: 2}) {
-		t.Fatal("with every should be false")
-	}
-	if watchArgsIsOutputMatchOnly(watchArgs{OutputMatch: "READY", ProgressIntervalMS: 1000}) {
-		t.Fatal("with progress should be false")
-	}
-	if watchArgsIsOutputMatchOnly(watchArgs{}) {
-		t.Fatal("empty should be false")
-	}
-}
-
-// TestCovValidateWatchEventArgs covers validateWatchEventArgs.
-func TestCovValidateWatchEventArgs(t *testing.T) {
-	t.Parallel()
-	// Wildcard event → ok.
-	if err := validateWatchEventArgs(watchArgs{Events: []string{"*"}}); err != nil {
-		t.Fatalf("wildcard: %v", err)
-	}
-
-	// Valid event → ok.
-	if err := validateWatchEventArgs(watchArgs{Events: []string{"assistant.tool"}}); err != nil {
-		t.Fatalf("assistant.tool: %v", err)
-	}
-
-	// Invalid event name.
-	err := validateWatchEventArgs(watchArgs{Events: []string{"bogus"}})
-	if err == nil || !strings.Contains(err.Error(), "unknown event kind") {
-		t.Fatalf("bogus event: %v", err)
-	}
-
-	// assistant.message is explicitly rejected.
-	err = validateWatchEventArgs(watchArgs{Events: []string{"assistant.message"}})
-	if err == nil || !strings.Contains(err.Error(), "assistant.message is not watchable") {
-		t.Fatalf("assistant.message: %v", err)
-	}
-
-	// Every with multiple events → error.
-	err = validateWatchEventArgs(watchArgs{Events: []string{"assistant.tool", "communicate"}, Every: 2})
-	if err == nil || !strings.Contains(err.Error(), "every requires events naming exactly one kind") {
-		t.Fatalf("every multi: %v", err)
-	}
-
-	// Every with wildcard → error.
-	err = validateWatchEventArgs(watchArgs{Events: []string{"*"}, Every: 2})
-	if err == nil || !strings.Contains(err.Error(), "not \"*\"") {
-		t.Fatalf("every wildcard: %v", err)
-	}
-
-	// Event filter without events → error.
-	err = validateWatchEventArgs(watchArgs{EventFilter: &watchEventFilter{}})
-	if err == nil || !strings.Contains(err.Error(), "event_filter requires events naming assistant.tool") {
-		t.Fatalf("event_filter no events: %v", err)
-	}
-
-	// Event filter with wrong event kind → error.
-	err = validateWatchEventArgs(watchArgs{Events: []string{"job.notification"}, EventFilter: &watchEventFilter{}})
-	if err == nil {
-		t.Fatalf("event_filter wrong kind: %v", err)
 	}
 }
 
@@ -268,26 +169,6 @@ func TestCovNormalizeWatchArgs(t *testing.T) {
 	}
 	if a.EventFilter != nil {
 		t.Fatal("nil filter should stay nil")
-	}
-}
-
-// TestCovCloneWatchEventFilter covers cloneWatchEventFilter.
-func TestCovCloneWatchEventFilter(t *testing.T) {
-	t.Parallel()
-	// Nil → nil.
-	if got := cloneWatchEventFilter(nil); got != nil {
-		t.Fatal("nil should return nil")
-	}
-
-	// Non-nil → clone.
-	orig := &watchEventFilter{ToolName: "exec", Status: "ok"}
-	clone := cloneWatchEventFilter(orig)
-	if clone.ToolName != "exec" || clone.Status != "ok" {
-		t.Fatalf("clone = %+v", clone)
-	}
-	clone.ToolName = "modified"
-	if orig.ToolName == "modified" {
-		t.Fatal("clone should be independent")
 	}
 }
 
@@ -628,36 +509,6 @@ func TestCovJobFinishedEventData(t *testing.T) {
 	}
 }
 
-// TestCovWatchEventFilterMatches covers watchEventFilterMatches.
-func TestCovWatchEventFilterMatches(t *testing.T) {
-	t.Parallel()
-	// Nil filter → matches everything.
-	if !watchEventFilterMatches(nil, events.SessionEvent{Kind: events.EventToolCallEnd}) {
-		t.Fatal("nil filter should match")
-	}
-
-	// Non-ToolCallEnd event → false.
-	filter := &watchEventFilter{ToolName: "exec"}
-	if watchEventFilterMatches(filter, events.SessionEvent{Kind: events.EventWarning}) {
-		t.Fatal("non-ToolCallEnd should not match")
-	}
-
-	// Matching tool name.
-	ev := events.SessionEvent{
-		Kind: events.EventToolCallEnd,
-		Data: events.ToolCallEndData{ToolName: "exec"},
-	}
-	if !watchEventFilterMatches(filter, ev) {
-		t.Fatal("matching tool name should pass")
-	}
-
-	// Non-matching tool name.
-	ev.Data = events.ToolCallEndData{ToolName: "read_file"}
-	if watchEventFilterMatches(filter, ev) {
-		t.Fatal("non-matching tool name should fail")
-	}
-}
-
 // ---- jobs.go pure functions ----
 
 // TestCovStringOutputResult covers stringOutputResult.
@@ -794,35 +645,6 @@ func TestCovLiveShellHandles(t *testing.T) {
 	got = jm.liveShellHandles()
 	if len(got) != 1 {
 		t.Fatalf("no-workdir shell excluded = %v", got)
-	}
-}
-
-// ---- delegate_runtime.go pure functions ----
-
-// TestCovDelegateQuietAttentionID covers delegateQuietAttentionID and
-// delegateQuietAttentionIDForStretch.
-func TestCovDelegateQuietAttentionID(t *testing.T) {
-	t.Parallel()
-	lease := delegateLease{delegateID: "dlg_1", generation: 2}
-	got := delegateQuietAttentionID(lease)
-	if got != "quiet:dlg_1:2:1" {
-		t.Fatalf("got = %q", got)
-	}
-
-	got = delegateQuietAttentionIDForStretch(lease, 3)
-	if got != "quiet:dlg_1:2:3" {
-		t.Fatalf("stretch = %q", got)
-	}
-}
-
-// TestCovDelegateQuietAttentionContent covers delegateQuietAttentionContent.
-func TestCovDelegateQuietAttentionContent(t *testing.T) {
-	t.Parallel()
-	lease := delegateLease{delegateID: "dlg_1", generation: 1}
-	now := time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
-	got := delegateQuietAttentionContent(lease, delegateQuietWindow, now)
-	if !strings.Contains(got, "dlg_1") || !strings.Contains(got, "delegate-notification") {
-		t.Fatalf("content = %q", got)
 	}
 }
 

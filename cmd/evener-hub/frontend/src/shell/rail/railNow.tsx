@@ -9,10 +9,8 @@
 // here: React bails out of re-rendering the (referentially unchanged) rail
 // subtree, and only the leaves that read RailNowContext re-render. The timer
 // itself is panes/session/liveness.ts's shared useNowTick/NOW_TICK_MS, not a
-// second copy of it. The CONTEXT stays rail-local, the way
-// chrome/treeNow.ts keeps its own: the rail and the activity tree tick
-// concurrently over different subtrees, so sharing one context would couple
-// two independent clocks.
+// second copy of it. The CONTEXT stays rail-local: sharing one context with
+// another subtree would couple two independent clocks.
 import { createContext, type ReactNode, useContext } from "react";
 import { NOW_TICK_MS, useNowTick } from "../../panes/session/liveness";
 

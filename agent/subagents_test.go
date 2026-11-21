@@ -79,14 +79,12 @@ func TestDefaultToolSummaryMatchesSpawnCeiling(t *testing.T) {
 		t.Fatalf("delegate enum description = %q, want explorer with read_transcript", desc)
 	}
 
-	// availableAgentEntries must also include read_transcript for explorer
+	// The prompt roster lists the role but carries no tool list: the delegate
+	// schema above is the single source for current per-role capabilities, so
+	// the role's presence there is all this block must show.
 	entries := s.availableAgentEntries()
-	for _, entry := range entries {
-		if entry.Name == "explorer" {
-			if !strings.Contains(entry.DefaultTools, "`read_transcript`") {
-				t.Fatalf("available_agents explorer DefaultTools = %q, want read_transcript", entry.DefaultTools)
-			}
-		}
+	if !slices.ContainsFunc(entries, func(entry agentEntry) bool { return entry.Name == "explorer" }) {
+		t.Fatalf("available_agents lists no explorer role: %+v", entries)
 	}
 }
 

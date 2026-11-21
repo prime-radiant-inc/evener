@@ -942,7 +942,13 @@ type EvenerDelegateInfo struct {
 	DrainHeldByJobs           bool   `json:"drainHeldByJobs,omitempty"`
 	RunningJobCount           int    `json:"runningJobCount,omitempty"`
 	OldestRunningJobStartedAt string `json:"oldestRunningJobStartedAt,omitempty"`
-	// HoldSequence orders DrainHeldByJobs against every other sample of the same
+	// DrainHeldBySubagents and RunningSubagentCount are the same hold for open
+	// descendant subagents: a coordinator parked in its finalization drain while
+	// its children run, so its stated intent is frozen. Carried on the frame for
+	// the same reason as the job hold, so a pushed frame and a read row agree.
+	DrainHeldBySubagents bool `json:"drainHeldBySubagents,omitempty"`
+	RunningSubagentCount int  `json:"runningSubagentCount,omitempty"`
+	// HoldSequence orders the whole hold against every other sample of the same
 	// delegate's hold. The source bumps it under the controller lock when the
 	// sampled hold changes, so a consumer applies the highest sequence and
 	// rejects a sample a slower publisher delivered late. Absent when no sample
@@ -973,9 +979,19 @@ type EvenerDelegateInfo struct {
 }
 
 type EvenerDelegateParams struct {
-	ThreadID string             `json:"threadId"`
-	Ref      string             `json:"ref"`
-	Delegate EvenerDelegateInfo `json:"delegate"`
+	ThreadID string `json:"threadId"`
+	Ref      string `json:"ref"`
+	// BootGeneration is the serving daemon's boot generation for the thread
+	// this frame is addressed to, exactly as history/updated carries it: the
+	// counter for the root, "<n>@<rootSessionID>" for a descendant
+	// (DescendantBootGeneration). See CompareBootGeneration.
+	//
+	// Unlike history/updated's field this one is omitted when empty: a peer
+	// too old to stamp it, and a hub-synthesized frame (such as the relay's
+	// own notice), may not carry it at all. Absence therefore means "this
+	// frame says nothing about identity", never "the generation is empty".
+	BootGeneration string             `json:"bootGeneration,omitempty"`
+	Delegate       EvenerDelegateInfo `json:"delegate"`
 }
 
 type EvenerTurnSlots struct {

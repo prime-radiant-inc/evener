@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // gitCancelTripwire bounds the waits in this file. TRIPWIRE: each one is a
@@ -21,25 +23,21 @@ const gitCancelTripwire = 90 * time.Second
 
 // waitForFakeGitStart waits until the fake git has recorded that it is running
 // with its TERM trap installed. run is git()'s own result channel: a fake that
-// never execs will never write the file, and polling out the tripwire would
+// never execs will never write the file, and waiting out the guard would
 // report "never appeared" instead of naming the error git() already has.
 func waitForFakeGitStart(t *testing.T, path string, run <-chan error) {
 	t.Helper()
-	deadline := time.Now().Add(gitCancelTripwire)
-	for {
+	testwait.Until(t, "the fake git to write "+path, func() bool {
 		if _, err := os.Stat(path); err == nil {
-			return
+			return true
 		}
 		select {
 		case err := <-run:
 			t.Fatalf("git() returned before the fake git started: %v", err)
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("fake git never wrote %s within %s", path, gitCancelTripwire)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return false
+	})
 }
 
 // TestGit_CancellationSendsSIGTERM pins the graceful-cancellation contract of

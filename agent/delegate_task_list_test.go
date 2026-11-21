@@ -190,7 +190,6 @@ func TestCreateDelegate_TaskListFreezesIntoDescriptor(t *testing.T) {
 	}
 	root.delegateController.mu.Lock()
 	aggregate := root.delegateController.durable[result.DelegateID]
-	live := root.delegateController.live[result.DelegateID]
 	root.delegateController.mu.Unlock()
 	if aggregate == nil {
 		t.Fatal("no durable aggregate for the created delegate")
@@ -199,10 +198,14 @@ func TestCreateDelegate_TaskListFreezesIntoDescriptor(t *testing.T) {
 	if len(got) != 2 || got[0].Title != "inspect" || got[1].Title != "verify" || got[1].Type != "verify" {
 		t.Fatalf("descriptor task templates = %+v, want the parent's two tasks", got)
 	}
-	if live == nil || live.binding == nil || live.binding.runtime == nil {
-		t.Fatal("no live child session for the created delegate")
+	// The scripted child can finish and release its live binding before the
+	// test reads it, so read the seeded store through the child session, which
+	// is retained until the runtime is reclaimed.
+	sub := root.getSub(result.ChildSessionID)
+	if sub == nil {
+		t.Fatal("no retained child session for the created delegate")
 	}
-	tasks := live.binding.runtime.getOrCreateTaskStore().View()
+	tasks := sub.sess.getOrCreateTaskStore().View()
 	if len(tasks) != 2 || tasks[0].Description != "inspect" || tasks[1].Description != "verify" {
 		t.Fatalf("child task list = %+v, want the parent's two tasks", tasks)
 	}

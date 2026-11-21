@@ -1186,22 +1186,6 @@ func TestReturnClaimedQueuedMutation(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// clientMutationTranscriptItems struct
-// ---------------------------------------------------------------------------
-
-func TestClientMutationTranscriptItemsStruct(t *testing.T) {
-	t.Parallel()
-	items := clientMutationTranscriptItems{
-		StableTurnID: "turn_1",
-		User:         true,
-		Failure:      false,
-	}
-	if items.StableTurnID != "turn_1" || !items.User || items.Failure {
-		t.Fatalf("items = %+v", items)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // ClientMutationProjection nil session
 // ---------------------------------------------------------------------------
 
@@ -1357,10 +1341,6 @@ func TestRejectClientMutationWithInvalidParams(t *testing.T) {
 		t.Fatalf("code = %d, want %d", record.Rejection.Code, appwire.CodeInvalidParams)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Ensure no unused imports
-// ---------------------------------------------------------------------------
 
 var _ = fmt.Sprintf
 var _ = errors.New

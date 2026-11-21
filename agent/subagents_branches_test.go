@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -9,52 +10,6 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
 )
-
-// ---------------------------------------------------------------------------
-// SubagentStatus constants
-// ---------------------------------------------------------------------------
-
-func TestSubagentStatusConstants(t *testing.T) {
-	t.Parallel()
-	if SubagentRunning != "running" {
-		t.Fatalf("SubagentRunning = %q", SubagentRunning)
-	}
-	if SubagentCompleted != "completed" {
-		t.Fatalf("SubagentCompleted = %q", SubagentCompleted)
-	}
-	if SubagentFailed != "failed" {
-		t.Fatalf("SubagentFailed = %q", SubagentFailed)
-	}
-	if SubagentCancelled != "cancelled" {
-		t.Fatalf("SubagentCancelled = %q", SubagentCancelled)
-	}
-	if SubagentExhausted != "exhausted" {
-		t.Fatalf("SubagentExhausted = %q", SubagentExhausted)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// subagentResult struct
-// ---------------------------------------------------------------------------
-
-func TestSubagentResultStruct(t *testing.T) {
-	t.Parallel()
-	r := subagentResult{
-		AgentID:       "agent_1",
-		Status:        SubagentCompleted,
-		Closed:        true,
-		Output:        "result text",
-		Success:       true,
-		TurnsUsed:     5,
-		TranscriptRef: "local:abc",
-	}
-	if r.AgentID != "agent_1" || r.Status != SubagentCompleted {
-		t.Fatalf("struct wrong: %+v", r)
-	}
-	if !r.Closed || !r.Success || r.TurnsUsed != 5 {
-		t.Fatalf("struct wrong: %+v", r)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // delegateSalvagedDraftNote constant
@@ -93,32 +48,32 @@ func TestAppendUniqueStrings(t *testing.T) {
 	t.Parallel()
 	t.Run("new items added", func(t *testing.T) {
 		result := appendUniqueStrings([]string{"a"}, "b", "c")
-		if len(result) != 3 || result[1] != "b" || result[2] != "c" {
-			t.Fatalf("result = %v", result)
+		if want := []string{"a", "b", "c"}; !slices.Equal(result, want) {
+			t.Fatalf("result = %v, want %v", result, want)
 		}
 	})
 	t.Run("duplicates skipped", func(t *testing.T) {
 		result := appendUniqueStrings([]string{"a", "b"}, "b", "c")
-		if len(result) != 3 {
-			t.Fatalf("expected 3, got %d", len(result))
+		if want := []string{"a", "b", "c"}; !slices.Equal(result, want) {
+			t.Fatalf("result = %v, want %v", result, want)
 		}
 	})
-	t.Run("empty strings skipped", func(t *testing.T) {
-		result := appendUniqueStrings([]string{"a"}, "", "b", "")
-		if len(result) != 2 {
-			t.Fatalf("expected 2, got %d", len(result))
+	t.Run("empty and duplicate extras skipped", func(t *testing.T) {
+		result := appendUniqueStrings([]string{"a"}, "", "a", "b", "")
+		if want := []string{"a", "b"}; !slices.Equal(result, want) {
+			t.Fatalf("result = %v, want %v", result, want)
 		}
 	})
 	t.Run("nil base", func(t *testing.T) {
 		result := appendUniqueStrings(nil, "a", "b")
-		if len(result) != 2 {
-			t.Fatalf("expected 2, got %d", len(result))
+		if want := []string{"a", "b"}; !slices.Equal(result, want) {
+			t.Fatalf("result = %v, want %v", result, want)
 		}
 	})
 	t.Run("no extras", func(t *testing.T) {
 		result := appendUniqueStrings([]string{"a"})
-		if len(result) != 1 || result[0] != "a" {
-			t.Fatalf("result = %v", result)
+		if want := []string{"a"}; !slices.Equal(result, want) {
+			t.Fatalf("result = %v, want %v", result, want)
 		}
 	})
 }
@@ -184,18 +139,6 @@ func TestEnsureRecoveryReaderNoRecoveryNeeded(t *testing.T) {
 // rootOnlySubagentTools / isRootOnlySubagentTool / isRootOnlyJobPresenceTool
 // ---------------------------------------------------------------------------
 
-func TestRootOnlySubagentTools(t *testing.T) {
-	t.Parallel()
-	tools := rootOnlySubagentTools()
-	if len(tools) == 0 {
-		t.Fatalf("expected non-empty root-only tools")
-	}
-	// Should include "delegate" and "manage_worktree"
-	if !hasString(tools, "manage_worktree") {
-		t.Fatalf("expected manage_worktree in root-only tools: %v", tools)
-	}
-}
-
 func TestIsRootOnlyJobPresenceTool(t *testing.T) {
 	t.Parallel()
 	if !isRootOnlyJobPresenceTool("delegate") {
@@ -203,42 +146,6 @@ func TestIsRootOnlyJobPresenceTool(t *testing.T) {
 	}
 	if isRootOnlyJobPresenceTool("read_file") {
 		t.Fatalf("expected read_file to not be root-only job presence tool")
-	}
-}
-
-func TestIsRootOnlySubagentTool(t *testing.T) {
-	t.Parallel()
-	if !isRootOnlySubagentTool("manage_worktree") {
-		t.Fatalf("expected manage_worktree to be root-only subagent tool")
-	}
-	if isRootOnlySubagentTool("read_file") {
-		t.Fatalf("expected read_file to not be root-only subagent tool")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// protectedGrantTools / isProtectedGrantTool
-// ---------------------------------------------------------------------------
-
-func TestProtectedGrantTools(t *testing.T) {
-	t.Parallel()
-	tools := protectedGrantTools()
-	for _, want := range []string{"ask_user", "urls_add", "urls_remove"} {
-		if !hasString(tools, want) {
-			t.Fatalf("expected %q in protected grant tools, got %v", want, tools)
-		}
-	}
-}
-
-func TestIsProtectedGrantTool(t *testing.T) {
-	t.Parallel()
-	for _, name := range []string{"ask_user", "urls_add", "urls_remove"} {
-		if !isProtectedGrantTool(name) {
-			t.Fatalf("expected %s to be protected", name)
-		}
-	}
-	if isProtectedGrantTool("read_file") {
-		t.Fatalf("expected read_file to not be protected")
 	}
 }
 
@@ -250,17 +157,8 @@ func TestRemoveRootOnlySubagentTools(t *testing.T) {
 	t.Parallel()
 	input := []string{"read_file", "delegate", "exec_command", "manage_worktree"}
 	result := removeRootOnlySubagentTools(input)
-	if hasString(result, "delegate") {
-		t.Fatalf("expected delegate to be removed")
-	}
-	if hasString(result, "manage_worktree") {
-		t.Fatalf("expected manage_worktree to be removed")
-	}
-	if !hasString(result, "read_file") {
-		t.Fatalf("expected read_file to be kept")
-	}
-	if !hasString(result, "exec_command") {
-		t.Fatalf("expected exec_command to be kept")
+	if want := []string{"read_file", "exec_command"}; !slices.Equal(result, want) {
+		t.Fatalf("tools after root-only removal = %v, want %v", result, want)
 	}
 }
 
@@ -426,60 +324,6 @@ func TestLocalEnvPolicyFromName(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// cloneMap
-// ---------------------------------------------------------------------------
-
-func TestCloneMapEmpty(t *testing.T) {
-	t.Parallel()
-	if cloneMap(nil) != nil {
-		t.Fatalf("expected nil for nil map")
-	}
-	if cloneMap(map[string]any{}) != nil {
-		t.Fatalf("expected nil for empty map")
-	}
-}
-
-func TestCloneMapValid(t *testing.T) {
-	t.Parallel()
-	in := map[string]any{"key": "value", "num": 42}
-	out := cloneMap(in)
-	if out == nil {
-		t.Fatalf("expected non-nil clone")
-	}
-	if out["key"] != "value" {
-		t.Fatalf("key = %v", out["key"])
-	}
-	// Verify deep copy
-	out["key"] = "modified"
-	if in["key"] == "modified" {
-		t.Fatalf("expected deep copy")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// cloneShallowMap
-// ---------------------------------------------------------------------------
-
-func TestCloneShallowMapEmpty(t *testing.T) {
-	t.Parallel()
-	if cloneShallowMap(nil) != nil {
-		t.Fatalf("expected nil for nil map")
-	}
-	if cloneShallowMap(map[string]any{}) != nil {
-		t.Fatalf("expected nil for empty map")
-	}
-}
-
-func TestCloneShallowMapValid(t *testing.T) {
-	t.Parallel()
-	in := map[string]any{"key": "value"}
-	out := cloneShallowMap(in)
-	if out == nil || out["key"] != "value" {
-		t.Fatalf("expected clone with key=value, got %v", out)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // subagentNeedsCommunicateNudge
 // ---------------------------------------------------------------------------
 
@@ -562,23 +406,6 @@ func TestRestoreFrozenSkillBodiesValid(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// preparedSubagentRun struct
-// ---------------------------------------------------------------------------
-
-func TestPreparedSubagentRunStruct(t *testing.T) {
-	t.Parallel()
-	p := &preparedSubagentRun{
-		task:       "do the work",
-		agentType:  "default",
-		workingDir: "/path",
-		isolation:  "worktree",
-	}
-	if p.task != "do the work" || p.agentType != "default" {
-		t.Fatalf("struct wrong: %+v", p)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // preparedSubagentRun.disposeUnadopted
 // ---------------------------------------------------------------------------
 
@@ -604,25 +431,6 @@ func TestDisposeUnadoptedSubagentSessionNil(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// subagent struct fields
-// ---------------------------------------------------------------------------
-
-func TestSubagentStruct(t *testing.T) {
-	t.Parallel()
-	sub := &subagent{
-		id:        "dlg_1",
-		status:    SubagentRunning,
-		turnsUsed: 3,
-	}
-	if sub.id != "dlg_1" || sub.status != SubagentRunning {
-		t.Fatalf("struct wrong: %+v", sub)
-	}
-	if sub.turnsUsed != 3 {
-		t.Fatalf("turnsUsed = %d", sub.turnsUsed)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // sandboxSnapshotFromEnv (tested via frozenDelegateSandboxMatches)
 // ---------------------------------------------------------------------------
 
@@ -632,10 +440,6 @@ func TestSandboxSnapshotFromEnvNilEnv(t *testing.T) {
 		t.Fatalf("expected nil for nil env")
 	}
 }
-
-// ---------------------------------------------------------------------------
-// rootOnlyJobControlTools variable
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // defaultSubagentInstructions constant
@@ -683,10 +487,6 @@ func TestDelegateToolNameCeilingNilRegistry(t *testing.T) {
 		t.Fatalf("expected nil for nil registry")
 	}
 }
-
-// ---------------------------------------------------------------------------
-// subagent emit field
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // subagent time fields

@@ -3,7 +3,7 @@
 // selections, how a draft reaches the threads store, and what the user hears
 // when a recovery row was changed or consumed elsewhere.
 
-import type { ComposerMention } from "@evener/appwire-client";
+import { type ComposerMention, markerPattern } from "@evener/appwire-client";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import type { DisplayedRecoveryStopCapture } from "../../../stores/mutationOutboxIndexedDB";
 import { type InputAttachment, readRecoveryWithStopEpoch, threadsStore } from "../../../stores/threads";
@@ -16,6 +16,12 @@ export type DraftSelections = {
 };
 
 export type SelectionRefusal = "skill-unsupported" | "command-unsupported";
+
+/** An adopted image anchor the request would carry with no image behind it.
+ * The composer states this in place beside the draft; the toast exists for the
+ * routes whose press does not pass through that surface (a typed /queue or
+ * /steer submits its own arguments through the same seam). */
+export type UnbackedImageRefusal = "unbacked-image";
 
 // What the target advertises. Absent capabilities (a thread model that has not
 // loaded) support nothing, matching the store's own composerMutationIntent gate.
@@ -38,6 +44,14 @@ export function pushSelectionRefusal(refusal: SelectionRefusal): void {
   else pushToast("error", "Command selections are not supported on this session; your draft is kept", refusal);
 }
 
+export function pushUnbackedImageRefusal(refusal: UnbackedImageRefusal): void {
+  pushToast(
+    "error",
+    "This draft refers to an image this composer does not have. Remove the reference, or attach the image again, before sending.",
+    refusal,
+  );
+}
+
 // A recovery row that another surface changed ("changed") or already sent
 // ("consumed") under this one. A resend a Stop crossed answers "sent" with a
 // born-canceled row - the composition's durable copy - so no distinct fenced
@@ -47,6 +61,45 @@ export type RecoveryRefusal = "changed" | "consumed";
 export function pushRecoveryRefusal(refusal: RecoveryRefusal): void {
   if (refusal === "changed") pushToast("info", "This message changed in another tab. Refresh and try again.", refusal);
   else pushToast("info", "This message was already sent in another tab.", refusal);
+}
+
+/** The marker numbers a text spells, ascending and deduplicated. */
+export function spelledImageMarkers(text: string): number[] {
+  const markers = Array.from(text.matchAll(markerPattern()), (match) => Number(match[1]));
+  return [...new Set(markers)].sort((left, right) => left - right);
+}
+
+/**
+ * The adopted image anchors a request would carry with no image behind them.
+ *
+ * `adopted` is the set of markers a draft's WRITER staged whose bytes this
+ * composer does not hold - the provenance a persisted draft carries with its
+ * revision, read on mount and on rebind alike. It is the only thing that may
+ * refuse a send. A marker the person typed is prose: it never enters
+ * `adopted`, so it keeps sending as the literal text it is.
+ *
+ * The test is a pair read at the moment of sending - the outgoing text and
+ * that same adoption record - never a remembered backed/unbacked flag. What
+ * the record says is which occurrences the writing side STAGED; which of them
+ * are still spelled is read from the live text here, so an edit that removes
+ * one stops refusing and an undo that restores it starts refusing again. A
+ * marker number alone could never do that job after a renumbering merge,
+ * where the same number can name a different occurrence entirely.
+ *
+ * The attachment store deliberately has no say. Staging writes "[image N]"
+ * into the text AND appends the tile in the same gesture, so a tile can only
+ * belong to the text this source wrote. Text this source adopted is by
+ * definition text another writer produced, and its bytes never travelled with
+ * it (localStorage holds no bytes), so a tile already in the store at that
+ * number is a different image - the composition this source replaced. Letting
+ * it back the adopted marker would rewrite the adopted prose into a reference
+ * carrying somebody else's bytes, which this issue forbids ("do not silently
+ * substitute another image by numeric marker").
+ */
+export function unbackedImageMarkersIn(text: string, adopted: readonly number[]): number[] {
+  if (adopted.length === 0) return [];
+  const spelled = new Set(spelledImageMarkers(text));
+  return [...new Set(adopted)].filter((marker) => spelled.has(marker)).sort((left, right) => left - right);
 }
 
 export type DraftRoute = "send" | "queue" | "steer" | "drain";
@@ -67,8 +120,16 @@ export function submitDraftToStore(
   compositionOwnerId?: string,
 ): Promise<void> {
   const store = threadsStore.getState();
-  const args = [ref, draft.text, draft.attachments, draft.skillNames, draft.commandNames, draft.mentions] as const;
-  const call = (method: (typeof store)["send"] | (typeof store)["drainAsSteer"]) => method(...args, compositionOwnerId);
+  const args = [
+    ref,
+    draft.text,
+    draft.attachments,
+    draft.skillNames,
+    draft.commandNames,
+    draft.mentions,
+    compositionOwnerId,
+  ] as const;
+  const call = (method: (typeof store)["send"] | (typeof store)["drainAsSteer"]) => method(...args);
   return route === "drain" ? call(store.drainAsSteer) : call(store[route]);
 }
 
@@ -111,16 +172,11 @@ export function captureRecoverySendIntent(displayedRef: string, recoveryId: stri
   return { displayedBarrier, durableSnapshot };
 }
 
-/** Performs the resend holding the destination claim lease: a destination
- * this tab is not already reading is hydrated under a foreground claim - the
- * same ensureThread/releaseThread pair useThreadClaim holds a pane's
- * subscription with - acquired only after ensureThread succeeds, so a failed
- * acquisition (whose rollback ensureThread already performed) releases
- * nothing, and the lease is released exactly once, after the resend. A
- * destination another reader already tracks needs no claim and takes none. */
+/** Performs the resend while holding a refcounted destination claim lease so
+ * the destination model stays pinned until `perform` settles; see
+ * `acquireUnreadThreadClaim`. */
 export async function withRecoveryDestinationClaim<T>(destinationRef: string, perform: () => Promise<T>): Promise<T> {
   const lease = await acquireUnreadThreadClaim(destinationRef);
-  if (lease === null) return perform();
   try {
     return await perform();
   } finally {

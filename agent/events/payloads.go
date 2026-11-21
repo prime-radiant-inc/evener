@@ -934,7 +934,14 @@ type DelegateUpdatedData struct {
 	DrainHeldByJobs           bool   `json:"drain_held_by_jobs,omitempty"`
 	RunningJobCount           int    `json:"running_job_count,omitempty"`
 	OldestRunningJobStartedAt string `json:"oldest_running_job_started_at,omitempty"`
-	// HoldSequence is the source-side order of the hold three fields above.
+	// DrainHeldBySubagents and RunningSubagentCount carry the same hold for
+	// descendant open subagents, so a parked coordinator reports the wait
+	// instead of its frozen pre-drain intent. The frame carries them for the
+	// reason the job hold is carried: a client replaces a row's mutating fields
+	// with the frame's, so omitting them would erase the wait.
+	DrainHeldBySubagents bool `json:"drain_held_by_subagents,omitempty"`
+	RunningSubagentCount int  `json:"running_subagent_count,omitempty"`
+	// HoldSequence is the source-side order of the complete hold sample above.
 	// The source bumps it when the sampled hold changes; a consumer applies the
 	// highest sequence it has seen and ignores a delayed sample. Absent when no
 	// sample ever differed.

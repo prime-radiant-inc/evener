@@ -3,12 +3,15 @@ package transcriptindex
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appitempaging"
+	"primeradiant.com/evener/internal/apptranscript"
 )
 
 func newFormatFixture(t testing.TB, name string) fixture {
@@ -375,4 +378,347 @@ func TestCallWithoutResultsIsInterruptedAtCompletion(t *testing.T) {
 			t.Fatalf("the call that got results = %s, want it completed", dump(c.Item))
 		}
 	}
+}
+
+// An interrupted completion is transcript-only, so it joins no group, but it
+// still belongs to its turn: the full read must fold it into the stamped
+// turn's status exactly as the index does, or a crashed execution renders
+// completed while the index reports it interrupted.
+func TestFullReadFoldsInterruptedCompletionIntoTurnStatus(t *testing.T) {
+	fx := newFormatFixture(t, "interrupted call")
+	turns := fullReadTurns(t, fx)
+	var full *appwire.Turn
+	for i := range turns {
+		if turns[i].ID == "turn_m22" {
+			full = &turns[i]
+			break
+		}
+	}
+	if full == nil {
+		t.Fatalf("no turn_m22 in the full read: %s", dump(turns))
+	}
+	if full.Status != appwire.TurnStatusInterrupted {
+		t.Fatalf("full read turn_m22 = %s, want interrupted", dump(*full))
+	}
+	if indexed := turnOf(t, indexedCandidates(t, fx, -1), "turn_m22"); indexed.Status != appwire.TurnStatusInterrupted {
+		t.Fatalf("indexed turn_m22 = %s, want interrupted", dump(indexed))
+	}
+}
+
+// A completion and a reopen are transcript-only, so they join no group, but
+// the file's last one decides the execution's status: a reopen clears a prior
+// failure and the last completion sets the final state on every fragment,
+// exactly as the index reports it.
+func TestFullReadFoldsReopenAndCompletionInOrder(t *testing.T) {
+	fx := newFormatFixture(t, "open and reclaimed")
+	turns := fullReadTurns(t, fx)
+	fragments := 0
+	for i := range turns {
+		if turns[i].ID != "turn_m16" {
+			continue
+		}
+		fragments++
+		if turns[i].Status != appwire.TurnStatusCompleted || turns[i].Error != nil {
+			t.Fatalf("full read turn_m16 fragment %d = %s, want completed with no error", i, dump(turns[i]))
+		}
+	}
+	if fragments < 2 {
+		t.Fatalf("full read turn_m16 fragments = %d, want one per run: %s", fragments, dump(turns))
+	}
+	if indexed := turnOf(t, indexedCandidates(t, fx, -1), "turn_m16"); indexed.Status != appwire.TurnStatusCompleted || indexed.Error != nil {
+		t.Fatalf("indexed turn_m16 = %s, want completed with no error", dump(indexed))
+	}
+}
+
+// A stamped execution's failure diagnostic is whole-turn like its status: a
+// standalone delivery can split the execution so a fragment that carries no
+// TURN_FAILURE of its own still has to report the failure the file records.
+func TestFullReadSharesTheStampedFailureDiagnostic(t *testing.T) {
+	fx := newFormatFixture(t, "delivery inside an execution")
+	fx.lines = []fixtureLine{
+		entryLine(opens("turn_d1", schema.TurnSpanExecution, user("start"))),
+		entryLine(inTurn("turn_d1", assistant(text("working")))),
+		entryLine(opens("t_delivery_d1", schema.TurnSpanDelivery, steering("a note"))),
+		entryLine(inTurn("turn_d1", standalone(schema.TurnFailure, "run failed"))),
+		entryLine(completion("turn_d1", schema.TurnFailed, 20, 700)),
+	}
+	turns := fullReadTurns(t, fx)
+	fragments := 0
+	for i := range turns {
+		if turns[i].ID != "turn_d1" {
+			continue
+		}
+		fragments++
+		if turns[i].Status != appwire.TurnStatusFailed || turns[i].Error == nil {
+			t.Fatalf("full read turn_d1 fragment %d = %s, want failed with the file's diagnostic", i, dump(turns[i]))
+		}
+	}
+	if fragments == 0 {
+		t.Fatalf("full read has no turn_d1: %s", dump(turns))
+	}
+	if indexed := turnOf(t, indexedCandidates(t, fx, -1), "turn_d1"); indexed.Status != appwire.TurnStatusFailed || indexed.Error == nil {
+		t.Fatalf("indexed turn_d1 = %s, want failed with the file's diagnostic", dump(indexed))
+	}
+}
+
+// A reopen is a status record in its own right: a turn the file reopened and
+// never completed again reports in progress, not the status of the run it
+// reopened.
+func TestFullReadReportsAReopenedTurnInProgress(t *testing.T) {
+	fx := newFormatFixture(t, "open and reclaimed")
+	fx.lines = []fixtureLine{
+		entryLine(opens("turn_r1", schema.TurnSpanExecution, user("start"))),
+		entryLine(inTurn("turn_r1", assistant(text("working")))),
+		entryLine(completion("turn_r1", schema.TurnFailed, 20, 700)),
+		entryLine(reopen("turn_r1")),
+	}
+	turns := fullReadTurns(t, fx)
+	var full *appwire.Turn
+	for i := range turns {
+		if turns[i].ID == "turn_r1" {
+			full = &turns[i]
+			break
+		}
+	}
+	if full == nil {
+		t.Fatalf("no turn_r1 in the full read: %s", dump(turns))
+	}
+	if full.Status != appwire.TurnStatusInProgress {
+		t.Fatalf("full read turn_r1 = %s, want inProgress", dump(*full))
+	}
+	if indexed := turnOf(t, indexedCandidates(t, fx, -1), "turn_r1"); indexed.Status != appwire.TurnStatusInProgress {
+		t.Fatalf("indexed turn_r1 = %s, want inProgress", dump(indexed))
+	}
+}
+
+// A compaction fold copy repeats an entry an original already supplied. The
+// replay must not re-fold a stale failure over the latest original one.
+func TestFullReadIgnoresAReplayedFailureCopy(t *testing.T) {
+	older := inTurn("turn_c1", standalone(schema.TurnFailure, "older failure"))
+	fx := newFormatFixture(t, "open and reclaimed")
+	fx.lines = []fixtureLine{
+		entryLine(opens("turn_c1", schema.TurnSpanExecution, user("start"))),
+		entryLine(inTurn("turn_c1", assistant(text("working")))),
+		entryLine(older),
+		entryLine(inTurn("turn_c1", standalone(schema.TurnFailure, "latest failure"))),
+		entryLine(completion("turn_c1", schema.TurnFailed, 20, 700)),
+		entryLine(foldCopy(older, 2)),
+	}
+	turns := fullReadTurns(t, fx)
+	indexed := turnOf(t, indexedCandidates(t, fx, -1), "turn_c1")
+	fragments := 0
+	for i := range turns {
+		if turns[i].ID != "turn_c1" {
+			continue
+		}
+		fragments++
+		if turns[i].Status != appwire.TurnStatusFailed || !reflect.DeepEqual(turns[i].Error, indexed.Error) {
+			t.Fatalf("full read turn_c1 fragment %d = %s, want the index's diagnostic %+v", i, dump(turns[i]), indexed.Error)
+		}
+	}
+	if fragments == 0 {
+		t.Fatalf("full read has no turn_c1: %s", dump(turns))
+	}
+}
+
+// An execution the file leaves open — no completion record after its start —
+// is in progress, not done: the index opens a stamped execution at in
+// progress and only a completion ends it, so a read of a file that stops
+// mid-execution must not claim the turn finished.
+func TestFullReadKeepsAnOpenExecutionInProgress(t *testing.T) {
+	fx := newFormatFixture(t, "open and reclaimed")
+	fx.lines = fx.lines[:2]
+	turns := fullReadTurns(t, fx)
+	var full *appwire.Turn
+	for i := range turns {
+		if turns[i].ID == "turn_m15" {
+			full = &turns[i]
+			break
+		}
+	}
+	if full == nil {
+		t.Fatalf("no turn_m15 in the full read: %s", dump(turns))
+	}
+	if full.Status != appwire.TurnStatusInProgress || full.CompletedAt != nil || full.DurationMS != nil {
+		t.Fatalf("full read turn_m15 = %s, want inProgress with no completion", dump(*full))
+	}
+	if indexed := turnOf(t, indexedCandidates(t, fx, 2), "turn_m15"); indexed.Status != appwire.TurnStatusInProgress {
+		t.Fatalf("indexed turn_m15 = %s, want inProgress", dump(indexed))
+	}
+}
+
+// A TURN_FAILURE record is a diagnostic, not a terminal state: the index
+// surfaces it only once a completion reports the execution failed, so an
+// open execution that carries one still reads in progress with no error.
+func TestFullReadKeepsAnOpenExecutionOutOfFailed(t *testing.T) {
+	fx := newFormatFixture(t, "open and reclaimed")
+	fx.lines = []fixtureLine{
+		entryLine(opens("turn_f1", schema.TurnSpanExecution, user("start"))),
+		entryLine(inTurn("turn_f1", assistant(text("working")))),
+		entryLine(inTurn("turn_f1", standalone(schema.TurnFailure, "run failed"))),
+	}
+	turns := fullReadTurns(t, fx)
+	var full *appwire.Turn
+	for i := range turns {
+		if turns[i].ID == "turn_f1" {
+			full = &turns[i]
+			break
+		}
+	}
+	if full == nil {
+		t.Fatalf("no turn_f1 in the full read: %s", dump(turns))
+	}
+	if full.Status != appwire.TurnStatusInProgress || full.Error != nil {
+		t.Fatalf("full read turn_f1 = %s, want inProgress with no diagnostic", dump(*full))
+	}
+	if indexed := turnOf(t, indexedCandidates(t, fx, -1), "turn_f1"); indexed.Status != appwire.TurnStatusInProgress || indexed.Error != nil {
+		t.Fatalf("indexed turn_f1 = %s, want inProgress with no diagnostic", dump(indexed))
+	}
+}
+
+// A span's kind is recorded on its opener, and a gap's opener can be a
+// transcript-only notice: the full read skips the notice, so the first entry
+// it sees of the gap carries no kind and must not pass for an execution.
+func TestFullReadKeepsAGapOpenedByANoticeCompleted(t *testing.T) {
+	fx := newFormatFixture(t, "notices")
+	fx.lines = []fixtureLine{
+		entryLine(opens("t_gap_n1", schema.TurnSpanGap, noticed(schema.NoticeInfo{Kind: schema.NoticeGoalEnded, GoalEnded: &schema.GoalEndedNotice{Status: "complete", Iterations: 2}}))),
+		entryLine(inTurn("t_gap_n1", withModel(standalone(schema.TurnModelSwitch, "switched to gpt-next"), "gpt-next"))),
+	}
+	turns := fullReadTurns(t, fx)
+	var full *appwire.Turn
+	for i := range turns {
+		if turns[i].ID == "t_gap_n1" {
+			full = &turns[i]
+			break
+		}
+	}
+	if full == nil {
+		t.Fatalf("no t_gap_n1 in the full read: %s", dump(turns))
+	}
+	if full.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("full read t_gap_n1 = %s, want completed", dump(*full))
+	}
+	if indexed := turnOf(t, indexedCandidates(t, fx, -1), "t_gap_n1"); indexed.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("indexed t_gap_n1 = %s, want completed", dump(indexed))
+	}
+}
+
+// A completion ends the execution for its calls too: the index marks every
+// call of the awaiting assistant entry that no result answered as
+// interrupted, so the full read must not leave them running.
+func TestFullReadInterruptsUnansweredCallsAtCompletion(t *testing.T) {
+	fx := newFormatFixture(t, "interrupted call")
+	turns := fullReadTurns(t, fx)
+	statuses := map[string]string{}
+	for _, turn := range turns {
+		for _, item := range turn.Items {
+			if item.CallID != "" {
+				statuses[item.CallID] = item.Status
+			}
+		}
+	}
+	indexed := map[string]string{}
+	for _, item := range itemsOf(indexedCandidates(t, fx, -1), "turn_m22") {
+		if item.CallID != "" {
+			indexed[item.CallID] = item.Status
+		}
+	}
+	if statuses["ic1"] != appwire.TurnStatusInterrupted || indexed["ic1"] != appwire.TurnStatusInterrupted {
+		t.Fatalf("unanswered call ic1: full read %q, indexed %q, want interrupted both", statuses["ic1"], indexed["ic1"])
+	}
+	if !reflect.DeepEqual(statuses, indexed) {
+		t.Fatalf("full read call statuses = %v, indexed = %v", statuses, indexed)
+	}
+}
+
+// Only a legacy turn latches an interrupted steering marker: a stamped gap or
+// prelude stays completed when a cancellation writes one into it.
+func TestFullReadKeepsAnInterruptedSteeringGapCompleted(t *testing.T) {
+	fx := newFormatFixture(t, "gap turns")
+	canceled := steering("cancelled before it began")
+	canceled.SteeringKind = events.SteeringKindInterrupted
+	fx.lines = []fixtureLine{
+		entryLine(opens("t_gap_c1", schema.TurnSpanGap, canceled)),
+	}
+	turns := fullReadTurns(t, fx)
+	var full *appwire.Turn
+	for i := range turns {
+		if turns[i].ID == "t_gap_c1" {
+			full = &turns[i]
+			break
+		}
+	}
+	if full == nil {
+		t.Fatalf("no t_gap_c1 in the full read: %s", dump(turns))
+	}
+	if full.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("full read t_gap_c1 = %s, want completed", dump(*full))
+	}
+	if indexed := turnOf(t, indexedCandidates(t, fx, -1), "t_gap_c1"); indexed.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("indexed t_gap_c1 = %s, want completed", dump(indexed))
+	}
+}
+
+// The index addresses a call by its FIRST content part in the announcing
+// entry: a provider that emits one id twice gets its first row settled and
+// its second left alone, and the full read must pick the same rows.
+func TestFullReadSettlesADuplicatedCallIDLikeTheIndex(t *testing.T) {
+	announced := func() schema.Turn {
+		return inTurn("turn_dup1", inRound(assistant(text("calling"), call("dup1", "read_file", `{}`), call("dup1", "read_file", `{}`)), "r_dup"))
+	}
+	cases := map[string][]fixtureLine{
+		"unanswered": {
+			entryLine(opens("turn_dup1", schema.TurnSpanExecution, user("start"))),
+			entryLine(announced()),
+			entryLine(completion("turn_dup1", schema.TurnInterrupted, 90, 10)),
+		},
+		"answered": {
+			entryLine(opens("turn_dup1", schema.TurnSpanExecution, user("start"))),
+			entryLine(announced()),
+			entryLine(inTurn("turn_dup1", results(result("dup1", "read_file", "ok")))),
+			entryLine(completion("turn_dup1", schema.TurnCompleted, 91, 10)),
+		},
+	}
+	for name, lines := range cases {
+		t.Run(name, func(t *testing.T) {
+			fx := newFormatFixture(t, "interrupted call")
+			fx.lines = lines
+			var full []string
+			for _, turn := range fullReadTurns(t, fx) {
+				if turn.ID != "turn_dup1" {
+					continue
+				}
+				for _, item := range turn.Items {
+					if item.Type == "commandExecution" {
+						full = append(full, item.CallID+"|"+item.Status)
+					}
+				}
+			}
+			var indexed []string
+			for _, item := range itemsOf(indexedCandidates(t, fx, -1), "turn_dup1") {
+				if item.Type == "commandExecution" {
+					indexed = append(indexed, item.CallID+"|"+item.Status)
+				}
+			}
+			if !reflect.DeepEqual(full, indexed) {
+				t.Fatalf("full read call rows = %v, indexed = %v", full, indexed)
+			}
+		})
+	}
+}
+
+// fullReadTurns projects a fixture through the whole-file reader with one
+// tool-call registry, the way the hub's past-turn merge projects a saved
+// session.
+func fullReadTurns(t testing.TB, fx fixture) []appwire.Turn {
+	t.Helper()
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(writeFixture(t, fx), testMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		return apptranscript.ProjectTurn(turnID, entryIndex, turn, reg, nil, nil)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return turns
 }

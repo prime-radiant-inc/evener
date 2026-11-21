@@ -1358,7 +1358,7 @@ func (s *Session) moveHeldDelegateAttentionTurnsToTail(released []string) {
 	// resolved row a restart still owes a position is the exact trigger of the
 	// generation it recovers, and that row is moved where its identity is
 	// known — after its turn is back in history — by
-	// admitRecoveredDelegateAttentionTrigger.
+	// restoreAcceptedTrigger.
 	for _, attentionID := range pending {
 		if _, ok := releasable[attentionID]; !ok {
 			continue
@@ -1430,6 +1430,16 @@ func (s *Session) retainSelectablePendingTurnsLocked(fold delegateAttentionFold,
 		}
 		turns = append(turns, turn)
 	}
+	return s.restoreAttentionTurns(turns, resident)
+}
+
+// restoreAttentionTurns puts turns, in arrival order, back into the resumed
+// history, each anchored by the turns that follow it, which a compaction
+// marker after them would otherwise have cut. A turn whose attention identity
+// appears in resident keeps the position it already has and is not restored,
+// but it still anchors the restored turns that arrived before it. A nil
+// resident restores every turn.
+func (s *Session) restoreAttentionTurns(turns []schema.Turn, resident map[string]struct{}) error {
 	for i, turn := range turns {
 		if _, present := resident[turn.AttentionID]; present {
 			continue
@@ -1493,7 +1503,7 @@ func (s *Session) stopQuietedDelegateAttentionRowsLocked(fold delegateAttentionF
 	// that trigger behind the very quiet its own generation exists to end: the
 	// recovered request filters it out, the run settles successfully, and the
 	// report stays durably consumed with the model never having read it. The
-	// trigger's own restore releases it (releaseRecoveredDelegateAttentionTrigger),
+	// trigger's own restore releases it (restoreAcceptedTrigger),
 	// where the exact identity is known and the turn is already back in history.
 	for _, id := range fold.pendingIDs() {
 		source, _, ok := cutDelegateAttentionReopenSegment(id)
@@ -1854,12 +1864,7 @@ func (s *Session) holdAcceptedTrigger(attentionID string) {
 // have cut.
 func (s *Session) restoreAcceptedTrigger(attentionID string, turns []schema.Turn) error {
 	s.holdAcceptedTrigger(attentionID)
-	for i, turn := range turns {
-		if err := s.retainDelegateAttentionTurn(turn, turns[i+1:]...); err != nil {
-			return err
-		}
-	}
-	return nil
+	return s.restoreAttentionTurns(turns, nil)
 }
 
 // acceptDelegateAttention records the exact reserved generation in the child
@@ -2865,11 +2870,9 @@ func (s *Session) rearmRootDelegateAttentionFromTranscript(entries []transcript.
 	// duplicate on a boundary-free restart), a missing one is re-appended,
 	// and resolved attentions are never pending, so nothing resurrects.
 	pendingTurns := fold.pendingTurns("")
-	for i, durable := range pendingTurns {
-		if err := s.retainDelegateAttentionTurn(durable, pendingTurns[i+1:]...); err != nil {
-			s.attentionMu.Unlock()
-			return err
-		}
+	if err := s.restoreAttentionTurns(pendingTurns, nil); err != nil {
+		s.attentionMu.Unlock()
+		return err
 	}
 	s.rootAttentionWakeIDs = make(map[string]struct{}, len(ids))
 	for _, id := range ids {
@@ -2975,7 +2978,15 @@ func (s *Session) dropResidentDelegateAttentionTurnLocked(attentionID string) {
 }
 
 func (s *Session) readDelegateAttentionFold(path, sessionID string) (delegateAttentionFold, error) {
-	if readFold := s.cfg.testOnly.delegateAttentionReadFold; readFold != nil {
+	// The hook is read under s.mu because a test installs and clears it under
+	// that same lock (updateSessionTestConfig). Every caller reaches here with
+	// s.mu released -- the rows above read what the fold needs from it and drop
+	// it again -- so taking it here nests under no caller's hold. attentionMu
+	// stays the outer lock: nothing under s.mu takes it.
+	s.mu.Lock()
+	readFold := s.cfg.testOnly.delegateAttentionReadFold
+	s.mu.Unlock()
+	if readFold != nil {
 		return readFold(path, sessionID)
 	}
 	return s.attentionFoldCursor.read(path, sessionID)
@@ -3362,4 +3373,88 @@ func attentionTransparentRecentCutoff(history []schema.Turn, preserveRecent int)
 		}
 	}
 	return 0, false
+}
+
+// dropUnleasedWatchAttentionTurns keeps unresolved WATCH attention out of an
+// UNLEASED turn's projection, by durable identity (LIFE-01, #2340).
+//
+// Deferring a watch notice to durable attention appends it to resident history,
+// because a durable attention item IS a model-visible turn. On a turn with no
+// lease that defeats the gate from the other side: the queue is empty (the
+// notice was moved off it), so queue-based admission has nothing to refuse, and
+// the request then expands the very history that holds the notice. The turn also
+// cannot CREDIT the presentation -- only a leased generation commits one -- so a
+// later leased run would present it a second time.
+//
+// Identity, not content, is the test. This half appends under
+// deferredWatchAttentionPrefix, and the fold's resolutions say which of those
+// rows are still pending. Settled history -- including an item a leased
+// generation already presented -- is preserved untouched.
+//
+// A projection with no watch row in it is the common case, and it needs no fold
+// read at all: the prescan below answers it from the turns already in hand, so
+// an unleased turn whose history holds no watch row costs nothing.
+//
+// A leased turn drops nothing: it IS the presentation the notice waits for.
+func (s *Session) dropUnleasedWatchAttentionTurns(ctx context.Context, turns []schema.Turn) (kept []schema.Turn, droppedAt []int) {
+	if !s.stableChildTurnNeedsLease(ctx) {
+		return turns, nil
+	}
+	if !slices.ContainsFunc(turns, func(turn schema.Turn) bool {
+		return isWatchNoticeAttentionID(turn.AttentionID)
+	}) {
+		return turns, nil
+	}
+	// The fold cursor behind this read is guarded by attentionMu: every append
+	// and resolution that moves it holds that lock, so the read is taken under
+	// it.
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	fold, err := s.delegateAttentionFoldLocked()
+	if err != nil {
+		return turns, nil
+	}
+	unresolved := func(turn schema.Turn) bool {
+		if !isWatchNoticeAttentionID(turn.AttentionID) {
+			return false
+		}
+		if _, known := fold.content[turn.AttentionID]; !known {
+			// Not one of the fold's rows: nothing durable is waiting behind it,
+			// so there is nothing to withhold.
+			return false
+		}
+		_, resolved := fold.resolutions[turn.AttentionID]
+		return !resolved
+	}
+	for i, turn := range turns {
+		if unresolved(turn) {
+			if kept == nil {
+				kept = make([]schema.Turn, i, len(turns)-1)
+				copy(kept, turns[:i])
+			}
+			droppedAt = append(droppedAt, i)
+			continue
+		}
+		if kept != nil {
+			kept = append(kept, turn)
+		}
+	}
+	if kept == nil {
+		return turns, nil
+	}
+	return kept, droppedAt
+}
+
+// watchSendAttentionPrefix marks the durable attention rows the send rail
+// writes for the receiver of a watch frame.
+const watchSendAttentionPrefix = "watch:"
+
+// isWatchNoticeAttentionID reports whether id names a durable watch notice
+// row. Two producers write one: the send rail, which delivers a frame to its
+// receiver under watchSendAttentionPrefix, and an unleased turn that may not
+// carry a notice, which parks it under deferredWatchAttentionPrefix. Withholding
+// a live notice from a projection must answer for both producers, so the
+// prefixes are decided in one place.
+func isWatchNoticeAttentionID(id string) bool {
+	return strings.HasPrefix(id, watchSendAttentionPrefix) || strings.HasPrefix(id, deferredWatchAttentionPrefix)
 }
