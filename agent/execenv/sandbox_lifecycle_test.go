@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/gittest"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // TRIPWIRE: every real process this file spawns does milliseconds of work — a
@@ -274,16 +275,15 @@ wait`
 		exited <- code
 	}()
 
-	readyBy := time.Now().Add(processTripwire)
-	for {
-		if _, err := os.Stat(ready); err == nil {
-			break
+	testwait.Until(t, "the child to signal trap readiness", func() bool {
+		select {
+		case code := <-exited:
+			t.Fatalf("child exited (code %d) before signaling trap readiness", code)
+		default:
 		}
-		if time.Now().After(readyBy) {
-			t.Fatal("child never signaled trap readiness")
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
+		_, err := os.Stat(ready)
+		return err == nil
+	})
 
 	env.Cleanup()
 
