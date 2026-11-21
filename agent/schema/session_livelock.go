@@ -43,7 +43,7 @@ func SessionLivelockPath(dir, id string) string {
 // SessionLivelockHeld reports absent, so callers degrade to "unknown" rather
 // than guessing. The flock arm is linux || darwin rather than unix because
 // the held-marker it needs exists only for those two; every other Unix takes
-// the no-livelock arm (issue #6796).
+// the no-livelock arm.
 //
 // One automated use is allowed, and it withholds rather than takes: an owner
 // proven live — a HELD livelock, or the liveness oracle's rendezvous

@@ -49,6 +49,25 @@ func seedOwnerRootSession(t *testing.T, stateDir, sid string) {
 	}
 }
 
+// requireSessionLivelock skips on GOOS whose arm is the not-applied
+// fallback, or whose inspection errors: the verdicts below read livelock
+// evidence, which only exists where the lock does and can be inspected.
+func requireSessionLivelock(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	release, applied, err := schema.AcquireSessionLivelock(dir, "probe")
+	if err != nil {
+		t.Fatalf("probe livelock support: %v", err)
+	}
+	if !applied {
+		t.Skip("session livelock is unavailable on this platform")
+	}
+	defer release()
+	if held, _, err := schema.SessionLivelockHeld(dir, "probe"); err != nil || !held {
+		t.Skip("session livelock inspection is unavailable on this platform")
+	}
+}
+
 // requireLaneReportedSkippedAndKept asserts the reporting contract's
 // invariant: the lane is in prune's skipped list with exactly the want reason,
 // absent from removed, and its worktree is still on disk.
@@ -83,6 +102,7 @@ func requireLaneReportedSkippedAndKept(t *testing.T, r *wtRepo, lane, path, want
 // manual recipe's job.
 func TestWorktreePruneReportsDeadLookingDelegateLaneOwner(t *testing.T) {
 	t.Parallel()
+	requireSessionLivelock(t)
 	r := newWorktreeRepo(t)
 	hermeticRendezvous(t, r)
 	owner := identifier.MustNewSessionID()
@@ -105,6 +125,7 @@ func TestWorktreePruneReportsDeadLookingDelegateLaneOwner(t *testing.T) {
 // still not collected.
 func TestWorktreePruneReportsLiveDelegateLaneOwner(t *testing.T) {
 	t.Parallel()
+	requireSessionLivelock(t)
 	r := newWorktreeRepo(t)
 	hermeticRendezvous(t, r)
 	owner := identifier.MustNewSessionID()
@@ -147,6 +168,7 @@ func TestWorktreePruneReportsUnverifiableDelegateLaneOwner(t *testing.T) {
 // same lane still reports the verdict. The lane is collected by neither.
 func TestLaneResidueSweepSkipsOwnerLivenessProbes(t *testing.T) {
 	t.Parallel()
+	requireSessionLivelock(t)
 	r := newWorktreeRepo(t)
 	hermeticRendezvous(t, r)
 	owner := identifier.MustNewSessionID()
