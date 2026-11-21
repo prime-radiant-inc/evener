@@ -501,7 +501,7 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 		// the newer execution addressable: the projector would clear the
 		// running turn it no longer owns, and the newer turn's own end would
 		// then be discarded, leaving the thread active forever.
-		if event.Kind == events.EventSessionEnd && !sessionEventClosesSession(event) && s.descendantRunningTurnID(threadID) != "" {
+		if event.Kind == events.EventSessionEnd && !sessionEventClosesSession(event) && projection.projector.RunningTurnID() != "" {
 			s.mu.Unlock()
 			return nil
 		}

@@ -77,6 +77,13 @@ func (p *AppEventProjector) TaskPublicationRevision() uint64 {
 	return p.taskPublicationRevision
 }
 
+// RunningTurnID returns the execution whose start its matching end has not
+// settled. An end projected before that execution's own end must know it
+// would be settling a turn it does not own.
+func (p *AppEventProjector) RunningTurnID() string {
+	return p.runningTurnID
+}
+
 func (p *AppEventProjector) observeTaskPublication(epoch, revision uint64) {
 	if epoch > p.taskPublicationEpoch || (epoch == p.taskPublicationEpoch && revision > p.taskPublicationRevision) {
 		p.taskPublicationEpoch = epoch
