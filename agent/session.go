@@ -1303,7 +1303,10 @@ type Session struct {
 	// outcome of which replaces the advertised pair itself. ReportedModelRef
 	// keeps naming it through that window so a synchronous read racing the
 	// boundary cannot regress to the pre-pick model after the acceptance was
-	// published. Guarded by s.mu.
+	// published - but only while the committed watermark (modelPickAccepted)
+	// has not passed it: a newer pick that commits while this one validates
+	// owns the advertised pair instead, so the validating pick must not
+	// shadow it. Guarded by s.mu.
 	modelValidating *pendingModelSwitch
 	// modelSwitchPublishMu serializes a switch application's commit through
 	// its publication - the profile swap, the marker record, and the
@@ -2092,19 +2095,23 @@ func (s *Session) Profile() *provider.Profile { return s.currentProfile() }
 
 // ReportedModelRef is the model a client should be shown for this session
 // right now: the newest pick accepted for the turn boundary when one is
-// queued, else the pick whose boundary application is still validating, else
-// the committed profile's pair. thread/model/set's hook samples it inside the
+// queued, else the pick whose boundary application is still validating and
+// that no committed pick has superseded, else the committed profile's pair.
+// thread/model/set's hook samples it inside the
 // server's critical section, so a pick accepted mid-turn is readable from
 // thread/read before its boundary commits it - the read half of the acceptance
 // SetModelOn publishes as EventNextModelChanged - and stays readable through
-// the application itself, whose settle is what replaces the pair.
+// the application itself, whose settle is what replaces the pair. A pick
+// newer than the validating one that commits mid-application owns the sample,
+// so the pair never regresses from a committed choice to the pick it
+// superseded.
 func (s *Session) ReportedModelRef() (model, provider string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if newest := s.newestPendingModelIndexLocked(); newest >= 0 {
 		return s.pendingModels[newest].resolvedModel, s.pendingModels[newest].resolvedProvider
 	}
-	if validating := s.modelValidating; validating != nil {
+	if validating := s.modelValidating; validating != nil && validating.seq > s.modelPickAccepted {
 		return validating.resolvedModel, validating.resolvedProvider
 	}
 	p := s.profile
@@ -2547,21 +2554,21 @@ func (s *Session) applyQueuedModelSwitches(inWaitingCall bool) {
 			return
 		}
 		pending, ok := s.popNewestPendingModelLocked()
+		// The popped pick is accepted but in neither the queue nor the profile
+		// for the whole application, so hold it as the advertised pair from the
+		// pop's own mutex hold: the thread/model/set hook's synchronous refresh
+		// samples concurrently, and a sample landing between two separate holds
+		// would find the pick in neither place and regress thread/read to the
+		// pre-pick model after the acceptance was published. Every settle below
+		// replaces the advertised pair itself - the committed profile, a
+		// re-queued entry, or the retraction.
+		if ok {
+			s.modelValidating = &pending
+		}
 		s.mu.Unlock()
 		if !ok {
 			return
 		}
-		// The popped pick is accepted but in neither the queue nor the profile
-		// for the whole application, so hold it as the advertised pair through
-		// that window: the thread/model/set hook's synchronous refresh can
-		// sample exactly here when a pick races the end of its turn, and
-		// sampling the pre-pick model would regress thread/read after the
-		// acceptance was published. Every settle below replaces the advertised
-		// pair itself - the committed profile, a re-queued entry, or the
-		// retraction.
-		s.mu.Lock()
-		s.modelValidating = &pending
-		s.mu.Unlock()
 		if hook := s.cfg.testOnly.beforeQueuedModelApply; hook != nil {
 			hook()
 		}

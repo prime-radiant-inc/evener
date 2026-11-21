@@ -333,6 +333,16 @@ func TestSupersededPendingApplicationDoesNotOverwriteANewerPick(t *testing.T) {
 		if err := s.SetModel("gpt-4.1-mini"); err != nil {
 			t.Errorf("newer SetModel: %v", err)
 		}
+		// The newer pick has committed and published while the queued pick's
+		// application is still parked mid-validation. The read sample must
+		// name the committed pick, not the validating pick it superseded:
+		// model-set's synchronous refresh runs exactly here, and reporting
+		// the parked pick would overwrite the committed choice in thread/read
+		// for as long as the superseded application takes to drop.
+		model, instance := s.ReportedModelRef()
+		if model != "gpt-4.1-mini" || instance != "openai" {
+			t.Errorf("advertised pair while the superseded pick validates = %s/%s, want the committed newer pick gpt-4.1-mini/openai", instance, model)
+		}
 		newerPicked <- struct{}{}
 		close(releaseTailFetch)
 	}()
