@@ -286,6 +286,23 @@ func preflightGoogleAutoToolLoop(client *Client, opts GenerateOptions, toolDefs 
 	if anchor != "" {
 		return &ConfigurationError{ProviderInstance: res.Instance, Message: "google interactions with previous_interaction_id cannot use automatic Generate/StreamGenerate tool loops; use Client.Complete/Client.Stream or set MaxToolRounds=0"}
 	}
+	var rawReplacement any
+	hasReplacement := false
+	if pinned, ok := res.Transport.Body["tools"]; ok {
+		rawReplacement = pinned
+		hasReplacement = true
+	} else if gOpts, ok := opts.ProviderOptions[registry.ProtocolGoogle].(map[string]any); ok {
+		if optTools, ok := gOpts["tools"]; ok {
+			rawReplacement = optTools
+			hasReplacement = true
+		}
+	}
+	if hasReplacement {
+		if hasFunc, hasSearch := GoogleEffectiveToolsKinds(rawReplacement); hasFunc && hasSearch {
+			return &ConfigurationError{ProviderInstance: res.Instance, Message: "google interactions combining web_search with active function tools cannot use automatic Generate/StreamGenerate tool loops; use Client.Complete/Client.Stream or set MaxToolRounds=0"}
+		}
+		return nil
+	}
 	toolsSupported := res.Caps.Tools == nil || *res.Caps.Tools
 	webSearch := opts.WebSearch && (res.Caps.WebSearch == nil || *res.Caps.WebSearch) && !registry.IsVertexGeminiOmni(res.Transport.Preset, res.WireID)
 	if webSearch && len(toolDefs) > 0 && toolsSupported && registry.BoolValue(res.Caps.CombinedSearchAndFunctions) {

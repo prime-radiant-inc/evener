@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -129,6 +130,82 @@ func TestGenerateGooglePreflightRejectsAnchoredAndCombinedBeforeTurn1(t *testing
 		}
 	})
 
+	t.Run("combined replacement in ProviderOptions or Transport.Body rejected before Turn 1", func(t *testing.T) {
+		combinedSlice := []map[string]any{
+			{"type": "google_search"},
+			{"type": "function", "name": "ping", "parameters": map[string]any{"type": "object"}},
+		}
+		combinedRaw := json.RawMessage(`[{"type":"google_search"},{"type":"function","name":"ping","parameters":{"type":"object"}}]`)
+		for _, tc := range []struct {
+			name     string
+			provOpts map[string]any
+			stream   bool
+		}{
+			{"Generate slice", map[string]any{"google": map[string]any{"tools": combinedSlice}}, false},
+			{"StreamGenerate json.RawMessage", map[string]any{"google": map[string]any{"tools": combinedRaw}}, true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				spy := &preflightSpyAdapter{name: "google"}
+				c := NewClient(WithRegistry(r))
+				c.Register(spy)
+				opts := GenerateOptions{
+					Client: c, Provider: "google", Model: "gemini-3.8-flash",
+					Prompt: new("search"), Tools: []Tool{activeTool}, ProviderOptions: tc.provOpts,
+				}
+				var err error
+				if tc.stream {
+					_, err = StreamGenerate(context.Background(), opts)
+				} else {
+					_, err = Generate(context.Background(), opts)
+				}
+				if _, ok := errors.AsType[*ConfigurationError](err); !ok || spy.called || activeToolExecRan {
+					t.Fatalf("expected ConfigurationError before Turn 1; err=%v called=%v exec=%v", err, spy.called, activeToolExecRan)
+				}
+			})
+		}
+
+		rBody, err := registry.Load(
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(k string) (string, bool) {
+				if k == "GEMINI_API_KEY" {
+					return "test-key", true
+				}
+				return "", false
+			}),
+			registry.WithInstances(map[string]registry.Provider{
+				"google": {Transport: registry.Transport{Body: map[string]any{"tools": combinedSlice}}},
+			}),
+		)
+		if err != nil {
+			t.Fatalf("registry.Load: %v", err)
+		}
+		spy := &preflightSpyAdapter{name: "google"}
+		cBody := NewClient(WithRegistry(rBody))
+		cBody.Register(spy)
+		_, err = Generate(context.Background(), GenerateOptions{
+			Client: cBody, Provider: "google", Model: "gemini-3.8-flash",
+			Prompt: new("search"), Tools: []Tool{activeTool},
+		})
+		if _, ok := errors.AsType[*ConfigurationError](err); !ok || spy.called {
+			t.Fatalf("expected Transport.Body combined tools preflight ConfigurationError; err=%v called=%v", err, spy.called)
+		}
+	})
+
+	t.Run("function-only replacement overrides WebSearch=true in Generate preflight", func(t *testing.T) {
+		spy := &preflightSpyAdapter{name: "google"}
+		c := NewClient(WithRegistry(r))
+		c.Register(spy)
+		funcOnly := []map[string]any{{"type": "function", "name": "ping", "parameters": map[string]any{"type": "object"}}}
+		if _, err := Generate(context.Background(), GenerateOptions{
+			Client: c, Provider: "google", Model: "gemini-3.8-flash",
+			Prompt: new("hi"), Tools: []Tool{activeTool}, WebSearch: true,
+			ProviderOptions: map[string]any{"google": map[string]any{"tools": funcOnly}},
+		}); err != nil || !spy.called {
+			t.Fatalf("function-only replacement must pass preflight and reach adapter: err=%v called=%v", err, spy.called)
+		}
+	})
+
 	t.Run("MaxToolRounds=0 and passive tools and unanchored function loop remain allowed", func(t *testing.T) {
 		zero := 0
 		for _, tc := range []struct {
@@ -222,6 +299,22 @@ func TestGenerateGooglePreflightSkipsCommandCredentialAndIgnoresNilAnchor(t *tes
 	})
 	if _, ok := errors.AsType[*ConfigurationError](err); !ok || spy.called {
 		t.Fatalf("expected preflight ConfigurationError before dispatch; err=%v called=%v", err, spy.called)
+	}
+	if runs := credRuns(); runs != 0 {
+		t.Fatalf("preflight rejection executed credential command %d times, want 0", runs)
+	}
+	_, err = Generate(context.Background(), GenerateOptions{
+		Client:   c,
+		Provider: "google-cmd",
+		Model:    "gemini-3.8-flash",
+		Prompt:   new("search"),
+		Tools:    []Tool{activeTool},
+		ProviderOptions: map[string]any{
+			"google": map[string]any{"tools": []map[string]any{{"type": "google_search"}, {"type": "function", "name": "ping", "parameters": map[string]any{"type": "object"}}}},
+		},
+	})
+	if _, ok := errors.AsType[*ConfigurationError](err); !ok || spy.called {
+		t.Fatalf("expected combined replacement preflight ConfigurationError; err=%v called=%v", err, spy.called)
 	}
 	if runs := credRuns(); runs != 0 {
 		t.Fatalf("preflight rejection executed credential command %d times, want 0", runs)

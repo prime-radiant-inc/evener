@@ -295,6 +295,175 @@ func TestBuildBodyErrorsPropagateThroughCompleteStreamCountTokens(t *testing.T) 
 	}
 }
 
+func TestEffectiveToolsReplacementCombinedSearchAndFunctionsPolicy(t *testing.T) {
+	t.Parallel()
+
+	combinedRes := func() registry.Resolved {
+		return protoRes(func(c *registry.Caps) {
+			c.CombinedSearchAndFunctions = new(true)
+			c.Fields["previous_interaction_id"] = true
+		})
+	}
+
+	combinedSlice := []map[string]any{
+		{"type": "google_search"},
+		{"type": "function", "name": "fn", "description": "d", "parameters": map[string]any{"type": "object"}},
+	}
+	combinedAny := []any{
+		map[string]any{"type": "google_search"},
+		map[string]any{"type": "function", "name": "fn", "description": "d", "parameters": map[string]any{"type": "object"}},
+	}
+	combinedRaw := json.RawMessage(`[{"type":"google_search"},{"type":"function","name":"fn","description":"d","parameters":{"type":"object"}}]`)
+	funcOnly := []map[string]any{
+		{"type": "function", "name": "fn", "description": "d", "parameters": map[string]any{"type": "object"}},
+	}
+
+	t.Run("combined replacement with default store=false fails before HTTP", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			modReq func(*llm.Request)
+			modRes func(*registry.Resolved)
+		}{
+			{
+				name: "ProviderOptions []map[string]any",
+				modReq: func(r *llm.Request) {
+					r.ProviderOptions = map[string]any{"google": map[string]any{"tools": combinedSlice}}
+				},
+			},
+			{
+				name: "ProviderOptions []any",
+				modReq: func(r *llm.Request) {
+					r.ProviderOptions = map[string]any{"google": map[string]any{"tools": combinedAny}}
+				},
+			},
+			{
+				name: "ProviderOptions json.RawMessage",
+				modReq: func(r *llm.Request) {
+					r.ProviderOptions = map[string]any{"google": map[string]any{"tools": combinedRaw}}
+				},
+			},
+			{
+				name:   "Transport.Body tools",
+				modRes: func(res *registry.Resolved) { res.Transport.Body = map[string]any{"tools": combinedSlice} },
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				var hits atomic.Int32
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					hits.Add(1)
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(interactionsJSON))
+				}))
+				defer srv.Close()
+
+				res := protoLive(srv)
+				res.Caps.CombinedSearchAndFunctions = new(true)
+				res.Caps.Fields["previous_interaction_id"] = true
+				if tc.modRes != nil {
+					tc.modRes(&res)
+				}
+				req := protoReq("")
+				if tc.modReq != nil {
+					tc.modReq(&req)
+				}
+				_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), req, res)
+				if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok || hits.Load() != 0 {
+					t.Fatalf("expected pre-HTTP ConfigurationError (hits=0), got err=%T %v hits=%d", err, err, hits.Load())
+				}
+			})
+		}
+	})
+
+	t.Run("stateful combined replacement defaults tool_choice=validated and rejects invalid caps or auto", func(t *testing.T) {
+		srv, got := protoServer(t, http.StatusOK, interactionsJSON)
+		res := protoLive(srv)
+		res.Caps.CombinedSearchAndFunctions = new(true)
+		res.Caps.Fields["previous_interaction_id"] = true
+
+		req := protoReq("")
+		req.Store = new(true)
+		req.ProviderOptions = map[string]any{"google": map[string]any{"tools": combinedRaw}}
+		if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), req, res); err != nil {
+			t.Fatalf("stateful combined replacement failed: %v", err)
+		}
+		if got.body["store"] != true {
+			t.Fatalf("wire store = %v, want true", got.body["store"])
+		}
+		if genCfg, _ := got.body["generation_config"].(map[string]any); genCfg["tool_choice"] != "validated" {
+			t.Fatalf("wire generation_config.tool_choice = %v, want validated", genCfg["tool_choice"])
+		}
+
+		// Explicit generation_config.tool_choice = "auto" rejected.
+		reqAuto := protoReq("")
+		reqAuto.Store = new(true)
+		reqAuto.ProviderOptions = map[string]any{"google": map[string]any{
+			"tools":             combinedSlice,
+			"generation_config": map[string]any{"tool_choice": "auto"},
+		}}
+		if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), reqAuto, res); err == nil {
+			t.Fatal("expected explicit generation_config.tool_choice=auto with combined replacement to fail")
+		}
+
+		// CombinedSearchAndFunctions=false rejected (e.g. gemini-2.5-flash).
+		noCombRes := combinedRes()
+		noCombRes.Caps.CombinedSearchAndFunctions = new(false)
+		if _, err := (&Protocol{}).BuildBody(req, noCombRes); err == nil {
+			t.Fatal("expected CombinedSearchAndFunctions=false to reject combined replacement")
+		}
+
+		// Tools=false rejected (e.g. gemini-3-pro-image).
+		noToolsRes := combinedRes()
+		noToolsRes.Caps.Tools = new(false)
+		if _, err := (&Protocol{}).BuildBody(req, noToolsRes); err == nil {
+			t.Fatal("expected Tools=false to reject function tool replacement")
+		}
+	})
+
+	t.Run("function-only replacement overrides req.WebSearch=true with store=false and tool_choice=auto", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			modReq func(*llm.Request)
+			modRes func(*registry.Resolved)
+		}{
+			{
+				name:   "ProviderOptions tools",
+				modReq: func(r *llm.Request) { r.ProviderOptions = map[string]any{"google": map[string]any{"tools": funcOnly}} },
+			},
+			{
+				name:   "Transport.Body tools",
+				modRes: func(res *registry.Resolved) { res.Transport.Body = map[string]any{"tools": funcOnly} },
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				srv, got := protoServer(t, http.StatusOK, interactionsJSON)
+				res := protoLive(srv)
+				res.Caps.WebSearch = new(true)
+				res.Caps.CombinedSearchAndFunctions = new(true)
+				res.Caps.Fields["previous_interaction_id"] = true
+				if tc.modRes != nil {
+					tc.modRes(&res)
+				}
+				req := protoReq("")
+				req.WebSearch = true
+				req.Tools = []llm.ToolDefinition{{Name: "orig", Parameters: map[string]any{"type": "object"}}}
+				req.ToolChoice = &llm.ToolChoice{Mode: "auto"}
+				if tc.modReq != nil {
+					tc.modReq(&req)
+				}
+				if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), req, res); err != nil {
+					t.Fatalf("function-only replacement failed: %v", err)
+				}
+				if got.body["store"] != false {
+					t.Fatalf("wire store = %v, want false", got.body["store"])
+				}
+				if genCfg, _ := got.body["generation_config"].(map[string]any); genCfg["tool_choice"] != "auto" {
+					t.Fatalf("wire generation_config.tool_choice = %v, want auto", genCfg["tool_choice"])
+				}
+			})
+		}
+	})
+}
+
 func TestListModelsEndpointWithExistingQuery(t *testing.T) {
 	t.Parallel()
 	srv, got := protoServer(t, 200, `{"models":[]}`)

@@ -226,34 +226,69 @@ func buildBodyWithPolicy(req llm.Request, res registry.Resolved, stream, fallbac
 		body["labels"] = labels
 	}
 
-	// Tools and google_search.
+	active := map[cloneContainerKey]bool{}
+	if options != nil {
+		if key, ok := cloneContainerIdentity(options); ok {
+			active[key] = true
+		}
+	}
+
+	// Tools and google_search: resolve effective tools after ProviderOptions and Transport.Body replacements.
 	toolsSupported := caps.Tools == nil || *caps.Tools
-	if len(req.Tools) > 0 && !toolsSupported {
-		return nil, policy, &llm.ConfigurationError{Message: fmt.Sprintf("google model %q does not support function tools", res.WireID)}
+	pinnedTools, hasPinnedTools := res.Transport.Body["tools"]
+	rawOptTools, hasOptTools := options["tools"]
+	var clonedOptTools any
+	if hasOptTools {
+		cloned, err := cloneJSONValueWithPath(rawOptTools, active, res.Instance)
+		if err != nil {
+			return nil, policy, err
+		}
+		clonedOptTools = cloned
+		body["tools"] = clonedOptTools
 	}
 	var toolEntries []map[string]any
-	if len(req.Tools) > 0 {
-		for _, t := range req.Tools {
-			if openaichat.CyclicSchema(t.Parameters) {
-				return nil, policy, &llm.ConfigurationError{Message: fmt.Sprintf("tool %q schema contains a cycle", t.Name), Cause: openaichat.ErrCyclicSchema}
+	if !hasPinnedTools && !hasOptTools {
+		if len(req.Tools) > 0 {
+			for _, t := range req.Tools {
+				if openaichat.CyclicSchema(t.Parameters) {
+					return nil, policy, &llm.ConfigurationError{Message: fmt.Sprintf("tool %q schema contains a cycle", t.Name), Cause: openaichat.ErrCyclicSchema}
+				}
+			}
+			toolEntries = append(toolEntries, toInteractionFunctionDecls(req.Tools)...)
+		}
+		webSearch := req.WebSearch && (caps.WebSearch == nil || *caps.WebSearch) && !registry.IsVertexGeminiOmni(res.Transport.Preset, res.WireID)
+		if webSearch {
+			if len(req.Tools) == 0 {
+				toolEntries = append(toolEntries, map[string]any{"type": "google_search"})
+			} else if toolsSupported && registry.BoolValue(caps.CombinedSearchAndFunctions) {
+				toolEntries = append(toolEntries, map[string]any{"type": "google_search"})
 			}
 		}
-		toolEntries = append(toolEntries, toInteractionFunctionDecls(req.Tools)...)
-	}
-	webSearch := req.WebSearch && (caps.WebSearch == nil || *caps.WebSearch) && !registry.IsVertexGeminiOmni(res.Transport.Preset, res.WireID)
-	if webSearch {
-		if len(req.Tools) == 0 {
-			toolEntries = append(toolEntries, map[string]any{"type": "google_search"})
-		} else if toolsSupported && registry.BoolValue(caps.CombinedSearchAndFunctions) {
-			if !policy.effectiveStore || !storeSendable || !caps.Fields["previous_interaction_id"] || !requestutil.WireFieldEnabled(caps, "generation_config.tool_choice", res.Protocol) {
-				return nil, policy, &llm.ConfigurationError{Message: "google combined google_search and function tools require store=true, previous_interaction_id, and generation_config.tool_choice enabled"}
-			}
-			toolEntries = append(toolEntries, map[string]any{"type": "google_search"})
-			policy.combinedTools = true
+		if len(toolEntries) > 0 {
+			body["tools"] = toolEntries
 		}
 	}
-	if len(toolEntries) > 0 {
-		body["tools"] = toolEntries
+	var effectiveTools any
+	switch {
+	case hasPinnedTools:
+		effectiveTools = pinnedTools
+	case hasOptTools:
+		effectiveTools = clonedOptTools
+	case len(toolEntries) > 0:
+		effectiveTools = toolEntries
+	}
+	hasFunction, hasGoogleSearch := llm.GoogleEffectiveToolsKinds(effectiveTools)
+	if hasFunction && !toolsSupported {
+		return nil, policy, &llm.ConfigurationError{Message: fmt.Sprintf("google model %q does not support function tools", res.WireID)}
+	}
+	policy.combinedTools = hasFunction && hasGoogleSearch
+	if policy.combinedTools {
+		if !registry.BoolValue(caps.CombinedSearchAndFunctions) {
+			return nil, policy, &llm.ConfigurationError{Message: fmt.Sprintf("google model %q does not support combining google_search and function tools", res.WireID)}
+		}
+		if !policy.effectiveStore || !storeSendable || !caps.Fields["previous_interaction_id"] || !requestutil.WireFieldEnabled(caps, "generation_config.tool_choice", res.Protocol) {
+			return nil, policy, &llm.ConfigurationError{Message: "google combined google_search and function tools require store=true, previous_interaction_id, and generation_config.tool_choice enabled"}
+		}
 	}
 
 	// generation_config.
@@ -332,17 +367,10 @@ func buildBodyWithPolicy(req llm.Request, res registry.Resolved, stream, fallbac
 		}
 	}
 
-	active := map[cloneContainerKey]bool{}
-	if options != nil {
-		if key, ok := cloneContainerIdentity(options); ok {
-			active[key] = true
-		}
-	}
-
 	// Merge ProviderOptions["google"] with deep-cloned copies.
 	for k, v := range options {
 		switch k {
-		case "generation_config", "labels", "agent", "stream", "store", "previous_interaction_id", "continuation_token", "cached_content", "background", "service_tier":
+		case "generation_config", "labels", "tools", "agent", "stream", "store", "previous_interaction_id", "continuation_token", "cached_content", "background", "service_tier":
 			continue
 		default:
 			cloned, err := cloneJSONValueWithPath(v, active, res.Instance)
@@ -366,6 +394,17 @@ func buildBodyWithPolicy(req llm.Request, res registry.Resolved, stream, fallbac
 				return nil, policy, err
 			}
 			genCfg[k] = cloned
+		}
+	}
+	if policy.combinedTools {
+		_, hasPinnedToolChoice := res.Transport.Body["generation_config.tool_choice"]
+		_, hasPinnedGenCfg := res.Transport.Body["generation_config"]
+		if !hasPinnedToolChoice && !hasPinnedGenCfg {
+			switch effectiveToolChoiceMode(genCfg["tool_choice"]) {
+			case "validated", "any", "none":
+			default:
+				return nil, policy, &llm.ConfigurationError{ProviderInstance: res.Instance, Message: fmt.Sprintf("combined google_search and function tools require generation_config.tool_choice mode in {validated, any, none}, got %q", effectiveToolChoiceMode(genCfg["tool_choice"]))}
+			}
 		}
 	}
 	if len(genCfg) > 0 {
@@ -475,6 +514,7 @@ func reconcileOutputField(body map[string]any, admitted, outputCap *int, caps re
 }
 
 type cloneContainerKey struct {
+	typ    reflect.Type
 	addr   uintptr
 	length int
 }
@@ -483,21 +523,79 @@ func cloneContainerIdentity(v any) (cloneContainerKey, bool) {
 	if v == nil {
 		return cloneContainerKey{}, false
 	}
-	rv := reflect.ValueOf(v)
+	return reflectContainerIdentity(reflect.ValueOf(v))
+}
+
+func reflectContainerIdentity(rv reflect.Value) (cloneContainerKey, bool) {
+	if !rv.IsValid() {
+		return cloneContainerKey{}, false
+	}
 	switch rv.Kind() {
-	case reflect.Map:
+	case reflect.Pointer, reflect.Map:
 		if rv.IsNil() {
 			return cloneContainerKey{}, false
 		}
-		return cloneContainerKey{addr: rv.Pointer(), length: -1}, true
+		return cloneContainerKey{typ: rv.Type(), addr: rv.Pointer(), length: -1}, true
 	case reflect.Slice:
-		if rv.Len() == 0 {
+		if rv.Len() == 0 || rv.Type().Elem().Kind() == reflect.Uint8 {
 			return cloneContainerKey{}, false
 		}
-		return cloneContainerKey{addr: rv.Pointer(), length: rv.Len()}, true
+		return cloneContainerKey{typ: rv.Type(), addr: rv.Pointer(), length: rv.Len()}, true
 	default:
 		return cloneContainerKey{}, false
 	}
+}
+
+func checkReflectCycle(rv reflect.Value, active map[cloneContainerKey]bool, instance string) error {
+	if !rv.IsValid() {
+		return nil
+	}
+	if rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return nil
+		}
+		return checkReflectCycle(rv.Elem(), active, instance)
+	}
+	key, tracked := reflectContainerIdentity(rv)
+	if tracked {
+		if active[key] {
+			return cyclicOptionsError(instance)
+		}
+		active[key] = true
+		defer delete(active, key)
+	}
+	switch rv.Kind() {
+	case reflect.Pointer:
+		return checkReflectCycle(rv.Elem(), active, instance)
+	case reflect.Map:
+		for iter := rv.MapRange(); iter.Next(); {
+			if err := checkReflectCycle(iter.Value(), active, instance); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice:
+		if rv.Type().Elem().Kind() == reflect.Uint8 {
+			return nil
+		}
+		fallthrough
+	case reflect.Array:
+		for i := 0; i < rv.Len(); i++ {
+			if err := checkReflectCycle(rv.Index(i), active, instance); err != nil {
+				return err
+			}
+		}
+	case reflect.Struct:
+		rt := rv.Type()
+		for i := 0; i < rv.NumField(); i++ {
+			if !rt.Field(i).IsExported() {
+				continue
+			}
+			if err := checkReflectCycle(rv.Field(i), active, instance); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func cyclicOptionsError(instance string) error {
@@ -509,16 +607,35 @@ func cyclicOptionsError(instance string) error {
 }
 
 func cloneJSONValueWithPath(v any, active map[cloneContainerKey]bool, instance string) (any, error) {
-	key, tracked := cloneContainerIdentity(v)
-	if tracked {
-		if active[key] {
-			return nil, cyclicOptionsError(instance)
-		}
-		active[key] = true
-		defer delete(active, key)
-	}
 	switch x := v.(type) {
+	case nil, bool, string, int, int64, float64, json.Number:
+		return v, nil
+	case json.RawMessage:
+		if x == nil {
+			return json.RawMessage(nil), nil
+		}
+		cp := make(json.RawMessage, len(x))
+		copy(cp, x)
+		return cp, nil
+	case []byte:
+		if x == nil {
+			return []byte(nil), nil
+		}
+		cp := make([]byte, len(x))
+		copy(cp, x)
+		return cp, nil
 	case map[string]any:
+		if x == nil {
+			return map[string]any(nil), nil
+		}
+		key, tracked := cloneContainerIdentity(v)
+		if tracked {
+			if active[key] {
+				return nil, cyclicOptionsError(instance)
+			}
+			active[key] = true
+			defer delete(active, key)
+		}
 		out := make(map[string]any, len(x))
 		for k, vv := range x {
 			cloned, err := cloneJSONValueWithPath(vv, active, instance)
@@ -529,12 +646,26 @@ func cloneJSONValueWithPath(v any, active map[cloneContainerKey]bool, instance s
 		}
 		return out, nil
 	case map[string]string:
+		if x == nil {
+			return map[string]any(nil), nil
+		}
 		out := make(map[string]any, len(x))
 		for k, vv := range x {
 			out[k] = vv
 		}
 		return out, nil
 	case []any:
+		if x == nil {
+			return []any(nil), nil
+		}
+		key, tracked := cloneContainerIdentity(v)
+		if tracked {
+			if active[key] {
+				return nil, cyclicOptionsError(instance)
+			}
+			active[key] = true
+			defer delete(active, key)
+		}
 		out := make([]any, len(x))
 		for i := range x {
 			cloned, err := cloneJSONValueWithPath(x[i], active, instance)
@@ -544,64 +675,29 @@ func cloneJSONValueWithPath(v any, active map[cloneContainerKey]bool, instance s
 			out[i] = cloned
 		}
 		return out, nil
-	case json.RawMessage:
-		if x == nil {
-			return json.RawMessage(nil), nil
-		}
-		cp := make(json.RawMessage, len(x))
-		copy(cp, x)
-		return cp, nil
 	default:
-		if v == nil {
-			return nil, nil
+		if err := checkReflectCycle(reflect.ValueOf(v), active, instance); err != nil {
+			return nil, err
 		}
-		rv := reflect.ValueOf(v)
-		switch rv.Kind() {
-		case reflect.Map:
-			if rv.IsNil() {
-				return map[string]any(nil), nil
+		b, err := json.Marshal(v)
+		if err != nil {
+			return nil, &llm.ConfigurationError{
+				ProviderInstance: cmp.Or(strings.TrimSpace(instance), "google"),
+				Message:          fmt.Sprintf("provider_options.google contains non-JSON value: %v", err),
+				Cause:            err,
 			}
-			if rv.Type().Key().Kind() == reflect.String {
-				out := make(map[string]any, rv.Len())
-				for iter := rv.MapRange(); iter.Next(); {
-					cloned, err := cloneJSONValueWithPath(iter.Value().Interface(), active, instance)
-					if err != nil {
-						return nil, err
-					}
-					out[iter.Key().String()] = cloned
-				}
-				return out, nil
-			}
-			out := reflect.MakeMapWithSize(rv.Type(), rv.Len())
-			for iter := rv.MapRange(); iter.Next(); {
-				cloned, err := cloneJSONValueWithPath(iter.Value().Interface(), active, instance)
-				if err != nil {
-					return nil, err
-				}
-				out.SetMapIndex(iter.Key(), reflect.ValueOf(cloned))
-			}
-			return out.Interface(), nil
-		case reflect.Slice:
-			if rv.Type().Elem().Kind() == reflect.Uint8 {
-				if rv.IsNil() {
-					return v, nil
-				}
-				cp := make([]byte, rv.Len())
-				reflect.Copy(reflect.ValueOf(cp), rv)
-				return cp, nil
-			}
-			out := make([]any, rv.Len())
-			for i := 0; i < rv.Len(); i++ {
-				cloned, err := cloneJSONValueWithPath(rv.Index(i).Interface(), active, instance)
-				if err != nil {
-					return nil, err
-				}
-				out[i] = cloned
-			}
-			return out, nil
-		default:
-			return v, nil
 		}
+		dec := json.NewDecoder(bytes.NewReader(b))
+		dec.UseNumber()
+		var decoded any
+		if err := dec.Decode(&decoded); err != nil {
+			return nil, &llm.ConfigurationError{
+				ProviderInstance: cmp.Or(strings.TrimSpace(instance), "google"),
+				Message:          fmt.Sprintf("provider_options.google failed to decode JSON value: %v", err),
+				Cause:            err,
+			}
+		}
+		return decoded, nil
 	}
 }
 

@@ -96,6 +96,40 @@ func TestBuildBodyProviderOptionsCycleAndSharedSubMap(t *testing.T) {
 			t.Fatalf("clones shared mutable state: b=%v sub=%v", bMap, subMap)
 		}
 	})
+
+	t.Run("self-referential pointer cycle returns ConfigurationError while diamond pointer succeeds", func(t *testing.T) {
+		type selfPtrNode struct {
+			Name string
+			Next *selfPtrNode
+		}
+		cyclicNode := &selfPtrNode{Name: "loop"}
+		cyclicNode.Next = cyclicNode
+
+		reqCyclic := protoReq("")
+		reqCyclic.ProviderOptions = map[string]any{
+			"google": map[string]any{"node": cyclicNode},
+		}
+		_, err := (&Protocol{}).BuildBody(reqCyclic, protoRes(nil))
+		if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok {
+			t.Fatalf("expected *llm.ConfigurationError for cyclic pointer, got %T %v", err, err)
+		}
+
+		sharedLeaf := &selfPtrNode{Name: "leaf"}
+		reqDiamond := protoReq("")
+		reqDiamond.ProviderOptions = map[string]any{
+			"google": map[string]any{
+				"left":  sharedLeaf,
+				"right": sharedLeaf,
+			},
+		}
+		body, err := (&Protocol{}).BuildBody(reqDiamond, protoRes(nil))
+		if err != nil {
+			t.Fatalf("diamond pointer unexpectedly failed: %v", err)
+		}
+		if lm, ok := body["left"].(map[string]any); !ok || lm["Name"] != "leaf" {
+			t.Fatalf("left = %#v, want decoded struct map", body["left"])
+		}
+	})
 }
 
 func TestBuildBodyProviderOptionsTypedSliceAndMapDeepCloned(t *testing.T) {
@@ -161,10 +195,13 @@ func TestBuildBodyProviderOptionsTypedSliceAndMapDeepCloned(t *testing.T) {
 	}
 
 	rawReq := protoReq("")
+	customIntMap := map[int][]string{1: {"alpha", "beta"}, 2: nil}
 	rawReq.ProviderOptions = map[string]any{
 		"google": map[string]any{
 			"tools":           rawTools,
 			"safety_settings": rawSafety,
+			"custom_int_map":  customIntMap,
+			"nested_raw":      map[string]any{"raw": rawSafety},
 		},
 	}
 	rawBody1, err := (&Protocol{}).BuildBody(rawReq, res)
@@ -181,6 +218,16 @@ func TestBuildBodyProviderOptionsTypedSliceAndMapDeepCloned(t *testing.T) {
 	if rawTools[0] != '[' || rawSafety[0] != '[' {
 		t.Fatalf("caller json.RawMessage mutated: tools=%q safety=%q", rawTools, rawSafety)
 	}
+	nestedRaw, ok := rawBody1["nested_raw"].(map[string]any)
+	if !ok {
+		t.Fatalf("nested_raw = %T, want map[string]any", rawBody1["nested_raw"])
+	}
+	if nr, ok := nestedRaw["raw"].(json.RawMessage); !ok {
+		t.Fatalf("nested_raw[raw] = %T, want json.RawMessage", nestedRaw["raw"])
+	} else {
+		nr[0] = 'Y'
+	}
+	customIntMap[1][0] = "caller-mutated"
 
 	srv, got := protoServer(t, http.StatusOK, interactionsJSON)
 	liveRes := protoLive(srv)
@@ -193,6 +240,21 @@ func TestBuildBodyProviderOptionsTypedSliceAndMapDeepCloned(t *testing.T) {
 	}
 	if gotSafety, ok := got.body["safety_settings"].([]any); !ok || len(gotSafety) != 1 {
 		t.Fatalf("wire safety_settings = %T %#v, want 1-element JSON array", got.body["safety_settings"], got.body["safety_settings"])
+	}
+	wantIntMap := map[string]any{"1": []any{"caller-mutated", "beta"}, "2": nil}
+	if !reflect.DeepEqual(got.body["custom_int_map"], wantIntMap) {
+		t.Fatalf("wire custom_int_map = %#v, want %#v", got.body["custom_int_map"], wantIntMap)
+	}
+	// Mutating source slice after BuildBody must not alter rawBody1.
+	if rawIntMap, ok := rawBody1["custom_int_map"].(map[string]any); !ok {
+		t.Fatalf("rawBody1 custom_int_map = %T, want map[string]any", rawBody1["custom_int_map"])
+	} else if !reflect.DeepEqual(rawIntMap["1"], []any{"alpha", "beta"}) || rawIntMap["2"] != nil {
+		t.Fatalf("rawBody1 custom_int_map mutated or malformed: %#v", rawIntMap)
+	}
+	if nrWire, ok := got.body["nested_raw"].(map[string]any); !ok {
+		t.Fatalf("wire nested_raw = %T, want map[string]any", got.body["nested_raw"])
+	} else if _, ok := nrWire["raw"].([]any); !ok {
+		t.Fatalf("wire nested_raw.raw = %T, want JSON array", nrWire["raw"])
 	}
 }
 
