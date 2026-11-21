@@ -205,7 +205,7 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 		// keeps the reservation, so the sticky retry re-presents it and the
 		// reopen is left to that retry's own failure.
 		if errors.Is(commitErr, errDelegateTargetBusy) {
-			s.reopenFailedDelegateAttention(sub, ids[0])
+			s.reopenFailedDelegateAttention(sub, ids[0], false)
 		}
 		s.delegateController.retryDelegateAttentionLater()
 		return true
@@ -237,7 +237,12 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 		s.emit(warningDataFromError("launch delegate attention", errors.Join(launchErr, finishErr)))
 		// The committed start closed and the launch refused, so this
 		// generation will never present the report it consumed.
-		s.reopenFailedDelegateAttention(sub, ids[0])
+		// The committed start already replaced the controller's wake set with
+		// the accept's post-consume pending list, dropping this delegate from
+		// c.attention when the report was its only pending item. Reopening the
+		// row must therefore re-arm it, or no in-process drive ever selects the
+		// delegate again.
+		s.reopenFailedDelegateAttention(sub, ids[0], true)
 		s.delegateController.retryDelegateAttentionLater()
 	}
 	return true
@@ -248,7 +253,13 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 // deliberately stopped child are left to their teardown: those paths already
 // discard pending attention, and a report re-delivered into a tearing-down
 // tree would only race the discard.
-func (s *Session) reopenFailedDelegateAttention(sub *subagent, attentionID string) {
+//
+// armWake re-arms the reopened row's wake in the controller. The launch-refusal
+// arm needs it: its committed start replaced the wake set with the accept's
+// post-consume pending list. The busy-commit arm does not: its failed commit
+// never replaced the wake, so the delegate is still selected and the driven
+// presentation reads the reopened transcript row.
+func (s *Session) reopenFailedDelegateAttention(sub *subagent, attentionID string, armWake bool) {
 	if s == nil || sub == nil || sub.sess == nil || attentionID == "" {
 		return
 	}
@@ -266,8 +277,13 @@ func (s *Session) reopenFailedDelegateAttention(sub *subagent, attentionID strin
 	}
 	// A drive retry reopens a row whose presentation failed with no user stop
 	// behind it, so nothing quiets the reopened row: it presents at once.
-	if _, err := sub.sess.reopenConsumedDelegateAttention(attentionID, 0); err != nil {
+	reopenID, err := sub.sess.reopenConsumedDelegateAttention(attentionID, 0)
+	if err != nil {
 		s.emit(warningDataFromError("reopen unpresented delegate attention", err))
+		return
+	}
+	if armWake && reopenID != "" {
+		s.delegateController.rearmReopenedDelegateAttention(sub.sess.owningDelegateID, reopenID)
 	}
 }
 
@@ -466,6 +482,15 @@ func (s *Session) drivePendingDelegateAttention() bool {
 	owner, sub, err := s.restoreColdDelegateAttentionRuntime(delegateID)
 	if err != nil {
 		s.warnDelegateAttentionFailed(delegateAttentionRestoreLabel, delegateID, err)
+		if errors.Is(err, errDelegateLaneHeld) {
+			// The refusal happened before any launch ran, so no launch-side stamp
+			// marks this delegate: a cold runtime in particular has no child to
+			// stamp. Keep the owed row for the paced retry but out of the drain's
+			// quiescence scans, which would otherwise wait on a lane another
+			// session holds forever. A later restore that revalidates the lane
+			// clears the quiet (reviveValidateIsolationLane).
+			s.delegateController.quietLaneHeldAttention(delegateID)
+		}
 		s.countDelegateAttentionRestoreFailure(delegateID, err)
 		s.scheduleDelegateAttentionRetry()
 		return true
@@ -486,10 +511,13 @@ func (s *Session) drivePendingDelegateAttention() bool {
 
 // isTransientStartFailure reports whether a delegate start or restore failed
 // for a reason that clears on its own: the target was busy (a race with a
-// reservation, a stop or a reclamation), or retirement had closed admission.
+// reservation, a stop or a reclamation), retirement had closed admission, or
+// another session holds the delegate's isolation lane and may give it back.
 // Those are retried as they stand. Any other failure is permanent for the
 // purposes of giving up: the attention drive counts it toward handing the
 // attention to the root.
 func isTransientStartFailure(err error) bool {
-	return errors.Is(err, errDelegateTargetBusy) || errors.Is(err, ErrRetirementUnavailable)
+	return errors.Is(err, errDelegateTargetBusy) ||
+		errors.Is(err, ErrRetirementUnavailable) ||
+		errors.Is(err, errDelegateLaneHeld)
 }

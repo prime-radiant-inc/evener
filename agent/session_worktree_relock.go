@@ -208,6 +208,13 @@ func (s *Session) reLockOwnLane(local *execenv.LocalExecutionEnvironment, lane i
 	}
 }
 
+// errDelegateLaneHeld marks a launch refused because another session holds the
+// delegate's isolation lane. The holder can give the lane back at any time, so
+// the attention drive retries this refusal instead of counting it toward the
+// permanent restore-failure give-up, which would hand the delegate's report to
+// the root and resolve the delegate's copy (#5672).
+var errDelegateLaneHeld = errors.New("lane held by another session")
+
 // reviveRevalidateDelegateLane re-establishes this session's evener:dlg:
 // marker on an isolated delegate's lane before a revive hands the lane back to
 // a child runtime — retained runtimes included. Close-time disposal leaves a
@@ -249,7 +256,7 @@ func (s *Session) reviveRevalidateDelegateLane(local *execenv.LocalExecutionEnvi
 	case delegateLaneNoRepo:
 		return fmt.Errorf("delegate lane %s at %s is no longer part of a git repository", lane.delegateID, lane.path)
 	default: // delegateLaneRefuse
-		return fmt.Errorf("delegate lane %s at %s is held by another session", lane.delegateID, lane.path)
+		return fmt.Errorf("%w: delegate lane %s at %s", errDelegateLaneHeld, lane.delegateID, lane.path)
 	}
 }
 

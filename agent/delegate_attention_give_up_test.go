@@ -21,7 +21,13 @@ import (
 // caller today.
 func TestIsTransientStartFailure(t *testing.T) {
 	t.Parallel()
-	for _, err := range []error{errDelegateTargetBusy, ErrRetirementUnavailable, fmt.Errorf("restore: %w", errDelegateTargetBusy)} {
+	for _, err := range []error{
+		errDelegateTargetBusy,
+		ErrRetirementUnavailable,
+		errDelegateLaneHeld,
+		fmt.Errorf("restore: %w", errDelegateTargetBusy),
+		fmt.Errorf("restore: %w", errDelegateLaneHeld),
+	} {
 		if !isTransientStartFailure(err) {
 			t.Errorf("isTransientStartFailure(%v) = false, want true", err)
 		}
