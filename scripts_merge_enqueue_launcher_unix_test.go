@@ -507,6 +507,15 @@ const validatorFuncs = "/^acl_getfacl_grants_foreign_write()/,/^}/p;" +
 // that ask the whole question rather than one predicate.
 const validatorFuncsWithWalk = validatorFuncs + ";/^scratch_path_is_trusted()/,/^}/p"
 
+// mintCleanupFuncs loads the state globals, finish and the mint, for the cases
+// that drive the launcher's own cleanup rather than a copy of it.
+const mintCleanupFuncs = "/^gh_group_fd=/p;" +
+	"/^gh_group_read_fd=/p;" +
+	"/^gh_private_dir=/p;" +
+	"/^gh_private_file=/p;" +
+	"/^finish()/,/^}/p;" +
+	"/^mint_gh_group_channel()/,/^}/p"
+
 // runLauncherFunc sources the launcher's own functions into bash and runs expr.
 // Everything a fixture asks the launcher's rule goes through here, so there is
 // exactly one place where the set of loaded functions is decided.
@@ -3254,11 +3263,6 @@ func TestMergeEnqueueLauncherRemovesAMintedDirOnCancellationBeforeHandoff(t *tes
 	dir := resolvePath(t, fixtureScratchBase(t))
 	root := resolvePathAfterCreate(t, filepath.Join(dir, "scratch-root"))
 	record := filepath.Join(dir, "minted-dir")
-	const mintCleanupFuncs = "/^gh_group_fd=/p;" +
-		"/^gh_group_read_fd=/p;" +
-		"/^gh_private_dir=/p;" +
-		"/^finish()/,/^}/p;" +
-		"/^mint_gh_group_channel()/,/^}/p"
 	script := `set -euo pipefail; ` +
 		`scratch_root="$2"; record="$3"; ` +
 		`scratch_rm() { :; }; ` +
@@ -3351,6 +3355,61 @@ printf 'helper-ran\n' >> "$EVENER_FIXTURE_LOG"
 	}
 	if string(body) != original {
 		t.Fatalf("the caller's inherited group file now holds %q, want %q: the helper published into a file the launcher did not create", body, original)
+	}
+}
+
+// TestMergeEnqueueLauncherKeepsAnEntryTheMintDidNotCreate pins the other side of
+// the cancellation cleanup: finish removes a channel file only when the mint's
+// own create made it. A mint that refuses its directory -- an untrusted root, or
+// an entry already at the channel name -- must leave that entry alone.
+//
+// The refusal is deterministic: mktemp is a stand-in returning a directory that
+// already holds gh-group with another writer's bytes, so the no-clobber create
+// fails (or the trust check refuses) and the directory cannot be removed. The
+// launcher's own mint and EXIT trap are run, not a copy.
+func TestMergeEnqueueLauncherKeepsAnEntryTheMintDidNotCreate(t *testing.T) {
+	t.Parallel()
+	const original = "another writer's group id\n"
+	for _, tc := range []struct {
+		name    string
+		trusted string
+		refusal string
+	}{
+		{name: "refused create", trusted: "return 0", refusal: "an entry already at the channel name"},
+		{name: "untrusted root", trusted: "return 1", refusal: "an untrusted root"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := resolvePath(t, fixtureScratchBase(t))
+			root := resolvePathAfterCreate(t, filepath.Join(dir, "scratch-root"))
+			planted := resolvePathAfterCreate(t, filepath.Join(dir, "planted-dir"))
+			handle := filepath.Join(planted, "gh-group")
+			if err := os.WriteFile(handle, []byte(original), 0o600); err != nil {
+				t.Fatalf("plant the entry: %v", err)
+			}
+			script := `set -euo pipefail; ` +
+				`scratch_root="$2"; planted="$3"; ` +
+				`scratch_rm() { :; }; ` +
+				`helper_started=false; ` +
+				`scratch_path_is_trusted() { ` + tc.trusted + `; }; ` +
+				`scratch_resolve() { printf '%s\n' "$1"; }; ` +
+				`mktemp() { printf '%s\n' "$planted"; }; ` +
+				`trap 'finish' EXIT; ` +
+				`mint_gh_group_channel`
+			if err := runLauncherFunc(t, mintCleanupFuncs, script, root, planted); err != nil {
+				t.Fatalf("the mint with %s did not return normally: %v", tc.refusal, err)
+			}
+			body, err := os.ReadFile(handle)
+			if err != nil {
+				t.Fatalf("the entry is gone after %s: finish unlinked a file this script never created (%v)", tc.refusal, err)
+			}
+			if string(body) != original {
+				t.Fatalf("the entry now holds %q, want %q: finish wrote through a file this script never created", body, original)
+			}
+			if _, err := os.Stat(planted); err != nil {
+				t.Fatalf("the directory holding the refused entry is gone after %s: %v", tc.refusal, err)
+			}
+		})
 	}
 }
 

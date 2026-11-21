@@ -762,6 +762,11 @@ published_gh_pgid=""
 # normally gone before the helper starts. A cancellation in between leaves it set
 # so finish removes the channel file and the directory this script created.
 gh_private_dir=""
+# The channel file this script created in gh_private_dir and has not yet removed,
+# or empty. A mint that refused its directory -- an untrusted root, or an entry
+# already at the channel name -- leaves the directory set but never this path, so
+# finish removes a file only when the create that made it succeeded.
+gh_private_file=""
 # The scratch directory the helper was built in, or empty on the prebuilt path.
 #
 # Declared and assigned here, never read from the environment. scratch_dir writes
@@ -1178,7 +1183,9 @@ finish() {
   # creation and removal, or the mint could not remove it, and it holds nothing
   # this script needs.
   if [ -n "$gh_private_dir" ]; then
-    rm -f "$gh_private_dir/gh-group" 2>/dev/null || true
+    # Only the channel this script created. A refused create leaves an entry
+    # that is not this script's to unlink.
+    rm -f "${gh_private_file:-}" 2>/dev/null || true
     rmdir "$gh_private_dir" 2>/dev/null || true
   fi
   # Under set -e a failing scratch_rm would abort this handler before the
@@ -1264,12 +1271,19 @@ mint_gh_group_channel() {
     # result can still carry a symlinked component above it.
     [ -n "$dir" ] && dir=$(scratch_resolve "$dir" 2>/dev/null) || dir=""
     if [ -n "$dir" ] && ! scratch_path_is_trusted "$dir"; then
-      if rmdir "$dir" 2>/dev/null; then gh_private_dir=""; fi
+      # The check refused this path, so this script claims nothing on it any
+      # more, not even the directory mktemp -d made: its ancestor may already
+      # belong to another writer.
+      rmdir "$dir" 2>/dev/null || true
+      gh_private_dir=""
       dir=""
     fi
     if [ -z "$dir" ]; then
       return 0
     fi
+    # Record the resolved spelling, so the file and directory finish removes
+    # name the same path the trust check approved.
+    gh_private_dir="$dir"
   fi
   channel="$dir/gh-group"
   # A fresh, empty, mode-0600 file. `set -C` (noclobber) refuses to truncate an
@@ -1279,6 +1293,8 @@ mint_gh_group_channel() {
     if [ -z "$scratch" ] && rmdir "$dir" 2>/dev/null; then gh_private_dir=""; fi
     return 0
   fi
+  # The create succeeded, so the file is this script's own until the unlink below.
+  gh_private_file="$channel"
   # The opens are contained: a file that cannot be opened leaves the run without
   # a channel rather than ending it. Under set -e a bare redirection failure here
   # would end the script through the EXIT trap with a launcher status.
@@ -1296,6 +1312,7 @@ mint_gh_group_channel() {
   if ! { exec 3>>"$channel"; } 2>/dev/null || ! { exec 4<"$channel"; } 2>/dev/null; then
     { exec 3>&- 4<&-; } 2>/dev/null || true
     rm -f "$channel" 2>/dev/null || true
+    gh_private_file=""
     if [ -z "$scratch" ] && rmdir "$dir" 2>/dev/null; then gh_private_dir=""; fi
     return 0
   fi
@@ -1303,6 +1320,7 @@ mint_gh_group_channel() {
   # the descriptors are the only handles. A directory that cannot be removed
   # here is left to the EXIT trap.
   rm -f "$channel" 2>/dev/null || true
+  gh_private_file=""
   if [ -z "$scratch" ] && rmdir "$dir" 2>/dev/null; then gh_private_dir=""; fi
   gh_group_fd=3
   gh_group_read_fd=4
