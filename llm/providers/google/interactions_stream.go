@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -798,6 +799,9 @@ func decodeInteractionStream(
 					raw:      map[string]any{"status": status, "interaction_id": acc.id},
 					cause:    parseErr,
 				}
+			}
+			if errors.Is(parseErr, context.DeadlineExceeded) || errors.Is(parseErr, llm.ErrResponseIdleTimeout) {
+				return llm.WrapContextError(provider, parseErr)
 			}
 			return llm.NewStreamError(provider, runner.IncompleteMsg, parseErr)
 		},

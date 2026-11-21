@@ -655,6 +655,8 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 		// implements.
 		TerminalError: func(parseErr error) error {
 			switch {
+			case errors.Is(parseErr, context.DeadlineExceeded):
+				return llm.WrapContextError(res.Instance, parseErr)
 			case errors.Is(parseErr, llm.ErrSSEReadTimeout), errors.Is(parseErr, llm.ErrResponseIdleTimeout):
 				// The stream went idle past the read timeout. Named separately
 				// from the read failures below because a stall is the one an
