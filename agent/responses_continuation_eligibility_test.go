@@ -34,9 +34,7 @@ func TestResponsesContinuationRejectsAPreFoldInFlightResponse(t *testing.T) {
 		Model:    "gpt-5.4",
 		Messages: []llm.Message{llm.System("system"), llm.User("in flight")},
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	planned, _, _ := sess.planResponsesContinuation(ctx, sess.currentProfile(), sess.priceRoundRoute(sess.currentProfile(), req), req, preFold, false, false)
+	planned, _, _ := sess.planResponsesContinuation(context.Background(), sess.currentProfile(), sess.priceRoundRoute(sess.currentProfile(), req), req, preFold, false, false)
 	if planned.Continuation == nil {
 		t.Fatalf("planned request carries no continuation metadata: %+v", planned)
 	}
