@@ -768,7 +768,8 @@ test("with enterToSend on, Steer's tooltip drops its chord and Send's names bare
 
 // --- steer / drain-as-steer routing -----------------------------------------
 
-test("clicking steer with an empty textarea and empty queue is a focus-only no-op", async () => {
+test("an empty collapsed composer omits Steer from the narrow session menu", async () => {
+  installNarrowComposer(399);
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
@@ -781,10 +782,10 @@ test("clicking steer with an empty textarea and empty queue is a focus-only no-o
     receipt: appliedReceipt(params.clientMutationId, "thread_a"),
   }));
 
-  await user.click(steerButton());
+  await user.click(screen.getByRole("button", { name: "Session actions" }));
 
   expect(fake.calls.filter((c) => c.method === "turn/steer" || c.method === "turn/drainAsSteer")).toHaveLength(0);
-  expect(document.activeElement).toBe(textarea());
+  expect(screen.queryByRole("menuitem", { name: "Steer" })).toBeNull();
 });
 
 test("a successful classic steer also clears the textarea and its draft (contracts §Drafts)", async () => {

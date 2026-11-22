@@ -133,7 +133,18 @@ export function assertComposerPlacement(measurement, { contentWidth, primary, in
   const expected = ["composer-attach", `composer-${primary}`, ...(inlineSteer ? ["composer-steer"] : [])].sort();
   assert.deepEqual(present, expected, "independent primary slot and inline Steer");
   assert.equal(work.verbCluster.controls, inlineSteer ? 2 : 1);
-  assert.ok(work.verbCluster.top < work.verbCluster.statusRowBottom - 1, "verb row must not wrap");
+  assert.ok(Number.isFinite(work.verbCluster.top), "primary control's top is measured");
+  if (work.verbCluster.statusRowBottom === null) {
+    // A compact folded phone has no status row. Its session menu is the other
+    // control that must share the primary action's single row.
+    assert.ok(Number.isFinite(measurement.trigger?.top), "compact session menu's top is measured");
+    assert.ok(
+      Math.abs(measurement.trigger.top - work.verbCluster.top) <= 1,
+      "compact menu and primary action must share one row",
+    );
+  } else {
+    assert.ok(work.verbCluster.top < work.verbCluster.statusRowBottom - 1, "verb row must not wrap");
+  }
   assert.ok(
     work.controlsFound && work.controlsContained && work.controlsDoNotOverlap && work.sharedPaneWithoutOverflow,
     "controls contained without overlap or overflow",
@@ -185,12 +196,14 @@ export async function measureComposerPlacement(endpoint, url, { viewportWidth, c
       );
     }
     contentWidth ??= await evaluate(send, "window.measureComposerContentWidth()");
-    const inlineSteer = steer && contentWidth > 399;
-    const menuSteer = steer && contentWidth <= 399;
     const results = [];
     for (const primary of ["stop", "submit", "stop"]) {
       if (primary === "submit") await typeComposerDraft(send);
       else if (results.length) await clearDraft(send);
+      // The first empty Stop is folded. After a focused clear, the card keeps
+      // its expanded geometry and inline Steer remains in place beside Stop.
+      const inlineSteer = steer && contentWidth > 399 && (primary === "submit" || results.length > 0);
+      const menuSteer = primary === "submit" && steer && contentWidth <= 399;
       assert.ok(
         await evaluate(send, `document.activeElement === document.querySelector('${editor}')`),
         "typing and clearing preserve editor focus through slot replacement",
@@ -473,9 +486,10 @@ export async function verifyComposerOutsidePressClick(endpoint, url, width) {
     await evaluate(send, "window.settled");
     await waitForFonts(send);
 
-    // Open the editor and settle on the expanded card. A trusted tap on the
-    // editor would itself move the footer, so focus it programmatically.
-    await evaluate(send, `document.querySelector('${editor}').focus()`);
+    // Type and clear through the real editor: content latches the expanded card
+    // while focused, so the empty editor can fold when the outside click lands.
+    await typeComposerDraft(send);
+    await clearDraft(send);
     await until(send, `!document.querySelector('[data-testid="composer-input-card"]').hasAttribute('data-folded')`);
     await waitForComposerSettled(send);
 
@@ -552,7 +566,8 @@ export async function verifyComposerOutsidePressClick(endpoint, url, width) {
     assert.equal(settled.editing, false, "the click ends editing");
 
     // A press-drag produces no click and must leave the card as it was.
-    await evaluate(send, `document.querySelector('${editor}').focus()`);
+    await typeComposerDraft(send);
+    await clearDraft(send);
     await until(send, `!document.querySelector('[data-testid="composer-input-card"]').hasAttribute('data-folded')`);
     await waitForComposerSettled(send);
     const dragStart = await evaluate(

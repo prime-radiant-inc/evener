@@ -1099,21 +1099,10 @@ test("an idle session renders neither steer nor stop - only Send at rest", async
   await mountComposer("ref_a", { status: { type: "idle" } });
   expect(screen.queryByTestId("composer-steer")).toBeNull();
   expect(screen.queryByTestId("composer-stop")).toBeNull();
-  // The resting card is folded: the paperclip returns with the full row.
-  expect(screen.queryByTestId("composer-attach")).toBeNull();
   expect(submitButton()).toBeTruthy();
 });
 
-test("a busy session renders both steer and stop, enabled", async () => {
-  await mountComposer("ref_a", {
-    status: { type: "active" },
-    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
-  });
-  expect(steerButton().disabled).toBe(false);
-  expect(stopButton().disabled).toBe(false);
-});
-
-test("a busy session on a harness that can't interrupt renders steer but not stop", async () => {
+test("a busy session on a harness that can't interrupt renders Steer with content but never Stop", async () => {
   resetStoplessComposerSightingsForTests();
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
   try {
@@ -1126,7 +1115,9 @@ test("a busy session on a harness that can't interrupt renders steer but not sto
         activeTurnId: "turn_1",
       },
     });
-    expect(steerButton()).toBeTruthy();
+    expect(screen.queryByTestId("composer-stop")).toBeNull();
+    act(() => replaceEditorText(textarea(), "draft"));
+    expect(steerButton().disabled).toBe(false);
     expect(screen.queryByTestId("composer-stop")).toBeNull();
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls).toStrictEqual([
@@ -1193,17 +1184,16 @@ test.each(ENDED_STATUSES)("a %s session's compact card keeps controls and sends 
   }));
   const editor = textarea();
 
-  // The folded row keeps the model, effort, menu and Send before the editor
-  // is engaged; the paperclip only returns with the expanded card.
+  // The folded row keeps Attach, the model, effort, menu and Send.
   expect(composerMode()).toBe("follow-up");
   expect(editor.style.minHeight).toBe("1lh");
-  expect(screen.queryByTestId("composer-attach")).toBeNull();
+  expect(screen.getByTestId("composer-attach")).toBeTruthy();
   expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
   expect(submitButton().disabled).toBe(true);
 
-  // Focus expands the editor. There is no turn for Steer or Stop.
+  // Focus does not expand the editor. There is no turn for Steer or Stop.
   await user.click(editor);
-  expect(editor.style.minHeight).toBe("3lh");
+  expect(editor.style.minHeight).toBe("1lh");
   expect(submitButton().textContent).not.toBe("");
   expect(screen.getByTestId("composer-attach")).toBeTruthy();
   expect(screen.queryByTestId("composer-steer")).toBeNull();
@@ -1246,7 +1236,7 @@ test("a saved local notLoaded session keeps controls and one discovery owner at 
 
   expect(composerMode()).toBe("follow-up");
   expect(textarea().style.minHeight).toBe("1lh");
-  expect(screen.queryByTestId("composer-attach")).toBeNull();
+  expect(screen.getByTestId("composer-attach")).toBeTruthy();
   const chrome = screen.getByTestId("session-chrome-inline");
   expect(submitButton().disabled).toBe(true);
   await waitFor(() => expect(activityRefs).toEqual([ref]));
@@ -1254,12 +1244,12 @@ test("a saved local notLoaded session keeps controls and one discovery owner at 
   await waitFor(() => expect(subtreeRefs).toEqual([ref]));
   expect(sessionActivitySnapshot(fake, ref, "session")?.summary).not.toBeNull();
 
-  // Focus changes the editor height without replacing the discovery owner.
+  // Focus leaves the card's size and discovery owner unchanged.
   await user.click(textarea());
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
   expect(screen.getByTestId("composer-attach")).toBeTruthy();
   expect(screen.getByTestId("session-chrome-inline")).toBe(chrome);
-  expect(textarea().style.minHeight).toBe("3lh");
+  expect(textarea().style.minHeight).toBe("1lh");
   expect(activityRefs).toEqual([ref]);
   expect(subtreeRefs).toEqual([ref]);
 });
@@ -1282,31 +1272,32 @@ test("an ended session that still holds text keeps its control row after blur", 
   expect(editor.style.minHeight).toBe("3lh");
 });
 
-// The writing surface opens from one line to three when a follow-up is focused.
-test("an ended session's field rests at one line and opens to three on focus", async () => {
+// The writing surface opens from one line to three for follow-up content.
+test("an ended session's field rests at one line and opens to three for content", async () => {
   await mountComposer("ref_a", { status: { type: "notLoaded" } });
   expect(textarea().style.minHeight).toBe("1lh");
 
   await act(async () => textarea().focus());
+  expect(textarea().style.minHeight).toBe("1lh");
+  act(() => replaceEditorText(textarea(), "draft"));
   expect(textarea().style.minHeight).toBe("3lh");
 
   await act(async () => {
     textarea().blur();
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   });
-  expect(textarea().style.minHeight).toBe("1lh");
+  expect(textarea().style.minHeight).toBe("3lh");
 });
 
-// An ended session's card is three lines tall while focused, so a mid-press
-// collapse moves the pressed control exactly as the live card's fold does.
-test("an ended session's field keeps its writing height until the outside click lands", async () => {
+// Content, not focus or an outside click, owns an ended card's writing height.
+test("an ended session's field keeps its content height through an outside click", async () => {
   await mountComposer("ref_a", { status: { type: "notLoaded" } });
   const editor = textarea();
   await act(async () => editor.focus());
+  act(() => replaceEditorText(editor, "draft"));
   expect(editor.style.minHeight).toBe("3lh");
 
-  // The press moves focus off the editor and its blur clears the follow-up
-  // focus on the next frame. The card must not shrink until the click lands.
+  // The press moves focus off the editor without discarding its content.
   await act(async () => {
     fireEvent.pointerDown(document.body);
     editor.blur();
@@ -1320,17 +1311,7 @@ test("an ended session's field keeps its writing height until the outside click 
   await act(async () => {
     fireEvent.click(document.body);
   });
-  await waitFor(() => expect(editor.style.minHeight).toBe("1lh"));
-});
-
-// A live session's field must NOT pick up the collapsed floor - it keeps the
-// editor's two-line default, so a running composer is a comfortable target.
-test("a live session's field folds to one line and returns to the widget's default floor on focus", async () => {
-  await mountComposer("ref_a", { status: { type: "idle" } });
-  const editor = textarea();
-  expect(editor.style.minHeight).toBe("1lh");
-  act(() => editor.focus());
-  await waitFor(() => expect(editor.style.minHeight).toBe("2lh"));
+  expect(editor.style.minHeight).toBe("3lh");
 });
 
 test("an ended session can still be typed into and submitted with the Mod+Enter chord", async () => {

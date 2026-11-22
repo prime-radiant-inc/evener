@@ -71,10 +71,10 @@
   display: none;
 }
 
-/* On the Duo cover, an empty, unfocused composer gives its extra inset back
- * to the transcript. Drafts, attachments and editing keep ordinary space. */
+/* On the Duo cover, an empty, folded composer gives its extra inset back to
+ * the transcript. Focus does not change that shape; content does. */
 @media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4) {
-  :global([data-composer]):not([data-composer-editing]) .card:has([role="textbox"][data-empty="true"]) {
+  :global([data-composer]) .card[data-folded="true"]:has([role="textbox"][data-empty="true"]) {
     gap: 0;
     padding-block: 0;
   }

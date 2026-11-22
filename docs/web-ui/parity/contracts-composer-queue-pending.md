@@ -72,9 +72,17 @@ except where a line says so itself.
   restore Send. Idle, finished and otherwise non-stoppable sessions retain
   Send with its existing eligibility and recovery behavior.
 - Session actions offers Stop whenever session controls permit it, with or
-  without a draft, at every width. Steer stays inline above a 399px composer
-  content box and in the menu at or below it. Its draft and queue behavior
-  does not change.
+  without a draft, at every width. An empty composer stays folded on manual
+  focus and session-opening autofocus; text, images, selected skills or selected
+  commands expand it. Clearing after content arrives keeps the card expanded while
+  focused, so Send-to-Stop cannot move under a press; leaving the empty editor folds it.
+  Attach remains in the folded row, while the folded empty row hides inline Steer.
+  Above a 399px composer content box, Steer is inline with content and keeps its
+  slot through a focused clear; at or below it, content-bearing Steer stays in
+  the menu. Its draft and queue behavior does not change.
+- At and below the 559px compact pane boundary, Send and Stop hide their words
+  and keep their glyphs and accessible names. Stop uses a stop-sign outline in
+  the existing dangerQuiet variant.
 - A Send-to-Stop swap shows a distinct Stop button immediately, disabled for
   500 ms to reject accidental double-taps. A Stop present when the composer
   opens needs no delay. The delay expires automatically and cannot outlive

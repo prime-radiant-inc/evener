@@ -218,15 +218,16 @@
   }
 }
 
-/* The Send button's word. It rides beside the paper-plane glyph while the
- * pane has room; at the compact boundary (the same 559px as the status
- * row's first container query) the word drops and the glyph carries the button - the button
- * keeps aria-label="Send", so the accessible name survives. Pane width, not
+/* The Send and Stop words ride beside their glyphs while the pane has room;
+ * at the compact boundary (the same 559px as the status row's first container
+ * query) the words drop and the glyphs carry the buttons - the buttons keep
+ * their accessible names, so the labels survive. Pane width, not
  * viewport width: a narrow docked pane on a desktop display needs the same
  * collapse the phone gets. The spawn pane's Start button plays the same
  * collapse (spawn.module.css's own .submitLabel). */
 @container (max-width: 559px) {
-  .submitLabel {
+  .submitLabel,
+  .stopLabel {
     display: none;
   }
 }
@@ -253,14 +254,22 @@
 .leading[data-folded="true"]:not([data-compact="true"]) {
   container-type: inline-size;
   contain-intrinsic-inline-size: 356px;
+  flex-wrap: nowrap;
 }
 
-/* The phone's compact resting row keeps only the menu in this slot; it must
- * hug that menu so the field keeps the line and Send stays at the far edge.
+/* The phone's compact resting row keeps Attach and the menu in this slot; it
+ * hugs both controls so the field keeps the line and Send stays at the far edge.
  * The explicit basis also overrides the folded reservation's contribution in
  * engines that size the row from it. */
 .leading[data-compact="true"] {
+  flex: 0 0 calc(var(--tap-min) * 2 + var(--space-1));
+  min-width: calc(var(--tap-min) * 2 + var(--space-1));
+  contain-intrinsic-inline-size: none;
+}
+
+/* The menu-only chrome otherwise takes its root's width:100%, wrapping below
+ * Attach and doubling the folded phone card's height. Its slot is one tap. */
+.menuSlot {
   flex: 0 0 var(--tap-min);
   min-width: var(--tap-min);
-  contain-intrinsic-inline-size: none;
 }
