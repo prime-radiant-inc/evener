@@ -1021,6 +1021,35 @@ func dispatchedResult(name, callID string, lim schema.ToolOutputLimit, v any, er
 	return truncateResult(name, callID, full, false, lim)
 }
 
+// legacyTruncationMarker is the wording the registry used before the current
+// markers; archived transcripts still carry it.
+const legacyTruncationMarker = "[WARNING: Tool output was truncated."
+
+// truncationMarkers are the substrings a truncated result's text carries.
+// truncateResult appends the footer to every truncated result, and the
+// per-strategy helpers add their own count notice; both are listed because
+// archived sessions predate the footer. A consumer that recognizes truncated
+// tool output by text (doctor's transcript health) calls IsTruncatedOutput, so
+// new wording belongs in this one list.
+var truncationMarkers = []string{
+	"[Tool output was truncated.]",
+	"[Output truncated: ",
+	"total lines; showing first ",
+	"lines omitted ...]",
+	legacyTruncationMarker,
+}
+
+// IsTruncatedOutput reports whether recorded tool-result text carries a
+// truncation marker this registry emits, or the legacy wording archived
+// sessions carry. It exists so a reader of recorded results (doctor's
+// transcript health) counts truncations by the registry's own definition
+// instead of a second copy of these strings.
+func IsTruncatedOutput(text string) bool {
+	return slices.ContainsFunc(truncationMarkers, func(marker string) bool {
+		return strings.Contains(text, marker)
+	})
+}
+
 func truncateResult(toolName, callID, full string, isErr bool, lim schema.ToolOutputLimit) ExecResult {
 	out := full
 	var reason TruncationReason

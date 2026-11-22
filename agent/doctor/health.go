@@ -12,16 +12,11 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
-
-// truncationBanner is the substring the tool registry stamps onto a result
-// whose output it truncated (agent/internal/tool/registry.go's
-// truncateChars, ~:596): the tail-only and head/tail marker sentences differ
-// after this point, so matching the shared prefix catches both.
-const truncationBanner = "[WARNING: Tool output was truncated."
 
 // errorClassMarkers is the doctor's own coarse error-class heuristic over a
 // failed tool result's text — a marker table, not a schema, so a tool's
@@ -106,8 +101,8 @@ type HealthResult struct {
 	ToolErrors map[string]map[string]int `json:"tool_errors"`
 
 	LongestIdenticalRun IdenticalRun `json:"longest_identical_run"`
-	// TruncationWarnings counts tool results whose content carries the
-	// registry's truncation banner.
+	// TruncationWarnings counts tool results whose content carries a marker the
+	// tool registry stamps on truncated output (tool.IsTruncatedOutput).
 	TruncationWarnings int `json:"truncation_warnings"`
 
 	// Steering counts steering turns by kind (events.SteeringKind*, or
@@ -193,7 +188,7 @@ func TranscriptHealth(ctx context.Context, stateBase, selector string) (HealthRe
 					continue
 				}
 				text := toolResultContentText(part.ToolResult.Content)
-				if strings.Contains(text, truncationBanner) {
+				if tool.IsTruncatedOutput(text) {
 					res.TruncationWarnings++
 				}
 				if part.ToolResult.ToolCallID != "" {
