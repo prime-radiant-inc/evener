@@ -4,12 +4,14 @@ import { scaledType, uiType } from "../design/tokens";
 import { render, renderedText } from "../renderNative.testkit";
 import { FirstLoad, SheetStatus } from "./SheetStatus";
 
-const status = { line: null as string | null, state: "ready", fatal: false };
+const status = { line: null as string | null, state: "ready", fatal: false, error: null as string | null };
 vi.mock("../board/connectionStatus", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../board/connectionStatus")>()),
 	useConnectionStatusText: () => status.line,
 }));
-vi.mock("../ConnectionProvider", () => ({ useConnection: () => ({ state: status.state, fatal: status.fatal }) }));
+vi.mock("../ConnectionProvider", () => ({
+	useConnection: () => ({ state: status.state, fatal: status.fatal, error: status.error }),
+}));
 const screen = vi.hoisted(() => ({ fontScale: 1 }));
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -74,5 +76,14 @@ it("says why a never-loaded page can't connect, whatever the state", () => {
 			INCOMPATIBLE_VERSIONS,
 		);
 	}
+	status.fatal = false;
+});
+
+it("says the close's own sentence, so a hub below the floor names its upgrade", () => {
+	status.fatal = true;
+	status.state = "closed";
+	status.error = "This hub is older than the minimum supported protocol. Update Evener on the hub.";
+	expect(renderedText(render(<FirstLoad hubName="magic-kingdom" label="Loading hosts" />))).toBe(status.error);
+	status.error = null;
 	status.fatal = false;
 });
