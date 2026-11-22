@@ -135,29 +135,6 @@ func clampLineBytes(raw []byte, maxRunes int) (prefix []byte, clamped bool, tota
 	return raw[:cutPos], true, runes
 }
 
-// clampLineString is clampLineBytes over a string without copying short or
-// oversized strings before clamping.
-func clampLineString(raw string, maxRunes int) (prefix string, clamped bool, totalRunes int) {
-	if maxRunes <= 0 || len(raw) <= maxRunes {
-		return raw, false, len(raw)
-	}
-	pos := 0
-	cutPos := -1
-	runes := 0
-	for pos < len(raw) {
-		_, size := utf8.DecodeRuneInString(raw[pos:])
-		pos += size
-		runes++
-		if runes == maxRunes {
-			cutPos = pos
-		}
-	}
-	if runes <= maxRunes {
-		return raw, false, runes
-	}
-	return raw[:cutPos], true, runes
-}
-
 // truncateLineUTF8Bytes slices raw at the last valid rune boundary <= maxBytes.
 func truncateLineUTF8Bytes(raw []byte, maxBytes int) []byte {
 	if maxBytes <= 0 {
@@ -169,25 +146,6 @@ func truncateLineUTF8Bytes(raw []byte, maxBytes int) []byte {
 	pos := 0
 	for pos < len(raw) {
 		_, size := utf8.DecodeRune(raw[pos:])
-		if pos+size > maxBytes {
-			break
-		}
-		pos += size
-	}
-	return raw[:pos]
-}
-
-// truncateLineUTF8String slices raw at the last valid rune boundary <= maxBytes.
-func truncateLineUTF8String(raw string, maxBytes int) string {
-	if maxBytes <= 0 {
-		return ""
-	}
-	if len(raw) <= maxBytes {
-		return raw
-	}
-	pos := 0
-	for pos < len(raw) {
-		_, size := utf8.DecodeRuneInString(raw[pos:])
 		if pos+size > maxBytes {
 			break
 		}
@@ -220,7 +178,7 @@ type preparedRow struct {
 	content    []byte // clamped content (or full content when singleLineEscape)
 	clamped    bool
 	rawLineLen int
-	origRaw    []byte // retained only when clamped or when single row might need byte-slicing
+	origRaw    []byte // full raw line, retained only when content is clamped
 }
 
 func prepareWindowRow(lineNum int, unnumbered bool, raw []byte, singleLineEscape bool, maxLineChars int) preparedRow {
@@ -230,7 +188,6 @@ func prepareWindowRow(lineNum int, unnumbered bool, raw []byte, singleLineEscape
 			num:        lineNum,
 			content:    raw,
 			rawLineLen: rawLen,
-			origRaw:    raw,
 		}
 	}
 	prefix, wasClamped, totalRunes := clampLineBytes(raw, maxLineChars)
@@ -239,7 +196,6 @@ func prepareWindowRow(lineNum int, unnumbered bool, raw []byte, singleLineEscape
 			num:        lineNum,
 			content:    raw,
 			rawLineLen: rawLen,
-			origRaw:    raw,
 		}
 	}
 	var suffix string
@@ -281,6 +237,18 @@ const (
 	readFooterTrailingReserve   = 256
 )
 
+// readMaxTotalBytes is the registry's ceiling for one read_file result: the
+// body cap plus the padding the registry leaves above it.
+func readMaxTotalBytes() int {
+	return DefaultReadMaxBytes + readRegistryBackstopPadding
+}
+
+// readFooterCap is the largest trailer footer a rendered read attaches after
+// headerReserve bytes are reserved for a header.
+func readFooterCap(headerReserve int) int {
+	return max(256, readMaxTotalBytes()-headerReserve-1024)
+}
+
 func renderPreparedRows(rows []preparedRow, unnumbered bool, maxBytes int, tailKeepLast bool, displayPath string, headerReserve int) renderedWindow {
 	if len(rows) == 0 {
 		return renderedWindow{}
@@ -315,8 +283,8 @@ func renderPreparedRows(rows []preparedRow, unnumbered bool, maxBytes int, tailK
 		}
 		effectiveMax := maxBytes
 		if displayPath != "" {
-			maxTotal := DefaultReadMaxBytes + readRegistryBackstopPadding
-			footerCap := max(256, maxTotal-headerReserve-1024)
+			maxTotal := readMaxTotalBytes()
+			footerCap := readFooterCap(headerReserve)
 			footer := formatSingleLineOverflowFooter(r.num, r.rawLineLen, displayPath, unnumbered, footerCap)
 			effectiveMax = min(maxBytes, max(0, maxTotal-headerReserve-len(footer)))
 		}
@@ -403,7 +371,7 @@ func maxFooterPathBytes() int {
 }
 
 func readBodyBudget(displayPath string, unnumbered bool, p readWindowParams) (bodyMaxBytes, headerReserve int) {
-	maxTotal := DefaultReadMaxBytes + readRegistryBackstopPadding
+	maxTotal := readMaxTotalBytes()
 	if unnumbered {
 		headerReserve = len(formatTailHeader(displayPath, p, max(DefaultReadLines, 1), true, false)) + 16
 		budget := min(DefaultReadMaxBytes, max(0, maxTotal-headerReserve-readFooterTrailingReserve))
@@ -506,8 +474,7 @@ func finalizeReadOutput(rw renderedWindow, opts readFooterOpts) (string, ReadFil
 	// Attach trailing footer/notice.
 	switch {
 	case rw.singleLineOverflow:
-		maxTotal := DefaultReadMaxBytes + readRegistryBackstopPadding
-		footerCap := max(256, maxTotal-opts.headerReserve-1024)
+		footerCap := readFooterCap(opts.headerReserve)
 		out.WriteString(formatSingleLineOverflowFooter(rw.singleLineNum, rw.singleLineRawLen, opts.displayPath, opts.unnumbered, footerCap))
 	case opts.unnumbered:
 		if p.tailMode && p.explicitLimit && opts.moreRemain {
@@ -714,57 +681,17 @@ func collectStringRows(window string, startLine, effLimit int, stopAtMaxBytes, s
 	bodyBytes := 0
 	for remaining > 0 {
 		idx := strings.IndexByte(window[consumed:], '\n')
-		var lineStr string
+		var line string
 		var nextConsumed int
 		if idx < 0 {
-			lineStr = window[consumed:]
+			line = window[consumed:]
 			nextConsumed = len(window)
 		} else {
-			lineStr = window[consumed : consumed+idx]
+			line = window[consumed : consumed+idx]
 			nextConsumed = consumed + idx + 1
-			lineStr = strings.TrimSuffix(lineStr, "\r")
+			line = strings.TrimSuffix(line, "\r")
 		}
-		var row preparedRow
-		if singleLineEscape {
-			rawLen := len(lineStr)
-			sliceStr := lineStr
-			if len(rows) == 0 && len(sliceStr) > maxBodyBytes {
-				sliceStr = truncateLineUTF8String(lineStr, maxBodyBytes)
-			}
-			row = preparedRow{
-				num:        lineNumber,
-				content:    []byte(sliceStr),
-				rawLineLen: rawLen,
-				origRaw:    []byte(sliceStr),
-			}
-		} else {
-			prefix, wasClamped, totalRunes := clampLineString(lineStr, DefaultReadMaxLineChars)
-			if !wasClamped {
-				b := []byte(prefix)
-				row = preparedRow{
-					num:        lineNumber,
-					content:    b,
-					rawLineLen: len(prefix),
-					origRaw:    b,
-				}
-			} else {
-				suffix := fmt.Sprintf("... [line truncated: %d chars total; read with offset=%d limit=1 for full line]", totalRunes, lineNumber)
-				out := make([]byte, len(prefix)+len(suffix))
-				copy(out, prefix)
-				copy(out[len(prefix):], suffix)
-				var orig []byte
-				if len(rows) == 0 {
-					orig = []byte(truncateLineUTF8String(lineStr, maxBodyBytes))
-				}
-				row = preparedRow{
-					num:        lineNumber,
-					content:    out,
-					clamped:    true,
-					rawLineLen: len(lineStr),
-					origRaw:    orig,
-				}
-			}
-		}
+		row := prepareWindowRow(lineNumber, false, []byte(line), singleLineEscape, DefaultReadMaxLineChars)
 		rowLen := row.renderedLen(false)
 		if stopAtMaxBytes && len(rows) > 0 && bodyBytes+rowLen > maxBodyBytes {
 			return rows
@@ -939,10 +866,9 @@ func readNumberedWindowCtx(ctx context.Context, displayPath, name string, r io.R
 		return "", ReadFileMeta{}, readWindowErr(ctx, name, herr)
 	}
 	p := resolveReadWindowParams(offsetLine, limitLines)
-	// Small files, images, documents, and negative offsets on <=ReadTotalLinesScanCap
-	// files take the whole-file path so NUL checks, exact total lines, and media
-	// responses share renderTextReadRich.
-	if size <= readWindowWholeBelow || detectImageFormat(displayPath, head) != "" || detectDocumentFormat(displayPath, head) != "" || (p.tailMode && size <= ReadTotalLinesScanCap) {
+	// readWhole finishes the file after head and renders it through the same
+	// whole-file path the unbounded read uses.
+	readWhole := func() (string, ReadFileMeta, error) {
 		if size > MaxWholeFileReadBytes {
 			return "", ReadFileMeta{}, &ReadLimitError{Limit: MaxWholeFileReadBytes}
 		}
@@ -954,6 +880,12 @@ func readNumberedWindowCtx(ctx context.Context, displayPath, name string, r io.R
 			return "", ReadFileMeta{}, &ReadLimitError{Limit: MaxWholeFileReadBytes}
 		}
 		return renderTextReadRich(displayPath, b, offsetLine, limitLines)
+	}
+	// Small files, images, documents, and negative offsets on <=ReadTotalLinesScanCap
+	// files take the whole-file path so NUL checks, exact total lines, and media
+	// responses share renderTextReadRich.
+	if size <= readWindowWholeBelow || detectImageFormat(displayPath, head) != "" || detectDocumentFormat(displayPath, head) != "" || (p.tailMode && size <= ReadTotalLinesScanCap) {
+		return readWhole()
 	}
 
 	if p.tailMode {
@@ -967,17 +899,7 @@ func readNumberedWindowCtx(ctx context.Context, displayPath, name string, r io.R
 			}
 			return out, meta, nil
 		}
-		if size > MaxWholeFileReadBytes {
-			return "", ReadFileMeta{}, &ReadLimitError{Limit: MaxWholeFileReadBytes}
-		}
-		b, over, err := readBounded(ctx, io.MultiReader(bytes.NewReader(head), r), nil, MaxWholeFileReadBytes)
-		if err != nil {
-			return "", ReadFileMeta{}, readWindowErr(ctx, name, err)
-		}
-		if over {
-			return "", ReadFileMeta{}, &ReadLimitError{Limit: MaxWholeFileReadBytes}
-		}
-		return renderTextReadRich(displayPath, b, offsetLine, limitLines)
+		return readWhole()
 	}
 
 	out, meta, err := scanLineWindowRich(ctx, r, size, displayPath, head, offsetLine, limitLines)
@@ -988,6 +910,74 @@ func readNumberedWindowCtx(ctx context.Context, displayPath, name string, r io.R
 		return "", ReadFileMeta{}, readWindowErr(ctx, name, err)
 	}
 	return out, meta, nil
+}
+
+// chunkRefiller fills a window scanner's pending bytes from a chunk-sized
+// reader. A read that returns its final bytes with an error hands those bytes
+// to the scanner first; deferReadErr decides whether that error is reported on
+// the next refill (so the bytes are parsed before the failure) or at once.
+type chunkRefiller struct {
+	ctx          context.Context
+	r            io.Reader
+	buf          []byte
+	pending      *[]byte
+	deferReadErr bool
+	eof          bool
+	empties      int
+	readErr      error
+}
+
+func newChunkRefiller(ctx context.Context, r io.Reader, pending *[]byte, deferReadErr bool) *chunkRefiller {
+	return &chunkRefiller{
+		ctx:          ctx,
+		r:            r,
+		buf:          make([]byte, readWindowChunk),
+		pending:      pending,
+		deferReadErr: deferReadErr,
+	}
+}
+
+// refill makes pending hold the next non-empty chunk, returning false at EOF.
+func (c *chunkRefiller) refill() (bool, error) {
+	for {
+		if c.readErr != nil {
+			err := c.readErr
+			c.readErr = nil
+			return false, err
+		}
+		if c.eof {
+			return false, nil
+		}
+		if err := c.ctx.Err(); err != nil {
+			return false, err
+		}
+		n, err := c.r.Read(c.buf)
+		if n > 0 {
+			*c.pending = c.buf[:n]
+			c.empties = 0
+			switch {
+			case err == nil:
+			case errors.Is(err, io.EOF):
+				c.eof = true
+			case c.deferReadErr:
+				c.readErr = err
+			default:
+				return false, err
+			}
+			return true, nil
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				c.eof = true
+				return false, nil
+			}
+			return false, err
+		}
+		c.empties++
+		if c.empties > 100 {
+			return false, io.ErrNoProgress
+		}
+	}
 }
 
 // scanTailWindowSeekerRich executes negative-offset tail reads on >ReadTotalLinesScanCap
@@ -1109,42 +1099,9 @@ func scanTailWindowSeekerRich(ctx context.Context, rs io.ReadSeeker, size int64,
 		stoppedByLines = false
 		moreRemain     = false
 	)
-	readBuf := make([]byte, readWindowChunk)
 	var pending []byte
-	eof := false
-	empties := 0
-	refill := func() (bool, error) {
-		for {
-			if eof {
-				return false, nil
-			}
-			if err := ctx.Err(); err != nil {
-				return false, err
-			}
-			n, err := tailReader.Read(readBuf)
-			if n > 0 {
-				pending = readBuf[:n]
-				empties = 0
-				if errors.Is(err, io.EOF) {
-					eof = true
-				} else if err != nil {
-					return false, err
-				}
-				return true, nil
-			}
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					eof = true
-					return false, nil
-				}
-				return false, err
-			}
-			empties++
-			if empties > 100 {
-				return false, io.ErrNoProgress
-			}
-		}
-	}
+	refiller := newChunkRefiller(ctx, tailReader, &pending, false)
+	refill := refiller.refill
 
 	var curLine []byte
 	emitted := 0
@@ -1152,7 +1109,7 @@ func scanTailWindowSeekerRich(ctx context.Context, rs io.ReadSeeker, size int64,
 		if p.explicitLimit && emitted >= p.effLimit {
 			if len(pending) > 0 {
 				moreRemain = true
-			} else if !eof {
+			} else if !refiller.eof {
 				ok, err := refill()
 				if err != nil {
 					return "", ReadFileMeta{}, err
@@ -1175,7 +1132,7 @@ func scanTailWindowSeekerRich(ctx context.Context, rs io.ReadSeeker, size int64,
 			}
 			if !ok {
 				lineReady = true
-				eof = true
+				refiller.eof = true
 			}
 		} else {
 			curLine = append(curLine, pending[:i]...)
@@ -1226,7 +1183,7 @@ func scanTailWindowSeekerRich(ctx context.Context, rs io.ReadSeeker, size int64,
 			lineNum++
 		}
 		emitted++
-		if eof && len(pending) == 0 {
+		if refiller.eof && len(pending) == 0 {
 			break
 		}
 	}
@@ -1263,51 +1220,8 @@ func scanLineWindowRich(ctx context.Context, r io.Reader, size int64, displayPat
 	p := resolveReadWindowParams(offsetLine, limitLines)
 	bodyMax, headerReserve := readBodyBudget(displayPath, false, p)
 	pending := head
-	buf := make([]byte, readWindowChunk)
-	empties := 0
-	eof := false
-	// readErr is an error a Read returned alongside its final bytes. Surface it
-	// on the next refill rather than dropping it and reporting a clean EOF.
-	var readErr error
-	refill := func() (bool, error) {
-		for {
-			if readErr != nil {
-				err := readErr
-				readErr = nil
-				return false, err
-			}
-			if eof {
-				return false, nil
-			}
-			if err := ctx.Err(); err != nil {
-				return false, err
-			}
-			n, err := r.Read(buf)
-			if n > 0 {
-				pending = buf[:n]
-				empties = 0
-				switch {
-				case err == nil:
-				case errors.Is(err, io.EOF):
-					eof = true
-				default:
-					readErr = err
-				}
-				return true, nil
-			}
-			if err != nil {
-				if err == io.EOF {
-					eof = true
-					return false, nil
-				}
-				return false, err
-			}
-			empties++
-			if empties > 100 {
-				return false, io.ErrNoProgress
-			}
-		}
-	}
+	refiller := newChunkRefiller(ctx, r, &pending, true)
+	refill := refiller.refill
 
 	if len(pending) == 0 {
 		ok, err := refill()
@@ -1372,6 +1286,7 @@ func scanLineWindowRich(ctx context.Context, r io.Reader, size int64, displayPat
 	var (
 		rows                 []preparedRow
 		line                 []byte
+		lineClampedFits      bool // the accumulating line's clamped row is known to fit
 		bodyBytes            int
 		moreRemain           bool
 		stoppedByBytes       bool
@@ -1405,9 +1320,10 @@ func scanLineWindowRich(ctx context.Context, r io.Reader, size int64, displayPat
 					postWindowInLine = true
 					break
 				}
-				if !p.singleLineEscape && len(line) > max(remainingBudget+1, DefaultReadMaxLineChars*4+64) {
+				if !p.singleLineEscape && !lineClampedFits && len(line) > max(remainingBudget+1, DefaultReadMaxLineChars*4+64) {
 					probe := prepareWindowRow(p.start+emitted, false, line, false, DefaultReadMaxLineChars)
-					if probe.clamped && probe.renderedLen(false) > bodyMax-bodyBytes {
+					clampedLen := probe.renderedLen(false)
+					if probe.clamped && clampedLen > bodyMax-bodyBytes {
 						stoppedByBytes = true
 						moreRemain = true
 						postWindowInLine = true
@@ -1418,6 +1334,13 @@ func scanLineWindowRich(ctx context.Context, r io.Reader, size int64, displayPat
 						moreRemain = true
 						postWindowInLine = true
 						break
+					}
+					if probe.clamped && clampedLen+16 <= bodyMax-bodyBytes {
+						// Clamping fixes the row's content length; only the rune
+						// count in its suffix can still grow, by a few digits.
+						// Latch once it fits with slack, so the rest of this line
+						// is not rescanned rune by rune on every 64 KiB chunk.
+						lineClampedFits = true
 					}
 				}
 			}
@@ -1441,7 +1364,7 @@ func scanLineWindowRich(ctx context.Context, r io.Reader, size int64, displayPat
 						bodyBytes += rl
 					}
 				}
-				eof = true
+				refiller.eof = true
 				pending = nil
 				break
 			}
@@ -1463,6 +1386,7 @@ func scanLineWindowRich(ctx context.Context, r io.Reader, size int64, displayPat
 		rawCopy := make([]byte, len(line))
 		copy(rawCopy, line)
 		line = line[:0]
+		lineClampedFits = false
 
 		row := prepareWindowRow(p.start+emitted, false, rawCopy, p.singleLineEscape, DefaultReadMaxLineChars)
 		rl := row.renderedLen(false)
@@ -1479,7 +1403,7 @@ func scanLineWindowRich(ctx context.Context, r io.Reader, size int64, displayPat
 	if !moreRemain && len(rows) == p.effLimit {
 		if len(pending) > 0 {
 			moreRemain = true
-		} else if !eof {
+		} else if !refiller.eof {
 			ok, err := refill()
 			if err != nil {
 				return "", ReadFileMeta{}, err
@@ -1498,9 +1422,7 @@ func scanLineWindowRich(ctx context.Context, r io.Reader, size int64, displayPat
 		// Count remaining lines to EOF WITHOUT checking post-window bytes for NUL
 		// (preserves TestReadFileWindowScopesTheBinaryRefusal).
 		remLines := postWindowLineOffset
-		if postWindowLineOffset > 0 && len(pending) == 0 && eof {
-			// Overflow line was already at EOF.
-		} else {
+		if postWindowLineOffset == 0 || len(pending) > 0 || !refiller.eof {
 			rem, err := countRemainingLines(ctx, &pending, refill, postWindowInLine)
 			if err != nil {
 				return "", ReadFileMeta{}, err

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"time"
 
 	"primeradiant.com/evener/agent/internal/tool"
@@ -38,15 +39,16 @@ const maxPriorReadSpans = 32
 // readFilePath returns the resolved path a read_file call names, or false when
 // the call's arguments do not name a path.
 func (s *Session) readFilePath(call []byte) (string, bool) {
-	var args map[string]any
+	var args struct {
+		FilePath string `json:"file_path"`
+	}
 	if json.Unmarshal(call, &args) != nil {
 		return "", false
 	}
-	path, _ := args["file_path"].(string)
-	if path == "" {
+	if args.FilePath == "" {
 		return "", false
 	}
-	return s.resolveFilePath(path), true
+	return s.resolveFilePath(args.FilePath), true
 }
 
 // statReadStamp stats path on the host filesystem. That is the file the read
@@ -166,40 +168,80 @@ func repeatReadNote(span priorReadSpan, res *tool.ExecResult) string {
 // single read whose content it matches, so its content hash is cleared; when
 // the union is exactly one of the two ranges, that read's hash is kept.
 func coalescePriorReadSpans(spans []priorReadSpan) []priorReadSpan {
-	for merged := true; merged; {
-		merged = false
-		for i := 0; i < len(spans) && !merged; i++ {
-			for j := i + 1; j < len(spans); j++ {
-				a, b := spans[i], spans[j]
-				if a.startLine == 0 || b.startLine == 0 {
-					continue
-				}
-				if a.endLine+1 < b.startLine || b.endLine+1 < a.startLine {
-					continue
-				}
-				m := a
-				m.startLine = min(a.startLine, b.startLine)
-				m.endLine = max(a.endLine, b.endLine)
-				if b.turn < m.turn {
-					m.turn = b.turn
-				}
-				m.repeatCount = max(a.repeatCount, b.repeatCount)
-				switch {
-				case m.startLine == b.startLine && m.endLine == b.endLine:
-					m.content = b.content
-				case m.startLine == a.startLine && m.endLine == a.endLine:
-					// a's own read still covers the union.
-				default:
-					m.content = [sha256.Size]byte{}
-				}
-				spans[i] = m
-				spans = append(spans[:j], spans[j+1:]...)
-				merged = true
-				break
-			}
+	if len(spans) == 0 {
+		return spans
+	}
+	// Media spans (startLine == 0) never merge and keep their place.
+	textIndexes := make([]int, 0, len(spans))
+	for i, span := range spans {
+		if span.startLine > 0 {
+			textIndexes = append(textIndexes, i)
 		}
 	}
-	return spans
+	sort.SliceStable(textIndexes, func(a, b int) bool {
+		x, y := spans[textIndexes[a]], spans[textIndexes[b]]
+		if x.startLine != y.startLine {
+			return x.startLine < y.startLine
+		}
+		return x.endLine < y.endLine
+	})
+
+	var (
+		merged     []priorReadSpan
+		groupFirst []int // original index of each merged span's earliest member
+		groupOf    = make([]int, len(spans))
+	)
+	for i := range groupOf {
+		groupOf[i] = -1
+	}
+	for _, idx := range textIndexes {
+		span := spans[idx]
+		if n := len(merged); n > 0 && merged[n-1].endLine+1 >= span.startLine {
+			merged[n-1] = mergePriorReadSpans(merged[n-1], span)
+			groupFirst[n-1] = min(groupFirst[n-1], idx)
+			groupOf[idx] = n - 1
+			continue
+		}
+		merged = append(merged, span)
+		groupFirst = append(groupFirst, idx)
+		groupOf[idx] = len(merged) - 1
+	}
+	// A merged span keeps the record of its earliest member.
+	for g, first := range groupFirst {
+		merged[g].stamp = spans[first].stamp
+		merged[g].pages = spans[first].pages
+	}
+
+	// Restore the original interleaving with media spans: each merged span sits
+	// where its earliest member was.
+	out := make([]priorReadSpan, 0, len(merged)+len(spans)-len(textIndexes))
+	for i, span := range spans {
+		if span.startLine == 0 {
+			out = append(out, span)
+		} else if g := groupOf[i]; g >= 0 && groupFirst[g] == i {
+			out = append(out, merged[g])
+		}
+	}
+	return out
+}
+
+// mergePriorReadSpans merges b into a, keeping the earliest turn, the highest
+// repeat count, and a's content only when a's range still covers the union.
+func mergePriorReadSpans(a, b priorReadSpan) priorReadSpan {
+	m := a
+	m.startLine = min(a.startLine, b.startLine)
+	m.endLine = max(a.endLine, b.endLine)
+	m.turn = min(a.turn, b.turn)
+	m.repeatCount = max(a.repeatCount, b.repeatCount)
+	switch {
+	case m.startLine == b.startLine && m.endLine == b.endLine:
+		m.content = b.content
+	case m.startLine == a.startLine && m.endLine == a.endLine:
+		// a's own read still covers the union.
+	default:
+		m.content = [sha256.Size]byte{}
+	}
+	return m
 }
 
 // clearPriorReads forgets every range read before the current uncompacted

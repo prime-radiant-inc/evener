@@ -43,8 +43,10 @@ const (
 )
 
 type slicedMemoEntry struct {
-	key  [sha256.Size]byte
-	data []byte
+	key        [sha256.Size]byte
+	data       []byte
+	actualTo   int
+	totalPages int
 }
 
 var (
@@ -53,7 +55,8 @@ var (
 )
 
 // slicedMemoKey identifies one extraction by the complete input bytes and the
-// resolved 1-based page range.
+// requested 1-based page range. The entry stores the resolved range, so a hit
+// can report it without counting the document's pages again.
 func slicedMemoKey(raw []byte, from, to int) [sha256.Size]byte {
 	hash := sha256.New()
 	hash.Write(raw)
@@ -63,24 +66,30 @@ func slicedMemoKey(raw []byte, from, to int) [sha256.Size]byte {
 	return key
 }
 
-func lookupSliced(key [sha256.Size]byte) ([]byte, bool) {
+func lookupSliced(key [sha256.Size]byte) (slicedMemoEntry, bool) {
 	slicedMemoMu.Lock()
 	defer slicedMemoMu.Unlock()
 	for _, entry := range slicedMemo {
 		if entry.key == key {
-			return bytes.Clone(entry.data), true
+			entry.data = bytes.Clone(entry.data)
+			return entry, true
 		}
 	}
-	return nil, false
+	return slicedMemoEntry{}, false
 }
 
-func rememberSliced(key [sha256.Size]byte, data []byte) {
+func rememberSliced(key [sha256.Size]byte, data []byte, actualTo, totalPages int) {
 	if len(data) > maxSlicedMemoBytes {
 		return
 	}
 	slicedMemoMu.Lock()
 	defer slicedMemoMu.Unlock()
-	slicedMemo = append(slicedMemo, slicedMemoEntry{key: key, data: bytes.Clone(data)})
+	slicedMemo = append(slicedMemo, slicedMemoEntry{
+		key:        key,
+		data:       bytes.Clone(data),
+		actualTo:   actualTo,
+		totalPages: totalPages,
+	})
 	total := 0
 	for _, entry := range slicedMemo {
 		total += len(entry.data)
@@ -160,6 +169,23 @@ func SlicePDF(ctx context.Context, raw []byte, spec string) (sliced []byte, from
 	conf.ValidationMode = model.ValidationRelaxed
 	conf.WriteXRefStream = true
 
+	// A provided range that was sliced before answers from the memo without
+	// re-counting the document's pages. The entry carries the canonical facts
+	// the first extraction found, and the raw return is re-checked against the
+	// current byte cap so a changed limit applies on a hit too.
+	var memoKey [sha256.Size]byte
+	if provided {
+		memoKey = slicedMemoKey(raw, from, to)
+		if entry, ok := lookupSliced(memoKey); ok {
+			if from == 1 && entry.actualTo == entry.totalPages && len(raw) <= MaxModelPDFBytes {
+				return raw, from, entry.actualTo, entry.totalPages, nil
+			}
+			if len(entry.data) <= MaxModelPDFBytes {
+				return entry.data, from, entry.actualTo, entry.totalPages, nil
+			}
+		}
+	}
+
 	totalPages, err = api.PageCount(ctx, bytes.NewReader(raw), conf)
 	if err != nil {
 		return nil, 0, 0, 0, fmt.Errorf("read_file: cannot read PDF: %w", err)
@@ -184,11 +210,6 @@ func SlicePDF(ctx context.Context, raw []byte, spec string) (sliced []byte, from
 		return raw, from, actualTo, totalPages, nil
 	}
 
-	key := slicedMemoKey(raw, from, actualTo)
-	if cached, ok := lookupSliced(key); ok {
-		return cached, from, actualTo, totalPages, nil
-	}
-
 	var buf bytes.Buffer
 	selected := []string{fmt.Sprintf("%d-%d", from, actualTo)}
 	if err := api.Trim(ctx, bytes.NewReader(raw), &buf, selected, conf); err != nil {
@@ -200,6 +221,6 @@ func SlicePDF(ctx context.Context, raw []byte, spec string) (sliced []byte, from
 			"read_file: PDF pages %d-%d are %d bytes, exceeding the %d MiB per-call cap; request a smaller page range",
 			from, actualTo, buf.Len(), MaxModelPDFBytes>>20)
 	}
-	rememberSliced(key, buf.Bytes())
+	rememberSliced(memoKey, buf.Bytes(), actualTo, totalPages)
 	return buf.Bytes(), from, actualTo, totalPages, nil
 }

@@ -84,12 +84,13 @@ func execFileReadWith(ctx context.Context, args map[string]any, guard readGuard,
 	limit := optionalIntArg(args, "limit")
 	visionAsk, _ := args["vision_prompt"].(string)
 	pages, _ := args["pages"].(string)
+	hasPages := strings.TrimSpace(pages) != ""
 	result, meta, err := read(path, offset, limit)
 	if err == nil {
 		// If the file is an image or document (PDF), return an
 		// tool.ImageResult so the vision side-channel can process it.
 		if img := tool.ParseImageResult(path, result); img != nil {
-			if strings.TrimSpace(pages) != "" {
+			if hasPages {
 				return "", errPagesOnNonPDF
 			}
 			guard.TrackRead(path)
@@ -103,10 +104,8 @@ func execFileReadWith(ctx context.Context, args map[string]any, guard readGuard,
 			img.Data = prepared.Data
 			img.MediaType = prepared.MediaType
 			if prepared.Scaled {
-				scale := float64(prepared.OriginalWidth) / float64(prepared.Width)
-				if vertical := float64(prepared.OriginalHeight) / float64(prepared.Height); vertical > scale {
-					scale = vertical
-				}
+				scale := max(float64(prepared.OriginalWidth)/float64(prepared.Width),
+					float64(prepared.OriginalHeight)/float64(prepared.Height))
 				img.Text += fmt.Sprintf("\n[Image: original %dx%d, displayed at %dx%d (multiply coordinates by %.2f to map to original)]",
 					prepared.OriginalWidth, prepared.OriginalHeight, prepared.Width, prepared.Height, scale)
 			}
@@ -126,7 +125,7 @@ func execFileReadWith(ctx context.Context, args map[string]any, guard readGuard,
 			doc.Prompt = visionAsk
 			return *doc, nil
 		}
-		if strings.TrimSpace(pages) != "" {
+		if hasPages {
 			return "", errPagesOnNonPDF
 		}
 		guard.TrackRead(path)
