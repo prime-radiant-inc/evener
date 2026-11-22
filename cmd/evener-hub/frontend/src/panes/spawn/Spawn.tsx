@@ -2718,6 +2718,8 @@ function SpawnForm({
                       plain "(default)" until the resolve lands. */}
                   <span className={CLASS.modelTrigger} data-testid="spawn-model-slot" data-state={modelTriggerState}>
                     <ModelSwitchTrigger
+                      fill
+                      shrink
                       label={
                         modelRequired
                           ? MODEL_CHOOSE_LABEL

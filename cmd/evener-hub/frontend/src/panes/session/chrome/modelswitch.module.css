@@ -4,8 +4,41 @@
   composes: trigger from "../../../widgets/popover/popover.module.css";
 }
 
+/* fill: the wrapper spans the slot the caller gave it instead of hugging the
+ * label. Desktop's Popover supplies the same shape through its own
+ * stretchTrigger; this is the mobile span wrapper's equivalent. */
+.triggerWrapperFill {
+  display: flex;
+  width: 100%;
+}
+
 .trigger {
   composes: quietTrigger from "../../../widgets/internal/quietTrigger.module.css";
+}
+
+/* shrink: the caller's slot may be narrower than the model id, so the button
+ * yields its content width rather than reserving it and pushing the row's
+ * fixed facts out. The value's own quietValue ellipsis finishes the job; this
+ * is the button-level half of the contract. */
+.trigger.triggerShrink {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+/* The status row's phone-width allocation: the fixed effort/context/queue
+ * facts consume the row exactly, so in shrink mode the trigger gives up its
+ * decorative inline padding and keeps a 1rem value floor. That reserves a
+ * visible model label without dropping a fact or making the row scroll.
+ * Keyed to shrink so a hugging trigger keeps its padding at every width. */
+@container (max-width: 399px) {
+  .trigger.triggerShrink {
+    padding-inline: 0;
+  }
+
+  .triggerShrink > .value {
+    min-width: 1rem;
+  }
 }
 
 /* The model id, in this row's caption size. Sans, not mono: an id is an

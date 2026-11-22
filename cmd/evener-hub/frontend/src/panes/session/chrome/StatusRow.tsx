@@ -147,7 +147,7 @@ export function StatusRow({ sessionRef, model, now, align = "start" }: StatusRow
   return (
     <div className={align === "end" ? `${CLASS.row} ${CLASS.rowEnd}` : CLASS.row} data-testid="status-row">
       <span className={CLASS.identity} data-testid="status-row-identity">
-        <ModelSwitch sessionRef={sessionRef} model={model} />
+        <ModelSwitch sessionRef={sessionRef} model={model} shrink />
         <ReasoningEffortControl sessionRef={sessionRef} model={model} />
       </span>
       {hasContext && (

@@ -29,9 +29,12 @@ import { modelIdentity, modelLabel } from "./statusFormat";
 export interface ModelSwitchProps {
   sessionRef: string;
   model: ThreadModel;
+  /** Whether the status row's compact slot may squeeze the trigger: forwarded
+   * to ModelSwitchTrigger's shrink contract. */
+  shrink?: boolean;
 }
 
-export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
+export function ModelSwitch({ sessionRef, model, shrink = false }: ModelSwitchProps) {
   const toasts = useToasts();
 
   // changeModel is the ONLY gate, and it is the wire's own answer: the hub
@@ -88,6 +91,7 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
       loadCatalog={loadCatalog}
       refreshKey={modelsRevision}
       onPick={(entry) => void handlePick(entry)}
+      shrink={shrink}
       data-testid="model-switch-trigger"
       valueTestId="model-switch-value"
     />

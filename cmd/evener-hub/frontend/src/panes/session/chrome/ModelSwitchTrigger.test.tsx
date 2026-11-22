@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { expect, test, vi } from "vitest";
 import { Button, Dialog, type ModelCatalog } from "../../../widgets";
+import rawPopoverStyles from "../../../widgets/popover/popover.module.css";
 import { installMobileViewport } from "../testing/mobileViewport";
 import { ModelSwitchTrigger } from "./ModelSwitchTrigger";
 import rawStyles from "./modelswitch.module.css";
@@ -71,6 +72,42 @@ test("the label carries no box of its own - plain text, not a bordered chip", ()
 test("the trigger is a non-submitting button", () => {
   renderTrigger();
   expect((screen.getByTestId("trigger") as HTMLButtonElement).type).toBe("button");
+});
+
+// --- sizing: the panes' slot contracts, owned here ---------------------------
+
+test("fill stretches the desktop Popover wrapper", () => {
+  renderTrigger({ fill: true });
+  expect(screen.getByTestId("trigger").parentElement?.className.split(" ")).toContain(rawPopoverStyles.triggerStretch);
+});
+
+test("without fill the trigger wrapper hugs its label", () => {
+  renderTrigger();
+  expect(screen.getByTestId("trigger").parentElement?.className.split(" ")).not.toContain(
+    rawPopoverStyles.triggerStretch,
+  );
+});
+
+test("fill stretches the mobile span wrapper", () => {
+  const restoreViewport = installMobileViewport();
+  try {
+    renderTrigger({ fill: true });
+    const wrapper = screen.getByTestId("trigger").parentElement;
+    expect(wrapper?.className.split(" ")).toContain(rawStyles.triggerWrapper);
+    expect(wrapper?.className.split(" ")).toContain(rawStyles.triggerWrapperFill);
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("shrink marks the trigger button for the truncating contract", () => {
+  renderTrigger({ shrink: true });
+  expect(screen.getByTestId("trigger").className.split(" ")).toContain(rawStyles.triggerShrink);
+});
+
+test("by default the trigger carries neither sizing class", () => {
+  renderTrigger();
+  expect(screen.getByTestId("trigger").className).toBe(rawStyles.trigger);
 });
 
 test("disabled refuses to open the picker at all", async () => {

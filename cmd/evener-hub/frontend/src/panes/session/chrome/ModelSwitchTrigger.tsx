@@ -73,6 +73,14 @@ export interface ModelSwitchTriggerProps {
    * kind of reload, not a scope change. */
   refreshKey?: unknown;
   disabled?: boolean;
+  /** Stretch the trigger's wrapper across the slot it was given instead of
+   * hugging the label. The Popover path uses its own stretchTrigger; the
+   * mobile span wrapper gets the equivalent class. Default false. */
+  fill?: boolean;
+  /** The caller's slot may squeeze this trigger: the button and value
+   * truncate instead of reserving the model id's full width and widening the
+   * row. Default false. */
+  shrink?: boolean;
   /** Visually-hidden action suffix for the trigger's accessible name. */
   actionLabel?: string;
   "data-testid"?: string;
@@ -88,6 +96,8 @@ const CLASS = {
   popoverPanel: requireClass(styles.popoverPanel, "modelswitch.module.css", "popoverPanel"),
   sheetBody: requireClass(styles.sheetBody, "modelswitch.module.css", "sheetBody"),
   triggerWrapper: requireClass(styles.triggerWrapper, "modelswitch.module.css", "triggerWrapper"),
+  triggerWrapperFill: requireClass(styles.triggerWrapperFill, "modelswitch.module.css", "triggerWrapperFill"),
+  triggerShrink: requireClass(styles.triggerShrink, "modelswitch.module.css", "triggerShrink"),
 };
 
 export function ModelSwitchTrigger({
@@ -98,6 +108,8 @@ export function ModelSwitchTrigger({
   onOpenConnection,
   refreshKey,
   disabled = false,
+  fill = false,
+  shrink = false,
   actionLabel = "change model",
   "data-testid": testId,
   valueTestId,
@@ -266,7 +278,7 @@ export function ModelSwitchTrigger({
     <button
       ref={triggerRef}
       type="button"
-      className={CLASS.trigger}
+      className={shrink ? `${CLASS.trigger} ${CLASS.triggerShrink}` : CLASS.trigger}
       data-testid={testId}
       title={label}
       onClick={() => {
@@ -301,12 +313,13 @@ export function ModelSwitchTrigger({
       <>
         {/* A span wrapper matching Popover's own trigger wrapper
             (widgets/popover's .trigger: inline-flex, hugging): the status
-            row's container-query compression targets
-            `.identity > span:first-child > button`, so the trigger must stay
-            one span deep on both sides of the breakpoint or the phone-width
-            label floor (min-width: 1rem, padding-inline: 0) stops applying
-            and the fixed facts squeeze the model label to zero width. */}
-        <span className={CLASS.triggerWrapper}>{triggerButton}</span>
+            row sizes that one span as the trigger's slot, so the trigger
+            must stay one span deep on both sides of the breakpoint.
+            triggerWrapperFill is Popover's stretchTrigger equivalent for a
+            caller that needs the wrapper to span its slot (the spawn card). */}
+        <span className={fill ? `${CLASS.triggerWrapper} ${CLASS.triggerWrapperFill}` : CLASS.triggerWrapper}>
+          {triggerButton}
+        </span>
         <Sheet open={open} side="bottom" onClose={closePicker} title="Choose model">
           <div className={CLASS.sheetBody}>{panel}</div>
         </Sheet>
@@ -324,6 +337,7 @@ export function ModelSwitchTrigger({
       // The panel's input owns focus and its own text selection - see
       // closePicker for why FocusScope must not manage focus here.
       autoFocus={false}
+      stretchTrigger={fill}
       trigger={triggerButton}
     >
       <div className={CLASS.popoverPanel}>{panel}</div>
