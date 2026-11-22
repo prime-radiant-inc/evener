@@ -3162,6 +3162,12 @@ func (s *Session) communicatedSettledLocked() bool {
 	return s.comm.isSettled()
 }
 
+func (s *Session) communicatedSettled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.communicatedSettledLocked()
+}
+
 // quietlyYielded reports a quiet boundary, not a visible final reply.
 func (s *Session) quietlyYielded() bool {
 	s.mu.Lock()

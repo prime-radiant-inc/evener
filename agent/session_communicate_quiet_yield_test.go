@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -552,6 +553,7 @@ func TestQuietYieldAttentionNoActionNotLatchedWhenRoundStoppedByHook(t *testing.
 			if got := hookCalls.Load(); got != 1 {
 				t.Fatalf("%s hook calls = %d, want 1", tc.event, got)
 			}
+			requireQuietToolResult(t, s, "quiet-0")
 			if s.quietlyYielded() {
 				t.Fatalf("quietlyYielded() = true after %s stopped the round", tc.event)
 			}
@@ -868,6 +870,48 @@ func TestCommunicateBoundaryStateMachine(t *testing.T) {
 			t.Parallel()
 			tc.run(t)
 		})
+	}
+}
+
+func TestKeepingReportRestoresSettledReportWhenFollowUpAbortsBeforeStopSettles(t *testing.T) {
+	t.Parallel()
+	adapter := newFakeAdapter("openai",
+		func(llm.Request) llm.Response {
+			return quietYieldResponse("settled-call", `{"message":"settled report","output":{"message":"settled summary","data":{"version":1}}}`)
+		},
+		func(llm.Request) llm.Response {
+			return quietYieldResponse("aborted-call", `{"message":"aborted follow-up","output":{"message":"aborted summary","data":{"version":2}}}`)
+		},
+	)
+	s := newSession(t, withAdapter(adapter), withStateDir(t.TempDir()))
+	installCommunicateStopHook(s, func() string { return `{}` })
+
+	ctx := tripwireCtx(t)
+	const wantReply = `{"message":"settled summary","data":{"version":1},"artifacts":[]}`
+	reply, err := s.ProcessInput(ctx, "initial work", nil)
+	if err != nil || reply != wantReply {
+		t.Fatalf("initial ProcessInput = (%q, %v), want (%q, nil)", reply, err, wantReply)
+	}
+
+	execFault := errors.New("tool batch aborted before stop")
+	enqueueCompletedJobNotification(t, s, "followup-job")
+	faultCtx := context.WithValue(ctx, sessionLifecycleFaultsKey{}, map[string]error{"exec_tools": execFault})
+	res, err := s.keepingReport(s.ProcessInputKind)(faultCtx, "", nil, EntryNotification)
+	if !errors.Is(err, execFault) {
+		t.Fatalf("keepingReport err = %v, want preserved %v", err, execFault)
+	}
+	if res != wantReply {
+		t.Fatalf("keepingReport res = %q, want %q", res, wantReply)
+	}
+
+	inputs := delegateTerminalRunInputs{runErr: err}
+	inputs.captureCommunicateReport(s)
+	if !inputs.communicated || !inputs.structuredResultPresent || !errors.Is(inputs.runErr, execFault) {
+		t.Fatalf("captureCommunicateReport = communicated:%t structuredPresent:%t runErr:%v, want settled report and preserved error", inputs.communicated, inputs.structuredResultPresent, inputs.runErr)
+	}
+	gotStructured, marshalErr := json.Marshal(inputs.structuredResult)
+	if marshalErr != nil || string(gotStructured) != `{"data":{"version":1},"message":"settled summary"}` {
+		t.Fatalf("captured structuredResult = %s (err=%v), want prior settled output", gotStructured, marshalErr)
 	}
 }
 
