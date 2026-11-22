@@ -1,31 +1,17 @@
-/* The read-only transcript pane's body: a column that gives the windowed
+/* The job-log pane's stylesheet: .body is the column that gives the log's
  * VirtualList a bounded height to virtualize inside (VirtualList's own .root
  * is height:100% + overflow-y:auto - it fills whatever height it's given),
- * with the optional "load older" row pinned above it as a flow:none sibling.
- * Mirrors the session pane's own transcript height chain (session.module.css:
- * .transcript flexes inside .contentColumn, .transcriptBody fills it) minus
- * the live composer/chrome the read-only viewer deliberately omits. */
+ * with the command line, notes and read-failure notice pinned above it as
+ * flow:none siblings. The height chain mirrors the session transcript's
+ * (session.module.css: .transcript flexes inside .contentColumn,
+ * .transcriptBody fills it) minus the live composer/chrome that read-only
+ * viewer deliberately omits. */
 .body {
   height: 100%;
   min-height: 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
-}
-
-.list {
-  /* min-height:0 lets this flex child shrink and scroll instead of stretching
-   * the column to its content - the same requirement AppShell.module.css's
-   * .content and PaneScaffold's own .body already carry. */
-  flex: 1 1 auto;
-  min-height: 0;
-  min-width: 0;
-}
-
-.scope {
-  flex: none;
-  min-width: 0;
-  margin-bottom: var(--space-2);
 }
 
 /* Job output uses VirtualList's scroll port within the bounded pane. */
