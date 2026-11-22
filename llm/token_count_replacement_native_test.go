@@ -67,15 +67,16 @@ func replacementList(defs []ToolDefinition, protocol string) []map[string]any {
 		}
 		return out
 	case registry.ProtocolGoogle:
-		decls := make([]map[string]any, len(defs))
+		out := make([]map[string]any, len(defs))
 		for i, d := range defs {
-			decls[i] = map[string]any{
+			out[i] = map[string]any{
+				"type":        "function",
 				"name":        d.Name,
 				"description": d.Description,
 				"parameters":  d.Parameters,
 			}
 		}
-		return []map[string]any{{"functionDeclarations": decls}}
+		return out
 	default:
 		return nil
 	}
@@ -251,7 +252,7 @@ func TestAProviderNativeToolIsCountedByItsOwnBytes(t *testing.T) {
 			"type": "web_search_20250305", "name": "web_search",
 		}},
 		{"google google_search", registry.ProtocolGoogle, map[string]any{
-			"google_search": map[string]any{},
+			"type": "google_search",
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

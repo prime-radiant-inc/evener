@@ -644,7 +644,7 @@ test("a refused recovery resend keeps the replacement row owned by this pane's s
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const seat = "seat-a";
-  await seedRejectedRecovery(storage, "ref_a", "retry me", {}, seat);
+  const seeded = await seedRejectedRecovery(storage, "ref_a", "retry me", {}, seat);
   const source = createTestComposerSource("ref_a", seat);
   const { fake } = await mountComposerWithHandle("ref_a", { status: { type: "idle" } }, { source });
   fake.on("turn/start", (params) => {
@@ -660,9 +660,19 @@ test("a refused recovery resend keeps the replacement row owned by this pane's s
   await waitFor(async () => {
     const rows = await storage.listRecovery("ref_a");
     expect(rows).toHaveLength(1);
+    // The row is a REPLACEMENT the bounce wrote, not the seeded row still
+    // sitting there: a new local mutation id under the same seat.
+    expect(rows[0]?.clientMutationId).not.toBe(seeded.clientMutationId);
     expect(rows[0]?.compositionOwnerId).toBe(seat);
   });
   await waitFor(() => expect(textarea().textContent).toBe("retry me"));
+  // The waitFors above pass while the refused resend can still own the durable
+  // enqueue count and the destination claim lease (sampled mid-flight: enqueue
+  // 1, claim 2). Settle it here: the next test's reset drops both, and a settle
+  // landing after that reset throws "released an in-flight durable enqueue ...
+  // never acquired" and releases the destination hold the next test owns
+  // (issue #7236).
+  await flushPendingTurnsProjectionForTests();
 });
 
 test("this pane's bounced send restores to its next mount under the same seat", async () => {

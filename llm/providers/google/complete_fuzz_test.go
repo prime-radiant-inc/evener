@@ -7,45 +7,28 @@ import (
 	"testing"
 )
 
-// FuzzGoogleComplete drives the Gemini non-streaming Complete path against a
-// local httptest server replaying the fuzz bytes, status steered by the first
-// byte. It exercises the non-streaming response decode (fromGeminiResponse +
-// normalizeJSONNumbers on a 2xx body) and the HTTP error mapping
-// (status mapping plus classifyGeminiError on a non-2xx body).
-//
-// Oracles:
-//   - never panics for arbitrary bodies (floor);
-//   - a non-2xx status always yields a non-nil error;
-//   - a 2xx status that decodes without error yields a Response stamped with the
-//     google provider.
 func FuzzGoogleComplete(f *testing.F) {
 	seeds := [][]byte{
-		[]byte(`{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":1}}`),
-		[]byte(`{"candidates":[{"content":{"parts":[{"functionCall":{"name":"shell","args":{"cmd":"ls"}}}]}}]}`),
-		[]byte(`{"error":{"code":429,"message":"resource exhausted","status":"RESOURCE_EXHAUSTED"}}`),
-		[]byte(`{"candidates":"not-an-array"}`),
+		[]byte(`{"id":"int_1","model":"gemini-3.8-flash","status":"completed","steps":[{"type":"model_output","content":[{"type":"text","text":"hi"}]}],"usage":{"total_input_tokens":3,"total_output_tokens":1,"total_tokens":4}}`),
+		[]byte(`{"id":"int_2","status":"requires_action","steps":[{"type":"function_call","id":"c1","name":"shell","arguments":{"cmd":"ls"},"signature":"sig1"}]}`),
+		[]byte(`{"id":"int_3","status":"failed","errors":[{"code":"resource_exhausted","message":"resource exhausted"}]}`),
+		[]byte(`{"id":"int_4","status":"failed","errors":[{"code":"safety","message":"blocked"}]}`),
+		[]byte(`{"id":"int_5","status":"queued"}`),
+		[]byte(`{"id":"int_6","status":"incomplete","steps":[{"type":"model_output","content":[{"type":"text","text":"part"}]}],"continuation_token":"ct1"}`),
+		[]byte(`{"id":"int_7","status":"completed","steps":[{"type":"google_search_call","id":"gs1","arguments":{"queries":["q1",42,"q2"]}},{"type":"google_search_result","call_id":"gs1","result":[{"url":"https://a","search_suggestions":"<div></div>"}]}]}`),
+		[]byte(`{"steps":"not-an-array"}`),
 		[]byte(`{}`),
 		[]byte(``),
 		[]byte(`not json`),
-		[]byte("{\"candidates\":\xff}"),
+		[]byte("{\"steps\":\xff}"),
 		[]byte(`[1,2,3]`),
 	}
 	for _, s := range seeds {
-		f.Add(byte(200), s)
+		f.Add(byte(0), s)
 	}
-	f.Add(byte(29), []byte(`{"error":{"message":"quota"}}`)) // 429
-	f.Add(byte(0), []byte(`{"promptFeedback":{"blockReason":"SAFETY"}}`))
-	// Ambiguous-400 gRPC remap arms beyond RESOURCE_EXHAUSTED (timeout, server
-	// error, and an unmapped status that must keep the provider's own 400).
+	f.Add(byte(29), []byte(`{"error":{"message":"quota"}}`))
 	f.Add(byte(200), []byte(`{"error":{"code":400,"message":"deadline","status":"DEADLINE_EXCEEDED"}}`))
 	f.Add(byte(200), []byte(`{"error":{"code":400,"message":"unavailable","status":"UNAVAILABLE"}}`))
-	f.Add(byte(200), []byte(`{"error":{"code":400,"message":"bad","status":"INVALID_ARGUMENT"}}`))
-	// 2xx decoder arms: thought-signature fallback keys, a non-object candidate
-	// part (skipped), and a groundingMetadata web-search projection.
-	f.Add(byte(0), []byte(`{"candidates":[{"content":{"parts":[{"functionCall":{"name":"t","args":{},"thoughtSignature":"fsig"}}]}}]}`))
-	f.Add(byte(0), []byte(`{"candidates":[{"content":{"parts":[{"thought_signature":"psnake","functionCall":{"name":"t","args":{},"thought_signature":"fsnake"}}]}}]}`))
-	f.Add(byte(0), []byte(`{"candidates":[{"content":{"parts":["nope",{"text":"hi"}]},"finishReason":"STOP"}]}`))
-	f.Add(byte(0), []byte(`{"candidates":[{"groundingMetadata":{"webSearchQueries":["q1",42,"q2"]},"finishReason":"STOP"}]}`))
 
 	f.Fuzz(func(t *testing.T, statusSel byte, body []byte) {
 		status := http.StatusOK

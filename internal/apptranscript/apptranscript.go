@@ -93,10 +93,15 @@ func ScanPrelude(path string, maxLineBytes int) (transcript.Header, error) {
 }
 
 // PreludeTurn projects semantic transcript header context into the synthetic
-// system turn shown before conversation entries.
-func PreludeTurn(header transcript.Header) *appwire.Turn {
+// system turn shown before conversation entries. launchPrompt is the prompt the
+// session saved to its meta when the header records none (a role- or
+// plugin-changing fork starts with an empty header); a header prompt wins.
+func PreludeTurn(header transcript.Header, launchPrompt string) *appwire.Turn {
 	var items []appwire.ThreadItem
 	systemPrompt := strings.TrimSpace(header.SystemPrompt)
+	if systemPrompt == "" {
+		systemPrompt = strings.TrimSpace(launchPrompt)
+	}
 	if systemPrompt != "" {
 		items = append(items, appwire.ThreadItem{
 			Type:        "systemMessage",
@@ -1055,11 +1060,12 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, re
 const redactedThinkingText = "[redacted thinking]"
 
 // MetadataOnlyResponsesReasoning reports whether a reasoning part is invisible
-// to the transcript and leaves surrounding text in the same run.
+// to the transcript and leaves surrounding text in the same run. Responses
+// native parts and signature-only Google thought steps are both invisible.
 func MetadataOnlyResponsesReasoning(part llm.ContentPart) bool {
 	t := part.Thinking
 	return part.Kind == llm.ContentThinking && t != nil && t.Text == "" && len(t.Summary) == 0 && t.EncryptedContent == "" &&
-		(len(t.ResponsesContentParts) != 0 || len(t.ResponsesSummaryParts) != 0)
+		(len(t.ResponsesContentParts) != 0 || len(t.ResponsesSummaryParts) != 0 || t.GoogleInteraction || t.Signature != "")
 }
 
 // identityReasoning returns the index of the entry's first thinking or
@@ -1186,8 +1192,10 @@ type webSearchRaw struct {
 
 // WebSearchProjection derives a display query and newline-separated result
 // lines ("Title — URL") from a provider-native web-search content part, so it
-// can render through the existing web_search tool card. Unrecognized payloads
-// still yield the part's Query, keeping the search visible.
+// can render through the existing web_search tool card. Citation sources win
+// over the raw payload, which historical generateContent parts still carry.
+// Unrecognized payloads still yield the part's Query, keeping the search
+// visible.
 func WebSearchProjection(ws *llm.WebSearchData) (query string, results string) {
 	if ws == nil {
 		return "", ""
@@ -1201,6 +1209,14 @@ func WebSearchProjection(ws *llm.WebSearchData) (query string, results string) {
 		query = envvars.FirstNonEmpty(raw.Action.Query, raw.Input.Query, strings.Join(raw.WebSearchQueries, "; "))
 	}
 	var lines []string
+	if len(ws.Sources) > 0 {
+		for _, s := range ws.Sources {
+			if line := webSearchResultLine(s.Title, s.URL); line != "" {
+				lines = append(lines, line)
+			}
+		}
+		return query, strings.Join(lines, "\n")
+	}
 	for _, chunk := range raw.GroundingChunks {
 		if line := webSearchResultLine(chunk.Web.Title, chunk.Web.URI); line != "" {
 			lines = append(lines, line)
@@ -1285,7 +1301,11 @@ func itemTurnProjectionFromFileContext(ctx context.Context, path string, maxLine
 	if err := ctx.Err(); err != nil {
 		return ItemTurnProjection{}, err
 	}
-	projection, err := groupedAppTurnProjection(&acc, header)
+	launchPrompt := ""
+	if strings.TrimSpace(header.SystemPrompt) == "" {
+		launchPrompt = schema.LaunchSystemPromptBesideTranscript(path)
+	}
+	projection, err := groupedAppTurnProjection(&acc, header, launchPrompt)
 	if ctx.Err() != nil {
 		return ItemTurnProjection{}, ctx.Err()
 	}
@@ -1317,7 +1337,10 @@ func itemTurnsFromEntries(header transcript.Header, entries []transcript.Entry, 
 	for i := range entries {
 		appendProjectedEntry(&acc, project, entries[i].Turn, i+1)
 	}
-	projection, err := groupedAppTurnProjection(&acc, header)
+	// The seam holds decoded entries and no transcript path, so it has no meta
+	// to read: callers that project a saved file go through
+	// itemTurnProjectionFromFileContext, which resolves the saved launch prompt.
+	projection, err := groupedAppTurnProjection(&acc, header, "")
 	return projection.Turns, err
 }
 

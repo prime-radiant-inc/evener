@@ -2001,6 +2001,247 @@ func TestDelegateAttentionFailedStartReopensConsumedReport(t *testing.T) {
 	})
 }
 
+// The reopen a refused launch performs must also re-arm the fresh row as a
+// wake. The successful commitStart replaced the controller's wake set with the
+// accept's post-consume pending list, so the delegate left c.attention when the
+// report was its only pending item; appending the reopened row to the
+// transcript alone leaves it undriven in-process. This test pins the production
+// wake path rather than a test-owned drive: after the refusal, the root's
+// scheduled drive pass must select the delegate from its re-armed wake, and
+// once the foreign lane is given back the pass must present the report.
+func TestDelegateAttentionRefusedLaunchReopensThroughTheWakeMap(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var wedgeOnce sync.Once
+	var wedgedSession atomic.Value
+	wedge := func(req llm.Request) llm.Response {
+		wedgedSession.Store(req.SessionID)
+		wedgeOnce.Do(func() { close(entered) })
+		<-release
+		return agenttest.FinalResponse("done")
+	}
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	holdSharedDescendantAnnounce("reopen-through-wake-map")
+	lane := spawnSharedDescendantLane(t, r, "reopen-through-wake-map", "dlg_reopenwake00001", "034reopenwake00001", wedge)
+
+	lane.announceRelease()
+	lane.delegateSub.mu.Lock()
+	delegateDone := lane.delegateSub.done
+	lane.delegateSub.mu.Unlock()
+	select {
+	case <-delegateDone:
+	// TRIPWIRE: the tail finishes within a couple of drain passes of the
+	// release; 15s only fires on a genuine hang.
+	case <-time.After(15 * time.Second):
+		t.Fatalf("the delegate's finalize tail never finished after the seeded announce release")
+	}
+	if pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs(); pendErr != nil || len(pending) == 0 {
+		t.Fatalf("the retained child's report is not pending after the seeded window: pending=%v (%v)", pending, pendErr)
+	}
+	// Every later drive under test is the production pass this test calls, not
+	// the fixture's notify edges.
+	lane.delegateSess.SetNotifyFunc(nil)
+	lane.sharedSub.sess.SetNotifyFunc(nil)
+
+	const foreignSID = "034foreignholder0002"
+	adoptForeignLane(t, r, lane.lanePath, foreignSID)
+
+	// Drive the presentation once through the test worker; the commit succeeds
+	// and the launch refuses the foreign lane, stamping the child abandoned and
+	// reopening the consumed report.
+	setupStop := make(chan struct{})
+	_, setupDone := lane.startDrive(setupStop)
+	testwait.Until(t, "the presentation start to refuse the foreign-held lane", func() bool {
+		return lane.root.childDrainAbandoned(lane.delegateSess.id)
+	})
+	close(setupStop)
+	waitForTestSignal(t, setupDone, "the setup drive worker to exit before recovery")
+	testwait.Until(t, "the reopen to leave the failed report pending", func() bool {
+		pending, err := lane.delegateSess.pendingDelegateAttentionIDs()
+		if err != nil {
+			return false
+		}
+		for _, id := range pending {
+			if strings.Contains(id, delegateAttentionReopenMarker) {
+				return true
+			}
+		}
+		return false
+	})
+
+	// The wake the committed start dropped must be back: this is the production
+	// selection state the paced retry and the root's scheduled pass read.
+	if !lane.root.delegateController.owesDelegateAttention(lane.fixture.delegateID) {
+		t.Fatal("the refused launch left the reopened report without a wake: the controller no longer owes the delegate attention")
+	}
+
+	// The foreign lock is temporary, so a scheduled pass that refuses it must
+	// stay a retry: after maxDelegateAttentionRestoreFailures counted refusals
+	// the drive hands the report to the root and resolves the delegate's copy,
+	// which leaves nothing to present once the lane comes back. Each pass below
+	// is the production drive against the still-locked lane.
+	for range maxDelegateAttentionRestoreFailures + 2 {
+		lane.root.drivePendingDelegateAttention()
+	}
+	if !lane.root.delegateController.owesDelegateAttention(lane.fixture.delegateID) {
+		t.Fatal("the foreign lock counted toward the permanent restore-failure give-up: the delegate no longer owes the reopened report")
+	}
+	if !lane.root.delegateController.coldRestoreDriveCandidateLocked(lane.fixture.delegateID) {
+		t.Fatal("repeated foreign-lock refusals parked the delegate: the reopened report has no scheduled restore left")
+	}
+	heldPending, heldErr := lane.delegateSess.pendingDelegateAttentionIDs()
+	heldReopened := false
+	for _, id := range heldPending {
+		if strings.Contains(id, delegateAttentionReopenMarker) {
+			heldReopened = true
+			break
+		}
+	}
+	if !heldReopened {
+		t.Fatalf("the reopened report left the delegate while its lane was held: pending=%v (%v)", heldPending, heldErr)
+	}
+
+	// Give the lane back. An unlocked lane is re-locked under the tree's own
+	// marker at the launch, so only the stranded report can keep the
+	// presentation from running now.
+	wtGit(t, r.mainRoot, "worktree", "unlock", lane.lanePath)
+
+	// The root's scheduled drive pass, not a test-owned child drive, must select
+	// the re-armed wake and present the reopened report.
+	lane.root.drivePendingDelegateAttention()
+	select {
+	case <-entered:
+	// TRIPWIRE: the pass launches the presentation as soon as the lane is
+	// unlocked; 30s only fires on a genuine hang, not a loaded shard's
+	// scheduling delay.
+	case <-time.After(30 * time.Second):
+		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
+		t.Fatalf("the re-armed wake never drove the reopened report (pending attention=%d (%v))", len(pending), pendErr)
+	}
+	if got, _ := wedgedSession.Load().(string); got != lane.delegateSess.id {
+		t.Fatalf("the reopened presentation ran on session %q, want the lane-owning delegate %q", got, lane.delegateSess.id)
+	}
+
+	releaseOnce.Do(func() { close(release) })
+	testwait.Until(t, "the delegate's attention turn to finish after release", func() bool {
+		lane.delegateSub.mu.Lock()
+		running := lane.delegateSub.running
+		lane.delegateSub.mu.Unlock()
+		return !running
+	})
+}
+
+// A cold delegate's scheduled restore revalidates its lane before any launch
+// runs, so a foreign-held lane refuses the restore itself: no launch refusal
+// stamps the child and no resident runtime retries into the launch-side quiet.
+// The owed row must still leave the drain's quiescence scans while it stays
+// pending for the paced retry, or a one-shot drain waits on a lane another
+// session holds forever. Once the lane is given back the restore revalidates
+// it, ends the quiet, and presents the report.
+func TestColdDelegateAttentionHeldLaneLeavesDrainQuiescence(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	var lanePath string
+	fixture := newColdDelegateFixtureConfigured(t, "", func(d *delegatestore.Descriptor) {
+		d.Isolation = "worktree"
+		lanePath = r.delegateLane(t, "cold-held-quiet", "dlg_coldheldquiet01", "034coldheldquiet001")
+		d.WorkingDir = lanePath
+	})
+	const attentionID = "delegate:cold-held-report"
+	writer, err := transcript.NewWriter(transcriptPath(fixture.stateDir, fixture.childID), transcript.Header{
+		SessionID:       fixture.childID,
+		ParentSessionID: fixture.meta.ID,
+		Task:            "cold held report",
+		ProfileID:       "openai",
+		Model:           "gpt-5.2",
+		WorkingDir:      fixture.workspace,
+		Depth:           1,
+	})
+	if err != nil {
+		t.Fatalf("create cold delegate transcript: %v", err)
+	}
+	turn := schema.NewTurn(schema.TurnSteering, llm.User("cold held report"))
+	turn.AttentionID = attentionID
+	if err := writer.AppendDurable(turn); err != nil {
+		t.Fatalf("append cold delegate attention: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close cold delegate transcript: %v", err)
+	}
+
+	const foreignSID = "034coldforeignholder001"
+	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
+	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", worktree.FormatSessionMarker(foreignSID), lanePath)
+
+	root, err := restoreDelegateResourceBootstrapSessionWithTestConfig(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir,
+		testConfig{sandboxProber: unsandboxedProber(fixture.workspace)})
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	if !root.delegateController.owesDelegateAttention(fixture.delegateID) {
+		t.Fatal("the cold delegate's report is not owed before the drive")
+	}
+	if !root.delegateController.hasDeliverableDelegateAttention() {
+		t.Fatal("the cold delegate's report is not deliverable before the refusal")
+	}
+
+	entered := make(chan struct{})
+	var enteredOnce sync.Once
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+		if req.SessionID == fixture.childID {
+			enteredOnce.Do(func() { close(entered) })
+		}
+		return agenttest.FinalResponse("done")
+	}})
+	quietCleared := make(chan bool, 4)
+	root.cfg.testOnly.afterDelegateAttentionRestore = func(delegateID string, _ *subagent) {
+		if delegateID != fixture.delegateID {
+			return
+		}
+		select {
+		case quietCleared <- root.delegateController.hasDeliverableDelegateAttention():
+		default:
+		}
+	}
+
+	root.drivePendingDelegateAttention()
+	if !root.delegateController.owesDelegateAttention(fixture.delegateID) {
+		t.Fatal("a foreign-held lane dropped the cold delegate's owed report instead of keeping it for the paced retry")
+	}
+	if root.delegateController.hasDeliverableDelegateAttention() {
+		// Error, not Fatal: the unlock below releases the lane so the deferred
+		// Close can finish, and the failure still names the regression.
+		t.Error("a cold delegate's foreign-held lane still counts as deliverable work: the drain cannot give up")
+	}
+	if _, locked, reason := r.laneLocked(t, lanePath); !locked || !strings.Contains(reason, foreignSID) {
+		t.Fatalf("the refusal touched the foreign lock: locked=%v reason=%q", locked, reason)
+	}
+
+	// Give the lane back: the next restore revalidates it, ends the quiet, and
+	// presents the report.
+	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
+	root.drivePendingDelegateAttention()
+	select {
+	case deliverable := <-quietCleared:
+		if !deliverable {
+			t.Fatal("a successful restore left the owed report quiet: the drain would ignore fresh attention")
+		}
+	default:
+		t.Fatal("the unlocked lane's restore never reached the attention drive")
+	}
+	select {
+	case <-entered:
+	// TRIPWIRE: the scripted in-process adapter answers as soon as the restored
+	// run reaches it; 30s only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
+		t.Fatal("the restored cold delegate never presented its owed report")
+	}
+}
+
 // A deliberate stop that cancels an in-flight attention presentation owns the
 // report's teardown, not the settle tail: the stop's discard machinery
 // enumerated the attention ids it knew at plan time, so a reopen appending a

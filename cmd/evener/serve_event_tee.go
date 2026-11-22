@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 )
@@ -82,9 +83,14 @@ func (t *verboseEventTee) observe(ev events.SessionEvent) {
 	}
 }
 
-// close stops the tee and waits for the writer goroutine to drain what it
-// already accepted, so a clean shutdown does not truncate the log.
+// close stops the tee and waits, within writerShutdownJoinBudget, for the
+// writer goroutine to drain what it already accepted, so a clean shutdown does
+// not truncate the log. The bound is the second half of never blocking on the
+// sink: observe lives on the bridge, and close is joined by serve's teardown.
 func (t *verboseEventTee) close() {
 	close(t.ch)
-	<-t.done
+	select {
+	case <-t.done:
+	case <-time.After(writerShutdownJoinBudget):
+	}
 }

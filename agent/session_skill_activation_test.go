@@ -839,16 +839,23 @@ func TestSkillActivation_Failure(t *testing.T) {
 		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
 			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}}
-		s := newSession(t, withAdapter(adapter), withDir(root),
-			withProfile(newAnthropicProfile("claude-test")))
+		namerAdapter := &agenttest.ScriptedAdapter{Provider: "namer-spy", Responder: func(llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant(`{"name":"Opaque Skill Attempt"}`)}
+		}}
+		s := newSession(t, withAdapter(adapter), withAdapter(namerAdapter), withDir(root), withStateDir(t.TempDir()),
+			withProfile(WithCheapModel(newAnthropicProfile("claude-test"), "namer-spy/namer")))
 		if err := os.Remove(filepath.Join(root, "skills", "opaque", "SKILL.md")); err != nil {
 			t.Fatal(err)
 		}
 		evs, stop := captureEvents(s)
 		_, err := s.ProcessInput(context.Background(), "/opaque REQUEST_93d2", nil)
+		s.sendersWG.Wait()
 		stop()
 		if len(adapter.Requests()) != 0 {
 			t.Fatalf("known failed activation dispatched %d dependent requests", len(adapter.Requests()))
+		}
+		if len(namerAdapter.Requests()) != 1 {
+			t.Fatalf("initial prompt session namer calls = %d, want 1", len(namerAdapter.Requests()))
 		}
 		if names := skillActivatedEventNames(*evs); len(names) != 0 {
 			t.Fatalf("failed activation emitted success events: %v", names)

@@ -22,7 +22,7 @@ import (
 	"primeradiant.com/evener/internal/devtool/covstmt"
 )
 
-// covstmtMain implements `evener dev covstmt PROFILE...`: one line per profile,
+// covstmtMain implements `evener-dev dev covstmt PROFILE...`: one line per profile,
 // "covered total" — the shape coverage-floor.sh and e2e-cover.sh read with
 // `read -r covered total` for the test, fuzz, and union tracks at once.
 func covstmtMain(args []string) int {
@@ -30,7 +30,7 @@ func covstmtMain(args []string) int {
 }
 
 func covstmtRun(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("evener dev covstmt", flag.ContinueOnError)
+	fs := flag.NewFlagSet("evener-dev dev covstmt", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	gaps := fs.Bool("gaps", false, "report ranked uncovered-statement gaps for one profile")
 	union := fs.Bool("union", false, "count PROFILE... as ONE profile: per-position dedup, any-hit union")
@@ -39,7 +39,7 @@ func covstmtRun(args []string, stdout, stderr io.Writer) int {
 	zero := fs.Bool("zero", false, "gaps: only wholly-uncovered units")
 	in := fs.String("in", "", "gaps: list uncovered blocks inside files matching this substring")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintln(stderr, "usage: evener dev covstmt PROFILE [PROFILE ...]")
+		_, _ = fmt.Fprintln(stderr, "usage: evener-dev dev covstmt PROFILE [PROFILE ...]")
 		_, _ = fmt.Fprintln(stderr, "  prints \"covered total\" per profile, one line each")
 		_, _ = fmt.Fprintln(stderr, "  --union  print ONE line counting all PROFILEs as a per-position union")
 		_, _ = fmt.Fprintln(stderr, "  --gaps  rank where the profile's uncovered statements are (one PROFILE)")
@@ -61,7 +61,7 @@ func covstmtRun(args []string, stdout, stderr io.Writer) int {
 		})
 		if len(stray) > 0 {
 			sort.Strings(stray)
-			_, _ = fmt.Fprintf(stderr, "evener dev covstmt: --gaps is required for %s\n", strings.Join(stray, ", "))
+			_, _ = fmt.Fprintf(stderr, "evener-dev dev covstmt: --gaps is required for %s\n", strings.Join(stray, ", "))
 			fs.Usage()
 			return 2
 		}
@@ -75,7 +75,7 @@ func covstmtRun(args []string, stdout, stderr io.Writer) int {
 	}
 	if *gaps {
 		if *union {
-			_, _ = fmt.Fprintln(stderr, "evener dev covstmt: --union and --gaps are mutually exclusive")
+			_, _ = fmt.Fprintln(stderr, "evener-dev dev covstmt: --union and --gaps are mutually exclusive")
 			fs.Usage()
 			return 2
 		}
@@ -88,7 +88,7 @@ func covstmtRun(args []string, stdout, stderr io.Writer) int {
 		// newline cannot fuse with the next profile's header and drop a block.
 		covered, total, err := covstmt.StmtCountsUnion(profiles)
 		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "evener dev covstmt: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "evener-dev dev covstmt: %v\n", err)
 			return 1
 		}
 		_, _ = fmt.Fprintf(stdout, "%d %d\n", covered, total)
@@ -102,7 +102,7 @@ func covstmtRun(args []string, stdout, stderr io.Writer) int {
 	for _, p := range profiles {
 		covered, total, err := covstmt.StmtCounts(p)
 		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "evener dev covstmt: %s: %v\n", p, err)
+			_, _ = fmt.Fprintf(stderr, "evener-dev dev covstmt: %s: %v\n", p, err)
 			return 1
 		}
 		lines = append(lines, fmt.Sprintf("%d %d", covered, total))
@@ -119,19 +119,19 @@ func covstmtRun(args []string, stdout, stderr io.Writer) int {
 // byte-for-byte so the script's output is unchanged.
 func covstmtGapsRun(profile, by string, top int, zeroOnly bool, inPattern string, stdout, stderr io.Writer) int {
 	if by != "package" && by != "file" {
-		_, _ = fmt.Fprintf(stderr, "evener dev covstmt: --by must be package or file (got %s)\n", by)
+		_, _ = fmt.Fprintf(stderr, "evener-dev dev covstmt: --by must be package or file (got %s)\n", by)
 		return 2
 	}
 	if top < 0 {
 		// A negative count is a typo, not "show nothing": clamping it to zero
 		// would exit 0 with an empty report, which reads as a clean run. Reject
 		// it like any other unusable flag value, so the caller sees the mistake.
-		_, _ = fmt.Fprintf(stderr, "evener dev covstmt: --top must not be negative (got %d)\n", top)
+		_, _ = fmt.Fprintf(stderr, "evener-dev dev covstmt: --top must not be negative (got %d)\n", top)
 		return 2
 	}
 	blocks, err := covstmt.Blocks(profile)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "evener dev covstmt: %s: %v\n", profile, err)
+		_, _ = fmt.Fprintf(stderr, "evener-dev dev covstmt: %s: %v\n", profile, err)
 		return 1
 	}
 	if inPattern != "" {

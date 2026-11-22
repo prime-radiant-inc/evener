@@ -26,7 +26,6 @@
 // in the raw disclosure. The watch/observer glyph vocabulary (◌/↩) is replaced
 // by the uniform tone treatment.
 import {
-  AnsiTailBuffer,
   entityOpenTarget,
   findEntityView,
   isPlainObject,
@@ -45,12 +44,27 @@ import {
 } from "../../../../transcriptDisplay/renderContext";
 import { Card, Chip, Disclosure, Markdown, MarkdownBubble, ToolIcon, type ToolIconKind } from "../../../../widgets";
 import { AnsiLineContent } from "../../../../widgets/codeblock/ansiLine";
-import { disclosureDefault } from "../../../../widgets/disclosure/disclosureStore";
+import { disclosureDefault, isDisclosureOpen, setDisclosureOpen } from "../../../../widgets/disclosure/disclosureStore";
 import { FailureGlyph } from "../../../../widgets/failureglyph";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EntityRef } from "../EntityRef";
 import { OpenTranscriptButton } from "../openTranscript";
 import styles from "./notificationcard.module.css";
+import {
+  boundedMessage,
+  boundedValue,
+  delegateCardLabel,
+  excerptPreview,
+  hiddenResultRows,
+  notificationDisclosureId,
+  notificationRendersBody,
+  rawDisclosureId,
+  STRUCTURED_NONE,
+  shownResultRows,
+  structuredResultNote,
+  structuredRowLabel,
+  structuredValueText,
+} from "./notificationText";
 
 const CLASS = {
   collapsible: requireClass(styles.collapsible, "notificationcard.module.css", "collapsible"),
@@ -83,16 +97,6 @@ const CLASS = {
   structuredNote: requireClass(styles.structuredNote, "notificationcard.module.css", "structuredNote"),
   staticHead: requireClass(styles.staticHead, "notificationcard.module.css", "staticHead"),
 };
-
-const EXCERPT_PREVIEW = 500;
-const MESSAGE_MAX = 8000;
-// The structured table's bounds, the message's MESSAGE_MAX for rows and
-// cells: the daemon accepts results up to a megabyte
-// (delegatestore.MaxTerminalStructuredResultBytes), and a many-keyed or
-// long-valued result must render a bounded window, not thousands of rows in
-// one mount. The full result stays in the daemon's frame and the transcript.
-const RESULT_ROWS_MAX = 100;
-const RESULT_VALUE_MAX = 2000;
 
 // The head's status glyph for every tone except error: one line-art shape per
 // parsed tone, receding in neutral ink at the rail's ambient 50% opacity like
@@ -130,33 +134,9 @@ function ExcerptText({ text, ansi }: { text: string; ansi: boolean }) {
   ));
 }
 
-// boundedShellTailPreview bounds a shell excerpt to its FINAL EXCERPT_PREVIEW
-// characters, not its first: the producer's own excerpt is already a tail of
-// retained output (agent/job_notify.go), so a head-cut on top of that hides
-// the command's newest, usually most useful lines behind its oldest ones.
-// AnsiTailBuffer is the shared ANSI tail-state machinery (also used live by
-// shellTool.tsx's ShellBody) - reused here rather than a second control
-// parser - so a cut landing inside an SGR sequence never leaks a raw
-// fragment, and styling active at the kept boundary is reconstructed as a
-// normalized SGR sequence right before the kept text.
-function boundedShellTailPreview(decoded: string): string {
-  const tail = new AnsiTailBuffer(EXCERPT_PREVIEW).update(decoded);
-  return tail.truncated ? `…${tail.renderedText}` : tail.renderedText;
-}
-
 function Excerpt({ text, ansi }: { text: string; ansi: boolean }) {
-  // The parser hands the excerpt already decoded (issue #3086), so this slice
-  // and the tail bound work on plain text.
-  const body = text.trim();
-  if (body === "") return null;
-  // Direction matches the parse mode: a shell excerpt (ansi) is bounded to
-  // its tail, a delegate report head (non-ansi) keeps its existing
-  // head-truncated preview.
-  const preview = ansi
-    ? boundedShellTailPreview(body)
-    : body.length <= EXCERPT_PREVIEW
-      ? body
-      : `${body.slice(0, EXCERPT_PREVIEW)}…`;
+  const preview = excerptPreview(text, ansi);
+  if (preview === "") return null;
   // Keep unstructured output bounded in the primary card. The complete
   // diagnostic payload remains available in the card's one raw disclosure.
   return (
@@ -171,6 +151,32 @@ function Field({ label, value, testId }: { label: string; value: ReactNode; test
     <span className={CLASS.field} data-testid={testId}>
       <span className={CLASS.fieldLabel}>{label}</span> {value}
     </span>
+  );
+}
+
+// The verbatim frame, behind the card's one raw disclosure. It stays the
+// native <details>/<summary> pair the card has always shown (the marker row is
+// part of that design), but its open state lives in the shared disclosure store
+// so Find can open it: a match only the frame holds opens this fold and
+// highlights the word. A closed fold is aria-hidden, which is what keeps Find's
+// marking out of words a reader cannot see (<details>'s closed body is hidden
+// to assistive tech and to marking alike).
+function RawNotification({ id, text }: { id: string; text: string }) {
+  const open = isDisclosureOpen(id, false);
+  return (
+    <details
+      className={CLASS.raw}
+      data-testid="notification-raw-disclosure"
+      open={open}
+      onToggle={(event) => {
+        if (event.currentTarget.open !== open) setDisclosureOpen(id, event.currentTarget.open);
+      }}
+    >
+      <summary className={CLASS.summary}>Raw notification</summary>
+      <pre className={CLASS.rawBody} data-testid="notification-raw" aria-hidden={open ? undefined : "true"}>
+        {text}
+      </pre>
+    </details>
   );
 }
 
@@ -243,47 +249,17 @@ function NotificationMetadata({ notification }: { notification: ParsedNotificati
   return <div className={CLASS.metadata}>{fields}</div>;
 }
 
-// The verdict reasons the daemon writes beside a structured result it refused
-// (agent/jobs.go's structuredResultReason* codes), said plainly for the one
-// reader who asked for a schema and needs to know their result did not
-// survive. The verbatim frame keeps the details a code cannot carry.
-const STRUCTURED_RESULT_NOTES: Record<string, string> = {
-  schema_result_missing: "Structured result missing: the run ended without reporting one.",
-  schema_result_too_large: "Structured result too large to show.",
-  schema_validation_failed: "Structured result failed schema validation.",
-  schema_capture_failed: "Structured result could not be captured.",
-};
-
-// A schema row's key in words (finding_verdict → "Finding verdict"), bounded
-// as a value is - a schema key can be as long as its author likes; the raw
-// keys stay in the daemon's frame, which is the verbatim record.
-function structuredRowLabel(key: string): string {
-  const words = key.replaceAll("_", " ");
-  return `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
-}
-
-// One schema value as readable text: scalars as they are, arrays as a joined
-// list, nested objects as their JSON (schemas that nest are rare, and their
-// shape is the caller's own). An absent value says so, quietly - an empty
-// cell reads as a gap.
-function boundedValue(text: string): string {
-  return text.length <= RESULT_VALUE_MAX ? text : `${text.slice(0, RESULT_VALUE_MAX)}…`;
-}
-
+// One schema value as the table paints it. An absent value says so, quietly -
+// an empty cell reads as a gap.
 function structuredRowValue(value: unknown): ReactNode {
-  if (value === null || value === undefined || (Array.isArray(value) && value.length === 0)) {
-    return (
-      <span className={CLASS.resultNone} data-empty="true">
-        (none)
-      </span>
-    );
-  }
-  if (Array.isArray(value)) {
-    if (value.every((entry) => typeof entry !== "object")) return boundedValue(value.map(String).join(", "));
-    return boundedValue(JSON.stringify(value));
-  }
-  if (typeof value === "object") return boundedValue(JSON.stringify(value));
-  return boundedValue(String(value));
+  const text = structuredValueText(value);
+  return text === STRUCTURED_NONE ? (
+    <span className={CLASS.resultNone} data-empty="true">
+      {text}
+    </span>
+  ) : (
+    text
+  );
 }
 
 // The structured output as a table (mockups 24-delegate-complete §A): one row
@@ -301,7 +277,7 @@ function StructuredResult({ notification }: { notification: ParsedNotification }
         data-testid="notification-structured-note"
         data-reason={notification.structuredResultReason}
       >
-        {STRUCTURED_RESULT_NOTES[notification.structuredResultReason ?? ""] ?? "Structured result not shown."}
+        {structuredResultNote(notification.structuredResultReason)}
       </div>
     );
   }
@@ -316,7 +292,8 @@ function StructuredResult({ notification }: { notification: ParsedNotification }
   }
   const rows = Object.entries(result);
   if (rows.length === 0) return null;
-  const shown = rows.slice(0, RESULT_ROWS_MAX);
+  const shown = shownResultRows(rows);
+  const hidden = hiddenResultRows(rows.length);
   return (
     <table className={CLASS.resultTable} data-testid="notification-structured-result">
       <tbody>
@@ -328,10 +305,10 @@ function StructuredResult({ notification }: { notification: ParsedNotification }
             <td className={CLASS.resultValue}>{structuredRowValue(value)}</td>
           </tr>
         ))}
-        {rows.length > shown.length && (
+        {hidden > 0 && (
           <tr>
             <td className={CLASS.resultNone} colSpan={2}>
-              (+{rows.length - shown.length} more rows)
+              (+{hidden} more rows)
             </td>
           </tr>
         )}
@@ -360,22 +337,11 @@ export function NotificationCard({
   const entityOwner = sessionRef ?? contextOwner;
   const { config } = context;
   const disclosureScope = disclosureScopeForSession(context, sessionRef);
-  // The disclosure identity prefers the watch id for watch cards: two
-  // watches on the same job share a jobId, and keying by it couples their
-  // expand/collapse state. Content joins identity — repeat firings of one
-  // watch (timer repeats especially) are distinct deliveries that expand
-  // independently; keying by watch id alone re-collapses them into one.
-  // Legacy frames without a watch id fall back to the job id, then the raw
-  // text, exactly as before. Non-watch cards keep delegate → job → raw
-  // identity untouched.
-  const notificationId =
-    notification.type === "watch"
-      ? notification.watchId
-        ? `${notification.watchId}:${notification.rawText}`
-        : (notification.jobId ?? notification.rawText)
-      : (notification.delegateId ?? notification.jobId ?? notification.rawText);
-  const scopedNotificationId = `notification:${sessionRef ?? "default"}:${notificationId}${disclosureId ? `:${disclosureId}` : ""}`;
+  // The card's own identity and its raw frame's, both scoped to this view:
+  // Find opens the same keys (notificationText's identity rule).
+  const scopedNotificationId = notificationDisclosureId(notification, sessionRef, disclosureId);
   const disclosureKey = scopedDisclosureId(disclosureScope, scopedNotificationId);
+  const rawKey = scopedDisclosureId(disclosureScope, rawDisclosureId(scopedNotificationId));
   const disclosureFallback =
     expandDetailsByDefault(config) || disclosureDefault(disclosureScope, scopedNotificationId, false);
   // Only warning earns a Chip; success + neutral recede with no chip at all
@@ -410,12 +376,7 @@ export function NotificationCard({
   // appends riding after it - the same composition the parser's `secondary`
   // carries, the trigger standing in for the plain label. When the entity map
   // cannot answer, EntityRef falls back to plain text.
-  const delegateLabel =
-    notification.type === "delegate"
-      ? [notification.name, notification.description, notification.delegateId].find(
-          (part) => part !== undefined && part !== "",
-        )
-      : undefined;
+  const delegateLabel = delegateCardLabel(notification);
   // The ending composed onto the head is the packet frame's display prose
   // (`ending`, delegateEndingText); a legacy attribute frame's `reason` is a
   // raw producer code and never reaches the head.
@@ -426,28 +387,9 @@ export function NotificationCard({
   // A delegate head whose body would render nothing - a machinery stop, a
   // failure whose whole error is its ending (mockups 24-delegate-complete §C)
   // - is the whole row: a disclosure that expanded to an empty body would be
-  // an affordance lie, so it renders as a static line. The terms below mirror
-  // the body's blocks one for one (metadata, prose, message-or-excerpt,
-  // structured result, concerns; the raw disclosure is delegate-suppressed) -
-  // keep them in step. Non-delegate cards always render the raw disclosure, so
-  // they always have a body.
-  // A structured result's presence: a record says something by its keys, and
-  // any other validated shape (a top-level array or scalar schema's result)
-  // by existing. An empty record is not a report - the row stays static
-  // rather than expanding to a body whose only block renders nothing.
-  const hasStructuredResult =
-    notification.structuredResult !== undefined &&
-    (!isPlainObject(notification.structuredResult) || Object.keys(notification.structuredResult).length > 0);
-  const delegateHasReport =
-    notification.type !== "delegate" ||
-    Boolean(
-      notification.message ||
-        notification.prose ||
-        notification.excerpt ||
-        hasStructuredResult ||
-        notification.structuredResultValid === false ||
-        notification.concerns.length > 0,
-    );
+  // an affordance lie, so it renders as a static line. The predicate is shared
+  // with Find, which must not offer to open a disclosure that is not there.
+  const delegateHasReport = notificationRendersBody(notification);
   // The delegate's name, in two forms. On the static head (a plain row) it is
   // the shared entity-card trigger. In a disclosure summary it is the same
   // card on hover but never a focus stop or click target of its own: the
@@ -582,13 +524,10 @@ export function NotificationCard({
                 )}
                 {notification.message ? (
                   notification.type === "delegate" ? (
-                    <MarkdownBubble
-                      source={notification.message.slice(0, MESSAGE_MAX)}
-                      dataTestId="notification-message"
-                    />
+                    <MarkdownBubble source={boundedMessage(notification.message)} dataTestId="notification-message" />
                   ) : (
                     <div className={CLASS.excerpt} data-testid="notification-field-excerpt">
-                      <Markdown source={notification.message.slice(0, MESSAGE_MAX)} />
+                      <Markdown source={boundedMessage(notification.message)} />
                     </div>
                   )
                 ) : (
@@ -598,14 +537,7 @@ export function NotificationCard({
                 {notification.concerns.length > 0 && (
                   <div className={CLASS.concerns}>Concerns: {notification.concerns.join("; ")}</div>
                 )}
-                {notification.type !== "delegate" && (
-                  <details className={CLASS.raw} data-testid="notification-raw-disclosure">
-                    <summary className={CLASS.summary}>Raw notification</summary>
-                    <pre className={CLASS.rawBody} data-testid="notification-raw">
-                      {notification.rawText}
-                    </pre>
-                  </details>
-                )}
+                {notification.type !== "delegate" && <RawNotification id={rawKey} text={notification.rawText} />}
               </div>
             </Card>
           </div>

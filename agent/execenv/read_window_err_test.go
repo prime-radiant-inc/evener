@@ -56,7 +56,7 @@ func TestReadWindowReportsCancellationNotAStall(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := readNumberedWindowCtx(ctx, "big.log", "big.log", src, 4<<20, new(1), new(2))
+		_, _, err := readNumberedWindowCtx(ctx, "big.log", "big.log", src, 4<<20, new(1), new(2))
 		done <- err
 	}()
 	// Cancel the call while its read is parked. The deadline watcher inside
@@ -88,7 +88,7 @@ func TestReadWindowStillReportsAGenuineStall(t *testing.T) {
 		{data: []byte("first line\n")},
 		{err: os.ErrDeadlineExceeded},
 	}}
-	_, err := readNumberedWindowCtx(context.Background(), "big.log", "big.log", src, 4<<20, new(1), new(2))
+	_, _, err := readNumberedWindowCtx(context.Background(), "big.log", "big.log", src, 4<<20, new(1), new(2))
 	if !errors.Is(err, errGrepStreamStalled) {
 		t.Fatalf("windowed read whose deadline fired with a live context = %v, want the stall error", err)
 	}
@@ -131,7 +131,7 @@ func TestReadWindowKeepsAnErrorReturnedWithData(t *testing.T) {
 		{data: []byte(strings.Repeat("row\n", 8))},
 		{data: []byte(strings.Repeat("row\n", 56)), err: boom},
 	}}
-	_, err := readNumberedWindowCtx(context.Background(), "big.log", "big.log", src, 4<<20, new(1), new(100))
+	_, _, err := readNumberedWindowCtx(context.Background(), "big.log", "big.log", src, 4<<20, new(1), new(100))
 	if !errors.Is(err, boom) {
 		t.Fatalf("windowed read over a reader that fails with its data = %v, want %v", err, boom)
 	}
@@ -144,15 +144,18 @@ func TestReadWindowEndsCleanlyOnDataWithEOF(t *testing.T) {
 	t.Parallel()
 	body := "first\nsecond\nthird\n"
 	src := &scriptedReader{steps: []scriptedStep{
-		{data: []byte(body[:8])},
-		{data: []byte(body[8:]), err: io.EOF},
+		{data: []byte(body[:12])},
+		{data: []byte(body[12:]), err: io.EOF},
 	}}
-	got, err := readNumberedWindowCtx(context.Background(), "big.log", "big.log", src, 4<<20, new(1), new(2))
+	got, meta, err := readNumberedWindowCtx(context.Background(), "big.log", "big.log", src, 4<<20, new(1), new(2))
 	if err != nil {
 		t.Fatalf("windowed read of a reader ending with data+EOF: %v", err)
 	}
 	off, lim := 1, 2
-	if want := NumberLinesBytes([]byte(body), &off, &lim); got != want {
+	if want := NumberLines(body, &off, &lim); !strings.HasPrefix(got, want) {
 		t.Fatalf("window = %q, want %q", got, want)
+	}
+	if meta.StartLine != 1 || meta.EndLine != 2 || meta.TotalLines != 0 {
+		t.Fatalf("meta = %+v, want StartLine=1 EndLine=2 TotalLines=0", meta)
 	}
 }

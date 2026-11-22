@@ -847,7 +847,7 @@ var evenerDevBuild struct {
 func TestServeDevUsageAndUnknownSubcommand(t *testing.T) {
 	code, stdout, stderr := execEvenerDev(t)
 	if code != 2 || stdout != "" || stderr == "" {
-		t.Fatalf("bare evener dev = exit %d, stdout %q, stderr %q; want 2 with usage on stderr only", code, stdout, stderr)
+		t.Fatalf("bare evener-dev dev = exit %d, stdout %q, stderr %q; want 2 with usage on stderr only", code, stdout, stderr)
 	}
 	code, stdout, stderr = execEvenerDev(t, "no-such-subcommand")
 	if code != 2 || stdout != "" {

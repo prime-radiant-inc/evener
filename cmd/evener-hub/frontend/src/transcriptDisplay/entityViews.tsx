@@ -10,8 +10,37 @@
 //
 // No provider means no map: EntityRef renders the id as plain text, exactly as
 // it did before any map reached it.
-import type { EntityView } from "@evener/appwire-client";
+import {
+  buildEntityView,
+  type EntityView,
+  type EvenerDelegateInfo,
+  projectSessionActivity,
+  type SessionActivitySnapshot,
+  type TurnModel,
+} from "@evener/appwire-client";
 import { createContext, type ReactNode, useContext } from "react";
+
+/** Builds the entity map a surface can share from evidence it already holds:
+ * the session-activity snapshot, plus a transcript's optional turns and live
+ * delegate overlay. It owns no reads. */
+export function sessionEntityViews({
+  sessionRef,
+  snapshot,
+  delegates,
+  turns = [],
+}: {
+  sessionRef: string;
+  snapshot: SessionActivitySnapshot | null;
+  delegates?: EvenerDelegateInfo[];
+  turns?: TurnModel[];
+}): Map<string, EntityView> {
+  const tree = snapshot ? (projectSessionActivity(snapshot).tree ?? undefined) : undefined;
+  const stale = Boolean(
+    snapshot?.delegates.error || snapshot?.jobs.error || snapshot?.delegates.unavailable || snapshot?.jobs.unavailable,
+  );
+  const ended = snapshot?.context?.availability === "retained";
+  return buildEntityView({ sessionRef, tree, delegates, turns, stale, ended });
+}
 
 const EntityOwnerRefContext = createContext<string | undefined>(undefined);
 

@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -93,6 +95,13 @@ type RuntimeCredentials struct {
 	// Expiry is the token expiry for OAuth-sourced credentials; zero for
 	// env-sourced credentials.
 	Expiry time.Time
+	// AccountID is the ChatGPT account id the token authenticates as, read from
+	// the same record the token came from. A caller must send it with the
+	// bearer rather than re-reading the record by instance name: a rename lands
+	// a refreshed record under its new name while the request is in flight, so
+	// the name it asked for can be gone by the time the header is set. Empty for
+	// env-sourced credentials and for a record that names no account.
+	AccountID string
 }
 
 type callbackServer interface {
@@ -482,11 +491,7 @@ func (s *Service) ResolveRuntimeCredentials(ctx context.Context, stateDir, insta
 	}
 
 	if !needsRefresh(s.now(), record.Expiry) {
-		return RuntimeCredentials{
-			BearerToken: record.AccessToken,
-			Source:      AuthSourceOAuth,
-			Expiry:      record.Expiry,
-		}, nil
+		return credentialsFromRecord(record), nil
 	}
 
 	if strings.TrimSpace(record.RefreshToken) == "" {
@@ -524,11 +529,7 @@ func (s *Service) refreshExpiredRecord(ctx context.Context, stateDir, instanceNa
 		return RuntimeCredentials{}, err
 	}
 	if !needsRefresh(s.now(), current.Expiry) {
-		return RuntimeCredentials{
-			BearerToken: current.AccessToken,
-			Source:      AuthSourceOAuth,
-			Expiry:      current.Expiry,
-		}, nil
+		return credentialsFromRecord(current), nil
 	}
 	// The pre-lock guard checked the record loaded before the lock; the record
 	// may have been rewritten since, so re-check the re-read record before
@@ -556,14 +557,154 @@ func (s *Service) refreshExpiredRecord(ctx context.Context, stateDir, instanceNa
 		applyClaims(&refreshed, claims)
 	}
 
-	if err := SaveAuth(stateDir, instanceName, refreshed); err != nil {
+	committed, err := commitRefreshedRecord(stateDir, instanceName, current, refreshed, s.now())
+	if err != nil {
 		return RuntimeCredentials{}, err
 	}
+	return credentialsFromRecord(committed), nil
+}
+
+// credentialsFromRecord returns the runtime credentials a stored OAuth record
+// supplies. AccountID falls back to the id token's claims for a record written
+// before the account id was persisted as its own field.
+func credentialsFromRecord(record AuthRecord) RuntimeCredentials {
+	accountID := record.AccountID
+	if accountID == "" {
+		if claims, err := ParseIDTokenClaims(record.IDToken); err == nil {
+			accountID = claims.AccountID
+		}
+	}
 	return RuntimeCredentials{
-		BearerToken: refreshed.AccessToken,
+		BearerToken: record.AccessToken,
 		Source:      AuthSourceOAuth,
-		Expiry:      refreshed.Expiry,
-	}, nil
+		Expiry:      record.Expiry,
+		AccountID:   accountID,
+	}
+}
+
+// errAuthRecordChanged reports that the record a refresh was derived from was
+// replaced on disk while its token refresh was in flight.
+var errAuthRecordChanged = errors.New("auth record changed while its token was refreshed")
+
+// sameAuthRecord reports whether a and b are the same credential record. It
+// compares the timestamps by instant: time.Time's == also compares the location
+// pointer, and every JSON decode of a fixed-offset timestamp allocates its own
+// *time.Location, so == would call an unchanged record changed. Provider is
+// left out because it names the instance the record is filed under, which a
+// rename rewrites.
+func sameAuthRecord(a, b AuthRecord) bool {
+	if !a.ObtainedAt.Equal(b.ObtainedAt) || !a.Expiry.Equal(b.Expiry) {
+		return false
+	}
+	a.ObtainedAt, a.Expiry = time.Time{}, time.Time{}
+	b.ObtainedAt, b.Expiry = time.Time{}, time.Time{}
+	a.Provider, b.Provider = "", ""
+	return a == b
+}
+
+// commitRefreshedRecord persists refreshed over the record it was derived from.
+// It holds the store's cross-process lock across a re-read of the record and
+// the write, so a record renamed or deleted while the refresh was in flight is
+// never written back under its old name, and a record another process saved in
+// the meantime is not overwritten: a usable one is returned instead, and one
+// that still needs refreshing is reported as a transient change for the caller
+// to retry against. When the old name is gone but exactly one other record is
+// the one this refresh redeemed a token for, the rename's destination, the
+// rotated credentials land there rather than being discarded (the issuer has
+// already burned the token they replace).
+//
+// The returned record is the one the caller should use, and it is the one on
+// disk. The lock wait has no deadline on purpose: once the refresh token has
+// been redeemed the rotated record has to land, or the token it replaced is
+// lost. Every holder of this lock holds it across file writes only, never a
+// network call, so the wait is short.
+func commitRefreshedRecord(stateDir, instanceName string, loaded, refreshed AuthRecord, now time.Time) (AuthRecord, error) {
+	var committed AuthRecord
+	err := withAuthStoreLock(stateDir, func() error {
+		onDisk, loadErr := LoadAuth(stateDir, instanceName)
+		switch {
+		case errors.Is(loadErr, ErrAuthNotFound):
+			// The instance was renamed or signed out while the refresh was in
+			// flight. Writing here would recreate a record under a name nothing
+			// owns, which the registry can surface as a phantom instance.
+			dest, ok, err := renamedAuthDestination(stateDir, loaded)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return loginRequiredError(ErrAuthNotFound)
+			}
+			refreshed.Provider = dest
+			if err := saveAuthRecordLocked(stateDir, dest, refreshed); err != nil {
+				return err
+			}
+			committed = refreshed
+			return nil
+		case loadErr != nil && !errors.Is(loadErr, ErrAuthCorrupt):
+			return loadErr
+		case loadErr == nil && !sameAuthRecord(onDisk, loaded):
+			// Another writer got there first. Reuse its record when it is
+			// usable; otherwise let the caller retry against it rather than
+			// overwrite a record this refresh never saw.
+			if !needsRefresh(now, onDisk.Expiry) {
+				committed = onDisk
+				return nil
+			}
+			return errAuthRecordChanged
+		}
+		// The record is unchanged, or unreadable: there is nothing on disk to
+		// reuse, and a refresh whose token was redeemed must land.
+		if err := saveAuthRecordLocked(stateDir, instanceName, refreshed); err != nil {
+			return err
+		}
+		committed = refreshed
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			// The auth directory itself is gone, so every record in it is too.
+			return AuthRecord{}, loginRequiredError(ErrAuthNotFound)
+		}
+		return AuthRecord{}, err
+	}
+	return committed, nil
+}
+
+// renamedAuthDestination finds the one record filed under another instance name
+// that is the record loaded was read from: the record a rename moved while this
+// refresh was in flight. Exactly one match is a destination. No match means the
+// name was signed out rather than renamed, and more than one means the
+// destination cannot be told from another instance holding the same credential;
+// both report false so the caller writes nothing.
+func renamedAuthDestination(stateDir string, loaded AuthRecord) (string, bool, error) {
+	entries, err := os.ReadDir(filepath.Join(stateDir, authDirName))
+	if err != nil {
+		return "", false, fmt.Errorf("list auth records: %w", err)
+	}
+	dest := ""
+	for _, entry := range entries {
+		// Only an auth record can be the destination: a refusal note beside one
+		// does not end in authFileSuffix, and a subdirectory or symlink is not
+		// a record.
+		if !entry.Type().IsRegular() || !strings.HasSuffix(entry.Name(), authFileSuffix) {
+			continue
+		}
+		name := strings.TrimSuffix(entry.Name(), authFileSuffix)
+		candidate, err := LoadAuth(stateDir, name)
+		if err != nil {
+			// Missing, corrupt, or unreadable: not the record this refresh
+			// redeemed a token for.
+			continue
+		}
+		if !sameAuthRecord(candidate, loaded) {
+			continue
+		}
+		if dest != "" {
+			return "", false, nil
+		}
+		dest = name
+	}
+	return dest, dest != "", nil
 }
 
 // NeedsLogin reports whether the user has to sign in again to recover r: its

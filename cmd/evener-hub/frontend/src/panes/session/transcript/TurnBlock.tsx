@@ -30,7 +30,7 @@ import { ToolRunGroup } from "./ToolRunGroup";
 import { TurnDoneEndCap } from "./TurnDoneEndCap";
 import { TurnFailureEndCap } from "./TurnFailureEndCap";
 import { toolRendererFor } from "./toolRenderers";
-import { foldTurnEntries, type ToolRun } from "./toolRuns";
+import { foldTurnEntries, intentGroupId, intentRunAt, type ToolRun } from "./toolRuns";
 import styles from "./turnblock.module.css";
 import { asTurnError } from "./turnFailure";
 import { itemRendererFor, threadFingerprintForItem } from "./types";
@@ -160,7 +160,7 @@ export function ProjectedIntentGroup({
   const context = useTranscriptRenderContext();
   const { config } = context;
   const scope = disclosureScopeForSession(context, undefined);
-  const identity = rowId ?? `intent-group:${entries[0]?.id ?? "empty"}`;
+  const identity = rowId ?? intentGroupId(entries[0]?.id);
   const disclosureKey = scopedDisclosureId(scope, identity);
   const namedIntent = config.content.kind === "preset" && config.content.level === "intent";
   const fallback = namedIntent || expandDetailsByDefault(config) || disclosureDefault(scope, identity, false);
@@ -350,16 +350,12 @@ export function TurnBlock({
       continue;
     }
     if (entry.kind === "intent") {
-      const group: Extract<ProjectedEntry, { kind: "intent" }>[] = [entry];
-      while (laidOut[index + 1]?.kind === "intent") {
-        index += 1;
-        const next = laidOut[index];
-        if (next?.kind === "intent") group.push(next);
-      }
+      const run = intentRunAt(laidOut, index);
+      index = run.end - 1;
       renderedEntries.push(
         <ProjectedIntentGroup
-          key={`intent-group:${group[0]?.id}`}
-          entries={group}
+          key={intentGroupId(run.entries[0]?.id)}
+          entries={run.entries}
           viewAnchorIndex={viewAnchorIndex}
           sessionRef={sessionRef}
           renderContext={itemRenderContext}

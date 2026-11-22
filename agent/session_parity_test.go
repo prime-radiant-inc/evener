@@ -759,7 +759,8 @@ func TestParity_ToolOutputTruncation(t *testing.T) {
 
 			// Create a file larger than the read_file limit (50,000 chars).
 			dir := sess.env.WorkingDirectory()
-			big := strings.Repeat("x", 60_000)
+			const totalLines = 1200
+			big := strings.Repeat(strings.Repeat("x", 60)+"\n", totalLines)
 			if err := os.WriteFile(filepath.Join(dir, "big.txt"), []byte(big), 0644); err != nil {
 				t.Fatal(err)
 			}
@@ -776,20 +777,27 @@ func TestParity_ToolOutputTruncation(t *testing.T) {
 			if len(reqs) < 2 {
 				t.Fatalf("expected at least 2 requests, got %d", len(reqs))
 			}
-			found := false
+			var toolOut string
 			for _, m := range reqs[1].Messages {
 				for _, p := range m.Content {
 					if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
 						if s, ok := p.ToolResult.Content.(string); ok {
-							if strings.Contains(s, "Tool output was truncated") {
-								found = true
-							}
+							toolOut = s
 						}
 					}
 				}
 			}
-			if !found {
-				t.Fatal("expected truncation marker in tool result for oversized read_file output")
+			if toolOut == "" {
+				t.Fatal("expected tool result content for oversized read_file output")
+			}
+			if len(toolOut) >= len(big) || len(toolOut) > 50_000 {
+				t.Fatalf("read_file result length = %d, want strictly bounded below %d and <= 50000", len(toolOut), len(big))
+			}
+			if !strings.HasPrefix(toolOut, "1\t") || strings.Contains(toolOut, "1200\t") {
+				t.Fatalf("expected head-only page starting at line 1 and stopping before line 1200; len=%d", len(toolOut))
+			}
+			if !strings.Contains(toolOut, "1200") || !strings.Contains(toolOut, "offset=") {
+				t.Fatalf("expected continuation footer naming total lines (1200) and next offset=; tail=%q", toolOut[max(0, len(toolOut)-200):])
 			}
 		})
 	}
@@ -941,6 +949,6 @@ func makeEditCall(provider, id, file, old, new_ string) llm.ContentPart {
 	}
 	return llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
 		ID: id, Name: "edit_file", Type: "function",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"file_path":%q,"old_string":%q,"new_string":%q}`, file, old, new_)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"file_path":%q,"edits":[{"old_string":%q,"new_string":%q}]}`, file, old, new_)),
 	}}
 }

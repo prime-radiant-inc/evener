@@ -56,15 +56,13 @@ type delegateRuntimeReclamationCandidate struct {
 // ClaimRuntimeReclamation reserves enough quiescent terminal runtime subtrees
 // to admit required new resident runtimes. The durable delegate tree is not
 // mutated; the claim only fences process-local runtime ownership while callers
-// close the selected sessions outside the controller mutex.
+// release the selected sessions outside the controller mutex.
 //
-// Unlike the idle release, capacity reclamation deliberately does not refuse
-// a subtree that owns a shared task store: eviction here is terminal, closing
-// the resumability of every member it tears down. A resolver elsewhere in the
-// tree that names an evicted member as its shared-store owner fails its
-// owner-residency check on the next resume — eviction behavior this path
-// has always had — which the idle release's non-terminal teardown must not
-// reproduce, hence the guard there and not here.
+// Capacity reclamation is residency-only, exactly like the idle release: it
+// unloads resident runtimes without closing resumability, so it must also
+// refuse a subtree that owns a shared task store. A resolver elsewhere in the
+// tree that names a released member as its shared-store owner would fail its
+// owner-residency check on the next cold restore.
 func (c *delegateTreeController) ClaimRuntimeReclamation(required int) (*delegateRuntimeReclamationClaim, error) {
 	retirementRelease, retirementErr := c.beginRetirementMutation()
 	if retirementErr != nil {
@@ -107,6 +105,11 @@ func (c *delegateTreeController) ClaimRuntimeReclamation(required int) (*delegat
 		return nil, nil
 	}
 
+	// A residency-only release must keep any session named as a shared task
+	// store owner resident. Collect the owners once: the per-candidate check
+	// below runs under this mutex and would otherwise rescan the whole tree for
+	// every candidate.
+	sharedStoreOwners := c.sharedTaskStoreOwnerSessionsLocked()
 	candidatesByID := make(map[string]delegateRuntimeReclamationCandidate)
 	for id, aggregate := range c.durable {
 		if !c.isResidentTerminalRuntimeLocked(id, aggregate) {
@@ -114,6 +117,13 @@ func (c *delegateTreeController) ClaimRuntimeReclamation(required int) (*delegat
 		}
 		entries, ok := c.claimableRuntimeSubtreeLocked(id)
 		if !ok {
+			continue
+		}
+		if subtreeOwnsSharedTaskStore(entries, sharedStoreOwners) {
+			// Residency-only release keeps every member resumable, so a
+			// resolver naming one of them as its shared task store owner
+			// must keep that owner resident. Skip the subtree; admission
+			// fails loudly if too few safe candidates remain.
 			continue
 		}
 		candidatesByID[id] = delegateRuntimeReclamationCandidate{
@@ -125,9 +135,9 @@ func (c *delegateTreeController) ClaimRuntimeReclamation(required int) (*delegat
 		}
 	}
 
-	// A claim closes a whole quiescent subtree. Keep only its highest resident
-	// root so descendants are never selected twice or closed independently of a
-	// reclaimable retained parent.
+	// A claim releases a whole quiescent subtree. Keep only its highest resident
+	// root so descendants are never selected twice or released independently of
+	// a reclaimable retained parent.
 	candidates := make([]delegateRuntimeReclamationCandidate, 0, len(candidatesByID))
 	for id, candidate := range candidatesByID {
 		hasCandidateAncestor := false
@@ -268,8 +278,8 @@ func (c *delegateTreeController) claimableRuntimeSubtreeLocked(rootID string) ([
 	members := c.subtreeMembersLocked(rootID)
 	for id := range members {
 		if c.laneHandoffCoversLocked(id) {
-			// A lane handoff owns this subtree; a terminal reclaim would tear
-			// down runtimes the handoff is about to hand over.
+			// A lane handoff owns this subtree; a reclaim would release
+			// runtimes the handoff is about to hand over.
 			return nil, false
 		}
 	}
@@ -453,9 +463,9 @@ func (c *delegateTreeController) ownerRuntimeLocked(aggregate *delegatestore.Agg
 
 // unhookReclaimedRuntimeRecord removes a reclaimed member's record from its
 // owner's subagent manager so the released runtime leaves no live record
-// behind. Both reclamation paths — capacity eviction and the idle release —
-// unhook identically; the ordering around the unhook differs and stays
-// per-caller.
+// behind. Both reclamation paths — capacity pressure and the idle release —
+// run the same sequence: unhook, clear the exact resident pointers, and only
+// then settle the released runtimes.
 func unhookReclaimedRuntimeRecord(entry delegateRuntimeReclamationEntry) {
 	entry.runtime.releaseTranscriptFrontier()
 	if entry.ownerRuntime != nil && entry.ownerRuntime.subagents != nil {
@@ -463,6 +473,13 @@ func unhookReclaimedRuntimeRecord(entry delegateRuntimeReclamationEntry) {
 	}
 }
 
+// reclaimDelegateRuntimeCapacity frees resident runtime capacity for required
+// new resident runtimes. It selects quiescent terminal subtrees and releases
+// them residency-only, exactly as the idle timer does: the resident runtime is
+// unhooked from its owner's manager and its exact live pointer cleared, and
+// only process-local resources settle. Durable identity, transcripts, watches,
+// isolation lanes and worktrees survive, and every released member stays
+// resumable; no SessionEnd hook runs and no session_closed boundary is emitted.
 func (s *Session) reclaimDelegateRuntimeCapacity(required int) (err error) {
 	if s == nil || s.delegateController == nil {
 		return errors.New("delegate controller is unavailable")
@@ -478,23 +495,57 @@ func (s *Session) reclaimDelegateRuntimeCapacity(required int) (err error) {
 		}
 	}()
 
+	// Releasing a runtime with session-local work still unsettled would strand
+	// that work: this release is non-terminal, so a queued notification, a
+	// pending watch send, or a delivery parcel would lose its only consumer
+	// while the delegate itself stays resumable. Refuse the claim rather than
+	// force the release; the runtime stays warm and admission fails loudly.
+	for _, entry := range claim.entries {
+		if !entry.runtime.idleReleasePregatesClear() {
+			return fmt.Errorf("retained delegate limit reached (%d): claimed runtime subtree still holds unsettled session work", s.delegateController.maxRetainedTerminal)
+		}
+	}
+
+	// Persist each member's durable meta first: unlike a terminal close, this
+	// release never reaches the close's meta flush, so a goal or note staged in
+	// memory but not yet written would die with the only copy. A failed write
+	// aborts the claim and leaves the runtime warm rather than dropping state
+	// it could not persist.
+	for _, entry := range claim.entries {
+		if err := entry.runtime.autoSaveMeta(); err != nil {
+			return fmt.Errorf("persist delegate meta before capacity reclamation: %w", err)
+		}
+	}
+
+	// Record the in-flight window before the unhook, and unhook BEFORE the
+	// teardowns: this release is non-terminal, so a lane handoff during the
+	// teardown must see the subtree as busy, and a send racing it must
+	// cold-restore instead of meeting a runtime that still reads as resident.
+	s.delegateController.beginRuntimeReleaseInFlight(claim.entries)
+	defer s.delegateController.endRuntimeReleaseInFlight(claim.entries)
+
 	closed := make(map[string]*Session, len(claim.entries))
 	for _, entry := range claim.entries {
-		if entry.runtime == nil {
-			continue
-		}
-		unhookReclaimedRuntimeRecord(entry)
-		if closeRuntime := s.cfg.testOnly.delegateRuntimeReclaimClose; closeRuntime != nil {
-			closeRuntime(entry.runtime)
-		} else {
-			teardownChildSession(context.Background(), entry.runtime)
-		}
 		closed[entry.delegateID] = entry.runtime
+		unhookReclaimedRuntimeRecord(entry)
 	}
 	if err := s.delegateController.CompleteRuntimeReclamation(claim, closed); err != nil {
 		return err
 	}
 	completed = true
+
+	s.mu.Lock()
+	closeRuntime := s.cfg.testOnly.delegateRuntimeReclaimClose
+	s.mu.Unlock()
+	if closeRuntime != nil {
+		// A test observes the release instead of performing it. Claim entries
+		// are leaf-first, so the hook sees the post-order the release uses.
+		for _, entry := range claim.entries {
+			closeRuntime(entry.runtime)
+		}
+		return nil
+	}
+	s.teardownReclaimedRuntimes(claim.entries)
 	return nil
 }
 
@@ -551,7 +602,7 @@ func (c *delegateTreeController) ClaimIdleRuntimeRelease(delegateID string) (*de
 	if !ok {
 		return nil, true, nil
 	}
-	if c.subtreeOwnsSharedTaskStoreLocked(entries) {
+	if subtreeOwnsSharedTaskStore(entries, c.sharedTaskStoreOwnerSessionsLocked()) {
 		return nil, false, nil
 	}
 	// Leaf-first ordering puts the named root last among the entries, so the
@@ -561,22 +612,35 @@ func (c *delegateTreeController) ClaimIdleRuntimeRelease(delegateID string) (*de
 	return c.armRuntimeReclamationClaimLocked(roots, entries), false, nil
 }
 
-// subtreeOwnsSharedTaskStoreLocked reports whether releasing the claim's
-// subtree would strand a shared task store resolver: some aggregate — inside
-// the subtree or anywhere else in the tree — names one of the subtree's
-// sessions as its shared task store owner. A released owner has no resident
-// runtime, so resolveStableSharedTaskStore's owner-residency requirement would
-// fail the resolver's next resume.
-func (c *delegateTreeController) subtreeOwnsSharedTaskStoreLocked(entries []delegateRuntimeReclamationEntry) bool {
-	owned := make(map[string]struct{}, len(entries))
-	for _, entry := range entries {
-		owned[entry.childSessionID] = struct{}{}
-	}
+// sharedTaskStoreOwnerSessionsLocked returns every session ID the tree's
+// aggregates name as a shared task store owner, or nil when none do. Callers
+// must hold c.mu.
+func (c *delegateTreeController) sharedTaskStoreOwnerSessionsLocked() map[string]struct{} {
+	var owners map[string]struct{}
 	for _, aggregate := range c.durable {
 		if owner := aggregate.Descriptor.SharedTaskStoreOwnerSessionID; owner != "" {
-			if _, ok := owned[owner]; ok {
-				return true
+			if owners == nil {
+				owners = make(map[string]struct{})
 			}
+			owners[owner] = struct{}{}
+		}
+	}
+	return owners
+}
+
+// subtreeOwnsSharedTaskStore reports whether releasing the claim's
+// subtree would strand a shared task store resolver: one of the subtree's
+// sessions is named as an owner in owners (see
+// sharedTaskStoreOwnerSessionsLocked). A released owner has no resident runtime,
+// so resolveStableSharedTaskStore's owner-residency requirement would fail the
+// resolver's next resume.
+func subtreeOwnsSharedTaskStore(entries []delegateRuntimeReclamationEntry, owners map[string]struct{}) bool {
+	if len(owners) == 0 {
+		return false
+	}
+	for _, entry := range entries {
+		if _, ok := owners[entry.childSessionID]; ok {
+			return true
 		}
 	}
 	return false
@@ -704,19 +768,26 @@ func (s *Session) releaseIdleRuntimeAfterFinalize() bool {
 	}
 	completed = true
 
-	// Members settle in depth waves, deepest first, with same-depth members
-	// torn down concurrently under a bounded cap. A member teardown is
-	// wait-dominated — signaling processes and honoring bounded closes,
-	// where a stdio MCP member's close can take seconds — and the members
-	// share no locks here: the unhook and the claim completion above are
-	// already done, and each member's body keeps exactly the context and
-	// close budget the serial loop gave it (one Background context, its
-	// own close cascade). Batches inside a wave cap how many of those
-	// waits overlap; a wave drains completely before the next one starts,
-	// which is what keeps a member from beginning before every descendant
-	// of a deeper wave has settled.
+	s.teardownReclaimedRuntimes(claim.entries)
+	return true
+}
+
+// teardownReclaimedRuntimes settles the process-local resources of an
+// already-completed reclamation claim. Members settle in depth waves, deepest
+// first, with same-depth members torn down concurrently under a bounded cap. A
+// member teardown is wait-dominated — signaling processes and honoring bounded
+// closes, where a stdio MCP member's close can take seconds — and the members
+// share no locks here: the unhook and the claim completion are already done,
+// and each member's body keeps one Background context and its own close
+// cascade. Batches inside a wave cap how many of those waits overlap; a wave
+// drains completely before the next one starts, which is what keeps a member
+// from beginning before every descendant of a deeper wave has settled.
+//
+// Both reclamation paths share it: capacity pressure and the idle release
+// differ only in how they pick a claim, never in how they settle one.
+func (s *Session) teardownReclaimedRuntimes(entries []delegateRuntimeReclamationEntry) {
 	limit := s.idleTeardownConcurrency()
-	for _, wave := range reclamationTeardownWaves(claim.entries) {
+	for _, wave := range reclamationTeardownWaves(entries) {
 		for start := 0; start < len(wave); start += limit {
 			var wg sync.WaitGroup
 			for _, entry := range wave[start:min(start+limit, len(wave))] {
@@ -727,7 +798,6 @@ func (s *Session) releaseIdleRuntimeAfterFinalize() bool {
 			wg.Wait()
 		}
 	}
-	return true
 }
 
 // delegateTeardownConcurrencyDefault caps how many same-depth members the
@@ -809,8 +879,8 @@ func (s *Session) teardownReclaimedRuntimeEntry(entry delegateRuntimeReclamation
 	// runtime instance can never be warm-resumed — so unhooking is the
 	// consistent outcome either way: durable state and scratch pins survive
 	// for a cold restore, and the teardown body emits its own warnings for
-	// the settlements that did not complete, the same contract
-	// reclaimDelegateRuntimeCapacity's teardowns already follow.
+	// the settlements that did not complete. Capacity reclamation follows the
+	// same contract because both paths share this teardown.
 	_ = entry.runtime.releaseChildRuntimeForRetirement(context.Background())
 }
 

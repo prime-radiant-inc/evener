@@ -878,8 +878,9 @@ func TestDefAskUserSchema(t *testing.T) {
 // parameter (0-10, default 0) so the model can request surrounding lines, per
 // the contract-surface rule that a new model-facing param is documented in the
 // same commit that adds it.
-// TestDefReadFileSliceParamsDocumented pins the offset/limit prose: offset is
-// a 1-based start line, limit is a line count, and the default limit is 2000
+// TestDefReadFileSliceParamsDocumented pins the offset/limit semantics: offset
+// is a 1-based start line that also accepts negative tail reads, and limit
+// defaults to 2000 lines with limit=1 returning a single long line uncut
 // (matching LocalExecutionEnvironment.ReadFile's actual defaults).
 func TestDefReadFileSliceParamsDocumented(t *testing.T) {
 	def := DefReadFile()
@@ -897,14 +898,58 @@ func TestDefReadFileSliceParamsDocumented(t *testing.T) {
 	}
 	offsetDesc, _ := offset["description"].(string)
 	limitDesc, _ := limit["description"].(string)
-	if !strings.Contains(offsetDesc, "1-based") {
-		t.Errorf("offset description should document it's a 1-based start line, got: %q", offsetDesc)
+	if !strings.Contains(offsetDesc, "1-based") || !strings.Contains(offsetDesc, "negative") {
+		t.Errorf("offset description should document a 1-based start line and negative tail reads, got: %q", offsetDesc)
 	}
-	if !strings.Contains(limitDesc, "line count") {
-		t.Errorf("limit description should document it's a line count, got: %q", limitDesc)
+	if !strings.Contains(limitDesc, "2000") || !strings.Contains(limitDesc, "uncut") {
+		t.Errorf("limit description should document the default of 2000 and the limit=1 uncut escape, got: %q", limitDesc)
 	}
-	if !strings.Contains(limitDesc, "2000") {
-		t.Errorf("limit description should document the default of 2000, got: %q", limitDesc)
+}
+
+// TestDefReadFileVariantsExposeSharedParameters pins the one shared schema
+// contract across all three vision regimes and memory_read: every variant
+// carries file_path, offset, limit, and pages with a non-empty description, so
+// a session can pass a PDF page selector no matter which regime it selected.
+// vision_prompt presence follows the regime, and memory_read keeps scope.
+func TestDefReadFileVariantsExposeSharedParameters(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		def        llm.ToolDefinition
+		wantVision bool
+	}{
+		{"read_file", DefReadFile(), true},
+		{"read_file-native-vision", DefReadFileNativeVision(), false},
+		{"read_file-pdf-vision-only", DefReadFilePDFVisionOnly(), true},
+		{"memory_read", DefMemoryRead(), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if tc.def.Parameters["additionalProperties"] != false {
+				t.Fatalf("%s additionalProperties = %v, want false", tc.name, tc.def.Parameters["additionalProperties"])
+			}
+			required(t, tc.def, tc.name, []string{"file_path"})
+			props, ok := tc.def.Parameters["properties"].(map[string]any)
+			if !ok {
+				t.Fatalf("%s properties = %T, want map[string]any", tc.name, tc.def.Parameters["properties"])
+			}
+			for _, paramName := range []string{"file_path", "offset", "limit", "pages"} {
+				param, ok := props[paramName].(map[string]any)
+				if !ok {
+					t.Fatalf("%s missing the %q property", tc.name, paramName)
+				}
+				desc, _ := param["description"].(string)
+				if strings.TrimSpace(desc) == "" {
+					t.Errorf("%s %q carries no description", tc.name, paramName)
+				}
+			}
+			if _, hasVision := props["vision_prompt"]; hasVision != tc.wantVision {
+				t.Errorf("%s vision_prompt present = %v, want %v", tc.name, hasVision, tc.wantVision)
+			}
+			if tc.name == "memory_read" {
+				required(t, tc.def, tc.name, []string{"scope"})
+			}
+		})
 	}
 }
 
@@ -1060,8 +1105,8 @@ func TestAllBuiltinParametersCarryDescriptions(t *testing.T) {
 		DefDelegate(nil), DefDelegateWithSandbox(nil, DelegateSandboxSchema{}),
 		DefDelegateSend(), DefModelList(), DefJobWatch(nil),
 		DefJobStatus(), DefJobList(), DefJobStop(), DefGrep(), DefGlob(),
-		DefApplyPatch(), DefWebFetch(), DefWebSearch(), DefCommunicate(),
-		DefTaskList(nil), DefUseSkill(), DefFindSessionTranscripts(),
+		DefApplyPatch(), DefWebFetch(), DefCommunicate(),
+		DefTaskList(nil), DefUseSkill(), DefFindSessionTranscripts(), DefMemoryEdit(),
 		DefDoctorEvener(), DefManageWorktree(), DefManageWorktreeDisposeOnly(),
 		DefReadTranscript(), DefAskUser(), DefUpdateGoal(), DefNotesAgentSet(),
 		DefUrlsAdd(), DefUrlsRemove(), DefNotesRead(),
@@ -1070,6 +1115,53 @@ func TestAllBuiltinParametersCarryDescriptions(t *testing.T) {
 		if missing := UndocumentedProperties(def); len(missing) > 0 {
 			t.Errorf("%s parameters carry no description: %s", def.Name, strings.Join(missing, ", "))
 		}
+	}
+}
+
+func TestDefEditFileAndMemoryEditSchema(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		def      llm.ToolDefinition
+		wantReq  []string
+		hasScope bool
+	}{
+		{name: "edit_file", def: DefEditFile(), wantReq: []string{"file_path", "edits"}, hasScope: false},
+		{name: "memory_edit", def: DefMemoryEdit(), wantReq: []string{"file_path", "edits", "scope"}, hasScope: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.def.Name != tc.name {
+				t.Fatalf("Name = %q, want %q", tc.def.Name, tc.name)
+			}
+			if tc.def.Parameters["additionalProperties"] != false {
+				t.Fatalf("additionalProperties = %v, want false", tc.def.Parameters["additionalProperties"])
+			}
+			required(t, tc.def, tc.name, tc.wantReq)
+			props := tc.def.Parameters["properties"].(map[string]any)
+			if _, has := props["old_string"]; has {
+				t.Fatalf("%s must not expose top-level old_string", tc.name)
+			}
+			if _, has := props["new_string"]; has {
+				t.Fatalf("%s must not expose top-level new_string", tc.name)
+			}
+			if _, has := props["scope"]; has != tc.hasScope {
+				t.Fatalf("%s scope present=%v, want %v", tc.name, has, tc.hasScope)
+			}
+			edits, ok := props["edits"].(map[string]any)
+			if !ok || edits["type"] != "array" || edits["minItems"] != 1 {
+				t.Fatalf("%s edits schema = %#v", tc.name, props["edits"])
+			}
+			items := edits["items"].(map[string]any)
+			if items["additionalProperties"] != false {
+				t.Fatalf("%s edits.items additionalProperties = %v, want false", tc.name, items["additionalProperties"])
+			}
+			itemProps := items["properties"].(map[string]any)
+			for _, k := range []string{"old_string", "new_string", "replace_all"} {
+				if _, ok := itemProps[k]; !ok {
+					t.Fatalf("%s edits.items missing %q", tc.name, k)
+				}
+			}
+		})
 	}
 }
 

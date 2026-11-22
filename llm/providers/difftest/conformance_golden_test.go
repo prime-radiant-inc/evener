@@ -271,31 +271,42 @@ var conformanceFixtures = []sseFixture{
 		},
 	},
 
-	// ---- Google Gemini (streamGenerateContent, alt=sse; data: only) ----
+	// ---- Google Gemini Interactions SSE ----
 	{
 		name:     "google_text_finish",
 		provider: "google",
-		source:   "llm/providers/google/adapter_test.go TestAdapter_Stream_YieldsTextDeltasAndFinish",
+		source:   "llm/providers/google/protocol_transport_test.go interactionsSSE",
 		frames: []sseFrame{
-			{"", `{"candidates":[{"content":{"parts":[{"text":"Hel"}]}}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`},
-			{"", `{"candidates":[{"content":{"parts":[{"text":"lo"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2,"totalTokenCount":3}}`},
+			{"step.start", `{"event_type":"step.start","index":0,"step":{"type":"model_output"}}`},
+			{"step.delta", `{"event_type":"step.delta","index":0,"delta":{"type":"text","text":"Hel"}}`},
+			{"step.delta", `{"event_type":"step.delta","index":0,"delta":{"type":"text","text":"lo"}}`},
+			{"step.stop", `{"event_type":"step.stop","index":0}`},
+			{"interaction.completed", `{"event_type":"interaction.completed","interaction":{"id":"int_conf_1","status":"completed","usage":{"total_input_tokens":1,"total_output_tokens":2,"total_tokens":3}}}`},
 		},
 	},
 	{
 		name:     "google_functioncall",
 		provider: "google",
-		source:   "llm/providers/google/adapter_test.go TestAdapter_Stream_TranslatesFunctionCalls",
+		source:   "llm/providers/google/interactions_settlement_test.go function_call",
 		frames: []sseFrame{
-			{"", `{"candidates":[{"content":{"parts":[{"thoughtSignature":"sig-1","functionCall":{"name":"get_weather","args":{"n":1}}}]}}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`},
-			{"", `{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2,"totalTokenCount":3}}`},
+			{"step.start", `{"event_type":"step.start","index":0,"step":{"type":"function_call","id":"call_1","name":"get_weather","arguments":{},"signature":"sig-1"}}`},
+			{"step.delta", `{"event_type":"step.delta","index":0,"delta":{"type":"arguments_delta","arguments":"{\"n\":1}"}}`},
+			{"step.stop", `{"event_type":"step.stop","index":0}`},
+			{"step.start", `{"event_type":"step.start","index":1,"step":{"type":"model_output"}}`},
+			{"step.delta", `{"event_type":"step.delta","index":1,"delta":{"type":"text","text":"ok"}}`},
+			{"step.stop", `{"event_type":"step.stop","index":1}`},
+			{"interaction.completed", `{"event_type":"interaction.completed","interaction":{"id":"int_conf_2","status":"completed","usage":{"total_input_tokens":1,"total_output_tokens":2,"total_tokens":3}}}`},
 		},
 	},
 	{
 		name:     "google_usage_on_finish_chunk",
 		provider: "google",
-		source:   "llm/providers/google/usage_finish_chunk_test.go TestStream_UsageOnFinishChunk",
+		source:   "llm/providers/google/usage_finish_chunk_test.go TestStream_UsageOnInteractionCompleted",
 		frames: []sseFrame{
-			{"", `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":22,"totalTokenCount":33}}`},
+			{"step.start", `{"event_type":"step.start","index":0,"step":{"type":"model_output"}}`},
+			{"step.delta", `{"event_type":"step.delta","index":0,"delta":{"type":"text","text":"hi"}}`},
+			{"step.stop", `{"event_type":"step.stop","index":0}`},
+			{"interaction.completed", `{"event_type":"interaction.completed","interaction":{"id":"int_conf_3","status":"completed","usage":{"total_input_tokens":11,"total_output_tokens":22,"total_tokens":33}}}`},
 		},
 	},
 

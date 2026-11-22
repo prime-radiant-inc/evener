@@ -135,7 +135,7 @@ func providerTargetDirs(r *runner, provider string, body []byte) []string {
 // fallback for bodies such as provider errors that do not identify their
 // protocol.
 func providerTargetDirsForAttempt(r *runner, endpointFamily, provider string, body []byte) []string {
-	if dirs := endpointFamilyTargetDirs(r, endpointFamily); len(dirs) > 0 {
+	if dirs, matched := endpointFamilyTargetDirs(r, endpointFamily); matched {
 		return dirs
 	}
 	if dirs := bodyShapeTargetDirs(r, body); len(dirs) > 0 {
@@ -145,8 +145,6 @@ func providerTargetDirsForAttempt(r *runner, endpointFamily, provider string, bo
 	switch provider {
 	case "anthropic":
 		return []string{r.dir(dirAnthropicStream)}
-	case "google":
-		return []string{r.dir(dirGeminiStream)}
 	case "openai-compatible":
 		return []string{r.dir(dirChatCompletionsSSE)}
 	case "openai":
@@ -155,20 +153,22 @@ func providerTargetDirsForAttempt(r *runner, endpointFamily, provider string, bo
 	return nil
 }
 
-func endpointFamilyTargetDirs(r *runner, endpointFamily string) []string {
+func endpointFamilyTargetDirs(r *runner, endpointFamily string) ([]string, bool) {
 	switch strings.TrimSpace(endpointFamily) {
 	case "anthropic_messages":
-		return []string{r.dir(dirAnthropicStream)}
-	case "google_stream_generate_content":
-		return []string{r.dir(dirGeminiStream)}
+		return []string{r.dir(dirAnthropicStream)}, true
+	case "google_interactions_stream":
+		return []string{r.dir(dirGeminiStream)}, true
+	case "google_interactions", "google_generate_content", "google_stream_generate_content":
+		return nil, true
 	case "openai_public", "openai_codex":
-		return []string{r.dir(dirResponsesStream)}
+		return []string{r.dir(dirResponsesStream)}, true
 	// openai_compatible_chat_completions is a retired family; records that
 	// still carry it hold the same Chat Completions wire shape.
 	case "openai_chat_completions", "openai_compatible_chat_completions":
-		return []string{r.dir(dirChatCompletionsSSE)}
+		return []string{r.dir(dirChatCompletionsSSE)}, true
 	default:
-		return nil
+		return nil, false
 	}
 }
 
@@ -178,7 +178,7 @@ func bodyShapeTargetDirs(r *runner, body []byte) []string {
 		return []string{r.dir(dirResponsesStream)}
 	case isAnthropicMessagesStream(body):
 		return []string{r.dir(dirAnthropicStream)}
-	case isGeminiStream(body):
+	case isGoogleInteractionsStream(body):
 		return []string{r.dir(dirGeminiStream)}
 	case isChatCompletionsStream(body):
 		return []string{r.dir(dirChatCompletionsSSE)}
@@ -202,10 +202,12 @@ func isAnthropicMessagesStream(body []byte) bool {
 		strings.Contains(s, `"type":"message_delta"`) || strings.Contains(s, `"type": "message_delta"`)
 }
 
-// isGeminiStream detects the streamGenerateContent response vocabulary.
-func isGeminiStream(body []byte) bool {
+// isGoogleInteractionsStream detects the Google Interactions SSE event vocabulary.
+func isGoogleInteractionsStream(body []byte) bool {
 	s := string(body)
-	return strings.Contains(s, `"candidates"`) || strings.Contains(s, `"usageMetadata"`) || strings.Contains(s, `"promptFeedback"`)
+	return strings.Contains(s, "event: interaction.") ||
+		strings.Contains(s, `"event_type":"interaction.`) || strings.Contains(s, `"event_type": "interaction.`) ||
+		strings.Contains(s, `"event_type":"step.`) || strings.Contains(s, `"event_type": "step.`)
 }
 
 // isChatCompletionsStream detects the OpenAI Chat Completions chunk shape.

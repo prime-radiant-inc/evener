@@ -90,6 +90,11 @@ const (
 
 type Options struct {
 	ProviderHandles ProviderHandleMode
+	// LaunchSystemPrompt is the prompt the session launched with, for a
+	// transcript header that recorded none: a role- or plugin-changing fork
+	// starts with an empty header and keeps the prompt it rendered in the
+	// session meta.
+	LaunchSystemPrompt string
 }
 
 func NormalizeProviderHandleMode(mode string) (ProviderHandleMode, error) {
@@ -120,7 +125,7 @@ func Convert(header transcript.Header, entries []transcript.Entry, opts Options)
 			ModelName: header.Model,
 			Extra:     map[string]any{"profile_id": header.ProfileID},
 		},
-		Extra: buildRootExtra(header),
+		Extra: buildRootExtra(header, opts.LaunchSystemPrompt),
 	}
 
 	var steps []Step
@@ -540,7 +545,8 @@ func formatTimestamp(turn schema.Turn) string {
 }
 
 // buildRootExtra populates the trajectory-level extra map from the header.
-func buildRootExtra(header transcript.Header) map[string]any {
+// launchPrompt answers for a header that recorded none (see Options).
+func buildRootExtra(header transcript.Header, launchPrompt string) map[string]any {
 	extra := map[string]any{}
 	if header.WorkingDir != "" {
 		extra["working_dir"] = header.WorkingDir
@@ -557,8 +563,12 @@ func buildRootExtra(header transcript.Header) map[string]any {
 	if header.Task != "" {
 		extra["task"] = header.Task
 	}
-	if header.SystemPrompt != "" {
-		extra["system_prompt"] = header.SystemPrompt
+	systemPrompt := header.SystemPrompt
+	if systemPrompt == "" {
+		systemPrompt = launchPrompt
+	}
+	if systemPrompt != "" {
+		extra["system_prompt"] = systemPrompt
 	}
 	return extra
 }

@@ -63,7 +63,7 @@ func TestShapeRequest_MaxTokensAndSampling(t *testing.T) {
 		t.Fatalf("fields gate the request-level values: %+v", got)
 	}
 	gfields := registry.Baseline(registry.ProtocolGoogle)
-	gfields["generationConfig.topP"] = false
+	gfields["generation_config.top_p"] = false
 	got = ShapeRequest(req, resolved(registry.ProtocolGoogle, registry.Caps{Fields: gfields}))
 	if got.TopP != nil || got.Temperature == nil || len(got.StopSequences) != 2 {
 		t.Fatalf("google paths: %+v", got)
@@ -75,6 +75,26 @@ func TestShapeRequest_MaxTokensAndSampling(t *testing.T) {
 	got = ShapeRequest(req, resolved(registry.ProtocolAnthropic, registry.Caps{MaxStopSequences: new(1)}))
 	if !reflect.DeepEqual(got.StopSequences, []string{"a"}) {
 		t.Fatalf("max_stop_sequences truncates: %v", got.StopSequences)
+	}
+}
+
+func TestEffortReachesWire_GoogleInteractions(t *testing.T) {
+	t.Parallel()
+	res := resolved(registry.ProtocolGoogle, registry.Caps{
+		ThinkingShape: new("level"),
+		EffortValues:  []string{"minimal", "low", "medium", "high", "xhigh"},
+	})
+	for _, tier := range []string{"minimal", "low", "medium", "high", "xhigh"} {
+		if !EffortReachesWire(tier, res) {
+			t.Errorf("EffortReachesWire(%q) = false, want true", tier)
+		}
+	}
+	if EffortReachesWire("max", res) {
+		t.Error("EffortReachesWire(max) = true, want false (clamps to ceiling)")
+	}
+	res.Caps.Fields[registry.FieldGoogleThinkingLevel] = false
+	if EffortReachesWire("high", res) {
+		t.Error("EffortReachesWire with FieldGoogleThinkingLevel=false must be false")
 	}
 }
 

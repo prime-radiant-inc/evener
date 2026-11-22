@@ -623,12 +623,23 @@ func BenchmarkPrepareModelRequestHistoryFold(b *testing.B) {
 // teeth are pinned directly by
 // TestPrepareModelRequestHistoryFoldCeilingCatchesPublishedCopy; do not derive
 // the literal from the implementation under test.
-const maxRequestFoldHistoryBytesPerPreparationPlain int64 = 2_268_000
+//
+// Measured on 2026-11-21 with the minimum-of-rounds estimator, after the fold
+// path's own allocation had grown past the 2026-11-18 calibration: copy-free
+// preparations are 1,978,104 on the plain lane and 2,058,168 under -race on a
+// loaded shard, and copy-bearing preparations are 2,821,880 and 2,895,840.
+// Each literal sits at its lane's midpoint, leaving about half a copy on each
+// side: plain clears copy-free by 421,896 and stays 421,880 below copy-bearing,
+// while -race clears the loaded copy-free reading by 418,832 and stays 418,840
+// below copy-bearing. A reintroduced published copy therefore still fails both
+// bounds.
+const maxRequestFoldHistoryBytesPerPreparationPlain int64 = 2_400_000
 
 // maxRequestFoldHistoryBytesPerPreparationRace is the same bound for the race
-// lane. The literals are separate so a change that moves one lane cannot
+// lane. The literals stay separate for the same per-lane reason as
+// maxRequestHistoryBytesPerPreparation*: a change that moves one lane cannot
 // silently move the other.
-const maxRequestFoldHistoryBytesPerPreparationRace int64 = 2_268_000
+const maxRequestFoldHistoryBytesPerPreparationRace int64 = 2_477_000
 
 // maxRequestFoldHistoryBytesPerPreparation is this lane's ceiling; -race is
 // detected through the package's existing raceDetectorEnabled const.

@@ -181,8 +181,8 @@ func EffectiveToolsJSONBytes(req Request, res registry.Resolved, override bool) 
 // Every builder whose protocol's options carry tools writes the request's own
 // tools and then copies ProviderOptions over the body: Chat Completions, the
 // standard Responses route, Anthropic (name, description, input_schema), and
-// Google (functionDeclarations). An explicit option is therefore a list that
-// dispatches on all four. The transport's body constants are applied after the
+// Google Interactions (type, name, description, parameters). An explicit option
+// is therefore a list that dispatches on all four. The transport's body constants are applied after the
 // builder and after the option (protocolhttp.Prepare), and they override
 // whatever stands at the same path, so a row that pins tools replaces the
 // option: the constant is the wire list, and pricing the option charges bytes
@@ -464,6 +464,10 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 				if t.protocol == registry.ProtocolOpenAIResponses {
 					chars += len(strings.TrimSpace(p.ToolCall.ItemID))
 				}
+				if t.protocol == registry.ProtocolGoogle && p.ToolCall.GoogleInteraction &&
+					t.instance != "" && t.wireID != "" && p.ToolCall.GoogleInstance == t.instance && p.ToolCall.GoogleModel == t.wireID {
+					chars += len(strings.TrimSpace(p.ToolCall.ThoughtSignature))
+				}
 			}
 		case ContentToolResult:
 			if p.ToolResult != nil {
@@ -489,6 +493,9 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 				}
 			}
 		case ContentThinking, ContentRedThinking:
+			if isForeignGoogleInteractionThinking(p, t.protocol) {
+				continue
+			}
 			if t.stripOpaqueThinking {
 				// The blob never rides and a reasoning-disabled row builds no
 				// item at all; the remaining plaintext bills as built.
@@ -540,7 +547,7 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 //
 // Chat reasoning is priced across the message by estimateMessageInputParts.
 func thinkingReplayChars(target targetInfo, p ContentPart) int {
-	if p.Thinking == nil {
+	if p.Thinking == nil || isForeignGoogleInteractionThinking(p, target.protocol) {
 		return 0
 	}
 	t := p.Thinking
@@ -559,6 +566,15 @@ func thinkingReplayChars(target targetInfo, p ContentPart) int {
 				return 0
 			}
 			return responsesReasoningChars(t)
+		case registry.ProtocolGoogle:
+			if p.Kind != ContentThinking || !t.ReplayableGoogleThoughtFor(target.instance, target.wireID) {
+				return 0
+			}
+			chars := len(strings.TrimSpace(t.Signature))
+			for _, s := range t.Summary {
+				chars += len(s)
+			}
+			return chars
 		default:
 			// The Google adapter and every other protocol along this path emit
 			// no thinking shape.
@@ -654,8 +670,12 @@ func (p *reasoningTextPresence) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
+func isForeignGoogleInteractionThinking(p ContentPart, proto string) bool {
+	return p.Thinking != nil && p.Thinking.GoogleInteraction && proto != registry.ProtocolGoogle
+}
+
 func (r *chatReasoningEstimate) add(target targetInfo, p ContentPart) {
-	if p.Kind != ContentThinking || p.Thinking == nil {
+	if p.Kind != ContentThinking || p.Thinking == nil || isForeignGoogleInteractionThinking(p, target.protocol) {
 		return
 	}
 	r.displayChars += len(p.Thinking.Text)
@@ -709,10 +729,11 @@ func (r chatReasoningEstimate) chars(target targetInfo) int {
 // names the media estimates key on, and whether the target's adapter replays a
 // thinking part that carries text and no replay metadata.
 type targetInfo struct {
-	provider, model string
-	protocol        string
-	surface         string
-	family          string
+	instance, wireID string
+	provider, model  string
+	protocol         string
+	surface          string
+	family           string
 	// resolved marks a target built from a registry row. The row's instance is
 	// an alias it was reached through, not vendor identity, so the media-family
 	// name rule reads a resolved target's model name alone -- unless the caller
@@ -871,6 +892,7 @@ func targetFromResolved(res registry.Resolved, provider, model string) targetInf
 		fallbackProvider = ""
 	}
 	return targetInfo{
+		instance: res.Instance, wireID: res.WireID,
 		provider: provider, model: model,
 		protocol: res.Protocol, surface: res.Surface, family: res.Model.Family,
 		resolved: true, providerFromCaller: providerFromCaller,

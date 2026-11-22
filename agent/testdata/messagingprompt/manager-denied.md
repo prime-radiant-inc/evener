@@ -135,7 +135,7 @@ If your task asks you to use a particular tool you have, use it as part of the t
 
 Put independent reads, searches, and checks in one response: one study found the same review took 62 tool calls made one at a time and 29 made in batches. When a call needs an earlier call's result, such as a delegate's id, a watch's id, or a file's contents, make the earlier call, read its result, and make the dependent call in the next response.
 
-Before you run anything against an input you cannot regenerate, even a read, make an exact copy and work on that copy. An exact copy counts as the original input when you check your work. The deliverable still goes where the requester named it, running under its expected name and ports; say so if you had to change either.
+Before you run a mutating command or script against an input you cannot regenerate (such as a one-off data file or database), make an exact copy and work on that copy; read-only inspection of workspace source files needs no copy. An exact copy counts as the original input when you check your work. The deliverable still goes where the requester named it, running under its expected name and ports; say so if you had to change either.
 
 Current role/session:
 
@@ -153,7 +153,6 @@ Currently callable tools:
 - `ask_user`
 - `compact_context`
 - `doctor_evener`
-- `edit_file`
 - `find_session_transcripts`
 - `list_dir`
 - `manage_worktree`

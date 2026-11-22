@@ -253,7 +253,15 @@ export type { DocFileContent, DocFileErrorKind } from "./docContent";
 export { DOC_FILE_MAX_BYTES, DocFileError, docDownloadURL, docFileRawURL, docImageURL } from "./docContent";
 export type { DiscardStoredDraftResult } from "./draftCheckpointPort";
 export { canonicalJson } from "./draftCheckpointPort";
-export { diffStats, editDiffText } from "./editDiff";
+export type { DiffLineKind, EditOperation } from "./editDiff";
+export {
+  classifyDiffLineKinds,
+  diffStats,
+  editBatchDiffText,
+  editDiffText,
+  editOperationsOf,
+  splitDiffLines,
+} from "./editDiff";
 export type { EntityIdMatch, EntityKind } from "./entityIds";
 export { entityKindOf, findEntityIds, jobOwnerSessionId } from "./entityIds";
 export type { DelegateEntityView, EntityView, JobEntityView, OpenTarget, WatchEntityView } from "./entityView";

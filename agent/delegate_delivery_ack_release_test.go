@@ -20,12 +20,10 @@ func TestNonInlineDeliveryAckJournalsTheHoldRelease(t *testing.T) {
 	seedDelegateControllerIdle(t, c, "dlg_hold", "")
 	seedDelegateControllerIdle(t, c, "dlg_child", "dlg_hold")
 	seedDelegateControllerDelivery(t, c, "dlg_child")
-	plans := c.ReplayDeliveries()
-	if len(plans) != 1 || plans[0].delegateID != "dlg_child" || plans[0].ownerDelegateID != "dlg_hold" {
-		t.Fatalf("replayed delivery plans = %#v, want one report from dlg_child to dlg_hold", plans)
-	}
 	// The owner settles an attention-triggered stop. Its generation is the
 	// newest quiet the child's report supersedes, and nothing has released it.
+	// The stop settles before the report's claim is created, so the claim
+	// belongs to that generation.
 	journalDeriveHeldStopWithTrigger(t, c, delegatestore.TriggerAttention, delegatestore.OutcomeCancelled, "cancelled")
 	c.mu.Lock()
 	settled := c.latestAttentionStop["dlg_hold"]
@@ -33,6 +31,10 @@ func TestNonInlineDeliveryAckJournalsTheHoldRelease(t *testing.T) {
 	c.mu.Unlock()
 	if settled != 1 || floor != 0 {
 		t.Fatalf("seeded stop = generation %d floor %d, want the stop settled at 1 with no release", settled, floor)
+	}
+	plans := c.ReplayDeliveries()
+	if len(plans) != 1 || plans[0].delegateID != "dlg_child" || plans[0].ownerDelegateID != "dlg_hold" {
+		t.Fatalf("replayed delivery plans = %#v, want one report from dlg_child to dlg_hold", plans)
 	}
 
 	token, admitted, err := c.BeginDelivery(plans[0])
@@ -63,14 +65,15 @@ func TestNonInlineDeliveryAckReleasesThroughThePrecedingSettledGeneration(t *tes
 	seedDelegateControllerIdle(t, c, "dlg_hold", "")
 	seedDelegateControllerIdle(t, c, "dlg_child", "dlg_hold")
 	seedDelegateControllerDelivery(t, c, "dlg_child")
+	// Generation 1 is an attention stop whose quiet stands, and generation 2 is
+	// the successor run the stop's own row started. It is still open when the
+	// child's report is acknowledged, so the claim names the generation before
+	// that run.
+	journalDeriveHeldStopWithTrigger(t, c, delegatestore.TriggerAttention, delegatestore.OutcomeCancelled, "cancelled")
 	plans := c.ReplayDeliveries()
 	if len(plans) != 1 || plans[0].delegateID != "dlg_child" || plans[0].ownerDelegateID != "dlg_hold" {
 		t.Fatalf("replayed delivery plans = %#v, want one report from dlg_child to dlg_hold", plans)
 	}
-	// Generation 1 is an attention stop whose quiet stands, and generation 2 is
-	// the successor run the stop's own row started. It is still open when the
-	// child's report is acknowledged.
-	journalDeriveHeldStopWithTrigger(t, c, delegatestore.TriggerAttention, delegatestore.OutcomeCancelled, "cancelled")
 	c.mu.Lock()
 	_, err := c.appendLocked(delegatestore.Event{
 		Kind:       delegatestore.EventDelegateRunStarted,

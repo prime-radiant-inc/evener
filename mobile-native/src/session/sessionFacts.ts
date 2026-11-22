@@ -157,12 +157,22 @@ function modelName(modelProvider: string, catalog: readonly ModelDescriptor[] | 
 /** The composer's chip: the model's name, then its effort when the model has
  * levels. */
 export function modelChipLabel(
-	session: Pick<ThreadModel, "modelProvider" | "reasoningEffort" | "reasoningEffortLevels" | "supportsReasoning">,
+	session: Pick<
+		ThreadModel,
+		"model" | "modelProvider" | "modelProfile" | "reasoningEffort" | "reasoningEffortLevels" | "supportsReasoning"
+	>,
 	catalog: readonly ModelDescriptor[] | undefined,
 	/** The session's Board row's model_name, when the fleet has the row. */
 	rowName?: string,
 ): string {
-	const name = modelName(session.modelProvider, catalog, rowName);
+	// The lookup runs on the qualified identity, so a live thread/model/changed
+	// - whose modelProvider carries the provider instance and whose model
+	// carries the announced id - resolves like a snapshot instead of looking
+	// the provider up as the model. And that live layout is the window where
+	// the Board row still names the model the last read saw, so the row lags
+	// the announcement: the announced id is the fallback, not the row.
+	const announced = session.model !== "" && session.model !== session.modelProvider;
+	const name = modelName(qualifiedModelIdentity(session), catalog, announced ? undefined : rowName);
 	const levels = sessionEffortLevels(session.reasoningEffortLevels, session.supportsReasoning);
 	return levels.length > 0 ? `${name} · ${effortName(session.reasoningEffort ?? "")}` : name;
 }

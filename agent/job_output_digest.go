@@ -11,24 +11,35 @@ import (
 // assembleOutputDigest renders a head+tail line digest: the head slice, an
 // elision marker describing what sits between, then the tail slice. total is the
 // lifetime output byte count and dropped is the bytes permanently evicted past
-// the retention cap. The marker states the EXACT elided byte count plus the
-// transcript-read hint — never a line estimate: the store is byte-oriented and does not
-// track total lines, and estimating from the shown lines' average length is
-// unreliable (the head/tail sample is biased toward short lines, so a guess can
-// exceed the true total).
+// the retention cap, which is also the lifetime offset where the retained output
+// starts. The marker states the EXACT elided byte count, the omitted lifetime
+// byte range, and the offset_bytes continuation — never a line estimate: the
+// store is byte-oriented and does not track total lines, and estimating from the
+// shown lines' average length is unreliable (the head/tail sample is biased
+// toward short lines, so a guess can exceed the true total).
 func assembleOutputDigest(head, tail []byte, total, dropped int64) string {
-	elidedBytes := max(total-int64(len(head))-int64(len(tail)), 0)
+	total = max(total, 0)
+	retainedStart := min(max(dropped, 0), total)
+	// The head slice is a prefix of the retained output and the tail slice is a
+	// suffix, so these are the lifetime offsets of the first and last bytes the
+	// digest omits.
+	omitStart := total
+	if total-retainedStart >= int64(len(head)) {
+		omitStart = retainedStart + int64(len(head))
+	}
+	omitEnd := max(total-int64(len(tail)), omitStart)
+	elidedBytes := omitEnd - omitStart
 	var b strings.Builder
 	b.Write(head)
 	if len(head) > 0 && head[len(head)-1] != '\n' {
 		b.WriteByte('\n')
 	}
 	if dropped > 0 {
-		fmt.Fprintf(&b, "…[%s elided, %s of them permanently dropped past the retention cap — inspect retained output with read_transcript using the returned job transcript_ref]…\n",
-			humanBytes(elidedBytes), humanBytes(dropped))
+		fmt.Fprintf(&b, "…[%s elided; %s permanently dropped past the retention cap; omitted [%d,%d); read more with read_transcript(offset_bytes=%d) via the returned job transcript_ref]…\n",
+			humanBytes(elidedBytes), humanBytes(dropped), omitStart, omitEnd, omitStart)
 	} else {
-		fmt.Fprintf(&b, "…[%s elided — read more with read_transcript using the returned job transcript_ref]…\n",
-			humanBytes(elidedBytes))
+		fmt.Fprintf(&b, "…[%s elided; omitted [%d,%d); read more with read_transcript(offset_bytes=%d) via the returned job transcript_ref]…\n",
+			humanBytes(elidedBytes), omitStart, omitEnd, omitStart)
 	}
 	b.Write(tail)
 	return b.String()
@@ -64,68 +75,89 @@ const (
 // ~shellDigestHalfBytes with the middle elided. The full output stays in the
 // OutputStore, reachable via the job transcript_ref.
 func shellInlineDigest(full string, total, dropped int64) string {
-	return shellInlineDigestFrom(full, total, dropped, false, 0, 0)
+	return shellInlineDigestWithin(full, total, dropped, 0, 0)
 }
 
-// shellInlineDigestFrom is shellInlineDigest with the retention boundary's line
-// state: startsMidLine says the first visible byte continues a line whose
-// beginning was evicted, so that fragment is not structural diff text.
-// lineBudget is the registry's rendered-line bound (0 = unbounded); a diff
-// digest drops its optional tail rather than let the registry re-cut a hunk.
-// charBudget is the registry's rendered-character bound (0 = unbounded); a
-// diff digest shrinks its byte windows at file or hunk boundaries so the
-// marker itself survives instead of being cut away by the registry.
-func shellInlineDigestFrom(full string, total, dropped int64, startsMidLine bool, lineBudget, charBudget int) string {
-	headBudget, tailBudget := shellDigestHalfBytes, shellDigestHalfBytes
-	var lastWindow diffWindow
-	haveWindow := false
-	for {
-		window, ok := unifiedDiffWindow(full, headBudget, tailBudget, dropped > 0, startsMidLine, lineBudget)
-		if !ok {
-			break
+// shellInlineDigestWithin is shellInlineDigest bounded by the registry's
+// rendered limits: lineBudget counts the digest plus its one-line footer
+// (0 = unbounded), and charBudget bounds the digest's runes (0 = unbounded).
+// It first allocates head and tail whole-line slots inside lineBudget (reserving
+// one line each for the omission marker and job footer, preferring the final
+// line when only one preview line fits), then trims whole lines from the inner
+// edges until charBudget fits (dropping head before tail if each end is down to
+// a single oversized line). Each candidate computes the omitted lifetime range
+// from the slices actually shown.
+func shellInlineDigestWithin(full string, total, dropped int64, lineBudget, charBudget int) string {
+	headLines, tailLines := shellDigestLines, shellDigestLines
+	if lineBudget > 0 {
+		// The digest path always renders a job footer line. Keep at least one
+		// line at each end when the allowance holds two; when only one preview
+		// line fits, prefer the final line.
+		switch avail := lineBudget - 2; {
+		case avail <= 0:
+			headLines, tailLines = 0, 0
+		case avail == 1:
+			headLines, tailLines = 0, 1
+		default:
+			headLines, tailLines = min(avail/2, shellDigestLines), min(avail-avail/2, shellDigestLines)
 		}
-		lastWindow, haveWindow = window, true
-		digest := renderDiffDigest(full, window, total, dropped)
+	}
+	head, headCount, tail, tailCount := shellInlineDigestSlices(full, shellDigestHalfBytes, shellDigestHalfBytes, headLines, tailLines)
+	for {
+		digest := assembleOutputDigest(head, tail, total, dropped)
 		if charBudget <= 0 || len([]rune(digest)) <= charBudget {
 			return digest
 		}
-		if tailBudget > 1 {
-			tailBudget /= 2
-		} else if headBudget > 1 {
-			headBudget /= 2
-		} else {
+		switch {
+		case headCount > 1 && (tailCount <= 1 || len(head) >= len(tail)):
+			head, headCount, _ = firstLineBytes(head, headCount-1)
+		case tailCount > 1:
+			tail, tailCount, _ = lastLineBytes(tail, tailCount-1)
+		case headCount > 0:
+			head, headCount = nil, 0
+		case tailCount > 0:
+			tail, tailCount = nil, 0
+		default:
 			return digest
 		}
 	}
-	if haveWindow {
-		return renderDiffDigest(full, lastWindow, total, dropped)
-	}
+}
+
+// shellInlineDigestSlices selects the initial head and tail byte slices and
+// their line counts for one pair of preview byte and line budgets.
+func shellInlineDigestSlices(full string, headBudget, tailBudget, headLines, tailLines int) (head []byte, headCount int, tail []byte, tailCount int) {
 	b := []byte(full)
-	headRaw := b
-	if len(headRaw) > shellDigestHalfBytes {
-		headRaw = headRaw[:shellDigestHalfBytes]
-		// Drop a trailing partial line so the head ends on a line boundary and no
-		// mid-line fragment is shown before the elision marker.
-		if i := bytes.LastIndexByte(headRaw, '\n'); i >= 0 {
-			headRaw = headRaw[:i+1]
+	var headRaw []byte
+	if headBudget > 0 && headLines > 0 {
+		headRaw = b
+		if len(headRaw) > headBudget {
+			headRaw = headRaw[:headBudget]
+			// Drop a trailing partial line so the head ends on a line boundary and no
+			// mid-line fragment is shown before the elision marker.
+			if i := bytes.LastIndexByte(headRaw, '\n'); i >= 0 {
+				headRaw = headRaw[:i+1]
+			}
+			// A single long line with no newline before the cut leaves the byte slice
+			// ending mid-rune; drop the dangling partial rune so the head is valid UTF-8.
+			headRaw = runetrim.TrimTrailingPartial(headRaw)
 		}
-		// A single long line with no newline before the cut leaves the byte slice
-		// ending mid-rune; drop the dangling partial rune so the head is valid UTF-8.
-		headRaw = runetrim.TrimTrailingPartial(headRaw)
 	}
-	tailRaw := b
-	if len(tailRaw) > shellDigestHalfBytes {
-		tailRaw = tailRaw[len(tailRaw)-shellDigestHalfBytes:]
-		// Drop a leading partial line so the tail starts on a line boundary.
-		if i := bytes.IndexByte(tailRaw, '\n'); i >= 0 {
-			tailRaw = tailRaw[i+1:]
+	var tailRaw []byte
+	if tailBudget > 0 && tailLines > 0 {
+		tailRaw = b
+		if len(tailRaw) > tailBudget {
+			tailRaw = tailRaw[len(tailRaw)-tailBudget:]
+			// Drop a leading partial line so the tail starts on a line boundary.
+			if i := bytes.IndexByte(tailRaw, '\n'); i >= 0 {
+				tailRaw = tailRaw[i+1:]
+			}
+			// Likewise drop a dangling partial rune at the cut so the tail is valid UTF-8.
+			tailRaw = runetrim.TrimLeadingPartial(tailRaw)
 		}
-		// Likewise drop a dangling partial rune at the cut so the tail is valid UTF-8.
-		tailRaw = runetrim.TrimLeadingPartial(tailRaw)
 	}
-	head, _, _ := firstLineBytes(headRaw, shellDigestLines)
-	tail, _, _ := lastLineBytes(tailRaw, shellDigestLines)
-	return assembleOutputDigest(head, tail, total, dropped)
+	head, headCount, _ = firstLineBytes(headRaw, headLines)
+	tail, tailCount, _ = lastLineBytes(tailRaw, tailLines)
+	return head, headCount, tail, tailCount
 }
 
 // firstLineBytes returns the first n lines of b (each line including its trailing

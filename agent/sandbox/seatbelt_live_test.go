@@ -1118,3 +1118,55 @@ func TestSeatbeltLiveRestrictedNetworkUnixSockets(t *testing.T) {
 		}
 	})
 }
+
+// TestSeatbeltLiveChildEnvFdReachesConfinedChild drives the production
+// ConfineWithChildEnv path against the real kernel: a configured environment
+// with a secret value and a dotted name (legal in a process environment, which
+// /usr/bin/env used to carry, but not a shell identifier) must reach the
+// confined child over the private fd, with neither the launcher's argv nor its
+// environment carrying the value. This is #7009's macOS proof: the unit tests
+// pin the argv and payload, this one pins that sandbox-exec, the policy, the
+// reader, and the fd all actually work together.
+func TestSeatbeltLiveChildEnvFdReachesConfinedChild(t *testing.T) {
+	requireLiveSeatbelt(t)
+	rp, cwd := liveResolve(t, ModeRestricted, true)
+	sessionTmp := t.TempDir()
+	w, err := NewWrapper(rp, pathToSeatbelt, sessionTmp)
+	if err != nil {
+		t.Fatalf("NewWrapper: %v", err)
+	}
+
+	const secret = "EVENER-LIVE-CHILD-ENV-7009"
+	cmd := exec.Command("/usr/bin/env") //nolint:noctx // argv[0] is the hard-coded /usr/bin/sandbox-exec after confinement
+	cmd.Env = ApplyEnvFloor(os.Environ(), rp, sessionTmp)
+	if err := w.ConfineWithChildEnv(cmd, cwd, ChildEnvDelta{Set: map[string]string{
+		"logging.level.root": "debug",
+		"MCP_SERVER_TOKEN":   secret,
+	}}); err != nil {
+		t.Fatalf("ConfineWithChildEnv: %v", err)
+	}
+	t.Cleanup(func() {
+		for _, f := range cmd.ExtraFiles {
+			_ = f.Close()
+		}
+	})
+
+	assertNoArgvValue(t, cmd.Args, secret)
+	for _, kv := range cmd.Env {
+		if strings.Contains(kv, secret) {
+			t.Fatalf("configured secret is in the launcher environment: %q", kv)
+		}
+	}
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("confined command: %v\n%s", err, out)
+	}
+	env := string(out)
+	if !strings.Contains(env, "logging.level.root=debug\n") {
+		t.Errorf("the confined child did not receive the dotted name:\n%s", env)
+	}
+	if !strings.Contains(env, "MCP_SERVER_TOKEN="+secret+"\n") {
+		t.Errorf("the confined child did not receive the configured secret over the private fd:\n%s", env)
+	}
+}

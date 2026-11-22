@@ -48,14 +48,6 @@ const BEDROCK = provider({
   varsEnv: ["AWS_REGION"],
   vars: { AWS_REGION: "AWS_REGION" },
 });
-const VERTEX_EXPRESS = provider({
-  id: "google-vertex-express",
-  protocol: "google",
-  auth: "header",
-  apiKeyEnv: ["GOOGLE_VERTEX_API_KEY"],
-  varsEnv: ["GOOGLE_VERTEX_EXPRESS_BASE_URL"],
-  vars: { BASE_URL: "GOOGLE_VERTEX_EXPRESS_BASE_URL" },
-});
 
 beforeEach(() => {
   resetConnectionStoreForTests();
@@ -129,40 +121,6 @@ describe("AddInstanceDialog", () => {
     await userEvent.setup().selectOptions(screen.getByLabelText("Base provider"), "extras");
     const rows = Array.from(document.querySelectorAll('input[id^="add-instance-var-"]')).map((el) => el.id);
     expect(rows).toEqual(["add-instance-var-EXTRAS", "add-instance-var-EXTRA_ONE"]);
-  });
-
-  test("google-vertex-express renders only its own base-URL override, no project or location", async () => {
-    connectReadyFakeClient();
-    render(
-      <AddInstanceDialog availableProviders={[ANTHROPIC, VERTEX_EXPRESS]} onCancel={() => {}} onSuccess={() => {}} />,
-    );
-    await userEvent.setup().selectOptions(screen.getByLabelText("Base provider"), "google-vertex-express");
-    expect(screen.getByLabelText("GOOGLE_VERTEX_EXPRESS_BASE_URL")).toBeTruthy();
-    expect(screen.queryByLabelText("GOOGLE_VERTEX_PROJECT")).toBeNull();
-    expect(screen.queryByLabelText("GOOGLE_VERTEX_LOCATION")).toBeNull();
-  });
-
-  test("google-vertex-express's base-URL override is sent under its template key, not the env var name", async () => {
-    const fake = connectReadyFakeClient();
-    fake.on("evener/instance/create", (params) => {
-      expect(params).toEqual({
-        name: "vertex-express",
-        base: "google-vertex-express",
-        baseUrl: "",
-        vars: { BASE_URL: "https://example.test/v1" },
-        originClientId: "test-tab",
-      });
-      return { instances: [], availableProviders: [] };
-    });
-    const user = userEvent.setup();
-    render(
-      <AddInstanceDialog availableProviders={[ANTHROPIC, VERTEX_EXPRESS]} onCancel={() => {}} onSuccess={() => {}} />,
-    );
-    await user.selectOptions(screen.getByLabelText("Base provider"), "google-vertex-express");
-    await enterText(user, screen.getByLabelText("Name"), "vertex-express");
-    await enterText(user, screen.getByLabelText("GOOGLE_VERTEX_EXPRESS_BASE_URL"), "https://example.test/v1");
-    await user.click(screen.getByRole("button", { name: "Create" }));
-    await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/instance/create")).toBe(true));
   });
 
   test("switching base providers clears the previous base's variable inputs and values", async () => {

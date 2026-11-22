@@ -322,6 +322,9 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	if err := r.openDurableState(); err != nil {
 		return err
 	}
+	// Detached restoring children belong to the hub, not to a caller: shutdown
+	// cancels their claims and waits for each child to be reaped.
+	defer r.resumeLocks.Close()
 	closeHosts, err := r.connectHosts()
 	if err != nil {
 		return err

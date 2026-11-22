@@ -115,16 +115,10 @@ const tools = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
 const full = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
 
 describe("the seam projects the conversation at the user's content level", () => {
-	it("hides a settled thought and empties a running one at chat", () => {
+	it("hides settled and running thoughts at chat", () => {
 		const rows = rowsAt(chat);
 		expect(JSON.stringify(rows)).not.toContain("auditing quietly");
-		// The projector's content-free placeholder: the row survives (a live
-		// thought is attention-worthy) but carries no thought text.
-		expect(rowById(rows, "r2")).toMatchObject({
-			kind: "activity",
-			label: "Reasoning",
-			state: "running",
-		});
+		expect(rowById(rows, "r2")).toBeUndefined();
 		expect(JSON.stringify(rows)).not.toContain("secret live thought");
 	});
 
@@ -152,12 +146,10 @@ describe("the seam projects the conversation at the user's content level", () =>
 		});
 	});
 
-	it("the phone's Chat level hides settled traces through the production display filter", () => {
+	it("the phone's Chat level hides every thought through the production display filter", () => {
 		// The phone reaches Chat differently from the web: displayForLevel maps
 		// Chat to the intent projection and the screen then applies
-		// conversationOnly. A healthy settled trace must be gone either way
-		// (ruling 2026-11-01: Chat stays conversation-only), while the live
-		// current thought's placeholder still rides.
+		// conversationOnly, which removes every reasoning row.
 		const display = displayForLevel("chat", null);
 		expect(display.justTheConversation).toBe(true);
 		const conversation = projectConversation(
@@ -168,17 +160,9 @@ describe("the seam projects the conversation at the user's content level", () =>
 		const presentation = projectNativeTranscript(conversation, display.config, {
 			justTheConversation: display.justTheConversation,
 		});
-		const settledTrace = presentation.items.find(
-			(row) => row.kind === "activity" && row.family === "reasoning" && row.state !== "running",
-		);
-		expect(settledTrace).toBeUndefined();
+		expect(presentation.items.some((row) => row.kind === "activity" && row.family === "reasoning")).toBe(false);
 		expect(JSON.stringify(presentation.items)).not.toContain("auditing quietly");
-		// The live current thought's placeholder survives the filter.
-		expect(
-			presentation.items.some(
-				(row) => row.kind === "activity" && row.family === "reasoning" && row.state === "running",
-			),
-		).toBe(true);
+		expect(JSON.stringify(presentation.items)).not.toContain("secret live thought");
 	});
 
 	it("settles superseded thoughts and stale in-progress tails instead of rendering them running", () => {
@@ -260,11 +244,10 @@ describe("the seam projects the conversation at the user's content level", () =>
 				detail: { output: "auditing quietly" },
 			});
 		}
-		// The chat preset stays conversation-only: settled traces stay hidden,
-		// and the live placeholder carries no text.
+		// The chat preset stays conversation-only: no reasoning row survives.
 		expect(rowById(rowsAt(chat), "r1")).toBeUndefined();
 		expect(JSON.stringify(rowsAt(chat))).not.toContain("auditing quietly");
-		// The live thought stays content-free while it runs, at every level.
+		// No level leaks the live thought's text into a compact row.
 		for (const config of [chat, intent, tools]) {
 			const rows = JSON.stringify(rowsAt(config));
 			expect(rows).not.toContain("secret live thought");

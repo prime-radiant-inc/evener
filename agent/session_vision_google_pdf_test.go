@@ -22,23 +22,21 @@ func TestDescribeImage_GooglePDFRoutingAndSingleDelivery(t *testing.T) {
 	for _, route := range []string{"session", "refusal", "failure"} {
 		t.Run(route, func(t *testing.T) {
 			t.Parallel()
-			type wirePart struct {
-				Text       string `json:"text"`
-				InlineData *struct {
-					MIMEType string `json:"mimeType"` //nolint:tagliatelle // Gemini's wire schema uses camelCase.
-					Data     string `json:"data"`
-				} `json:"inlineData"` //nolint:tagliatelle // Gemini's wire schema uses camelCase.
-				FunctionResponse *struct {
-					Name     string            `json:"name"`
-					Response map[string]string `json:"response"`
-					Parts    []json.RawMessage `json:"parts"`
-				} `json:"functionResponse"` //nolint:tagliatelle // Gemini's wire schema uses camelCase.
+			type wireContent struct {
+				Type     string `json:"type"`
+				Text     string `json:"text"`
+				MIMEType string `json:"mime_type"`
+				Data     string `json:"data"`
+			}
+			type wireStep struct {
+				Type    string        `json:"type"`
+				Content []wireContent `json:"content"`
+				Name    string        `json:"name"`
+				CallID  string        `json:"call_id"`
+				Result  any           `json:"result"`
 			}
 			type wireRequest struct {
-				Contents []struct {
-					Role  string     `json:"role"`
-					Parts []wirePart `json:"parts"`
-				} `json:"contents"`
+				Input []wireStep `json:"input"`
 			}
 			requests := make(chan wireRequest, 2)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -54,7 +52,7 @@ func TestDescribeImage_GooglePDFRoutingAndSingleDelivery(t *testing.T) {
 					return
 				}
 				requests <- body
-				_, _ = w.Write([]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"pdf-result-4463"}]},"finishReason":"STOP"}]}`))
+				_, _ = w.Write([]byte(`{"id":"int_pdf","model":"pdf-model","status":"completed","steps":[{"type":"model_output","content":[{"type":"text","text":"pdf-result-4463"}]}]}`))
 			}))
 			t.Cleanup(srv.Close)
 			configured := newFakeErrAdapter("pdfroute", []func(llm.Request) (llm.Response, error){
@@ -105,12 +103,12 @@ func TestDescribeImage_GooglePDFRoutingAndSingleDelivery(t *testing.T) {
 				t.Fatalf("Google describe requests=%d, want 1", len(requests))
 			}
 			description := <-requests
-			if len(description.Contents) != 1 || description.Contents[0].Role != "user" || len(description.Contents[0].Parts) != 2 {
+			if len(description.Input) != 1 || description.Input[0].Type != "user_input" || len(description.Input[0].Content) != 2 {
 				t.Fatalf("describe request=%+v", description)
 			}
-			media := description.Contents[0].Parts[1].InlineData
-			if media == nil || media.MIMEType != "application/pdf" {
-				t.Fatalf("PDF inlineData=%+v", media)
+			media := description.Input[0].Content[1]
+			if media.Type != "document" || media.MIMEType != "application/pdf" {
+				t.Fatalf("PDF document item=%+v", media)
 			}
 			decoded, err := base64.StdEncoding.DecodeString(media.Data)
 			if err != nil || !bytes.Equal(decoded, pdf) {
@@ -131,19 +129,21 @@ func TestDescribeImage_GooglePDFRoutingAndSingleDelivery(t *testing.T) {
 			}
 			serving := <-requests
 			responses, descriptions := 0, 0
-			for _, content := range serving.Contents {
-				for _, part := range content.Parts {
-					if part.InlineData != nil {
-						t.Fatal("PDF was delivered again in the serving request")
+			for _, step := range serving.Input {
+				switch step.Type {
+				case "function_result":
+					responses++
+					if step.Name != "read_file" || step.Result != "tool-result-4463" {
+						t.Fatalf("tool response=%+v, want string result without binary parts", step)
 					}
-					if response := part.FunctionResponse; response != nil {
-						responses++
-						if response.Name != "read_file" || response.Response["result"] != "tool-result-4463" || len(response.Parts) != 0 {
-							t.Fatalf("tool response=%+v, want retained result without binary parts", response)
+				case "user_input":
+					for _, item := range step.Content {
+						if item.Type == "document" || item.Type == "image" {
+							t.Fatal("PDF was delivered again in the serving request")
 						}
-					}
-					if part.Text == result.description {
-						descriptions++
+						if item.Text == result.description {
+							descriptions++
+						}
 					}
 				}
 			}

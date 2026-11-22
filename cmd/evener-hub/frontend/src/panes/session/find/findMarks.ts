@@ -20,6 +20,13 @@ const MAX_RANGES = 1500;
  * entry's own anchor and the span of rows the virtual list has mounted. */
 interface MountedTranscript {
   entries: Map<string, HTMLElement>;
+  /** The call rows mounted by their own item id: a hit inside an open run
+   * resolves to the row that holds its words, not the anchor around it. */
+  rows: Map<string, HTMLElement>;
+  /** The entries a folded anchor stands in for (a tool run), each mapped to
+   * that anchor: a hit on a folded call resolves to the row that holds it
+   * once the fold opens. */
+  folds: Map<string, HTMLElement>;
   firstRow: number;
   lastRow: number;
 }
@@ -27,6 +34,8 @@ interface MountedTranscript {
 function readMounted(port: HTMLElement): MountedTranscript {
   const mounted: MountedTranscript = {
     entries: new Map(),
+    rows: new Map(),
+    folds: new Map(),
     firstRow: Number.POSITIVE_INFINITY,
     lastRow: Number.NEGATIVE_INFINITY,
   };
@@ -36,7 +45,14 @@ function readMounted(port: HTMLElement): MountedTranscript {
       mounted.firstRow = Math.min(mounted.firstRow, row);
       mounted.lastRow = Math.max(mounted.lastRow, row);
     }
-    mounted.entries.set(anchor.getAttribute("data-view-anchor-id") ?? "", anchor);
+    const id = anchor.getAttribute("data-view-anchor-id") ?? "";
+    mounted.entries.set(id, anchor);
+    for (const member of (anchor.getAttribute("data-view-anchor-members") ?? "").split(",")) {
+      if (member !== "") mounted.folds.set(member, anchor);
+    }
+  }
+  for (const row of port.querySelectorAll<HTMLElement>("[data-item-id]")) {
+    mounted.rows.set(row.getAttribute("data-item-id") ?? "", row);
   }
   return mounted;
 }
@@ -219,17 +235,39 @@ export function markTranscript(
   let focus: Range | null = null;
   if (port && needle !== "") {
     const mounted = readMounted(port);
+    // A folded run's members share their leader's one anchor; read its text
+    // once, not once per member that matches inside it.
+    const markedKeys = new Set<string>();
     const markHit = (hit: FindHit): HTMLElement | null => {
       // Hits far outside the mounted window cost nothing.
       if (hit.rowIndex < mounted.firstRow || hit.rowIndex > mounted.lastRow) return null;
-      const entry = mounted.entries.get(hit.key);
+      // A call inside a folded run has no anchor of its own: the run's anchor
+      // lists it as a member. Once Find opens the run the call's own row is
+      // what holds the words, and it is preferred over the anchor around it.
+      const entry =
+        mounted.entries.get(hit.key) ??
+        mounted.rows.get(hit.itemId) ??
+        mounted.folds.get(hit.key) ??
+        mounted.folds.get(hit.itemId);
       if (entry === undefined) return null;
+      if (markedKeys.has(hit.key)) return entry;
+      markedKeys.add(hit.key);
       const isCurrent = hit.key === currentKey;
       if (!registry && !isCurrent) return entry;
-      // A message row also carries its speaker and time; only what the
-      // message says is searched, so only that is painted and scrolled to.
-      const body = entry.querySelector<HTMLElement>(`[${FIND_BODY_ATTRIBUTE}]`) ?? entry;
-      const found = rangesIn(body, needle, registry ? MAX_RANGES - all.length - mine.length : 1);
+      // A row also carries chrome - a speaker and time, a thought's
+      // "Thought · ~N tokens" heading; only what it says is searched, so only
+      // those regions are painted and scrolled to. A redacted thought says
+      // two things (its neutral label and its unfolded body), so every marked
+      // region is read, in DOM order.
+      const bodies = entry.querySelectorAll<HTMLElement>(`[${FIND_BODY_ATTRIBUTE}]`);
+      const regions = bodies.length > 0 ? Array.from(bodies) : [entry];
+      const found: Range[] = [];
+      for (const region of regions) {
+        const budget = registry ? MAX_RANGES - all.length - mine.length - found.length : 1;
+        if (budget <= 0) break;
+        found.push(...rangesIn(region, needle, budget));
+        if (!registry && found.length > 0) break;
+      }
       if (isCurrent) focus = found[0] ?? null;
       if (registry) (isCurrent ? mine : all).push(...found);
       return entry;

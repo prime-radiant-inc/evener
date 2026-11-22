@@ -2,7 +2,14 @@
 // in a Menlo inset (the first 40 lines, then the full log), an edit as a diff
 // with the web's add and delete washes, the file a write wrote, a task list,
 // an error, and the images the step produced.
-import { formatByteCount, isKnownTaskStatus, lineCount } from "@evener/appwire-client";
+import {
+	classifyDiffLineKinds,
+	type DiffLineKind,
+	formatByteCount,
+	isKnownTaskStatus,
+	lineCount,
+	splitDiffLines,
+} from "@evener/appwire-client";
 import { type ReactNode, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import type { AnsiLine } from "@evener/appwire-client";
@@ -136,11 +143,18 @@ function Checklist({ tasks }: { tasks: readonly ChecklistTask[] }) {
 	);
 }
 
-function diffLineStyle(line: string, palette: Palette) {
-	if (line.startsWith("+++") || line.startsWith("---")) return { color: palette.inkLow };
-	if (line.startsWith("+")) return { color: palette.inkHi, backgroundColor: palette.diffAdd };
-	if (line.startsWith("-")) return { color: palette.inkHi, backgroundColor: palette.diffDel };
-	return { color: palette.inkHi };
+function diffLineStyle(kind: DiffLineKind, palette: Palette) {
+	switch (kind) {
+		case "header":
+		case "meta":
+			return { color: palette.inkLow };
+		case "add":
+			return { color: palette.inkHi, backgroundColor: palette.diffAdd };
+		case "del":
+			return { color: palette.inkHi, backgroundColor: palette.diffDel };
+		case "context":
+			return { color: palette.inkHi };
+	}
 }
 
 function Diff({ text, added, removed }: { text: string; added: number; removed: number }) {
@@ -148,7 +162,15 @@ function Diff({ text, added, removed }: { text: string; added: number; removed: 
 	const scale = useTextScale();
 	// Go source is tab-indented: a tab expands to its stop, the +/- column
 	// counting as column 0, as a terminal draws a diff.
-	const lines = useMemo(() => keyedByOffset(text.split("\n").map(expandTabs), (line) => line.length), [text]);
+	const lines = useMemo(() => {
+		const rawLines = splitDiffLines(text);
+		if (rawLines.length === 0) return [];
+		const kinds = classifyDiffLineKinds(text);
+		return keyedByOffset(
+			rawLines.map((raw, i) => ({ text: expandTabs(raw), kind: kinds[i] ?? ("context" as const) })),
+			(entry) => entry.text.length,
+		);
+	}, [text]);
 	const count = { fontSize: 13 * scale, lineHeight: 18 * scale, fontVariant: ["tabular-nums" as const] };
 	return (
 		<>
@@ -162,9 +184,9 @@ function Diff({ text, added, removed }: { text: string; added: number; removed: 
 					<Text
 						key={key}
 						allowFontScaling={allowFontScaling}
-						style={{ ...scaledType(typeRoles.machine, scale), ...diffLineStyle(line, palette) }}
+						style={{ ...scaledType(typeRoles.machine, scale), ...diffLineStyle(line.kind, palette) }}
 					>
-						{line}
+						{line.text}
 					</Text>
 				))}
 			</Inset>

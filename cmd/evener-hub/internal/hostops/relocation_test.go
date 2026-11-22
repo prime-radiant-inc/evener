@@ -76,7 +76,7 @@ func testStoreRelocation(t *testing.T, withCustody bool) {
 	}
 	store = reopenFresh(t, sourcePath)
 	original := storeSnapshotForTest(store)
-	originalEpoch := store.CursorEpoch()
+	originalCompactSeq, originalQuarantineEpoch := store.CompactSeq(), store.quarantineEpoch()
 	originalSignal := store.Quarantine()
 	if len(original.Compensations) != 0 || original.Sequence != 2 || original.AllocatorHighWaterMark == 0 {
 		t.Fatalf("fixture is not settled meaningful authority: %+v", original)
@@ -144,8 +144,11 @@ func testStoreRelocation(t *testing.T, withCustody bool) {
 	if got := storeSnapshotForTest(moved); !reflect.DeepEqual(got, original) {
 		t.Fatalf("relocation changed authority:\n got %+v\nwant %+v", got, original)
 	}
-	if got := moved.CursorEpoch(); got != originalEpoch {
-		t.Fatalf("cursor epoch = %+v, want %+v", got, originalEpoch)
+	if got := moved.CompactSeq(); got != originalCompactSeq {
+		t.Fatalf("compactSeq = %d, want %d", got, originalCompactSeq)
+	}
+	if got := moved.quarantineEpoch(); got != originalQuarantineEpoch {
+		t.Fatalf("quarantine epoch = %d, want %d", got, originalQuarantineEpoch)
 	}
 	if originalSignal == nil {
 		if moved.Quarantine() != nil {

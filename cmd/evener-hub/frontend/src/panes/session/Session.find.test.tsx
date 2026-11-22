@@ -154,7 +154,7 @@ test("the find chord opens Find over the focused conversation and marks the newe
 
   fireEvent.change(field, { target: { value: "quokka" } });
   const bar = screen.getByTestId("find-bar");
-  expect(bar.getAttribute("data-find-count")).toBe("2");
+  expect(bar.getAttribute("data-find-count")).toBe("3");
   expect(bar.getAttribute("data-find-position")).toBe("1");
   await waitFor(() => expect(marked()?.getAttribute("data-view-anchor-id")).toBe("turn_2-userMessage"));
 
@@ -164,7 +164,7 @@ test("the find chord opens Find over the focused conversation and marks the newe
   view.unmount();
 });
 
-test("stepping older lands on the earlier message; what a tool call returned is not a match", async () => {
+test("stepping older lands on the earlier message, then on what a folded tool call returned", async () => {
   renderSession();
   await screen.findByText("No more to say.");
 
@@ -176,8 +176,13 @@ test("stepping older lands on the earlier message; what a tool call returned is 
   expect(screen.getByTestId("find-bar").getAttribute("data-find-position")).toBe("2");
   await waitFor(() => expect(marked()?.getAttribute("data-view-anchor-id")).toBe("turn_1-agentMessage"));
   expect(marked()?.textContent).toContain("Done reading about the quokka.");
-  // The call that returned the same word stays folded away, uncounted.
-  expect(screen.queryByText("the quokka lives here")).toBeNull();
+
+  // One step older reaches the folded call that returned the same word: Find
+  // opens its run and its body, so the words it counted are on screen.
+  fireEvent.keyDown(field, { key: "Enter" });
+  expect(screen.getByTestId("find-bar").getAttribute("data-find-position")).toBe("3");
+  await waitFor(() => expect(marked()?.getAttribute("data-item-id")).toBe("turn_1-call-1"));
+  await waitFor(() => expect(marked()?.textContent).toContain("the quokka lives here"));
 });
 
 test("a pane that does not hold the keyboard leaves the find chord to the browser", async () => {

@@ -524,11 +524,12 @@ type delegateDeliveryWake struct {
 	receiver     delegateDeliveryReceiver
 	attentionIDs []string
 	// wakeGeneration is the newest settled generation the acknowledgments
-	// grouped into this wake superseded, sampled at delivery admission, not when
-	// each wake was journaled. The callback releases against this sample rather
-	// than reading the generation again after the acknowledgment landed: a stop
-	// that settles in between is newer evidence than this delivery, and
-	// re-sampling would let the older delivery clear that newer quiet.
+	// grouped into this wake superseded, sampled when each delivery's claim was
+	// created, not when each wake was journaled. The callback releases against
+	// this sample rather than reading the generation again after the
+	// acknowledgment landed: a stop that settles in between is newer evidence
+	// than this delivery, and re-sampling would let the older delivery clear that
+	// newer quiet.
 	wakeGeneration uint64
 }
 
@@ -788,12 +789,12 @@ func (c *delegateTreeController) wakeDeliveryReceiverAt(receiver delegateDeliver
 		// list read would present the delivered row alone and leave
 		// the stopped report for a later generation.
 		//
-		// The generation was sampled at delivery admission, not when the wake funnel journaled this
-		// acknowledgment's release: the delegate's newest settled generation,
-		// which is the newest quiet the delivery supersedes. Sampling it here
-		// would read the generation after the acknowledgment landed, so a stop
-		// that settled in that interval would be cleared by a delivery older
-		// than it.
+		// The generation was sampled when the delivery's claim was created, not
+		// when the wake funnel journaled this acknowledgment's release: the
+		// owner's settled generation then, which is the newest quiet the delivery
+		// supersedes. Sampling it here would read the generation after the
+		// acknowledgment landed, so a stop that settled in that interval would be
+		// cleared by a delivery older than it.
 		receiver.releaseAutomaticDriveHolds(delegateHoldReleaseDelivery, wakeGeneration)
 		// A non-root receiver gets the same durable arm the root gets
 		// (#6330): armDelegateAttentions opens the receiver's attention

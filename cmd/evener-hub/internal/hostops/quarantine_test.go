@@ -198,10 +198,10 @@ func TestQuarantineIsCustodyFirstAndNeverDeletesTheCorruptFile(t *testing.T) {
 		len(state.RemovedHosts) != 0 || state.Sequence != 0 || state.CompactSeq != 0 {
 		t.Fatalf("the replacement store did not start empty: %+v", state)
 	}
-	if got, want := store.CursorEpoch().QuarantineEpoch, uint64(1); got != want {
+	if got, want := store.quarantineEpoch(), uint64(1); got != want {
 		t.Fatalf("the replacement store's quarantine epoch = %d, want %d", got, want)
 	}
-	if got, want := store.CursorEpoch().CompactSeq, uint64(0); got != want {
+	if got, want := store.CompactSeq(), uint64(0); got != want {
 		t.Fatalf("the replacement store's compactSeq = %d, want %d", got, want)
 	}
 	if got := state.AllocatorHighWaterMark; got != 3 {
@@ -227,7 +227,7 @@ func TestQuarantineIsCustodyFirstAndNeverDeletesTheCorruptFile(t *testing.T) {
 		t.Fatalf("the epoch sidecar = %d, want 1\n%s", sidecar.QuarantineEpoch, epochBytes)
 	}
 	reopened := reopenFresh(t, path)
-	if got := reopened.CursorEpoch().QuarantineEpoch; got != 1 {
+	if got := reopened.quarantineEpoch(); got != 1 {
 		t.Fatalf("a fresh open after the quarantine reads epoch %d, want 1", got)
 	}
 	if !strings.Contains(string(custodyBytes), `"quarantineEpoch":1`) {
@@ -488,7 +488,7 @@ func TestQuarantineRecoversACrashBeforeTheRename(t *testing.T) {
 	if _, ok := store.Record("00000000000000000001"); !ok {
 		t.Fatalf("the recovered replacement is missing the fence import: %+v", store.Records())
 	}
-	if got := store.CursorEpoch().QuarantineEpoch; got != 1 {
+	if got := store.quarantineEpoch(); got != 1 {
 		t.Fatalf("the recovered epoch = %d, want exactly one advance from 0", got)
 	}
 	var sidecar struct {
@@ -510,7 +510,7 @@ func TestQuarantineRecoversACrashBeforeTheRename(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second fresh open: %v", err)
 	}
-	if got := again.CursorEpoch().QuarantineEpoch; got != 1 {
+	if got := again.quarantineEpoch(); got != 1 {
 		t.Fatalf("second fresh open reads epoch %d, want 1 (never two advances for one quarantine)", got)
 	}
 }
@@ -564,7 +564,7 @@ func TestQuarantineRecoversACrashBeforeTheReplacementOpen(t *testing.T) {
 	if _, ok := store.Record("00000000000000000003"); !ok {
 		t.Fatalf("the recovered replacement is missing the ownership-only import: %+v", store.Records())
 	}
-	if got := store.CursorEpoch().QuarantineEpoch; got != 1 {
+	if got := store.quarantineEpoch(); got != 1 {
 		t.Fatalf("the recovered epoch = %d, want 1", got)
 	}
 	reopened := mustReadFSFile(t, fs, path)
@@ -613,7 +613,7 @@ func TestQuarantineRecoversACrashAfterTheReplacementWrite(t *testing.T) {
 	if got := mustReadFSFile(t, fs, path); !bytes.Equal(got, replacement) {
 		t.Fatalf("the recovery boot rewrote the replacement store:\n got %s\nwant %s", got, replacement)
 	}
-	if got := store.CursorEpoch().QuarantineEpoch; got != 1 {
+	if got := store.quarantineEpoch(); got != 1 {
 		t.Fatalf("the recovery boot advanced the epoch to %d, want 1", got)
 	}
 	if _, err := lstat(fs, quarantineIntentPath(path)); !errors.Is(err, os.ErrNotExist) {
@@ -681,54 +681,9 @@ func TestQuarantineFailsStartupWhenTheIntentHasNoCompleteCustody(t *testing.T) {
 	})
 }
 
-// TestQuarantineRefusesAPreQuarantineCursor pins §4's cursor rule end to end: a
-// cursor minted against the pre-quarantine store is a typed stale-entry re-list
-// refusal against the replacement, because the live epoch moved.
-func TestQuarantineRefusesAPreQuarantineCursor(t *testing.T) {
-	store, path := openTestStore(t)
-	createTestRecord(t, store, "h1")
-	mirrorCursorBoundary(t, store, "h1", 7, "incarnation-h1", 1)
-	page, err := store.ReadOperations(OperationsQuery{Host: "h1"})
-	if err != nil {
-		t.Fatalf("ReadOperations: %v", err)
-	}
-	preQuarantine, err := DecodeCursor(page.NextCursor)
-	if err != nil {
-		t.Fatalf("DecodeCursor: %v", err)
-	}
-	if preQuarantine.QuarantineEpoch != 0 {
-		t.Fatalf("the pre-quarantine cursor pins epoch %d, want 0", preQuarantine.QuarantineEpoch)
-	}
-
-	// The store file rots on disk behind the handle's back.
-	writeRawStore(t, path, 0o600, corruptSequenceFile(t))
-	forgetStore(path)
-
-	replacement, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open after the corruption: %v", err)
-	}
-	if got := replacement.CursorEpoch().QuarantineEpoch; got != 1 {
-		t.Fatalf("the replacement epoch = %d, want 1", got)
-	}
-	_, err = replacement.ReadOperations(OperationsQuery{Host: "h1", Cursor: page.NextCursor})
-	if err == nil {
-		t.Fatalf("a pre-quarantine cursor was admitted against the replacement store")
-	}
-	var stale *CursorStaleError
-	if !errors.As(err, &stale) {
-		t.Fatalf("ReadOperations = %v, want a typed stale-entry refusal", err)
-	}
-	if !strings.Contains(stale.Reason, "quarantine epoch") {
-		t.Fatalf("the refusal reason = %q, want it to name the quarantine epoch", stale.Reason)
-	}
-}
-
 // TestSecondQuarantineAdvancesTheEpochExactlyOnce pins the durable counter
 // across two quarantines: each corrupt file takes its own custody snapshot and
-// aside file, and the epoch moves by exactly one per quarantine, so the stop
-// between them is one epoch apart and no cursor minted at the first survives the
-// second.
+// aside file, and the epoch moves by exactly one per quarantine.
 func TestSecondQuarantineAdvancesTheEpochExactlyOnce(t *testing.T) {
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, quarantinedStoreJSON)
@@ -736,7 +691,7 @@ func TestSecondQuarantineAdvancesTheEpochExactlyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
-	if got := first.CursorEpoch().QuarantineEpoch; got != 1 {
+	if got := first.quarantineEpoch(); got != 1 {
 		t.Fatalf("the first quarantine's epoch = %d, want 1", got)
 	}
 	// The replacement store rots on disk; the second corrupt file is quarantined
@@ -749,7 +704,7 @@ func TestSecondQuarantineAdvancesTheEpochExactlyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second Open: %v", err)
 	}
-	if got := second.CursorEpoch().QuarantineEpoch; got != 2 {
+	if got := second.quarantineEpoch(); got != 2 {
 		t.Fatalf("the second quarantine's epoch = %d, want exactly 2", got)
 	}
 	if signal := second.Quarantine(); signal == nil || signal.QuarantineEpoch != 2 {

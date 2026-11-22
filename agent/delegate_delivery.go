@@ -98,6 +98,12 @@ type delegateDeliveryClaim struct {
 	ownerID    string
 	waiter     *delegateInlineWaiter
 	cold       bool
+	// wakeGeneration is the owner's settled generation when the claim was
+	// created. A deferred claim can wait a whole owner turn before
+	// BeginDelivery admits it, and a stop that settles while it waits is newer
+	// evidence than the delivery, so the acknowledgment's release carries this
+	// sample rather than one taken at admission (#7226).
+	wakeGeneration uint64
 	// held marks a plan its receiver deferred to its next round because it
 	// was mid-turn.
 	held bool
@@ -290,23 +296,27 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (_ del
 	}
 	delete(c.deliveryClaims, plan.deliveryID)
 	cold := claim.cold
-	admit := func(claim delegateDeliveryClaimToken) *delegateDeliveryAdmission {
+	admit := func(claimToken delegateDeliveryClaimToken) *delegateDeliveryAdmission {
 		c.nextToken++
 		inline := plan.waiter != nil || plan.callerCommitted
 		receipt := &delegateDeliveryAdmission{
-			token:           delegateDeliveryToken{processID: c.nextToken, deliveryID: claim.deliveryID},
+			token:           delegateDeliveryToken{processID: c.nextToken, deliveryID: claimToken.deliveryID},
 			delegateID:      plan.delegateID,
 			ownerID:         plan.ownerDelegateID,
-			claim:           claim,
+			claim:           claimToken,
 			cold:            cold,
 			inline:          inline,
 			callerCommitted: plan.callerCommitted,
 		}
 		// Only a non-inline acknowledgment publishes a wake to the owner, and
-		// it must release against this sample: sampling at acknowledgment time
-		// would supersede a stop that settled after the claim was admitted.
+		// only the plan's own claim is admitted non-inline: a carried admission
+		// exists only on an inline reply, which carries the held head to the
+		// caller already waiting on it. The release therefore carries the
+		// generation the claim was created in rather than one read when the
+		// acknowledgment lands, so a stop that settled while a deferred claim
+		// waited is not cleared (#7226).
 		if !inline {
-			receipt.wakeGeneration = c.attentionWakeGenerationLocked(plan.ownerDelegateID)
+			receipt.wakeGeneration = claim.wakeGeneration
 		}
 		c.deliveries[receipt.token.processID] = receipt
 		return receipt
@@ -368,11 +378,9 @@ type delegateDeliveryAck struct {
 	ownerID      string
 	delegateID   string
 	ownerChanged bool
-	// wakeGeneration is the settled generation the acknowledged delivery's wake
-	// supersedes, sampled under the controller lock at delivery admission, not where the wake was
-	// journaled. A callback that sampled the generation itself would read it
-	// after the acknowledgment landed, so a stop that settled in between would
-	// be cleared by a delivery older than it.
+	// wakeGeneration is the claim-creation sample the acknowledgment's release
+	// carries. See delegateDeliveryClaim.wakeGeneration for why it is not
+	// sampled here (#7226).
 	wakeGeneration uint64
 }
 
@@ -757,10 +765,10 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 		return plans, err
 	}
 	// plans carries the generation the acknowledgment's release superseded,
-	// sampled at delivery admission, not where that release was journaled. The
-	// callback releases against that sample rather than reading the generation
-	// again, so a stop that settles between the acknowledgment and this wake
-	// keeps its quiet.
+	// sampled when that delivery's claim was created, not where that release was
+	// journaled. The callback releases against that sample rather than reading
+	// the generation again, so a stop that settles between the acknowledgment and
+	// this wake keeps its quiet.
 	return plans, plan.controller.wakeDeliveryReceiverAt(receiver, []string{attentionID}, plans.ackWakeGeneration)
 }
 
@@ -887,11 +895,12 @@ func (c *delegateTreeController) newHeadDeliveryPlanLocked(delegateID, deliveryI
 		waiter = c.claimDelegateWaiterLocked(delegateID, head.Generation)
 	}
 	claim := &delegateDeliveryClaim{
-		token:      claimToken,
-		delegateID: delegateID,
-		ownerID:    head.OwnerDelegateID,
-		waiter:     waiter,
-		cold:       cold,
+		token:          claimToken,
+		delegateID:     delegateID,
+		ownerID:        head.OwnerDelegateID,
+		waiter:         waiter,
+		cold:           cold,
+		wakeGeneration: c.attentionWakeGenerationLocked(head.OwnerDelegateID),
 	}
 	c.deliveryClaims[deliveryID] = claim
 	if len(carried) > 0 {

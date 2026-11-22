@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/execsupport/fsatomic"
@@ -1214,7 +1215,14 @@ func (x *Index) readHeader() error {
 		// ordinary error no rebuild trigger ever answers.
 		return fmt.Errorf("%w: decode stored header: %w", errCorrupt, err)
 	}
-	x.prelude = apptranscript.PreludeTurn(header)
+	// A fork that starts with an empty header saved the prompt it rendered to
+	// the meta beside the transcript; the prelude is computed once here, at
+	// open, from both.
+	launchPrompt := ""
+	if strings.TrimSpace(header.SystemPrompt) == "" {
+		launchPrompt = schema.LaunchSystemPromptBesideTranscript(x.path)
+	}
+	x.prelude = apptranscript.PreludeTurn(header, launchPrompt)
 	return nil
 }
 

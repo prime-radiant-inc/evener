@@ -184,6 +184,13 @@ func (s *Session) hasPendingDelegateAttention() bool {
 	return s != nil && s.isRootDelegateAttentionReceiver() && s.delegateController.hasPendingDelegateAttention()
 }
 
+// hasDeliverableDelegateAttention is hasPendingDelegateAttention minus the
+// attention a foreign-held lane has made undeliverable. The drive still retries
+// those rows, but a one-shot drain must be able to give up on them.
+func (s *Session) hasDeliverableDelegateAttention() bool {
+	return s != nil && s.isRootDelegateAttentionReceiver() && s.delegateController.hasDeliverableDelegateAttention()
+}
+
 // hasPendingStableSteering reports whether this session's own delegate
 // generation holds an admitted steering message no model request has consumed
 // yet. A delegate run parked in its finalization drain reads this to run a turn

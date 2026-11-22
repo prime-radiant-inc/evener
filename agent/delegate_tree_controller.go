@@ -471,9 +471,10 @@ type delegateMutationPlans struct {
 	shellRepairs          []delegateShellRepairPlan
 	warnings              []events.WarningData
 	// ackWakeGeneration is the settled generation the acknowledgment this batch
-	// committed superseded, sampled at delivery admission, not where its release
-	// was journaled. The post-commit wake releases against this sample so a stop
-	// that settles in between is not cleared by a delivery older than it.
+	// committed superseded, sampled when its delivery's claim was created, not
+	// where its release was journaled. The post-commit wake releases against this
+	// sample so a stop that settles in between is not cleared by a delivery older
+	// than it.
 	ackWakeGeneration uint64
 }
 
