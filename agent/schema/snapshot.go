@@ -231,9 +231,6 @@ type SessionMeta struct {
 	// LaunchEnvBaseline is what the launch prompt stated, seeded before any replay.
 	LaunchEnvBaseline  envctx.Snapshot `json:"launch_env_baseline,omitzero"`
 	LaunchSystemPrompt string          `json:"launch_system_prompt,omitempty"` // when the transcript header has none
-	// ReasoningEffortEscalated records the sticky loop-detection escalation
-	// separately from Config so a resumed lower-effort task cannot undo it.
-	ReasoningEffortEscalated bool `json:"reasoning_effort_escalated,omitempty"`
 	// ObservedBy records append-only observer UI relationships. It grants no
 	// access and lets the hub auto-open an observer beside this worker.
 	ObservedBy []string `json:"observed_by,omitempty"`

@@ -1256,7 +1256,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		stateDir:                 cfg.StateDir,
 		installID:                resolveInstallationID(cfg, cfg.StateDir),
 		state:                    SessionIdle,
-		loopEffortEscalated:      meta.ReasoningEffortEscalated,
 		events:                   make(chan events.SessionEvent, 256),
 		history:                  resumeHistory,
 		frontierStartupPending:   true,
@@ -2220,6 +2219,12 @@ func modelFallbackEligible(err error, policy llm.RetryPolicy) bool {
 	// here rather than left to llm.Classify, which would walk into the wrapped
 	// attempt error and land wherever that happens to classify.
 	if _, ok := errors.AsType[*llm.ProviderUnhealthyError](err); ok {
+		return false
+	}
+	// A response discarded by the per-response tool-call cap indicts the shape
+	// of that one response. Replaying the same request against a fallback model
+	// would let the runaway loose again.
+	if _, ok := errors.AsType[*responseToolCallLimitError](err); ok {
 		return false
 	}
 	switch llm.Classify(err) {

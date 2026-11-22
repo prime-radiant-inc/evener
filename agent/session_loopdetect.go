@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/tool"
-	"primeradiant.com/evener/llm"
 )
 
 // failureLoopExcerptRunes bounds the failure excerpt carried by the structural
@@ -13,25 +12,13 @@ import (
 const failureLoopExcerptRunes = 500
 
 // stuckEscalation returns the steering message for the nth loop detection.
-// First detection bumps reasoning effort; subsequent detections get increasingly
-// direct about abandoning the current approach.
+// Later detections get increasingly direct about abandoning the current
+// approach. It changes no session setting: steering the model is the whole
+// intervention.
 func (s *Session) stuckEscalation(count int) string {
 	switch count {
 	case 1:
-		// Bump reasoning effort to help the agent think harder.
-		s.mu.Lock()
-		prev := s.cfg.ReasoningEffort
-		switch prev {
-		case "", llm.ReasoningEffortNone, "low", "medium":
-			s.cfg.ReasoningEffort = "high"
-		case "high", "xhigh":
-			// "max" is the top of evener's effort lattice; the per-model clamp
-			// lowers it to whatever tier the model actually tops out at.
-			s.cfg.ReasoningEffort = "max"
-		}
-		s.loopEffortEscalated = true
-		s.mu.Unlock()
-		return "You are stuck in a loop. Your reasoning effort has been increased. " +
+		return "You are stuck in a loop. " +
 			"Stop and think about why your current approach is not working. " +
 			"What assumption are you making that might be wrong?"
 	case 2:
