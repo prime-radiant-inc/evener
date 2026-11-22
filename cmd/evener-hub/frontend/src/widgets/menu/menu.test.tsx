@@ -986,6 +986,26 @@ test("the trigger announces its popup state via aria-haspopup/aria-expanded", as
   expect(trigger.getAttribute("aria-expanded")).toBe("true");
 });
 
+test("the trigger exposes its open state as data-open for callers' CSS", async () => {
+  const user = userEvent.setup();
+  render(
+    <div>
+      <Menu trigger="Actions" items={items()} />
+      <button type="button">Elsewhere</button>
+    </div>,
+  );
+  const trigger = screen.getByRole("button", { name: "Actions" });
+  expect(trigger.getAttribute("data-open")).toBe("false");
+  await user.click(trigger);
+  expect(trigger.getAttribute("data-open")).toBe("true");
+  await user.keyboard("{Escape}");
+  expect(trigger.getAttribute("data-open")).toBe("false");
+  await user.click(trigger);
+  expect(trigger.getAttribute("data-open")).toBe("true");
+  await user.click(screen.getByRole("button", { name: "Elsewhere" }));
+  expect(trigger.getAttribute("data-open")).toBe("false");
+});
+
 // --- fix-wave: role=menu accessible name (Important) -------------------
 // A menu with no accessible name announces as just "menu" to a screen
 // reader - indistinguishable from any other menu on the page. Labelling
