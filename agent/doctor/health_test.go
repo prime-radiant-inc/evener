@@ -872,3 +872,36 @@ func TestRootBareTextFallbackFinalEndTurnIndex(t *testing.T) {
 		t.Errorf("bare-text final index = %d, want 0", got)
 	}
 }
+
+func TestTranscriptHealth_QuietYieldsExcludedFromLongestIdenticalRun(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, "proj-quiet-run")
+	const sid = "0351uS7IJIgwIWumd4RtmZ"
+	quietState := json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true,"communicate_quiet":true}`)
+	var turns []schema.Turn
+	for _, id := range []string{"q0", "q1", "q2", "q3"} {
+		res := healthToolResult(id, "communicate", `{"accepted":true,"end_turn":true,"inbox":[],"quiet":true}`, false)
+		res.ToolResult.ToolState = quietState
+		turns = append(turns,
+			schema.NewTurn(schema.TurnAssistant, llm.Message{Content: []llm.ContentPart{healthToolCall(id, "communicate", `{}`)}}),
+			schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{res}}),
+		)
+	}
+	writeSessionsFixtureSession(t, bucket, sid,
+		transcript.Header{CreatedAt: time.Unix(1, 0).UTC()},
+		turns,
+		schema.SessionMeta{TurnCount: len(turns)},
+		nil,
+		time.Unix(2, 0).UTC(),
+	)
+	h, err := TranscriptHealth(t.Context(), base, sid)
+	if err != nil {
+		t.Fatalf("TranscriptHealth: %v", err)
+	}
+	if h.ToolCalls["communicate"] != 4 {
+		t.Errorf("ToolCalls[communicate] = %d, want 4", h.ToolCalls["communicate"])
+	}
+	if h.LongestIdenticalRun.Length != 0 {
+		t.Errorf("LongestIdenticalRun = %+v, want Length=0 (quiet yields are turn-ending acks, not a loop)", h.LongestIdenticalRun)
+	}
+}

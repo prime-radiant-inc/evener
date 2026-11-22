@@ -928,15 +928,22 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	ctx = context.WithValue(ctx, ctxIntentKey{}, strings.TrimSpace(intent))
 	v, err := t.Exec(ctx, env, args)
 	res := dispatchedResult(name, callID, dispatchLimit(name, t.Limit, args), v, err)
-	if judged {
-		// Recorded on the untruncated body, before any nudge is appended, so
-		// the nudge cannot poison the body hash. FullOutput rather than
-		// Output: a TruncTail tool renders every over-limit error behind the
-		// same truncation banner, and classing on that banner would read two
-		// unrelated failures as one and park a call that never repeated
-		// itself. Nudging after truncation is deliberate: the text must
-		// survive the limiter.
-		judgedBody := res.FullOutput
+		if judged {
+			if !res.IsError && schema.IsQuietCommunicateState(res.ToolState) {
+				// Successful quiet yields legitimately repeat across consecutive
+				// notification or watch wakes while background work completes;
+				// clear any prior failure run without counting body repetition.
+				r.breaker.clearFailures(key)
+				return res
+			}
+			// Recorded on the untruncated body, before any nudge is appended, so
+			// the nudge cannot poison the body hash. FullOutput rather than
+			// Output: a TruncTail tool renders every over-limit error behind the
+			// same truncation banner, and classing on that banner would read two
+			// unrelated failures as one and park a call that never repeated
+			// itself. Nudging after truncation is deliberate: the text must
+			// survive the limiter.
+			judgedBody := res.FullOutput
 		if judgedBody == "" {
 			judgedBody = res.Output
 		}

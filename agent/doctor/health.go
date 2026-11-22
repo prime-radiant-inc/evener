@@ -173,10 +173,11 @@ func TranscriptHealth(ctx context.Context, stateBase, selector string) (HealthRe
 	var occurrences []toolCallOccurrence
 	resultSeen := map[string]bool{}
 	resultErrors := map[string]bool{}
+	pairedResults := pairToolResults(doc.Entries)
 	resolver := newSessionToolResolver(doc.Entries, resultTool)
 
-	for _, e := range doc.Entries {
-		for _, part := range e.Turn.Message.Content {
+	for i, e := range doc.Entries {
+		for j, part := range e.Turn.Message.Content {
 			switch part.Kind {
 			case llm.ContentToolCall:
 				if part.ToolCall == nil {
@@ -184,6 +185,9 @@ func TranscriptHealth(ctx context.Context, stateBase, selector string) (HealthRe
 				}
 				name := resolver.callName(part.ToolCall)
 				res.ToolCalls[name]++
+				if paired := pairedResults[toolCallPosition{i, j}]; paired != nil && !paired.IsError && schema.IsQuietCommunicateState(paired.ToolState) {
+					continue
+				}
 				occurrences = append(occurrences, toolCallOccurrence{
 					signature: toolCallSignature(name, part.ToolCall),
 					tool:      name,
