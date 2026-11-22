@@ -423,7 +423,6 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		VisionModel:              s.cfg.VisionModel,
 		Manager:                  s.cfg.Manager,
 		Config:                   s.cfg.toSnapshot(),
-		ReasoningEffortEscalated: s.loopEffortEscalated,
 		EnvInfo:                  s.envInfo,
 		CreatedAt:                s.createdAt,
 		UpdatedAt:                now,

@@ -84,18 +84,13 @@ func completeAttemptMetadata(meta ModelAttemptMetadata, resp llm.Response) Model
 
 // effectiveReasoningEffort decides the reasoning effort for one round without
 // touching the session's configured value: the current in-progress task's
-// override wins when set (even when lower — deliberately cheap tasks are a
-// feature), except while a loop-detect escalation is active, where the
-// higher-ranked of the configured and override efforts wins so the "your
-// reasoning effort has been increased" steering never lies.
-func effectiveReasoningEffort(cfg, override string, escalated bool) string {
-	if override == "" {
-		return cfg
+// override wins when set, even when lower. Deliberately cheap tasks are a
+// feature.
+func effectiveReasoningEffort(cfg, override string) string {
+	if override != "" {
+		return override
 	}
-	if escalated && llm.ReasoningEffortRank(cfg) > llm.ReasoningEffortRank(override) {
-		return cfg
-	}
-	return override
+	return cfg
 }
 
 // prepareModelRequestWithError runs the per-round input phases and assembles the
@@ -196,7 +191,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	t.ToolDefs = time.Since(tToolDefsStart)
 	// The task override applies to this round only; s.cfg.ReasoningEffort keeps
 	// the session's configured effort so it is restored when the task ends.
-	reasoningEffort = effectiveReasoningEffort(strings.TrimSpace(s.cfg.ReasoningEffort), effortOverride, s.loopEffortEscalated)
+	reasoningEffort = effectiveReasoningEffort(strings.TrimSpace(s.cfg.ReasoningEffort), effortOverride)
 	s.mu.Unlock()
 	if s.contextMgr != nil {
 		s.contextMgr.SetProfile(profile)
