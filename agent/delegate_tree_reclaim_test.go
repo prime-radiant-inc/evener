@@ -632,14 +632,14 @@ func TestDelegateIdleRelease_ReleasesWholeSubtreeLeafFirst(t *testing.T) {
 func claimSettledIdleSubtree(t *testing.T, tree *delegateTreeController, delegateID string, members ...*Session) *delegateRuntimeReclamationClaim {
 	t.Helper()
 	var claim *delegateRuntimeReclamationClaim
-	testwait.Until(t, "subtree of "+delegateID+" to settle with no delegate attention owed", func() bool {
+	testwait.UntilSeen(t, "subtree of "+delegateID+" to settle with no delegate attention owed", func() (bool, string) {
 		for _, member := range members {
 			owed, err := member.pendingDelegateAttentionIDs()
 			if err != nil {
 				t.Fatalf("pendingDelegateAttentionIDs(%s): %v", member.id, err)
 			}
 			if len(owed) != 0 || !member.idleReleasePregatesClear() {
-				return false
+				return false, idleSettleDetail(members)
 			}
 		}
 		var err error
@@ -647,9 +647,37 @@ func claimSettledIdleSubtree(t *testing.T, tree *delegateTreeController, delegat
 		if err != nil {
 			t.Fatalf("ClaimIdleRuntimeRelease: %v", err)
 		}
-		return claim != nil
+		if claim != nil {
+			return true, ""
+		}
+		return false, idleSettleDetail(members)
 	})
 	return claim
+}
+
+// idleSettleDetail renders each member that still owes attention, fails a
+// release pre-gate, or has an input in flight, so the settle timeout names the
+// blocked member and which of those it tripped instead of only the condition
+// it waited for. When no member is blocked it says the claim itself was
+// refused; the helper cannot see which of the release's other guards refused.
+func idleSettleDetail(members []*Session) string {
+	var parts []string
+	for _, member := range members {
+		owed, err := member.pendingDelegateAttentionIDs()
+		if err != nil {
+			parts = append(parts, fmt.Sprintf("%s owed-error=%v", member.id, err))
+			continue
+		}
+		if len(owed) == 0 && member.idleReleasePregatesClear() && member.inputsInFlight.Load() == 0 {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s owed=%v pregatesClear=%v inputsInFlight=%d",
+			member.id, owed, member.idleReleasePregatesClear(), member.inputsInFlight.Load()))
+	}
+	if len(parts) == 0 {
+		return "every member settled, so the release claim itself was refused"
+	}
+	return strings.Join(parts, "; ")
 }
 
 // wideSubtreeReleaseProbe records what the idle release's member-teardown
@@ -705,7 +733,15 @@ func driveWideSubtreeIdleRelease(t *testing.T, wideChildren, limit int, parkDead
 			return agenttest.ToolCallResponse(calls...)
 		},
 	}
-	for range wideChildren + 1 {
+	// Every step here must be a finish: the parent's post-tool call, each
+	// child's first call, and each wake that presents one report all consume
+	// one. The wake count is not fixed — a report delivered after the
+	// parent's turn ends starts one more generation — so script spare finish
+	// steps rather than exactly the calls the first turn implies: a call past
+	// the script gets the adapter's bare-text fallback, and a delegate turn
+	// that ends on bare text can settle with its report rows still owed and no
+	// wake left to present them (the settle wait above then times out).
+	for range 2*wideChildren + 2 {
 		steps = append(steps, func(llm.Request) llm.Response { return agenttest.FinalResponse("member done") })
 	}
 	adapter := newFakeAdapter("openai", steps...)
@@ -861,6 +897,19 @@ func driveWideSubtreeIdleRelease(t *testing.T, wideChildren, limit int, parkDead
 		members = append(members, childRuntimes[id])
 	}
 	claim := claimSettledIdleSubtree(t, tree, parentRes.DelegateID, members...)
+	// A call past the script is served the fakeAdapter's bare-text fallback
+	// (a plain "done" with no tool call), and a delegate turn that ends on
+	// bare text can settle with pending report rows still owed. When that
+	// strands attention, the settle wait above fails first and its
+	// idleSettleDetail names the member, so this check never runs. Its job is
+	// the quieter case: the script ran off but the subtree still settled,
+	// which would otherwise pass silently.
+	adapter.mu.Lock()
+	adapterCalls := len(adapter.requests)
+	adapter.mu.Unlock()
+	if adapterCalls > len(steps) {
+		t.Fatalf("wide-subtree fixture ran the adapter off its script (%d calls, %d steps): a turn on the bare-text fallback can strand pending delegate attention", adapterCalls, len(steps))
+	}
 	want := append([]string(nil), childIDs...)
 	want = append(want, parentRes.DelegateID)
 	if got := reclamationDelegateIDs(claim); !reflect.DeepEqual(got, want) {
