@@ -1112,7 +1112,7 @@ func TestDelegateResourceRuntime_CanonicalInlineDeliveryPreservesPacketSemantics
 		endedAt := startedAt.Add(90 * time.Second)
 		activityAt := endedAt.Add(-2 * time.Second)
 		finish := delegateFinishFromRun(delegateTerminalRunInputs{
-			session:      &Session{comm: communicateResult{called: true}},
+			session:      &Session{comm: communicateResult{phase: commBoundarySettled}},
 			result:       "complete",
 			communicated: true,
 			descriptor: delegatestore.Descriptor{
@@ -1869,7 +1869,7 @@ func TestDelegateResourceRuntime_StructuredResultExplicitNullIsPresent(t *testin
 	if !bytes.Equal(captured.(json.RawMessage), json.RawMessage(`null`)) {
 		t.Fatalf("captured explicit null = %#v", captured)
 	}
-	sess := &Session{comm: communicateResult{called: true}}
+	sess := &Session{comm: communicateResult{phase: commBoundarySettled}}
 	finish := delegateFinishFromRun(delegateTerminalRunInputs{
 		session:                 sess,
 		result:                  "explicit null",
@@ -1892,7 +1892,7 @@ func TestDelegateResourceRuntime_StructuredResultExplicitNullIsPresent(t *testin
 func TestDelegateResourceRuntime_InvalidStructuredResultIsBoundedAndExplained(t *testing.T) {
 	t.Parallel()
 	structured := map[string]any{"wrong": true}
-	sess := &Session{comm: communicateResult{called: true, structured: structured}}
+	sess := &Session{comm: communicateResult{phase: commBoundarySettled, structured: structured}}
 	finish := delegateFinishFromRun(delegateTerminalRunInputs{
 		session:                 sess,
 		result:                  "schema-invalid result",
@@ -1962,7 +1962,7 @@ func TestDelegateResourceRuntime_TerminalPacketPreservesTaskModelEffortTimingUsa
 	startedAt := time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC)
 	endedAt := startedAt.Add(90 * time.Second)
 	activityAt := endedAt.Add(-2 * time.Second)
-	sess := &Session{comm: communicateResult{called: true}}
+	sess := &Session{comm: communicateResult{phase: commBoundarySettled}}
 	finish := delegateFinishFromRun(delegateTerminalRunInputs{
 		session:      sess,
 		result:       "complete",

@@ -12,7 +12,7 @@ package agent
 // every guard evaluation lives in exactly one place here or in the shared
 // predicates the reducers call (exactLeaseLocked, admitLeaseLocked,
 // supervisionSuppressedLocked, finalizationReadyLocked,
-// noActionBaseEligibleLocked, noActionEvidenceEligible).
+// noActionBaseEligibleLocked, noActionEvidenceEligible, attentionNoActionEligibleLocked).
 //
 // Contract for the reduce*Intent methods: the caller holds c.mu. The reducer
 // acquires no locks, performs no journal I/O, and calls no Session methods
@@ -835,6 +835,20 @@ func (c *delegateTreeController) reduceWorkAdmittedIntent(intent finishIntent) f
 	return finishDecision{}
 }
 
+func attentionNoActionEligibleLocked(evidence *delegateGenerationEvidence) bool {
+	return evidence != nil && evidence.requirement == delegateCompletionAttentionOnly && !evidence.terminalSeen
+}
+
+// reduceCanAttentionNoActionIntent checks whether the generation can record an
+// attention no-action outcome without mutating evidence or evidenceVersion.
+func (c *delegateTreeController) reduceCanAttentionNoActionIntent(intent finishIntent) finishDecision {
+	evidence, err := c.completionEvidenceLocked(intent.lease)
+	if err != nil {
+		return finishDecision{err: err}
+	}
+	return finishDecision{recorded: attentionNoActionEligibleLocked(evidence)}
+}
+
 // reduceAttentionNoActionIntent records the quiet attention no-action outcome
 // when the requirement is still attention-only and no terminal was seen.
 func (c *delegateTreeController) reduceAttentionNoActionIntent(intent finishIntent) finishDecision {
@@ -842,7 +856,7 @@ func (c *delegateTreeController) reduceAttentionNoActionIntent(intent finishInte
 	if err != nil {
 		return finishDecision{err: err}
 	}
-	if evidence.requirement != delegateCompletionAttentionOnly || evidence.terminalSeen {
+	if !attentionNoActionEligibleLocked(evidence) {
 		return finishDecision{}
 	}
 	evidence.outcome = delegateCompletionOutcomeAttentionNoAction

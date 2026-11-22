@@ -1952,10 +1952,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			}
 			return "", progressed, abortErr
 		}
-		s.mu.Lock()
-		s.comm.quietEnd = false
-		s.comm.roundVisible = false
-		s.mu.Unlock()
+		s.beginCommunicateRound()
 
 		// --- Phase: ToolExec ---
 		tPhaseStart = s.sclock().Now()
@@ -2067,11 +2064,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			// A tool post-hook stop yields to a visible reply or a pending ask,
 			// never to a silent quiet yield: let batchBlocked publish and record
 			// its reason instead of settling silently.
-			s.mu.Lock()
-			if s.quietBoundaryLocked() {
-				s.comm.quietEnd = false
-			}
-			s.mu.Unlock()
+			s.clearQuietBoundaryForBatchStop()
 		}
 		done, text, deliverErr := s.deliverIfCommunicated(ctx, askedThisRound)
 		if deliverErr != nil {

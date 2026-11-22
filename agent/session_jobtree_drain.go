@@ -1100,7 +1100,7 @@ func (s *Session) keepingReport(process func(context.Context, string, []ImageAtt
 			return res, err
 		}
 		s.mu.Lock()
-		if !s.comm.called || s.comm.stopBlocked {
+		if !s.communicatedUnblockedLocked() {
 			// The restore replaces the report fields, not the fact that this
 			// input sent a non-terminal update: keeping it makes a later
 			// missing-report reminder acknowledge that update instead of

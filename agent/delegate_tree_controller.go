@@ -1564,6 +1564,13 @@ func (c *delegateTreeController) escalateCompletionRequirementLocked(lease deleg
 	return decision.err
 }
 
+func (c *delegateTreeController) canRecordAttentionNoAction(lease delegateLease) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	decision := c.reduceCanAttentionNoActionIntent(finishIntent{lease: lease})
+	return decision.recorded, decision.err
+}
+
 func (c *delegateTreeController) recordAttentionNoAction(lease delegateLease) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -74,7 +74,7 @@ func TestStop_HookInputFields(t *testing.T) {
 		t.Helper()
 		sess.mu.Lock()
 		sess.state = SessionProcessing
-		sess.comm = communicateResult{called: true, reply: reply}
+		sess.comm = communicateResult{phase: commBoundarySettled, reply: reply}
 		sess.mu.Unlock()
 		done, text, err := sess.deliverIfCommunicated(context.Background(), false)
 		if err != nil {
@@ -198,7 +198,7 @@ func TestStop_StopHookActiveResetsWithTheTurn(t *testing.T) {
 	// Turn one ends with a Stop block, so its flag is set when the turn returns.
 	sess.mu.Lock()
 	sess.state = SessionProcessing
-	sess.comm = communicateResult{called: true, reply: "turn one reply"}
+	sess.comm = communicateResult{phase: commBoundarySettled, reply: "turn one reply"}
 	sess.mu.Unlock()
 	if done, _, err := sess.deliverIfCommunicated(context.Background(), false); err != nil || done {
 		t.Fatalf("turn one boundary = done %v, err %v; want a blocked (not done) boundary", done, err)
