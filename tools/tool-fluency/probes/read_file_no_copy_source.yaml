@@ -2,7 +2,7 @@ schema: 1
 id: read_file.no_copy_source
 tool: read_file
 prompt: |
-  Inspect alpha.go, beta.go, and gamma.go and report each port value plus their sum.
+  Inspect alpha.go, beta.go, and gamma.go and report the exact ALPHA_PORT, BETA_PORT, and GAMMA_PORT values.
   Finish with RESULT_NO_COPY_SOURCE.
 fixture:
   files:
@@ -77,4 +77,4 @@ expect:
     - tool: read_file
     - tool: communicate
   forbidden_calls: [shell]
-  final_contains: ["RESULT_NO_COPY_SOURCE", "8101", "8202", "8303", "24606"]
+  final_contains: ["RESULT_NO_COPY_SOURCE", "8101", "8202", "8303"]
