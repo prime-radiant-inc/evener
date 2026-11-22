@@ -1,0 +1,14 @@
+/* The dock a pane floats controls in over its own content: out of flow, above
+ * the content, and transparent to pointers except where its own children opt
+ * back in. Each call site keeps its own insets and alignment. */
+.dock {
+  position: absolute;
+  z-index: var(--z-raised);
+  display: flex;
+  flex-direction: column;
+  pointer-events: none;
+}
+
+.dock > * {
+  pointer-events: auto;
+}
