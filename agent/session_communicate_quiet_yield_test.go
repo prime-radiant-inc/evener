@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 
@@ -444,6 +446,128 @@ func TestCommunicateQuietYieldAfterBlockedStopHookDoesNotAcceptBlockedReply(t *t
 		}
 		if acceptedID != "first-winner" {
 			t.Fatalf("AcceptedCommunicateCallID = %q, want %q", acceptedID, "first-winner")
+		}
+	})
+}
+
+func TestStopHookContinuationPreservesOrInjectsInFlightSteer(t *testing.T) {
+	t.Parallel()
+	t.Run("stop_allows_after_check_leaves_steer_for_carrier", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		probePath := filepath.Join(dir, "check.txt")
+		if err := os.WriteFile(probePath, []byte("ok\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var s *Session
+		steered := false
+		carrierSawSteer := make(chan struct{})
+		adapter := newFakeAdapter("openai", func(llm.Request) llm.Response {
+			return quietYieldResponse("draft-reply", `{"message":"draft reply"}`)
+		}, func(llm.Request) llm.Response {
+			if !steered {
+				steered = true
+				if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+					ClientMutationID: "steer-during-stop-check",
+					Input:            []appwire.InputItem{{Type: "text", Text: "STEER_DURING_STOP_CHECK"}},
+				}); err != nil {
+					t.Errorf("AcceptClientMutationSteer: %v", err)
+				}
+			}
+			return agenttest.ToolCallResponse(llm.ToolCallData{
+				ID:        "check-file",
+				Name:      "read_file",
+				Arguments: json.RawMessage(`{"file_path":` + mustJSONString(probePath) + `}`),
+				Type:      "function",
+			})
+		}, func(req llm.Request) llm.Response {
+			if requestContainsText(req, "STEER_DURING_STOP_CHECK") {
+				close(carrierSawSteer)
+			}
+			return quietYieldResponse("carrier-reply", `{"message":"handled steer"}`)
+		})
+		s = newSession(t, withDir(dir), withAdapter(adapter), withStateDir(t.TempDir()))
+		if err := s.ensureClientMutationStore(); err != nil {
+			t.Fatal(err)
+		}
+		var stopCalls atomic.Int32
+		installCommunicateStopHook(s, func() string {
+			if stopCalls.Add(1) == 1 {
+				return `{"decision":"block","reason":"read check.txt before finishing"}`
+			}
+			return `{}`
+		})
+
+		ctx := tripwireCtx(t)
+		if _, err := s.ProcessInput(ctx, "answer after checking", nil); err != nil {
+			t.Fatalf("ProcessInput: %v", err)
+		}
+		select {
+		case <-carrierSawSteer:
+		default:
+			t.Fatal("in-flight steer during Stop-hook check was consumed before Stop allowed the reply; carrier never ran")
+		}
+	})
+
+	t.Run("stop_blocks_again_injects_steer_into_next_round", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		probePath := filepath.Join(dir, "check.txt")
+		if err := os.WriteFile(probePath, []byte("ok\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var s *Session
+		steered := false
+		nextRoundSawSteer := false
+		adapter := newFakeAdapter("openai", func(llm.Request) llm.Response {
+			return quietYieldResponse("draft-reply", `{"message":"draft reply"}`)
+		}, func(llm.Request) llm.Response {
+			if !steered {
+				steered = true
+				if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+					ClientMutationID: "steer-during-second-block",
+					Input:            []appwire.InputItem{{Type: "text", Text: "STEER_DURING_SECOND_BLOCK"}},
+				}); err != nil {
+					t.Errorf("AcceptClientMutationSteer: %v", err)
+				}
+			}
+			return agenttest.ToolCallResponse(llm.ToolCallData{
+				ID:        "check-file-1",
+				Name:      "read_file",
+				Arguments: json.RawMessage(`{"file_path":` + mustJSONString(probePath) + `}`),
+				Type:      "function",
+			})
+		}, func(req llm.Request) llm.Response {
+			nextRoundSawSteer = requestContainsText(req, "STEER_DURING_SECOND_BLOCK")
+			return agenttest.ToolCallResponse(llm.ToolCallData{
+				ID:        "check-file-2",
+				Name:      "read_file",
+				Arguments: json.RawMessage(`{"file_path":` + mustJSONString(probePath) + `}`),
+				Type:      "function",
+			})
+		})
+		s = newSession(t, withDir(dir), withAdapter(adapter), withStateDir(t.TempDir()))
+		if err := s.ensureClientMutationStore(); err != nil {
+			t.Fatal(err)
+		}
+		var stopCalls atomic.Int32
+		installCommunicateStopHook(s, func() string {
+			if stopCalls.Add(1) <= 2 {
+				return `{"decision":"block","reason":"keep checking"}`
+			}
+			return `{}`
+		})
+
+		ctx := tripwireCtx(t)
+		reply, err := s.ProcessInput(ctx, "answer after two checks", nil)
+		if err != nil {
+			t.Fatalf("ProcessInput: %v", err)
+		}
+		if !nextRoundSawSteer {
+			t.Fatal("when Stop blocked again, pending steer was not injected before the next model request")
+		}
+		if reply != "draft reply" {
+			t.Fatalf("reply = %q, want %q", reply, "draft reply")
 		}
 	})
 }

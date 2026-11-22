@@ -2085,6 +2085,20 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			s.finishProcessingAtFailureBoundary(ctx)
 			return "", progressed, nil
 		}
+		if s.communicated() {
+			// A captured reply held steering queued until Stop decided. Stop
+			// blocked completion and no tool hook stopped the round, so fold
+			// any pending steer before the next model request (or before
+			// checking whether an observer callback may yield).
+			if abortErr := s.withResponseSideEffects(ctx, func() {
+				if s.hasPendingSteering() {
+					yieldToObserverCallback = false
+				}
+				s.injectDrainedSteering()
+			}); abortErr != nil {
+				return "", progressed, abortErr
+			}
+		}
 		if yieldToObserverCallback || sessionLifecycleFault(ctx, "yield_observer") != nil {
 			s.finishProcessingAtFailureBoundary(ctx)
 			return "", progressed, nil

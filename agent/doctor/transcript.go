@@ -132,6 +132,13 @@ func loadSessionRowTranscript(ctx context.Context, path, resultTool string) (tra
 			switch entry.Turn.Kind {
 			case schema.TurnAssistant, schema.TurnTool, schema.TurnToolResults, schema.TurnCompletion:
 				doc.Entries = append(doc.Entries, entry)
+			case schema.TurnUserInput, schema.TurnSteering:
+				doc.Entries = append(doc.Entries, transcript.Entry{Turn: schema.Turn{
+					Kind:          entry.Turn.Kind,
+					TurnID:        entry.Turn.TurnID,
+					SteeringKind:  entry.Turn.SteeringKind,
+					AcceptedReply: entry.Turn.AcceptedReply,
+				}})
 			default:
 				if entry.Turn.AcceptedReply {
 					doc.Entries = append(doc.Entries, entry)

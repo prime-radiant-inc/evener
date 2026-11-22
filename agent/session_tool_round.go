@@ -610,7 +610,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 		if s.envContextDue() {
 			_ = s.maybeAppendEnvironmentContext()
 		}
-		if !s.communicatedUnblocked() && !s.quietlyYielded() {
+		if !s.communicated() && !s.quietlyYielded() {
 			if s.hasPendingSteering() {
 				yieldToObserverCallback = false
 			}

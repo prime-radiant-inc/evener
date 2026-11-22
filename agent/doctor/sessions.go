@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/argrepair"
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/internal/apptranscript"
@@ -255,16 +256,30 @@ func outcomeHint(doc transcriptDoc, resultTool string) string {
 
 func findOutcome(entries []transcript.Entry, resultTool string) (hint string, decided bool) {
 	results := pairToolResults(entries)
+	quietExecution := false
+	quietTurnID := ""
 	for i, e := range slices.Backward(entries) {
+		if quietExecution {
+			if e.Turn.Kind == schema.TurnUserInput || e.Turn.Kind == schema.TurnCompletion ||
+				(quietTurnID != "" && e.Turn.TurnID != "" && e.Turn.TurnID != quietTurnID) ||
+				(quietTurnID == "" && e.Turn.Kind == schema.TurnSteering && e.Turn.SteeringKind == events.SteeringKindNotification) {
+				quietExecution = false
+				quietTurnID = ""
+			}
+		}
 		if e.Turn.AcceptedReply {
 			return "end_turn=true", true
 		}
-		args, endTurn, decided := outcomeCall(i, e.Turn, resultTool, results)
-		if decided {
+		args, endTurn, callDecided, recordedQuiet := outcomeCall(i, e.Turn, resultTool, results, quietExecution)
+		if callDecided {
 			if endTurn != nil {
 				return formatOutcomeWithVerdict(args, endTurn), true
 			}
 			return formatOutcome(args), true
+		}
+		if recordedQuiet {
+			quietExecution = true
+			quietTurnID = e.Turn.TurnID
 		}
 	}
 	return "none", false
@@ -272,19 +287,23 @@ func findOutcome(entries []transcript.Entry, resultTool string) (hint string, de
 
 // outcomeCall decides whether an assistant entry settles the hint. Recorded
 // verdicts take precedence over inference from the call's arguments.
-func outcomeCall(entryIndex int, turn schema.Turn, resultTool string, results map[toolCallPosition]pairedToolResult) (args json.RawMessage, endTurn *bool, decided bool) {
+func outcomeCall(entryIndex int, turn schema.Turn, resultTool string, results map[toolCallPosition]pairedToolResult, quietExecution bool) (args json.RawMessage, endTurn *bool, decided bool, recordedQuiet bool) {
 	if turn.Kind != schema.TurnAssistant {
-		return nil, nil, false
+		return nil, nil, false, false
 	}
 	foundCall := false
+	sawRecordedQuiet := false
 	for partIndex, part := range turn.Message.Content {
 		if part.Kind != llm.ContentToolCall || part.ToolCall == nil || part.ToolCall.Name != resultTool {
 			continue
 		}
 		foundCall = true
-		if verdict, recorded := communicateResultEndTurn(results[toolCallPosition{entryIndex, partIndex}]); recorded {
+		paired := results[toolCallPosition{entryIndex, partIndex}]
+		if verdict, recorded := communicateResultEndTurn(paired); recorded {
 			if verdict != nil {
 				args, endTurn, decided = communicateCallArguments(part.ToolCall), verdict, true
+			} else if isRecordedQuietResult(paired) {
+				sawRecordedQuiet = true
 			}
 			continue
 		}
@@ -292,7 +311,15 @@ func outcomeCall(entryIndex int, turn schema.Turn, resultTool string, results ma
 			args, endTurn, decided = raw, nil, true
 		}
 	}
-	return args, endTurn, decided || !foundCall
+	return args, endTurn, decided || (!foundCall && !quietExecution), sawRecordedQuiet && !decided
+}
+
+func isRecordedQuietResult(paired pairedToolResult) bool {
+	if paired.result == nil || paired.result.IsError {
+		return false
+	}
+	state, ok := schema.DecodeCommunicateToolState(paired.result.ToolState)
+	return ok && state.IsQuiet()
 }
 
 type toolCallPosition struct {
