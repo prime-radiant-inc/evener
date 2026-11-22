@@ -11,10 +11,13 @@ export interface ChipProps {
   /** What the chip marks, rendered as `data-kind` so callers and tests can
    * tell one chip from another without reading its label. */
   kind?: string;
+  /** Render the label in the mono face, for machine text such as tool names. */
+  mono?: boolean;
 }
 
 const BASE_CLASS = {
   chip: requireClass(styles.chip, "chip.module.css", "chip"),
+  mono: requireClass(styles.mono, "chip.module.css", "mono"),
   remove: requireClass(styles.remove, "chip.module.css", "remove"),
 };
 
@@ -44,9 +47,10 @@ function removeLabelFor(children: ReactNode): string {
 
 /** A small labeled pill, optionally removable. tone maps to the four
  * semantic families (chip is pre-allowlisted in token-contract.test.ts). */
-export function Chip({ children, tone = "neutral", onRemove, kind }: ChipProps) {
+export function Chip({ children, tone = "neutral", onRemove, kind, mono = false }: ChipProps) {
+  const monoClass = mono ? ` ${BASE_CLASS.mono}` : "";
   return (
-    <span className={`${BASE_CLASS.chip} ${TONE_CLASS[tone]}`} data-kind={kind}>
+    <span className={`${BASE_CLASS.chip} ${TONE_CLASS[tone]}${monoClass}`} data-kind={kind}>
       {children}
       {onRemove !== undefined && (
         <button type="button" className={BASE_CLASS.remove} aria-label={removeLabelFor(children)} onClick={onRemove}>

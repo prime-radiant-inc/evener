@@ -24,6 +24,10 @@ export default function ChipGallerySection() {
         {TONES.map((tone) => (
           <ToneRow key={tone} tone={tone} />
         ))}
+        <div className={styles.row}>
+          <p className={styles.rowLabel}>mono</p>
+          <Chip mono>apply_patch</Chip>
+        </div>
       </ThemeFlip>
     </section>
   );
