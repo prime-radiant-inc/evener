@@ -113,15 +113,19 @@ test("opening the pane marks the turn its row shows, once", () => {
   expect(marks(fake)).toEqual([markFor(FIRST_TURN)]);
 });
 
-test("a row that loads after the pane opens is marked when it arrives, and a later turn is not", () => {
+test("a row that loads after the pane opens is marked when it arrives, and a turn that ends while you watch is too", () => {
   const fake = connectFake();
   renderHook(() => useMarkSessionSeenOnOpen(REF));
   expect(marks(fake)).toEqual([]);
   act(() => showRow({ unseen: true, turn_ended_at: FIRST_TURN }));
   expect(marks(fake)).toEqual([markFor(FIRST_TURN)]);
-  // A turn that ends while the pane stays open is not "opened since" (S4 ruling 18).
+  // A turn that ends while you watch is seen, as on the phone (useMarkSeenInFront).
   act(() => showRow({ unseen: true, turn_ended_at: NEXT_TURN }));
-  expect(marks(fake)).toEqual([markFor(FIRST_TURN)]);
+  expect(marks(fake)).toEqual([markFor(FIRST_TURN), markFor(NEXT_TURN)]);
+  expect(sessionReadProgress.isSeen({ ref: REF, unseen: true, turn_ended_at: NEXT_TURN })).toBe(true);
+  // One mark per turn end: the hub's answer is not marked again.
+  act(() => showRow({ turn_ended_at: NEXT_TURN }));
+  expect(marks(fake)).toEqual([markFor(FIRST_TURN), markFor(NEXT_TURN)]);
 });
 
 test("a seen row, or one without a turn end, sends nothing", () => {
@@ -137,8 +141,9 @@ test("coming back to the page marks the turn the row shows now", () => {
   showRow({ unseen: true, turn_ended_at: FIRST_TURN });
   const fake = connectFake();
   renderHook(() => useMarkSessionSeenOnOpen(REF));
-  act(() => showRow({ unseen: true, turn_ended_at: NEXT_TURN }));
   setVisibility("hidden");
+  // A turn that ends while the page is hidden marks nothing until it is shown.
+  act(() => showRow({ unseen: true, turn_ended_at: NEXT_TURN }));
   expect(marks(fake)).toEqual([markFor(FIRST_TURN)]);
   setVisibility("visible");
   expect(marks(fake)).toEqual([markFor(FIRST_TURN), markFor(NEXT_TURN)]);
