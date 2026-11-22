@@ -1755,6 +1755,7 @@ async function measure() {
   const model = pane.querySelector<HTMLElement>('[data-testid="model-switch-value"]');
   const currentWork = pane.querySelector<HTMLElement>('[data-testid="current-work"]');
   const composerCard = pane.querySelector<HTMLElement>('[data-testid="composer-input-card"]');
+  const composerFieldBox = composerCard?.querySelector<HTMLElement>('[role="textbox"]')?.getBoundingClientRect();
   const composerContainerWidth = measureComposerContentWidth();
   const controlTestIds = ["composer-attach", "composer-stop", "composer-submit", "composer-steer"];
   const composeControls = controlTestIds.map((testId) => ({
@@ -1892,6 +1893,8 @@ async function measure() {
         return {
           controls: verbs.length,
           top: verbs.length > 0 ? Math.min(...verbs.map((control) => (control.box as DOMRect).top)) : null,
+          fieldRight: composerFieldBox?.right ?? null,
+          fieldBottom: composerFieldBox?.bottom ?? null,
           statusRowBottom: statusBox?.bottom ?? null,
           containerWidth: composerContainerWidth,
         };

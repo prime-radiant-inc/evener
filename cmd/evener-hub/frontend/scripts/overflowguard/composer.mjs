@@ -215,6 +215,8 @@ export async function measureComposerPlacement(endpoint, url, { viewportWidth, c
       results.push({
         primary,
         contentWidth: measurement.currentWork.verbCluster.containerWidth,
+        fieldRight: measurement.currentWork.verbCluster.fieldRight,
+        fieldBottom: measurement.currentWork.verbCluster.fieldBottom,
         inline: measurement.currentWork.controls.filter((c) => c.present).map((c) => c.testId),
         menu: measurement.menuVerbs,
         controlGeometry: measurement.currentWork.controlGeometry,
@@ -239,6 +241,15 @@ export async function measureComposerPlacement(endpoint, url, { viewportWidth, c
       drafted.controlGeometry["composer-submit"],
       ["right", "top", "bottom"],
     );
+    assert.ok(Number.isFinite(empty.fieldBottom), "message field's bottom is measured");
+    if (empty.fieldBottom > empty.menuGeometry.top + 1) {
+      // Only an inline field has to sit left of the menu. The fine-pointer
+      // narrow desktop card deliberately stacks the field above the controls.
+      assert.ok(
+        empty.fieldRight <= empty.menuGeometry.left + 1,
+        `message field stays left of the session menu: ${empty.fieldRight} -> ${empty.menuGeometry.left}`,
+      );
+    }
     return {
       viewportWidth,
       paneWidth: await evaluate(send, "document.getElementById('oh-pane').getBoundingClientRect().width"),

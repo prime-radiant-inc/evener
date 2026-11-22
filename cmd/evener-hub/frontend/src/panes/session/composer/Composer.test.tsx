@@ -581,9 +581,11 @@ test("the composer region fills pane height and bottom-anchors the replacement s
 test("the Send and Stop words collapse to glyphs below the compact pane threshold", () => {
   const css = readModuleCss(import.meta.url, "composer.module.css");
   expect(topRuleBlock(css, ".composer")).toMatch(/container-type:\s*inline-size/);
-  expect(css).toMatch(/@container \(max-width: 559px\)[\s\S]*?\.submitLabel,\s*\.stopLabel\s*\{[^}]*display:\s*none/);
+  expect(css).toMatch(
+    /@container \(max-width: 559px\)[\s\S]*?\.submitLabel,\s*\.stopLabelStack\s*\{[^}]*display:\s*none/,
+  );
   expect(mediaBlock(css, "max-width: 899px")).toMatch(
-    /\.composer\s+:global\(button\):has\(> \.submitLabel\),\s*\.composer\s+:global\(button\):has\(> \.stopLabel\)\s*\{[^}]*min-width:\s*var\(--tap-min\)/,
+    /\.composer\s+:global\(button\):has\(> \.submitLabel\),\s*\.composer\s+:global\(button\):has\(> \.stopLabelStack\)\s*\{[^}]*min-width:\s*var\(--tap-min\)/,
   );
 });
 

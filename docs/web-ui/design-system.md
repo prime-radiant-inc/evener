@@ -140,9 +140,10 @@ losing the conversation that made the evidence relevant.
   shell retains the separate status footer. A phone chip shows its
   glyph and a single active count (settled for Tasks); its category name and the full
   active/total fraction stay in its accessible name and tooltip. An empty composer
-  with room folds to one row: Attach and the session menu keep their leading utility
-  slots, the placeholder yields between them and Send or Stop at the right, and Steer
-  enters to the primary action's left. These positions do not move when content arrives.
+  with room folds to one row: Attach keeps its leading utility slot, the message field
+  stays left of the session menu, and the menu and Send or Stop keep their trailing
+  slots. Steer enters to the primary action's left. These positions do not move when
+  content arrives.
   Focus, including session-opening
   autofocus, never grows the empty card; typing or another content contribution expands
   it on the spatial recipe (§5). Clearing while focused keeps that expanded shape stable,

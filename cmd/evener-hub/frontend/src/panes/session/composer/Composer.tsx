@@ -140,12 +140,16 @@ const CLASS = {
   storageStatus: requireClass(styles.storageStatus, "composer.module.css", "storageStatus"),
   attachments: requireClass(styles.attachments, "composer.module.css", "attachments"),
   leading: requireClass(styles.leading, "composer.module.css", "leading"),
+  attachSlot: requireClass(styles.attachSlot, "composer.module.css", "attachSlot"),
+  editorSlot: requireClass(styles.editorSlot, "composer.module.css", "editorSlot"),
   menuSlot: requireClass(styles.menuSlot, "composer.module.css", "menuSlot"),
   chromeSlot: requireClass(styles.chromeSlot, "composer.module.css", "chromeSlot"),
   activityRow: requireClass(styles.activityRow, "composer.module.css", "activityRow"),
+  steerSlot: requireClass(styles.steerSlot, "composer.module.css", "steerSlot"),
   formAnchor: requireClass(styles.formAnchor, "composer.module.css", "formAnchor"),
   submitLabel: requireClass(styles.submitLabel, "composer.module.css", "submitLabel"),
-  stopLabel: requireClass(styles.stopLabel, "composer.module.css", "stopLabel"),
+  stopLabelStack: requireClass(styles.stopLabelStack, "composer.module.css", "stopLabelStack"),
+  stopMeasure: requireClass(styles.stopMeasure, "composer.module.css", "stopMeasure"),
 };
 
 // The composer re-renders on every draft keystroke and nothing in the chrome
@@ -1291,6 +1295,11 @@ function ComposerWithSubmission({
     <MemoizedSessionChrome ref={ref} paneId={paneId} placement="composer" turnVerbs={turnVerbs} compactRung />
   );
   const askChrome = <MemoizedSessionChrome ref={ref} paneId={paneId} placement="composer" turnVerbs={turnVerbs} />;
+  const attachControl = (
+    <div className={CLASS.attachSlot}>
+      <AttachImageControl inputRef={fileInputRef} testId="composer-attach" tooltip="Attach an image" />
+    </div>
+  );
 
   // data-testid on every control in this row: two different buttons here
   // start with "Steer" (this one and the pending rows' "Steer now"), so
@@ -1311,14 +1320,14 @@ function ComposerWithSubmission({
     >
       {controlsCollapsed ? (
         <>
-          <AttachImageControl inputRef={fileInputRef} testId="composer-attach" tooltip="Attach an image" />
+          {attachControl}
           <div className={CLASS.menuSlot}>
             <MemoizedSessionChrome ref={ref} paneId={paneId} placement="menu" turnVerbs={turnVerbs} />
           </div>
         </>
       ) : (
         <>
-          <AttachImageControl inputRef={fileInputRef} testId="composer-attach" tooltip="Attach an image" />
+          {attachControl}
           {!askPending && <div className={CLASS.chromeSlot}>{leadingChrome}</div>}
         </>
       )}
@@ -1473,66 +1482,72 @@ function ComposerWithSubmission({
                 folded={folded}
                 foldedCompact={controlsCollapsed}
                 field={
-                  <SkillEditor
-                    ref={editorRef}
-                    value={{
-                      text,
-                      skillNames,
-                      ...selectionMeta,
-                      adoptedImageMarkers,
-                      adoptedImageRanges,
-                      stagedImageRanges,
-                    }}
-                    restoreEpoch={restoreEpoch}
-                    skillDetails={skillChipDetails}
-                    commandDetails={(name) =>
-                      visibleSlashCatalog.find((item) => slashCommandInvocation(item) === `/${name}`)?.description ??
-                      `${name} — no longer in this session's command catalog`
-                    }
-                    onChange={handleTextChange}
-                    onKeyDown={handleKeyDown}
-                    onPaste={handlePaste}
-                    aria-controls={slashActiveId ? slashListboxId : undefined}
-                    aria-activedescendant={slashActiveId ?? undefined}
-                    minLines={minLines}
-                    onBlur={handleEditorBlur}
-                    placeholder={ended ? "Send a follow-up…" : "Message the agent…"}
-                    aria-label="Message"
-                  />
+                  <div className={CLASS.editorSlot} data-folded={folded ? "true" : undefined}>
+                    <SkillEditor
+                      ref={editorRef}
+                      value={{
+                        text,
+                        skillNames,
+                        ...selectionMeta,
+                        adoptedImageMarkers,
+                        adoptedImageRanges,
+                        stagedImageRanges,
+                      }}
+                      restoreEpoch={restoreEpoch}
+                      skillDetails={skillChipDetails}
+                      commandDetails={(name) =>
+                        visibleSlashCatalog.find((item) => slashCommandInvocation(item) === `/${name}`)?.description ??
+                        `${name} — no longer in this session's command catalog`
+                      }
+                      onChange={handleTextChange}
+                      onKeyDown={handleKeyDown}
+                      onPaste={handlePaste}
+                      aria-controls={slashActiveId ? slashListboxId : undefined}
+                      aria-activedescendant={slashActiveId ?? undefined}
+                      minLines={minLines}
+                      onBlur={handleEditorBlur}
+                      placeholder={ended ? "Send a follow-up…" : "Message the agent…"}
+                      aria-label="Message"
+                    />
+                  </div>
                 }
                 leading={leadingControls}
                 actions={
                   <>
                     {/* Steer enters to the LEFT of Send/Stop, keeping the
                         primary action's right edge fixed as content arrives. */}
-                    {showSteer && !narrow && !folded && (
-                      <Tooltip
-                        label={steerTooltipLabel({
-                          recoveryFenced: steerRecoveryFenced,
-                          unbackedImage: hasUnbackedImage,
-                          enterToSend,
-                        })}
-                      >
-                        <Button
-                          variant="primary"
-                          size="xs"
-                          type="button"
-                          data-testid="composer-steer"
-                          onClick={handleSteerClick}
-                          // Same as Stop above: busy + the steer capability
-                          // already gate this control's existence. The recovery
-                          // fence gates the press the same way the Send button's
-                          // does, and the tooltip says why (kata 2f41) instead of
-                          // describing an action the fence refuses. The fence is
-                          // an aria-disabled refusal, not the native attribute, so
-                          // the button keeps focus and hover and that reason
-                          // stays reachable.
-                          aria-disabled={steerRecoveryFenced || hasUnbackedImage || undefined}
-                          disabled={actionPending}
+                    {showSteer && !narrow && (
+                      <span className={CLASS.steerSlot} data-hidden={folded ? "true" : undefined}>
+                        <Tooltip
+                          label={steerTooltipLabel({
+                            recoveryFenced: steerRecoveryFenced,
+                            unbackedImage: hasUnbackedImage,
+                            enterToSend,
+                          })}
                         >
-                          Steer
-                        </Button>
-                      </Tooltip>
+                          <Button
+                            variant="primary"
+                            size="xs"
+                            type="button"
+                            data-testid={folded ? "composer-steer-placeholder" : "composer-steer"}
+                            aria-hidden={folded || undefined}
+                            tabIndex={folded ? -1 : undefined}
+                            onClick={handleSteerClick}
+                            // Same as Stop above: busy + the steer capability
+                            // already gate this control's existence. The recovery
+                            // fence gates the press the same way the Send button's
+                            // does, and the tooltip says why (kata 2f41) instead of
+                            // describing an action the fence refuses. The fence is
+                            // an aria-disabled refusal, not the native attribute, so
+                            // the button keeps focus and hover and that reason
+                            // stays reachable.
+                            aria-disabled={steerRecoveryFenced || hasUnbackedImage || undefined}
+                            disabled={actionPending || folded}
+                          >
+                            Steer
+                          </Button>
+                        </Tooltip>
+                      </span>
                     )}
                     {/* Distinct keys replace the actual button, so a press
                         begun on Send cannot finish on Stop. */}
@@ -1549,7 +1564,14 @@ function ComposerWithSubmission({
                           // Keep pending gates after the brief swap guard ends.
                           disabled={actionPending || !inlineStopReady}
                         >
-                          <span className={CLASS.stopLabel}>Stop</span>
+                          <span className={CLASS.stopLabelStack}>
+                            <span>Stop</span>
+                            {/* Keep Stop's slot as wide as Send's existing label
+                                without widening Send or moving the menu. */}
+                            <span className={CLASS.stopMeasure} aria-hidden="true">
+                              Send
+                            </span>
+                          </span>
                         </Button>
                       </Tooltip>
                     ) : (
