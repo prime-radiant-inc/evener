@@ -16,6 +16,10 @@ export default function CopyButtonGallerySection() {
           <CopyButton text={'{"id":"dlg_42"}'} label="Copy raw JSON" />
         </div>
         <div className={styles.row}>
+          <p className={styles.rowLabel}>text presentation</p>
+          <CopyButton text="ABCD-1234" label="Copy code" presentation="text" />
+        </div>
+        <div className={styles.row}>
           <p className={styles.rowLabel}>sm size</p>
           <CopyButton text="short text" label="Copy" size="sm" />
         </div>

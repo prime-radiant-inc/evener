@@ -16,9 +16,8 @@ import { CONNECTION_REPLACED_ERROR, errorText } from "@evener/appwire-client";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { openInNewTab } from "../../../../shell/openInNewTab";
 import { credentialsStore, devicePollOnHost, fetchHost, isStaleListingRefusal } from "../../../../stores/credentials";
-import { Button, Dialog, FormRow, Input, OpenButton, useToasts } from "../../../../widgets";
+import { Button, CopyButton, Dialog, FormRow, Input, OpenButton, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { copyText } from "./clipboard";
 import styles from "./oauthDialogs.module.css";
 import { refreshListingAfterMutation } from "./reconcileListing";
 import { useEditorLifetime } from "./useEditorLifetime";
@@ -312,13 +311,6 @@ export function DeviceCodeDialog({
     // against, not just a lint nicety.
   }, [name, flowId, intervalSeconds, host, onAuthorized, onSuccess, toast.push, active]);
 
-  async function handleCopy(): Promise<void> {
-    const ok = await copyText(userCode);
-    if (!active.current) return;
-    setCopied(true);
-    setCopyFailed(!ok);
-  }
-
   function handleOpenVerificationUrl(): void {
     try {
       openInNewTab(verificationUrl);
@@ -377,9 +369,16 @@ export function DeviceCodeDialog({
             </Button>
           ) : (
             <>
-              <Button type="button" variant="quiet" onClick={() => void handleCopy()}>
-                {copied ? "Copied ✓" : "Copy code"}
-              </Button>
+              <CopyButton
+                text={userCode}
+                label="Copy code"
+                presentation="text"
+                onResult={(ok) => {
+                  if (!active.current) return;
+                  setCopied(true);
+                  setCopyFailed(!ok);
+                }}
+              />
               <Button type="button" disabled={!copied} onClick={handleOpenVerificationUrl}>
                 Send me to OpenAI
               </Button>
