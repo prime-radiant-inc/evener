@@ -28,88 +28,89 @@ func TestPrepareToolCall_HealsDefaultCommunicateEnvelopeIssue831(t *testing.T) {
 	observedDoubleEncoded := `{"data":{"baseline_tests":"go test ./agent/ -run 'SessionName|SessionNamer|Rename' -count=1 — ok","files":["agent/session_namer.go","agent/internal/contextmgr/context_manager.go (read-only, root-cause evidence)","cmd/evener-tui/ (terminal title feature)"],"worktree":"session-auto-namer"}}`
 
 	for _, tc := range []struct {
-		name          string
-		arguments     string
-		wantMessage   string
-		wantOutputMsg string
-		wantChanges   bool
+		name              string
+		arguments         string
+		wantMessage       string
+		wantOutputPresent bool
+		wantOutputMsg     string
+		wantChanges       bool
 	}{
 		{
-			name:          "complete object",
-			arguments:     `{"end_turn":true,"message":"top-level","output":{"message":"nested","data":{},"artifacts":[]}}`,
-			wantMessage:   "top-level",
-			wantOutputMsg: "nested",
+			name:              "complete object",
+			arguments:         `{"end_turn":true,"message":"top-level","output":{"message":"nested","data":{},"artifacts":[]}}`,
+			wantMessage:       "top-level",
+			wantOutputPresent: true,
+			wantOutputMsg:     "nested",
 		},
 		{
-			name:          "object fills documented defaults",
-			arguments:     `{"end_turn":true,"message":"top-level","output":{}}`,
-			wantMessage:   "top-level",
-			wantOutputMsg: "",
-			wantChanges:   true,
+			name:              "object omits optional defaults without repair",
+			arguments:         `{"end_turn":true,"message":"top-level","output":{}}`,
+			wantMessage:       "top-level",
+			wantOutputPresent: true,
 		},
 		{
-			name:          "absent output",
-			arguments:     `{"end_turn":true,"message":"top-level"}`,
-			wantMessage:   "top-level",
-			wantOutputMsg: "",
-			wantChanges:   true,
+			name:        "absent output valid without repair",
+			arguments:   `{"end_turn":true,"message":"top-level"}`,
+			wantMessage: "top-level",
 		},
 		{
-			name:          "null output",
-			arguments:     `{"end_turn":true,"message":"top-level","output":null}`,
-			wantMessage:   "top-level",
-			wantOutputMsg: "",
-			wantChanges:   true,
+			name:              "null output",
+			arguments:         `{"end_turn":true,"message":"top-level","output":null}`,
+			wantMessage:       "top-level",
+			wantOutputPresent: true,
+			wantChanges:       true,
 		},
 		{
-			name:          "output-only object text",
-			arguments:     `{"end_turn":true,"output":{"message":"output-only text","data":{},"artifacts":[]}}`,
-			wantMessage:   "output-only text",
-			wantOutputMsg: "output-only text",
-			wantChanges:   true,
+			name:              "output-only object text",
+			arguments:         `{"end_turn":true,"output":{"message":"output-only text","data":{},"artifacts":[]}}`,
+			wantMessage:       "output-only text",
+			wantOutputPresent: true,
+			wantOutputMsg:     "output-only text",
+			wantChanges:       true,
 		},
 		{
-			name:          "clean JSON object string",
-			arguments:     `{"end_turn":true,"output":` + jsonQuote(outputString) + `}`,
-			wantMessage:   "output-only text",
-			wantOutputMsg: "output-only text",
-			wantChanges:   true,
+			name:              "clean JSON object string",
+			arguments:         `{"end_turn":true,"output":` + jsonQuote(outputString) + `}`,
+			wantMessage:       "output-only text",
+			wantOutputPresent: true,
+			wantOutputMsg:     "output-only text",
+			wantChanges:       true,
 		},
 		{
-			name:          "observed double encoded shape",
-			arguments:     `{"end_turn":true,"message":"top-level","output":` + jsonQuote(observedDoubleEncoded) + `}`,
-			wantMessage:   "top-level",
-			wantOutputMsg: "",
-			wantChanges:   true,
+			name:              "observed double encoded shape",
+			arguments:         `{"end_turn":true,"message":"top-level","output":` + jsonQuote(observedDoubleEncoded) + `}`,
+			wantMessage:       "top-level",
+			wantOutputPresent: true,
+			wantChanges:       true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			res := prepareToolCall(llm.ToolCallData{ID: "issue831", Name: "communicate", Arguments: json.RawMessage(tc.arguments)}, rt, []string{"communicate"}, "communicate", "communicate", "")
 			if res.PrevalErr != "" {
-				t.Fatalf("prepareToolCall rejected healed default envelope: %s", res.PrevalErr)
+				t.Fatalf("prepareToolCall rejected default envelope: %s", res.PrevalErr)
 			}
 			if got := len(res.Changes) > 0; got != tc.wantChanges {
 				t.Fatalf("has changes = %t, want %t: %+v", got, tc.wantChanges, res.Changes)
 			}
 			var got map[string]any
 			if err := json.Unmarshal(res.Call.Arguments, &got); err != nil {
-				t.Fatalf("unmarshal repaired call: %v", err)
+				t.Fatalf("unmarshal call: %v", err)
 			}
 			if got["message"] != tc.wantMessage {
 				t.Fatalf("message = %#v, want %q", got["message"], tc.wantMessage)
 			}
-			output, ok := got["output"].(map[string]any)
-			if !ok {
-				t.Fatalf("output = %#v, want object", got["output"])
+			rawOut, present := got["output"]
+			if present != tc.wantOutputPresent {
+				t.Fatalf("output present = %t, want %t (%#v)", present, tc.wantOutputPresent, rawOut)
 			}
-			if output["message"] != tc.wantOutputMsg {
-				t.Fatalf("output.message = %#v, want %q", output["message"], tc.wantOutputMsg)
-			}
-			if _, ok := output["data"].(map[string]any); !ok {
-				t.Fatalf("output.data = %#v, want object", output["data"])
-			}
-			if _, ok := output["artifacts"].([]any); !ok {
-				t.Fatalf("output.artifacts = %#v, want array", output["artifacts"])
+			if tc.wantOutputPresent {
+				output, ok := rawOut.(map[string]any)
+				if !ok {
+					t.Fatalf("output = %#v, want object", rawOut)
+				}
+				if msg, _ := output["message"].(string); msg != tc.wantOutputMsg {
+					t.Fatalf("output.message = %#v, want %q", output["message"], tc.wantOutputMsg)
+				}
 			}
 		})
 	}
@@ -428,18 +429,29 @@ func TestPrepareToolCall_RejectsInvalidRawCommunicateArgumentsBeforeHealingIssue
 func TestPrepareToolCall_ValidRawCommunicateArgumentsAtLimitAndUTF8StillHealIssue831(t *testing.T) {
 	t.Parallel()
 	_, rt := registerCommunicateForIssue627(t)
-	base := `{"end_turn":true,"message":"top-level"}`
-	for _, args := range [][]byte{
-		[]byte(base + strings.Repeat(" ", tool.MaxToolArgumentBytes-len(base))),
-		[]byte(`{"end_turn":true,"message":"✓"}`),
+	for _, output := range []struct {
+		name        string
+		tail        string
+		wantChanges bool
+	}{
+		{name: "absent output", tail: `}`, wantChanges: false},
+		{name: "null output", tail: `,"output":null}`, wantChanges: true},
 	} {
-		res := prepareToolCall(llm.ToolCallData{ID: "issue831-raw-valid", Name: "communicate", Arguments: args}, rt, []string{"communicate"}, "communicate", "communicate", "")
-		if res.PrevalErr != "" {
-			t.Fatalf("valid arguments rejected: %q", res.PrevalErr)
-		}
-		if len(res.Changes) == 0 {
-			t.Fatalf("valid default envelope was not healed: %q", args)
-		}
+		t.Run(output.name, func(t *testing.T) {
+			base := `{"end_turn":true,"message":"top-level"` + output.tail
+			for _, args := range [][]byte{
+				[]byte(base + strings.Repeat(" ", tool.MaxToolArgumentBytes-len(base))),
+				[]byte(`{"end_turn":true,"message":"✓"` + output.tail),
+			} {
+				res := prepareToolCall(llm.ToolCallData{ID: "issue831-raw-valid", Name: "communicate", Arguments: args}, rt, []string{"communicate"}, "communicate", "communicate", "")
+				if res.PrevalErr != "" {
+					t.Fatalf("valid arguments (%d bytes) rejected: %q", len(args), res.PrevalErr)
+				}
+				if got := len(res.Changes) > 0; got != output.wantChanges {
+					t.Fatalf("has changes = %t, want %t (%d bytes): %+v", got, output.wantChanges, len(args), res.Changes)
+				}
+			}
+		})
 	}
 }
 

@@ -286,3 +286,30 @@ func TestCommunicateExplicitDefaultOutputSchema(t *testing.T) {
 		})
 	}
 }
+
+func TestCommunicateOptionalOutputEmitsNoRepairNotice(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		args string
+	}{
+		{name: "message only", args: `{"message":"done"}`},
+		{name: "progress without output", args: `{"message":"working","end_turn":false}`},
+		{name: "partial default output", args: `{"message":"done","output":{"data":{"sum":1000}}}`},
+		{name: "empty default output", args: `{"message":"done","output":{}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := newSession(t, withStateDir(t.TempDir()))
+			repairedCh := drainRepairedEvents(s)
+			res := s.execTool(t.Context(), rawCommunicateCall("valid-"+tc.name, tc.args), "")
+			if res.IsError {
+				t.Fatalf("execTool(%s) failed: %s", tc.args, res.FullOutput)
+			}
+			s.Close()
+			if repaired := <-repairedCh; len(repaired) != 0 {
+				t.Fatalf("schema-valid communicate(%s) emitted spurious repair notice: %+v", tc.args, repaired)
+			}
+		})
+	}
+}

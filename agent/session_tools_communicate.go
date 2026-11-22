@@ -13,7 +13,6 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
-	"primeradiant.com/evener/agent/internal/tool/repair"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -522,10 +521,6 @@ func hasMeaningfulNodeOutput(out nodeOutput) bool {
 		len(out.Artifacts) > 0
 }
 
-// defaultEnvelopeKeys are the output-envelope keys the default communicate
-// schema declares — and the only keys the documented-defaults fill may add.
-var defaultEnvelopeKeys = []string{"message", "data", "artifacts"}
-
 // canonicalDefaultCommunicateOutputSchema is constructed once because every
 // communicate repair checks it, sometimes multiple times. It is private and
 // only read by reflect.DeepEqual; callers never receive this mutable map.
@@ -582,64 +577,6 @@ func communicateOutputSchema(def llm.ToolDefinition) map[string]any {
 
 func isCanonicalDefaultCommunicateOutputEnvelope(output map[string]any) bool {
 	return reflect.DeepEqual(output, canonicalDefaultCommunicateOutputSchema)
-}
-
-// fillCommunicateEnvelope fills a present default-envelope `output` object's
-// missing message/data/artifacts keys with their documented empty defaults
-// ("" / {} / []). It mutates args in place on the working copy the caller
-// owns, and never overwrites an existing key. Only communicateEnvelopeFor's
-// envelope — the default one — may be passed here; repairDefaultCommunicateEnvelope
-// owns that canonical-schema gate before calling this helper. A custom output
-// schema must keep failing loudly on keys the model was required to choose.
-func fillCommunicateEnvelope(envelope, args map[string]any) []repair.Change {
-	raw, isMap := args["output"].(map[string]any)
-	if !isMap {
-		return nil
-	}
-	props, _ := envelope["properties"].(map[string]any)
-	var changes []repair.Change
-	for _, key := range defaultEnvelopeKeys {
-		if _, present := raw[key]; present {
-			continue
-		}
-		prop, ok := props[key].(map[string]any)
-		if !ok {
-			continue
-		}
-		v, ok := envelopeZeroValue(prop)
-		if !ok {
-			continue
-		}
-		raw[key] = v
-		changes = append(changes, repair.Change{Kind: repair.ChangeFillRequired, Field: "output." + key, Detail: "filled default"})
-	}
-	return changes
-}
-
-// envelopeZeroValue returns the zero-value instance of an envelope property's
-// declared type — the value a missing key is filled with. It returns ok=false
-// for anything that is not a plain scalar, object, or array, and for
-// enum-constrained properties: a zero value is never a value the model chose,
-// so an enum field must stay absent and be reported as missing rather than
-// silently sent as an invalid choice.
-func envelopeZeroValue(prop map[string]any) (any, bool) {
-	if _, hasEnum := prop["enum"]; hasEnum {
-		return nil, false
-	}
-	typ, _ := prop["type"].(string)
-	switch typ {
-	case "string":
-		return "", true
-	case "boolean":
-		return false, true
-	case "integer", "number":
-		return float64(0), true
-	case "object":
-		return map[string]any{}, true
-	case "array":
-		return []any{}, true
-	}
-	return nil, false
 }
 
 func hasMeaningfulRawOutput(raw any) bool {

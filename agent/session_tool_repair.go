@@ -115,15 +115,11 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		args, retainedReadChanges = normalizeRetainedReadArgs(args)
 	}
 
-	// The default communicate envelope documents message/data/artifacts as
-	// always-present with empty defaults (issue #627), but the schema demands
-	// them as required — reconcile by filling the documented defaults before
-	// validation. communicateEnvelopeFor limits this to the session's unbound
-	// result tool with the exact default envelope and returns it so the fill cannot
-	// diverge from what was checked. The fill runs on a working copy and is
-	// committed (args + recorded changes) only if validation passes, so a
-	// call that still fails never emits a ToolCallRepaired event whose
-	// Arguments bytes were never applied.
+	// Bound only to the session's unbound result tool with the canonical
+	// default output schema: repairs malformed legacy shapes (output:null,
+	// JSON-stringified output objects, and output.message without top-level
+	// message) without synthesizing or filling optional fields the schema
+	// already permits to be omitted. Commit only if validation passes.
 	var fillChanges []repair.Change
 	promotedOutputString := false
 	if envelope, ok := communicateEnvelopeFor(t, resultToolName); ok {
@@ -270,22 +266,23 @@ func repairDefaultCommunicateEnvelope(envelope, args map[string]any) ([]repair.C
 	}
 
 	var changes []repair.Change
-	if raw, present := args["output"]; !present || raw == nil {
-		if !present && strings.TrimSpace(stringArg(args, "message")) == "" {
-			return nil, false, nil
+	promoted := false
+	if raw, present := args["output"]; present {
+		switch encoded := raw.(type) {
+		case nil:
+			args["output"] = map[string]any{}
+			changes = append(changes, repair.Change{Kind: repair.ChangeSynthesize, Field: "output", Detail: "synthesized default envelope"})
+		case string:
+			decoded, err := decodeDefaultCommunicateOutputString(encoded)
+			if err != nil {
+				return nil, false, err
+			}
+			args["output"] = decoded
+			promoted = true
+			changes = append(changes, repair.Change{Kind: repair.ChangePromoteJSONObject, Field: "output", Detail: "promoted JSON object string"})
 		}
-		args["output"] = map[string]any{}
-		changes = append(changes, repair.Change{Kind: repair.ChangeSynthesize, Field: "output", Detail: "synthesized default envelope"})
-	} else if encoded, ok := raw.(string); ok {
-		decoded, err := decodeDefaultCommunicateOutputString(encoded)
-		if err != nil {
-			return nil, false, err
-		}
-		args["output"] = decoded
-		changes = append(changes, repair.Change{Kind: repair.ChangePromoteJSONObject, Field: "output", Detail: "promoted JSON object string"})
 	}
 
-	changes = append(changes, fillCommunicateEnvelope(envelope, args)...)
 	if _, present := args["message"]; !present {
 		if output, ok := args["output"].(map[string]any); ok {
 			if message, ok := output["message"].(string); ok && strings.TrimSpace(message) != "" {
@@ -294,12 +291,7 @@ func repairDefaultCommunicateEnvelope(envelope, args map[string]any) ([]repair.C
 			}
 		}
 	}
-	for _, change := range changes {
-		if change.Kind == repair.ChangePromoteJSONObject {
-			return changes, true, nil
-		}
-	}
-	return changes, false, nil
+	return changes, promoted, nil
 }
 
 func decodeDefaultCommunicateOutputString(encoded string) (map[string]any, error) {

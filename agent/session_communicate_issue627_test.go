@@ -60,20 +60,20 @@ func TestPrepareToolCall_CommunicateOutputEnvelopeHealed(t *testing.T) {
 	if res.PrevalErr != "" {
 		t.Fatalf("documented-shape communicate call rejected (issue #627): %s", res.PrevalErr)
 	}
-	if len(res.Changes) == 0 {
-		t.Fatal("expected the missing envelope keys to be recorded as repairs")
+	if len(res.Changes) != 0 {
+		t.Fatalf("schema-valid partial output recorded spurious repairs: %+v", res.Changes)
 	}
 	var got map[string]any
 	if err := json.Unmarshal(res.Call.Arguments, &got); err != nil {
-		t.Fatalf("unmarshal healed args: %v", err)
+		t.Fatalf("unmarshal args: %v", err)
 	}
 	out, ok := got["output"].(map[string]any)
 	if !ok {
-		t.Fatalf("healed args lost the output object: %v", got)
+		t.Fatalf("args lost the output object: %v", got)
 	}
-	for _, key := range []string{"message", "data", "artifacts"} {
+	for _, key := range []string{"data", "artifacts"} {
 		if _, ok := out[key]; !ok {
-			t.Fatalf("healed output missing %q key: %v", key, out)
+			t.Fatalf("output missing %q key: %v", key, out)
 		}
 	}
 }
