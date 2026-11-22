@@ -2145,11 +2145,9 @@ async function main() {
     if (shortMenu.viewportWidth !== 844 || shortMenu.viewportHeight !== 390) {
       shortMenuFailures.push(`realized viewport=${shortMenu.viewportWidth}x${shortMenu.viewportHeight}`);
     }
-    const expectedMenuLabels = ["Overview", "Verbosity…", "Rename", "Pin this session…", "Archive", "Shut down"];
-    if (shortMenu.itemCount !== 7) shortMenuFailures.push(`items=${shortMenu.itemCount}, expected 7`);
-    const menuLabels = shortMenu.itemLabels
-      .filter((label) => label !== "Stop")
-      .map((label) => label.replace(/^Overview · .+$/, "Overview"));
+    const expectedMenuLabels = ["Verbosity…", "Rename", "Pin this session…", "Archive", "Shut down"];
+    if (shortMenu.itemCount !== 6) shortMenuFailures.push(`items=${shortMenu.itemCount}, expected 6`);
+    const menuLabels = shortMenu.itemLabels.filter((label) => label !== "Stop");
     if (JSON.stringify(menuLabels) !== JSON.stringify(expectedMenuLabels)) {
       shortMenuFailures.push(
         `labels=${JSON.stringify(shortMenu.itemLabels)}, expected ${JSON.stringify(expectedMenuLabels)}`,

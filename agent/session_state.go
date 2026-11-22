@@ -415,6 +415,11 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 	if s.persistFallbackPrompt && s.systemPromptFrozen {
 		fallbackPrompt = s.cachedSystemPrompt
 	}
+	lastInputTokens, lastInputMeasuredLen, lastInputAnchor, lastInputTarget := s.contextMgr.LastInputMeasurement(s.profile)
+	var lastInputLenPtr *int
+	if lastInputTokens > 0 {
+		lastInputLenPtr = &lastInputMeasuredLen
+	}
 	return schema.SessionMeta{
 		ID:                       s.id,
 		ProfileID:                s.profile.ID(),
@@ -423,14 +428,16 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		VisionModel:              s.cfg.VisionModel,
 		Manager:                  s.cfg.Manager,
 		Config:                   s.cfg.toSnapshot(),
-		ReasoningEffortEscalated: s.loopEffortEscalated,
 		EnvInfo:                  s.envInfo,
 		CreatedAt:                s.createdAt,
 		UpdatedAt:                now,
 		TurnCount:                s.modelResponses,
 		AcceptedInputTurns:       s.turns,
 		TurnBudgetWarningEmitted: s.turnBudgetWarningEmitted,
-		LastInputTokens:          s.contextMgr.LastInputTokens(),
+		LastInputTokens:          lastInputTokens,
+		LastInputMeasuredLen:     lastInputLenPtr,
+		LastInputAnchor:          lastInputAnchor,
+		LastInputTarget:          lastInputTarget,
 		ContextWindow:            contextWindow,
 		ContextWindowSource:      contextWindowSource,
 		Name:                     s.naming.value,

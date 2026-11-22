@@ -677,9 +677,9 @@ function LiveConversationBody({
         {/* Recovery keeps the composer and its menu mounted. Retain the
             fallback for other local snapshots with no Send surface, and for
             remote ones on a phone: the composer never mounts for a
-            notLoaded remote share, the phone layout has no status bar to
-            carry the menu, and a single-pane phone hides the rail, so this
-            menu is the only remaining way into Overview and About.
+            notLoaded remote share, and a single-pane phone hides the rail.
+            This fallback keeps session actions available; StackHost's top bar
+            supplies Find and Overview.
             Owner-retained sessions still direct recovery to their owner. */}
         {model.status.type === "notLoaded" &&
           !recoveryOwnerRef &&

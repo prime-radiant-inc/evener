@@ -83,7 +83,7 @@ func FuzzModelRoundContracts(f *testing.F) {
 			StorageScopeFingerprint: modelRoundChoice(r, "scope", "", text),
 			StoragePolicyLabel:      modelRoundChoice(r, "store", "none", ""),
 		}
-		full := responsesContinuationFullHistoryRequestForPlan(routeForRow(registry.Resolved{Instance: "fuzz", ModelID: "fuzz"}, normalized, false), normalized, plan)
+		full := responsesContinuationFullHistoryRequestForPlan(routeForRow(registry.Resolved{Instance: "fuzz", ModelID: "fuzz"}, normalized, false), normalized, plan, contextBoundaryNone)
 		if full.HistoryMode != llm.HistoryModeFullHistory || full.Continuation == nil {
 			t.Fatalf("full-history plan was not materialized: %+v", full)
 		}

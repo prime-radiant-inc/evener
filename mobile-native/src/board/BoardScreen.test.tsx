@@ -28,6 +28,7 @@ import { manifest, wireSnapshot } from "@evener/appwire-client/testing/navigatio
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { HUB_BELOW_FLOOR } from "../connectionRecovery";
 import type { ConversationClientLike } from "../conversation/services/conversation";
 import {
 	alertRequests,
@@ -2037,6 +2038,20 @@ it("says Update needed and why when no retry can fix the close", async () => {
 	connect(id, null, "closed", { fatal: true });
 	rerender(tree, nav);
 	expect(texts(tree)).toContain(INCOMPATIBLE_TEXT);
+	expect(hasRow(tree, "Build docs")).toBe(true);
+	act(() => tree.unmount());
+});
+
+it("carries the fatal close's own sentence, so a hub below the floor names its upgrade", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	connect(id, null, "closed", { fatal: true, error: HUB_BELOW_FLOOR });
+	rerender(tree, nav);
+	expect(texts(tree)).toContain(HUB_BELOW_FLOOR);
+	expect(texts(tree)).not.toContain(INCOMPATIBLE_TEXT);
 	expect(hasRow(tree, "Build docs")).toBe(true);
 	act(() => tree.unmount());
 });

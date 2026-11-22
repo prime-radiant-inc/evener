@@ -245,7 +245,9 @@ func delegateQuietAttentionIDForStretch(lease delegateLease, sequence uint64) st
 
 // delegateQuietAttentionContent builds one quiet notice's frame. quietFor is
 // the silence the wake reports, measured at its due boundary (see
-// BeginQuietAttention).
+// BeginQuietAttention). The body is the harness's own observation rather than
+// the delegate's words, so the frame carries no authority marker (#4083):
+// there are no subagent instructions or approval claims to disclaim.
 func delegateQuietAttentionContent(lease delegateLease, quietFor time.Duration, activityAt time.Time) string {
 	return fmt.Sprintf(
 		"<delegate-notification delegate_id=%q>%s</delegate-notification>",

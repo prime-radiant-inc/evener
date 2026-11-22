@@ -54,6 +54,10 @@
   letter-spacing: var(--tracking-display);
 }
 
+.topBar[data-session="true"] .stackTitle {
+  text-align: left;
+}
+
 .leading {
   /* Always rendered, even empty (welcome - see StackHost.tsx's showBack) -
    * a single empty flex item still anchors at the row's start under

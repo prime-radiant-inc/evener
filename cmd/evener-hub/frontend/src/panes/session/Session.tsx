@@ -25,6 +25,7 @@ import { useNavigationStore } from "../../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { Button, EmptyState, InlineNotice, Loader, PaneScaffold, Skeleton } from "../../widgets";
 import { ConversationBody, type ConversationSeat } from "./ConversationBody";
+import { SessionInspectionActions } from "./chrome/SessionInspectionActions";
 import { RepoLocation } from "./composer/RepoLocation";
 import styles from "./session.module.css";
 import { navigationSummaryFor, resolveThreadName } from "./threadTitle";
@@ -239,6 +240,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
             scaffoldMarker={`session:${ref}`}
             title={title}
             cadence={cadence}
+            actions={isMobile ? undefined : <SessionInspectionActions sessionRef={ref} paneId={paneId} />}
             footer={footer}
             edgeFooter={edgeFooter}
           >

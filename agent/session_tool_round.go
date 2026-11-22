@@ -102,7 +102,7 @@ func decideNoToolCalls(noContent bool, t retryTracker, resultToolName string) no
 				Tracker:      t,
 				Retry:        true,
 				WarningMsg:   fmt.Sprintf("empty response from model (retry %d/%d)", t.consecutiveEmpty, maxEmptyRetries),
-				SteeringText: steering,
+				SteeringText: systemReminderBlock(steering),
 			}
 		}
 		return noToolCallsDecision{Tracker: t, TerminalKind: noToolTerminalEmptyExhausted}
@@ -119,7 +119,7 @@ func decideNoToolCalls(noContent bool, t retryTracker, resultToolName string) no
 			Tracker:      t,
 			Retry:        true,
 			WarningMsg:   fmt.Sprintf("bare text response without tool call (retry %d/%d)", t.consecutiveBareText, maxBareTextRetries),
-			SteeringText: steering,
+			SteeringText: systemReminderBlock(steering),
 		}
 	}
 	return noToolCallsDecision{Tracker: t, TerminalKind: noToolTerminalBareTextExhausted}

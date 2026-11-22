@@ -722,6 +722,41 @@ test("a phone composer restores status chrome and its activity line with content
   await settleActivityDiscovery("ref_a");
 });
 
+test("a phone composer leaves inspection actions to the top bar at rest and with content", async ({
+  onTestFinished,
+}) => {
+  onTestFinished(installMobileViewport());
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_phone_header_menu"));
+  await threadsStore.getState().ensureThread("ref_phone_header_menu");
+  const paneId = workspaceStore.getState().openPane("session", { ref: "ref_phone_header_menu" });
+  render(
+    <ClientProvider client={fake}>
+      <Composer
+        ref="ref_phone_header_menu"
+        paneId={paneId}
+        source={createTestComposerSource("ref_phone_header_menu")}
+        focused={false}
+      />
+    </ClientProvider>,
+  );
+  const editor = await screen.findByRole("textbox", { name: "Message" });
+  await flushPendingTurnsProjectionForTests();
+
+  for (const withContent of [false, true]) {
+    if (withContent) {
+      act(() => replaceEditorText(editor, "draft"));
+      await waitFor(() => expect(screen.getByTestId("session-chrome-inline")).toBeTruthy());
+    }
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    expect(screen.queryByRole("menuitem", { name: /find/i })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /Overview/ })).toBeNull();
+    expect(screen.getByRole("menuitem", { name: "Verbosity…" })).toBeTruthy();
+    await user.keyboard("{Escape}");
+  }
+});
+
 // A cascade column's chrome renders the conversation's activity controls
 // below the footer (CascadeColumn's ScopeActivityControls), so its seat
 // declares that ownership and the phone composer renders no second activity

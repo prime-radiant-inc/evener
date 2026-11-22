@@ -63,7 +63,7 @@ than an error state. The direction of the skew decides who adapts:
 | Boundary | Must tolerate | May assume |
 |---|---|---|
 | Hub and its daemons | The hub works with any older daemon. | Daemon code may assume the hub is the same version or newer, and carries no fallback for an older hub. |
-| Phone or web client and hub | The client works with an older hub, including the combined update/apply path. | Hub code carries no fallback for an older phone app. |
+| Phone or web client and hub | The client works with a hub on the supported protocol floor (`evener-appwire-v7`), including the combined update/apply path. A hub older than v7 is below the floor: the client reports that the hub must be upgraded on its host, because no client action can reach it. | Hub code carries no fallback for an older phone app. |
 | Local hub and remote hub over SSH | The local hub works with an older remote hub. | Remote-side code carries no fallback for a newer local hub. |
 | On-disk state | Every persisted format stays readable and every migration stays, because users skip versions. | Nothing is dropped on a time window alone. |
 

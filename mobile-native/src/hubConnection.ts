@@ -3,7 +3,7 @@ import type { AppwireClient, ConnectionState, WebSocketLike } from "@evener/appw
 import { createConnectionStore } from "@evener/appwire-client/state/connection";
 import { createHubClient } from "./connection";
 import { recordClientReadyHub } from "./connectionIdentity";
-import { connectionFailure } from "./connectionRecovery";
+import { connectionFailure, isFatalConnectionFailure } from "./connectionRecovery";
 
 export interface HubConnection {
 	client: AppwireClient | null;
@@ -145,7 +145,7 @@ export function useHubConnection(
 					if (next === "closed") {
 						const failure = connectionFailure(currentConnection.terminalReason);
 						setError(failure.message);
-						setFatal(failure.kind === "protocol");
+						setFatal(isFatalConnectionFailure(failure.kind));
 					}
 				});
 				return connection.connect();
@@ -154,7 +154,7 @@ export function useHubConnection(
 				if (!cancelled) {
 					const failure = connectionFailure(connection?.terminalReason ?? null);
 					setError(failure.message);
-					setFatal(failure.kind === "protocol");
+					setFatal(isFatalConnectionFailure(failure.kind));
 					store.setState({ state: "closed" });
 					connection?.close();
 				}

@@ -840,6 +840,12 @@ async function chooseOverviewMenu(send, selector) {
   await settleOverview(send);
 }
 
+async function choosePaneOverview(send, selector) {
+  await clickControl(send, selector);
+  await waitForDom(send, `document.querySelector(${JSON.stringify(OVERVIEW)})`, "opened pane Overview");
+  await settleOverview(send);
+}
+
 async function openRailOverview(send) {
   const visible = await evaluate(
     send,
@@ -1178,6 +1184,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
     "window.overviewGuardState().panes.find(p => p.type === 'session' && p.params.ref === 'local:p0-s0').id",
   );
   const trigger = (id) => `[data-session-actions-ref="local:p0-s0"][data-pane-id="${id}"]`;
+  const overviewTrigger = (id, ref = "local:p0-s0") => `[data-session-overview-ref="${ref}"][data-pane-id="${id}"]`;
   await evaluate(
     send,
     `document.querySelector(${JSON.stringify(OVERVIEW)}).querySelector('[role="radio"][aria-checked="true"]').focus()`,
@@ -1299,11 +1306,11 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   };
   // The rail opener is removed when a phone's Sessions drawer closes.
   await dismiss("close", pane);
-  await chooseOverviewMenu(send, trigger(pane));
+  await choosePaneOverview(send, overviewTrigger(pane));
   await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
   await evaluate(
     send,
-    `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(trigger(pane))}).closest('button'))`,
+    `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(overviewTrigger(pane))}))`,
   );
   await dismiss("escape", pane, true);
 
@@ -1354,15 +1361,15 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
     const duplicate = await evaluate(send, "window.overviewPane('duplicate')");
     await settleOverview(send);
     for (const origin of [pane, duplicate]) {
-      await chooseOverviewMenu(send, trigger(origin));
+      await choosePaneOverview(send, overviewTrigger(origin));
       await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
       await evaluate(
         send,
-        `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(trigger(origin))}).closest('button'))`,
+        `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(overviewTrigger(origin))}))`,
       );
       await dismiss("escape", origin, true);
     }
-    await chooseOverviewMenu(send, trigger(duplicate));
+    await choosePaneOverview(send, overviewTrigger(duplicate));
     await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
     await evaluate(send, `window.overviewPane('close', ${JSON.stringify(duplicate)})`);
     await settleOverview(send);
@@ -1374,7 +1381,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   }
   if (viewport.mobile) {
     if (!(await evaluate(send, "window.overviewGuardState().overview.open")))
-      await chooseOverviewMenu(send, trigger(pane));
+      await choosePaneOverview(send, overviewTrigger(pane));
     await clickControl(send, `${OVERVIEW} [role="radio"][aria-label^="Agents"]`);
     await waitForDom(
       send,
@@ -1415,10 +1422,10 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
     // The read-only pane's ancestor breadcrumb is gone: the revealed child
     // conversation owns the return focus through its own actions control.
     const childPaneId = await evaluate(send, "window.overviewGuardState().focusedPaneId");
-    const childActions = `[data-session-actions-ref="local:overview-child"][data-pane-id="${childPaneId}"]`;
+    const childActions = overviewTrigger(childPaneId, "local:overview-child");
     await evaluate(
       send,
-      `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(childActions)})?.closest('button') ?? null)`,
+      `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(childActions)}))`,
     );
     await waitForDom(
       send,
