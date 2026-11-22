@@ -82,7 +82,8 @@ func FuzzProfileOverrides(f *testing.F) {
 
 		// When decisions survive the JSON round-trip inside addDecisionToSchema and
 		// the communicate tool has a usable output schema, the decoration must take
-		// effect: decision enum + required output.
+		// effect: decision enum + decision required inside output, with output
+		// itself left optional at the top level.
 		if len(decisions) > 0 {
 			assertDecisionApplied(t, p2, decisions)
 		}
@@ -194,8 +195,11 @@ func assertDecisionApplied(t *testing.T, p *Profile, decisions []string) {
 			t.Fatalf("decision enum[%d] = %q, want %q", i, enum[i], d)
 		}
 	}
-	if !contains(toStringSlice(def.Parameters["required"]), "output") {
-		t.Fatalf("output not required at top level after WithAllowedDecisions")
+	if contains(toStringSlice(def.Parameters["required"]), "output") {
+		t.Fatalf("output must stay optional at the top level after WithAllowedDecisions")
+	}
+	if !contains(toStringSlice(output["required"]), "decision") {
+		t.Fatalf("decision not required inside output after WithAllowedDecisions")
 	}
 }
 

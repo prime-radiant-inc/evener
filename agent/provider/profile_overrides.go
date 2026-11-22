@@ -16,8 +16,12 @@ var (
 
 // WithCommunicateOutputSchema returns a cloned profile whose `communicate`
 // tool has its `output` property schema replaced wholesale by the given
-// schema. The top-level `required` list on the tool parameters is also
-// updated to include `output`.
+// schema. The top-level `required` list is left alone: `message`, `end_turn`,
+// and `output` all stay optional, so a progress update
+// (`end_turn=false`) and a quiet yield (`communicate({})`) validate without a
+// fabricated output object. Whenever `output` is supplied, its own schema
+// (the caller's here) validates it, and the handler requires it on a final
+// reply.
 //
 // The schema is validated against the draft 2020-12 meta-schema first: a
 // caller-supplied schema spliced into tool parameters verbatim ships on the
@@ -64,7 +68,9 @@ func WithCommunicateOutputSchema(p *Profile, outputSchema map[string]any) (*Prof
 
 // WithAllowedDecisions returns a cloned profile where the `communicate` tool
 // schema requires a `decision` field constrained to the given values, and
-// `output` is required at the top level.
+// `output` is required inside `output.required` whenever output is present.
+// `output` itself stays optional at the top level, so progress updates and
+// quiet yields validate; the handler requires it on a final reply.
 //
 // This is intended for orchestration systems (like Toil) that route workflow
 // DAGs based on the agent's decision.
@@ -108,8 +114,8 @@ func WithCheapModel(p *Profile, ref string) *Profile {
 }
 
 // replaceCommunicateOutputSchema deep-copies td.Parameters and overwrites
-// Parameters.properties.output with a deep copy of outputSchema. It also adds
-// "output" to Parameters.required if not already present.
+// Parameters.properties.output with a deep copy of outputSchema. Parameters'
+// top-level required list is untouched, so `output` stays optional.
 //
 // A tool definition with no parameters or no properties map is returned
 // unchanged: there is nowhere to splice the schema, and that absence is the
@@ -143,13 +149,6 @@ func replaceCommunicateOutputSchema(td llm.ToolDefinition, outputSchema map[stri
 		return td, fmt.Errorf("copy output schema: %w", err)
 	}
 	props["output"] = copied
-
-	// Ensure output is listed as required at the top level.
-	topReq := toStringSlice(params["required"])
-	if !slices.Contains(topReq, "output") {
-		topReq = append(topReq, "output")
-	}
-	params["required"] = topReq
 
 	return td, nil
 }
@@ -222,13 +221,6 @@ func addDecisionToSchema(td llm.ToolDefinition, decisions []string) llm.ToolDefi
 
 	// Update output description (remove "optional").
 	outputSchema["description"] = "Structured output."
-
-	// Make output required at the top level.
-	topReq := toStringSlice(params["required"])
-	if !slices.Contains(topReq, "output") {
-		topReq = append(topReq, "output")
-	}
-	params["required"] = topReq
 
 	return td
 }

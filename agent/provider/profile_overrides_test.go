@@ -1,10 +1,13 @@
 package provider
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
+
+	"github.com/santhosh-tekuri/jsonschema/v5"
 
 	"primeradiant.com/evener/llm"
 )
@@ -49,15 +52,23 @@ func TestWithCommunicateOutputSchema(t *testing.T) {
 		if out["description"] != "custom" {
 			t.Errorf("output.description = %v", out["description"])
 		}
-		req := toStringSlice(params["required"])
-		found := false
-		for _, r := range req {
+		for _, r := range toStringSlice(params["required"]) {
 			if r == "output" {
-				found = true
+				t.Error("output must stay absent from top-level required so progress updates and quiet yields validate")
 			}
 		}
-		if !found {
-			t.Error("output not in required")
+		compiled := compileToolParameters(t, params)
+		for _, args := range []map[string]any{
+			{},
+			{"message": "progress", "end_turn": false},
+			{"message": "done", "output": "ok"},
+		} {
+			if err := compiled.Validate(args); err != nil {
+				t.Errorf("valid call %v rejected: %v", args, err)
+			}
+		}
+		if err := compiled.Validate(map[string]any{"output": 1}); err == nil {
+			t.Error("an output that violates the supplied schema must be rejected")
 		}
 	})
 
@@ -182,15 +193,23 @@ func TestWithAllowedDecisions(t *testing.T) {
 		if out["description"] != "Structured output." {
 			t.Errorf("output.description = %q", out["description"])
 		}
-		topReq := toStringSlice(params["required"])
-		foundOutput := false
-		for _, r := range topReq {
+		for _, r := range toStringSlice(params["required"]) {
 			if r == "output" {
-				foundOutput = true
+				t.Error("output must stay absent from top-level required so progress updates and quiet yields validate")
 			}
 		}
-		if !foundOutput {
-			t.Error("output not in top-level required")
+		compiled := compileToolParameters(t, params)
+		for _, args := range []map[string]any{
+			{},
+			{"message": "progress", "end_turn": false},
+			{"message": "done", "output": map[string]any{"decision": "continue"}},
+		} {
+			if err := compiled.Validate(args); err != nil {
+				t.Errorf("valid call %v rejected: %v", args, err)
+			}
+		}
+		if err := compiled.Validate(map[string]any{"message": "done", "output": map[string]any{"message": "x"}}); err == nil {
+			t.Error("an output without the required decision must be rejected when output is supplied")
 		}
 	})
 
@@ -401,6 +420,26 @@ func TestToStringSlice(t *testing.T) {
 			}
 		})
 	}
+}
+
+// compileToolParameters compiles a tool parameter schema so a test can
+// validate argument maps against it, the same check a registry applies.
+func compileToolParameters(t *testing.T, params map[string]any) *jsonschema.Schema {
+	t.Helper()
+	b, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal parameters: %v", err)
+	}
+	const uri = "urn:evener:test-tool-schema"
+	c := jsonschema.NewCompiler()
+	if err := c.AddResource(uri, bytes.NewReader(b)); err != nil {
+		t.Fatalf("add schema resource: %v", err)
+	}
+	schema, err := c.Compile(uri)
+	if err != nil {
+		t.Fatalf("compile parameters: %v", err)
+	}
+	return schema
 }
 
 // The configured cheap model's window comes from its own registry row; with

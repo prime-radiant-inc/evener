@@ -598,30 +598,24 @@ func DefJobWatchNamed(eventKinds []string, resultTool string) llm.ToolDefinition
 }
 
 func DefJobStatus() llm.ToolDefinition {
-	return DefJobStatusNamed(DefaultResultToolName, false)
+	return DefJobStatusNamed(DefaultResultToolName)
 }
 
 // EndTurnToWait is the guidance for an agent that has nothing else to do until
-// its background work finishes: end the turn and let the completion wake it.
+// its background work finishes: yield quietly and let the completion wake it.
 // It is the one wording shared by the job tool descriptions and the refusals of
-// wait-shaped calls. hasEndReason is whether the session's result tool takes
-// end_reason (only a root with a human partner does); advice to pass it
-// elsewhere would fail the tool's schema.
-func EndTurnToWait(resultTool string, hasEndReason bool) string {
-	call := "call `" + resultTool + "` with `end_turn=true`"
-	if hasEndReason {
-		call += " and `end_reason=\"waiting_on_work\"`"
-	}
-	return "When you have nothing else to do until your background work finishes, end your turn: " + call + ". Its completion wakes you. To wake on a condition instead, set `job_watch` with `output_match`."
+// wait-shaped calls.
+func EndTurnToWait(resultTool string) string {
+	return "When you have nothing else to do until your background work finishes, end your turn: call `" + resultTool + "({})` with no message to yield quietly, and its completion wakes you. To post a status note before waiting, send an update with `" + resultTool + "(end_turn=false, message=...)`. To wake on a condition instead, set `job_watch` with `output_match`."
 }
 
 // DefJobStatusNamed is DefJobStatus for a session whose result tool is named
-// resultTool and does (hasEndReason) or does not take end_reason.
-func DefJobStatusNamed(resultTool string, hasEndReason bool) llm.ToolDefinition {
+// resultTool.
+func DefJobStatusNamed(resultTool string) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "job_status",
-		Description: "Inspect one durable shell job or stable delegate by target. Use this for metadata-only orientation: type, lifecycle status, observable phase, running/quiet time, and transcript_ref. Delegate status never returns terminal packet contents or acknowledges delivery. Completion is notification-driven, and a repeat call on a running target whose status and phase have not changed is refused. " + EndTurnToWait(resultTool, hasEndReason) + " Read raw evidence with read_transcript(transcript_ref).",
+		Description: "Inspect one durable shell job or stable delegate by target. Use this for metadata-only orientation: type, lifecycle status, observable phase, running/quiet time, and transcript_ref. Delegate status never returns terminal packet contents or acknowledges delivery. Completion is notification-driven, and a repeat call on a running target whose status and phase have not changed is refused. " + EndTurnToWait(resultTool) + " Read raw evidence with read_transcript(transcript_ref).",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -635,7 +629,7 @@ func DefJobStatusNamed(resultTool string, hasEndReason bool) llm.ToolDefinition 
 }
 
 func DefJobList() llm.ToolDefinition {
-	return DefJobListNamed(DefaultResultToolName, false)
+	return DefJobListNamed(DefaultResultToolName)
 }
 
 var jobListStatusEnum = func() []any {
@@ -649,13 +643,13 @@ var jobListStatusEnum = func() []any {
 
 // DefJobListNamed is DefJobList for a session whose result tool is named
 // resultTool.
-func DefJobListNamed(resultTool string, hasEndReason bool) llm.ToolDefinition {
+func DefJobListNamed(resultTool string) llm.ToolDefinition {
 	strictFalse := false
 	statusEnum := append([]any(nil), jobListStatusEnum...)
 	typeEnum := []any{"shell", "delegate"}
 	return llm.ToolDefinition{
 		Name:        "job_list",
-		Description: "List this session's durable shell jobs and stable delegates, newest first; filter by `status` or `type`. Rows include typed identity, status, phase, running_for_ms, quiet_for_ms, and transcript_ref, so this is usually enough to re-orient without a follow-up status call. Completion is notification-driven. " + EndTurnToWait(resultTool, hasEndReason) + " " + ObserverReporting(resultTool) + " Use transcript evidence after an observer's report when you need audit or diagnosis context. The result also includes your active watches. Terminal outcome statuses: completed, failed, command_exited_nonzero, command_killed, exhausted, cancelled, stopped. A short shell can finish before a running-only filter sees it, and an ended delegate becomes idle; when recency matters, list unfiltered or inspect the typed resource by id.",
+		Description: "List this session's durable shell jobs and stable delegates, newest first; filter by `status` or `type`. Rows include typed identity, status, phase, running_for_ms, quiet_for_ms, and transcript_ref, so this is usually enough to re-orient without a follow-up status call. Completion is notification-driven. " + EndTurnToWait(resultTool) + " " + ObserverReporting(resultTool) + " Use transcript evidence after an observer's report when you need audit or diagnosis context. The result also includes your active watches. Terminal outcome statuses: completed, failed, command_exited_nonzero, command_killed, exhausted, cancelled, stopped. A short shell can finish before a running-only filter sees it, and an ended delegate becomes idle; when recency matters, list unfiltered or inspect the typed resource by id.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -840,7 +834,7 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        name,
-		Description: "Send a user-facing message. Use this tool for every message, readiness line, requested status marker, request for input, and final answer the user or caller should see. A valid call has visible text in `message` or `output.message`. If you will immediately keep working after this message, set `end_turn=false` and continue by calling the next work tool in the following round. Use `end_turn=false` only for visible narration or status before immediate continued work. Use `end_turn=true` when this message should stop the current activation: final answers, completed results, blocking requests for input, readiness lines that wait for future user/caller/watch-frame input, and a line naming the work you are waiting on. Set `message` to the exact visible text. Always include `output` as an object with exactly these top-level fields: `message`, `data`, and `artifacts`. For ordinary status or conversational messages, use `output.message=\"\"`, `output.data={}`, and `output.artifacts=[]`. When handing back completed work or machine-readable results, populate `output` with the evidence and structured data the caller needs.",
+		Description: "Send a message to your human partner or caller. Use this tool for every message, readiness line, requested status marker, request for input, and final answer they should see. A call with no `message` and no `output` ends your turn quietly and sends nothing: use it when you have nothing to add while background work runs, or when a notification or watch frame needs nothing from you. With `end_turn=false` the `message` is a progress update: send it only when your partner needs to know something or act on it, then keep working in the following round. With `end_turn` true or omitted, the `message` is your final reply and ends the turn. Include `output` only when you hand back completed work or machine-readable results; a `result_schema` requires it on a final reply but not on a progress update or a quiet yield.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -848,15 +842,16 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 			"properties": map[string]any{
 				"message": map[string]any{
 					"type":        "string",
-					"description": "Exact user-facing message text. Fill this with the text the user or caller should see. When the task asks for concrete findings, put the concrete findings here.",
+					"description": "Text to send to your human partner or parent agent. Omit when ending your turn with nothing to send.",
 				},
 				"end_turn": map[string]any{
 					"type":        "boolean",
-					"description": "Set to false only for visible narration/status before immediate continued work. Set to true when this message ends the current activation: final answer, completed result, blocking input request, readiness line that waits for future user/caller/watch-frame input, or a line naming the work you are waiting on.",
+					"default":     true,
+					"description": "true (default): end this turn. false: send `message` as a progress update and continue working in the next round.",
 				},
 				"output": map[string]any{
 					"type":                 "object",
-					"description":          "Structured output envelope. Keep this present on every call with exactly these top-level fields: message, data, artifacts. For ordinary text replies, keep user-visible text in the top-level message and leave data/artifacts empty.",
+					"description":          "Optional structured payload for a final reply. Include it only when you hand back completed work or machine-readable results; a `result_schema` requires it on a final reply.",
 					"additionalProperties": false,
 					"properties": map[string]any{
 						"message": map[string]any{"type": "string", "description": "Human-readable structured summary for automation and orchestration. Leave empty for ordinary conversational replies."},
@@ -872,78 +867,47 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 							"items":       map[string]any{"type": "string"},
 						},
 					},
-					"required": []string{"message", "data", "artifacts"},
 				},
 			},
-			"required": []string{"message", "end_turn", "output"},
 		},
 	}
-}
-
-// Why a root session's communicate call ends its turn: done (nothing waits
-// on the human partner), needs_response (the agent cannot go on until its
-// human partner answers or acts), or waiting_on_work (work the agent started
-// will wake it). Offered only where someone can answer the session; only
-// needs_response rests the session awaiting.
-const (
-	CommunicateEndReasonDone          = "done"
-	CommunicateEndReasonNeedsResponse = "needs_response"
-	CommunicateEndReasonWaitingOnWork = "waiting_on_work"
-)
-
-// CommunicateEndReasons lists the end_reason values in the order the
-// parameter advertises them.
-var CommunicateEndReasons = []string{CommunicateEndReasonDone, CommunicateEndReasonNeedsResponse, CommunicateEndReasonWaitingOnWork}
-
-// WithCommunicateEndReason returns a copy of a communicate definition that
-// also offers end_reason. Only a root someone can answer gets it: nobody
-// responds to a delegate's or a headless root's resting state.
-func WithCommunicateEndReason(def llm.ToolDefinition) llm.ToolDefinition {
-	params := CloneSchemaMap(def.Parameters)
-	props, _ := params["properties"].(map[string]any)
-	if props == nil {
-		return def
-	}
-	props["end_reason"] = map[string]any{
-		"type":        "string",
-		"enum":        slices.Clone(CommunicateEndReasons),
-		"description": "Why this message ends your turn; read only when end_turn=true, and done when omitted. `done`: you finished or answered, and nothing waits on your human partner; the session rests idle. `needs_response`: you cannot go on until your human partner answers or acts, such as a decision, a review, or something only they can do; the session shows it is waiting on them. `waiting_on_work`: you are waiting on delegates or background jobs that will wake you; the session rests idle and asks nobody for attention. The call is refused when nothing can wake the session: use `done` if finished, `needs_response` if your partner must act, or start the work or arm a watch before ending the turn.",
-	}
-	def.Parameters = params
-	return def
 }
 
 // ObserverReporting is how an observer sidecar talks to the session it
 // watches through resultTool, shared by every tool description and error that
 // teaches it.
 func ObserverReporting(resultTool string) string {
-	return "Observers send updates with `" + resultTool + "(end_turn=false)`, and a readiness line or their findings with `" + resultTool + "(end_turn=true)`."
+	return "Observers send updates with `" + resultTool + "(end_turn=false)`, and a readiness line or their findings with `" + resultTool + "(end_turn=true)` or `" + resultTool + "(message=...)`; `" + resultTool + "({})` ends the turn quietly when a frame needs nothing from them."
 }
 
 // communicateDelegateDescription is communicate worded for a delegate, whose
 // messages go to its parent agent. It names no output fields: a delegate
 // started with result_schema gets that schema as its output parameter
 // (provider.WithCommunicateOutputSchema), so only the schema can say the shape.
-const communicateDelegateDescription = "Send a message to your parent agent; it is the only way your parent hears from you. Put the text your parent should read in `message`. " +
-	"With `end_turn=false` the message is an update: your parent receives it, and it wakes a parent that is waiting on you, so send one only when your parent needs to know something or act on it, never to narrate progress, and keep working in the following round. " +
-	"The result's `delivery` says whether your parent has the update (`delivered`), will get it at its next step (`queued`), or cannot get it (`not_delivered`, with a `reason`); the call succeeds either way. " +
-	"With `end_turn=true` the message ends your turn with your report, your one line naming the work you are waiting on, or a readiness line before you wait for watch frames: put the complete result in a report. A `result_schema` still requires its output on every call, so when the schema has no truthful pending value, keep the turn open rather than invent one. " +
-	"Always include `output` in the shape its schema gives; when you hand back completed work or machine-readable results, fill it with the evidence and structured data your parent needs."
+func communicateDelegateDescription(resultTool string) string {
+	return "Send a message to your parent agent; it is the only way your parent hears from you. Put the text your parent should read in `message`. " +
+		"With `end_turn=false` the message is an update: your parent receives it, and it wakes a parent that is waiting on you, so send one only when your parent needs to know something or act on it, never to narrate progress, and keep working in the following round. " +
+		"The result's `delivery` says whether your parent has the update (`delivered`), will get it at its next step (`queued`), or cannot get it (`not_delivered`, with a `reason`); the call succeeds either way. " +
+		"With `end_turn` true or omitted the message ends your turn with your report, your one line naming the work you are waiting on, or a readiness line before you wait for watch frames: put the complete result in a report. " +
+		"When you have nothing to send while work you started keeps running, or when a notification or watch frame needs nothing from you, call `" + resultTool + "({})` with no message to end your turn quietly, keeping your report for when the work finishes. " +
+		"A `result_schema` requires its `output` on a final reply (a non-empty `message`), not on a progress update or a quiet yield; when you hand back completed work or machine-readable results, fill `output` with the evidence and structured data your parent needs."
+}
 
 // WithCommunicateDelegateUpdates returns a copy of a communicate definition
 // worded for a delegate: end_turn=false sends an update its parent receives,
-// end_turn=true its report, its wait line, or an observer readiness line. The
-// output schema stays as the caller built it.
+// end_turn=true (or omitted) its report, its wait line, or an observer
+// readiness line, and a message-less call a quiet yield. The output schema
+// stays as the caller built it.
 func WithCommunicateDelegateUpdates(def llm.ToolDefinition) llm.ToolDefinition {
 	params := CloneSchemaMap(def.Parameters)
 	props, _ := params["properties"].(map[string]any)
 	if message, ok := props["message"].(map[string]any); ok {
-		message["description"] = "The text your parent agent receives. When the task asks for concrete findings, put them here."
+		message["description"] = "The text your parent agent receives. Omit when ending your turn with nothing to send."
 	}
 	if endTurn, ok := props["end_turn"].(map[string]any); ok {
-		endTurn["description"] = "false: send an update and keep working; your parent receives it, and it wakes a parent that is waiting on you. true: send your report, the one line naming the work you are waiting on, or a readiness line before you wait for watch frames, and end your turn."
+		endTurn["description"] = "true (default): end this turn with your message. false: send `message` as an update and keep working; your parent receives it, and it wakes a parent that is waiting on you."
 	}
-	def.Description = communicateDelegateDescription
+	def.Description = communicateDelegateDescription(def.Name)
 	def.Parameters = params
 	return def
 }

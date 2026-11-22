@@ -629,7 +629,7 @@ func (r *Registry) Register(t RegisteredTool) error {
 	if t.Schema == nil {
 		// compileSchema memoizes by parameters, so a re-registration with
 		// unchanged parameters gets the schema already compiled for them and
-		// one that changes them (a root's communicate gains end_reason)
+		// one that changes them (a delegate's communicate gains a result_schema)
 		// compiles its own.
 		s, err := compileSchema(t.Definition.Parameters)
 		if err != nil {

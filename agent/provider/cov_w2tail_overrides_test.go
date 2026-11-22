@@ -33,7 +33,8 @@ func TestW2Tail_addDecisionToSchema_Guards(t *testing.T) {
 	}
 }
 
-// The full path injects the decision enum and marks output required.
+// The full path injects the decision enum and requires decision inside output,
+// while leaving output itself optional at the top level.
 func TestW2Tail_addDecisionToSchema_Injects(t *testing.T) {
 	td := llm.ToolDefinition{
 		Name: "communicate",
@@ -56,8 +57,11 @@ func TestW2Tail_addDecisionToSchema_Injects(t *testing.T) {
 	if dec["type"] != "string" {
 		t.Errorf("decision type = %v", dec["type"])
 	}
-	if _, ok := got.Parameters["required"]; !ok {
-		t.Errorf("top-level required not set")
+	if !contains(toStringSlice(out["required"]), "decision") {
+		t.Errorf("decision not required inside output")
+	}
+	if contains(toStringSlice(got.Parameters["required"]), "output") {
+		t.Errorf("output must stay optional at the top level")
 	}
 }
 
