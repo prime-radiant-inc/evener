@@ -2000,13 +2000,14 @@ func (s *Session) resetJobNotificationRetry() {
 // transient — reset at the top of each call, then read back by communicated,
 // communicateOutput, and the turn loop's deliver step. Guarded by s.mu.
 type communicateResult struct {
-	called     bool // terminal communicate/result was invoked this turn
-	updated    bool // non-terminal communicate (end_turn=false) was invoked this turn
-	text       string
-	reply      string
-	output     string // canonical structured output (communicateOutput)
-	structured any    // raw args["output"] object before communicate canonicalization
-	quietEnd   bool   // quiet yield was accepted without capturing a report
+	called            bool // terminal communicate/result was invoked this turn
+	updated           bool // non-terminal communicate (end_turn=false) was invoked this turn
+	text              string
+	reply             string
+	output            string // canonical structured output (communicateOutput)
+	structured        any    // raw args["output"] object before communicate canonicalization
+	quietEnd          bool   // quiet yield was accepted without capturing a report
+	stopPendingCallID string // explicit winner whose observation awaits the Stop decision
 }
 
 // sessionName holds the session's auto-generated display name and its
@@ -3135,6 +3136,9 @@ func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply,
 		output:     output,
 		structured: structured,
 	}
+	if s.hasReplyStopHook() {
+		s.comm.stopPendingCallID = callIDFromContext(ctx)
+	}
 	s.latestReport = s.comm
 	s.mu.Unlock()
 	lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
@@ -3892,7 +3896,12 @@ func assistantHistoryMessage(message llm.Message) llm.Message {
 // appendAssistantTurn appends an assistant turn that carries the full response
 // metadata (usage stats and response ID) alongside the message content.
 func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttemptMetadata) error {
+	return s.appendAssistantTurnWithAcceptance(resp, finalAttempt, false)
+}
+
+func (s *Session) appendAssistantTurnWithAcceptance(resp llm.Response, finalAttempt ModelAttemptMetadata, acceptedReply bool) error {
 	t := schema.Turn{
+		AcceptedReply:                   acceptedReply,
 		Kind:                            schema.TurnAssistant,
 		Message:                         assistantHistoryMessage(resp.Message),
 		Timestamp:                       s.sclock().Now().UTC(),
@@ -3912,6 +3921,9 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		RoundID:                         s.roundIDForModelCall(),
 	}
 	t.Authorship = s.roundTranscriptAuthorship()
+	if acceptedReply {
+		t.CausalKnown, t.Causal = true, s.activeCausalProvenance()
+	}
 	err := func() error {
 		s.attentionMu.Lock()
 		defer s.attentionMu.Unlock()

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -179,7 +180,12 @@ func transcriptOlderThan(path string, cutoff time.Time) bool {
 // delegates journal (delegate count), and the jobs scan (legacy delegate
 // failures), bounded the same way.
 func sessionRow(ctx context.Context, b bucket, paths Paths, meta schema.SessionMeta, delegates delegateCache) (SessionRow, error) {
-	doc, err := loadSessionRowTranscript(ctx, paths.TranscriptPath)
+	resultTool := "communicate"
+	if meta.Config.ResultToolName != "" {
+		resultTool = meta.Config.ResultToolName
+	}
+
+	doc, err := loadSessionRowTranscript(ctx, paths.TranscriptPath, resultTool)
 	if err != nil {
 		return SessionRow{}, fmt.Errorf("session %s: %w", meta.ID, err)
 	}
@@ -201,11 +207,6 @@ func sessionRow(ctx context.Context, b bucket, paths Paths, meta schema.SessionM
 		return SessionRow{}, fmt.Errorf("session %s: %w", meta.ID, err)
 	}
 	delegateCount := len(projectDoctorDelegates("", meta.ID, stable))
-
-	resultTool := "communicate"
-	if meta.Config.ResultToolName != "" {
-		resultTool = meta.Config.ResultToolName
-	}
 
 	return SessionRow{
 		SessionID:       paths.SessionID,
@@ -250,21 +251,42 @@ func sessionModels(headerModel, metaModel string) []string {
 // "none", not guessed at.
 func outcomeHint(doc transcriptDoc, resultTool string) string {
 	for _, e := range slices.Backward(doc.Entries) {
-		if e.Turn.Kind != schema.TurnAssistant {
-			continue
+		if e.Turn.AcceptedReply {
+			return "end_turn=true"
 		}
-		var resultCall *llm.ToolCallData
-		for _, part := range e.Turn.Message.Content {
-			if part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.Name == resultTool {
-				resultCall = part.ToolCall
+		call, decided := outcomeCall(e.Turn, resultTool)
+		if decided {
+			if call == nil {
+				return "none"
 			}
+			return formatOutcome(call.Arguments)
 		}
-		if resultCall == nil {
-			return "none"
-		}
-		return formatOutcome(resultCall.Arguments)
 	}
 	return "none"
+}
+
+// outcomeCall decides whether an assistant entry settles the hint. A turn
+// with only quiet result calls does not hide an earlier reply.
+func outcomeCall(turn schema.Turn, resultTool string) (call *llm.ToolCallData, decided bool) {
+	if turn.Kind != schema.TurnAssistant {
+		return nil, false
+	}
+	quiet := false
+	for _, part := range turn.Message.Content {
+		if part.Kind != llm.ContentToolCall || part.ToolCall == nil || part.ToolCall.Name != resultTool {
+			continue
+		}
+		if quietCommunicateArguments(part.ToolCall.Arguments) {
+			quiet = true
+		} else {
+			call = part.ToolCall
+		}
+	}
+	return call, call != nil || !quiet
+}
+
+func quietCommunicateArguments(raw json.RawMessage) bool {
+	return callArgsEndTurn(raw) && apptranscript.CommunicateArgumentsWithoutMessage(raw)
 }
 
 // formatOutcome renders a result-tool call's arguments as the outcome hint.
@@ -278,15 +300,14 @@ func outcomeHint(doc transcriptDoc, resultTool string) string {
 // schema happens to carry one; its absence is not an error.
 func formatOutcome(rawArgs json.RawMessage) string {
 	var args struct {
-		EndTurn bool `json:"end_turn"`
-		Output  struct {
+		Output struct {
 			Decision string `json:"decision"`
 		} `json:"output"`
 	}
 	if err := json.Unmarshal(rawArgs, &args); err != nil {
 		return "none"
 	}
-	hint := fmt.Sprintf("end_turn=%t", args.EndTurn)
+	hint := fmt.Sprintf("end_turn=%t", callArgsEndTurn(rawArgs))
 	if args.Output.Decision != "" {
 		hint += " decision=" + args.Output.Decision
 	}

@@ -2654,3 +2654,14 @@ func TestRenderMarkdown_PrevalOnlyRejectedCommunicateStillSurfaces(t *testing.T)
 		t.Errorf("PrevalOnly-rejected communicate must still surface raw bytes; got:\n%s", out)
 	}
 }
+
+func TestTranscriptRenderQuietCommunicate(t *testing.T) {
+	for _, args := range []string{`{}`, `{"message":" ","end_turn":true}`} {
+		var out strings.Builder
+		call := rawCommunicateCall("quiet", args)
+		writeResultToolMessage(&out, &call, true)
+		if out.Len() != 0 {
+			t.Errorf("args %s rendered %q", args, out.String())
+		}
+	}
+}

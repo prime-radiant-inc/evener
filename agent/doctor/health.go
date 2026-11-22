@@ -307,6 +307,10 @@ func longestIdenticalRun(occ []toolCallOccurrence, resultSeen, resultErrors map[
 func finalEndTurnIndex(entries []transcript.Entry, resultTool string) int {
 	last := -1
 	for i, e := range entries {
+		if e.Turn.AcceptedReply {
+			last = i
+			continue
+		}
 		if e.Turn.Kind != schema.TurnAssistant {
 			continue
 		}
@@ -314,7 +318,7 @@ func finalEndTurnIndex(entries []transcript.Entry, resultTool string) int {
 			if part.Kind != llm.ContentToolCall || part.ToolCall == nil || part.ToolCall.Name != resultTool {
 				continue
 			}
-			if callArgsEndTurn(part.ToolCall.Arguments) {
+			if callArgsEndTurn(part.ToolCall.Arguments) && !quietCommunicateArguments(part.ToolCall.Arguments) {
 				last = i
 			}
 		}
@@ -322,16 +326,13 @@ func finalEndTurnIndex(entries []transcript.Entry, resultTool string) int {
 	return last
 }
 
-// callArgsEndTurn reads end_turn off a result-tool call's arguments. A
-// missing or unparseable field reads as false — never a guessed true.
+// callArgsEndTurn uses communicate's default for a valid object and refuses
+// to infer a boundary from malformed arguments.
 func callArgsEndTurn(rawArgs json.RawMessage) bool {
-	var args struct {
+	args := &struct {
 		EndTurn bool `json:"end_turn"`
-	}
-	if err := json.Unmarshal(rawArgs, &args); err != nil {
-		return false
-	}
-	return args.EndTurn
+	}{EndTurn: true}
+	return json.Unmarshal(rawArgs, &args) == nil && args != nil && args.EndTurn
 }
 
 // RenderHealth renders a HealthResult as a compact human table.

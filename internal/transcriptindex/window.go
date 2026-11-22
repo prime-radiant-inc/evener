@@ -1007,6 +1007,20 @@ func (r *reader) item(record itemRecord, turnID string) (appwire.ThreadItem, err
 				}
 				continue
 			}
+			if completion := entry.Completion; entry.Kind == schema.TurnCompletion && completion != nil && completion.AcceptedCommunicateCallID != "" && item.Type == "agentMessage" {
+				if item.Observation != nil && item.CallID == completion.AcceptedCommunicateCallID {
+					item.Observation.TerminalAccepted = new(true)
+				}
+				for i := range echoes {
+					if echoes[i].CallID == completion.AcceptedCommunicateCallID {
+						echoes[i].Observation.TerminalAccepted = new(true)
+					}
+				}
+				if completion.ReplacementReply != nil {
+					item.Text = *completion.ReplacementReply
+				}
+				continue
+			}
 			if len(echoes) > 0 && (entry.Kind == schema.TurnToolResults || entry.Kind == schema.TurnTool) {
 				for i := range echoes {
 					if echoes[i].Observation.EndTurn {

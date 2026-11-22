@@ -139,6 +139,7 @@ type toolDeps struct {
 	// call carried no explicit structured output; an explicit JSON null is
 	// passed as json.RawMessage("null"), which is non-nil and therefore present.
 	setCommunicateTerminal func(ctx context.Context, message, reply, output string, structured any) bool
+	communicateStopPending func() bool
 
 	// runningJobIDs lists this session's own running (session-launched,
 	// non-nested) job ids. The communicate handler uses it to warn when
@@ -371,6 +372,7 @@ func newToolDeps(s *Session) *toolDeps {
 		hasFoldableHistory:     s.hasFoldableHistory,
 		skillInventory:         s.skillInventorySnapshot,
 		setCommunicateTerminal: s.acceptCommunicateTerminal,
+		communicateStopPending: s.hasReplyStopHook,
 		runningJobIDs:          func() []string { return sessionRunningWorkIDs(s) },
 		canQuietlyYield:        s.canQuietlyYield,
 		recordQuietYield:       s.recordQuietYield,

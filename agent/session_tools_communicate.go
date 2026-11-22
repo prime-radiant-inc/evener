@@ -216,6 +216,7 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 			// persistence. The result remains linked to this call by ToolCallID.
 			return tool.StateResult{Output: string(b), State: communicateEndState{
 				Accepted: &accepted, EndTurn: &endTurn,
+				BoundaryPending: accepted && endTurn && deps.communicateStopPending != nil && deps.communicateStopPending(),
 			}}, nil
 		},
 	}); err != nil {
@@ -326,9 +327,10 @@ func unmarshalCommunicateArguments(raw []byte, args *map[string]any) error {
 
 // communicateEndState records the tool verdict independently of display output.
 type communicateEndState struct {
-	Accepted *bool `json:"communicate_accepted,omitempty"`
-	EndTurn  *bool `json:"communicate_end_turn,omitempty"`
-	Quiet    *bool `json:"communicate_quiet,omitempty"`
+	Accepted        *bool `json:"communicate_accepted,omitempty"`
+	EndTurn         *bool `json:"communicate_end_turn,omitempty"`
+	Quiet           *bool `json:"communicate_quiet,omitempty"`
+	BoundaryPending bool  `json:"communicate_boundary_pending,omitempty"`
 }
 
 // delegateUpdateDelivery is where a delegate's update stands when its

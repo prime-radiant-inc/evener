@@ -12,9 +12,12 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/llm"
 )
 
@@ -940,4 +943,200 @@ func TestHubWatchCompletionKeepsTerminalOwnershipPastRetryWindow(t *testing.T) {
 	if deliveries != 1 {
 		t.Fatalf("completion deliveries=%d, want 1", deliveries)
 	}
+}
+
+func TestHubCompletionFromRecordedRootReplies(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		steps          []func(llm.Request) llm.Response
+		legacyReason   string
+		stopResult     string
+		wantTerminal   string
+		delegates, job bool
+		wantMessages   int
+		wantCompletion bool
+	}{
+		{name: "quiet with three running delegates", delegates: true, steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response { return quietYieldResponse("quiet", `{}`) },
+		}},
+		{name: "explicit reply with running job", job: true, wantMessages: 1, wantCompletion: true, wantTerminal: "Server up", steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "shell", Name: "shell", Arguments: json.RawMessage(`{"command":"serve","mode":"background"}`)})
+			},
+			func(llm.Request) llm.Response { return quietYieldResponse("reply", `{"message":"Server up"}`) },
+		}},
+		{name: "bare-text reply", wantMessages: 1, wantCompletion: true, wantTerminal: "Server up", steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response { return bareTextResponse("Server up", llm.FinishReasonStop) },
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("Unexpected retry") },
+		}},
+		{name: "bare-text Stop replacement", wantMessages: 2, wantCompletion: true, wantTerminal: "Replacement", stopResult: `{"continue":false,"stopReason":"Replacement"}`, steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response { return bareTextResponse("Vetoed draft", llm.FinishReasonStop) },
+		}},
+		{name: "historical waiting_on_work", legacyReason: "waiting_on_work", wantMessages: 1},
+		{name: "historical needs_response", legacyReason: "needs_response", wantMessages: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newHeldJobEnvironment(t.TempDir())
+			watched := newSession(t, withEnv(env), withSteps(tc.steps...), withStateDir(t.TempDir()))
+			t.Cleanup(env.releaseJob)
+			if tc.delegates {
+				for i := 0; i < 3; i++ {
+					child := newSession(t)
+					id := fmt.Sprintf("child-%d", i)
+					watched.subagents.track(&subagent{id: id, sess: child, running: true})
+					t.Cleanup(func() { watched.subagents.remove(id) })
+				}
+			}
+			open := func() *transcriptindex.Index {
+				t.Helper()
+				idx, err := transcriptindex.Open(watched.TranscriptPath(), t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if err := idx.Close(); err != nil {
+						t.Error(err)
+					}
+				})
+				return idx
+			}
+			live := open()
+			if tc.stopResult != "" {
+				installCommunicateStopHook(watched, func() string { return tc.stopResult })
+			}
+			if tc.legacyReason != "" {
+				if err := watched.deliverCommunicate(events.CommunicateData{CallID: "legacy", EndTurn: true, Message: "Historical reply", EndReason: tc.legacyReason}); err != nil {
+					t.Fatal(err)
+				}
+				state := json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true}`)
+				watched.appendTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "legacy", Name: "communicate", ToolState: state}}}})
+			} else {
+				reply, err := watched.ProcessInput(tripwireCtx(t), "Question", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tc.delegates && (!watched.quietlyYielded() || reply != "") {
+					t.Fatalf("quiet reply=%q, yielded=%v", reply, watched.quietlyYielded())
+				}
+				if tc.job && len(sessionRunningJobIDs(watched)) != 1 {
+					t.Fatal("background job not running when reply was delivered")
+				}
+			}
+			const ref, instance, generation = "local:worker", "worker-instance", "7@worker"
+			for _, read := range []struct {
+				idx    *transcriptindex.Index
+				replay bool
+			}{{live, false}, {open(), true}} {
+				manager := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+				watch, err := manager.jobManager.configureHubWatch(ref, instance, generation, "local:manager", []string{"communicate"}, true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var window transcriptindex.Window
+				if err := read.idx.ReadObserved(time.Now, func(s *transcriptindex.Snapshot, _ time.Time) error { window, err = s.Latest(40); return err }); err != nil {
+					t.Fatal(err)
+				}
+				var turns []appwire.Turn
+				var accepted []string
+				for _, candidate := range window.Candidates {
+					item := candidate.Item
+					if item.Type != "agentMessage" {
+						continue
+					}
+					if obs := item.Observation; obs != nil && obs.TerminalAccepted != nil && *obs.TerminalAccepted {
+						accepted = append(accepted, item.Text)
+						if tc.legacyReason != "" && obs.EndReason != tc.legacyReason {
+							t.Errorf("replay=%t: end reason=%q, want %q", read.replay, obs.EndReason, tc.legacyReason)
+						}
+					}
+					turn := candidate.Turn
+					turn.Items = []appwire.ThreadItem{item}
+					turns = append(turns, turn)
+					if !read.replay && item.Observation != nil {
+						obs := *item.Observation
+						obs.Ref, obs.InstanceID, obs.GenerationID, obs.EntryID = ref, instance, generation, item.ID
+						if err := manager.jobManager.onHubObservation(watch.WatchID, appwire.SessionWatchUpdate{Metadata: obs, Event: "communicate"}); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				if len(turns) != tc.wantMessages {
+					t.Errorf("replay=%t: agent messages=%d, want %d", read.replay, len(turns), tc.wantMessages)
+				}
+				wantTerminal := tc.wantTerminal
+				if tc.legacyReason != "" {
+					wantTerminal = "Historical reply"
+				}
+				if wantTerminal != "" && (len(accepted) != 1 || accepted[0] != wantTerminal) || wantTerminal == "" && len(accepted) != 0 {
+					t.Errorf("replay=%t: accepted=%q, want %q", read.replay, accepted, wantTerminal)
+				}
+				if read.replay {
+					snapshot := &appwire.ThreadReadResponse{Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: ref, InstanceID: instance}, Turns: turns}, BootGeneration: generation, LatestExecutionTurnID: window.LatestExecutionTurnID}
+					if err := manager.jobManager.onHubObservation(watch.WatchID, appwire.SessionWatchUpdate{Snapshot: snapshot}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if active := managerWatchActive(manager.jobManager, watch.WatchID); active == tc.wantCompletion {
+					t.Errorf("replay=%t: active=%t, want completion=%t", read.replay, active, tc.wantCompletion)
+				}
+			}
+		})
+	}
+}
+
+func TestHubCompletionWaitsForExplicitReplyStopHook(t *testing.T) {
+	var readMidTurn func()
+	watched := newSession(t, withSteps(
+		func(llm.Request) llm.Response { return quietYieldResponse("first", `{"message":"First winner"}`) },
+		func(llm.Request) llm.Response {
+			readMidTurn()
+			return quietYieldResponse("second", `{"message":"Second call"}`)
+		},
+	), withStateDir(t.TempDir()))
+	idx, err := transcriptindex.Open(watched.TranscriptPath(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := idx.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	check := func(want bool) {
+		t.Helper()
+		if err := idx.ReadObserved(time.Now, func(s *transcriptindex.Snapshot, _ time.Time) error {
+			window, err := s.Latest(40)
+			if err != nil {
+				return err
+			}
+			for _, candidate := range window.Candidates {
+				if candidate.Item.CallID != "first" || candidate.Item.Type != "agentMessage" {
+					continue
+				}
+				obs := candidate.Item.Observation
+				if got := obs != nil && obs.TerminalAccepted != nil && *obs.TerminalAccepted; got != want {
+					t.Errorf("first call terminal acceptance=%t, want %t", got, want)
+				}
+				return nil
+			}
+			return errors.New("first communicate card not found")
+		}); err != nil {
+			t.Error(err)
+		}
+	}
+	var sawBlock bool
+	readMidTurn = func() { sawBlock = true; check(false) }
+	stops := 0
+	installCommunicateStopHook(watched, func() string {
+		stops++
+		if stops == 1 {
+			return `{"decision":"block","reason":"Continue"}`
+		}
+		return `{}`
+	})
+	got, err := watched.ProcessInput(tripwireCtx(t), "Question", nil)
+	if err != nil || !sawBlock || got != "First winner" {
+		t.Fatalf("reply=%q continued=%t err=%v", got, sawBlock, err)
+	}
+	check(true)
 }

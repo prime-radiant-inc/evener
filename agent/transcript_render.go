@@ -1735,40 +1735,27 @@ func writeUnpairedResults(b *strings.Builder, idx *resultIndex, opt renderOpts) 
 // arguments string if the message field is absent.
 func writeResultToolMessage(b *strings.Builder, tc *llm.ToolCallData, healed bool) {
 	args := json.RawMessage(tc.SentArgumentsBytes())
-	if len(args) > 0 {
-		var m map[string]any
-		if err := json.Unmarshal(args, &m); err == nil {
-			if msg, ok := m["message"]; ok {
-				fmt.Fprintf(b, "%v\n", msg)
-				return
-			}
-		}
-		// For a healed communicate (result is "ok"), the raw bytes are malformed
-		// but were repaired and delivered live. Repair them here to recover the
-		// message — matching what live delivered — instead of showing the raw
-		// malformed bytes. For a rejected communicate (result is "error") or a
-		// pending call (no result), the raw fallback is correct: the user sees
-		// the raw bytes the model sent.
-		if healed && tc.RawArguments != "" {
-			repaired, _ := repair.RepairJSON([]byte(tc.RawArguments))
-			// Replay the communicate-specific normalization (promote string
-			// output to object, copy output.message into message) so a healed
-			// call with a string-valued output renders the same message live
-			// delivered — matching the apptranscript projection path.
-			normalized := apptranscript.NormalizeCommunicateArguments(repaired)
-			if err := json.Unmarshal(normalized, &m); err == nil {
-				if msg, ok := m["message"]; ok {
-					fmt.Fprintf(b, "%v\n", msg)
-					return
-				}
-			}
-		}
-		// No "message" key or unparseable: render the raw arguments.
-		// Bound the raw fallback so one pathological line cannot dominate the
-		// card, mirroring the summary path's resultLineMaxRunes limit.
-		b.WriteString(runetrim.OneLine(truncRunes(string(args), resultLineMaxRunes)))
-		b.WriteString("\n")
+	if len(args) == 0 {
+		return
 	}
+	if msg := apptranscript.CommunicateMessageFromArguments(args); msg != "" {
+		fmt.Fprintln(b, msg)
+		return
+	}
+	if apptranscript.CommunicateArgumentsWithoutMessage(args) {
+		return
+	}
+	// Reconstruct a healed call's delivered message; only malformed bytes
+	// that still carry no recoverable message fall back to the raw excerpt.
+	if healed && tc.RawArguments != "" {
+		repaired, _ := repair.RepairJSON([]byte(tc.RawArguments))
+		if msg := apptranscript.CommunicateMessageFromArguments(apptranscript.NormalizeCommunicateArguments(repaired)); msg != "" {
+			fmt.Fprintln(b, msg)
+			return
+		}
+	}
+	b.WriteString(runetrim.OneLine(truncRunes(string(args), resultLineMaxRunes)))
+	b.WriteByte('\n')
 }
 
 const (

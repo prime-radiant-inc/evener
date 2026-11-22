@@ -45,12 +45,49 @@ func CommunicateItem(turnID string, entryIndex int, entry schema.Turn) (appwire.
 			CausalKnown: entry.CausalKnown, Causal: provenance.Clone(entry.Causal),
 		},
 	}
+	if entry.AcceptedReply {
+		item.Observation.TerminalAccepted = new(true)
+	}
 	if p := entry.ConversationProvenance; p != nil {
 		item.ConversationProvenance = &appwire.ConversationOutputProvenance{Version: p.Version, InstanceID: p.InstanceID,
 			RunGeneration: p.RunGeneration, RequestID: p.RequestID, FrontierID: p.FrontierID, SourceItemID: item.ID}
 	}
 	item.StartedAt = entryStartedAt(entry)
 	return item, true
+}
+
+// IsQuietCommunicate reports typed evidence of a successful quiet yield.
+func IsQuietCommunicate(result *llm.ToolResultData) bool {
+	return result != nil && !result.IsError && IsQuietCommunicateState(result.ToolState)
+}
+
+// IsQuietCommunicateState decodes the typed result state shared by replay
+// and the live tool-call end event.
+func IsQuietCommunicateState(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var state struct {
+		Quiet bool `json:"communicate_quiet"`
+	}
+	return json.Unmarshal(raw, &state) == nil && state.Quiet
+}
+
+func markAcceptedAssistantReply(items []appwire.ThreadItem, turnID string, entry schema.Turn) {
+	if entry.Kind != schema.TurnAssistant || !entry.AcceptedReply {
+		return
+	}
+	// A response can contain multiple text runs. They remain separate cards,
+	// but only the last visible message carries the terminal observation.
+	for i := len(items) - 1; i >= 0; i-- {
+		if items[i].Type == "agentMessage" && strings.TrimSpace(items[i].Text) != "" {
+			items[i].Observation = &appwire.SessionObservationMetadata{
+				TurnID: turnID, EndTurn: true, TerminalAccepted: new(true),
+				CausalKnown: entry.CausalKnown, Causal: provenance.Clone(entry.Causal),
+			}
+			return
+		}
+	}
 }
 
 // CommunicateTerminalAccepted reads the result of exactly this communicate
@@ -65,14 +102,18 @@ func CommunicateTerminalAccepted(entry schema.Turn, callID string) *bool {
 			continue
 		}
 		result := part.ToolResult
-		if result.ToolCallID != callID || result.IsError {
+		if result.ToolCallID != callID || result.IsError || IsQuietCommunicate(result) {
 			continue
 		}
 		var typedState struct {
-			Accepted *bool `json:"communicate_accepted"`
-			EndTurn  *bool `json:"communicate_end_turn"`
+			Accepted        *bool `json:"communicate_accepted"`
+			EndTurn         *bool `json:"communicate_end_turn"`
+			BoundaryPending bool  `json:"communicate_boundary_pending"`
 		}
 		if json.Unmarshal(result.ToolState, &typedState) == nil && typedState.Accepted != nil && typedState.EndTurn != nil && *typedState.EndTurn {
+			if typedState.BoundaryPending {
+				return nil // Wait for the execution completion record, not tool arbitration.
+			}
 			return typedState.Accepted
 		}
 		var encoded []byte

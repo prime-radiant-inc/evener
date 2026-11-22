@@ -996,3 +996,40 @@ func TestListSessions_OutcomeBeyondFirstTailWindow(t *testing.T) {
 		t.Errorf("Outcome = %q, want the assistant turn beyond the first window's end_turn=true decision=approve", got)
 	}
 }
+
+func TestRootBareTextFallbackOutcomeHint(t *testing.T) {
+	entries := finalReplyThenQuietEntries()
+	if got := outcomeHint(transcriptDoc{Entries: entries}, "communicate"); got != "end_turn=true decision=approve" {
+		t.Errorf("outcome after quiet yield = %q", got)
+	}
+	entries[0] = acceptedBareTextEntry(t)
+	if got := outcomeHint(transcriptDoc{Entries: entries[:1]}, "communicate"); got != "end_turn=true" {
+		t.Errorf("standalone bare-text outcome = %q", got)
+	}
+	if got := outcomeHint(transcriptDoc{Entries: entries}, "communicate"); got != "end_turn=true" {
+		t.Errorf("bare-text outcome = %q", got)
+	}
+}
+
+func TestRootBareTextFallbackOutcomeBeyondTrailingQuietTail(t *testing.T) {
+	origTail := sessionRowTranscriptTailBytes
+	sessionRowTranscriptTailBytes = 8 << 10
+	t.Cleanup(func() { sessionRowTranscriptTailBytes = origTail })
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid := newSessionsTestSID(t)
+	entries := finalReplyThenQuietEntries()
+	turns := []schema.Turn{entries[0].Turn}
+	for range 3 {
+		turns = append(turns, schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("p", 4096))))
+	}
+	turns = append(turns, entries[1].Turn)
+	writeSessionsFixtureSession(t, bucket, sid, transcript.Header{CreatedAt: time.Unix(1, 0).UTC(), Model: "m"}, turns, schema.SessionMeta{Model: "m", TurnCount: len(turns)}, nil, time.Unix(2, 0).UTC())
+	res, err := ListSessions(context.Background(), base, SessionsOpts{})
+	if err != nil || len(res.Sessions) != 1 {
+		t.Fatalf("sessions=%+v err=%v", res, err)
+	}
+	if got := res.Sessions[0].Outcome; got != "end_turn=true decision=approve" {
+		t.Fatalf("outcome=%q", got)
+	}
+}

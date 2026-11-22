@@ -57,18 +57,15 @@ func loadRecordedTranscriptContext(ctx context.Context, path string) (transcript
 }
 
 // loadSessionRowTranscript reads only what a sessions row consumes: the
-// header, and the last assistant turn's entry — the outcome hint's input,
-// which reports "none" only when the transcript holds no complete assistant
-// record. A transcript at or under sessionRowTranscriptTailBytes goes through
-// the full scan unchanged, so a small transcript keeps its exact summary and
-// error shape. A longer transcript is read in a tail window that doubles
-// until it holds an assistant record or reaches the transcript's start, so
-// the full scan's cost returns only for a transcript with no assistant record
-// to find. In every window, compaction fold copies are skipped and an
-// unterminated final tail is tolerated, exactly as the full scan does; a
+// header, and the last entry that can decide the outcome hint. A quiet
+// yield does not stop the search for the reply it followed. A transcript at
+// or under sessionRowTranscriptTailBytes goes through the full scan. A longer
+// transcript is read in a tail window that doubles until it holds an outcome
+// entry or reaches the start. The window skips compaction fold copies and
+// tolerates a torn final line, like the full scan. A
 // corrupt complete line inside the window still fails the read, so the
 // unreadable-session contract holds within the window.
-func loadSessionRowTranscript(ctx context.Context, path string) (transcriptDoc, error) {
+func loadSessionRowTranscript(ctx context.Context, path, resultTool string) (transcriptDoc, error) {
 	file, err := openDoctorTranscriptFile(path)
 	if err != nil {
 		return transcriptDoc{}, fmt.Errorf("read transcript %s: %w", path, err)
@@ -129,10 +126,8 @@ func loadSessionRowTranscript(ctx context.Context, path string) (transcriptDoc, 
 			if entry.Turn.OriginalOrdinal != nil {
 				continue // compaction fold copy: the original appears earlier
 			}
-			// The row's only entries consumer is the outcome hint, which
-			// reads the last assistant turn; retaining just that entry
-			// keeps the window's decoded cost from piling up per session.
-			if entry.Turn.Kind == schema.TurnAssistant {
+			// Retain only the most recent entry that can decide the outcome.
+			if _, decided := outcomeCall(entry.Turn, resultTool); entry.Turn.AcceptedReply || decided {
 				doc.Entries = []transcript.Entry{entry}
 			}
 		}
@@ -140,7 +135,7 @@ func loadSessionRowTranscript(ctx context.Context, path string) (transcriptDoc, 
 			return doc, nil
 		}
 	}
-	// No window reached an assistant record: read the whole transcript
+	// No window reached an outcome entry: read the whole transcript
 	// through the full scan so the outcome is the true one, never a guess
 	// from a window that ran out.
 	return loadRecordedTranscriptContext(ctx, path)

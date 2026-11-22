@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/provider"
@@ -1812,7 +1813,18 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			skipHistory = false
 		}
 
-		if abortErr := errors.Join(s.emitAssistantResponse(ctx, resp, modelResp, txt, skipHistory, attempt), sessionLifecycleFault(ctx, "emit_assistant")); abortErr != nil {
+		bareReply := len(calls) == 0 && !s.reportsToParent() && kind == EntryUserInput &&
+			s.usesDefaultCommunicateOutputEnvelope() && resp.Finish.Reason == llm.FinishReasonStop &&
+			!noContent && strings.TrimSpace(lastText) != "" && !s.communicated()
+		var bareStop hooks.StopResult
+		if bareReply {
+			// Decide acceptance before the append-only assistant record is written.
+			// Apply hook context after the response, so the next request still sees
+			// the draft followed by the hook's instructions.
+			bareStop = s.runReplyStopHook(ctx, lastText)
+		}
+		acceptedBareReply := bareReply && !bareStop.Blocked && !bareStop.Stopped
+		if abortErr := errors.Join(s.emitAssistantResponse(ctx, resp, modelResp, txt, skipHistory, attempt, acceptedBareReply), sessionLifecycleFault(ctx, "emit_assistant")); abortErr != nil {
 			return "", progressed, abortErr
 		}
 		if googleTerminalSettlement {
@@ -1857,6 +1869,13 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			calls[i].Name = s.canonicalToolName(calls[i].Name)
 		}
 
+		if bareReply {
+			done, reply, err := s.deliverBareReply(ctx, lastText, bareStop)
+			if done || err != nil {
+				return reply, progressed, err
+			}
+			continue
+		}
 		if len(calls) == 0 {
 			route := routeNoToolCalls(kind, s.hasAcceptedTerminalCommunicate())
 			if route == finishIdle {

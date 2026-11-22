@@ -681,7 +681,6 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 	quiet := s.comm.quietEnd && !delivered
 	text = s.comm.reply
 	s.mu.Unlock()
-	stopHookActive := s.stopHookActive.Load()
 	if !delivered && !quiet && !askedThisRound {
 		return false, "", nil
 	}
@@ -691,22 +690,9 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 	} else if !quiet && s.hookRunner != nil {
 		// Stop hooks (communicate-only boundary; not consulted at an ask
 		// boundary — spec §5.1/§5.5).
-		hi := s.hookInput(plugin.HookStop)
-		hi.Reason = "communicate.end_turn"
-		// stop_hook_active tells a Stop hook whether this dispatch follows a
-		// block in the same turn, so a hook that blocks to ask for more work can
-		// tell the continuation apart and avoid blocking forever. The reply text
-		// is last_assistant_message: it is what the turn is about to deliver.
-		hi.StopHookActive = &stopHookActive
-		hi.LastAssistantMessage = text
-		stopResult := s.hookRunner.RunStop(s.apiLogContext(ctx), hi)
-		for _, m := range stopResult.ModelContext {
-			if err := s.deliverHookContext(m); err != nil {
-				return false, "", err
-			}
-		}
-		for _, m := range stopResult.UserMessages {
-			s.deliverHookUserMessage(m)
+		stopResult := s.runReplyStopHook(ctx, text)
+		if err := s.deliverReplyStopHookMessages(stopResult); err != nil {
+			return false, "", err
 		}
 		// continue:false on Stop ends the turn: the hook's stopReason becomes the
 		// text this boundary delivers, replacing a reply the hook is vetoing. A
@@ -726,19 +712,7 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 			s.mu.Lock()
 			s.stopHookReplacedReply = true
 			s.mu.Unlock()
-			// A stop ends the turn exactly as the ordinary boundary does, so it
-			// must perform the same terminal-communicate bookkeeping: in a
-			// TurnEndsProcess session the latch is what lets the drain discard
-			// watch frames the model declined to wait for and keeps the process
-			// from waiting on undeliverable watch-send residue (#329, #865).
-			if delivered && s.cfg.TurnEndsProcess {
-				s.acceptTerminalCommunicate()
-			}
-			s.finishProcessingAtBoundary(ctx, boundaryState)
-			if hook := s.cfg.testOnly.afterCommunicateBoundary; hook != nil {
-				hook(s)
-			}
-			return true, text, nil
+			return s.finishReplyBoundary(ctx, boundaryState, delivered, text, &text)
 		}
 		if stopResult.Blocked {
 			// Don't finish — keep looping. The next Stop dispatch in this turn
@@ -746,6 +720,18 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 			s.stopHookActive.Store(true)
 			return false, "", nil
 		}
+	}
+	return s.finishReplyBoundary(ctx, boundaryState, delivered, text, nil)
+}
+
+func (s *Session) finishReplyBoundary(ctx context.Context, state SessionState, delivered bool, text string, replacement *string) (bool, string, error) {
+	if delivered {
+		s.mu.Lock()
+		if id := s.comm.stopPendingCallID; id != "" {
+			s.execution.acceptedCommunicateCallID = id
+			s.execution.replacementReply = replacement
+		}
+		s.mu.Unlock()
 	}
 	if delivered && s.cfg.TurnEndsProcess {
 		// The model has explicitly ended the turn that ends the process. Record
@@ -755,11 +741,66 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 		// on a later notification turn (#865).
 		s.acceptTerminalCommunicate()
 	}
-	s.finishProcessingAtBoundary(ctx, boundaryState)
+	s.finishProcessingAtBoundary(ctx, state)
 	if hook := s.cfg.testOnly.afterCommunicateBoundary; hook != nil {
 		hook(s)
 	}
 	return true, text, nil
+}
+
+func (s *Session) usesDefaultCommunicateOutputEnvelope() bool {
+	rt := s.reg.Get(s.resultToolName())
+	return rt != nil && !rt.CommunicateOutputBound && usesDefaultCommunicateOutputEnvelope(rt.Definition)
+}
+
+func (s *Session) hasReplyStopHook() bool {
+	return s.hookRunner != nil && s.hookRunner.Has(plugin.HookStop)
+}
+
+func (s *Session) runReplyStopHook(ctx context.Context, text string) hooks.StopResult {
+	if !s.hasReplyStopHook() {
+		return hooks.StopResult{}
+	}
+	active := s.stopHookActive.Load()
+	hi := s.hookInput(plugin.HookStop)
+	hi.Reason = "communicate.end_turn"
+	// A hook that blocked can distinguish a continuation from its first chance.
+	hi.StopHookActive = &active
+	hi.LastAssistantMessage = text
+	return s.hookRunner.RunStop(s.apiLogContext(ctx), hi)
+}
+
+func (s *Session) deliverReplyStopHookMessages(result hooks.StopResult) error {
+	for _, m := range result.ModelContext {
+		if err := s.deliverHookContext(m); err != nil {
+			return err
+		}
+	}
+	for _, m := range result.UserMessages {
+		s.deliverHookUserMessage(m)
+	}
+	return nil
+}
+
+// deliverBareReply settles a tool-free root reply. Until the Stop decision
+// allows or replaces it, the draft is not a captured reply.
+func (s *Session) deliverBareReply(ctx context.Context, text string, result hooks.StopResult) (bool, string, error) {
+	if err := s.deliverReplyStopHookMessages(result); err != nil {
+		return false, "", err
+	}
+	if result.Stopped {
+		text = s.hookStopText(result.StopReason, "Stop hook stopped this turn")
+		if err := s.deliverCommunicateWithAcceptance(events.CommunicateData{EndTurn: true, Message: text}, true); err != nil {
+			return false, "", err
+		}
+	} else if result.Blocked {
+		s.stopHookActive.Store(true)
+		return false, "", nil
+	}
+	s.mu.Lock()
+	s.comm = communicateResult{called: true, text: text, reply: text}
+	s.mu.Unlock()
+	return s.finishReplyBoundary(ctx, SessionIdle, true, text, nil)
 }
 
 // replaceAcceptedReply makes the hook's text this turn's reply on every

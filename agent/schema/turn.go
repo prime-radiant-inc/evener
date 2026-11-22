@@ -179,6 +179,9 @@ type TurnCompletionInfo struct {
 	Status      TurnCompletionStatus `json:"status"`
 	CompletedAt time.Time            `json:"completed_at"`
 	DurationMS  int64                `json:"duration_ms"`
+	// Acceptance of an explicit reply deferred until Stop hooks settled.
+	AcceptedCommunicateCallID string  `json:"accepted_communicate_call_id,omitempty"`
+	ReplacementReply          *string `json:"replacement_reply,omitempty"`
 }
 
 // CommunicateInfo is the persisted form of one delivered communicate message.
@@ -447,7 +450,10 @@ type AskResolution struct {
 // projected, so turns carrying them are not byte-identical by design;
 // they stay sorted here too so a future key lands in one obvious place.
 type Turn struct {
-	Actor SessionActor `json:"actor,omitzero"`
+	// AcceptedReply identifies bare assistant prose, or a Stop hook replacement,
+	// that settled the execution as a visible final reply.
+	AcceptedReply bool         `json:"accepted_reply,omitempty"`
+	Actor         SessionActor `json:"actor,omitzero"`
 	// AnswerToTurnIDs names the pending question executions resolved by this
 	// accepted input. Missing evidence never establishes continuation.
 	AnswerToTurnIDs []string       `json:"answer_to_turn_ids,omitempty"`

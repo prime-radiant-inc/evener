@@ -844,3 +844,31 @@ func TestTranscriptHealth_UnifiesProviderWireAndCanonicalToolNames(t *testing.T)
 		t.Errorf("custom grep_search run matched canonical grep = (%t, %v), want (false, nil)", matched, err)
 	}
 }
+
+func finalReplyThenQuietEntries() []transcript.Entry {
+	return []transcript.Entry{
+		{Turn: schema.NewTurn(schema.TurnAssistant, llm.Message{Content: []llm.ContentPart{healthToolCall("answer", "communicate", `{"message":"Server up","end_turn":true,"output":{"decision":"approve"}}`)}})},
+		{Turn: schema.NewTurn(schema.TurnAssistant, llm.Message{Content: []llm.ContentPart{healthToolCall("quiet", "communicate", `{}`), healthToolCall("quiet-explicit", "communicate", `{"end_turn":true}`)}})},
+	}
+}
+
+func acceptedBareTextEntry(t *testing.T) transcript.Entry {
+	t.Helper()
+	var turn schema.Turn
+	if err := json.Unmarshal([]byte(`{"accepted_reply":true}`), &turn); err != nil {
+		t.Fatal(err)
+	}
+	turn.Kind, turn.Message = schema.TurnAssistant, llm.Assistant("Root answer")
+	return transcript.Entry{Turn: turn}
+}
+
+func TestRootBareTextFallbackFinalEndTurnIndex(t *testing.T) {
+	entries := finalReplyThenQuietEntries()
+	if got := finalEndTurnIndex(entries, "communicate"); got != 0 {
+		t.Errorf("final index after quiet yield = %d, want 0", got)
+	}
+	entries[0] = acceptedBareTextEntry(t)
+	if got := finalEndTurnIndex(entries, "communicate"); got != 0 {
+		t.Errorf("bare-text final index = %d, want 0", got)
+	}
+}

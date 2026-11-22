@@ -497,6 +497,11 @@ func (b *builder) applyIdentity(ordinal uint64, offset int64, length uint32, ent
 		}
 	}
 	if entry.Kind == schema.TurnCompletion {
+		if completion := entry.Completion; completion != nil && completion.AcceptedCommunicateCallID != "" {
+			if err := b.linkCommunicationEvidence(slot, completion.AcceptedCommunicateCallID, c); err != nil {
+				return err
+			}
+		}
 		delete(b.open, turnID)
 		if err := b.interruptAwaitedCalls(summary, c); err != nil {
 			return err
@@ -790,37 +795,35 @@ func (b *builder) completeCommunications(slot uint64, entry *schema.Turn, c cont
 		if apptranscript.CommunicateTerminalAccepted(*entry, id) == nil {
 			continue
 		}
-		const batch = 128
-		for end := b.x.items.n; end > 0; {
-			start := end - min(end, batch)
-			buf, err := b.x.items.read(start, int(end-start))
+		if err := b.linkCommunicationEvidence(slot, id, c); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *builder) linkCommunicationEvidence(slot uint64, id string, c contributor) error {
+	const batch = 128
+	for end := b.x.items.n; end > 0; {
+		start := end - min(end, batch)
+		buf, err := b.x.items.read(start, int(end-start))
+		if err != nil {
+			return err
+		}
+		for position := end; position > start; position-- {
+			record := decodeItem(buf[(position-1-start)*itemRecordSize:])
+			if uint64(record.Turn) != slot || record.Call.Len == 0 || record.Opener.Ordinal >= c.Ordinal {
+				continue
+			}
+			matches, err := b.communicationMatches(record, id)
 			if err != nil {
 				return err
 			}
-			found := false
-			for position := end; position > start; position-- {
-				record := decodeItem(buf[(position-1-start)*itemRecordSize:])
-				if uint64(record.Turn) != slot || record.Call.Len == 0 || record.Opener.Ordinal >= c.Ordinal {
-					continue
-				}
-				matches, err := b.communicationMatches(record, id)
-				if err != nil {
-					return err
-				}
-				if !matches {
-					continue
-				}
-				if err := b.addContributor(position-1, c, c.Ordinal+1); err != nil {
-					return err
-				}
-				found = true
-				break
+			if matches {
+				return b.addContributor(position-1, c, c.Ordinal+1)
 			}
-			if found {
-				break
-			}
-			end = start
 		}
+		end = start
 	}
 	return nil
 }
