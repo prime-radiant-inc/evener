@@ -51,4 +51,22 @@ describe("copyText", () => {
     await copyText("ABCD-1234");
     expect(document.querySelector("textarea")).toBeNull();
   });
+
+  test("the execCommand fallback restores focus to the element that had it", async () => {
+    Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+    document.execCommand = vi.fn().mockReturnValue(true);
+    const button = document.createElement("button");
+    document.body.appendChild(button);
+    try {
+      button.focus();
+      expect(document.activeElement).toBe(button);
+
+      const ok = await copyText("ABCD-1234");
+
+      expect(ok).toBe(true);
+      expect(document.activeElement).toBe(button);
+    } finally {
+      button.remove();
+    }
+  });
 });

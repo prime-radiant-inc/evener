@@ -3,6 +3,10 @@
 // when that API is unavailable or throwing (e.g. a non-secure-context remote
 // hub, where navigator.clipboard is undefined entirely).
 function copyViaExecCommand(text: string): boolean {
+  // Focusing the textarea moves focus out of a dialog; an Escape afterwards
+  // would no longer reach the dialog's handler. Remember what had focus and
+  // give it back once the textarea is gone.
+  const previousFocus = document.activeElement;
   const textarea = document.createElement("textarea");
   textarea.value = text;
   // Off-screen but still focusable/selectable - execCommand("copy") only
@@ -19,6 +23,9 @@ function copyViaExecCommand(text: string): boolean {
     ok = false;
   } finally {
     document.body.removeChild(textarea);
+    if (previousFocus instanceof HTMLElement && previousFocus.isConnected) {
+      previousFocus.focus({ preventScroll: true });
+    }
   }
   return ok;
 }
