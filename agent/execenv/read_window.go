@@ -287,15 +287,12 @@ func renderPreparedRows(rows []preparedRow, unnumbered bool, maxBytes int, tailK
 		if displayPath != "" {
 			maxTotal := readMaxTotalBytes()
 			footerCap := readFooterCap(headerReserve)
-			// The footer names the shown byte count, so size the truncated prefix
-			// twice: the second pass sizes it from the footer that names it, and
-			// that footer never outgrows the one that sized the prefix.
-			shown := 0
-			for range 2 {
-				footer := formatSingleLineOverflowFooter(r.num, r.rawLineLen, shown, displayPath, unnumbered, footerCap)
-				effectiveMax = min(maxBytes, max(0, maxTotal-headerReserve-len(footer)))
-				shown = len(truncateLineUTF8Bytes(raw, max(0, effectiveMax-rowPrefixLen(r.num, unnumbered)-1)))
-			}
+			// Size the prefix against the longest footer any shown count can
+			// produce: the zero-prefix footer plus the extra decimal digits
+			// maxBytes allows, or footerCap when they would overflow it.
+			baseFooter := formatSingleLineOverflowFooter(r.num, r.rawLineLen, 0, displayPath, unnumbered, footerCap)
+			footerLen := min(footerCap, len(baseFooter)+digitCount(maxBytes+1)-1)
+			effectiveMax = min(maxBytes, max(0, maxTotal-headerReserve-footerLen))
 		}
 		budget := max(0, effectiveMax-rowPrefixLen(r.num, unnumbered)-1)
 		r.content = truncateLineUTF8Bytes(raw, budget)
