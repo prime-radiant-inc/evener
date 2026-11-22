@@ -10,6 +10,80 @@ import (
 	"time"
 )
 
+// TestExchangeCopilotTokenUsesPiCompatibilityHeaders pins the live-proven
+// exchange: GET /copilot_internal/v2/token with the GitHub token as bearer and
+// the public Pi/VS Code compatibility headers, returning the session token and
+// its absolute unix-second expiry.
+func TestExchangeCopilotTokenUsesPiCompatibilityHeaders(t *testing.T) {
+	at := time.Date(2026, 11, 22, 2, 0, 0, 0, time.UTC)
+	swapNow(t, at)
+	var got struct {
+		method, path, authorization, accept    string
+		userAgent, editor, plugin, integration string
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got.method, got.path = r.Method, r.URL.Path
+		got.authorization = r.Header.Get("Authorization")
+		got.accept = r.Header.Get("Accept")
+		got.userAgent = r.Header.Get("User-Agent")
+		got.editor = r.Header.Get("Editor-Version")
+		got.plugin = r.Header.Get("Editor-Plugin-Version")
+		got.integration = r.Header.Get("Copilot-Integration-Id")
+		writeJSON(w, map[string]any{"token": "copilot-session", "expires_at": at.Add(30 * time.Minute).Unix()})
+	}))
+	t.Cleanup(server.Close)
+
+	session, err := ExchangeCopilotToken(context.Background(), server.Client(), newTestConfig(server), "github-access")
+	if err != nil {
+		t.Fatalf("ExchangeCopilotToken() error = %v", err)
+	}
+	if session.Token != "copilot-session" || !session.Expiry.Equal(at.Add(30*time.Minute)) {
+		t.Fatalf("session = %+v, want token and 30-minute expiry", session)
+	}
+	if got.method != http.MethodGet || got.path != "/copilot_internal/v2/token" {
+		t.Fatalf("request = %s %s, want GET /copilot_internal/v2/token", got.method, got.path)
+	}
+	if got.authorization != "Bearer github-access" || got.accept != "application/json" {
+		t.Fatalf("Authorization = %q Accept = %q", got.authorization, got.accept)
+	}
+	if got.userAgent != PiUserAgent || got.editor != EditorVersion || got.plugin != EditorPluginVersion || got.integration != IntegrationID {
+		t.Fatalf("compatibility headers = UA %q editor %q plugin %q integration %q", got.userAgent, got.editor, got.plugin, got.integration)
+	}
+}
+
+func TestExchangeCopilotTokenRejectsPermanentStatus(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			server := rawResponseServer(t, status, `{"message":"Bad credentials"}`)
+			if _, err := ExchangeCopilotToken(context.Background(), server.Client(), newTestConfig(server), "github-access"); !errors.Is(err, ErrCopilotTokenRejected) {
+				t.Fatalf("ExchangeCopilotToken() error = %v, want ErrCopilotTokenRejected", err)
+			}
+		})
+	}
+}
+
+func TestExchangeCopilotTokenReportsTransientFailure(t *testing.T) {
+	server := rawResponseServer(t, http.StatusBadGateway, `{}`)
+	_, err := ExchangeCopilotToken(context.Background(), server.Client(), newTestConfig(server), "github-access")
+	if err == nil {
+		t.Fatal("ExchangeCopilotToken() error = nil, want a transient failure")
+	}
+	if errors.Is(err, ErrCopilotTokenRejected) || errors.Is(err, ErrLoginRequired) {
+		t.Fatalf("transient failure was classified as permanent: %v", err)
+	}
+}
+
+func TestExchangeCopilotTokenRejectsMalformedResponses(t *testing.T) {
+	for name, body := range map[string]string{"invalid json": "{", "missing token": `{"expires_at":1}`, "missing expiry": `{"token":"t"}`} {
+		t.Run(name, func(t *testing.T) {
+			server := rawResponseServer(t, 0, body)
+			if _, err := ExchangeCopilotToken(context.Background(), server.Client(), newTestConfig(server), "github-access"); !errors.Is(err, ErrMalformedResponse) {
+				t.Fatalf("ExchangeCopilotToken() error = %v, want ErrMalformedResponse", err)
+			}
+		})
+	}
+}
+
 func TestRefreshTokenRotatesAndComputesExpiry(t *testing.T) {
 	at := time.Date(2026, 11, 22, 2, 0, 0, 0, time.UTC)
 	swapNow(t, at)

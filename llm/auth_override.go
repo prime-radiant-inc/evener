@@ -40,11 +40,12 @@ func AuthenticatorOverrideFor(ctx context.Context, scheme string) Authenticator 
 	if auth == nil {
 		return nil
 	}
-	// Only the Codex transport uses scoped authenticators today: it is
-	// the sole scheme whose record lookup reads mutable process-global
-	// state (DefaultCodex.StateDir). Every other scheme resolves from
-	// the Resolved record alone and keeps the global lookup.
-	if scheme != registry.AuthOAuthOpenAICodex {
+	// The record-backed OAuth transports use scoped authenticators: their
+	// record lookup reads mutable process-global state (DefaultCodex.StateDir,
+	// DefaultCopilot.StateDir), so a launch binds its own state root instead.
+	// Every other scheme resolves from the Resolved record alone and keeps
+	// the global lookup.
+	if scheme != registry.AuthOAuthOpenAICodex && scheme != registry.AuthOAuthGitHubCopilot {
 		return nil
 	}
 	return auth

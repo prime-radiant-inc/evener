@@ -18,16 +18,18 @@ import (
 // the service. Queues are consumed in request order; a blocked refresh lets a
 // test hold one process inside the record lock while another starts.
 type scriptedGitHub struct {
-	mu            sync.Mutex
-	deviceStarts  int
-	userCalls     int
-	pollCodes     []string
-	refreshCodes  []string
-	refreshStatus []int
-	refreshTokens []string
-	rotations     int
-	started       chan struct{}
-	release       chan struct{}
+	mu             sync.Mutex
+	deviceStarts   int
+	userCalls      int
+	pollCodes      []string
+	refreshCodes   []string
+	refreshStatus  []int
+	refreshTokens  []string
+	rotations      int
+	exchangeCalls  int
+	exchangeStatus []int
+	started        chan struct{}
+	release        chan struct{}
 }
 
 func newScriptedGitHub(t *testing.T) (*scriptedGitHub, *httptest.Server) {
@@ -56,6 +58,12 @@ func (g *scriptedGitHub) queueRefreshStatuses(statuses ...int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.refreshStatus = append(g.refreshStatus, statuses...)
+}
+
+func (g *scriptedGitHub) queueExchangeStatuses(statuses ...int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.exchangeStatus = append(g.exchangeStatus, statuses...)
 }
 
 // blockRefresh parks every refresh request until the returned release runs.
@@ -100,12 +108,28 @@ func (g *scriptedGitHub) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, map[string]string{"error": code})
 			return
 		}
-		writeJSON(w, tokenResponse("login-access", "login-refresh"))
+		writeJSON(w, map[string]any{"access_token": "login-access", "token_type": "bearer", "scope": "read:user"})
 	case "/user":
 		g.mu.Lock()
 		g.userCalls++
 		g.mu.Unlock()
 		writeJSON(w, map[string]any{"id": 4242, "login": "octocat", "email": "octocat@example.com"})
+	case copilotSessionPath:
+		g.mu.Lock()
+		g.exchangeCalls++
+		n := g.exchangeCalls
+		status := 0
+		if len(g.exchangeStatus) > 0 {
+			status = g.exchangeStatus[0]
+			g.exchangeStatus = g.exchangeStatus[1:]
+		}
+		g.mu.Unlock()
+		if status != 0 {
+			w.WriteHeader(status)
+			writeJSON(w, map[string]string{"message": "Bad credentials"})
+			return
+		}
+		writeJSON(w, map[string]any{"token": fmt.Sprintf("copilot-%d", n), "expires_at": nowFunc().Add(30 * time.Minute).Unix()})
 	default:
 		http.NotFound(w, r)
 	}
@@ -165,6 +189,12 @@ func (g *scriptedGitHub) deviceStartCount() int {
 	return g.deviceStarts
 }
 
+func (g *scriptedGitHub) exchangeCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.exchangeCalls
+}
+
 func testRecord(now time.Time, accessTTL, refreshTTL time.Duration) AuthRecord {
 	record := sampleRecord()
 	record.AccessToken = "access-old"
@@ -174,6 +204,8 @@ func testRecord(now time.Time, accessTTL, refreshTTL time.Duration) AuthRecord {
 	record.ObtainedAt = now.Add(-2 * time.Hour)
 	record.AccessExpiry = now.Add(accessTTL)
 	record.RefreshExpiry = now.Add(refreshTTL)
+	record.CopilotToken = "copilot-old"
+	record.CopilotExpiry = now.Add(10 * time.Minute)
 	return record
 }
 
@@ -215,17 +247,23 @@ func TestLoginWithDevicePersistsAccountAndTokens(t *testing.T) {
 	if record.Scheme != AuthScheme || record.Instance != "work" || record.AccountID != "4242" {
 		t.Fatalf("record identity = scheme %q instance %q account %q", record.Scheme, record.Instance, record.AccountID)
 	}
-	if record.AccessToken != "login-access" || record.RefreshToken != "login-refresh" {
-		t.Fatal("record did not carry the login token pair")
+	if record.AccessToken != "login-access" || record.RefreshToken != "" || !record.RefreshExpiry.IsZero() || !record.AccessExpiry.IsZero() {
+		t.Fatal("record did not carry the non-expiring GitHub access token")
 	}
-	if !record.AccessExpiry.Equal(at.Add(5*time.Second + 8*time.Hour)) {
-		t.Fatalf("access expiry = %v, want %v", record.AccessExpiry, at.Add(5*time.Second+8*time.Hour))
+	if record.CopilotToken != "copilot-1" {
+		t.Fatalf("copilot token = %q, want the exchanged session", record.CopilotToken)
 	}
-	if !record.RefreshExpiry.Equal(at.Add(5*time.Second + 15897600*time.Second)) {
-		t.Fatalf("refresh expiry = %v, want the issued refresh lifetime", record.RefreshExpiry)
+	if !record.CopilotExpiry.Equal(at.Add(5*time.Second + 30*time.Minute)) {
+		t.Fatalf("copilot expiry = %v, want the exchanged session lifetime", record.CopilotExpiry)
 	}
 	if record.RefreshRejected {
 		t.Fatal("fresh login saved a rejected refresh state")
+	}
+	if !status.Expiry.Equal(record.CopilotExpiry) {
+		t.Fatalf("status expiry = %v, want the Copilot session expiry %v", status.Expiry, record.CopilotExpiry)
+	}
+	if gh.exchangeCount() != 1 {
+		t.Fatalf("session exchanges = %d, want 1", gh.exchangeCount())
 	}
 	if gh.deviceStartCount() != 1 {
 		t.Fatalf("device starts = %d, want 1", gh.deviceStartCount())
@@ -360,14 +398,17 @@ func TestResolveUsesFreshAccessTokenWithoutNetwork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveRuntimeCredentials() error = %v", err)
 	}
-	if credentials.BearerToken != "access-old" || credentials.AccountID != "4242" {
-		t.Fatal("runtime credentials did not carry the stored access token and account")
+	if credentials.BearerToken != "copilot-old" || credentials.AccountID != "4242" {
+		t.Fatal("runtime credentials did not carry the stored Copilot session token and account")
 	}
-	if !credentials.Expiry.Equal(record.AccessExpiry) {
-		t.Fatalf("expiry = %v, want %v", credentials.Expiry, record.AccessExpiry)
+	if !credentials.Expiry.Equal(record.CopilotExpiry) {
+		t.Fatalf("expiry = %v, want %v", credentials.Expiry, record.CopilotExpiry)
 	}
 	if gh.refreshCount() != 0 {
 		t.Fatalf("refresh requests = %d, want 0 for a fresh token", gh.refreshCount())
+	}
+	if gh.exchangeCount() != 0 {
+		t.Fatalf("session exchanges = %d, want 0 for a fresh session", gh.exchangeCount())
 	}
 }
 
@@ -384,11 +425,11 @@ func TestResolveRefreshesFiveMinutesBeforeExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveRuntimeCredentials() error = %v", err)
 	}
-	if credentials.BearerToken != "access-1" || credentials.AccountID != "4242" {
-		t.Fatal("runtime credentials did not carry the refreshed token and account")
+	if credentials.BearerToken != "copilot-old" || credentials.AccountID != "4242" {
+		t.Fatal("runtime credentials did not carry the current Copilot session and account")
 	}
-	if !credentials.Expiry.Equal(at.Add(8 * time.Hour)) {
-		t.Fatalf("expiry = %v, want %v", credentials.Expiry, at.Add(8*time.Hour))
+	if !credentials.Expiry.Equal(record.CopilotExpiry) {
+		t.Fatalf("expiry = %v, want %v", credentials.Expiry, record.CopilotExpiry)
 	}
 	if got := gh.refreshTokenList(); len(got) != 1 {
 		t.Fatalf("refresh requests = %d, want the one stored-token refresh", len(got))
@@ -401,6 +442,12 @@ func TestResolveRefreshesFiveMinutesBeforeExpiry(t *testing.T) {
 	}
 	if loaded.AccessToken != "access-1" || loaded.RefreshToken != "refresh-1" {
 		t.Fatal("refreshed record did not carry the rotated pair")
+	}
+	if loaded.CopilotToken != "copilot-old" {
+		t.Fatal("a GitHub token refresh unexpectedly replaced the Copilot session")
+	}
+	if gh.exchangeCount() != 0 {
+		t.Fatalf("session exchanges = %d, want 0 when the session is fresh", gh.exchangeCount())
 	}
 	if !loaded.ObtainedAt.Equal(at) {
 		t.Fatalf("obtained at = %v, want %v", loaded.ObtainedAt, at)
@@ -480,8 +527,93 @@ func TestResolveTransientRefreshFailureLeavesRecordUsable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second ResolveRuntimeCredentials() error = %v", err)
 	}
-	if credentials.BearerToken != "access-1" {
-		t.Fatal("retry after a transient failure did not use the refreshed token")
+	if credentials.BearerToken != "copilot-old" {
+		t.Fatal("retry after a transient failure did not use the stored session token")
+	}
+}
+
+// TestResolveRenewsCopilotSessionFiveMinutesEarly pins session renewal for the
+// current non-expiring GitHub token: the same GitHub token is exchanged again,
+// no GitHub refresh happens, and the replacement session is persisted.
+func TestResolveRenewsCopilotSessionFiveMinutesEarly(t *testing.T) {
+	at := time.Date(2026, 11, 22, 2, 0, 0, 0, time.UTC)
+	swapNow(t, at)
+	gh, server := newScriptedGitHub(t)
+	stateDir := t.TempDir()
+	record := testRecord(at, 10*time.Minute, 24*time.Hour)
+	record.AccessExpiry = time.Time{}
+	record.RefreshToken = ""
+	record.RefreshExpiry = time.Time{}
+	record.CopilotExpiry = at.Add(4 * time.Minute)
+	if err := SaveAuth(stateDir, record.Instance, record); err != nil {
+		t.Fatalf("SaveAuth() error = %v", err)
+	}
+	credentials, err := newServiceForTest(server).ResolveRuntimeCredentials(context.Background(), stateDir, record.Instance)
+	if err != nil {
+		t.Fatalf("ResolveRuntimeCredentials() error = %v", err)
+	}
+	if credentials.BearerToken != "copilot-1" {
+		t.Fatalf("runtime bearer = %q, want the renewed Copilot session", credentials.BearerToken)
+	}
+	if !credentials.Expiry.Equal(at.Add(30 * time.Minute)) {
+		t.Fatalf("runtime expiry = %v, want the renewed session expiry", credentials.Expiry)
+	}
+	if gh.exchangeCount() != 1 {
+		t.Fatalf("session exchanges = %d, want 1", gh.exchangeCount())
+	}
+	if gh.refreshCount() != 0 {
+		t.Fatalf("GitHub refresh requests = %d, want 0 for a non-expiring token", gh.refreshCount())
+	}
+	loaded, err := LoadAuth(stateDir, record.Instance)
+	if err != nil {
+		t.Fatalf("LoadAuth() error = %v", err)
+	}
+	if loaded.CopilotToken != "copilot-1" || !loaded.CopilotExpiry.Equal(at.Add(30*time.Minute)) {
+		t.Fatal("renewed session was not persisted")
+	}
+	if !loaded.ObtainedAt.Equal(at) {
+		t.Fatalf("obtained at = %v, want %v", loaded.ObtainedAt, at)
+	}
+}
+
+// TestResolveRejectedSessionExchangeMarksLoginRequired proves a permanent
+// exchange rejection keeps the record for diagnosis and returns the typed
+// login-required error.
+func TestResolveRejectedSessionExchangeMarksLoginRequired(t *testing.T) {
+	at := time.Date(2026, 11, 22, 2, 0, 0, 0, time.UTC)
+	swapNow(t, at)
+	gh, server := newScriptedGitHub(t)
+	gh.queueExchangeStatuses(http.StatusUnauthorized)
+	stateDir := t.TempDir()
+	record := testRecord(at, 10*time.Minute, 24*time.Hour)
+	record.AccessExpiry = time.Time{}
+	record.RefreshToken = ""
+	record.RefreshExpiry = time.Time{}
+	record.CopilotExpiry = at.Add(4 * time.Minute)
+	if err := SaveAuth(stateDir, record.Instance, record); err != nil {
+		t.Fatalf("SaveAuth() error = %v", err)
+	}
+	svc := newServiceForTest(server)
+	_, err := svc.ResolveRuntimeCredentials(context.Background(), stateDir, record.Instance)
+	if !errors.Is(err, ErrLoginRequired) || !errors.Is(err, ErrCopilotTokenRejected) {
+		t.Fatalf("ResolveRuntimeCredentials() error = %v, want login required with the rejection cause", err)
+	}
+	loaded, err := LoadAuth(stateDir, record.Instance)
+	if err != nil {
+		t.Fatalf("LoadAuth() error = %v", err)
+	}
+	if !loaded.RefreshRejected {
+		t.Fatal("rejected session exchange did not mark the record for login")
+	}
+	if loaded.CopilotToken != record.CopilotToken || loaded.AccessToken != record.AccessToken {
+		t.Fatal("rejection changed the refused generation, want it retained for diagnosis")
+	}
+	status, err := svc.Status(stateDir, record.Instance)
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if !status.SignedIn || !status.NeedsLogin {
+		t.Fatalf("status = %+v, want signed in but needing login", status)
 	}
 }
 

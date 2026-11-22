@@ -87,7 +87,7 @@ func PollDeviceOnce(ctx context.Context, client *http.Client, cfg Config, dc Dev
 	switch payload.Error {
 	case "":
 		tokens := payload.tokenSet(nowFunc())
-		if err := validateTokenSet(tokens, true); err != nil {
+		if err := validateTokenSet(tokens); err != nil {
 			return TokenSet{}, PollPending, interval, err
 		}
 		return tokens, PollAuthorized, interval, nil

@@ -30,17 +30,20 @@ func (a *recordingAuthenticator) Apply(context.Context, *http.Request, registry.
 	return nil
 }
 
-// TestAuthenticatorOverrideOnlyAnswersForTheCodexScheme pins the scheme gate:
-// an override bound to the context serves the scoped Codex transport and is
-// invisible to every other scheme, which keeps resolving from the record
-// alone. A bearer transport must never receive a Codex-bound override.
-func TestAuthenticatorOverrideOnlyAnswersForTheCodexScheme(t *testing.T) {
+// TestAuthenticatorOverrideOnlyAnswersForRecordBackedSchemes pins the scheme
+// gate: an override bound to the context serves the scoped record-backed OAuth
+// transports and is invisible to every other scheme, which keeps resolving
+// from the record alone. A bearer transport must never receive such an override.
+func TestAuthenticatorOverrideOnlyAnswersForRecordBackedSchemes(t *testing.T) {
 	t.Parallel()
 	auth := &recordingAuthenticator{}
 	ctx := WithAuthenticatorOverride(context.Background(), auth)
 
 	if got := AuthenticatorOverrideFor(ctx, registry.AuthOAuthOpenAICodex); got != auth {
 		t.Fatalf("codex scheme override = %v, want the bound authenticator", got)
+	}
+	if got := AuthenticatorOverrideFor(ctx, registry.AuthOAuthGitHubCopilot); got != auth {
+		t.Fatalf("copilot scheme override = %v, want the bound authenticator", got)
 	}
 	if got := AuthenticatorOverrideFor(ctx, "bearer"); got != nil {
 		t.Fatalf("bearer scheme override = %v, want nil: the override must not answer for another scheme", got)
