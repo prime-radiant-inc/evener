@@ -169,17 +169,40 @@ func TestRequestMeasurementDropsTheCountAfterAModelSwitch(t *testing.T) {
 	}
 }
 
+// lateCountStrategy runs a seam after the wrapped strategy's fold layers have
+// returned. The compaction layer clears the saved count itself, so only a count
+// recorded after that clear — a reply settling between the fold and its
+// publication — is non-zero at publication time.
+type lateCountStrategy struct {
+	contextmgr.Strategy
+	record func()
+}
+
+func (s lateCountStrategy) ManageContext(ctx context.Context, history *[]schema.Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
+	err := s.Strategy.ManageContext(ctx, history, sysPromptChars, emitFn)
+	s.record()
+	return err
+}
+
 // TestFoldPublicationClearsTheRecordedInputCount pins the publication half: a
-// count recorded before a fold that rewrote history describes the pre-fold
-// prefix, so the fold drops it in the same lock hold that publishes.
+// count that lands after the compaction layer finished describes the prefix the
+// fold is about to replace, so the publication drops it. Recording the count
+// before the fold instead would prove nothing — the compaction layer clears it
+// first, so the publication's own clear would look redundant.
 func TestFoldPublicationClearsTheRecordedInputCount(t *testing.T) {
 	sess := compactAtSession(t, 0)
+	preFoldLen := len(currentHistory(t, sess))
 	// Pressure above the default 0.90 trigger, so the request-time fold really
 	// rewrites history instead of publishing it unchanged.
 	forcePressureAbove(t, sess, 0.91)
-	if got := sess.contextMgr.LastInputTokens(); got == 0 {
-		t.Fatal("fixture recorded no input count, so this proof is vacuous")
-	}
+	settled := 0
+	sess.strategy = lateCountStrategy{Strategy: sess.strategy, record: func() {
+		if got := sess.contextMgr.LastInputTokens(); got != 0 {
+			t.Errorf("compaction layer left the count at %d; the seam must record after the layer has cleared it", got)
+		}
+		sess.contextMgr.RecordInputTokens(900, preFoldLen, "")
+		settled++
+	}}
 
 	var timings events.RoundTimings
 	if _, _, _, _, _, _, err := sess.prepareModelRequestWithError(context.Background(), 1, &timings); err != nil {
@@ -189,8 +212,11 @@ func TestFoldPublicationClearsTheRecordedInputCount(t *testing.T) {
 	if !hasCheckpoint(folded) {
 		t.Fatal("fixture published no checkpoint, so no fold rewrote history")
 	}
+	if settled == 0 {
+		t.Fatal("the request-time fold never ran the settle seam, so this proof is vacuous")
+	}
 	if got := sess.contextMgr.LastInputTokens(); got != 0 {
-		t.Fatalf("LastInputTokens after a fold that rewrote history = %d, want 0: the pre-fold count outlived the publication", got)
+		t.Fatalf("LastInputTokens after a fold that rewrote history = %d, want 0: a count that settled mid-fold outlived the publication", got)
 	}
 	profile := sess.currentProfile()
 	if got, want := sess.contextMgr.EstimateUsage(folded, 0).Used, meterWithNoSavedCount(profile, folded); got != want {
