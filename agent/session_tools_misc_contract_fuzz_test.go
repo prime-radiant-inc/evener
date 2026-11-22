@@ -128,9 +128,7 @@ func stmRunRestoreContracts(t *testing.T, program []byte) {
 	}
 
 	// Historical communicate results never manufacture a pending ask.
-	call := func(id, args string) llm.ToolCallData {
-		return llm.ToolCallData{ID: id, Name: "communicate", Arguments: json.RawMessage(args), Type: "function"}
-	}
+	call := rawCommunicateCall
 	in := func(turnID string, turns ...schema.Turn) []schema.Turn {
 		for i := range turns {
 			turns[i].TurnID = turnID

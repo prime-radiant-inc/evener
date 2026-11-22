@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
@@ -52,10 +53,8 @@ func TestWithCommunicateOutputSchema(t *testing.T) {
 		if out["description"] != "custom" {
 			t.Errorf("output.description = %v", out["description"])
 		}
-		for _, r := range toStringSlice(params["required"]) {
-			if r == "output" {
-				t.Error("output must stay absent from top-level required so progress updates and quiet yields validate")
-			}
+		if slices.Contains(toStringSlice(params["required"]), "output") {
+			t.Error("output must stay absent from top-level required so progress updates and quiet yields validate")
 		}
 		compiled := compileToolParameters(t, params)
 		for _, args := range []map[string]any{
@@ -193,10 +192,8 @@ func TestWithAllowedDecisions(t *testing.T) {
 		if out["description"] != "Structured output." {
 			t.Errorf("output.description = %q", out["description"])
 		}
-		for _, r := range toStringSlice(params["required"]) {
-			if r == "output" {
-				t.Error("output must stay absent from top-level required so progress updates and quiet yields validate")
-			}
+		if slices.Contains(toStringSlice(params["required"]), "output") {
+			t.Error("output must stay absent from top-level required so progress updates and quiet yields validate")
 		}
 		compiled := compileToolParameters(t, params)
 		for _, args := range []map[string]any{

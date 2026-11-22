@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/tool/repair"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -80,7 +81,8 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 		resultToolDef = existing.Definition
 		resultToolDef.Name = resultToolName
 	}
-	structuredRequired := deps.communicateOutputBound || !usesDefaultCommunicateOutputEnvelope(resultToolDef)
+	_, defaultEnvelope := unboundDefaultCommunicateEnvelope(resultToolDef, deps.communicateOutputBound)
+	structuredRequired := !defaultEnvelope
 	if err := reg.Register(tool.RegisteredTool{
 		Definition:             resultToolDef,
 		OmitIntent:             true,
@@ -105,9 +107,9 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 				message = strings.TrimSpace(originalOutput.Message)
 			}
 			explicitNodeOutput := hasMeaningfulNodeOutput(originalOutput)
-			meaningfulOutput := explicitNodeOutput || hasMeaningfulRawOutput(rawOutput)
-			if structuredRequired {
-				meaningfulOutput = outputPresent
+			meaningfulOutput := outputPresent
+			if !structuredRequired {
+				meaningfulOutput = explicitNodeOutput || hasMeaningfulRawOutput(rawOutput)
 			}
 			if message == "" {
 				if !endTurn {
@@ -326,13 +328,7 @@ func unmarshalCommunicateArguments(raw []byte, args *map[string]any) error {
 	return nil
 }
 
-// communicateEndState records the tool verdict independently of display output.
-type communicateEndState struct {
-	Accepted        *bool `json:"communicate_accepted,omitempty"`
-	EndTurn         *bool `json:"communicate_end_turn,omitempty"`
-	Quiet           *bool `json:"communicate_quiet,omitempty"`
-	BoundaryPending bool  `json:"communicate_boundary_pending,omitempty"`
-}
+type communicateEndState = schema.CommunicateToolState
 
 // delegateUpdateDelivery is where a delegate's update stands when its
 // communicate(end_turn=false) call returns: the result's delivery and reason.
@@ -556,10 +552,17 @@ var canonicalDefaultCommunicateOutputSchema = func() map[string]any {
 // Returning the envelope it validated (rather than a bool the caller
 // re-derives) is what keeps the check and the fill from diverging.
 func communicateEnvelopeFor(t *tool.RegisteredTool, resultToolName string) (map[string]any, bool) {
-	if t == nil || t.Definition.Name != resultToolName || t.CommunicateOutputBound {
+	if t == nil || t.Definition.Name != resultToolName {
 		return nil, false
 	}
-	envelope := communicateOutputSchema(t.Definition)
+	return unboundDefaultCommunicateEnvelope(t.Definition, t.CommunicateOutputBound)
+}
+
+func unboundDefaultCommunicateEnvelope(def llm.ToolDefinition, bound bool) (map[string]any, bool) {
+	if bound {
+		return nil, false
+	}
+	envelope := communicateOutputSchema(def)
 	return envelope, isCanonicalDefaultCommunicateOutputEnvelope(envelope)
 }
 

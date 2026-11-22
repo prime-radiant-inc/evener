@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -9,6 +10,35 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
+
+// CommunicateToolState records the tool verdict independently of display output.
+type CommunicateToolState struct {
+	Accepted        *bool `json:"communicate_accepted,omitempty"`
+	EndTurn         *bool `json:"communicate_end_turn,omitempty"`
+	Quiet           *bool `json:"communicate_quiet,omitempty"`
+	BoundaryPending bool  `json:"communicate_boundary_pending,omitempty"`
+}
+
+// DecodeCommunicateToolState reads the persisted tool state.
+func DecodeCommunicateToolState(raw json.RawMessage) (CommunicateToolState, bool) {
+	var state CommunicateToolState
+	err := json.Unmarshal(raw, &state)
+	return state, err == nil
+}
+
+// IsQuiet reports whether the tool yielded without replying.
+func (s CommunicateToolState) IsQuiet() bool {
+	return s.Quiet != nil && *s.Quiet
+}
+
+// IsQuietCommunicateState reports typed evidence of a quiet yield.
+func IsQuietCommunicateState(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	state, ok := DecodeCommunicateToolState(raw)
+	return ok && state.IsQuiet()
+}
 
 // TurnKind identifies the category of a Turn in the Session history.
 type TurnKind string

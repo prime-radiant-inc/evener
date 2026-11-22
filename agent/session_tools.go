@@ -332,12 +332,12 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	// a PreToolUse updatedInput rewrote them after the model's bytes were read.
 	s.recordDispatchedToolArguments(call)
 
-	resultToolAlias := s.resultToolNameOverride()
+	isResultTool := call.Name == s.resultToolName()
 	startData := events.ToolCallStartData{
 		ToolName:      call.Name,
 		CallID:        call.ID,
 		ArgumentsJSON: argsJSON,
-		IsResultTool:  resultToolAlias != "" && call.Name == resultToolAlias,
+		IsResultTool:  isResultTool,
 	}
 	// Promote intent to the top-level event field for observability.
 	var args map[string]any
@@ -385,6 +385,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 			ToolName:      res.ToolName,
 			CallID:        res.CallID,
 			ArgumentsJSON: argsJSON,
+			IsResultTool:  isResultTool,
 			Error:         res.FullOutput,
 		})
 		s.responseSideEffectsMu.Unlock()
@@ -469,6 +470,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 			ToolName:      call.Name,
 			CallID:        call.ID,
 			ArgumentsJSON: argsJSON,
+			IsResultTool:  isResultTool,
 			Error:         skippedToolResult(call, err).FullOutput,
 		})
 		s.responseSideEffectsMu.Unlock()
@@ -504,6 +506,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		ToolName:      res.ToolName,
 		CallID:        res.CallID,
 		ArgumentsJSON: argsJSON,
+		IsResultTool:  isResultTool,
 		ToolState:     res.ToolState,
 		OutputRef:     outputRef,
 	}

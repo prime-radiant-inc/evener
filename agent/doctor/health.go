@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -300,11 +301,11 @@ func longestIdenticalRun(occ []toolCallOccurrence, resultSeen, resultErrors map[
 	return best
 }
 
-// finalEndTurnIndex returns the doc.Entries index of the LAST entry whose
-// ASSISTANT turn carries a resultTool call with end_turn=true, or -1 if none
-// exists. This is the anchor "the session declared itself done" point that
-// StaleNotifications and UserCorrections measure trailing activity against.
+// finalEndTurnIndex returns the index of the last accepted terminal reply,
+// or -1 if none exists. StaleNotifications and UserCorrections measure
+// trailing activity from this boundary.
 func finalEndTurnIndex(entries []transcript.Entry, resultTool string) int {
+	results := toolResultsByCallID(entries)
 	last := -1
 	for i, e := range entries {
 		if e.Turn.AcceptedReply {
@@ -318,8 +319,14 @@ func finalEndTurnIndex(entries []transcript.Entry, resultTool string) int {
 			if part.Kind != llm.ContentToolCall || part.ToolCall == nil || part.ToolCall.Name != resultTool {
 				continue
 			}
+			if result := results[part.ToolCall.ID]; result != nil {
+				if endTurn := communicateResultEndTurn(result); endTurn != nil && *endTurn {
+					last = i
+				}
+				continue
+			}
 			args := communicateCallArguments(part.ToolCall)
-			if callArgsEndTurn(args) && !quietCommunicateArguments(args) {
+			if callArgsEndTurn(args) && !apptranscript.CommunicateArgumentsWithoutMessage(args) {
 				last = i
 			}
 		}

@@ -26,7 +26,7 @@
 - Legacy empty default envelope on a quiet yield (`{"message": "", "end_turn": true, "output": {"message": "", "data": {}, "artifacts": []}}`): must execute as a quiet yield rather than failing structured-output-without-message validation (covered in Task 2).
 - Custom `result_schema` accepting `{}` or falsy fields (`{"passed": false}`) on a final reply: key-presence check (`_, ok := args["output"]`) accepts `{"message": "Failed", "output": {}}` when valid against the schema and rejects when `"output"` is omitted (covered in Task 2).
 - Post-report housekeeping notification on a `reportRequired` subagent calling `communicate({})`: after a subagent has already delivered its valid final report, a trailing job notification handled with `communicate({})` inside `drainJobTreeKeepingReport` succeeds and preserves the captured report and `structured_result` (covered in Task 2).
-- `doctor_evener` `outcomeHint` and `finalEndTurnIndex` when a session ends with a trailing `communicate({})` ack or a root bare-text fallback: trailing `communicate({})` must neither clobber `outcomeHint` to `"none"` nor move `finalEndTurnIndex`, and root bare-text fallback must surface its prose in `outcomeHint` (covered in Task 3).
+- `doctor_evener` `outcomeHint` and `finalEndTurnIndex` when a session ends with a trailing `communicate({})` ack or a root bare-text fallback: trailing `communicate({})` must neither clobber `outcomeHint` to `"none"` nor move `finalEndTurnIndex`, and root bare-text fallback must surface `end_turn=true` in `outcomeHint` (covered in Task 3).
 
 ---
 

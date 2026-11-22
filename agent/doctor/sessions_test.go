@@ -1046,3 +1046,77 @@ func TestOutcomeHintHealedVisibleReply(t *testing.T) {
 		t.Errorf("healed final index=%d, want 1", got)
 	}
 }
+
+// Not parallel: overrides sessionRowTranscriptTailBytes.
+func TestDoctorOutcomeAfterRejectedStructuredReply(t *testing.T) {
+	origTail := sessionRowTranscriptTailBytes
+	sessionRowTranscriptTailBytes = 8 << 10
+	t.Cleanup(func() { sessionRowTranscriptTailBytes = origTail })
+
+	for _, result := range []struct {
+		name    string
+		isError bool
+		state   json.RawMessage
+	}{
+		{name: "missing_required_output", isError: true},
+		{name: "lost_terminal_capture", state: json.RawMessage(`{"communicate_accepted":false,"communicate_end_turn":true}`)},
+		{name: "quiet_result", state: json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true,"communicate_quiet":true}`)},
+	} {
+		t.Run(result.name, func(t *testing.T) {
+			for _, tc := range []struct {
+				name         string
+				earlierReply bool
+				wantOutcome  string
+				wantBoundary int
+			}{
+				{name: "only_attempt", wantOutcome: "none", wantBoundary: -1},
+				{name: "earlier_reply", earlierReply: true, wantOutcome: "end_turn=true decision=approve", wantBoundary: 0},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					var turns []schema.Turn
+					if tc.earlierReply {
+						prior := communicateCall(true, "approve")
+						accepted := healthToolResult(prior.ToolCall.ID, "communicate", nil, false)
+						accepted.ToolResult.ToolState = json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true}`)
+						turns = append(turns,
+							schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{prior}}),
+							schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{accepted}}),
+						)
+					}
+					// Keep the earlier reply outside the first tail window.
+					turns = append(turns, schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("p", 12<<10))))
+					reply := healthToolCall("attempt", "communicate", `{"message":"done"}`)
+					verdict := healthToolResult("attempt", "communicate", nil, result.isError)
+					verdict.ToolResult.ToolState = result.state
+					// The transcript stops after the tool result, before a correction.
+					turns = append(turns,
+						schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{reply}}),
+						schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{verdict}}),
+					)
+					base := t.TempDir()
+					bucket := stateHomeBucket(base, hash1)
+					sid := newSessionsTestSID(t)
+					meta := schema.SessionMeta{TurnCount: len(turns)}
+					writeSessionsFixtureSession(t, bucket, sid, transcript.Header{CreatedAt: time.Unix(1, 0).UTC()}, turns, meta, nil, time.Unix(2, 0).UTC())
+					doc, err := loadRecordedTranscriptContext(t.Context(), filepath.Join(bucket, "sessions", sid+".transcript.jsonl"))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if got := outcomeHint(doc, "communicate"); got != tc.wantOutcome {
+						t.Errorf("full outcome = %q, want %q", got, tc.wantOutcome)
+					}
+					if got := finalEndTurnIndex(doc.Entries, "communicate"); got != tc.wantBoundary {
+						t.Errorf("final boundary = %d, want %d", got, tc.wantBoundary)
+					}
+					rows, err := ListSessions(t.Context(), base, SessionsOpts{})
+					if err != nil || len(rows.Sessions) != 1 || len(rows.Unreadable) != 0 {
+						t.Fatalf("ListSessions = %+v, %v", rows, err)
+					}
+					if got := rows.Sessions[0].Outcome; got != tc.wantOutcome {
+						t.Errorf("tail outcome = %q, want %q", got, tc.wantOutcome)
+					}
+				})
+			}
+		})
+	}
+}

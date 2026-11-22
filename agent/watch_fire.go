@@ -10,7 +10,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
-	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/agent/schema"
 )
 
 func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
@@ -166,7 +166,7 @@ func evaluateWatchEvent(snap watchEventSnapshot, ev events.SessionEvent) watchEv
 		return miss
 	}
 	if kind == events.EventToolCallEnd {
-		if call, ok := data.(events.ToolCallEndData); ok && call.Error == "" && apptranscript.IsQuietCommunicateState(call.ToolState) {
+		if call, ok := data.(events.ToolCallEndData); ok && call.Error == "" && schema.IsQuietCommunicateState(call.ToolState) {
 			return miss
 		}
 	}

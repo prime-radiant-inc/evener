@@ -27,12 +27,8 @@ func communicateToolResult(t *testing.T, s *Session, id string) *llm.ToolResultD
 	t.Helper()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, turn := range s.history {
-		for _, part := range turn.Message.Content {
-			if part.ToolResult != nil && part.ToolResult.ToolCallID == id {
-				return part.ToolResult
-			}
-		}
+	if result, ok := findToolResultInHistory(s.history, id); ok {
+		return result
 	}
 	t.Fatalf("no tool result for %q", id)
 	return nil

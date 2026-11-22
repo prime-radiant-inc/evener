@@ -1307,6 +1307,7 @@ func TestDelegateResourceSupervision_UserRunWithoutCommunicateRemainsMissingTerm
 }
 
 func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *testing.T) {
+	notReportingYet := func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("not reporting yet")} }
 	t.Run("no-tool response cannot return cleanly without one bounded recovery nudge", func(t *testing.T) {
 		fixture := newColdDelegateFixture(t, "")
 		bare := func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare response")} }
@@ -1363,7 +1364,6 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 	t.Run("a reportless notification cannot return cleanly without one bounded recovery nudge", func(t *testing.T) {
 		fixture := newColdDelegateFixture(t, "")
 		var root *Session
-		bare := func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("not reporting yet")} }
 		nudgeUpdate := make(chan bool, 1)
 		fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response {
@@ -1377,7 +1377,7 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 			func(llm.Request) llm.Response {
 				return quietYieldResponse("dead-wait", `{}`)
 			},
-			bare, bare, bare, bare,
+			notReportingYet, notReportingYet, notReportingYet, notReportingYet,
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered") },
 		})
 		root = restoreSupervisionRoot(t, fixture, nil)
@@ -1478,7 +1478,6 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 	t.Run("post-drain owner steering cannot return cleanly without one bounded recovery nudge", func(t *testing.T) {
 		fixture := newColdDelegateFixture(t, "")
 		var root *Session
-		bare := func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("not reporting yet")} }
 		fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response {
 				sub := root.subagents.get(fixture.childID)
@@ -1488,7 +1487,7 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 			func(llm.Request) llm.Response {
 				return quietYieldResponse("dead-wait", `{}`)
 			},
-			bare, bare, bare, bare,
+			notReportingYet, notReportingYet, notReportingYet, notReportingYet,
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered") },
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("steering handled") },
 		})

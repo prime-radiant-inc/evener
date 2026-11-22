@@ -16,7 +16,7 @@ import (
 // Session.mu is exempt because the emit path re-acquires it, which makes
 // "held across an emit" a self-deadlock rather than a convention
 // (session_emit_lock_guard_test.go). Apart from the frontier leaf, every mutex here is treated as
-// forbidden whether or not it is held across an emit TODAY — five of them are
+// forbidden whether or not it is held across an emit TODAY — four of them are
 // (responseSideEffectsMu, queueEventsMu, queuePersistMu, subagent.mu), and for
 // the rest nothing would announce it if a future emit moved inside their
 // critical section. A sampler that takes one is one refactor away from wedging

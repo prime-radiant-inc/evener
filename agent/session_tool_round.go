@@ -749,8 +749,9 @@ func (s *Session) finishReplyBoundary(ctx context.Context, state SessionState, d
 }
 
 func (s *Session) usesDefaultCommunicateOutputEnvelope() bool {
-	rt := s.reg.Get(s.resultToolName())
-	return rt != nil && !rt.CommunicateOutputBound && usesDefaultCommunicateOutputEnvelope(rt.Definition)
+	name := s.resultToolName()
+	_, ok := communicateEnvelopeFor(s.reg.Get(name), name)
+	return ok
 }
 
 func (s *Session) hasReplyStopHook() bool {

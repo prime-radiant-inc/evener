@@ -75,13 +75,7 @@ func IsQuietCommunicate(result *llm.ToolResultData) bool {
 // IsQuietCommunicateState decodes the typed result state shared by replay
 // and the live tool-call end event.
 func IsQuietCommunicateState(raw json.RawMessage) bool {
-	if len(raw) == 0 {
-		return false
-	}
-	var state struct {
-		Quiet bool `json:"communicate_quiet"`
-	}
-	return json.Unmarshal(raw, &state) == nil && state.Quiet
+	return schema.IsQuietCommunicateState(raw)
 }
 
 func markAcceptedAssistantReply(items []appwire.ThreadItem, turnID string, entry schema.Turn) {
@@ -113,19 +107,19 @@ func CommunicateTerminalAccepted(entry schema.Turn, callID string) *bool {
 			continue
 		}
 		result := part.ToolResult
-		if result.ToolCallID != callID || result.IsError || IsQuietCommunicate(result) {
+		if result.ToolCallID != callID || result.IsError {
 			continue
 		}
-		var typedState struct {
-			Accepted        *bool `json:"communicate_accepted"`
-			EndTurn         *bool `json:"communicate_end_turn"`
-			BoundaryPending bool  `json:"communicate_boundary_pending"`
-		}
-		if json.Unmarshal(result.ToolState, &typedState) == nil && typedState.Accepted != nil && typedState.EndTurn != nil && *typedState.EndTurn {
-			if typedState.BoundaryPending {
-				return nil // Wait for the execution completion record, not tool arbitration.
+		if state, ok := schema.DecodeCommunicateToolState(result.ToolState); ok {
+			if state.IsQuiet() {
+				continue
 			}
-			return typedState.Accepted
+			if state.Accepted != nil && state.EndTurn != nil && *state.EndTurn {
+				if state.BoundaryPending {
+					return nil // Wait for the execution completion record, not tool arbitration.
+				}
+				return state.Accepted
+			}
 		}
 		var encoded []byte
 		switch value := result.Content.(type) {

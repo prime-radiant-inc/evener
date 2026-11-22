@@ -108,7 +108,7 @@ type call struct {
 	// covered reports that the entry settling the call (TOOL_RESULTS, or
 	// COMMUNICATE for a communicate call) is recorded.
 	covered bool
-	// resultTool suppresses the regular tool card for a renamed communicate.
+	// resultTool also suppresses end events that predate the result-tool flag.
 	resultTool bool
 }
 
@@ -493,16 +493,22 @@ func (o *Overlay) appendText(key, text string) []Change {
 	return []Change{{Method: appwire.NotifyOverlayDelta, Params: appwire.OverlayDeltaParams{Key: key, Field: appwire.OverlayDeltaText, Delta: text}}}
 }
 
+func isResultTool(toolName string, marked bool) bool {
+	return marked || toolName == "communicate"
+}
+
 func (o *Overlay) startTool(ev events.SessionEvent, data events.ToolCallStartData) []Change {
-	if data.ToolName == "communicate" {
+	if isResultTool(data.ToolName, data.IsResultTool) {
+		// Old end events did not carry the flag for a renamed result tool.
+		if data.ToolName != "communicate" {
+			if c, ok := o.toolCall(data.CallID); ok {
+				c.resultTool = true
+			}
+		}
 		return nil
 	}
 	c, ok := o.toolCall(data.CallID)
 	if !ok {
-		return nil
-	}
-	if data.IsResultTool {
-		c.resultTool = true
 		return nil
 	}
 	s := o.toolSlot(data.CallID, c)
@@ -557,7 +563,7 @@ func (o *Overlay) appendOutput(callID, text string) []Change {
 }
 
 func (o *Overlay) endTool(data events.ToolCallEndData) []Change {
-	if data.ToolName == "communicate" || data.Error == "" && apptranscript.IsQuietCommunicateState(data.ToolState) {
+	if isResultTool(data.ToolName, data.IsResultTool) || data.Error == "" && apptranscript.IsQuietCommunicateState(data.ToolState) {
 		return nil
 	}
 	c, ok := o.toolCall(data.CallID)

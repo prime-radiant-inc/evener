@@ -21,8 +21,8 @@ import (
 )
 
 // sessionRowTranscriptTailBytes is the first tail window a sessions row reads
-// from a transcript longer than it. The row consumes only the header and the
-// last assistant turn's entry, so one window holds it for nearly every
+// from a transcript longer than it. The row consumes only the header and
+// enough entries to decide the outcome, so one window suffices for nearly every
 // transcript; when it does not, the window doubles until it does or the row
 // falls back to the full scan, so the outcome is never guessed from a window
 // that merely ran out. A transcript at or under the bound is read whole by
@@ -57,8 +57,8 @@ func loadRecordedTranscriptContext(ctx context.Context, path string) (transcript
 }
 
 // loadSessionRowTranscript reads only what a sessions row consumes: the
-// header, and the last entry that can decide the outcome hint. A quiet
-// yield does not stop the search for the reply it followed. A transcript at
+// header and enough entries to decide the outcome hint. A quiet yield or
+// rejected reply does not stop the search for the reply it followed. A transcript at
 // or under sessionRowTranscriptTailBytes goes through the full scan. A longer
 // transcript is read in a tail window that doubles until it holds an outcome
 // entry or reaches the start. The window skips compaction fold copies and
@@ -88,6 +88,7 @@ func loadSessionRowTranscript(ctx context.Context, path, resultTool string) (tra
 	}
 	doc := transcriptDoc{Header: header}
 	for window := sessionRowTranscriptTailBytes; window < size; window *= 2 {
+		doc.Entries = doc.Entries[:0]
 		// A record that starts inside the window is kept even when the
 		// window begins exactly at its boundary; only the tail of a record
 		// that began before the window is discarded, without decoding.
@@ -126,12 +127,18 @@ func loadSessionRowTranscript(ctx context.Context, path, resultTool string) (tra
 			if entry.Turn.OriginalOrdinal != nil {
 				continue // compaction fold copy: the original appears earlier
 			}
-			// Retain only the most recent entry that can decide the outcome.
-			if _, decided := outcomeCall(entry.Turn, resultTool); entry.Turn.AcceptedReply || decided {
-				doc.Entries = []transcript.Entry{entry}
+			// Retain tool results so the scan can pair them with assistant
+			// calls before deciding whether to stop or widen the window.
+			switch entry.Turn.Kind {
+			case schema.TurnAssistant, schema.TurnTool, schema.TurnToolResults:
+				doc.Entries = append(doc.Entries, entry)
+			default:
+				if entry.Turn.AcceptedReply {
+					doc.Entries = append(doc.Entries, entry)
+				}
 			}
 		}
-		if len(doc.Entries) > 0 {
+		if _, decided := findOutcome(doc.Entries, resultTool); decided {
 			return doc, nil
 		}
 	}
