@@ -38,6 +38,7 @@ type ModelAttemptMetadata struct {
 	RequestFingerprint      string
 	StorageScopeFingerprint string
 	ContextMarker           string
+	ContextBoundary         string
 	AttemptGroupID          string
 	PreviousResponseIDHash  string
 	ConversationIDHash      string
@@ -59,6 +60,7 @@ func singleAttemptRequestMetadata(req llm.Request) (llm.Request, ModelAttemptMet
 		meta.RequestFingerprint = req.Continuation.RequestFingerprint
 		meta.StorageScopeFingerprint = req.Continuation.StorageScopeFingerprint
 		meta.ContextMarker = req.Continuation.ContextMarker
+		meta.ContextBoundary = req.Continuation.ContextBoundary
 		meta.PreviousResponseIDHash = req.Continuation.PreviousResponseIDHash
 		meta.ConversationIDHash = req.Continuation.ConversationIDHash
 		meta.StoragePolicyLabel = req.Continuation.StoragePolicyLabel
@@ -964,8 +966,12 @@ func (s *Session) planResponsesContinuation(ctx context.Context, profile *provid
 		req.HistoryMode = llm.HistoryModeFullHistory
 		return route.withInputEstimate(req), nil, nil
 	}
+	// Sample the boundary identity before the provider call, so a response that
+	// lands after a fold publishes a new boundary records the boundary it was
+	// actually planned against.
+	boundary := responsesContinuationBoundaryIdentity(historyTurns)
 	if s.responsesContinuationDisabledForPlan(req, plan, stream) {
-		return responsesContinuationFullHistoryRequestForPlan(route, req, plan), nil, nil
+		return responsesContinuationFullHistoryRequestForPlan(route, req, plan, boundary), nil, nil
 	}
 
 	reservation := reserveResponsesContinuationHistoryBase(historyTurns)
@@ -996,22 +1002,24 @@ func (s *Session) planResponsesContinuation(ctx context.Context, profile *provid
 			EndpointFamily:          string(plan.EndpointFamily),
 			RequestFingerprint:      plan.RequestFingerprint,
 			ContextMarker:           responseContextMarkerV2,
+			ContextBoundary:         boundary,
 			StoragePolicyLabel:      plan.StoragePolicyLabel,
 			StorageScopeFingerprint: plan.StorageScopeFingerprint,
 		}
 		return route.withInputEstimate(req), fullHistory, candidate.Delta
 	}
 
-	return responsesContinuationFullHistoryRequestForPlan(route, req, plan), nil, nil
+	return responsesContinuationFullHistoryRequestForPlan(route, req, plan, boundary), nil, nil
 }
 
-func responsesContinuationFullHistoryRequestForPlan(route roundRoute, req llm.Request, plan llm.ResponsesContinuationPlan) llm.Request {
+func responsesContinuationFullHistoryRequestForPlan(route roundRoute, req llm.Request, plan llm.ResponsesContinuationPlan, boundary string) llm.Request {
 	req, _ = llm.ApplyResponsesContinuationStoreOverride(req, plan.StoragePolicyLabel)
 	req.HistoryMode = llm.HistoryModeFullHistory
 	req.Continuation = &llm.ContinuationMetadata{
 		EndpointFamily:          string(plan.EndpointFamily),
 		RequestFingerprint:      plan.RequestFingerprint,
 		ContextMarker:           responseContextMarkerV2,
+		ContextBoundary:         boundary,
 		StoragePolicyLabel:      plan.StoragePolicyLabel,
 		StorageScopeFingerprint: plan.StorageScopeFingerprint,
 	}

@@ -48,31 +48,41 @@ var requestHistoryFixtureTurns = []int{256, requestHistoryBudgetTurns}
 // pass. The ceiling is PER LANE because the race detector's instrumentation
 // adds real allocation to the same code path and moves the whole distribution
 // up, so each build's ceiling must independently clear the required margins.
-// Measured on 2026-11-17 with the minimum-of-rounds estimator, copy-free
-// preparations are 1,001,048 on the plain lane and 1,001,080 under -race, and
-// copy-bearing preparations are 1,844,824 and 1,844,856 (the copy is 1,024 *
-// unsafe.Sizeof(schema.Turn{}) = 843,776 bytes in both; each lane's
-// copy-bearing reading is its own copy-free reading plus exactly that). Both
-// ceilings are 1,425,000, near the midpoint of each lane's feasible band:
-// 423,952 and 423,920 above the two copy-free measurements, and 419,824 and
-// 419,856 below the two copy-bearing ones, so attribution noise and honest
-// drift cannot mask the copy on either side of the bound.
 //
-// The two lanes track each other to within tens of bytes, so the two literals
-// hold the same value today. They stay separate so a change that moves one lane
-// alone cannot silently move the other.
+// Re-measured on 2026-11-22 with the minimum-of-rounds estimator, copy-free
+// preparations are 1,148,776 on the plain lane and 1,218,568-1,225,720 under
+// -race, and copy-bearing preparations are 2,008,936 and 2,082,232-2,084,968
+// (the copy is 1,024 * unsafe.Sizeof(schema.Turn{}) = 860,160 bytes). The copy
+// grew 16,384 from the 843,776 the fixture saw on 2026-11-17 because
+// schema.Turn gained the 16-byte ResponseContextBoundary field (#6734 Path 4),
+// and a copy-free preparation grows with the history slice the same way. Main
+// had also drifted up from its 2026-11-17 reading in the meantime, so the
+// previous 1,425,000 was already nearly spent: on origin/main at 2026-11-22 a
+// 843,776-byte copy met copy-free readings of 1,206,296-1,207,512, only
+// 6.5-7.8 KB above the quarter-copy minimum the test below requires.
+// Both literals therefore move to the midpoint of their own lane's feasible
+// band today: 1,575,000 sits 426,224 above the plain copy-free reading and
+// 433,936 below its copy-bearing partner, while 1,650,000 sits 424,280 and
+// 432,232 clear of the race lane's. Each ceiling keeps the half-copy margin
+// this design wants on both sides, and the regression test still requires a
+// quarter copy as its minimum.
+//
+// The two lanes are calibrated separately because they move separately: on
+// 2026-11-22 the race detector's instrumentation put the race reading about
+// 77,000 above the plain one. A change that moves one lane alone must not
+// silently move the other.
 //
 // The margins are a fraction of the copy rather than the copy's own size
 // because the gap between a copy-free preparation and its copy-bearing partner
-// is 843,776 bytes (the copy itself): a ceiling at the midpoint of the two
+// is 860,160 bytes (the copy itself): a ceiling at the midpoint of the two
 // readings holds half a copy on each side, and the regression test below
 // requires a quarter copy on each side as its minimum.
 //
 // Both literals are deliberate: do not derive them from the implementation
 // under test.
 const (
-	maxRequestHistoryBytesPerPreparationPlain int64 = 1_425_000
-	maxRequestHistoryBytesPerPreparationRace  int64 = 1_425_000
+	maxRequestHistoryBytesPerPreparationPlain int64 = 1_575_000
+	maxRequestHistoryBytesPerPreparationRace  int64 = 1_650_000
 )
 
 // maxRequestHistoryBytesPerPreparation is this lane's ceiling. -race is

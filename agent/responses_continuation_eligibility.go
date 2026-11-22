@@ -39,7 +39,8 @@ func selectResponsesContinuationAnchorCandidate(cfg SessionConfig, history []sch
 		}
 	}
 
-	activeStart := latestContextBoundaryIndex(history) + 1
+	boundaryIndex := latestContextBoundaryIndex(history)
+	activeStart := boundaryIndex + 1
 	anchorIndex := -1
 	for i := len(history) - 1; i >= activeStart; i-- {
 		if history[i].Kind == schema.TurnAssistant {
@@ -59,6 +60,12 @@ func selectResponsesContinuationAnchorCandidate(cfg SessionConfig, history []sch
 		return responsesContinuationAnchorCandidate{}, llm.ResponsesContinuationDecision{
 			HistoryMode: llm.HistoryModeFullHistory,
 			Reason:      "continuation_anchor_metadata_missing",
+		}
+	}
+	if responsesContinuationAnchorBoundaryStale(anchor, history, boundaryIndex) {
+		return responsesContinuationAnchorCandidate{}, llm.ResponsesContinuationDecision{
+			HistoryMode: llm.HistoryModeFullHistory,
+			Reason:      "continuation_anchor_boundary_stale",
 		}
 	}
 
@@ -223,6 +230,47 @@ func latestContextBoundaryIndex(history []schema.Turn) int {
 		}
 	}
 	return -1
+}
+
+// contextBoundaryNone names the boundary a request was planned against when
+// history held no checkpoint or summary. A turn with an empty name predates the
+// field, so it is never checked against the current boundary: older sessions
+// keep anchoring as they did.
+const contextBoundaryNone = "none"
+
+// contextBoundaryIdentity names one context boundary turn. Its kind and
+// timestamp identify it: a fold's new checkpoint or summary always has a later
+// timestamp, while a rewrite that moves the same boundary to another index
+// keeps its name.
+func contextBoundaryIdentity(boundary schema.Turn) string {
+	return string(boundary.Kind) + "@" + boundary.Timestamp.UTC().Format(time.RFC3339Nano)
+}
+
+// responsesContinuationBoundaryIdentity names the active context boundary in
+// history, or contextBoundaryNone when there is none.
+func responsesContinuationBoundaryIdentity(history []schema.Turn) string {
+	idx := latestContextBoundaryIndex(history)
+	if idx < 0 {
+		return contextBoundaryNone
+	}
+	return contextBoundaryIdentity(history[idx])
+}
+
+// responsesContinuationAnchorBoundaryStale reports whether anchor was planned
+// against a different context boundary than history now holds. A response that
+// landed after a fold published a new boundary was planned against the old (or
+// absent) one, so its provider context lacks the new checkpoint and it must not
+// anchor a delta that would omit it (#6734).
+func responsesContinuationAnchorBoundaryStale(anchor schema.Turn, history []schema.Turn, boundaryIndex int) bool {
+	planned := strings.TrimSpace(anchor.ResponseContextBoundary)
+	if planned == "" {
+		return false
+	}
+	current := contextBoundaryNone
+	if boundaryIndex >= 0 {
+		current = contextBoundaryIdentity(history[boundaryIndex])
+	}
+	return planned != current
 }
 
 func turnHasResponsesContinuationMetadata(turn schema.Turn) bool {
