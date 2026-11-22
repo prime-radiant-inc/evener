@@ -129,11 +129,10 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 				if deps.canQuietlyYield == nil {
 					return nil, errQuietYieldWithoutWake
 				}
-				attentionNoAction, err := deps.canQuietlyYield(ctx)
-				if err != nil {
+				if err := deps.canQuietlyYield(ctx); err != nil {
 					return nil, err
 				}
-				deps.recordQuietYield(attentionNoAction)
+				deps.recordQuietYield()
 				inbox := drainCommunicateInbox(deps)
 				accepted := true
 				b, _ := json.Marshal(map[string]any{"accepted": true, "end_turn": true, "quiet": true, "inbox": inbox})
@@ -266,26 +265,26 @@ var errQuietYieldWithoutWake = errors.New("nothing can wake this turn. Start the
 
 type communicateEntryKindKey struct{}
 
-func (s *Session) canQuietlyYield(ctx context.Context) (bool, error) {
+func (s *Session) canQuietlyYield(ctx context.Context) error {
 	kind, _ := ctx.Value(communicateEntryKindKey{}).(EntryKind)
 	if !s.reportsToParent() {
 		if kind == EntryNotification || s.communicatedUnblocked() {
-			return false, nil
+			return nil
 		}
 		if s.cfg.TurnEndsProcess {
 			work, err := s.hasOneShotWakeableWork()
 			if err != nil || work {
-				return false, err
+				return err
 			}
-			return false, errQuietYieldWithoutWake
+			return errQuietYieldWithoutWake
 		}
 		if s.hasWakeableWork() {
-			return false, nil
+			return nil
 		}
-		return false, errQuietYieldWithoutWake
+		return errQuietYieldWithoutWake
 	}
 	if s.communicatedUnblocked() || ctx.Value(keepingDelegateReportKey{}) == s {
-		return false, nil
+		return nil
 	}
 	lease, leased := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
 	if leased && s.delegateController != nil {
@@ -293,26 +292,26 @@ func (s *Session) canQuietlyYield(ctx context.Context) (bool, error) {
 		case EntryDelegateAttention:
 			eligible, err := s.delegateController.canRecordAttentionNoAction(lease)
 			if err != nil || eligible {
-				return eligible, err
+				return err
 			}
 		case EntryNotification:
 			// The same input can consume another notification after an
 			// attention-only acknowledgement. The lease still owns that verdict.
 			decision, err := s.delegateController.completionDecision(lease)
 			if err != nil || decision != delegateCompletionNeedsNudge {
-				return false, err
+				return err
 			}
 		default:
 			decision, err := s.delegateController.completionDecision(lease)
 			if err != nil || decision == delegateCompletionUseExistingTerminal {
-				return false, err
+				return err
 			}
 		}
 	}
 	if work, err := s.treeHasOutstandingWork(); work || err != nil {
-		return false, err
+		return err
 	}
-	return false, errors.New("nothing can wake this turn, and you have not sent your report yet. Start the work, or send your final report with the result tool")
+	return errors.New("nothing can wake this turn, and you have not sent your report yet. Start the work, or send your final report with the result tool")
 }
 
 // unmarshalCommunicateArguments keeps the structured output's numbers exact.

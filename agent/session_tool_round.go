@@ -736,22 +736,22 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 func (s *Session) finishReplyBoundary(ctx context.Context, state SessionState, delivered bool, text string, replacement *string) (bool, string, error) {
 	var settlePending bool
 	var quiet bool
-	var attentionNoAction bool
 	if delivered {
 		settlePending = s.settleCommunicateBoundary(replacement)
 	} else {
 		s.mu.Lock()
 		quiet = s.quietBoundaryLocked()
-		attentionNoAction = s.comm.roundAttentionNoAction
 		s.mu.Unlock()
 	}
 	if settlePending {
 		s.recordDelegateTerminalSeen(ctx)
 	}
-	if !delivered && quiet && attentionNoAction {
-		if lease, leased := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); leased && s.delegateController != nil {
-			if _, err := s.delegateController.recordAttentionNoAction(lease); err != nil {
-				return false, "", err
+	if !delivered && quiet && s.delegateController != nil {
+		if kind, _ := ctx.Value(communicateEntryKindKey{}).(EntryKind); kind == EntryDelegateAttention {
+			if lease, leased := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); leased {
+				if _, err := s.delegateController.recordAttentionNoAction(lease); err != nil {
+					return false, "", err
+				}
 			}
 		}
 	}

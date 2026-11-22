@@ -2018,16 +2018,15 @@ const (
 // transient — reset at the top of each call, then read back by communicated,
 // communicateOutput, and the turn loop's deliver step. Guarded by s.mu.
 type communicateResult struct {
-	phase                  communicateBoundaryPhase
-	updated                bool // non-terminal communicate (end_turn=false) was invoked this turn
-	text                   string
-	reply                  string
-	output                 string // canonical structured output (communicateOutput)
-	structured             any    // raw args["output"] object before communicate canonicalization
-	stopPendingCallID      string // explicit winner whose observation awaits the Stop decision
-	roundQuiet             bool   // quiet yield was accepted in the current tool round
-	roundVisible           bool   // a visible terminal communicate was attempted in the current tool round
-	roundAttentionNoAction bool   // quiet yield in this round is eligible for attentionNoAction on settlement
+	phase             communicateBoundaryPhase
+	updated           bool // non-terminal communicate (end_turn=false) was invoked this turn
+	text              string
+	reply             string
+	output            string // canonical structured output (communicateOutput)
+	structured        any    // raw args["output"] object before communicate canonicalization
+	stopPendingCallID string // explicit winner whose observation awaits the Stop decision
+	roundQuiet        bool   // quiet yield was accepted in the current tool round
+	roundVisible      bool   // a visible terminal communicate was attempted in the current tool round
 }
 
 func (c communicateResult) hasAccepted() bool { return c.phase != commBoundaryNone }
@@ -3179,14 +3178,12 @@ func (s *Session) beginCommunicateRound() {
 	s.mu.Lock()
 	s.comm.roundQuiet = false
 	s.comm.roundVisible = false
-	s.comm.roundAttentionNoAction = false
 	s.mu.Unlock()
 }
 
-func (s *Session) recordQuietYield(attentionNoAction bool) {
+func (s *Session) recordQuietYield() {
 	s.mu.Lock()
 	s.comm.roundQuiet = true
-	s.comm.roundAttentionNoAction = attentionNoAction && !s.comm.roundVisible && !s.comm.isUnblocked()
 	s.mu.Unlock()
 }
 
@@ -3194,7 +3191,6 @@ func (s *Session) clearQuietBoundaryForBatchStop() {
 	s.mu.Lock()
 	if s.quietBoundaryLocked() {
 		s.comm.roundQuiet = false
-		s.comm.roundAttentionNoAction = false
 	}
 	s.mu.Unlock()
 }
@@ -3220,7 +3216,6 @@ func (s *Session) settleCommunicateBoundary(replacement *string) bool {
 	wasPending := s.comm.phase == commBoundaryStopPending || s.comm.phase == commBoundaryStopBlocked
 	s.comm.phase = commBoundarySettled
 	s.comm.roundQuiet = false
-	s.comm.roundAttentionNoAction = false
 	s.comm.stopPendingCallID = ""
 	s.latestReport = s.comm
 	return wasPending
@@ -3231,9 +3226,8 @@ func (s *Session) discardBlockedForQuietLocked() {
 		return
 	}
 	s.comm = communicateResult{
-		updated:                s.comm.updated,
-		roundQuiet:             s.comm.roundQuiet,
-		roundAttentionNoAction: s.comm.roundAttentionNoAction,
+		updated:    s.comm.updated,
+		roundQuiet: s.comm.roundQuiet,
 	}
 }
 
@@ -3249,7 +3243,6 @@ func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply,
 	s.mu.Lock()
 	if s.comm.hasAccepted() {
 		s.comm.roundVisible = true
-		s.comm.roundAttentionNoAction = false
 		s.mu.Unlock()
 		return false
 	}

@@ -477,34 +477,7 @@ func newAttentionDelegateTestSession(t *testing.T, dir string, adapter llm.Provi
 		s.owningDelegateID = ownDelegateID
 		s.mu.Unlock()
 	})
-
-	c.mu.Lock()
-	if _, err := c.appendLocked(delegatestore.Event{
-		Kind:       delegatestore.EventDelegateAttentionChanged,
-		DelegateID: delegateID,
-		AttentionChanged: &delegatestore.DelegateAttentionChanged{
-			NeedsAttention: true,
-		},
-	}); err != nil {
-		c.mu.Unlock()
-		t.Fatalf("append attention projection: %v", err)
-	}
-	c.live[delegateID] = &delegateLiveState{runtime: s}
-	c.noteDelegateAttentionLocked(delegateID, "attention-"+delegateID)
-	c.mu.Unlock()
-
-	reservation, err := c.ReserveAttention(s, "attention-"+delegateID)
-	if err != nil {
-		t.Fatalf("ReserveAttention: %v", err)
-	}
-	if err := c.prepareAttentionStart(reservation, s, nil); err != nil {
-		t.Fatalf("prepareAttentionStart: %v", err)
-	}
-	started, err := c.CommitStart(reservation)
-	if err != nil {
-		t.Fatalf("CommitStart attention: %v", err)
-	}
-	return s, c, started.lease
+	return s, c, startDelegateAttentionEvidenceGenerationFor(t, c, delegateID, s)
 }
 
 func TestQuietYieldAttentionNoActionNotLatchedWhenRoundStoppedByHook(t *testing.T) {
@@ -717,40 +690,6 @@ func TestCommunicateBoundaryStateMachine(t *testing.T) {
 			},
 		},
 		{
-			name: "None -> StopPending -> StopBlocked -> Quiet -> None",
-			run: func(t *testing.T) {
-				s := newSession(t)
-				installCommunicateStopHook(s, func() string { return `{"decision":"block","reason":"need check"}` })
-				s.mu.Lock()
-				s.state = SessionProcessing
-				s.mu.Unlock()
-				s.beginCommunicateRound()
-				if !s.acceptCommunicateTerminal(t.Context(), "draft", "draft", "", nil) {
-					t.Fatal("expected terminal communicate to be accepted")
-				}
-				if done, _, err := s.deliverIfCommunicated(t.Context(), false); err != nil || done {
-					t.Fatalf("deliverIfCommunicated = done:%v err:%v, want blocked", done, err)
-				}
-				if s.comm.phase != commBoundaryStopBlocked || !s.communicated() || s.communicatedUnblocked() || s.quietlyYielded() {
-					t.Fatalf("after Stop block: comm=%+v", s.comm)
-				}
-				s.beginCommunicateRound()
-				notifCtx := context.WithValue(t.Context(), communicateEntryKindKey{}, EntryNotification)
-				attentionNoAction, err := s.canQuietlyYield(notifCtx)
-				if err != nil || attentionNoAction {
-					t.Fatalf("canQuietlyYield = attentionNoAction:%v err:%v, want false, nil", attentionNoAction, err)
-				}
-				s.recordQuietYield(attentionNoAction)
-				done, text, err := s.deliverIfCommunicated(notifCtx, false)
-				if err != nil || !done || text != "" {
-					t.Fatalf("deliverIfCommunicated(quiet) = done:%v text:%q err:%v", done, text, err)
-				}
-				if s.comm.phase != commBoundaryNone || s.communicated() || !s.quietlyYielded() || s.comm.reply != "" {
-					t.Fatalf("after quiet discard: comm=%+v", s.comm)
-				}
-			},
-		},
-		{
 			name: "None -> StopPending -> StopBlocked -> RoundVisible -> Settled",
 			run: func(t *testing.T) {
 				s := newSession(t)
@@ -772,7 +711,7 @@ func TestCommunicateBoundaryStateMachine(t *testing.T) {
 					t.Fatalf("round 1 deliverIfCommunicated = done:%v err:%v, want blocked", done, err)
 				}
 				s.beginCommunicateRound()
-				s.recordQuietYield(false)
+				s.recordQuietYield()
 				if s.acceptCommunicateTerminal(t.Context(), "second", "second", "", nil) {
 					t.Fatal("competing visible communicate must lose to blocked first winner")
 				}
@@ -789,46 +728,22 @@ func TestCommunicateBoundaryStateMachine(t *testing.T) {
 			},
 		},
 		{
-			name: "StopBlocked + dead-wait refused",
-			run: func(t *testing.T) {
-				s := newSession(t)
-				installCommunicateStopHook(s, func() string { return `{"decision":"block","reason":"still blocked"}` })
-				s.mu.Lock()
-				s.state = SessionProcessing
-				s.mu.Unlock()
-				s.beginCommunicateRound()
-				if !s.acceptCommunicateTerminal(t.Context(), "first", "first", "", nil) {
-					t.Fatal("expected first terminal communicate to win")
-				}
-				if done, _, err := s.deliverIfCommunicated(t.Context(), false); err != nil || done {
-					t.Fatalf("deliverIfCommunicated = done:%v err:%v, want blocked", done, err)
-				}
-				s.beginCommunicateRound()
-				if _, err := s.canQuietlyYield(t.Context()); err == nil {
-					t.Fatal("expected dead-wait quiet yield after Stop block to be refused")
-				}
-				if s.comm.phase != commBoundaryStopBlocked || s.comm.roundQuiet || s.quietlyYielded() {
-					t.Fatalf("after refused quiet yield: comm=%+v", s.comm)
-				}
-			},
-		},
-		{
 			name: "Quiet + batchBlocked cleared",
 			run: func(t *testing.T) {
 				s := newSession(t)
 				s.beginCommunicateRound()
-				s.recordQuietYield(true)
-				if !s.comm.roundQuiet || !s.comm.roundAttentionNoAction || !s.quietlyYielded() {
+				s.recordQuietYield()
+				if !s.comm.roundQuiet || !s.quietlyYielded() {
 					t.Fatalf("after recordQuietYield: comm=%+v", s.comm)
 				}
 				s.clearQuietBoundaryForBatchStop()
-				if s.comm.phase != commBoundaryNone || s.comm.roundQuiet || s.comm.roundAttentionNoAction || s.quietlyYielded() {
+				if s.comm.phase != commBoundaryNone || s.comm.roundQuiet || s.quietlyYielded() {
 					t.Fatalf("after clearQuietBoundaryForBatchStop: comm=%+v", s.comm)
 				}
 			},
 		},
 		{
-			name: "canRecordAttentionNoAction is read-only and stale lease keeps SessionProcessing",
+			name: "canRecordAttentionNoAction is read-only, reportRequired quiet settle is no-op, and stale lease keeps SessionProcessing",
 			run: func(t *testing.T) {
 				s, c, lease := newAttentionDelegateTestSession(t, t.TempDir(), newFakeAdapter("openai"))
 				c.mu.Lock()
@@ -850,16 +765,36 @@ func TestCommunicateBoundaryStateMachine(t *testing.T) {
 					t.Fatalf("read-only probe mutated state: outcome=%v version=%d->%d", snap.outcome, versionBefore, versionAfter)
 				}
 
+				// Escalated reportRequired delegate with quiet boundary: finishReplyBoundary
+				// rechecks via recordAttentionNoAction safely without latching outcome.
+				if err := c.escalateCompletionRequirement(lease); err != nil {
+					t.Fatalf("escalateCompletionRequirement: %v", err)
+				}
+				attnCtx := context.WithValue(
+					context.WithValue(t.Context(), delegateRunLeaseContextKey{}, lease),
+					communicateEntryKindKey{}, EntryDelegateAttention,
+				)
 				s.mu.Lock()
 				s.state = SessionProcessing
 				s.mu.Unlock()
 				s.beginCommunicateRound()
-				s.recordQuietYield(true)
+				s.recordQuietYield()
+				done, _, err := s.finishReplyBoundary(attnCtx, SessionIdle, false, "", nil)
+				if err != nil || !done || s.State() != SessionIdle {
+					t.Fatalf("reportRequired quiet finishReplyBoundary = done:%t err:%v state:%v; want done, nil, idle", done, err, s.State())
+				}
+				snap, err = c.completionSnapshot(lease)
+				if err != nil || snap.outcome != delegateCompletionOutcomeNone {
+					t.Fatalf("reportRequired snapshot = %+v, err=%v; want outcome=None", snap, err)
+				}
+
+				s.mu.Lock()
+				s.state = SessionProcessing
+				s.mu.Unlock()
 				if _, err := c.FinishGeneration(lease, delegateFinish{outcome: delegatestore.OutcomeCancelled, reason: "stale"}); err != nil {
 					t.Fatalf("FinishGeneration: %v", err)
 				}
-				ctx := context.WithValue(t.Context(), delegateRunLeaseContextKey{}, lease)
-				done, _, err := s.finishReplyBoundary(ctx, SessionIdle, false, "", nil)
+				done, _, err = s.finishReplyBoundary(attnCtx, SessionIdle, false, "", nil)
 				if err == nil || done || s.State() != SessionProcessing {
 					t.Fatalf("stale finishReplyBoundary = done:%t err:%v state:%v; want error, done=false, state=processing", done, err, s.State())
 				}

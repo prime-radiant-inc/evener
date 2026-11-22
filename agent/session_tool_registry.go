@@ -147,8 +147,8 @@ type toolDeps struct {
 	runningJobIDs func() []string
 
 	// Quiet yields end the turn without capturing or delivering a report.
-	canQuietlyYield  func(context.Context) (bool, error)
-	recordQuietYield func(bool)
+	canQuietlyYield  func(context.Context) error
+	recordQuietYield func()
 
 	// turnEndsProcess mirrors SessionConfig.TurnEndsProcess so the end_turn
 	// warning can tell the truth about what happens to those jobs. Captured by
