@@ -436,3 +436,82 @@ func TestListModelsDecodeFailure(t *testing.T) {
 		t.Fatal("an undecodable models listing must fail")
 	}
 }
+
+const copilotRoster = `{"data":[
+ {"id":"claude-haiku-5.5","supported_endpoints":["/v1/messages","/chat/completions"],"model_picker_enabled":true,"capabilities":{"family":"claude","limits":{"max_prompt_tokens":200000,"max_output_tokens":32000},"supports":{"tool_calls":true,"vision":true,"reasoning":true}}},
+ {"id":"gpt-5.6-sol","supported_endpoints":["/responses","/chat/completions"],"capabilities":{"family":"gpt","limits":{"max_output_tokens":64000},"supports":{"tool_calls":true}}},
+ {"id":"chat-only","supported_endpoints":["/chat/completions"]},
+ {"id":"no-metadata"},
+ {"id":"picker-hidden","supported_endpoints":["/chat/completions"],"model_picker_enabled":false},
+ {"id":"policy-disabled","supported_endpoints":["/chat/completions"],"policy":{"state":"Disabled"}},
+ {"id":"image-unproven","supported_endpoints":["/chat/completions"],"capabilities":{"family":"gpt","supports":{"vision":true}}},
+ {"id":"gateway-vision","supported_endpoints":["/chat/completions"],"capabilities":{"family":"gpt","vision":true}},
+ {"id":"architecture-vision","supported_endpoints":["/chat/completions"],"architecture":{"input_modalities":["text","image"]},"capabilities":{"family":"gpt"}},
+ {"id":"embedding-only","supported_endpoints":["/embeddings"],"capabilities":{"family":"gpt"}}
+]}`
+
+// TestListModelsRoutesAccountRoster pins the subscription roster's routing:
+// the account states which wire endpoints each id serves, so Claude goes to
+// Messages, GPT prefers Responses, chat-only rows stay on Chat, absent
+// metadata keeps the OpenAI-compatible default, and a row advertising no
+// endpoint Evener speaks is dropped rather than launched down a wrong path.
+func TestListModelsRoutesAccountRoster(t *testing.T) {
+	t.Parallel()
+	srv, _ := server(t, 200, copilotRoster)
+	rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]registry.Model{}
+	for _, row := range rows {
+		byID[row.ID] = row
+	}
+	for _, hidden := range []string{"picker-hidden", "policy-disabled", "embedding-only"} {
+		if _, ok := byID[hidden]; ok {
+			t.Fatalf("%s must not be offered: %+v", hidden, rows)
+		}
+	}
+	claude := byID["claude-haiku-5.5"]
+	if claude.Protocol != registry.ProtocolAnthropic {
+		t.Fatalf("claude protocol = %q, want %q", claude.Protocol, registry.ProtocolAnthropic)
+	}
+	if claude.Transport == nil || claude.Transport.Endpoint != "/v1/messages" || claude.Transport.StreamEndpoint != "/v1/messages" {
+		t.Fatalf("claude transport = %+v, want /v1/messages", claude.Transport)
+	}
+	if claude.Transport.CountTokensEndpoint != registry.EndpointUnsupported {
+		t.Fatalf("claude count tokens = %q, want unsupported", claude.Transport.CountTokensEndpoint)
+	}
+	if claude.Family != "claude" || claude.Surface != registry.SurfaceAnthropic {
+		t.Fatalf("claude family/surface = %q/%q", claude.Family, claude.Surface)
+	}
+	if claude.Caps.ContextWindow == nil || *claude.Caps.ContextWindow != 200000 || claude.Caps.MaxOutputTokens == nil || *claude.Caps.MaxOutputTokens != 32000 {
+		t.Fatalf("claude limits = %+v", claude.Caps)
+	}
+	if claude.Caps.Tools == nil || !*claude.Caps.Tools || claude.Caps.Reasoning == nil || !*claude.Caps.Reasoning {
+		t.Fatalf("claude supports = %+v", claude.Caps)
+	}
+	if !claude.Caps.AcceptsModality("image") {
+		t.Fatalf("claude-haiku-5.5 is the live-proven image row: %+v", claude.Caps.InputModalities)
+	}
+	if claude.Caps.Cost != nil {
+		t.Fatalf("an account roster must not publish dollar prices: %+v", claude.Caps.Cost)
+	}
+	if gpt := byID["gpt-5.6-sol"]; gpt.Protocol != registry.ProtocolOpenAIResponses {
+		t.Fatalf("gpt protocol = %q, want responses", gpt.Protocol)
+	}
+	if chat := byID["chat-only"]; chat.Protocol != registry.ProtocolOpenAIChat {
+		t.Fatalf("chat-only protocol = %q, want chat", chat.Protocol)
+	}
+	if plain := byID["no-metadata"]; plain.Protocol != registry.ProtocolOpenAIChat {
+		t.Fatalf("no-metadata protocol = %q, want chat fallback", plain.Protocol)
+	}
+	// Every shared gateway field that can advertise vision — the account's
+	// supports block, the embedded gateway capabilities, and the OpenAI-compatible
+	// architecture modalities — is outranked by the live proof: only
+	// claude-haiku-5.5 has an image path that works.
+	for _, id := range []string{"image-unproven", "gateway-vision", "architecture-vision"} {
+		if unproven := byID[id]; unproven.Caps.AcceptsModality("image") {
+			t.Fatalf("%s must stay text-only until its own live image proof: %+v", id, unproven.Caps.InputModalities)
+		}
+	}
+}

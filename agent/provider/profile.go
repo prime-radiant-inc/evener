@@ -451,15 +451,36 @@ func (p *Profile) ProviderOptions() map[string]any {
 }
 
 // CheapModel is the configured cheap model, else the instance's curated or
-// configured cheap_model, else the model itself.
+// configured cheap_model, else the model itself. An authoritative account
+// roster that omits the curated cheap model uses the session model instead:
+// the subscription, not the bundled catalog, says which ids it serves. An
+// explicit cheap override is the user's, so it is never substituted.
 func (p *Profile) CheapModel() string {
 	if m := strings.TrimSpace(p.cheapModel); m != "" {
 		return m
 	}
-	if p.res.CheapModel != "" {
+	if p.res.CheapModel != "" && !p.curatedCheapModelAbsent() {
 		return p.res.CheapModel
 	}
 	return p.Model()
+}
+
+// curatedCheapModelAbsent reports that the instance's authoritative live
+// roster has answered and does not list the curated cheap model.
+func (p *Profile) curatedCheapModelAbsent() bool {
+	if p == nil || p.registry == nil || p.res.CheapModel == "" {
+		return false
+	}
+	listing, ok := p.registry.LiveListingFor(p.ID())
+	if !ok || !listing.Authoritative {
+		return false
+	}
+	for _, row := range listing.Rows {
+		if strings.EqualFold(strings.TrimSpace(row.ID), strings.TrimSpace(p.res.CheapModel)) {
+			return false
+		}
+	}
+	return true
 }
 
 // ConfiguredCheapModel returns the auxiliary model explicitly set via

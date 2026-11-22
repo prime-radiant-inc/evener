@@ -6,9 +6,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/auth/githubcopilot"
 	"primeradiant.com/evener/execsupport/valueexpr"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
@@ -69,5 +72,55 @@ func TestCredentialTestProbesCommandCredential(t *testing.T) {
 	}
 	if gotAuth != "Bearer token" {
 		t.Fatalf("the probe sent Authorization %q; want the minted bearer", gotAuth)
+	}
+}
+
+// TestCredentialTestEmptyAccountRosterIsNotSetupSuccess pins the setup gate:
+// the credentials work, the account answered, and it offers no model Evener
+// can use, so the check must not report the instance ready.
+func TestCredentialTestEmptyAccountRosterIsNotSetupSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/models") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	t.Cleanup(srv.Close)
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	if err := githubcopilot.SaveAuth(stateDir, "work", githubcopilot.AuthRecord{
+		Instance: "work", Scheme: githubcopilot.AuthScheme, Version: 1,
+		AccessToken: "access", CopilotToken: "copilot", AccountID: "account-1",
+		ObtainedAt: time.Now().Add(-time.Hour), CopilotExpiry: time.Now().Add(24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	tomlPath := filepath.Join(dir, "providers.toml")
+	cfg := "[providers.work]\nbase = \"github-copilot\"\nbase_url = \"" + srv.URL + "/v1\"\n"
+	if err := os.WriteFile(tomlPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctrl := newTestAuthController(t, dir, stateDir, tomlPath)
+	loader := func(path string, _ bool) (credentialProbeClient, error) {
+		r, err := registry.Load(
+			registry.WithConfigPath(path), registry.WithStateRoot(stateDir),
+			registry.WithOffline(true), registry.WithoutCache(),
+		)
+		if err != nil {
+			return nil, err
+		}
+		return llm.NewClient(llm.WithRegistry(r)), nil
+	}
+	resp, err := ctrl.runCredentialTest(context.Background(), "work", "", loader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status == appwire.AuthTestStatusSuccess {
+		t.Fatalf("status = %q (%s), want no setup success without a usable model", resp.Status, resp.Message)
+	}
+	if resp.Message == "" {
+		t.Fatal("the result must explain why setup is not ready")
 	}
 }

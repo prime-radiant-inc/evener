@@ -1322,6 +1322,32 @@ func buildInitialProfile(ctx context.Context, client *llm.Client, modelRef cmdut
 // On exactly that rejection, consult the instance's live listing once and
 // resolve again; every other failure is returned unchanged.
 func resolveInitialProfile(ctx context.Context, client *llm.Client, modelRef cmdutil.ModelRef) (*provider.Profile, *agent.StartupModelListing, error) {
+	// An account-owned roster is the whole catalog: list it once, then judge
+	// the launch against that same listing. The listing is handed to the
+	// session as the primed startup roster, so construction and the cheap
+	// model decision never fetch a second time.
+	instance := modelRef.Provider
+	if client != nil && instance == "" {
+		instance = client.DefaultProvider()
+	}
+	if client != nil && client.Registry().LiveListingAuthoritative(instance) {
+		listCtx, cancel := context.WithTimeout(ctx, llm.LiveModelListTimeout)
+		listing, listErr := client.Models(listCtx, instance)
+		cancel()
+		if listErr != nil {
+			return nil, nil, fmt.Errorf("%s: the account's model list could not be read: %w", instance, listErr)
+		}
+		profile, err := cmdutil.ResolveProfile(client, modelRef.Qualified())
+		if err != nil {
+			return nil, nil, err
+		}
+		if !listing.Usable || !listingHasModel(listing.Models, profile.Model()) {
+			return nil, nil, &llm.ModelNotAvailableError{
+				Instance: instance, Model: profile.Model(), Available: listedModelIDs(listing.Models),
+			}
+		}
+		return profile, &agent.StartupModelListing{Instance: instance, Listing: listing}, nil
+	}
 	raw, err := cmdutil.ResolveProfile(client, modelRef.Qualified())
 	if err == nil || !errors.Is(err, registry.ErrCodexModelNotListed) {
 		return raw, nil, err
@@ -1340,6 +1366,31 @@ func resolveInitialProfile(ctx context.Context, client *llm.Client, modelRef cmd
 		return profile, nil, nil
 	}
 	return profile, &agent.StartupModelListing{Instance: modelRef.Provider, Listing: listing}, nil
+}
+
+// listedModelIDs names the ids an authoritative listing offers, in listing
+// order, for the error that tells the user what the account does serve.
+func listedModelIDs(rows []registry.Resolved) []string {
+	out := make([]string, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, row.ModelID)
+	}
+	return out
+}
+
+// listingHasModel matches the membership rules the session's SetModel check
+// uses: exact id, trimmed id, then case-insensitive.
+func listingHasModel(rows []registry.Resolved, model string) bool {
+	trimmed := strings.TrimSpace(model)
+	if trimmed == "" {
+		return false
+	}
+	for _, row := range rows {
+		if row.ModelID == model || strings.EqualFold(strings.TrimSpace(row.ModelID), trimmed) {
+			return true
+		}
+	}
+	return false
 }
 
 // applyVisionModel validates the --vision-model ref against the registered

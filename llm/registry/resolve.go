@@ -127,7 +127,20 @@ func ParseRef(ref string) Ref {
 	return Ref{Model: ref}
 }
 
-type liveListing struct{ rows map[string]Model }
+// LiveListing is one instance's cached live listing. Authoritative says the
+// account's own roster is the whole catalog for the instance: a Copilot
+// subscription decides which models it serves, so no snapshot, cache, or
+// curated row may stand in for one the roster omits. Other providers opt out
+// and keep their static rows alongside the live ones.
+type LiveListing struct {
+	Rows          []Model
+	Authoritative bool
+}
+
+type liveListing struct {
+	rows          map[string]Model
+	authoritative bool
+}
 
 // liveFacts keeps only what the live layer may supply (spec §5).
 func liveFacts(m Model) Model {
@@ -138,6 +151,14 @@ func liveFacts(m Model) Model {
 		ThinkingFormat: m.Caps.ThinkingFormat, MaxTokensField: m.Caps.MaxTokensField,
 		EffortParameterUnsupported: m.Caps.EffortParameterUnsupported,
 	}}
+	// Routing the account advertises belongs to the live row: the protocol,
+	// transport endpoints, surface, and family are what make a Copilot id
+	// dispatchable at all.
+	out.Protocol, out.Surface, out.Family = m.Protocol, m.Surface, m.Family
+	if m.Transport != nil {
+		t := cloneTransport(*m.Transport)
+		out.Transport = &t
+	}
 	if m.Caps.ThinkingAlwaysOn != nil && *m.Caps.ThinkingAlwaysOn {
 		out.Caps.ThinkingAlwaysOn = new(true)
 	}
@@ -146,39 +167,62 @@ func liveFacts(m Model) Model {
 
 // ApplyLive records an instance's live listing. Non-chat and hidden rows are
 // dropped and only advertised facts are kept; the listing replaces any
-// previous one.
+// previous one and is non-authoritative, the behavior every provider that
+// called this before authority existed keeps.
 func (r *Registry) ApplyLive(instance string, rows []Model) {
-	listing := liveListing{rows: map[string]Model{}}
-	for _, m := range rows {
+	r.ApplyLiveListing(instance, LiveListing{Rows: rows})
+}
+
+// ApplyLiveListing records rows and their authority, replacing any previous
+// listing for the instance.
+func (r *Registry) ApplyLiveListing(instance string, listing LiveListing) {
+	stored := liveListing{rows: map[string]Model{}, authoritative: listing.Authoritative}
+	for _, m := range listing.Rows {
 		if !IsChatModelID(m.ID) || m.Hidden {
 			continue
 		}
-		listing.rows[m.ID] = liveFacts(m)
+		stored.rows[m.ID] = liveFacts(m)
 	}
 	r.liveMu.Lock()
 	defer r.liveMu.Unlock()
 	if r.live == nil {
 		r.live = map[string]liveListing{}
 	}
-	r.live[instance] = listing
+	r.live[instance] = stored
 }
 
 // SnapshotLive returns the cached live listings by instance, for carriers
 // like a registry reload that must preserve them across a fresh object.
-// ApplyLive restores each entry; the round trip keeps exactly the visible chat
-// ids with their advertised facts.
-func (r *Registry) SnapshotLive() map[string][]Model {
+// ApplyLiveListing restores each entry; the round trip keeps exactly the
+// visible chat ids with their advertised facts and their authority.
+func (r *Registry) SnapshotLive() map[string]LiveListing {
 	r.liveMu.RLock()
 	defer r.liveMu.RUnlock()
-	out := make(map[string][]Model, len(r.live))
+	out := make(map[string]LiveListing, len(r.live))
 	for instance, listing := range r.live {
 		rows := make([]Model, 0, len(listing.rows))
 		for _, id := range sortedKeys(listing.rows) {
 			rows = append(rows, listing.rows[id])
 		}
-		out[instance] = rows
+		out[instance] = LiveListing{Rows: rows, Authoritative: listing.authoritative}
 	}
 	return out
+}
+
+// LiveListingFor returns the cached live listing of an instance, its rows
+// sorted by id.
+func (r *Registry) LiveListingFor(instance string) (LiveListing, bool) {
+	r.liveMu.RLock()
+	defer r.liveMu.RUnlock()
+	listing, ok := r.live[instance]
+	if !ok {
+		return LiveListing{}, false
+	}
+	rows := make([]Model, 0, len(listing.rows))
+	for _, id := range sortedKeys(listing.rows) {
+		rows = append(rows, listing.rows[id])
+	}
+	return LiveListing{Rows: rows, Authoritative: listing.authoritative}, true
 }
 
 // LiveModels returns the cached live listing of an instance, sorted by id.
@@ -205,10 +249,52 @@ func (r *Registry) liveRow(instance, id string) *Model {
 	return nil
 }
 
+// LiveListingAuthoritative reports whether the instance's account owns its
+// catalog: its live listing is the only source of model ids, and a static row
+// the roster omits may not be launched or offered. Auth scheme decides it, so
+// a new instance pointed at the same account inherits the rule.
+func (r *Registry) LiveListingAuthoritative(instance string) bool {
+	if r == nil {
+		return false
+	}
+	rec, ok := r.recordFor(instance)
+	if !ok {
+		return false
+	}
+	return r.listingTransport(rec).Auth == AuthOAuthGitHubCopilot
+}
+
+// liveRowFor resolves the live row a reference names: its own id first, then
+// the row id the lookup matched through a wire id. Both the caps replay and
+// the routing seed read it, so a row listed under its wire id routes the same
+// way the facts merge.
+func (r *Registry) liveRowFor(instance, model string, hit lookupHit) (*Model, bool) {
+	if lr := r.liveRow(instance, model); lr != nil {
+		return lr, false
+	}
+	if hit.wireID != model {
+		if lr := r.liveRow(instance, hit.wireID); lr != nil {
+			return lr, true
+		}
+	}
+	return nil, false
+}
+
 func (r *Registry) liveRowMap(instance string) map[string]Model {
 	r.liveMu.RLock()
 	defer r.liveMu.RUnlock()
 	return r.live[instance].rows
+}
+
+// liveListingState reports the instance's cached rows and whether an
+// authoritative listing was recorded at all. Authority hides static rows only
+// once the account has answered: an instance that has never been listed keeps
+// its bundled catalog.
+func (r *Registry) liveListingState(instance string) (map[string]Model, bool) {
+	r.liveMu.RLock()
+	defer r.liveMu.RUnlock()
+	listing, ok := r.live[instance]
+	return listing.rows, ok && listing.authoritative
 }
 
 type lookupHit struct {
@@ -524,7 +610,8 @@ func (r *Registry) recordMintsCommandCredential(rec *record) bool {
 	if apiKeyEvaluates(r.listingTransport(rec)) {
 		return true
 	}
-	for _, id := range modelIDs(rec, r.LiveModels(rec.name)) {
+	liveListing, _ := r.LiveListingFor(rec.name)
+	for _, id := range modelIDs(rec, liveListing) {
 		rowRes, err := r.resolveLayersMode(rec, Ref{Model: id}, nil, resolveTransport)
 		if err != nil {
 			continue
@@ -901,7 +988,17 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 
 	var liveReplay func()
 	if includeLive {
-		liveReplay = func() { r.applyLive(&caps, rec, ref.Model, hit, prov) }
+		liveReplay = func() {
+			r.applyLive(&caps, &row, rec, ref.Model, hit, prov)
+			// Live routing may have moved the row's protocol. Every layer
+			// after it — config provider caps and config globs — judges its
+			// field table against the protocol the account chose.
+			rowProto = rec.head.Protocol
+			if row.Protocol != "" {
+				rowProto = row.Protocol
+			}
+			crossProto = rowProto != rec.head.Protocol
+		}
 	}
 	r.replayOrdered(rec, replayScope{ref: ref.Model, altID: altID, exact: hit.rowID}, replayHooks{
 		live: liveReplay,
@@ -928,6 +1025,14 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 			}
 		},
 	})
+	// The replay may have moved the row's protocol: the live layer lands after
+	// the bundled layers and an authored row after that. Everything below —
+	// the protocol field table, the transport shape, the endpoint gate — reads
+	// the protocol that actually won.
+	rowProto = rec.head.Protocol
+	if row.Protocol != "" {
+		rowProto = row.Protocol
+	}
 	seedFields(&caps, rowProto)
 	if aliasLockstep {
 		row.Disabled = aliasDisabled
@@ -1192,6 +1297,14 @@ func (r *Registry) applyGlobRow(c *Caps, row *Model, gr Model, tag, g, rowProto 
 // needs preset expansion.
 func applyRowScalars(row *Model, src Model, tag string, prov map[string]string) {
 	if src.Protocol != "" {
+		// An authored protocol retargets the wire: the previous protocol's
+		// endpoints do not survive as the new protocol's path unless this
+		// same layer also states a transport.
+		if src.Protocol != row.Protocol && src.Transport == nil && row.Transport != nil {
+			c := cloneTransport(*row.Transport)
+			clearProtocolTransport(&c)
+			row.Transport = &c
+		}
 		row.Protocol = src.Protocol
 		prov["Protocol"] = tag
 	}
@@ -1229,15 +1342,33 @@ func applyRowScalars(row *Model, src Model, tag string, prov map[string]string) 
 
 // applyLive merges the instance's live facts for the reference (or the
 // matched wire id) between the curated and user layers (spec §5).
-func (r *Registry) applyLive(c *Caps, rec *record, model string, hit lookupHit, prov map[string]string) {
-	lr := r.liveRow(rec.name, model)
-	byWireID := false
-	if lr == nil && hit.wireID != model {
-		lr = r.liveRow(rec.name, hit.wireID)
-		byWireID = true
-	}
+func (r *Registry) applyLive(c *Caps, row *Model, rec *record, model string, hit lookupHit, prov map[string]string) {
+	lr, byWireID := r.liveRowFor(rec.name, model, hit)
 	if lr == nil {
 		return
+	}
+	// The account's roster carries the wire protocol and its endpoint shapes.
+	// The live layer replays after the bundled layers and before config, so
+	// these outrank bundled routing while an authored row still overrides
+	// them. A protocol change drops the previous protocol's endpoints first:
+	// a Messages path must not survive as an openai-chat row's wire.
+	if lr.Protocol != "" {
+		if row.Protocol != "" && row.Protocol != lr.Protocol && row.Transport != nil {
+			c := cloneTransport(*row.Transport)
+			clearProtocolTransport(&c)
+			row.Transport = &c
+		}
+		row.Protocol = lr.Protocol
+		prov["Protocol"] = LayerLive
+	}
+	if lr.Transport != nil {
+		if row.Transport == nil {
+			row.Transport = &Transport{}
+		} else {
+			c := cloneTransport(*row.Transport)
+			row.Transport = &c
+		}
+		mergeTransport(row.Transport, *lr.Transport)
 	}
 	caps := lr.Caps
 	// A window the curated alias row declares describes that alias (a 1M
@@ -1247,6 +1378,18 @@ func (r *Registry) applyLive(c *Caps, rec *record, model string, hit lookupHit, 
 		caps.ContextWindow = nil
 	}
 	mergeCaps(c, caps, LayerLive, prov)
+	// Surface and family are the account's facts about the row. The live
+	// layer replays after the bundled layers and before config, so setting
+	// them unconditionally gives live precedence over the catalog while an
+	// authored row or glob still overrides it.
+	if lr.Surface != "" {
+		row.Surface = lr.Surface
+		prov["Surface"] = LayerLive
+	}
+	if lr.Family != "" {
+		row.Family = lr.Family
+		prov["Family"] = LayerLive
+	}
 }
 
 // overlayRowDeclaresWindow reports whether the curated overlay's row rowID
@@ -1751,9 +1894,9 @@ func (r *Registry) InstanceModels(instance string) ([]InstanceModel, error) {
 	if !ok {
 		return nil, fmt.Errorf("%w %q", ErrUnknownInstance, instance)
 	}
-	live := r.liveRowMap(rec.name)
-	ids := modelIDsFromMap(rec, live)
-	nonConfigVisible := nonConfigVisibleIDs(rec, live)
+	live, authoritative := r.liveListingState(rec.name)
+	ids := modelIDsFromMap(rec, live, authoritative)
+	nonConfigVisible := nonConfigVisibleIDs(rec, live, authoritative)
 	var authoredModels map[string]Model
 	if r.userLayer != nil {
 		if p, ok := r.userLayer.Providers[rec.name]; ok {
@@ -1811,14 +1954,14 @@ func (r *Registry) IsAuthoredOnlyModel(instance, model string) bool {
 	if _, ok := p.Models[model]; !ok {
 		return false
 	}
-	live := r.liveRowMap(rec.name)
-	return !nonConfigVisibleIDs(rec, live)[model]
+	live, authoritative := r.liveListingState(rec.name)
+	return !nonConfigVisibleIDs(rec, live, authoritative)[model]
 }
 
-func nonConfigVisibleIDs(rec *record, live map[string]Model) map[string]bool {
+func nonConfigVisibleIDs(rec *record, live map[string]Model, authoritative bool) map[string]bool {
 	seen := map[string]bool{}
 	for _, layer := range rec.layers {
-		if layer.tag == LayerConfig || (len(live) > 0 && layer.tag != LayerOverlay) {
+		if layer.tag == LayerConfig || authoritative || (len(live) > 0 && layer.tag != LayerOverlay) {
 			continue
 		}
 		for id := range layer.rows {
@@ -1960,12 +2103,15 @@ func (r *Registry) instanceRecordIDs(instance string) (*record, []string, error)
 	if !ok {
 		return nil, nil, fmt.Errorf("%w %q", ErrUnknownInstance, instance)
 	}
-	return rec, modelIDsFromMap(rec, r.liveRowMap(instance)), nil
+	live, authoritative := r.liveListingState(instance)
+	return rec, modelIDsFromMap(rec, live, authoritative), nil
 }
 
 // ModelIDs lists an instance's visible model ids, sorted. A usable live
 // listing hides snapshot/cache-only ids while curated overlay and user rows
-// remain additive. Without live rows, the exact catalog rows are the fallback.
+// remain additive; an authoritative account roster is the whole catalog, so
+// only its ids are visible. Without live rows, the exact catalog rows are the
+// fallback.
 func (r *Registry) ModelIDs(instance string) ([]string, error) {
 	_, ids, err := r.instanceRecordIDs(instance)
 	return ids, err
@@ -1990,20 +2136,25 @@ func (r *Registry) CatalogModelIDs(id string) ([]string, error) {
 	if !ok {
 		return nil, fmt.Errorf("unknown provider %q", id)
 	}
-	return modelIDs(rec, r.LiveModels(id)), nil
+	listing, _ := r.LiveListingFor(id)
+	return modelIDs(rec, listing), nil
 }
 
-func modelIDs(rec *record, live []Model) []string {
+func modelIDs(rec *record, listing LiveListing) []string {
+	live := listing.Rows
 	liveMap := make(map[string]Model, len(live))
 	for _, m := range live {
 		liveMap[m.ID] = m
 	}
-	return modelIDsFromMap(rec, liveMap)
+	return modelIDsFromMap(rec, liveMap, listing.Authoritative)
 }
 
-func modelIDsFromMap(rec *record, live map[string]Model) []string {
+func modelIDsFromMap(rec *record, live map[string]Model, authoritative bool) []string {
 	seen := map[string]bool{}
-	if len(live) == 0 {
+	if authoritative {
+		// The account roster is the whole catalog: every static row is
+		// invisible, including the bundled snapshot and curated overlay.
+	} else if len(live) == 0 {
 		for _, id := range exactRowIDs(rec) {
 			seen[id] = true
 		}
