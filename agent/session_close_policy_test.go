@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
@@ -106,6 +107,39 @@ func TestReleaseRuntimePolicyOutcomes(t *testing.T) {
 				t.Fatalf("retirement changed state %s -> %s", before, got.state)
 			}
 		})
+	}
+}
+
+// TestTerminalCloseStillRunsSessionEndHookAndAnnounces pins releaseTerminal
+// against the residency-only capacity and idle releases: an explicit close
+// keeps its terminal contract, emitting session_closed and running the
+// SessionEnd hook.
+func TestTerminalCloseStillRunsSessionEndHookAndAnnounces(t *testing.T) {
+	t.Parallel()
+	runtime := newQueuePersistTestSession(t, t.TempDir())
+	marker := installSessionEndMarkerHook(t, runtime)
+
+	got := observeRelease(t, runtime, closeOptions{cleanupEnv: true}, releaseTerminal)
+	if got.err != nil {
+		t.Fatalf("terminal close error: %v", got.err)
+	}
+	if n := countKind(got.kinds, events.EventSessionEnd); n != 1 {
+		t.Fatalf("terminal close emitted %d session end event(s), want 1: %v", n, got.kinds)
+	}
+	closed := false
+	for _, ev := range got.kinds {
+		if d, ok := ev.Data.(events.SessionEndData); ev.Kind == events.EventSessionEnd && ok && d.Reason == "session_closed" {
+			closed = true
+		}
+	}
+	if !closed {
+		t.Fatalf("terminal close did not emit the session_closed boundary: %v", got.kinds)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("terminal close did not run the SessionEnd hook: %v", err)
+	}
+	if got.state != SessionClosed {
+		t.Fatalf("terminal close state = %s, want closed", got.state)
 	}
 }
 

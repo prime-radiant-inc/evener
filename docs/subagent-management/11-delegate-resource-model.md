@@ -1548,18 +1548,25 @@ create or cold restore when the admission would exceed the bound:
    minting or committing a stable ID or constructing a runtime;
 2. under the controller, choose exact quiescent idle terminal subtree roots,
    preferring permanently closed, then acknowledged terminal, then oldest
-   outcome, then stable ID;
+   outcome, then stable ID, and skipping any subtree that owns a shared task
+   store, because its owner must stay resident for a resolver's next restore;
 3. claim those exact resident subtrees so no start, attention, shell admission,
    stop, or competing reclamation can enter them;
-4. close each claimed subtree post-order after controller unlock; and
+4. persist each claimed runtime's staged durable meta, then release those
+   resident runtimes post-order after controller unlock under the
+   residency-only policy: settle process-local resources only, with no
+   SessionEnd hook, no session_closed boundary, no watch cancellation, no lane
+   disposal and no worktree unlock; and
 5. under the controller, clear only the exact resident runtime pointer if the
    claim still matches.
 
 If too few reclaimable subtrees exist, admission fails before stable ID mint or
 commit and before runtime construction. Reclamation never deletes or rewrites
 the stable aggregate, descriptor, transcript, outcome, lineage, watch/delivery
-state, or resumability. It appends no unload lifecycle event. There is no timer,
-background scan, idle deadline, or autonomous unload protocol.
+state, isolation lane, worktree, or resumability, and every released member
+stays resumable through delegate_send. It appends no unload lifecycle event.
+There is no timer, background scan, idle deadline, or autonomous unload
+protocol.
 
 ### Supervision and continuation behavior
 
@@ -2300,8 +2307,10 @@ The project is complete only when all of the following are true:
 23. Nested delegation and mandatory delegate subtree stop work at depth three.
 24. Idle runtimes remain resident until root close, explicit disposal, or an
     admission-triggered max_retained_terminal reclamation. Reclamation claims
-    exact quiescent subtrees, closes post-order, and deletes no durable state;
-    no automatic/background unload protocol exists.
+    exact quiescent subtrees, releases their resident runtimes post-order under
+    the residency-only policy — durable state, watches, lanes and worktrees
+    stay intact — and deletes no durable state; no automatic/background unload
+    protocol exists.
 25. Stable delegate sources/receivers, watch_parent, self/parent/shell sources,
     filters/every/coalescing/budget/list/inspect/clear, terminal ordering,
     observer callbacks, restart notices, and ObservedBy metadata remain. The
