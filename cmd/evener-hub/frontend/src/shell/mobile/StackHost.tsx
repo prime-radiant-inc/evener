@@ -658,23 +658,21 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const panelPaneTypes = new Set(["sessionTasks", "sessionDetails"]);
   const isPanelPane = focusedPane !== null && panelPaneTypes.has(focusedPane.type);
   const focusedSessionRef = focusedPane?.type === "session" ? (refParam(focusedPane.params) ?? undefined) : undefined;
-  const retainedParentRef =
-    focusedPane !== null && focusedSessionRef !== undefined ? conversationOpenParentRef(focusedPane) : undefined;
+  const livePaneIds = useMemo(() => new Set(panes.map((pane) => pane.id)), [panes]);
+  const retainedParentRef = focusedPane?.type === "session" ? conversationOpenParentRef(focusedPane) : undefined;
   const retainedParentAvailable =
     retainedParentRef !== undefined &&
     panes.some(
       (pane) => (pane.type === "session" || pane.type === "transcript") && refParam(pane.params) === retainedParentRef,
     );
   const sessionBackAvailable =
-    focusedPane !== null &&
-    focusedSessionRef !== undefined &&
+    focusedPane?.type === "session" &&
     (paneBack !== null ||
       retainedParentAvailable ||
       attentionEntryOwnsPane(focusedPane) ||
-      backStackRef.current.some((id) => id !== focusedPane.id && panes.some((pane) => pane.id === id)));
+      backStackRef.current.some((id) => id !== focusedPane.id && livePaneIds.has(id)));
   const showBack =
     focusedPane !== null && focusedPane.type !== "welcome" && (focusedSessionRef === undefined || sessionBackAvailable);
-  const showLeadingSessions = !singlePane && focusedSessionRef !== undefined && !showBack;
   const drawer = !singlePane ? <TreeDrawer onToggle={() => setPanelOpen((v) => !v)} /> : null;
 
   function handlePanelBack(): void {
@@ -699,14 +697,14 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
               onClick={isPanelPane ? handlePanelBack : (paneBack ?? handleBack)}
             />
           ) : (
-            showLeadingSessions && drawer
+            focusedSessionRef !== undefined && drawer
           )}
         </div>
         <span className={styles.stackTitle} data-testid="topbar-title">
           {paneTitle}
         </span>
-        {focusedSessionRef !== undefined && focusedPane !== null && (
-          <SessionInspectionActions sessionRef={focusedSessionRef} paneId={focusedPane.id} />
+        {focusedSessionRef !== undefined && (
+          <SessionInspectionActions sessionRef={focusedSessionRef} paneId={focusedPane?.id} />
         )}
         {focusedSessionRef === undefined && drawer}
       </div>
