@@ -4,6 +4,7 @@ import (
 	"context"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -297,5 +298,106 @@ func TestRequestMeasurementRecordsLiveTurns(t *testing.T) {
 	}
 	if meta.LastInputAnchor == "" {
 		t.Fatal("meta persisted no prefix anchor")
+	}
+}
+
+// capturedMeasurementLen reports the prefix length the round captured for its
+// reply's input count: the turns the provider is about to see.
+func capturedMeasurementLen(t *testing.T, sess *Session) int {
+	t.Helper()
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if !sess.requestMeasurement.ok {
+		t.Fatal("the round captured no request measurement")
+	}
+	return sess.requestMeasurement.length
+}
+
+// TestRequestMeasurementFollowsTheDelegateSnapshot pins the delegate half of the
+// advance: a leased round projects the controller's own later snapshot, which
+// can hold a turn that landed after the round's history copy. The reply's count
+// covers that turn, so the saved prefix must move up with the request. Left on
+// the pre-snapshot length, the reader prices the turn a second time as a delta.
+func TestRequestMeasurementFollowsTheDelegateSnapshot(t *testing.T) {
+	runtime := newSession(t, withStateDir(t.TempDir()))
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_measurement", "")
+	lease := delegateLease{delegateID: "dlg_measurement", generation: 1}
+	runtime.delegateController = c
+	c.mu.Lock()
+	c.live[lease.delegateID].runtime = runtime
+	c.live[lease.delegateID].binding.runtime = runtime
+	c.mu.Unlock()
+
+	// Land a turn after the round's history copy and before the controller's
+	// snapshot, so the projected request presents a turn the round copy lacks.
+	// No skill obligation is pending, so no rebuild runs: this exercise isolates
+	// the delegate-snapshot advance from the skill-rebuild one.
+	const marker = "turn appended after the round history copy"
+	var once sync.Once
+	updateSessionTestConfig(runtime, func(cfg *testConfig) {
+		cfg.afterModelHistorySnapshot = func() {
+			once.Do(func() {
+				runtime.appendTurn(schema.TurnUserInput, llm.User(marker))
+			})
+		}
+	})
+
+	ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
+	var timings events.RoundTimings
+	if _, _, _, _, _, _, err := runtime.prepareModelRequestWithError(ctx, 1, &timings); err != nil {
+		t.Fatalf("prepare delegate model request: %v", err)
+	}
+	source, ok := runtime.takeRoundFallbackSource()
+	if !ok {
+		t.Fatal("prepareModelRequestWithError recorded no fallback source")
+	}
+	if got := countMessageText(runtime.requestMessages(source.system, expandHistory(source.turns, source.scope)), marker); got != 1 {
+		t.Fatalf("the projected request presents the between-snapshots turn %d times, want 1: the fixture never exercised the delegate snapshot", got)
+	}
+	if got, want := capturedMeasurementLen(t, runtime), len(source.turns); got != want {
+		t.Fatalf("saved measured length = %d, want the %d-turn prefix the request presents: the count stayed on the pre-snapshot prefix", got, want)
+	}
+}
+
+// TestRequestMeasurementFollowsASkillRebuild pins the rebuild half of the
+// advance: a skill reload notification appended after the request was built
+// joins the rebuilt request, so the saved prefix must move up with it.
+func TestRequestMeasurementFollowsASkillRebuild(t *testing.T) {
+	sess := newSession(t, withStateDir(t.TempDir()))
+	// An obligation whose identity the session cannot follow appends a typed
+	// failure notification and rebuilds the request around it.
+	sess.mu.Lock()
+	sess.skillLifecycle.Obligations = append(sess.skillLifecycle.Obligations, schema.SkillDeliveryObligation{
+		InvocationID: "inv-measurement-rebuild",
+		Route:        "model_tool",
+	})
+	sess.skillLifecycle.Revision++
+	sess.mu.Unlock()
+
+	var timings events.RoundTimings
+	if _, _, _, _, _, _, err := sess.prepareModelRequestWithError(context.Background(), 1, &timings); err != nil {
+		t.Fatalf("prepareModelRequestWithError: %v", err)
+	}
+	source, ok := sess.takeRoundFallbackSource()
+	if !ok {
+		t.Fatal("prepareModelRequestWithError recorded no fallback source")
+	}
+	carried := false
+	for _, turn := range source.turns {
+		if turn.SkillState == nil {
+			continue
+		}
+		for _, outcome := range turn.SkillState.Outcomes {
+			if outcome.InvocationID == "inv-measurement-rebuild" && outcome.Status == "failed" {
+				carried = true
+			}
+		}
+	}
+	if !carried {
+		t.Fatal("the rebuilt request carries no failed outcome for inv-measurement-rebuild: the rebuild never ran, so this proof is vacuous")
+	}
+	if got, want := capturedMeasurementLen(t, sess), len(source.turns); got != want {
+		t.Fatalf("saved measured length = %d, want the %d-turn prefix the rebuilt request presents: the count stayed on the pre-rebuild prefix", got, want)
 	}
 }

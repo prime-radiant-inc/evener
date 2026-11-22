@@ -44,7 +44,9 @@ func (cm *Manager) recordInputTokensLocked(tokens int, historyLen int, anchor st
 // ClearInputMeasurement drops the saved count together with its prefix identity
 // and producing target. A session calls it in the same lock hold that publishes
 // rewritten history, so a count measured against the pre-rewrite prefix cannot
-// outlive the publication.
+// outlive the publication. The compaction layers call it before and after a
+// pass, so between-layer pressure readings fall back to char/4 estimates that
+// reflect their in-place history changes.
 func (cm *Manager) ClearInputMeasurement() {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
