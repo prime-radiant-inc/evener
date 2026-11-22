@@ -2006,7 +2006,9 @@ Rules:
   idempotent: the parent journal keeps one `job_started` per job and one
   `job_finished` or `job_notification_pending` per `(job_id, terminal_generation)`,
   however many times the child restores. The forwarded `job_started` carries
-  the original `background` and `working_dir`.
+  the original `background` and `working_dir`, but not the job's process group
+  identity: that stays in the owner's journal, so a crash reap or another
+  branch's repair cannot signal a job whose owner is still live.
 - Dedupe rule: the shell owner's durable record is authoritative over a
   forwarded copy. Stable delegates have no forwarded job copy; the controller
   fold is their sole lifecycle authority.
