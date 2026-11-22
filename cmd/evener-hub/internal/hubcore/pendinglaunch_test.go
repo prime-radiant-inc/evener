@@ -3,6 +3,7 @@ package hubcore
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -44,16 +45,18 @@ func TestPendingLaunchCloseCancelsInFlightAndRefusesNewClaims(t *testing.T) {
 	if !created {
 		t.Fatal("claim was not created")
 	}
-	settled := make(chan struct{})
+	// Settle closes claim.done, which is what unblocks Close, so anything the
+	// goroutine does after Settle returns can run after Close returned. Record
+	// that settling started before Settle instead: Close's wait makes that
+	// store visible here without depending on how the goroutine is scheduled.
+	var settling atomic.Bool
 	go func() {
 		<-claim.Context().Done()
+		settling.Store(true)
 		claim.Settle(rendezvous.Entry{}, claim.Context().Err())
-		close(settled)
 	}()
 	locks.Close()
-	select {
-	case <-settled:
-	default:
+	if !settling.Load() {
 		t.Fatal("Close returned before the in-flight claim settled")
 	}
 	if _, ok := locks.PendingLaunch("session-a"); ok {
