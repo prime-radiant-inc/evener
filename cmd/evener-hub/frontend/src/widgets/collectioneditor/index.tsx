@@ -1,5 +1,6 @@
 import { type FormEvent, type ReactNode, useState } from "react";
 import { Button } from "../button";
+import { CloseIcon } from "../dialog/CloseIcon";
 import { IconButton } from "../iconbutton";
 import { Input } from "../input";
 import { requireClass } from "../internal/requireClass";
@@ -77,14 +78,6 @@ const CLASS = {
   error: requireClass(styles.error, "collectioneditor.module.css", "error"),
 };
 
-function RemoveIcon() {
-  return (
-    <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
-      <path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 /**
  * The generic add-row/remove-row list editor - the single most duplicated
  * shape in the legacy settings UI (directory lists, MCP config files,
@@ -158,7 +151,7 @@ export function CollectionEditor<T>({
                 <div className={CLASS.content}>{renderItem(item)}</div>
                 <IconButton
                   label={removeLabel(item)}
-                  icon={<RemoveIcon />}
+                  icon={<CloseIcon size={10} />}
                   variant="quiet"
                   size="sm"
                   onClick={() => onRemove(item)}
