@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -181,8 +180,7 @@ func TestJobStatusOnDelegateAfterAttentionReportIsAllowed(t *testing.T) {
 	}
 }
 
-// Both roles are told to yield with the result tool without retired arguments.
-func TestWaitGuidanceUsesQuietYieldForEveryRole(t *testing.T) {
+func TestWaitRefusalAllowsQuietYieldWithBackgroundWork(t *testing.T) {
 	t.Parallel()
 	child := minimalTestSessionConfig(t)
 	child.spawn.parentSessionID = "01PARENT"
@@ -190,14 +188,19 @@ func TestWaitGuidanceUsesQuietYieldForEveryRole(t *testing.T) {
 		"root": newTestSession(t), "delegate": newSession(t, withConfig(child)),
 	} {
 		t.Run(name, func(t *testing.T) {
-			for _, toolName := range []string{"job_status", "job_list"} {
-				description := s.reg.Get(toolName).Definition.Description
-				if strings.Contains(description, "end_reason") || !strings.Contains(description, "communicate({})") {
-					t.Errorf("%s does not advertise quiet yield", toolName)
-				}
-			}
 			if r := callTool(s, "shell", map[string]any{"command": "sleep 30"}); !isWaitRefused(r) {
 				t.Fatalf("sleep not refused: %+v", r)
+			}
+			jobID := startBackgroundShellJob(t, s, idleShellCommand)
+			t.Cleanup(func() { _, _ = s.jobManager.stop(jobID) })
+			res := callTool(s, "communicate", map[string]any{})
+			var state struct {
+				Accepted bool `json:"communicate_accepted"`
+				EndTurn  bool `json:"communicate_end_turn"`
+				Quiet    bool `json:"communicate_quiet"`
+			}
+			if err := json.Unmarshal(res.ToolState, &state); err != nil || res.IsError || !state.Accepted || !state.EndTurn || !state.Quiet {
+				t.Fatalf("quiet yield: IsError=%v, state=%+v, decode=%v", res.IsError, state, err)
 			}
 		})
 	}

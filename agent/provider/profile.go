@@ -22,6 +22,9 @@ type Profile struct {
 	toolNameMap map[string]string // canonical → provider-specific
 	docFiles    []string
 	cheapModel  string
+	// communicateOutputBound records an explicit result schema or decision enum,
+	// even when the bound schema has the default envelope's shape.
+	communicateOutputBound bool
 	// cheapProvider routes auxiliary "side calls" (naming, summarization,
 	// web_fetch Q&A) to a different instance than the main model. Empty means
 	// the main model's instance. Set via WithCheapModel("instance/model").
@@ -575,6 +578,12 @@ func (p *Profile) withCheapModelFrom(original *Profile) *Profile {
 	return p
 }
 
+// HasCommunicateOutputOverride reports whether the profile explicitly bound
+// a result schema or allowed decisions for communicate.
+func (p *Profile) HasCommunicateOutputOverride() bool {
+	return p != nil && p.communicateOutputBound
+}
+
 // WithCommunicateOverridesFrom returns a copy of p whose communicate tool
 // definition is replaced by original's, when original defines one.
 func (p *Profile) WithCommunicateOverridesFrom(original *Profile) *Profile {
@@ -608,5 +617,6 @@ func (p *Profile) WithCommunicateOverridesFrom(original *Profile) *Profile {
 		defs = append(defs, *origCommunicate)
 	}
 	p.toolDefs = defs
+	p.communicateOutputBound = original.communicateOutputBound
 	return p
 }

@@ -80,10 +80,12 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 		resultToolDef = existing.Definition
 		resultToolDef.Name = resultToolName
 	}
+	structuredRequired := deps.communicateOutputBound || !usesDefaultCommunicateOutputEnvelope(resultToolDef)
 	if err := reg.Register(tool.RegisteredTool{
-		Definition:    resultToolDef,
-		OmitIntent:    true,
-		UnmarshalArgs: unmarshalCommunicateArguments,
+		Definition:             resultToolDef,
+		OmitIntent:             true,
+		CommunicateOutputBound: deps.communicateOutputBound,
+		UnmarshalArgs:          unmarshalCommunicateArguments,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			if err := deps.abort(ctx); err != nil {
@@ -98,7 +100,6 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 				endTurn = v
 			}
 			rawOutput, outputPresent := args["output"]
-			structuredRequired := requiresStructuredFinalOutput(resultToolDef)
 			originalOutput := normalizeNodeOutput(rawOutput)
 			if message == "" && !structuredRequired {
 				message = strings.TrimSpace(originalOutput.Message)
@@ -287,10 +288,6 @@ func (s *Session) canQuietlyYield(ctx context.Context) error {
 		return err
 	}
 	return errors.New("Nothing can wake this turn, and you have not sent your report yet. Start the work, or send your final report with communicate(message=...).")
-}
-
-func requiresStructuredFinalOutput(def llm.ToolDefinition) bool {
-	return !usesDefaultCommunicateOutputEnvelope(def)
 }
 
 // unmarshalCommunicateArguments keeps the structured output's numbers exact.
@@ -543,10 +540,12 @@ var canonicalDefaultCommunicateOutputSchema = func() map[string]any {
 // communicateEnvelopeFor reports whether t is the session's result tool with
 // the exact canonical default output envelope, returning that envelope schema
 // when it is.
-// This is the single owner of the fill's two gates (issue #627):
+// This is the single owner of the fill's gates (issues #627 and #831):
 //   - identity: only the result tool gets the fill. A same-shaped schema on
 //     any other registered tool (an MCP or plugin tool) must keep failing
 //     loudly on keys the model was required to choose.
+//   - no explicit binding: a caller can bind the exact default schema and
+//     still require the model to supply its own output.
 //   - exact schema: equality with DefCommunicateNamed's canonical output
 //     schema. Same-key schemas can carry stricter types, enums, descriptions,
 //     or other constraints, so key-name comparison is not sufficient.
@@ -554,15 +553,11 @@ var canonicalDefaultCommunicateOutputSchema = func() map[string]any {
 // Returning the envelope it validated (rather than a bool the caller
 // re-derives) is what keeps the check and the fill from diverging.
 func communicateEnvelopeFor(t *tool.RegisteredTool, resultToolName string) (map[string]any, bool) {
-	if t == nil || t.Definition.Name != resultToolName {
+	if t == nil || t.Definition.Name != resultToolName || t.CommunicateOutputBound {
 		return nil, false
 	}
-	props, _ := t.Definition.Parameters["properties"].(map[string]any)
-	envelope, _ := props["output"].(map[string]any)
-	if !isCanonicalDefaultCommunicateOutputEnvelope(envelope) {
-		return nil, false
-	}
-	return envelope, true
+	envelope := communicateOutputSchema(t.Definition)
+	return envelope, isCanonicalDefaultCommunicateOutputEnvelope(envelope)
 }
 
 // usesDefaultCommunicateOutputEnvelope reports whether def's `output` property
@@ -570,9 +565,13 @@ func communicateEnvelopeFor(t *tool.RegisteredTool, resultToolName string) (map[
 // superset, a same-key schema with a stricter enum, or any other variation is a
 // custom envelope whose fields must remain exact.
 func usesDefaultCommunicateOutputEnvelope(def llm.ToolDefinition) bool {
+	return isCanonicalDefaultCommunicateOutputEnvelope(communicateOutputSchema(def))
+}
+
+func communicateOutputSchema(def llm.ToolDefinition) map[string]any {
 	props, _ := def.Parameters["properties"].(map[string]any)
 	output, _ := props["output"].(map[string]any)
-	return isCanonicalDefaultCommunicateOutputEnvelope(output)
+	return output
 }
 
 func isCanonicalDefaultCommunicateOutputEnvelope(output map[string]any) bool {

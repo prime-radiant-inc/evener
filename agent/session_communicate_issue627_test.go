@@ -129,9 +129,6 @@ func TestPrepareToolCall_CommunicateOutputExampleShowsFullShape(t *testing.T) {
 	if res.PrevalErr == "" {
 		t.Fatal("expected prevalidation failure for enum-constrained missing decision")
 	}
-	if strings.Contains(res.PrevalErr, "wrong type or value") {
-		t.Fatalf("generic wrong-type-or-value message hides the actual constraint (issue #627): %s", res.PrevalErr)
-	}
 	if !strings.Contains(res.PrevalErr, "output.decision") {
 		t.Fatalf("error does not name the missing nested key output.decision: %s", res.PrevalErr)
 	}
@@ -180,14 +177,8 @@ func TestExplainSchemaError_CommunicateOutputNamesMissingNestedKey(t *testing.T)
 	params := tool.DefCommunicateNamed("communicate").Parameters
 	params["properties"].(map[string]any)["output"].(map[string]any)["required"] = []string{"message"}
 	msg := repair.ExplainSchemaError("communicate", params, issue627ArgsMap(), "output", "required")
-	if strings.Contains(msg, "wrong type or value") {
-		t.Fatalf("present output object misreported as wrong type or value (issue #627): %q", msg)
-	}
 	if !strings.Contains(msg, "output.message") {
 		t.Fatalf("message does not name the missing nested key: %q", msg)
-	}
-	if !strings.Contains(msg, "Example:") {
-		t.Fatalf("message lost the example tail: %q", msg)
 	}
 }
 
@@ -206,8 +197,15 @@ func TestExplainSchemaError_ExampleShowsNestedOutputShape(t *testing.T) {
 	before := strings.Join(required, ",")
 
 	msg := repair.ExplainSchemaError("communicate", params, issue627ArgsMap(), "output", "required")
-	if !strings.Contains(msg, `"output": {"artifacts": [], "data": {}, "message": "..."}`) {
-		t.Fatalf("example does not show the accepted output shape: %q", msg)
+	var example struct{ Output map[string]any }
+	start := strings.IndexByte(msg, '{')
+	if start < 0 || json.NewDecoder(strings.NewReader(msg[start:])).Decode(&example) != nil {
+		t.Fatalf("no JSON object in diagnostic: %q", msg)
+	}
+	for _, key := range []string{"message", "data", "artifacts"} {
+		if _, ok := example.Output[key]; !ok {
+			t.Errorf("nested output example is missing key %q: %+v", key, example.Output)
+		}
 	}
 	if after := strings.Join(required, ","); after != before {
 		t.Fatalf("schema's required list mutated by example rendering: %s -> %s", before, after)

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"sync/atomic"
 	"testing"
@@ -8,6 +9,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -242,6 +244,48 @@ func TestCommunicateCustomSchemaUsesPresenceNotTruthiness(t *testing.T) {
 			}
 			if out, err := json.Marshal(s.communicateStructured()); err != nil || s.communicateStructured() == nil || string(out) != tc.value {
 				t.Fatalf("captured output=%s, err=%v, want present %s", out, err, tc.value)
+			}
+		})
+	}
+}
+
+func TestCommunicateExplicitDefaultOutputSchema(t *testing.T) {
+	t.Parallel()
+	defaultOutput := tool.DefCommunicate().Parameters["properties"].(map[string]any)["output"].(map[string]any)
+	for _, tc := range []struct {
+		name, args  string
+		wantError   bool
+		wantQuiet   bool
+		wantFinal   bool
+		wantOutput  string
+		copyBinding bool
+	}{
+		{name: "final without output", args: `{"message":"done"}`, wantError: true},
+		{name: "copied binding rejects final without output", args: `{"message":"done"}`, wantError: true, copyBinding: true},
+		{name: "progress without output", args: `{"message":"working","end_turn":false}`},
+		{name: "quiet notification", args: `{}`, wantQuiet: true},
+		{name: "final with empty object", args: `{"message":"done","output":{}}`, wantFinal: true, wantOutput: `{}`},
+		{name: "output-only message", args: `{"output":{"message":"nested"}}`, wantError: true},
+		{name: "output encoded as string", args: `{"message":"done","output":"{}"}`, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			profile := WithCommunicateOutputSchema(NewOpenAIProfile("gpt-5.2"), defaultOutput)
+			if tc.copyBinding {
+				profile = NewOpenAIProfile("gpt-5.2").WithCommunicateOverridesFrom(profile)
+			}
+			s := newSession(t, withProfile(profile))
+			ctx := context.WithValue(t.Context(), communicateEntryKindKey{}, EntryNotification)
+			res := s.execTool(ctx, rawCommunicateCall("explicit-default-schema", tc.args), "")
+			if res.IsError != tc.wantError {
+				t.Fatalf("IsError=%v, want %v; ToolState=%s", res.IsError, tc.wantError, res.ToolState)
+			}
+			if gotQuiet, gotFinal := s.quietlyYielded(), s.communicated(); gotQuiet != tc.wantQuiet || gotFinal != tc.wantFinal {
+				t.Fatalf("quiet=%v, final=%v; want quiet=%v, final=%v", gotQuiet, gotFinal, tc.wantQuiet, tc.wantFinal)
+			}
+			if tc.wantOutput != "" {
+				if got, err := json.Marshal(s.communicateStructured()); err != nil || string(got) != tc.wantOutput {
+					t.Fatalf("captured output=%s, err=%v, want %s", got, err, tc.wantOutput)
+				}
 			}
 		})
 	}

@@ -522,6 +522,9 @@ type RegisteredTool struct {
 	Schema     *jsonschema.Schema
 	Limit      schema.ToolOutputLimit
 	OmitIntent bool
+	// CommunicateOutputBound disables default-envelope repairs on the result
+	// tool when its output schema or allowed decisions were explicitly bound.
+	CommunicateOutputBound bool
 	// UnmarshalArgs optionally preserves tool-specific values before preparation
 	// and dispatch validate them. Nil retains encoding/json's float64 numbers.
 	UnmarshalArgs func([]byte, *map[string]any) error

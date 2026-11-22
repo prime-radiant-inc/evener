@@ -118,9 +118,8 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 	// The default communicate envelope documents message/data/artifacts as
 	// always-present with empty defaults (issue #627), but the schema demands
 	// them as required — reconcile by filling the documented defaults before
-	// validation. communicateEnvelopeFor owns both gates (identity: the
-	// session's result tool only; exact shape: precisely the default
-	// envelope), and returns the envelope it validated so the fill cannot
+	// validation. communicateEnvelopeFor limits this to the session's unbound
+	// result tool with the exact default envelope and returns it so the fill cannot
 	// diverge from what was checked. The fill runs on a working copy and is
 	// committed (args + recorded changes) only if validation passes, so a
 	// call that still fails never emits a ToolCallRepaired event whose

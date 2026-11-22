@@ -48,7 +48,8 @@ type toolDeps struct {
 	abort func(ctx context.Context) error
 
 	// resultToolName is the effective name of the communicate tool.
-	resultToolName func() string
+	resultToolName         func() string
+	communicateOutputBound bool
 
 	// memoryToolsStripped reports that this session has no memory namespace
 	// (memoryNamespaceUnavailable), so filterUnavailableMemoryTools will remove
@@ -299,16 +300,17 @@ type webDeps struct {
 // unchanged. Built once in registerCoreTools.
 func newToolDeps(s *Session) *toolDeps {
 	return &toolDeps{
-		registerTool:        s.cfg.testOnly.registerTool,
-		emit:                s.emit,
-		deliverCommunicate:  s.deliverCommunicate,
-		postDelegateUpdate:  s.postDelegateUpdate,
-		steer:               s.steerKind,
-		steerTaskCompletion: s.steerTaskCompletion,
-		drainSteering:       s.drainSteeringForCommunicate,
-		prependSteering:     s.prependSteering,
-		abort:               s.abortIfClosing,
-		resultToolName:      s.resultToolName,
+		registerTool:           s.cfg.testOnly.registerTool,
+		emit:                   s.emit,
+		deliverCommunicate:     s.deliverCommunicate,
+		postDelegateUpdate:     s.postDelegateUpdate,
+		steer:                  s.steerKind,
+		steerTaskCompletion:    s.steerTaskCompletion,
+		drainSteering:          s.drainSteeringForCommunicate,
+		prependSteering:        s.prependSteering,
+		abort:                  s.abortIfClosing,
+		resultToolName:         s.resultToolName,
+		communicateOutputBound: s.profile.HasCommunicateOutputOverride(),
 		cmdTimeouts: func() (int, int) {
 			return s.cfg.DefaultCommandTimeoutMS, s.cfg.MaxCommandTimeoutMS
 		},
