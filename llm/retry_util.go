@@ -6,7 +6,54 @@ import (
 	"math"
 	"math/rand/v2"
 	"time"
+
+	"primeradiant.com/evener/llm/registry"
 )
+
+// authRotation is implemented by a record-backed authenticator whose on-disk
+// record another process may rotate (the Copilot transport). AuthGeneration
+// names the current record generation without exposing its secrets: equal
+// values mean the same refresh token and obtained-at pair.
+type authRotation interface {
+	AuthGeneration(ctx context.Context, res registry.Resolved) (string, error)
+}
+
+// authRotationFor returns the authenticator serving res's scheme when it can
+// report record generations. The lookup honors the call-scoped override, so a
+// scoped Copilot authenticator answers for the launch's own state root.
+func authRotationFor(ctx context.Context, res registry.Resolved) authRotation {
+	auth := AuthenticatorForContext(ctx, res.Transport.Auth)
+	rotation, _ := auth.(authRotation)
+	return rotation
+}
+
+// retryOnAuthRotation runs attempt, and when it fails with an authentication
+// error while the record generation changed, runs it exactly once more. A
+// second failure is returned as-is: the retry is never repeated, and no other
+// error kind is retried here (401 classification is unchanged for every
+// provider). discard, when non-nil, releases a value from the abandoned
+// attempt before the retry so an opened stream is closed rather than leaked.
+func retryOnAuthRotation[T any](ctx context.Context, rotation authRotation, res registry.Resolved, attempt func() (T, error), discard func(T)) (T, error) {
+	if rotation == nil {
+		return attempt()
+	}
+	before, err := rotation.AuthGeneration(ctx, res)
+	if err != nil || before == "" {
+		return attempt()
+	}
+	value, attemptErr := attempt()
+	if attemptErr == nil || Kind(attemptErr) != KindAuthentication {
+		return value, attemptErr
+	}
+	after, err := rotation.AuthGeneration(ctx, res)
+	if err != nil || after == "" || after == before {
+		return value, attemptErr
+	}
+	if discard != nil {
+		discard(value)
+	}
+	return attempt()
+}
 
 // SleepFunc pauses for the duration d, returning early with an error if ctx is
 // cancelled before d elapses.

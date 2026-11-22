@@ -286,7 +286,7 @@ func TestTwoProcessFreshLoginClearsStaleRejection(t *testing.T) {
 	if loaded.RefreshRejected {
 		t.Fatal("fresh login left the previous generation's rejection in place")
 	}
-	if loaded.AccessToken != "login-access" || loaded.RefreshToken != "login-refresh" {
+	if loaded.AccessToken != "login-access" || loaded.RefreshToken != "" {
 		t.Fatal("fresh login did not replace the refused generation")
 	}
 }

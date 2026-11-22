@@ -31,7 +31,7 @@ type credentialProbeClient interface {
 	// runCredentialTest validates an asserted endpoint fingerprint against it -
 	// not against the hub's own registry - because it is what the model-list
 	// call resolves the name through - and binds that same registry's state
-	// root to the request (see withScopedCodexAuth), so a client loaded from a
+	// root to the request (see withScopedOAuthAuth), so a client loaded from a
 	// custom root reads that root's Codex record.
 	Registry() *registry.Registry
 }
@@ -210,7 +210,7 @@ func (c *hubAuthController) runCredentialTest(ctx context.Context, name, asserte
 		}
 	}
 
-	probeCtx, cancel := context.WithTimeout(withScopedCodexAuth(ctx, client.Registry()), credentialTestTimeout)
+	probeCtx, cancel := context.WithTimeout(withScopedOAuthAuth(ctx, client.Registry()), credentialTestTimeout)
 	defer cancel()
 	listing, err := client.Models(probeCtx, name)
 	// The probe read the credential this instance had when it started, and

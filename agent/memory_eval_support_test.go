@@ -300,7 +300,11 @@ func (b *memoryEvalAdmission) middleware(auth llm.Authenticator) llm.MiddlewareF
 			}
 			b.active.Add(1)
 			defer b.active.Done()
-			resp, err := next(llm.WithAuthenticatorOverride(ctx, auth), req)
+			nextCtx := ctx
+			if auth != nil {
+				nextCtx = llm.WithScopedAuthenticator(ctx, registry.AuthOAuthOpenAICodex, auth)
+			}
+			resp, err := next(nextCtx, req)
 			b.fail(err)
 			if err == nil {
 				b.observeUsage(resp.Usage)
@@ -317,10 +321,13 @@ func (b *memoryEvalAdmission) middleware(auth llm.Authenticator) llm.MiddlewareF
 			if err := b.terminalFailure(); err != nil {
 				return nil, err
 			}
-			ctx, cancel := b.bindContext(llm.WithAuthenticatorOverride(ctx, auth))
+			ctx, cancel := b.bindContext(ctx)
 			if err := ctx.Err(); err != nil {
 				cancel()
 				return nil, err
+			}
+			if auth != nil {
+				ctx = llm.WithScopedAuthenticator(ctx, registry.AuthOAuthOpenAICodex, auth)
 			}
 			if err := b.approvedRequest(req); err != nil {
 				b.fail(err)

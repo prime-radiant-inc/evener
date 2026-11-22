@@ -109,7 +109,7 @@ func TestImageRecoveryAttemptDeadlineStopsRepair(t *testing.T) {
 		t.Run(map[bool]string{false: "complete", true: "stream"}[stream], func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				preparer := &deadlineImagePreparer{}
-				ctx := llm.WithAuthenticatorOverride(t.Context(), preparer)
+				ctx := llm.WithScopedAuthenticator(t.Context(), registry.AuthOAuthOpenAICodex, preparer)
 				req, res := deadlineRecoveryRequest(t)
 				calls := 0
 				client := &http.Client{Transport: listingRoundTripper(func(r *http.Request) (*http.Response, error) {
@@ -142,7 +142,7 @@ func TestImageRecoveryDeadlineRetryOwnership(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				synctest.Test(t, func(t *testing.T) {
 					preparer := &deadlineImagePreparer{}
-					ctx := llm.WithAuthenticatorOverride(t.Context(), preparer)
+					ctx := llm.WithScopedAuthenticator(t.Context(), registry.AuthOAuthOpenAICodex, preparer)
 					if callerDeadline {
 						var cancel context.CancelFunc
 						ctx, cancel = context.WithTimeout(ctx, time.Second/2)

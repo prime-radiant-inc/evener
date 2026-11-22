@@ -355,7 +355,13 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 		return t.protocol.Complete(c.withHasher(ctx), req, t.res)
 	}
 	handler := applyMiddlewareComplete(base, c.middlewareSnapshot())
-	resp, err := handler(ctx, req)
+	var rotation authRotation
+	if t.resolved && t.override == nil {
+		rotation = authRotationFor(ctx, t.res)
+	}
+	resp, err := retryOnAuthRotation(ctx, rotation, t.res, func() (Response, error) {
+		return handler(ctx, req)
+	}, nil)
 	resp.Provider = t.name
 	err = RewriteErrorProvider(err, t.name)
 	return resp, err
@@ -411,7 +417,17 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 		return st, err
 	}
 	handler := applyMiddlewareStream(base, c.middlewareSnapshot())
-	st, err := handler(ctx, req)
+	var rotation authRotation
+	if t.resolved && t.override == nil {
+		rotation = authRotationFor(ctx, t.res)
+	}
+	st, err := retryOnAuthRotation(ctx, rotation, t.res, func() (Stream, error) {
+		return handler(ctx, req)
+	}, func(st Stream) {
+		if st != nil {
+			_ = st.Close()
+		}
+	})
 	if err != nil {
 		return nil, RewriteErrorProvider(err, t.name)
 	}

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -85,17 +84,22 @@ func (s *Service) LoginWithDevice(ctx context.Context, stateDir, instance string
 }
 
 func (s *Service) saveLogin(ctx context.Context, stateDir, instance string, tokens TokenSet) (AuthStatus, error) {
-	if err := validateTokenSet(tokens, true); err != nil {
+	if err := validateTokenSet(tokens); err != nil {
 		return AuthStatus{}, err
 	}
 	account, err := FetchAccount(ctx, s.client, s.cfg, tokens.AccessToken)
 	if err != nil {
 		return AuthStatus{}, err
 	}
+	session, err := ExchangeCopilotToken(ctx, s.client, s.cfg, tokens.AccessToken)
+	if err != nil {
+		return AuthStatus{}, fmt.Errorf("exchange GitHub token for a Copilot session: %w", err)
+	}
 	record := AuthRecord{Instance: instance, Scheme: AuthScheme, Version: 1,
 		AccessToken: tokens.AccessToken, RefreshToken: tokens.RefreshToken,
 		TokenType: firstNonEmpty(tokens.TokenType, "Bearer"), Scope: firstNonEmpty(tokens.Scope, s.cfg.scope()),
 		ObtainedAt: nowFunc(), AccessExpiry: tokens.AccessExpiry, RefreshExpiry: tokens.RefreshExpiry,
+		CopilotToken: session.Token, CopilotExpiry: session.Expiry,
 		AccountID: account.ID, Email: account.Email}
 	beforeRecordLock()
 	if err := WithRecordLock(stateDir, instance, func() error {
@@ -139,8 +143,9 @@ func (s *Service) Logout(stateDir, instance string) (bool, error) {
 	return existed, err
 }
 
-// ResolveRuntimeCredentials returns a usable bearer token, refreshing five
-// minutes before access expiry under the record lock. Missing, rejected, or
+// ResolveRuntimeCredentials returns the current Copilot session token,
+// refreshing an expiring GitHub token and then renewing the Copilot session
+// five minutes early under the record lock. Missing, rejected, or
 // unrefreshable records return ErrLoginRequired; a transient failure stays an
 // ordinary error so the caller can retry.
 func (s *Service) ResolveRuntimeCredentials(ctx context.Context, stateDir, instance string) (RuntimeCredentials, error) {
@@ -157,13 +162,19 @@ func (s *Service) ResolveRuntimeCredentials(ctx context.Context, stateDir, insta
 	if record.NeedsLogin(nowFunc()) {
 		return RuntimeCredentials{}, loginRequired(errors.New("stored refresh token cannot recover this record"))
 	}
-	if !needsRefresh(nowFunc(), record.AccessExpiry) {
+	if !needsRefresh(nowFunc(), record.CopilotExpiry) && !githubNeedsRefresh(nowFunc(), record) {
 		return runtimeFromRecord(record), nil
 	}
-	return s.refreshUnderLock(ctx, stateDir, instance)
+	return s.renewUnderLock(ctx, stateDir, instance)
 }
 
-func (s *Service) refreshUnderLock(ctx context.Context, stateDir, instance string) (credentials RuntimeCredentials, err error) {
+// githubNeedsRefresh reports whether a refreshable GitHub access token is
+// inside the renewal window. A non-expiring token never needs refreshing.
+func githubNeedsRefresh(now time.Time, record AuthRecord) bool {
+	return !record.AccessExpiry.IsZero() && needsRefresh(now, record.AccessExpiry)
+}
+
+func (s *Service) renewUnderLock(ctx context.Context, stateDir, instance string) (credentials RuntimeCredentials, err error) {
 	beforeRecordLock()
 	err = WithRecordLock(stateDir, instance, func() error {
 		current, err := LoadAuth(stateDir, instance)
@@ -176,81 +187,106 @@ func (s *Service) refreshUnderLock(ctx context.Context, stateDir, instance strin
 		if current.NeedsLogin(nowFunc()) {
 			return loginRequired(errors.New("stored refresh token cannot recover this record"))
 		}
-		if !needsRefresh(nowFunc(), current.AccessExpiry) {
+		renewed := current
+		if githubNeedsRefresh(nowFunc(), current) {
+			if current.RefreshToken == "" {
+				return loginRequired(errors.New("GitHub access token expired and cannot be refreshed"))
+			}
+			tokens, err := RefreshToken(ctx, s.client, s.cfg, current.RefreshToken)
+			if errors.Is(err, ErrBadRefreshToken) {
+				return s.saveRejected(stateDir, instance, current, current, ErrBadRefreshToken)
+			}
+			if err != nil {
+				return fmt.Errorf("refresh GitHub Copilot auth: %w", err)
+			}
+			renewed, err = refreshedRecord(current, tokens)
+			if err != nil {
+				return err
+			}
+		}
+		if needsRefresh(nowFunc(), renewed.CopilotExpiry) {
+			session, err := ExchangeCopilotToken(ctx, s.client, s.cfg, renewed.AccessToken)
+			if errors.Is(err, ErrCopilotTokenRejected) {
+				return s.saveRejected(stateDir, instance, current, renewed, ErrCopilotTokenRejected)
+			}
+			if err != nil {
+				if renewed != current {
+					if saveErr := s.saveIfCurrent(stateDir, instance, current, renewed); saveErr != nil &&
+						!errors.Is(saveErr, ErrAuthChanged) && !errors.Is(saveErr, ErrAuthNotFound) {
+						return fmt.Errorf("renew Copilot session: %w (persist refreshed GitHub credentials: %w)", err, saveErr)
+					}
+				}
+				return fmt.Errorf("renew Copilot session: %w", err)
+			}
+			renewed.CopilotToken = session.Token
+			renewed.CopilotExpiry = session.Expiry
+			renewed.ObtainedAt = nowFunc()
+		}
+		if renewed == current {
 			credentials = runtimeFromRecord(current)
 			return nil
 		}
-		// Re-read under the Task 1 lock: a newer login, refresh, or logout wins.
-		// This generation is the only one this request may redeem and replace.
-		tokens, err := RefreshToken(ctx, s.client, s.cfg, current.RefreshToken)
-		if errors.Is(err, ErrBadRefreshToken) {
-			return s.recordRejection(stateDir, instance, current)
-		}
-		if err != nil {
-			return fmt.Errorf("refresh GitHub Copilot auth: %w", err)
-		}
-		refreshed, err := refreshedRecord(current, tokens)
-		if err != nil {
+		if err := s.saveIfCurrent(stateDir, instance, current, renewed); err != nil {
 			return err
 		}
-		// The lock makes the record immutable between the re-read and this
-		// compare-and-save, stating the stale-writer contract.
-		if _, err := LoadAuthIfCurrent(stateDir, instance, current); err != nil {
-			return err
-		}
-		if err := SaveAuth(stateDir, instance, refreshed); err != nil {
-			return err
-		}
-		credentials = runtimeFromRecord(refreshed)
+		credentials = runtimeFromRecord(renewed)
 		return nil
 	})
 	return credentials, err
 }
 
-func (s *Service) recordRejection(stateDir, instance string, refused AuthRecord) error {
+// saveRejected marks the current generation rejected and saves rejected, which
+// may carry a GitHub token rotation from this renewal attempt. A newer login,
+// refresh, or logout wins instead of being overwritten.
+func (s *Service) saveRejected(stateDir, instance string, read, rejected AuthRecord, cause error) error {
 	// Key the flag to the exact refused token and generation: a newer record
 	// must not inherit this rejection.
-	current, err := LoadAuthIfCurrent(stateDir, instance, refused)
-	if errors.Is(err, ErrAuthNotFound) || errors.Is(err, ErrAuthChanged) {
-		return loginRequired(ErrBadRefreshToken)
-	}
-	if err != nil {
+	rejected.RefreshRejected = true
+	if err := s.saveIfCurrent(stateDir, instance, read, rejected); err != nil {
+		if errors.Is(err, ErrAuthNotFound) || errors.Is(err, ErrAuthChanged) {
+			return loginRequired(cause)
+		}
 		return err
 	}
-	current.RefreshRejected = true
-	if err := SaveAuth(stateDir, instance, current); err != nil {
+	return loginRequired(cause)
+}
+
+// saveIfCurrent saves next only while read is still the stored generation.
+// The lock makes the record immutable between the re-read and this save,
+// stating the stale-writer contract.
+func (s *Service) saveIfCurrent(stateDir, instance string, read, next AuthRecord) error {
+	if _, err := LoadAuthIfCurrent(stateDir, instance, read); err != nil {
 		return err
 	}
-	return loginRequired(ErrBadRefreshToken)
+	return SaveAuth(stateDir, instance, next)
 }
 
 func statusFromRecord(record AuthRecord) AuthStatus {
 	now := nowFunc()
 	return AuthStatus{SignedIn: true, Source: AuthSourceOAuth, AccountID: record.AccountID,
-		Email: record.Email, Expiry: record.AccessExpiry,
-		NeedsRefresh: needsRefresh(now, record.AccessExpiry), NeedsLogin: record.NeedsLogin(now)}
+		Email: record.Email, Expiry: record.CopilotExpiry,
+		NeedsRefresh: needsRefresh(now, record.CopilotExpiry) || githubNeedsRefresh(now, record),
+		NeedsLogin:   record.NeedsLogin(now)}
 }
 
 func runtimeFromRecord(record AuthRecord) RuntimeCredentials {
-	return RuntimeCredentials{BearerToken: record.AccessToken, AccountID: record.AccountID, Expiry: record.AccessExpiry}
+	return RuntimeCredentials{BearerToken: record.CopilotToken, AccountID: record.AccountID, Expiry: record.CopilotExpiry}
 }
 
 func refreshedRecord(current AuthRecord, tokens TokenSet) (AuthRecord, error) {
-	if err := validateTokenSet(tokens, false); err != nil {
+	if err := validateTokenSet(tokens); err != nil {
 		return AuthRecord{}, err
 	}
 	record := current
 	record.AccessToken = tokens.AccessToken
 	record.TokenType = firstNonEmpty(tokens.TokenType, record.TokenType)
 	record.Scope = firstNonEmpty(tokens.Scope, record.Scope)
-	if strings.TrimSpace(tokens.RefreshToken) != "" {
-		record.RefreshToken = tokens.RefreshToken
-	}
-	record.ObtainedAt = nowFunc()
 	record.AccessExpiry = tokens.AccessExpiry
-	if !tokens.RefreshExpiry.IsZero() {
+	if tokens.RefreshToken != "" {
+		record.RefreshToken = tokens.RefreshToken
 		record.RefreshExpiry = tokens.RefreshExpiry
 	}
+	record.ObtainedAt = nowFunc()
 	record.RefreshRejected = false
 	return record, nil
 }

@@ -18,6 +18,8 @@ func sampleRecord() AuthRecord {
 		ObtainedAt:    time.Date(2026, 11, 22, 1, 0, 0, 0, time.UTC),
 		AccessExpiry:  time.Date(2026, 11, 22, 9, 0, 0, 0, time.UTC),
 		RefreshExpiry: time.Date(2027, 5, 21, 1, 0, 0, 0, time.UTC),
+		CopilotToken:  "copilot-token",
+		CopilotExpiry: time.Date(2026, 11, 22, 3, 0, 0, 0, time.UTC),
 		AccountID:     "1234567",
 		Email:         "user@example.com",
 	}
@@ -52,6 +54,38 @@ func TestValidateAcceptsPersistedRefreshRejection(t *testing.T) {
 	}
 }
 
+// TestValidateAcceptsNonExpiringGitHubToken pins the Pi-compatible identity's
+// current token shape: a GitHub access token with no refresh token and no
+// expiry, plus the required Copilot session token and expiry.
+func TestValidateAcceptsNonExpiringGitHubToken(t *testing.T) {
+	record := sampleRecord()
+	record.RefreshToken = ""
+	record.AccessExpiry = time.Time{}
+	record.RefreshExpiry = time.Time{}
+	record.TokenType = ""
+	record.Scope = ""
+	if err := record.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want a non-expiring GitHub token to be valid", err)
+	}
+}
+
+// TestNeedsLoginForNonExpiringToken proves a non-expiring GitHub token never
+// needs login just because the GitHub refresh fields are empty.
+func TestNeedsLoginForNonExpiringToken(t *testing.T) {
+	now := time.Date(2026, 11, 22, 2, 0, 0, 0, time.UTC)
+	record := sampleRecord()
+	record.RefreshToken = ""
+	record.AccessExpiry = time.Time{}
+	record.RefreshExpiry = time.Time{}
+	if record.NeedsLogin(now) {
+		t.Fatal("non-expiring GitHub token reported login required")
+	}
+	record.RefreshRejected = true
+	if !record.NeedsLogin(now) {
+		t.Fatal("rejected credential did not require login")
+	}
+}
+
 func TestValidateRejectsMissingOrWrongRequiredFields(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -63,13 +97,12 @@ func TestValidateRejectsMissingOrWrongRequiredFields(t *testing.T) {
 		{"missing version", func(r *AuthRecord) { r.Version = 0 }},
 		{"unsupported version", func(r *AuthRecord) { r.Version = 2 }},
 		{"missing access token", func(r *AuthRecord) { r.AccessToken = "" }},
-		{"missing refresh token", func(r *AuthRecord) { r.RefreshToken = "" }},
-		{"missing token type", func(r *AuthRecord) { r.TokenType = "" }},
-		{"missing scope", func(r *AuthRecord) { r.Scope = "" }},
+		{"missing copilot token", func(r *AuthRecord) { r.CopilotToken = "" }},
+		{"missing copilot expiry", func(r *AuthRecord) { r.CopilotExpiry = time.Time{} }},
 		{"missing obtained at", func(r *AuthRecord) { r.ObtainedAt = time.Time{} }},
-		{"missing access expiry", func(r *AuthRecord) { r.AccessExpiry = time.Time{} }},
-		{"missing refresh expiry", func(r *AuthRecord) { r.RefreshExpiry = time.Time{} }},
 		{"missing account id", func(r *AuthRecord) { r.AccountID = "" }},
+		{"refresh token without expiry", func(r *AuthRecord) { r.RefreshExpiry = time.Time{} }},
+		{"refresh expiry without token", func(r *AuthRecord) { r.RefreshToken = "" }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -94,7 +127,7 @@ func TestRecordJSONBindsSchemeAndOmitsSource(t *testing.T) {
 	for _, key := range []string{
 		"instance", "auth_scheme", "version", "access_token", "refresh_token",
 		"token_type", "scope", "obtained_at", "access_expiry", "refresh_expiry",
-		"account_id",
+		"copilot_token", "copilot_expiry", "account_id",
 	} {
 		if _, ok := raw[key]; !ok {
 			t.Errorf("serialized record is missing %q", key)

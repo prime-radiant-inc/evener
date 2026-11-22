@@ -211,8 +211,8 @@ func TestLoadAuthRejectsMismatchedInstance(t *testing.T) {
 
 func TestLoadAuthRejectsMissingRequiredFields(t *testing.T) {
 	for _, key := range []string{
-		"instance", "auth_scheme", "version", "access_token", "refresh_token",
-		"token_type", "scope", "obtained_at", "access_expiry", "refresh_expiry",
+		"instance", "auth_scheme", "version", "access_token", "copilot_token",
+		"copilot_expiry", "obtained_at", "refresh_token", "refresh_expiry",
 		"account_id",
 	} {
 		t.Run(key, func(t *testing.T) {

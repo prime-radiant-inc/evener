@@ -2,17 +2,23 @@ package llm
 
 import (
 	"context"
-
-	"primeradiant.com/evener/llm/registry"
+	"maps"
 )
 
 type authenticatorOverrideKey struct{}
 
-// WithAuthenticatorOverride carries a call-scoped authenticator that
-// replaces the process-global AuthenticatorFor lookup for protocol
-// calls issued under the returned context: the caller binds the
-// authenticator (and its state root) to the request instead of racing
-// a global rewire. A nil override keeps the historical lookup.
+// authenticatorOverrides carries one context's call-scoped authenticators.
+// Only exact scheme-bound values answer; the legacy generic value is kept for
+// WithAuthenticatorOverride's API and never serves a request.
+type authenticatorOverrides struct {
+	generic  Authenticator
+	byScheme map[string]Authenticator
+}
+
+// WithAuthenticatorOverride records a legacy call-scoped authenticator, but
+// no scheme resolves through it: record-backed OAuth schemes require
+// WithScopedAuthenticator, and every other scheme resolves from its Resolved
+// record or the global registration. A nil override returns ctx unchanged.
 func WithAuthenticatorOverride(ctx context.Context, auth Authenticator) context.Context {
 	if auth == nil {
 		// context.WithValue panics on a nil value, and the documented
@@ -20,15 +26,32 @@ func WithAuthenticatorOverride(ctx context.Context, auth Authenticator) context.
 		// context IS that lookup.
 		return ctx
 	}
-	return context.WithValue(ctx, authenticatorOverrideKey{}, auth)
+	overrides := authenticatorOverridesForContext(ctx)
+	overrides.generic = auth
+	return context.WithValue(ctx, authenticatorOverrideKey{}, overrides)
 }
 
-// authenticatorOverride returns the call-scoped authenticator, if any.
-func authenticatorOverride(ctx context.Context) Authenticator {
-	if auth, ok := ctx.Value(authenticatorOverrideKey{}).(Authenticator); ok {
-		return auth
+// WithScopedAuthenticator binds auth to one auth scheme for calls under ctx.
+// Record-backed OAuth schemes must use this so a Codex scope cannot answer a
+// Copilot request, or vice versa. A nil authenticator or empty scheme keeps ctx.
+func WithScopedAuthenticator(ctx context.Context, scheme string, auth Authenticator) context.Context {
+	if auth == nil || scheme == "" {
+		return ctx
 	}
-	return nil
+	overrides := authenticatorOverridesForContext(ctx)
+	byScheme := make(map[string]Authenticator, len(overrides.byScheme)+1)
+	maps.Copy(byScheme, overrides.byScheme)
+	byScheme[scheme] = auth
+	overrides.byScheme = byScheme
+	return context.WithValue(ctx, authenticatorOverrideKey{}, overrides)
+}
+
+// authenticatorOverridesForContext returns the call-scoped authenticators, if any.
+func authenticatorOverridesForContext(ctx context.Context) authenticatorOverrides {
+	if overrides, ok := ctx.Value(authenticatorOverrideKey{}).(authenticatorOverrides); ok {
+		return overrides
+	}
+	return authenticatorOverrides{}
 }
 
 // AuthenticatorOverrideFor returns the call-scoped authenticator carried
@@ -36,16 +59,12 @@ func authenticatorOverride(ctx context.Context) Authenticator {
 // must never answer for a bearer transport or vice versa. Nil keeps the
 // global lookup.
 func AuthenticatorOverrideFor(ctx context.Context, scheme string) Authenticator {
-	auth := authenticatorOverride(ctx)
-	if auth == nil {
-		return nil
+	overrides := authenticatorOverridesForContext(ctx)
+	if auth := overrides.byScheme[scheme]; auth != nil {
+		return auth
 	}
-	// Only the Codex transport uses scoped authenticators today: it is
-	// the sole scheme whose record lookup reads mutable process-global
-	// state (DefaultCodex.StateDir). Every other scheme resolves from
-	// the Resolved record alone and keeps the global lookup.
-	if scheme != registry.AuthOAuthOpenAICodex {
-		return nil
-	}
-	return auth
+	// Record-backed OAuth schemes require an exact scheme-bound authenticator;
+	// every other scheme keeps the global lookup. A generic override answers
+	// neither, so it cannot run for a bearer request.
+	return nil
 }

@@ -43,7 +43,7 @@ func FetchAccount(ctx context.Context, client *http.Client, cfg Config, accessTo
 		Email string      `json:"email"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return Account{}, fmt.Errorf("%w: %v", ErrMalformedResponse, err)
+		return Account{}, fmt.Errorf("%w: %w", ErrMalformedResponse, err)
 	}
 	if payload.ID == "" {
 		return Account{}, fmt.Errorf("%w: missing account id", ErrMalformedResponse)

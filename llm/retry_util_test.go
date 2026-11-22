@@ -6,7 +6,112 @@ import (
 	"math"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/llm/registry"
 )
+
+type rotationStub struct {
+	generations []string
+	readErr     error
+	reads       int
+}
+
+func (r *rotationStub) AuthGeneration(context.Context, registry.Resolved) (string, error) {
+	r.reads++
+	if r.readErr != nil {
+		return "", r.readErr
+	}
+	if len(r.generations) == 0 {
+		return "", nil
+	}
+	g := r.generations[0]
+	if len(r.generations) > 1 {
+		r.generations = r.generations[1:]
+	}
+	return g, nil
+}
+
+func authErr() error {
+	return ErrorFromHTTPStatus("github-copilot", 401, "bad credentials", nil, nil)
+}
+
+func TestRetryOnAuthRotationRetriesOnceAfterRotation(t *testing.T) {
+	rotation := &rotationStub{generations: []string{"gen-a", "gen-b"}}
+	attempts, discarded := 0, 0
+	got, err := retryOnAuthRotation(context.Background(), rotation, registry.Resolved{}, func() (int, error) {
+		attempts++
+		if attempts == 1 {
+			return 1, authErr()
+		}
+		return 2, nil
+	}, func(int) { discarded++ })
+	if err != nil {
+		t.Fatalf("retryOnAuthRotation: %v", err)
+	}
+	if got != 2 || attempts != 2 || discarded != 1 {
+		t.Fatalf("got %d attempts %d discarded %d, want 2/2/1", got, attempts, discarded)
+	}
+}
+
+func TestRetryOnAuthRotationDoesNotRetryWithoutChange(t *testing.T) {
+	rotation := &rotationStub{generations: []string{"gen-a"}}
+	attempts := 0
+	_, err := retryOnAuthRotation(context.Background(), rotation, registry.Resolved{}, func() (int, error) {
+		attempts++
+		return 0, authErr()
+	}, nil)
+	if Kind(err) != KindAuthentication || attempts != 1 {
+		t.Fatalf("err %v attempts %d, want the 401 returned after one attempt", err, attempts)
+	}
+}
+
+func TestRetryOnAuthRotationDoesNotRetryNonAuthFailure(t *testing.T) {
+	rotation := &rotationStub{generations: []string{"gen-a", "gen-b"}}
+	attempts := 0
+	err := ErrorFromHTTPStatus("github-copilot", 500, "boom", nil, nil)
+	_, got := retryOnAuthRotation(context.Background(), rotation, registry.Resolved{}, func() (int, error) {
+		attempts++
+		return 0, err
+	}, nil)
+	if !errors.Is(got, err) || attempts != 1 {
+		t.Fatalf("err %v attempts %d, want the original error after one attempt", got, attempts)
+	}
+}
+
+func TestRetryOnAuthRotationNilRotationDoesNotRetry(t *testing.T) {
+	attempts := 0
+	_, err := retryOnAuthRotation(context.Background(), nil, registry.Resolved{}, func() (int, error) {
+		attempts++
+		return 0, authErr()
+	}, nil)
+	if Kind(err) != KindAuthentication || attempts != 1 {
+		t.Fatalf("err %v attempts %d, want one attempt without a rotation source", err, attempts)
+	}
+}
+
+func TestRetryOnAuthRotationReturnsSecondFailureWithoutFurtherRetry(t *testing.T) {
+	rotation := &rotationStub{generations: []string{"gen-a", "gen-b", "gen-c"}}
+	attempts := 0
+	_, err := retryOnAuthRotation(context.Background(), rotation, registry.Resolved{}, func() (int, error) {
+		attempts++
+		return 0, authErr()
+	}, nil)
+	if Kind(err) != KindAuthentication || attempts != 2 {
+		t.Fatalf("err %v attempts %d, want exactly one retry", err, attempts)
+	}
+}
+
+func TestRetryOnAuthRotationSkipsWhenGenerationIsUnreadable(t *testing.T) {
+	rotation := &rotationStub{readErr: errors.New("unreadable record")}
+	attempts := 0
+	_, err := retryOnAuthRotation(context.Background(), rotation, registry.Resolved{}, func() (int, error) {
+		attempts++
+		return 0, authErr()
+	}, nil)
+	if Kind(err) != KindAuthentication || attempts != 1 {
+		t.Fatalf("err %v attempts %d, want one attempt when the record cannot be read", err, attempts)
+	}
+}
 
 func TestRetry_RetriesRetryableErrors_WithExponentialBackoff(t *testing.T) {
 	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.

@@ -141,7 +141,7 @@ func TestRequestDeviceCodeReturnsDisplayFields(t *testing.T) {
 	swapNow(t, at)
 	var mu sync.Mutex
 	var form url.Values
-	var accept string
+	var accept, userAgent string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/login/device/code" {
 			t.Errorf("request = %s %s, want POST /login/device/code", r.Method, r.URL.Path)
@@ -149,6 +149,7 @@ func TestRequestDeviceCodeReturnsDisplayFields(t *testing.T) {
 		_ = r.ParseForm()
 		mu.Lock()
 		accept = r.Header.Get("Accept")
+		userAgent = r.Header.Get("User-Agent")
 		form = r.PostForm
 		mu.Unlock()
 		writeJSON(w, map[string]any{
@@ -182,11 +183,14 @@ func TestRequestDeviceCodeReturnsDisplayFields(t *testing.T) {
 	if accept != "application/json" {
 		t.Errorf("Accept = %q, want application/json", accept)
 	}
+	if userAgent != PiUserAgent {
+		t.Errorf("User-Agent = %q, want the Pi-compatible device identity %q", userAgent, PiUserAgent)
+	}
 	if form.Get("client_id") != ClientID {
 		t.Errorf("client_id = %q, want %q", form.Get("client_id"), ClientID)
 	}
-	if form.Get("scope") != "read:user offline_access" {
-		t.Errorf("scope = %q, want read:user offline_access", form.Get("scope"))
+	if form.Get("scope") != "read:user" {
+		t.Errorf("scope = %q, want read:user only", form.Get("scope"))
 	}
 }
 

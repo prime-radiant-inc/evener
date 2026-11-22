@@ -285,9 +285,10 @@ func TestFetchLiveModelsSkipsRowAuthOverrideInstances(t *testing.T) {
 
 // TestFetchLiveModels_BindsTheRegistrysCodexScope pins the model-list half of
 // a wrong-record bug: the fetch must authenticate with the registry client's
-// own state root, not whatever root the process-global Codex holds. The
+// own state root, not whatever root the process-global OAuth clients hold. The
 // adapter records the request context, so the assertion is about what the
-// fetch actually carried.
+// fetch actually carried. The Copilot assertion keeps a Codex scope from
+// answering a Copilot listing.
 func TestFetchLiveModels_BindsTheRegistrysCodexScope(t *testing.T) {
 	root := t.TempDir()
 	writeCodexOAuthRecord(t, root, "codex-work")
@@ -325,6 +326,14 @@ func TestFetchLiveModels_BindsTheRegistrysCodexScope(t *testing.T) {
 	}
 	if codex.StateDir != root {
 		t.Fatalf("scoped Codex state dir = %q, want the client registry's %q", codex.StateDir, root)
+	}
+	copilotAuth := llm.AuthenticatorOverrideFor(recorder.requestCtx, registry.AuthOAuthGitHubCopilot)
+	copilot, ok := copilotAuth.(*tokenauth.Copilot)
+	if !ok {
+		t.Fatalf("fetch context carried %T for Copilot, want a scoped *tokenauth.Copilot", copilotAuth)
+	}
+	if copilot.StateDir != root {
+		t.Fatalf("scoped Copilot state dir = %q, want the client registry's %q", copilot.StateDir, root)
 	}
 }
 

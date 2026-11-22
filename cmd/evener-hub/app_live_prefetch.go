@@ -48,7 +48,7 @@ func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, au
 	// concurrent fetch, probe, or model-list RPC — can move the
 	// records under it. No lock is held across the request: fetches
 	// for different instances run fully concurrently again.
-	fetchCtx := withScopedCodexAuth(ctx, reg)
+	fetchCtx := withScopedOAuthAuth(ctx, reg)
 	rows, live, usable, err := fetchInstanceLiveWith(fetchCtx, newLiveClient(reg), name)
 	auth.settleCredentialProbe(probe, llm.ModelListing{Live: live, Usable: usable}, err)
 	if err != nil {
@@ -65,18 +65,18 @@ func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, au
 	return nil
 }
 
-// withScopedCodexAuth binds the call-scoped Codex authenticator for one
-// registry snapshot: every hub path that issues a registry-client request
-// — prefetch fetches, the manual refresh, the credential-test probe, the
-// model-list loader — carries it, so the request reads the OAuth record
-// under THAT registry's state root instead of whatever root the
-// process-global Codex happens to hold. A nil registry (a bare client in
-// a test) keeps the global lookup: there is no root to scope to.
-func withScopedCodexAuth(ctx context.Context, reg *registry.Registry) context.Context {
+// withScopedOAuthAuth binds the call-scoped Codex and Copilot authenticators
+// for one registry snapshot: every hub path that issues a registry-client
+// request — prefetch fetches, the manual refresh, the credential-test probe,
+// the model-list loader — carries them, so each OAuth scheme reads its record
+// under THAT registry's state root. A nil registry (a bare client in a test)
+// keeps the global lookup: there is no root to scope to.
+func withScopedOAuthAuth(ctx context.Context, reg *registry.Registry) context.Context {
 	if reg == nil {
 		return ctx
 	}
-	return llm.WithAuthenticatorOverride(ctx, tokenauth.ScopedCodex(reg.StateRoot()))
+	ctx = llm.WithScopedAuthenticator(ctx, registry.AuthOAuthOpenAICodex, tokenauth.ScopedCodex(reg.StateRoot()))
+	return llm.WithScopedAuthenticator(ctx, registry.AuthOAuthGitHubCopilot, tokenauth.ScopedCopilot(reg.StateRoot()))
 }
 
 // LiveRegistryClient builds a registry client for one fetch without
