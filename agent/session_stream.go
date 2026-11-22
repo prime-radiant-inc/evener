@@ -81,6 +81,22 @@ type attemptObservation struct {
 // the two readers must not drift.
 const modelRetryFailFastAfter = 4
 
+// maxToolCallsPerResponse bounds one streamed assistant response. A model that
+// emits more calls than this is a runaway, not a productive response: the
+// stream is cut, none of the calls execute, and the turn fails. Read-only calls
+// count too, because a read-only batch fans out one goroutine per call.
+const maxToolCallsPerResponse = 100
+
+// responseToolCallLimitError reports a response discarded by
+// maxToolCallsPerResponse. It is non-retryable and model-fallback-ineligible:
+// the same request against another model replays the runaway.
+type responseToolCallLimitError struct {
+	cause error
+}
+
+func (e *responseToolCallLimitError) Error() string { return e.cause.Error() }
+func (e *responseToolCallLimitError) Unwrap() error { return e.cause }
+
 // emitModelRetry builds the RetryPolicy.OnRetry hook that reports each retry of
 // req on the session event bus. Attempt counts retries (the first retry is 1);
 // MaxAttempts is the full budget including the initial try, so a consumer can
@@ -327,6 +343,21 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 	previewCallIDs := func() []string {
 		return append([]string(nil), communicatePreviewOrder...)
 	}
+	// toolCallSeen counts distinct tool-call ids in this one response, at each
+	// id's first event. The name/args maps cannot serve as the count: a provider
+	// may repeat an id across start, delta, and end, and which of those it emits
+	// varies by provider.
+	toolCallSeen := map[string]struct{}{}
+	overToolCallLimit := func(id string) bool {
+		if id == "" {
+			return false
+		}
+		if _, seen := toolCallSeen[id]; seen {
+			return false
+		}
+		toolCallSeen[id] = struct{}{}
+		return len(toolCallSeen) > maxToolCallsPerResponse
+	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			for _, callID := range previewCallIDs() {
@@ -382,6 +413,13 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 		return obs
 	}
 
+	abortOverToolCallLimit := func() (sessionModelResponse, attemptObservation, error) {
+		err := &responseToolCallLimitError{
+			cause: llm.NewPermanentStreamError(req.Provider, "assistant response exceeded "+strconv.Itoa(maxToolCallsPerResponse)+" tool calls", nil),
+		}
+		return sessionModelResponse{CommunicatePreviewCallIDs: previewCallIDs()}, observe(err), err
+	}
+
 	emitAssistantStart := func() {
 		if assistantStarted {
 			return
@@ -417,6 +455,9 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 		}
 		message, ok := decoder.message(args)
 		if !ok || message == "" {
+			return
+		}
+		if !communicatePreviewStarted[callID] && strings.TrimSpace(message) == "" {
 			return
 		}
 		prev := communicateText[callID]
@@ -455,6 +496,9 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 			if ev.ToolCall == nil || ev.ToolCall.ID == "" {
 				break
 			}
+			if overToolCallLimit(ev.ToolCall.ID) {
+				return abortOverToolCallLimit()
+			}
 			toolNames[ev.ToolCall.ID] = s.canonicalToolName(ev.ToolCall.Name)
 			if _, ok := toolArgs[ev.ToolCall.ID]; !ok {
 				toolArgs[ev.ToolCall.ID] = &strings.Builder{}
@@ -463,6 +507,9 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 			s.noteParentJobActivity(jobPhaseModelStreaming)
 			if ev.ToolCall == nil || ev.ToolCall.ID == "" {
 				break
+			}
+			if overToolCallLimit(ev.ToolCall.ID) {
+				return abortOverToolCallLimit()
 			}
 			if ev.ToolCall.Name != "" {
 				toolNames[ev.ToolCall.ID] = s.canonicalToolName(ev.ToolCall.Name)
@@ -481,6 +528,9 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 			s.noteParentJobActivity(jobPhaseModelStreaming)
 			if ev.ToolCall == nil || ev.ToolCall.ID == "" {
 				break
+			}
+			if overToolCallLimit(ev.ToolCall.ID) {
+				return abortOverToolCallLimit()
 			}
 			if ev.ToolCall.Name != "" {
 				toolNames[ev.ToolCall.ID] = s.canonicalToolName(ev.ToolCall.Name)

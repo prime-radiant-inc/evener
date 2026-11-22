@@ -2654,3 +2654,31 @@ func TestRenderMarkdown_PrevalOnlyRejectedCommunicateStillSurfaces(t *testing.T)
 		t.Errorf("PrevalOnly-rejected communicate must still surface raw bytes; got:\n%s", out)
 	}
 }
+
+func TestTranscriptRenderQuietCommunicate(t *testing.T) {
+	for _, args := range []string{`{}`, `{"message":" ","end_turn":true}`} {
+		var out strings.Builder
+		call := rawCommunicateCall("quiet", args)
+		writeResultToolMessage(&out, &call, true)
+		if out.Len() != 0 {
+			t.Errorf("args %s rendered %q", args, out.String())
+		}
+	}
+}
+
+func TestQuietYieldMarkdownUsesPairedVerdict(t *testing.T) {
+	const suspect = `{"message":"",}`
+	for _, quiet := range []bool{false, true} {
+		call := rawCommunicateCall("quiet", `{}`)
+		call.RawArguments = suspect
+		result := &llm.ToolResultData{ToolCallID: call.ID, Name: call.Name}
+		if quiet {
+			result.ToolState = json.RawMessage(`{"communicate_quiet":true}`)
+		}
+		entries := []transcript.Entry{toolCallEntry(&call), toolResultEntry(result)}
+		out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
+		if rendered := strings.Contains(out, suspect); rendered == quiet {
+			t.Errorf("quiet=%t: raw bytes rendered=%t", quiet, rendered)
+		}
+	}
+}

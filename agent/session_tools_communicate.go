@@ -13,7 +13,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
-	"primeradiant.com/evener/agent/internal/tool/repair"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -80,13 +80,13 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 		resultToolDef = existing.Definition
 		resultToolDef.Name = resultToolName
 	}
-	if deps.offersEndReason {
-		resultToolDef = tool.WithCommunicateEndReason(resultToolDef)
-	}
+	_, defaultEnvelope := unboundDefaultCommunicateEnvelope(resultToolDef, deps.communicateOutputBound)
+	structuredRequired := !defaultEnvelope
 	if err := reg.Register(tool.RegisteredTool{
-		Definition:    resultToolDef,
-		OmitIntent:    true,
-		UnmarshalArgs: unmarshalCommunicateArguments,
+		Definition:             resultToolDef,
+		OmitIntent:             true,
+		CommunicateOutputBound: deps.communicateOutputBound,
+		UnmarshalArgs:          unmarshalCommunicateArguments,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			if err := deps.abort(ctx); err != nil {
@@ -96,30 +96,53 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 			if v, ok := args["message"]; ok {
 				message = strings.TrimSpace(fmt.Sprint(v))
 			}
-			endTurn, ok := args["end_turn"].(bool)
-			if !ok {
-				return nil, errors.New("communicate requires end_turn")
+			endTurn := true
+			if v, ok := args["end_turn"].(bool); ok {
+				endTurn = v
 			}
-			// The registry's schema has already held end_reason to its enum.
-			endReason := ""
-			if endTurn && deps.offersEndReason {
-				endReason, _ = args["end_reason"].(string)
-				if endReason == "" {
-					endReason = tool.CommunicateEndReasonDone
+			rawOutput, outputPresent := args["output"]
+			originalOutput := normalizeNodeOutput(rawOutput)
+			if message == "" {
+				if !structuredRequired {
+					message = strings.TrimSpace(originalOutput.Message)
+				} else if outMap, ok := rawOutput.(map[string]any); ok {
+					if outMsg, ok := outMap["message"].(string); ok {
+						message = strings.TrimSpace(outMsg)
+					}
 				}
 			}
-
-			originalOutput := normalizeNodeOutput(args["output"])
-			if message == "" && strings.TrimSpace(originalOutput.Message) != "" {
-				message = strings.TrimSpace(originalOutput.Message)
+			explicitNodeOutput := hasMeaningfulNodeOutput(originalOutput)
+			meaningfulOutput := outputPresent
+			if !structuredRequired {
+				meaningfulOutput = explicitNodeOutput || hasMeaningfulRawOutput(rawOutput)
 			}
 			if message == "" {
-				return nil, errors.New("communicate requires message or output.message")
+				if !endTurn {
+					return nil, errors.New("communicate with end_turn=false requires a non-empty message")
+				}
+				if meaningfulOutput {
+					return nil, errors.New("communicate with output requires a non-empty message")
+				}
+				if err := deps.abort(ctx); err != nil {
+					return nil, err
+				}
+				if deps.canQuietlyYield == nil {
+					return nil, errQuietYieldWithoutWake
+				}
+				if err := deps.canQuietlyYield(ctx); err != nil {
+					return nil, err
+				}
+				deps.recordQuietYield()
+				inbox := drainCommunicateInbox(deps)
+				accepted := true
+				b, _ := json.Marshal(map[string]any{"accepted": true, "end_turn": true, "quiet": true, "inbox": inbox})
+				return tool.StateResult{Output: string(b), State: communicateEndState{
+					Accepted: &accepted, EndTurn: &accepted, Quiet: &accepted,
+				}}, nil
 			}
-			explicitNodeOutput := hasMeaningfulNodeOutput(originalOutput)
-			rawOutput, outputPresent := args["output"]
-			usesCustomOutputSchema := !usesDefaultCommunicateOutputEnvelope(resultToolDef)
-			explicitStructuredOutput := explicitNodeOutput || (outputPresent && usesCustomOutputSchema) || hasMeaningfulRawOutput(rawOutput)
+			if endTurn && structuredRequired && !outputPresent {
+				return nil, errors.New("communicate requires output on a final reply with a result schema or allowed decisions")
+			}
 			effectiveOutput := originalOutput
 			if strings.TrimSpace(effectiveOutput.Message) == "" {
 				effectiveOutput.Message = message
@@ -132,16 +155,11 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 			if err := deps.abort(ctx); err != nil {
 				return nil, err
 			}
-			if endTurn && endReason == tool.CommunicateEndReasonWaitingOnWork &&
-				deps.wakeableWork != nil && !deps.wakeableWork() {
-				return nil, errors.New("end_reason waiting_on_work requires work that will wake this session; none is pending: end with done if the work is finished, needs_response if your partner must act, or start the work or arm a watch before ending the turn")
-			}
 
 			if err := deps.deliverCommunicate(events.CommunicateData{
-				CallID:    callIDFromContext(ctx),
-				EndTurn:   endTurn,
-				Message:   message,
-				EndReason: endReason,
+				CallID:  callIDFromContext(ctx),
+				EndTurn: endTurn,
+				Message: message,
 			}); err != nil {
 				// The transcript refused the entry (a poisoned or closed
 				// writer, or a served session failing closed): nothing
@@ -161,26 +179,7 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 
 			inbox := []string{}
 			if endTurn {
-				// Drain daemon-authored steering context into the terminal inbox.
-				// Client-authored steering remains durable pending work for
-				// wakeForPendingSteering and the steering carrier: incorporating
-				// it into a result that ends the turn would create a durable
-				// transcript item without a model request that can act on it.
-				// The inbox is text-only in the wire shape, so image-bearing
-				// daemon entries are also appended as TurnSteering to keep their
-				// ContentImage parts available to the next model round.
-				drained := deps.drainSteering()
-				inbox = make([]string, 0, len(drained))
-				var deferred []steeringMessage
-				for _, msg := range drained {
-					if strings.TrimSpace(msg.Text) != "" {
-						inbox = append(inbox, msg.Text)
-					}
-					if len(msg.Images) > 0 {
-						deferred = append(deferred, msg)
-					}
-				}
-				deps.prependSteering(deferred)
+				inbox = drainCommunicateInbox(deps)
 			}
 
 			// end_turn=false calls never reach the terminal capture, so they stay
@@ -193,13 +192,13 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 				// terminal call can never pair its structured value with this
 				// call's message — and a losing call reports accepted:false.
 				var capturedOutput any
-				if explicitStructuredOutput {
+				if meaningfulOutput {
 					capturedOutput = rawOutput
 					if capturedOutput == nil && outputPresent {
 						capturedOutput = json.RawMessage(`null`)
 					}
 				}
-				accepted = deps.setCommunicateTerminal(ctx, message, resultText, structuredText, capturedOutput, endReason)
+				accepted = deps.setCommunicateTerminal(ctx, message, resultText, structuredText, capturedOutput)
 			}
 
 			resp := map[string]any{
@@ -223,7 +222,8 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 			// output: the registry may truncate the latter before transcript
 			// persistence. The result remains linked to this call by ToolCallID.
 			return tool.StateResult{Output: string(b), State: communicateEndState{
-				Accepted: &accepted, EndTurn: &endTurn, EndReason: endReason,
+				Accepted: &accepted, EndTurn: &endTurn,
+				BoundaryPending: accepted && endTurn && deps.communicateStopPending != nil && deps.communicateStopPending(),
 			}}, nil
 		},
 	}); err != nil {
@@ -240,6 +240,78 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 		reg.Remove(tool.DefaultResultToolName)
 	}
 	return nil
+}
+
+// drainCommunicateInbox drains daemon-authored steering into a terminal inbox.
+// Client-authored steering remains durable for the next wake. The inbox is
+// text-only, so daemon entries with images are also carried to the next round.
+func drainCommunicateInbox(deps *toolDeps) []string {
+	drained := deps.drainSteering()
+	inbox := make([]string, 0, len(drained))
+	var deferred []steeringMessage
+	for _, msg := range drained {
+		if strings.TrimSpace(msg.Text) != "" {
+			inbox = append(inbox, msg.Text)
+		}
+		if len(msg.Images) > 0 {
+			deferred = append(deferred, msg)
+		}
+	}
+	deps.prependSteering(deferred)
+	return inbox
+}
+
+var errQuietYieldWithoutWake = errors.New("nothing can wake this turn. Start the work or arm a watch before yielding, or send your final reply with the result tool")
+
+type communicateEntryKindKey struct{}
+
+func (s *Session) canQuietlyYield(ctx context.Context) error {
+	kind, _ := ctx.Value(communicateEntryKindKey{}).(EntryKind)
+	if !s.reportsToParent() {
+		if kind == EntryNotification || s.communicatedUnblocked() {
+			return nil
+		}
+		if s.cfg.TurnEndsProcess {
+			work, err := s.hasOneShotWakeableWork()
+			if err != nil || work {
+				return err
+			}
+			return errQuietYieldWithoutWake
+		}
+		if s.hasWakeableWork() {
+			return nil
+		}
+		return errQuietYieldWithoutWake
+	}
+	if s.communicatedUnblocked() || ctx.Value(keepingDelegateReportKey{}) == s {
+		return nil
+	}
+	lease, leased := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
+	if leased && s.delegateController != nil {
+		switch kind {
+		case EntryDelegateAttention:
+			recorded, err := s.delegateController.recordAttentionNoAction(lease)
+			if err != nil || recorded {
+				return err
+			}
+		case EntryNotification:
+			// The same input can consume another notification after an
+			// attention-only acknowledgement. The lease still owns that verdict.
+			decision, err := s.delegateController.completionDecision(lease)
+			if err != nil || decision != delegateCompletionNeedsNudge {
+				return err
+			}
+		default:
+			decision, err := s.delegateController.completionDecision(lease)
+			if err != nil || decision == delegateCompletionUseExistingTerminal {
+				return err
+			}
+		}
+	}
+	if work, err := s.treeHasOutstandingWork(); work || err != nil {
+		return err
+	}
+	return errors.New("nothing can wake this turn, and you have not sent your report yet. Start the work, or send your final report with the result tool")
 }
 
 // unmarshalCommunicateArguments keeps the structured output's numbers exact.
@@ -276,14 +348,7 @@ func unmarshalCommunicateArguments(raw []byte, args *map[string]any) error {
 	return nil
 }
 
-// communicateEndState records communicate's terminal verdict and optional end
-// reason independently of the display output.
-type communicateEndState struct {
-	Accepted *bool `json:"communicate_accepted,omitempty"`
-	EndTurn  *bool `json:"communicate_end_turn,omitempty"`
-	// The key is communicate's own, so no other tool's state can match it.
-	EndReason string `json:"communicate_end_reason"`
-}
+type communicateEndState = schema.CommunicateToolState
 
 // delegateUpdateDelivery is where a delegate's update stands when its
 // communicate(end_turn=false) call returns: the result's delivery and reason.
@@ -477,10 +542,6 @@ func hasMeaningfulNodeOutput(out nodeOutput) bool {
 		len(out.Artifacts) > 0
 }
 
-// defaultEnvelopeKeys are the output-envelope keys the default communicate
-// schema declares — and the only keys the documented-defaults fill may add.
-var defaultEnvelopeKeys = []string{"message", "data", "artifacts"}
-
 // canonicalDefaultCommunicateOutputSchema is constructed once because every
 // communicate repair checks it, sometimes multiple times. It is private and
 // only read by reflect.DeepEqual; callers never receive this mutable map.
@@ -494,10 +555,12 @@ var canonicalDefaultCommunicateOutputSchema = func() map[string]any {
 // communicateEnvelopeFor reports whether t is the session's result tool with
 // the exact canonical default output envelope, returning that envelope schema
 // when it is.
-// This is the single owner of the fill's two gates (issue #627):
+// This is the single owner of the fill's gates (issues #627 and #831):
 //   - identity: only the result tool gets the fill. A same-shaped schema on
 //     any other registered tool (an MCP or plugin tool) must keep failing
 //     loudly on keys the model was required to choose.
+//   - no explicit binding: a caller can bind the exact default schema and
+//     still require the model to supply its own output.
 //   - exact schema: equality with DefCommunicateNamed's canonical output
 //     schema. Same-key schemas can carry stricter types, enums, descriptions,
 //     or other constraints, so key-name comparison is not sufficient.
@@ -508,12 +571,15 @@ func communicateEnvelopeFor(t *tool.RegisteredTool, resultToolName string) (map[
 	if t == nil || t.Definition.Name != resultToolName {
 		return nil, false
 	}
-	props, _ := t.Definition.Parameters["properties"].(map[string]any)
-	envelope, _ := props["output"].(map[string]any)
-	if !isCanonicalDefaultCommunicateOutputEnvelope(envelope) {
+	return unboundDefaultCommunicateEnvelope(t.Definition, t.CommunicateOutputBound)
+}
+
+func unboundDefaultCommunicateEnvelope(def llm.ToolDefinition, bound bool) (map[string]any, bool) {
+	if bound {
 		return nil, false
 	}
-	return envelope, true
+	envelope := communicateOutputSchema(def)
+	return envelope, isCanonicalDefaultCommunicateOutputEnvelope(envelope)
 }
 
 // usesDefaultCommunicateOutputEnvelope reports whether def's `output` property
@@ -521,71 +587,17 @@ func communicateEnvelopeFor(t *tool.RegisteredTool, resultToolName string) (map[
 // superset, a same-key schema with a stricter enum, or any other variation is a
 // custom envelope whose fields must remain exact.
 func usesDefaultCommunicateOutputEnvelope(def llm.ToolDefinition) bool {
+	return isCanonicalDefaultCommunicateOutputEnvelope(communicateOutputSchema(def))
+}
+
+func communicateOutputSchema(def llm.ToolDefinition) map[string]any {
 	props, _ := def.Parameters["properties"].(map[string]any)
 	output, _ := props["output"].(map[string]any)
-	return isCanonicalDefaultCommunicateOutputEnvelope(output)
+	return output
 }
 
 func isCanonicalDefaultCommunicateOutputEnvelope(output map[string]any) bool {
 	return reflect.DeepEqual(output, canonicalDefaultCommunicateOutputSchema)
-}
-
-// fillCommunicateEnvelope fills a present default-envelope `output` object's
-// missing message/data/artifacts keys with their documented empty defaults
-// ("" / {} / []). It mutates args in place on the working copy the caller
-// owns, and never overwrites an existing key. Only communicateEnvelopeFor's
-// envelope — the default one — may be passed here; repairDefaultCommunicateEnvelope
-// owns that canonical-schema gate before calling this helper. A custom output
-// schema must keep failing loudly on keys the model was required to choose.
-func fillCommunicateEnvelope(envelope, args map[string]any) []repair.Change {
-	raw, isMap := args["output"].(map[string]any)
-	if !isMap {
-		return nil
-	}
-	props, _ := envelope["properties"].(map[string]any)
-	var changes []repair.Change
-	for _, key := range defaultEnvelopeKeys {
-		if _, present := raw[key]; present {
-			continue
-		}
-		prop, ok := props[key].(map[string]any)
-		if !ok {
-			continue
-		}
-		v, ok := envelopeZeroValue(prop)
-		if !ok {
-			continue
-		}
-		raw[key] = v
-		changes = append(changes, repair.Change{Kind: repair.ChangeFillRequired, Field: "output." + key, Detail: "filled default"})
-	}
-	return changes
-}
-
-// envelopeZeroValue returns the zero-value instance of an envelope property's
-// declared type — the value a missing key is filled with. It returns ok=false
-// for anything that is not a plain scalar, object, or array, and for
-// enum-constrained properties: a zero value is never a value the model chose,
-// so an enum field must stay absent and be reported as missing rather than
-// silently sent as an invalid choice.
-func envelopeZeroValue(prop map[string]any) (any, bool) {
-	if _, hasEnum := prop["enum"]; hasEnum {
-		return nil, false
-	}
-	typ, _ := prop["type"].(string)
-	switch typ {
-	case "string":
-		return "", true
-	case "boolean":
-		return false, true
-	case "integer", "number":
-		return float64(0), true
-	case "object":
-		return map[string]any{}, true
-	case "array":
-		return []any{}, true
-	}
-	return nil, false
 }
 
 func hasMeaningfulRawOutput(raw any) bool {

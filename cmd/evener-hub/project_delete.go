@@ -93,6 +93,12 @@ func projectSessionOwnership(ctx context.Context, cfg hubcore.WebConfig, id stri
 	if projectSessionLive(cfg.Roster, id) {
 		return true, nil
 	}
+	// A claimed launch is restoring this session but has not registered yet.
+	// Deletion must wait for it: removing the files under a restoring child
+	// would let it publish into a project that no longer exists.
+	if cfg.ResumeLocks != nil && cfg.ResumeLocks.HasPendingLaunch(id) {
+		return true, nil
+	}
 	owner, _, err := lookupDaemonOwner(ctx, cfg, "", id, true)
 	return owner.SessionID != "" || owner.ThreadID != "", err
 }

@@ -1,6 +1,6 @@
 # communicateNudge
 
-You stopped without calling communicate. You MUST call communicate with end_turn=true and a message summarizing your complete findings, or naming the work you are waiting on, before stopping. The parent agent receives ONLY the communicate message — it cannot see anything else you did. Report your results, or what you are waiting on, now.
+You stopped without calling communicate. If running work or a delegate will wake you and you have nothing to report, call communicate({}) with no message. For complete findings, a blocker, or a readiness line, call communicate with end_turn=true and a message. Your parent receives only the communicate message, not the rest of your turn.
 
 ## Reporting (bundled subagent role)
 
@@ -12,10 +12,10 @@ before you finish, such as a question only it can answer, send an update with
 `communicate(end_turn=false)` and keep working. It reaches your parent and may
 wake it, so never send one as narration.
 
-When work you started is still running and you have nothing left to do, end your
-turn with one line naming what you wait for. That is a normal turn end, not an
-incomplete report: the result comes back to you when the work finishes, on your
-next turn once this one ends, or sooner if a delegate sends a mid-work update.
+When work you started will wake you and you have nothing left to do, call
+`communicate({})` to end your turn quietly. Send a `communicate(end_turn=false)`
+update first only if your parent needs it. The work's completion or a delegate
+update wakes you; save your report for when you have results.
 
 Your parent controls this delegate through one stable `delegate_id` (`dlg_...`).
 A `job_id` (`job_...`) always names shell work, never one of your model turns.

@@ -2,6 +2,7 @@ package tool
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
 	"regexp"
 	"slices"
@@ -591,6 +592,120 @@ func TestOptionalJobInspectionToolsAreNonStrict(t *testing.T) {
 	}
 }
 
+// TestDefCommunicateSchemaOptionalSurface pins the unified communicate schema:
+// message, end_turn (defaulting to true), and output are each optional,
+// nothing is required at the top level, and end_reason is gone. Every calling
+// convention the runtime accepts (quiet yield, progress update, ordinary
+// reply) must pass JSON-schema validation, and an unknown or wrongly typed
+// argument must not.
+func TestDefCommunicateSchemaOptionalSurface(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		def  llm.ToolDefinition
+	}{
+		{name: "default name", def: DefCommunicate()},
+		{name: "renamed", def: DefCommunicateNamed("submit_report")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			def := tc.def
+			if def.Strict == nil || *def.Strict {
+				t.Fatalf("Strict = %v, want an explicit false so optional properties stay optional", def.Strict)
+			}
+			if got := def.Parameters["type"]; got != "object" {
+				t.Fatalf("parameters.type = %v, want object", got)
+			}
+			if got := def.Parameters["additionalProperties"]; got != false {
+				t.Fatalf("parameters.additionalProperties = %v, want false", got)
+			}
+			props, ok := def.Parameters["properties"].(map[string]any)
+			if !ok {
+				t.Fatalf("parameters.properties = %T, want map[string]any", def.Parameters["properties"])
+			}
+			if got, want := slices.Sorted(maps.Keys(props)), []string{"end_turn", "message", "output"}; !slices.Equal(got, want) {
+				t.Fatalf("properties = %v, want %v (no end_reason)", got, want)
+			}
+
+			endTurn, _ := props["end_turn"].(map[string]any)
+			if endTurn["type"] != "boolean" {
+				t.Errorf("end_turn.type = %v, want boolean", endTurn["type"])
+			}
+			if endTurn["default"] != true {
+				t.Errorf("end_turn.default = %v, want true", endTurn["default"])
+			}
+
+			output, _ := props["output"].(map[string]any)
+			if output["type"] != "object" {
+				t.Errorf("output.type = %v, want object", output["type"])
+			}
+			if output["additionalProperties"] != false {
+				t.Errorf("output.additionalProperties = %v, want false", output["additionalProperties"])
+			}
+			outProps, _ := output["properties"].(map[string]any)
+			if got, want := slices.Sorted(maps.Keys(outProps)), []string{"artifacts", "data", "message"}; !slices.Equal(got, want) {
+				t.Errorf("output.properties = %v, want %v", got, want)
+			}
+			if req := schemaRequiredNames(output); len(req) > 0 {
+				t.Errorf("output.required = %v, want none so an empty output envelope validates", req)
+			}
+			if req := schemaRequiredNames(def.Parameters); len(req) > 0 {
+				t.Errorf("top-level required = %v, want none", req)
+			}
+
+			schema, err := compileSchema(def.Parameters)
+			if err != nil {
+				t.Fatalf("compile parameters: %v", err)
+			}
+			for _, args := range []map[string]any{
+				{},
+				{"message": "hi"},
+				{"message": "hi", "end_turn": false},
+				{"message": "hi", "end_turn": true},
+				{"output": map[string]any{}},
+				{"message": "hi", "output": map[string]any{"data": map[string]any{"k": 1}}},
+				{"message": "hi", "output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}}},
+			} {
+				if err := schema.Validate(args); err != nil {
+					t.Errorf("valid call %v rejected: %v", args, err)
+				}
+			}
+			for _, args := range []map[string]any{
+				{"end_reason": "done"},
+				{"message": 3},
+				{"output": "nope"},
+				{"output": map[string]any{"artifacts": []any{1}}},
+			} {
+				if err := schema.Validate(args); err == nil {
+					t.Errorf("invalid call %v accepted", args)
+				}
+			}
+		})
+	}
+}
+
+// schemaRequiredNames reads a schema's required list as []string, treating a
+// missing or null entry as none. Schemas built in Go hold []string while a
+// JSON round-tripped one holds []any.
+func schemaRequiredNames(schema map[string]any) []string {
+	raw, ok := schema["required"]
+	if !ok || raw == nil {
+		return nil
+	}
+	switch v := raw.(type) {
+	case []string:
+		return v
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return []string{fmt.Sprintf("%v", v)}
+	}
+}
+
 func TestJobListDescriptionKeepsObserverCommunicateGuidance(t *testing.T) {
 	def := DefJobList()
 	if !strings.Contains(def.Description, "communicate(end_turn=true)") {
@@ -878,8 +993,9 @@ func TestDefAskUserSchema(t *testing.T) {
 // parameter (0-10, default 0) so the model can request surrounding lines, per
 // the contract-surface rule that a new model-facing param is documented in the
 // same commit that adds it.
-// TestDefReadFileSliceParamsDocumented pins the offset/limit prose: offset is
-// a 1-based start line, limit is a line count, and the default limit is 2000
+// TestDefReadFileSliceParamsDocumented pins the offset/limit semantics: offset
+// is a 1-based start line that also accepts negative tail reads, and limit
+// defaults to 2000 lines with limit=1 returning a single long line uncut
 // (matching LocalExecutionEnvironment.ReadFile's actual defaults).
 func TestDefReadFileSliceParamsDocumented(t *testing.T) {
 	def := DefReadFile()
@@ -897,14 +1013,58 @@ func TestDefReadFileSliceParamsDocumented(t *testing.T) {
 	}
 	offsetDesc, _ := offset["description"].(string)
 	limitDesc, _ := limit["description"].(string)
-	if !strings.Contains(offsetDesc, "1-based") {
-		t.Errorf("offset description should document it's a 1-based start line, got: %q", offsetDesc)
+	if !strings.Contains(offsetDesc, "1-based") || !strings.Contains(offsetDesc, "negative") {
+		t.Errorf("offset description should document a 1-based start line and negative tail reads, got: %q", offsetDesc)
 	}
-	if !strings.Contains(limitDesc, "line count") {
-		t.Errorf("limit description should document it's a line count, got: %q", limitDesc)
+	if !strings.Contains(limitDesc, "2000") || !strings.Contains(limitDesc, "uncut") {
+		t.Errorf("limit description should document the default of 2000 and the limit=1 uncut escape, got: %q", limitDesc)
 	}
-	if !strings.Contains(limitDesc, "2000") {
-		t.Errorf("limit description should document the default of 2000, got: %q", limitDesc)
+}
+
+// TestDefReadFileVariantsExposeSharedParameters pins the one shared schema
+// contract across all three vision regimes and memory_read: every variant
+// carries file_path, offset, limit, and pages with a non-empty description, so
+// a session can pass a PDF page selector no matter which regime it selected.
+// vision_prompt presence follows the regime, and memory_read keeps scope.
+func TestDefReadFileVariantsExposeSharedParameters(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		def        llm.ToolDefinition
+		wantVision bool
+	}{
+		{"read_file", DefReadFile(), true},
+		{"read_file-native-vision", DefReadFileNativeVision(), false},
+		{"read_file-pdf-vision-only", DefReadFilePDFVisionOnly(), true},
+		{"memory_read", DefMemoryRead(), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if tc.def.Parameters["additionalProperties"] != false {
+				t.Fatalf("%s additionalProperties = %v, want false", tc.name, tc.def.Parameters["additionalProperties"])
+			}
+			required(t, tc.def, tc.name, []string{"file_path"})
+			props, ok := tc.def.Parameters["properties"].(map[string]any)
+			if !ok {
+				t.Fatalf("%s properties = %T, want map[string]any", tc.name, tc.def.Parameters["properties"])
+			}
+			for _, paramName := range []string{"file_path", "offset", "limit", "pages"} {
+				param, ok := props[paramName].(map[string]any)
+				if !ok {
+					t.Fatalf("%s missing the %q property", tc.name, paramName)
+				}
+				desc, _ := param["description"].(string)
+				if strings.TrimSpace(desc) == "" {
+					t.Errorf("%s %q carries no description", tc.name, paramName)
+				}
+			}
+			if _, hasVision := props["vision_prompt"]; hasVision != tc.wantVision {
+				t.Errorf("%s vision_prompt present = %v, want %v", tc.name, hasVision, tc.wantVision)
+			}
+			if tc.name == "memory_read" {
+				required(t, tc.def, tc.name, []string{"scope"})
+			}
+		})
 	}
 }
 

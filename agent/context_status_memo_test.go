@@ -125,7 +125,7 @@ func TestContextStatusMemoInvalidatesOnProfileAndMeasurementChange(t *testing.T)
 			s.recordTurn(turn, turn)
 			assertMemoIsExact(t, s, "before measurement")
 		}
-		if accepted := s.contextMgr.RecordInputTokensFor(s.profile, 300, 1); !accepted {
+		if accepted := s.contextMgr.RecordInputTokensFor(s.profile, 300, 1, ""); !accepted {
 			t.Fatal("RecordInputTokensFor refused the fixture's own profile")
 		}
 		assertMemoIsExact(t, s, "after measurement")

@@ -638,7 +638,7 @@
       "turnId": "turn_1",
       "toolName": "read_file",
       "callId": "call_read_file",
-      "output": "   1\tpackage agent\n   2\t\n   3\tfunc settle() {}\n",
+      "output": "1\tpackage agent\n2\t\n3\tfunc settle() {}\n",
       "status": "completed",
       "completedAt": 1790625602000
     },
@@ -648,7 +648,7 @@
       "turnId": "turn_1",
       "toolName": "read_file",
       "callId": "call_read_file_range",
-      "output": "   2\t\n   3\tfunc settle() {}\n",
+      "output": "2\t\n3\tfunc settle() {}\n\n[Showing lines 2-3 of 3 total (end of file).]",
       "status": "completed",
       "completedAt": 1790625602000
     },

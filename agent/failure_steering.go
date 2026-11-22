@@ -78,15 +78,21 @@ const (
 // ending on an open-phase or context-length fallback rejection still settles
 // the primary group's partial.
 //
-// Excluded: cancellations, and rounds whose only failures are open-phase
-// request rejections (auth, 4xx, quota, context length — all rejected before
-// the stream opened, so "the provider connection failed" would be false).
-// A round whose described group was itself killed by a content filter settles
-// steering-only, and never with salvage: a compaction-atomic turn carrying the
-// filtered content would pin it in history and defeat the ForceCompact recovery
-// that exists to remove it.
+// Excluded: cancellations, responses discarded by the per-response tool-call
+// cap, and rounds whose only failures are open-phase request rejections (auth,
+// 4xx, quota, context length — all rejected before the stream opened, so "the
+// provider connection failed" would be false). A round whose described group
+// was itself killed by a content filter settles steering-only, and never with
+// salvage: a compaction-atomic turn carrying the filtered content would pin it
+// in history and defeat the ForceCompact recovery that exists to remove it.
 func classifySettlement(rec *roundRecorder, terminalErr error) settlementKind {
 	if roundWasCancelled(terminalErr) {
+		return settleNone
+	}
+	// A capped response is our own bound, not a provider failure. Its partial
+	// is the runaway itself, so persisting it as a draft and steering the model
+	// to reuse it would invite the same calls again.
+	if _, ok := errors.AsType[*responseToolCallLimitError](terminalErr); ok {
 		return settleNone
 	}
 	if contentFilterKilledGroup(rec.SteeringGroup()) {

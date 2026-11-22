@@ -13,7 +13,7 @@ import type {
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useOptionalNeedsYou, useOptionalNeedsYouController } from "../../shell/NeedsYouProvider";
 import type { NeedsYouChoice, NeedsYouSnapshot } from "../../shell/needsYouActions";
-import { Button, IconButton, ListRow, Popover } from "../../widgets";
+import { Button, IconButton, ListRow, Popover, StatusDot } from "../../widgets";
 import { LONG_PRESS_MS, POINTER_CLICK_WINDOW_MS } from "../../widgets/hovercard";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./nextNeedsYou.module.css";
@@ -76,7 +76,6 @@ const CLASS = {
   nextSlot: requireClass(styles.nextSlot, "nextNeedsYou.module.css", "nextSlot"),
   nextStack: requireClass(styles.nextStack, "nextNeedsYou.module.css", "nextStack"),
   nextLead: requireClass(styles.nextLead, "nextNeedsYou.module.css", "nextLead"),
-  nextDot: requireClass(styles.nextDot, "nextNeedsYou.module.css", "nextDot"),
   nextLabel: requireClass(styles.nextLabel, "nextNeedsYou.module.css", "nextLabel"),
   ellipsis: requireClass(styles.ellipsis, "nextNeedsYou.module.css", "ellipsis"),
   list: requireClass(styles.list, "nextNeedsYou.module.css", "list"),
@@ -437,7 +436,7 @@ function OwnedNextNeedsYou({
         >
           <span className={CLASS.nextStack}>
             <span className={CLASS.nextLead}>
-              <span className={CLASS.nextDot} aria-hidden="true" />
+              <StatusDot state="needs-you" decorative />
               Needs you
             </span>
             {nextTitle !== "" && <span className={CLASS.nextLabel}>{nextTitle}</span>}

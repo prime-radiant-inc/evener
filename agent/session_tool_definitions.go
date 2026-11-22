@@ -314,6 +314,7 @@ func (s *Session) rebuildToolDefsCache() {
 		if s != nil {
 			s.cachedToolDefs = nil
 			s.cachedToolDefsJSONBytes = 0
+			s.toolDefsGen++
 		}
 		return
 	}
@@ -446,9 +447,6 @@ func (s *Session) rebuildToolDefsCache() {
 	for i := range defs {
 		if isResultToolDefinition(defs[i].Name, defs[i].Name, s.resultToolName()) {
 			defs[i] = tool.WithoutIntentParameter(defs[i])
-			if s.hasHumanPartnerToAsk() {
-				defs[i] = tool.WithCommunicateEndReason(defs[i])
-			}
 			if s.reportsToParent() {
 				defs[i] = tool.WithCommunicateDelegateUpdates(defs[i])
 			}
@@ -464,6 +462,7 @@ func (s *Session) rebuildToolDefsCache() {
 
 	s.cachedToolDefs = defs
 	s.cachedToolDefsJSONBytes = llm.ToolsJSONBytes(defs)
+	s.toolDefsGen++
 }
 
 // normalizeRegistryToolDefinition keeps directly registered tools acceptable

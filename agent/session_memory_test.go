@@ -2705,7 +2705,7 @@ func TestMemoryFreeFormOperations(t *testing.T) {
 		t.Fatal(res.Output)
 	}
 	res = memoryExec(t, s, "memory_read", map[string]any{"scope": "project", "file_path": "duplicate.txt", "offset": 6, "limit": 1})
-	if res.IsError || res.Output != "   6\tToken\n" {
+	if res.IsError || oneLine(res.Output, 6) != "Token" {
 		t.Fatalf("window=%q error=%t", res.Output, res.IsError)
 	}
 	res = memoryExec(t, s, "memory_edit", map[string]any{"scope": "project", "file_path": "duplicate.txt", "edits": []any{map[string]any{"old_string": "Token", "new_string": "changed"}}})
@@ -2903,11 +2903,18 @@ func TestMemoryOutputRecovery(t *testing.T) {
 				t.Fatal(err)
 			}
 			var body, want strings.Builder
-			for i := 1; i <= 400; i++ {
+			// read_file and memory_read cap one text read at 48 KB, head only.
+			// The page must fit that cap for one artifact to carry it whole;
+			// the configured output limit below still cuts the result first.
+			lineCount := 400
+			if name == "memory_read" {
+				lineCount = 100
+			}
+			for i := 1; i <= lineCount; i++ {
 				line := fmt.Sprintf("opaque-artifact-%03d-%s", i, strings.Repeat("z", 170))
 				body.WriteString(line + "\n")
 				if name == "memory_read" {
-					fmt.Fprintf(&want, "%4d\t%s\n", i, line)
+					fmt.Fprintf(&want, "%d\t%s\n", i, line)
 				} else {
 					if i > 1 {
 						want.WriteByte('\n')
@@ -2994,7 +3001,13 @@ func TestMemoryOutputRecovery(t *testing.T) {
 			for i := range steps {
 				steps[i] = step
 			}
-			s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: host, artifactStore: store}), withSteps(steps...))
+			s := newSession(t, withConfig(SessionConfig{
+				MemoryStateRoot: host,
+				artifactStore:   store,
+				ToolOutputLimits: map[string]schema.ToolOutputLimit{
+					name: {MaxChars: 1024, Strategy: schema.TruncHeadTail},
+				},
+			}), withSteps(steps...))
 			if name == "memory_read" {
 				// The page is long, so its read ends with the size note.
 				want.WriteString(memoryPageSizeNote(body.Len(), s.memoryGardeningSkillAvailable()))

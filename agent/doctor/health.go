@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -135,9 +136,10 @@ type HealthResult struct {
 // only long enough to compute the identical-run signature and pair it back
 // to its result by ToolCallID.
 type toolCallOccurrence struct {
-	signature string
-	tool      string
-	callID    string
+	signature  string
+	tool       string
+	callID     string
+	quietBreak bool
 }
 
 // TranscriptHealth computes HealthResult for one session: mechanical,
@@ -167,10 +169,11 @@ func TranscriptHealth(ctx context.Context, stateBase, selector string) (HealthRe
 	var occurrences []toolCallOccurrence
 	resultSeen := map[string]bool{}
 	resultErrors := map[string]bool{}
+	pairedResults := pairToolResults(doc.Entries)
 	resolver := newSessionToolResolver(doc.Entries, resultTool)
 
-	for _, e := range doc.Entries {
-		for _, part := range e.Turn.Message.Content {
+	for i, e := range doc.Entries {
+		for j, part := range e.Turn.Message.Content {
 			switch part.Kind {
 			case llm.ContentToolCall:
 				if part.ToolCall == nil {
@@ -178,6 +181,10 @@ func TranscriptHealth(ctx context.Context, stateBase, selector string) (HealthRe
 				}
 				name := resolver.callName(part.ToolCall)
 				res.ToolCalls[name]++
+				if paired := pairedResults[toolCallPosition{i, j}]; paired.result != nil && !paired.result.IsError && schema.IsQuietCommunicateState(paired.result.ToolState) {
+					occurrences = append(occurrences, toolCallOccurrence{quietBreak: true})
+					continue
+				}
 				occurrences = append(occurrences, toolCallOccurrence{
 					signature: toolCallSignature(name, part.ToolCall),
 					tool:      name,
@@ -275,8 +282,12 @@ func toolCallSignature(name string, tc *llm.ToolCallData) string {
 func longestIdenticalRun(occ []toolCallOccurrence, resultSeen, resultErrors map[string]bool) IdenticalRun {
 	var best IdenticalRun
 	for i := 0; i < len(occ); {
+		if occ[i].quietBreak {
+			i++
+			continue
+		}
 		j := i + 1
-		for j < len(occ) && occ[j].signature == occ[i].signature {
+		for j < len(occ) && !occ[j].quietBreak && occ[j].signature == occ[i].signature {
 			j++
 		}
 		if length := j - i; length > best.Length {
@@ -295,21 +306,32 @@ func longestIdenticalRun(occ []toolCallOccurrence, resultSeen, resultErrors map[
 	return best
 }
 
-// finalEndTurnIndex returns the doc.Entries index of the LAST entry whose
-// ASSISTANT turn carries a resultTool call with end_turn=true, or -1 if none
-// exists. This is the anchor "the session declared itself done" point that
-// StaleNotifications and UserCorrections measure trailing activity against.
+// finalEndTurnIndex returns the index of the last accepted terminal reply,
+// or -1 if none exists. StaleNotifications and UserCorrections measure
+// trailing activity from this boundary.
 func finalEndTurnIndex(entries []transcript.Entry, resultTool string) int {
+	results := pairToolResults(entries)
 	last := -1
 	for i, e := range entries {
+		if e.Turn.AcceptedReply {
+			last = i
+			continue
+		}
 		if e.Turn.Kind != schema.TurnAssistant {
 			continue
 		}
-		for _, part := range e.Turn.Message.Content {
+		for j, part := range e.Turn.Message.Content {
 			if part.Kind != llm.ContentToolCall || part.ToolCall == nil || part.ToolCall.Name != resultTool {
 				continue
 			}
-			if callArgsEndTurn(part.ToolCall.Arguments) {
+			if endTurn, recorded := communicateResultEndTurn(results[toolCallPosition{i, j}]); recorded {
+				if endTurn != nil && *endTurn {
+					last = i
+				}
+				continue
+			}
+			args := communicateCallArguments(part.ToolCall)
+			if callArgsEndTurn(args) && !apptranscript.CommunicateArgumentsWithoutMessage(args) {
 				last = i
 			}
 		}
@@ -317,16 +339,13 @@ func finalEndTurnIndex(entries []transcript.Entry, resultTool string) int {
 	return last
 }
 
-// callArgsEndTurn reads end_turn off a result-tool call's arguments. A
-// missing or unparseable field reads as false — never a guessed true.
+// callArgsEndTurn uses communicate's default for a valid object and refuses
+// to infer a boundary from malformed arguments.
 func callArgsEndTurn(rawArgs json.RawMessage) bool {
-	var args struct {
+	args := &struct {
 		EndTurn bool `json:"end_turn"`
-	}
-	if err := json.Unmarshal(rawArgs, &args); err != nil {
-		return false
-	}
-	return args.EndTurn
+	}{EndTurn: true}
+	return json.Unmarshal(rawArgs, &args) == nil && args != nil && args.EndTurn
 }
 
 // RenderHealth renders a HealthResult as a compact human table.

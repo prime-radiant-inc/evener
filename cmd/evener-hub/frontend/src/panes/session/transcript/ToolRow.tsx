@@ -75,7 +75,7 @@ const ROW_ICON_SIZE = 14;
 //
 // A row with no intent is a single line: summary, then affordances, then
 // the chevron if there is something to expand.
-import { Fragment, type ReactNode, useId, useMemo } from "react";
+import { type ComponentProps, Fragment, type ReactNode, useId, useMemo } from "react";
 import { Chevron, FailureGlyph, ToolIcon, type ToolIconKind } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { EntityRef } from "./EntityRef";
@@ -516,6 +516,34 @@ function seatAnchor(segments: SummarySegment[], measure: SummaryMeasure, cut: nu
   return { cut: safeCut, before, after };
 }
 
+/** The row's leading seat, shared by every line that draws it: the kind icon
+ * slot (or the bare failure cross), the exit mark, and the status rail. */
+function RowLead({ leading, exit, status }: { leading: ReactNode; exit: ReactNode; status: ReactNode }) {
+  return (
+    <>
+      {leading}
+      {exit}
+      {status}
+    </>
+  );
+}
+
+/** The row's disclosure button. `type` and the test id are the contract; every
+ * aria attribute and the handler ride through as ordinary button props. */
+function RowTrigger({ testId = "tool-row-trigger", ...props }: ComponentProps<"button"> & { testId?: string }) {
+  return <button type="button" data-testid={testId} {...props} />;
+}
+
+/** The one summary span, shared by the intent-less `content` and the
+ * `summaryContent` branches: only its children differ. */
+function SummaryText({ className, children }: { className: string; children: ReactNode }) {
+  return (
+    <span className={className} data-testid="tool-row-summary">
+      {children}
+    </span>
+  );
+}
+
 export function ToolRow({
   summary,
   summaryLink,
@@ -545,6 +573,9 @@ export function ToolRow({
   // blanked by the caller; callers that blank it pass hasSummaryText so the
   // layout can tell "collapsed" from "nothing to show" (#1253).
   const summaryTextPresent = hasSummaryText ?? hasSummary;
+  const summaryClassName = `${CLASS.summary}${monoSummary ? ` ${CLASS.mono}` : ""}${
+    hasIntent ? ` ${CLASS.demoted}${expanded ? "" : ` ${CLASS.clamped}`}` : ""
+  }`;
   // Two-level disclosure is opt-in via onToggleSummary, and only applies to
   // intent-bearing rows. Intent-less rows keep the legacy overlay pattern
   // (one trigger controls the body) regardless of which props are passed.
@@ -753,9 +784,7 @@ export function ToolRow({
           left edge down a long list of sibling rows, whereas a tool row sits
           inside flowing prose, where a blank reserved column reads as a stray
           indent. Different context, different answer. */}
-      {leadingIconNode}
-      {exitNode}
-      {statusNode}
+      <RowLead leading={leadingIconNode} exit={exitNode} status={statusNode} />
       {hasIntent && (
         <span className={CLASS.intent} data-testid="tool-row-intent">
           {statedIntent}
@@ -763,12 +792,7 @@ export function ToolRow({
         </span>
       )}
       {hasSummary && (
-        <span
-          className={`${CLASS.summary}${monoSummary ? ` ${CLASS.mono}` : ""}${
-            hasIntent ? ` ${CLASS.demoted}${expanded ? "" : ` ${CLASS.clamped}`}` : ""
-          }`}
-          data-testid="tool-row-summary"
-        >
+        <SummaryText className={summaryClassName}>
           {hasIntent && !expanded ? (
             clampedSummary
           ) : anchor !== undefined ? (
@@ -790,7 +814,7 @@ export function ToolRow({
           {hasIntent && trailing && anchor === undefined ? (
             <span className={CLASS.summaryTrailing}>{trailing}</span>
           ) : null}
-        </span>
+        </SummaryText>
       )}
       {!hasIntent && !hasSummary && chevron}
       {(!hasIntent || !hasSummary) && anchor === undefined ? trailing : null}
@@ -835,12 +859,7 @@ export function ToolRow({
   const summaryContent = (
     <>
       {hasSummary && (
-        <span
-          className={`${CLASS.summary}${monoSummary ? ` ${CLASS.mono}` : ""}${
-            hasIntent ? ` ${CLASS.demoted}${expanded ? "" : ` ${CLASS.clamped}`}` : ""
-          }`}
-          data-testid="tool-row-summary"
-        >
+        <SummaryText className={summaryClassName}>
           {hasIntent && !expanded ? (
             // Collapsed: the middle-truncating clamp is a nowrap flex line
             // and the trailing control / body chevron ride it as flex items,
@@ -896,7 +915,7 @@ export function ToolRow({
           ) : (
             summarySegmentNodes(segments, summaryLink)
           )}
-        </span>
+        </SummaryText>
       )}
       {/* Rows with no intent trail the control at the summary line's end. An
           intent-only row never reaches this fallback: its control rides the
@@ -940,10 +959,9 @@ export function ToolRow({
   // row), and it names the status as its description the way the suppressed
   // intent trigger used to (#1253 review).
   const bodyTriggerButton = twoLevel ? (
-    <button
-      type="button"
+    <RowTrigger
+      testId="tool-row-body-trigger"
       className={CLASS.bodyTrigger}
-      data-testid="tool-row-body-trigger"
       aria-expanded={expanded}
       aria-controls={disclosureBodyId}
       aria-label={summaryLabel}
@@ -951,7 +969,7 @@ export function ToolRow({
       onClick={() => onToggle?.()}
     >
       {bodyChevronInline ? null : bodyChevron}
-    </button>
+    </RowTrigger>
   ) : null;
 
   // Intent button attributes differ between two-level and legacy modes.
@@ -977,10 +995,8 @@ export function ToolRow({
           {/* A summary-less row keeps only its .bodyTrigger control (rendered
               below) - no second intent disclosure, no second chevron. */}
           {!intentControlSuppressed && (
-            <button
-              type="button"
+            <RowTrigger
               className={`${CLASS.trigger} ${CLASS.intentOverlayTrigger}`}
-              data-testid="tool-row-trigger"
               aria-expanded={triggerExpanded}
               aria-controls={triggerControls}
               aria-label={`${failed ? "Failed " : ""}${statedIntent}`}
@@ -989,9 +1005,7 @@ export function ToolRow({
             />
           )}
           <span className={CLASS.intentTriggerContent} data-testid="tool-row-intent-trigger-content">
-            {leadingIconNode}
-            {exitNode}
-            {statusNode}
+            <RowLead leading={leadingIconNode} exit={exitNode} status={statusNode} />
             <span className={CLASS.intent} data-testid="tool-row-intent">
               {statedIntent}
             </span>
@@ -1007,53 +1021,41 @@ export function ToolRow({
         // ~34px unbounded below the 700px breakpoint and wrapping the trigger
         // on a phone column (#1253 review).
         <span className={CLASS.intentLine} data-testid="tool-row-intent-line">
-          {leadingIconNode}
-          {exitNode}
-          {statusNode}
+          <RowLead leading={leadingIconNode} exit={exitNode} status={statusNode} />
           <span className={CLASS.intent} data-testid="tool-row-intent">
             {statedIntent}
           </span>
         </span>
       ) : hasIntent ? (
-        <button
-          type="button"
+        <RowTrigger
           className={CLASS.trigger}
-          data-testid="tool-row-trigger"
           aria-expanded={triggerExpanded}
           aria-controls={triggerControls}
           onClick={triggerOnClick}
         >
-          {leadingIconNode}
-          {exitNode}
-          {statusNode}
+          <RowLead leading={leadingIconNode} exit={exitNode} status={statusNode} />
           <span className={CLASS.intent} data-testid="tool-row-intent">
             <TailUnit line="intent" segments={[{ kind: "text", text: statedIntent ?? "" }]}>
               {chevron}
             </TailUnit>
           </span>
-        </button>
+        </RowTrigger>
       ) : (
-        <>
-          {leadingIconNode}
-          {exitNode}
-          {statusNode}
-        </>
+        <RowLead leading={leadingIconNode} exit={exitNode} status={statusNode} />
       )}
       {!showIntentTrailing && intentLineTrailing}
       {bodyTriggerOnIntentLine && bodyTriggerButton}
       {!hasIntent && <div className={CLASS.summaryLine}>{summaryContent}</div>}
       {!hasIntent && (
-        <button
-          type="button"
+        <RowTrigger
           className={CLASS.trigger}
-          data-testid="tool-row-trigger"
           aria-expanded={expanded}
           aria-controls={disclosureBodyId}
           aria-label={summaryLabel}
           onClick={() => onToggle?.()}
         >
           {chevron}
-        </button>
+        </RowTrigger>
       )}
       {hasIntent && twoLevel && bodyTriggerOnSummaryLine && (
         <div id={summaryRegionId} className={CLASS.summaryLine} data-body-trigger="true">

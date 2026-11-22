@@ -50,10 +50,10 @@ func (c *delegateTreeController) beginSubtreeLaneHandoff(delegateID string) lane
 			// pointers, but its teardown is still winding down in the lane.
 			// Handing the lane over now would put a new occupant beside it.
 			// A reclamation claim (c.reclaiming) is deliberately not refused
-			// here: the reclaiming session's own close-time lane cleanup runs
-			// under that claim and must be able to unlock/remove its child
-			// lanes. Independent handoffs still see the reclamation as active
-			// in the quiescence snapshot and refuse there.
+			// here: a session close racing the claim must still run its own
+			// lane cleanup and be able to unlock/remove its child lanes.
+			// Independent handoffs still see the reclamation as active in the
+			// quiescence snapshot and refuse there.
 			return laneHandoffBusy
 		}
 	}

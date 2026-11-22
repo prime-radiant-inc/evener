@@ -10,10 +10,10 @@ import "context"
 // the admitted handle handed to the window renderer instead of loaded whole.
 // The open/admit/stat sequence is openAdmittedReadCtx, which readFileCtx shares,
 // so a change to admission cannot reach one entry and miss the other.
-func (s *sandboxFS) readNumberedWindowCtx(ctx context.Context, tool, abs, displayPath string, offsetLine, limitLines *int) (string, error) {
+func (s *sandboxFS) readNumberedWindowCtx(ctx context.Context, tool, abs, displayPath string, offsetLine, limitLines *int) (string, ReadFileMeta, error) {
 	f, size, err := s.openAdmittedReadCtx(ctx, tool, abs)
 	if err != nil {
-		return "", err
+		return "", ReadFileMeta{}, err
 	}
 	defer func() { _ = f.Close() }()
 	return readNumberedWindowCtx(ctx, displayPath, abs, f, size, offsetLine, limitLines)

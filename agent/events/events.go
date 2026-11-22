@@ -131,9 +131,8 @@ const (
 	EventPromptLoaded EventKind = "PROMPT_LOADED"
 	// EventRoundTimings carries round timing information.
 	EventRoundTimings EventKind = "ROUND_TIMINGS"
-	// EventStatusSettled announces a resting session's new state outside a
-	// turn: a needs_response rest moving to awaiting once its quiet period
-	// passes.
+	// EventStatusSettled is retained for historical events that announced a
+	// resting session's state outside a turn.
 	EventStatusSettled EventKind = "STATUS_SETTLED"
 	// EventTurnEnded marks a single turn reaching its terminal boundary, carrying
 	// the turn's wall-clock duration.

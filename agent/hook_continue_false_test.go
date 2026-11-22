@@ -501,3 +501,45 @@ func TestUserPromptSubmit_ContinueFalseEndsTheInputUnderAnActiveGoal(t *testing.
 		t.Errorf("model requests = %d, want 0: a stopped prompt must not reach the model through a goal continuation", got)
 	}
 }
+
+func TestPostToolHooks_ContinueFalseOnQuietYieldPublishesReason(t *testing.T) {
+	t.Parallel()
+	for _, event := range []string{"PostToolUse", "PostToolBatch"} {
+		t.Run(event, func(t *testing.T) {
+			t.Parallel()
+			cmd := `printf '%s' '{"continue":false,"stopReason":"hook stopped quiet yield"}'`
+			sess, adapter := postHookFixture(t, event, cmd, func(round int, _ llm.Request) llm.Response {
+				if round > 0 {
+					t.Fatalf("%s continue:false must end the turn; reached request %d", event, round)
+				}
+				return quietYieldResponse("quiet-0", `{}`)
+			})
+			warnings := collectWarnings(sess)
+			enqueueCompletedJobNotification(t, sess, "finished-job")
+
+			ctx := tripwireCtx(t)
+			if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+				t.Fatalf("ProcessInputKind: %v", err)
+			}
+			requireQuietToolResult(t, sess, "quiet-0")
+			var steering []schema.Turn
+			for _, turn := range sess.history {
+				if turn.Kind == schema.TurnSteering && turn.SteeringKind == events.SteeringKindHookContext {
+					steering = append(steering, turn)
+				}
+			}
+			if len(steering) != 1 || !strings.Contains(steering[0].Message.Text(), "hook stopped quiet yield") {
+				t.Fatalf("hook-context steering turns = %+v, want one carrying the stop reason", steering)
+			}
+			if sess.quietlyYielded() {
+				t.Fatal("quietlyYielded() = true after a post-tool hook stopped the round")
+			}
+			awaitWarningNaming(t, warnings, "hook stopped quiet yield")
+			sess.Close()
+
+			if got := len(adapter.Requests()); got != 1 {
+				t.Fatalf("model requests = %d, want 1", got)
+			}
+		})
+	}
+}

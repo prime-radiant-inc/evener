@@ -120,9 +120,11 @@ type SessionConfig struct {
 	// defaultMaxConcurrentDelegateTurns (50). Idle delegates hold no slot.
 	MaxConcurrentDelegateTurns int `json:"max_concurrent_delegate_turns,omitempty"`
 
-	// MaxRetainedTerminal bounds how many terminal child records
-	// (completed|failed|cancelled|exhausted) the subagent manager retains per
-	// parent. Zero defaults to defaultMaxRetainedTerminal (2048).
+	// MaxRetainedTerminal bounds how many resident idle terminal child-runtime
+	// subtrees the tree retains. Reclamation is demand-triggered at delegate
+	// create or cold restore and is residency-only: the runtime unloads while
+	// durable state and resumability stay intact. Zero defaults to
+	// defaultMaxRetainedTerminal (2048).
 	MaxRetainedTerminal int `json:"max_retained_terminal,omitempty"`
 
 	// ToolOutputLimits overrides default per-tool truncation behavior.

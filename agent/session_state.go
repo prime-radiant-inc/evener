@@ -7,7 +7,6 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
-	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -24,15 +23,8 @@ const (
 	SessionIdle = appwire.SessionStateIdle
 	// SessionProcessing indicates the session is actively processing.
 	SessionProcessing = appwire.SessionStateActive
-	// SessionAwaiting indicates the session is idle with the ball in its
-	// human partner's court: a question is pending, or the last completed
-	// turn ended on a communicate that said needs_response and no autonomous
-	// work (goal kick, pending notifications, queued input, a pending
-	// delegate report, working child subagents) is in flight. A plain reply
-	// rests idle. It is the daemon-truth source for the session's raw state;
-	// only an actionable condition (a pending question or approval, a warning,
-	// or a restart) puts a session in the hub's "needs you" attention state
-	// (#2629). A turn that merely ended on needs_response is Idle.
+	// SessionAwaiting indicates the session is resting with an unanswered
+	// ask_user question. An ordinary reply or quiet yield rests idle.
 	// The string must stay byte-equal to appwire.ThreadStatusAwaiting
 	// ("awaiting"): every status pass-through switch on the wire journey
 	// defaults unrecognized strings to idle, so changing this string would
@@ -224,6 +216,11 @@ func (s *Session) pendingDelegateUpdateAttentionIDs() []string {
 	if err != nil {
 		return nil
 	}
+	if !s.communicatedUnblocked() {
+		// While parked at a quiet yield before delivering its own report, a
+		// coordinator delegate wakes on nested delegate reports as well as updates.
+		return ids
+	}
 	var updates []string
 	for _, attentionID := range ids {
 		if isDelegateUpdateAttentionID(attentionID) {
@@ -239,11 +236,12 @@ func (s *Session) pendingDelegateUpdateAttentionIDs() []string {
 // is not among them. Coverage alone answers, with no transcript read to fail,
 // so an update already marked consumed may be listed too.
 func (s *Session) presentedDelegateUpdateAttentionIDs() []string {
+	keepAll := !s.communicatedUnblocked()
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 	var updates []string
 	for id := range s.attentionCoveredIDs {
-		if isDelegateUpdateAttentionID(id) {
+		if keepAll || isDelegateUpdateAttentionID(id) {
 			updates = append(updates, id)
 		}
 	}
@@ -274,7 +272,7 @@ func (s *Session) autonomyInFlight() bool {
 }
 
 // hasWakeableWork reports whether anything can wake a resting session. Used by
-// communicate to refuse waiting_on_work only when nothing can wake it. Producers
+// communicate to refuse a quiet yield only when nothing can wake it. Producers
 // are read before queues, with notifications last among queue terms, so a
 // retirement-to-enqueue handoff cannot fall between reads. Detached processes,
 // Stop-held steering, and daemon nudges never count; watch and emission terms
@@ -300,6 +298,27 @@ func (s *Session) hasWakeableWork() bool {
 		}
 	}
 	return s.hasRunnableUserSteering() || s.autonomyInFlight() || s.HasPendingAsk()
+}
+
+// hasOneShotWakeableWork reports whether anything can wake a one-shot
+// (TurnEndsProcess) root session before its process exits. An unfired watch
+// alone does not hold DrainOwnedJobTree open, so only drainable subtree work,
+// live job retirement, in-flight watch/job emission, runnable user steering,
+// or a pending ask qualifies.
+func (s *Session) hasOneShotWakeableWork() (bool, error) {
+	work, err := s.treeHasOutstandingWork()
+	if err != nil || work {
+		return work, err
+	}
+	if s.jobManager != nil && s.jobManager.hasLiveRuns() {
+		return true, nil
+	}
+	for _, holder := range s.watchHolderSessions() {
+		if holder.jobManager.hasNoticeEmissionInFlight() {
+			return true, nil
+		}
+	}
+	return s.hasRunnableUserSteering() || s.HasPendingAsk(), nil
 }
 
 // cumulativeUsageSnapshot converts the context manager's llm.Usage total to
@@ -415,6 +434,11 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 	if s.persistFallbackPrompt && s.systemPromptFrozen {
 		fallbackPrompt = s.cachedSystemPrompt
 	}
+	lastInputTokens, lastInputMeasuredLen, lastInputAnchor, lastInputTarget := s.contextMgr.LastInputMeasurement(s.profile)
+	var lastInputLenPtr *int
+	if lastInputTokens > 0 {
+		lastInputLenPtr = &lastInputMeasuredLen
+	}
 	return schema.SessionMeta{
 		ID:                       s.id,
 		ProfileID:                s.profile.ID(),
@@ -423,14 +447,16 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		VisionModel:              s.cfg.VisionModel,
 		Manager:                  s.cfg.Manager,
 		Config:                   s.cfg.toSnapshot(),
-		ReasoningEffortEscalated: s.loopEffortEscalated,
 		EnvInfo:                  s.envInfo,
 		CreatedAt:                s.createdAt,
 		UpdatedAt:                now,
 		TurnCount:                s.modelResponses,
 		AcceptedInputTurns:       s.turns,
 		TurnBudgetWarningEmitted: s.turnBudgetWarningEmitted,
-		LastInputTokens:          s.contextMgr.LastInputTokens(),
+		LastInputTokens:          lastInputTokens,
+		LastInputMeasuredLen:     lastInputLenPtr,
+		LastInputAnchor:          lastInputAnchor,
+		LastInputTarget:          lastInputTarget,
 		ContextWindow:            contextWindow,
 		ContextWindowSource:      contextWindowSource,
 		Name:                     s.naming.value,
@@ -561,9 +587,8 @@ func (s *Session) finishProcessingAtFailureBoundary(ctx context.Context) {
 
 // finishProcessingAtRestoredFailureBoundary settles an interrupt whose marker
 // was rejected by the same transcript-tail rule restore uses. Marker rejection
-// can follow an admitted reply, which clears askPending before a completed
-// tool-results turn that ended on needs_response leaves the durable session
-// awaiting. Generic failures keep the pending-set rule above; this path is
+// can follow an admitted reply that clears askPending in memory before the
+// transcript records the answer. Generic failures keep the pending-set rule above; this path is
 // only for an interrupt marker that never became a boundary record.
 func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context) {
 	// recordTurn retains the live pair before an ordinary transcript write
@@ -625,8 +650,7 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 		release(transitioned, turnMS)
 		return
 	}
-	state := deriveRestoredState(restoredHistory, divergence, origins, latestAttemptStarts(restoredEntries, restoredRepairInsertions, restoredSuperseded))
-	pending, isAskRound := deriveRestoredAskPending(restoredHistory, divergence, origins)
+	state, pending, isAskRound := deriveRestoredState(restoredHistory, divergence, origins)
 	transitioned, turnMS := s.transitionProcessingAtBoundaryLocked(state)
 	if transitioned {
 		// The settlement is atomic with the state publication: a no-op
@@ -729,172 +753,12 @@ func (s *Session) isClosingOrClosed() bool {
 	return s.closingOrClosedLocked()
 }
 
-// settleTerminalState decides the terminal session state at the drain-loop
-// settle. It runs ONLY on the clean-completion path (interrupted and failed
-// turns return from ProcessInputKind before the settle), so turn outcome is
-// implied by reachability. awaiting arms only when the turn produced
-// user-visible output and nothing autonomous will move the session next.
-func settleTerminalState(hadOutput, goalKicked, queuePending, autonomyPending bool) SessionState {
-	if !hadOutput || goalKicked || queuePending || autonomyPending {
-		return SessionIdle
-	}
-	return SessionAwaiting
-}
-
-// recomputeRestoredState settles a restored session the way the live settle
-// does, now that history, goal restore, and (unless deferred for nested
-// delegate reconstruction) notification/watch-send side effects are all in
-// place. The initial derivation in RestoreSession decided from history
-// alone; this pass reruns deriveRestoredState (session_tools_ask.go) once
-// autonomy signals (working children, pending notifications, queued input)
-// are available to check. A pending question rests awaiting regardless. A
-// needs_response rest with autonomy in flight rests idle and is owed, so a
-// later wake that runs no turn arms it once nothing moves the session; with
-// none in flight it rests awaiting. Restored active goals are deliberately
-// not autonomy: they are not re-kicked on restore ("loaded but idle").
-// divergenceTurn is the same value its one caller
-// (RestoreSessionFromMetaWithConfig) already computed for
-// escapeHistoryWithSessionProvenance, in the same units as s.history at
-// this point: a forked child's inherited prefix must not be decided by this
-// session's own journal (steeringOriginBoundary).
-func (s *Session) recomputeRestoredState(divergenceTurn int, attemptStarts map[string]int) {
-	s.mu.Lock()
-	origins := s.clientMutations.steeringOrigins()
-	target := deriveRestoredState(s.history, divergenceTurn, origins, attemptStarts)
-	_, askRound := deriveRestoredAskPending(s.history, divergenceTurn, origins)
-	s.mu.Unlock()
-	if target != SessionAwaiting {
-		return
-	}
-	held := !askRound && s.autonomyInFlight()
+// armAwaitingAtSettle gives a pending question precedence over queued or
+// autonomous work. Only an open idle session can move to awaiting here.
+func (s *Session) armAwaitingAtSettle() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if (s.state != SessionIdle && s.state != SessionAwaiting) || s.closingOrClosedLocked() {
-		return
-	}
-	if !held {
+	if len(s.askPending) > 0 && s.state == SessionIdle && !s.closingOrClosedLocked() {
 		s.state = SessionAwaiting
-		return
 	}
-	s.state = SessionIdle
-	s.comm.endReason = tool.CommunicateEndReasonNeedsResponse
-	s.restGeneration++
-	s.restOwedGeneration = s.restGeneration
 }
-
-// armAwaitingAtSettle upgrades idle -> awaiting at the drain-loop settle when
-// the session waits on its human partner: a question is pending, or the turn
-// ended on a communicate that said needs_response and settleTerminalState
-// finds nothing autonomous in flight. A plain reply (done) and a wait on
-// work (waiting_on_work) rest idle. It runs after settleGoalOnIdle (so the
-// goal kick is known) and before the EventSessionEnd emit. A pending question
-// upgrades at once, so the emitted State carries it; a needs_response rest
-// upgrades after its quiet period and announces itself with
-// EventStatusSettled. The upgrade respects the same closed-guard as
-// finishProcessingAtBoundary and only ever upgrades from SessionIdle, and a
-// turn starting since the settle cancels a pending one (restGeneration).
-func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
-	s.mu.Lock()
-	s.restGeneration++
-	generation := s.restGeneration
-	if len(s.askPending) > 0 {
-		// Only the answer resolves a pending question; queued input waits
-		// behind it, so nothing else is read here.
-		if s.restStillPendingLocked(generation) {
-			s.state = SessionAwaiting
-		}
-		s.mu.Unlock()
-		return
-	}
-	// A wake that ran no turn produced no output of its own; the rest it
-	// interrupted had output at its own settle, and everything else is
-	// checked again from here.
-	hadOutput = hadOutput || s.resumeQuietRest
-	s.resumeQuietRest = false
-	s.mu.Unlock()
-	if s.communicateEndReason() != tool.CommunicateEndReasonNeedsResponse || !hadOutput {
-		return
-	}
-	// From here the turn owes its human partner a rest, even when queued
-	// input, steering, a goal kick or work in flight holds it idle for now: a
-	// later wake that runs no turn settles again and arms it once nothing
-	// moves the session. hadOutput is true from here on.
-	s.mu.Lock()
-	s.restOwedGeneration = generation
-	s.mu.Unlock()
-	// Runnable user steering is queued input for this purpose: a carrier that
-	// returned its steer undelivered leaves it for the next wake, and a
-	// session that will move on its own is not waiting on the user.
-	// A queue parked by a Stop is not work either: nothing runs it until the
-	// person acts, and WireState already reads it that way (issue #4142).
-	moves := s.pendingQueueDepth() > 0 || s.hasRunnableUserSteering()
-	if settleTerminalState(hadOutput, goalKicked, moves, s.autonomyInFlight()) != SessionAwaiting {
-		return
-	}
-	// A needs_response rest waits out a quiet period first, so a session that
-	// ends a turn and starts the next one at once never flickers to awaiting.
-	// The timer re-checks everything the settle checked: a newer settle, a new
-	// turn, a close, or work that arrived in the meantime leaves it idle.
-	delay := needsResponseQuietPeriodDefault
-	if override := s.cfg.testOnly.needsResponseQuietPeriod; override != nil {
-		delay = *override
-	}
-	if delay <= 0 {
-		// Nothing moved since the checks above, and the input's SESSION_END,
-		// emitted right after this settle, carries the state.
-		s.restAwaiting(generation)
-		return
-	}
-	s.sclock().AfterFunc(delay, func() {
-		// The cheap check first, so a timer outliving its session or turn
-		// reads no work state. restAwaiting re-reads queued input and
-		// steering under the transition's hold.
-		if !s.restStillPending(generation) || s.autonomyInFlight() {
-			return
-		}
-		// Held across the emit so a turn start can't slip in between.
-		// STATUS_SETTLED must stay out of modelEventKinds: a
-		// watch fired from this emit could start a turn, which waits on restMu.
-		s.restMu.Lock()
-		defer s.restMu.Unlock()
-		if s.restAwaiting(generation) {
-			if hook := s.cfg.testOnly.needsResponseRestBeforeAnnounce; hook != nil {
-				hook()
-			}
-			s.emit(events.StatusSettledData{State: string(SessionAwaiting)})
-		}
-	})
-}
-
-// restStillPending reports whether the rest numbered generation can still
-// arm: no turn started and no settle ran since, and the session is idle and
-// open.
-func (s *Session) restStillPending(generation uint64) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.restStillPendingLocked(generation)
-}
-
-func (s *Session) restStillPendingLocked(generation uint64) bool {
-	return s.restGeneration == generation && s.state == SessionIdle && !s.closingOrClosedLocked()
-}
-
-// restAwaiting moves the session to awaiting if the rest numbered generation
-// can still arm, and reports whether it did. Queued input and runnable user
-// steering are read again under the same hold as the transition, since
-// neither starts a turn the moment it arrives.
-func (s *Session) restAwaiting(generation uint64) bool {
-	steeringHeld := s.userSteeringHeld()
-	queueHeld := s.clientMutations != nil && s.clientMutations.queueHeld()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.restStillPendingLocked(generation) || (!queueHeld && len(s.inputQueue) > 0) || s.runnableUserSteeringLocked(steeringHeld) {
-		return false
-	}
-	s.state = SessionAwaiting
-	return true
-}
-
-// needsResponseQuietPeriodDefault is how long a turn that ended on
-// needs_response rests idle before it rests awaiting.
-const needsResponseQuietPeriodDefault = 5 * time.Second

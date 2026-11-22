@@ -141,7 +141,7 @@ test("delivery is announced once when the transcript reflects the id", async () 
   );
   // The delivered shape: the daemon's own hydrate carries the turn item the
   // steer became, keyed by the client mutation id (reconcilePendingEntries'
-  // reflectedMutationIds rule) - the same re-hydrate PendingMessageStack.test.tsx's
+  // reflectedMutationIds rule) - the same re-hydrate the delivered-steer
   // disappearance test drives.
   fake.on("thread/read", () =>
     readResponse("ref_a", {

@@ -2242,7 +2242,7 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 		// The unleased predicate this turn sees is what withholds watch
 		// notices and defers them to a leased generation; the turn itself
 		// credits no attention row.
-		_, err := childSess.ProcessInputKind(withDriveTurn(driveCtx, drive), "", nil, EntryNotification)
+		_, err := childSess.keepingReport(childSess.ProcessInputKind)(withDriveTurn(driveCtx, drive), "", nil, EntryNotification)
 		// A Stop of the delegate (stopDrive) cancelled the turn: that is the
 		// ordinary nonfatal end of a stopped run, so the work the delegate
 		// owns is left alone.
@@ -2515,9 +2515,9 @@ func (s *Session) childFatalRunGated(childSessionID string) bool {
 // calling the result tool. Sent at most once.
 func communicateNudge(toolName string) string {
 	return "You stopped without calling " + toolName + ". " +
-		"You MUST call " + toolName + " with end_turn=true and a message summarizing your complete findings, or naming the work you are waiting on, " +
-		"before stopping. The parent agent receives ONLY the " + toolName + " message — " +
-		"it cannot see anything else you did. Report your results, or what you are waiting on, now."
+		"If running work or a delegate will wake you and you have nothing to report, call " + toolName + "({}) with no message. " +
+		"For complete findings, a blocker, or a readiness line, call " + toolName + " with end_turn=true and a message. " +
+		"Your parent receives only the " + toolName + " message, not the rest of your turn."
 }
 
 // communicateUpdateNudge is the reminder for a subagent that sent its parent a
@@ -2529,8 +2529,8 @@ func communicateNudge(toolName string) string {
 func communicateUpdateNudge(toolName string) string {
 	return "You ended your turn after sending the parent an update with " + toolName + " end_turn=false. " +
 		"The parent received that update; it is not a result. " +
-		delegateContinueAuthorized + ", then call " + toolName + " with end_turn=true and your complete findings. " +
-		"If you are genuinely blocked, report that blocker. " +
+		delegateContinueAuthorized + ". If running work or a delegate will wake you and you have nothing to report, call " + toolName + "({}) with no message. " +
+		"For complete findings, a blocker, or a readiness line, call " + toolName + " with end_turn=true and a message. " +
 		"This is an automatic runtime reminder, not a new instruction from the parent, and it authorizes no new work."
 }
 
@@ -2590,7 +2590,14 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		if observer := a.sess.cfg.testOnly.subagentRunIteration; observer != nil {
 			observer(a, iteration)
 		}
-		res, err = a.sess.processInputKindWithProvenance(ctx, input, nil, kind, inputProvenance)
+		runInput := func(inCtx context.Context, text string, images []ImageAttachment, inKind EntryKind) (string, error) {
+			return a.sess.processInputKindWithProvenance(inCtx, text, images, inKind, inputProvenance)
+		}
+		if iteration > 1 {
+			res, err = a.sess.keepingReport(runInput)(ctx, input, nil, kind)
+		} else {
+			res, err = runInput(ctx, input, nil, kind)
+		}
 		_, budgetExhausted := budgetExhaustionFromError(err)
 		a.mu.Lock()
 		cancelRequested := a.cancelRequested
@@ -2620,7 +2627,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				needsNudge = decision == delegateCompletionNeedsNudge
 			}
 		} else {
-			needsNudge = !a.sess.communicated()
+			needsNudge = !a.sess.communicatedUnblocked()
 		}
 		shouldNudge := nudgeAvailable && !cancelRequested &&
 			!budgetExhausted &&
@@ -2628,12 +2635,26 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			needsNudge &&
 			!a.sess.hookStoppedTheInput() &&
 			(err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted))
+		deferStopHook := false
+		if needsNudge && !cancelRequested && !budgetExhausted && !a.sess.hookStoppedTheInput() && err == nil && a.sess.quietlyYielded() {
+			// An explicit quiet yield parks the generation until its owned work
+			// wakes it. Both the report nudge and SubagentStop wait until the
+			// drain and any required post-drain report nudge finish.
+			outstanding, workErr := a.sess.treeHasOutstandingWork()
+			if workErr != nil {
+				err = workErr
+				shouldNudge = false
+			} else if outstanding {
+				deferStopHook = true
+				shouldNudge = false
+			}
+		}
 		if shouldNudge {
 			nudgeAvailable = false
 			res, err = a.deliverCommunicateNudge(ctx, inputProvenance)
 			_, budgetExhausted = budgetExhaustionFromError(err)
 		}
-		if hookAvailable && !cancelRequested && !budgetExhausted {
+		if !deferStopHook && hookAvailable && !cancelRequested && !budgetExhausted {
 			hookAvailable = false
 			res, err = a.runSubagentStopHook(ctx, res, err, a.followUpProvenance(inputProvenance))
 		}
@@ -2664,8 +2685,9 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				a.finalizing = false
 				a.mu.Unlock()
 				res, err = a.deliverCommunicateNudge(ctx, inputProvenance)
+				_, budgetExhausted = budgetExhaustionFromError(err)
 				a.mu.Lock()
-				cancelRequested = a.cancelRequested
+				cancelRequested = cancelRequested || a.cancelRequested
 				a.mu.Unlock()
 				settlementMode = delegateSettlementModeForRun(err, cancelRequested)
 				boundary, boundaryErr := a.sess.delegateController.SupervisionBoundary(lease, settlementMode)
@@ -2678,7 +2700,49 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 					kind = EntryContinuation
 					continue
 				case delegateSupervisionSuppress:
+					cancelRequested = true
 				}
+				if err == nil && !a.hookStoppedRun() && !a.sess.stopHookReplacedReplyNow() && !a.sess.hookStoppedTheInput() {
+					res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
+				}
+			}
+		}
+		if deferStopHook && hookAvailable {
+			a.mu.Lock()
+			cancelRequested = cancelRequested || a.cancelRequested
+			a.mu.Unlock()
+			if stableRun && a.sess.delegateController != nil {
+				settlementMode = delegateSettlementModeForRun(err, cancelRequested)
+				boundary, boundaryErr := a.sess.delegateController.SupervisionBoundary(lease, settlementMode)
+				if boundaryErr != nil && !errors.Is(boundaryErr, errDelegateTargetBusy) {
+					err = errors.Join(err, boundaryErr)
+				}
+				switch boundary {
+				case delegateSupervisionContinue:
+					if restoreParentDriveNotify != nil {
+						a.sess.SetNotifyFunc(restoreParentDriveNotify)
+						restoreParentDriveNotify = nil
+					}
+					a.mu.Lock()
+					a.finalizing = false
+					a.mu.Unlock()
+					input = "Continue with the newly received steering before settling."
+					kind = EntryContinuation
+					continue
+				case delegateSupervisionSuppress:
+					cancelRequested = true
+				}
+			}
+			if !cancelRequested && !budgetExhausted {
+				hookAvailable = false
+				if restoreParentDriveNotify != nil {
+					a.sess.SetNotifyFunc(restoreParentDriveNotify)
+					restoreParentDriveNotify = nil
+				}
+				a.mu.Lock()
+				a.finalizing = false
+				a.mu.Unlock()
+				res, err = a.runSubagentStopHook(ctx, res, err, a.followUpProvenance(inputProvenance))
 				if err == nil && !a.hookStoppedRun() && !a.sess.stopHookReplacedReplyNow() && !a.sess.hookStoppedTheInput() {
 					res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
 				}
@@ -3315,11 +3379,14 @@ func (inputs *delegateTerminalRunInputs) captureCommunicateReport(sess *Session)
 	}
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	inputs.communicated = sess.comm.called
-	inputs.structuredResult = sess.comm.structured
-	inputs.structuredResultPresent = sess.comm.structured != nil
-	if inputs.communicated && inputs.runErr == nil {
-		inputs.result = sess.comm.text
+	settled := sess.comm.called && !sess.comm.stopBlocked
+	inputs.communicated = settled
+	if settled {
+		inputs.structuredResult = sess.comm.structured
+		inputs.structuredResultPresent = sess.comm.structured != nil
+		if inputs.runErr == nil {
+			inputs.result = sess.comm.text
+		}
 	}
 }
 

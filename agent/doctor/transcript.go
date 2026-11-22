@@ -21,8 +21,8 @@ import (
 )
 
 // sessionRowTranscriptTailBytes is the first tail window a sessions row reads
-// from a transcript longer than it. The row consumes only the header and the
-// last assistant turn's entry, so one window holds it for nearly every
+// from a transcript longer than it. The row consumes only the header and
+// enough entries to decide the outcome, so one window suffices for nearly every
 // transcript; when it does not, the window doubles until it does or the row
 // falls back to the full scan, so the outcome is never guessed from a window
 // that merely ran out. A transcript at or under the bound is read whole by
@@ -57,18 +57,15 @@ func loadRecordedTranscriptContext(ctx context.Context, path string) (transcript
 }
 
 // loadSessionRowTranscript reads only what a sessions row consumes: the
-// header, and the last assistant turn's entry — the outcome hint's input,
-// which reports "none" only when the transcript holds no complete assistant
-// record. A transcript at or under sessionRowTranscriptTailBytes goes through
-// the full scan unchanged, so a small transcript keeps its exact summary and
-// error shape. A longer transcript is read in a tail window that doubles
-// until it holds an assistant record or reaches the transcript's start, so
-// the full scan's cost returns only for a transcript with no assistant record
-// to find. In every window, compaction fold copies are skipped and an
-// unterminated final tail is tolerated, exactly as the full scan does; a
+// header and enough entries to decide the outcome hint. A quiet yield or
+// rejected reply does not stop the search for the reply it followed. A transcript at
+// or under sessionRowTranscriptTailBytes goes through the full scan. A longer
+// transcript is read in a tail window that doubles until it holds an outcome
+// entry or reaches the start. The window skips compaction fold copies and
+// tolerates a torn final line, like the full scan. A
 // corrupt complete line inside the window still fails the read, so the
 // unreadable-session contract holds within the window.
-func loadSessionRowTranscript(ctx context.Context, path string) (transcriptDoc, error) {
+func loadSessionRowTranscript(ctx context.Context, path, resultTool string) (transcriptDoc, error) {
 	file, err := openDoctorTranscriptFile(path)
 	if err != nil {
 		return transcriptDoc{}, fmt.Errorf("read transcript %s: %w", path, err)
@@ -91,6 +88,7 @@ func loadSessionRowTranscript(ctx context.Context, path string) (transcriptDoc, 
 	}
 	doc := transcriptDoc{Header: header}
 	for window := sessionRowTranscriptTailBytes; window < size; window *= 2 {
+		doc.Entries = doc.Entries[:0]
 		// A record that starts inside the window is kept even when the
 		// window begins exactly at its boundary; only the tail of a record
 		// that began before the window is discarded, without decoding.
@@ -129,18 +127,29 @@ func loadSessionRowTranscript(ctx context.Context, path string) (transcriptDoc, 
 			if entry.Turn.OriginalOrdinal != nil {
 				continue // compaction fold copy: the original appears earlier
 			}
-			// The row's only entries consumer is the outcome hint, which
-			// reads the last assistant turn; retaining just that entry
-			// keeps the window's decoded cost from piling up per session.
-			if entry.Turn.Kind == schema.TurnAssistant {
-				doc.Entries = []transcript.Entry{entry}
+			// Retain tool results so the scan can pair them with assistant
+			// calls before deciding whether to stop or widen the window.
+			switch entry.Turn.Kind {
+			case schema.TurnAssistant, schema.TurnTool, schema.TurnToolResults, schema.TurnCompletion:
+				doc.Entries = append(doc.Entries, entry)
+			case schema.TurnUserInput, schema.TurnSteering:
+				doc.Entries = append(doc.Entries, transcript.Entry{Turn: schema.Turn{
+					Kind:          entry.Turn.Kind,
+					TurnID:        entry.Turn.TurnID,
+					SteeringKind:  entry.Turn.SteeringKind,
+					AcceptedReply: entry.Turn.AcceptedReply,
+				}})
+			default:
+				if entry.Turn.AcceptedReply {
+					doc.Entries = append(doc.Entries, entry)
+				}
 			}
 		}
-		if len(doc.Entries) > 0 {
+		if _, decided := findOutcome(doc.Entries, resultTool); decided {
 			return doc, nil
 		}
 	}
-	// No window reached an assistant record: read the whole transcript
+	// No window reached an outcome entry: read the whole transcript
 	// through the full scan so the outcome is the true one, never a guess
 	// from a window that ran out.
 	return loadRecordedTranscriptContext(ctx, path)

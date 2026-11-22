@@ -38,6 +38,7 @@ type ModelAttemptMetadata struct {
 	RequestFingerprint      string
 	StorageScopeFingerprint string
 	ContextMarker           string
+	ContextBoundary         string
 	AttemptGroupID          string
 	PreviousResponseIDHash  string
 	ConversationIDHash      string
@@ -59,6 +60,7 @@ func singleAttemptRequestMetadata(req llm.Request) (llm.Request, ModelAttemptMet
 		meta.RequestFingerprint = req.Continuation.RequestFingerprint
 		meta.StorageScopeFingerprint = req.Continuation.StorageScopeFingerprint
 		meta.ContextMarker = req.Continuation.ContextMarker
+		meta.ContextBoundary = req.Continuation.ContextBoundary
 		meta.PreviousResponseIDHash = req.Continuation.PreviousResponseIDHash
 		meta.ConversationIDHash = req.Continuation.ConversationIDHash
 		meta.StoragePolicyLabel = req.Continuation.StoragePolicyLabel
@@ -84,18 +86,13 @@ func completeAttemptMetadata(meta ModelAttemptMetadata, resp llm.Response) Model
 
 // effectiveReasoningEffort decides the reasoning effort for one round without
 // touching the session's configured value: the current in-progress task's
-// override wins when set (even when lower — deliberately cheap tasks are a
-// feature), except while a loop-detect escalation is active, where the
-// higher-ranked of the configured and override efforts wins so the "your
-// reasoning effort has been increased" steering never lies.
-func effectiveReasoningEffort(cfg, override string, escalated bool) string {
-	if override == "" {
-		return cfg
+// override wins when set, even when lower. Deliberately cheap tasks are a
+// feature.
+func effectiveReasoningEffort(cfg, override string) string {
+	if override != "" {
+		return override
 	}
-	if escalated && llm.ReasoningEffortRank(cfg) > llm.ReasoningEffortRank(override) {
-		return cfg
-	}
-	return override
+	return cfg
 }
 
 // prepareModelRequestWithError runs the per-round input phases and assembles the
@@ -193,10 +190,13 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	tToolDefsStart := s.sclock().Now()
 	toolDefs := s.cachedToolDefs
 	toolDefsJSONBytes := s.cachedToolDefsJSONBytes
+	// Read beside the list itself: the request sends this list, so its generation
+	// is the one the provider's input count covers.
+	toolDefsGen := s.toolDefsGen
 	t.ToolDefs = time.Since(tToolDefsStart)
 	// The task override applies to this round only; s.cfg.ReasoningEffort keeps
 	// the session's configured effort so it is restored when the task ends.
-	reasoningEffort = effectiveReasoningEffort(strings.TrimSpace(s.cfg.ReasoningEffort), effortOverride, s.loopEffortEscalated)
+	reasoningEffort = effectiveReasoningEffort(strings.TrimSpace(s.cfg.ReasoningEffort), effortOverride)
 	s.mu.Unlock()
 	if s.contextMgr != nil {
 		s.contextMgr.SetProfile(profile)
@@ -280,6 +280,19 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	s.attentionMu.Lock()
 	s.mu.Lock()
 	historyTurns := append([]schema.Turn{}, s.history...)
+	// The provider's input count describes this history snapshot and the prompt
+	// and tool list the builder is about to send, not whatever history holds
+	// when the reply settles: a fold or repair that publishes while the reply
+	// streams rewrites history, and a turn accepted after this point was never
+	// sent. recordResponseUsage validates and records against this capture.
+	s.requestMeasurement = requestMeasurement{
+		ok:           true,
+		length:       len(historyTurns),
+		anchor:       contextmgr.PrefixAnchor(historyTurns, len(historyTurns)),
+		revision:     s.historyRevision,
+		systemPrompt: sys,
+		toolDefsGen:  toolDefsGen,
+	}
 	// A request's coverage belongs to its history snapshot. A later fold may
 	// replace a retracted frontier before this request stages its inputs.
 	historyCoverage := s.snapshotConversationCoverageLocked(historyTurns)
@@ -379,6 +392,14 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			_ = s.delegateController.AbortModelRequest(claim)
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
 		}
+		// This snapshot can hold a turn appended after the capture above (a
+		// parent steer, say), and the request presents it, so the count the
+		// provider returns covers it. Move the measurement onto the presented
+		// prefix; a rewrite in between refuses the move, and settlement then
+		// drops the pre-rewrite count.
+		s.mu.Lock()
+		s.advanceRequestMeasurementLocked(presentedBoundary)
+		s.mu.Unlock()
 		// A test can land a steer between the completed claim and the rebuild (#7205).
 		s.mu.Lock()
 		afterDelegateSnapshot := s.cfg.testOnly.afterDelegateModelSnapshot
@@ -481,6 +502,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	rebuildForAppendedSkillTurns := func() (bool, error) {
 		s.mu.Lock()
 		var appended []schema.Turn
+		priorMeasurement := s.requestMeasurement
 		// Measure against the snapshot this request projected (presentedTurns),
 		// not the round snapshot (historyTurns): a leased delegate round
 		// projects the controller's later snapshot, which can already hold the
@@ -492,6 +514,12 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// history, and moving it down with the drop below would make every
 			// withheld row look like a fresh append on the next rebuild.
 			presentedBoundary = len(s.history)
+			// The rebuilt request presents these appended turns, so the count
+			// the provider returns covers them. Move the measurement up with the
+			// request: left on the pre-rebuild prefix, the reader prices them a
+			// second time as a delta. A rewrite since the capture refuses the
+			// move, and settlement drops the count instead.
+			s.advanceRequestMeasurementLocked(presentedBoundary)
 		}
 		historyTurns = append([]schema.Turn{}, s.history...)
 		s.mu.Unlock()
@@ -524,6 +552,12 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// The boundary already advanced past the withheld steer, so it stays
 			// outside every later rebuild window this round; the next claim binds it.
 			if len(appended) == 0 {
+				// Nothing was rebuilt, so this request still presents the
+				// pre-rebuild prefix: the advance above would claim coverage of
+				// turns the provider never sees.
+				s.mu.Lock()
+				s.requestMeasurement = priorMeasurement
+				s.mu.Unlock()
 				return false, nil
 			}
 		}
@@ -969,8 +1003,12 @@ func (s *Session) planResponsesContinuation(ctx context.Context, profile *provid
 		req.HistoryMode = llm.HistoryModeFullHistory
 		return route.withInputEstimate(req), nil, nil
 	}
+	// Sample the boundary identity before the provider call, so a response that
+	// lands after a fold publishes a new boundary records the boundary it was
+	// actually planned against.
+	boundary := responsesContinuationBoundaryIdentity(historyTurns)
 	if s.responsesContinuationDisabledForPlan(req, plan, stream) {
-		return responsesContinuationFullHistoryRequestForPlan(route, req, plan), nil, nil
+		return responsesContinuationFullHistoryRequestForPlan(route, req, plan, boundary), nil, nil
 	}
 
 	reservation := reserveResponsesContinuationHistoryBase(historyTurns)
@@ -1001,22 +1039,24 @@ func (s *Session) planResponsesContinuation(ctx context.Context, profile *provid
 			EndpointFamily:          string(plan.EndpointFamily),
 			RequestFingerprint:      plan.RequestFingerprint,
 			ContextMarker:           responseContextMarkerV2,
+			ContextBoundary:         boundary,
 			StoragePolicyLabel:      plan.StoragePolicyLabel,
 			StorageScopeFingerprint: plan.StorageScopeFingerprint,
 		}
 		return route.withInputEstimate(req), fullHistory, candidate.Delta
 	}
 
-	return responsesContinuationFullHistoryRequestForPlan(route, req, plan), nil, nil
+	return responsesContinuationFullHistoryRequestForPlan(route, req, plan, boundary), nil, nil
 }
 
-func responsesContinuationFullHistoryRequestForPlan(route roundRoute, req llm.Request, plan llm.ResponsesContinuationPlan) llm.Request {
+func responsesContinuationFullHistoryRequestForPlan(route roundRoute, req llm.Request, plan llm.ResponsesContinuationPlan, boundary string) llm.Request {
 	req, _ = llm.ApplyResponsesContinuationStoreOverride(req, plan.StoragePolicyLabel)
 	req.HistoryMode = llm.HistoryModeFullHistory
 	req.Continuation = &llm.ContinuationMetadata{
 		EndpointFamily:          string(plan.EndpointFamily),
 		RequestFingerprint:      plan.RequestFingerprint,
 		ContextMarker:           responseContextMarkerV2,
+		ContextBoundary:         boundary,
 		StoragePolicyLabel:      plan.StoragePolicyLabel,
 		StorageScopeFingerprint: plan.StorageScopeFingerprint,
 	}
@@ -1579,14 +1619,87 @@ func (s *Session) recordResponseUsage(resp llm.Response, req llm.Request, answer
 		responseHasServerWebSearch(resp.Message.Content),
 	)
 	if record {
+		// The check and the recording are one critical section: a publication
+		// rewrites history and clears the count under s.mu, so a reply that
+		// validated just before it could otherwise reinstall its count after the
+		// clear.
 		s.mu.Lock()
-		hLen := len(s.history)
-		s.mu.Unlock()
+		defer s.mu.Unlock()
+		hLen, anchor, ok := s.settleRequestMeasurementLocked()
+		if !ok {
+			return
+		}
 		// Only the profile that answered may own this measurement: a SetModel
 		// during the request cleared the measurement it belonged to (roborev's
 		// fifteenth round).
-		s.contextMgr.RecordInputTokensFor(answeringProfile, tokens, hLen)
+		s.contextMgr.RecordInputTokensFor(answeringProfile, tokens, hLen, anchor)
 	}
+}
+
+// requestMeasurement is the history and request shape a model request was built
+// from. length and anchor name the resident prefix the provider's input count
+// covers, revision is the historyRevision at that snapshot (an ordinary append
+// never bumps it), and systemPrompt/toolDefsGen name the non-history overhead
+// the builder sent.
+type requestMeasurement struct {
+	ok           bool
+	length       int
+	anchor       string
+	revision     int
+	systemPrompt string
+	toolDefsGen  int
+}
+
+// advanceRequestMeasurementLocked moves the pending capture forward to a later
+// resident prefix the request now presents, whose turns the provider's count
+// will cover. It refuses unless the captured history is still the one it
+// captured — the revision is unchanged and the captured prefix still holds at
+// its length — leaving the stale capture for settlement to drop. Callers hold
+// s.mu.
+func (s *Session) advanceRequestMeasurementLocked(to int) {
+	m := s.requestMeasurement
+	if !m.ok || to < m.length || to > len(s.history) || !s.measurementHoldsLocked(m) {
+		return
+	}
+	m.length = to
+	m.anchor = contextmgr.PrefixAnchor(s.history, to)
+	s.requestMeasurement = m
+}
+
+// measurementHoldsLocked reports whether the captured history is still the one
+// the capture describes: no rewrite since it was taken (same revision) and the
+// captured prefix still holds at its length. Callers hold s.mu.
+func (s *Session) measurementHoldsLocked(m requestMeasurement) bool {
+	if m.revision != s.historyRevision || len(s.history) < m.length {
+		return false
+	}
+	return m.length == 0 || contextmgr.PrefixAnchor(s.history, m.length) == m.anchor
+}
+
+// settleRequestMeasurementLocked returns the prefix a response's input count may
+// be recorded against. A rewrite while the reply streamed (the revision changed,
+// history shrank below the captured prefix, or the prefix itself was rewritten)
+// or a request shape that changed under it (system prompt, tool list) means the
+// count describes a request this session no longer sends, so it is dropped
+// instead of being paired with the new shape. History that only grew keeps the
+// captured prefix, and the reader prices the appended turns as a delta. A
+// session with no capture — a caller outside the round loop — measures what is
+// resident now. The caller holds s.mu across this check and the recording, so a
+// publication cannot interleave between them.
+func (s *Session) settleRequestMeasurementLocked() (length int, anchor string, ok bool) {
+	m := s.requestMeasurement
+	s.requestMeasurement = requestMeasurement{}
+	if !m.ok {
+		length = len(s.history)
+		return length, contextmgr.PrefixAnchor(s.history, length), true
+	}
+	if !s.measurementHoldsLocked(m) {
+		return 0, "", false
+	}
+	if s.cachedSystemPrompt != m.systemPrompt || s.toolDefsGen != m.toolDefsGen {
+		return 0, "", false
+	}
+	return m.length, m.anchor, true
 }
 
 // responseHasServerWebSearch reports whether a response's content includes a
@@ -1628,7 +1741,7 @@ func effectiveRecordedInputTokens(usage llm.Usage, fullHistoryEstimate int, hasS
 // /delta/end, skipping start/delta when the assistant already streamed) and appends
 // the assistant turn to history unless the response was empty without phase metadata.
 // It runs under withResponseSideEffects and returns its abort error.
-func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, modelResp sessionModelResponse, txt string, skipHistory bool, finalAttempt ModelAttemptMetadata) error {
+func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, modelResp sessionModelResponse, txt string, skipHistory bool, finalAttempt ModelAttemptMetadata, acceptedReply bool) error {
 	var persistErr error
 	if err := s.withResponseSideEffects(ctx, func() {
 		if !modelResp.StreamedAssistant {
@@ -1637,7 +1750,7 @@ func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, 
 			})
 		}
 		if !skipHistory {
-			persistErr = s.appendAssistantTurn(resp, finalAttempt)
+			persistErr = s.appendAssistantTurnWithAcceptance(resp, finalAttempt, acceptedReply)
 			if persistErr != nil {
 				return
 			}

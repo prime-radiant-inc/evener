@@ -41,7 +41,7 @@ func parseCommunicateArgs(args json.RawMessage) (endTurn bool, message string) {
 		message = strings.TrimSpace(payload.Output.Message)
 	}
 	if payload.EndTurn == nil {
-		return false, ""
+		return true, message
 	}
 	return *payload.EndTurn, message
 }

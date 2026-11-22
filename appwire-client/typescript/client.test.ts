@@ -9,6 +9,7 @@ import {
   decodeInitializeResponse,
   HEARTBEAT_INTERVAL_MS,
   HEARTBEAT_TIMEOUT_MS,
+  HubBelowFloorError,
   RECONNECT_BASE_MS,
   RESUME_REQUEST_TIMEOUT_MS,
   type SubscriberErrorInfo,
@@ -318,7 +319,14 @@ describe("AppwireClient", () => {
   // byte-identical every time -- so it has to be terminal, or an operator who
   // upgrades the hub under an open browser gets "Reconnecting" forever instead
   // of something they can act on.
-  test("connect gives up when the server rejects the handshake as invalid", async () => {
+  //
+  // A hub refuses a NEWER protocol than the one it serves without naming
+  // upgradeRequired (internal/appserver/server.go only names it for versions
+  // it knows are older than its own). This client's minimum is v7, so that
+  // refusal means the hub itself is below the supported floor: the client must
+  // report the hub needs upgrading on its host, not send the person back to
+  // reload a page that cannot help. It also never announces v6 to find out.
+  test("connect classifies a hub that refuses v7 as below the supported floor", async () => {
     const fake = new FakeSocket();
     const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
 
@@ -329,15 +337,80 @@ describe("AppwireClient", () => {
       id: frame.id,
       error: {
         code: -32600,
-        message: `protocol version "evener-appwire-v2" is incompatible; want "${APPWIRE_PROTOCOL_VERSION}"`,
+        message: `protocol version "${APPWIRE_PROTOCOL_VERSION}" is incompatible; want "evener-appwire-v6"`,
       },
     });
 
-    await expect(connecting).rejects.toThrow(/incompatible/);
+    await expect(connecting).rejects.toBeInstanceOf(HubBelowFloorError);
     expect(client.state).toBe("closed");
-    // Same contract as the mismatched-version test above: the initial
-    // connect must classify the close, not just the reconnect path.
+    expect(client.terminalReason).toBe("hub-below-floor");
+    // One announcement, at the floor: never a v6 probe, never a second dial.
+    expect(sentFrames(fake).filter((sent) => sent.method === "initialize")).toHaveLength(1);
+    expect(frame.params).toMatchObject({ protocolVersion: "evener-appwire-v7" });
+  });
+
+  // The other direction: the hub names upgradeRequired when the CLIENT is
+  // behind it. Nothing about the hub needs fixing, so this stays the
+  // client-side protocol verdict (reload fetches a bundle the hub accepts).
+  test("connect keeps upgradeRequired as a client-side protocol verdict", async () => {
+    const fake = new FakeSocket();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
+
+    const connecting = connectReady(fake, client);
+    await flushUntil(() => fake.sent.length > 0);
+    const frame = lastSentFrame(fake);
+    fake.receive({
+      id: frame.id,
+      error: {
+        code: -32600,
+        message: `protocol version "evener-appwire-v6" is older than this server's "${APPWIRE_PROTOCOL_VERSION}": upgrade required`,
+        data: { evenerErrorInfo: "upgradeRequired" },
+      },
+    });
+
+    const rejection = await connecting.catch((error: unknown) => error);
+    expect(rejection).not.toBeInstanceOf(HubBelowFloorError);
+    expect(client.state).toBe("closed");
     expect(client.terminalReason).toBe("protocol");
+  });
+
+  // A hub below the floor is not a transient outage: a ready client that
+  // reconnects into that refusal must close terminally rather than back off
+  // against a hub that cannot accept it until someone upgrades it.
+  test("a reconnect into an older hub closes without retrying", async () => {
+    const sockets: FakeSocket[] = [];
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => {
+        const socket = new FakeSocket({ autoInitialize: sockets.length === 0 });
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const connecting = client.connect();
+    sockets[0]?.open();
+    await connecting;
+    sockets[0]?.closeFromServer(1006);
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+    const reconnectSocket = sockets[1];
+    if (!reconnectSocket) throw new Error("expected reconnect socket");
+    reconnectSocket.open();
+    await flushUntil(() => reconnectSocket.sent.length > 0);
+    const reconnect = lastSentFrame(reconnectSocket);
+    reconnectSocket.receive({
+      id: reconnect.id,
+      error: {
+        code: -32600,
+        message: `protocol version "${APPWIRE_PROTOCOL_VERSION}" is incompatible; want "evener-appwire-v6"`,
+      },
+    });
+    await flushUntil(() => client.state === "closed");
+
+    expect(client.state).toBe("closed");
+    expect(client.terminalReason).toBe("hub-below-floor");
+    await vi.runAllTimersAsync();
+    expect(sockets).toHaveLength(2);
   });
 
   test("a malformed initial handshake is a terminal protocol failure", async () => {

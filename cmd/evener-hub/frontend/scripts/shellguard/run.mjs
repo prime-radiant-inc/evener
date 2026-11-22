@@ -840,6 +840,12 @@ async function chooseOverviewMenu(send, selector) {
   await settleOverview(send);
 }
 
+async function choosePaneOverview(send, selector) {
+  await clickControl(send, selector);
+  await waitForDom(send, `document.querySelector(${JSON.stringify(OVERVIEW)})`, "opened pane Overview");
+  await settleOverview(send);
+}
+
 async function openRailOverview(send) {
   const visible = await evaluate(
     send,
@@ -936,16 +942,6 @@ async function measureOverview(send) {
       return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
     };
     const mobile = matchMedia('(max-width: 899px)').matches;
-    // A folded resting phone composer renders no activity line - the counts
-    // come back with the expanded card - so the phone measurement engages the
-    // editor first. That is the state whose chips this guard checks.
-    if (mobile) {
-      const editor = document.querySelector('[data-testid="composer-form"] [role="textbox"]');
-      if (editor && !document.querySelector('[data-testid="composer-activity-line"]')) {
-        editor.focus();
-        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      }
-    }
     // A category is a label line over an optional detail line (the stacked
     // SegmentedControl); each line must show its whole text.
     const categories = Array.from(aside.querySelectorAll('[role="radio"]'), element => {
@@ -963,7 +959,7 @@ async function measureOverview(send) {
     });
     const close = aside.querySelector('button[aria-label="Close Overview"]');
     // The activity surface: the pane's status bar on desktop, the quiet line
-    // below the composer card on a phone (the phone pane renders no footer
+    // above the composer card on a phone (the phone pane renders no footer
     // strip).
     const surface = mobile
       ? document.querySelector('[data-testid="composer-activity-line"]')
@@ -1137,7 +1133,7 @@ function assertOverview(result, viewport, theme) {
     if (!footer) {
       failures.push("engaged phone composer does not render its activity line");
     } else {
-      // The phone pane renders no footer strip: the quiet line below the
+      // The phone pane renders no footer strip: the quiet line above the
       // composer card carries the same four activity tabs, each at the tap
       // floor and never clipped.
       if (footer.chips.length !== 4) failures.push(`phone composer activity chips: ${JSON.stringify(footer.chips)}`);
@@ -1178,6 +1174,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
     "window.overviewGuardState().panes.find(p => p.type === 'session' && p.params.ref === 'local:p0-s0').id",
   );
   const trigger = (id) => `[data-session-actions-ref="local:p0-s0"][data-pane-id="${id}"]`;
+  const overviewTrigger = (id, ref = "local:p0-s0") => `[data-session-overview-ref="${ref}"][data-pane-id="${id}"]`;
   await evaluate(
     send,
     `document.querySelector(${JSON.stringify(OVERVIEW)}).querySelector('[role="radio"][aria-checked="true"]').focus()`,
@@ -1299,11 +1296,11 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   };
   // The rail opener is removed when a phone's Sessions drawer closes.
   await dismiss("close", pane);
-  await chooseOverviewMenu(send, trigger(pane));
+  await choosePaneOverview(send, overviewTrigger(pane));
   await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
   await evaluate(
     send,
-    `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(trigger(pane))}).closest('button'))`,
+    `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(overviewTrigger(pane))}))`,
   );
   await dismiss("escape", pane, true);
 
@@ -1354,15 +1351,15 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
     const duplicate = await evaluate(send, "window.overviewPane('duplicate')");
     await settleOverview(send);
     for (const origin of [pane, duplicate]) {
-      await chooseOverviewMenu(send, trigger(origin));
+      await choosePaneOverview(send, overviewTrigger(origin));
       await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
       await evaluate(
         send,
-        `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(trigger(origin))}).closest('button'))`,
+        `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(overviewTrigger(origin))}))`,
       );
       await dismiss("escape", origin, true);
     }
-    await chooseOverviewMenu(send, trigger(duplicate));
+    await choosePaneOverview(send, overviewTrigger(duplicate));
     await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
     await evaluate(send, `window.overviewPane('close', ${JSON.stringify(duplicate)})`);
     await settleOverview(send);
@@ -1374,7 +1371,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   }
   if (viewport.mobile) {
     if (!(await evaluate(send, "window.overviewGuardState().overview.open")))
-      await chooseOverviewMenu(send, trigger(pane));
+      await choosePaneOverview(send, overviewTrigger(pane));
     await clickControl(send, `${OVERVIEW} [role="radio"][aria-label^="Agents"]`);
     await waitForDom(
       send,
@@ -1415,10 +1412,10 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
     // The read-only pane's ancestor breadcrumb is gone: the revealed child
     // conversation owns the return focus through its own actions control.
     const childPaneId = await evaluate(send, "window.overviewGuardState().focusedPaneId");
-    const childActions = `[data-session-actions-ref="local:overview-child"][data-pane-id="${childPaneId}"]`;
+    const childActions = overviewTrigger(childPaneId, "local:overview-child");
     await evaluate(
       send,
-      `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(childActions)})?.closest('button') ?? null)`,
+      `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(childActions)}))`,
     );
     await waitForDom(
       send,
@@ -1586,6 +1583,16 @@ export async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, chi
     await settleOverview(send);
     await openRailOverview(send);
     const fixture = preparePage && (await preparePage(send));
+    if (viewport.mobile) {
+      const editor = '[data-testid="composer-form"] [role="textbox"]';
+      await evaluate(send, `document.querySelector(${JSON.stringify(editor)}).focus()`);
+      await send("Input.insertText", { text: "overview phone draft" });
+      await waitForDom(
+        send,
+        `document.querySelector('[data-testid="composer-activity-line"]') !== null`,
+        "content expands the phone composer for its activity-line measurement",
+      );
+    }
     const result = await measureOverview(send);
     if (process.env.EVENER_SCRATCH_DIR) {
       await evaluate(
@@ -1608,6 +1615,17 @@ export async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, chi
     const padding = await measureActivityRowPadding(send, viewport);
     result.rowPadding = padding.result;
     failures.push(...padding.failures);
+    if (viewport.mobile) {
+      const editor = '[data-testid="composer-form"] [role="textbox"]';
+      await evaluate(send, `document.querySelector(${JSON.stringify(editor)}).focus()`);
+      await pressKey(send, "a", "KeyA", 65, process.platform === "darwin" ? 4 : 2);
+      await pressKey(send, "Backspace", "Backspace", 8);
+      await waitForDom(
+        send,
+        `document.querySelector(${JSON.stringify(editor)}).textContent === ''`,
+        "temporary activity-line draft cleared before trusted command journeys",
+      );
+    }
     try {
       result.keyboard = await trustedOverviewFlow(send, viewport, childGesture);
     } catch (error) {

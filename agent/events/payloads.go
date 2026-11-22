@@ -215,6 +215,7 @@ type ToolCallStartData struct {
 	CallID        string `json:"call_id"`
 	ArgumentsJSON string `json:"arguments_json,omitempty"`
 	Description   string `json:"description,omitempty"`
+	IsResultTool  bool   `json:"is_result_tool,omitempty"`
 }
 
 // ToolCallOutputDeltaData is the payload for an EventToolCallOutputDelta event.
@@ -324,6 +325,7 @@ type ToolCallEndData struct {
 	ToolName      string `json:"tool_name"`
 	CallID        string `json:"call_id"`
 	ArgumentsJSON string `json:"arguments_json,omitempty"`
+	IsResultTool  bool   `json:"is_result_tool,omitempty"`
 	// Output is a bounded excerpt of the tool's output, not the whole of it.
 	// The same bytes already streamed as TOOL_CALL_OUTPUT_DELTA events, so a
 	// consumer that watched them accumulates the tail itself; this field is

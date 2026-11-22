@@ -90,7 +90,7 @@ func TestUnknownWindowTripwireFoldsOnMeasuredInput(t *testing.T) {
 
 	history := bulkHistory(12, 100) // ~1.8K tokens
 	measured := UnknownWindowInputTripwire + 50_000
-	cm.RecordInputTokens(measured, len(history))
+	cm.RecordInputTokens(measured, len(history), "")
 
 	spy := &emitSpy{}
 	cm.MaybeCompact(context.Background(), &history, 0, spy.fn)
@@ -116,7 +116,7 @@ func TestKnownWindowTripwireStaysDead(t *testing.T) {
 
 	history := bulkHistory(12, 100)
 	measured := UnknownWindowInputTripwire + 50_000
-	cm.RecordInputTokens(measured, len(history))
+	cm.RecordInputTokens(measured, len(history), "")
 
 	spy := &emitSpy{}
 	cm.MaybeCompact(context.Background(), &history, 0, spy.fn)
@@ -253,7 +253,7 @@ func TestUnknownWindowStrategyTripwireForcesFold(t *testing.T) {
 
 	history := bulkHistory(12, 100) // ~1.8K tokens
 	measured := UnknownWindowInputTripwire + 50_000
-	cm.RecordInputTokens(measured, len(history))
+	cm.RecordInputTokens(measured, len(history), "")
 
 	strategy := &SessionLogStrategy{cm: cm, log: mustNewSessionLog(t, filepath.Join(t.TempDir(), "log.jsonl"))}
 	spy := &emitSpy{}
@@ -422,7 +422,7 @@ func TestEstimateUsageMarksAssumedWindow(t *testing.T) {
 func TestTripwireRejectsAnotherModelsMeasurement(t *testing.T) {
 	// The A-pass: an unknown-window profile and the snapshot it captured.
 	cm := NewManager(unknownGatewayProfile(), nil, cheapmodel.New(nil))
-	captured, _, _, _ := cm.profileSnapshot()
+	captured, _, _, _, _ := cm.profileSnapshot()
 	if _, unknown := effectiveWindowOf(captured); !unknown {
 		t.Fatal("fixture: the gateway profile must resolve an unknown window")
 	}
@@ -431,7 +431,7 @@ func TestTripwireRejectsAnotherModelsMeasurement(t *testing.T) {
 	// new model records a measurement far past the tripwire.
 	b := testProfile("openai", "gpt-5", 1_000_000)
 	cm.SetProfile(b)
-	if !cm.RecordInputTokensFor(b, UnknownWindowInputTripwire+50_000, 0) {
+	if !cm.RecordInputTokensFor(b, UnknownWindowInputTripwire+50_000, 0, "") {
 		t.Fatal("fixture: the new model's measurement was refused")
 	}
 

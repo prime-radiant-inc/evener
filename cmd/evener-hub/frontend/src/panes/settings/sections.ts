@@ -30,7 +30,17 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "transcript",
-    searchTerms: ["transcript", "tokens", "cost", "thinking", "tool calls", "desktop layout", "mobile layout"],
+    searchTerms: [
+      "transcript",
+      "tokens",
+      "cost",
+      "thinking",
+      "tool calls",
+      "desktop layout",
+      "mobile layout",
+      "unread",
+      "open at unread replies",
+    ],
     label: "Conversation display",
     cluster: "preferences",
   },

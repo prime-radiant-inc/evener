@@ -90,14 +90,20 @@ func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limit
 // A call naming a positive offset or limit reads only the bytes the window
 // needs; see read_window.go.
 func (e *LocalExecutionEnvironment) ReadFileCtx(ctx context.Context, path string, offsetLine *int, limitLines *int) (string, error) {
+	out, _, err := e.ReadFileRichCtx(ctx, path, offsetLine, limitLines)
+	return out, err
+}
+
+// ReadFileRichCtx is ReadFileCtx that also returns structured ReadFileMeta.
+func (e *LocalExecutionEnvironment) ReadFileRichCtx(ctx context.Context, path string, offsetLine *int, limitLines *int) (string, ReadFileMeta, error) {
 	if lineWindowRequested(offsetLine, limitLines) {
 		return e.readFileWindowedCtx(ctx, path, offsetLine, limitLines)
 	}
-	out, _, err := e.ReadFileAndBytesCtx(ctx, path, nil, nil)
+	out, _, meta, err := e.ReadFileRichAndBytesCtx(ctx, path, nil, nil)
 	if err != nil {
-		return "", readFileLimitHint(err)
+		return "", ReadFileMeta{}, readFileLimitHint(err)
 	}
-	return out, nil
+	return out, meta, nil
 }
 
 // errReadFileCapHint is the "and you can still read a window" note read_file
@@ -126,9 +132,15 @@ func readFileLimitHint(err error) error {
 // entry always loads it; ReadFileCtx, which does not need them, reads the
 // window alone. On error the bytes are nil.
 func (e *LocalExecutionEnvironment) ReadFileAndBytesCtx(ctx context.Context, path string, offsetLine *int, limitLines *int) (string, []byte, error) {
+	out, b, _, err := e.ReadFileRichAndBytesCtx(ctx, path, offsetLine, limitLines)
+	return out, b, err
+}
+
+// ReadFileRichAndBytesCtx is ReadFileAndBytesCtx that also returns structured ReadFileMeta.
+func (e *LocalExecutionEnvironment) ReadFileRichAndBytesCtx(ctx context.Context, path string, offsetLine *int, limitLines *int) (string, []byte, ReadFileMeta, error) {
 	t, err := e.fileTarget("read_file", path, targetRead)
 	if err != nil {
-		return "", nil, err
+		return "", nil, ReadFileMeta{}, err
 	}
 	defer t.release()
 	sfs, abs := t.sfs, t.abs
@@ -143,77 +155,13 @@ func (e *LocalExecutionEnvironment) ReadFileAndBytesCtx(ctx context.Context, pat
 		b, err = readFileCappedCtx(ctx, e.filesystem(), abs)
 	}
 	if err != nil {
-		return "", nil, e.mapReadFileErr(sfs, abs, err)
+		return "", nil, ReadFileMeta{}, e.mapReadFileErr(sfs, abs, err)
 	}
-	out, rerr := renderTextRead(path, b, offsetLine, limitLines)
+	out, meta, rerr := renderTextReadRich(path, b, offsetLine, limitLines)
 	if rerr != nil {
-		return "", nil, rerr
+		return "", nil, ReadFileMeta{}, rerr
 	}
-	return out, b, nil
-}
-
-// NumberLinesBytes is NumberLines over the file's raw bytes. It exists so a
-// caller that already holds the bytes does not pay a whole-file string copy to
-// display a small window: the read_file path returns a 20-line window while
-// holding an 8 MiB file, and converting the file to a string first copies every
-// byte of it. The output is byte-identical to NumberLines(string(text), ...).
-func NumberLinesBytes(text []byte, offsetLine, limitLines *int) string {
-	start := 1
-	if offsetLine != nil && *offsetLine > 0 {
-		start = *offsetLine
-	}
-	limit := DefaultReadLines
-	if limitLines != nil && *limitLines > 0 {
-		limit = *limitLines
-	}
-	// A trailing newline terminates the last line rather than starting another,
-	// so it is not a row of its own. Trimming it first is what makes an offset
-	// past a one-line file report "" instead of an empty extra line. A CRLF
-	// terminator is removed as a unit, so the CR of a final empty CRLF line
-	// does not survive as a stray byte.
-	if bytes.HasSuffix(text, []byte("\r\n")) {
-		text = text[:len(text)-2]
-	} else {
-		text = bytes.TrimSuffix(text, []byte{'\n'})
-	}
-	offset := 0
-	for i := 1; i < start; i++ {
-		idx := bytes.IndexByte(text[offset:], '\n')
-		if idx < 0 {
-			return ""
-		}
-		offset += idx + 1
-	}
-	window := text[offset:]
-	var out strings.Builder
-	remaining := limit
-	lineNumber := start
-	consumed := 0
-	for remaining > 0 {
-		idx := bytes.IndexByte(window[consumed:], '\n')
-		var line []byte
-		if idx < 0 {
-			line = window[consumed:]
-			consumed = len(window)
-		} else {
-			line = window[consumed : consumed+idx]
-			consumed += idx + 1
-		}
-		// CRLF normalizes to LF per emitted line, so only the window is
-		// rewritten and the rest of the file is never touched. Only a line a
-		// newline terminated can end in the CR of a CRLF pair; a CR at the end
-		// of the final unterminated line is file content and stays.
-		if idx >= 0 {
-			line = bytes.TrimSuffix(line, []byte{'\r'})
-		}
-		fmt.Fprintf(&out, "%4d\t%s\n", lineNumber, line)
-		lineNumber++
-		remaining--
-		if idx < 0 {
-			break
-		}
-	}
-	return out.String()
+	return out, b, meta, nil
 }
 
 // eachLine visits the '\n'-separated segments of text in order — including
@@ -232,79 +180,43 @@ func eachLine(text string, visit func(line string) bool) {
 
 // DefaultReadLines is the line count a read returns when the caller gives no
 // positive limit.
-const DefaultReadLines = 2000
+var DefaultReadLines = 2000
 
-// NumberLines presents text as ReadFile presents a text file: CRLF
-// normalized to LF, lines numbered from offsetLine (default 1), at most
-// limitLines lines (default 2000), and "" past the end. A trailing newline
-// terminates the last line rather than starting another: a file ending in
-// "\n" has exactly as many rows as newline characters, matching the line
-// count patch context works with, so a row copied from the display cannot
-// run past the end of the file (#6202). The window is extracted by scanning
-// segments rather than splitting the file, so a line-heavy file at the
-// whole-file read cap does not allocate per line for every line in it
-// (issue #4556).
+// DefaultReadMaxBytes bounds the rendered body bytes a single text read emits
+// before stopping on a clean line boundary (leaving headroom for footers under
+// the tool registry's 50,000-char backstop).
+var DefaultReadMaxBytes = 48_000
+
+// DefaultReadMaxLineChars caps the UTF-8 rune count of any single line on
+// normal reads (bypassed when limit == 1).
+var DefaultReadMaxLineChars = 2000
+
+// ReadTotalLinesScanCap is the file-size threshold below which bounded text
+// reads count remaining newlines to EOF to report exact total line numbers.
+// Above this size, forward partial reads stop at the window boundary and
+// negative offsets use a backward ReadSeeker tail scan.
+var ReadTotalLinesScanCap int64 = 2 << 20
+
+// NumberLines presents text as ReadFile presents a text file: CRLF normalized
+// to LF, compact "N\t" row prefixes ("N:" for the whole window when any
+// displayed line starts with a tab, so tab-indented content cannot be mistaken
+// for the separator), lines numbered from offsetLine (default 1), at most
+// limitLines lines (default 2000), and "" past the end. Lines longer than
+// DefaultReadMaxLineChars (2,000 runes) are clamped with an inline marker
+// unless limit is 1, which skips the rune clamp for the single requested line;
+// the rendered body stops on a clean line boundary under DefaultReadMaxBytes
+// (48 KB). A negative offset returns that many lines back from the end,
+// numbered from the file's start, keeping the tail-most rows when the byte cap
+// drops earlier ones. A trailing newline terminates the last line rather than
+// starting another: a file ending in "\n" has exactly as many rows as newline
+// characters, matching the line count patch context works with, so a row
+// copied from the display cannot run past the end of the file (#6202). The
+// window is extracted by scanning segments rather than splitting the file, so
+// a line-heavy file at the whole-file read cap does not allocate per line for
+// every line in it (issue #4556). It renders rows only: unlike read_file,
+// there are no file-path footers, empty-file notices, or continuation hints.
 func NumberLines(text string, offsetLine, limitLines *int) string {
-	start := 1
-	if offsetLine != nil && *offsetLine > 0 {
-		start = *offsetLine
-	}
-	limit := DefaultReadLines
-	if limitLines != nil && *limitLines > 0 {
-		limit = *limitLines
-	}
-	// A trailing newline terminates the last line rather than starting another,
-	// so it is not a row of its own. Trimming it first is what makes an offset
-	// past a one-line file report "" instead of an empty extra line. A CRLF
-	// terminator is removed as a unit, so the CR of a final empty CRLF line
-	// does not survive as a stray byte.
-	if strings.HasSuffix(text, "\r\n") {
-		text = text[:len(text)-2]
-	} else {
-		text = strings.TrimSuffix(text, "\n")
-	}
-	// Skip to the window's first line by scanning newlines in the original
-	// text. Running out of newlines first means start is past the final
-	// segment. The scan does not normalize or copy, so skipping a long prefix
-	// costs only the newline scan, not a rewrite of every byte before it.
-	offset := 0
-	for i := 1; i < start; i++ {
-		idx := strings.IndexByte(text[offset:], '\n')
-		if idx < 0 {
-			return ""
-		}
-		offset += idx + 1
-	}
-	windowText := text[offset:]
-	var out strings.Builder
-	remaining := limit
-	lineNumber := start
-	consumed := 0
-	for remaining > 0 {
-		idx := strings.IndexByte(windowText[consumed:], '\n')
-		var line string
-		if idx < 0 {
-			line = windowText[consumed:]
-			consumed = len(windowText)
-		} else {
-			line = windowText[consumed : consumed+idx]
-			consumed += idx + 1
-		}
-		// CRLF normalizes to LF per line, so only the emitted window is
-		// rewritten; the rest of the file is never touched. Only a line a
-		// newline terminated can end in the CR of a CRLF pair; a CR at the end
-		// of the final unterminated line is file content and stays.
-		if idx >= 0 {
-			line = strings.TrimSuffix(line, "\r")
-		}
-		fmt.Fprintf(&out, "%4d\t%s\n", lineNumber, line)
-		lineNumber++
-		remaining--
-		if idx < 0 {
-			break
-		}
-	}
-	return out.String()
+	return formatNumberLinesString(text, offsetLine, limitLines)
 }
 
 // readFileNotFoundSuggestion renders a "did you mean" hint for a read_file

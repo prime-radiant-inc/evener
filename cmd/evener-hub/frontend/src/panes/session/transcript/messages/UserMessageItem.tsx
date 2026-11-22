@@ -107,7 +107,6 @@ export function UserMessageView({
   timeIso,
   entityText = false,
   provisional,
-  status,
   footer,
 }: {
   item: ItemModel;
@@ -124,10 +123,6 @@ export function UserMessageView({
   entityText?: boolean;
   /** Held-steer ghost caption (steering-ghost spec §2): presence applies the provisional register and renders in the meta slot; absence renders exactly the delivered form. */
   provisional?: string;
-  /** Pending-row status in the meta slot. Unlike `provisional`, this does not
-   * change the bubble's shape or opacity: the pending stack uses the same row
-   * the delivered message will become. */
-  status?: string;
   /** Pending-row actions, rendered under the bubble in the same content column. */
   footer?: ReactNode;
 }) {
@@ -140,7 +135,6 @@ export function UserMessageView({
       data-speaker={speaker}
       data-opens-exchange={opensExchange ? "true" : undefined}
       data-provisional={provisional !== undefined ? "true" : undefined}
-      data-status={status !== undefined ? "true" : undefined}
     >
       <span className={CLASS.avatar}>
         <SpeakerAvatar speaker={speaker} />
@@ -150,9 +144,7 @@ export function UserMessageView({
           <span className={CLASS.name}>
             {item.actor?.kind === "manager" ? `Manager · ${item.actor.managerRef ?? ""}` : name}
           </span>
-          {status !== undefined ? (
-            <span className={CLASS.time}>{status}</span>
-          ) : provisional !== undefined ? (
+          {provisional !== undefined ? (
             <span className={CLASS.time}>{provisional}</span>
           ) : (
             Number.isFinite(time) && (

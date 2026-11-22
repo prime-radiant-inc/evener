@@ -10,7 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/argrepair"
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -179,7 +183,12 @@ func transcriptOlderThan(path string, cutoff time.Time) bool {
 // delegates journal (delegate count), and the jobs scan (legacy delegate
 // failures), bounded the same way.
 func sessionRow(ctx context.Context, b bucket, paths Paths, meta schema.SessionMeta, delegates delegateCache) (SessionRow, error) {
-	doc, err := loadSessionRowTranscript(ctx, paths.TranscriptPath)
+	resultTool := "communicate"
+	if meta.Config.ResultToolName != "" {
+		resultTool = meta.Config.ResultToolName
+	}
+
+	doc, err := loadSessionRowTranscript(ctx, paths.TranscriptPath, resultTool)
 	if err != nil {
 		return SessionRow{}, fmt.Errorf("session %s: %w", meta.ID, err)
 	}
@@ -201,11 +210,6 @@ func sessionRow(ctx context.Context, b bucket, paths Paths, meta schema.SessionM
 		return SessionRow{}, fmt.Errorf("session %s: %w", meta.ID, err)
 	}
 	delegateCount := len(projectDoctorDelegates("", meta.ID, stable))
-
-	resultTool := "communicate"
-	if meta.Config.ResultToolName != "" {
-		resultTool = meta.Config.ResultToolName
-	}
 
 	return SessionRow{
 		SessionID:       paths.SessionID,
@@ -242,29 +246,211 @@ func sessionModels(headerModel, metaModel string) []string {
 	}
 }
 
-// outcomeHint reads the final communicate-family call's end_turn (and
-// output.decision, if the result tool's schema carries one) from the
-// session's last ASSISTANT turn. It reports "none" when that turn carries no
-// result-tool call, when its arguments don't parse, or when the session has
-// no assistant turn at all — an absent or malformed outcome is reported as
-// "none", not guessed at.
+// outcomeHint reads the latest reply's end_turn and any output.decision.
+// Rejected calls and quiet yields do not hide an earlier reply. An ordinary
+// assistant turn without a result-tool call still settles the hint as "none".
 func outcomeHint(doc transcriptDoc, resultTool string) string {
-	for _, e := range slices.Backward(doc.Entries) {
-		if e.Turn.Kind != schema.TurnAssistant {
-			continue
-		}
-		var resultCall *llm.ToolCallData
-		for _, part := range e.Turn.Message.Content {
-			if part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.Name == resultTool {
-				resultCall = part.ToolCall
+	hint, _ := findOutcome(doc.Entries, resultTool)
+	return hint
+}
+
+func findOutcome(entries []transcript.Entry, resultTool string) (hint string, decided bool) {
+	results := pairToolResults(entries)
+	quietExecution := false
+	quietTurnID := ""
+	for i, e := range slices.Backward(entries) {
+		if quietExecution {
+			if e.Turn.Kind == schema.TurnUserInput || e.Turn.Kind == schema.TurnCompletion ||
+				(quietTurnID != "" && e.Turn.TurnID != "" && e.Turn.TurnID != quietTurnID) ||
+				(quietTurnID == "" && e.Turn.Kind == schema.TurnSteering && e.Turn.SteeringKind == events.SteeringKindNotification) {
+				quietExecution = false
+				quietTurnID = ""
 			}
 		}
-		if resultCall == nil {
-			return "none"
+		if e.Turn.AcceptedReply {
+			return "end_turn=true", true
 		}
-		return formatOutcome(resultCall.Arguments)
+		args, endTurn, callDecided, recordedQuiet := outcomeCall(i, e.Turn, resultTool, results, quietExecution)
+		if callDecided {
+			if endTurn != nil {
+				return formatOutcomeWithVerdict(args, endTurn), true
+			}
+			return formatOutcome(args), true
+		}
+		if recordedQuiet {
+			quietExecution = true
+			quietTurnID = e.Turn.TurnID
+		}
 	}
-	return "none"
+	return "none", false
+}
+
+// outcomeCall decides whether an assistant entry settles the hint. Recorded
+// verdicts take precedence over inference from the call's arguments.
+func outcomeCall(entryIndex int, turn schema.Turn, resultTool string, results map[toolCallPosition]pairedToolResult, quietExecution bool) (args json.RawMessage, endTurn *bool, decided bool, recordedQuiet bool) {
+	if turn.Kind != schema.TurnAssistant {
+		return nil, nil, false, false
+	}
+	foundCall := false
+	sawRecordedQuiet := false
+	for partIndex, part := range turn.Message.Content {
+		if part.Kind != llm.ContentToolCall || part.ToolCall == nil || part.ToolCall.Name != resultTool {
+			continue
+		}
+		foundCall = true
+		paired := results[toolCallPosition{entryIndex, partIndex}]
+		if verdict, recorded := communicateResultEndTurn(paired); recorded {
+			if verdict != nil {
+				args, endTurn, decided = communicateCallArguments(part.ToolCall), verdict, true
+			} else if isRecordedQuietResult(paired) {
+				sawRecordedQuiet = true
+			}
+			continue
+		}
+		if raw := communicateCallArguments(part.ToolCall); !quietCommunicateArguments(raw) {
+			args, endTurn, decided = raw, nil, true
+		}
+	}
+	return args, endTurn, decided || (!foundCall && !quietExecution), sawRecordedQuiet && !decided
+}
+
+func isRecordedQuietResult(paired pairedToolResult) bool {
+	if paired.result == nil || paired.result.IsError {
+		return false
+	}
+	state, ok := schema.DecodeCommunicateToolState(paired.result.ToolState)
+	return ok && state.IsQuiet()
+}
+
+type toolCallPosition struct {
+	entry, part int
+}
+
+type pairedToolResult struct {
+	result             *llm.ToolResultData
+	completionAccepted bool
+}
+
+type turnCallKey struct {
+	turnID, callID string
+}
+
+// pairToolResults binds each result to the latest open call with its ID, and
+// resolves Stop-hook BoundaryPending results when their execution's
+// TurnCompletion records AcceptedCommunicateCallID.
+func pairToolResults(entries []transcript.Entry) map[toolCallPosition]pairedToolResult {
+	open := make(map[string]toolCallPosition)
+	byTurn := make(map[turnCallKey]toolCallPosition)
+	unscopedSpan := make(map[string]toolCallPosition)
+	results := make(map[toolCallPosition]pairedToolResult)
+	for i, entry := range entries {
+		switch entry.Turn.Kind {
+		case schema.TurnUserInput:
+			clear(unscopedSpan)
+		case schema.TurnAssistant:
+			for j, part := range entry.Turn.Message.Content {
+				if part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.ID != "" {
+					pos := toolCallPosition{i, j}
+					open[part.ToolCall.ID] = pos
+					if entry.Turn.TurnID != "" {
+						byTurn[turnCallKey{entry.Turn.TurnID, part.ToolCall.ID}] = pos
+					} else {
+						unscopedSpan[part.ToolCall.ID] = pos
+					}
+				}
+			}
+		case schema.TurnToolResults, schema.TurnTool:
+			for _, part := range entry.Turn.Message.Content {
+				if part.Kind != llm.ContentToolResult || part.ToolResult == nil {
+					continue
+				}
+				id := part.ToolResult.ToolCallID
+				if pos, ok := open[id]; ok {
+					results[pos] = pairedToolResult{result: part.ToolResult}
+					delete(open, id)
+				}
+			}
+		case schema.TurnCompletion:
+			if c := entry.Turn.Completion; c != nil && c.Status == schema.TurnCompleted && c.AcceptedCommunicateCallID != "" {
+				var pos toolCallPosition
+				var found bool
+				if entry.Turn.TurnID != "" {
+					pos, found = byTurn[turnCallKey{entry.Turn.TurnID, c.AcceptedCommunicateCallID}]
+				} else {
+					pos, found = unscopedSpan[c.AcceptedCommunicateCallID]
+				}
+				if found {
+					if r, ok := results[pos]; ok {
+						r.completionAccepted = true
+						results[pos] = r
+					}
+				}
+			}
+			clear(unscopedSpan)
+		}
+	}
+	return results
+}
+
+// communicateResultEndTurn reports a visible reply's recorded end_turn. A
+// recorded verdict with no visible reply suppresses argument inference, as
+// does a pending Stop boundary until TurnCompletion or AcceptedReply settles it.
+func communicateResultEndTurn(paired pairedToolResult) (endTurn *bool, recorded bool) {
+	result := paired.result
+	if result == nil {
+		return nil, false
+	}
+	if result.IsError {
+		return nil, true
+	}
+	if state, ok := schema.DecodeCommunicateToolState(result.ToolState); ok {
+		if state.IsQuiet() || (state.BoundaryPending && !paired.completionAccepted) || state.Accepted != nil && !*state.Accepted {
+			return nil, true
+		}
+		if state.EndTurn != nil && state.Accepted != nil {
+			return state.EndTurn, true
+		}
+		recorded = state.Accepted != nil || state.EndTurn != nil || state.Quiet != nil
+	}
+	// Older results carried their verdict in Content, not ToolState.
+	var raw []byte
+	switch content := result.Content.(type) {
+	case string:
+		raw = []byte(content)
+	case json.RawMessage:
+		raw = content
+	case map[string]any:
+		// Object content unmarshals into a map on transcript reload.
+		raw, _ = json.Marshal(content)
+	}
+	var legacy struct {
+		Accepted *bool `json:"accepted"`
+		EndTurn  *bool `json:"end_turn"`
+		Quiet    *bool `json:"quiet"`
+	}
+	if json.Unmarshal(raw, &legacy) != nil {
+		return nil, recorded
+	}
+	if legacy.Quiet != nil && *legacy.Quiet {
+		return nil, true
+	}
+	if legacy.Accepted != nil && *legacy.Accepted && legacy.EndTurn != nil {
+		return legacy.EndTurn, true
+	}
+	return nil, recorded || legacy.Accepted != nil || legacy.EndTurn != nil || legacy.Quiet != nil
+}
+
+// A healed call stores {} as replay-safe Arguments; use the same repair as
+// the transcript projection to distinguish its reply from a real empty call.
+func communicateCallArguments(call *llm.ToolCallData) json.RawMessage {
+	if call.RawArguments != "" {
+		return apptranscript.NormalizeCommunicateArguments(argrepair.RepairJSON(call.SentArgumentsBytes()))
+	}
+	return call.Arguments
+}
+
+func quietCommunicateArguments(raw json.RawMessage) bool {
+	return callArgsEndTurn(raw) && apptranscript.CommunicateArgumentsWithoutMessage(raw)
 }
 
 // formatOutcome renders a result-tool call's arguments as the outcome hint.
@@ -277,16 +463,25 @@ func outcomeHint(doc transcriptDoc, resultTool string) string {
 // addDecisionToSchema). A present decision is surfaced when the caller's
 // schema happens to carry one; its absence is not an error.
 func formatOutcome(rawArgs json.RawMessage) string {
+	return formatOutcomeWithVerdict(rawArgs, nil)
+}
+
+func formatOutcomeWithVerdict(rawArgs json.RawMessage, endTurn *bool) string {
 	var args struct {
-		EndTurn bool `json:"end_turn"`
-		Output  struct {
+		Output struct {
 			Decision string `json:"decision"`
 		} `json:"output"`
 	}
 	if err := json.Unmarshal(rawArgs, &args); err != nil {
-		return "none"
+		if endTurn == nil {
+			return "none"
+		}
+		return fmt.Sprintf("end_turn=%t", *endTurn)
 	}
-	hint := fmt.Sprintf("end_turn=%t", args.EndTurn)
+	if endTurn == nil {
+		endTurn = new(callArgsEndTurn(rawArgs))
+	}
+	hint := fmt.Sprintf("end_turn=%t", *endTurn)
 	if args.Output.Decision != "" {
 		hint += " decision=" + args.Output.Decision
 	}

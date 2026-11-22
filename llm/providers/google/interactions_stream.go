@@ -18,6 +18,11 @@ import (
 	"primeradiant.com/evener/llm/providers/internal/transport"
 )
 
+// maxInteractionStreamEventBytes bounds one Interactions SSE event. Real events
+// carry a step or a whole interaction and stay far below this; the bound only
+// stops a malformed or hostile stream from buffering without limit.
+const maxInteractionStreamEventBytes = 8 << 20
+
 type interactionStreamSlot struct {
 	index          int
 	stepType       string
@@ -789,6 +794,7 @@ func decodeInteractionStream(
 		Cancel:        cancel,
 		Finished:      &finished,
 		IncompleteMsg: provider + " stream ended without completion",
+		SSEOpts:       []llm.SSEOption{llm.WithMaxEventBytes(maxInteractionStreamEventBytes)},
 		TerminalError: func(parseErr error) error {
 			if acc.status == "queued" || (stored && acc.id != "") {
 				status := cmp.Or(acc.status, "in_progress")
@@ -802,6 +808,10 @@ func decodeInteractionStream(
 			}
 			if errors.Is(parseErr, context.DeadlineExceeded) || errors.Is(parseErr, llm.ErrResponseIdleTimeout) {
 				return llm.WrapContextError(provider, parseErr)
+			}
+			if errors.Is(parseErr, llm.ErrSSEEventTooLarge) {
+				// A bound violation is not a truncated stream: report it as itself.
+				return llm.NewStreamError(provider, parseErr.Error(), parseErr)
 			}
 			return llm.NewStreamError(provider, runner.IncompleteMsg, parseErr)
 		},

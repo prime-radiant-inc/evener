@@ -12,6 +12,7 @@ import { selectAttentionSummary, selectDisplaySources } from "../../stores/navig
 import { buildShutdownConvergence } from "../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { type SidebarGroupingPref, usePrefsStore } from "../../stores/prefs";
+import { sessionReadProgress, useSessionSeen } from "../../stores/readProgress";
 import { threadsStore } from "../../stores/threads";
 import {
   Button,
@@ -567,9 +568,16 @@ function NavigationRail({
       }
     }
   }, [resources, archivedLists]);
+  const seen = useSessionSeen();
+  // First run: adopt the newest update this browser has seen as the read
+  // epoch, so a fleet that predates it does not arrive all unread.
+  useEffect(() => {
+    if (resources.live.length > 0 || resources.needsYou.length > 0)
+      sessionReadProgress.adoptEpoch([...resources.live, ...resources.needsYou]);
+  }, [resources.live, resources.needsYou]);
   const currentLiveBands = useMemo(
-    () => railLiveBands(resources.live, resources.needsYou),
-    [resources.live, resources.needsYou],
+    () => railLiveBands(resources.live, resources.needsYou, seen.isSeen),
+    [resources.live, resources.needsYou, seen],
   );
   // A row that changes band is unmounted and mounted again under its new
   // fold, which would close a dialog opened from its menu and discard what
@@ -689,12 +697,18 @@ function NavigationRail({
       });
     }
   }
+  // One optimistic mutation's lifecycle: install the pending op, run the
+  // mutation, converge the rail on its result, then clear the op only once the
+  // rail can show the settled state. A failure that never converged keeps the
+  // op installed - the read model still holds the old state, so removing the
+  // guess would flip the row back with nothing else to show.
   const runAction = useCallback(
     async function runAction<T>(
       fn: () => Promise<T>,
       failure: string,
       optimistic?: PendingOp | ((result: T) => PendingOp),
       propagate = false,
+      onSuccess?: (result: T) => void,
     ) {
       let installed = typeof optimistic === "object" ? optimistic : undefined;
       let mutationCompleted = false;
@@ -709,6 +723,7 @@ function NavigationRail({
         }
         await convergeMutation(result);
         converged = true;
+        onSuccess?.(result);
       } catch (error) {
         toasts.push("error", `${failure}: ${errorText(error)}`);
         if (propagate) throw error;
@@ -809,26 +824,20 @@ function NavigationRail({
       },
       onDeleteSession: async (session) => {
         const optimistic: PendingOp = { kind: "hideSession", ref: session.ref };
-        let mutationCompleted = false;
-        let converged = false;
-        setPending((ops) => [...ops, optimistic]);
-        try {
-          const result = await deleteSession(client, session.ref);
-          mutationCompleted = true;
-          await convergeMutation(result);
-          converged = true;
-          closePanesForDeletedSessions(result.deleted);
-          if (result.skipped.length)
-            toasts.push(
-              "warning",
-              `Couldn't delete "${session.title}": ${result.skipped[0]?.reason ?? "still in use"}`,
-            );
-        } catch (error) {
-          toasts.push("error", `Couldn't delete "${session.title}": ${errorText(error)}`);
-          throw error;
-        } finally {
-          if (!mutationCompleted || converged) setPending((ops) => ops.filter((op) => op !== optimistic));
-        }
+        await runAction(
+          () => deleteSession(client, session.ref),
+          `Couldn't delete "${session.title}"`,
+          optimistic,
+          true,
+          (result) => {
+            closePanesForDeletedSessions(result.deleted);
+            if (result.skipped.length)
+              toasts.push(
+                "warning",
+                `Couldn't delete "${session.title}": ${result.skipped[0]?.reason ?? "still in use"}`,
+              );
+          },
+        );
       },
       onToggleFavoriteProject: (project) => {
         const value = !project.favorite;
@@ -893,25 +902,20 @@ function NavigationRail({
     if (!target) return;
     closeDeleteDialog();
     const optimistic: PendingOp = { kind: "hideProject", key: target.key };
-    let mutationCompleted = false;
-    let converged = false;
-    setPending((ops) => [...ops, optimistic]);
-    try {
-      const result = await deleteProject(target.key, target.working_dir ?? "", target.sources);
-      mutationCompleted = true;
-      await convergeMutation(result);
-      converged = true;
-      closePanesForDeletedSessions(result.deleted);
-      if (result.skipped.length)
-        toasts.push(
-          "warning",
-          `Deleted ${result.deleted.length} session(s); ${result.skipped.length} could not be removed`,
-        );
-    } catch (error) {
-      toasts.push("error", `Couldn't delete project: ${errorText(error)}`);
-    } finally {
-      if (!mutationCompleted || converged) setPending((ops) => ops.filter((op) => op !== optimistic));
-    }
+    await runAction(
+      () => deleteProject(target.key, target.working_dir ?? "", target.sources),
+      "Couldn't delete project",
+      optimistic,
+      false,
+      (result) => {
+        closePanesForDeletedSessions(result.deleted);
+        if (result.skipped.length)
+          toasts.push(
+            "warning",
+            `Deleted ${result.deleted.length} session(s); ${result.skipped.length} could not be removed`,
+          );
+      },
+    );
   }
 
   const archivedOpen = isExpanded(ARCHIVED_SECTION_KEY, false);

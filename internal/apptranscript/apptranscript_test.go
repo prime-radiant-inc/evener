@@ -1909,3 +1909,46 @@ func TestProjectTurn_HealedCommunicateStringOutputRendersMessage(t *testing.T) {
 		t.Errorf("Text = %q, want %q (output string promoted and message extracted)", resultItems[0].Text, "hello")
 	}
 }
+
+func TestRootBareTextFallbackProjection(t *testing.T) {
+	for _, format := range []int{0, schema.TurnFormatIdentity} {
+		var turn schema.Turn
+		if err := json.Unmarshal([]byte(`{"accepted_reply":true}`), &turn); err != nil {
+			t.Fatal(err)
+		}
+		turn.Format = format
+		turn.Kind, turn.Message, turn.CausalKnown = schema.TurnAssistant, llm.Assistant("Root answer"), true
+		items, _ := ProjectEntryParts("turn", 2, turn, nil, nil, nil)
+		if len(items) != 1 || items[0].Type != "agentMessage" || items[0].Text != "Root answer" {
+			t.Fatalf("format %d: items=%+v", format, items)
+		}
+		obs := items[0].Observation
+		if obs == nil || obs.TurnID != "turn" || !obs.CausalKnown || !obs.EndTurn || obs.TerminalAccepted == nil || !*obs.TerminalAccepted {
+			t.Fatalf("format %d: observation=%+v", format, obs)
+		}
+	}
+}
+
+func TestRootBareTextFallbackQuietProjection(t *testing.T) {
+	for _, tc := range []struct {
+		raw, state string
+		wantItems  int
+	}{
+		{`{}`, `{"communicate_accepted":true,"communicate_end_turn":true,"communicate_quiet":true}`, 0},
+		{`{}`, ``, 0},
+		{`{"end_turn":true,"message":" ","output":{"message":""}}`, ``, 0},
+		{`not valid JSON`, ``, 1},
+		{`not valid JSON`, `{"communicate_quiet":true}`, 0},
+	} {
+		reg := NewToolCallRegistry()
+		ProjectTurn("turn", 1, schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call", Name: "communicate", Arguments: json.RawMessage(`{}`), RawArguments: tc.raw},
+		}}}}, reg, nil, nil)
+		items := ProjectTurn("turn", 2, schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call", Name: "communicate", ToolState: json.RawMessage(tc.state)},
+		}}}}, reg, nil, nil)
+		if len(items) != tc.wantItems || len(items) == 1 && (items[0].Type != "agentMessage" || items[0].Text != tc.raw) {
+			t.Errorf("args=%q state=%q: items=%+v, want %d", tc.raw, tc.state, items, tc.wantItems)
+		}
+	}
+}

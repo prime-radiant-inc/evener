@@ -281,6 +281,34 @@ describe("liveBandNodes", () => {
   });
 });
 
+describe("live unread", () => {
+  test("carries the shared unseen mark without moving a row out of its band", () => {
+    const live = [
+      row("local:done", { turn_ended_at: at(3), unseen: true }),
+      // Read (the person already saw the reply) yet still needs them.
+      row("local:ask", { state: "awaiting", ask_pending: true, turn_ended_at: at(4) }),
+    ];
+    const read = new Set(["local:ask"]);
+    const bands = railLiveBands(live, [], (item) => read.has(item.ref));
+
+    expect(bands.idle.map((item) => [item.session.ref, item.unseen])).toEqual([["local:done", true]]);
+    expect(bands.needsYou.map((item) => [item.session.ref, item.unseen])).toEqual([["local:ask", false]]);
+  });
+
+  test("a Live row's node carries the mark, and a mark change earns a fresh node", () => {
+    const unread = row("local:a", { turn_ended_at: at(3) });
+    const bands = railLiveBands([unread], [], () => false);
+    const first = bandsOf(liveBandNodes(bands, sources, open))[0];
+    expect(first && sessionsOf(first)[0]?.unseen).toBe(true);
+
+    const read = railLiveBands([unread], [], () => true);
+    const second = bandsOf(liveBandNodes(read, sources, open))[0];
+    // Absent reads as seen; the cached node must not keep the old mark.
+    expect(second).not.toBe(first);
+    expect(second && sessionsOf(second)[0]?.unseen).toBeUndefined();
+  });
+});
+
 describe("liveCycleRefs", () => {
   test("is the order on screen once Live has loaded", () => {
     const live = [row("local:idle"), row("local:work", { state: "active" })];

@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -9,6 +10,35 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
+
+// CommunicateToolState records the tool verdict independently of display output.
+type CommunicateToolState struct {
+	Accepted        *bool `json:"communicate_accepted,omitempty"`
+	EndTurn         *bool `json:"communicate_end_turn,omitempty"`
+	Quiet           *bool `json:"communicate_quiet,omitempty"`
+	BoundaryPending bool  `json:"communicate_boundary_pending,omitempty"`
+}
+
+// DecodeCommunicateToolState reads the persisted tool state.
+func DecodeCommunicateToolState(raw json.RawMessage) (CommunicateToolState, bool) {
+	var state CommunicateToolState
+	err := json.Unmarshal(raw, &state)
+	return state, err == nil
+}
+
+// IsQuiet reports whether the tool yielded without replying.
+func (s CommunicateToolState) IsQuiet() bool {
+	return s.Quiet != nil && *s.Quiet
+}
+
+// IsQuietCommunicateState reports typed evidence of a quiet yield.
+func IsQuietCommunicateState(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	state, ok := DecodeCommunicateToolState(raw)
+	return ok && state.IsQuiet()
+}
 
 // TurnKind identifies the category of a Turn in the Session history.
 type TurnKind string
@@ -179,6 +209,9 @@ type TurnCompletionInfo struct {
 	Status      TurnCompletionStatus `json:"status"`
 	CompletedAt time.Time            `json:"completed_at"`
 	DurationMS  int64                `json:"duration_ms"`
+	// Acceptance of an explicit reply deferred until Stop hooks settled.
+	AcceptedCommunicateCallID string  `json:"accepted_communicate_call_id,omitempty"`
+	ReplacementReply          *string `json:"replacement_reply,omitempty"`
 }
 
 // CommunicateInfo is the persisted form of one delivered communicate message.
@@ -188,9 +221,7 @@ type CommunicateInfo struct {
 	CallID  string `json:"call_id,omitempty"`
 	EndTurn bool   `json:"end_turn"`
 	Message string `json:"message"`
-	// EndReason is why a root session's call ended its turn (one of
-	// tool.CommunicateEndReasons); empty on a call that kept the turn going
-	// and wherever end_reason is not offered (delegates, headless roots).
+	// EndReason is retained for replay of historical communicate entries.
 	EndReason string `json:"end_reason,omitempty"`
 }
 
@@ -449,7 +480,10 @@ type AskResolution struct {
 // projected, so turns carrying them are not byte-identical by design;
 // they stay sorted here too so a future key lands in one obvious place.
 type Turn struct {
-	Actor SessionActor `json:"actor,omitzero"`
+	// AcceptedReply identifies bare assistant prose, or a Stop hook replacement,
+	// that settled the execution as a visible final reply.
+	AcceptedReply bool         `json:"accepted_reply,omitempty"`
+	Actor         SessionActor `json:"actor,omitzero"`
 	// AnswerToTurnIDs names the pending question executions resolved by this
 	// accepted input. Missing evidence never establishes continuation.
 	AnswerToTurnIDs []string       `json:"answer_to_turn_ids,omitempty"`
@@ -507,10 +541,16 @@ type Turn struct {
 	OriginalOrdinal *uint64 `json:"original_ordinal,omitempty"`
 	// OwningTurnID identifies the logical turn that owns an ordinary steering
 	// entry. It differs from StableTurnID, which identifies the client mutation.
-	OwningTurnID           string `json:"owning_turn_id,omitempty"`
-	ResponseContextMarker  string `json:"response_context_marker,omitempty"`
-	ResponseEndpoint       string `json:"response_endpoint,omitempty"`
-	ResponseEndpointFamily string `json:"response_endpoint_family,omitempty"`
+	OwningTurnID string `json:"owning_turn_id,omitempty"`
+	// ResponseContextBoundary names the context boundary the request that
+	// produced this assistant turn was planned against: the latest checkpoint
+	// or summary turn at planning time, or "none" when history held none. It is
+	// empty on turns recorded before the field existed, which continuation
+	// eligibility leaves unchecked.
+	ResponseContextBoundary string `json:"response_context_boundary,omitempty"`
+	ResponseContextMarker   string `json:"response_context_marker,omitempty"`
+	ResponseEndpoint        string `json:"response_endpoint,omitempty"`
+	ResponseEndpointFamily  string `json:"response_endpoint_family,omitempty"`
 	// ResponseID is the provider's response identifier (from llm.Response.ID),
 	// recorded on assistant turns and surfaced in ATIF trajectory export.
 	ResponseID                      string `json:"response_id,omitempty"`
@@ -521,6 +561,8 @@ type Turn struct {
 	ResponseRequestFingerprint      string `json:"response_request_fingerprint,omitempty"`
 	ResponseRequestModel            string `json:"response_request_model,omitempty"`
 	ResponseStorageScopeFingerprint string `json:"response_storage_scope_fingerprint,omitempty"`
+	// ResultToolName identifies communicate when advertised under a custom name.
+	ResultToolName string `json:"result_tool_name,omitempty"`
 	// RoundID names the model round an ASSISTANT entry (including a salvage
 	// entry) records: every request from the round's first attempt up to the
 	// first recorded ASSISTANT entry shares it.

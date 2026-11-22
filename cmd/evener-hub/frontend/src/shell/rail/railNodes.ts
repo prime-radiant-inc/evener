@@ -99,6 +99,9 @@ export interface SessionRailNode extends WidgetTreeNode {
   // Set only on a row inside one of Live's bands: the attention class the
   // band was chosen from, which the row's why line is read from too.
   live?: BoardState;
+  // A Live row with replies this browser has not read. Read progress, not a
+  // status: the row's band and signal dot are unaffected by it.
+  unseen?: boolean;
   // A Live row's host, present only where the row has to name it (see
   // liveBandNodes).
   liveHost?: { label: string; online: boolean };
@@ -399,9 +402,12 @@ const liveSessionNodeCache = new WeakMap<object, Map<string, SessionRailNode>>()
 export function liveSessionNode(
   session: RailSession,
   state: BoardState,
+  unseen: boolean | undefined,
   host?: { label: string; online: boolean },
 ): SessionRailNode {
-  const variant = host ? `${state}|${host.online ? "on" : "off"}|${host.label}` : state;
+  const variant = `${state}|${unseen === true ? "unread" : "read"}${
+    host ? `|${host.online ? "on" : "off"}|${host.label}` : ""
+  }`;
   let variants = liveSessionNodeCache.get(session);
   if (!variants) {
     variants = new Map();
@@ -409,7 +415,15 @@ export function liveSessionNode(
   }
   let node = variants.get(variant);
   if (!node) {
-    node = { id: liveRowId(session.ref), kind: "session", session, children: [], crossProjectTier: true, live: state };
+    node = {
+      id: liveRowId(session.ref),
+      kind: "session",
+      session,
+      children: [],
+      crossProjectTier: true,
+      live: state,
+    };
+    if (unseen === true) node.unseen = true;
     if (host) node.liveHost = host;
     variants.set(variant, node);
   }

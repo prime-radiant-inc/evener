@@ -2,20 +2,29 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { assertComposerPlacement } from "./overflowguard/composer.mjs";
 
-function measurement(width, ids, { stop = true, steer = false } = {}) {
+function measurement(width, ids, { stop = true, steer = false, statusBottom = 40, triggerTop = 20 } = {}) {
   return {
     currentWork: {
-      verbCluster: { containerWidth: width, controls: ids.length - 1, top: 20, statusRowBottom: 40 },
+      verbCluster: { containerWidth: width, controls: ids.length - 1, top: 20, statusRowBottom: statusBottom },
       controls: ids.map((testId) => ({ testId, present: true })),
       controlsFound: true,
       controlsContained: true,
       controlsDoNotOverlap: true,
       sharedPaneWithoutOverflow: true,
     },
+    trigger: { top: triggerTop },
     scrollers: [],
     menuVerbs: { open: true, stop, steer },
   };
 }
+
+test("a compact folded composer checks menu alignment when no status row exists", () => {
+  const expected = { contentWidth: 358, primary: "stop", inlineSteer: false, menuSteer: false };
+  const aligned = measurement(358, ["composer-attach", "composer-stop"], { statusBottom: null, triggerTop: 20 });
+  assertComposerPlacement(aligned, expected);
+  const wrapped = measurement(358, ["composer-attach", "composer-stop"], { statusBottom: null, triggerTop: 64 });
+  assert.throws(() => assertComposerPlacement(wrapped, expected), assert.AssertionError);
+});
 
 for (const contentWidth of [399, 400]) {
   for (const primary of ["stop", "submit"]) {

@@ -2,9 +2,11 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"maps"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -466,4 +468,72 @@ func inspectPreviewLifecycle(evs []events.SessionEvent) previewLifecycle {
 		}
 	}
 	return result
+}
+
+func TestCommunicatePreviewWaitsForNonWhitespaceMessage(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		kind       EntryKind
+		chunks     []string
+		wantStarts int
+		wantText   string
+	}{
+		{
+			name:       "whitespace_only_quiet_yield_emits_no_preview",
+			kind:       EntryNotification,
+			chunks:     []string{`{"message":"   "}`},
+			wantStarts: 0,
+			wantText:   "",
+		},
+		{
+			name:       "leading_whitespace_streams_full_message_once_nonwhitespace_arrives",
+			kind:       EntryUserInput,
+			chunks:     []string{`{"message":"  `, `hello"}`},
+			wantStarts: 1,
+			wantText:   "  hello",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fullArgs := strings.Join(tc.chunks, "")
+			client := llm.NewClient()
+			client.Register(&streamingAdapter{name: "openai", streamScript: func(st *llm.ChanStream) {
+				st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &llm.ToolCallData{ID: "preview-ws", Name: "communicate"}})
+				for _, chunk := range tc.chunks {
+					st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &llm.ToolCallData{ID: "preview-ws", Arguments: json.RawMessage(chunk)}})
+				}
+				call := llm.ToolCallData{ID: "preview-ws", Name: "communicate", Arguments: json.RawMessage(fullArgs)}
+				st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
+				finish := llm.FinishReason{Reason: llm.FinishReasonToolCalls}
+				st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &finish})
+			}})
+			sess := newSession(t, withClient(client), withDir(t.TempDir()), withStateDir(t.TempDir()))
+			if tc.kind == EntryNotification {
+				enqueueCompletedJobNotification(t, sess, "ws-job")
+			}
+			recorder := startPreviewEventRecorder(sess)
+			input := "run"
+			if tc.kind == EntryNotification {
+				input = ""
+			}
+			if _, err := sess.ProcessInputKind(tripwireCtx(t), input, nil, tc.kind); err != nil {
+				t.Fatalf("ProcessInputKind: %v", err)
+			}
+			evs := recorder.stop(sess)
+			var starts int
+			var streamed strings.Builder
+			for _, ev := range evs {
+				switch ev.Kind {
+				case events.EventCommunicatePreviewStart:
+					starts++
+				case events.EventCommunicatePreviewDelta:
+					streamed.WriteString(ev.Data.(events.CommunicatePreviewDeltaData).Delta)
+				}
+			}
+			if starts != tc.wantStarts || streamed.String() != tc.wantText {
+				t.Fatalf("starts=%d streamed=%q, want starts=%d streamed=%q", starts, streamed.String(), tc.wantStarts, tc.wantText)
+			}
+		})
+	}
 }

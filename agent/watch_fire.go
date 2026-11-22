@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/agent/schema"
 )
 
 func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
@@ -163,6 +164,11 @@ func evaluateWatchEvent(snap watchEventSnapshot, ev events.SessionEvent) watchEv
 	miss := watchEventDecision{eventCount: snap.eventCount}
 	if !snap.targetActive {
 		return miss
+	}
+	if kind == events.EventToolCallEnd {
+		if call, ok := data.(events.ToolCallEndData); ok && call.Error == "" && schema.IsQuietCommunicateState(call.ToolState) {
+			return miss
+		}
 	}
 	if snap.wildcardEvents {
 		if !isSupportedWatchEventKind(kind) {

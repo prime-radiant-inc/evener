@@ -98,6 +98,19 @@ func (s *Session) resultToolName() string {
 	return tool.DefaultResultToolName
 }
 
+func (s *Session) resultToolNameOverride() string {
+	if s.cfg.ResultToolName == tool.DefaultResultToolName {
+		return ""
+	}
+	return s.cfg.ResultToolName
+}
+
+func (s *Session) newToolResultsTurn(m llm.Message) schema.Turn {
+	t := schema.NewTurn(schema.TurnToolResults, m)
+	t.ResultToolName = s.resultToolNameOverride()
+	return t
+}
+
 // registerTool registers a custom tool at runtime.
 func (s *Session) registerTool(name, description string, params map[string]any, fn func(ctx context.Context, args any) (any, error)) {
 	// s.reg self-synchronizes (see the Session.mu lock discipline comment), so
@@ -319,10 +332,12 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	// a PreToolUse updatedInput rewrote them after the model's bytes were read.
 	s.recordDispatchedToolArguments(call)
 
+	isResultTool := call.Name == s.resultToolName()
 	startData := events.ToolCallStartData{
 		ToolName:      call.Name,
 		CallID:        call.ID,
 		ArgumentsJSON: argsJSON,
+		IsResultTool:  isResultTool,
 	}
 	// Promote intent to the top-level event field for observability.
 	var args map[string]any
@@ -370,6 +385,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 			ToolName:      res.ToolName,
 			CallID:        res.CallID,
 			ArgumentsJSON: argsJSON,
+			IsResultTool:  isResultTool,
 			Error:         res.FullOutput,
 		})
 		s.responseSideEffectsMu.Unlock()
@@ -387,13 +403,13 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		return skippedToolResult(call, err)
 	}
 	var res tool.ExecResult
-	var readKey readRangeKey
+	var readPath string
 	var readBefore readStamp
 	trackRepeat := false
 	if call.Name == "read_file" && prep.PrevalErr == "" {
-		if key, ok := s.readFileKey(call.Arguments); ok {
-			readBefore, trackRepeat = statReadStamp(key.path)
-			readKey = key
+		if path, ok := s.readFilePath(call.Arguments); ok {
+			readBefore, trackRepeat = statReadStamp(path)
+			readPath = path
 		}
 	}
 	if prep.PrevalErr != "" {
@@ -431,7 +447,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	}
 	res.DurationMS = time.Since(toolStart).Milliseconds()
 	if trackRepeat && !res.IsError {
-		s.noteReadFileRepeat(readKey, readBefore, &res)
+		s.noteReadFileRepeat(readPath, readBefore, &res)
 	}
 	// M7: on a sandbox denial in an interactive root session, raise a human approval
 	// card and block HERE — between dispatch and the TOOL_CALL_END emit, so the tool
@@ -454,6 +470,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 			ToolName:      call.Name,
 			CallID:        call.ID,
 			ArgumentsJSON: argsJSON,
+			IsResultTool:  isResultTool,
 			Error:         skippedToolResult(call, err).FullOutput,
 		})
 		s.responseSideEffectsMu.Unlock()
@@ -489,6 +506,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		ToolName:      res.ToolName,
 		CallID:        res.CallID,
 		ArgumentsJSON: argsJSON,
+		IsResultTool:  isResultTool,
 		ToolState:     res.ToolState,
 		OutputRef:     outputRef,
 	}
@@ -628,8 +646,7 @@ func (s *Session) runPostToolHooks(ctx context.Context, call llm.ToolCallData, r
 	}
 	for _, m := range hookResult.ModelContext {
 		if err := s.deliverHookContext(m); err != nil {
-			// Keep the tool state: a turn-ending communicate's records the
-			// end reason restore reads (endedOnNeedsResponse).
+			// Preserve execution state when a hook fails after the tool ran.
 			failed := errorResult(call, err.Error())
 			failed.ToolState = res.ToolState
 			return &failed
@@ -815,15 +832,18 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 		} else if hasTerminalJobResult(calls, results) {
 			persistErr = s.appendToolResultsDurably(live, persisted, skillState)
 		} else if skillState != nil {
-			liveTurn := schema.NewTurn(schema.TurnToolResults, live)
+			liveTurn := s.newToolResultsTurn(live)
 			liveTurn.SkillState = skillState
-			persistedTurn := schema.NewTurn(schema.TurnToolResults, persisted)
+			persistedTurn := s.newToolResultsTurn(persisted)
 			persistedTurn.SkillState = skillState
 			// The obligation is already durable above, so a failed carrier write
 			// returns rather than reporting a recorded round.
 			persistErr = s.recordSkillCarrierDurably(liveTurn, persistedTurn)
 		} else {
-			s.appendTurnWithTranscriptMessage(schema.TurnToolResults, live, persisted)
+			liveTurn := s.newToolResultsTurn(live)
+			persistedTurn := liveTurn
+			persistedTurn.Message = persisted
+			s.recordTurn(liveTurn, persistedTurn)
 		}
 		if persistErr != nil {
 			return
@@ -920,9 +940,9 @@ func (s *Session) takeDelegateDeliveryCommits(calls []llm.ToolCallData) []delega
 // appendToolResultsDurably mirrors appendTurnWithDurableTranscriptMessage
 // (session.go) with the round's typed skill state attached to both copies.
 func (s *Session) appendToolResultsDurably(live, persisted llm.Message, skillState *schema.SkillTurnState) error {
-	liveTurn := schema.NewTurn(schema.TurnToolResults, live)
+	liveTurn := s.newToolResultsTurn(live)
 	liveTurn.SkillState = skillState.Clone()
-	persistedTurn := schema.NewTurn(schema.TurnToolResults, persisted)
+	persistedTurn := s.newToolResultsTurn(persisted)
 	persistedTurn.SkillState = skillState.Clone()
 	err := s.appendTurnAfterTranscriptWrite(
 		persistedTurn,
@@ -939,7 +959,7 @@ func (s *Session) appendToolResultsDurably(live, persisted llm.Message, skillSta
 // results durably with their delegate delivery commits and, when the round
 // included skill tool calls, the typed skill state on both turn copies.
 func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted llm.Message, commits []delegateToolCallDeliveryCommit, skillState *schema.SkillTurnState) error {
-	liveTurn := schema.NewTurn(schema.TurnToolResults, live)
+	liveTurn := s.newToolResultsTurn(live)
 	liveTurn.SkillState = skillState.Clone()
 	persistedTurn := liveTurn
 	persistedTurn.Message = persisted
@@ -1041,8 +1061,12 @@ func (s *Session) hasTranscriptWriter() bool {
 
 // trackReadFile records that a file has been read in this session.
 func (s *Session) trackReadFile(path string) {
+	// Resolve before taking readFilesMu: resolveFilePath calls currentEnv,
+	// which takes s.mu, and a fold publishing under s.mu takes readFilesMu
+	// (clearPriorReads), so the reverse order here would deadlock the two.
+	abs := s.resolveFilePath(path)
 	s.readFilesMu.Lock()
-	s.readFiles[s.resolveFilePath(path)] = true
+	s.readFiles[abs] = true
 	s.readFilesMu.Unlock()
 }
 

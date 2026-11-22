@@ -168,6 +168,13 @@ type SessionMeta struct {
 	// LastInputTokens is the prompt-token count from the most recent LLM call,
 	// used to display context-window pressure on resume.
 	LastInputTokens int `json:"last_input_tokens,omitempty"`
+	// LastInputMeasuredLen is the history length LastInputTokens was measured at,
+	// LastInputAnchor fingerprints the turn at that index, and LastInputTarget names
+	// the producer. A restore seeds the count only when all three still describe
+	// this session, a nil length marking a meta written before it existed.
+	LastInputMeasuredLen *int   `json:"last_input_measured_len,omitempty"`
+	LastInputAnchor      string `json:"last_input_anchor,omitempty"`
+	LastInputTarget      string `json:"last_input_target,omitempty"`
 	// ContextWindow is the window the session budgets against, and
 	// ContextWindowSource where it came from ("live", "overlay", "config",
 	// "snapshot", or "assumed"). They are rewritten on every save, so a resumed
@@ -231,9 +238,6 @@ type SessionMeta struct {
 	// LaunchEnvBaseline is what the launch prompt stated, seeded before any replay.
 	LaunchEnvBaseline  envctx.Snapshot `json:"launch_env_baseline,omitzero"`
 	LaunchSystemPrompt string          `json:"launch_system_prompt,omitempty"` // when the transcript header has none
-	// ReasoningEffortEscalated records the sticky loop-detection escalation
-	// separately from Config so a resumed lower-effort task cannot undo it.
-	ReasoningEffortEscalated bool `json:"reasoning_effort_escalated,omitempty"`
 	// ObservedBy records append-only observer UI relationships. It grants no
 	// access and lets the hub auto-open an observer beside this worker.
 	ObservedBy []string `json:"observed_by,omitempty"`

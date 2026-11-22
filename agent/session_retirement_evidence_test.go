@@ -3608,7 +3608,10 @@ func TestRetirementEnvironmentWorktreeCreate(t *testing.T) {
 func TestRetirementWatchFiredRepeating(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
-	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("repeat acknowledged") })
+	adapter := newFakeAdapter("openai",
+		func(llm.Request) llm.Response { return quietYieldResponse("first-repeat-ack", `{}`) },
+		func(llm.Request) llm.Response { return quietYieldResponse("second-repeat-ack", `{}`) },
+	)
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}), withAdapter(adapter))
 	c := retirementEvidenceController(t, root)
 	registered, err := root.jobManager.configureWatch(watchArgs{Target: "caller", Source: "self", RepeatSeconds: 60, Note: "repeating-timer-note"})

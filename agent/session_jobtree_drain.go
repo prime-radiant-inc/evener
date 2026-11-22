@@ -1080,6 +1080,8 @@ func (s *Session) drainJobTreeUsing(ctx context.Context, process func(context.Co
 	return s.drainJobTreeWith(ctx, ticker.C(), s.kickDriveTree, process)
 }
 
+type keepingDelegateReportKey struct{}
+
 // keepingReport wraps a drain turn. Every input starts with a fresh
 // communicate result, so a turn that ends without a terminal communicate would
 // erase the report the delegate already gave. That turn restores the latest
@@ -1089,13 +1091,16 @@ func (s *Session) drainJobTreeUsing(ctx context.Context, process func(context.Co
 // already reported; any other error still propagates.
 func (s *Session) keepingReport(process func(context.Context, string, []ImageAttachment, EntryKind) (string, error)) func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
 	return func(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (string, error) {
-		reported := s.communicated()
+		reported := s.communicatedUnblocked()
+		if reported {
+			ctx = context.WithValue(ctx, keepingDelegateReportKey{}, s)
+		}
 		res, err := process(ctx, input, images, kind)
 		if !reported {
 			return res, err
 		}
 		s.mu.Lock()
-		if !s.comm.called {
+		if !s.comm.called || s.comm.stopBlocked {
 			// The restore replaces the report fields, not the fact that this
 			// input sent a non-terminal update: keeping it makes a later
 			// missing-report reminder acknowledge that update instead of
@@ -1103,6 +1108,9 @@ func (s *Session) keepingReport(process func(context.Context, string, []ImageAtt
 			updated := s.comm.updated
 			s.comm = s.latestReport
 			s.comm.updated = updated
+			if res == "" {
+				res = s.latestReport.reply
+			}
 			if isNoReportFailure(err) {
 				err = nil
 			}

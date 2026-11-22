@@ -39,6 +39,7 @@ import { DockHost } from "../shell/DockHost";
 import { DockRegion } from "../shell/DockRegion";
 import { workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
+import { prefsStore } from "../stores/prefs";
 import { threadsStore } from "../stores/threads";
 import { Toast } from "../widgets";
 import {
@@ -313,6 +314,12 @@ threadsStore.subscribe((state) => {
 // an earlier pass's unmount writes one, and the open those passes measure is
 // the plain one that lands at the end.
 const SEEN = new URLSearchParams(window.location.search).get("seen");
+// The unseen-reply landing is opt-in on the web (#4845 slice 2), so this
+// harness opts in for its own unseen pass. `openAtUnread=off` runs the same
+// watermark under the web default, which is the control proving a session
+// with an unseen reply still opens at the live end unless the reader asks.
+const OPEN_AT_UNREAD = SEEN !== null && new URLSearchParams(window.location.search).get("openAtUnread") !== "off";
+prefsStore.getState().setOpenAtUnreadReplies(OPEN_AT_UNREAD);
 if (SEEN === null) localStorage.removeItem(seenWatermarkKey(REF));
 else writeSeenWatermark(REF, SEEN);
 
@@ -847,9 +854,8 @@ async function growContentAndSettle(): Promise<
 // shrinking the transcript's port 671 -> 667 with scrollTop held - no scroll
 // event, no content resize. Left alone the reader sits 4px short, which
 // isAtBottom's rounding tolerance still calls "at the bottom", so no pill.
-// The trace's own arrival is timed by a 3s interval (the guard hit it only
-// when contention stretched the run past the tick); this phase stages the same
-// header growth deterministically, on the real header's cadence slot.
+// Grow the real header directly: its action row can be taller than the cadence
+// trace, so growing only the cadence slot need not shrink the transcript port.
 const PORT_SHRINK_PX = 4;
 const SHRINK_SETTLE_FRAMES = 30;
 const SHRINK_TRIPWIRE_MS = 8_000;
@@ -859,10 +865,10 @@ async function shrinkPortAndSettle(): Promise<
   const wait = "the scroll-port-shrink wait";
   const el = requireScrollElement(wait);
   const before = geometryOf(el);
-  const slot = document.querySelector<HTMLElement>('[data-testid="pane-cadence-slot"]');
-  if (!slot) throw new Error("transcript harness: the pane header's cadence slot is not mounted");
-  const grown = slot.getBoundingClientRect().height + PORT_SHRINK_PX;
-  slot.style.minHeight = `${grown}px`;
+  const header = document.querySelector<HTMLElement>('[data-testid="pane-cadence-slot"]')?.parentElement;
+  if (!header) throw new Error("transcript harness: the pane header is not mounted");
+  const grown = header.getBoundingClientRect().height + PORT_SHRINK_PX;
+  header.style.minHeight = `${grown}px`;
 
   const deadline = performance.now() + SHRINK_TRIPWIRE_MS;
   let stableFrames = 0;

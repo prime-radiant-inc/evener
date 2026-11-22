@@ -5,6 +5,7 @@ import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "./notifications";
+import { replaceEditorText } from "./panes/session/testing/editor";
 import { StubResizeObserver } from "./resizeObserverTestUtils";
 import { AppShell } from "./shell/AppShell";
 import { resetWorkspaceStoreForTests } from "./shell/workspace";
@@ -143,6 +144,7 @@ beforeAll(async () => {
   installLocalStorage(new MemoryStorage());
   await import("./dev/WidgetGallery");
   await import("./dev/DevHarness");
+  await import("./dev/ComposerResponsiveDemo");
   await import("./panes/welcome/Welcome");
   // AppShell.tsx now React.lazy()s DockHost itself (Task 7's bundle split -
   // dockview is dead weight on the mobile path); the default-route test
@@ -157,6 +159,7 @@ beforeAll(async () => {
   await warmRoute("/", "No session open");
   await warmRoute("/dev/widgets", /widget gallery/i);
   await warmRoute("/dev/harness", /connection:/i);
+  await warmRoute("/dev/composer-responsive", "Responsive composer");
 });
 
 beforeEach(() => {
@@ -316,6 +319,34 @@ test("renders the dev widget gallery at /dev/widgets", async () => {
   // Route warmed in beforeAll, so this waits only on this render's own
   // work — no module transform, no Suspense reveal throttle.
   expect(await screen.findByText(/widget gallery/i)).toBeTruthy();
+});
+
+test("switches every responsive composer frame between empty and drafted states", async () => {
+  window.history.pushState({}, "", "/dev/composer-responsive");
+  render(<App />);
+  expect(await screen.findByRole("heading", { name: "Responsive composer" })).toBeTruthy();
+  const frames = screen.getAllByTitle(/session preview$/);
+  expect(frames.map((frame) => frame.getAttribute("data-frame"))).toEqual(["phone", "tablet", "desktop"]);
+  expect(frames.every((frame) => frame.getAttribute("src")?.includes("draft=0"))).toBe(true);
+  act(() => screen.getByRole("radio", { name: "With a draft" }).click());
+  expect(frames.every((frame) => frame.getAttribute("src")?.includes("draft=1"))).toBe(true);
+});
+
+test("a framed responsive demo mounts the real transcript and selected draft state", async () => {
+  window.history.pushState({}, "", "/dev/composer-responsive?frame=tablet&draft=1");
+  render(<App />);
+  const editor = await screen.findByRole("textbox", { name: "Message" });
+  expect(screen.getByTestId("transcript-preview-flow")).toBeTruthy();
+  expect(editor.textContent).not.toBe("");
+  expect(screen.getByTestId("composer-input-card").hasAttribute("data-folded")).toBe(false);
+  expect(screen.getByTestId("composer-submit")).toBeTruthy();
+
+  act(() => replaceEditorText(editor, "edited preview draft"));
+  cleanup();
+  window.history.pushState({}, "", "/dev/composer-responsive?frame=tablet&draft=0");
+  render(<App />);
+  const emptyEditor = await screen.findByRole("textbox", { name: "Message" });
+  expect(emptyEditor.textContent).toBe("");
 });
 
 test("renders the dev harness at /dev/harness", async () => {

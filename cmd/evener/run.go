@@ -516,6 +516,8 @@ func run(ctx context.Context, cfg runConfig) error {
 		done = drainEventsHuman(sess.Events(), cfg.stderr)
 	}
 
+	// ProcessInput returns the accepted reply, including tool-free root prose.
+	// Do not print streamed assistant drafts to stdout.
 	result, err := runProcessInput(sess, ctx, prompt)
 	if err == nil && cfg.askResponder != "" {
 		result, err = runAskResponderLoop(ctx, sess, cfg, result)

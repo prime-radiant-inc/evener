@@ -14,6 +14,7 @@
 .card {
   display: flex;
   flex-direction: column;
+  position: relative;
   gap: var(--space-2);
   padding: var(--space-3) var(--space-2) var(--space-2);
   border: 1px solid var(--edge);
@@ -71,10 +72,14 @@
   display: none;
 }
 
-/* On the Duo cover, an empty, unfocused composer gives its extra inset back
- * to the transcript. Drafts, attachments and editing keep ordinary space. */
+/* On the Duo cover, an empty, folded composer gives its extra inset back to
+ * the transcript. Focus does not change that shape; content does. */
 @media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4) {
-  :global([data-composer]):not([data-composer-editing]) .card:has([role="textbox"][data-empty="true"]) {
+  :global([data-composer]) .card {
+    padding-bottom: 0;
+  }
+
+  :global([data-composer]) .card[data-folded="true"]:has([role="textbox"][data-empty="true"]) {
     gap: 0;
     padding-block: 0;
   }
@@ -117,7 +122,7 @@
 }
 
 /* A caller that knows its control row is compact can use the same one-line
- * shape below the normal width threshold (the phone's menu-only resting row). */
+ * shape below the normal width threshold (the phone's Attach/menu resting row). */
 .card[data-folded="true"][data-folded-compact="true"] {
   flex-direction: row;
   align-items: center;
@@ -125,6 +130,16 @@
 
 .card[data-folded="true"][data-folded-compact="true"] .field {
   flex: 1 1 10ch;
+}
+
+/* The field owns its text inset, so a narrow composer card can yield its
+ * inline padding and column gap in every state. Three tap targets and half
+ * the card remain available to the writing field without moving on expansion. */
+@container (max-width: 340px) {
+  :global([data-composer]) .card {
+    padding-inline: 0;
+    column-gap: 0;
+  }
 }
 
 /* The row never wraps. It once did, below 399px, for a three-verb cluster

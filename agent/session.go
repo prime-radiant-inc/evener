@@ -390,17 +390,13 @@ type Session struct {
 	// LOCK ORDER (outermost first; a lock to the left is taken before any to its
 	// right and never while holding one to its right):
 	//   responseSideEffectsMu > mu          (Close takes both)
-	//   restMu > delegateDeliveryMu > mu
+	//   delegateDeliveryMu > mu
 	//   metaSaveMu > mu                     (maybeAutoSave)
 	//   goalUpdateMu > mu, notesUpdateMu > mu (emit runs after mu is released)
 	// drainAbandonedMu and childCommittedSendMu are leaves: nothing is taken under
 	// them.
 	//
-	// Every field whose comment says "Guarded by mu" (or s.mu) is guarded by mu;
-	// that includes the rest fields restGeneration, restOwedGeneration,
-	// restBeforeInput, quietRestBeforeInput, endReasonBeforeInput and
-	// resumeQuietRest. restMu does not guard those fields: it makes a rest's
-	// transition and its STATUS_SETTLED emit atomic against restGeneration moving.
+	// Every field whose comment says "Guarded by mu" (or s.mu) is guarded by mu.
 	// The group below is the original core set; later fields carry their own
 	// guard in their field comment.
 	//
@@ -589,6 +585,12 @@ type Session struct {
 	persistedAppendLogBase        int           // count of pair appends already pruned from persistedAppendLog by fold publications; base+len(log) is the total pair-append count a fold snapshot captures as snapAppends. Guarded by mu.
 	newestPublishedFoldRevision   int           // publication sequence (historyRevision at publish) of the newest fold publication, set inside publishFoldTransaction's s.mu window. Last-write-wins deferred effects (compaction naming, task/artifact steering) are suppressed — at flush time and again at async naming completion — for any fold with an older publication revision: suppression binds to PUBLICATION order, never flush order, so an older fold flushing while the newest is published-but-unflushed stays silent, and the newest fold's own flush can never be suppressed. Guarded by mu.
 	responsesContinuationDisabled map[responsesContinuationDisabledKey]bool
+
+	// requestMeasurement is the history prefix and request shape the round's
+	// model request was prepared from. recordResponseUsage records the
+	// provider's input count against it, so a reply that settles after a rewrite
+	// cannot charge its count to history it never sent. Guarded by mu.
+	requestMeasurement requestMeasurement
 
 	// currentRoundRecorder is the in-flight round's salvage recorder: per retry
 	// group, every attempt's stats and the best partial that group streamed.
@@ -893,41 +895,11 @@ type Session struct {
 	// accepted. Unlike comm it survives the next input's reset, so a drain
 	// can restore the report that input erased.
 	latestReport communicateResult
-	// restMu makes a needs_response rest's transition and its STATUS_SETTLED
-	// emit atomic against a turn advancing restGeneration: either the turn
-	// starts first and the rest stays idle, or the announcement reaches the
-	// event feed before anything the turn emits.
-	// LOCK ORDER: restMu > delegateDeliveryMu > mu.
-	restMu sync.Mutex
-	// restGeneration counts turn starts and drain-loop settles. A
-	// needs_response rest arms awaiting only if neither happened during its
-	// quiet period. Guarded by s.mu.
-	restGeneration uint64
 	// restBeforeInput is the resting state the session had when the current
 	// input started, read only by finishNotificationNoop: a notification wake
 	// that turns out to have nothing to deliver runs no turn, so it settles
 	// back to it. Guarded by s.mu.
 	restBeforeInput SessionState
-	// restOwedGeneration is the restGeneration of the settle that last found a
-	// needs_response turn with output (or a wake that resumed its rest),
-	// whether it scheduled the quiet period or something held the session
-	// idle; 0 before any. A fresh
-	// session's restGeneration is 0 too, so 0 never counts as owed. Guarded
-	// by s.mu.
-	restOwedGeneration uint64
-	// quietRestBeforeInput records that the current input started while that
-	// rest was still owed: no turn or settle since, and the session idle. The
-	// input's turn start cancelled it. Guarded by s.mu.
-	quietRestBeforeInput bool
-	// endReasonBeforeInput is the communicate end reason the current input's
-	// turn start reset. A wake that runs no turn puts it back, so the
-	// drain-loop settle reads the end reason of the last turn that ran.
-	// Guarded by s.mu.
-	endReasonBeforeInput string
-	// resumeQuietRest tells the drain-loop settle that a wake which ran no
-	// turn left that cancelled rest standing, so the settle arms it again.
-	// Guarded by s.mu.
-	resumeQuietRest bool
 
 	// terminalCommunicateAccepted latches that a communicate with
 	// end_turn=true completed a turn while TurnEndsProcess: the model has
@@ -1231,9 +1203,10 @@ type Session struct {
 	// read-before-write guardrail
 	readFiles   map[string]bool
 	readFilesMu sync.RWMutex
-	// priorReads remembers each read_file path and range with the file's state
-	// at that read. Guarded by readFilesMu.
-	priorReads map[readRangeKey]priorRead
+	// priorReads remembers the line ranges already read from each read_file
+	// path, with the file's state and the turn of each read. Guarded by
+	// readFilesMu.
+	priorReads map[string][]priorReadSpan
 
 	// SESSION_END deduplication: emitted exactly once across ProcessInput and Close.
 	// Guarded by mu; read and written only in session_end.go.
@@ -1369,11 +1342,6 @@ type Session struct {
 
 	// stuck detection
 	loopDetectionCount int // how many times loop detection has fired
-	// loopEffortEscalated records that loop detection bumped the session's
-	// reasoning effort ("Your reasoning effort has been increased"). While set,
-	// a lower per-task effort override no longer wins over the escalated
-	// configured effort — the steering message must not lie. Guarded by s.mu.
-	loopEffortEscalated bool
 
 	// transcript writer (nil when StateDir is empty, or when opening it failed)
 	transcript *transcript.Writer
@@ -1523,6 +1491,11 @@ type Session struct {
 	// re-serializing the list every round (#6406). It is written only where
 	// cachedToolDefs is, and must describe exactly the list beside it.
 	cachedToolDefsJSONBytes int
+	// toolDefsGen counts cachedToolDefs rebuilds. A saved input count covers the
+	// tool list and system prompt the request was measured with, so settlement
+	// reads this to notice a list that changed while the reply streamed.
+	// Guarded by mu.
+	toolDefsGen int
 
 	systemPromptOverride string
 	cachedSystemPrompt   string
@@ -2041,13 +2014,17 @@ func (s *Session) resetJobNotificationRetry() {
 // transient — reset at the top of each call, then read back by communicated,
 // communicateOutput, and the turn loop's deliver step. Guarded by s.mu.
 type communicateResult struct {
-	called     bool // terminal communicate/result was invoked this turn
-	updated    bool // non-terminal communicate (end_turn=false) was invoked this turn
-	text       string
-	reply      string
-	output     string // canonical structured output (communicateOutput)
-	structured any    // raw args["output"] object before communicate canonicalization
-	endReason  string // why the terminal call ended the turn (tool.CommunicateEndReasons); "" on a delegate
+	called            bool // terminal communicate/result was invoked this turn
+	updated           bool // non-terminal communicate (end_turn=false) was invoked this turn
+	text              string
+	reply             string
+	output            string // canonical structured output (communicateOutput)
+	structured        any    // raw args["output"] object before communicate canonicalization
+	quietEnd          bool   // quiet yield was accepted without capturing a report
+	stopPending       bool   // terminal acceptance awaits a Stop hook decision
+	stopPendingCallID string // explicit winner whose observation awaits the Stop decision
+	stopBlocked       bool   // a Stop hook blocked the captured reply; preserved only if a later round settles visibly
+	roundVisible      bool   // a visible terminal communicate was attempted in the current tool round
 }
 
 // sessionName holds the session's auto-generated display name and its
@@ -3142,12 +3119,27 @@ func (s *Session) communicatedReply() (string, bool) {
 	return s.comm.reply, s.comm.called
 }
 
-// communicateEndReason is why this input's terminal communicate call ended
-// the turn: "" when none was accepted, or on a delegate.
-func (s *Session) communicateEndReason() string {
+func (s *Session) quietBoundaryLocked() bool {
+	return s.comm.quietEnd && (!s.comm.called || (s.comm.stopBlocked && !s.comm.roundVisible))
+}
+
+func (s *Session) communicatedUnblocked() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.comm.endReason
+	return s.comm.called && !s.comm.stopBlocked
+}
+
+// quietlyYielded reports a quiet boundary, not a visible final reply.
+func (s *Session) quietlyYielded() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.quietBoundaryLocked()
+}
+
+func (s *Session) recordQuietYield() {
+	s.mu.Lock()
+	s.comm.quietEnd = true
+	s.mu.Unlock()
 }
 
 // acceptCommunicateTerminal is the atomic terminal-result writer for the
@@ -3158,27 +3150,40 @@ func (s *Session) communicateEndReason() string {
 // still-empty structured slot. It returns whether this call won; losers report
 // accepted:false. The stable-delegate lease, when the context carries one, is
 // recorded after the lock is released.
-func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply, output string, structured any, endReason string) bool {
+func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply, output string, structured any) bool {
 	s.mu.Lock()
 	if s.comm.called {
+		s.comm.roundVisible = true
 		s.mu.Unlock()
 		return false
 	}
+	stopPending := s.hasReplyStopHook()
 	s.comm = communicateResult{
-		called:     true,
-		text:       message,
-		reply:      reply,
-		output:     output,
-		structured: structured,
-		endReason:  endReason,
+		called:       true,
+		text:         message,
+		reply:        reply,
+		output:       output,
+		structured:   structured,
+		roundVisible: true,
+		stopPending:  stopPending,
 	}
-	s.latestReport = s.comm
+	if stopPending {
+		s.comm.stopPendingCallID = callIDFromContext(ctx)
+	} else {
+		s.latestReport = s.comm
+	}
 	s.mu.Unlock()
+	if !stopPending {
+		s.recordDelegateTerminalSeen(ctx)
+	}
+	return true
+}
+
+func (s *Session) recordDelegateTerminalSeen(ctx context.Context) {
 	lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
 	if stableRun && s.delegateController != nil {
 		_ = s.delegateController.recordTerminalSeen(lease)
 	}
-	return true
 }
 
 // extractOriginalPrompt returns a delegate's assignment or the first user
@@ -3929,7 +3934,12 @@ func assistantHistoryMessage(message llm.Message) llm.Message {
 // appendAssistantTurn appends an assistant turn that carries the full response
 // metadata (usage stats and response ID) alongside the message content.
 func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttemptMetadata) error {
+	return s.appendAssistantTurnWithAcceptance(resp, finalAttempt, false)
+}
+
+func (s *Session) appendAssistantTurnWithAcceptance(resp llm.Response, finalAttempt ModelAttemptMetadata, acceptedReply bool) error {
 	t := schema.Turn{
+		AcceptedReply:                   acceptedReply,
 		Kind:                            schema.TurnAssistant,
 		Message:                         assistantHistoryMessage(resp.Message),
 		Timestamp:                       s.sclock().Now().UTC(),
@@ -3946,9 +3956,14 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		ResponseStorageScopeFingerprint: finalAttempt.StorageScopeFingerprint,
 		ResponseRequestFingerprint:      finalAttempt.RequestFingerprint,
 		ResponseContextMarker:           finalAttempt.ContextMarker,
+		ResponseContextBoundary:         finalAttempt.ContextBoundary,
+		ResultToolName:                  s.resultToolNameOverride(),
 		RoundID:                         s.roundIDForModelCall(),
 	}
 	t.Authorship = s.roundTranscriptAuthorship()
+	if acceptedReply {
+		t.CausalKnown, t.Causal = true, s.activeCausalProvenance()
+	}
 	err := func() error {
 		s.attentionMu.Lock()
 		defer s.attentionMu.Unlock()

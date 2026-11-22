@@ -45,7 +45,7 @@ export const ActivityChips = memo(function ActivityChips({ sessionRef, paneId }:
     [resources, sessionRef, snapshot, subagents],
   );
   const { counts } = scope;
-  // A phone renders this row on its own line below the composer card, so a
+  // A phone renders this row on its own line above the composer card, so a
   // chip shows the compact single active count; the full active/total
   // fraction stays in the chip's accessible name.
   const mobile = useIsMobile();

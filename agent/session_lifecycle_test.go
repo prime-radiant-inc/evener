@@ -1026,7 +1026,7 @@ func TestSession_GracefulShutdown_CorrectOrdering(t *testing.T) {
 	}
 }
 
-func TestSession_LoopDetection_WarningWording(t *testing.T) {
+func TestSession_LoopDetection_SteersWithoutEscalatingEffort(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -1065,10 +1065,13 @@ func TestSession_LoopDetection_WarningWording(t *testing.T) {
 	if _, err := sess.ProcessInput(ctx, "loop", nil); err != nil {
 		t.Fatal(err)
 	}
+	sess.mu.Lock()
+	effortAfterDetection := sess.cfg.ReasoningEffort
+	sess.mu.Unlock()
 	sess.Close()
 	<-done
 
-	// Verify the LOOP_DETECTION event message matches the spec wording.
+	// The detection reaches the model as a LOOP_DETECTION steering event.
 	var loopMsg string
 	for _, ev := range evs {
 		if d, ok := ev.Data.(events.LoopDetectionData); ok {
@@ -1079,11 +1082,9 @@ func TestSession_LoopDetection_WarningWording(t *testing.T) {
 	if loopMsg == "" {
 		t.Fatal("no LOOP_DETECTION event found")
 	}
-	if !strings.Contains(loopMsg, "stuck in a loop") {
-		t.Fatalf("loop message should contain 'stuck in a loop', got: %q", loopMsg)
-	}
-	if !strings.Contains(loopMsg, "reasoning effort has been increased") {
-		t.Fatalf("first loop detection should mention reasoning escalation, got: %q", loopMsg)
+	// Detection steers; it must not silently raise the session's effort.
+	if effortAfterDetection != "" {
+		t.Fatalf("ReasoningEffort after loop detection = %q, want it unchanged (no hidden escalation)", effortAfterDetection)
 	}
 }
 

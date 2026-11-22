@@ -31,7 +31,7 @@ func TestDelegateAttentionDriveStaleSelectionPreservesNextOwnerRun(t *testing.T)
 			if err := root.subagents.get(fixture.childID).sess.Enqueue(context.Background(), "queued follow-up work"); err != nil {
 				t.Errorf("queue attention follow-up: %v", err)
 			}
-			return llm.Response{Message: llm.Assistant("attention requires no action")}
+			return quietYieldResponse("attention-no-action", `{}`)
 		},
 		bare, bare, bare, bare,
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("follow-up report") },
@@ -134,7 +134,7 @@ func TestDelegateAttentionDriveFailedCommitLeavesRowPendingAndRetries(t *testing
 	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
-		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("nothing to do")} },
+		func(llm.Request) llm.Response { return quietYieldResponse("quiet-ack", `{}`) },
 	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)

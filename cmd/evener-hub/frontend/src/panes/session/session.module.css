@@ -19,19 +19,14 @@
  * contents align to the trailing edge so a short title still sits at the
  * corner rather than stretching across the pane. */
 .attentionDock {
-  position: absolute;
+  composes: dock from "./overlayDock.module.css";
   left: var(--space-3);
   right: var(--space-3);
   bottom: var(--space-3);
-  z-index: var(--z-raised);
-  display: flex;
-  flex-direction: column;
   align-items: flex-end;
-  pointer-events: none;
 }
 
 .attentionDock > * {
-  pointer-events: auto;
   max-width: 100%;
 }
 

@@ -125,10 +125,21 @@ func NewAbortError(message string, cause error) error {
 // error (e.g. an SSE decode failure or a wrapped context error) and is exposed
 // via Unwrap; pass nil for a content-level stream sentinel with no cause.
 func NewStreamError(provider, message string, cause error) error {
+	return newStreamError(provider, message, cause, true)
+}
+
+// NewPermanentStreamError reports a streaming failure that retrying cannot fix,
+// such as a response discarded by a client-side bound. Retrying the same
+// request reproduces the same failure, so the retry chain must stop.
+func NewPermanentStreamError(provider, message string, cause error) error {
+	return newStreamError(provider, message, cause, false)
+}
+
+func newStreamError(provider, message string, cause error, retryable bool) error {
 	return &StreamError{nonHTTPBaseError{
 		provider:  provider,
 		message:   message,
-		retryable: true,
+		retryable: retryable,
 		cause:     cause,
 	}}
 }

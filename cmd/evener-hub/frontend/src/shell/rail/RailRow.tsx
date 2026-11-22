@@ -106,8 +106,10 @@ const CLASS = {
   actions: requireClass(styles.actions, "RailRow.module.css", "actions"),
   chevronButton: requireClass(styles.chevronButton, "RailRow.module.css", "chevronButton"),
   signal: requireClass(styles.signal, "RailRow.module.css", "signal"),
+  unreadDot: requireClass(styles.unreadDot, "RailRow.module.css", "unreadDot"),
   textCol: requireClass(styles.textCol, "RailRow.module.css", "textCol"),
   titleLine: requireClass(styles.titleLine, "RailRow.module.css", "titleLine"),
+  meta: requireClass(styles.meta, "RailRow.module.css", "meta"),
   label: requireClass(styles.label, "RailRow.module.css", "label"),
   sessionTitle: requireClass(styles.sessionTitle, "RailRow.module.css", "sessionTitle"),
   contextCard: requireClass(styles.contextCard, "RailRow.module.css", "contextCard"),
@@ -156,6 +158,14 @@ function Signal({ state }: { state: CadenceState }) {
       <StatusDot state={state} />
     </RowGutter>
   );
+}
+
+// Replies the person has not read since they last opened this session, drawn
+// as the phone's Board draws them: a small accent dot beside the age. Separate
+// from the status dot by design - needs-you says a person is needed, this says
+// there is something new to read - so it carries its own name.
+function UnreadMarker() {
+  return <span role="img" aria-label="Unread" data-testid="rail-row-unread" className={CLASS.unreadDot} />;
 }
 
 // The rail no longer renders watch rows of its own (the activity sidebar's
@@ -746,20 +756,24 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
       </span>
       {/* The timestamp shares its slot with hover actions. */}
       <span className={CLASS.rightSlot}>
-        {notStarted ? (
-          // Words, not a number: a session that has never run has no elapsed
-          // work to report, and the age this slot would otherwise show is
-          // counting from the moment it was created - which reads as activity
-          // and is the single most misleading thing on the row. Saying so also
-          // gives the row an accessible name that answers the question a
-          // returning user actually has ("did I already ask it something?"),
-          // which an empty signal gutter never could.
-          <span data-testid="rail-row-not-started" className={CLASS.notStarted}>
-            Not started
-          </span>
-        ) : (
-          <RailAge updatedAt={session.updated_at} />
-        )}
+        <span className={CLASS.meta}>
+          {notStarted ? (
+            // Words, not a number: a session that has never run has no elapsed
+            // work to report, and the age this slot would otherwise show is
+            // counting from the moment it was created - which reads as activity
+            // and is the single most misleading thing on the row. Saying so also
+            // gives the row an accessible name that answers the question a
+            // returning user actually has ("did I already ask it something?"),
+            // which an empty signal gutter never could.
+            <span data-testid="rail-row-not-started" className={CLASS.notStarted}>
+              Not started
+            </span>
+          ) : (
+            <RailAge updatedAt={session.updated_at} />
+          )}
+          {/* A session that never ran has no reply to read. */}
+          {!notStarted && node.unseen === true ? <UnreadMarker /> : null}
+        </span>
         <span className={CLASS.actions}>
           <SessionMenuRow session={session} actions={actions} />
         </span>

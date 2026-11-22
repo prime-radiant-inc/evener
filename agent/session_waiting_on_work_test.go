@@ -332,11 +332,11 @@ func TestSessionHasWakeableWorkJobFinalizationHandoff(t *testing.T) {
 	}
 }
 
-func TestWaitingOnWorkRefusalKeepsTheSessionAlive(t *testing.T) {
+func TestCommunicateQuietYieldRefusalKeepsTheSessionAlive(t *testing.T) {
 	t.Parallel()
 	s, adapter := newExecutionSession(t)
 	adapter.script(
-		respond(agenttest.ToolCallResponse(communicateCallArgs("comm-1", map[string]any{"message": "starting the rebase now", "end_turn": true, "end_reason": "waiting_on_work"}))),
+		respond(quietYieldResponse("comm-1", `{}`)),
 		respond(agenttest.ToolCallResponse(communicateCallArgs("comm-2", map[string]any{"message": "done", "end_turn": true}))),
 	)
 	if _, err := s.ProcessInput(context.Background(), "talk", nil); err != nil {
@@ -344,7 +344,7 @@ func TestWaitingOnWorkRefusalKeepsTheSessionAlive(t *testing.T) {
 	}
 	s.Close()
 	communicates := entriesOfKind(transcriptTurnsOf(t, s), schema.TurnCommunicate)
-	if len(communicates) != 1 || communicates[0].Communicate.EndReason != "done" {
+	if len(communicates) != 1 || communicates[0].Communicate.CallID != "comm-2" {
 		t.Fatalf("communicates = %+v; want exactly the done call from the correction round", communicates)
 	}
 }

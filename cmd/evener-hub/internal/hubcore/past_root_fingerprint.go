@@ -44,9 +44,10 @@ var notShownMetaFields = []string{
 	// carries it, no navigation row does.
 	"Manager",
 	"ProfileID", "CheapModel", "VisionModel", "Config", "Revision",
-	"TurnBudgetWarningEmitted", "LastInputTokens", "ContextWindow", "ContextWindowSource", "NameSource", "NameUpdatedAt",
+	"TurnBudgetWarningEmitted", "LastInputTokens", "LastInputMeasuredLen", "LastInputAnchor", "LastInputTarget",
+	"ContextWindow", "ContextWindowSource", "NameSource", "NameUpdatedAt",
 	"DivergenceTurn", "Goal", "PinnedNote", "Skills", "MemorySaveUnavailable", "HumanNote", "AgentNote",
-	"SessionURLs", "EnvContext", "ReasoningEffortEscalated", "CumulativeUsage",
+	"SessionURLs", "EnvContext", "CumulativeUsage",
 	"WorkMillis", "JobTreeRevision", "ScratchTempDir", "ScratchTreeRootID",
 	"ScratchDirSessionID", "LaunchEnvBaseline",
 	"LaunchSystemPrompt",

@@ -20,7 +20,7 @@ type ConfigSnapshot struct {
 	MaxSubagentDepth           int                        `json:"max_subagent_depth"`                      // resolved nesting depth, zero when DisableSubagents is set
 	DisableSubagents           bool                       `json:"disable_subagents,omitempty"`             // the launch selected max_subagent_depth=0
 	MaxConcurrentDelegateTurns int                        `json:"max_concurrent_delegate_turns,omitempty"` // tree-wide cap on running delegate turns
-	MaxRetainedTerminal        int                        `json:"max_retained_terminal,omitempty"`         // per-parent cap on retained terminal child records
+	MaxRetainedTerminal        int                        `json:"max_retained_terminal,omitempty"`         // tree-wide cap on resident idle terminal child-runtime subtrees
 	ToolOutputLimits           map[string]ToolOutputLimit `json:"tool_output_limits,omitempty"`            // per-tool output truncation overrides
 	UserInstructionOverride    string                     `json:"user_instruction_override,omitempty"`     // text appended at the end of the system prompt
 	AgentName                  string                     `json:"agent_name,omitempty"`                    // persona selected for prompt composition

@@ -669,7 +669,7 @@ func TestEditFileBatch_CRLFMixedEndingsAndBOM(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ReadFile: %v", err)
 		}
-		// Extract line 1 payload after the "   1\t" prefix just as a model does.
+		// Extract line 1 payload after the "1\t" prefix just as a model does.
 		firstLine, _, _ := strings.Cut(readOut, "\n")
 		_, line1Body, ok := strings.Cut(firstLine, "\t")
 		if !ok || !strings.HasPrefix(line1Body, "\xEF\xBB\xBF") {

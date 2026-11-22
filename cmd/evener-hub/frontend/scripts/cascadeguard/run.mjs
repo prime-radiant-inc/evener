@@ -1718,12 +1718,7 @@ async function reloadAndMobileJourney() {
   await readInsideTallEntry(sourcePortExpr, "phone source");
   await widthOnlyReflow(sourcePortExpr, 430, 844, "phone-reader-width-reflow");
   await widthOnlyReflow(sourcePortExpr, 390, 844, "phone-reader-width-return");
-  await driver.click(`${driver.composerSelector(fixture.rootRef)} [data-testid="session-chrome-inline"] button[aria-haspopup="menu"]`);
-  const overview = await wait(`(() => {
-    const button = [...document.querySelectorAll('[role="menuitem"]')].find(node => node.textContent.trim().startsWith('Overview'));
-    if (!button) return null; const r = button.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-  })()`, "existing phone Overview menu action");
-  await driver.clickAt(overview.x, overview.y);
+  await driver.click('button[aria-label="Overview"]');
   await wait(sidebarEntranceSettled, "phone Overview entrance settled before physical row tap");
   const mobileRow = await reveal(fixture.edges[0], '[data-testid="activity-sidebar"]');
   await driver.click(mobileRow);

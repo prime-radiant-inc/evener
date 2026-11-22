@@ -79,7 +79,9 @@ func TestW3Sub_RegisterFileTools_ImageResult(t *testing.T) {
 // side-channel (session_tools_file.go document arm).
 func TestW3Sub_RegisterFileTools_DocumentResult(t *testing.T) {
 	t.Parallel()
-	payload := "[document: doc.pdf]\n" + base64.StdEncoding.EncodeToString([]byte("fakepdfbytes"))
+	// read_file validates document payloads as PDFs before dispatch, so the
+	// fixture must be a real one-page PDF rather than arbitrary bytes.
+	payload := "[document: doc.pdf]\n" + base64.StdEncoding.EncodeToString(validPDFFixture(t))
 	res := w3sub_readFileResult(t, &w3sub_readFileEnv{output: payload}, "doc.pdf")
 	if res.IsError {
 		t.Fatalf("unexpected error: %q", res.Output)
