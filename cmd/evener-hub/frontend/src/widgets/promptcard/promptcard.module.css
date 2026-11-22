@@ -128,6 +128,16 @@
   flex: 1 1 10ch;
 }
 
+/* The field owns its text inset, so a narrow composer card can yield its
+ * inline padding and column gap in every state. Three tap targets and half
+ * the card remain available to the writing field without moving on expansion. */
+@container (max-width: 340px) {
+  :global([data-composer]) .card {
+    padding-inline: 0;
+    column-gap: 0;
+  }
+}
+
 /* The row never wraps. It once did, below 399px, for a three-verb cluster
  * (Stop, Send, Steer) that could not sit beside the status row at phone
  * width (issue #1339) - but the wrapped second line read badly, so Jesse's

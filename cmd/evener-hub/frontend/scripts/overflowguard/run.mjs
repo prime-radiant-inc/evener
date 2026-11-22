@@ -557,11 +557,8 @@ function assertComposerFooter(measurement) {
   }
   if (measurement.cards !== 1) failures.push(`visible composer cards=${measurement.cards}, expected 1`);
   // The phone pane keeps one bottom surface: no edge footer at all, so the
-  // composer's own dock is the pane's bottom edge. When its activity line
-  // renders, that line IS the bottom surface - the chips fill the safe-area
-  // band themselves, so the dock reserves nothing below them (Jesse,
-  // 2026-11-11: the band was eating the transcript). Without the line, the
-  // dock keeps owning the band.
+  // composer's own dock is the pane's bottom edge. Its activity line sits
+  // above the card, leaving the card's dock responsible for the band.
   if (mobile) {
     if (measurement.edgeFooterCount !== 0) failures.push("phone pane still renders an edge footer");
     if (measurement.statusbar !== null) failures.push("phone pane still renders a status bar");
@@ -574,20 +571,21 @@ function assertComposerFooter(measurement) {
     ) {
       failures.push(`composer dock bottom=${measurement.footerBottom}px, pane bottom=${measurement.paneBottom}px`);
     }
-    const lineCarriesBand = measurement.focus === "editor" && measurement.activityLine !== null;
-    const expectedPadding = lineCarriesBand ? 0 : requiredClearance;
+    const expectedPadding = requiredClearance;
     if (measurement.paddingBottom === null || !nearlyEqual(measurement.paddingBottom, expectedPadding)) {
       failures.push(
-        `composer dock padding=${measurement.paddingBottom}px, expected ${expectedPadding}px (${lineCarriesBand ? "activity line owns the band" : `safe-area clearance=${requiredClearance}px`})`,
+        `composer dock padding=${measurement.paddingBottom}px, expected safe-area clearance=${requiredClearance}px`,
       );
     }
-    // The resting row sheds attach but never its actions control - Send, or
-    // Stop while the harness session runs a turn. The activity counts live on
-    // their own line below the card, outside the form, in every focus state.
+    // Empty focus keeps the same compact row as rest: Attach, Send/Stop and
+    // the session menu stay available without restoring the status chrome.
     if (!measurement.submitVisible && !measurement.stopVisible)
       failures.push("phone resting row lost its Send/Stop actions control");
+    if (!measurement.attachVisible) failures.push("phone folded row lost Attach");
+    if (measurement.editorMinLines !== "1lh") failures.push("empty focus expanded the one-line editor");
+    if (measurement.modelTrigger?.visible) failures.push("empty focus restored the model picker before content");
     if (measurement.rowChipCount !== 0) failures.push("activity chips must not ride in the composer control row");
-    if (measurement.focus !== "editor" && measurement.card !== null && measurement.field !== null) {
+    if (measurement.card !== null && measurement.field !== null) {
       const fieldShare = measurement.field.width / measurement.card.width;
       if (fieldShare < 0.5) {
         failures.push(
@@ -596,48 +594,7 @@ function assertComposerFooter(measurement) {
       }
       failures.push(...assertCompactFoldedRow(measurement));
     }
-    // The folded resting card is the phone's smallest surface: it shows no
-    // activity line, and the counts come back with the expanded card.
-    if (measurement.focus === "editor") {
-      if (measurement.activityChipCount === 0) failures.push("engaged composer lost its activity chips");
-      if (!measurement.activityLineOutsideForm) failures.push("activity chips are inside the composer form");
-      if (measurement.activityLine !== null && measurement.card !== null) {
-        const lineBottom = measurement.activityLine.bottom;
-        if (measurement.paneBottom !== null && lineBottom < measurement.paneBottom - 1) {
-          failures.push(
-            `activity line leaves ${Math.round(measurement.paneBottom - lineBottom)}px below itself at the pane's bottom edge`,
-          );
-        }
-      }
-    } else if (measurement.activityLine !== null) {
-      failures.push("resting composer still renders its activity line");
-    }
-    if (
-      measurement.activityLine !== null &&
-      measurement.lastBottom !== null &&
-      measurement.activityLine.top < measurement.lastBottom - 1
-    ) {
-      failures.push("activity line is not below the card");
-    }
-    if (measurement.focus === "editor") {
-      if (!measurement.attachVisible) failures.push("focused editor did not bring the full row back (attach hidden)");
-      // The model picker must stay a real control in the engaged row at
-      // every width: the status chrome's basis (its compact rung) keeps the
-      // row honest beside the chips, so the trigger never renders clipped
-      // or collapsed to nothing.
-      const model = measurement.modelTrigger;
-      if (model === null || !model.visible || model.clientWidth <= 1) {
-        failures.push(`engaged row lost its model picker (${JSON.stringify(model)})`);
-      } else if (model.clientWidth + 1 < model.scrollWidth) {
-        failures.push(
-          `model picker clipped to ${model.clientWidth}px of ${model.scrollWidth}px beside the row's other content`,
-        );
-      }
-    } else if (measurement.attachVisible) {
-      failures.push(
-        `phone row must shed attach while resting (${measurement.focus} focus, attach=${measurement.attachVisible})`,
-      );
-    }
+    if (measurement.activityLine !== null) failures.push("empty composer renders its activity line before content");
     return failures;
   }
   // overflowharness-entry.tsx supplies this fixture path, independent of the checkout.
@@ -660,7 +617,7 @@ function assertComposerFooter(measurement) {
 
 function assertCompactFoldedRow(measurement) {
   const failures = [];
-  if (!measurement.foldedCompact) failures.push("the resting phone did not compact its controls");
+  if (!measurement.foldedCompact) failures.push("the empty phone did not compact its controls");
   if (measurement.field === null || measurement.controls === null) {
     failures.push("the folded field or control row is missing");
   } else {
@@ -676,25 +633,15 @@ function assertCompactFoldedRow(measurement) {
 }
 
 function assertDuoLandscapeComposer(measurement) {
-  const resting = measurement.focus !== "editor";
-  const failures = resting ? assertCompactFoldedRow(measurement) : [];
-  if (!measurement.primaryTouch) failures.push("the wide touch landscape fixture did not realize its primary touch pointer");
+  const failures = assertCompactFoldedRow(measurement);
+  if (!measurement.primaryTouch)
+    failures.push("the wide touch landscape fixture did not realize its primary touch pointer");
   if (measurement.card === null || measurement.card.width >= 620) {
     failures.push("the fixture no longer exercises a folded card below the desktop one-line threshold");
   }
-  if (!resting) {
-    if (measurement.foldedCompact) failures.push("editor focus left the landscape phone controls compact");
-    if (!measurement.attachVisible) failures.push("editor focus did not restore Attach");
-    if (!measurement.modelTrigger?.visible) failures.push("editor focus did not restore the model picker");
-    if (measurement.editorMinLines !== "2lh") failures.push("editor focus did not restore the two-line field");
-    if (
-      measurement.field === null ||
-      measurement.controls === null ||
-      measurement.field.bottom > measurement.controls.top + GEOMETRY_TOLERANCE
-    ) {
-      failures.push("the engaged field and controls did not return to their stacked rows");
-    }
-  }
+  if (!measurement.attachVisible) failures.push("the empty landscape phone lost Attach");
+  if (measurement.modelTrigger?.visible) failures.push("empty landscape focus restored the model picker");
+  if (measurement.editorMinLines !== "1lh") failures.push("empty landscape focus expanded the one-line field");
   failures.push(...assertLandscapeEdgeFooter(measurement));
   return failures;
 }
@@ -869,6 +816,11 @@ function assertDuoCompactStates(result) {
   if (empty && (empty.cardGap !== "0px" || empty.cardPaddingBlock !== "0px 0px")) {
     failures.push(`empty card retains gap/padding ${empty.cardGap}/${empty.cardPaddingBlock}`);
   }
+  const emptyAttach = empty?.controls.find((control) => control.testId === "composer-attach");
+  const emptyPrimary = empty?.controls.find((control) => control.testId === "composer-stop");
+  if (emptyAttach && emptyPrimary && Math.abs(emptyAttach.bottom - emptyPrimary.bottom) > 1) {
+    failures.push(`empty Attach/Stop bottoms=${emptyAttach.bottom}/${emptyPrimary.bottom}, expected one aligned row`);
+  }
   if (focused && focused.footerPaddingBottom !== "0px") {
     failures.push(
       `focused footer clearance=${focused.footerPaddingBottom}, expected keyboard-adjusted safe-area clearance`,
@@ -879,11 +831,12 @@ function assertDuoCompactStates(result) {
       `empty/live footer=${empty.totalFooterHeight}px, exceeds the 258.94px budget (306.94px baseline minus 48px)`,
     );
   }
-  if (!focused?.editing || focused.editorMinLines !== "2lh") failures.push("focus did not engage the two-line editor");
-  // Ordinary spacing is PromptCard's own stacked inset: one --space-2 between
-  // field and controls, --space-3 above the field and --space-2 below the row.
-  if (focused && (focused.cardGap !== "8px" || focused.cardPaddingBlock !== "12px 8px")) {
-    failures.push(`focused card did not restore ordinary spacing: ${focused.cardGap}/${focused.cardPaddingBlock}`);
+  if (!focused?.editing || focused.editorMinLines !== "1lh") failures.push("focus did not retain the one-line editor");
+  if (focused && (focused.cardGap !== "0px" || focused.cardPaddingBlock !== "0px 0px")) {
+    failures.push(`focus expanded the empty card: ${focused.cardGap}/${focused.cardPaddingBlock}`);
+  }
+  if (focused && empty && Math.abs(focused.totalFooterHeight - empty.totalFooterHeight) > 1) {
+    failures.push(`focus changed footer height=${empty.totalFooterHeight}/${focused.totalFooterHeight}`);
   }
   if (draft?.editorMinLines !== "2lh" || draft.editing)
     failures.push("a blurred draft did not retain its two-line resting state");
@@ -900,11 +853,9 @@ function assertDuoCompactStates(result) {
   if (!approval?.approval || approval.approval.height <= 0) failures.push("the real approval card did not mount");
   if (!result.approvalResolved) failures.push("Allow did not resolve the real approval card");
   for (const state of result.states) {
-    // The activity counts live on their own line below the card. The folded
-    // resting card renders no line, so the empty state mounts none; every
-    // expanded state - engaged, drafting, attached, ask-pending, approval -
-    // mounts all four.
-    const expectedCount = state.state === "empty" ? 0 : 4;
+    // The activity counts live above the expanded card. Empty and focused
+    // states stay folded and mount none; content-bearing states mount all four.
+    const expectedCount = state.state === "empty" || state.state === "focused" ? 0 : 4;
     if (state.counters.length !== expectedCount)
       failures.push(`${state.state}: expected ${expectedCount} mounted activity counters`);
     for (const counter of state.counters) {
@@ -1956,19 +1907,18 @@ async function main() {
       return failed > 0 ? 1 : 0;
     }
 
+    const protocolResponse = await fetch(devtoolsHttpURL(cdpEndpoint, "/json/protocol"));
+    if (!protocolResponse.ok) throw new Error(`browser protocol HTTP ${protocolResponse.status}`);
+    const protocol = await protocolResponse.json();
+    const safeAreaSupported =
+      protocol.domains
+        .find((domain) => domain.domain === "Emulation")
+        ?.commands.some((command) => command.name === "setSafeAreaInsetsOverride") ?? false;
+    if (!safeAreaSupported)
+      console.log("composer ... LIMITATION - Chrome has no real safe-area override, nonzero safe-area cases skipped");
+
     if (!composerOnly) {
       if (!(await runDuoCompactGuard(cdpEndpoint, vitePort, guard.profileDir))) failed++;
-      const protocolResponse = await fetch(devtoolsHttpURL(cdpEndpoint, "/json/protocol"));
-      if (!protocolResponse.ok) throw new Error(`browser protocol HTTP ${protocolResponse.status}`);
-      const protocol = await protocolResponse.json();
-      const safeAreaSupported =
-        protocol.domains
-          .find((domain) => domain.domain === "Emulation")
-          ?.commands.some((command) => command.name === "setSafeAreaInsetsOverride") ?? false;
-      if (!safeAreaSupported)
-        console.log(
-          "composer footer ... LIMITATION - Chrome has no real safe-area override, nonzero safe-area cases skipped",
-        );
       const duoLandscapeMeasurements = await measureComposerFooter(
         cdpEndpoint,
         `http://127.0.0.1:${vitePort}/overflowharness.html?w=572&h=669`,
@@ -1985,10 +1935,7 @@ async function main() {
         },
       );
       for (const measurement of duoLandscapeMeasurements) {
-        const failures = [
-          ...assertComposerFooter(measurement),
-          ...assertDuoLandscapeComposer(measurement),
-        ];
+        const failures = [...assertComposerFooter(measurement), ...assertDuoLandscapeComposer(measurement)];
         const label = `951x669 Duo landscape composer safe-area=${measurement.safeArea} focus=${measurement.focus}`;
         if (failures.length > 0) {
           failed++;
@@ -2016,10 +1963,7 @@ async function main() {
         },
       );
       for (const measurement of finePointerLandscapeMeasurements) {
-        const failures = [
-          ...assertComposerFooter(measurement),
-          ...assertFinePointerLandscapeComposer(measurement),
-        ];
+        const failures = [...assertComposerFooter(measurement), ...assertFinePointerLandscapeComposer(measurement)];
         const label = `951x669 fine-pointer landscape composer safe-area=${measurement.safeArea}`;
         if (failures.length > 0) {
           failed++;
@@ -2125,6 +2069,7 @@ async function main() {
           ...sweep.map((viewportWidth) => ({ viewportWidth })),
           ...[399, 400, 420, 480, 600, 699].map((contentWidth) => ({ viewportWidth: 800, contentWidth })),
           { viewportWidth: 1400, contentWidth: 399 },
+          ...(safeAreaSupported ? [{ viewportWidth: 390, safeArea: 34 }] : []),
         ];
         for (const scenario of cases) {
           const label = `composer slots ${theme} steer=${steer} ${JSON.stringify(scenario)}`;

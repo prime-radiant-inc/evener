@@ -155,7 +155,7 @@ export function assertComposerPlacement(measurement, { contentWidth, primary, in
   assert.equal(measurement.menuVerbs.steer, menuSteer, "independent menu Steer placement");
 }
 
-export async function measureComposerPlacement(endpoint, url, { viewportWidth, contentWidth, steer }) {
+export async function measureComposerPlacement(endpoint, url, { viewportWidth, contentWidth, steer, safeArea = 0 }) {
   const page = await connectOnlyPage(endpoint);
   const { send } = page;
   try {
@@ -165,6 +165,7 @@ export async function measureComposerPlacement(endpoint, url, { viewportWidth, c
       mobile: viewportWidth < 900,
       touch: viewportWidth < 900,
     });
+    if (safeArea > 0) await send("Emulation.setSafeAreaInsetsOverride", { insets: { bottom: safeArea } });
     await navigateTo(page, url, BOOT);
     await assertGuardOrigin(send, new URL(url).host);
     await evaluate(send, "window.settled");
@@ -235,12 +236,11 @@ export async function measureComposerPlacement(endpoint, url, { viewportWidth, c
     };
     stablePoint("Attach", empty.controlGeometry["composer-attach"], drafted.controlGeometry["composer-attach"]);
     stablePoint("session menu", empty.menuGeometry, drafted.menuGeometry);
-    stablePoint(
-      "primary action",
-      empty.controlGeometry["composer-stop"],
-      drafted.controlGeometry["composer-submit"],
-      ["right", "top", "bottom"],
-    );
+    stablePoint("primary action", empty.controlGeometry["composer-stop"], drafted.controlGeometry["composer-submit"], [
+      "right",
+      "top",
+      "bottom",
+    ]);
     assert.ok(Number.isFinite(empty.fieldBottom), "message field's bottom is measured");
     if (empty.fieldBottom > empty.menuGeometry.top + 1) {
       // Only an inline field has to sit left of the menu. The fine-pointer
@@ -256,6 +256,7 @@ export async function measureComposerPlacement(endpoint, url, { viewportWidth, c
       states: results,
     };
   } finally {
+    if (safeArea > 0) await send("Emulation.setSafeAreaInsetsOverride", { insets: {} });
     await clearViewportOverride(send);
     page.close();
   }
@@ -577,7 +578,10 @@ export async function verifyComposerOutsidePressClick(endpoint, url, width) {
     await until(send, toggledExpr);
     // The fold runs in a zero-delay timer after the click, so data-folded
     // lands in a later React commit than the disclosure's open.
-    await until(send, `document.querySelector('[data-testid="composer-input-card"]').getAttribute('data-folded') === 'true'`);
+    await until(
+      send,
+      `document.querySelector('[data-testid="composer-input-card"]').getAttribute('data-folded') === 'true'`,
+    );
     const settled = await evaluate(
       send,
       `({

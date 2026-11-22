@@ -51,6 +51,12 @@
   inset-block-end: var(--space-2);
 }
 
+@media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4) {
+  .composer:has([data-folded="true"] [role="textbox"][data-empty="true"]) .attachSlot {
+    inset-block-end: 0;
+  }
+}
+
 .editorSlot {
   display: flex;
   flex-direction: column;

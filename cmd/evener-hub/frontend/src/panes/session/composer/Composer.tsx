@@ -1324,7 +1324,6 @@ function ComposerWithSubmission({
     <div
       className={CLASS.composer}
       ref={attachComposerRoot}
-      data-composer-activity-line={showActivityLine ? "true" : undefined}
       onFocusCapture={handleFollowUpFocus}
       onBlurCapture={handleFollowUpBlur}
       onPointerDown={holdComposerPress}

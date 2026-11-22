@@ -709,9 +709,6 @@ test("a phone composer restores status chrome and its activity line with content
   const form = screen.getByTestId("composer-form");
   expect(form.querySelector("[data-activity-tab]")).toBeNull();
   expect(screen.queryByTestId("composer-activity-line")).toBeNull();
-  // The pane footer keys its home-indicator padding off this marker, so a
-  // folded card must not publish it.
-  expect(document.querySelector('[data-composer-activity-line="true"]')).toBeNull();
   expect(screen.getByTestId("session-chrome-menu")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Session actions" })).toBeTruthy();
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
@@ -719,7 +716,6 @@ test("a phone composer restores status chrome and its activity line with content
   act(() => replaceEditorText(screen.getByRole("textbox", { name: "Message" }), "draft"));
   expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
   expect(screen.getByTestId("composer-activity-line").querySelector("[data-activity-tab]")).toBeTruthy();
-  expect(document.querySelector('[data-composer-activity-line="true"]')).toBeTruthy();
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
   expect(form.querySelector("[data-activity-tab]")).toBeNull();
   expect(screen.queryByTestId("session-chrome-menu")).toBeNull();
@@ -729,7 +725,7 @@ test("a phone composer restores status chrome and its activity line with content
 // A cascade column's chrome renders the conversation's activity controls
 // below the footer (CascadeColumn's ScopeActivityControls), so its seat
 // declares that ownership and the phone composer renders no second activity
-// line below its card.
+// line above its card.
 test("a composer whose seat owns the activity counts never mounts chips", async ({ onTestFinished }) => {
   onTestFinished(installMobileViewport());
   const fake = connectReadyFakeClient();

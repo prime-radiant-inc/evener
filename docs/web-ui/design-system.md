@@ -156,6 +156,9 @@ losing the conversation that made the evidence relevant.
   transcript resting at its end stays there through the fold. The folded empty row
   hides inline Steer; a focused clear preserves the existing control geometry. Where the 559px pane-width compression rung
   hides Send and Stop's words, their glyphs and accessible names remain.
+  At container widths up to 340px, the card yields its inline padding and column
+  gap in every state; the field's own text inset remains, leaving half the card
+  for writing beside three tap targets without moving them when content arrives.
   A phone's resting composer is one line too, keeping Attach, the session menu and Send
   or Stop while shedding the model chrome and activity line. Content restores the full
   row, including the model picker and activity counts. This phone treatment also holds

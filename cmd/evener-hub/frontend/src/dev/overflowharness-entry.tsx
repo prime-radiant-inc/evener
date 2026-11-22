@@ -2089,8 +2089,8 @@ async function measureMenuVerbs(): Promise<{ open: boolean; stop: boolean; steer
 
 function duoBox(element: Element | null | undefined) {
   if (!element) return null;
-  const { width, height } = geometryOf(element);
-  return { width, height };
+  const { width, height, bottom } = geometryOf(element);
+  return { width, height, bottom };
 }
 
 function measureDuoDraftState() {
@@ -2163,6 +2163,7 @@ async function measureDuoCompactStates(phase: "focus" | "rest") {
           control instanceof HTMLInputElement &&
           (control.type === "text" || control.getAttribute("aria-label") === "Something else…")
         ),
+        testId: control.getAttribute("data-testid"),
         name: control.getAttribute("aria-label") ?? control.getAttribute("data-testid") ?? control.getAttribute("type"),
       })),
       horizontalOverflow: pane.scrollWidth - pane.clientWidth,
