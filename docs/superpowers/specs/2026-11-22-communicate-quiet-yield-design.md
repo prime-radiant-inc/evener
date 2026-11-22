@@ -21,7 +21,7 @@ This design reduces `communicate` to one uniform schema across every agent role:
 - Make `output` optional on ordinary replies, progress updates, and quiet yields; enforce `result_schema` and `WithAllowedDecisions` strictly on final replies (`end_turn: true` with non-empty `message` or present `output`), never on `end_turn: false` updates or `communicate({})`.
 - Preserve the dead-wait guard (`2026-11-01` shepherd bug) without `waiting_on_work`: reject `communicate({})` on an unanswered turn when nothing can wake the session, while allowing `communicate({})` unconditionally on admitted notification and attention-only wakes.
 - Key Hub completion watches (`agent/job_watch_hub.go:587`) off an **accepted final reply** rather than `EndReason == "done"` or raw `hasWakeableWork()`, so pausing with `communicate({})` while 3 delegates run never completes a watch, while delivering a final reply with an unrelated background dev server running still completes cleanly.
-- Add a Claude Code `--brief`-style root bare-text fallback: keep teaching `communicate` in prompts (and replace `system.md.tmpl:132`'s bare-text `"Noted:"` rule with `communicate({})`), while accepting clean natural-stop prose (`FinishReasonStop`, zero tool calls, non-blank text) on untyped root `EntryUserInput` turns through the same accepted-reply path.
+- Add a Claude Code `--brief`-style bare-text fallback: keep teaching `communicate` in prompts (and replace `system.md.tmpl:132`'s bare-text `"Noted:"` rule with `communicate({})`), while accepting clean natural-stop prose (`FinishReasonStop`, zero tool calls, non-blank text) on untyped `EntryUserInput` turns for both root sessions and untyped idle subagents with no live owned work (`treeHasOutstandingWork() == false`) through the same accepted-reply path.
 - Update evergreen product documentation (`docs/product/lifecycles.md`, `docs/product/attention-navigation.md`, `docs/product/session-activity.md`, `docs/product/subsystems.md`) in the same change.
 
 ## Non-goals and anti-goals
@@ -30,7 +30,7 @@ This design reduces `communicate` to one uniform schema across every agent role:
 - **No new tool in the registry.** Quiet yields use `communicate({})`, keeping the tool surface at one communication/turn-end tool.
 - **No heuristic prose parsing.** Never inspect `message` text for phrases like `"Waiting on CI"` to guess whether a reply is a wait.
 - **No new backward-compatibility shims on the live tool schema.** Do not advertise `end_reason` on `communicate`. Retain read-only decoding of historical `end_reason` / `communicate_end_reason` records already stored in transcripts (`job_watch_hub.go` replay of old `"waiting_on_work"` / `"needs_response"` entries must continue not to count them as completed).
-- **No bare-text fallback on subagents, structured-schema roots, or autonomous notification wakes.** Subagents still owe an explicit `communicate` final report, `--output-schema` / `AllowedDecisions` sessions still owe validated `output`, and notification/watch wakes teach `communicate({})`.
+- **No bare-text fallback on subagents with live owned work, structured-schema sessions, or autonomous notification/attention wakes.** Subagents holding live owned jobs, active child delegates, pending notifications, or pending watch sends (`treeHasOutstandingWork()`), `--output-schema` / `result_schema` / `AllowedDecisions` sessions, and `EntryNotification` / `EntryDelegateAttention` / `EntryContinuation` / `EntryRuntime` turns still require explicit `communicate`.
 
 ## Constraints
 
@@ -55,7 +55,7 @@ This design reduces `communicate` to one uniform schema across every agent role:
 
 1. **Single tool (`Variant A`):** Keep one `communicate` tool across all sessions (`message?`, `end_turn?: boolean` defaulting to `true`, `output?`), with `communicate({})` (no `message`, `end_turn` omitted/`true`, no `output`) ending the turn quietly without sending anything.
 2. **Delete `end_reason`, `waiting_on_work`, and `needs_response`:** Remove model-declared wait/await states from `communicate`; `ask_user` owns conversational `SessionAwaiting`.
-3. **Claude Code `--brief`-style root bare-text fallback:** Keep teaching `communicate` in prompts (and teach `communicate({})` instead of bare-text `"Noted:"` on wakes), while accepting clean natural-stop prose on untyped root user turns without scolding.
+3. **Claude Code `--brief`-style bare-text fallback:** Keep teaching `communicate` in prompts (and teach `communicate({})` instead of bare-text `"Noted:"` on wakes), while accepting clean natural-stop prose on untyped `EntryUserInput` turns for root sessions and untyped idle subagents with no live owned work (extended 2026-11-22 after subagents finished in prose and spun in `no-tool-calls` retry loops).
 4. **Split `#7460`:** Keep live inbound rollover filtering/truncation separate in issue `#7460`.
 
 ## Detailed Design
@@ -139,7 +139,7 @@ flowchart TD
     CommKind -->|communicate empty, quiet yield| QuietGate{Unanswered obligation and no wake source?}
     QuietGate -->|yes| RefuseQuiet[Tool error: nothing can wake this turn]
     QuietGate -->|no| QuietIdle[End turn -> SessionIdle, skip Stop hooks, preserve latestReport]
-    CommKind -->|0 tools, clean prose on untyped root EntryUserInput| FallbackReply[Run Stop hooks on TurnAssistant text -> Accepted Reply -> SessionIdle]
+    CommKind -->|0 tools, clean prose on untyped idle EntryUserInput| FallbackReply[Run Stop hooks on TurnAssistant text -> Accepted Reply -> SessionIdle]
     CommKind -->|0 tools, other| RetryOrEmpty[Existing empty / subagent / schema communicate retry]
 ```
 
@@ -177,16 +177,16 @@ In `(*subagent).run` (`agent/subagents.go:2613-2680`):
 - Simplify `armAwaitingAtSettle` (`agent/session_state.go:796-905`): `SessionAwaiting` is entered at settle **iff** `len(s.askPending) > 0`. Delete `needsResponseQuietPeriodDefault`, the 5-second `AfterFunc` timer, `restMu`, `restOwedGeneration`, `resumeQuietRest`, `EventStatusSettled` emission for `needs_response`, and `endedOnNeedsResponse` / `communicateEndReasonOf` restore scanning (`agent/session_tools_ask.go:800-860`). Historical transcripts that ended on `needs_response` without an unresolved `ask_user` restore to `SessionIdle` (matching how Web Rail and Phone Board already display them).
 - Clean up dead `needsResponse` / `needsResponseRest` predicates in `hubapi/attention.go`, `appwire-client/typescript/railSessionState.ts`, and `cmd/evener-hub/frontend/src/notifications/attention.ts` (keeping any wire struct JSON fields optional/zero-valued if required for wire compatibility across older daemons).
 
-### 4. Root Bare-Text Fallback (`Claude --brief` Style)
+### 4. Bare-Text Fallback (`Claude --brief` Style)
 
 - **Scope:** Applies **only** when all four hold:
-  1. Root session (`!s.reportsToParent()`),
+  1. Root session (`!s.reportsToParent()`) or untyped idle subagent (`s.reportsToParent()` with `!outstanding && workErr == nil` from `s.treeHasOutstandingWork()`),
   2. `kind == EntryUserInput` — including in-flight steering-carrier `EntryUserInput` turns — and deliberately **never** `EntryNotification`, `EntryContinuation`, or `EntryDelegateAttention`, so background wakes and goal continuations never leak `"Noted:"` prose as a visible reply,
   3. Session has no custom `communicate` schema or `AllowedDecisions` (`usesDefaultCommunicateOutputEnvelope`),
   4. Model finished cleanly (`resp.Finish.Reason == llm.FinishReasonStop`, `len(calls) == 0`, `!noContent`, non-blank `lastText`).
 - **Mechanics (`agent/session_lifecycle.go` & `agent/session_tool_round.go`):**
   - Instead of entering `handleNoToolCalls` scolding, accept `lastText` through a shared boundary helper:
-    1. Record the accepted reply on `s.comm` (`s.comm = communicateResult{called: true, text: lastText, reply: lastText}`) **without** appending a duplicate `TurnCommunicate` entry (since `TurnAssistant` is already persisted in the transcript and rendered as `agentMessage` by `apptranscript`, Hub, mobile-native, and CLI `EventAssistantTextEnd`).
+    1. Transition `s.comm` through `{phase: commBoundaryStopPending, updated: s.comm.updated, text: text, reply: text, roundVisible: true}` into `finishReplyBoundary` (which calls `settleCommunicateBoundary` to populate `s.latestReport` and `recordDelegateTerminalSeen(ctx)` for subagent completion without spurious missing-report nudges) **without** appending a duplicate `TurnCommunicate` entry (since `TurnAssistant` is already persisted in the transcript and rendered as `agentMessage` by `apptranscript`, Hub, mobile-native, and CLI `EventAssistantTextEnd`).
     2. Run `deliverIfCommunicated` (`HookStop` with `LastAssistantMessage = lastText`):
        - Explicit `communicate` preserves `#570` atomic first-winner capture across `stopResult.Blocked` (matching the already-persisted `communicate_accepted: true` tool state and `TestDelegateResourceRuntime_GenericStopUsesCanonicalFinish`); on root bare-text fallback (where no `communicate` tool result was written), `stopResult.Blocked` clears the unpersisted candidate so the continued round produces the accepted reply.
        - If `stopResult.Stopped` is `true`, `replaceAcceptedReply(text)` replaces the reply on both paths (`TurnCommunicate` replacement as today).

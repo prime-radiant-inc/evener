@@ -19,7 +19,7 @@ import (
 const wantFailureNudge = "You just ran the same tool twice with the same arguments and got the same failure. Consider an alternate approach"
 
 func wantRepetitionNudge(count int) string {
-	return fmt.Sprintf("You have now made this same call and received the identical result %d times in a row. Repeating it will not change the answer — use the result you already have, or change your approach. If you are repeating it to wait for something, end your turn with your result tool: the completion wakes you, and to wake on a condition you set a job_watch with output_match.", count)
+	return fmt.Sprintf("You have now made this same call and received the identical result %d times in a row. Repeating it will not change the answer — use the result you already have, or change your approach. If you are repeating it to wait for something, end your turn with communicate: the completion wakes you, and to wake on a condition you set a job_watch with output_match.", count)
 }
 
 // repetitionNudgeMarker is present in the repetition nudge at any count, for
@@ -546,5 +546,28 @@ func TestBreakerDispatch_QuietYieldsNeverDrawRepetitionNudge(t *testing.T) {
 	thirdFail := r.ExecuteCall(ctx, env, call)
 	if !thirdFail.Rejected || !strings.HasPrefix(thirdFail.Output, wantFailurePark("communicate")) {
 		t.Fatalf("third dead-wait failure was not parked: %+v", thirdFail)
+	}
+}
+
+func TestBreakerDispatch_RepetitionNudgeUsesConfiguredResultToolNameAndSurvivesClone(t *testing.T) {
+	const body = "identical body"
+	r := NewRegistry()
+	r.SetResultToolName("report_done")
+	registerBreakerFake(t, r, "probe", func(int) (any, error) { return body, nil })
+	env := breakerEnv(t)
+	ctx := context.Background()
+	call := breakerCall("p1", "probe", `{}`)
+
+	r.ExecuteCall(ctx, env, call)
+	second := r.ExecuteCall(ctx, env, call)
+	if !strings.Contains(second.Output, "end your turn with report_done:") || strings.Contains(second.Output, "your result tool") {
+		t.Fatalf("configured registry nudge = %q, want report_done", second.Output)
+	}
+
+	clone := r.Clone()
+	clone.ExecuteCall(ctx, env, call)
+	cloneSecond := clone.ExecuteCall(ctx, env, call)
+	if !strings.Contains(cloneSecond.Output, "end your turn with report_done:") {
+		t.Fatalf("cloned registry nudge = %q, want preserved report_done", cloneSecond.Output)
 	}
 }
