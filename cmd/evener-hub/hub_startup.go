@@ -625,8 +625,13 @@ func (r *hubRuntime) buildWeb(appwireTrace *appserver.WebSocketTrace) (*WebServe
 	cfg := r.cfg
 	sshManager := r.sshManager
 	r.scratchReconcile = newScratchReconciler(r.past, r.archive, r.roster)
+	// A hostname failure is non-fatal: the local source falls back to "this
+	// host" in the picker. Read it directly so the advertised login origin
+	// keeps its single hubHostname lookup.
+	hostName, _ := os.Hostname()
 	web := newWebServer(hubcore.WebConfig{
 		HubAddr:                   r.boundAddr,
+		LocalHostName:             hostName,
 		AuthToken:                 r.authToken,
 		PublicURL:                 cfg.PublicURL,
 		HubStateRoot:              cfg.HubStateRoot,

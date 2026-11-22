@@ -4,9 +4,10 @@ import type { HostForwardedResult, HostRequestParams, ThreadStartParams } from "
 import { WireError } from "@evener/appwire-client";
 import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { expect, test, vi } from "vitest";
+import { beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../stores/connection";
 import { navigationStore } from "../../stores/navigation/store";
+import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import { getToasts } from "../../widgets/toast/store";
 import { CONNECT_ATTACH_TIMEOUT_MS } from "./Spawn";
 import { selectSpawnDirectory, setDraftField, spawnDraftsStore } from "./spawnDrafts";
@@ -80,11 +81,21 @@ function attachCalls(fake: FakeClient): { host: string }[] {
     .filter((call) => call.method === "evener/host/attach")
     .map((call) => call.params as { host: string });
 }
+
+/** Opens the picker's disconnected-hosts disclosure, where each offline host's Connect lives. */
+function openDisconnectedHosts(): void {
+  const disclosure = screen.getByTestId("spawn-host-disconnected") as HTMLDetailsElement;
+  if (disclosure.open) return;
+  const summary = disclosure.querySelector("summary");
+  if (summary === null) throw new Error("the disconnected-hosts disclosure has no summary");
+  fireEvent.click(summary);
+}
 installSpawnTestHooks();
+beforeEach(() => resetDisclosureStoreForTests());
 
 // --- host picker (Component 06b) -------------------------------------------
 
-test("host picker lists sources, preselects local, and disables offline hosts", async () => {
+test("host picker lists sources, preselects local, and tucks disconnected hosts behind a disclosure", async () => {
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -96,12 +107,43 @@ test("host picker lists sources, preselects local, and disables offline hosts", 
   const picker = screen.getByLabelText("Host") as HTMLSelectElement;
   expect(picker.value).toBe("local");
   const options = within(picker).getAllByRole("option") as HTMLOptionElement[];
-  expect(options.map((option) => option.value)).toEqual(["local", "buildbox", "offline-host"]);
+  const connectHost = within(picker).getByRole("option", { name: "Connect host" }) as HTMLOptionElement;
+  expect(options[options.length - 1]).toBe(connectHost);
+  expect(options.filter((option) => option !== connectHost).map((option) => option.value)).toEqual([
+    "local",
+    "buildbox",
+    "offline-host",
+  ]);
   expect((options.find((option) => option.value === "buildbox") as HTMLOptionElement).disabled).toBe(false);
   const offline = options.find((option) => option.value === "offline-host") as HTMLOptionElement;
   expect(offline.disabled).toBe(true);
   // The reason is in the option's own accessible text, not only a tooltip.
   expect(offline.textContent).toContain("offline");
+
+  const disclosure = screen.getByTestId("spawn-host-disconnected") as HTMLDetailsElement;
+  expect(disclosure.open).toBe(false);
+  openDisconnectedHosts();
+  expect(screen.getByRole("button", { name: "Connect offline-host" })).toBeTruthy();
+});
+
+// The bottom of the picker is the way to a host the hub does not list yet: it
+// hands the reader to the hosts settings, where Add host lives, without
+// changing the draft's launch target.
+test("Connect host at the bottom of the picker opens the hosts settings", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  renderSpawn(readyClient());
+  await settled();
+
+  const picker = screen.getByLabelText("Host") as HTMLSelectElement;
+  const connectHost = within(picker).getByRole("option", { name: "Connect host" }) as HTMLOptionElement;
+  fireEvent.change(picker, { target: { value: connectHost.value } });
+  await settled();
+
+  expect(window.location.pathname).toBe("/settings/hosts");
+  expect(picker.value).toBe("local");
 });
 
 // The Host row sits above the working directory: the folder list, recents,
@@ -125,8 +167,8 @@ test("the host row renders above the working directory", async () => {
 // manifest reports the host online (its channel is attached), so the picker must
 // not spend a redundant evener/host/attach on it. Only a host the manifest
 // reports offline needs the dial, and that row's option is disabled, so the
-// Connect affordance below is the path that reaches it. Before the fix every
-// picker selection dialed, online or not.
+// Connect affordance in the disconnected-hosts disclosure is the path that
+// reaches it. Before the fix every picker selection dialed, online or not.
 test("selecting an already-online remote host issues no attach call", async () => {
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
@@ -170,6 +212,7 @@ test("a rapid double Connect dials the host once", async () => {
   renderSpawn(fake);
   await settled();
 
+  openDisconnectedHosts();
   const connect = screen.getByRole("button", { name: "Connect offline-host" }) as HTMLButtonElement;
   act(() => {
     connect.click();
@@ -183,9 +226,10 @@ test("a rapid double Connect dials the host once", async () => {
 
 // Changing the host select never dials: an online row is already attached (a
 // dial would only be redundant), and an offline row's option is disabled, so a
-// select event cannot name it. The Connect button below is the single attach
-// path. Before the fix the onChange branch dialed any selected offline row, a
-// latent double-attach if the disabled rendering were ever relaxed.
+// select event cannot name it. The Connect button in the disconnected-hosts
+// disclosure is the single attach path. Before the fix the onChange branch
+// dialed any selected offline row, a latent double-attach if the disabled
+// rendering were ever relaxed.
 test("changing the host select issues no attach call", async () => {
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
@@ -209,7 +253,8 @@ test("changing the host select issues no attach call", async () => {
   await settled();
   expect(attachCalls(fake)).toEqual([]);
 
-  // The Connect button still attaches the offline host.
+  // The Connect button in the disconnected-hosts disclosure still attaches it.
+  openDisconnectedHosts();
   fireEvent.click(screen.getByRole("button", { name: "Connect offline-host" }));
   await settled();
   await waitFor(() =>
@@ -224,7 +269,8 @@ test("changing the host select issues no attach call", async () => {
 // A never-attached host is listed offline with a disabled spawn option
 // (component 06b), so the picker must offer a concrete, enabled Connect
 // affordance for it — otherwise a configured [[hosts]] entry is dead UI. The
-// Connect action issues the same evener/host/attach call.
+// disclosure holds that affordance; the Connect action issues the same
+// evener/host/attach call.
 test("an offline host offers an enabled Connect action that attaches it", async () => {
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
@@ -238,6 +284,7 @@ test("an offline host offers an enabled Connect action that attaches it", async 
   const offline = within(picker).getByRole("option", { name: /offline-host/ }) as HTMLOptionElement;
   expect(offline.disabled).toBe(true);
 
+  openDisconnectedHosts();
   const connect = screen.getByRole("button", { name: "Connect offline-host" }) as HTMLButtonElement;
   expect(connect.disabled).toBe(false);
   fireEvent.click(connect);
@@ -267,6 +314,7 @@ test("a failed Connect surfaces the attach error", async () => {
   renderSpawn(fake);
   await settled();
 
+  openDisconnectedHosts();
   fireEvent.click(screen.getByRole("button", { name: "Connect offline-host" }));
   expect(await screen.findByText(/Connect offline-host failed/i)).toBeTruthy();
 });
@@ -303,6 +351,7 @@ test("a slow Connect attach resolves inside the attach timeout with no failure t
   renderSpawn(fake);
   await settled();
 
+  openDisconnectedHosts();
   fireEvent.click(screen.getByRole("button", { name: "Connect offline-host" }));
   // The attach RPC carries the explicit attach timeout, not the 30s default.
   await waitFor(() =>

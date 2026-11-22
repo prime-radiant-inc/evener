@@ -569,7 +569,8 @@ test("the host picker keeps its host while the manifest revalidates", async () =
   const picker = screen.getByLabelText("Host") as HTMLSelectElement;
   expect(picker.value).toBe("buildbox");
   const options = within(picker).getAllByRole("option") as HTMLOptionElement[];
-  expect(options.map((option) => option.value)).toEqual(["local", "buildbox", "offline-host"]);
+  expect(options.slice(0, 3).map((option) => option.value)).toEqual(["local", "buildbox", "offline-host"]);
+  expect(within(picker).getByRole("option", { name: "Connect host" })).toBe(options[options.length - 1]);
   // The retained snapshot keeps its own offline labelling: a withheld list
   // reads as "unknown", which would flip this one to online.
   const offline = options.find((option) => option.value === "offline-host") as HTMLOptionElement;

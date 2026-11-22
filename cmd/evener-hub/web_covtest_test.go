@@ -412,8 +412,21 @@ func TestCovSplitProviderModelNoSlash(t *testing.T) {
 // --- web_api_tree.go: apiTreeSources ---
 
 // TestCovAPITreeSourcesLocalOnly covers the sources path when only the local
-// source is configured.
+// source is configured. The local label names this hub's machine and marks it
+// as the hub, the way the spawn picker shows it.
 func TestCovAPITreeSourcesLocalOnly(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", LocalHostName: "magic-kingdom"})
+	sources := web.apiTreeSources()
+	want := []hubapi.Source{{ID: "local", Label: "magic-kingdom (hub)", Kind: "local", Online: true}}
+	if !reflect.DeepEqual(sources, want) {
+		t.Fatalf("sources = %#v, want %#v", sources, want)
+	}
+}
+
+// TestCovAPITreeSourcesLocalLabelWithoutHostName covers the fallback for a
+// server built without a host name: the local source stays labeled, never
+// blank.
+func TestCovAPITreeSourcesLocalLabelWithoutHostName(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
 	sources := web.apiTreeSources()
 	want := []hubapi.Source{{ID: "local", Label: "this host", Kind: "local", Online: true}}
@@ -429,11 +442,11 @@ func TestCovAPITreeSourcesReportsOfflineSource(t *testing.T) {
 	registry := appsource.NewRegistry()
 	registry.Add(&offlineStubSource{scriptedAppSource: &scriptedAppSource{id: "remote-offline"}, online: false})
 	registry.Add(&offlineStubSource{scriptedAppSource: &scriptedAppSource{id: "remote-online"}, online: true})
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", LocalHostName: "magic-kingdom"})
 	web.sources = registry
 	sources := web.apiTreeSources()
 	want := []hubapi.Source{
-		{ID: "local", Label: "this host", Kind: "local", Online: true},
+		{ID: "local", Label: "magic-kingdom (hub)", Kind: "local", Online: true},
 		{ID: "remote-offline", Label: "remote-offline", Kind: "appwire", Online: false},
 		{ID: "remote-online", Label: "remote-online", Kind: "appwire", Online: true},
 	}
