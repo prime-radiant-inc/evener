@@ -143,10 +143,14 @@ test("the value slot renders the caller's own node in the caller's typography", 
   expect(screen.getByText("main")).toBe(value);
 });
 
-test("the value slot right-aligns and shrinks inside the label line", () => {
+test("the value takes a shrinkable share of the label line", () => {
   const value = rule(".value");
-  expect(value).toContain("margin-left: auto");
+  expect(value).toContain("flex: 1 1 0");
+  expect(value).toContain("justify-content: flex-end");
   expect(value).toContain("min-width: 0");
+  expect(value).toContain("max-width: max-content");
+  // The heading still wraps, so chips can move under a long label.
+  expect(rule(".heading")).toContain("flex-wrap: wrap");
 });
 
 test("an interactive collection row ends in a decorative drill-in chevron; a plain row does not", () => {

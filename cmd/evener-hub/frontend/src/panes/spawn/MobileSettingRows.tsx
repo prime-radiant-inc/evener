@@ -154,14 +154,22 @@ function OptionSheet({
   onClose: () => void;
   onChange: (value: string) => void;
 }) {
+  const [draft, setDraft] = useState(value);
+
+  useEffect(() => {
+    if (open) setDraft(value);
+  }, [open, value]);
+
   return (
     <Sheet open={open} side="bottom" onClose={onClose} title={`Choose ${name.toLowerCase()}`}>
       <div className={CLASS.sheetBody}>
         <RadioGroup
           variant="list"
           label={name}
-          value={value}
+          value={draft}
           options={options}
+          // Arrows only preview; click, Enter and Space commit and close.
+          onPreview={setDraft}
           onChange={(next) => {
             onChange(next);
             onClose();

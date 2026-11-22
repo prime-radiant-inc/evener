@@ -23,6 +23,7 @@ function ControlledRadioGroup(props: {
   options: RadioGroupOption[];
   initial: string;
   onChange?: (value: string) => void;
+  onPreview?: (value: string) => void;
   disabled?: boolean;
   variant?: "stack" | "list";
 }) {
@@ -38,6 +39,14 @@ function ControlledRadioGroup(props: {
         setValue(next);
         props.onChange?.(next);
       }}
+      onPreview={
+        props.onPreview === undefined
+          ? undefined
+          : (next) => {
+              setValue(next);
+              props.onPreview?.(next);
+            }
+      }
     />
   );
 }
@@ -167,6 +176,33 @@ test("Home selects the first enabled option, End selects the last", async () => 
   await user.keyboard("{Home}");
   expect(screen.getByRole("radio", { name: "System" }).getAttribute("aria-checked")).toBe("true");
   expect(document.activeElement).toBe(screen.getByRole("radio", { name: "System" }));
+});
+
+test("with onPreview, arrow navigation previews without committing", async () => {
+  const user = userEvent.setup();
+  const onChange = vi.fn();
+  const onPreview = vi.fn();
+  render(<ControlledRadioGroup options={THEME_OPTIONS} initial="dark" onChange={onChange} onPreview={onPreview} />);
+  screen.getByRole("radio", { name: "Dark" }).focus();
+
+  await user.keyboard("{ArrowDown}");
+
+  expect(onPreview).toHaveBeenCalledWith("light");
+  expect(onChange).not.toHaveBeenCalled();
+  expect(screen.getByRole("radio", { name: "Light" }).getAttribute("aria-checked")).toBe("true");
+  expect(document.activeElement).toBe(screen.getByRole("radio", { name: "Light" }));
+});
+
+test("clicking still commits when onPreview is supplied", async () => {
+  const user = userEvent.setup();
+  const onChange = vi.fn();
+  const onPreview = vi.fn();
+  render(<ControlledRadioGroup options={THEME_OPTIONS} initial="dark" onChange={onChange} onPreview={onPreview} />);
+
+  await user.click(screen.getByRole("radio", { name: "System" }));
+
+  expect(onChange).toHaveBeenCalledWith("system");
+  expect(onPreview).not.toHaveBeenCalled();
 });
 
 test("a disabled option cannot be focused or clicked", async () => {

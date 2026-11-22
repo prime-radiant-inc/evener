@@ -144,6 +144,72 @@ test("the option sheet marks exactly the checked radio", async () => {
   expect(onAccessChange).toHaveBeenCalledWith("workspace-write");
 });
 
+test("arrow keys preview the access choice without committing; Enter commits it", async () => {
+  const user = userEvent.setup();
+  const onAccessChange = vi.fn();
+  renderRows({
+    onAccessChange,
+    accessOptions: [
+      { value: "", label: "(default)" },
+      { value: "read-only", label: "read-only" },
+      { value: "workspace-write", label: "workspace write" },
+    ],
+  });
+
+  const trigger = screen.getByRole("button", { name: "Access mode: (default)" });
+  await user.click(trigger);
+  const dialog = await screen.findByRole("dialog", { name: "Choose access mode" });
+  within(dialog).getByRole("radio", { name: "(default)" }).focus();
+
+  await user.keyboard("{ArrowDown}");
+  expect(within(dialog).getByRole("radio", { name: "read-only" }).getAttribute("aria-checked")).toBe("true");
+  await user.keyboard("{ArrowDown}");
+  expect(within(dialog).getByRole("radio", { name: "workspace write" }).getAttribute("aria-checked")).toBe("true");
+
+  expect(onAccessChange).not.toHaveBeenCalled();
+  expect(screen.getByRole("dialog", { name: "Choose access mode" })).toBe(dialog);
+  expect(document.activeElement).toBe(within(dialog).getByRole("radio", { name: "workspace write" }));
+
+  await user.keyboard("{Enter}");
+
+  expect(onAccessChange).toHaveBeenCalledWith("workspace-write");
+  expect(screen.queryByRole("dialog", { name: "Choose access mode" })).toBeNull();
+  expect(document.activeElement).toBe(trigger);
+});
+
+test("Escape after an arrow preview discards the uncommitted access choice", async () => {
+  const user = userEvent.setup();
+  const onAccessChange = vi.fn();
+  renderRows({
+    onAccessChange,
+    accessOptions: [
+      { value: "", label: "(default)" },
+      { value: "read-only", label: "read-only" },
+      { value: "workspace-write", label: "workspace write" },
+    ],
+  });
+
+  const trigger = screen.getByRole("button", { name: "Access mode: (default)" });
+  await user.click(trigger);
+  let dialog = await screen.findByRole("dialog", { name: "Choose access mode" });
+  within(dialog).getByRole("radio", { name: "(default)" }).focus();
+  await user.keyboard("{ArrowDown}");
+  expect(within(dialog).getByRole("radio", { name: "read-only" }).getAttribute("aria-checked")).toBe("true");
+
+  await user.keyboard("{Escape}");
+
+  expect(screen.queryByRole("dialog", { name: "Choose access mode" })).toBeNull();
+  expect(trigger.getAttribute("aria-label")).toBe("Access mode: (default)");
+  expect(onAccessChange).not.toHaveBeenCalled();
+
+  await user.click(trigger);
+  dialog = await screen.findByRole("dialog", { name: "Choose access mode" });
+  await waitFor(() =>
+    expect(within(dialog).getByRole("radio", { name: "(default)" }).getAttribute("aria-checked")).toBe("true"),
+  );
+  expect(within(dialog).getByRole("radio", { name: "read-only" }).getAttribute("aria-checked")).toBe("false");
+});
+
 test("browsing a directory and cancelling preserves the session directory", async () => {
   const user = userEvent.setup();
   const onCwdChange = vi.fn();

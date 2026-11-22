@@ -132,9 +132,16 @@
  * the caller's node. */
 .value {
   display: inline-flex;
-  flex: 0 1 auto;
+  /* A zero basis keeps a long value on the label line instead of forcing the
+   * wrapping heading to put it on its own line; the value then takes the
+   * line's spare width and shrinks or wraps inside it. */
+  flex: 1 1 0;
+  justify-content: flex-end;
   align-items: center;
   min-width: 0;
+  max-width: max-content;
+  /* Absorbs the width a short value does not need, keeping it at the row's
+   * trailing edge instead of just after the label. */
   margin-left: auto;
 }
 

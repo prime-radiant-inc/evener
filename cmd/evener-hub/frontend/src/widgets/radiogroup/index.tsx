@@ -16,7 +16,15 @@ export interface RadioGroupProps {
    * accessible-name props (a group can't ship unlabeled). */
   label: string;
   value: string;
+  /** Called when an option is activated (click, Enter or Space); without
+   * onPreview, also called when Arrow/Home/End navigation moves the checked
+   * option. */
   onChange: (value: string) => void;
+  /** When supplied, Arrow/Home/End navigation reports the newly focused
+   * option here instead of calling onChange, so a sheet can preview a choice
+   * without committing it. The caller must put the previewed value in
+   * `value` for the checked option to move. */
+  onPreview?: (value: string) => void;
   options: RadioGroupOption[];
   /** Disables every option regardless of its own `disabled` field. */
   disabled?: boolean;
@@ -94,6 +102,7 @@ export function RadioGroup({
   label,
   value,
   onChange,
+  onPreview,
   options,
   disabled = false,
   description,
@@ -113,9 +122,16 @@ export function RadioGroup({
     onChange(option.value);
   }
 
+  function preview(index: number) {
+    const option = options[index];
+    if (!option || option.disabled || disabled) return;
+    onPreview?.(option.value);
+  }
+
   function focusAndChoose(index: number) {
     if (index === -1) return;
-    choose(index);
+    if (onPreview) preview(index);
+    else choose(index);
     optionRefs.current[index]?.focus();
   }
 
