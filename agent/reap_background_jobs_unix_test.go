@@ -164,6 +164,39 @@ func TestReapSessionBackgroundJobsToleratesMissingJournal(t *testing.T) {
 	}
 }
 
+// TestReconcileLostJobsReapsTheSurvivingGroup proves the restore path: a
+// restarted session that finds a running background record whose group is still
+// alive and whose leader still has the recorded start time ends that group
+// before the job is recorded lost, so the job does not outlive its session.
+func TestReconcileLostJobsReapsTheSurvivingGroup(t *testing.T) {
+	t.Parallel()
+	stateDir, sessionID := t.TempDir(), "sess_restore_reap"
+	sleeper := startProcessGroup(t)
+	writeRunningBackgroundRecord(t, stateDir, sessionID, "job_restore_reap", sleeper.pid, sleeper.started)
+
+	jm, err := newJobManager(stateDir, sessionID, func(jobNotification) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = jm.close() })
+	if err := jm.reconcileLostJobs(); err != nil {
+		t.Fatalf("reconcile lost jobs: %v", err)
+	}
+
+	if exitErr, ended := sleeper.waitWithin(t, 10*time.Second); !ended {
+		t.Fatal("a restarted session left its predecessor's background group running")
+	} else if !signalledExit(exitErr) {
+		t.Fatalf("reaped process ended without a signal: %v", exitErr)
+	}
+	recs, err := jm.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := recs["job_restore_reap"]; rec == nil || rec.Status != jobstore.StatusStopped || rec.Reason != "runtime_lost" {
+		t.Fatalf("restored record = %+v, want stopped/runtime_lost", rec)
+	}
+}
+
 // processGroup is a real command in its own process group, the shape a
 // background shell job takes.
 type processGroup struct {
