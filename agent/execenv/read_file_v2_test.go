@@ -1,9 +1,11 @@
 package execenv
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -206,6 +208,155 @@ func TestReadFileLineClampingAndSingleLineEscape(t *testing.T) {
 		wholeOut, _, wholeMeta, err := env.ReadFileRichAndBytesCtx(t.Context(), p, &off, &lim)
 		if err != nil || wholeOut != out || wholeMeta != meta {
 			t.Fatalf("ReadFileRichCtx diverged from ReadFileRichAndBytesCtx: err=%v meta=%+v", err, wholeMeta)
+		}
+	})
+
+	t.Run("overflow hint continues past the shown bytes", func(t *testing.T) {
+		t.Parallel()
+		sh, err := exec.LookPath("sh")
+		if err != nil {
+			t.Skipf("no POSIX sh on PATH: %v", err)
+		}
+		// Distinct bytes: a hint that restarts at byte 0 cannot match the bytes
+		// that follow the prefix this read already returned.
+		raw := make([]byte, 120_000)
+		for i := range raw {
+			raw[i] = byte('!') + byte(i%90)
+		}
+		p := filepath.Join(dir, "hint-120k.txt")
+		if err := os.WriteFile(p, append(append([]byte(nil), raw...), '\n'), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		off, lim := 1, 1
+		out, meta, err := env.ReadFileRichCtx(t.Context(), p, &off, &lim)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !meta.Truncated || meta.TruncatedBy != "chars" {
+			t.Fatalf("meta = %+v, want Truncated=true TruncatedBy=chars", meta)
+		}
+		body, _, ok := strings.Cut(out, "\n[")
+		if !ok {
+			t.Fatalf("overflow output has no footer: %.300q", out)
+		}
+		const prefix = "1\t"
+		if !strings.HasPrefix(body, prefix) || !strings.HasSuffix(body, "\n") {
+			t.Fatalf("overflow body is not one numbered line: %.120q", body)
+		}
+		shown := len(body) - len(prefix) - 1
+		if shown <= 0 || shown >= len(raw) {
+			t.Fatalf("shown = %d bytes, want 0 < shown < %d", shown, len(raw))
+		}
+
+		const marker = "To inspect further bytes: "
+		_, rest, ok := strings.Cut(out, marker)
+		if !ok {
+			t.Fatalf("overflow footer has no recovery command: %.300q", out)
+		}
+		cmd, _, ok := strings.Cut(rest, "]")
+		if !ok {
+			t.Fatalf("overflow footer has no closing bracket: %.300q", out)
+		}
+		got, err := exec.Command(sh, "-c", cmd).Output()
+		if err != nil {
+			t.Fatalf("hint command %q: %v", cmd, err)
+		}
+		want := raw[shown:]
+		if len(want) > DefaultReadMaxBytes {
+			want = want[:DefaultReadMaxBytes]
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("hint %q returned %d bytes starting %q, want %d bytes from offset %d starting %q",
+				cmd, len(got), got[:min(len(got), 20)], len(want), shown, want[:min(len(want), 20)])
+		}
+		if bytes.Equal(got, raw[:len(got)]) {
+			t.Fatalf("hint %q re-reads the already-shown prefix", cmd)
+		}
+		if footerLen := len(out) - len(body); footerLen > readFooterCap(0) {
+			t.Fatalf("footer = %d bytes, want <= %d", footerLen, readFooterCap(0))
+		}
+		if len(out) > readMaxTotalBytes() {
+			t.Fatalf("overflow output = %d bytes, want <= %d", len(out), readMaxTotalBytes())
+		}
+	})
+
+	t.Run("long path around the footer cap keeps output within caps", func(t *testing.T) {
+		t.Parallel()
+		// A real filesystem rejects these paths, so the fixture lives in memory.
+		memfs := afero.NewMemMapFs()
+		const baseDir = "/work"
+		env := NewLocalExecutionEnvironment(baseDir).SetFs(memfs)
+		t.Cleanup(env.Cleanup)
+
+		raw := make([]byte, 120_000)
+		for i := range raw {
+			raw[i] = byte('!') + byte(i%90)
+		}
+		buildPath := func(n int) string {
+			seg := strings.Repeat("d", 100)
+			var parts []string
+			for len(filepath.Join(parts...)) < n {
+				parts = append(parts, seg)
+			}
+			return filepath.Join(append(parts, "target.txt")...)
+		}
+
+		const marker = "To inspect further bytes: "
+		cases := []struct {
+			name     string
+			pathLen  int
+			wantHint bool
+		}{
+			// The footer's fixed text is under 200 bytes, so a path this far
+			// below footerCap keeps the command while the path above it forces
+			// the short notice.
+			{name: "near cap", pathLen: readFooterCap(0) - 300, wantHint: true},
+			{name: "over cap", pathLen: readFooterCap(0) + 100, wantHint: false},
+		}
+		for _, tc := range cases {
+			relPath := buildPath(tc.pathLen)
+			fullPath := filepath.Join(baseDir, relPath)
+			if err := memfs.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := afero.WriteFile(memfs, fullPath, append(append([]byte(nil), raw...), '\n'), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			off, lim := 1, 1
+			out, meta, err := env.ReadFileRichCtx(t.Context(), relPath, &off, &lim)
+			if err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if !meta.Truncated || meta.TruncatedBy != "chars" {
+				t.Fatalf("%s: meta = %+v, want Truncated=true TruncatedBy=chars", tc.name, meta)
+			}
+			body, footer, ok := strings.Cut(out, "\n[")
+			if !ok || footer == "" {
+				t.Fatalf("%s: output has no footer: %.300q", tc.name, out)
+			}
+			footer = "\n[" + footer
+			if len(out) > readMaxTotalBytes() {
+				t.Fatalf("%s: output = %d bytes, want <= %d", tc.name, len(out), readMaxTotalBytes())
+			}
+			if len(footer) > readFooterCap(0) {
+				t.Fatalf("%s: footer = %d bytes, want <= %d", tc.name, len(footer), readFooterCap(0))
+			}
+			_, rest, hasHint := strings.Cut(footer, marker)
+			if hasHint != tc.wantHint {
+				t.Fatalf("%s: hint present = %t, want %t: footer %d bytes", tc.name, hasHint, tc.wantHint, len(footer))
+			}
+			if !tc.wantHint {
+				continue
+			}
+			cmd, _, ok := strings.Cut(rest, "]")
+			if !ok {
+				t.Fatalf("%s: hint has no closing bracket: %.300q", tc.name, footer)
+			}
+			shown := len(body) - len("1\t") - 1
+			want := fmt.Sprintf("tail -c +%d | head -c %d", shown+1, DefaultReadMaxBytes)
+			if !strings.Contains(cmd, want) {
+				t.Fatalf("%s: hint %q does not continue at byte %d: want substring %q", tc.name, cmd, shown+1, want)
+			}
 		}
 	})
 }
