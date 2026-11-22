@@ -3,8 +3,8 @@ import { WireError } from "@evener/appwire-client";
 import { Component, lazy, type ReactNode, Suspense, useState } from "react";
 import { useClient } from "../../../shell/clientContext";
 import { Button, EmptyState, InlineNotice, Skeleton } from "../../../widgets";
+import { copyText } from "../../../widgets/copybutton/clipboard";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { copyText } from "./credentials/clipboard";
 import styles from "./devicePairing/devicePairing.module.css";
 import { useConnectedEffect } from "./useConnectedEffect";
 
