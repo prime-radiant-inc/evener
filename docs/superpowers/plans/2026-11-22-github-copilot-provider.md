@@ -43,7 +43,7 @@
 - Produces: `const AuthScheme = "oauth-github-copilot"`; `AuthRecord`, `AuthFilePath(stateDir, instance string) string`, `LoadAuth`, `SaveAuth`, `DeleteAuth`, and `WithRecordLock(stateDir, instance string, fn func() error) error`.
 - `AuthRecord` requires instance, scheme, version, access/refresh tokens, token type, scope, obtained/access/refresh expiry, and stable account ID. Email and `RefreshRejected` are optional state. Do not serialize an OAuth `source` field.
 
-**Size budget:** 200 production lines.
+**Size budget:** 242 production lines, explicitly accepted by Jesse after the measured minimum exceeded the initial 200-line target.
 
 - [ ] **Step 1: Write failing record and two-process lifecycle tests.** Cover valid round trips, mode 0600, wrong scheme/path, corrupt JSON, missing required fields, and cross-scheme rejection. In `lock_process_test.go`, run two actual test processes through `WithRecordLock`; prove serialized read/modify/write and that a deleted record cannot be recreated by a stale writer. Match `ErrAuthNotFound`, `ErrAuthCorrupt`, and validation errors structurally.
 - [ ] **Step 2: Run the tests red.** Run `cd auth && go test ./githubcopilot`; expect missing-package/symbol failures for the new behavior, not an unrelated compile failure.
