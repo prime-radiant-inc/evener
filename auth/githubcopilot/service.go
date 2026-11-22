@@ -213,7 +213,7 @@ func (s *Service) renewUnderLock(ctx context.Context, stateDir, instance string)
 				if renewed != current {
 					if saveErr := s.saveIfCurrent(stateDir, instance, current, renewed); saveErr != nil &&
 						!errors.Is(saveErr, ErrAuthChanged) && !errors.Is(saveErr, ErrAuthNotFound) {
-						return fmt.Errorf("renew Copilot session: %w (persist refreshed GitHub credentials: %v)", err, saveErr)
+						return fmt.Errorf("renew Copilot session: %w (persist refreshed GitHub credentials: %w)", err, saveErr)
 					}
 				}
 				return fmt.Errorf("renew Copilot session: %w", err)

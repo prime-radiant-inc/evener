@@ -416,7 +416,7 @@ func newCopilotClient(t *testing.T, srvURL string) *llm.Client {
 	return llm.NewClient(llm.WithRegistry(r))
 }
 
-func completeOnce(t *testing.T, client *llm.Client, ctx context.Context) error {
+func completeOnce(ctx context.Context, t *testing.T, client *llm.Client) error {
 	t.Helper()
 	_, err := client.Complete(ctx, llm.Request{Model: "m", Provider: "copilot", Messages: []llm.Message{llm.User("hi")}})
 	return err
@@ -450,7 +450,7 @@ func TestCopilotClientRetries401OnceWhenRecordGenerationChanged(t *testing.T) {
 
 	client := newCopilotClient(t, ts.URL)
 	ctx := llm.WithScopedAuthenticator(context.Background(), registry.AuthOAuthGitHubCopilot, ScopedCopilot(stateDir))
-	if err := completeOnce(t, client, ctx); err != nil {
+	if err := completeOnce(ctx, t, client); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 	seen := srv.seen()
@@ -472,7 +472,7 @@ func TestCopilotClientDoesNotRetry401WhenRecordUnchanged(t *testing.T) {
 
 	client := newCopilotClient(t, ts.URL)
 	ctx := llm.WithScopedAuthenticator(context.Background(), registry.AuthOAuthGitHubCopilot, ScopedCopilot(stateDir))
-	err := completeOnce(t, client, ctx)
+	err := completeOnce(ctx, t, client)
 	if llm.Kind(err) != llm.KindAuthentication {
 		t.Fatalf("Complete error = %v (%v), want authentication", err, llm.Kind(err))
 	}
@@ -529,7 +529,7 @@ func TestCopilotClientRetries401OnlyOnce(t *testing.T) {
 
 	client := newCopilotClient(t, ts.URL)
 	ctx := llm.WithScopedAuthenticator(context.Background(), registry.AuthOAuthGitHubCopilot, ScopedCopilot(stateDir))
-	err := completeOnce(t, client, ctx)
+	err := completeOnce(ctx, t, client)
 	if llm.Kind(err) != llm.KindAuthentication {
 		t.Fatalf("Complete error = %v, want authentication", err)
 	}

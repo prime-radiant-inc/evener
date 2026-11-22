@@ -277,13 +277,12 @@ func TestGitHubCopilotLiveProbe(t *testing.T) {
 	}
 	probeCtx = llm.WithScopedAuthenticator(probeCtx, registry.AuthOAuthGitHubCopilot, tokenauth.ScopedCopilot(stateDir))
 	for _, run := range runs {
-		run := run
 		t.Run(run.family+"/"+run.scenario.Name, func(t *testing.T) {
 			if run.MissingPin {
 				logCopilotRosterDiagnostics(t, roster)
 				t.Fatalf("enabled pinned scenario %q wants live model %q, but no advertised model offered it with the required endpoint, vision, tools, and streaming", run.scenario.Name, run.scenario.ModelPin)
 			}
-			runCopilotLiveScenario(t, probeCtx, run, baseURL, recorder)
+			runCopilotLiveScenario(probeCtx, t, run, baseURL, recorder)
 		})
 	}
 }
@@ -833,7 +832,7 @@ func copilotLiveFamily(family string) string {
 
 const copilotLiveToolName = "get_secret_code"
 
-func runCopilotLiveScenario(t *testing.T, parent context.Context, run copilotLiveRun, baseURL string, recorder *copilotHeaderRecorder) {
+func runCopilotLiveScenario(parent context.Context, t *testing.T, run copilotLiveRun, baseURL string, recorder *copilotHeaderRecorder) {
 	t.Helper()
 	if !run.scenario.Enabled {
 		t.Skipf("%s is not enabled yet", run.scenario.Name)
@@ -851,7 +850,7 @@ func runCopilotLiveScenario(t *testing.T, parent context.Context, run copilotLiv
 	interactionID := "copilot-live-" + strings.NewReplacer("/", "-", " ", "-").Replace(run.family+"-"+run.scenario.Name)
 
 	before := len(recorder.snapshot())
-	first := streamCopilotOnce(t, parent, row, llm.Request{
+	first := streamCopilotOnce(parent, t, row, llm.Request{
 		Model: run.model.ID, Provider: "github-copilot", Messages: history,
 		Tools: []llm.ToolDefinition{tool}, MaxTokens: new(1024),
 		SessionID: interactionID, ThreadID: interactionID,
@@ -867,9 +866,8 @@ func runCopilotLiveScenario(t *testing.T, parent context.Context, run copilotLiv
 	if call == nil {
 		t.Fatalf("no streamed %s tool call: %v", copilotLiveToolName, toolCallNames(calls))
 	}
-	history = append(history, first.Message)
-	history = append(history, llm.ToolResultNamed(call.ID, call.Name, "SECRET-CODE-7", false))
-	second := streamCopilotOnce(t, parent, row, llm.Request{
+	history = append(history, first.Message, llm.ToolResultNamed(call.ID, call.Name, "SECRET-CODE-7", false))
+	second := streamCopilotOnce(parent, t, row, llm.Request{
 		Model: run.model.ID, Provider: "github-copilot", Messages: history,
 		Tools: []llm.ToolDefinition{tool}, MaxTokens: new(1024),
 		SessionID: interactionID, ThreadID: interactionID,
@@ -918,7 +916,7 @@ func runCopilotLiveScenario(t *testing.T, parent context.Context, run copilotLiv
 // streamCopilotOnce drives one real protocol stream and returns its accumulated
 // response. In-band stream errors are failures: the probe proves live behavior,
 // not a fallback.
-func streamCopilotOnce(t *testing.T, parent context.Context, row registry.Resolved, req llm.Request) *llm.Response {
+func streamCopilotOnce(parent context.Context, t *testing.T, row registry.Resolved, req llm.Request) *llm.Response {
 	t.Helper()
 	protocol, ok := llm.ProtocolFor(row.Protocol)
 	if !ok {
@@ -1031,8 +1029,8 @@ func toolCallNames(calls []llm.ToolCallData) []string {
 func livePNG(t *testing.T) []byte {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
-	for y := 0; y < 8; y++ {
-		for x := 0; x < 8; x++ {
+	for y := range 8 {
+		for x := range 8 {
 			img.Set(x, y, color.RGBA{R: 200, G: 30, B: 30, A: 255})
 		}
 	}

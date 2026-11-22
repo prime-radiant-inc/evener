@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -119,8 +120,8 @@ func (*Copilot) RequiresStreamingComplete() bool { return false }
 // user's message or a tool-driven step. System and developer messages are not
 // conversational input, so they are skipped.
 func copilotInitiator(messages []llm.Message) string {
-	for i := len(messages) - 1; i >= 0; i-- {
-		switch messages[i].Role {
+	for _, message := range slices.Backward(messages) {
+		switch message.Role {
 		case llm.RoleUser:
 			return "user"
 		case llm.RoleAssistant, llm.RoleTool:

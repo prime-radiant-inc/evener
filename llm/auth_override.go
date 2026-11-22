@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"maps"
 )
 
 type authenticatorOverrideKey struct{}
@@ -39,9 +40,7 @@ func WithScopedAuthenticator(ctx context.Context, scheme string, auth Authentica
 	}
 	overrides := authenticatorOverridesForContext(ctx)
 	byScheme := make(map[string]Authenticator, len(overrides.byScheme)+1)
-	for existing, bound := range overrides.byScheme {
-		byScheme[existing] = bound
-	}
+	maps.Copy(byScheme, overrides.byScheme)
 	byScheme[scheme] = auth
 	overrides.byScheme = byScheme
 	return context.WithValue(ctx, authenticatorOverrideKey{}, overrides)

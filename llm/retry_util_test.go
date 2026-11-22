@@ -73,7 +73,7 @@ func TestRetryOnAuthRotationDoesNotRetryNonAuthFailure(t *testing.T) {
 		attempts++
 		return 0, err
 	}, nil)
-	if got != err || attempts != 1 {
+	if !errors.Is(got, err) || attempts != 1 {
 		t.Fatalf("err %v attempts %d, want the original error after one attempt", got, attempts)
 	}
 }

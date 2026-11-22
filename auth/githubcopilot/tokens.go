@@ -70,7 +70,7 @@ func postFormJSON(ctx context.Context, client *http.Client, cfg Config, path str
 		return fmt.Errorf("github OAuth endpoint %s returned status %d", path, resp.StatusCode)
 	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return fmt.Errorf("%w: %v", ErrMalformedResponse, err)
+		return fmt.Errorf("%w: %w", ErrMalformedResponse, err)
 	}
 	return nil
 }
@@ -130,7 +130,7 @@ func ExchangeCopilotToken(ctx context.Context, client *http.Client, cfg Config, 
 		ExpiresAt int64  `json:"expires_at"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return CopilotSession{}, fmt.Errorf("%w: %v", ErrMalformedResponse, err)
+		return CopilotSession{}, fmt.Errorf("%w: %w", ErrMalformedResponse, err)
 	}
 	if strings.TrimSpace(payload.Token) == "" || payload.ExpiresAt <= 0 {
 		return CopilotSession{}, fmt.Errorf("%w: missing session token or expiry", ErrMalformedResponse)

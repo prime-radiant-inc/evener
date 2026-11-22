@@ -233,7 +233,7 @@ func TestLoginWithDevicePersistsAccountAndTokens(t *testing.T) {
 	var slept []time.Duration
 	svc.sleep = func(ctx context.Context, d time.Duration) error {
 		slept = append(slept, d)
-		*clock = (*clock).Add(d)
+		*clock = clock.Add(d)
 		return nil
 	}
 	stateDir := t.TempDir()
@@ -288,7 +288,7 @@ func TestLoginWithDeviceStopsAtCodeExpiry(t *testing.T) {
 	gh.queuePollCodes("authorization_pending")
 	svc := newServiceForTest(server)
 	svc.sleep = func(ctx context.Context, d time.Duration) error {
-		*clock = (*clock).Add(20 * time.Minute)
+		*clock = clock.Add(20 * time.Minute)
 		return nil
 	}
 	stateDir := t.TempDir()
@@ -309,7 +309,7 @@ func TestLoginWithDeviceCarriesSlowDownInterval(t *testing.T) {
 	var slept []time.Duration
 	svc.sleep = func(ctx context.Context, d time.Duration) error {
 		slept = append(slept, d)
-		*clock = (*clock).Add(d)
+		*clock = clock.Add(d)
 		return nil
 	}
 	if _, err := svc.LoginWithDevice(context.Background(), t.TempDir(), "work", nil); err != nil {
