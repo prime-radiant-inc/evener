@@ -1793,6 +1793,7 @@ async function measure() {
     const box = element?.getBoundingClientRect();
     return {
       testId,
+      element,
       present: visible(element),
       containedInCard: containedInCard(box),
       containedInPane: containedInPane(box),
@@ -1877,7 +1878,7 @@ async function measure() {
         (control) => !control.present || (control.containedInCard && control.containedInPane),
       ),
       controlsDoNotOverlap,
-      controls: controls.map(({ box: _box, ...control }) => control),
+      controls: controls.map(({ box: _box, element: _element, ...control }) => control),
       controlGeometry: Object.fromEntries(
         controls.flatMap((control) => {
           if (!control.present || !control.element) return [];
