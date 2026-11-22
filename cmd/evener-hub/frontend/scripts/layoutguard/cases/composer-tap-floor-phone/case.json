@@ -4,10 +4,12 @@
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
+    "widgets/internal/quietTrigger.module.css",
     "panes/session/composer/composer.module.css",
     "panes/session/chrome/sessionchrome.module.css",
     "panes/session/chrome/statusrow.module.css",
     "panes/session/chrome/modelswitch.module.css",
+    "widgets/select/select.module.css",
     "widgets/promptcard/promptcard.module.css",
     "widgets/button/button.module.css",
     "widgets/iconbutton/iconbutton.module.css",
@@ -22,9 +24,9 @@
     "touch": true
   },
   "mutation": {
-    "declaration": "statusrow.module.css: remove the phone/coarse min-width and min-height from .effortTrigger",
-    "verified": "2026-11-06",
+    "declaration": "select.module.css: remove the phone/coarse min-width and min-height from .quietVariant",
+    "verified": "2026-11-22",
     "expect": "fail",
-    "note": "Without the floor the effort trigger measures about 30x27 at 390px; the case fails on both axes."
+    "note": "The shared quietTrigger recipe still supplies the coarse min-height; without Select's own rule the trigger measured 16.8x44.0 at 390px (2026-11-22), so the case fails on width."
   }
 }

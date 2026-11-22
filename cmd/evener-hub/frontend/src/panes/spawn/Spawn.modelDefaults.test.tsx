@@ -1495,15 +1495,15 @@ test("a disabled effort control renders its disabled state on the visible wrappe
   expect(trigger.getAttribute("data-disabled")).toBe("true");
 });
 
-// The transparent overlay select is the topmost hittable layer, so it must
-// inherit the wrapper's cursor - its own `pointer` would otherwise win over
-// the wrapper's `not-allowed` on a disabled control. CSS gate: jsdom
+// The quiet Select's transparent overlay is the topmost hittable layer, so it
+// must inherit the trigger's cursor - its own `pointer` would otherwise win
+// over the trigger's `not-allowed` on a disabled control. CSS gate: jsdom
 // evaluates no cascade, so the computed cursor is asserted on the source.
-test("the effort overlay select inherits the wrapper cursor", () => {
-  const spawnCss = readModuleCss(import.meta.url, "spawn.module.css");
+test("the quiet effort overlay select inherits the trigger cursor", () => {
+  const selectCss = readModuleCss(import.meta.url, "../../widgets/select/select.module.css");
 
-  expect(spawnCss).toMatch(/\.effortSelect\s*\{[^}]*cursor:\s*inherit/);
-  expect(spawnCss).toContain(".effortTrigger:not([data-disabled");
+  expect(selectCss).toMatch(/\.quietSelect\s*\{[^}]*cursor:\s*inherit/);
+  expect(selectCss).toContain('.quietVariant:not([data-disabled="true"]) .quietSelect');
 });
 
 test("with Model left at '(default)', the Effort select follows the hub's resolved default model", async () => {

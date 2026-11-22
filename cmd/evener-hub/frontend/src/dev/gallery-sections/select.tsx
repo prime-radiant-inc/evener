@@ -20,6 +20,19 @@ function LiveSelect({ options = OPTIONS }: { options?: SelectOption[] }) {
   return <Select value={value} options={options} onChange={(e) => setValue(e.target.value)} />;
 }
 
+function LiveQuietSelect({ options = OPTIONS }: { options?: SelectOption[] }) {
+  const [value, setValue] = useState(options[0]?.value ?? "");
+  return (
+    <Select
+      variant="quiet"
+      ariaLabel="Region"
+      value={value}
+      options={options}
+      onChange={(e) => setValue(e.target.value)}
+    />
+  );
+}
+
 export default function SelectGallerySection() {
   return (
     <section>
@@ -36,6 +49,18 @@ export default function SelectGallerySection() {
         <div className={styles.row}>
           <p className={styles.rowLabel}>disabled</p>
           <Select value="us-east" options={OPTIONS} onChange={() => {}} disabled />
+        </div>
+        <div className={styles.row}>
+          <p className={styles.rowLabel}>quiet</p>
+          <LiveQuietSelect />
+        </div>
+        <div className={styles.row}>
+          <p className={styles.rowLabel}>quiet, a disabled option</p>
+          <LiveQuietSelect options={HOST_OPTIONS} />
+        </div>
+        <div className={styles.row}>
+          <p className={styles.rowLabel}>quiet disabled</p>
+          <Select variant="quiet" ariaLabel="Region" value="us-east" options={OPTIONS} onChange={() => {}} disabled />
         </div>
       </ThemeFlip>
     </section>

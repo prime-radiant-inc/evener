@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="tokens.css">
 <link rel="stylesheet" href="resolved.css">
 <style>
+  /* biome-ignore lint/complexity/noImportantStyles: layoutguard measures settled geometry, so transitions must not run */
   *, *::before, *::after { transition: none !important; animation: none !important; }
   body { margin: 0; background: var(--surface-1); font-family: var(--font-sans); color: var(--ink-hi); }
   .fixtures { display: flex; flex-direction: column; gap: 8px; padding: 8px; }
@@ -16,8 +17,9 @@
 </head>
 <body data-font-size="m">
 <!-- Composer.tsx renders the status row through SessionChrome's `.body`/`.row`
-     hierarchy. The effort trigger is a transparent native <select> laid over
-     its own readout, so its painted target is the .effortTrigger span. -->
+     hierarchy. The effort trigger is Select's quiet variant: a transparent
+     native <select> laid over its own readout, so its painted target is the
+     .quietVariant trigger span inside the row's .effortTrigger wrapper. -->
 <main class="fixtures">
   <section class="fixture">
     <div class="fixtureLabel">390px phone, status row with a reasoning-effort control</div>
@@ -31,22 +33,24 @@
           <div class="row" data-status>
           <span class="identity">
             <span class="model">
-              <button class="trigger" type="button" data-model>
+              <button class="trigger quietTrigger" type="button" data-model>
                 <span class="value" data-model-value>deepseek-4.1-flash-abliterated</span>
                 <span class="chevron">⌄</span>
               </button>
             </span>
               <span class="model">
-                <button class="trigger" type="button" data-model="vision">
+                <button class="trigger quietTrigger" type="button" data-model="vision">
                   <span class="value" data-model-value>vision</span>
                   <span class="chevron">⌄</span>
                 </button>
               </span>
-            <span class="effortTrigger" data-effort>
+            <span class="effortTrigger">
               <span class="separator" aria-hidden="true">·</span>
-              <span class="effortValue" aria-hidden="true">high</span>
-              <span class="effortChevron" aria-hidden="true">⌄</span>
-              <select class="effortSelect" aria-label="Reasoning effort"><option>high</option></select>
+              <span class="quietVariant quietTrigger" data-effort>
+                <span class="quietReadout" aria-hidden="true">high</span>
+                <span class="quietCaret" aria-hidden="true" data-quiet-chevron>⌄</span>
+                <select class="quietSelect" aria-label="Reasoning effort"><option>high</option></select>
+              </span>
             </span>
           </span>
           <span class="visuallyHidden"><meter aria-label="Context: 67k of 100k tokens used, 67 percent" min="0" value="67000" max="100000"></meter></span>

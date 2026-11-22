@@ -9,8 +9,10 @@
     "widgets/tooltip/tooltip.module.css",
     "panes/session/composer/composer.module.css",
     "panes/session/chrome/sessionchrome.module.css",
+    "widgets/internal/quietTrigger.module.css",
     "panes/session/chrome/statusrow.module.css",
     "panes/session/chrome/modelswitch.module.css",
+    "widgets/select/select.module.css",
     "widgets/meter/meter.module.css",
     "widgets/visuallyhidden/visuallyhidden.module.css"
   ],

@@ -5,20 +5,7 @@
 }
 
 .trigger {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  /* No width: the trigger hugs its label (the status row's identity run
-   * sizes the wrapper to content), and max-width caps it inside the wrapper
-   * when the row runs narrow so the label ellipsizes instead of overflowing. */
-  min-width: 0;
-  max-width: 100%;
-  padding: var(--space-1);
-  border: none;
-  border-radius: var(--radius-pill);
-  background: transparent;
-  cursor: pointer;
-  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+  composes: quietTrigger from "../../../widgets/internal/quietTrigger.module.css";
 }
 
 /* The model id, in this row's caption size. Sans, not mono: an id is an
@@ -27,47 +14,13 @@
  * mono treatment in the Details sheet. Tabular figures hold the version
  * digits steady across switches. */
 .value {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--ink-mid);
+  composes: quietValue from "../../../widgets/internal/quietTrigger.module.css";
   font-family: var(--font-sans);
   font-variant-numeric: tabular-nums;
-  font-size: var(--font-size-caption);
-}
-
-.trigger:hover:not(:disabled) {
-  background: var(--hover-1);
-}
-
-.trigger:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: -2px;
-}
-
-.trigger:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
 }
 
 .chevron {
-  display: inline-flex;
-  align-items: center;
-  flex: none;
-  color: var(--ink-mid);
-}
-
-/* Touch target floor (2026-07-30-mobile-session-layout-design.md, decision
- * 4): the trigger is the only way to open the model picker, so a coarse
- * pointer needs the platform's 44px tap floor - min-height, not height, so
- * the row's own sizing above stays untouched and this only ever grows it.
- * (any-pointer: coarse), not a width breakpoint like button.module.css's own
- * phone block: this trigger isn't a widgets/button consumer. */
-@media (any-pointer: coarse) {
-  .trigger {
-    min-height: var(--tap-min);
-  }
+  composes: quietChevron from "../../../widgets/internal/quietTrigger.module.css";
 }
 
 /* The floating panel's own content padding/sizing - widgets/popover supplies

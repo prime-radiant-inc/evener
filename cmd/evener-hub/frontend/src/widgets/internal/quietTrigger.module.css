@@ -1,0 +1,71 @@
+/* The shared closed-state trigger for a picker whose visible control IS its
+ * current value: Select's quiet variant lays a transparent native <select>
+ * over this recipe, and ModelSwitchTrigger's Popover button composes it. Both
+ * keep their own mechanics - a native select in the one, a Popover in the
+ * other - and share only the closed face: pill geometry, the --hover-1 wash,
+ * the inset focus ring, caption ink and the chevron.
+ *
+ * The disabled state is keyed twice: :disabled for a real <button>, and
+ * [data-disabled="true"] for the span Select renders around its overlay (a
+ * span takes no disabled attribute). */
+.quietTrigger {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 100%;
+  padding: var(--space-1);
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  cursor: pointer;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.quietTrigger:hover:not(:disabled):not([data-disabled="true"]) {
+  background: var(--hover-1);
+}
+
+/* The focus ring belongs to the trigger's visible face even though focus
+ * lands on the transparent <select> inside Select's quiet variant -
+ * :focus-within is what carries it across. The button form matches through
+ * :focus-visible. */
+.quietTrigger:focus-visible,
+.quietTrigger:focus-within {
+  outline: var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.quietTrigger:disabled,
+.quietTrigger[data-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* The current value, ellipsizing rather than widening the trigger. */
+.quietValue {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+.quietChevron {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  color: var(--ink-mid);
+}
+
+/* Touch target floor (2026-07-30-mobile-session-layout-design.md, decision
+ * 4): a coarse pointer needs the platform's 44px target. min-height only, so
+ * each site's own width breakpoint can add what its layout needs - Select's
+ * quiet variant adds min-width and centring. */
+@media (any-pointer: coarse) {
+  .quietTrigger {
+    min-height: var(--tap-min);
+  }
+}

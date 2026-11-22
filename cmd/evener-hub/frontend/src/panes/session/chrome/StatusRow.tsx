@@ -24,7 +24,7 @@ import {
   sessionEffortLevels,
 } from "@evener/appwire-client";
 import { threadsStore } from "../../../stores/threads";
-import { Chevron, Meter, useToasts, VisuallyHidden } from "../../../widgets";
+import { Meter, Select, useToasts, VisuallyHidden } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { ModelSwitch } from "./ModelSwitch";
 import {
@@ -61,19 +61,15 @@ const CLASS = {
   queueCompact: requireClass(styles.queueCompact, "statusrow.module.css", "queueCompact"),
   separator: requireClass(styles.separator, "statusrow.module.css", "separator"),
   effortTrigger: requireClass(styles.effortTrigger, "statusrow.module.css", "effortTrigger"),
-  effortValue: requireClass(styles.effortValue, "statusrow.module.css", "effortValue"),
-  effortChevron: requireClass(styles.effortChevron, "statusrow.module.css", "effortChevron"),
-  effortSelect: requireClass(styles.effortSelect, "statusrow.module.css", "effortSelect"),
 };
 
-// ReasoningEffortControl renders the reasoning-effort switcher as a quiet
-// trigger matching the model switcher beside it: the current value IS the
-// visible control, no bordered <select> box competing with it in a row that has
-// to stay one 12px line. It is still a REAL native <select> underneath, laid
-// over the readout at zero opacity - so it keeps every behavior a box would
-// have (tab order, arrow keys, type-ahead, the platform's own dropdown, a
-// standard <label htmlFor> accessible name) rather than reimplementing a
-// listbox to save a border.
+// ReasoningEffortControl renders the reasoning-effort switcher with Select's
+// quiet variant, matching the model switcher beside it: the current value IS
+// the visible control, no bordered <select> box competing with it in a row
+// that has to stay one 12px line. It is still a REAL native <select>
+// underneath, laid over the readout at zero opacity - so it keeps every
+// behavior a box would have (tab order, arrow keys, type-ahead, the
+// platform's own dropdown, ariaLabel naming the control).
 //
 // The effective ladder is the model's own named levels, or - when it reasons
 // but names none - the sessionEffortLevels fallback: the wire really can emit
@@ -109,43 +105,26 @@ function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; mod
   if (levels.length === 0) return null;
 
   const current = model.reasoningEffort ?? "";
-  const options = effortOptionLevels(levels, current);
+  const options = effortOptionLevels(levels, current).map((level) => ({
+    value: level,
+    label: level === "" ? effortDefaultLabel(model.defaultReasoningEffort, levels) : effortLabel(level, levels),
+  }));
 
   return (
     <span className={CLASS.effortTrigger} data-testid="status-row-effort">
       <span className={CLASS.separator} aria-hidden="true">
         ·
       </span>
-      {/* The visible readout, and the only thing that takes up space here: the
-          <select> over it is transparent, so this text is what a reader sees
-          and the native control is what they operate. aria-hidden because the
-          select already speaks its own value - without it the value would be
-          announced twice. */}
-      <span className={CLASS.effortValue} data-testid="status-row-effort-value" aria-hidden="true">
-        {effortReadout(current, levels, model.defaultReasoningEffort)}
-      </span>
-      <span className={CLASS.effortChevron} aria-hidden="true">
-        <Chevron direction="down" />
-      </span>
-      <VisuallyHidden>
-        <label htmlFor="status-row-reasoning-effort">Reasoning effort</label>
-      </VisuallyHidden>
-      {/* A native <select>, not widgets/select: that widget's own restyle is
-          the bordered 32px box this row is shedding, and it forwards no
-          className for an overlay variant. Rendered raw so this row can own
-          the presentation while keeping every native behavior. */}
-      <select
+      <Select
+        variant="quiet"
         id="status-row-reasoning-effort"
-        className={CLASS.effortSelect}
+        ariaLabel="Reasoning effort"
         value={current}
+        options={options}
+        readout={effortReadout(current, levels, model.defaultReasoningEffort)}
         onChange={(e) => void handleChange(e.target.value)}
-      >
-        {options.map((level) => (
-          <option key={level} value={level}>
-            {level === "" ? effortDefaultLabel(model.defaultReasoningEffort, levels) : effortLabel(level, levels)}
-          </option>
-        ))}
-      </select>
+        valueTestId="status-row-effort-value"
+      />
     </span>
   );
 }
