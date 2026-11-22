@@ -38,15 +38,11 @@ var numberLinesGolden = []struct {
 // expectations taken from the pre-change implementation, and checks that the
 // bytes variant read_file uses answers identically. Comparing the two new
 // functions to each other alone would prove nothing: both could drift together.
-func TestNumberLinesBytesMatchesGolden(t *testing.T) {
+func TestNumberLinesMatchesGolden(t *testing.T) {
 	for _, tc := range numberLinesGolden {
 		off, lim := tc.off, tc.lim
 		if got := NumberLines(tc.text, &off, &lim); got != tc.want {
 			t.Errorf("%s: NumberLines(%q) = %q, want %q", tc.name, tc.text, got, tc.want)
-		}
-		off, lim = tc.off, tc.lim
-		if got := NumberLinesBytes([]byte(tc.text), &off, &lim); got != tc.want {
-			t.Errorf("%s: NumberLinesBytes(%q) = %q, want %q", tc.name, tc.text, got, tc.want)
 		}
 	}
 }

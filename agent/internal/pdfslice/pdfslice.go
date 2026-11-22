@@ -7,11 +7,9 @@ package pdfslice
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
@@ -28,77 +26,6 @@ var (
 	// MaxModelPDFBytes caps the PDF bytes returned to the model per read.
 	MaxModelPDFBytes = 20 << 20
 )
-
-// pdfcpu stamps every written PDF with a fresh /ID (derived from the current
-// time) and fresh Info dates, so trimming the same range of the same input
-// twice produces different bytes. Repeat tracking compares the bytes a read
-// returned with the bytes a re-read returns, so the same input and range must
-// yield the same document. A small bounded memo provides that stability (and
-// skips re-slicing a range a session reads again); the key carries the digest
-// of the whole input, so a file that changed on disk can never hit a stale
-// entry.
-const (
-	maxSlicedMemoEntries = 8
-	maxSlicedMemoBytes   = 48 << 20
-)
-
-type slicedMemoEntry struct {
-	key        [sha256.Size]byte
-	data       []byte
-	actualTo   int
-	totalPages int
-}
-
-var (
-	slicedMemoMu sync.Mutex
-	slicedMemo   []slicedMemoEntry
-)
-
-// slicedMemoKey identifies one extraction by the complete input bytes and the
-// requested 1-based page range. The entry stores the resolved range, so a hit
-// can report it without counting the document's pages again.
-func slicedMemoKey(raw []byte, from, to int) [sha256.Size]byte {
-	hash := sha256.New()
-	hash.Write(raw)
-	_, _ = fmt.Fprintf(hash, "\x00%d-%d", from, to)
-	var key [sha256.Size]byte
-	copy(key[:], hash.Sum(nil))
-	return key
-}
-
-func lookupSliced(key [sha256.Size]byte) (slicedMemoEntry, bool) {
-	slicedMemoMu.Lock()
-	defer slicedMemoMu.Unlock()
-	for _, entry := range slicedMemo {
-		if entry.key == key {
-			entry.data = bytes.Clone(entry.data)
-			return entry, true
-		}
-	}
-	return slicedMemoEntry{}, false
-}
-
-func rememberSliced(key [sha256.Size]byte, data []byte, actualTo, totalPages int) {
-	if len(data) > maxSlicedMemoBytes {
-		return
-	}
-	slicedMemoMu.Lock()
-	defer slicedMemoMu.Unlock()
-	slicedMemo = append(slicedMemo, slicedMemoEntry{
-		key:        key,
-		data:       bytes.Clone(data),
-		actualTo:   actualTo,
-		totalPages: totalPages,
-	})
-	total := 0
-	for _, entry := range slicedMemo {
-		total += len(entry.data)
-	}
-	for len(slicedMemo) > 1 && (len(slicedMemo) > maxSlicedMemoEntries || total > maxSlicedMemoBytes) {
-		total -= len(slicedMemo[0].data)
-		slicedMemo = slicedMemo[1:]
-	}
-}
 
 // newStatelessConfig builds a relaxed pdfcpu configuration without reading or
 // creating ~/.config/pdfcpu, so read_file stays hermetic and sandbox-safe.
@@ -175,23 +102,6 @@ func SlicePDF(ctx context.Context, raw []byte, spec string) (sliced []byte, from
 		return nil, 0, 0, 0, fmt.Errorf("read_file: cannot initialize PDF config: %w", err)
 	}
 
-	// A provided range that was sliced before answers from the memo without
-	// re-counting the document's pages. The entry carries the canonical facts
-	// the first extraction found, and the raw return is re-checked against the
-	// current byte cap so a changed limit applies on a hit too.
-	var memoKey [sha256.Size]byte
-	if provided {
-		memoKey = slicedMemoKey(raw, from, to)
-		if entry, ok := lookupSliced(memoKey); ok {
-			if from == 1 && entry.actualTo == entry.totalPages && len(raw) <= MaxModelPDFBytes {
-				return raw, from, entry.actualTo, entry.totalPages, nil
-			}
-			if len(entry.data) <= MaxModelPDFBytes {
-				return entry.data, from, entry.actualTo, entry.totalPages, nil
-			}
-		}
-	}
-
 	totalPages, err = api.PageCount(ctx, bytes.NewReader(raw), conf)
 	if err != nil {
 		return nil, 0, 0, 0, fmt.Errorf("read_file: cannot read PDF: %w", err)
@@ -227,6 +137,5 @@ func SlicePDF(ctx context.Context, raw []byte, spec string) (sliced []byte, from
 			"read_file: PDF pages %d-%d are %d bytes, exceeding the %d MiB per-call cap; request a smaller page range",
 			from, actualTo, buf.Len(), MaxModelPDFBytes>>20)
 	}
-	rememberSliced(memoKey, buf.Bytes(), actualTo, totalPages)
 	return buf.Bytes(), from, actualTo, totalPages, nil
 }

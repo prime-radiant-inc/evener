@@ -152,7 +152,7 @@ func TestReadWindowEndsCleanlyOnDataWithEOF(t *testing.T) {
 		t.Fatalf("windowed read of a reader ending with data+EOF: %v", err)
 	}
 	off, lim := 1, 2
-	if want := NumberLinesBytes([]byte(body), &off, &lim); !strings.HasPrefix(got, want) {
+	if want := NumberLines(body, &off, &lim); !strings.HasPrefix(got, want) {
 		t.Fatalf("window = %q, want %q", got, want)
 	}
 	if meta.StartLine != 1 || meta.EndLine != 2 || meta.TotalLines != 0 {

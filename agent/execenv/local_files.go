@@ -164,23 +164,6 @@ func (e *LocalExecutionEnvironment) ReadFileRichAndBytesCtx(ctx context.Context,
 	return out, b, meta, nil
 }
 
-// NumberLinesBytes is NumberLines over the file's raw bytes. It exists so a
-// caller that already holds the bytes does not pay a whole-file string copy to
-// display a small window: the read_file path returns a 20-line window while
-// holding an 8 MiB file, and converting the file to a string first copies every
-// byte of it. The output is byte-identical to NumberLines(string(text), ...):
-// compact "N\t" row prefixes ("N:" for the whole window when any displayed
-// line starts with a tab), CRLF normalized to LF, lines clamped to
-// DefaultReadMaxLineChars runes (skipped for the single line that limit=1
-// selects), and a rendered body that stops on a clean line boundary under
-// DefaultReadMaxBytes. A negative offset returns that many lines back from the
-// end, keeping the tail-most rows when the byte cap drops earlier ones. Rows
-// only: unlike read_file, there are no file-path footers or continuation
-// notices.
-func NumberLinesBytes(text []byte, offsetLine, limitLines *int) string {
-	return formatNumberLinesBytes(text, offsetLine, limitLines)
-}
-
 // eachLine visits the '\n'-separated segments of text in order — including
 // the final (possibly empty) segment after a trailing newline, exactly the
 // segments strings.Split(text, "\n") yields — without materializing them all:

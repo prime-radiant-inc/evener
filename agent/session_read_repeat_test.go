@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -377,5 +378,114 @@ func TestMemoryReadLargePagePreservesSizeNoteWithTextResult(t *testing.T) {
 	}
 	if strings.Count(index.Output, "\n\n") != 1 {
 		t.Fatalf("sliced index emitted more than one footer: %q", index.Output)
+	}
+}
+
+// An engine-paged read_file result already stops cleanly at 48 KB with an
+// offset= continuation footer; the session must not also treat it as a
+// registry-truncated output and append a redundant artifact/read_transcript
+// pointer holding only the identical page.
+func TestPagedReadFileDoesNotAttachRedundantArtifact(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "large.txt")
+	const totalLines = 2000
+	body := strings.Repeat(strings.Repeat("a", 60)+"\n", totalLines)
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := newSession(t, withEnv(execenv.NewLocalExecutionEnvironment(dir)))
+	res := repeatReadFile(t, s, "r-big", path, map[string]any{})
+	if res.Truncated {
+		t.Fatalf("engine-paged read set ExecResult.Truncated=true; want false (registry did not cut it)")
+	}
+	if !strings.Contains(res.Output, "offset=") {
+		t.Fatalf("engine-paged read missing offset= continuation footer: tail=%q", res.Output[max(0, len(res.Output)-200):])
+	}
+	if strings.Contains(res.Output, "artifact:") || strings.Contains(res.Output, "read_transcript(") {
+		t.Fatalf("engine-paged read attached a redundant artifact/read_transcript hint: tail=%q", res.Output[max(0, len(res.Output)-240):])
+	}
+}
+
+// memory_read on MEMORY.md must derive its continuation footer from the lines
+// NumberLines actually emitted, both when the 48 KB byte cap cuts a large
+// generated index and when a negative offset selects a tail slice.
+func TestMemoryReadIndexFooterMatchesByteCappedAndNegativeOffsetOutput(t *testing.T) {
+	t.Parallel()
+	s, scope := memoryWritesSession(t)
+	for i := range 360 {
+		name := fmt.Sprintf("p%03d.md", i)
+		desc := fmt.Sprintf("when handling memory index entry %03d across a long descriptive trigger clause %s", i, strings.Repeat("x", 90))
+		seedMemoryPage(t, scope, name, "---\ndescription: "+desc+"\ntags: [t]\nupdated: 2026-10-01\n---\n")
+	}
+
+	full := memoryExec(t, s, "memory_read", map[string]any{"scope": "personal", "file_path": "MEMORY.md"})
+	if full.IsError {
+		t.Fatal(full.Output)
+	}
+	rowsBody, footer, hasFooter := strings.Cut(full.Output, "\n\n")
+	if !hasFooter || footer == "" {
+		t.Fatalf("byte-capped MEMORY.md read emitted no continuation footer (len=%d)", len(full.Output))
+	}
+	lines := strings.Split(strings.TrimSuffix(rowsBody, "\n"), "\n")
+	lastRowNum, _, ok := strings.Cut(lines[len(lines)-1], "\t")
+	if !ok {
+		lastRowNum, _, ok = strings.Cut(lines[len(lines)-1], ":")
+	}
+	lastShown, err := strconv.Atoi(strings.TrimSpace(lastRowNum))
+	if !ok || err != nil || lastShown <= 0 || lastShown >= 360 {
+		t.Fatalf("expected byte-capped index to stop before line 360; last line=%q", lines[len(lines)-1])
+	}
+	wantNext := fmt.Sprintf("offset=%d", lastShown+1)
+	if !strings.Contains(footer, wantNext) {
+		t.Fatalf("byte-capped MEMORY.md footer = %q, want %q", footer, wantNext)
+	}
+
+	tail := memoryExec(t, s, "memory_read", map[string]any{"scope": "personal", "file_path": "MEMORY.md", "offset": -50, "limit": 10})
+	if tail.IsError {
+		t.Fatal(tail.Output)
+	}
+	tailBody, tailFooter, hasTailFooter := strings.Cut(tail.Output, "\n\n")
+	if !hasTailFooter || tailFooter == "" {
+		t.Fatalf("negative-offset MEMORY.md slice missing footer: %q", tail.Output)
+	}
+	tailLines := strings.Split(strings.TrimSuffix(tailBody, "\n"), "\n")
+	firstTok, _, _ := strings.Cut(tailLines[0], "\t")
+	lastTok, _, _ := strings.Cut(tailLines[len(tailLines)-1], "\t")
+	firstTail, _ := strconv.Atoi(strings.TrimSpace(firstTok))
+	lastTail, _ := strconv.Atoi(strings.TrimSpace(lastTok))
+	if firstTail <= 1 || lastTail != firstTail+9 {
+		t.Fatalf("negative-offset slice rows = %d..%d, want 10 rows near tail", firstTail, lastTail)
+	}
+	wantRange := fmt.Sprintf("%d-%d", firstTail, lastTail)
+	wantTailNext := fmt.Sprintf("offset=%d", lastTail+1)
+	if !strings.Contains(tailFooter, wantRange) || !strings.Contains(tailFooter, wantTailNext) {
+		t.Fatalf("negative-offset MEMORY.md footer = %q, want range %q and %q", tailFooter, wantRange, wantTailNext)
+	}
+}
+
+// Following a clamped line's own offset=N limit=1 recovery hint must not be
+// flagged as an unchanged repeat of the earlier clamped read.
+func TestRepeatReadDoesNotFlagLimitOneUncutEscapeAfterClampedRead(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "minified.js")
+	body := "header\n" + strings.Repeat("z", 5000) + "\nfooter\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := newSession(t, withEnv(execenv.NewLocalExecutionEnvironment(dir)))
+
+	first := repeatReadFile(t, s, "r-clamped", path, map[string]any{})
+	if first.UnchangedSinceTurn != nil {
+		t.Fatal("first read must not be marked unchanged")
+	}
+	escape := repeatReadFile(t, s, "r-escape", path, map[string]any{"offset": 2, "limit": 1})
+	if escape.UnchangedSinceTurn != nil {
+		t.Fatalf("offset=2 limit=1 uncut recovery after clamped read must not be flagged unchanged (UnchangedSinceTurn=%d, output tail=%q)",
+			*escape.UnchangedSinceTurn, escape.Output[max(0, len(escape.Output)-160):])
+	}
+	if !strings.Contains(escape.Output, strings.Repeat("z", 5000)) {
+		t.Fatal("offset=2 limit=1 did not return the full uncut line")
 	}
 }

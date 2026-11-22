@@ -67,7 +67,7 @@ func TestReadFileWindowScopesTheBinaryRefusal(t *testing.T) {
 		if err != nil {
 			t.Fatalf("windowed read of a file whose NUL is past the window: %v", err)
 		}
-		want := NumberLinesBytes([]byte(pad+"binary\x00tail\n"), &off, &lim)
+		want := NumberLines(pad+"binary\x00tail\n", &off, &lim)
 		if !strings.HasPrefix(got, want) {
 			t.Fatalf("window = %q, want %q", got, want)
 		}

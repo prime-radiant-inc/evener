@@ -165,16 +165,6 @@ func TestSlicePDFRangesAndClamping(t *testing.T) {
 	if got := pdfPageCount(t, sliced); got != 3 {
 		t.Fatalf("SlicePDF(pages 2-4) returned a PDF with %d pages, want 3", got)
 	}
-	// pdfcpu gives every written PDF a fresh file ID and Info dates, so the
-	// same input and range must still come back byte-identical: repeat
-	// tracking compares the bytes a re-read returns against the first read.
-	repeated, _, _, _, err := SlicePDF(ctx, fifteenPages, "2-4")
-	if err != nil {
-		t.Fatalf("SlicePDF(pages 2-4) again error: %v", err)
-	}
-	if !bytes.Equal(repeated, sliced) {
-		t.Fatal("SlicePDF(pages 2-4) returned different bytes for the same input and range")
-	}
 
 	sliced, from, to, totalPages, err = SlicePDF(ctx, fifteenPages, "11-20")
 	if err != nil {

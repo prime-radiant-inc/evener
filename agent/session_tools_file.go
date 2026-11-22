@@ -132,14 +132,11 @@ func execFileReadWith(ctx context.Context, args map[string]any, guard readGuard,
 		text := tool.TextResult{
 			Output:             result,
 			FullOutput:         result,
-			Truncated:          meta.Truncated,
 			ReadStartLine:      meta.StartLine,
 			ReadEndLine:        meta.EndLine,
 			ReadPastEOF:        meta.PastEOF,
 			ReadUnnumberedTail: meta.TailMode && meta.StartLine == 0 && meta.EndLine == 0,
-		}
-		if meta.Truncated {
-			text.TruncatedBy = tool.TruncationReason(meta.TruncatedBy)
+			ReadClamped:        meta.ClampedLines > 0,
 		}
 		return text, nil
 	}

@@ -113,7 +113,7 @@ func TestReadFileDefaultLimitUsesTruncHead(t *testing.T) {
 	}
 }
 
-func TestTextResultPassesThroughReadMetadataAndTruncation(t *testing.T) {
+func TestTextResultPassesThroughReadMetadata(t *testing.T) {
 	t.Parallel()
 	reg := NewRegistry()
 	if err := reg.Register(RegisteredTool{
@@ -122,10 +122,9 @@ func TestTextResultPassesThroughReadMetadataAndTruncation(t *testing.T) {
 		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
 			return TextResult{
 				Output:        "1\ta\n",
-				Truncated:     true,
-				TruncatedBy:   TruncatedByChars,
 				ReadStartLine: 1,
 				ReadEndLine:   40,
+				ReadClamped:   true,
 			}, nil
 		},
 	}); err != nil {
@@ -135,8 +134,8 @@ func TestTextResultPassesThroughReadMetadataAndTruncation(t *testing.T) {
 	if got.Output != "1\ta\n" {
 		t.Fatalf("Output = %q, want %q unchanged", got.Output, "1\ta\n")
 	}
-	if !got.Truncated || got.TruncatedBy != TruncatedByChars || got.ReadStartLine != 1 || got.ReadEndLine != 40 {
-		t.Fatalf("ExecResult metadata = truncated=%v by=%q start=%d end=%d", got.Truncated, got.TruncatedBy, got.ReadStartLine, got.ReadEndLine)
+	if got.Truncated || got.ReadStartLine != 1 || got.ReadEndLine != 40 || !got.ReadClamped {
+		t.Fatalf("ExecResult metadata = truncated=%v start=%d end=%d clamped=%v", got.Truncated, got.ReadStartLine, got.ReadEndLine, got.ReadClamped)
 	}
 }
 
@@ -174,8 +173,6 @@ func TestReadFileLongPathDoesNotTripRegistryTruncHead(t *testing.T) {
 			}
 			return TextResult{
 				Output:        out,
-				Truncated:     meta.Truncated,
-				TruncatedBy:   TruncationReason(meta.TruncatedBy),
 				ReadStartLine: meta.StartLine,
 				ReadEndLine:   meta.EndLine,
 			}, nil
@@ -196,5 +193,8 @@ func TestReadFileLongPathDoesNotTripRegistryTruncHead(t *testing.T) {
 	}
 	if got.Output != got.RecoverableOutput {
 		t.Fatalf("registry TruncHead modified execenv output (output len=%d recoverable len=%d)", len(got.Output), len(got.RecoverableOutput))
+	}
+	if got.Truncated {
+		t.Fatalf("registry marked long-path output truncated when it fit under 50,000 chars")
 	}
 }

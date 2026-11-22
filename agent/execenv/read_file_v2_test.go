@@ -552,10 +552,6 @@ func TestNumberLinesNegativeOffsetKeepsTailMostLines(t *testing.T) {
 	off := -500
 
 	gotStr := NumberLines(text, &off, nil)
-	gotBytes := NumberLinesBytes([]byte(text), &off, nil)
-	if gotStr != gotBytes {
-		t.Fatalf("NumberLines vs NumberLinesBytes diverged for negative offset")
-	}
 	if len(gotStr) > DefaultReadMaxBytes {
 		t.Fatalf("NumberLines len = %d, want <= %d", len(gotStr), DefaultReadMaxBytes)
 	}

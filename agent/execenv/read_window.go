@@ -543,36 +543,6 @@ func trimTrailingNewlineString(s string) string {
 	return strings.TrimSuffix(s, "\n")
 }
 
-// formatNumberLinesBytes is the pure numbered-row formatter behind NumberLinesBytes
-// (no file-path footers, no empty-file or unnumbered-tail headers).
-func formatNumberLinesBytes(text []byte, offsetLine, limitLines *int) string {
-	p := resolveReadWindowParams(offsetLine, limitLines)
-	body := trimTrailingNewlineBytes(text)
-
-	if p.tailMode {
-		startOffset := backwardTailOffsetBytes(body, p.tailScanNeedLines())
-		startLine := 1
-		if startOffset > 0 {
-			startLine = 1 + bytes.Count(body[:startOffset], []byte{'\n'})
-		}
-		rows, _, _, _ := collectBytesRows(body[startOffset:], startLine, p.effLimit, p.explicitLimit, p.singleLineEscape, false, DefaultReadMaxBytes)
-		rw := renderPreparedRows(rows, false, DefaultReadMaxBytes, !p.explicitLimit, "", 0)
-		return rw.body
-	}
-
-	offset := 0
-	for i := 1; i < p.start; i++ {
-		idx := bytes.IndexByte(body[offset:], '\n')
-		if idx < 0 {
-			return ""
-		}
-		offset += idx + 1
-	}
-	rows, _, _, _ := collectBytesRows(body[offset:], p.start, p.effLimit, true, p.singleLineEscape, false, DefaultReadMaxBytes)
-	rw := renderPreparedRows(rows, false, DefaultReadMaxBytes, false, "", 0)
-	return rw.body
-}
-
 func backwardTailOffsetBytes(body []byte, needLines int64) int {
 	newlinesFound := int64(0)
 	pos := len(body)

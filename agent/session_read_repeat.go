@@ -78,8 +78,9 @@ func sameReadStamp(a, b readStamp) bool {
 // repeats of the same span the note escalates to name the repeat count.
 func (s *Session) noteReadFileRepeat(path string, before readStamp, res *tool.ExecResult) {
 	// A past-EOF notice and an unnumbered tail read report no absolute line
-	// range, so there is nothing a later read can be compared against.
-	if res.ReadPastEOF || res.ReadUnnumberedTail {
+	// range, and a clamped read withheld parts of long lines that a follow-up
+	// limit=1 read must be free to fetch without a false repeat hint.
+	if res.ReadPastEOF || res.ReadUnnumberedTail || res.ReadClamped {
 		return
 	}
 	s.mu.Lock()
@@ -113,6 +114,11 @@ func (s *Session) noteReadFileRepeat(path string, before readStamp, res *tool.Ex
 		if textRead {
 			covered = span.startLine > 0 && span.startLine <= res.ReadStartLine && span.endLine >= res.ReadEndLine &&
 				(span.startLine != res.ReadStartLine || span.endLine != res.ReadEndLine || span.content == nowHash)
+		} else if res.ReadPages != "" {
+			// Sliced PDFs carry fresh trailer IDs per extraction, so matching on
+			// the unchanged file stamp plus canonical page range avoids holding
+			// a process-global PDF byte cache.
+			covered = span.startLine == 0 && span.pages == res.ReadPages
 		} else {
 			covered = span.startLine == 0 && span.pages == res.ReadPages && span.content == nowHash
 		}

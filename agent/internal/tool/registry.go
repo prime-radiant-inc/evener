@@ -372,6 +372,7 @@ type ExecResult struct {
 	ReadEndLine        int
 	ReadPastEOF        bool
 	ReadUnnumberedTail bool
+	ReadClamped        bool
 	ReadPages          string
 
 	// UnchangedSinceTurn is set on a repeat read_file of the same path and range
@@ -459,12 +460,11 @@ type StateResult struct {
 type TextResult struct {
 	Output             string
 	FullOutput         string
-	Truncated          bool
-	TruncatedBy        TruncationReason
 	ReadStartLine      int
 	ReadEndLine        int
 	ReadPastEOF        bool
 	ReadUnnumberedTail bool
+	ReadClamped        bool
 }
 
 // ImageResult is returned by tool executors (e.g. read_file) when a file is
@@ -1033,10 +1033,7 @@ func dispatchedResult(name, callID string, lim schema.ToolOutputLimit, v any, er
 		res.ReadEndLine = text.ReadEndLine
 		res.ReadPastEOF = text.ReadPastEOF
 		res.ReadUnnumberedTail = text.ReadUnnumberedTail
-		if !res.Truncated && text.Truncated {
-			res.Truncated = true
-			res.TruncatedBy = text.TruncatedBy
-		}
+		res.ReadClamped = text.ReadClamped
 		return res
 	}
 

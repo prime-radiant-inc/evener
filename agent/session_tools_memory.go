@@ -7,6 +7,7 @@ import (
 	"maps"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -283,20 +284,43 @@ func memoryPageSizeNote(size int, withSkill bool) string {
 	return fmt.Sprintf("\n\nThis page is long (%d KB). A memory page should hold one fact.", kb)
 }
 
-func memoryIndexSliceFooter(body, scope, toolName string, offset, limit *int) string {
-	start := 1
-	if offset != nil && *offset > 0 {
-		start = *offset
+// memoryIndexRowRange parses the 1-based line numbers of the first and last
+// numbered rows rendered by execenv.NumberLines.
+func memoryIndexRowRange(rendered string) (first, last int, ok bool) {
+	trimmed := strings.TrimSuffix(rendered, "\n")
+	if trimmed == "" {
+		return 0, 0, false
 	}
-	winLimit := execenv.DefaultReadLines
-	if limit != nil && *limit > 0 {
-		winLimit = *limit
+	parseRowNum := func(line string) (int, bool) {
+		sep := strings.IndexAny(line, "\t:")
+		if sep <= 0 {
+			return 0, false
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(line[:sep]))
+		return n, err == nil && n > 0
 	}
+	firstLine := trimmed
+	if nl := strings.IndexByte(trimmed, '\n'); nl >= 0 {
+		firstLine = trimmed[:nl]
+	}
+	lastLine := trimmed
+	if nl := strings.LastIndexByte(trimmed, '\n'); nl >= 0 {
+		lastLine = trimmed[nl+1:]
+	}
+	f, okF := parseRowNum(firstLine)
+	l, okL := parseRowNum(lastLine)
+	if !okF || !okL {
+		return 0, 0, false
+	}
+	return f, l, true
+}
+
+func memoryIndexSliceFooter(body, rendered, scope, toolName string) string {
 	totalLines := strings.Count(body, "\n") + 1
-	if start > totalLines || winLimit > totalLines-start {
+	start, end, ok := memoryIndexRowRange(rendered)
+	if !ok || end >= totalLines {
 		return ""
 	}
-	end := start + winLimit - 1
 	return fmt.Sprintf("\n[Showing lines %d-%d of %d; read more with %s(scope=%q, file_path=\"MEMORY.md\", offset=%d)]",
 		start, end, totalLines, toolName, scope, end+1)
 }
@@ -335,7 +359,7 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 		body := strings.TrimSuffix(rendered.Index, "\n")
 		offset, limit := optionalIntArg(args, "offset"), optionalIntArg(args, "limit")
 		out := execenv.NumberLines(body, offset, limit)
-		return out + memoryIndexSliceFooter(body, scope, s.providerVisibleToolName("memory_read"), offset, limit), nil
+		return out + memoryIndexSliceFooter(body, out, scope, s.providerVisibleToolName("memory_read")), nil
 	}
 	// Capture the bytes this read loaded, so the page's record is exactly what
 	// the session saw. They are the whole page even for an offset or limit
