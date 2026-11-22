@@ -3081,6 +3081,24 @@ func TestDelegateAttentionUserStopHoldsUnpresentedRowFromStaleArmedWake(t *testi
 	if pending := stopFold.pendingIDs(); len(pending) != 2 || len(stopFold.resolutions) != 0 {
 		t.Fatalf("the stop's fold = pending:%v resolutions:%v, want both originals pending", pending, stopFold.resolutions)
 	}
+	// The stop will settle the latch the parked request has not presented; the
+	// other pending row is its rider. Both are named in this deterministic
+	// window: the parked request holds the delegate busy, so no drive can
+	// consume or reorder them.
+	var claimedID, otherID string
+	lane.delegateSess.attentionMu.Lock()
+	claimedID = lane.delegateSess.attentionAcceptedID
+	lane.delegateSess.attentionMu.Unlock()
+	for _, id := range stopFold.order {
+		if id != claimedID {
+			otherID = id
+			break
+		}
+	}
+	if claimedID == "" || otherID == "" {
+		t.Fatalf("the stop's window does not name the latched trigger and its rider (latched=%q order=%v)",
+			claimedID, stopFold.order)
+	}
 	lane.delegateSub.mu.Lock()
 	runDone := lane.delegateSub.done
 	lane.delegateSub.mu.Unlock()
@@ -3096,47 +3114,14 @@ func TestDelegateAttentionUserStopHoldsUnpresentedRowFromStaleArmedWake(t *testi
 		t.Fatal("the user-stopped run never completed its settle tail")
 	}
 
-	// The settle's shape, read from the fold the settle left: the claimed row
-	// reopened under a fresh identity, and the reopened row still pending —
-	// the stop's hold keeps it out of automatic drives, so its pending state
-	// is deterministic here. The other original's state is deliberately
-	// unconstrained: the stale armed wake may have presented it during or
-	// right after the settle, and the waits below tolerate either. The parked
-	// request carried both originals, the proof the claim captured its rider:
-	// that capture is what left the stale armed wake behind.
-	fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
-	if foldErr != nil {
-		t.Fatalf("read the delegate's attention fold after the stop: %v", foldErr)
-	}
-	// The settle consumed nothing and re-delivered nothing: the trigger is
-	// still pending under its own identity, and the stop holds exactly it out
-	// of the automatic drives. The other original stays presentable.
-	var claimedID, otherID string
-	lane.delegateSess.attentionMu.Lock()
-	for _, id := range fold.order {
-		if _, resolved := fold.resolutions[id]; resolved {
-			lane.delegateSess.attentionMu.Unlock()
-			t.Fatalf("the user's stop consumed a row (resolutions=%v)", fold.resolutions)
-		}
-		if lane.delegateSess.delegateAttentionHeldFromAutomaticDriveLocked(id) {
-			if claimedID != "" {
-				lane.delegateSess.attentionMu.Unlock()
-				t.Fatalf("the settle held two rows (%q, %q)", claimedID, id)
-			}
-			claimedID = id
-			continue
-		}
-		if otherID != "" {
-			lane.delegateSess.attentionMu.Unlock()
-			t.Fatalf("the settle left two unheld rows (%q, %q)", otherID, id)
-		}
-		otherID = id
-	}
-	lane.delegateSess.attentionMu.Unlock()
-	if claimedID == "" || otherID == "" {
-		t.Fatalf("the stop's settle did not leave one held row and one presentable row (order=%v resolutions=%v)", fold.order, fold.resolutions)
-	}
-	claimedText, otherText := fold.content[claimedID].Text(), fold.content[otherID].Text()
+	// No transient hold snapshot is asserted here: once the release lets the
+	// stale armed wake drive, a valid successor may present the rider, and its
+	// settle tail may release the hold and present the stopped report, between
+	// any two observations. The generation ordering below is the durable shape
+	// of the hold's effect. The parked request carried both originals, the
+	// proof the claim captured its rider: that capture is what left the stale
+	// armed wake behind.
+	claimedText, otherText := stopFold.content[claimedID].Text(), stopFold.content[otherID].Text()
 	stateDump := func() string {
 		requestsMu.Lock()
 		summaries := make([]string, len(requests))
@@ -3185,7 +3170,7 @@ func TestDelegateAttentionUserStopHoldsUnpresentedRowFromStaleArmedWake(t *testi
 		live, err := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
 		return err == nil && live.resolutions[otherID] != ""
 	})
-	fold, foldErr = readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
+	fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
 	if foldErr != nil {
 		t.Fatalf("read the delegate's attention fold after the other row presented: %v", foldErr)
 	}
@@ -3434,24 +3419,11 @@ func TestDelegateAttentionHeldUpdateDoesNotLoopTheFinalizationDrain(t *testing.T
 		t.Fatal("the user-stopped run never completed its settle tail")
 	}
 
-	// The settle holds exactly the update — the trigger the stopped run
-	// carried — out of the automatic drives; the rider stays presentable. That
-	// hold is what keeps the update out of the finalization drain's list.
-	fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
-	if foldErr != nil {
-		t.Fatalf("read the delegate's attention fold after the stop: %v", foldErr)
-	}
-	if fold.resolutions[updateID] != "" || fold.resolutions[riderRowID] != "" {
-		t.Fatalf("the stop consumed a scenario row (resolutions=%v)", fold.resolutions)
-	}
-	lane.delegateSess.attentionMu.Lock()
-	heldUpdate := lane.delegateSess.delegateAttentionHeldFromAutomaticDriveLocked(updateID)
-	heldRider := lane.delegateSess.delegateAttentionHeldFromAutomaticDriveLocked(riderRowID)
-	lane.delegateSess.attentionMu.Unlock()
-	if !heldUpdate || heldRider {
-		t.Fatalf("the settle held the wrong rows (update held=%t, rider held=%t; pending=%v)",
-			heldUpdate, heldRider, fold.pendingIDs())
-	}
+	// No transient hold snapshot is asserted here. Once the stop lands, the
+	// stale armed wake drives the rider and the rider's settle tail releases
+	// the hold, so the update may present on its own generation between any two
+	// observations. The generation ordering below is the durable shape of the
+	// hold's effect: the update never rides the rider's generation.
 	if !isDelegateUpdateAttentionID(updateID) {
 		t.Fatalf("the held row %q lost the update classification", updateID)
 	}
@@ -3501,13 +3473,6 @@ func TestDelegateAttentionHeldUpdateDoesNotLoopTheFinalizationDrain(t *testing.T
 		generation := attentionRunGenerations(t, lane.root.delegateController, lane.fixture.delegateID)[riderRowID]
 		return generation > stopGenerations[riderRowID] && attentionRunGenerationFinished(t, lane.root.delegateController, lane.fixture.delegateID, generation)
 	})
-	// The held update never rode the rider's generation: whatever generation
-	// presents it, it is not the rider's.
-	riderGeneration := attentionRunGenerations(t, lane.root.delegateController, lane.fixture.delegateID)[riderRowID]
-	if updateGeneration := attentionRunGenerations(t, lane.root.delegateController, lane.fixture.delegateID)[updateID]; updateGeneration == riderGeneration {
-		t.Fatalf("the held update rode the rider's generation %d (%s)", riderGeneration, drainState())
-	}
-
 	// The recovery contract: the rider's settle tail re-arms the remaining
 	// attention, and that fresh arm — a wake from a new event — releases the
 	// hold and presents the update on a generation of its own.
@@ -3521,7 +3486,7 @@ func TestDelegateAttentionHeldUpdateDoesNotLoopTheFinalizationDrain(t *testing.T
 		t.Fatalf("the held update rode the rider's generation instead of its own (update gen %d, rider gen %d; %s)",
 			updateGeneration, riderGeneration, drainState())
 	}
-	fold, foldErr = readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
+	fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
 	if foldErr != nil {
 		t.Fatalf("read the delegate's attention fold after the update resolved: %v", foldErr)
 	}
@@ -4198,7 +4163,6 @@ func TestDelegateAttentionUserStopHoldSurvivesIdleReleaseRestore(t *testing.T) {
 	// pass through the cold restore; the release unhooked the resident sub
 	// record the earlier drives used, so the pass is the wake-path drive
 	// that owns the restore.
-	rodeShape := ""
 	testwait.UntilSeen(t, "the released delegate's cold-restored drive to present the other row", func() (bool, string) {
 		lane.root.drivePendingDelegateAttention()
 		live, err := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
@@ -4206,20 +4170,11 @@ func TestDelegateAttentionUserStopHoldSurvivesIdleReleaseRestore(t *testing.T) {
 			return false, fmt.Sprintf("transcript read err=%v (%s)", err, stateDump())
 		}
 		if live.resolutions[otherID] != "" {
-			// The turn's finish resolves every row its request carried in one
-			// append, so the held report appearing with the other row's first
-			// resolution is the report riding that presentation.
-			if live.resolutions[claimedID] != "" {
-				rodeShape = fmt.Sprintf("resolutions=%v order=%v", live.resolutions, live.order)
-			}
 			return true, ""
 		}
 		return false, fmt.Sprintf("resolutions=%v order=%v gens=%v (%s)",
 			live.resolutions, live.order, live.resumeGenerations, stateDump())
 	})
-	if rodeShape != "" {
-		t.Fatalf("the cold-restored drive presented the stopped run's report riding the other row's presentation (%s; %s)", rodeShape, stateDump())
-	}
 
 	// The proof the presentation rode the cold restore: the delegate's live
 	// runtime is a session the release did not know — the resident runtime
@@ -4256,6 +4211,21 @@ func TestDelegateAttentionUserStopHoldSurvivesIdleReleaseRestore(t *testing.T) {
 	}
 	if fold.resolutions[claimedID] != delegateAttentionConsumed {
 		t.Fatalf("the held row did not resolve as presented on the fresh arm (resolutions=%v; %s)", fold.resolutions, stateDump())
+	}
+	// The generation oracle: one fold snapshot cannot prove which turn wrote
+	// which marker, because two correct successor generations can finish
+	// between polls. The journal names each row's generation, so the stopped
+	// report must have resolved on a later one than the row the cold-restored
+	// drive presented.
+	generations := attentionRunGenerations(t, lane.root.delegateController, lane.fixture.delegateID)
+	reportGeneration, otherGeneration := generations[claimedID], generations[otherID]
+	if reportGeneration == 0 || otherGeneration == 0 {
+		t.Fatalf("the journal does not name both rows' generations (report gen=%d, other gen=%d; %s)",
+			reportGeneration, otherGeneration, stateDump())
+	}
+	if reportGeneration <= otherGeneration {
+		t.Fatalf("the cold-restored drive presented the stopped run's report riding the other row's presentation (report gen=%d, other gen=%d; %s)",
+			reportGeneration, otherGeneration, stateDump())
 	}
 }
 

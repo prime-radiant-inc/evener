@@ -1446,6 +1446,13 @@ type Session struct {
 	// trigger as consumed first, so only this latch tells a fold to keep its
 	// turn; promoteStagedAttentionCoverage clears it. Guarded by attentionMu.
 	attentionAcceptedID string
+	// attentionPresentedTrigger is the trigger a settled request of the
+	// generation presented, recorded at the moment promoteStagedAttentionCoverage
+	// clears the latch. It survives per-turn coverage resets so a stop landing
+	// in a later round can still consume the already-presented report instead of
+	// leaving it pending with its commit-time wake armed. The next generation's
+	// commit replaces it. Guarded by attentionMu.
+	attentionPresentedTrigger string
 	// attentionAcceptedCause is the cause of attentionAcceptedID, kept for the
 	// request that presents it (promoteStagedAttentionCoverage). Guarded by
 	// attentionMu.

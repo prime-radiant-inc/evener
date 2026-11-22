@@ -1001,10 +1001,11 @@ func (s *Session) reopenConsumedDelegateAttention(attentionID string, quietAt ui
 }
 
 // settleUnpresentedDelegateAttention handles the trigger an attention-triggered
-// run latched but never presented: the turn died before its request could carry
-// the report. A settled full-history request presented the report and cleared
-// the latch, so it settles nothing; a responses-continuation delta carries no
-// attention and clears no latch, so a delta-settled round still owes it.
+// run latched but never presented, and the trigger a settled request did
+// present when a later round of the same turn then died: the turn ended before
+// its final request could carry (or finish answering) the report. A
+// responses-continuation delta carries no attention and clears no latch, so a
+// delta-settled round still owes an unpresented trigger.
 //
 // A drive never consumes its trigger, so that row is still pending and stays
 // deliverable: the settle only holds it out of the automatic drives when a
@@ -1012,6 +1013,12 @@ func (s *Session) reopenConsumedDelegateAttention(attentionID string, quietAt ui
 // report from riding a successor generation's request. A restored generation
 // consumed its trigger before it ran, so that case still reopens the consumed
 // row under a fresh identity.
+//
+// A late round of the same turn can die after a settled request already
+// presented the trigger; that presentation clears the latch but leaves the
+// report pending with its commit-time wake armed, so the presented-trigger
+// path consumes it instead of settling nothing. The stop's quiet has nothing
+// to hold in that shape: the model already saw the report.
 //
 // A receiver whose own teardown is discarding its pending attention, and a
 // receiver a deliberate stop or the tree's close owns, are left to that
@@ -1033,7 +1040,14 @@ func (s *Session) settleUnpresentedDelegateAttention(quietAt uint64) (string, er
 	latched := s.attentionAcceptedID
 	s.attentionMu.Unlock()
 	if latched == "" {
-		return "", nil
+		// The latch clears when a settled request presents the trigger, so a
+		// turn the user then stops mid-round reaches this tail with an empty
+		// latch and an already-presented report whose commit-time wake is still
+		// armed. Leaving that row pending would release finalization into a
+		// duplicate successor that presents the report a second time. An
+		// unpresented trigger keeps its latch and takes the hold path below;
+		// any other row keeps the failed turn's behaviour.
+		return s.consumePresentedDelegateTrigger(quietAt)
 	}
 	if s.delegateController.attentionReopenRefused(s.owningDelegateID) {
 		s.clearAcceptedTrigger()
@@ -1065,10 +1079,56 @@ func (s *Session) settleUnpresentedDelegateAttention(quietAt uint64) (string, er
 	return latched, nil
 }
 
+// consumePresentedDelegateTrigger consumes a stopped generation's trigger
+// when a settled request of that generation already presented it. Promote
+// credits that presentation, so the report was delivered; a stop landing in a
+// later round has nothing left to re-deliver, and leaving the row pending
+// would drive a successor to present it again. quietAt is zero when no stop
+// owns the quiet: a plain failed turn keeps its rows pending, presented or
+// not, for a later generation. A trigger that was never presented keeps its
+// latch and the hold path, and a row already resolved under another
+// disposition is left alone.
+func (s *Session) consumePresentedDelegateTrigger(quietAt uint64) (string, error) {
+	if quietAt == 0 {
+		return "", nil
+	}
+	s.attentionMu.Lock()
+	trigger := s.attentionPresentedTrigger
+	s.attentionMu.Unlock()
+	if trigger == "" {
+		return "", nil
+	}
+	s.attentionMu.Lock()
+	fold, err := s.delegateAttentionFoldLocked()
+	pending := false
+	if err == nil {
+		_, resolved := fold.resolutions[trigger]
+		_, hasContent := fold.content[trigger]
+		pending = !resolved && hasContent
+	}
+	s.attentionMu.Unlock()
+	if err != nil {
+		return "", err
+	}
+	if !pending {
+		return "", nil
+	}
+	if err := s.resolveAttentionDurably([]string{trigger}, delegateAttentionConsumed); err != nil {
+		return "", err
+	}
+	s.attentionMu.Lock()
+	if s.attentionPresentedTrigger == trigger {
+		s.attentionPresentedTrigger = ""
+	}
+	s.attentionMu.Unlock()
+	return trigger, nil
+}
+
 // clearAcceptedTrigger drops the latched trigger without presenting it.
 func (s *Session) clearAcceptedTrigger() {
 	s.attentionMu.Lock()
 	s.attentionAcceptedID = ""
+	s.attentionPresentedTrigger = ""
 	s.attentionAcceptedCause = nil
 	s.attentionMu.Unlock()
 }
@@ -1934,6 +1994,7 @@ func (s *Session) holdAcceptedTrigger(attentionID string) {
 		cause = s.attentionAcceptedCause
 	}
 	s.attentionAcceptedID = attentionID
+	s.attentionPresentedTrigger = ""
 	s.attentionAcceptedCause = cause
 	s.attentionMu.Unlock()
 }
@@ -2372,6 +2433,7 @@ func (s *Session) promoteStagedAttentionCoverage(settled llm.Request) {
 	}
 	var acceptedCause *provenance.Causal
 	if _, presented := staged[s.attentionAcceptedID]; presented && s.attentionAcceptedID != "" {
+		s.attentionPresentedTrigger = s.attentionAcceptedID
 		s.attentionAcceptedID = ""
 		acceptedCause, s.attentionAcceptedCause = s.attentionAcceptedCause, nil
 	}
