@@ -27,7 +27,6 @@ import { rowRoleFor } from "./layoutRoles";
 import { TurnSeparator } from "./messages";
 import { ToolCallItem } from "./ToolCallItem";
 import { ToolRunGroup } from "./ToolRunGroup";
-import { TurnDoneEndCap } from "./TurnDoneEndCap";
 import { TurnFailureEndCap } from "./TurnFailureEndCap";
 import { toolRendererFor } from "./toolRenderers";
 import { foldTurnEntries, intentGroupId, intentRunAt, type ToolRun } from "./toolRuns";
@@ -204,11 +203,6 @@ export function ProjectedIntentGroup({
             </div>
           </div>
         </Disclosure>
-        {separatorTurn && separatorTurn.status === "completed" && !asTurnError(separatorTurn.error) && (
-          <div className={transcriptStyles.intentGroupItems} data-testid="turn-done-row">
-            <TurnDoneEndCap turn={separatorTurn} />
-          </div>
-        )}
         {separatorTurn && <TurnSeparator turn={separatorTurn} />}
       </div>
     </>
@@ -419,11 +413,6 @@ export function TurnBlock({
     <div className={CLASS.turn} data-testid="turn-block" data-turn-id={sourceTurn.id} data-turn-status={displayStatus}>
       {renderedEntries}
       {failure && <TurnFailureEndCap error={failure} turnId={sourceTurn.id} sessionRef={sessionRef} />}
-      {!failure && displayStatus === "completed" && showTurnSeparator && (
-        <div className={CLASS.runContent} data-testid="turn-done-row">
-          <TurnDoneEndCap turn={sourceTurn} />
-        </div>
-      )}
       {showTurnSeparator && <TurnSeparator turn={sourceTurn} />}
     </div>
   );
