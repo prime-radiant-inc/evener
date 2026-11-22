@@ -359,6 +359,8 @@ func applyEvent(r *JobRecord, e Event) {
 		r.OriginItemID = e.OriginItemID
 		r.Provenance = provenance.Clone(e.Provenance)
 		r.OutputPath = e.OutputPath
+		r.ProcessGroupID = e.ProcessGroupID
+		r.ProcessStartTime = clonePtr(e.ProcessStartTime)
 		if e.StartedAt != nil {
 			r.StartedAt = *e.StartedAt
 		}

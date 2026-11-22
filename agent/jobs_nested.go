@@ -701,6 +701,10 @@ func (jm *jobManager) alreadyForwarded(e jobstore.Event) (bool, error) {
 
 func (jm *jobManager) forwardEvent(e jobstore.Event) error {
 	e.VisibleToSession = jm.sessionID
+	// The copy lands in an ancestor's journal, which a crash reap or a sibling
+	// branch's repair scans; the live group identity stays in the owner's own
+	// journal, where only the owner's loss may reap it (#4843 review).
+	e.ProcessGroupID, e.ProcessStartTime = 0, nil
 	if held, err := jm.alreadyForwarded(e); err != nil {
 		return err
 	} else if held {

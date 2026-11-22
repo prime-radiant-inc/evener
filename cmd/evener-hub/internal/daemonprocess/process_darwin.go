@@ -5,21 +5,17 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"runtime"
 	"strconv"
-	"syscall"
-	"time"
-	"unsafe"
 
 	"golang.org/x/sys/unix"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/execsupport/procgroup"
 )
 
 // Darwin's proc_info ABI is declared in XNU's proc_info.h and
 // proc_info_private.h. Audit-token signaling atomically checks pidversion;
 // kill(2) cannot provide that guarantee.
 const (
-	darwinProcInfo         = 336
 	darwinPIDInfo          = 2
 	darwinPIDFDInfo        = 3
 	darwinSignalAuditToken = 0x11
@@ -50,31 +46,22 @@ func openDarwinProcess(pid int) (processHandle, error) {
 }
 func (p *darwinProcess) close() error { return nil }
 
+// darwinProcCall issues one proc_info call through procgroup's shared plumbing
+// and reads a vanished process as ErrExited, the sentinel this package reports.
 func darwinProcCall(call, pid, flavor int, arg uintptr, buf []byte) (int, error) {
-	var ptr unsafe.Pointer
-	if len(buf) > 0 {
-		ptr = unsafe.Pointer(&buf[0])
+	n, err := procgroup.ProcInfo(call, pid, flavor, arg, buf)
+	if errors.Is(err, procgroup.ErrNoSuchProcess) {
+		return 0, ErrExited
 	}
-	n, _, errno := syscall.Syscall6(darwinProcInfo, uintptr(call), uintptr(pid), uintptr(flavor), arg, uintptr(ptr), uintptr(len(buf)))
-	runtime.KeepAlive(buf)
-	if errno != 0 {
-		if errno == syscall.ESRCH {
-			return 0, ErrExited
-		}
-		return 0, errno
-	}
-	return int(n), nil
+	return n, err
 }
+
 func darwinReadInfo(pid, flavor, size int) ([]byte, error) {
-	data := make([]byte, size)
-	n, err := darwinProcCall(darwinPIDInfo, pid, flavor, 0, data)
-	if err != nil {
-		return nil, err
+	data, err := procgroup.ProcInfoSnapshot(pid, flavor, size)
+	if errors.Is(err, procgroup.ErrNoSuchProcess) {
+		return nil, ErrExited
 	}
-	if n != size {
-		return nil, fmt.Errorf("darwin process info flavor %d returned %d bytes, expected %d", flavor, n, size)
-	}
-	return data, nil
+	return data, err
 }
 func darwinGeneration(pid int) (uint64, uint32, error) {
 	data, err := darwinReadInfo(pid, darwinUniqueInfo, 56)
@@ -141,7 +128,10 @@ func (p *darwinProcess) inspect(t Target) (identity, error) {
 	if gone {
 		return identity{}, ErrExited
 	}
-	started := time.Unix(int64(binary.NativeEndian.Uint64(info[120:])), int64(binary.NativeEndian.Uint64(info[128:]))*1000)
+	started, ok := procgroup.StartTimeFromBSDInfo(info)
+	if !ok {
+		return identity{}, fmt.Errorf("darwin process %d has no start time", p.pid)
+	}
 	return identity{generation: strconv.FormatUint(p.unique, 10) + ":" + strconv.FormatUint(uint64(p.version), 10), uid: int(binary.NativeEndian.Uint32(info[20:])), startedAt: started, startedAtLower: started, argv: argv, ownsLog: owns}, nil
 }
 

@@ -196,6 +196,7 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 	}
 
 	jm.setShellSignal(run, handle.Signal)
+	jm.setShellProcessIdentity(run, handle.Pid)
 	waitCh := make(chan shellWaitResult, 1)
 	processDone := make(chan struct{})
 	var runtimeTimeoutCh <-chan struct{}
@@ -600,6 +601,26 @@ func (jm *jobManager) setShellSignal(run *runningJob, signal func()) {
 	}
 }
 
+// setShellProcessIdentity records the process group the command runs in (the
+// child leads its own group, see execenv's procgroup.SysProcAttr) and the
+// leader's start time, while the child is still unreaped: os/exec holds its pid
+// until Wait, so the identity read cannot land on a recycled pid. The durable
+// start event carries both, which is what lets a later daemon verify and reap
+// this group if the daemon dies without teardown (#4843). A command that has
+// already ended has no identity to record and none to reap.
+func (jm *jobManager) setShellProcessIdentity(run *runningJob, pid int) {
+	started, ok := processStartedAt(pid)
+	if pid <= 0 || !ok {
+		return
+	}
+	jm.mu.Lock()
+	if jm.running[run.rec.JobID] == run {
+		run.rec.ProcessGroupID = pid
+		run.rec.ProcessStartTime = &started
+	}
+	jm.mu.Unlock()
+}
+
 // jobStartedEvent is the durable EventJobStarted for a freshly created shell
 // job record.
 func jobStartedEvent(rec *jobstore.JobRecord) jobstore.Event {
@@ -620,6 +641,8 @@ func jobStartedEvent(rec *jobstore.JobRecord) jobstore.Event {
 		StartedAt:        &startedAt,
 		OutputPath:       rec.OutputPath,
 		WorkingDir:       rec.WorkingDir,
+		ProcessGroupID:   rec.ProcessGroupID,
+		ProcessStartTime: rec.ProcessStartTime,
 		Provenance:       provenance.Clone(rec.Provenance),
 	}
 }
