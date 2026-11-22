@@ -980,7 +980,7 @@ func TestHubCompletionFromRecordedRootReplies(t *testing.T) {
 			watched := newSession(t, withEnv(env), withSteps(tc.steps...), withStateDir(t.TempDir()))
 			t.Cleanup(env.releaseJob)
 			if tc.delegates {
-				for i := 0; i < 3; i++ {
+				for i := range 3 {
 					child := newSession(t)
 					id := fmt.Sprintf("child-%d", i)
 					watched.subagents.track(&subagent{id: id, sess: child, running: true})

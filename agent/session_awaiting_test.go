@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"testing"
 	"time"
 
@@ -76,7 +77,7 @@ func TestProcessInput_InterruptStaysIdle(t *testing.T) {
 func TestProcessInput_NextInputClearsAwaiting(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
-	c.Register(newFakeAdapter("openai", askAwaitingResponse, askAwaitingResponse))
+	c.Register(newFakeAdapter("openai", slices.Repeat([]func(llm.Request) llm.Response{askAwaitingResponse}, 2)...))
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatal(err)

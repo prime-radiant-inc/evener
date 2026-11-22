@@ -3042,7 +3042,8 @@ func TestDelegateAttentionUserStopHoldsReopenedRowFromStaleArmedWake(t *testing.
 	// first drive. The parked announce closes the tails before the rows
 	// land, so the loop below is the only driver that can present them.
 	holdSharedDescendantAnnounce("user-stop-stale-wake")
-	lane := spawnSharedDescendantLane(t, r, "user-stop-stale-wake", "dlg_userstopwake01", "034userstopwake1", wedge, quietWorktreeAttentionResponse, quietWorktreeAttentionResponse)
+	responses := append([]func(llm.Request) llm.Response{wedge}, slices.Repeat([]func(llm.Request) llm.Response{quietWorktreeAttentionResponse}, 2)...)
+	lane := spawnSharedDescendantLane(t, r, "user-stop-stale-wake", "dlg_userstopwake01", "034userstopwake1", responses...)
 	lane.releaseSeededAnnounceHold(t)
 	var warningsMu sync.Mutex
 	var warnings []string
