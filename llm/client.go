@@ -477,6 +477,22 @@ type ModelListing struct {
 	Models []registry.Resolved
 }
 
+// ModelNotAvailableError reports a launch naming a model the instance's
+// authoritative roster does not list. Available names every model the roster
+// offers, so the caller can tell the user what to choose instead.
+type ModelNotAvailableError struct {
+	Instance  string
+	Model     string
+	Available []string
+}
+
+func (e *ModelNotAvailableError) Error() string {
+	if len(e.Available) == 0 {
+		return fmt.Sprintf("%s does not list %q and offers no models", e.Instance, e.Model)
+	}
+	return fmt.Sprintf("%s does not list %q; available models: %s", e.Instance, e.Model, strings.Join(e.Available, ", "))
+}
+
 // LiveModelLister is the optional override interface for adapters that serve
 // a live model listing. An override that does not implement it cannot list
 // models under its instance name, even when the registry knows that name.
@@ -497,6 +513,7 @@ func (c *Client) Models(ctx context.Context, instance string) (ModelListing, err
 	// string (upper case, surrounding whitespace), or the listing is
 	// fetched and then silently dropped under the wrong key.
 	instance = normalizeProviderName(instance)
+	authoritative := !c.isOverride(instance) && c.Registry().LiveListingAuthoritative(instance)
 	rows, live, err := c.listLive(ctx, instance)
 	if err != nil {
 		if c.isOverride(instance) {
@@ -519,17 +536,25 @@ func (c *Client) Models(ctx context.Context, instance string) (ModelListing, err
 	}
 	if !c.LiveListingUsable(instance, rows) {
 		if c.hasRegistry {
-			c.Registry().ApplyLive(instance, nil)
+			c.Registry().ApplyLiveListing(instance, registry.LiveListing{Authoritative: authoritative})
+		}
+		if authoritative {
+			// The account answered and offers nothing Evener can dispatch:
+			// the bundled rows are not this subscription's catalog.
+			return ModelListing{Live: true}, nil
 		}
 		return c.resolveFallbackListing(instance, true)
 	}
 	if !c.hasRegistry {
+		if authoritative {
+			return ModelListing{Live: true, Usable: true, Models: standaloneRows(instance, rows)}, nil
+		}
 		return c.resolveFallbackListing(instance, true)
 	}
 	// Only a client that owns its registry records what an instance's
 	// transport said. A client without WithRegistry resolves against the
 	// process-wide EmbeddedRegistry shared by every bare client.
-	c.Registry().ApplyLive(instance, rows)
+	c.Registry().ApplyLiveListing(instance, registry.LiveListing{Rows: rows, Authoritative: authoritative})
 	return c.resolveListing(instance)
 }
 

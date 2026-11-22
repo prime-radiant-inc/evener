@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,10 +15,19 @@ import (
 	"time"
 
 	apilog "primeradiant.com/evener/llm/apilog"
+	"primeradiant.com/evener/llm/registry"
 )
 
 type fakeAdapter struct {
 	name string
+}
+
+// copilotTestAuthenticator stands in for the stored Copilot session so a
+// listing fetch reaches the test endpoint without credential material.
+type copilotTestAuthenticator struct{}
+
+func (copilotTestAuthenticator) Apply(context.Context, *http.Request, registry.Resolved) error {
+	return nil
 }
 
 func (a *fakeAdapter) Name() string { return a.name }
@@ -1357,5 +1368,53 @@ func TestClient_DirectCallKeepsNilParametersForOverrides(t *testing.T) {
 				t.Fatalf("parameters = %#v, want nil: a direct call did not go through preparation, so the caller's nil is the declaration the adapter reads", tools[0].Parameters)
 			}
 		})
+	}
+}
+
+// TestModelsAuthoritativeAccountAnswerHasNoStaticFallback pins the account
+// roster rule end to end: Copilot answered, and every row it offered was
+// hidden or outside the picker. The listing stays live-but-unusable with no
+// models, because the bundled catalog is not this subscription's catalog.
+func TestModelsAuthoritativeAccountAnswerHasNoStaticFallback(t *testing.T) {
+	t.Parallel()
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/models") {
+			http.NotFound(w, r)
+			return
+		}
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[
+		 {"id":"picker-hidden","model_picker_enabled":false,"supported_endpoints":["/chat/completions"]},
+		 {"id":"policy-off","policy":{"state":"disabled"},"supported_endpoints":["/chat/completions"]},
+		 {"id":"embeddings-only","supported_endpoints":["/embeddings"]}
+		]}`))
+	}))
+	t.Cleanup(srv.Close)
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "providers.toml")
+	cfg := "[providers.work]\nbase = \"github-copilot\"\nbase_url = \"" + srv.URL + "/v1\"\n"
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := registry.Load(
+		registry.WithConfigPath(cfgPath), registry.WithStateRoot(t.TempDir()),
+		registry.WithOffline(true), registry.WithoutCache(),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	c := NewClient(WithRegistry(r))
+	ctx := WithScopedAuthenticator(context.Background(), registry.AuthOAuthGitHubCopilot, copilotTestAuthenticator{})
+	listing, err := c.Models(ctx, "work")
+	if err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+	if hits != 1 {
+		t.Fatalf("listing fetches = %d, want 1", hits)
+	}
+	if !listing.Live || listing.Usable || len(listing.Models) != 0 {
+		t.Fatalf("listing = %+v, want live-but-unusable with no static rows", listing)
 	}
 }

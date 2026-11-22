@@ -608,18 +608,153 @@ func TestInstanceModels_ListsAliasRowsWithTheirTargetsState(t *testing.T) {
 func TestSnapshotLive_RoundTripsListings(t *testing.T) {
 	t.Parallel()
 	r := fixtureLoad(t, nil, "")
-	r.ApplyLive("anthropic", []Model{{ID: "claude-live-new"}, {ID: "embedding-thing"}})
+	r.ApplyLiveListing("anthropic", LiveListing{Rows: []Model{{ID: "claude-live-new"}, {ID: "embedding-thing"}}})
 	snap := r.SnapshotLive()
-	rows, ok := snap["anthropic"]
-	if !ok || len(rows) != 1 || rows[0].ID != "claude-live-new" {
+	listing, ok := snap["anthropic"]
+	if !ok || len(listing.Rows) != 1 || listing.Rows[0].ID != "claude-live-new" {
 		t.Fatalf("SnapshotLive = %+v, want the single chat id", snap)
 	}
 	r2 := fixtureLoad(t, nil, "")
-	for inst, models := range snap {
-		r2.ApplyLive(inst, models)
+	for inst, listing := range snap {
+		r2.ApplyLiveListing(inst, listing)
 	}
 	if got := r2.LiveModels("anthropic"); len(got) != 1 || got[0].ID != "claude-live-new" {
 		t.Fatalf("restored live = %+v, want claude-live-new", got)
+	}
+}
+
+// copilotTestRegistry loads an instance pointed at the Copilot subscription
+// with a stored credential, so its listing transport carries the OAuth scheme
+// that makes the roster authoritative.
+func copilotTestRegistry(t *testing.T, cfg string) *Registry {
+	t.Helper()
+	state := t.TempDir()
+	saveCopilotRecordForTest(t, state, "github-copilot", healthyCopilotRecord("github-copilot"))
+	return fixtureLoad(t, nil, cfg, WithStateRoot(state))
+}
+
+// TestApplyLiveListingAuthoritativeHidesStaticRows pins the account-owned
+// catalog rule: the live roster is the only source of ids, an authoritative
+// empty answer leaves a launchable model set empty, and the authority survives
+// the snapshot round trip a Reload performs. A non-authoritative ApplyLive
+// clears it, which is what every other provider keeps.
+func TestApplyLiveListingAuthoritativeHidesStaticRows(t *testing.T) {
+	t.Parallel()
+	r := copilotTestRegistry(t, "")
+	if !r.LiveListingAuthoritative("github-copilot") {
+		t.Fatal("a Copilot instance's roster must be authoritative")
+	}
+	if r.LiveListingAuthoritative("anthropic") {
+		t.Fatal("another provider must opt out of authority")
+	}
+	static, err := r.ModelIDs("github-copilot")
+	if err != nil || len(static) == 0 {
+		t.Fatalf("fixture precondition: the Copilot catalog carries static rows: %v %v", static, err)
+	}
+	r.ApplyLiveListing("github-copilot", LiveListing{Rows: []Model{{ID: "live-only"}}, Authoritative: true})
+	ids, err := r.ModelIDs("github-copilot")
+	if err != nil || len(ids) != 1 || ids[0] != "live-only" {
+		t.Fatalf("authoritative ids = %v, %v, want only live-only", ids, err)
+	}
+
+	snap := r.SnapshotLive()
+	carried, ok := snap["github-copilot"]
+	if !ok || !carried.Authoritative || len(carried.Rows) != 1 {
+		t.Fatalf("snapshot = %+v, want authoritative live-only", snap)
+	}
+	r2 := copilotTestRegistry(t, "")
+	r2.ApplyLiveListing("github-copilot", carried)
+	ids, err = r2.ModelIDs("github-copilot")
+	if err != nil || len(ids) != 1 || ids[0] != "live-only" {
+		t.Fatalf("carried ids = %v, %v, want only live-only", ids, err)
+	}
+
+	r.ApplyLive("github-copilot", []Model{{ID: "other"}})
+	if listing, _ := r.LiveListingFor("github-copilot"); listing.Authoritative {
+		t.Fatal("ApplyLive must record a non-authoritative listing")
+	}
+}
+
+// liveClaudeRow is the advertised Copilot routing for the one live-proven
+// Claude row.
+func liveClaudeRow() Model {
+	return Model{
+		ID: "claude-haiku-5.5", Protocol: ProtocolAnthropic, Surface: SurfaceAnthropic, Family: "claude",
+		Transport: &Transport{Endpoint: "/v1/messages", StreamEndpoint: "/v1/messages", CountTokensEndpoint: EndpointUnsupported},
+		Caps:      Caps{Tools: new(true), MaxInputTokens: new(200000), MaxOutputTokens: new(32000)},
+	}
+}
+
+// TestResolveLiveRowCarriesAccountRouting pins that the live layer supplies
+// the protocol, endpoints, family, and surface a Copilot id needs: without
+// them the row resolves as an unknown OpenAI chat model at the wrong URL.
+func TestResolveLiveRowCarriesAccountRouting(t *testing.T) {
+	t.Parallel()
+	r := copilotTestRegistry(t, "")
+	r.ApplyLiveListing("github-copilot", LiveListing{Rows: []Model{liveClaudeRow()}, Authoritative: true})
+	res, err := r.Resolve("github-copilot/claude-haiku-5.5")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if res.Protocol != ProtocolAnthropic {
+		t.Fatalf("protocol = %q, want %q", res.Protocol, ProtocolAnthropic)
+	}
+	if got, want := res.Transport.BaseURL+res.Transport.Endpoint, "https://api.githubcopilot.com/v1/messages"; got != want {
+		t.Fatalf("final URL = %q, want %q", got, want)
+	}
+	if res.Transport.CountTokensEndpoint != EndpointUnsupported {
+		t.Fatalf("count tokens = %q, want unsupported", res.Transport.CountTokensEndpoint)
+	}
+	if res.Surface != SurfaceAnthropic || res.Model.Family != "claude" {
+		t.Fatalf("surface/family = %q/%q", res.Surface, res.Model.Family)
+	}
+}
+
+// TestResolveAccountRoutingHonorsUserOverride pins the layer order: the
+// account's live routing sits above the bundled catalog and below the user's
+// own protocol and endpoint.
+func TestResolveAccountRoutingHonorsUserOverride(t *testing.T) {
+	t.Parallel()
+	const cfg = `
+[providers.work]
+base = "github-copilot"
+
+[providers.work.models."claude-haiku-5.5"]
+protocol = "openai-chat"
+endpoint = "/custom/chat"
+`
+	r := copilotTestRegistry(t, cfg)
+	r.ApplyLiveListing("work", LiveListing{Rows: []Model{liveClaudeRow()}, Authoritative: true})
+	res, err := r.Resolve("work/claude-haiku-5.5")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if res.Protocol != ProtocolOpenAIChat {
+		t.Fatalf("protocol = %q, want the user's %q", res.Protocol, ProtocolOpenAIChat)
+	}
+	if res.Transport.Endpoint != "/custom/chat" {
+		t.Fatalf("endpoint = %q, want the user's /custom/chat", res.Transport.Endpoint)
+	}
+}
+
+// TestApplyLiveStripsSyntheticAccountCost is Task 4's deferred regression:
+// a live row that carries a price must not become a live dollar price on a
+// Copilot instance, and no provenance may claim one.
+func TestApplyLiveStripsSyntheticAccountCost(t *testing.T) {
+	t.Parallel()
+	r := copilotTestRegistry(t, "")
+	row := liveClaudeRow()
+	row.Caps.Cost = &Cost{Input: 5, Output: 25}
+	r.ApplyLiveListing("github-copilot", LiveListing{Rows: []Model{row}, Authoritative: true})
+	res, err := r.Resolve("github-copilot/claude-haiku-5.5")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if res.Caps.Cost != nil || res.Model.Caps.Cost != nil {
+		t.Fatalf("cost = %+v/%+v, want absent after the live apply", res.Caps.Cost, res.Model.Caps.Cost)
+	}
+	if got := res.Provenance["Cost"]; got != "" {
+		t.Fatalf("cost provenance = %q, want none", got)
 	}
 }
 

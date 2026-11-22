@@ -21,6 +21,7 @@ const (
 	credentialTestEndpointMessage      = "The provider endpoint could not be reached. Check the endpoint and network connection."
 	credentialTestConfigurationMessage = "Provider configuration could not be loaded. Check the instance settings."
 	credentialTestUnsupportedMessage   = "This provider does not support harmless credential verification."
+	credentialTestNoModelsMessage      = "The credentials work, but the account offers no models Evener can use. Check the subscription or plan."
 	credentialTestSupersededMessage    = "Credentials changed while this check was running. Refresh and check again."
 )
 
@@ -231,6 +232,9 @@ func (c *hubAuthController) runCredentialTest(ctx context.Context, name, asserte
 	}
 	if !listing.Live {
 		return credentialTestResponse(name, appwire.AuthTestStatusUnsupported, credentialTestUnsupportedMessage), nil
+	}
+	if !listing.Usable && client.Registry().LiveListingAuthoritative(name) {
+		return credentialTestResponse(name, appwire.AuthTestStatusUnsupported, credentialTestNoModelsMessage), nil
 	}
 	return credentialTestResponse(name, appwire.AuthTestStatusSuccess, credentialTestSuccessMessage), nil
 }

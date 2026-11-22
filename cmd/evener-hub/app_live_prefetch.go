@@ -43,6 +43,7 @@ func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, au
 		// live listing here, and the holder keeps its last-known rows.
 		return nil
 	}
+	authoritative := reg.LiveListingAuthoritative(name)
 	// Call-scoped authenticator: this fetch's requests bind a Codex
 	// value carrying reg's state root, so no global rewire — from any
 	// concurrent fetch, probe, or model-list RPC — can move the
@@ -53,15 +54,15 @@ func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, au
 	auth.settleCredentialProbe(probe, llm.ModelListing{Live: live, Usable: usable}, err)
 	if err != nil {
 		if ctx.Err() == nil {
-			holder.ReapplyLive(tok, name, id, nil)
+			holder.ReapplyLiveListing(tok, name, id, registry.LiveListing{Authoritative: authoritative})
 		}
 		return err
 	}
 	if !usable {
-		holder.ReapplyLive(tok, name, id, nil)
+		holder.ReapplyLiveListing(tok, name, id, registry.LiveListing{Authoritative: authoritative})
 		return nil
 	}
-	holder.ReapplyLive(tok, name, id, rows)
+	holder.ReapplyLiveListing(tok, name, id, registry.LiveListing{Rows: rows, Authoritative: authoritative})
 	return nil
 }
 

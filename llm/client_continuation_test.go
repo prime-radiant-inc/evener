@@ -208,3 +208,49 @@ func TestPlanContinuationNormalizesTheScopeEndpoint(t *testing.T) {
 		t.Fatalf("the scope records a normalized transport: %q %q", plan.StorageScope.BaseURL, plan.StorageScope.Path)
 	}
 }
+
+// TestResponsesEndpointFamilyForCopilotIsDisabled pins that the Copilot
+// subscription is its own responses endpoint family and that the public
+// OpenAI continuation contract, including its support entry, never applies.
+func TestResponsesEndpointFamilyForCopilotIsDisabled(t *testing.T) {
+	t.Parallel()
+	res := registry.Resolved{
+		Protocol:  registry.ProtocolOpenAIResponses,
+		Transport: registry.Transport{Auth: registry.AuthOAuthGitHubCopilot},
+	}
+	family := llm.ResponsesEndpointFamilyFor(res)
+	if family != llm.ResponsesEndpointFamilyGitHubCopilot {
+		t.Fatalf("family = %q, want %q", family, llm.ResponsesEndpointFamilyGitHubCopilot)
+	}
+	support := llm.ResponsesContinuationSupportFor(llm.DefaultResponsesContinuationSupportRegistry(), family)
+	if support.Enabled {
+		t.Fatalf("support = %+v, want Copilot continuation disabled", support)
+	}
+	decision := llm.DecideResponsesContinuation(llm.ResponsesContinuationAuto, support)
+	if decision.HistoryMode != llm.HistoryModeFullHistory {
+		t.Fatalf("history mode = %q, want full history", decision.HistoryMode)
+	}
+}
+
+// TestShapeRequestCopilotAlwaysFullHistory pins that no anchor or storage
+// flag survives shaping for a Copilot row, while the public family keeps its
+// anchor exactly as before.
+func TestShapeRequestCopilotAlwaysFullHistory(t *testing.T) {
+	t.Parallel()
+	store := true
+	req := llm.Request{
+		HistoryMode: llm.HistoryModeResponsesDelta, PreviousResponseID: "resp_1",
+		ConversationID: "conv_1", Store: &store,
+	}
+	copilot := llm.ShapeRequest(req, registry.Resolved{
+		Protocol:  registry.ProtocolOpenAIResponses,
+		Transport: registry.Transport{Auth: registry.AuthOAuthGitHubCopilot},
+	})
+	if copilot.PreviousResponseID != "" || copilot.ConversationID != "" || copilot.Store != nil {
+		t.Fatalf("shaped = %+v, want full history with no store", copilot)
+	}
+	public := llm.ShapeRequest(req, registry.Resolved{Protocol: registry.ProtocolOpenAIResponses})
+	if public.PreviousResponseID != "resp_1" || public.ConversationID != "conv_1" {
+		t.Fatalf("public shaped = %+v, want its anchor preserved", public)
+	}
+}

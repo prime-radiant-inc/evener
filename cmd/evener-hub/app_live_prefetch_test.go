@@ -7,11 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/auth/githubcopilot"
 	"primeradiant.com/evener/execsupport/valueexpr"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/tokenauth"
@@ -320,4 +322,48 @@ func runStartupPrefetch(t *testing.T, start func(startBackground func(func()))) 
 		t.Fatal("the prefetch never returned: it is still running after its startup pass")
 	}
 	return runs
+}
+
+// TestPrefetchKeepsAuthoritativeEmptyRoster pins the account-owned catalog
+// through the hub's publish path and a reload: the subscription answered with
+// no usable rows, so no bundled Copilot row may appear, before or after the
+// snapshot is carried onto a fresh registry.
+func TestPrefetchKeepsAuthoritativeEmptyRoster(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/models") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	t.Cleanup(srv.Close)
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	if err := githubcopilot.SaveAuth(stateDir, "work", githubcopilot.AuthRecord{
+		Instance: "work", Scheme: githubcopilot.AuthScheme, Version: 1,
+		AccessToken: "access", CopilotToken: "copilot", AccountID: "account-1",
+		ObtainedAt: time.Now().Add(-time.Hour), CopilotExpiry: time.Now().Add(24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	tomlPath := filepath.Join(dir, "providers.toml")
+	cfg := "[providers.work]\nbase = \"github-copilot\"\nbase_url = \"" + srv.URL + "/v1\"\n"
+	if err := os.WriteFile(tomlPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctl := newTestInstancesController(t, tomlPath, dir, stateDir, nil)
+	if err := ctl.reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	prefetchAllLiveModels(context.Background(), ctl.reg, nil, func() {})
+	if got := entry(t, ctl.List(), "work"); len(got.Models) != 0 {
+		t.Fatalf("models = %+v, want none from an authoritative empty roster", got.Models)
+	}
+	if err := ctl.reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if got := entry(t, ctl.List(), "work"); len(got.Models) != 0 {
+		t.Fatalf("models after reload = %+v, want the empty roster carried", got.Models)
+	}
 }
