@@ -82,6 +82,29 @@
   grid-area: 1 / 1;
 }
 
+/* The slot's occupant at rest: the age (or "Not started") and, when there are
+ * replies the person has not read, the unread marker beside it. Wrapping them
+ * keeps the marker in the same shared grid cell as the hover actions instead
+ * of claiming a slot of its own that would narrow the title column. */
+.meta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* The unread marker: the phone Board's blue dot for replies this browser has
+ * not read. Not a status glyph - needs-you owns the attention hues and their
+ * motion - so it stays a still accent dot with no accessible text of its own
+ * beyond the name the span carries. */
+.unreadDot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--accent);
+}
+
 /* Row actions (RailRow's "+"/"..." trigger buttons; both a session row's
  * single "..." and a project row's "+" pair): quiet by default -
  * transparent, borderless, invisible - revealed on row hover/focus so the

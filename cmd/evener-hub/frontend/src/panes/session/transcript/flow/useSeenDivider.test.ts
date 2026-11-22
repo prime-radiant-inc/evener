@@ -269,3 +269,24 @@ test("unseenOpeningTurnId opens at the divider turn when the retained view was f
 test("unseenOpeningTurnId is null when there is no boundary turn", () => {
   expect(unseenOpeningTurnId({ dividerTurnId: null, settled: true }, NOTHING_WAITS)).toBeNull();
 });
+
+// A turn that errored or was interrupted still ends where it ends; the reader
+// can have read it, so it is a read-eligible position (mirrors the phone's
+// latestSettledTurnId).
+test("a failed reply is read-eligible: it marks where reading stopped", () => {
+  writeSeenWatermark("local:01AAA", "t1");
+  const { result, unmount } = renderHook(() =>
+    useSeenDivider("local:01AAA", model([turn("t1"), turn("t2", "failed")])),
+  );
+  expect(result.current.dividerTurnId).toBe("t2");
+  unmount();
+  expect(readSeenWatermark("local:01AAA")).toBe("t2");
+});
+
+test("an interrupted reply is read-eligible too", () => {
+  writeSeenWatermark("local:01AAA", "t1");
+  const { result, unmount } = renderHook(() => useSeenDivider("local:01AAA", model([turn("t1"), running("t2")])));
+  expect(result.current.dividerTurnId).toBe("t2");
+  unmount();
+  expect(readSeenWatermark("local:01AAA")).toBe("t2");
+});

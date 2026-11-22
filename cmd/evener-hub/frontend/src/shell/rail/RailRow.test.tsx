@@ -2667,3 +2667,41 @@ describe("host group row", () => {
     expect(screen.getByTestId("rail-row-host-group").textContent).toBe("devbox");
   });
 });
+
+// The unread marker is a read signal, not a status: a session can need you with
+// nothing new to read, or carry new replies that need nothing from you.
+describe("unread marker", () => {
+  test("an unread session shows the marker beside its age", () => {
+    render(<RailRow node={sessionRailNode(apiNode(), { unseen: true })} info={info()} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-unread")).toBeTruthy();
+  });
+
+  test("a session with nothing new to read shows no marker", () => {
+    render(<RailRow node={sessionRailNode(apiNode())} info={info()} actions={actions()} />);
+    expect(screen.queryByTestId("rail-row-unread")).toBeNull();
+  });
+
+  test("a row that needs you but has been read shows the needs-you dot and no unread marker", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "awaiting", ask_pending: true }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.queryByTestId("rail-row-unread")).toBeNull();
+    expect(within(screen.getByTestId("rail-row-signal")).getByRole("img", { name: "Needs you" })).toBeTruthy();
+  });
+
+  test("a finished row with new replies shows the unread marker and no status dot", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "idle" }), { unseen: true })}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByTestId("rail-row-unread")).toBeTruthy();
+    expect(screen.queryByTestId("rail-row-signal")).toBeNull();
+  });
+});
