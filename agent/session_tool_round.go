@@ -610,7 +610,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 		if s.envContextDue() {
 			_ = s.maybeAppendEnvironmentContext()
 		}
-		if !s.communicated() {
+		if !s.communicated() && !s.quietlyYielded() {
 			if s.hasPendingSteering() {
 				yieldToObserverCallback = false
 			}
@@ -799,9 +799,14 @@ func (s *Session) deliverBareReply(ctx context.Context, text string, result hook
 	}
 	if result.Stopped {
 		text = s.hookStopText(result.StopReason, "Stop hook stopped this turn")
+		s.deliverHookUserMessage(text)
 		if err := s.deliverCommunicateWithAcceptance(events.CommunicateData{EndTurn: true, Message: text}, true); err != nil {
 			return false, "", err
 		}
+		s.appendSteeringTurn(wrapHookContext("Stop hook replaced your previous reply with the following message delivered to the user:\n"+text), events.SteeringKindHookContext)
+		s.mu.Lock()
+		s.stopHookReplacedReply = true
+		s.mu.Unlock()
 	} else if result.Blocked {
 		s.stopHookActive.Store(true)
 		return false, "", nil

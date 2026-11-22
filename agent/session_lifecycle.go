@@ -1839,6 +1839,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		var bareStop hooks.StopResult
 		if bareReply {
 			bareStop = s.runReplyStopHook(ctx, lastText)
+			if bareStop.Stopped {
+				// The provider's stored response holds only the vetoed draft; clear
+				// its continuation anchor so the next request replays full history.
+				resp.ID = ""
+			}
 		}
 		acceptedBareReply := bareReply && !bareStop.Blocked && !bareStop.Stopped
 		var stopErr error

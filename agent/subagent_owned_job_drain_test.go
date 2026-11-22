@@ -1846,29 +1846,46 @@ func TestSubagentOwnedJobDrainStandingWatchDoesNotAllowQuietYield(t *testing.T) 
 
 func TestSubagentOwnedJobDrainQuietYieldAwakesForNestedDelegate(t *testing.T) {
 	t.Parallel()
-	adapter := newMessagingAdapter("NESTED-WAITER", "NESTED-LEAF")
+	adapter := newMessagingAdapter("NESTED-WAITER", "NESTED-LEAF-A", "NESTED-LEAF-B")
 	drainClock := newOwnedJobDrainClock()
+	leafAWokeCoordinator := make(chan struct{})
 	adapter.script("NESTED-WAITER", func(llm.Request) llm.Response {
-		return delegateToolResponse("spawn-leaf", "NESTED-LEAF: report the proof")
+		return agenttest.ToolCallResponse(
+			llm.ToolCallData{ID: "spawn-a", Name: "delegate", Arguments: json.RawMessage(`{"prompt":"NESTED-LEAF-A: report proof A"}`)},
+			llm.ToolCallData{ID: "spawn-b", Name: "delegate", Arguments: json.RawMessage(`{"prompt":"NESTED-LEAF-B: report proof B"}`)},
+		)
 	}, func(llm.Request) llm.Response {
-		return quietYieldResponse("quiet-nested", `{}`)
+		return quietYieldResponse("quiet-nested-1", `{}`)
+	}, func(req llm.Request) llm.Response {
+		if requestContainsText(req, "LEAF-A-PROOF") {
+			close(leafAWokeCoordinator)
+		}
+		return quietYieldResponse("quiet-nested-2", `{}`)
 	}, func(llm.Request) llm.Response {
 		return agenttest.FinalResponse("nested proof received")
 	})
-	leafEntered, releaseLeaf := make(chan struct{}), make(chan struct{})
-	release := sync.OnceFunc(func() { close(releaseLeaf) })
-	adapter.script("NESTED-LEAF", func(llm.Request) llm.Response {
-		close(leafEntered)
-		<-releaseLeaf
-		return agenttest.FinalResponse("LEAF-PROOF")
+	leafAEntered, releaseLeafA := make(chan struct{}), make(chan struct{})
+	leafBEntered, releaseLeafB := make(chan struct{}), make(chan struct{})
+	releaseA := sync.OnceFunc(func() { close(releaseLeafA) })
+	releaseB := sync.OnceFunc(func() { close(releaseLeafB) })
+	adapter.script("NESTED-LEAF-A", func(llm.Request) llm.Response {
+		close(leafAEntered)
+		<-releaseLeafA
+		return agenttest.FinalResponse("LEAF-A-PROOF")
+	})
+	adapter.script("NESTED-LEAF-B", func(llm.Request) llm.Response {
+		close(leafBEntered)
+		<-releaseLeafB
+		return agenttest.FinalResponse("LEAF-B-PROOF")
 	})
 	parent := newMessagingRoot(t, adapter, func(c *SessionConfig) {
 		*c = minimalTestSessionConfig(t)
 		c.StateDir, c.MaxSubagentDepth, c.clock = t.TempDir(), 2, drainClock
 	})
-	t.Cleanup(release)
+	t.Cleanup(releaseA)
+	t.Cleanup(releaseB)
 	ctx := tripwireCtx(t)
-	result := parent.createDelegate(ctx, delegateArgs{Task: "NESTED-WAITER: coordinate the leaf"})
+	result := parent.createDelegate(ctx, delegateArgs{Task: "NESTED-WAITER: coordinate the leaves"})
 	if result.Err != nil {
 		t.Fatal(result.Err)
 	}
@@ -1880,28 +1897,37 @@ func TestSubagentOwnedJobDrainQuietYieldAwakesForNestedDelegate(t *testing.T) {
 	child.mu.Lock()
 	done := child.done
 	child.mu.Unlock()
-	for _, signal := range []<-chan struct{}{leafEntered, drainClock.drainEntered} {
+	for _, signal := range []<-chan struct{}{leafAEntered, leafBEntered, drainClock.drainEntered} {
 		select {
 		case <-signal:
 		case <-ctx.Done():
-			t.Fatal("worker never reached the drain with its nested delegate held")
+			t.Fatal("worker never reached the drain with both nested delegates held")
 		}
 	}
 	if got := len(adapter.requestsFor("NESTED-WAITER")); got != 2 || len(rootPendingAttention(parent)) != 0 {
-		t.Fatalf("worker made %d requests or reported before the leaf could answer", got)
+		t.Fatalf("worker made %d requests or reported before the leaves could answer", got)
 	}
-	requireQuietToolResult(t, child.sess, "quiet-nested")
-	release()
+	requireQuietToolResult(t, child.sess, "quiet-nested-1")
+	releaseA()
+	// Worker A's report must wake the coordinator while Worker B is still held.
+	earlyCtx, earlyCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer earlyCancel()
+	select {
+	case <-leafAWokeCoordinator:
+	case <-earlyCtx.Done():
+		t.Fatal("first nested worker report did not wake the quiet-parked coordinator while its sibling was still running")
+	}
+	releaseB()
 	select {
 	case <-done:
 	case <-ctx.Done():
-		t.Fatal("the leaf's report did not wake and finish the worker")
+		t.Fatal("the second leaf's report did not wake and finish the worker")
 	}
 	requests := adapter.requestsFor("NESTED-WAITER")
-	if len(requests) != 3 || !requestContainsText(requests[2], "LEAF-PROOF") {
-		t.Fatalf("worker requests = %d, want three with the nested result in the last one", len(requests))
+	if len(requests) != 4 || !requestContainsText(requests[2], "LEAF-A-PROOF") || !requestContainsText(requests[3], "LEAF-B-PROOF") {
+		t.Fatalf("worker requests = %d, want four with LEAF-A-PROOF in #3 and LEAF-B-PROOF in #4", len(requests))
 	}
 	if packet := loadDelegateTerminalPacket(t, parent, result.DelegateID); packet.Kind != delegatestore.PacketReported || string(packet.Message) != `"nested proof received"` {
-		t.Fatalf("terminal packet = %+v, want the worker's one report after the nested wake", packet)
+		t.Fatalf("terminal packet = %+v, want the worker's one report after both nested wakes", packet)
 	}
 }

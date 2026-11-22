@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
@@ -148,6 +149,55 @@ func TestRootBareTextFallbackStopHook(t *testing.T) {
 			}
 			if tc.wantAccepted == "" && (len(marked) != 0 || len(communicated) != 1 || communicated[0] != tc.want) {
 				t.Fatalf("assistant acceptance=%q, communicate=%q", marked, communicated)
+			}
+			if tc.name == "replace" {
+				var followUpReq llm.Request
+				stateDir := t.TempDir()
+				repSess := newSession(t, withConfig(SessionConfig{StateDir: stateDir, OpenAIResponsesContinuation: "auto"}), withSteps(func(llm.Request) llm.Response {
+					r := bareTextResponse("First draft", llm.FinishReasonStop)
+					r.ID = "resp_vetoed_draft"
+					return r
+				}, func(req llm.Request) llm.Response {
+					followUpReq = req
+					return bareTextResponse("Follow-up answer", llm.FinishReasonStop)
+				}))
+				repStops := 0
+				installCommunicateStopHook(repSess, func() string {
+					repStops++
+					if repStops == 1 {
+						return `{"continue":false,"stopReason":"Replacement"}`
+					}
+					return `{}`
+				})
+				if got, err := repSess.ProcessInput(tripwireCtx(t), "Question", nil); err != nil || got != "Replacement" {
+					t.Fatalf("replace setup reply=%q err=%v", got, err)
+				}
+				if _, err := repSess.ProcessInput(tripwireCtx(t), "What did I receive?", nil); err != nil {
+					t.Fatalf("follow-up ProcessInput: %v", err)
+				}
+				if followUpReq.PreviousResponseID != "" || !requestContainsText(followUpReq, "Replacement") {
+					t.Fatalf("follow-up PreviousResponseID=%q hasReplacement=%t, want empty anchor and Replacement in messages", followUpReq.PreviousResponseID, requestContainsText(followUpReq, "Replacement"))
+				}
+				meta := repSess.Meta()
+				repSess.Close()
+
+				var resumedReq llm.Request
+				resumedClient := llm.NewClient()
+				resumedClient.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+					resumedReq = req
+					return bareTextResponse("After resume", llm.FinishReasonStop)
+				}))
+				resumed, err := RestoreSessionFromMetaWithConfig(resumedClient, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{StateDir: stateDir})
+				if err != nil {
+					t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+				}
+				defer resumed.Close()
+				if _, err := resumed.ProcessInput(tripwireCtx(t), "Check after resume", nil); err != nil {
+					t.Fatalf("resumed ProcessInput: %v", err)
+				}
+				if !requestContainsText(resumedReq, "Replacement") {
+					t.Fatalf("resumed follow-up omitted Replacement from model history: %+v", resumedReq.Messages)
+				}
 			}
 		})
 	}

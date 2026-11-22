@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
@@ -12,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -313,5 +315,50 @@ func TestCommunicateOptionalOutputEmitsNoRepairNotice(t *testing.T) {
 				t.Fatalf("schema-valid communicate(%s) emitted spurious repair notice: %+v", tc.args, repaired)
 			}
 		})
+	}
+}
+
+func TestCommunicateQuietYieldPreservesInFlightClientSteering(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	env := newHeldJobEnvironment(dir)
+	var s *Session
+	steered := false
+	steerDelivered := make(chan struct{})
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(llm.ToolCallData{ID: "shell", Name: "shell", Arguments: json.RawMessage(`{"command":"go test","mode":"background"}`)})
+	}, func(llm.Request) llm.Response {
+		if !steered {
+			steered = true
+			if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+				ClientMutationID: "steer-during-quiet",
+				Input:            []appwire.InputItem{{Type: "text", Text: "STEER_DURING_QUIET_SENTINEL"}},
+			}); err != nil {
+				t.Errorf("AcceptClientMutationSteer: %v", err)
+			}
+		}
+		return quietYieldResponse("quiet-yield", `{}`)
+	}, func(req llm.Request) llm.Response {
+		if requestContainsText(req, "STEER_DURING_QUIET_SENTINEL") {
+			close(steerDelivered)
+		}
+		return agenttest.FinalResponse("STEER_ACTED_ON")
+	})
+	s = newSession(t, withEnv(env), withAdapter(adapter), withStateDir(t.TempDir()))
+	t.Cleanup(env.releaseJob)
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := tripwireCtx(t)
+	if _, err := s.ProcessInput(ctx, "launch work", nil); err != nil {
+		t.Fatal(err)
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	select {
+	case <-steerDelivered:
+	case <-waitCtx.Done():
+		t.Fatal("in-flight client steer during quiet yield did not trigger a carrier model turn while background job remained held")
 	}
 }
