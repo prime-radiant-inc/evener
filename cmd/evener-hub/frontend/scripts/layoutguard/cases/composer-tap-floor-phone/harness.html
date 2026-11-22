@@ -35,11 +35,15 @@
           <div class="row" data-status>
           <span class="identity" data-identity>
             <span class="model">
-              <button class="trigger quietTrigger" type="button" data-model>
+              <button class="trigger quietTrigger triggerShrink" type="button" data-model>
                 <span class="value" data-model-value>deepseek-4.1-flash-abliterated</span>
                 <span class="chevron">⌄</span>
               </button>
             </span>
+              <!-- The wide-row companion is not a production trigger: the
+                   status row renders one ModelSwitch. Only the real trigger
+                   carries the shrink contract; the compact rules never applied
+                   to this stand-in before the migration either. -->
               <span class="model">
                 <button class="trigger quietTrigger" type="button" data-model="vision">
                   <span class="value" data-model-value>vision</span>

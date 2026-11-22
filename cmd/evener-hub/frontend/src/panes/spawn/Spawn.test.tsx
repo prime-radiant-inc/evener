@@ -8,7 +8,9 @@ import { expect, onTestFinished, test, vi } from "vitest";
 import { MOBILE_QUERY } from "../../shell/useIsMobile";
 import { connectionStore } from "../../stores/connection";
 import { readModuleCss } from "../../styles/cssBlock";
+import popoverStyles from "../../widgets/popover/popover.module.css";
 import promptCardStyles from "../../widgets/promptcard/promptcard.module.css";
+import modelSwitchStyles from "../session/chrome/modelswitch.module.css";
 import editorStyles from "../session/composer/skilleditor.module.css";
 import Welcome from "../welcome/Welcome";
 import { applySpawnURL, spawnDraftsStore } from "./spawnDrafts";
@@ -337,6 +339,16 @@ test("the prompt card IS the shared PromptCard widget, not a lookalike", async (
 test("the model trigger hugs effort at the row's far end", () => {
   const css = readModuleCss(import.meta.url, "spawn.module.css");
   expect(css).toMatch(/\.modelTrigger\s*\{[^}]*flex:\s*0 1 auto;[^}]*margin-left:\s*auto/);
+});
+
+// The nested shrink contract belongs to the shared trigger, not to selectors
+// that reach into its Popover DOM: the card asks for the fill/shrink shape.
+test("the card's model trigger fills its slot and opts into truncation", async () => {
+  renderSpawn(readyClient());
+  await settled();
+  const trigger = modelTrigger();
+  expect(trigger.className.split(" ")).toContain(modelSwitchStyles.triggerShrink);
+  expect(trigger.parentElement?.className.split(" ")).toContain(popoverStyles.triggerStretch);
 });
 
 // The card draws the one border and owns the focus ring, so the field inside

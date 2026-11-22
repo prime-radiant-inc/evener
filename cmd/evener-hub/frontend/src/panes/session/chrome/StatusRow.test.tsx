@@ -15,6 +15,7 @@ import { requireClass } from "../../../widgets/internal/requireClass";
 import rawMeterStyles from "../../../widgets/meter/meter.module.css";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import visuallyHiddenStyles from "../../../widgets/visuallyhidden/visuallyhidden.module.css";
+import rawModelSwitchStyles from "./modelswitch.module.css";
 import { StatusRow } from "./StatusRow";
 import statusRowStyles from "./statusrow.module.css";
 
@@ -28,11 +29,16 @@ test("status CSS declares the approved 560, 480, and 400px compression threshold
 });
 
 test("phone status CSS reserves a visible model label without dropping fixed facts", () => {
-  const css = readFileSync(join(here, "statusrow.module.css"), "utf8");
-  const phoneBlock = /@container \(max-width: 399px\) \{([\s\S]*?)\n\}/.exec(css)?.[1] ?? "";
+  const rowCss = readFileSync(join(here, "statusrow.module.css"), "utf8");
+  const phoneBlock = /@container \(max-width: 399px\) \{([\s\S]*?)\n\}/.exec(rowCss)?.[1] ?? "";
   expect(phoneBlock).toContain("gap: var(--space-1)");
-  expect(phoneBlock).toContain("padding-inline: 0");
-  expect(phoneBlock).toContain("min-width: 1rem");
+
+  // The trigger's own half of that compression moved behind its shrink prop,
+  // so the row no longer pierces the Popover button's DOM.
+  const triggerCss = readFileSync(join(here, "modelswitch.module.css"), "utf8");
+  const triggerPhoneBlock = /@container \(max-width: 399px\) \{([\s\S]*?)\n\}/.exec(triggerCss)?.[1] ?? "";
+  expect(triggerPhoneBlock).toContain("padding-inline: 0");
+  expect(triggerPhoneBlock).toContain("min-width: 1rem");
 });
 
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
@@ -178,6 +184,11 @@ test("groups model and effort visually while retaining two independent controls"
   expect(identity.contains(screen.getByTestId("model-switch-trigger"))).toBe(true);
   expect(identity.contains(screen.getByRole("combobox", { name: /reasoning effort/i }))).toBe(true);
   expect(identity.children).toHaveLength(2);
+});
+
+test("the row asks the model trigger to shrink rather than widen", () => {
+  render(<StatusRow sessionRef="ref_a" model={testModel()} now={1000} />);
+  expect(screen.getByTestId("model-switch-trigger").className.split(" ")).toContain(rawModelSwitchStyles.triggerShrink);
 });
 
 // --- model switcher ---------------------------------------------------------
