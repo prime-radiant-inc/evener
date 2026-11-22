@@ -53,6 +53,10 @@ losing the conversation that made the evidence relevant.
   Open navigates independently. Neither action should accidentally trigger the other.
   Progressive disclosure costs an extra action to inspect detail; it must not conceal
   the reason to inspect it.
+- **Keep thinking at intent density.** Chat omits reasoning rows. At Intent and above,
+  compact live and settled summaries share the icon rail, sans UI type, title line
+  height, and a `--rhythm-item` vertical inset. Their chevrons disclose the same quiet,
+  italic reading text. Full keeps the richer reasoning presentation.
 - **Keep different facts distinct.** Delegate lifecycle, attention, immutable launch receipt
   and child-authored report answer different questions. A successful launch is not finished
   work; an earlier report is not current activity. Prefer an honest unknown to an inferred
@@ -1070,13 +1074,14 @@ reduced motion, and each is defined once:
   palette; delegate rows) and stops the moment the status authority stops reporting work. It
   communicates state, not frame throughput or percent complete. Needs-you (a solid dot) and
   failed (a diamond) stay static and shape-distinct.
-- **The pulsing grid.** The transcript's content-free "Thinking…" placeholder, shown for a
-  live reasoning item while the Reasoning content flag is off, uses the catalog `Loader`'s
-  pulsing pixel grid. It renders no reasoning text, disappears once the thought is no longer
-  the turn's current activity, and is the only animation the transcript itself adds. It is a
-  user-facing wait placeholder, not an agent-status indicator, and unlike Cadence it is not
-  activity-gated, so it keeps pulsing if the stream stalls; Cadence's decaying trace remains
-  the honest liveness signal.
+- **The pulsing grid.** At Intent and above, the transcript's compact live "Thinking…"
+  summary while the Reasoning content flag is off uses the catalog `Loader`'s pulsing
+  pixel grid. Its closed summary renders no reasoning text; the disclosure reveals the
+  trace on demand. The grid disappears once the thought is no longer the turn's current
+  activity, and is the only animation the transcript itself adds. It is a user-facing wait
+  placeholder, not an agent-status indicator, and unlike Cadence it is not activity-gated,
+  so it keeps pulsing if the stream stalls; Cadence's decaying trace remains the honest
+  liveness signal.
 - **The streaming caret.** A blinking bar at the end of text that is still streaming, in
   the surrounding ink; it exists only while the text is live.
 
