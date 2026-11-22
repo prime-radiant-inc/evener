@@ -185,7 +185,7 @@ func TranscriptHealth(ctx context.Context, stateBase, selector string) (HealthRe
 				}
 				name := resolver.callName(part.ToolCall)
 				res.ToolCalls[name]++
-				if paired := pairedResults[toolCallPosition{i, j}]; paired != nil && !paired.IsError && schema.IsQuietCommunicateState(paired.ToolState) {
+				if paired := pairedResults[toolCallPosition{i, j}]; paired.result != nil && !paired.result.IsError && schema.IsQuietCommunicateState(paired.result.ToolState) {
 					continue
 				}
 				occurrences = append(occurrences, toolCallOccurrence{

@@ -130,7 +130,7 @@ func loadSessionRowTranscript(ctx context.Context, path, resultTool string) (tra
 			// Retain tool results so the scan can pair them with assistant
 			// calls before deciding whether to stop or widen the window.
 			switch entry.Turn.Kind {
-			case schema.TurnAssistant, schema.TurnTool, schema.TurnToolResults:
+			case schema.TurnAssistant, schema.TurnTool, schema.TurnToolResults, schema.TurnCompletion:
 				doc.Entries = append(doc.Entries, entry)
 			default:
 				if entry.Turn.AcceptedReply {

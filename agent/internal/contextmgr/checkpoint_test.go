@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -149,6 +150,13 @@ func TestCheckpoint_CommunicateOnlyRecordsAcceptedReplies(t *testing.T) {
 		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "communicate", "dispatch failed", true)},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2", "communicate", `{"message":"accepted reply","end_turn":true}`)},
 		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2", "communicate", "delivered", false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2b", "communicate", `{"message":"default end_turn reply"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2b", "communicate", "delivered", false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2p", "communicate", `{"message":"progress status","end_turn":false}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2p", "communicate", "delivered", false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2q", "communicate", `{}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2q", "communicate", `{"accepted":true,"end_turn":true,"quiet":true}`, false)},
+		{AcceptedReply: true, Kind: schema.TurnAssistant, Message: llm.Assistant("OK")},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c3", "communicate", `{"message":"unanswered reply","end_turn":true}`)},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("still working")},
 	}
@@ -161,8 +169,28 @@ func TestCheckpoint_CommunicateOnlyRecordsAcceptedReplies(t *testing.T) {
 			agents = append(agents, e.Text)
 		}
 	}
-	if len(agents) != 1 || agents[0] != "accepted reply" {
-		t.Fatalf("agent conversation = %v, want only the accepted reply", agents)
+	wantAgents := []string{"accepted reply", "default end_turn reply", "OK"}
+	if len(agents) != len(wantAgents) || agents[0] != wantAgents[0] || agents[1] != wantAgents[1] || agents[2] != wantAgents[2] {
+		t.Fatalf("agent conversation = %v, want %v", agents, wantAgents)
+	}
+
+	var seenPrompt string
+	client := llm.NewClient()
+	client.Register(&agenttest.ScriptedAdapter{
+		Provider: "openai",
+		Responder: func(req llm.Request) llm.Response {
+			seenPrompt = req.Messages[len(req.Messages)-1].Text()
+			return llm.Response{Message: llm.Assistant("## Progress\ncompacted")}
+		},
+	})
+	cm := NewManager(NewOpenAIProfile("gpt-5.2"), client, cheapmodel.New(client))
+	if _, err := cm.summarizeFold(t.Context(), history, 1, "", nil); err != nil {
+		t.Fatalf("summarizeFold: %v", err)
+	}
+	for _, want := range []string{"Agent Message: default end_turn reply\n", "Agent Status: progress status\n", "Agent Message: OK\n"} {
+		if !strings.Contains(seenPrompt, want) {
+			t.Errorf("summarizeFold prompt missing %q:\n%s", want, seenPrompt)
+		}
 	}
 }
 

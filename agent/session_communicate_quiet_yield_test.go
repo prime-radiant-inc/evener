@@ -261,7 +261,9 @@ func TestCommunicateExplicitDefaultOutputSchema(t *testing.T) {
 		{name: "progress without output", args: `{"message":"working","end_turn":false}`},
 		{name: "quiet notification", args: `{}`, wantQuiet: true},
 		{name: "final with empty object", args: `{"message":"done","output":{}}`, wantFinal: true, wantOutput: `{}`},
-		{name: "output-only message", args: `{"output":{"message":"nested"}}`, wantError: true},
+		{name: "output-only message", args: `{"output":{"message":"nested"}}`, wantFinal: true, wantOutput: `{"message":"nested"}`},
+		{name: "blank top-level message uses output.message", args: `{"message":"   ","output":{"message":"nested report","data":{"ok":true}}}`, wantFinal: true, wantOutput: `{"data":{"ok":true},"message":"nested report"}`},
+		{name: "blank top-level and blank output.message rejected", args: `{"message":"   ","output":{"message":"   "}}`, wantError: true},
 		{name: "output encoded as string", args: `{"message":"done","output":"{}"}`, wantError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

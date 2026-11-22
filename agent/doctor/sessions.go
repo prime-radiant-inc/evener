@@ -272,7 +272,7 @@ func findOutcome(entries []transcript.Entry, resultTool string) (hint string, de
 
 // outcomeCall decides whether an assistant entry settles the hint. Recorded
 // verdicts take precedence over inference from the call's arguments.
-func outcomeCall(entryIndex int, turn schema.Turn, resultTool string, results map[toolCallPosition]*llm.ToolResultData) (args json.RawMessage, endTurn *bool, decided bool) {
+func outcomeCall(entryIndex int, turn schema.Turn, resultTool string, results map[toolCallPosition]pairedToolResult) (args json.RawMessage, endTurn *bool, decided bool) {
 	if turn.Kind != schema.TurnAssistant {
 		return nil, nil, false
 	}
@@ -299,17 +299,37 @@ type toolCallPosition struct {
 	entry, part int
 }
 
-// pairToolResults binds each result to the latest open call with its ID.
-// Providers can reuse an ID in a later round, so the call's position is its key.
-func pairToolResults(entries []transcript.Entry) map[toolCallPosition]*llm.ToolResultData {
+type pairedToolResult struct {
+	result             *llm.ToolResultData
+	completionAccepted bool
+}
+
+type turnCallKey struct {
+	turnID, callID string
+}
+
+// pairToolResults binds each result to the latest open call with its ID, and
+// resolves Stop-hook BoundaryPending results when their execution's
+// TurnCompletion records AcceptedCommunicateCallID.
+func pairToolResults(entries []transcript.Entry) map[toolCallPosition]pairedToolResult {
 	open := make(map[string]toolCallPosition)
-	results := make(map[toolCallPosition]*llm.ToolResultData)
+	byTurn := make(map[turnCallKey]toolCallPosition)
+	unscopedSpan := make(map[string]toolCallPosition)
+	results := make(map[toolCallPosition]pairedToolResult)
 	for i, entry := range entries {
 		switch entry.Turn.Kind {
+		case schema.TurnUserInput:
+			clear(unscopedSpan)
 		case schema.TurnAssistant:
 			for j, part := range entry.Turn.Message.Content {
 				if part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.ID != "" {
-					open[part.ToolCall.ID] = toolCallPosition{i, j}
+					pos := toolCallPosition{i, j}
+					open[part.ToolCall.ID] = pos
+					if entry.Turn.TurnID != "" {
+						byTurn[turnCallKey{entry.Turn.TurnID, part.ToolCall.ID}] = pos
+					} else {
+						unscopedSpan[part.ToolCall.ID] = pos
+					}
 				}
 			}
 		case schema.TurnToolResults, schema.TurnTool:
@@ -319,10 +339,27 @@ func pairToolResults(entries []transcript.Entry) map[toolCallPosition]*llm.ToolR
 				}
 				id := part.ToolResult.ToolCallID
 				if pos, ok := open[id]; ok {
-					results[pos] = part.ToolResult
+					results[pos] = pairedToolResult{result: part.ToolResult}
 					delete(open, id)
 				}
 			}
+		case schema.TurnCompletion:
+			if c := entry.Turn.Completion; c != nil && c.Status == schema.TurnCompleted && c.AcceptedCommunicateCallID != "" {
+				var pos toolCallPosition
+				var found bool
+				if entry.Turn.TurnID != "" {
+					pos, found = byTurn[turnCallKey{entry.Turn.TurnID, c.AcceptedCommunicateCallID}]
+				} else {
+					pos, found = unscopedSpan[c.AcceptedCommunicateCallID]
+				}
+				if found {
+					if r, ok := results[pos]; ok {
+						r.completionAccepted = true
+						results[pos] = r
+					}
+				}
+			}
+			clear(unscopedSpan)
 		}
 	}
 	return results
@@ -330,8 +367,9 @@ func pairToolResults(entries []transcript.Entry) map[toolCallPosition]*llm.ToolR
 
 // communicateResultEndTurn reports a visible reply's recorded end_turn. A
 // recorded verdict with no visible reply suppresses argument inference, as
-// does a pending Stop boundary until an AcceptedReply entry appears.
-func communicateResultEndTurn(result *llm.ToolResultData) (endTurn *bool, recorded bool) {
+// does a pending Stop boundary until TurnCompletion or AcceptedReply settles it.
+func communicateResultEndTurn(paired pairedToolResult) (endTurn *bool, recorded bool) {
+	result := paired.result
 	if result == nil {
 		return nil, false
 	}
@@ -339,7 +377,7 @@ func communicateResultEndTurn(result *llm.ToolResultData) (endTurn *bool, record
 		return nil, true
 	}
 	if state, ok := schema.DecodeCommunicateToolState(result.ToolState); ok {
-		if state.IsQuiet() || state.BoundaryPending || state.Accepted != nil && !*state.Accepted {
+		if state.IsQuiet() || (state.BoundaryPending && !paired.completionAccepted) || state.Accepted != nil && !*state.Accepted {
 			return nil, true
 		}
 		if state.EndTurn != nil && state.Accepted != nil {

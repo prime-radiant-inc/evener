@@ -1054,17 +1054,20 @@ func TestDoctorOutcomeAfterRejectedStructuredReply(t *testing.T) {
 	t.Cleanup(func() { sessionRowTranscriptTailBytes = origTail })
 
 	for _, result := range []struct {
-		name           string
-		isError        bool
-		state          json.RawMessage
-		content        any
-		legacyFallback bool
+		name               string
+		isError            bool
+		state              json.RawMessage
+		content            any
+		legacyFallback     bool
+		completionAccepted bool
 	}{
 		{name: "missing_required_output", isError: true},
 		{name: "lost_terminal_capture", state: json.RawMessage(`{"communicate_accepted":false,"communicate_end_turn":true}`)},
 		{name: "quiet_result", state: json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true,"communicate_quiet":true}`)},
 		{name: "legacy_quiet_result", content: `{"accepted":true,"end_turn":true,"quiet":true}`},
 		{name: "legacy_no_verdict", content: `{}`, legacyFallback: true},
+		{name: "stop_hook_pending_unsettled", state: json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true,"communicate_boundary_pending":true}`)},
+		{name: "stop_hook_completed_accepted", state: json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true,"communicate_boundary_pending":true}`), completionAccepted: true},
 	} {
 		t.Run(result.name, func(t *testing.T) {
 			for _, tc := range []struct {
@@ -1096,17 +1099,28 @@ func TestDoctorOutcomeAfterRejectedStructuredReply(t *testing.T) {
 					// Keep the earlier reply outside the first tail window.
 					turns = append(turns, schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("p", 12<<10))))
 					wantOutcome, wantBoundary := tc.wantOutcome, tc.wantBoundary
-					if result.legacyFallback {
+					if result.legacyFallback || result.completionAccepted {
 						wantOutcome, wantBoundary = "end_turn=true", len(turns)
 					}
 					reply := healthToolCall(attemptID, "communicate", `{"message":"done"}`)
 					verdict := healthToolResult(attemptID, "communicate", result.content, result.isError)
 					verdict.ToolResult.ToolState = result.state
-					// The transcript stops after the tool result, before a correction.
-					turns = append(turns,
-						schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{reply}}),
-						schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{verdict}}),
-					)
+					assistantTurn := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{reply}})
+					resultTurn := schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{verdict}})
+					assistantTurn.Format, assistantTurn.TurnID = schema.TurnFormatIdentity, "turn_attempt"
+					resultTurn.Format, resultTurn.TurnID = schema.TurnFormatIdentity, "turn_attempt"
+					turns = append(turns, assistantTurn, resultTurn)
+					if result.completionAccepted {
+						turns = append(turns, schema.Turn{
+							Format: schema.TurnFormatIdentity,
+							TurnID: "turn_attempt",
+							Kind:   schema.TurnCompletion,
+							Completion: &schema.TurnCompletionInfo{
+								Status:                    schema.TurnCompleted,
+								AcceptedCommunicateCallID: attemptID,
+							},
+						})
+					}
 					base := t.TempDir()
 					bucket := stateHomeBucket(base, hash1)
 					sid := newSessionsTestSID(t)

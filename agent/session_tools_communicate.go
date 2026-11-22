@@ -102,8 +102,14 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 			}
 			rawOutput, outputPresent := args["output"]
 			originalOutput := normalizeNodeOutput(rawOutput)
-			if message == "" && !structuredRequired {
-				message = strings.TrimSpace(originalOutput.Message)
+			if message == "" {
+				if !structuredRequired {
+					message = strings.TrimSpace(originalOutput.Message)
+				} else if outMap, ok := rawOutput.(map[string]any); ok {
+					if outMsg, ok := outMap["message"].(string); ok {
+						message = strings.TrimSpace(outMsg)
+					}
+				}
 			}
 			explicitNodeOutput := hasMeaningfulNodeOutput(originalOutput)
 			meaningfulOutput := outputPresent
