@@ -181,7 +181,7 @@ In `(*subagent).run` (`agent/subagents.go:2613-2680`):
 
 - **Scope:** Applies **only** when all four hold:
   1. Root session (`!s.reportsToParent()`),
-  2. `kind == EntryUserInput` (never `EntryNotification`, `EntryContinuation`, or `EntryDelegateAttention`),
+  2. `kind == EntryUserInput` — including in-flight steering-carrier `EntryUserInput` turns — and deliberately **never** `EntryNotification`, `EntryContinuation`, or `EntryDelegateAttention`, so background wakes and goal continuations never leak `"Noted:"` prose as a visible reply,
   3. Session has no custom `communicate` schema or `AllowedDecisions` (`usesDefaultCommunicateOutputEnvelope`),
   4. Model finished cleanly (`resp.Finish.Reason == llm.FinishReasonStop`, `len(calls) == 0`, `!noContent`, non-blank `lastText`).
 - **Mechanics (`agent/session_lifecycle.go` & `agent/session_tool_round.go`):**
@@ -190,7 +190,7 @@ In `(*subagent).run` (`agent/subagents.go:2613-2680`):
     2. Run `deliverIfCommunicated` (`HookStop` with `LastAssistantMessage = lastText`):
        - Explicit `communicate` preserves `#570` atomic first-winner capture across `stopResult.Blocked` (matching the already-persisted `communicate_accepted: true` tool state and `TestDelegateResourceRuntime_GenericStopUsesCanonicalFinish`); on root bare-text fallback (where no `communicate` tool result was written), `stopResult.Blocked` clears the unpersisted candidate so the continued round produces the accepted reply.
        - If `stopResult.Stopped` is `true`, `replaceAcceptedReply(text)` replaces the reply on both paths (`TurnCommunicate` replacement as today).
-    3. Emit an accepted-reply completion marker / observation (only after `Stop` hooks allow or replace the reply) so `cmd/evener/run.go` (`ProcessInput` return value), `doctor_evener` (`outcomeHint`), and `job_watch_hub.go` (`hubCompletion`, both live and replayed) see the accepted root reply identically to `communicate({"message": lastText})`.
+    3. On an allowed bare-text reply (`!result.Stopped && !result.Blocked`), after `s.comm` settles and before `finishReplyBoundary` clears `s.activeProvenance`, emit `events.CommunicateData{EndTurn: true, Message: text}` via `s.emitWithProvenance(..., provenance.Clone(s.activeCausalProvenance()))` **without** writing a duplicate `TurnCommunicate` entry (`TurnAssistant{AcceptedReply: true}` is already durable). This gives `watch_parent=true` observers and `events: ["communicate"]` self-watches full parity and causal self-influence tracking while keeping transcript, UI, and human-mode CLI (`cmd/evener/run.go`, via `apptranscript.EchoesAssistantText`) single-copy, and ensures `cmd/evener/run.go` (`ProcessInput` return value), `doctor_evener` (`outcomeHint`), and `job_watch_hub.go` (`hubCompletion`, both live and replayed) see the accepted root reply identically to `communicate({"message": lastText})`.
 
 ### 5. Transcript Projection, Reload Parity, and Watch Suppression
 

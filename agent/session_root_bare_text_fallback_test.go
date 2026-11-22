@@ -2,20 +2,27 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/llm"
 )
@@ -24,7 +31,48 @@ func bareTextResponse(text string, reason string) llm.Response {
 	return llm.Response{Message: llm.Assistant(text), Finish: llm.FinishReason{Reason: reason}}
 }
 
+func communicateEventsIn(evs []events.SessionEvent) []events.CommunicateData {
+	var out []events.CommunicateData
+	for _, ev := range evs {
+		if ev.Kind == events.EventCommunicate {
+			if d, ok := ev.Data.(events.CommunicateData); ok {
+				out = append(out, d)
+			}
+		}
+	}
+	return out
+}
+
+func countAgentMessages(t *testing.T, transcriptPath, turnID string) (total int, texts []string) {
+	t.Helper()
+	idx, err := transcriptindex.Open(transcriptPath, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := idx.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	window, err := idx.Latest(40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range window.Candidates {
+		if candidate.Item.Type != "agentMessage" {
+			continue
+		}
+		if turnID != "" && candidate.Item.TurnID != turnID {
+			continue
+		}
+		total++
+		texts = append(texts, candidate.Item.Text)
+	}
+	return total, texts
+}
+
 func TestRootBareTextFallback(t *testing.T) {
+	t.Parallel()
 	structured, err := provider.WithCommunicateOutputSchema(NewOpenAIProfile("gpt-5.2"), map[string]any{"type": "object", "additionalProperties": true})
 	if err != nil {
 		t.Fatal(err)
@@ -47,14 +95,16 @@ func TestRootBareTextFallback(t *testing.T) {
 		{name: "truncated", text: "Partial answer", finish: llm.FinishReasonLength, kind: EntryUserInput},
 		{name: "empty", finish: llm.FinishReasonStop, kind: EntryUserInput},
 		{name: "notification", text: "Acknowledgement", finish: llm.FinishReasonStop, kind: EntryNotification},
+		{name: "goal continuation", text: "Continuation prose", finish: llm.FinishReasonStop, kind: EntryContinuation},
 		{name: "subagent", text: "Unreported answer", finish: llm.FinishReasonStop, kind: EntryUserInput, parent: true},
 		{name: "explicit default envelope", text: "Untyped answer", finish: llm.FinishReasonStop, kind: EntryUserInput, profile: boundDefault},
 		{name: "output schema", text: "Untyped answer", finish: llm.FinishReasonStop, kind: EntryUserInput, profile: structured},
 		{name: "allowed decisions", text: "No decision", finish: llm.FinishReasonStop, kind: EntryUserInput, profile: provider.WithAllowedDecisions(NewOpenAIProfile("gpt-5.2"), []string{"approve"})},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			var calls int
-			s := newSession(t, withProfile(tc.profile), withSteps(func(llm.Request) llm.Response {
+			s := newSession(t, withProfile(tc.profile), withStateDir(t.TempDir()), withSteps(func(llm.Request) llm.Response {
 				calls++
 				return bareTextResponse(tc.text, tc.finish)
 			}, func(llm.Request) llm.Response {
@@ -68,6 +118,7 @@ func TestRootBareTextFallback(t *testing.T) {
 					return agenttest.FinalResponse("Explicit answer")
 				}
 			}))
+			evs, evMu, evDone := collectEvents(s)
 			if tc.parent {
 				s.cfg.spawn.parentSessionID = "parent"
 			}
@@ -80,6 +131,14 @@ func TestRootBareTextFallback(t *testing.T) {
 			if tc.wantFallback {
 				if err != nil || got != tc.text || calls != 1 || s.State() != SessionIdle {
 					t.Fatalf("reply=%q calls=%d state=%v err=%v", got, calls, s.State(), err)
+				}
+				s.Close()
+				<-evDone
+				evMu.Lock()
+				commEvs := communicateEventsIn(*evs)
+				evMu.Unlock()
+				if len(commEvs) != 1 || !commEvs[0].EndTurn || commEvs[0].Message != tc.text {
+					t.Fatalf("EventCommunicate = %+v, want 1 EndTurn=%q", commEvs, tc.text)
 				}
 				return
 			}
@@ -94,8 +153,389 @@ func TestRootBareTextFallback(t *testing.T) {
 			} else if got != "Explicit answer" {
 				t.Fatalf("reply=%q, want the explicit reply", got)
 			}
+			s.Close()
+			<-evDone
+			evMu.Lock()
+			commEvs := communicateEventsIn(*evs)
+			evMu.Unlock()
+			if len(commEvs) != 1 || !commEvs[0].EndTurn || commEvs[0].Message != "Explicit answer" {
+				t.Fatalf("ineligible bare text leaked or missed EventCommunicate: %+v", commEvs)
+			}
 		})
 	}
+
+	t.Run("steering carrier", func(t *testing.T) {
+		t.Parallel()
+		var s *Session
+		steered := false
+		carrierSawSteer := false
+		s = newSession(t, withStateDir(t.TempDir()), withSteps(func(llm.Request) llm.Response {
+			if !steered {
+				steered = true
+				if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+					ClientMutationID: "bare-fallback-carrier",
+					Input:            []appwire.InputItem{{Type: "text", Text: "CARRIER_STEER_SENTINEL"}},
+				}); err != nil {
+					t.Errorf("AcceptClientMutationSteer: %v", err)
+				}
+			}
+			return agenttest.FinalResponse("Initial reply")
+		}, func(req llm.Request) llm.Response {
+			carrierSawSteer = requestContainsText(req, "CARRIER_STEER_SENTINEL")
+			return bareTextResponse("Carrier bare answer", llm.FinishReasonStop)
+		}, func(llm.Request) llm.Response {
+			return agenttest.FinalResponse("Unexpected bare-text retry")
+		}))
+		if err := s.ensureClientMutationStore(); err != nil {
+			t.Fatal(err)
+		}
+		evs, evMu, evDone := collectEvents(s)
+		got, err := s.ProcessInput(tripwireCtx(t), "Question", nil)
+		if err != nil || !carrierSawSteer || got != "Initial reply\nCarrier bare answer" || s.State() != SessionIdle {
+			t.Fatalf("reply=%q sawSteer=%t state=%v err=%v", got, carrierSawSteer, s.State(), err)
+		}
+		s.Close()
+		<-evDone
+		evMu.Lock()
+		commEvs := communicateEventsIn(*evs)
+		evMu.Unlock()
+		if len(commEvs) != 2 || !commEvs[1].EndTurn || commEvs[1].Message != "Carrier bare answer" {
+			t.Fatalf("EventCommunicate = %+v, want carrier bare answer emitted", commEvs)
+		}
+	})
+
+	t.Run("post-quiet notification wake", func(t *testing.T) {
+		t.Parallel()
+		env := newHeldJobEnvironment(t.TempDir())
+		var calls int
+		s := newSession(t, withEnv(env), withStateDir(t.TempDir()), withSteps(
+			func(llm.Request) llm.Response {
+				calls++
+				return agenttest.ToolCallResponse(llm.ToolCallData{
+					ID:        "bg-shell",
+					Name:      "shell",
+					Arguments: json.RawMessage(`{"command":"go test","mode":"background"}`),
+				})
+			},
+			func(llm.Request) llm.Response {
+				calls++
+				return quietYieldResponse("quiet-wait", `{}`)
+			},
+			func(llm.Request) llm.Response {
+				calls++
+				return bareTextResponse("Noted: background job completed", llm.FinishReasonStop)
+			},
+			func(llm.Request) llm.Response {
+				calls++
+				return agenttest.FinalResponse("Background job finished cleanly")
+			},
+		))
+		t.Cleanup(env.releaseJob)
+		evs, evMu, evDone := collectEvents(s)
+		ctx := tripwireCtx(t)
+
+		got1, err := s.ProcessInput(ctx, "Start background job", nil)
+		if err != nil || got1 != "" || !s.quietlyYielded() || s.State() != SessionIdle {
+			t.Fatalf("turn 1: reply=%q quiet=%t state=%v err=%v", got1, s.quietlyYielded(), s.State(), err)
+		}
+		env.releaseJob()
+		testwait.Until(t, "background job notification enqueued", func() bool {
+			return s.peekNotifications() > 0
+		})
+
+		got2, err := s.ProcessInputKind(ctx, "", nil, EntryNotification)
+		if err != nil || calls != 4 || got2 != "Background job finished cleanly" || s.State() != SessionIdle {
+			t.Fatalf("turn 2: reply=%q calls=%d state=%v err=%v", got2, calls, s.State(), err)
+		}
+		s.Close()
+		<-evDone
+		evMu.Lock()
+		commEvs := communicateEventsIn(*evs)
+		evMu.Unlock()
+		if len(commEvs) != 1 || commEvs[0].Message != "Background job finished cleanly" || !commEvs[0].EndTurn {
+			t.Fatalf("EventCommunicate = %+v, want only the explicit notification reply", commEvs)
+		}
+		turns := transcriptTurnsOf(t, s)
+		sawNoToolSteer := false
+		for _, turn := range turns {
+			if turn.Kind == schema.TurnSteering && turn.SteeringKind == events.SteeringKindNoToolCalls {
+				sawNoToolSteer = true
+			}
+			if turn.Kind == schema.TurnAssistant && turn.AcceptedReply {
+				t.Fatalf("unexpected accepted TurnAssistant on notification wake: %q", lastAgentText(turn.Message))
+			}
+		}
+		if !sawNoToolSteer {
+			t.Fatal("notification bare text did not trigger SteeringKindNoToolCalls steering")
+		}
+	})
+}
+
+func TestRootBareTextFallbackNotifiesCommunicateWatches(t *testing.T) {
+	t.Parallel()
+	t.Run("watch_parent observer receives EventCommunicate", func(t *testing.T) {
+		t.Parallel()
+		adapter := newMessagingAdapter("OBSERVER-BRIEF")
+		allowObserverArm := make(chan struct{})
+		observerFrameReq := make(chan llm.Request, 1)
+		var rootTurnCount int
+		adapter.script("root",
+			func(llm.Request) llm.Response {
+				rootTurnCount++
+				return delegateToolCall("spawn-obs", map[string]any{
+					"prompt":       "OBSERVER-BRIEF: watch parent communicate events.",
+					"watch_parent": true,
+				})
+			},
+			func(llm.Request) llm.Response {
+				rootTurnCount++
+				return agenttest.FinalResponse("Observer starting")
+			},
+			func(llm.Request) llm.Response {
+				rootTurnCount++
+				return quietYieldResponse("ack-obs-ready", `{}`)
+			},
+			func(llm.Request) llm.Response {
+				rootTurnCount++
+				return bareTextResponse("Root bare answer", llm.FinishReasonStop)
+			},
+			func(llm.Request) llm.Response {
+				rootTurnCount++
+				return agenttest.FinalResponse("Unexpected retry")
+			},
+		)
+		adapter.script("OBSERVER-BRIEF",
+			func(llm.Request) llm.Response {
+				awaitSignal(t, allowObserverArm, "root turn 1 finished")
+				return agenttest.ToolCallResponse(llm.ToolCallData{
+					ID:        "arm-watch",
+					Name:      "job_watch",
+					Arguments: json.RawMessage(`{"operation":"create","source":"parent","events":["communicate"]}`),
+				})
+			},
+			func(llm.Request) llm.Response {
+				return agenttest.FinalResponse("Observer armed")
+			},
+			func(req llm.Request) llm.Response {
+				select {
+				case observerFrameReq <- req:
+				default:
+				}
+				return quietYieldResponse("obs-ack", `{}`)
+			},
+		)
+		root := newMessagingRoot(t, adapter, nil)
+		evs, evMu, evDone := collectEvents(root)
+		ctx := tripwireCtx(t)
+
+		if _, err := root.ProcessInput(ctx, "Start observer", nil); err != nil {
+			t.Fatalf("setup turn: %v", err)
+		}
+		close(allowObserverArm)
+		testwait.Until(t, "observer watch armed and initial generation idle", func() bool {
+			if root.jobManager.watchCount() != 1 || len(rootPendingAttention(root)) != 1 {
+				return false
+			}
+			root.delegateController.mu.Lock()
+			defer root.delegateController.mu.Unlock()
+			for _, agg := range root.delegateController.durable {
+				return !agg.CurrentRunOpen
+			}
+			return false
+		})
+		if _, err := root.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+			t.Fatalf("ack observer ready: %v", err)
+		}
+
+		got, err := root.ProcessInput(ctx, "Question", nil)
+		if err != nil || got != "Root bare answer" || rootTurnCount != 4 || root.State() != SessionIdle {
+			t.Fatalf("bare reply=%q calls=%d state=%v err=%v", got, rootTurnCount, root.State(), err)
+		}
+
+		var obsReq llm.Request
+		select {
+		case obsReq = <-observerFrameReq:
+		case <-ctx.Done():
+			t.Fatal("watch_parent=true observer did not receive watch frame for root bare-text reply")
+		}
+		if !requestContainsText(obsReq, "kind: communicate") || !requestContainsText(obsReq, "message: Root bare answer") || !requestContainsText(obsReq, "end_turn: true") {
+			t.Fatalf("observer request did not carry communicate frame for bare-text reply: %+v", obsReq.Messages)
+		}
+
+		testwait.Until(t, "observer attention turn idle", func() bool {
+			root.delegateController.mu.Lock()
+			defer root.delegateController.mu.Unlock()
+			for _, agg := range root.delegateController.durable {
+				return !agg.CurrentRunOpen
+			}
+			return false
+		})
+		root.Close()
+		<-evDone
+
+		evMu.Lock()
+		commEvs := communicateEventsIn(*evs)
+		evMu.Unlock()
+		if len(commEvs) != 2 ||
+			!commEvs[0].EndTurn || commEvs[0].Message != "Observer starting" ||
+			!commEvs[1].EndTurn || commEvs[1].Message != "Root bare answer" {
+			t.Fatalf("EventCommunicate = %+v, want setup reply \"Observer starting\" followed by one EndTurn=\"Root bare answer\"", commEvs)
+		}
+
+		var turn2ID string
+		turns := transcriptTurnsOf(t, root)
+		for _, turn := range turns {
+			if turn.Kind == schema.TurnUserInput && strings.Contains(turn.Message.Text(), "Question") {
+				turn2ID = turn.TurnID
+			}
+		}
+		if turn2ID == "" {
+			t.Fatal("missing TurnUserInput for Question")
+		}
+		var turn2CommEntries, turn2AcceptedAssistant int
+		for _, turn := range turns {
+			if turn.TurnID != turn2ID {
+				continue
+			}
+			if turn.Kind == schema.TurnCommunicate {
+				turn2CommEntries++
+			}
+			if turn.Kind == schema.TurnAssistant && turn.AcceptedReply {
+				turn2AcceptedAssistant++
+			}
+		}
+		if turn2CommEntries != 0 || turn2AcceptedAssistant != 1 {
+			t.Fatalf("Turn 2 TurnCommunicate=%d TurnAssistant{AcceptedReply}=%d, want 0 and 1", turn2CommEntries, turn2AcceptedAssistant)
+		}
+		msgCount, msgTexts := countAgentMessages(t, root.TranscriptPath(), turn2ID)
+		if msgCount != 1 || msgTexts[0] != "Root bare answer" {
+			t.Fatalf("transcriptindex Turn 2 agentMessages = %q (count=%d), want [\"Root bare answer\"]", msgTexts, msgCount)
+		}
+	})
+
+	t.Run("self watch fires and single-turn transcript has zero TurnCommunicate", func(t *testing.T) {
+		t.Parallel()
+		var watchReq llm.Request
+		var calls int
+		s := newSession(t, withStateDir(t.TempDir()), withSteps(
+			func(llm.Request) llm.Response {
+				calls++
+				return bareTextResponse("Root bare answer", llm.FinishReasonStop)
+			},
+			func(req llm.Request) llm.Response {
+				calls++
+				watchReq = req
+				return quietYieldResponse("ack-self-watch", `{}`)
+			},
+		))
+		watchRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+			ID:        "watch-self",
+			Name:      "job_watch",
+			Arguments: json.RawMessage(`{"operation":"create","source":"self","events":["communicate"]}`),
+		})
+		if watchRes.IsError {
+			t.Fatalf("job_watch self: %s", watchRes.Output)
+		}
+		evs, evMu, evDone := collectEvents(s)
+		got, err := s.ProcessInput(tripwireCtx(t), "Question", nil)
+		if err != nil || got != "Root bare answer" || s.State() != SessionIdle {
+			t.Fatalf("reply=%q err=%v state=%v", got, err, s.State())
+		}
+		s.Close()
+		<-evDone
+		evMu.Lock()
+		commEvs := communicateEventsIn(*evs)
+		evMu.Unlock()
+		if len(commEvs) != 1 || !commEvs[0].EndTurn || commEvs[0].Message != "Root bare answer" {
+			t.Fatalf("EventCommunicate = %+v, want 1 EndTurn=\"Root bare answer\"", commEvs)
+		}
+		if calls != 2 || !requestContainsText(watchReq, `reason="event: `+string(events.EventCommunicate)+`"`) {
+			t.Fatalf("calls=%d, self watch notification request missing event: %s: %+v", calls, events.EventCommunicate, watchReq.Messages)
+		}
+		turns := transcriptTurnsOf(t, s)
+		if gotComm := len(entriesOfKind(turns, schema.TurnCommunicate)); gotComm != 0 {
+			t.Fatalf("TurnCommunicate entries = %d, want 0", gotComm)
+		}
+		var acceptedAssistants int
+		for _, turn := range entriesOfKind(turns, schema.TurnAssistant) {
+			if turn.AcceptedReply {
+				acceptedAssistants++
+			}
+		}
+		if acceptedAssistants != 1 {
+			t.Fatalf("TurnAssistant{AcceptedReply: true} entries = %d, want 1", acceptedAssistants)
+		}
+		msgCount, msgTexts := countAgentMessages(t, s.TranscriptPath(), "")
+		if msgCount != 1 || msgTexts[0] != "Root bare answer" {
+			t.Fatalf("transcriptindex agentMessages = %q (count=%d), want [\"Root bare answer\"]", msgTexts, msgCount)
+		}
+	})
+
+	t.Run("watch provenance preserved for classifySelfInfluenceLocked", func(t *testing.T) {
+		t.Parallel()
+		s := newSession(t, withStateDir(t.TempDir()), withSteps(
+			func(llm.Request) llm.Response {
+				return bareTextResponse("Root bare answer", llm.FinishReasonStop)
+			},
+			func(llm.Request) llm.Response {
+				return quietYieldResponse("ack-self-watch", `{}`)
+			},
+		))
+		installWatchBelowValidation(t, s.jobManager, watchArgs{
+			Target: runtimeMessageAliasCaller,
+			Events: []string{"communicate"},
+			Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+		})
+		cfg := onlyWatchConfigForTest(t, s.jobManager)
+		const priorDeliveryID = "wd_prior_1"
+		s.jobManager.mu.Lock()
+		if s.jobManager.deliveredWatchSendIDs == nil {
+			s.jobManager.deliveredWatchSendIDs = make(map[string]struct{})
+		}
+		s.jobManager.deliveredWatchSendIDs[priorDeliveryID] = struct{}{}
+		s.jobManager.mu.Unlock()
+
+		inputProv := provenance.WithWatch(nil, cfg.watchID, cfg.generation, priorDeliveryID, s.ID(), runtimeMessageAliasCaller)
+		evs, evMu, evDone := collectEvents(s)
+		got, err := s.processInputKindWithProvenance(tripwireCtx(t), "Watch follow-up", nil, EntryUserInput, inputProv)
+		if err != nil || got != "Root bare answer" {
+			t.Fatalf("reply=%q err=%v", got, err)
+		}
+		s.Close()
+		<-evDone
+
+		evMu.Lock()
+		var commEv *events.SessionEvent
+		for i := range *evs {
+			if (*evs)[i].Kind == events.EventCommunicate {
+				ev := (*evs)[i]
+				commEv = &ev
+				break
+			}
+		}
+		evMu.Unlock()
+		if commEv == nil {
+			t.Fatal("EventCommunicate was not emitted for bare-text reply")
+		}
+		if !reflect.DeepEqual(commEv.Provenance, inputProv) {
+			t.Fatalf("EventCommunicate provenance = %#v, want exact input provenance %#v", commEv.Provenance, inputProv)
+		}
+		s.jobManager.mu.Lock()
+		influence := s.jobManager.classifySelfInfluenceLocked(cfg, commEv.Provenance)
+		s.jobManager.mu.Unlock()
+		if !influence.self || influence.gradientDepth != 1 || influence.fuseDepth != 1 {
+			t.Fatalf("classifySelfInfluenceLocked = %+v, want self=true gradientDepth=1 fuseDepth=1", influence)
+		}
+		var pendingDepths []int
+		for _, jEv := range loadJobStoreEvents(t, s.jobManager) {
+			if jEv.Kind == jobstore.EventWatchSendPending && jEv.WatchSend != nil {
+				pendingDepths = append(pendingDepths, jEv.WatchSend.SelfInfluenceDepth)
+			}
+		}
+		if len(pendingDepths) == 0 || pendingDepths[0] != 1 {
+			t.Fatalf("watch send pending SelfInfluenceDepth = %v, want 1", pendingDepths)
+		}
+	})
 }
 
 func TestRootBareTextFallbackStopHook(t *testing.T) {

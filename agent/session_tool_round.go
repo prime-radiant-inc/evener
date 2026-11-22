@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/toolname"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -835,6 +836,9 @@ func (s *Session) deliverBareReply(ctx context.Context, text string, result hook
 	s.mu.Lock()
 	s.comm = communicateResult{phase: commBoundarySettled, text: text, reply: text}
 	s.mu.Unlock()
+	if !result.Stopped {
+		s.emitWithProvenance(events.CommunicateData{EndTurn: true, Message: text}, provenance.Clone(s.activeCausalProvenance()))
+	}
 	return s.finishReplyBoundary(ctx, SessionIdle, true, text, nil)
 }
 
