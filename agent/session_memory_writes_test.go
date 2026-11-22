@@ -261,7 +261,7 @@ func TestMemoryReadRendersTheIndex(t *testing.T) {
 		}
 	}
 	res := memoryExec(t, s, "memory_read", map[string]any{"scope": "personal", "file_path": "MEMORY.md"})
-	if res.IsError || !strings.HasPrefix(res.Output, "   1\tTags: t (300)\n") || strings.Count(res.Output, "\n") != 301 || strings.Contains(res.Output, "Not shown") {
+	if res.IsError || !strings.HasPrefix(res.Output, "1\tTags: t (300)\n") || strings.Count(res.Output, "\n") != 301 || strings.Contains(res.Output, "Not shown") {
 		t.Fatalf("full index: %d lines, %.200q", strings.Count(res.Output, "\n"), res.Output)
 	}
 	sliced := memoryExec(t, s, "memory_read", map[string]any{"scope": "personal", "file_path": "MEMORY.md", "offset": 1, "limit": 40})
@@ -273,7 +273,7 @@ func TestMemoryReadRendersTheIndex(t *testing.T) {
 		t.Fatalf("sliced MEMORY.md missing continuation footer (hasFooter=%t):\n%s", hasFooter, sliced.Output)
 	}
 	paged := memoryExec(t, s, "memory_read", map[string]any{"scope": "personal", "file_path": "MEMORY.md", "offset": 300, "limit": 5})
-	if paged.IsError || !strings.HasPrefix(paged.Output, " 300\t- [") || strings.Count(paged.Output, "\n") != 2 {
+	if paged.IsError || !strings.HasPrefix(paged.Output, "300\t- [") || strings.Count(paged.Output, "\n") != 2 {
 		t.Fatalf("paged: %q", paged.Output)
 	}
 	for _, huge := range []map[string]any{

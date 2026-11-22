@@ -341,10 +341,10 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 	// the session saw. They are the whole page even for an offset or limit
 	// read, which therefore records the whole page as of that read.
 	var raw []byte
-	out, err := execFileReadWith(forwarded, s.fileReadGuard(env), func(path string, offset, limit *int) (string, error) {
-		text, loaded, err := env.ReadFileAndBytesCtx(ctx, path, offset, limit)
+	out, err := execFileReadWith(ctx, forwarded, s.fileReadGuard(env), func(path string, offset, limit *int) (string, execenv.ReadFileMeta, error) {
+		text, loaded, meta, err := env.ReadFileRichAndBytesCtx(ctx, path, offset, limit)
 		raw = loaded
-		return text, err
+		return text, meta, err
 	})
 	// Every page read is tracked for change notices.
 	if err == nil {
@@ -360,8 +360,18 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 		listed := filepath.FromSlash(memorypages.ListedPagePath(env, filepath.ToSlash(file)))
 		s.recordMemoryContent(scope, listed, raw, recordErr, true)
 		// A long page gets a note pointing at what a page should be.
-		if text, ok := out.(string); ok && size > memoryPageSizeLimit {
-			out = text + memoryPageSizeNote(size, s.memoryGardeningSkillAvailable())
+		if size > memoryPageSizeLimit {
+			note := memoryPageSizeNote(size, s.memoryGardeningSkillAvailable())
+			switch text := out.(type) {
+			case string:
+				out = text + note
+			case tool.TextResult:
+				text.Output += note
+				if text.FullOutput != "" {
+					text.FullOutput += note
+				}
+				out = text
+			}
 		}
 	}
 	return out, err

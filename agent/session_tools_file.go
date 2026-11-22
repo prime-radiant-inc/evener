@@ -48,23 +48,35 @@ func registerFileTools(reg *tool.Registry, deps *toolDeps) error {
 }
 
 func execFileRead(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any, guard readGuard) (any, error) {
-	read := env.ReadFile
-	if ce, ok := env.(execenv.ContextualFileReader); ok {
-		read = func(path string, offset, limit *int) (string, error) {
-			return ce.ReadFileCtx(ctx, path, offset, limit)
-		}
+	if rr, ok := env.(execenv.RichFileReader); ok {
+		return execFileReadWith(ctx, args, guard, func(path string, offset, limit *int) (string, execenv.ReadFileMeta, error) {
+			return rr.ReadFileRichCtx(ctx, path, offset, limit)
+		})
 	}
-	return execFileReadWith(args, guard, read)
+	if ce, ok := env.(execenv.ContextualFileReader); ok {
+		return execFileReadWith(ctx, args, guard, func(path string, offset, limit *int) (string, execenv.ReadFileMeta, error) {
+			text, err := ce.ReadFileCtx(ctx, path, offset, limit)
+			return text, execenv.ReadFileMeta{}, err
+		})
+	}
+	return execFileReadWith(ctx, args, guard, func(path string, offset, limit *int) (string, execenv.ReadFileMeta, error) {
+		text, err := env.ReadFile(path, offset, limit)
+		return text, execenv.ReadFileMeta{}, err
+	})
 }
 
 // execFileReadWith is read_file's semantics over read, so a caller can supply
-// a reader that also captures what it loaded.
-func execFileReadWith(args map[string]any, guard readGuard, read func(path string, offset, limit *int) (string, error)) (any, error) {
+// a reader that also captures what it loaded and reports the structural facts
+// of a text read. ctx is threaded for the media work (image downscaling, PDF
+// page slicing) that runs on the result here; the read itself already carries
+// the caller's context.
+func execFileReadWith(ctx context.Context, args map[string]any, guard readGuard, read func(path string, offset, limit *int) (string, execenv.ReadFileMeta, error)) (any, error) {
+	_ = ctx
 	path := fmt.Sprint(args["file_path"])
 	offset := optionalIntArg(args, "offset")
 	limit := optionalIntArg(args, "limit")
 	visionAsk, _ := args["vision_prompt"].(string)
-	result, err := read(path, offset, limit)
+	result, meta, err := read(path, offset, limit)
 	if err == nil {
 		guard.TrackRead(path)
 		// If the file is an image or document (PDF), return an
@@ -77,6 +89,19 @@ func execFileReadWith(args map[string]any, guard readGuard, read func(path strin
 			doc.Prompt = visionAsk
 			return *doc, nil
 		}
+		text := tool.TextResult{
+			Output:             result,
+			FullOutput:         result,
+			Truncated:          meta.Truncated,
+			ReadStartLine:      meta.StartLine,
+			ReadEndLine:        meta.EndLine,
+			ReadPastEOF:        meta.PastEOF,
+			ReadUnnumberedTail: meta.TailMode && meta.StartLine == 0 && meta.EndLine == 0,
+		}
+		if meta.Truncated {
+			text.TruncatedBy = tool.TruncationReason(meta.TruncatedBy)
+		}
+		return text, nil
 	}
 	return result, err
 }
