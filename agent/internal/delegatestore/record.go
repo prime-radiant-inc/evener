@@ -262,9 +262,4 @@ type PendingAttention struct {
 	// arm admits it, so the queue alone cannot tell a row that passed the
 	// admission gate from one the generation merely carries.
 	Committed bool `json:"committed,omitempty"`
-	// HeldThrough is the settled generation whose user-stop quiet still holds
-	// this row out of the automatic drives. Zero means no hold. A fresh wake
-	// admitted at or above it releases it, because the wake is newer evidence
-	// than the stop.
-	HeldThrough uint64 `json:"held_through,omitempty"`
 }

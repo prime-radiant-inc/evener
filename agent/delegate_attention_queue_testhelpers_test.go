@@ -25,7 +25,7 @@ func (c *delegateTreeController) noteDelegateAttentionLockedForTest(delegateID, 
 	if c.delegateAttentionCommittedLocked(delegateID, attentionID) {
 		return false
 	}
-	if _, err := c.appendLocked(attentionQueuedEvent(delegateID, attentionID, true, 0)); err != nil {
+	if _, err := c.appendLocked(attentionQueuedEvent(delegateID, attentionID, true)); err != nil {
 		return false
 	}
 	c.resetDelegateAttentionAttemptsLocked(delegateID)
@@ -73,5 +73,5 @@ func (c *delegateTreeController) attentionCommittedWakeIDsForTest(delegateID str
 func (c *delegateTreeController) seedAttentionRowForTest(delegateID, attentionID string, committed bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, _ = c.appendLocked(attentionQueuedEvent(delegateID, attentionID, committed, 0))
+	_, _ = c.appendLocked(attentionQueuedEvent(delegateID, attentionID, committed))
 }

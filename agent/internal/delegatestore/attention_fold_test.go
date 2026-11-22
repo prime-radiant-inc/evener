@@ -7,17 +7,16 @@ import (
 	"testing"
 )
 
-// attentionQueuedEvent, attentionResolvedEvent and attentionHeldEvent build the
-// three durable queue events the controller journals. They live here so every
-// test in this file names the payload shape once.
-func attentionQueuedEvent(delegateID, attentionID string, committed bool, admittedGeneration uint64) Event {
+// attentionQueuedEvent and attentionResolvedEvent build the two durable queue
+// events the controller journals. They live here so every test in this file
+// names the payload shape once.
+func attentionQueuedEvent(delegateID, attentionID string, committed bool) Event {
 	return Event{
 		Kind:       EventDelegateAttentionQueued,
 		DelegateID: delegateID,
 		AttentionQueued: &AttentionQueued{
-			AttentionID:        attentionID,
-			Committed:          committed,
-			AdmittedGeneration: admittedGeneration,
+			AttentionID: attentionID,
+			Committed:   committed,
 		},
 	}
 }
@@ -27,22 +26,6 @@ func attentionResolvedEvent(delegateID, attentionID string) Event {
 		Kind:              EventDelegateAttentionResolved,
 		DelegateID:        delegateID,
 		AttentionResolved: &AttentionResolved{AttentionID: attentionID},
-	}
-}
-
-func attentionHeldEvent(delegateID, attentionID string, generation uint64) Event {
-	return Event{
-		Kind:          EventDelegateAttentionHeld,
-		DelegateID:    delegateID,
-		AttentionHeld: &AttentionHeld{AttentionID: attentionID, Generation: generation},
-	}
-}
-
-func attentionReleaseEvent(delegateID string, generation uint64) Event {
-	return Event{
-		Kind:          EventDelegateAttentionHeld,
-		DelegateID:    delegateID,
-		AttentionHeld: &AttentionHeld{Generation: generation},
 	}
 }
 
@@ -82,9 +65,9 @@ func TestPendingAttentionQueueIsIdempotentAndOutOfOrder(t *testing.T) {
 	t.Parallel()
 	state := attentionTestState(t,
 		createdEvent("dlg_one", ""),
-		attentionQueuedEvent("dlg_one", "att_a", true, 0),
-		attentionQueuedEvent("dlg_one", "att_b", false, 0),
-		attentionQueuedEvent("dlg_one", "att_a", true, 0),
+		attentionQueuedEvent("dlg_one", "att_a", true),
+		attentionQueuedEvent("dlg_one", "att_b", false),
+		attentionQueuedEvent("dlg_one", "att_a", true),
 	)
 	aggregate := state["dlg_one"]
 	if got := attentionRows(aggregate); !reflect.DeepEqual(got, []string{"att_a", "att_b"}) {
@@ -100,9 +83,9 @@ func TestPendingAttentionQueueIsIdempotentAndOutOfOrder(t *testing.T) {
 
 	state = attentionTestState(t,
 		createdEvent("dlg_one", ""),
-		attentionQueuedEvent("dlg_one", "att_a", true, 0),
-		attentionQueuedEvent("dlg_one", "att_b", false, 0),
-		attentionQueuedEvent("dlg_one", "att_a", true, 0),
+		attentionQueuedEvent("dlg_one", "att_a", true),
+		attentionQueuedEvent("dlg_one", "att_b", false),
+		attentionQueuedEvent("dlg_one", "att_a", true),
 		attentionResolvedEvent("dlg_one", "att_a"),
 	)
 	aggregate = state["dlg_one"]
@@ -114,9 +97,9 @@ func TestPendingAttentionQueueIsIdempotentAndOutOfOrder(t *testing.T) {
 	}
 	state = attentionTestState(t,
 		createdEvent("dlg_one", ""),
-		attentionQueuedEvent("dlg_one", "att_a", true, 0),
-		attentionQueuedEvent("dlg_one", "att_b", false, 0),
-		attentionQueuedEvent("dlg_one", "att_a", true, 0),
+		attentionQueuedEvent("dlg_one", "att_a", true),
+		attentionQueuedEvent("dlg_one", "att_b", false),
+		attentionQueuedEvent("dlg_one", "att_a", true),
 		attentionResolvedEvent("dlg_one", "att_a"),
 		attentionResolvedEvent("dlg_one", "att_b"),
 		attentionResolvedEvent("dlg_one", "att_b"),
@@ -130,64 +113,6 @@ func TestPendingAttentionQueueIsIdempotentAndOutOfOrder(t *testing.T) {
 	}
 }
 
-// TestPendingAttentionHoldAndRelease pins the hold's two forms: a set stamps
-// one row, and a release clears every hold through its generation while
-// advancing the durable release floor a cold restore reads.
-func TestPendingAttentionHoldAndRelease(t *testing.T) {
-	t.Parallel()
-	settled := []Event{
-		createdEvent("dlg_held", ""),
-		startedEvent("dlg_held", 1, TriggerOwnerInput),
-		preparedEvent("dlg_held", 1, reportedPacket("done")),
-		finishedEvent("dlg_held", 1, OutcomeCompleted, DispositionReported, "dlg_held/delivery/1", nil),
-		attentionQueuedEvent("dlg_held", "att_late", true, 0),
-		attentionQueuedEvent("dlg_held", "att_early", true, 0),
-	}
-	state := attentionTestState(t, append(settled,
-		attentionHeldEvent("dlg_held", "att_late", 1),
-		attentionHeldEvent("dlg_held", "att_early", 1),
-	)...)
-	aggregate := state["dlg_held"]
-	for _, row := range aggregate.PendingAttention {
-		if row.HeldThrough != 1 {
-			t.Fatalf("row %s HeldThrough=%d, want 1", row.AttentionID, row.HeldThrough)
-		}
-	}
-	// A held row still raises the flag, exactly as the split-state controller
-	// did: the transcript still owes the row and a cold restore must re-present
-	// it. Only lifecycle eligibility can lower the projection while a row
-	// remains.
-	if !aggregate.NeedsAttention {
-		t.Fatal("a held row lowered NeedsAttention, but a restart rebuilt it as true")
-	}
-	// A fresh wake admitted at the held generation supersedes the quiet.
-	state = attentionTestState(t, append(settled,
-		attentionHeldEvent("dlg_held", "att_late", 1),
-		attentionHeldEvent("dlg_held", "att_early", 1),
-		attentionQueuedEvent("dlg_held", "att_fresh", true, 1),
-	)...)
-	for _, row := range state["dlg_held"].PendingAttention {
-		if row.HeldThrough != 0 {
-			t.Fatalf("fresh wake left row %s held through %d", row.AttentionID, row.HeldThrough)
-		}
-	}
-	// The explicit release form does the same and advances the floor.
-	state = attentionTestState(t, append(settled,
-		attentionHeldEvent("dlg_held", "att_late", 1),
-		attentionHeldEvent("dlg_held", "att_early", 1),
-		attentionReleaseEvent("dlg_held", 1),
-	)...)
-	aggregate = state["dlg_held"]
-	if aggregate.AttentionHoldReleasedGeneration != 1 {
-		t.Fatalf("release floor = %d, want 1", aggregate.AttentionHoldReleasedGeneration)
-	}
-	for _, row := range aggregate.PendingAttention {
-		if row.HeldThrough != 0 {
-			t.Fatalf("release left row %s held through %d", row.AttentionID, row.HeldThrough)
-		}
-	}
-}
-
 // TestPendingAttentionLifecycleRecomputesProjection drives the stop, close and
 // resumability arms through the same helper: each one ends eligibility and
 // lowers NeedsAttention in the same Apply that moves the lifecycle state, while
@@ -196,7 +121,7 @@ func TestPendingAttentionLifecycleRecomputesProjection(t *testing.T) {
 	t.Parallel()
 	state := attentionTestState(t,
 		createdEvent("dlg_stop", ""),
-		attentionQueuedEvent("dlg_stop", "att_one", true, 0),
+		attentionQueuedEvent("dlg_stop", "att_one", true),
 		stopRequestedEvent("dlg_stop"),
 	)
 	aggregate := state["dlg_stop"]
@@ -209,7 +134,7 @@ func TestPendingAttentionLifecycleRecomputesProjection(t *testing.T) {
 
 	state = attentionTestState(t,
 		createdEvent("dlg_closed", ""),
-		attentionQueuedEvent("dlg_closed", "att_one", true, 0),
+		attentionQueuedEvent("dlg_closed", "att_one", true),
 		stopRequestedEvent("dlg_closed"),
 		Event{Kind: EventDelegateSubtreeStopCompleted, DelegateID: "dlg_closed", SubtreeStopCompleted: &SubtreeStopCompleted{RequestSeq: 3}},
 		Event{Kind: EventDelegateResumabilityClosed, DelegateID: "dlg_closed", ResumabilityClosed: &ResumabilityClosed{Reason: "closed"}},
@@ -228,7 +153,7 @@ func TestPendingAttentionLifecycleRecomputesProjection(t *testing.T) {
 		stopRequestedEvent("dlg_closed"),
 		Event{Kind: EventDelegateSubtreeStopCompleted, DelegateID: "dlg_closed", SubtreeStopCompleted: &SubtreeStopCompleted{RequestSeq: 2}},
 		Event{Kind: EventDelegateResumabilityClosed, DelegateID: "dlg_closed", ResumabilityClosed: &ResumabilityClosed{Reason: "closed"}},
-		attentionQueuedEvent("dlg_closed", "att_late", true, 0),
+		attentionQueuedEvent("dlg_closed", "att_late", true),
 	)
 	if state["dlg_closed"].NeedsAttention {
 		t.Fatal("a row queued after close raised NeedsAttention")
@@ -243,7 +168,7 @@ func TestPendingAttentionAncestorFenceCoversDescendants(t *testing.T) {
 	state := attentionTestState(t,
 		createdEvent("dlg_parent", ""),
 		createdEvent("dlg_child", "dlg_parent"),
-		attentionQueuedEvent("dlg_child", "att_child", true, 0),
+		attentionQueuedEvent("dlg_child", "att_child", true),
 		Event{Kind: EventDelegateResumabilityClosed, DelegateID: "dlg_parent", ResumabilityClosed: &ResumabilityClosed{Reason: "closed"}},
 	)
 	child := state["dlg_child"]
@@ -302,7 +227,7 @@ func TestLegacyAttentionEventsStillLoadAndFold(t *testing.T) {
 	}
 	// The legacy boolean stays readable but is not a row: a later queue change
 	// re-derives the projection from the durable queue alone.
-	queued := attentionQueuedEvent("dlg_legacy", "att_new", true, 0)
+	queued := attentionQueuedEvent("dlg_legacy", "att_new", true)
 	queued.Seq = events[len(events)-1].Seq + 1
 	next, err := Fold(append(events, queued))
 	if err != nil {

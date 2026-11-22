@@ -634,7 +634,7 @@ func TestDelegateControllerWakesTheAttentionDriveWhenAFinalizationIsReleased(t *
 			}
 			c.mu.Lock()
 			c.rootRuntime = root
-			_, _ = c.appendLocked(attentionQueuedEvent("dlg_target", "attention-owed", true, 0))
+			_, _ = c.appendLocked(attentionQueuedEvent("dlg_target", "attention-owed", true))
 			c.mu.Unlock()
 			tc.release(t, c, lease, runtime)
 			select {

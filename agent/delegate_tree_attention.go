@@ -212,7 +212,7 @@ func (c *delegateTreeController) reconcileDelegateAttentionFromTranscripts() err
 		}
 		sort.Strings(added)
 		for _, attentionID := range added {
-			events = append(events, attentionQueuedEvent(id, attentionID, true, 0))
+			events = append(events, attentionQueuedEvent(id, attentionID, true))
 		}
 		// A pre-queue journal can also carry the legacy boolean with no rows to
 		// derive it from. The bootstrap is the one migration boundary allowed to
@@ -322,7 +322,7 @@ func (c *delegateTreeController) openDelegateAttentionLocked(delegateID, attenti
 	}
 	raised := c.delegateAttentionWillRaiseLocked(delegateID)
 	wakeGeneration := c.attentionWakeGenerationLocked(delegateID)
-	events := []delegatestore.Event{attentionQueuedEvent(delegateID, attentionID, true, wakeGeneration)}
+	events := []delegatestore.Event{attentionQueuedEvent(delegateID, attentionID, true)}
 	wakeGeneration, err := c.appendAttentionWakeAtLocked(delegateID, wakeGeneration, events...)
 	if err != nil {
 		return false, nil, delegateUpdatePlan{}, false, 0, err
@@ -427,17 +427,14 @@ func (c *delegateTreeController) tryReconcileResolvedDelegateAttention(delegateI
 // attentionQueuedEvent builds the durable queue event that marks
 // attentionID owed for delegateID. committed is true when the wake publishing
 // the row is in this batch; a start commit copies riders with committed false
-// and their own arm commits them later. admittedGeneration is the settled
-// generation the wake superseded, so a cold restore can order the row's quiet
-// against it.
-func attentionQueuedEvent(delegateID, attentionID string, committed bool, admittedGeneration uint64) delegatestore.Event {
+// and their own arm commits them later.
+func attentionQueuedEvent(delegateID, attentionID string, committed bool) delegatestore.Event {
 	return delegatestore.Event{
 		Kind:       delegatestore.EventDelegateAttentionQueued,
 		DelegateID: delegateID,
 		AttentionQueued: &delegatestore.AttentionQueued{
-			AttentionID:        attentionID,
-			Committed:          committed,
-			AdmittedGeneration: admittedGeneration,
+			AttentionID: attentionID,
+			Committed:   committed,
 		},
 	}
 }
@@ -494,8 +491,22 @@ func (c *delegateTreeController) appendAttentionResolvedLocked(delegateID string
 	if len(events) == 0 {
 		return nil
 	}
-	_, err := c.appendLocked(events...)
-	return err
+	if _, err := c.appendLocked(events...); err != nil {
+		return err
+	}
+	c.clearTransientAttentionIfResolvedLocked(delegateID)
+	return nil
+}
+
+// clearTransientAttentionIfResolvedLocked drops the process-local scheduling
+// state once the durable queue holds no rows for delegateID. Parked, counted
+// restore failures, the lane-held quiet and driveTurn all describe a retry for
+// rows that no longer exist; leaving one behind would make a delegate that owes
+// fresh attention look parked or tried.
+func (c *delegateTreeController) clearTransientAttentionIfResolvedLocked(delegateID string) {
+	if aggregate := c.durable[delegateID]; aggregate == nil || len(aggregate.PendingAttention) == 0 {
+		delete(c.attention, delegateID)
+	}
 }
 
 // rearmReopenedDelegateAttention queues a reopened row's fresh identity without
@@ -514,7 +525,7 @@ func (c *delegateTreeController) rearmReopenedDelegateAttention(delegateID, atte
 	if c.delegateAttentionCommittedLocked(delegateID, attentionID) {
 		return nil
 	}
-	_, err := c.appendLocked(attentionQueuedEvent(delegateID, attentionID, true, 0))
+	_, err := c.appendLocked(attentionQueuedEvent(delegateID, attentionID, true))
 	return err
 }
 
@@ -524,18 +535,7 @@ func (c *delegateTreeController) forgetDelegateAttentionLocked(delegateID, atten
 	if c == nil || delegateID == "" || attentionID == "" {
 		return nil
 	}
-	aggregate := c.durable[delegateID]
-	if aggregate == nil {
-		return nil
-	}
-	for _, row := range aggregate.PendingAttention {
-		if row.AttentionID != attentionID {
-			continue
-		}
-		_, err := c.appendLocked(attentionResolvedEvent(delegateID, attentionID))
-		return err
-	}
-	return nil
+	return c.appendAttentionResolvedLocked(delegateID, map[string]struct{}{attentionID: {}})
 }
 
 // attentionStateLocked returns delegateID's attention bookkeeping, creating it
@@ -705,7 +705,7 @@ func (c *delegateTreeController) attentionReplacementEventsLocked(delegateID str
 	}
 	sort.Strings(added)
 	for _, attentionID := range added {
-		events = append(events, attentionQueuedEvent(delegateID, attentionID, false, 0))
+		events = append(events, attentionQueuedEvent(delegateID, attentionID, false))
 	}
 	return events
 }

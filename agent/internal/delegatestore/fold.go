@@ -302,12 +302,6 @@ var eventKindSpecs = []eventKindSpec{
 		clone:   func(dst, src *Event) { clonePointee(&dst.AttentionResolved, &src.AttentionResolved) },
 		apply:   applyAttentionResolved,
 	},
-	{
-		kind:    EventDelegateAttentionHeld,
-		present: func(event *Event) bool { return event.AttentionHeld != nil },
-		clone:   func(dst, src *Event) { clonePointee(&dst.AttentionHeld, &src.AttentionHeld) },
-		apply:   applyAttentionHeld,
-	},
 }
 
 func eventKindSpecFor(kind EventKind) (eventKindSpec, bool) {
@@ -653,11 +647,8 @@ func applyAttentionHoldReleased(state State, event Event) error {
 }
 
 // applyAttentionQueued adds or updates one pending attention row. The row's
-// identity keys it: queuing an existing id marks it committed and applies the
-// wake's release, but never duplicates it. A fresh wake is newer evidence than
-// a settled user-stop quiet at or below its admission sample, so the release
-// ends those holds here as well as in the release event the same batch
-// carries.
+// identity keys it: queuing an existing id marks it committed, but never
+// duplicates it.
 func applyAttentionQueued(state State, event Event) error {
 	payload := event.AttentionQueued
 	if payload.AttentionID == "" {
@@ -667,9 +658,6 @@ func applyAttentionQueued(state State, event Event) error {
 	if err != nil {
 		return err
 	}
-	if payload.AdmittedGeneration > aggregate.SettledGeneration() {
-		return fmt.Errorf("delegate %q attention queue names generation %d, which is newer than the settled generation", event.DelegateID, payload.AdmittedGeneration)
-	}
 	if row := pendingAttentionRow(aggregate, payload.AttentionID); row != nil {
 		row.Committed = row.Committed || payload.Committed
 	} else {
@@ -678,7 +666,6 @@ func applyAttentionQueued(state State, event Event) error {
 			Committed:   payload.Committed,
 		})
 	}
-	releaseAttentionHoldsThroughLocked(aggregate, payload.AdmittedGeneration)
 	recomputeNeedsAttention(state, event.DelegateID)
 	return nil
 }
@@ -698,56 +685,6 @@ func applyAttentionResolved(state State, event Event) error {
 	removePendingAttention(state[event.DelegateID], payload.AttentionID)
 	recomputeNeedsAttention(state, event.DelegateID)
 	return nil
-}
-
-// applyAttentionHeld installs a user-stop quiet on one pending row, or, when
-// the payload names no row, releases every hold through its generation. Both
-// forms name a settled generation, and both re-derive the aggregate's
-// NeedsAttention projection in this same Apply.
-func applyAttentionHeld(state State, event Event) error {
-	payload := event.AttentionHeld
-	if payload.Generation == 0 {
-		return fmt.Errorf("delegate %q attention hold names no generation", event.DelegateID)
-	}
-	aggregate, err := requireAggregate(state, event.DelegateID)
-	if err != nil {
-		return err
-	}
-	if payload.AttentionID != "" {
-		row := pendingAttentionRow(aggregate, payload.AttentionID)
-		if row == nil {
-			return fmt.Errorf("delegate %q attention hold names %q, which is not pending", event.DelegateID, payload.AttentionID)
-		}
-		if payload.Generation > row.HeldThrough {
-			row.HeldThrough = payload.Generation
-		}
-		recomputeNeedsAttention(state, event.DelegateID)
-		return nil
-	}
-	settled := aggregate.SettledGeneration()
-	if settled == 0 || payload.Generation > settled {
-		return fmt.Errorf("delegate %q attention hold release names generation %d, which is newer than the settled generation", event.DelegateID, payload.Generation)
-	}
-	if payload.Generation > aggregate.AttentionHoldReleasedGeneration {
-		aggregate.AttentionHoldReleasedGeneration = payload.Generation
-	}
-	releaseAttentionHoldsThroughLocked(aggregate, payload.Generation)
-	recomputeNeedsAttention(state, event.DelegateID)
-	return nil
-}
-
-// releaseAttentionHoldsThroughLocked ends every stop quiet at or below
-// generation. Zero releases nothing; a hold strictly newer than the sample is
-// newer evidence than the event and stands.
-func releaseAttentionHoldsThroughLocked(aggregate *Aggregate, generation uint64) {
-	if generation == 0 {
-		return
-	}
-	for i := range aggregate.PendingAttention {
-		if aggregate.PendingAttention[i].HeldThrough <= generation {
-			aggregate.PendingAttention[i].HeldThrough = 0
-		}
-	}
 }
 
 // pendingAttentionRow returns the queued row with attentionID, or nil.
