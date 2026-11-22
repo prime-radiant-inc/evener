@@ -9,6 +9,7 @@ const styles = {
   card: requireClass(rawStyles.card, "card.module.css", "card"),
   outlined: requireClass(rawStyles.outlined, "card.module.css", "outlined"),
   attention: requireClass(rawStyles.attention, "card.module.css", "attention"),
+  none: requireClass(rawStyles.none, "card.module.css", "none"),
 };
 
 function cardCss(): string {
@@ -67,6 +68,25 @@ test('variant="outlined" draws the bordered surface', () => {
   const rule = ruleBody(cardCss(), "outlined");
   expect(rule).toContain("border-color: var(--edge)");
   expect(rule).toContain("background: var(--surface-1)");
+});
+
+test("padding defaults to the surface's own inset and adds no none class", () => {
+  render(<Card aria-label="padded">body</Card>);
+  expect(screen.getByLabelText("padded").classList.contains(styles.none)).toBe(false);
+});
+
+test('padding="none" zeroes the surface inset for a card whose own sections own their padding', () => {
+  render(
+    <Card variant="outlined" padding="none" aria-label="flush">
+      body
+    </Card>,
+  );
+  const card = screen.getByLabelText("flush");
+  expect(card.classList.contains(styles.card)).toBe(true);
+  expect(card.classList.contains(styles.outlined)).toBe(true);
+  expect(card.classList.contains(styles.none)).toBe(true);
+  // The compound selector outranks the flat and outlined paddings.
+  expect(cardCss()).toMatch(/\.card\.none\s*\{\s*padding:\s*0;\s*\}/);
 });
 
 test('tone="attention" draws the "a human is needed" envelope in the attention hue', () => {

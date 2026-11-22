@@ -15,9 +15,17 @@ import { beforeEach, expect, test } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { readModuleCss, topRuleBlock } from "../../../../styles/cssBlock";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
+import cardStyles from "../../../../widgets/card/card.module.css";
+import { requireClass } from "../../../../widgets/internal/requireClass";
 import { toolRendererFor } from "../toolRenderers";
 import "../tools";
 import "./jobWatch";
+
+const CARD_CLASS = {
+  card: requireClass(cardStyles.card, "card.module.css", "card"),
+  outlined: requireClass(cardStyles.outlined, "card.module.css", "outlined"),
+  none: requireClass(cardStyles.none, "card.module.css", "none"),
+};
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
@@ -121,6 +129,16 @@ test("the single-watch body never shows the watch id", () => {
   const Body = d.body!;
   render(<Body item={watchItem({ operation: "create" }, TIMER_RAW)} live={false} />);
   expect(screen.getByTestId("job-watch-body").textContent).not.toContain("watch_034KEfjYFbfoUaPeHJcLXY");
+});
+
+test("the body adopts the outlined Card with its surface padding removed", () => {
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  render(<Body item={watchItem({ operation: "create" }, TIMER_RAW)} live={false} />);
+  const body = screen.getByTestId("job-watch-body");
+  expect(body.classList.contains(CARD_CLASS.card)).toBe(true);
+  expect(body.classList.contains(CARD_CLASS.outlined)).toBe(true);
+  expect(body.classList.contains(CARD_CLASS.none)).toBe(true);
 });
 
 // --- §B: create condition watch -------------------------------------------
