@@ -128,13 +128,6 @@ func (s *Session) publishFoldedHistory(snapLen, snapRevision int, folded []schem
 	}
 	s.history = folded
 	s.bumpHistoryRevisionLocked()
-	// The count a reply recorded before this publication covers a prefix that no
-	// longer exists. Drop it in this same lock hold, so it cannot outlive the
-	// rewrite it describes: a reply settling later sees the bumped revision and
-	// drops its own count.
-	if s.contextMgr != nil {
-		s.contextMgr.ClearInputMeasurement()
-	}
 	// The prior read results are no longer in the model's context, so repeat
 	// reads after this fold are fresh reads. s.readFiles is deliberately kept:
 	// the read-before-write guard is about the session, not its context window.
@@ -384,6 +377,13 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// fold's requesting caller captured — so an unchanged publication, a
 	// losing fold, or a fold with no captured operation claims nothing.
 	commit.actualCompaction = commit.stagedCompactionCount() > 0
+	// A count recorded before a fold that rewrote history covers a prefix that no
+	// longer exists, so drop it in this same lock hold. An unchanged publication
+	// — the per-request fold that found nothing to fold — keeps it: the history
+	// the provider measured is still the one resident.
+	if commit.actualCompaction && s.contextMgr != nil {
+		s.contextMgr.ClearInputMeasurement()
+	}
 	commit.claimCompactionLocked()
 	// Publication-order marker for last-write-wins effect suppression, set
 	// HERE — at publish, not at flush: an older fold whose deferred flush

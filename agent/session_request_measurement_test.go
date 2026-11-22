@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -169,35 +170,58 @@ func TestRequestMeasurementDropsTheCountAfterAModelSwitch(t *testing.T) {
 }
 
 // TestFoldPublicationClearsTheRecordedInputCount pins the publication half: a
-// count recorded before a fold describes the pre-fold prefix, so the fold drops
-// it in the same lock hold that publishes the rewritten history.
+// count recorded before a fold that rewrote history describes the pre-fold
+// prefix, so the fold drops it in the same lock hold that publishes.
 func TestFoldPublicationClearsTheRecordedInputCount(t *testing.T) {
-	sess := newSession(t)
-	profile := sess.currentProfile()
-	pre := pricedTurns(4, 40)
-	sess.mu.Lock()
-	sess.history = pre
-	sess.mu.Unlock()
-
-	sess.recordResponseUsage(llm.Response{Usage: llm.Usage{InputTokens: 900}}, llm.Request{}, profile)
-	if got := sess.contextMgr.LastInputTokens(); got != 900 {
-		t.Fatalf("LastInputTokens before the fold = %d, want 900", got)
+	sess := compactAtSession(t, 0)
+	// Pressure above the default 0.90 trigger, so the request-time fold really
+	// rewrites history instead of publishing it unchanged.
+	forcePressureAbove(t, sess, 0.91)
+	if got := sess.contextMgr.LastInputTokens(); got == 0 {
+		t.Fatal("fixture recorded no input count, so this proof is vacuous")
 	}
 
-	// The fold keeps the measured boundary turn where it is, so only the
-	// publication itself can invalidate the count.
-	folded := append(pricedTurns(3, 12), pre[3])
-	sess.mu.Lock()
-	_, ok := sess.publishFoldedHistory(len(sess.history), sess.historyRevision, folded)
-	sess.mu.Unlock()
-	if !ok {
-		t.Fatal("publishFoldedHistory refused the fold")
+	var timings events.RoundTimings
+	if _, _, _, _, _, _, err := sess.prepareModelRequestWithError(context.Background(), 1, &timings); err != nil {
+		t.Fatalf("prepareModelRequestWithError: %v", err)
+	}
+	folded := currentHistory(t, sess)
+	if !hasCheckpoint(folded) {
+		t.Fatal("fixture published no checkpoint, so no fold rewrote history")
 	}
 	if got := sess.contextMgr.LastInputTokens(); got != 0 {
-		t.Fatalf("LastInputTokens after the fold = %d, want 0: the pre-fold count outlived the publication", got)
+		t.Fatalf("LastInputTokens after a fold that rewrote history = %d, want 0: the pre-fold count outlived the publication", got)
 	}
+	profile := sess.currentProfile()
 	if got, want := sess.contextMgr.EstimateUsage(folded, 0).Used, meterWithNoSavedCount(profile, folded); got != want {
 		t.Fatalf("context meter after the fold = %d, want the %d a session with no saved count reads", got, want)
+	}
+}
+
+// TestRequestMeasurementSurvivesAnUnchangedRequestTimeFold pins the guard: the
+// default strategy folds before EVERY request, and a fold that finds nothing to
+// fold still publishes the same history. Clearing the saved count there would
+// wipe the provider's measurement before every request, so the full-history
+// estimate and the pressure meter would fall back to char/4 each round.
+func TestRequestMeasurementSurvivesAnUnchangedRequestTimeFold(t *testing.T) {
+	sess := compactAtSession(t, 0)
+	history := currentHistory(t, sess)
+	sess.contextMgr.RecordInputTokens(900, len(history), "")
+
+	var timings events.RoundTimings
+	_, _, _, req, _, _, err := sess.prepareModelRequestWithError(context.Background(), 1, &timings)
+	if err != nil {
+		t.Fatalf("prepareModelRequestWithError: %v", err)
+	}
+	presented := currentHistory(t, sess)
+	if hasCheckpoint(presented) || !reflect.DeepEqual(history, presented) {
+		t.Fatalf("fixture rewrote history (checkpoint=%v), so the unchanged-publication proof is vacuous", hasCheckpoint(presented))
+	}
+	if got := sess.contextMgr.LastInputTokens(); got != 900 {
+		t.Fatalf("LastInputTokens after an unchanged request-time fold = %d, want the saved 900", got)
+	}
+	if got := req.FullHistoryInputTokensEstimate; got < 900 {
+		t.Fatalf("FullHistoryInputTokensEstimate = %d, want at least the saved 900: the count was wiped before the request was built", got)
 	}
 }
 
