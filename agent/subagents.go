@@ -2680,7 +2680,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				res, err = a.deliverCommunicateNudge(ctx, inputProvenance)
 				_, budgetExhausted = budgetExhaustionFromError(err)
 				a.mu.Lock()
-				cancelRequested = a.cancelRequested
+				cancelRequested = cancelRequested || a.cancelRequested
 				a.mu.Unlock()
 				settlementMode = delegateSettlementModeForRun(err, cancelRequested)
 				boundary, boundaryErr := a.sess.delegateController.SupervisionBoundary(lease, settlementMode)
@@ -2693,16 +2693,39 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 					kind = EntryContinuation
 					continue
 				case delegateSupervisionSuppress:
+					cancelRequested = true
 				}
 				if err == nil && !a.hookStoppedRun() && !a.sess.stopHookReplacedReplyNow() && !a.sess.hookStoppedTheInput() {
 					res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
 				}
 			}
 		}
-		if hookAvailable {
+		if deferStopHook && hookAvailable {
 			a.mu.Lock()
-			cancelRequested = a.cancelRequested
+			cancelRequested = cancelRequested || a.cancelRequested
 			a.mu.Unlock()
+			if stableRun && a.sess.delegateController != nil {
+				settlementMode = delegateSettlementModeForRun(err, cancelRequested)
+				boundary, boundaryErr := a.sess.delegateController.SupervisionBoundary(lease, settlementMode)
+				if boundaryErr != nil && !errors.Is(boundaryErr, errDelegateTargetBusy) {
+					err = errors.Join(err, boundaryErr)
+				}
+				switch boundary {
+				case delegateSupervisionContinue:
+					if restoreParentDriveNotify != nil {
+						a.sess.SetNotifyFunc(restoreParentDriveNotify)
+						restoreParentDriveNotify = nil
+					}
+					a.mu.Lock()
+					a.finalizing = false
+					a.mu.Unlock()
+					input = "Continue with the newly received steering before settling."
+					kind = EntryContinuation
+					continue
+				case delegateSupervisionSuppress:
+					cancelRequested = true
+				}
+			}
 			if !cancelRequested && !budgetExhausted {
 				hookAvailable = false
 				if restoreParentDriveNotify != nil {

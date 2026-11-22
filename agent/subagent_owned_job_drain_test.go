@@ -1945,6 +1945,7 @@ func TestSubagentOwnedJobDrainQuietYieldDefersSubagentStopHook(t *testing.T) {
 		name               string
 		decision           string
 		steps              []func(llm.Request) llm.Response
+		stopAtDrain        bool
 		wantFiredAtDrain   bool
 		wantStdinSubstring string
 		wantFinalReport    string
@@ -2004,6 +2005,18 @@ func TestSubagentOwnedJobDrainQuietYieldDefersSubagentStopHook(t *testing.T) {
 			wantStdinSubstring: "PRE_DRAIN_ASSISTANT_PROOF",
 			wantFinalReport:    `"reported early"`,
 		},
+		{
+			name:     "subtree_stop_during_quiet_drain_suppresses_hook",
+			decision: `{}`,
+			steps: []func(llm.Request) llm.Response{
+				func(llm.Request) llm.Response {
+					return agenttest.ToolCallResponse(llm.ToolCallData{ID: "owned-job", Name: "shell", Arguments: json.RawMessage(`{"command":"go test","mode":"background"}`)})
+				},
+				func(llm.Request) llm.Response { return quietYieldResponse("quiet-1", `{}`) },
+			},
+			stopAtDrain:      true,
+			wantFiredAtDrain: false,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -2055,11 +2068,24 @@ func TestSubagentOwnedJobDrainQuietYieldDefersSubagentStopHook(t *testing.T) {
 				t.Fatalf("SubagentStop fired before drain = %v (statErr=%v), want %v", firedAtDrain, statErr, tc.wantFiredAtDrain)
 			}
 
+			if tc.stopAtDrain {
+				if _, _, _, stopErr := parent.delegateController.StopSubtree(rootDelegateActor(parent.delegateRootSessionID), result.DelegateID); stopErr != nil {
+					t.Fatalf("StopSubtree: %v", stopErr)
+				}
+			}
 			env.releaseJob()
 			select {
 			case <-runDone:
 			case <-ctx.Done():
 				t.Fatal("delegate did not finish after releasing background job")
+			}
+			if tc.stopAtDrain {
+				if raw, readErr := os.ReadFile(hookLog); readErr == nil {
+					t.Fatalf("stopped quiet-parked generation ran SubagentStop: %q", raw)
+				} else if !os.IsNotExist(readErr) {
+					t.Fatalf("stat SubagentStop log: %v", readErr)
+				}
+				return
 			}
 
 			rawLog, err := os.ReadFile(hookLog)
