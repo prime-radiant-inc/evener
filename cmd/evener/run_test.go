@@ -1706,3 +1706,18 @@ func TestDrainEventsHumanToolArgsKeepRunesWhole(t *testing.T) {
 		t.Fatalf("tool args split a rune: %q", buf.String())
 	}
 }
+
+func TestRootBareTextFallbackRunStdout(t *testing.T) {
+	const answer = "Server up"
+	installRunScriptedProvider(t, &scriptedProvider{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant(answer), Finish: llm.FinishReason{Reason: llm.FinishReasonStop}}
+		},
+		func(llm.Request) llm.Response { return scriptedCommunicate("Unexpected retry") },
+	}})
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), runConfig{prompt: "Question", model: "openai/gpt-test", workDir: t.TempDir(), stateDir: t.TempDir(), stdout: &stdout, stderr: &stderr})
+	if err != nil || stdout.String() != answer+"\n" {
+		t.Fatalf("stdout=%q err=%v", stdout.String(), err)
+	}
+}

@@ -154,7 +154,11 @@ historyLoop:
 			// non-await replies.
 			text := t.Message.Text()
 			if text != "" {
-				b.WriteString("Assistant: ")
+				if t.AcceptedReply {
+					b.WriteString("Agent Message: ")
+				} else {
+					b.WriteString("Assistant: ")
+				}
 				b.WriteString(truncate(escapeHelperText(t, text), 500))
 				b.WriteString("\n")
 			}

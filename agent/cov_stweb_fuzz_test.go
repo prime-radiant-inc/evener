@@ -82,18 +82,15 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 
 	deps := stoolCommunicateDeps()
 	committed := false
-	deps.setCommunicateTerminal = func(context.Context, string, string, string, any, string) bool {
+	deps.setCommunicateTerminal = func(context.Context, string, string, string, any) bool {
 		committed = true
 		return true
 	}
 	reg := tool.NewRegistry()
 	_ = registerCommunicateTool(reg, deps)
 	handler := reg.Get("communicate").Exec
-	if _, err := handler(context.Background(), nil, map[string]any{"message": token}); err == nil || !strings.Contains(err.Error(), "end_turn") {
-		t.Fatalf("missing end_turn error = %v", err)
-	}
-	if _, err := handler(context.Background(), nil, map[string]any{"end_turn": false}); err == nil || !strings.Contains(err.Error(), "message") {
-		t.Fatalf("missing message error = %v", err)
+	if _, err := handler(context.Background(), nil, map[string]any{"end_turn": false}); err == nil {
+		t.Fatal("message-less progress update was accepted")
 	}
 
 	// Nonterminal output may supply the message, but must not commit a result.
@@ -111,11 +108,15 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 	}
 	// The durable verdict rides the typed state, independent of the display
 	// output: a nonterminal accept is an accepted message that does not end
-	// the turn and carries no end reason.
+	// the turn and is not a quiet yield.
 	if state, ok := typed.State.(communicateEndState); !ok ||
 		state.Accepted == nil || !*state.Accepted ||
-		state.EndTurn == nil || *state.EndTurn || state.EndReason != "" {
+		state.EndTurn == nil || *state.EndTurn || state.Quiet != nil {
 		t.Fatalf("nonterminal typed verdict = %#v", nonterminal)
+	}
+
+	if _, err := handler(context.Background(), nil, map[string]any{"message": token}); err != nil || !committed {
+		t.Fatalf("omitted end_turn did not commit the report: err=%v committed=%v", err, committed)
 	}
 
 	var resultMessage, resultReply, resultOutput string
@@ -133,7 +134,7 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 		}
 	}
 	deps.prependSteering = func(entries []steeringMessage) { deferred = append(deferred, entries...) }
-	deps.setCommunicateTerminal = func(_ context.Context, message, reply, output string, raw any, _ string) bool {
+	deps.setCommunicateTerminal = func(_ context.Context, message, reply, output string, raw any) bool {
 		resultMessage, resultReply, resultOutput = message, reply, output
 		structured = raw
 		return true
@@ -228,7 +229,7 @@ func stoolCommunicateDeps() *toolDeps {
 		drainSteering:          func() []steeringMessage { return nil },
 		prependSteering:        func([]steeringMessage) {},
 		resultToolName:         func() string { return "communicate" },
-		setCommunicateTerminal: func(context.Context, string, string, string, any, string) bool { return true },
+		setCommunicateTerminal: func(context.Context, string, string, string, any) bool { return true },
 	}
 }
 

@@ -13,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -619,4 +622,87 @@ func TestManagerWatchRebindCancellationAndHubRestart(t *testing.T) {
 			n := daemon.AppServer().SubscriberCount(ref)
 			return n == 0, fmt.Sprintf("%d upstream subscriptions", n)
 		})
+}
+
+type bareReplyObservationAdapter struct{}
+
+func (bareReplyObservationAdapter) Name() string { return "openai" }
+func (bareReplyObservationAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return nil, llm.ErrStreamUnsupported
+}
+func (bareReplyObservationAdapter) Complete(context.Context, llm.Request) (llm.Response, error) {
+	return llm.Response{Message: llm.Assistant("Server up"), Finish: llm.FinishReason{Reason: llm.FinishReasonStop}}, nil
+}
+
+func TestManagerSessionWatchPublishesAcceptedBareText(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	const ref = "local:root-worker"
+	stateDir, workDir := t.TempDir(), t.TempDir()
+	client := llm.NewClient()
+	client.Register(bareReplyObservationAdapter{})
+	sess, err := agent.NewSession(client, provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), agent.SessionConfig{
+		StateDir: stateDir, Sandbox: "off", Manager: true, AgentsDocPath: filepath.Join(workDir, "absent-AGENTS.md"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	instance := sess.ID()
+	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "test-token", StateDir: stateDir})
+	defer daemon.Close()
+	daemon.WireTranscriptHistory(sess)
+	identity, err := daemonserver.PrepareAppIdentityForRef("local", instance, ref, sess.TranscriptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon.ReplaceAppIdentity(identity.WithBootGeneration("7@worker").WithRecordedLength(sess.TranscriptRecordedLength()), nil)
+	upstream := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
+	defer upstream.Close()
+	entry := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: upstream.URL, SourceID: "local", ThreadID: instance, SessionID: instance, WorkspaceRef: ref, InstanceID: instance, HubToken: "test-token"}
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{{Entry: entry, SessionID: instance, Manager: true}}
+	}, upstream.Client())
+	configureObservationTargetSessionTools(daemon, source)
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := testWebConfig(t, hubcore.WebConfig{HubID: "hub-test"})
+	server := appserver.NewServer(appserver.ServerConfig{})
+	defer server.Shutdown(ctx)
+	owner := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, owner.Read)
+	binding := &boundSessionOperations{owner: owner, local: source, binding: appwire.SessionBinding{Ref: ref, InstanceID: instance, HubID: "hub-test", BindingID: "binding"}}
+	updates, err := binding.Watch(ctx, appwire.SessionWatchRequest{Ref: ref, Completion: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case initial, open := <-updates:
+		if !open || initial.Snapshot == nil || initial.Metadata.InstanceID != instance {
+			t.Fatalf("initial=%+v open=%t", initial, open)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if reply, err := sess.ProcessInput(ctx, "Is the server up?", nil); err != nil || reply != "Server up" {
+		t.Fatalf("reply=%q error=%v", reply, err)
+	}
+	for {
+		select {
+		case update, open := <-updates:
+			if !open {
+				t.Fatal("watch closed before publishing the final reply")
+			}
+			if update.Event != "communicate" {
+				continue
+			}
+			meta := update.Metadata
+			if update.Snapshot != nil || meta.InstanceID != instance || meta.TurnID == "" || !meta.EndTurn || meta.EndReason != "done" || meta.TerminalAccepted == nil || !*meta.TerminalAccepted {
+				t.Fatalf("live reply observation=%+v", update)
+			}
+			return
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
 }

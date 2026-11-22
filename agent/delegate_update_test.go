@@ -1413,9 +1413,8 @@ func TestDelegateDrainTurnReportReplacesTheEarlierReport(t *testing.T) {
 }
 
 // A drain turn whose model never reports ends the turn, not the run: the
-// earlier report stands as a completed report, not as a failure. A reply of
-// bare text ends a notification turn at once, and an empty response is
-// retried until it gives up.
+// earlier report stands as a completed report, not as a failure. Quiet yield
+// ends the turn at once. Bare text and empty responses exhaust their retries.
 func TestDelegateDrainTurnWithoutAReportKeepsTheEarlierReport(t *testing.T) {
 	t.Parallel()
 	emptyResponse := func(llm.Request) llm.Response {
@@ -1425,7 +1424,8 @@ func TestDelegateDrainTurnWithoutAReportKeepsTheEarlierReport(t *testing.T) {
 		turn     func(llm.Request) llm.Response
 		attempts int
 	}{
-		"bare text":      {bareTextDrainTurn, 1},
+		"quiet yield":    {func(llm.Request) llm.Response { return quietYieldResponse("drain-no-action", `{}`) }, 1},
+		"bare text":      {bareTextDrainTurn, maxBareTextRetries + 1},
 		"empty response": {emptyResponse, maxEmptyRetries + 1},
 	} {
 		t.Run(name, func(t *testing.T) {

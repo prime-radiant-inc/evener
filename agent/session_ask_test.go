@@ -1097,37 +1097,19 @@ func TestAskUser_CompactSucceedsWhenIdle(t *testing.T) {
 	}
 }
 
-// --- Compact must not over-hold on an awaiting rest with nothing pending ---
-//
-// SessionAwaiting is not produced only by a pending ask_user question: a turn
-// that ended on needs_response also rests SessionAwaiting, with an EMPTY
-// pending-ask set. A guard that read raw state (s.State() == SessionAwaiting)
-// rather than askPendingCount() would refuse Compact even when nothing is
-// pending — a regression this test pins.
-
-// TestAskUser_CompactProceedsOnNeedsResponseRestNoPendingAsk covers the
-// guard: a session resting SessionAwaiting from a needs_response turn (no
-// question posted, askPendingCount()==0) must not trip the
-// pending-ask error — Compact may still fail or succeed for other reasons,
-// but not this one.
-func TestAskUser_CompactProceedsOnNeedsResponseRestNoPendingAsk(t *testing.T) {
+// A historical ask whose arguments cannot be restored projects awaiting without
+// a pending question. Compact must not hold on that projection alone.
+func TestAskUser_CompactProceedsOnAwaitingProjectionWithoutPendingAsk(t *testing.T) {
 	t.Parallel()
-	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return endReasonResponse("here is my answer", "needs_response") })
-	sess := newSession(t, withAdapter(f), withImmediateRest())
-
-	ctx := tripwireCtx(t)
-	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
+	sess := newSession(t, withSteps(func(llm.Request) llm.Response { return agenttest.FinalResponse("here is my answer") }))
+	if _, err := sess.ProcessInput(tripwireCtx(t), "hello", nil); err != nil {
+		t.Fatal(err)
 	}
-	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("state after a needs_response completion = %q, want %q (test setup broken)", got, SessionAwaiting)
-	}
-	if got := sess.askPendingCount(); got != 0 {
-		t.Fatalf("askPendingCount after a needs_response completion = %d, want 0 (test setup broken)", got)
-	}
-
+	sess.mu.Lock()
+	sess.state = SessionAwaiting
+	sess.mu.Unlock()
 	if err := sess.Compact(context.Background()); err != nil && strings.Contains(err.Error(), compactErrPending) {
-		t.Fatalf("Compact on a needs_response rest with nothing pending returned the pending-ask error: %v (the hold is for a genuine pending question, not this needs_response rest)", err)
+		t.Fatalf("Compact with no pending question returned the pending-ask error: %v", err)
 	}
 }
 
@@ -1827,19 +1809,15 @@ func TestAskUser_InterruptMarkerWriteFailurePreservesBoundary(t *testing.T) {
 // covers the marker rejection after a user reply has already cleared the
 // in-memory ask set. The admitted reply runs a completed tool-results round,
 // then cancellation reaches the marker with a clean rollback failure. Live
-// settlement must derive the same awaiting boundary restore reads from that
-// durable tool completion, while retaining the resolved ask and rejecting the
-// marker.
+// settlement must rebuild the new durable question and its awaiting boundary,
+// not restore the first question the user answered or publish the failed marker.
 func TestAskUser_FailedInterruptMarkerAfterAnsweredToolRoundMatchesRestore(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	ask := askUserCall("ask1", askUserArgsValid())
 	loop := llm.ToolCallData{ID: "loop1", Name: "loop_tool", Arguments: json.RawMessage(`{}`), Type: "function"}
 	trigger := llm.ToolCallData{ID: "cancel1", Name: "trigger_cancel", Arguments: json.RawMessage(`{}`), Type: "function"}
-	// The answered round also ends on needs_response, so the durable boundary
-	// is awaiting: it differs from the idle the generic failure boundary would
-	// pick, which is what makes this test tell the two apart.
-	reply := communicateCallArgs("reply1", map[string]any{"message": "which region?", "end_reason": "needs_response"})
+	reply := askUserCall("ask2", askUserArgsValid())
 	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) }, func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(loop, reply, trigger) })
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -1873,8 +1851,12 @@ func TestAskUser_FailedInterruptMarkerAfterAnsweredToolRoundMatchesRestore(t *te
 	defer cancelReply()
 	replyCtx = context.WithValue(replyCtx, sessionToolRoundHooksKey{}, sessionToolRoundHooks{
 		beforeSteering: func() {
-			// The successful reply's tool-results turn is durable before this
-			// hook arms the fault for the next append and cancels the round.
+			// The new question's acknowledgement is durable. Clear the live
+			// cache before injecting the marker failure so this exercises the
+			// transcript rebuild rather than the generic pending-set rule.
+			sess.mu.Lock()
+			sess.setAskPendingLocked(nil)
+			sess.mu.Unlock()
 			fs := attachEnvironmentFailureFS(t, sess)
 			fs.mu.Lock()
 			fs.failure = markerFailure
@@ -1900,8 +1882,8 @@ func TestAskUser_FailedInterruptMarkerAfterAnsweredToolRoundMatchesRestore(t *te
 	if result, ok := findToolResultInHistory(sess.history, "loop1"); !ok || result.IsError {
 		t.Fatalf("completed reply tool result = %+v, found=%v, want one non-error result", result, ok)
 	}
-	if got := sess.askPendingCount(); got != 0 {
-		t.Fatalf("live pending count = %d, want 0 (the admitted reply resolved ask1)", got)
+	if pending := sess.askPending; len(pending) != 1 || pending[0].CallID != "ask2" {
+		t.Fatalf("live pending questions = %+v, want only the second ask", pending)
 	}
 	if got := sess.State(); got != SessionAwaiting {
 		t.Fatalf("live state after failed marker = %q, want %q (match the durable completed tool round)", got, SessionAwaiting)
@@ -1935,8 +1917,8 @@ func TestAskUser_FailedInterruptMarkerAfterAnsweredToolRoundMatchesRestore(t *te
 	meta := sess.Meta()
 	sess.Close()
 	restored := restoreAskSession(t, meta, dir)
-	if got := restored.askPendingCount(); got != 0 {
-		t.Fatalf("restored pending count = %d, want 0", got)
+	if pending := restored.askPending; len(pending) != 1 || pending[0].CallID != "ask2" {
+		t.Fatalf("restored pending questions = %+v, want only the second ask", pending)
 	}
 	if got := restored.State(); got != SessionAwaiting {
 		t.Fatalf("restored state = %q, want %q (durable completed tool round)", got, SessionAwaiting)
@@ -2385,7 +2367,7 @@ func TestAskUser_RestoreUsesJournalProvenanceForAKindlessLegacyHumanNoteTurn(t *
 	if !isAskRound || len(pending) != 1 {
 		t.Fatalf("deriveRestoredAskPending with journal provenance = pending=%#v isAskRound=%v, want ask1 still pending", pending, isAskRound)
 	}
-	if state := deriveRestoredState(history, 0, origins, nil); state != SessionAwaiting {
+	if state, _, _ := deriveRestoredState(history, 0, origins); state != SessionAwaiting {
 		t.Fatalf("deriveRestoredState with journal provenance = %q, want %q", state, SessionAwaiting)
 	}
 
@@ -2400,7 +2382,7 @@ func TestAskUser_RestoreUsesJournalProvenanceForAKindlessLegacyHumanNoteTurn(t *
 	if isAskRound || len(pending) != 0 {
 		t.Fatalf("deriveRestoredAskPending without journal provenance = pending=%#v isAskRound=%v, want the kindless turn to resolve the ask as an ordinary answering steer", pending, isAskRound)
 	}
-	if state := deriveRestoredState(history, 0, nil, nil); state != SessionIdle {
+	if state, _, _ := deriveRestoredState(history, 0, nil); state != SessionIdle {
 		t.Fatalf("deriveRestoredState without journal provenance = %q, want %q", state, SessionIdle)
 	}
 }
@@ -2446,7 +2428,7 @@ func TestAskUser_RestoreClassifiesAKindlessProvenancelessHumanNoteByItsTextShape
 	if !isAskRound || len(pending) != 1 {
 		t.Fatalf("deriveRestoredAskPending for an inherited kindless note = pending=%#v isAskRound=%v, want ask1 still pending", pending, isAskRound)
 	}
-	if state := deriveRestoredState(history, divergenceTurn, origins, nil); state != SessionAwaiting {
+	if state, _, _ := deriveRestoredState(history, divergenceTurn, origins); state != SessionAwaiting {
 		t.Fatalf("deriveRestoredState for an inherited kindless note = %q, want %q", state, SessionAwaiting)
 	}
 }
@@ -3558,40 +3540,29 @@ func TestAskUser_RestoreRebuildsPendingCountAndOrder(t *testing.T) {
 	}
 }
 
-// TestAskUser_RestoreNeedsResponseRestKeepsPendingEmptyAndGoalKicks is the
-// negative control: a restart after an awaiting rest with no ask_user
-// involved (a needs_response turn) must never rebuild a pending set, and an
-// idle /goal must still kick immediately, not arm — mirroring the live
-// TestSetGoal_KicksOnNeedsResponseRestNoPendingAsk. This is spec §2's
-// "generic awaiting: no rebuild" edge case, observed through restore.
-func TestAskUser_RestoreNeedsResponseRestKeepsPendingEmptyAndGoalKicks(t *testing.T) {
+// A historical needs_response reply is not an unresolved ask. Restore stays
+// idle and lets an idle goal kick instead of waiting for a nonexistent answer.
+func TestAskUser_RestoreLegacyNeedsResponseRestsIdle(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return endReasonResponse("here is my answer", "needs_response") }))
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: immediateRestConfig()})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-
-	ctx := tripwireCtx(t)
-	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("pre-restore state = %q, want %q (test setup broken)", got, SessionAwaiting)
-	}
+	sess := newSession(t, withStateDir(dir))
+	call := llm.ToolCallData{ID: "legacy", Name: "communicate", Type: "function", Arguments: json.RawMessage(`{"message":"which?","end_turn":true,"end_reason":"needs_response"}`)}
+	sess.appendTurn(schema.TurnUserInput, llm.User("hello"))
+	sess.appendTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}})
+	sess.appendTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
+		ToolCallID: call.ID, Name: call.Name, Content: "ok", ToolState: json.RawMessage(`{"communicate_end_reason":"needs_response"}`),
+	}}}})
 
 	meta := sess.Meta()
 	sess.Close()
 
 	restored := restoreAskSession(t, meta, dir)
 
-	if got := restored.State(); got != SessionAwaiting {
-		t.Fatalf("restored state = %q, want %q (test setup broken)", got, SessionAwaiting)
+	if got := restored.State(); got != SessionIdle {
+		t.Fatalf("restored state = %q, want idle for a historical needs_response reply", got)
 	}
 	if restored.HasPendingAsk() {
-		t.Fatal("HasPendingAsk() = true after restoring a needs_response rest with no ask, want false")
+		t.Fatal("a historical needs_response reply restored a pending ask")
 	}
 	if got := restored.askPendingCount(); got != 0 {
 		t.Fatalf("restored askPendingCount = %d, want 0 (a needs_response rest must never rebuild a pending set)", got)
@@ -4491,95 +4462,3 @@ func TestRoundEntryResolvesAskBoundary_SkipsNonCarrierFailureToFindTheRealEntry(
 // Legacy states — an end reason with no explicit verdict, the only shape
 // written before the verdict fields — still count, because those were only
 // ever recorded on the accepted terminal path.
-func TestCommunicateEndReasonOfGatesOnTypedVerdict(t *testing.T) {
-	t.Parallel()
-	yes, no := true, false
-	for _, tc := range []struct {
-		name  string
-		state communicateEndState
-		want  string
-	}{
-		{name: "accepted terminal reason", state: communicateEndState{Accepted: &yes, EndTurn: &yes, EndReason: "needs_response"}, want: "needs_response"},
-		{name: "rejected terminal reason", state: communicateEndState{Accepted: &no, EndTurn: &yes, EndReason: "done"}, want: ""},
-		{name: "accepted nonterminal reason", state: communicateEndState{Accepted: &yes, EndTurn: &no, EndReason: "done"}, want: ""},
-		{name: "rejected nonterminal reason", state: communicateEndState{Accepted: &no, EndTurn: &no, EndReason: "done"}, want: ""},
-		{name: "legacy end reason only", state: communicateEndState{EndReason: "needs_response"}, want: "needs_response"},
-		{name: "no verdict no reason", state: communicateEndState{}, want: ""},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			raw, err := json.Marshal(tc.state)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := communicateEndReasonOf(&llm.ToolResultData{ToolState: raw}); got != tc.want {
-				t.Fatalf("communicateEndReasonOf(%s) = %q, want %q", raw, got, tc.want)
-			}
-		})
-	}
-}
-
-// An input's terminal capture is first-wins, and a Stop hook block can send
-// the input on past the call it accepted, so a later terminal call in the
-// same attempt loses the capture and records accepted:false with its own
-// requested end reason. The restore scan reads that attempt back-to-front;
-// if the rejected call's reason were restorable, the session would restore
-// idle while its settlement still awaits the user — live and restore would
-// disagree.
-func TestCommunicateRestoreKeepsSettledNeedsResponseBehindRejectedRetry(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	blocked := filepath.Join(t.TempDir(), "stop-hook-blocked-once")
-	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
-		return agenttest.ToolCallResponse(communicateCallArgs("comm-1", map[string]any{
-			"message": "which db should we use?", "end_turn": true, "end_reason": "needs_response",
-		}))
-	}, func(req llm.Request) llm.Response {
-		return agenttest.ToolCallResponse(communicateCallArgs("comm-2", map[string]any{
-			"message": "settling on done regardless", "end_turn": true, "end_reason": "done",
-		}))
-	})
-	// The Stop hook blocks the first turn end — sending the input on past its
-	// accepted terminal communicate — and allows the second.
-	runner := hooks.NewRunner(nil, "")
-	runner.Add(plugin.HookStop, plugin.RegisteredHook{
-		Matcher: "*",
-		Type:    "command",
-		Command: "if [ -f " + blocked + " ]; then exit 0; else touch " + blocked + "; printf '%s' '{\"decision\":\"block\",\"reason\":\"one more round\"}'; fi",
-		Timeout: 5,
-	})
-	var sess *Session
-	c := llm.NewClient()
-	c.Register(f)
-	var err error
-	cfg := SessionConfig{StateDir: dir}
-	// The needs_response rest arms synchronously here (no quiet period): the
-	// live-against-restore comparison below reads sess.State() as soon as
-	// ProcessInput returns.
-	cfg.testOnly.needsResponseQuietPeriod = new(time.Duration)
-	sess, err = NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), cfg)
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	sess.hookRunner = runner
-
-	// TRIPWIRE: scripted in-process adapter; the Stop hook is a real
-	// subprocess writing a real marker file. Only fires on a genuine hang.
-	ctx := tripwireCtx(t)
-	if _, err := sess.ProcessInput(ctx, "talk", nil); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-	if got := len(f.Requests()); got != 2 {
-		t.Fatalf("provider requests = %d, want 2 (the block decision must send the input on to a second round)", got)
-	}
-	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("live state = %q, want %q (the input settled on comm-1's accepted needs_response)", got, SessionAwaiting)
-	}
-	meta := sess.Meta()
-	sess.Close()
-
-	restored := restoreAskSession(t, meta, dir)
-	if got := restored.State(); got != SessionAwaiting {
-		t.Fatalf("restored state = %q, want %q: comm-2's rejected done must not read as the restorable verdict ahead of comm-1's accepted needs_response", got, SessionAwaiting)
-	}
-}

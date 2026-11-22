@@ -1252,3 +1252,20 @@ func TestOutputMatchWatchOnJobWithNoOutputStoreIsLoud(t *testing.T) {
 		t.Fatalf("notifications = %+v, want one attach-scan-skipped warning", notified)
 	}
 }
+
+func TestWatchQuietCommunicateDoesNotMatch(t *testing.T) {
+	for _, wildcard := range []bool{false, true} {
+		snap := watchEventSnapshot{
+			targetActive: true, wildcardEvents: wildcard, eventKinds: map[events.EventKind]bool{events.EventToolCallEnd: true},
+			triggerKind: events.EventToolCallEnd, triggerEvery: 2, eventCount: 1,
+		}
+		data := events.ToolCallEndData{ToolName: "communicate", ToolState: json.RawMessage(`{"communicate_quiet":true}`)}
+		if got := evaluateWatchEvent(snap, events.SessionEvent{Kind: events.EventToolCallEnd, Data: data}); got.matched || got.eventCount != 1 {
+			t.Errorf("wildcard=%v: successful quiet result matched or changed count: %+v", wildcard, got)
+		}
+		data.Error = "test failure"
+		if got := evaluateWatchEvent(snap, events.SessionEvent{Kind: events.EventToolCallEnd, Data: data}); !got.matched || got.eventCount != 2 {
+			t.Errorf("wildcard=%v: failed call did not match: %+v", wildcard, got)
+		}
+	}
+}

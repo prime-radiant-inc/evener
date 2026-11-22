@@ -326,7 +326,7 @@ func communicateResultCallID(entry *schema.Turn, part int, seed map[string]strin
 	if name == "" {
 		name = seed[content.ToolResult.ToolCallID]
 	}
-	if name != "communicate" {
+	if !apptranscript.IsCommunicateTool(name, entry.ResultToolName) {
 		return "", false
 	}
 	return content.ToolResult.ToolCallID, true
@@ -382,7 +382,7 @@ func (b *builder) communicateContext(callID string) (strRef, error) {
 // pending calls by and the cut reconstruction's suffix scan answers, so the
 // two can never disagree on what counts as one.
 func deferredCommCall(entry *schema.Turn, part llm.ContentPart) bool {
-	return part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.Name == "communicate" &&
+	return part.Kind == llm.ContentToolCall && part.ToolCall != nil && apptranscript.IsCommunicateTool(part.ToolCall.Name, entry.ResultToolName) &&
 		(entry.Format != schema.TurnFormatIdentity || entry.Authorship != nil && entry.Authorship.Inherited)
 }
 
@@ -433,7 +433,7 @@ func (b *builder) recordCommState(entry *schema.Turn, turnID string, seed map[st
 		if name == "" {
 			name = seed[part.ToolResult.ToolCallID]
 		}
-		if name == "communicate" {
+		if apptranscript.IsCommunicateTool(name, entry.ResultToolName) || apptranscript.IsQuietCommunicate(part.ToolResult) {
 			delete(b.commCalls, part.ToolResult.ToolCallID)
 		}
 	}
@@ -497,6 +497,11 @@ func (b *builder) applyIdentity(ordinal uint64, offset int64, length uint32, ent
 		}
 	}
 	if entry.Kind == schema.TurnCompletion {
+		if completion := entry.Completion; completion != nil && completion.AcceptedCommunicateCallID != "" {
+			if err := b.linkCommunicationEvidence(slot, completion.AcceptedCommunicateCallID, c); err != nil {
+				return err
+			}
+		}
 		delete(b.open, turnID)
 		if err := b.interruptAwaitedCalls(summary, c); err != nil {
 			return err
@@ -790,37 +795,35 @@ func (b *builder) completeCommunications(slot uint64, entry *schema.Turn, c cont
 		if apptranscript.CommunicateTerminalAccepted(*entry, id) == nil {
 			continue
 		}
-		const batch = 128
-		for end := b.x.items.n; end > 0; {
-			start := end - min(end, batch)
-			buf, err := b.x.items.read(start, int(end-start))
+		if err := b.linkCommunicationEvidence(slot, id, c); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *builder) linkCommunicationEvidence(slot uint64, id string, c contributor) error {
+	const batch = 128
+	for end := b.x.items.n; end > 0; {
+		start := end - min(end, batch)
+		buf, err := b.x.items.read(start, int(end-start))
+		if err != nil {
+			return err
+		}
+		for position := end; position > start; position-- {
+			record := decodeItem(buf[(position-1-start)*itemRecordSize:])
+			if uint64(record.Turn) != slot || record.Call.Len == 0 || record.Opener.Ordinal >= c.Ordinal {
+				continue
+			}
+			matches, err := b.communicationMatches(record, id)
 			if err != nil {
 				return err
 			}
-			found := false
-			for position := end; position > start; position-- {
-				record := decodeItem(buf[(position-1-start)*itemRecordSize:])
-				if uint64(record.Turn) != slot || record.Call.Len == 0 || record.Opener.Ordinal >= c.Ordinal {
-					continue
-				}
-				matches, err := b.communicationMatches(record, id)
-				if err != nil {
-					return err
-				}
-				if !matches {
-					continue
-				}
-				if err := b.addContributor(position-1, c, c.Ordinal+1); err != nil {
-					return err
-				}
-				found = true
-				break
+			if matches {
+				return b.addContributor(position-1, c, c.Ordinal+1)
 			}
-			if found {
-				break
-			}
-			end = start
 		}
+		end = start
 	}
 	return nil
 }
@@ -983,7 +986,7 @@ func (b *builder) seed(entry *schema.Turn) (map[string]string, error) {
 				name = resolved.name
 			}
 		}
-		if name != "communicate" {
+		if !apptranscript.IsCommunicateTool(name, entry.ResultToolName) || apptranscript.IsQuietCommunicate(part.ToolResult) {
 			continue
 		}
 		// A rebuild-free extend also needs the deferred-communicate state
@@ -1025,7 +1028,7 @@ func (b *builder) recordNames(entry *schema.Turn, seed map[string]string) {
 			if name == "" {
 				name = seed[part.ToolResult.ToolCallID]
 			}
-			if name == "communicate" {
+			if apptranscript.IsCommunicateTool(name, entry.ResultToolName) || apptranscript.IsQuietCommunicate(part.ToolResult) {
 				b.setName(part.ToolResult.ToolCallID, toolName{})
 			}
 		}

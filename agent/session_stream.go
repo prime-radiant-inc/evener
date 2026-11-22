@@ -457,6 +457,9 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 		if !ok || message == "" {
 			return
 		}
+		if !communicatePreviewStarted[callID] && strings.TrimSpace(message) == "" {
+			return
+		}
 		prev := communicateText[callID]
 		if len(message) <= len(prev) || !strings.HasPrefix(message, prev) {
 			return

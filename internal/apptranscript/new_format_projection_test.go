@@ -184,13 +184,20 @@ func TestNewFormatCommunicateProjectsTheDeliveredMessage(t *testing.T) {
 		CallID:      "c1",
 		Status:      appwire.TurnStatusCompleted,
 		StartedAt:   &ms,
-		Observation: &appwire.SessionObservationMetadata{TurnID: "t_1", EndTurn: true},
+		Observation: &appwire.SessionObservationMetadata{TurnID: "t_1", EndTurn: true, EndReason: "done"},
 	}
 	if len(items) != 1 || !reflect.DeepEqual(items[0], want) || !reflect.DeepEqual(parts, []int{0}) {
 		t.Fatalf("items = %+v parts = %v, want [%+v] at part 0", items, parts, want)
 	}
 	if item, ok := CommunicateItem("t_1", 7, entry); !ok || !reflect.DeepEqual(item, want) {
 		t.Fatalf("CommunicateItem = %+v, %v; want %+v", item, ok, want)
+	}
+	for _, reason := range []string{"waiting_on_work", "needs_response"} {
+		legacy := entry
+		legacy.Communicate = &schema.CommunicateInfo{CallID: "c1", EndTurn: true, EndReason: reason, Message: "hello there"}
+		if item, ok := CommunicateItem("t_1", 7, legacy); !ok || item.Observation.EndReason != reason {
+			t.Fatalf("historical reason %q projected observation %+v", reason, item.Observation)
+		}
 	}
 	if _, ok := CommunicateItem("t_1", 7, schema.Turn{Kind: schema.TurnCommunicate, Format: schema.TurnFormatIdentity}); ok {
 		t.Fatal("a COMMUNICATE entry with no payload projected an item")

@@ -166,7 +166,10 @@ func (p *quotaWaitProvider) Complete(ctx context.Context, req llm.Request) (llm.
 	p.mu.Lock()
 	if len(p.steps) == 0 {
 		p.mu.Unlock()
-		return llm.Response{Message: llm.Assistant("unscripted request")}, nil
+		resp := parityResponse(parityCall("quota-root-ack", "communicate", map[string]any{}))
+		resp.Provider = p.Name()
+		resp.Model = req.Model
+		return resp, nil
 	}
 	step := p.steps[0]
 	p.steps = p.steps[1:]

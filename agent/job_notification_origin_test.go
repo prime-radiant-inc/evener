@@ -39,19 +39,23 @@ func TestAssistantNotificationTextDoesNotConsumeCompletionWake(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			adapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(tc.response)} }, func(llm.Request) llm.Response { return agenttest.FinalResponse("HANDLED_SENTINEL") })
+			adapter := newFakeAdapter("openai",
+				func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(tc.response)} },
+				func(llm.Request) llm.Response { return quietYieldResponse("initial-wake-ack", `{}`) },
+				func(llm.Request) llm.Response { return agenttest.FinalResponse("HANDLED_SENTINEL") },
+			)
 			client := llm.NewClient()
 			client.Register(adapter)
 			sess := newSession(t, withClient(client), withStateDir(t.TempDir()))
 
-			// An earlier completion opened this activation. Its bare-text response
-			// is allowed to finish idle, but cannot acknowledge a different job.
+			// An earlier completion opened this activation. The bare-text response
+			// is recorded before the explicit quiet yield, and cannot acknowledge a different job.
 			enqueueCompletedJobNotification(t, sess, "job_initial_wake")
 			if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 				t.Fatal(err)
 			}
 			assistants := assistantEntries(t, sess)
-			if len(assistants) != 1 || assistants[0].Message.Text() != tc.recorded {
+			if len(assistants) == 0 || assistants[0].Message.Text() != tc.recorded {
 				t.Fatalf("assistant record = %+v, want %q", assistants, tc.recorded)
 			}
 
@@ -60,10 +64,10 @@ func TestAssistantNotificationTextDoesNotConsumeCompletionWake(t *testing.T) {
 				t.Fatal(err)
 			}
 			requests := adapter.Requests()
-			if len(requests) != 2 {
-				t.Fatalf("model requests = %d, want 2: the real completion must wake the model despite assistant XML", len(requests))
+			if len(requests) != 3 {
+				t.Fatalf("model requests = %d, want 3: the real completion must wake the model despite assistant XML", len(requests))
 			}
-			requireJobNotificationInRequest(t, requests[1], jobID)
+			requireJobNotificationInRequest(t, requests[2], jobID)
 			requireNotificationState(t, sess.jobManager, jobID, jobstore.NotifyDelivered)
 		})
 	}

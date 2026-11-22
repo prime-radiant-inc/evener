@@ -48,10 +48,8 @@ func (s *Session) Compact(ctx context.Context) error {
 	// under the user's reply. Returning before any history read/mutation
 	// leaves the history and the pending question untouched — the reply or
 	// Clear are the only ways forward (protecting the pending-ask tail through
-	// compaction instead of refusing outright is the fast-follow). Keyed on
-	// the pending-ask set (askPendingCount), not the awaiting rest state:
-	// SessionAwaiting also covers a turn that ended on needs_response with
-	// nothing pending, where Compact must proceed normally.
+	// compaction instead of refusing outright is the fast-follow). Check for
+	// pending asks directly, including while the session is processing.
 	if s.askPendingCount() > 0 {
 		return errors.New("a question is pending; reply or clear first")
 	}

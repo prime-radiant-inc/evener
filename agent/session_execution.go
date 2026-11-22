@@ -35,7 +35,9 @@ type executionState struct {
 	startedAt time.Time
 	// failed records a TURN_FAILURE recorded during the execution: its
 	// completion then records failed whatever the input loop saw.
-	failed bool
+	failed                    bool
+	acceptedCommunicateCallID string
+	replacementReply          *string
 }
 
 // executionTurnID is the TurnID an execution runs under: the client-mutation
@@ -102,10 +104,15 @@ func (s *Session) completeExecution(status schema.TurnCompletionStatus) {
 			status = schema.TurnFailed
 		}
 		now := s.sclock().Now().UTC()
+		completion := &schema.TurnCompletionInfo{Status: status, CompletedAt: now, DurationMS: max(now.Sub(execution.startedAt).Milliseconds(), 0)}
+		if status == schema.TurnCompleted {
+			completion.AcceptedCommunicateCallID = execution.acceptedCommunicateCallID
+			completion.ReplacementReply = execution.replacementReply
+		}
 		rec, err := s.recordTranscriptOnlyThrough(schema.Turn{
 			Kind:       schema.TurnCompletion,
 			Timestamp:  now,
-			Completion: &schema.TurnCompletionInfo{Status: status, CompletedAt: now, DurationMS: max(now.Sub(execution.startedAt).Milliseconds(), 0)},
+			Completion: completion,
 		}, transcript.DoorSynced, transcript.PlaceCompletion)
 		if rec.Recorded {
 			ended = status
@@ -456,6 +463,10 @@ func (s *Session) recordNotice(notice schema.NoticeInfo) {
 // transcript does not record it fails closed and delivers nothing, returning
 // the refusal; a session nobody serves announces it as it always has.
 func (s *Session) deliverCommunicate(data events.CommunicateData) error {
+	return s.deliverCommunicateWithAcceptance(data, false)
+}
+
+func (s *Session) deliverCommunicateWithAcceptance(data events.CommunicateData, acceptedReply bool) error {
 	// A session that already failed closed refuses immediately: its
 	// execution is being cancelled, but a tool call already in flight (this
 	// one) can still reach delivery before that lands, and it must not
@@ -466,7 +477,7 @@ func (s *Session) deliverCommunicate(data events.CommunicateData) error {
 		return refusal
 	}
 	causal := s.activeCausalProvenance()
-	rec, err := s.recordTranscriptOnlyThrough(schema.Turn{Kind: schema.TurnCommunicate, ConversationProvenance: s.activeConversationProvenance(), CausalKnown: true, Causal: causal, Authorship: s.roundTranscriptAuthorship(), Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message, EndReason: data.EndReason}}, transcript.DoorSynced, transcript.PlaceSession)
+	rec, err := s.recordTranscriptOnlyThrough(schema.Turn{Kind: schema.TurnCommunicate, AcceptedReply: acceptedReply, ConversationProvenance: s.activeConversationProvenance(), CausalKnown: true, Causal: causal, Authorship: s.roundTranscriptAuthorship(), Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message, EndReason: data.EndReason}}, transcript.DoorSynced, transcript.PlaceSession)
 	if !rec.Recorded && s.servedByDaemon() {
 		switch writer := s.attachedTranscript(); {
 		case writer != nil && writer.Closed():

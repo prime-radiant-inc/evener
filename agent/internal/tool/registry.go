@@ -536,6 +536,9 @@ type RegisteredTool struct {
 	Schema     *jsonschema.Schema
 	Limit      schema.ToolOutputLimit
 	OmitIntent bool
+	// CommunicateOutputBound disables default-envelope repairs on the result
+	// tool when its output schema or allowed decisions were explicitly bound.
+	CommunicateOutputBound bool
 	// UnmarshalArgs optionally preserves tool-specific values before preparation
 	// and dispatch validate them. Nil retains encoding/json's float64 numbers.
 	UnmarshalArgs func([]byte, *map[string]any) error
@@ -643,7 +646,7 @@ func (r *Registry) Register(t RegisteredTool) error {
 	if t.Schema == nil {
 		// compileSchema memoizes by parameters, so a re-registration with
 		// unchanged parameters gets the schema already compiled for them and
-		// one that changes them (a root's communicate gains end_reason)
+		// one that changes them (a delegate's communicate gains a result_schema)
 		// compiles its own.
 		s, err := compileSchema(t.Definition.Parameters)
 		if err != nil {
@@ -940,6 +943,13 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	v, err := t.Exec(ctx, env, args)
 	res := dispatchedResult(name, callID, dispatchLimit(name, t.Limit, args), v, err)
 	if judged {
+		if !res.IsError && schema.IsQuietCommunicateState(res.ToolState) {
+			// Successful quiet yields legitimately repeat across consecutive
+			// notification or watch wakes while background work completes;
+			// clear any prior failure run without counting body repetition.
+			r.breaker.clearFailures(key)
+			return res
+		}
 		// Recorded on the untruncated body, before any nudge is appended, so
 		// the nudge cannot poison the body hash. FullOutput rather than
 		// Output: a TruncTail tool renders every over-limit error behind the

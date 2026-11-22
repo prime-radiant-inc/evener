@@ -153,10 +153,8 @@ func ImagePlaceholder(count int) string {
 // communicate tool call.
 func CommunicateMessageFromArguments(raw json.RawMessage) string {
 	var args struct {
-		Message string `json:"message"`
-		Output  *struct {
-			Message string `json:"message"`
-		} `json:"output"`
+		Message string          `json:"message"`
+		Output  json.RawMessage `json:"output"`
 	}
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return ""
@@ -164,10 +162,30 @@ func CommunicateMessageFromArguments(raw json.RawMessage) string {
 	if msg := strings.TrimSpace(args.Message); msg != "" {
 		return msg
 	}
-	if args.Output != nil {
-		return strings.TrimSpace(args.Output.Message)
+	var output struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(args.Output, &output) == nil {
+		return strings.TrimSpace(output.Message)
 	}
 	return ""
+}
+
+// CommunicateArgumentsWithoutMessage distinguishes a valid empty-message
+// object from malformed bytes that should keep the raw transcript fallback.
+func CommunicateArgumentsWithoutMessage(raw json.RawMessage) bool {
+	var object map[string]json.RawMessage
+	if json.Unmarshal(raw, &object) != nil || object == nil {
+		return false
+	}
+	for key := range object {
+		switch key {
+		case "message", "end_turn", "output", "end_reason": // also read legacy arguments
+		default:
+			return false // Preserve raw evidence for a non-communicate argument shape.
+		}
+	}
+	return CommunicateMessageFromArguments(NormalizeCommunicateArguments(raw)) == ""
 }
 
 // NormalizeCommunicateArguments replays the communicate-specific
@@ -442,6 +460,7 @@ func ProjectEntryParts(turnID string, entryIndex int, turn schema.Turn, reg *Too
 			reg.Names = map[string]string{}
 		}
 		items = projectIdentityAssistant(turnID, entryIndex, turn, reg, &parts)
+		markAcceptedAssistantReply(items, turnID, turn)
 		for i := range items {
 			items[i].Authorship = ProjectAuthorship(turn.Authorship)
 		}
@@ -481,6 +500,7 @@ func ProjectEntryParts(turnID string, entryIndex int, turn schema.Turn, reg *Too
 // part index in it.
 func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRegistry, imageProjector ImageProjector, outputImageProjector OutputImageProjector, parts *[]int) (out []appwire.ThreadItem) {
 	defer func() {
+		markAcceptedAssistantReply(out, turnID, turn)
 		if turn.Kind != schema.TurnTool && turn.Kind != schema.TurnToolResults {
 			for i := range out {
 				out[i].Authorship = ProjectAuthorship(turn.Authorship)
@@ -748,7 +768,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 					continue
 				}
 				reg.Names[part.ToolCall.ID] = part.ToolCall.Name
-				if part.ToolCall.Name == "communicate" {
+				if IsCommunicateTool(part.ToolCall.Name, turn.ResultToolName) {
 					// Defer ALL communicate messages to the paired tool result.
 					// The assistant turn alone cannot disambiguate: a valid-JSON
 					// communicate rejected at prevalidation (PrevalOnly) has the
@@ -792,7 +812,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 			if name == "" {
 				name = reg.Names[part.ToolResult.ToolCallID]
 			}
-			if name == "communicate" {
+			if IsCommunicateTool(name, turn.ResultToolName) || IsQuietCommunicate(part.ToolResult) {
 				first := len(items)
 				// A rejected communicate (IsError=true, PrevalOnly=true) was
 				// never executed — live suppresses it entirely (no
@@ -809,7 +829,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 							ID:            fmt.Sprintf("item_tool_result_%d_%d", turnIndex, i),
 							TurnID:        turnID,
 							RoundID:       turn.RoundID,
-							ToolName:      "communicate",
+							ToolName:      name,
 							CallID:        part.ToolResult.ToolCallID,
 							ArgumentsJSON: rawArgs,
 							Status:        appwire.TurnStatusFailed,
@@ -831,7 +851,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 				// RepairJSON machinery the live path used (read-only reuse via
 				// argrepair), then extract the message — reload then renders
 				// the same text live delivered.
-				if !part.ToolResult.IsError {
+				if !part.ToolResult.IsError && !IsQuietCommunicate(part.ToolResult) {
 					if rawArgs, ok := reg.CommRawArgs[part.ToolResult.ToolCallID]; ok && rawArgs != "" {
 						repaired := argrepair.RepairJSON([]byte(rawArgs))
 						normalized := NormalizeCommunicateArguments(repaired)
@@ -853,7 +873,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 								Status:  appwire.TurnStatusCompleted,
 							})
 							recordPart(parts, i)
-						} else if msg == "" && strings.TrimSpace(rawArgs) != "" {
+						} else if msg == "" && strings.TrimSpace(rawArgs) != "" && !CommunicateArgumentsWithoutMessage(json.RawMessage(rawArgs)) {
 							// Repair recovered no message (the healed bytes
 							// carry neither "message" nor output.message, or
 							// could not be repaired at all). Mirror the hub's
@@ -1029,7 +1049,7 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, re
 				continue
 			}
 			reg.Names[part.ToolCall.ID] = part.ToolCall.Name
-			if part.ToolCall.Name == "communicate" {
+			if IsCommunicateTool(part.ToolCall.Name, turn.ResultToolName) {
 				if turn.Authorship != nil && turn.Authorship.Inherited {
 					if reg.CommRawArgs == nil {
 						reg.CommRawArgs = map[string]string{}

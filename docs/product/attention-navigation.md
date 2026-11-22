@@ -10,11 +10,12 @@ page owns what the client does with that membership.
 
 ## Membership
 
-Only an actionable condition puts a session in Needs you: a pending question,
-a pending approval, a warning, or a restart. A turn that merely ended on
-`needs_response` is finished, not blocked on a person, so it rests Idle and
-never enters the tier. A failed session stays in the tier too, under its own
-error level, ordered first. The hub owns the rule once:
+Only an actionable condition puts a session in Needs you: a pending `ask_user`
+question, a pending approval, a warning, or a restart. The daemon's `awaiting`
+state comes from a pending question; approvals carry their own pending fact.
+Legacy or remote `awaiting` without `askPending` or a pending approval
+normalizes to Idle and does not enter the tier. A failed session stays in the
+tier too, under its own error level, ordered first. The hub owns the rule once:
 [`hubapi.NeedsAction`](../../hubapi/attention.go) decides the actionable
 conditions, and the hub's
 [`attentionLevel`](../../cmd/evener-hub/internal/hubcore/attention.go) adds

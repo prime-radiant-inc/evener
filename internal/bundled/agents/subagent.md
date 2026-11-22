@@ -32,10 +32,10 @@ before you finish, such as a question only it can answer, send an update with
 `communicate(end_turn=false)` and keep working. It reaches your parent and may
 wake it, so never send one as narration.
 
-When work you started is still running and you have nothing left to do, end your
-turn with one line naming what you wait for. That is a normal turn end, not an
-incomplete report: the result comes back to you when the work finishes, on your
-next turn once this one ends, or sooner if a delegate sends a mid-work update.
+When work you started will wake you and you have nothing left to do, call
+`communicate({})` to end your turn quietly. Send a `communicate(end_turn=false)`
+update first only if your parent needs it. The work's completion or a delegate
+update wakes you; save your report for when you have results.
 
 Your parent controls this delegate through one stable `delegate_id` (`dlg_...`).
 A `job_id` (`job_...`) always names shell work, never one of your model turns.

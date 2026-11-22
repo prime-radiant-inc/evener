@@ -150,7 +150,7 @@ func TestDelegateResultSchemaSplicePreservesSchemaOnValidTool(t *testing.T) {
 	if !bytes.Equal(got, want) {
 		t.Fatalf("the spliced output parameter drifted from the caller's result_schema:\n got %s\nwant %s", got, want)
 	}
-	if req := toStringSlice(communicate.Parameters["required"]); !slices.Contains(req, "output") {
-		t.Fatalf("communicate parameters required = %v, want output required", req)
+	if req := toStringSlice(communicate.Parameters["required"]); slices.Contains(req, "output") {
+		t.Fatalf("communicate parameters required = %v, want output optional", req)
 	}
 }

@@ -2,6 +2,7 @@ package tool
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
 	"regexp"
 	"slices"
@@ -588,6 +589,120 @@ func TestOptionalJobInspectionToolsAreNonStrict(t *testing.T) {
 		if def.Strict == nil || *def.Strict {
 			t.Fatalf("%s Strict = %v, want false so OpenAI does not require optional inspection fields", def.Name, def.Strict)
 		}
+	}
+}
+
+// TestDefCommunicateSchemaOptionalSurface pins the unified communicate schema:
+// message, end_turn (defaulting to true), and output are each optional,
+// nothing is required at the top level, and end_reason is gone. Every calling
+// convention the runtime accepts (quiet yield, progress update, ordinary
+// reply) must pass JSON-schema validation, and an unknown or wrongly typed
+// argument must not.
+func TestDefCommunicateSchemaOptionalSurface(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		def  llm.ToolDefinition
+	}{
+		{name: "default name", def: DefCommunicate()},
+		{name: "renamed", def: DefCommunicateNamed("submit_report")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			def := tc.def
+			if def.Strict == nil || *def.Strict {
+				t.Fatalf("Strict = %v, want an explicit false so optional properties stay optional", def.Strict)
+			}
+			if got := def.Parameters["type"]; got != "object" {
+				t.Fatalf("parameters.type = %v, want object", got)
+			}
+			if got := def.Parameters["additionalProperties"]; got != false {
+				t.Fatalf("parameters.additionalProperties = %v, want false", got)
+			}
+			props, ok := def.Parameters["properties"].(map[string]any)
+			if !ok {
+				t.Fatalf("parameters.properties = %T, want map[string]any", def.Parameters["properties"])
+			}
+			if got, want := slices.Sorted(maps.Keys(props)), []string{"end_turn", "message", "output"}; !slices.Equal(got, want) {
+				t.Fatalf("properties = %v, want %v (no end_reason)", got, want)
+			}
+
+			endTurn, _ := props["end_turn"].(map[string]any)
+			if endTurn["type"] != "boolean" {
+				t.Errorf("end_turn.type = %v, want boolean", endTurn["type"])
+			}
+			if endTurn["default"] != true {
+				t.Errorf("end_turn.default = %v, want true", endTurn["default"])
+			}
+
+			output, _ := props["output"].(map[string]any)
+			if output["type"] != "object" {
+				t.Errorf("output.type = %v, want object", output["type"])
+			}
+			if output["additionalProperties"] != false {
+				t.Errorf("output.additionalProperties = %v, want false", output["additionalProperties"])
+			}
+			outProps, _ := output["properties"].(map[string]any)
+			if got, want := slices.Sorted(maps.Keys(outProps)), []string{"artifacts", "data", "message"}; !slices.Equal(got, want) {
+				t.Errorf("output.properties = %v, want %v", got, want)
+			}
+			if req := schemaRequiredNames(output); len(req) > 0 {
+				t.Errorf("output.required = %v, want none so an empty output envelope validates", req)
+			}
+			if req := schemaRequiredNames(def.Parameters); len(req) > 0 {
+				t.Errorf("top-level required = %v, want none", req)
+			}
+
+			schema, err := compileSchema(def.Parameters)
+			if err != nil {
+				t.Fatalf("compile parameters: %v", err)
+			}
+			for _, args := range []map[string]any{
+				{},
+				{"message": "hi"},
+				{"message": "hi", "end_turn": false},
+				{"message": "hi", "end_turn": true},
+				{"output": map[string]any{}},
+				{"message": "hi", "output": map[string]any{"data": map[string]any{"k": 1}}},
+				{"message": "hi", "output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}}},
+			} {
+				if err := schema.Validate(args); err != nil {
+					t.Errorf("valid call %v rejected: %v", args, err)
+				}
+			}
+			for _, args := range []map[string]any{
+				{"end_reason": "done"},
+				{"message": 3},
+				{"output": "nope"},
+				{"output": map[string]any{"artifacts": []any{1}}},
+			} {
+				if err := schema.Validate(args); err == nil {
+					t.Errorf("invalid call %v accepted", args)
+				}
+			}
+		})
+	}
+}
+
+// schemaRequiredNames reads a schema's required list as []string, treating a
+// missing or null entry as none. Schemas built in Go hold []string while a
+// JSON round-tripped one holds []any.
+func schemaRequiredNames(schema map[string]any) []string {
+	raw, ok := schema["required"]
+	if !ok || raw == nil {
+		return nil
+	}
+	switch v := raw.(type) {
+	case []string:
+		return v
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return []string{fmt.Sprintf("%v", v)}
 	}
 }
 

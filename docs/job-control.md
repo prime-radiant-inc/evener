@@ -1185,7 +1185,7 @@ Canonical behavior:
   session `transcript_ref`. `last_outcome` carries the latest terminal metadata.
 - Quiet/running timing is a supervision hint, not proof of a stall.
 - Completion is notification-driven. `job_status` is for orientation and recovery, not for waiting: it never blocks, and calling it in a loop is the polling anti-pattern.
-- Evener refuses a repeat `job_status` call on a running target when nothing it reports has changed since this session's previous call on it. The comparison is the lifecycle status and phase; a delegate also compares its attention flag and the count of activity reports it has recorded (new progress allows the next read, the passage of time does not). Elapsed clocks such as `running_for_ms` never count. The refusal is an error beginning with the park prefix `evener did not execute this call:` and the status is not returned. The first call on a target, a call after the comparison changed, a call after a notification about the target or after a self-timer wake, a call after any delegate attention report, and any call on a finished target are allowed. Evener adds no wait primitive: an agent with nothing else to do ends its turn with the result tool (`end_turn=true`, plus `end_reason="waiting_on_work"` where the result tool takes it) and the completion wakes it, or sets a `job_watch` with `output_match` to wake on a condition.
+- Evener refuses a repeat `job_status` call on a running target when nothing it reports has changed since this session's previous call on it. The comparison is the lifecycle status and phase; a delegate also compares its attention flag and the count of activity reports it has recorded (new progress allows the next read, the passage of time does not). Elapsed clocks such as `running_for_ms` never count. The refusal is an error beginning with the park prefix `evener did not execute this call:` and the status is not returned. The first call on a target, a call after the comparison changed, a call after a notification about the target or after a self-timer wake, a call after any delegate attention report, and any call on a finished target are allowed. Evener adds no wait primitive: an agent with nothing else to do yields its turn quietly with `communicate({})` (after an optional `end_turn=false` status message) and the completion wakes it, or sets a `job_watch` with `output_match` to wake on a condition.
 - Reading an owner's terminal shell status consumes that shell's pending terminal
   notification. Delegate status never consumes its terminal packet; exact
   transcript-backed attention is consumed only by a successful notification turn.
@@ -1799,9 +1799,8 @@ Rules:
   event) describes the payload; it never decides whether the target wakes.
   There is no report-specific wake predicate and no drain-only delivery path.
 - A terminal report never creates a human-attention entry. Only a pending
-  `ask_user` question or a `needs_response` rest puts a session in the
-  awaiting state; a delegate's report reaches its parent as owner attention so
-  the parent continues autonomously.
+  `ask_user` question puts a session in the awaiting state; a delegate's report
+  reaches its parent as owner attention so the parent continues autonomously.
 - A delegate's terminal packet becomes durable before it is visible: the
   generation writes its prepared-terminal event to the root `delegates.jsonl`
   journal first, and acceptance, dedupe and integrity diagnostics key off that
@@ -1810,9 +1809,10 @@ Rules:
 - A delegate whose turn has ended while its generation waits on its own
   delegates is idle, and an update from one of them wakes it: the wait runs a
   turn that presents the update and consumes it, so no further generation
-  starts for it. A report from one of them gets no turn of its own: it waits
-  for the generation's end, when the next attention generation takes it with
-  everything else pending, unless an update's turn presents it first.
+  starts for it. When parked at a quiet yield (`communicate({})`) before sending
+  its own report, a report from a nested delegate wakes it the same way; once
+  its own report is accepted, a later nested report waits for the generation's
+  end unless an update's turn presents it first.
 - Receiver transcripts are the sole durable attention authority. Attention is
   appended and fsynced by exact private ID before a process-local wake. A
   successful notification turn appends and fsyncs the matching consumed marker;

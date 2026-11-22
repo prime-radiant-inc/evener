@@ -503,3 +503,48 @@ func TestBreakerDispatch_DifferentLargeErrorsUnderTruncationDoNotPark(t *testing
 		}
 	}
 }
+
+func TestBreakerDispatch_QuietYieldsNeverDrawRepetitionNudge(t *testing.T) {
+	r := NewRegistry()
+	fail := false
+	accepted := true
+	if err := r.Register(RegisteredTool{
+		Definition: DefCommunicate(),
+		OmitIntent: true,
+		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+			if fail {
+				return nil, errors.New("nothing can wake this turn")
+			}
+			return StateResult{
+				Output: `{"accepted":true,"end_turn":true,"inbox":[],"quiet":true}`,
+				State:  schema.CommunicateToolState{Accepted: &accepted, EndTurn: &accepted, Quiet: &accepted},
+			}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	env := breakerEnv(t)
+	ctx := context.Background()
+	call := breakerCall("q1", "communicate", `{}`)
+
+	for i := 1; i <= 4; i++ {
+		res := r.ExecuteCall(ctx, env, call)
+		if res.IsError {
+			t.Fatalf("quiet yield %d failed: %q", i, res.Output)
+		}
+		if strings.Contains(res.Output, repetitionNudgeMarker) {
+			t.Fatalf("quiet yield %d received repetition nudge: %q", i, res.Output)
+		}
+	}
+
+	fail = true
+	r.ExecuteCall(ctx, env, call)
+	secondFail := r.ExecuteCall(ctx, env, call)
+	if !strings.HasSuffix(secondFail.Output, wantFailureNudge) {
+		t.Fatalf("second dead-wait failure missing failure nudge: %q", secondFail.Output)
+	}
+	thirdFail := r.ExecuteCall(ctx, env, call)
+	if !thirdFail.Rejected || !strings.HasPrefix(thirdFail.Output, wantFailurePark("communicate")) {
+		t.Fatalf("third dead-wait failure was not parked: %+v", thirdFail)
+	}
+}

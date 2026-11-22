@@ -264,7 +264,7 @@ func applySuffixEffects(turn *schema.Turn, position uint64, suffix *suffixEffect
 					return errNotDerivable
 				}
 			}
-			if name != "communicate" {
+			if !apptranscript.IsCommunicateTool(name, turn.ResultToolName) && !apptranscript.IsQuietCommunicate(part.ToolResult) {
 				continue
 			}
 			if suffix.commAdds[id] {

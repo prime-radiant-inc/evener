@@ -70,7 +70,7 @@ func registerJobTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 // inject a failure at each registration boundary.
 func registerJobToolsWith(reg *tool.Registry, register func(tool.RegisteredTool) error, s *Session) error {
 	if err := register(tool.RegisteredTool{
-		Definition: tool.DefJobStatusNamed(s.resultToolName(), s.hasHumanPartnerToAsk()), ReadOnly: true,
+		Definition: tool.DefJobStatusNamed(s.resultToolName()), ReadOnly: true,
 		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			if _, hub := args["hub"]; hub {
@@ -84,7 +84,7 @@ func registerJobToolsWith(reg *tool.Registry, register func(tool.RegisteredTool)
 		return err
 	}
 	if err := register(tool.RegisteredTool{
-		Definition: tool.DefJobListNamed(s.resultToolName(), s.hasHumanPartnerToAsk()), ReadOnly: true,
+		Definition: tool.DefJobListNamed(s.resultToolName()), ReadOnly: true,
 		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			if _, hub := args["hub"]; hub {
@@ -391,7 +391,7 @@ func sessionJobManager(s *Session) (*jobManager, error) {
 // sessionRunningJobIDs lists this session's own running (session-launched,
 // non-nested) job ids, in job_list's default order. Used by the communicate
 // end_turn running-job warning (through sessionRunningWorkIDs) and by the
-// waiting_on_work wake predicate; returns nil when the session has no job
+// quiet yield wake predicate; returns nil when the session has no job
 // manager or no running jobs.
 func sessionRunningJobIDs(s *Session) []string {
 	jm, err := sessionJobManager(s)

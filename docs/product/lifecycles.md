@@ -71,18 +71,21 @@ States: `idle`, `active`, `awaiting`, `closed`. `closed` is terminal.
 `active` returns to `idle` or `awaiting`; `awaiting` returns to `active` when
 the human answers, or to `idle` when autonomous work takes over.
 
-`awaiting` means the next move is owed to a person: a question is pending, or
-the last turn ended on `needs_response` with no autonomous work in flight. A
-plain reply rests `idle`. `WireState` may raise a resting state to `active` when
-the session owns work that can start its next turn without user input.
+The daemon enters `awaiting` when an `ask_user` question is pending. A final
+reply or quiet `communicate({})` rests `idle`. `WireState` may raise a resting
+state to `active` when the session owns work that can start its next turn
+without user input.
 
 ### Thread status
 
 Observed states, no owner transitions: `idle`, `active`, `awaiting`,
-`warning`, `closed`, `notLoaded`, `systemError`, `restartRequired`. Clients
-normalize `closed` to `ended` and `systemError` to `errored` on navigation
-surfaces. `idle` and `systemError` are resting; `systemError` is a failed rest,
-which is why resting is a declared fact rather than a class comparison.
+`warning`, `closed`, `notLoaded`, `systemError`, `restartRequired`. On navigation
+surfaces, a pending question or approval keeps its attention state. Legacy or
+remote wire frames that report `awaiting` without a pending question or approval
+normalize to Idle rather than Needs you. Clients normalize `closed` to `ended`
+and `systemError` to `errored`. `idle` and `systemError` are resting;
+`systemError` is a failed rest, which is why resting is a declared fact rather
+than a class comparison.
 
 ### Turn
 

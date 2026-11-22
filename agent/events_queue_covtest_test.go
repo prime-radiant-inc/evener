@@ -365,7 +365,7 @@ func TestCovDelegateFinish_NilSession(t *testing.T) {
 	const report = "accepted human report"
 	const reply = "generic reported result"
 	sess := &Session{}
-	if !sess.acceptCommunicateTerminal(context.Background(), report, reply, "", nil, "") {
+	if !sess.acceptCommunicateTerminal(context.Background(), report, reply, "", nil) {
 		t.Fatal("terminal report was not accepted")
 	}
 	reported := buildDelegateFinish(sess, reply, nil)
