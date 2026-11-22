@@ -93,7 +93,7 @@ func stmRunRestoreContracts(t *testing.T, program []byte) {
 		completed,
 	}
 
-	if state := deriveRestoredState(history, 0, nil, nil); state != SessionAwaiting {
+	if state, _, _ := deriveRestoredState(history, 0, nil); state != SessionAwaiting {
 		t.Fatalf("completed ask round restored as %q, want %q", state, SessionAwaiting)
 	}
 	pending, isAskRound := deriveRestoredAskPending(history, 0, nil)
@@ -106,7 +106,7 @@ func stmRunRestoreContracts(t *testing.T, program []byte) {
 
 	// A later user input resolves the hold regardless of earlier completed asks.
 	history = append(history, schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("answer")})
-	if state := deriveRestoredState(history, 0, nil, nil); state != SessionIdle {
+	if state, _, _ := deriveRestoredState(history, 0, nil); state != SessionIdle {
 		t.Fatalf("user reply restored as %q, want %q", state, SessionIdle)
 	}
 	if pending, isAskRound := deriveRestoredAskPending(history, 0, nil); isAskRound || len(pending) != 0 {
@@ -120,17 +120,14 @@ func stmRunRestoreContracts(t *testing.T, program []byte) {
 		assistant,
 		stmToolResultsTurn(stmToolResult("ask-valid", "ask_user", true)),
 	}
-	if state := deriveRestoredState(errorOnly, 0, nil, nil); state != SessionIdle {
+	if state, _, _ := deriveRestoredState(errorOnly, 0, nil); state != SessionIdle {
 		t.Fatalf("error-only ask round restored as %q, want %q", state, SessionIdle)
 	}
 	if pending, isAskRound := deriveRestoredAskPending(errorOnly, 0, nil); isAskRound || len(pending) != 0 {
 		t.Fatalf("error-only ask round created pending state: pending=%#v isAskRound=%v", pending, isAskRound)
 	}
 
-	// A generic completed tool round rests idle and never fabricates an
-	// ask-user hold. An input rests awaiting only when the turn-ending
-	// communicate it accepted said needs_response; that call's result carries
-	// the reason in its tool state. An input is the turns sharing a TurnID.
+	// Historical communicate results never manufacture a pending ask.
 	call := func(id, args string) llm.ToolCallData {
 		return llm.ToolCallData{ID: id, Name: "communicate", Arguments: json.RawMessage(args), Type: "function"}
 	}
@@ -153,18 +150,18 @@ func stmRunRestoreContracts(t *testing.T, program []byte) {
 	}{
 		{"plain reply", in("t1", user, stmAssistantTurn(call("c1", done)), stmToolResultsTurn(stmCommunicateResult("c1", "done"))), SessionIdle},
 		{"waiting on work", in("t1", user, stmAssistantTurn(call("c1", done)), stmToolResultsTurn(stmCommunicateResult("c1", "waiting_on_work"))), SessionIdle},
-		{"needs response", in("t1", user, stmAssistantTurn(call("c1", needsResponse)), stmToolResultsTurn(stmCommunicateResult("c1", "needs_response"), stmToolResult("other", "other", false))), SessionAwaiting},
+		{"needs response", in("t1", user, stmAssistantTurn(call("c1", needsResponse)), stmToolResultsTurn(stmCommunicateResult("c1", "needs_response"), stmToolResult("other", "other", false))), SessionIdle},
 		{"needs response that lost the capture", in("t1", user, stmAssistantTurn(call("c1", done), call("c2", needsResponse)), stmToolResultsTurn(stmCommunicateResult("c1", "done"), stmCommunicateResult("c2", ""))), SessionIdle},
 		{"needs response a Stop hook carried past", in("t1",
 			user,
 			stmAssistantTurn(call("c1", needsResponse)), stmToolResultsTurn(stmCommunicateResult("c1", "needs_response")),
 			stmAssistantTurn(call("c2", done)), stmToolResultsTurn(stmCommunicateResult("c2", "")),
-		), SessionAwaiting},
+		), SessionIdle},
 		{"needs response whose hook context failed", in("t1", user, stmAssistantTurn(call("c1", needsResponse)), stmToolResultsTurn(func() llm.ContentPart {
 			part := stmCommunicateResult("c1", "needs_response")
 			part.ToolResult.IsError = true
 			return part
-		}())), SessionAwaiting},
+		}())), SessionIdle},
 		{"an attempt recovery reran under the same TurnID", in("t1",
 			user,
 			stmAssistantTurn(call("c1", needsResponse)), stmToolResultsTurn(stmCommunicateResult("c1", "needs_response")),
@@ -189,7 +186,7 @@ func stmRunRestoreContracts(t *testing.T, program []byte) {
 			stmAssistantTurn(call("c2", done)), stmToolResultsTurn(stmCommunicateResult("c2", "")),
 		}, SessionIdle},
 	} {
-		if state := deriveRestoredState(tc.turns, 0, nil, nil); state != tc.want {
+		if state, _, _ := deriveRestoredState(tc.turns, 0, nil); state != tc.want {
 			t.Fatalf("%s: restored as %q, want %q", tc.name, state, tc.want)
 		}
 		if pending, isAskRound := deriveRestoredAskPending(tc.turns, 0, nil); isAskRound || len(pending) != 0 {

@@ -390,17 +390,13 @@ type Session struct {
 	// LOCK ORDER (outermost first; a lock to the left is taken before any to its
 	// right and never while holding one to its right):
 	//   responseSideEffectsMu > mu          (Close takes both)
-	//   restMu > delegateDeliveryMu > mu
+	//   delegateDeliveryMu > mu
 	//   metaSaveMu > mu                     (maybeAutoSave)
 	//   goalUpdateMu > mu, notesUpdateMu > mu (emit runs after mu is released)
 	// drainAbandonedMu and childCommittedSendMu are leaves: nothing is taken under
 	// them.
 	//
-	// Every field whose comment says "Guarded by mu" (or s.mu) is guarded by mu;
-	// that includes the rest fields restGeneration, restOwedGeneration,
-	// restBeforeInput, quietRestBeforeInput, endReasonBeforeInput and
-	// resumeQuietRest. restMu does not guard those fields: it makes a rest's
-	// transition and its STATUS_SETTLED emit atomic against restGeneration moving.
+	// Every field whose comment says "Guarded by mu" (or s.mu) is guarded by mu.
 	// The group below is the original core set; later fields carry their own
 	// guard in their field comment.
 	//
@@ -893,41 +889,11 @@ type Session struct {
 	// accepted. Unlike comm it survives the next input's reset, so a drain
 	// can restore the report that input erased.
 	latestReport communicateResult
-	// restMu makes a needs_response rest's transition and its STATUS_SETTLED
-	// emit atomic against a turn advancing restGeneration: either the turn
-	// starts first and the rest stays idle, or the announcement reaches the
-	// event feed before anything the turn emits.
-	// LOCK ORDER: restMu > delegateDeliveryMu > mu.
-	restMu sync.Mutex
-	// restGeneration counts turn starts and drain-loop settles. A
-	// needs_response rest arms awaiting only if neither happened during its
-	// quiet period. Guarded by s.mu.
-	restGeneration uint64
 	// restBeforeInput is the resting state the session had when the current
 	// input started, read only by finishNotificationNoop: a notification wake
 	// that turns out to have nothing to deliver runs no turn, so it settles
 	// back to it. Guarded by s.mu.
 	restBeforeInput SessionState
-	// restOwedGeneration is the restGeneration of the settle that last found a
-	// needs_response turn with output (or a wake that resumed its rest),
-	// whether it scheduled the quiet period or something held the session
-	// idle; 0 before any. A fresh
-	// session's restGeneration is 0 too, so 0 never counts as owed. Guarded
-	// by s.mu.
-	restOwedGeneration uint64
-	// quietRestBeforeInput records that the current input started while that
-	// rest was still owed: no turn or settle since, and the session idle. The
-	// input's turn start cancelled it. Guarded by s.mu.
-	quietRestBeforeInput bool
-	// endReasonBeforeInput is the communicate end reason the current input's
-	// turn start reset. A wake that runs no turn puts it back, so the
-	// drain-loop settle reads the end reason of the last turn that ran.
-	// Guarded by s.mu.
-	endReasonBeforeInput string
-	// resumeQuietRest tells the drain-loop settle that a wake which ran no
-	// turn left that cancelled rest standing, so the settle arms it again.
-	// Guarded by s.mu.
-	resumeQuietRest bool
 
 	// terminalCommunicateAccepted latches that a communicate with
 	// end_turn=true completed a turn while TurnEndsProcess: the model has
@@ -2040,7 +2006,7 @@ type communicateResult struct {
 	reply      string
 	output     string // canonical structured output (communicateOutput)
 	structured any    // raw args["output"] object before communicate canonicalization
-	endReason  string // why the terminal call ended the turn (tool.CommunicateEndReasons); "" on a delegate
+	quietEnd   bool   // quiet yield was accepted without capturing a report
 }
 
 // sessionName holds the session's auto-generated display name and its
@@ -3135,12 +3101,17 @@ func (s *Session) communicatedReply() (string, bool) {
 	return s.comm.reply, s.comm.called
 }
 
-// communicateEndReason is why this input's terminal communicate call ended
-// the turn: "" when none was accepted, or on a delegate.
-func (s *Session) communicateEndReason() string {
+// quietlyYielded reports a quiet boundary, not a visible final reply.
+func (s *Session) quietlyYielded() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.comm.endReason
+	return s.comm.quietEnd && !s.comm.called
+}
+
+func (s *Session) recordQuietYield() {
+	s.mu.Lock()
+	s.comm.quietEnd = true
+	s.mu.Unlock()
 }
 
 // acceptCommunicateTerminal is the atomic terminal-result writer for the
@@ -3151,7 +3122,7 @@ func (s *Session) communicateEndReason() string {
 // still-empty structured slot. It returns whether this call won; losers report
 // accepted:false. The stable-delegate lease, when the context carries one, is
 // recorded after the lock is released.
-func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply, output string, structured any, endReason string) bool {
+func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply, output string, structured any) bool {
 	s.mu.Lock()
 	if s.comm.called {
 		s.mu.Unlock()
@@ -3163,7 +3134,6 @@ func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply,
 		reply:      reply,
 		output:     output,
 		structured: structured,
-		endReason:  endReason,
 	}
 	s.latestReport = s.comm
 	s.mu.Unlock()

@@ -2242,7 +2242,7 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 		// The unleased predicate this turn sees is what withholds watch
 		// notices and defers them to a leased generation; the turn itself
 		// credits no attention row.
-		_, err := childSess.ProcessInputKind(withDriveTurn(driveCtx, drive), "", nil, EntryNotification)
+		_, err := childSess.keepingReport(childSess.ProcessInputKind)(withDriveTurn(driveCtx, drive), "", nil, EntryNotification)
 		// A Stop of the delegate (stopDrive) cancelled the turn: that is the
 		// ordinary nonfatal end of a stopped run, so the work the delegate
 		// owns is left alone.
@@ -2628,6 +2628,15 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			needsNudge &&
 			!a.sess.hookStoppedTheInput() &&
 			(err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted))
+		if shouldNudge && err == nil && a.sess.quietlyYielded() {
+			// An explicit quiet yield parks the generation until its owned work
+			// wakes it. The post-drain check still requires its final report.
+			outstanding, workErr := a.sess.treeHasOutstandingWork()
+			if workErr != nil {
+				err = workErr
+			}
+			shouldNudge = !outstanding && workErr == nil
+		}
 		if shouldNudge {
 			nudgeAvailable = false
 			res, err = a.deliverCommunicateNudge(ctx, inputProvenance)

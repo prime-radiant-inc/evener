@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
@@ -73,7 +74,7 @@ func TestWithAllowedDecisions_AddsDecisionWithEnum(t *testing.T) {
 	t.Fatal("communicate tool not found")
 }
 
-func TestWithAllowedDecisions_MakesOutputRequired(t *testing.T) {
+func TestWithAllowedDecisions_KeepsOutputOptional(t *testing.T) {
 	t.Parallel()
 	p := WithAllowedDecisions(NewOpenAIProfile("gpt-5.2"), []string{"pass", "fail"})
 
@@ -81,18 +82,8 @@ func TestWithAllowedDecisions_MakesOutputRequired(t *testing.T) {
 		if td.Name != "communicate" {
 			continue
 		}
-		topRequired, ok := td.Parameters["required"].([]string)
-		if !ok {
-			t.Fatalf("parameters.required not []string: %#v", td.Parameters["required"])
-		}
-		hasOutput := false
-		for _, r := range topRequired {
-			if r == "output" {
-				hasOutput = true
-			}
-		}
-		if !hasOutput {
-			t.Fatal("parameters.required should include output")
+		if required := toStringSlice(td.Parameters["required"]); slices.Contains(required, "output") {
+			t.Fatalf("parameters.required = %v, want output optional", required)
 		}
 		return
 	}
@@ -129,7 +120,7 @@ func TestWithAllowedDecisions_RegistryPreservesDecisionSchema(t *testing.T) {
 		drainSteering:          func() []steeringMessage { return nil },
 		prependSteering:        func([]steeringMessage) {},
 		resultToolName:         func() string { return "communicate" },
-		setCommunicateTerminal: func(context.Context, string, string, string, any, string) bool { return true },
+		setCommunicateTerminal: func(context.Context, string, string, string, any) bool { return true },
 	}
 	_ = registerCommunicateTool(reg, deps)
 
@@ -194,7 +185,7 @@ func TestWithCommunicateOutputSchema_ReplacesOutput(t *testing.T) {
 	t.Fatal("communicate tool not found")
 }
 
-func TestWithCommunicateOutputSchema_MakesOutputRequired(t *testing.T) {
+func TestWithCommunicateOutputSchema_KeepsOutputOptional(t *testing.T) {
 	t.Parallel()
 	schema := map[string]any{
 		"type":       "object",
@@ -206,15 +197,8 @@ func TestWithCommunicateOutputSchema_MakesOutputRequired(t *testing.T) {
 		if td.Name != "communicate" {
 			continue
 		}
-		topRequired := toStringSlice(td.Parameters["required"])
-		hasOutput := false
-		for _, r := range topRequired {
-			if r == "output" {
-				hasOutput = true
-			}
-		}
-		if !hasOutput {
-			t.Fatalf("parameters.required=%v, should include output", topRequired)
+		if required := toStringSlice(td.Parameters["required"]); slices.Contains(required, "output") {
+			t.Fatalf("parameters.required = %v, want output optional", required)
 		}
 		return
 	}
@@ -345,16 +329,8 @@ func TestWithAllowedDecisions_WithOutputSchema_BothApplied(t *testing.T) {
 			t.Fatal("user-supplied plan_doc must survive WithAllowedDecisions")
 		}
 
-		// Output must be required at top level.
-		topReq := toStringSlice(td.Parameters["required"])
-		hasOutput := false
-		for _, r := range topReq {
-			if r == "output" {
-				hasOutput = true
-			}
-		}
-		if !hasOutput {
-			t.Fatal("parameters.required should include output")
+		if required := toStringSlice(td.Parameters["required"]); slices.Contains(required, "output") {
+			t.Fatalf("parameters.required = %v, want output optional", required)
 		}
 		return
 	}

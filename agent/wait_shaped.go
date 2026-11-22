@@ -22,7 +22,7 @@ func (e waitRefusalError) Error() string        { return tool.ParkPrefix + e.tex
 func (e waitRefusalError) Is(target error) bool { return target == errWaitRefused }
 
 func (s *Session) waitRefusal(what string) error {
-	return waitRefusalError{what + " " + tool.EndTurnToWait(s.resultToolName(), s.hasHumanPartnerToAsk())}
+	return waitRefusalError{what + " " + tool.EndTurnToWait(s.resultToolName())}
 }
 
 // jobStatusPolls remembers, per target, the state a job_status call last

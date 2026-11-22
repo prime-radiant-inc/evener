@@ -39,30 +39,20 @@ import (
 
 func TestRouteNoToolCalls(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		name              string
-		kind              EntryKind
-		priorToolActivity bool
-		noContent         bool
-		afterTerminal     bool
-		want              noCallsRoute
+	for _, tt := range []struct {
+		kind          EntryKind
+		afterTerminal bool
+		want          noCallsRoute
 	}{
-		{name: "notification acknowledgement before tool activity", kind: EntryNotification, want: finishIdle},
-		{name: "notification bare text after prior tool activity", kind: EntryNotification, priorToolActivity: true, want: runNoToolCalls},
-		{name: "notification silence", kind: EntryNotification, noContent: true, want: runNoToolCalls},
-		{name: "notification silence after terminal", kind: EntryNotification, noContent: true, afterTerminal: true, want: finishIdle},
-		{name: "notification silence after terminal and prior tools", kind: EntryNotification, priorToolActivity: true, noContent: true, afterTerminal: true, want: finishIdle},
-		{name: "notification bare text after terminal and prior tools", kind: EntryNotification, priorToolActivity: true, afterTerminal: true, want: finishIdle},
-		{name: "user input", kind: EntryUserInput, want: runNoToolCalls},
-		{name: "continuation", kind: EntryContinuation, want: runNoToolCalls},
-		{name: "delegate attention", kind: EntryDelegateAttention, want: runNoToolCalls},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := routeNoToolCalls(tt.kind, tt.priorToolActivity, tt.noContent, tt.afterTerminal); got != tt.want {
-				t.Fatalf("routeNoToolCalls() = %v, want %v", got, tt.want)
-			}
-		})
+		{EntryNotification, false, runNoToolCalls},
+		{EntryNotification, true, finishIdle},
+		{EntryUserInput, true, runNoToolCalls},
+		{EntryContinuation, false, runNoToolCalls},
+		{EntryDelegateAttention, false, runNoToolCalls},
+	} {
+		if got := routeNoToolCalls(tt.kind, tt.afterTerminal); got != tt.want {
+			t.Fatalf("routeNoToolCalls(%v, %v) = %v, want %v", tt.kind, tt.afterTerminal, got, tt.want)
+		}
 	}
 }
 
@@ -99,11 +89,11 @@ func TestDelegateTerminalCommunicateMarksGenerationEvidence(t *testing.T) {
 	}
 }
 
-func TestDelegateResourceSupervision_AttentionBareTextRecordsExplicitNoAction(t *testing.T) {
+func TestDelegateResourceSupervision_AttentionQuietYieldRecordsExplicitNoAction(t *testing.T) {
 	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
-		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("nothing to do")} },
+		func(llm.Request) llm.Response { return quietYieldResponse("attention-quiet", `{}`) },
 	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
@@ -115,10 +105,10 @@ func TestDelegateResourceSupervision_AttentionBareTextRecordsExplicitNoAction(t 
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	snapshot := <-snapshots
 	if snapshot.requirement != delegateCompletionAttentionOnly || snapshot.outcome != delegateCompletionOutcomeAttentionNoAction || snapshot.terminalSeen {
-		t.Fatalf("bare attention evidence = %#v, want explicit attention no-action", snapshot)
+		t.Fatalf("quiet attention evidence = %#v, want explicit attention no-action", snapshot)
 	}
 	if got := supervisionRequestCount(fixture.adapter); got != 2 {
-		t.Fatalf("provider requests = %d, want warm report plus one bare attention response", got)
+		t.Fatalf("provider requests = %d, want warm report plus one quiet attention response", got)
 	}
 }
 
@@ -134,7 +124,7 @@ func TestDelegateResourceSupervision_AttentionFollowUpRequiresReport(t *testing.
 			if err := root.subagents.get(fixture.childID).sess.Enqueue(context.Background(), "queued follow-up work"); err != nil {
 				t.Fatal(err)
 			}
-			return llm.Response{Message: llm.Assistant("attention requires no action")}
+			return quietYieldResponse("attention-quiet", `{}`)
 		},
 		bare, bare, bare, bare,
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("follow-up report") },
@@ -236,7 +226,7 @@ func TestDelegateResourceSupervision_CommittedAttentionStartRefusesASecondTurn(t
 			if err := root.subagents.get(fixture.childID).sess.Enqueue(context.Background(), "queued follow-up work"); err != nil {
 				t.Fatal(err)
 			}
-			return llm.Response{Message: llm.Assistant("attention requires no action")}
+			return quietYieldResponse("attention-quiet", `{}`)
 		},
 		bare, bare, bare, bare,
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("follow-up report") },
@@ -673,19 +663,10 @@ func TestDelegateResourceSupervision_NotificationDriveIsAnUnleasedInputTurn(t *t
 		t.Fatal("the child is not the unleased stable-turn case this contract describes")
 	}
 
-	// The drive turn answers with bare text, which finishes a notification turn
-	// idle (routeNoToolCalls). That makes its provider-request boundary exact:
-	// exactly one request belongs to the drive turn, so the assertions below
-	// cover the whole turn rather than its first round.
-	const driveAck = "noted the completion"
+	// The drive quietly acknowledges the ordinary completion in one round.
 	adapter.mu.Lock()
 	adapter.streamScript = func(st *llm.ChanStream) {
-		st.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: "t0"})
-		st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: "t0", Delta: driveAck})
-		resp := llm.Response{
-			Message: llm.Assistant(driveAck),
-			Finish:  llm.FinishReason{Reason: llm.FinishReasonStop},
-		}
+		resp := quietYieldResponse("drive-quiet", `{}`)
 		st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &resp.Finish, Usage: &resp.Usage, Response: &resp})
 	}
 	adapter.mu.Unlock()
@@ -864,7 +845,7 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedAt
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response {
-			return llm.Response{Message: llm.Assistant("attention requires no action")}
+			return quietYieldResponse("attention-quiet", `{}`)
 		},
 	})
 	root := restoreSupervisionRoot(t, fixture, nil)
@@ -950,7 +931,7 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesBoth(t *t
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response {
-			return llm.Response{Message: llm.Assistant("attention requires no action")}
+			return quietYieldResponse("attention-quiet", `{}`)
 		},
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("drained notification") },
 	})
@@ -1173,7 +1154,7 @@ func TestDelegateResourceSupervision_AttentionGoalContinuationRequiresReport(t *
 			if err != nil || started {
 				t.Errorf("SetGoal during attention = started:%t err:%v, want deferred", started, err)
 			}
-			return llm.Response{Message: llm.Assistant("attention requires no action")}
+			return quietYieldResponse("attention-quiet", `{}`)
 		},
 		bare, bare, bare, bare,
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("continuation report") },
@@ -1212,10 +1193,10 @@ func TestDelegateResourceSupervision_AttentionNotificationRemainsNoAction(t *tes
 				JobID:  "system-only",
 				Status: jobNotificationEventWatch,
 			})
-			return llm.Response{Message: llm.Assistant("attention requires no action")}
+			return quietYieldResponse("attention-quiet", `{}`)
 		},
 		func(llm.Request) llm.Response {
-			return llm.Response{Message: llm.Assistant("notification acknowledged")}
+			return quietYieldResponse("notification-quiet", `{}`)
 		},
 	})
 	root = restoreSupervisionRoot(t, fixture, nil)
@@ -1240,11 +1221,11 @@ func TestDelegateResourceSupervision_AttentionNotificationRemainsNoAction(t *tes
 	}
 }
 
-func TestDelegateResourceSupervision_BareShellAttentionCompletesNoActionWithoutSecondReport(t *testing.T) {
+func TestDelegateResourceSupervision_QuietShellAttentionCompletesNoActionWithoutSecondReport(t *testing.T) {
 	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
-		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("nothing to do")} },
+		func(llm.Request) llm.Response { return quietYieldResponse("attention-quiet", `{}`) },
 	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
@@ -1254,7 +1235,7 @@ func TestDelegateResourceSupervision_BareShellAttentionCompletesNoActionWithoutS
 	waitForStableSupervisionRun(t, root, fixture.childID)
 
 	if got := supervisionRequestCount(fixture.adapter); got != 2 {
-		t.Fatalf("provider requests = %d, want warm report plus one bare shell-attention response", got)
+		t.Fatalf("provider requests = %d, want warm report plus one quiet shell-attention response", got)
 	}
 	stored := loadStableShellRecord(t, sub.sess.jobManager, shell.JobID)
 	attentionID := stableShellAttentionID(shell.JobID, stored.TerminalGen)
@@ -1379,9 +1360,10 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 		assertSingleRecoveryNudge(t, fixture.adapter)
 	})
 
-	t.Run("notification yield cannot return cleanly without one bounded recovery nudge", func(t *testing.T) {
+	t.Run("a reportless notification cannot return cleanly without one bounded recovery nudge", func(t *testing.T) {
 		fixture := newColdDelegateFixture(t, "")
 		var root *Session
+		bare := func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("not reporting yet")} }
 		nudgeUpdate := make(chan bool, 1)
 		fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response {
@@ -1393,8 +1375,9 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 				return agenttest.CommunicateResponse(false, "work before notification")
 			},
 			func(llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("notification acknowledged")}
+				return quietYieldResponse("dead-wait", `{}`)
 			},
+			bare, bare, bare, bare,
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered") },
 		})
 		root = restoreSupervisionRoot(t, fixture, nil)
@@ -1461,7 +1444,7 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 		}
 		fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
-			func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("attention no action")} },
+			func(llm.Request) llm.Response { return quietYieldResponse("attention-quiet", `{}`) },
 			bare, bare, bare, bare,
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered after hook") },
 		})
@@ -1477,7 +1460,7 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 		fixture := newColdDelegateFixture(t, "")
 		fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
-			func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("attention no action")} },
+			func(llm.Request) llm.Response { return quietYieldResponse("attention-quiet", `{}`) },
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered after context") },
 		})
 		root := restoreSupervisionRoot(t, fixture, nil)
@@ -1495,6 +1478,7 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 	t.Run("post-drain owner steering cannot return cleanly without one bounded recovery nudge", func(t *testing.T) {
 		fixture := newColdDelegateFixture(t, "")
 		var root *Session
+		bare := func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("not reporting yet")} }
 		fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response {
 				sub := root.subagents.get(fixture.childID)
@@ -1502,8 +1486,9 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 				return agenttest.CommunicateResponse(false, "handoff")
 			},
 			func(llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("post-drain notification acknowledged")}
+				return quietYieldResponse("dead-wait", `{}`)
 			},
+			bare, bare, bare, bare,
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered") },
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("steering handled") },
 		})
@@ -1552,7 +1537,7 @@ func TestDelegateResourceSupervision_PostAcknowledgementAttentionBeforeRelease(t
 			fixture := newColdDelegateFixture(t, "")
 			fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 				func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
-				func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("attention no action")} },
+				func(llm.Request) llm.Response { return quietYieldResponse("attention-quiet", `{}`) },
 			})
 			for range tc.bareContinuations {
 				fixture.adapter.appendSteps(func(llm.Request) llm.Response {
@@ -4320,7 +4305,7 @@ func TestWaitForStableSupervisionRunOutlastsDeferredAttentionDrive(t *testing.T)
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response {
-			return llm.Response{Message: llm.Assistant("attention requires no action")}
+			return quietYieldResponse("attention-quiet", `{}`)
 		},
 	})
 	root := restoreSupervisionRoot(t, fixture, nil)
@@ -4357,7 +4342,7 @@ func TestSupervisionRootDrivesAttentionTheChildDropped(t *testing.T) {
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response {
-			return llm.Response{Message: llm.Assistant("attention requires no action")}
+			return quietYieldResponse("attention-quiet", `{}`)
 		},
 	})
 	root := restoreSupervisionRoot(t, fixture, nil)
@@ -4427,7 +4412,7 @@ func TestDelegateResourceSupervision_AttentionRefusedOnAHeldGuardIsRedriven(t *t
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("second result") },
 		func(llm.Request) llm.Response {
-			return llm.Response{Message: llm.Assistant("attention requires no action")}
+			return quietYieldResponse("attention-quiet", `{}`)
 		},
 	})
 	root := restoreSupervisionRoot(t, fixture, nil)
@@ -4476,7 +4461,7 @@ func TestDelegateResourceSupervision_AttentionRedriveThatLosesStops(t *testing.T
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("second result") },
 		func(llm.Request) llm.Response {
-			return llm.Response{Message: llm.Assistant("attention requires no action")}
+			return quietYieldResponse("attention-quiet", `{}`)
 		},
 	})
 	root := restoreSupervisionRoot(t, fixture, nil)
@@ -4534,10 +4519,10 @@ func TestDelegateResourceSupervision_AttentionRefusedOnANotificationTurnIsRedriv
 		func(llm.Request) llm.Response {
 			close(inTurn)
 			<-endTurn
-			return llm.Response{Message: llm.Assistant("noted the finished job")}
+			return quietYieldResponse("drive-ack", `{}`)
 		},
 		func(llm.Request) llm.Response {
-			return llm.Response{Message: llm.Assistant("attention requires no action")}
+			return quietYieldResponse("attention-quiet", `{}`)
 		},
 	})
 	root := restoreSupervisionRoot(t, fixture, nil)

@@ -14,22 +14,19 @@ import (
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
 // A recovery rerun runs a crashed input again under its TurnID without
 // recording its user input again, so only the transcript's reopen marker
-// separates its rounds from the crashed attempt's. Restore reads an end
-// reason from the latest attempt alone: a rerun that failed before accepting
-// a communicate rests idle, as it did live, even though the crashed attempt
-// accepted one that said needs_response.
-func TestRestoreReadsTheEndReasonOfTheLatestAttemptOnly(t *testing.T) {
+// separates its rounds from the crashed attempt. A failed rerun without a
+// pending ask rests idle both live and after restore.
+func TestRestoreRerunAfterStopBlockRestsIdle(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 
-	// The first attempt accepts a needs_response communicate; a Stop hook
+	// The first attempt offers a visible reply; a Stop hook
 	// sends the input on, and the process dies with the next round in flight.
 	inSecondRound := make(chan struct{})
 	var calls atomic.Int32
@@ -40,7 +37,7 @@ func TestRestoreReadsTheEndReasonOfTheLatestAttemptOnly(t *testing.T) {
 			return llm.Response{Message: llm.Assistant("a name")}, nil
 		}
 		if calls.Add(1) == 1 {
-			return endReasonResponse("which?", "needs_response"), nil
+			return quietYieldResponse("blocked", `{"message":"which?"}`), nil
 		}
 		close(inSecondRound)
 		<-ctx.Done()
@@ -127,24 +124,4 @@ func restoreReopenSession(t *testing.T, dir, id string, adapter *sessionScriptAd
 	}
 	t.Cleanup(restored.Close)
 	return restored
-}
-
-// A reopen recorded before the compaction anchor resume starts from puts the
-// whole retained window in the latest attempt: its start clamps to the
-// window's first turn rather than an index before it.
-func TestLatestAttemptStartsClampsAReopenBeforeTheRetainedWindow(t *testing.T) {
-	t.Parallel()
-	entry := func(kind schema.TurnKind) transcript.Entry {
-		return transcript.Entry{Turn: schema.Turn{Kind: kind, TurnID: "t1"}}
-	}
-	entries := []transcript.Entry{
-		entry(schema.TurnUserInput),
-		entry(schema.TurnReopen),
-		entry(schema.TurnAssistant),
-		entry(schema.TurnSummary),
-		entry(schema.TurnToolResults),
-	}
-	if got := latestAttemptStarts(entries, nil, supersededDelegateAttentionIDs(entries))["t1"]; got != 0 {
-		t.Fatalf("latest attempt start = %d, want 0, the retained window's first turn", got)
-	}
 }

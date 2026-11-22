@@ -109,16 +109,8 @@ func fuzzExactState(t *testing.T) {
 		stmAssistantTurn(llm.ToolCallData{ID: "c1", Name: "communicate", Arguments: json.RawMessage(`{"message":"which?","end_turn":true,"end_reason":"needs_response"}`), Type: "function"}),
 		stmToolResultsTurn(stmCommunicateResult("c1", "needs_response")),
 	}
-	restored := &Session{state: SessionIdle, history: needsResponse}
-	restored.recomputeRestoredState(0, nil)
-	if restored.state != SessionAwaiting {
-		t.Fatalf("restored state = %q", restored.state)
-	}
-	restored = &Session{state: SessionIdle, history: needsResponse}
-	restored.enqueueJobNotification(jobNotification{JobID: "pending"})
-	restored.recomputeRestoredState(0, nil)
-	if restored.state != SessionIdle {
-		t.Fatalf("autonomous restored state = %q", restored.state)
+	if state, _, _ := deriveRestoredState(needsResponse, 0, nil); state != SessionIdle {
+		t.Fatalf("legacy reply restored state = %q, want idle", state)
 	}
 }
 

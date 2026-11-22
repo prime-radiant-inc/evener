@@ -117,7 +117,7 @@ func TestPrepareToolCall_CommunicateOutputExampleShowsFullShape(t *testing.T) {
 	// `decision` is enum-constrained, so the fill must not invent a value for
 	// it; the call must be rejected with the missing key named.
 	outProps["decision"] = map[string]any{"type": "string", "enum": []string{"approved", "rejected"}}
-	outputSchema["required"] = append(outputSchema["required"].([]string), "decision")
+	outputSchema["required"] = []string{"decision"}
 	if err := reg.Register(regTool(llm.ToolDefinition{Name: "communicate", Description: "d", Parameters: params})); err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -173,12 +173,12 @@ func TestPrepareToolCall_CustomOutputSchemaNotSilentlyFilled(t *testing.T) {
 // TestExplainSchemaError_CommunicateOutputNamesMissingNestedKey pins the
 // model-facing message for the issue #627 failure shape: a present `output`
 // object that omits a nested required property must be explained as exactly
-// that — never as a wrong type or value on `output` itself. Uses the real
-// DefCommunicateNamed parameters (not a hand-mirrored schema) so drift in
-// definitions.go fails here.
+// that — never as a wrong type or value on `output` itself. Use the
+// default envelope with an explicit constraint, like a custom result schema.
 func TestExplainSchemaError_CommunicateOutputNamesMissingNestedKey(t *testing.T) {
 	t.Parallel()
 	params := tool.DefCommunicateNamed("communicate").Parameters
+	params["properties"].(map[string]any)["output"].(map[string]any)["required"] = []string{"message"}
 	msg := repair.ExplainSchemaError("communicate", params, issue627ArgsMap(), "output", "required")
 	if strings.Contains(msg, "wrong type or value") {
 		t.Fatalf("present output object misreported as wrong type or value (issue #627): %q", msg)
@@ -194,17 +194,15 @@ func TestExplainSchemaError_CommunicateOutputNamesMissingNestedKey(t *testing.T)
 // TestExplainSchemaError_ExampleShowsNestedOutputShape pins the Example tail:
 // for a schema whose required `output` property is itself an object with
 // required keys, the example must show that nested shape rather than a bare
-// `{}` — the recovery hint the issue reports as incomplete. It also guards
-// the shared schema against mutation: DefCommunicateNamed stores the nested
-// required list as a []string, which asStringSlice returns by reference, so
-// an example renderer that sorts it in place would corrupt
-// t.Definition.Parameters for every later message (and across registry
-// clones that share it).
+// `{}`. It also checks that rendering does not sort the caller's
+// required list in place.
 func TestExplainSchemaError_ExampleShowsNestedOutputShape(t *testing.T) {
 	t.Parallel()
 	params := tool.DefCommunicateNamed("communicate").Parameters
 	outputSchema := params["properties"].(map[string]any)["output"].(map[string]any)
-	required, _ := outputSchema["required"].([]string)
+	required := []string{"message", "data", "artifacts"}
+	params["required"] = []string{"output"}
+	outputSchema["required"] = required
 	before := strings.Join(required, ",")
 
 	msg := repair.ExplainSchemaError("communicate", params, issue627ArgsMap(), "output", "required")
@@ -218,7 +216,7 @@ func TestExplainSchemaError_ExampleShowsNestedOutputShape(t *testing.T) {
 
 // TestPrepareToolCall_SameShapeNonResultToolNotFilled pins the identity half
 // of the fill gate: a tool that is NOT the session's result tool keeps its
-// envelope-shaped required output failing loudly, even when its schema is
+// envelope-shaped output unchanged, even when its schema is
 // byte-identical to the default communicate envelope. The fill is a property
 // of the result tool's documented contract, not of any schema that happens to
 // share its shape (an MCP or plugin tool could plausibly look like this).
@@ -235,11 +233,8 @@ func TestPrepareToolCall_SameShapeNonResultToolNotFilled(t *testing.T) {
 		Arguments: json.RawMessage(`{"end_turn":true,"message":"m","output":{"data":{"a":1}}}`)}
 	// The session's result tool is communicate, not submit_report.
 	res := prepareToolCall(call, rt, []string{"submit_report"}, "submit_report", "communicate", "")
-	if res.PrevalErr == "" {
-		t.Fatalf("envelope-shaped schema on a non-result tool was silently filled: changes %+v args %s", res.Changes, res.Call.Arguments)
-	}
-	if !strings.Contains(res.PrevalErr, "output.message") {
-		t.Fatalf("error does not name the missing envelope key: %s", res.PrevalErr)
+	if res.PrevalErr != "" || len(res.Changes) != 0 || string(res.Call.Arguments) != string(call.Arguments) {
+		t.Fatalf("non-result tool changed: %+v", res)
 	}
 }
 
@@ -256,7 +251,7 @@ func TestPrepareToolCall_SupersetEnvelopeNotFilled(t *testing.T) {
 	outputSchema := props["output"].(map[string]any)
 	outProps := outputSchema["properties"].(map[string]any)
 	outProps["decision"] = map[string]any{"type": "string", "enum": []string{"approved", "rejected"}}
-	outputSchema["required"] = append(outputSchema["required"].([]string), "decision")
+	outputSchema["required"] = []string{"decision"}
 
 	if usesDefaultCommunicateOutputEnvelope(llm.ToolDefinition{Parameters: params}) {
 		t.Fatal("superset envelope must not match the default envelope predicate")
@@ -281,7 +276,7 @@ func TestPrepareToolCall_SupersetEnvelopeNotFilled(t *testing.T) {
 
 // TestPrepareToolCall_FillNotRecordedWhenValidationStillFails pins the
 // telemetry contract: the fill is committed only when validation passes. A
-// call that still fails after filling (here: end_turn missing) must report
+// call that still fails after filling (here: end_turn has the wrong type) must report
 // zero changes, so no ToolCallRepaired event claims arguments bytes that were
 // never applied.
 func TestPrepareToolCall_FillNotRecordedWhenValidationStillFails(t *testing.T) {
@@ -289,10 +284,10 @@ func TestPrepareToolCall_FillNotRecordedWhenValidationStillFails(t *testing.T) {
 	_, rt := registerCommunicateForIssue627(t)
 
 	call := llm.ToolCallData{ID: "r2-phantom", Name: "communicate",
-		Arguments: json.RawMessage(`{"message":"m","output":{"data":{"a":1}}}`)}
+		Arguments: json.RawMessage(`{"end_turn":{"invalid":true},"message":"m","output":{"data":{"a":1}}}`)}
 	res := prepareToolCall(call, rt, []string{"communicate"}, "communicate", "communicate", "")
 	if res.PrevalErr == "" {
-		t.Fatal("expected validation failure (end_turn missing)")
+		t.Fatal("expected validation failure for invalid end_turn")
 	}
 	if len(res.Changes) != 0 {
 		t.Fatalf("phantom ToolCallRepaired changes recorded for a call that failed validation: %+v", res.Changes)

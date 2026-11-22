@@ -671,23 +671,24 @@ func (s *Session) drainPostToolWatchSends(ctx context.Context) (watchSendDrainRe
 // stronger stop than a hook's veto, since a Blocked result would force the
 // model to answer its own questions and a persistent one would exhaust the
 // round cap and strand the session idle instead of awaiting. Stop hooks are
-// still consulted for a communicate-only boundary, exactly as before. It
+// still consulted for a visible communicate-only boundary, not a quiet yield. It
 // returns done=false when nothing was delivered and no ask was posted, or a
 // Stop hook blocked a communicate-only completion, meaning the turn should
 // continue to the next round.
 func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool) (done bool, text string, err error) {
 	s.mu.Lock()
 	delivered := s.comm.called
+	quiet := s.comm.quietEnd && !delivered
 	text = s.comm.reply
 	s.mu.Unlock()
 	stopHookActive := s.stopHookActive.Load()
-	if !delivered && !askedThisRound {
+	if !delivered && !quiet && !askedThisRound {
 		return false, "", nil
 	}
 	boundaryState := SessionIdle
 	if askedThisRound {
 		boundaryState = SessionAwaiting
-	} else if s.hookRunner != nil {
+	} else if !quiet && s.hookRunner != nil {
 		// Stop hooks (communicate-only boundary; not consulted at an ask
 		// boundary — spec §5.1/§5.5).
 		hi := s.hookInput(plugin.HookStop)

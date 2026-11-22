@@ -193,9 +193,9 @@ func (s *Session) composeHubRegistry() {
 		if base != nil {
 			registered = *base
 		} else if name == "job_list" {
-			registered.Definition = tool.DefJobListNamed(s.resultToolName(), s.hasHumanPartnerToAsk())
+			registered.Definition = tool.DefJobListNamed(s.resultToolName())
 		} else if name == "job_status" {
-			registered.Definition = tool.DefJobStatusNamed(s.resultToolName(), s.hasHumanPartnerToAsk())
+			registered.Definition = tool.DefJobStatusNamed(s.resultToolName())
 		} else {
 			continue
 		}

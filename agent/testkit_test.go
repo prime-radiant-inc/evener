@@ -44,21 +44,10 @@ type sessionOpts struct {
 	cfgSet              bool
 	stateDir            string
 	environmentSnapshot bool
-	immediateRest       bool
 	clock               clock.Clock
 }
 
 type sessionOpt func(*sessionOpts)
-
-// withImmediateRest drops the needs_response quiet period, so a turn that
-// ended on needs_response rests awaiting at the settle itself.
-func withImmediateRest() sessionOpt { return func(o *sessionOpts) { o.immediateRest = true } }
-
-// immediateRestConfig is testConfig with the needs_response quiet period
-// dropped, for tests that build a SessionConfig literal.
-func immediateRestConfig() testConfig {
-	return testConfig{needsResponseQuietPeriod: new(time.Duration)}
-}
 
 // minimalTestSessionConfig is newTestSession's fixture configuration: the
 // smallest deterministic session that still runs the real init path.
@@ -170,9 +159,6 @@ func newSession(t *testing.T, opts ...sessionOpt) *Session {
 		cfg.StateDir = o.stateDir
 	}
 	cfg.testOnly.skipGitSnapshot = !o.environmentSnapshot
-	if o.immediateRest {
-		cfg.testOnly.needsResponseQuietPeriod = new(time.Duration)
-	}
 	if o.clock != nil {
 		cfg.clock = o.clock
 	}

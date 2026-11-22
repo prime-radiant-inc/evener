@@ -80,9 +80,6 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 		resultToolDef = existing.Definition
 		resultToolDef.Name = resultToolName
 	}
-	if deps.offersEndReason {
-		resultToolDef = tool.WithCommunicateEndReason(resultToolDef)
-	}
 	if err := reg.Register(tool.RegisteredTool{
 		Definition:    resultToolDef,
 		OmitIntent:    true,
@@ -96,30 +93,48 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 			if v, ok := args["message"]; ok {
 				message = strings.TrimSpace(fmt.Sprint(v))
 			}
-			endTurn, ok := args["end_turn"].(bool)
-			if !ok {
-				return nil, errors.New("communicate requires end_turn")
+			endTurn := true
+			if v, ok := args["end_turn"].(bool); ok {
+				endTurn = v
 			}
-			// The registry's schema has already held end_reason to its enum.
-			endReason := ""
-			if endTurn && deps.offersEndReason {
-				endReason, _ = args["end_reason"].(string)
-				if endReason == "" {
-					endReason = tool.CommunicateEndReasonDone
-				}
-			}
-
-			originalOutput := normalizeNodeOutput(args["output"])
-			if message == "" && strings.TrimSpace(originalOutput.Message) != "" {
+			rawOutput, outputPresent := args["output"]
+			structuredRequired := requiresStructuredFinalOutput(resultToolDef)
+			originalOutput := normalizeNodeOutput(rawOutput)
+			if message == "" && !structuredRequired {
 				message = strings.TrimSpace(originalOutput.Message)
 			}
-			if message == "" {
-				return nil, errors.New("communicate requires message or output.message")
-			}
 			explicitNodeOutput := hasMeaningfulNodeOutput(originalOutput)
-			rawOutput, outputPresent := args["output"]
-			usesCustomOutputSchema := !usesDefaultCommunicateOutputEnvelope(resultToolDef)
-			explicitStructuredOutput := explicitNodeOutput || (outputPresent && usesCustomOutputSchema) || hasMeaningfulRawOutput(rawOutput)
+			meaningfulOutput := explicitNodeOutput || hasMeaningfulRawOutput(rawOutput)
+			if structuredRequired {
+				meaningfulOutput = outputPresent
+			}
+			if message == "" {
+				if !endTurn {
+					return nil, errors.New("communicate with end_turn=false requires a non-empty message")
+				}
+				if meaningfulOutput {
+					return nil, errors.New("communicate with output requires a non-empty message")
+				}
+				if err := deps.abort(ctx); err != nil {
+					return nil, err
+				}
+				if deps.canQuietlyYield == nil {
+					return nil, errQuietYieldWithoutWake
+				}
+				if err := deps.canQuietlyYield(ctx); err != nil {
+					return nil, err
+				}
+				deps.recordQuietYield()
+				inbox := drainCommunicateInbox(deps)
+				accepted := true
+				b, _ := json.Marshal(map[string]any{"accepted": true, "end_turn": true, "quiet": true, "inbox": inbox})
+				return tool.StateResult{Output: string(b), State: communicateEndState{
+					Accepted: &accepted, EndTurn: &accepted, Quiet: &accepted,
+				}}, nil
+			}
+			if endTurn && structuredRequired && !outputPresent {
+				return nil, errors.New("communicate requires output on a final reply with a result schema or allowed decisions")
+			}
 			effectiveOutput := originalOutput
 			if strings.TrimSpace(effectiveOutput.Message) == "" {
 				effectiveOutput.Message = message
@@ -132,16 +147,11 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 			if err := deps.abort(ctx); err != nil {
 				return nil, err
 			}
-			if endTurn && endReason == tool.CommunicateEndReasonWaitingOnWork &&
-				deps.wakeableWork != nil && !deps.wakeableWork() {
-				return nil, errors.New("end_reason waiting_on_work requires work that will wake this session; none is pending: end with done if the work is finished, needs_response if your partner must act, or start the work or arm a watch before ending the turn")
-			}
 
 			if err := deps.deliverCommunicate(events.CommunicateData{
-				CallID:    callIDFromContext(ctx),
-				EndTurn:   endTurn,
-				Message:   message,
-				EndReason: endReason,
+				CallID:  callIDFromContext(ctx),
+				EndTurn: endTurn,
+				Message: message,
 			}); err != nil {
 				// The transcript refused the entry (a poisoned or closed
 				// writer, or a served session failing closed): nothing
@@ -161,26 +171,7 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 
 			inbox := []string{}
 			if endTurn {
-				// Drain daemon-authored steering context into the terminal inbox.
-				// Client-authored steering remains durable pending work for
-				// wakeForPendingSteering and the steering carrier: incorporating
-				// it into a result that ends the turn would create a durable
-				// transcript item without a model request that can act on it.
-				// The inbox is text-only in the wire shape, so image-bearing
-				// daemon entries are also appended as TurnSteering to keep their
-				// ContentImage parts available to the next model round.
-				drained := deps.drainSteering()
-				inbox = make([]string, 0, len(drained))
-				var deferred []steeringMessage
-				for _, msg := range drained {
-					if strings.TrimSpace(msg.Text) != "" {
-						inbox = append(inbox, msg.Text)
-					}
-					if len(msg.Images) > 0 {
-						deferred = append(deferred, msg)
-					}
-				}
-				deps.prependSteering(deferred)
+				inbox = drainCommunicateInbox(deps)
 			}
 
 			// end_turn=false calls never reach the terminal capture, so they stay
@@ -193,13 +184,13 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 				// terminal call can never pair its structured value with this
 				// call's message — and a losing call reports accepted:false.
 				var capturedOutput any
-				if explicitStructuredOutput {
+				if meaningfulOutput {
 					capturedOutput = rawOutput
 					if capturedOutput == nil && outputPresent {
 						capturedOutput = json.RawMessage(`null`)
 					}
 				}
-				accepted = deps.setCommunicateTerminal(ctx, message, resultText, structuredText, capturedOutput, endReason)
+				accepted = deps.setCommunicateTerminal(ctx, message, resultText, structuredText, capturedOutput)
 			}
 
 			resp := map[string]any{
@@ -223,7 +214,7 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 			// output: the registry may truncate the latter before transcript
 			// persistence. The result remains linked to this call by ToolCallID.
 			return tool.StateResult{Output: string(b), State: communicateEndState{
-				Accepted: &accepted, EndTurn: &endTurn, EndReason: endReason,
+				Accepted: &accepted, EndTurn: &endTurn,
 			}}, nil
 		},
 	}); err != nil {
@@ -240,6 +231,66 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 		reg.Remove(tool.DefaultResultToolName)
 	}
 	return nil
+}
+
+// drainCommunicateInbox drains daemon-authored steering into a terminal inbox.
+// Client-authored steering remains durable for the next wake. The inbox is
+// text-only, so daemon entries with images are also carried to the next round.
+func drainCommunicateInbox(deps *toolDeps) []string {
+	drained := deps.drainSteering()
+	inbox := make([]string, 0, len(drained))
+	var deferred []steeringMessage
+	for _, msg := range drained {
+		if strings.TrimSpace(msg.Text) != "" {
+			inbox = append(inbox, msg.Text)
+		}
+		if len(msg.Images) > 0 {
+			deferred = append(deferred, msg)
+		}
+	}
+	deps.prependSteering(deferred)
+	return inbox
+}
+
+var errQuietYieldWithoutWake = errors.New("Nothing can wake this turn. Start the work or arm a watch before yielding, or send your final reply with communicate(message=...).")
+
+type communicateEntryKindKey struct{}
+
+func (s *Session) canQuietlyYield(ctx context.Context) error {
+	kind, _ := ctx.Value(communicateEntryKindKey{}).(EntryKind)
+	if !s.reportsToParent() {
+		if kind == EntryNotification || s.communicated() || s.hasWakeableWork() {
+			return nil
+		}
+		return errQuietYieldWithoutWake
+	}
+	if s.communicated() || ctx.Value(keepingDelegateReportKey{}) == s {
+		return nil
+	}
+	lease, leased := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
+	if leased && s.delegateController != nil {
+		if kind == EntryDelegateAttention {
+			recorded, err := s.delegateController.recordAttentionNoAction(lease)
+			if err != nil || recorded {
+				return err
+			}
+		} else if kind == EntryNotification {
+			// The same input can consume another notification after an
+			// attention-only acknowledgement. The lease still owns that verdict.
+			decision, err := s.delegateController.completionDecision(lease)
+			if err != nil || decision != delegateCompletionNeedsNudge {
+				return err
+			}
+		}
+	}
+	if work, err := s.treeHasOutstandingWork(); work || err != nil {
+		return err
+	}
+	return errors.New("Nothing can wake this turn, and you have not sent your report yet. Start the work, or send your final report with communicate(message=...).")
+}
+
+func requiresStructuredFinalOutput(def llm.ToolDefinition) bool {
+	return !usesDefaultCommunicateOutputEnvelope(def)
 }
 
 // unmarshalCommunicateArguments keeps the structured output's numbers exact.
@@ -276,13 +327,11 @@ func unmarshalCommunicateArguments(raw []byte, args *map[string]any) error {
 	return nil
 }
 
-// communicateEndState records communicate's terminal verdict and optional end
-// reason independently of the display output.
+// communicateEndState records the tool verdict independently of display output.
 type communicateEndState struct {
 	Accepted *bool `json:"communicate_accepted,omitempty"`
 	EndTurn  *bool `json:"communicate_end_turn,omitempty"`
-	// The key is communicate's own, so no other tool's state can match it.
-	EndReason string `json:"communicate_end_reason"`
+	Quiet    *bool `json:"communicate_quiet,omitempty"`
 }
 
 // delegateUpdateDelivery is where a delegate's update stands when its

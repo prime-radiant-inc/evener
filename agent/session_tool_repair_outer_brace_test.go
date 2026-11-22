@@ -19,17 +19,17 @@ func TestPrepareToolCall_MissingOuterBrace(t *testing.T) {
 	raw := `{"end_turn":true,"message":"OK","output":{"artifacts":[],"data":{},"message":""}`
 	for _, tc := range []struct {
 		name, args, finish string
-		repaired           bool
+		repaired, rejected bool
 	}{
-		{"completed", raw, "", true},
-		{"length stopped", raw, llm.FinishReasonLength, false},
-		{"empty object", `{}`, "", false},
+		{"completed", raw, "", true, false},
+		{"length stopped", raw, llm.FinishReasonLength, false, true},
+		{"empty object", `{}`, "", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			res := prepareToolCall(llm.ToolCallData{ID: "c1", Name: "communicate", Arguments: json.RawMessage(tc.args)}, reg.Get("communicate"), []string{"communicate"}, "communicate", "communicate", tc.finish)
 			if !tc.repaired {
-				if res.PrevalErr == "" || len(res.Changes) != 0 || string(res.Call.Arguments) != tc.args {
-					t.Fatalf("expected unchanged rejected call: %+v", res)
+				if (res.PrevalErr != "") != tc.rejected || len(res.Changes) != 0 || string(res.Call.Arguments) != tc.args {
+					t.Fatalf("expected unchanged call (rejected=%t): %+v", tc.rejected, res)
 				}
 				return
 			}

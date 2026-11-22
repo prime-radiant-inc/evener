@@ -446,9 +446,6 @@ func (s *Session) rebuildToolDefsCache() {
 	for i := range defs {
 		if isResultToolDefinition(defs[i].Name, defs[i].Name, s.resultToolName()) {
 			defs[i] = tool.WithoutIntentParameter(defs[i])
-			if s.hasHumanPartnerToAsk() {
-				defs[i] = tool.WithCommunicateEndReason(defs[i])
-			}
 			if s.reportsToParent() {
 				defs[i] = tool.WithCommunicateDelegateUpdates(defs[i])
 			}

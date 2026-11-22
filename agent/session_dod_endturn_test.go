@@ -16,13 +16,7 @@ func TestSession_EndTurnQuestionAllowsNextInput(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
-		return agenttest.ToolCallResponse(communicateCallArgs("ask2", map[string]any{
-			"end_turn":   true,
-			"end_reason": "needs_response",
-			"message":    "What language?",
-		}))
-	}, func(req llm.Request) llm.Response {
+	f := newFakeAdapter("openai", askAwaitingResponse, func(req llm.Request) llm.Response {
 		return agenttest.ToolCallResponse(communicateCallArgs("msg2", map[string]any{
 			"end_turn": true,
 			"message":  "Done writing Go code.",
@@ -30,7 +24,7 @@ func TestSession_EndTurnQuestionAllowsNextInput(t *testing.T) {
 	})
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{testOnly: immediateRestConfig()})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

@@ -628,8 +628,7 @@ func (s *Session) runPostToolHooks(ctx context.Context, call llm.ToolCallData, r
 	}
 	for _, m := range hookResult.ModelContext {
 		if err := s.deliverHookContext(m); err != nil {
-			// Keep the tool state: a turn-ending communicate's records the
-			// end reason restore reads (endedOnNeedsResponse).
+			// Preserve execution state when a hook fails after the tool ran.
 			failed := errorResult(call, err.Error())
 			failed.ToolState = res.ToolState
 			return &failed

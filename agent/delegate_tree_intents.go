@@ -835,7 +835,7 @@ func (c *delegateTreeController) reduceWorkAdmittedIntent(intent finishIntent) f
 	return finishDecision{}
 }
 
-// reduceAttentionNoActionIntent records the bare attention no-action outcome
+// reduceAttentionNoActionIntent records the quiet attention no-action outcome
 // when the requirement is still attention-only and no terminal was seen.
 func (c *delegateTreeController) reduceAttentionNoActionIntent(intent finishIntent) finishDecision {
 	evidence, err := c.completionEvidenceLocked(intent.lease)

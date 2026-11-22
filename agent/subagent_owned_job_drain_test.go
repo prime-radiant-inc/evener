@@ -1677,3 +1677,231 @@ func TestDelegateAttentionSuccessorFollowsItsPredecessorsResult(t *testing.T) {
 		t.Fatalf("delegate lifecycles seen = %v, want the original's idle and then the successor running", lifecycles)
 	}
 }
+
+func TestSubagentOwnedJobDrainQuietYield(t *testing.T) {
+	t.Parallel()
+	for _, reportFirst := range []bool{false, true} {
+		name := "wait before report"
+		if reportFirst {
+			name = "quiet housekeeping preserves report"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			drainClock := newOwnedJobDrainClock()
+			env := newHeldJobEnvironment(t.TempDir())
+			afterShell := make(chan struct{})
+			steps := []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "owned-test", Name: "shell", Arguments: json.RawMessage(`{"command":"go test","mode":"background"}`)})
+			}}
+			if reportFirst {
+				steps = append(steps,
+					func(llm.Request) llm.Response {
+						return quietYieldResponse("reported", `{"message":"passed","end_turn":true,"output":{}}`)
+					},
+					func(llm.Request) llm.Response { close(afterShell); return quietYieldResponse("quiet", `{}`) },
+					func(llm.Request) llm.Response {
+						return quietYieldResponse("unexpected", `{"message":"overwritten","end_turn":true,"output":{}}`)
+					},
+				)
+			} else {
+				steps = append(steps,
+					func(llm.Request) llm.Response { return quietYieldResponse("quiet", `{}`) },
+					func(llm.Request) llm.Response {
+						return quietYieldResponse("missing", `{"message":"missing output","end_turn":true}`)
+					},
+					func(llm.Request) llm.Response {
+						return quietYieldResponse("reported", `{"message":"passed","end_turn":true,"output":{}}`)
+					},
+				)
+			}
+			adapter := newFakeAdapter("openai", steps...)
+			parent := newSession(t, withEnv(env), withAdapter(adapter), withClock(drainClock), withStateDir(t.TempDir()), withConfig(minimalTestSessionConfig(t)))
+			t.Cleanup(env.releaseJob)
+			ctx := tripwireCtx(t)
+			result := parent.createDelegate(ctx, delegateArgs{Task: "run go test", ResultSchema: map[string]any{
+				"type": "object", "properties": map[string]any{}, "additionalProperties": false,
+			}})
+			if result.Err != nil {
+				t.Fatal(result.Err)
+			}
+			_, childID, err := decodeRef(result.TranscriptRef)
+			if err != nil {
+				t.Fatal(err)
+			}
+			child := parent.subagents.get(childID)
+			child.mu.Lock()
+			runDone := child.done
+			child.mu.Unlock()
+			select {
+			case <-drainClock.drainEntered:
+			case <-runDone:
+				child.mu.Lock()
+				defer child.mu.Unlock()
+				t.Fatalf("delegate finished before entering drain: status %s, result %q, requests %d", child.status, child.result, len(adapter.Requests()))
+			case <-ctx.Done():
+				t.Fatal("delegate did not enter its drain")
+			}
+			if got := len(adapter.Requests()); got != 2 {
+				t.Fatalf("provider requests before the shell finished = %d, want 2", got)
+			}
+			if got := len(rootPendingAttention(parent)); got != 0 {
+				t.Fatalf("parent attention items before the shell finished = %d, want none", got)
+			}
+			env.releaseJob()
+			select {
+			case <-runDone:
+			case <-ctx.Done():
+				t.Fatal("delegate did not finish its drain")
+			}
+			if reportFirst {
+				waitForOwnedJobDrainGeneration(t, child, afterShell, "reported shell completion attention")
+			}
+			requireQuietToolResult(t, child.sess, "quiet")
+			wantRequests := 3
+			if !reportFirst {
+				wantRequests = 4
+				if res := communicateToolResult(t, child.sess, "missing"); !res.IsError {
+					t.Error("the required final output was omitted without a tool error")
+				}
+			}
+			if requests := adapter.Requests(); len(requests) != wantRequests || !requestsContain(requests[2:], "child shell complete") {
+				t.Fatalf("provider requests = %d, want %d including shell completion after the drain", len(requests), wantRequests)
+			}
+			packet := loadDelegateTerminalPacket(t, parent, result.DelegateID)
+			aggregate := delegateAggregateSnapshot(t, parent.delegateController, result.DelegateID)
+			if aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeCompleted || packet.Kind != delegatestore.PacketReported || string(packet.Message) != `"passed"` || string(packet.StructuredResult) != `{}` {
+				t.Fatalf("terminal packet = %+v, want one completed report with empty structured output", packet)
+			}
+		})
+	}
+}
+
+func TestSubagentOwnedJobDrainQuietHousekeepingKeepsEarlierReport(t *testing.T) {
+	t.Parallel()
+	profile := WithCommunicateOutputSchema(NewOpenAIProfile("gpt-5.2"), map[string]any{
+		"type": "object", "properties": map[string]any{"count": map[string]any{"type": "integer"}},
+		"required": []string{"count"},
+	})
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response {
+		return quietYieldResponse("reported", `{"message":"passed","output":{"count":0}}`)
+	}, func(llm.Request) llm.Response {
+		return quietYieldResponse("housekeeping", `{}`)
+	})
+	cfg := minimalTestSessionConfig(t)
+	cfg.spawn.depth, cfg.spawn.parentSessionID = 1, "test-parent"
+	s := newSession(t, withProfile(profile), withAdapter(adapter), withConfig(cfg), withStateDir(t.TempDir()))
+	ctx := tripwireCtx(t)
+	if reply, err := s.ProcessInput(ctx, "report now", nil); err != nil || reply != "passed" {
+		t.Fatalf("reply=%q, err=%v, want passed", reply, err)
+	}
+	enqueueCompletedJobNotification(t, s, "last-owned-job")
+	if _, err := s.drainJobTreeKeepingReport(ctx); err != nil {
+		t.Fatal(err)
+	}
+	requireQuietToolResult(t, s, "housekeeping")
+	if reply, ok := s.communicatedReply(); !ok || reply != "passed" {
+		t.Fatalf("report after housekeeping = %q (%v), want passed", reply, ok)
+	}
+	structured, ok := s.communicateStructured().(map[string]any)
+	if !ok || structured["count"] != json.Number("0") || len(adapter.Requests()) != 2 {
+		t.Fatalf("structured result after housekeeping=%#v, provider requests=%d, want count 0 and two requests", structured, len(adapter.Requests()))
+	}
+}
+
+func TestSubagentOwnedJobDrainStandingWatchDoesNotAllowQuietYield(t *testing.T) {
+	t.Parallel()
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(llm.ToolCallData{ID: "watch", Name: "job_watch", Arguments: json.RawMessage(`{"operation":"create","source":"self","after_seconds":3600}`)})
+	}, func(llm.Request) llm.Response {
+		return quietYieldResponse("quiet", `{}`)
+	}, func(llm.Request) llm.Response {
+		return quietYieldResponse("reported", `{"message":"passed","output":{}}`)
+	})
+	parent := newSession(t, withAdapter(adapter), withStateDir(t.TempDir()), withConfig(minimalTestSessionConfig(t)))
+	ctx := tripwireCtx(t)
+	result := parent.createDelegate(ctx, delegateArgs{Task: "watch and report", ResultSchema: map[string]any{"type": "object"}})
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	_, childID, err := decodeRef(result.TranscriptRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := parent.subagents.get(childID)
+	child.mu.Lock()
+	done := child.done
+	child.mu.Unlock()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("delegate did not report after dead-wait refusal")
+	}
+	if communicateToolResult(t, child.sess, "watch").IsError || !communicateToolResult(t, child.sess, "quiet").IsError || len(adapter.Requests()) != 3 {
+		t.Fatal("the standing watch must install successfully but not permit a report-required yield")
+	}
+	if packet := loadDelegateTerminalPacket(t, parent, result.DelegateID); packet.Kind != delegatestore.PacketReported || string(packet.StructuredResult) != `{}` {
+		t.Fatalf("terminal packet = %+v, want a report with empty structured output", packet)
+	}
+}
+
+func TestSubagentOwnedJobDrainQuietYieldAwakesForNestedDelegate(t *testing.T) {
+	t.Parallel()
+	adapter := newMessagingAdapter("NESTED-WAITER", "NESTED-LEAF")
+	drainClock := newOwnedJobDrainClock()
+	adapter.script("NESTED-WAITER", func(llm.Request) llm.Response {
+		return delegateToolResponse("spawn-leaf", "NESTED-LEAF: report the proof")
+	}, func(llm.Request) llm.Response {
+		return quietYieldResponse("quiet-nested", `{}`)
+	}, func(llm.Request) llm.Response {
+		return agenttest.FinalResponse("nested proof received")
+	})
+	leafEntered, releaseLeaf := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(releaseLeaf) })
+	adapter.script("NESTED-LEAF", func(llm.Request) llm.Response {
+		close(leafEntered)
+		<-releaseLeaf
+		return agenttest.FinalResponse("LEAF-PROOF")
+	})
+	parent := newMessagingRoot(t, adapter, func(c *SessionConfig) {
+		*c = minimalTestSessionConfig(t)
+		c.StateDir, c.MaxSubagentDepth, c.clock = t.TempDir(), 2, drainClock
+	})
+	t.Cleanup(release)
+	ctx := tripwireCtx(t)
+	result := parent.createDelegate(ctx, delegateArgs{Task: "NESTED-WAITER: coordinate the leaf"})
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	_, id, err := decodeRef(result.TranscriptRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := parent.subagents.get(id)
+	child.mu.Lock()
+	done := child.done
+	child.mu.Unlock()
+	for _, signal := range []<-chan struct{}{leafEntered, drainClock.drainEntered} {
+		select {
+		case <-signal:
+		case <-ctx.Done():
+			t.Fatal("worker never reached the drain with its nested delegate held")
+		}
+	}
+	if got := len(adapter.requestsFor("NESTED-WAITER")); got != 2 || len(rootPendingAttention(parent)) != 0 {
+		t.Fatalf("worker made %d requests or reported before the leaf could answer", got)
+	}
+	requireQuietToolResult(t, child.sess, "quiet-nested")
+	release()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("the leaf's report did not wake and finish the worker")
+	}
+	requests := adapter.requestsFor("NESTED-WAITER")
+	if len(requests) != 3 || !requestContainsText(requests[2], "LEAF-PROOF") {
+		t.Fatalf("worker requests = %d, want three with the nested result in the last one", len(requests))
+	}
+	if packet := loadDelegateTerminalPacket(t, parent, result.DelegateID); packet.Kind != delegatestore.PacketReported || string(packet.Message) != `"nested proof received"` {
+		t.Fatalf("terminal packet = %+v, want the worker's one report after the nested wake", packet)
+	}
+}

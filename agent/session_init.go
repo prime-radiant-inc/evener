@@ -1167,9 +1167,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// Recover history from transcript JSONL. No snapshot fallback.
 	var resumeHistory []schema.Turn
 	var repairInsertions []int
-	// Where each reopened turn's latest attempt begins in resumeHistory: the
-	// restored state reads an end reason from that attempt alone.
-	var attemptStarts map[string]int
 	// The superseded attention identities the history build and the
 	// coordinate mappers below share: the transcript folds for them once,
 	// not once per reopen marker and boundary they map.
@@ -1179,7 +1176,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	} else if len(transcriptEntries) > 0 {
 		superseded = supersededDelegateAttentionIDs(transcriptEntries)
 		resumeHistory, repairInsertions = resumeHistoryIndexedWithSuperseded(transcriptEntries, superseded)
-		attemptStarts = latestAttemptStarts(transcriptEntries, repairInsertions, superseded)
 	}
 	if resumeHistory == nil {
 		resumeHistory = []schema.Turn{}
@@ -1727,29 +1723,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		return nil, err
 	}
 
-	// Re-derive the at-rest state from the restored history's tail: an
-	// unanswered ask_user call, or a last input that ended on needs_response,
-	// rests awaiting (deriveRestoredState's own doc comment has the full
-	// walk). NewSession never runs this scan — a fresh session always starts
-	// idle. steeringOrigins() gives the boundary its durable steering
-	// provenance, so a kindless legacy human-note turn is still read as a
-	// note rather than an answering steer.
-	// divergenceTurn (computed above for escapeHistoryWithSessionProvenance,
-	// and still in the same units s.history uses since escaping never
-	// changes its length) scopes the provenance to this session's own turns
-	// alone, so a forked child's inherited prefix is never decided by a
-	// reused client mutation id in the child's OWN journal.
+	// Only an unanswered ask can restore awaiting. The divergence scopes
+	// steering provenance to this session's own turns, never its inherited prefix.
 	steeringProvenance := s.clientMutations.steeringOrigins()
-	restoredState := deriveRestoredState(s.history, divergenceTurn, steeringProvenance, attemptStarts)
-	// Rebuild the pending-ask SET alongside the state (ask-attention-tiering
-	// spec §2): deriveRestoredState alone only re-derives that the session
-	// rests awaiting, but every hold keyed on askPending itself — the entry
-	// gate, the goal engine's arm-don't-kick paths, Compact's guard — stays
-	// inert after a restart unless the set is repopulated too.
-	// isAskRound distinguishes "nothing was pending" from "an ask was pending
-	// but none of its arguments parsed"; only the latter warrants a warning,
-	// and neither may ever fail the restore.
-	restoredAskPending, isAskRound := deriveRestoredAskPending(s.history, divergenceTurn, steeringProvenance)
+	restoredState, restoredAskPending, isAskRound := deriveRestoredState(s.history, divergenceTurn, steeringProvenance)
 	if isAskRound && len(restoredAskPending) == 0 {
 		s.emit(events.WarningData{Message: "restore: found a pending ask_user round but could not parse any of its questions; the pending-ask holds will not apply this session"})
 	}
@@ -1761,10 +1738,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// maintains the invariant, restore included.
 	s.setAskPendingLocked(restoredAskPending)
 	s.mu.Unlock()
-	// Settle before the session start announces the state.
-	if !restoreCfg.deferRestoreSideEffects {
-		s.recomputeRestoredState(divergenceTurn, attemptStarts)
-	}
 	s.emitSessionStartEnvelope(events.SessionStartData{
 		Profile:           profile.ID(),
 		Model:             profile.Model(),

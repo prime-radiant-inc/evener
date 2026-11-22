@@ -979,6 +979,10 @@ func takeSharedDescendantAnnounceHold(laneName string) chan struct{} {
 	return hold
 }
 
+func quietWorktreeAttentionResponse(llm.Request) llm.Response {
+	return quietYieldResponse("ack-worktree-attention", `{}`)
+}
+
 // spawnSharedDescendantLane builds that tree: a cold fixture delegate with an
 // isolated lane, restored and sent once through a turn that spawns exactly
 // one non-isolated child sharing the lane and then finishes, leaving both the
@@ -1093,15 +1097,15 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 			Type:      "function",
 		})
 	}
-	notify := finish
-	if len(notificationTurn) > 0 && notificationTurn[0] != nil {
-		notify = notificationTurn[0]
+	notify := notificationTurn
+	if len(notify) == 0 {
+		notify = []func(llm.Request) llm.Response{quietWorktreeAttentionResponse}
 	}
 	// The delegate's turn spawns its child, the child's turn finishes, the
 	// delegate's follow-up turn finishes, and the delegate's attention turn
-	// presenting the retained child's report answers the scripted step (or the
-	// adapter's bare-text fallback when none is given).
-	fixture.adapter.setSteps([]func(llm.Request) llm.Response{spawn, finish, finish, notify})
+	// presenting the retained child's report answers the scripted step (or
+	// quietly yields when none is given).
+	fixture.adapter.setSteps(append([]func(llm.Request) llm.Response{spawn, finish, finish}, notify...))
 	// A held tree's generation cannot finish until the test releases the
 	// hold, so the send's inline wait can only time out: take the shortest
 	// one, and wait instead for the retained child's tail to park on the hold
@@ -3029,7 +3033,7 @@ func TestDelegateAttentionUserStopHoldsReopenedRowFromStaleArmedWake(t *testing.
 		requestsMu.Unlock()
 		wedgeOnce.Do(func() { close(entered) })
 		<-release
-		return agenttest.FinalResponse("done")
+		return quietYieldResponse("ack-attention", `{}`)
 	}
 	// The parked-tail pin (the busy-commit test's form): unpinned, a
 	// fixture run finishing after this test's rows land resolves every
@@ -3038,7 +3042,7 @@ func TestDelegateAttentionUserStopHoldsReopenedRowFromStaleArmedWake(t *testing.
 	// first drive. The parked announce closes the tails before the rows
 	// land, so the loop below is the only driver that can present them.
 	holdSharedDescendantAnnounce("user-stop-stale-wake")
-	lane := spawnSharedDescendantLane(t, r, "user-stop-stale-wake", "dlg_userstopwake01", "034userstopwake1", wedge)
+	lane := spawnSharedDescendantLane(t, r, "user-stop-stale-wake", "dlg_userstopwake01", "034userstopwake1", wedge, quietWorktreeAttentionResponse, quietWorktreeAttentionResponse)
 	lane.releaseSeededAnnounceHold(t)
 	var warningsMu sync.Mutex
 	var warnings []string
@@ -3284,7 +3288,7 @@ func TestDelegateAttentionHeldUpdateDoesNotLoopTheFinalizationDrain(t *testing.T
 	wedge := func(req llm.Request) llm.Response {
 		wedgeOnce.Do(func() { close(entered) })
 		<-release
-		return agenttest.FinalResponse("done")
+		return quietYieldResponse("ack-attention", `{}`)
 	}
 	// Seed the loaded-runner interleave this test pins: hold the retained
 	// child's announce until the test's own window. The fixture's send comes
@@ -3388,6 +3392,8 @@ func TestDelegateAttentionHeldUpdateDoesNotLoopTheFinalizationDrain(t *testing.T
 		t.Fatalf("pend the second row: %v", err)
 	}
 	lane.fixture.adapter.appendSteps(wedge)
+	lane.fixture.adapter.appendSteps(quietWorktreeAttentionResponse)
+	lane.fixture.adapter.appendSteps(quietWorktreeAttentionResponse)
 
 	// The drive loop is the only driver: it pumps the delegate's delivery
 	// queue before each pass and drives the pending rows the way the daemon's
@@ -3642,13 +3648,13 @@ func TestDelegateAttentionResidentDrivePassDoesNotRebuildReleasedStopHold(t *tes
 	wedge := func(req llm.Request) llm.Response {
 		wedgeOnce.Do(func() { close(entered) })
 		<-release
-		return agenttest.FinalResponse("done")
+		return quietYieldResponse("ack-attention", `{}`)
 	}
 	// Seed the announce hold the scripted presentation step requires — the
 	// window it closes and the coverage race it prevents are stated at
 	// spawnSharedDescendantLane's refusal.
 	holdSharedDescendantAnnounce("resident-released-hold")
-	lane := spawnSharedDescendantLane(t, r, "resident-released-hold", "dlg_residenthold01", "034residenthold1", wedge)
+	lane := spawnSharedDescendantLane(t, r, "resident-released-hold", "dlg_residenthold01", "034residenthold1", wedge, quietWorktreeAttentionResponse)
 	lane.releaseSeededAnnounceHold(t)
 	lane.delegateSess.SetNotifyFunc(nil)
 	// The shared child's restored notify edge can launch its own pending
@@ -3955,7 +3961,7 @@ func TestDelegateAttentionUserStopHoldSurvivesIdleReleaseRestore(t *testing.T) {
 		requestsMu.Unlock()
 		wedgeOnce.Do(func() { close(entered) })
 		<-release
-		return agenttest.FinalResponse("done")
+		return quietYieldResponse("ack-attention", `{}`)
 	}
 	// The parked-tail pin (the busy-commit test's form): unpinned, a
 	// fixture run finishing after this test's rows land resolves every
@@ -3966,7 +3972,7 @@ func TestDelegateAttentionUserStopHoldSurvivesIdleReleaseRestore(t *testing.T) {
 	// and the fixture's armed-trigger race the note path below repairs is
 	// dead by construction, with the repair kept for the honest invariant.
 	holdSharedDescendantAnnounce("user-stop-release")
-	lane := spawnSharedDescendantLane(t, r, "user-stop-release", "dlg_userstoprel01", "034userstoprel1", wedge)
+	lane := spawnSharedDescendantLane(t, r, "user-stop-release", "dlg_userstoprel01", "034userstoprel1", wedge, quietWorktreeAttentionResponse)
 	lane.releaseSeededAnnounceHold(t)
 	var warningsMu sync.Mutex
 	var warnings []string
@@ -5380,7 +5386,10 @@ func TestDrainSkipsChildWhoseLaneRefusedDriveValidation(t *testing.T) {
 	bgCall := func(llm.Request) llm.Response {
 		return agenttest.ToolCallResponse(llm.ToolCallData{ID: "call_bg_shell", Name: "shell", Arguments: args, Type: "function"})
 	}
-	fixture, root, lanePath := spawnRetainedDelegateLane(t, r, "refused-drive-lane", "dlg_orphanactive000005", "034orphanactive0005", bgCall)
+	report := func(llm.Request) llm.Response {
+		return quietYieldResponse("refused-drive-report", `{"message":"done"}`)
+	}
+	fixture, root, lanePath := spawnRetainedDelegateLane(t, r, "refused-drive-lane", "dlg_orphanactive000005", "034orphanactive0005", bgCall, report)
 
 	// The child's turn spawns the background job and finishes; cancelling the
 	// generation's send ctx settles it the way every bounded drain ctx does

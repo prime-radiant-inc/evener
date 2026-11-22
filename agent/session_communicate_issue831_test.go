@@ -209,6 +209,7 @@ func TestPrepareToolCall_SameKeysStricterCommunicateOutputSchemaIsNotHealedIssue
 	params := tool.CloneSchemaMap(def.Parameters)
 	output := params["properties"].(map[string]any)["output"].(map[string]any)
 	output["properties"].(map[string]any)["message"] = map[string]any{"type": "string", "enum": []string{"allowed"}}
+	output["required"] = []string{"message"}
 
 	reg := tool.NewRegistry()
 	if err := reg.Register(regTool(llm.ToolDefinition{Name: "communicate", Description: def.Description, Parameters: params})); err != nil {
@@ -217,7 +218,7 @@ func TestPrepareToolCall_SameKeysStricterCommunicateOutputSchemaIsNotHealedIssue
 	rt := reg.Get("communicate")
 	for _, arguments := range []string{
 		`{"end_turn":true,"message":"top-level","output":null}`,
-		`{"end_turn":true,"output":{"message":"allowed","data":{},"artifacts":[]}}`,
+		`{"end_turn":true,"output":{"data":{},"artifacts":[]}}`,
 		`{"end_turn":true,"output":"{\"message\":\"allowed\",\"data\":{},\"artifacts\":[]}"}`,
 	} {
 		res := prepareToolCall(llm.ToolCallData{ID: "issue831-strict", Name: "communicate", Arguments: json.RawMessage(arguments)}, rt, []string{"communicate"}, "communicate", "communicate", "")
@@ -757,23 +758,24 @@ func TestPrepareToolCall_WhitespaceOutputMessageDoesNotBecomeTopLevelMessageIssu
 	_, rt := registerCommunicateForIssue627(t)
 	raw := json.RawMessage(`{"end_turn":true,"output":"{\"message\":\"   \",\"data\":{},\"artifacts\":[]}"}`)
 	res := prepareToolCall(llm.ToolCallData{ID: "issue831-whitespace", Name: "communicate", Arguments: raw}, rt, []string{"communicate"}, "communicate", "communicate", "")
-	if res.PrevalErr == "" || !strings.Contains(res.PrevalErr, `"message"`) {
-		t.Fatalf("result = %+v, want missing top-level message prevalidation error", res)
+	var args map[string]any
+	if res.PrevalErr != "" || json.Unmarshal(res.Call.Arguments, &args) != nil {
+		t.Fatalf("expected valid promoted output: %+v", res)
 	}
-	if len(res.Changes) != 0 || string(res.Call.Arguments) != string(raw) {
-		t.Fatalf("uncommitted whitespace repair = %+v, arguments = %q", res.Changes, res.Call.Arguments)
+	if _, ok := args["message"]; ok || len(res.Changes) != 1 || res.Changes[0].Kind != repair.ChangePromoteJSONObject {
+		t.Fatalf("whitespace was copied into the visible message: %+v", res)
 	}
 }
 
-func TestSession_WhitespaceOutputMessageDoesNotEmitRepairIssue831(t *testing.T) {
+func TestSession_InvalidWhitespaceOutputCallDoesNotEmitRepairIssue831(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t)
 	sess.stateDir = t.TempDir()
 	repairedCh := drainRepairedEvents(sess)
-	raw := json.RawMessage(`{"end_turn":true,"output":"{\"message\":\"   \",\"data\":{},\"artifacts\":[]}"}`)
+	raw := json.RawMessage(`{"end_turn":{"invalid":true},"output":"{\"message\":\"   \",\"data\":{},\"artifacts\":[]}"}`)
 	res := sess.execTool(context.Background(), llm.ToolCallData{ID: "issue831-whitespace-session", Name: "communicate", Arguments: raw}, "")
-	if !res.IsError || !res.PrevalOnly || !strings.Contains(res.FullOutput, `"message"`) {
-		t.Fatalf("result = %+v, want missing top-level message prevalidation error", res)
+	if !res.IsError || !res.PrevalOnly {
+		t.Fatalf("result = %+v, want prevalidation failure", res)
 	}
 	sess.Close()
 	if repaired := <-repairedCh; len(repaired) != 0 {

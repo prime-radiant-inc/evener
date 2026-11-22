@@ -169,7 +169,13 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 			res.PrevalErr = repair.ExplainTruncatedCall(requestedVisible)
 			return res
 		}
-		healed, c := repair.RepairArgs(t.Definition.Parameters, args, handlerJudgedArgs(t.Definition.Name, args)...)
+		keep := handlerJudgedArgs(t.Definition.Name, args)
+		if t.Definition.Name == resultToolName {
+			// A supplied output must pass its schema, not disappear as an
+			// optional placeholder and turn the call into a quiet yield.
+			keep = append(keep, "output")
+		}
+		healed, c := repair.RepairArgs(t.Definition.Parameters, args, keep...)
 		finalErrorArgs := args
 		// Scalar repair can turn provider-materialized strings such as
 		// expand_turn="0" into their neutral numeric forms. Normalize those
@@ -266,6 +272,9 @@ func repairDefaultCommunicateEnvelope(envelope, args map[string]any) ([]repair.C
 
 	var changes []repair.Change
 	if raw, present := args["output"]; !present || raw == nil {
+		if !present && strings.TrimSpace(stringArg(args, "message")) == "" {
+			return nil, false, nil
+		}
 		args["output"] = map[string]any{}
 		changes = append(changes, repair.Change{Kind: repair.ChangeSynthesize, Field: "output", Detail: "synthesized default envelope"})
 	} else if encoded, ok := raw.(string); ok {

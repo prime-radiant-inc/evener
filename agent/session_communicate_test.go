@@ -57,9 +57,6 @@ func communicateCallArgs(id string, args map[string]any) llm.ToolCallData {
 	normalized["message"] = message
 	normalized["end_turn"] = endTurn
 	normalized["output"] = output
-	if reason, ok := args["end_reason"]; ok {
-		normalized["end_reason"] = reason
-	}
 
 	raw, _ := json.Marshal(normalized)
 	return llm.ToolCallData{
@@ -454,7 +451,7 @@ func TestCommunicateCapturesRawStructuredOutput(t *testing.T) {
 		resultToolName: func() string {
 			return "communicate"
 		},
-		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any, _ string) bool {
+		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any) bool {
 			captured = raw
 			return true
 		},
@@ -499,7 +496,7 @@ func TestCommunicateRegistryDispatchPreservesExactStructuredIntegers(t *testing.
 		drainSteering:      func() []steeringMessage { return nil },
 		prependSteering:    func([]steeringMessage) {},
 		resultToolName:     func() string { return "communicate" },
-		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any, _ string) bool {
+		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any) bool {
 			captured = raw
 			return true
 		},
@@ -593,7 +590,7 @@ func TestCommunicateCapturesEmptyRawStructuredOutputForCustomSchema(t *testing.T
 		resultToolName: func() string {
 			return "communicate"
 		},
-		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any, _ string) bool {
+		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any) bool {
 			captured = raw
 			return true
 		},
@@ -981,10 +978,10 @@ func TestCommunicate_SchemaRejectsMalformedOutput(t *testing.T) {
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
 	rawArgs, _ := json.Marshal(map[string]any{
-		"message":  "missing data field",
+		"message":  "output.message must be a string",
 		"end_turn": true,
 		"output": map[string]any{
-			"message": "missing data field",
+			"message": false,
 		},
 	})
 	res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
