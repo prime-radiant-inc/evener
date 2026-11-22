@@ -8,6 +8,8 @@ import {
   type ComposerMention,
   errorText,
   formatElapsed,
+  type ItemImage,
+  type ItemModel,
   isTurnActive,
   sessionActionError,
 } from "@evener/appwire-client";
@@ -19,8 +21,8 @@ import {
   queueEntryAt,
   reflectedMutationIds,
 } from "@evener/appwire-client/state/mutation";
-import type { JSX } from "react";
-import { useContext, useEffect, useMemo, useRef, useState } from "react";
+import type { JSX, ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { copyToClipboard } from "../../../../shell/palette/commands";
 import { controlsFor, pressLocalRecoveryFenced, pressRefusal } from "../../../../stores/liveControls";
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
@@ -58,7 +60,7 @@ import {
   useComposerBusy,
   waitForQueueRowRestoreConsumed,
 } from "../../composer/queueRowInsert";
-import { SessionNowContext } from "../../liveness";
+import { useSessionNow } from "../../liveness";
 import { pendingMessageCaption } from "../../pending/pendingMessageCaption";
 import { rowMatchesIdentity, withoutActiveRecoveries } from "../../pending/pendingMessageLiveEdge";
 import { pendingRowActionOwner } from "../../pending/usePendingMessageActions";
@@ -208,6 +210,49 @@ function recoveryPreview(record: MutationRecoveryRecord): string {
   }
 }
 
+// The queue controls' icon glyphs: one aria-hidden element per verb, shared
+// by every row family that offers the verb.
+const GLYPH_EDIT = <span aria-hidden="true">✎</span>;
+const GLYPH_REMOVE = <span aria-hidden="true">✕</span>;
+const GLYPH_STEER = <span aria-hidden="true">⇧</span>;
+
+// The provisional bubble every pending family starts from; only the text and
+// the gallery bytes differ between a queue entry, a durable record and the
+// merged projection row that owns it.
+function pendingItem(id: string, text: string, images?: ItemImage[]): ItemModel {
+  return {
+    id,
+    turnId: "",
+    type: "userMessage",
+    text,
+    ...(images !== undefined && images.length > 0 ? { images } : {}),
+  };
+}
+
+// One row shell for every pending family. The families differ in their item,
+// caption, controls and data attributes, never in the li/UserMessageView
+// scaffold; the caller keeps the `key` because React reads it from the mapped
+// element.
+function PendingRow({
+  item,
+  provisional,
+  footer,
+  kind,
+  busy,
+}: {
+  item: ItemModel;
+  provisional: string;
+  footer?: ReactNode;
+  kind?: string;
+  busy?: boolean;
+}): JSX.Element {
+  return (
+    <li data-kind={kind} data-busy={busy ? "true" : undefined}>
+      <UserMessageView item={item} opensExchange={false} provisional={provisional} footer={footer} />
+    </li>
+  );
+}
+
 export function PendingRowStack({
   ref: sessionRef,
   paneId,
@@ -290,7 +335,7 @@ export function PendingRowStack({
   // The caption reads the same clock the liveness line does: Session's 3s
   // SessionNowContext tick, so no per-second machinery re-renders the
   // virtualized row.
-  const now = useContext(SessionNowContext);
+  const now = useSessionNow();
   const toasts = useToasts();
   const [busyEntryIds, setBusyEntryIds] = useState<ReadonlySet<string>>(new Set());
   const [retryErrors, setRetryErrors] = useState<ReadonlyMap<string, string>>(new Map());
@@ -580,7 +625,7 @@ export function PendingRowStack({
         {canEditQueuedMessage(record) && (
           <IconButton
             label="Edit message"
-            icon={<span aria-hidden="true">✎</span>}
+            icon={GLYPH_EDIT}
             size="sm"
             // The composer's live busy gate keeps Edit from racing an
             // in-flight submit, read through the seam store.
@@ -592,7 +637,7 @@ export function PendingRowStack({
         {canRemoveQueuedMessage(record) && (
           <IconButton
             label="Remove from queue"
-            icon={<span aria-hidden="true">✕</span>}
+            icon={GLYPH_REMOVE}
             size="sm"
             variant="danger"
             disabled={rowBusy}
@@ -609,19 +654,12 @@ export function PendingRowStack({
     if (!message) return;
     const hubRefused = entry.id === refusedId && entry.state === "submitting";
     renderById.set(message.id, () => (
-      <li key={message.displayId ?? message.id} data-busy={hubRefused ? "true" : undefined}>
-        <UserMessageView
-          item={{
-            id: message.id,
-            turnId: "",
-            type: "userMessage",
-            text: message.displayText || "[queued messages]",
-            images: message.images,
-          }}
-          opensExchange={false}
-          provisional={pendingMessageCaption(message, turnActive, now, hubRefused)}
-        />
-      </li>
+      <PendingRow
+        key={message.displayId ?? message.id}
+        item={pendingItem(message.id, message.displayText || "[queued messages]", message.images)}
+        provisional={pendingMessageCaption(message, turnActive, now, hubRefused)}
+        busy={hubRefused}
+      />
     ));
   });
   for (let index = 0; index < rowCount; index += 1) {
@@ -677,7 +715,7 @@ export function PendingRowStack({
       <>
         <IconButton
           label="Steer now"
-          icon={<span aria-hidden="true">⇧</span>}
+          icon={GLYPH_STEER}
           size="sm"
           disabled={!controls.drain || busy}
           onClick={() => {
@@ -706,7 +744,7 @@ export function PendingRowStack({
         />
         <IconButton
           label="Edit message"
-          icon={<span aria-hidden="true">✎</span>}
+          icon={GLYPH_EDIT}
           size="sm"
           disabled={!hasTexts || imageOnly || carriesImages || busy}
           disabledReason={
@@ -720,7 +758,7 @@ export function PendingRowStack({
         />
         <IconButton
           label="Remove from queue"
-          icon={<span aria-hidden="true">✕</span>}
+          icon={GLYPH_REMOVE}
           variant="danger"
           size="sm"
           disabled={busy}
@@ -730,32 +768,27 @@ export function PendingRowStack({
         />
       </>
     ) : undefined;
+    // A blank full text leaves the preview to speak: the daemon's image
+    // grammar ("[image]", "[N images]") is the row's whole content for a
+    // textless foreign entry, so an empty composed body never renders an
+    // empty bubble. The gallery is the one this client can still prove:
+    // the merged row's family holds the bytes the queue wire never carries.
     renderById.set(mergedRow.id, () => (
-      <li key={mergedRow.displayId ?? mergedRow.id} data-kind="queued">
-        <UserMessageView
-          item={{
-            id: entryId ?? `queue_${index}`,
-            turnId: "",
-            type: "userMessage",
-            // A blank full text leaves the preview to speak: the
-            // daemon's image grammar ("[image]", "[N images]") is the
-            // row's whole content for a textless foreign entry, so an
-            // empty composed body never renders an empty bubble.
-            text:
-              mergedRow.method !== "queue"
-                ? mergedRow.displayText
-                : [fullText !== undefined && fullText.trim() !== "" ? fullText : previewText, namedMarkers]
-                    .filter(Boolean)
-                    .join(" "),
-            // The gallery this client can still prove: the merged row's
-            // family holds the bytes the queue wire never carries.
-            ...(mergedRow !== undefined && mergedRow.images.length > 0 ? { images: mergedRow.images } : {}),
-          }}
-          opensExchange={false}
-          provisional={pendingMessageCaption(mergedRow, turnActive, now)}
-          footer={actions}
-        />
-      </li>
+      <PendingRow
+        key={mergedRow.displayId ?? mergedRow.id}
+        item={pendingItem(
+          entryId ?? `queue_${index}`,
+          mergedRow.method !== "queue"
+            ? mergedRow.displayText
+            : [fullText !== undefined && fullText.trim() !== "" ? fullText : previewText, namedMarkers]
+                .filter(Boolean)
+                .join(" "),
+          mergedRow.images,
+        )}
+        provisional={pendingMessageCaption(mergedRow, turnActive, now)}
+        footer={actions}
+        kind="queued"
+      />
     ));
   }
   editableEntries.forEach((record) => {
@@ -771,24 +804,18 @@ export function PendingRowStack({
     const rowBusy = busyEntryIds.has(record.clientMutationId);
     const hubRefused = record.clientMutationId === refusedId;
     const actions = renderLocalActions(record, rowBusy);
+    // The merged projection row for this record holds the submission's
+    // image bytes - the waiting row renders the gallery the record's
+    // preview text cannot describe.
     renderById.set(message.id, () => (
-      <li key={message.displayId ?? message.id} data-kind="waiting" data-busy={hubRefused ? "true" : undefined}>
-        <UserMessageView
-          item={{
-            id: record.clientMutationId,
-            turnId: "",
-            type: "userMessage",
-            text: recordPreview(record) || "[queued messages]",
-            // The merged projection row for this record holds the
-            // submission's image bytes - the waiting row renders the
-            // gallery the record's preview text cannot describe.
-            ...(message.images.length > 0 ? { images: message.images } : {}),
-          }}
-          opensExchange={false}
-          provisional={hubRefused ? "Waiting for the hub" : "Waiting to send"}
-          footer={actions}
-        />
-      </li>
+      <PendingRow
+        key={message.displayId ?? message.id}
+        item={pendingItem(record.clientMutationId, recordPreview(record) || "[queued messages]", message.images)}
+        provisional={hubRefused ? "Waiting for the hub" : "Waiting to send"}
+        footer={actions}
+        kind="waiting"
+        busy={hubRefused}
+      />
     ));
   });
   [
@@ -813,30 +840,22 @@ export function PendingRowStack({
     const label = kind === "canceled" ? "Canceled by Stop" : "Delivery uncertain";
     // A failed Retry has to announce itself: the provisional caption is
     // an ordinary span, so the error gets its own live node - the
-    // retired strip rendered it with role="alert".
+    // retired strip rendered it with role="alert". The merged projection
+    // row holds the submission's image bytes through these states too -
+    // the gallery survives a blocked or canceled delivery.
     renderById.set(message.id, () => (
-      <li key={message.displayId ?? message.id} data-kind={kind}>
-        <UserMessageView
-          item={{
-            id: record.clientMutationId,
-            turnId: "",
-            type: "userMessage",
-            text: recordPreview(record),
-            // The merged projection row holds the submission's image
-            // bytes through these states too - the gallery survives a
-            // blocked or canceled delivery.
-            ...(message.images.length > 0 ? { images: message.images } : {}),
-          }}
-          opensExchange={false}
-          provisional={label}
-          footer={
-            <>
-              {actions}
-              {retryError !== undefined && <span role="alert">{retryError}</span>}
-            </>
-          }
-        />
-      </li>
+      <PendingRow
+        key={message.displayId ?? message.id}
+        item={pendingItem(record.clientMutationId, recordPreview(record), message.images)}
+        provisional={label}
+        footer={
+          <>
+            {actions}
+            {retryError !== undefined && <span role="alert">{retryError}</span>}
+          </>
+        }
+        kind={kind}
+      />
     ));
   });
   visibleRecoveryEntries.forEach((record) => {
@@ -849,80 +868,62 @@ export function PendingRowStack({
     const isControlFailure = message.interrupt === true;
     const reason = record.recoveryReason;
     if (record.recoveryKind === "orphaned") {
+      // The merged projection's recovery row is built from the family's own
+      // input, so the gallery survives the refusal.
       renderById.set(message.id, () => (
-        <li key={message.displayId ?? message.id} data-kind="orphaned">
-          <UserMessageView
-            item={{
-              id: record.clientMutationId,
-              turnId: "",
-              type: "userMessage",
-              text: recordPreview(record),
-              // The merged projection's recovery row is built from the
-              // family's own input, so the gallery survives the refusal.
-              images: message.images,
-            }}
-            opensExchange={false}
-            provisional="Destination deleted"
-            footer={
-              <Button size="sm" variant="quiet" disabled={rowBusy} onClick={() => void handleCopy(record)}>
-                Copy
-              </Button>
-            }
-          />
-        </li>
+        <PendingRow
+          key={message.displayId ?? message.id}
+          item={pendingItem(record.clientMutationId, recordPreview(record), message.images)}
+          provisional="Destination deleted"
+          footer={
+            <Button size="sm" variant="quiet" disabled={rowBusy} onClick={() => void handleCopy(record)}>
+              Copy
+            </Button>
+          }
+          kind="orphaned"
+        />
       ));
       return;
     }
+    // A control failure is not a message: it carries no input, so say what
+    // failed instead of offering to edit a Stop or an empty removal. The
+    // refused row keeps the gallery too: the projection's recovery row holds
+    // the family input's image bytes.
     renderById.set(message.id, () => (
-      <li
+      <PendingRow
         key={message.displayId ?? message.id}
-        data-kind={isInterrupt ? "refused-stop" : isControlFailure ? "control-failure" : "refused"}
-      >
-        <UserMessageView
-          item={{
-            id: record.clientMutationId,
-            turnId: "",
-            type: "userMessage",
-            // A control failure is not a message: it carries no input,
-            // so say what failed instead of offering to edit a Stop or
-            // an empty removal.
-            text: recoveryPreview(record),
-            // The refused row keeps the gallery too: the projection's
-            // recovery row holds the family input's image bytes.
-            images: message.images,
-          }}
-          opensExchange={false}
-          provisional={reason ? `Not delivered · ${reason}` : "Not delivered"}
-          footer={
-            isControlFailure ? (
-              <IconButton
-                label="Dismiss"
-                icon={<span aria-hidden="true">✕</span>}
-                size="sm"
-                disabled={rowBusy}
-                onClick={() => void handleDismiss(record)}
-              />
-            ) : (
-              <IconButton
-                label="Edit message"
-                icon={<span aria-hidden="true">✎</span>}
-                size="sm"
-                // A refused control has to say so: the composer's live
-                // busy gate (an in-flight submit/steer/drain) keeps the
-                // press from racing, read through the seam store because
-                // only the composer knows its own busyAction. The
-                // refusal is aria-disabled rather than native, so the
-                // reason stays reachable from the keyboard.
-                disabled={rowBusy || composerBusy}
-                disabledReason={composerBusy ? "Wait for the current message to finish sending" : ""}
-                onClick={() =>
-                  requestQueueRowRestore(sessionRef, { text: "", recoveryRecord: record, target: paneId ?? null })
-                }
-              />
-            )
-          }
-        />
-      </li>
+        item={pendingItem(record.clientMutationId, recoveryPreview(record), message.images)}
+        provisional={reason ? `Not delivered · ${reason}` : "Not delivered"}
+        footer={
+          isControlFailure ? (
+            <IconButton
+              label="Dismiss"
+              icon={GLYPH_REMOVE}
+              size="sm"
+              disabled={rowBusy}
+              onClick={() => void handleDismiss(record)}
+            />
+          ) : (
+            <IconButton
+              label="Edit message"
+              icon={GLYPH_EDIT}
+              size="sm"
+              // A refused control has to say so: the composer's live
+              // busy gate (an in-flight submit/steer/drain) keeps the
+              // press from racing, read through the seam store because
+              // only the composer knows its own busyAction. The
+              // refusal is aria-disabled rather than native, so the
+              // reason stays reachable from the keyboard.
+              disabled={rowBusy || composerBusy}
+              disabledReason={composerBusy ? "Wait for the current message to finish sending" : ""}
+              onClick={() =>
+                requestQueueRowRestore(sessionRef, { text: "", recoveryRecord: record, target: paneId ?? null })
+              }
+            />
+          )
+        }
+        kind={isInterrupt ? "refused-stop" : isControlFailure ? "control-failure" : "refused"}
+      />
     ));
   });
   // Families supply their controls, but only the shared projection owns row
@@ -936,24 +937,16 @@ export function PendingRowStack({
         return render ? (
           render()
         ) : (
-          <li key={displayId}>
-            <UserMessageView
-              item={{
-                id: message.id,
-                turnId: "",
-                type: "userMessage",
-                text: message.displayText,
-                images: message.images,
-              }}
-              opensExchange={false}
-              provisional={pendingMessageCaption(
-                message,
-                turnActive,
-                now,
-                refusedId !== undefined && rowMatchesIdentity(message, refusedId),
-              )}
-            />
-          </li>
+          <PendingRow
+            key={displayId}
+            item={pendingItem(message.id, message.displayText, message.images)}
+            provisional={pendingMessageCaption(
+              message,
+              turnActive,
+              now,
+              refusedId !== undefined && rowMatchesIdentity(message, refusedId),
+            )}
+          />
         );
       })}
     </ul>
