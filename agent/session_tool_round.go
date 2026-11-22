@@ -113,7 +113,8 @@ func decideNoToolCalls(noContent bool, t retryTracker, resultToolName string) no
 	if t.consecutiveBareText <= maxBareTextRetries {
 		steering := "You responded with bare text instead of a tool call. " +
 			"All user-facing messages MUST use " + resultToolName + ". " +
-			"If that bare text was meant for the user, call " + resultToolName + " now with that text in message, set end_turn=true, and include the output envelope. " +
+			"If that bare text was meant for the user or caller, call " + resultToolName + " now with that text in message (and output when required by your schema). " +
+			"If a notification or watch frame needs nothing from you, call " + resultToolName + "({}) with no message to end your turn quietly. " +
 			"Otherwise call your next tool and keep working."
 		return noToolCallsDecision{
 			Tracker:      t,
