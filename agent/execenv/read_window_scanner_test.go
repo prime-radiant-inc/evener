@@ -9,8 +9,8 @@ import (
 
 // TestScanLineWindowMatchesNumberLinesBytes is the scanner's own differential:
 // every fixture is rendered twice, once by the scanner and once by
-// NumberLinesBytes over the whole fixture, and the two must agree byte for
-// byte.
+// renderTextReadRich over the whole fixture, and the two must agree byte for
+// byte (and meta for meta).
 func TestScanLineWindowMatchesNumberLinesBytes(t *testing.T) {
 	t.Parallel()
 	fixtures := readWindowScannerFixtures()
@@ -18,14 +18,17 @@ func TestScanLineWindowMatchesNumberLinesBytes(t *testing.T) {
 	for _, f := range fixtures {
 		for _, w := range windows {
 			off, lim := w.offset, w.limit
-			want := NumberLinesBytes([]byte(f.body), &off, &lim)
-			got, err := scanLineWindow(t.Context(), strings.NewReader(f.body), nil, w.offset, w.limit)
+			want, wantMeta, werr := renderTextReadRich("fixture.txt", []byte(f.body), &off, &lim)
+			got, gotMeta, err := scanLineWindowRich(t.Context(), strings.NewReader(f.body), int64(len(f.body)), "fixture.txt", nil, &off, &lim)
 			if err != nil {
-				t.Errorf("%s offset=%d limit=%d: scanner error %v", f.name, w.offset, w.limit, err)
+				t.Errorf("%s offset=%d limit=%d: scanner error %v (whole err=%v)", f.name, w.offset, w.limit, err, werr)
 				continue
 			}
 			if got != want {
 				t.Errorf("%s offset=%d limit=%d:\n scanner = %q\n want    = %q", f.name, w.offset, w.limit, got, want)
+			}
+			if gotMeta != wantMeta {
+				t.Errorf("%s offset=%d limit=%d:\n scanner meta = %+v\n want meta    = %+v", f.name, w.offset, w.limit, gotMeta, wantMeta)
 			}
 		}
 	}
@@ -99,14 +102,17 @@ func TestReadFileWindowForcesTheScanOnSmallFixtures(t *testing.T) {
 		}
 		for _, w := range readWindowScannerWindows() {
 			off, lim := w.offset, w.limit
-			want := NumberLinesBytes([]byte(f.body), &off, &lim)
-			got, err := env.ReadFileCtx(t.Context(), path, &off, &lim)
+			want, _, wantMeta, werr := env.ReadFileRichAndBytesCtx(t.Context(), path, &off, &lim)
+			got, gotMeta, err := env.ReadFileRichCtx(t.Context(), path, &off, &lim)
 			if err != nil {
-				t.Errorf("%s offset=%d limit=%d: ReadFileCtx error %v", f.name, w.offset, w.limit, err)
+				t.Errorf("%s offset=%d limit=%d: ReadFileRichCtx error %v (whole err=%v)", f.name, w.offset, w.limit, err, werr)
 				continue
 			}
 			if got != want {
 				t.Errorf("%s offset=%d limit=%d: scanned entry diverged\n got  = %q\n want = %q", f.name, w.offset, w.limit, got, want)
+			}
+			if gotMeta != wantMeta {
+				t.Errorf("%s offset=%d limit=%d: scanned meta diverged\n got  = %+v\n want = %+v", f.name, w.offset, w.limit, gotMeta, wantMeta)
 			}
 		}
 	}
@@ -119,14 +125,14 @@ func TestScanLineWindowHeadIsScannedFirst(t *testing.T) {
 	t.Parallel()
 	body := "first\nsecond\r\nthird"
 	off, lim := 1, 3
-	want := NumberLinesBytes([]byte(body), &off, &lim)
+	want, wantMeta, _ := renderTextReadRich("fixture.txt", []byte(body), &off, &lim)
 	head := body[:4] // "firs", splitting the first line
-	got, err := scanLineWindow(t.Context(), strings.NewReader(body[len(head):]), []byte(head), off, lim)
+	got, gotMeta, err := scanLineWindowRich(t.Context(), strings.NewReader(body[len(head):]), int64(len(body)), "fixture.txt", []byte(head), &off, &lim)
 	if err != nil {
 		t.Fatalf("scanner with head: %v", err)
 	}
-	if got != want {
-		t.Fatalf("scanner with head = %q, want %q", got, want)
+	if got != want || gotMeta != wantMeta {
+		t.Fatalf("scanner with head = (%q, %+v), want (%q, %+v)", got, gotMeta, want, wantMeta)
 	}
 }
 
@@ -148,7 +154,7 @@ func TestScanLineWindowRefusesANULByteItScans(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if _, err := scanLineWindow(t.Context(), strings.NewReader(tc.body), nil, tc.off, tc.lim); err == nil {
+			if _, _, err := scanLineWindowRich(t.Context(), strings.NewReader(tc.body), int64(len(tc.body)), "fixture.txt", nil, &tc.off, &tc.lim); err == nil {
 				t.Fatalf("scanner accepted a scanned NUL: %q", tc.body)
 			}
 		})
@@ -157,7 +163,7 @@ func TestScanLineWindowRefusesANULByteItScans(t *testing.T) {
 	// window's last line. This is the window-scoped refusal the package
 	// documents at readWindowWholeBelow.
 	body := "first\nsecond\nthird\n" + strings.Repeat("text\n", 10) + "bad\x00tail\n"
-	if _, err := scanLineWindow(t.Context(), strings.NewReader(body), nil, 1, 2); err != nil {
+	if _, _, err := scanLineWindowRich(t.Context(), strings.NewReader(body), int64(len(body)), "fixture.txt", nil, new(1), new(2)); err != nil {
 		t.Fatalf("scanner refused a window that ends before the file's NUL: %v", err)
 	}
 }

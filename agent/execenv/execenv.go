@@ -188,6 +188,25 @@ type ContextualFileReader interface {
 	EditFileCtx(ctx context.Context, path, oldString, newString string, replaceAll bool) (string, error)
 }
 
+// ReadFileMeta reports exact structural facts about a text read_file result so
+// tool truncation telemetry and repeat-read tracking never re-parse prose.
+type ReadFileMeta struct {
+	StartLine    int    // 1-based first emitted line (0 if empty, past EOF, or unscanned huge-file tail)
+	EndLine      int    // 1-based last emitted line (0 if empty, past EOF, or unscanned huge-file tail)
+	TotalLines   int    // exact total line count when known, 0 when >ReadTotalLinesScanCap and not scanned to EOF
+	Truncated    bool   // true when stopped early by DefaultReadMaxBytes or line limit before EOF
+	TruncatedBy  string // "", "chars", or "lines"
+	ClampedLines int    // count of emitted lines clamped at DefaultReadMaxLineChars
+	PastEOF      bool   // true when positive offset > TotalLines
+	TailMode     bool   // true when negative offset selected tail lines
+}
+
+// RichFileReader is an optional capability implemented by LocalExecutionEnvironment.
+// Existing ExecutionEnvironment test doubles remain unaffected.
+type RichFileReader interface {
+	ReadFileRichCtx(ctx context.Context, path string, offsetLine, limitLines *int) (string, ReadFileMeta, error)
+}
+
 // FileEdit is one exact-text replacement within a single-file batch edit.
 type FileEdit struct {
 	OldString  string

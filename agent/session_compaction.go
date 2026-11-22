@@ -128,6 +128,10 @@ func (s *Session) publishFoldedHistory(snapLen, snapRevision int, folded []schem
 	}
 	s.history = folded
 	s.bumpHistoryRevisionLocked()
+	// The prior read results are no longer in the model's context, so repeat
+	// reads after this fold are fresh reads. s.readFiles is deliberately kept:
+	// the read-before-write guard is about the session, not its context window.
+	s.clearPriorReads()
 	return folded, true
 }
 

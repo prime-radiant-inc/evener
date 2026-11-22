@@ -73,18 +73,21 @@ func TestReadFileWindowReadsOnlyTheWindow(t *testing.T) {
 	env.SetFs(counter)
 
 	offset, limit := 1, 20
-	out, err := env.ReadFile("large.txt", &offset, &limit)
+	out, meta, err := env.ReadFileRichCtx(t.Context(), "large.txt", &offset, &limit)
 	if err != nil {
 		t.Fatalf("ReadFile(offset=1, limit=20): %v", err)
 	}
 	// The window itself must be right, so a read that returns nothing cheaply
 	// cannot pass this test.
-	rows := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
-	if len(rows) != limit {
-		t.Fatalf("window = %d rows, want %d: %q", len(rows), limit, out)
+	rows := strings.Split(out, "\n")
+	if len(rows) < limit {
+		t.Fatalf("window = %d rows, want at least %d: %q", len(rows), limit, out)
 	}
-	if !strings.HasPrefix(rows[0], "   1\tline of representative") || !strings.HasPrefix(rows[limit-1], "  20\tline of representative") {
+	if !strings.HasPrefix(rows[0], "1\tline of representative") || !strings.HasPrefix(rows[limit-1], "20\tline of representative") {
 		t.Fatalf("window rows are not lines 1-%d of the file: first %q last %q", limit, rows[0], rows[limit-1])
+	}
+	if meta.StartLine != 1 || meta.EndLine != limit || meta.TotalLines != 0 {
+		t.Fatalf("meta = %+v, want StartLine=1 EndLine=%d TotalLines=0", meta, limit)
 	}
 
 	if got := counter.Bytes(); got > readWindowByteBudget {
@@ -116,13 +119,16 @@ func TestReadFileWindowReadsANearEOFFWindow(t *testing.T) {
 	env.SetFs(counter)
 
 	offset, limit := rows-24, 20
-	out, err := env.ReadFile("large.txt", &offset, &limit)
+	out, meta, err := env.ReadFileRichCtx(t.Context(), "large.txt", &offset, &limit)
 	if err != nil {
 		t.Fatalf("ReadFile(near EOF): %v", err)
 	}
-	got := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
-	if len(got) != limit || !strings.HasPrefix(got[0], "99976\tline of representative") {
+	got := strings.Split(out, "\n")
+	if len(got) < limit || !strings.HasPrefix(got[0], "99976\tline of representative") || !strings.HasPrefix(got[limit-1], "99995\tline of representative") {
 		t.Fatalf("near-EOF window = %q, want 20 rows from line %d", out, offset)
+	}
+	if meta.StartLine != 99976 || meta.EndLine != 99995 || meta.TotalLines != 0 {
+		t.Fatalf("meta = %+v, want StartLine=99976 EndLine=99995 TotalLines=0", meta)
 	}
 	// A line number is not a byte offset, so the scan of the prefix is
 	// unavoidable; holding the file is not. The bound is the file plus one
@@ -176,16 +182,19 @@ func TestReadFileWindowAnswersAFilePastTheWholeFileCap(t *testing.T) {
 	}
 
 	offset, limit := 1, 20
-	out, err := env.ReadFileCtx(t.Context(), "oversize.log", &offset, &limit)
+	out, meta, err := env.ReadFileRichCtx(t.Context(), "oversize.log", &offset, &limit)
 	if err != nil {
 		t.Fatalf("windowed read of an oversize file: %v", err)
 	}
-	got := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
-	if len(got) != limit {
-		t.Fatalf("window = %d rows, want %d: %q", len(got), limit, out)
+	got := strings.Split(out, "\n")
+	if len(got) < limit {
+		t.Fatalf("window = %d rows, want at least %d: %q", len(got), limit, out)
 	}
-	if !strings.HasPrefix(got[0], "   1\tline of representative") || !strings.HasPrefix(got[limit-1], "  20\tline of representative") {
+	if !strings.HasPrefix(got[0], "1\tline of representative") || !strings.HasPrefix(got[limit-1], "20\tline of representative") {
 		t.Fatalf("window rows are not lines 1-%d of the file: first %q last %q", limit, got[0], got[limit-1])
+	}
+	if meta.StartLine != 1 || meta.EndLine != limit || meta.TotalLines != 0 {
+		t.Fatalf("meta = %+v, want StartLine=1 EndLine=%d TotalLines=0", meta, limit)
 	}
 	if rows < limit {
 		t.Fatalf("fixture holds %d rows, fewer than the %d-row window", rows, limit)

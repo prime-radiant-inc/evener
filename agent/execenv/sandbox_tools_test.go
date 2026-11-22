@@ -512,7 +512,7 @@ func TestReadFileOffModeIdentical(t *testing.T) {
 	if err != nil {
 		t.Fatalf("off read: %v", err)
 	}
-	if !strings.Contains(offOut, "   1\tline one") || !strings.Contains(offOut, "   3\tline three") {
+	if !strings.Contains(offOut, "1\tline one") || !strings.Contains(offOut, "3\tline three") {
 		t.Fatalf("off read did not produce today's line-numbered output: %q", offOut)
 	}
 

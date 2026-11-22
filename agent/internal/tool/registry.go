@@ -367,6 +367,14 @@ type ExecResult struct {
 	// result cut out, so offset/limit can fetch exactly it. Nil otherwise.
 	OmittedLines *LineRange
 
+	// Read metadata propagated from RichFileReader / PDF slicing.
+	ReadStartLine      int
+	ReadEndLine        int
+	ReadPastEOF        bool
+	ReadUnnumberedTail bool
+	ReadClamped        bool
+	ReadPages          string
+
 	// UnchangedSinceTurn is set on a repeat read_file of the same path and range
 	// whose file is unchanged since the read made at that turn. The content is
 	// still returned; this is a hint, not a refusal.
@@ -450,8 +458,13 @@ type StateResult struct {
 // TextResult is returned by executors that need different text for the model
 // and for the full TOOL_CALL_END event payload.
 type TextResult struct {
-	Output     string
-	FullOutput string
+	Output             string
+	FullOutput         string
+	ReadStartLine      int
+	ReadEndLine        int
+	ReadPastEOF        bool
+	ReadUnnumberedTail bool
+	ReadClamped        bool
 }
 
 // ImageResult is returned by tool executors (e.g. read_file) when a file is
@@ -462,6 +475,7 @@ type ImageResult struct {
 	Data      []byte
 	MediaType string
 	Prompt    string // what the caller hopes to learn from this image
+	ReadPages string
 }
 
 // ParseImageResult checks if ReadFile output is an image response (the [image: ...]
@@ -981,6 +995,7 @@ func dispatchedResult(name, callID string, lim schema.ToolOutputLimit, v any, er
 		res.ImageData = img.Data
 		res.ImageMediaType = img.MediaType
 		res.ImagePrompt = img.Prompt
+		res.ReadPages = img.ReadPages
 		return res
 	}
 
@@ -1014,6 +1029,11 @@ func dispatchedResult(name, callID string, lim schema.ToolOutputLimit, v any, er
 		if text.FullOutput != "" {
 			res.FullOutput = text.FullOutput
 		}
+		res.ReadStartLine = text.ReadStartLine
+		res.ReadEndLine = text.ReadEndLine
+		res.ReadPastEOF = text.ReadPastEOF
+		res.ReadUnnumberedTail = text.ReadUnnumberedTail
+		res.ReadClamped = text.ReadClamped
 		return res
 	}
 
@@ -1128,17 +1148,17 @@ func omittedNumberedLines(full string, limit int) *LineRange {
 	return &LineRange{From: from, To: to}
 }
 
-// numberedLineAt parses the "%4d\t" prefix of the line containing runes[pos].
+// numberedLineAt parses the "%d\t" or "%d:" prefix of the line containing runes[pos].
 func numberedLineAt(runes []rune, pos int) (int, bool) {
 	start := pos
 	for start > 0 && runes[start-1] != '\n' {
 		start--
 	}
 	end := start
-	for end < len(runes) && runes[end] != '\t' && runes[end] != '\n' {
+	for end < len(runes) && runes[end] != '\t' && runes[end] != ':' && runes[end] != '\n' {
 		end++
 	}
-	if end >= len(runes) || runes[end] != '\t' {
+	if end >= len(runes) || (runes[end] != '\t' && runes[end] != ':') {
 		return 0, false
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(string(runes[start:end])))
@@ -1157,6 +1177,8 @@ func truncateCharsWithStatus(s string, limit int, strategy schema.TruncationStra
 	}
 	removed := len(runes) - limit
 	switch strategy {
+	case schema.TruncHead:
+		return truncateHeadChars(s, limit, false)
 	case schema.TruncTail:
 		// Spec: keep the last max_chars characters and prepend a warning.
 		marker := fmt.Sprintf("[Output truncated: %d characters removed from the beginning.]\n\n", removed)
@@ -1217,14 +1239,20 @@ func truncateHeadCountReason(s string, maxEntries, maxChars int) (string, Trunca
 // marker when s exceeds limit. Existing notes after the first blank line are
 // dropped whole, never cut into fragments. The removed count includes them.
 func truncateCharsFromTailWithStatus(s string, limit int) (string, bool) {
+	return truncateHeadChars(s, limit, true)
+}
+
+func truncateHeadChars(s string, limit int, splitNotes bool) (string, bool) {
 	runes := []rune(s)
 	if limit <= 0 || len(runes) <= limit {
 		return s, false
 	}
-	entries, _ := searchresult.Split(s)
 	entryRunes := len(runes)
-	if len(entries) != len(s) {
-		entryRunes = utf8.RuneCountInString(entries)
+	if splitNotes {
+		entries, _ := searchresult.Split(s)
+		if len(entries) != len(s) {
+			entryRunes = utf8.RuneCountInString(entries)
+		}
 	}
 	removed := len(runes) - limit
 	for {
@@ -1281,7 +1309,7 @@ func dispatchLimit(name string, lim schema.ToolOutputLimit, args map[string]any)
 func defaultToolLimit(toolName string) schema.ToolOutputLimit {
 	switch toolName {
 	case "read_file", "memory_read":
-		return schema.ToolOutputLimit{MaxChars: 50_000, Strategy: schema.TruncHeadTail}
+		return schema.ToolOutputLimit{MaxChars: 50_000, Strategy: schema.TruncHead}
 	case "shell":
 		return schema.ToolOutputLimit{MaxChars: 30_000, MaxLines: 512, Strategy: schema.TruncHeadTail}
 	case "grep", "memory_search":
