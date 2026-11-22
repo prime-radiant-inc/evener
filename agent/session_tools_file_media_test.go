@@ -17,16 +17,16 @@ import (
 
 	"github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"golang.org/x/image/bmp"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/llm"
 )
 
-// readFileMediaPNG builds the oversized image payload a read_file image result
-// carries: the [image: ...] envelope execenv produces followed by base64 PNG.
-func readFileMediaPNG(t *testing.T, width, height int) ([]byte, string) {
-	t.Helper()
+// readFileMediaImage returns the two-tone RGBA image read_file media fixtures
+// encode, so a downscale has an edge to preserve.
+func readFileMediaImage(width, height int) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 	for y := 0; y < height; y++ {
 		for x := 0; x < width; x++ {
@@ -37,8 +37,15 @@ func readFileMediaPNG(t *testing.T, width, height int) ([]byte, string) {
 			}
 		}
 	}
+	return img
+}
+
+// readFileMediaPNG builds the oversized image payload a read_file image result
+// carries: the [image: ...] envelope execenv produces followed by base64 PNG.
+func readFileMediaPNG(t *testing.T, width, height int) ([]byte, string) {
+	t.Helper()
 	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
+	if err := png.Encode(&buf, readFileMediaImage(width, height)); err != nil {
 		t.Fatalf("encode PNG fixture: %v", err)
 	}
 	return buf.Bytes(), "[image: big.png]\n" + base64.StdEncoding.EncodeToString(buf.Bytes())
@@ -78,6 +85,50 @@ func TestReadFileDownscalesOversizedImageAndAnnotatesCoordinates(t *testing.T) {
 		if !strings.Contains(res.Output, want) {
 			t.Fatalf("result text = %q, want it to carry %q (original, displayed, scale factor)", res.Output, want)
 		}
+	}
+}
+
+// A small BMP is re-encoded to PNG at the same pixel dimensions, so read_file
+// must not claim coordinates moved: it emits no "multiply coordinates by 1.00"
+// note for an image that was only format-converted.
+func TestReadFileSmallBMPReencodeHasNoCoordinateNote(t *testing.T) {
+	t.Parallel()
+	var bitmap bytes.Buffer
+	if err := bmp.Encode(&bitmap, readFileMediaImage(100, 100)); err != nil {
+		t.Fatalf("encode BMP fixture: %v", err)
+	}
+	payload := "[image: small.bmp]\n" + base64.StdEncoding.EncodeToString(bitmap.Bytes())
+	tracked := 0
+	guard := readGuard{
+		trackRead:              func(string) { tracked++ },
+		readBeforeWriteWarning: func(string) string { return "" },
+	}
+	v, err := execFileReadWith(context.Background(), map[string]any{"file_path": "small.bmp"}, guard,
+		func(string, *int, *int) (string, execenv.ReadFileMeta, error) {
+			return payload, execenv.ReadFileMeta{}, nil
+		})
+	if err != nil {
+		t.Fatalf("read_file(small.bmp): %v", err)
+	}
+	if tracked != 1 {
+		t.Fatalf("read_file tracked %d reads, want 1", tracked)
+	}
+	img, ok := v.(tool.ImageResult)
+	if !ok {
+		t.Fatalf("read_file(small.bmp) returned %T, want tool.ImageResult", v)
+	}
+	if img.MediaType != "image/png" {
+		t.Fatalf("prepared media type = %q, want image/png", img.MediaType)
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(img.Data))
+	if err != nil {
+		t.Fatalf("returned image bytes do not decode: %v", err)
+	}
+	if cfg.Width != 100 || cfg.Height != 100 {
+		t.Fatalf("returned image decodes to %dx%d, want 100x100 (dimensions unchanged)", cfg.Width, cfg.Height)
+	}
+	if strings.Contains(img.Text, "multiply coordinates") || strings.Contains(img.Text, "1.00") {
+		t.Fatalf("small BMP re-encode emitted a coordinate note: %q", img.Text)
 	}
 }
 

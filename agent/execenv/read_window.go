@@ -67,7 +67,6 @@ func lineWindowRequested(offsetLine, limitLines *int) bool {
 
 type readWindowParams struct {
 	requestedWindow  bool
-	explicitOffset   bool
 	explicitLimit    bool
 	singleLineEscape bool
 	tailMode         bool
@@ -79,7 +78,6 @@ type readWindowParams struct {
 func resolveReadWindowParams(offsetLine, limitLines *int) readWindowParams {
 	p := readWindowParams{
 		requestedWindow:  lineWindowRequested(offsetLine, limitLines),
-		explicitOffset:   offsetLine != nil && *offsetLine != 0,
 		explicitLimit:    limitLines != nil && *limitLines > 0,
 		singleLineEscape: limitLines != nil && *limitLines == 1,
 		start:            1,

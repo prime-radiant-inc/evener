@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
@@ -141,7 +142,10 @@ func TestTextResultPassesThroughReadMetadataAndTruncation(t *testing.T) {
 
 func TestReadFileLongPathDoesNotTripRegistryTruncHead(t *testing.T) {
 	t.Parallel()
-	baseDir := t.TempDir()
+	// The fixture path is ~2,500 bytes, past macOS PATH_MAX (1024), so it lives
+	// in an in-memory filesystem where that length is legal on every platform.
+	baseDir := "/work"
+	memfs := afero.NewMemMapFs()
 	seg := strings.Repeat("d", 100)
 	var relParts []string
 	for len(filepath.Join(relParts...)) < 2450 {
@@ -149,13 +153,13 @@ func TestReadFileLongPathDoesNotTripRegistryTruncHead(t *testing.T) {
 	}
 	relPath := filepath.Join(append(relParts, "target.txt")...)
 	fullPath := filepath.Join(baseDir, relPath)
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+	if err := memfs.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(fullPath, []byte(strings.Repeat("x", 60000)+"\n"), 0o644); err != nil {
+	if err := afero.WriteFile(memfs, fullPath, []byte(strings.Repeat("x", 60000)+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	env := execenv.NewLocalExecutionEnvironment(baseDir)
+	env := execenv.NewLocalExecutionEnvironment(baseDir).SetFs(memfs)
 	t.Cleanup(env.Cleanup)
 
 	reg := NewRegistry()

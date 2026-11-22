@@ -33,10 +33,11 @@ var (
 )
 
 // PreparedImage is image bytes that are safe to hand a model, with the
-// dimensions before and after preparation. Scaled reports that Data is not the
-// caller's input: it was downscaled, re-encoded, or both, so callers that
-// display coordinates derived from the new bytes need the original dimensions
-// to map back.
+// dimensions before and after preparation. Scaled reports that the pixel
+// dimensions changed: Data was downscaled, so callers that display coordinates
+// derived from the new bytes need the original dimensions to map back. A
+// re-encode that keeps the same dimensions (BMP converted to PNG, an over-cap
+// JPEG recompressed) reports Scaled false because coordinates are unchanged.
 type PreparedImage struct {
 	Data           []byte
 	MediaType      string
@@ -113,7 +114,9 @@ func PrepareImageForModel(data []byte) (PreparedImage, error) {
 			OriginalHeight: cfg.Height,
 			Width:          width,
 			Height:         height,
-			Scaled:         true,
+			// Only a dimension change moves coordinates; a format or byte
+			// re-encode at the original size does not.
+			Scaled: width != cfg.Width || height != cfg.Height,
 		}
 	}
 

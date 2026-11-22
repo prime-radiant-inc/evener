@@ -168,7 +168,15 @@ func (e *LocalExecutionEnvironment) ReadFileRichAndBytesCtx(ctx context.Context,
 // caller that already holds the bytes does not pay a whole-file string copy to
 // display a small window: the read_file path returns a 20-line window while
 // holding an 8 MiB file, and converting the file to a string first copies every
-// byte of it. The output is byte-identical to NumberLines(string(text), ...).
+// byte of it. The output is byte-identical to NumberLines(string(text), ...):
+// compact "N\t" row prefixes ("N:" for the whole window when any displayed
+// line starts with a tab), CRLF normalized to LF, lines clamped to
+// DefaultReadMaxLineChars runes (skipped for the single line that limit=1
+// selects), and a rendered body that stops on a clean line boundary under
+// DefaultReadMaxBytes. A negative offset returns that many lines back from the
+// end, keeping the tail-most rows when the byte cap drops earlier ones. Rows
+// only: unlike read_file, there are no file-path footers or continuation
+// notices.
 func NumberLinesBytes(text []byte, offsetLine, limitLines *int) string {
 	return formatNumberLinesBytes(text, offsetLine, limitLines)
 }
@@ -206,16 +214,24 @@ var DefaultReadMaxLineChars = 2000
 // negative offsets use a backward ReadSeeker tail scan.
 var ReadTotalLinesScanCap int64 = 2 << 20
 
-// NumberLines presents text as ReadFile presents a text file: CRLF
-// normalized to LF, lines numbered from offsetLine (default 1), at most
-// limitLines lines (default 2000), and "" past the end. A trailing newline
-// terminates the last line rather than starting another: a file ending in
-// "\n" has exactly as many rows as newline characters, matching the line
-// count patch context works with, so a row copied from the display cannot
-// run past the end of the file (#6202). The window is extracted by scanning
-// segments rather than splitting the file, so a line-heavy file at the
-// whole-file read cap does not allocate per line for every line in it
-// (issue #4556).
+// NumberLines presents text as ReadFile presents a text file: CRLF normalized
+// to LF, compact "N\t" row prefixes ("N:" for the whole window when any
+// displayed line starts with a tab, so tab-indented content cannot be mistaken
+// for the separator), lines numbered from offsetLine (default 1), at most
+// limitLines lines (default 2000), and "" past the end. Lines longer than
+// DefaultReadMaxLineChars (2,000 runes) are clamped with an inline marker
+// unless limit is 1, which skips the rune clamp for the single requested line;
+// the rendered body stops on a clean line boundary under DefaultReadMaxBytes
+// (48 KB). A negative offset returns that many lines back from the end,
+// numbered from the file's start, keeping the tail-most rows when the byte cap
+// drops earlier ones. A trailing newline terminates the last line rather than
+// starting another: a file ending in "\n" has exactly as many rows as newline
+// characters, matching the line count patch context works with, so a row
+// copied from the display cannot run past the end of the file (#6202). The
+// window is extracted by scanning segments rather than splitting the file, so
+// a line-heavy file at the whole-file read cap does not allocate per line for
+// every line in it (issue #4556). It renders rows only: unlike read_file,
+// there are no file-path footers, empty-file notices, or continuation hints.
 func NumberLines(text string, offsetLine, limitLines *int) string {
 	return formatNumberLinesString(text, offsetLine, limitLines)
 }

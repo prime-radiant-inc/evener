@@ -199,7 +199,8 @@ func TestReadFileLineClampingAndSingleLineEscape(t *testing.T) {
 		if len(firstLine)+1 > DefaultReadMaxBytes {
 			t.Fatalf("sliced row len = %d, want <= %d", len(firstLine)+1, DefaultReadMaxBytes)
 		}
-		if !strings.Contains(out, "60000") || !strings.Contains(out, "1") {
+		_, footer, ok := strings.Cut(out, "\n")
+		if !ok || !strings.Contains(footer, "1") || !strings.Contains(footer, "60000") {
 			t.Fatalf("footer should include line number 1 and byte length 60000: %.300q", out)
 		}
 		wholeOut, _, wholeMeta, err := env.ReadFileRichAndBytesCtx(t.Context(), p, &off, &lim)
@@ -583,8 +584,11 @@ func TestNumberLinesNegativeOffsetKeepsTailMostLines(t *testing.T) {
 
 // Not parallel: mutates package-level ReadTotalLinesScanCap.
 func TestReadFileLongPathStaysUnderRegistryCap(t *testing.T) {
-	baseDir := t.TempDir()
-	// Build a ~2,500-byte valid OS path under baseDir (each component < 255 bytes).
+	// The fixture path is ~2,500 bytes, past macOS PATH_MAX (1024), so it lives
+	// in an in-memory filesystem where that length is legal on every platform.
+	baseDir := "/work"
+	memfs := afero.NewMemMapFs()
+	// Build a ~2,500-byte valid path under baseDir (each component < 255 bytes).
 	seg := strings.Repeat("d", 100)
 	var relParts []string
 	for len(filepath.Join(relParts...)) < 2450 {
@@ -595,15 +599,15 @@ func TestReadFileLongPathStaysUnderRegistryCap(t *testing.T) {
 		t.Fatalf("fixture relPath len = %d, want >= 2400", len(relPath))
 	}
 	fullPath := filepath.Join(baseDir, relPath)
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+	if err := memfs.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	env := NewLocalExecutionEnvironment(baseDir)
+	env := NewLocalExecutionEnvironment(baseDir).SetFs(memfs)
 	t.Cleanup(env.Cleanup)
 
 	// Case 1: single-line overflow (60,000 bytes) with limit=1.
-	if err := os.WriteFile(fullPath, []byte(strings.Repeat("x", 60000)+"\n"), 0o644); err != nil {
+	if err := afero.WriteFile(memfs, fullPath, []byte(strings.Repeat("x", 60000)+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	off, lim := 1, 1
@@ -625,17 +629,22 @@ func TestReadFileLongPathStaysUnderRegistryCap(t *testing.T) {
 		t.Fatalf("single-line overflow equivalence failed: err=%v len=%d/%d", err, len(out), len(wholeOut))
 	}
 
-	// Case 2: unnumbered large-file tail (>ReadTotalLinesScanCap) exceeding 48 KB.
+	// Case 2: unnumbered large-file tail (>ReadTotalLinesScanCap) exceeding 48 KB,
+	// with the fixture itself past readWindowWholeBelow so this read takes
+	// scanTailWindowSeekerRich rather than the whole-file renderTextReadRich path.
 	origCap := ReadTotalLinesScanCap
 	ReadTotalLinesScanCap = 4096
 	t.Cleanup(func() { ReadTotalLinesScanCap = origCap })
 
 	var sb strings.Builder
 	pad := strings.Repeat("y", 190)
-	for i := 1; i <= 600; i++ {
+	for i := 1; i <= 720; i++ {
 		fmt.Fprintf(&sb, "n-%04d-%s\n", i, pad)
 	}
-	if err := os.WriteFile(fullPath, []byte(sb.String()), 0o644); err != nil {
+	if int64(sb.Len()) <= readWindowWholeBelow || sb.Len() < 140_000 {
+		t.Fatalf("tail fixture is %d bytes, want > readWindowWholeBelow (%d) and >= 140000", sb.Len(), readWindowWholeBelow)
+	}
+	if err := afero.WriteFile(memfs, fullPath, []byte(sb.String()), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	off = -500
@@ -649,7 +658,7 @@ func TestReadFileLongPathStaysUnderRegistryCap(t *testing.T) {
 	if !meta.TailMode || meta.StartLine != 0 || !meta.Truncated || meta.TruncatedBy != "chars" {
 		t.Fatalf("tail meta = %+v", meta)
 	}
-	if !strings.Contains(out, relPath) || !strings.Contains(out, "n-0600-") {
+	if !strings.Contains(out, relPath) || !strings.Contains(out, "n-0720-") {
 		t.Fatalf("unnumbered tail missing path header or final line")
 	}
 	wholeOut, _, wholeMeta, err = env.ReadFileRichAndBytesCtx(t.Context(), relPath, &off, nil)

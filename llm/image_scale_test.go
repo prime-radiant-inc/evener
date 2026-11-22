@@ -200,8 +200,13 @@ func TestPrepareImageForModelCompressesOversizedBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareImageForModel: %v", err)
 	}
-	if !got.Scaled {
-		t.Fatal("an over-cap image reported Scaled = false")
+	// Scaled tracks pixel dimensions only: this fixture is re-encoded for the
+	// byte cap and may or may not be shrunk, so the flag must agree with the
+	// dimensions that came back.
+	wantScaled := got.Width != got.OriginalWidth || got.Height != got.OriginalHeight
+	if got.Scaled != wantScaled {
+		t.Fatalf("Scaled = %v, want %v for %dx%d -> %dx%d", got.Scaled, wantScaled,
+			got.OriginalWidth, got.OriginalHeight, got.Width, got.Height)
 	}
 	if len(got.Data) > cap {
 		t.Fatalf("compressed bytes = %d, want <= %d", len(got.Data), cap)
@@ -211,6 +216,35 @@ func TestPrepareImageForModelCompressesOversizedBytes(t *testing.T) {
 	}
 	if ImageBlockMediaType(got.MediaType) == "" {
 		t.Fatalf("compressed media type = %q, not accepted by an image block", got.MediaType)
+	}
+}
+
+// A PNG over the byte cap can be recompressed to JPEG at its original pixel
+// dimensions. That is a byte re-encode, not a downscale, so Scaled stays false.
+// Not parallel: it lowers the package-level cap to the fixture's own size.
+func TestPrepareImageForModelByteReencodeKeepsScaledFalse(t *testing.T) {
+	data := imageScaleEncodePNG(t, imageScaleNoisyGray(400, 400))
+	old := MaxModelImageBytes
+	// The same image re-encoded as PNG cannot fit this cap, so the byte ladder
+	// must fall through to JPEG without resizing.
+	MaxModelImageBytes = len(data) - 1
+	defer func() { MaxModelImageBytes = old }()
+
+	got, err := PrepareImageForModel(data)
+	if err != nil {
+		t.Fatalf("PrepareImageForModel: %v", err)
+	}
+	if got.Width != 400 || got.Height != 400 {
+		t.Fatalf("byte re-encode resized to %dx%d, want the original 400x400", got.Width, got.Height)
+	}
+	if got.Scaled {
+		t.Fatal("a same-dimension PNG->JPEG re-encode reported Scaled = true")
+	}
+	if got.MediaType != "image/jpeg" {
+		t.Fatalf("byte re-encode media type = %q, want image/jpeg", got.MediaType)
+	}
+	if len(got.Data) > MaxModelImageBytes {
+		t.Fatalf("re-encoded bytes = %d, want <= %d", len(got.Data), MaxModelImageBytes)
 	}
 }
 
@@ -228,6 +262,12 @@ func TestPrepareImageForModelConvertsBMPToWireFormat(t *testing.T) {
 	}
 	if ImageBlockMediaType(got.MediaType) == "" {
 		t.Fatalf("converted media type = %q, not accepted by an image block", got.MediaType)
+	}
+	if got.MediaType != "image/png" {
+		t.Fatalf("converted media type = %q, want image/png", got.MediaType)
+	}
+	if got.Scaled {
+		t.Fatalf("a 100x100 BMP re-encoded at the same dimensions reported Scaled = true")
 	}
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(got.Data))
 	if err != nil {
