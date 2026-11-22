@@ -307,14 +307,38 @@
   }
 }
 
-/* The phone's compact resting row keeps Attach and the menu in this slot; it
- * hugs both controls so the field keeps the line and Send stays at the far edge.
- * The explicit basis also overrides the folded reservation's contribution in
- * engines that size the row from it. */
+/* The phone's compact resting row keeps only the menu in this slot. Attach is
+ * absolute over the field, so reserving its 48px here duplicated the folded
+ * editor's own Attach inset and squeezed the 320px writing surface to 82px
+ * (issue #7500). Hug the menu alone and let the field absorb the difference;
+ * the menu then starts where the expanded row's chrome reserve ends, so it
+ * stays put through expansion. The explicit basis also overrides the folded
+ * reservation's contribution in engines that size the row from it. */
 .leading[data-compact="true"] {
-  flex: 0 0 calc(var(--tap-min) * 2 + var(--space-1));
-  min-width: calc(var(--tap-min) * 2 + var(--space-1));
+  flex: 0 0 var(--tap-min);
+  min-width: var(--tap-min);
+  padding-inline-start: 0;
   contain-intrinsic-inline-size: none;
+}
+
+/* At the narrowest card the row has 286px for three 44px targets and the
+ * writing surface. PromptCard's matching 340px rule yields the card padding,
+ * the field inset, and the control gap; here Attach moves to the card's edge
+ * and the folded editor uses the whole field. The 320px placeholder is
+ * 151.1px wide and the row's maximum writing surface is 154px, so every
+ * pixel the duplicate reservations spent has to come back. */
+@container (max-width: 340px) {
+  .attachSlot {
+    inset-inline-start: 0;
+  }
+  .editorSlot {
+    padding-inline: var(--space-2);
+  }
+  .editorSlot[data-folded="true"] {
+    /* Coarse pointers keep the 44px Attach hit box; a fine-pointer narrow
+     * pane has the 24px Attach and keeps the editor's 4px gap beside it. */
+    padding-inline: var(--tap-min, calc(var(--space-5) + var(--space-1))) 0;
+  }
 }
 
 /* The menu-only chrome otherwise takes its root's width:100%, wrapping below
