@@ -190,7 +190,7 @@ test("AppShell mounts useKeyboardInset, so a visualViewport resize sets --keyboa
   vi.unstubAllGlobals();
 });
 
-test("ordinary mobile toolbar Back publishes only the Welcome transition", async () => {
+test("ordinary mobile Sessions opens the panel without publishing a route transition", async () => {
   vi.stubGlobal("innerWidth", 390);
   installMobileViewport();
   installLocationForRoute("local:origin");
@@ -219,17 +219,11 @@ test("ordinary mobile toolbar Back publishes only the Welcome transition", async
     events.push({ method: "replace", path: window.location.pathname });
   });
   try {
-    await user.click(screen.getByRole("button", { name: "Back" }));
-    await waitFor(() => {
-      const workspace = workspaceStore.getState();
-      expect(workspace.panes.find((pane) => pane.id === workspace.focusedPaneId)?.type).toBe("welcome");
-      expect(window.location.pathname).toBe("/");
-      expect(document.querySelector("[data-stacked-pane-type]")?.getAttribute("data-stacked-pane-type")).toBe(
-        "welcome",
-      );
-    });
+    await user.click(screen.getByRole("button", { name: /^Sessions/ }));
+    await screen.findByRole("dialog", { name: "Sessions" });
+    expect(window.location.pathname).toBe("/s/local%3Aorigin");
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
-    expect(events).toEqual([{ method: "push", path: "/" }]);
+    expect(events).toEqual([]);
   } finally {
     push.mockRestore();
     replace.mockRestore();
@@ -458,8 +452,9 @@ test.each(["local:owner", "local:child"])(
       // the nested location reconciles without disturbing the placement.
       expect(window.location.pathname).toBe(`/s/${encodeURIComponent(title)}`);
     }
-    await user.click(screen.getByRole("button", { name: "Back" }));
-    expect(await screen.findByText("No session open")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /^Sessions/ }));
+    expect(screen.getByRole("dialog", { name: "Sessions" })).toBeTruthy();
+    expect(workspaceStore.getState().panes).toEqual(retained);
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
   },
 );

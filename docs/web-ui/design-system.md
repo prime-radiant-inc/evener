@@ -123,6 +123,14 @@ losing the conversation that made the evidence relevant.
   but separates reading from scanning. Shared size and width preferences remain available.
   Phones reflow speaker rows, controls and evidence rather than shrinking a desktop page;
   wide evidence scrolls within its surface instead of widening the page or shrinking targets.
+- **Keep session reading controls in the header.** Find in session, then Overview, occupy the
+  desktop pane header's action slot; below 900px `StackHost` mounts the same actions as icon
+  buttons with the ordinary touch floor. The ordinary composer menu leaves those two actions to
+  the header and retains Verbosity, turn verbs, and session management. Rail and embedded-column
+  menus keep their existing inspection access. Overview keeps one icon and shows its open state
+  through selected styling. Mobile session titles align left. A session with no real Back
+  destination gets Sessions as its only leading navigation control; a retained parent, valid
+  back-stack destination, or attention Back uses Back instead. Non-session top bars are unchanged.
 - **Keep session status inside its pane.** Every visible desktop session pane ends
   with its own
   flush status footer, never one strip spanning sibling panes. The footer leads with that
@@ -140,7 +148,7 @@ losing the conversation that made the evidence relevant.
   token: `--dock-clearance` in `tokens.css` (`max(0px, env(safe-area-inset-bottom) -
   var(--keyboard-inset, 0px))`). Every dock reads that one value, and it yields when the
   on-screen keyboard covers the band. The working-directory strip follows that shell breakpoint:
-  the narrow phone reads the session's working directory and branch through the session menu's
+  the narrow phone reads the session's working directory and branch through the top bar's
   Overview (About), while a primary-touch phone whose wider landscape viewport uses the desktop
   shell retains the separate status footer. A phone chip shows its
   glyph and a single active count (settled for Tasks); its category name and the full
