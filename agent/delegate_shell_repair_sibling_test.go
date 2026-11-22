@@ -77,6 +77,7 @@ func TestDelegateShellRepairLeavesALiveSiblingsForwardedJobAlone(t *testing.T) {
 	select {
 	case <-exited:
 		t.Fatal("repairing a sibling branch killed a nested delegate's live background job")
+	// TRIPWIRE: a killed group leader exits immediately on SIGKILL; this brief quiet window proves the sibling repair left it running.
 	case <-time.After(500 * time.Millisecond):
 	}
 
@@ -109,6 +110,7 @@ func TestDelegateShellRepairLeavesALiveSiblingsForwardedJobAlone(t *testing.T) {
 	}
 	select {
 	case <-exited:
+	// TRIPWIRE: reapBackgroundJournal sends SIGKILL and the sleeper exits within milliseconds; 10s only fires on a genuine hang.
 	case <-time.After(10 * time.Second):
 		t.Fatal("crash recovery left the nested job's group running with its owner gone")
 	}
