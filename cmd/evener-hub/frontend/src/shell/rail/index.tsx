@@ -49,7 +49,7 @@ const CLASS = {
 // desktop content row keeps its width and styling and the workspace beside
 // it never stretches into the gap. A bare EmptyState here would leave the
 // row's only other child - the flex:1 workspace - to fill the window.
-function RailFailure({ failure, retry, reloadAvailable, isStaleFailure }: ChunkFailureFallbackProps): JSX.Element {
+function RailFailure({ failure, retry, canReload }: ChunkFailureFallbackProps): JSX.Element {
   const sidebarWidth = usePrefsStore((s) => s.sidebarWidth);
   return (
     <div
@@ -65,7 +65,7 @@ function RailFailure({ failure, retry, reloadAvailable, isStaleFailure }: ChunkF
             <Button size="sm" onClick={retry}>
               Retry
             </Button>
-            {reloadAvailable && isStaleFailure(failure) && (
+            {canReload && (
               <Button size="sm" variant="quiet" onClick={reloadPage}>
                 Reload page
               </Button>
@@ -97,7 +97,7 @@ const railHost = createLazyChunkStore(lazyRailHost);
 // singleton here follows (stores/navigation/store.ts's own note); no
 // production code should ever call it.
 export function resetRailChunkForTests(): void {
-  railHost.publish(lazyRailHost());
+  railHost.getState().publish(lazyRailHost());
 }
 
 const RailChunkBoundary = createChunkFailureBoundary(isStaleRailHostChunkError);

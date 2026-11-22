@@ -22,7 +22,7 @@ import styles from "./DockRegion.module.css";
 import { isStaleDockHostChunkError, loadDockHost } from "./dockHostChunk";
 import { reloadPage } from "./pageReload";
 
-function DockFailure({ failure, retry, reloadAvailable, isStaleFailure }: ChunkFailureFallbackProps): ReactNode {
+function DockFailure({ failure, retry, canReload }: ChunkFailureFallbackProps): ReactNode {
   return (
     <EmptyState
       title="Couldn't load the workspace"
@@ -32,7 +32,7 @@ function DockFailure({ failure, retry, reloadAvailable, isStaleFailure }: ChunkF
           <Button size="sm" onClick={retry}>
             Retry
           </Button>
-          {reloadAvailable && isStaleFailure(failure) && (
+          {canReload && (
             <Button size="sm" variant="quiet" onClick={reloadPage}>
               Reload page
             </Button>
@@ -63,7 +63,7 @@ const dockHost = createLazyChunkStore(lazyDockHost);
 // singleton here follows (stores/navigation/store.ts's own note); no
 // production code should ever call it.
 export function resetDockChunkForTests(): void {
-  dockHost.publish(lazyDockHost());
+  dockHost.getState().publish(lazyDockHost());
 }
 
 // The workspace boundary claims every error thrown below it (a module init or

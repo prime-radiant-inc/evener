@@ -42,7 +42,7 @@ const connectDialog = createLazyChunkStore(lazyConnectProviderDialog);
 // failed chunk. Mirrors the resetXForTests precedent every other module
 // singleton here follows; no production code should ever call it.
 export function resetConnectDialogChunkForTests(): void {
-  connectDialog.publish(lazyConnectProviderDialog());
+  connectDialog.getState().publish(lazyConnectProviderDialog());
 }
 
 // useConnectProviderDialogChunk owns the per-caller retry state while the
@@ -64,7 +64,7 @@ interface ConnectDialogFailureProps extends ChunkFailureFallbackProps {
   onClose: () => void;
 }
 
-function ConnectDialogFailure({ failure, retry, reloadAvailable, isStaleFailure, onClose }: ConnectDialogFailureProps) {
+function ConnectDialogFailure({ failure, retry, canReload, onClose }: ConnectDialogFailureProps) {
   return (
     <Dialog
       open
@@ -78,10 +78,7 @@ function ConnectDialogFailure({ failure, retry, reloadAvailable, isStaleFailure,
           <Button variant="primary" onClick={retry}>
             Retry
           </Button>
-          {/* reloadAvailable alone counts retries, so a logic bug that rode in
-              on a stale chunk URL would earn a page reload that cannot fix
-              it. The failed retry must itself name a stale hashed asset. */}
-          {reloadAvailable && isStaleFailure(failure) && (
+          {canReload && (
             <Button variant="quiet" onClick={reloadPage}>
               Reload page
             </Button>

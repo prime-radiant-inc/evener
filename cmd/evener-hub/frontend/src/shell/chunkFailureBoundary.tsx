@@ -3,33 +3,29 @@
 // chunkRetry.ts). Each needs an error boundary scoped to its surface and a
 // retry that swaps in a NEW lazy payload over a cache-busted URL; only the
 // error chrome, the claim predicate, and any pre-retry cleanup differ.
-import { Component, type ReactNode, useCallback, useState, useSyncExternalStore } from "react";
+import { Component, type ReactNode, useCallback, useState } from "react";
+import { useStore } from "zustand";
+import { createStore, type StoreApi } from "zustand/vanilla";
 
 // Module scope, not per mount: a lazy() payload caches its resolved module, so
 // one shared payload fetches the chunk once per page load and renders it
 // straight away on every later mount. Publishing on retry is what makes one
 // surface's recovery reach the others; a payload also caches a failure, which
 // is why each module's resetXForTests publishes a fresh one.
-export interface LazyChunkStore<Chunk> {
-  subscribe(listener: () => void): () => void;
-  getSnapshot(): { chunk: Chunk; version: number };
+export interface LazyChunkState<Chunk> {
+  chunk: Chunk;
+  version: number;
   publish(chunk: Chunk): void;
 }
 
+export type LazyChunkStore<Chunk> = StoreApi<LazyChunkState<Chunk>>;
+
 export function createLazyChunkStore<Chunk>(create: () => Chunk): LazyChunkStore<Chunk> {
-  let snapshot: { chunk: Chunk; version: number } = { chunk: create(), version: 0 };
-  const listeners = new Set<() => void>();
-  return {
-    subscribe(listener) {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    getSnapshot: () => snapshot,
-    publish(chunk) {
-      snapshot = { chunk, version: snapshot.version + 1 };
-      for (const listener of listeners) listener();
-    },
-  };
+  return createStore<LazyChunkState<Chunk>>()((set) => ({
+    chunk: create(),
+    version: 0,
+    publish: (chunk) => set((state) => ({ chunk, version: state.version + 1 })),
+  }));
 }
 
 export interface ChunkRetry<Chunk> {
@@ -52,12 +48,13 @@ export function useChunkRetry<Chunk>(
   create: (cacheBust: boolean) => Chunk,
   beforeRetry?: () => void,
 ): ChunkRetry<Chunk> {
-  const { chunk, version } = useSyncExternalStore(store.subscribe, store.getSnapshot);
+  const chunk = useStore(store, (state) => state.chunk);
+  const version = useStore(store, (state) => state.version);
   const [retryCount, setRetryCount] = useState(0);
   const retry = useCallback(() => {
     beforeRetry?.();
     setRetryCount((count) => count + 1);
-    store.publish(create(true));
+    store.getState().publish(create(true));
   }, [beforeRetry, create, store]);
   return { Chunk: chunk, version, retry, reloadAvailable: retryCount > 0 };
 }
@@ -68,11 +65,10 @@ export interface ChunkFailureFallbackProps {
   // generic apology.
   failure: string;
   retry: () => void;
-  reloadAvailable: boolean;
-  // Counting retries alone is not enough: a logic bug that rode in on a stale
-  // chunk URL would earn a reload that cannot fix it. The failed retry must
-  // itself name a stale hashed asset.
-  isStaleFailure: (failure: string) => boolean;
+  // True only once a cache-busted retry has already failed AND that failure
+  // names a stale hashed asset: a reload is the only thing that can fetch a
+  // newer URL, and counting retries alone would offer it for a logic bug.
+  canReload: boolean;
 }
 
 export interface ChunkFailureBoundaryProps {
@@ -125,8 +121,7 @@ export function createChunkFailureBoundary(
       return this.props.renderFailure({
         failure: this.state.failure,
         retry: this.retry,
-        reloadAvailable: this.props.reloadAvailable,
-        isStaleFailure,
+        canReload: this.props.reloadAvailable && isStaleFailure(this.state.failure),
       });
     }
   };
