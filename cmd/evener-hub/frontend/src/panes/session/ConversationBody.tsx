@@ -14,6 +14,7 @@ import { cadenceStateFor } from "../../shell/sessionStatus";
 import { useIsMobile } from "../../shell/useIsMobile";
 import { workspaceStore } from "../../shell/workspace";
 import { controlsFor, recoveryFence } from "../../stores/liveControls";
+import { usePrefsStore } from "../../stores/prefs";
 import { ownerRetainedRef } from "../../stores/recoveryFence";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore, useTranscriptDisplayStore } from "../../stores/transcriptDisplay";
@@ -401,12 +402,17 @@ function LiveConversationBody({
   );
 
   const seenBoundary = useSeenDivider(ref, model);
+  const openAtUnreadReplies = usePrefsStore((state) => state.openAtUnreadReplies);
   const retainedCapture = seat.readView?.getCapture();
-  const openingTurnId = unseenOpeningTurnId(seenBoundary, {
-    thread: model,
-    askDockPending: askPending,
-    retained: retainedCapture,
-  });
+  const openingTurnId = unseenOpeningTurnId(
+    seenBoundary,
+    {
+      thread: model,
+      askDockPending: askPending,
+      retained: retainedCapture,
+    },
+    openAtUnreadReplies,
+  );
   const openAtRow = useMemo(
     () => (openingTurnId === null ? -1 : transcriptFirstRowIndexForTurn(renderRows, openingTurnId)),
     [renderRows, openingTurnId],

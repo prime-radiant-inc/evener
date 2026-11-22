@@ -59,7 +59,12 @@ function boundaryFor(ref: string, model: ThreadModel): SeenBoundary {
  * there for the reader, and a reader with a retained place of their own up
  * the transcript returns to it. What waits is read from the thread as well as
  * from the question dock: a transcript restored without its bodies knows a
- * question is pending before the dock has the question to show. */
+ * question is pending before the dock has the question to show.
+ *
+ * The landing is opt-in (#4845): with `openAtUnreadReplies` off - the web's
+ * default - no boundary opens anything and the live end keeps the opening.
+ * The divider is unaffected either way: it is the last-visit marker, not a
+ * read receipt, and it can only ever suggest a place. */
 export function unseenOpeningTurnId(
   boundary: SeenBoundary,
   reader: {
@@ -67,7 +72,9 @@ export function unseenOpeningTurnId(
     askDockPending: boolean;
     retained: { followingBottom: boolean } | undefined;
   },
+  openAtUnreadReplies: boolean,
 ): string | null {
+  if (!openAtUnreadReplies) return null;
   if (!boundary.settled) return null;
   if (reader.askDockPending || reader.thread?.askPending || (reader.thread?.pendingEscalations.length ?? 0) > 0)
     return null;

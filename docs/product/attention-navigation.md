@@ -312,7 +312,8 @@ separate server-side contract.
 A session opens at the live end, with one exception: a finished reply the
 reader has not seen opens at that reply's start, so they read it downward
 instead of scrolling back from its end to find where it began. Both clients
-make that exception, each with its own memory of what was seen.
+offer that exception, each with its own memory of what was seen; the web
+makes it opt-in.
 
 The web remembers, per session and per browser, the latest finished turn at
 the moment the reader left the pane
@@ -338,17 +339,24 @@ unseen reply. The landing is the opening's alone: a transcript that reloads
 under an open pane does not send the reader back, and the reader's own scroll
 cancels a landing still in flight
 ([`useTranscriptScroll`](../../cmd/evener-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.ts)).
-There is no setting for this on the web: the live end is one click on the
-pill away, and a preference would only choose between two places that are
-both already reachable.
+The web makes that exception opt-in, off by default: Settings > Conversation
+display offers "Open at unread replies"
+([`prefs.ts`](../../cmd/evener-hub/frontend/src/stores/prefs.ts)). Off, an
+opening keeps the live end and the divider still marks where the new reply
+began; on, a finished unseen reply opens at its start, and the jump pill
+offers the live end from there. The choice is per browser, so opting in on
+one machine does not move another reader's opening.
 
 The mark is local to the browser, so it is independent of the hub's
 cross-device seen state: opening still marks the session seen through the
 rules in [session activity](session-activity.md), and a reply already read on
-another device still opens at its start here.
+another device still counts as unseen here - it opens at its start when
+"Open at unread replies" is on.
 
-The phone's Display page owns an open-at-unread-replies preference
+The phone's Display page owns the same open-at-unread-replies preference
 ([`openAtUnreadReplies`](../../mobile-native/src/display/displayPreferences.ts)),
-on by default: with it, a reply that finished since the reader last reached
-the end opens at that reply's start, past the reader's own message, its time
-marker and its attachments; a pending question or approval still wins.
+on by default there: with it, a reply that finished since the reader last
+reached the end opens at that reply's start, past the reader's own message,
+its time marker and its attachments; a pending question or approval still
+wins. The web's default is off, because the web reader already has the jump
+pill at the live end.
