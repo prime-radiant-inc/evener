@@ -2043,6 +2043,16 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// §5.1) — either ends the turn; deliverIfCommunicated decides the
 		// boundary state and composes them.
 		askedThisRound := s.askPendingCount() > askBefore
+		if batchBlocked && !askedThisRound {
+			// A tool post-hook stop yields to a visible reply or a pending ask,
+			// never to a silent quiet yield: let batchBlocked publish and record
+			// its reason instead of settling silently.
+			s.mu.Lock()
+			if !s.comm.called {
+				s.comm.quietEnd = false
+			}
+			s.mu.Unlock()
+		}
 		done, text, deliverErr := s.deliverIfCommunicated(ctx, askedThisRound)
 		if deliverErr != nil {
 			return "", progressed, deliverErr

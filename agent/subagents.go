@@ -2628,21 +2628,26 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			needsNudge &&
 			!a.sess.hookStoppedTheInput() &&
 			(err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted))
-		if shouldNudge && err == nil && a.sess.quietlyYielded() {
+		deferStopHook := false
+		if needsNudge && !cancelRequested && !budgetExhausted && !a.sess.hookStoppedTheInput() && err == nil && a.sess.quietlyYielded() {
 			// An explicit quiet yield parks the generation until its owned work
-			// wakes it. The post-drain check still requires its final report.
+			// wakes it. Both the report nudge and SubagentStop wait until the
+			// drain and any required post-drain report nudge finish.
 			outstanding, workErr := a.sess.treeHasOutstandingWork()
 			if workErr != nil {
 				err = workErr
+				shouldNudge = false
+			} else if outstanding {
+				deferStopHook = true
+				shouldNudge = false
 			}
-			shouldNudge = !outstanding && workErr == nil
 		}
 		if shouldNudge {
 			nudgeAvailable = false
 			res, err = a.deliverCommunicateNudge(ctx, inputProvenance)
 			_, budgetExhausted = budgetExhaustionFromError(err)
 		}
-		if hookAvailable && !cancelRequested && !budgetExhausted {
+		if !deferStopHook && hookAvailable && !cancelRequested && !budgetExhausted {
 			hookAvailable = false
 			res, err = a.runSubagentStopHook(ctx, res, err, a.followUpProvenance(inputProvenance))
 		}
@@ -2673,6 +2678,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				a.finalizing = false
 				a.mu.Unlock()
 				res, err = a.deliverCommunicateNudge(ctx, inputProvenance)
+				_, budgetExhausted = budgetExhaustionFromError(err)
 				a.mu.Lock()
 				cancelRequested = a.cancelRequested
 				a.mu.Unlock()
@@ -2688,6 +2694,25 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 					continue
 				case delegateSupervisionSuppress:
 				}
+				if err == nil && !a.hookStoppedRun() && !a.sess.stopHookReplacedReplyNow() && !a.sess.hookStoppedTheInput() {
+					res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
+				}
+			}
+		}
+		if hookAvailable {
+			a.mu.Lock()
+			cancelRequested = a.cancelRequested
+			a.mu.Unlock()
+			if !cancelRequested && !budgetExhausted {
+				hookAvailable = false
+				if restoreParentDriveNotify != nil {
+					a.sess.SetNotifyFunc(restoreParentDriveNotify)
+					restoreParentDriveNotify = nil
+				}
+				a.mu.Lock()
+				a.finalizing = false
+				a.mu.Unlock()
+				res, err = a.runSubagentStopHook(ctx, res, err, a.followUpProvenance(inputProvenance))
 				if err == nil && !a.hookStoppedRun() && !a.sess.stopHookReplacedReplyNow() && !a.sess.hookStoppedTheInput() {
 					res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
 				}

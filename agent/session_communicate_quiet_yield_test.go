@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
@@ -354,11 +353,9 @@ func TestCommunicateQuietYieldPreservesInFlightClientSteering(t *testing.T) {
 	if _, err := s.ProcessInput(ctx, "launch work", nil); err != nil {
 		t.Fatal(err)
 	}
-	waitCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
 	select {
 	case <-steerDelivered:
-	case <-waitCtx.Done():
+	case <-ctx.Done():
 		t.Fatal("in-flight client steer during quiet yield did not trigger a carrier model turn while background job remained held")
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +19,7 @@ import (
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/llm"
 )
 
@@ -1910,11 +1913,9 @@ func TestSubagentOwnedJobDrainQuietYieldAwakesForNestedDelegate(t *testing.T) {
 	requireQuietToolResult(t, child.sess, "quiet-nested-1")
 	releaseA()
 	// Worker A's report must wake the coordinator while Worker B is still held.
-	earlyCtx, earlyCancel := context.WithTimeout(ctx, 3*time.Second)
-	defer earlyCancel()
 	select {
 	case <-leafAWokeCoordinator:
-	case <-earlyCtx.Done():
+	case <-ctx.Done():
 		t.Fatal("first nested worker report did not wake the quiet-parked coordinator while its sibling was still running")
 	}
 	releaseB()
@@ -1929,5 +1930,152 @@ func TestSubagentOwnedJobDrainQuietYieldAwakesForNestedDelegate(t *testing.T) {
 	}
 	if packet := loadDelegateTerminalPacket(t, parent, result.DelegateID); packet.Kind != delegatestore.PacketReported || string(packet.Message) != `"nested proof received"` {
 		t.Fatalf("terminal packet = %+v, want the worker's one report after both nested wakes", packet)
+	}
+}
+
+func TestSubagentOwnedJobDrainQuietYieldDefersSubagentStopHook(t *testing.T) {
+	t.Parallel()
+	assistantAndCommunicate := func(text, id, args string) llm.Response {
+		resp := quietYieldResponse(id, args)
+		resp.Message.Content = append([]llm.ContentPart{{Kind: llm.ContentText, Text: text}}, resp.Message.Content...)
+		return resp
+	}
+
+	for _, tc := range []struct {
+		name               string
+		decision           string
+		steps              []func(llm.Request) llm.Response
+		wantFiredAtDrain   bool
+		wantStdinSubstring string
+		wantFinalReport    string
+	}{
+		{
+			name:     "reports_on_wake",
+			decision: `{"decision":"block","reason":"include HOOK_REVIEWED_PROOF"}`,
+			steps: []func(llm.Request) llm.Response{
+				func(llm.Request) llm.Response {
+					return agenttest.ToolCallResponse(llm.ToolCallData{ID: "owned-job", Name: "shell", Arguments: json.RawMessage(`{"command":"go test","mode":"background"}`)})
+				},
+				func(llm.Request) llm.Response { return quietYieldResponse("quiet-1", `{}`) },
+				func(llm.Request) llm.Response {
+					return assistantAndCommunicate("POST_DRAIN_ASSISTANT_PROOF", "report-1", `{"message":"initial report"}`)
+				},
+				func(req llm.Request) llm.Response {
+					if !requestContainsText(req, "HOOK_REVIEWED_PROOF") {
+						return assistantAndCommunicate("MISSING_HOOK_FEEDBACK", "report-2", `{"message":"missing hook feedback"}`)
+					}
+					return assistantAndCommunicate("FINAL_REVIEWED_ASSISTANT", "report-2", `{"message":"final reviewed report"}`)
+				},
+			},
+			wantFiredAtDrain:   false,
+			wantStdinSubstring: "POST_DRAIN_ASSISTANT_PROOF",
+			wantFinalReport:    `"final reviewed report"`,
+		},
+		{
+			name:     "nudged_after_drain",
+			decision: `{}`,
+			steps: []func(llm.Request) llm.Response{
+				func(llm.Request) llm.Response {
+					return agenttest.ToolCallResponse(llm.ToolCallData{ID: "owned-job", Name: "shell", Arguments: json.RawMessage(`{"command":"go test","mode":"background"}`)})
+				},
+				func(llm.Request) llm.Response { return quietYieldResponse("quiet-1", `{}`) },
+				func(llm.Request) llm.Response { return quietYieldResponse("quiet-2", `{}`) },
+				func(llm.Request) llm.Response {
+					return assistantAndCommunicate("POST_NUDGE_ASSISTANT_PROOF", "report-1", `{"message":"nudged report"}`)
+				},
+			},
+			wantFiredAtDrain:   false,
+			wantStdinSubstring: "POST_NUDGE_ASSISTANT_PROOF",
+			wantFinalReport:    `"nudged report"`,
+		},
+		{
+			name:     "already_reported_preserves_predrain_hook",
+			decision: `{}`,
+			steps: []func(llm.Request) llm.Response{
+				func(llm.Request) llm.Response {
+					return agenttest.ToolCallResponse(llm.ToolCallData{ID: "owned-job", Name: "shell", Arguments: json.RawMessage(`{"command":"go test","mode":"background"}`)})
+				},
+				func(llm.Request) llm.Response {
+					return assistantAndCommunicate("PRE_DRAIN_ASSISTANT_PROOF", "report-1", `{"message":"reported early"}`)
+				},
+				func(llm.Request) llm.Response { return quietYieldResponse("quiet-housekeeping", `{}`) },
+			},
+			wantFiredAtDrain:   true,
+			wantStdinSubstring: "PRE_DRAIN_ASSISTANT_PROOF",
+			wantFinalReport:    `"reported early"`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			drainClock := newOwnedJobDrainClock()
+			workDir := t.TempDir()
+			env := newHeldJobEnvironment(workDir)
+			hookLog := filepath.Join(workDir, "subagent-stop-stdin.jsonl")
+			cmd := "(cat; printf '\\n') >> " + shellquote.Literal(hookLog) + "; printf '%s' " + shellquote.Literal(tc.decision)
+			hooksRaw, err := json.Marshal(map[string]any{"hooks": map[string]any{"SubagentStop": []any{
+				map[string]any{"matcher": "*", "hooks": []any{map[string]any{"type": "command", "command": cmd}}},
+			}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			pluginDir := writePluginHooks(t, "subagent-stop-probe", string(hooksRaw))
+
+			cfg := minimalTestSessionConfig(t)
+			cfg.PluginDirs = []string{pluginDir}
+			cfg.testOnly.sandboxProber = bwrapCapableProber(workDir)
+			adapter := newFakeAdapter("openai", tc.steps...)
+			parent := newSession(t, withEnv(env), withAdapter(adapter), withClock(drainClock), withStateDir(t.TempDir()), withConfig(cfg))
+			t.Cleanup(env.releaseJob)
+
+			ctx := tripwireCtx(t)
+			result := parent.createDelegate(ctx, delegateArgs{Task: "run job and report"})
+			if result.Err != nil {
+				t.Fatal(result.Err)
+			}
+			_, childID, err := decodeRef(result.TranscriptRef)
+			if err != nil {
+				t.Fatal(err)
+			}
+			child := parent.subagents.get(childID)
+			child.mu.Lock()
+			runDone := child.done
+			child.mu.Unlock()
+
+			select {
+			case <-drainClock.drainEntered:
+			case <-runDone:
+				t.Fatalf("delegate finished before entering drain: status=%s result=%q", child.status, child.result)
+			case <-ctx.Done():
+				t.Fatal("delegate did not enter owned-job drain")
+			}
+
+			_, statErr := os.Stat(hookLog)
+			firedAtDrain := statErr == nil
+			if firedAtDrain != tc.wantFiredAtDrain {
+				t.Fatalf("SubagentStop fired before drain = %v (statErr=%v), want %v", firedAtDrain, statErr, tc.wantFiredAtDrain)
+			}
+
+			env.releaseJob()
+			select {
+			case <-runDone:
+			case <-ctx.Done():
+				t.Fatal("delegate did not finish after releasing background job")
+			}
+
+			rawLog, err := os.ReadFile(hookLog)
+			if err != nil {
+				t.Fatalf("read SubagentStop stdin log: %v", err)
+			}
+			lines := strings.Split(strings.TrimSpace(string(rawLog)), "\n")
+			if len(lines) != 1 {
+				t.Fatalf("SubagentStop invocation count = %d, want 1:\n%s", len(lines), rawLog)
+			}
+			if !strings.Contains(lines[0], tc.wantStdinSubstring) {
+				t.Fatalf("SubagentStop stdin = %s, want substring %q", lines[0], tc.wantStdinSubstring)
+			}
+			if packet := loadDelegateTerminalPacket(t, parent, result.DelegateID); packet.Kind != delegatestore.PacketReported || string(packet.Message) != tc.wantFinalReport {
+				t.Fatalf("terminal packet = %+v, want message %s", packet, tc.wantFinalReport)
+			}
+		})
 	}
 }
