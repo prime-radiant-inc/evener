@@ -122,7 +122,8 @@ export function SessionChrome({
       owningPaneId ?? state.panes.find((pane) => pane.type === "session" && refParam(pane.params) === sessionRef)?.id,
   );
   const owningPaneType = useWorkspaceStore((state) => state.panes.find((pane) => pane.id === paneId)?.type);
-  const headerOwnsInspection = placement === "composer" && owningPaneType === "session";
+  // The collapsed composer menu carries turnVerbs; ConversationBody's recovery fallback does not.
+  const headerOwnsInspection = (placement === "composer" || turnVerbs !== undefined) && owningPaneType === "session";
   const isMobile = useIsMobile();
   const [verbosityOpen, setVerbosityOpen] = useState(false);
   const toasts = useToasts();

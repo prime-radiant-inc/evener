@@ -539,8 +539,7 @@ test.each(["Close", "Escape"])(
           </MotionProvider>
         </ClientProvider>,
       );
-      await user.click(await screen.findByRole("button", { name: "Session actions" }));
-      await user.click(screen.getByRole("menuitem", { name: /Overview/ }));
+      await user.click(await screen.findByRole("button", { name: "Overview" }));
       await user.click(await screen.findByRole("button", { name: /Open child/ }));
       const sidebar = await screen.findByTestId("activity-sidebar");
       await user.click(within(sidebar).getByRole("radio", { name: "About" }));
@@ -552,7 +551,7 @@ test.each(["Close", "Escape"])(
       else await user.keyboard("{Escape}");
       // The read-only transcript's ancestor link is gone: the revealed
       // conversation owns the return focus through its own actions control.
-      const childActions = await screen.findByRole("button", { name: "Session actions" });
+      const childActions = await screen.findByRole("button", { name: "Overview" });
       await waitFor(() => expect(document.activeElement).toBe(childActions));
       await waitFor(() => expect(screen.queryByTestId("activity-sidebar")).toBeNull());
       expect(workspaceStore.getState().panes).toEqual(before.panes);
