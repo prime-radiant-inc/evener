@@ -1,7 +1,8 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { installMobileViewport } from "../../shell/appShellTestUtils";
 import { Button } from "../button";
 import { ListPicker, type ListPickerOption } from "./index";
 
@@ -154,4 +155,22 @@ test("a disabled trigger cannot open the list", async () => {
   await user.click(trigger());
 
   expect(screen.queryByRole("group", { name: "Host options" })).toBeNull();
+});
+
+describe("phone", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  test("the same choices open in a bottom sheet", async () => {
+    installMobileViewport();
+    const user = userEvent.setup();
+    render(<Harness />);
+
+    await user.click(trigger());
+
+    const sheet = screen.getByRole("dialog", { name: "Choose host" });
+    expect(within(sheet).getByRole("group", { name: "Host options" })).toBeTruthy();
+    await user.click(within(sheet).getByRole("button", { name: "buildbox" }));
+    expect(screen.queryByRole("dialog", { name: "Choose host" })).toBeNull();
+    expect(trigger().getAttribute("aria-label")).toBe("Host: buildbox");
+  });
 });

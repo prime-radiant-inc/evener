@@ -8,10 +8,12 @@
 // online ones select the launch target, and each offline one carries Connect.
 
 import { type KeyboardEvent, type ReactNode, useState } from "react";
+import { useIsMobile } from "../../shell/useIsMobile";
 import { Chevron } from "../chevron";
 import { requireClass } from "../internal/requireClass";
 import { ListRow } from "../listrow";
 import { Popover } from "../popover";
+import { Sheet } from "../sheet";
 import styles from "./listpicker.module.css";
 
 interface ListPickerOptionBase {
@@ -59,8 +61,12 @@ const CLASS = {
   default: requireClass(styles.default, "listpicker.module.css", "default"),
   chevron: requireClass(styles.chevron, "listpicker.module.css", "chevron"),
   popoverPanel: requireClass(styles.popoverPanel, "listpicker.module.css", "popoverPanel"),
+  sheetBody: requireClass(styles.sheetBody, "listpicker.module.css", "sheetBody"),
   panel: requireClass(styles.panel, "listpicker.module.css", "panel"),
+  sheetPanel: requireClass(styles.sheetPanel, "listpicker.module.css", "sheetPanel"),
   list: requireClass(styles.list, "listpicker.module.css", "list"),
+  sheetList: requireClass(styles.sheetList, "listpicker.module.css", "sheetList"),
+  sheetRowItem: requireClass(styles.sheetRowItem, "listpicker.module.css", "sheetRowItem"),
   separator: requireClass(styles.separator, "listpicker.module.css", "separator"),
 };
 
@@ -82,6 +88,7 @@ export function ListPicker({
   "data-testid": testId,
 }: ListPickerProps) {
   const [open, setOpen] = useState(false);
+  const isMobile = useIsMobile();
   const panelId = `${id}-options`;
   const selected = options.find((option) => option.id === value);
   const text = selected?.label ?? emptyLabel;
@@ -108,65 +115,81 @@ export function ListPicker({
     option.onSelect();
   }
 
-  return (
-    <Popover
-      open={open}
-      onClose={() => setOpen(false)}
-      closeOnScroll={false}
-      stretchTrigger
-      trigger={
-        <button
-          id={id}
-          type="button"
-          className={CLASS.trigger}
-          data-testid={testId}
-          aria-label={`${label}: ${text}`}
-          aria-expanded={open}
-          aria-controls={panelId}
-          disabled={disabled}
-          onClick={() => setOpen((current) => !current)}
-        >
-          <span className={`${CLASS.value} ${selected === undefined ? CLASS.default : ""}`}>{text}</span>
-          <span className={CLASS.chevron} aria-hidden="true">
-            <Chevron direction="down" />
-          </span>
-        </button>
-      }
+  const trigger = (
+    <button
+      id={id}
+      type="button"
+      className={CLASS.trigger}
+      data-testid={testId}
+      aria-label={`${label}: ${text}`}
+      aria-expanded={open}
+      aria-controls={panelId}
+      disabled={disabled}
+      onClick={() => setOpen((current) => !current)}
     >
-      <div className={CLASS.popoverPanel}>
-        <fieldset id={panelId} aria-label={`${label} options`} className={CLASS.panel} onKeyDown={handleKeyDown}>
-          <ul className={CLASS.list}>
-            {options.map((option) => (
-              <li key={option.id}>
-                {option.onSelect ? (
-                  <ListRow
-                    variant="plain"
-                    label={option.label}
-                    meta={option.meta}
-                    aria-current={option.id === value ? "true" : undefined}
-                    onSelect={() => choose(option)}
-                  />
-                ) : (
-                  <ListRow variant="plain" label={option.label} meta={option.meta} action={option.action} />
-                )}
-              </li>
-            ))}
-          </ul>
-          {footer && (
-            <>
-              <hr className={CLASS.separator} />
+      <span className={`${CLASS.value} ${selected === undefined ? CLASS.default : ""}`}>{text}</span>
+      <span className={CLASS.chevron} aria-hidden="true">
+        <Chevron direction="down" />
+      </span>
+    </button>
+  );
+
+  const panel = (
+    <fieldset
+      id={panelId}
+      aria-label={`${label} options`}
+      className={isMobile ? `${CLASS.panel} ${CLASS.sheetPanel}` : CLASS.panel}
+      onKeyDown={handleKeyDown}
+    >
+      <ul className={isMobile ? `${CLASS.list} ${CLASS.sheetList}` : CLASS.list}>
+        {options.map((option) => (
+          <li key={option.id} className={isMobile ? CLASS.sheetRowItem : undefined}>
+            {option.onSelect ? (
               <ListRow
                 variant="plain"
-                label={footer.label}
-                onSelect={() => {
-                  setOpen(false);
-                  footer.onSelect();
-                }}
+                label={option.label}
+                meta={option.meta}
+                aria-current={option.id === value ? "true" : undefined}
+                onSelect={() => choose(option)}
               />
-            </>
-          )}
-        </fieldset>
-      </div>
+            ) : (
+              <ListRow variant="plain" label={option.label} meta={option.meta} action={option.action} />
+            )}
+          </li>
+        ))}
+      </ul>
+      {footer && (
+        <>
+          <hr className={CLASS.separator} />
+          <div className={isMobile ? CLASS.sheetRowItem : undefined}>
+            <ListRow
+              variant="plain"
+              label={footer.label}
+              onSelect={() => {
+                setOpen(false);
+                footer.onSelect();
+              }}
+            />
+          </div>
+        </>
+      )}
+    </fieldset>
+  );
+
+  if (isMobile) {
+    return (
+      <>
+        {trigger}
+        <Sheet open={open} side="bottom" onClose={() => setOpen(false)} title={`Choose ${label.toLowerCase()}`}>
+          <div className={CLASS.sheetBody}>{panel}</div>
+        </Sheet>
+      </>
+    );
+  }
+
+  return (
+    <Popover open={open} onClose={() => setOpen(false)} closeOnScroll={false} stretchTrigger trigger={trigger}>
+      <div className={CLASS.popoverPanel}>{panel}</div>
     </Popover>
   );
 }

@@ -55,3 +55,33 @@
   border: 0;
   border-top: 1px solid var(--edge);
 }
+
+/* --- sheet variant (mobile bottom Sheet) ---------------------------------
+ * The design system's mobile-forms rule: sheet options are at least 48px
+ * tall, and the sheet's own body scrolls instead of the list. The li is a
+ * grid so its ListRow stretches to that floor without the widget reaching
+ * into the row's own box. */
+
+.sheetBody {
+  padding-bottom: var(--dock-clearance);
+}
+
+.sheetPanel {
+  gap: 0;
+}
+
+.sheetList {
+  max-height: none;
+  overflow-y: visible;
+  gap: 0;
+}
+
+.sheetRowItem {
+  display: grid;
+  min-height: 48px;
+  border-bottom: 1px solid var(--edge);
+}
+
+.sheetRowItem:last-child {
+  border-bottom: none;
+}
