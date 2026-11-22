@@ -372,6 +372,29 @@ async function main() {
         "the session-ref transcript pane recovered as the live conversation",
         recoveredOpened,
       );
+      // The landing is opt-in (#4845 slice 2), so the same watermark under the
+      // web's default preference has to open at the live end. Without this
+      // control the pass below would not tell the opt-in from a page that
+      // always lands at the unseen reply.
+      await navigateTo(
+        page,
+        `http://127.0.0.1:${vitePort}/transcriptscrollguard.html?seen=${UNSEEN_OPEN.seen}&openAtUnread=off`,
+        BOOT,
+      );
+      await waitForFonts(send);
+      const unseenDefault = JSON.parse(
+        await evaluate(send, "(async () => JSON.stringify(await window.waitForTranscriptSettled()))()"),
+      );
+      if (Math.abs(unseenDefault.bottomGap) > BOTTOM_TOLERANCE_PX) {
+        failures.push(
+          `with the open-at-unread preference off (the default) a session with an unseen reply opened ` +
+            `${unseenDefault.bottomGap}px off the true bottom (scrollTop ${unseenDefault.scrollTop}) - the live ` +
+            "end is the default opening",
+        );
+      }
+      if (unseenDefault.pill)
+        failures.push("with the open-at-unread preference off the jump pill is visible at the live end");
+
       // A session with a finished reply this browser has not shown opens at
       // that reply instead of the end: the turn at the top of the viewport
       // with the seen divider and the reply under it, the reader not following the end
@@ -612,7 +635,8 @@ async function main() {
           `(bottomGap ${landed.bottomGap}px, pill gone, held ${landed.tail.length} frames); ` +
           `post-mount content growth and a scroll-port shrink both re-anchored to the true bottom; ` +
           `a session opened with older history stayed at the bottom without auto-loading a page; ` +
-          `a session with an unseen reply opened at that reply instead of the end; ` +
+          `a session with an unseen reply stayed at the end with the open-at-unread preference off and ` +
+          `opened at that reply with it on; ` +
           `a large ended dock session merged older history and preserved its measured keyed-row geometry; ` +
           `the session-ref transcript pane recovered as the live conversation and did the same; deferred hydration waited for the mounted paged viewport; ` +
           `all ${MID_PASS_UNMOUNT_WAITS.length} post-settle waits named a pane that unmounted under them`,

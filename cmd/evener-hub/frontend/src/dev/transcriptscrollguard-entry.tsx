@@ -39,6 +39,7 @@ import { DockHost } from "../shell/DockHost";
 import { DockRegion } from "../shell/DockRegion";
 import { workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
+import { prefsStore } from "../stores/prefs";
 import { threadsStore } from "../stores/threads";
 import { Toast } from "../widgets";
 import {
@@ -313,6 +314,12 @@ threadsStore.subscribe((state) => {
 // an earlier pass's unmount writes one, and the open those passes measure is
 // the plain one that lands at the end.
 const SEEN = new URLSearchParams(window.location.search).get("seen");
+// The unseen-reply landing is opt-in on the web (#4845 slice 2), so this
+// harness opts in for its own unseen pass. `openAtUnread=off` runs the same
+// watermark under the web default, which is the control proving a session
+// with an unseen reply still opens at the live end unless the reader asks.
+const OPEN_AT_UNREAD = SEEN !== null && new URLSearchParams(window.location.search).get("openAtUnread") !== "off";
+prefsStore.getState().setOpenAtUnreadReplies(OPEN_AT_UNREAD);
 if (SEEN === null) localStorage.removeItem(seenWatermarkKey(REF));
 else writeSeenWatermark(REF, SEEN);
 
