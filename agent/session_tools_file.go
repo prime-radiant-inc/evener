@@ -4,11 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/pdfslice"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/llm"
 )
+
+// errPagesOnNonPDF is read_file's refusal for a pages selector on a text or
+// image file. It is returned before guard.TrackRead, so a refused read never
+// satisfies read-before-write.
+var errPagesOnNonPDF = errors.New("read_file: pages parameter is only supported for PDF files")
 
 func registerFileTools(reg *tool.Registry, deps *toolDeps) error {
 	register := reg.Register
@@ -72,17 +79,20 @@ func execFileRead(ctx context.Context, env execenv.ExecutionEnvironment, args ma
 // page slicing) that runs on the result here; the read itself already carries
 // the caller's context.
 func execFileReadWith(ctx context.Context, args map[string]any, guard readGuard, read func(path string, offset, limit *int) (string, execenv.ReadFileMeta, error)) (any, error) {
-	_ = ctx
 	path := fmt.Sprint(args["file_path"])
 	offset := optionalIntArg(args, "offset")
 	limit := optionalIntArg(args, "limit")
 	visionAsk, _ := args["vision_prompt"].(string)
+	pages, _ := args["pages"].(string)
 	result, meta, err := read(path, offset, limit)
 	if err == nil {
-		guard.TrackRead(path)
 		// If the file is an image or document (PDF), return an
 		// tool.ImageResult so the vision side-channel can process it.
 		if img := tool.ParseImageResult(path, result); img != nil {
+			if strings.TrimSpace(pages) != "" {
+				return "", errPagesOnNonPDF
+			}
+			guard.TrackRead(path)
 			prepared, err := llm.PrepareImageForModel(img.Data)
 			if err != nil {
 				// Keep the malformed-raster wording the registry's own
@@ -104,9 +114,22 @@ func execFileReadWith(ctx context.Context, args map[string]any, guard readGuard,
 			return *img, nil
 		}
 		if doc := tool.ParseDocumentResult(path, result); doc != nil {
+			sliced, from, to, totalPages, err := pdfslice.SlicePDF(ctx, doc.Data, pages)
+			if err != nil {
+				return "", err
+			}
+			guard.TrackRead(path)
+			doc.Data = sliced
+			doc.ReadPages = fmt.Sprintf("%d-%d", from, to)
+			doc.Text = fmt.Sprintf("[document: pdf, pages %d-%d of %d total, %d bytes, base64 data follows]",
+				from, to, totalPages, len(sliced))
 			doc.Prompt = visionAsk
 			return *doc, nil
 		}
+		if strings.TrimSpace(pages) != "" {
+			return "", errPagesOnNonPDF
+		}
+		guard.TrackRead(path)
 		text := tool.TextResult{
 			Output:             result,
 			FullOutput:         result,

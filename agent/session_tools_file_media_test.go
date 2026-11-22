@@ -5,12 +5,21 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/pdfcpu/pdfcpu/pkg/api"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/llm"
 )
 
@@ -70,4 +79,219 @@ func TestReadFileDownscalesOversizedImageAndAnnotatesCoordinates(t *testing.T) {
 			t.Fatalf("result text = %q, want it to carry %q (original, displayed, scale factor)", res.Output, want)
 		}
 	}
+}
+
+// readFileMediaPDF builds a valid PDF with pageCount empty pages in memory and
+// returns its bytes plus the [document: ...] envelope execenv produces for a
+// PDF read, so PDF tests need no external binary fixture.
+func readFileMediaPDF(t *testing.T, pageCount int) ([]byte, string) {
+	t.Helper()
+	var buf bytes.Buffer
+	buf.WriteString("%PDF-1.4\n")
+	offsets := make([]int, pageCount+3)
+	writeObject := func(number int, body string) {
+		offsets[number] = buf.Len()
+		fmt.Fprintf(&buf, "%d 0 obj\n%s\nendobj\n", number, body)
+	}
+	writeObject(1, "<< /Type /Catalog /Pages 2 0 R >>")
+	kids := make([]string, pageCount)
+	for i := range kids {
+		kids[i] = fmt.Sprintf("%d 0 R", i+3)
+	}
+	writeObject(2, fmt.Sprintf("<< /Type /Pages /Kids [%s] /Count %d >>", strings.Join(kids, " "), pageCount))
+	for i := 0; i < pageCount; i++ {
+		writeObject(i+3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> >>")
+	}
+	xrefOffset := buf.Len()
+	fmt.Fprintf(&buf, "xref\n0 %d\n", pageCount+3)
+	buf.WriteString("0000000000 65535 f \n")
+	for number := 1; number <= pageCount+2; number++ {
+		fmt.Fprintf(&buf, "%010d 00000 n \n", offsets[number])
+	}
+	fmt.Fprintf(&buf, "trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n",
+		pageCount+3, xrefOffset)
+	raw := buf.Bytes()
+	payload := fmt.Sprintf("[document: pdf, %d bytes, base64 data follows]\n%s",
+		len(raw), base64.StdEncoding.EncodeToString(raw))
+	return raw, payload
+}
+
+// readFilePDFPageCount counts raw's pages through pdfcpu, so a slicing test
+// proves the returned PDF's page count with a parser.
+func readFilePDFPageCount(t *testing.T, raw []byte) int {
+	t.Helper()
+	conf := model.NewDefaultConfiguration()
+	conf.ValidationMode = model.ValidationRelaxed
+	count, err := api.PageCount(context.Background(), bytes.NewReader(raw), conf)
+	if err != nil {
+		t.Fatalf("PageCount on returned PDF: %v", err)
+	}
+	return count
+}
+
+// readFilePDFPages drives read_file's real handler over a document read of raw
+// with the given pages selector and returns the result shape the registry hands
+// to repeat tracking, plus how many times the read guard tracked the path.
+func readFilePDFPages(t *testing.T, raw []byte, pages string) (tool.ExecResult, int, error) {
+	t.Helper()
+	payload := fmt.Sprintf("[document: pdf, %d bytes, base64 data follows]\n%s",
+		len(raw), base64.StdEncoding.EncodeToString(raw))
+	tracked := 0
+	guard := readGuard{
+		trackRead:              func(string) { tracked++ },
+		readBeforeWriteWarning: func(string) string { return "" },
+	}
+	v, err := execFileReadWith(context.Background(), map[string]any{
+		"file_path":     "manual.pdf",
+		"pages":         pages,
+		"vision_prompt": "inspect",
+	}, guard, func(string, *int, *int) (string, execenv.ReadFileMeta, error) {
+		return payload, execenv.ReadFileMeta{}, nil
+	})
+	if err != nil {
+		return tool.ExecResult{}, tracked, err
+	}
+	img, ok := v.(tool.ImageResult)
+	if !ok {
+		t.Fatalf("read_file(pages %q) returned %T, want tool.ImageResult", pages, v)
+	}
+	return tool.ExecResult{
+		ToolName:          "read_file",
+		CallID:            "read-pdf-" + pages,
+		Output:            img.Text,
+		FullOutput:        img.Text,
+		RecoverableOutput: img.Text,
+		ImageData:         img.Data,
+		ImageMediaType:    img.MediaType,
+		ImagePrompt:       img.Prompt,
+		ReadPages:         img.ReadPages,
+	}, tracked, nil
+}
+
+// TestReadFilePDFPagesAndRepeatTracking covers the pinned PDF slicing behavior:
+// an unpaged PDF over the page limit is refused before it can reach the model,
+// pages ranges slice the document, a different range on the same file is not a
+// repeat, re-reading a range is, and pages on non-PDF files is refused without
+// satisfying read-before-write.
+func TestReadFilePDFPagesAndRepeatTracking(t *testing.T) {
+	raw15, _ := readFileMediaPDF(t, 15)
+
+	t.Run("unpaged over the page limit is refused through execTool", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "big.pdf"), raw15, 0o644); err != nil {
+			t.Fatalf("write 15-page PDF: %v", err)
+		}
+		sess := newSession(t, withDir(dir))
+		args, err := json.Marshal(map[string]any{"file_path": "big.pdf"})
+		if err != nil {
+			t.Fatalf("marshal args: %v", err)
+		}
+		res := sess.execTool(context.Background(), llm.ToolCallData{
+			ID: "read-pdf-unpaged", Name: "read_file", Arguments: args, Type: "function",
+		}, "")
+		if !res.IsError {
+			t.Fatalf("unpaged 15-page PDF read succeeded; want the unpaged limit error")
+		}
+		if len(res.ImageData) != 0 {
+			t.Fatalf("refused PDF read returned %d image bytes; want none", len(res.ImageData))
+		}
+		for _, want := range []string{"15", "10"} {
+			if !strings.Contains(res.Output, want) {
+				t.Fatalf("unpaged refusal = %q, want it to name %q (total pages and the limit)", res.Output, want)
+			}
+		}
+	})
+
+	t.Run("page ranges and repeat tracking", func(t *testing.T) {
+		first, tracked, err := readFilePDFPages(t, raw15, "1-3")
+		if err != nil {
+			t.Fatalf("read pages 1-3: %v", err)
+		}
+		if tracked != 1 {
+			t.Fatalf("successful PDF read tracked %d times, want 1", tracked)
+		}
+		if first.ReadPages != "1-3" {
+			t.Fatalf("read pages 1-3 ReadPages = %q, want %q", first.ReadPages, "1-3")
+		}
+		if first.ImageMediaType != "application/pdf" {
+			t.Fatalf("read pages 1-3 media type = %q, want application/pdf", first.ImageMediaType)
+		}
+		if got := readFilePDFPageCount(t, first.ImageData); got != 3 {
+			t.Fatalf("read pages 1-3 returned a %d-page PDF, want 3", got)
+		}
+
+		sess := newSession(t)
+		stamp := readStamp{size: int64(len(raw15)), mtime: time.Unix(1_700_000_000, 0)}
+		sess.noteReadFileRepeat("manual.pdf", stamp, &first)
+		if first.UnchangedSinceTurn != nil {
+			t.Fatal("first read of pages 1-3 was marked unchanged")
+		}
+
+		second, _, err := readFilePDFPages(t, raw15, "4-6")
+		if err != nil {
+			t.Fatalf("read pages 4-6: %v", err)
+		}
+		if second.ReadPages != "4-6" {
+			t.Fatalf("read pages 4-6 ReadPages = %q, want %q", second.ReadPages, "4-6")
+		}
+		if got := readFilePDFPageCount(t, second.ImageData); got != 3 {
+			t.Fatalf("read pages 4-6 returned a %d-page PDF, want 3", got)
+		}
+		sess.noteReadFileRepeat("manual.pdf", stamp, &second)
+		if second.UnchangedSinceTurn != nil {
+			t.Fatal("pages 4-6 was marked unchanged after pages 1-3 of the same file; want distinct ranges distinguished")
+		}
+
+		again, _, err := readFilePDFPages(t, raw15, "1-3")
+		if err != nil {
+			t.Fatalf("re-read pages 1-3: %v", err)
+		}
+		sess.noteReadFileRepeat("manual.pdf", stamp, &again)
+		if again.UnchangedSinceTurn == nil {
+			t.Fatal("re-reading pages 1-3 was not detected as an unchanged repeat")
+		}
+		if len(again.ImageData) == 0 {
+			t.Fatal("repeat PDF read dropped the PDF bytes; content must always be returned")
+		}
+	})
+
+	t.Run("pages on non-PDF files is refused before tracking", func(t *testing.T) {
+		pngPayload := "[image: pic.png]\n" + base64.StdEncoding.EncodeToString(validPNGFixture(t))
+		for _, tc := range []struct{ name, path, payload string }{
+			{name: "text", path: "notes.txt", payload: "1\tplain text\n"},
+			{name: "image", path: "pic.png", payload: pngPayload},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				tracked := 0
+				guard := readGuard{
+					trackRead:              func(string) { tracked++ },
+					readBeforeWriteWarning: func(string) string { return "" },
+				}
+				read := func(string, *int, *int) (string, execenv.ReadFileMeta, error) {
+					return tc.payload, execenv.ReadFileMeta{}, nil
+				}
+				v, err := execFileReadWith(context.Background(), map[string]any{
+					"file_path": tc.path,
+					"pages":     "1-2",
+				}, guard, read)
+				if err == nil {
+					t.Fatalf("read_file(pages 1-2 on %s) succeeded with %T; want an error", tc.path, v)
+				}
+				if tracked != 0 {
+					t.Fatalf("rejected pages call on %s tracked the read %d times; want 0 (read-before-write must not be satisfied)", tc.path, tracked)
+				}
+
+				// Control: the same payload without pages succeeds and tracks,
+				// so the zero above is the rejection and not a dead guard.
+				if _, err := execFileReadWith(context.Background(), map[string]any{
+					"file_path": tc.path,
+				}, guard, read); err != nil {
+					t.Fatalf("read_file(%s) without pages: %v", tc.path, err)
+				}
+				if tracked != 1 {
+					t.Fatalf("control read of %s tracked %d times, want 1", tc.path, tracked)
+				}
+			})
+		}
+	})
 }
