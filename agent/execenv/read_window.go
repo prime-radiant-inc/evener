@@ -231,6 +231,7 @@ type renderedWindow struct {
 	singleLineOverflow bool
 	singleLineNum      int
 	singleLineRawLen   int
+	singleLineShown    int
 }
 
 const (
@@ -275,7 +276,7 @@ func renderPreparedRows(rows []preparedRow, unnumbered bool, maxBytes int, tailK
 	}
 
 	var singleLineOverflow bool
-	var singleLineNum, singleLineRawLen int
+	var singleLineNum, singleLineRawLen, singleLineShown int
 	if len(kept) == 1 && kept[0].renderedLen(unnumbered) > maxBytes {
 		r := &kept[0]
 		raw := r.origRaw
@@ -286,8 +287,15 @@ func renderPreparedRows(rows []preparedRow, unnumbered bool, maxBytes int, tailK
 		if displayPath != "" {
 			maxTotal := readMaxTotalBytes()
 			footerCap := readFooterCap(headerReserve)
-			footer := formatSingleLineOverflowFooter(r.num, r.rawLineLen, displayPath, unnumbered, footerCap)
-			effectiveMax = min(maxBytes, max(0, maxTotal-headerReserve-len(footer)))
+			// The footer names the shown byte count, so size the truncated prefix
+			// twice: the second pass sizes it from the footer that names it, and
+			// that footer never outgrows the one that sized the prefix.
+			shown := 0
+			for range 2 {
+				footer := formatSingleLineOverflowFooter(r.num, r.rawLineLen, shown, displayPath, unnumbered, footerCap)
+				effectiveMax = min(maxBytes, max(0, maxTotal-headerReserve-len(footer)))
+				shown = len(truncateLineUTF8Bytes(raw, max(0, effectiveMax-rowPrefixLen(r.num, unnumbered)-1)))
+			}
 		}
 		budget := max(0, effectiveMax-rowPrefixLen(r.num, unnumbered)-1)
 		r.content = truncateLineUTF8Bytes(raw, budget)
@@ -296,6 +304,7 @@ func renderPreparedRows(rows []preparedRow, unnumbered bool, maxBytes int, tailK
 		singleLineOverflow = true
 		singleLineNum = r.num
 		singleLineRawLen = r.rawLineLen
+		singleLineShown = len(r.content)
 	}
 
 	useColon := false
@@ -342,6 +351,7 @@ func renderPreparedRows(rows []preparedRow, unnumbered bool, maxBytes int, tailK
 		singleLineOverflow: singleLineOverflow,
 		singleLineNum:      singleLineNum,
 		singleLineRawLen:   singleLineRawLen,
+		singleLineShown:    singleLineShown,
 	}
 	if !unnumbered {
 		res.startLine = kept[0].num
@@ -400,11 +410,11 @@ func formatTailHeader(displayPath string, p readWindowParams, shownCount int, st
 	}
 }
 
-func formatSingleLineOverflowFooter(lineNum, rawLineLen int, displayPath string, unnumbered bool, maxFooterBytes int) string {
+func formatSingleLineOverflowFooter(lineNum, rawLineLen, shown int, displayPath string, unnumbered bool, maxFooterBytes int) string {
 	if !unnumbered && lineNum > 0 {
 		if displayPath != "" {
-			withSed := fmt.Sprintf("\n[Line %d is %d bytes, exceeding the %d-byte single-read cap. To inspect further bytes: sed -n '%dp' %s | head -c %d]",
-				lineNum, rawLineLen, DefaultReadMaxBytes, lineNum, ShellEscapeArgs(displayPath), DefaultReadMaxBytes)
+			withSed := fmt.Sprintf("\n[Line %d is %d bytes, exceeding the %d-byte single-read cap. To inspect further bytes: sed -n '%dp' %s | tail -c +%d | head -c %d]",
+				lineNum, rawLineLen, DefaultReadMaxBytes, lineNum, ShellEscapeArgs(displayPath), shown+1, DefaultReadMaxBytes)
 			if maxFooterBytes <= 0 || len(withSed) <= maxFooterBytes {
 				return withSed
 			}
@@ -476,7 +486,7 @@ func finalizeReadOutput(rw renderedWindow, opts readFooterOpts) (string, ReadFil
 	switch {
 	case rw.singleLineOverflow:
 		footerCap := readFooterCap(opts.headerReserve)
-		out.WriteString(formatSingleLineOverflowFooter(rw.singleLineNum, rw.singleLineRawLen, opts.displayPath, opts.unnumbered, footerCap))
+		out.WriteString(formatSingleLineOverflowFooter(rw.singleLineNum, rw.singleLineRawLen, rw.singleLineShown, opts.displayPath, opts.unnumbered, footerCap))
 	case opts.unnumbered:
 		if p.tailMode && p.explicitLimit && opts.moreRemain {
 			rem := max(int64(1), p.tailN-int64(rw.shownCount))
