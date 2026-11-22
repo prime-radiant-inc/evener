@@ -457,6 +457,23 @@ func TestLongRunningResumeHubCancelsOwnedChild(t *testing.T) {
 			var stopped chan error
 			if reason == "disconnect" {
 				client.Close()
+				// The caller walking away must not kill the healthy child (#5535):
+				// Resume answers retryable, the claim stays, and hub shutdown
+				// reaps the child instead.
+				if err := <-resumed; err == nil {
+					t.Fatal("canceled Resume reported success")
+				}
+				select {
+				case <-killed:
+					t.Fatal("departing caller killed the restoring child")
+				default:
+				}
+				if _, ok := locks.PendingLaunch(sessionID); !ok {
+					t.Fatal("departing caller dropped the pending-launch claim")
+				}
+				close(allowExit)
+				locks.Close()
+				<-killed
 			} else {
 				recovery := dialHubRPC(t, hub)
 				defer recovery.Close()
@@ -468,13 +485,11 @@ func TestLongRunningResumeHubCancelsOwnedChild(t *testing.T) {
 					var response appwire.EmptyResponse
 					stopped <- recovery.Request(t.Context(), appwire.MethodEvenerThreadForceStop, appwire.ThreadForceStopParams{Ref: "local:" + sessionID}, &response)
 				}()
-			}
-			<-killed
-			close(allowExit)
-			if err := <-resumed; err == nil {
-				t.Fatal("canceled Resume reported success")
-			}
-			if stopped != nil {
+				<-killed
+				close(allowExit)
+				if err := <-resumed; err == nil {
+					t.Fatal("canceled Resume reported success")
+				}
 				if err := <-stopped; err == nil {
 					t.Fatal("pre-ready cleanup alone fabricated durable stopped authority")
 				}
