@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Implement the selected direct provider. Do not substitute Copilot SDK/CLI, another client's OAuth identity, or another client's stored credentials.
+- Implement the selected direct provider with the explicitly approved temporary Pi-compatible OAuth identity. Do not substitute Copilot SDK/CLI, OpenCode's formally partnered identity, or another application's stored credential files.
 - Jesse explicitly approved the temporary Pi-compatible path after controlled probes and partnership research. Use public Copilot client ID `Iv1.b507a08c87ecfe98`, device scope `read:user`, and Pi's `/copilot_internal/v2/token` session exchange. Never request a client secret or claim GitHub approval for this compatibility path.
 - Store the GitHub access token plus the short-lived Copilot session token and session expiry. Renew the session token through the exchange five minutes early. The current identity returns a non-expiring GitHub token with no refresh token; retain support for the already-tested expiring-token path.
 - Copilot records use `oauth-github-copilot` and `<state-root>/auth/github-copilot/<instance>.json`, mode 0600. Codex records and validation stay unchanged.
@@ -21,7 +21,7 @@
 - Default tests are deterministic and network-free. Live tests require `EVENER_GITHUB_COPILOT_E2E=1` plus the credential/client ID. Do not log tokens or response bodies carrying them.
 - Assert behavior, structured values, final URLs, and sentinels, never human-readable copy. Keep existing providers' behavior unchanged except where a shared mechanism carries an explicit Copilot opt-in.
 - Work only in the `copilot-provider` worktree. Every task is TDD, commits its listed files, and uses the commit trailer supplied by the executor's own session. Report out-of-scope issues instead of absorbing them.
-- Approved task-budget total is 2,442 production lines after Jesse accepted the measured Task 1 and Task 2 sizes. Each task also carries a local budget; stop and report any new overage rather than expanding scope.
+- Approved task-budget ceiling is 2,792 production lines after Jesse accepted Task 1's 242 lines, Task 2's 650 lines, and a 600-line ceiling for Task 3. Each task also carries a local budget; stop and report any new overage rather than expanding scope.
 
 ## Review Focus
 
@@ -41,7 +41,7 @@
 
 **Interfaces:**
 - Produces: `const AuthScheme = "oauth-github-copilot"`; `AuthRecord`, `AuthFilePath(stateDir, instance string) string`, `LoadAuth`, `SaveAuth`, `DeleteAuth`, and `WithRecordLock(stateDir, instance string, fn func() error) error`.
-- `AuthRecord` requires instance, scheme, version, access/refresh tokens, token type, scope, obtained/access/refresh expiry, and stable account ID. Email and `RefreshRejected` are optional state. Do not serialize an OAuth `source` field.
+- `AuthRecord` requires instance, scheme, version, GitHub access token, Copilot session token/expiry, token type/scope, obtained-at, and stable account ID. GitHub refresh/access-expiry fields are optional and paired for the current non-expiring identity. Email and `RefreshRejected` are optional state. Do not serialize an OAuth `source` field.
 
 **Size budget:** 242 production lines, explicitly accepted by Jesse after the measured minimum exceeded the initial 200-line target.
 
@@ -68,7 +68,7 @@
 
 - [ ] **Step 1: Write scripted GitHub tests.** Cover device start fields, pending, `slow_down` increasing the interval, denial, actual expiry, malformed responses, cancellation, account ID lookup, refresh rotation, `bad_refresh_token`, and recovery after fresh login. Use fake clocks, not sleeps. Two actual processes must race refresh and logout without stale saves or false rejection; an unchanged newer generation must win.
 - [ ] **Step 2: Run red.** `cd auth && go test ./githubcopilot`; expect missing symbols or failed device/refresh behavior.
-- [ ] **Step 3: Implement the service.** Use GitHub's JSON device and token endpoints, `read:user offline_access`, no client secret, and `GET /user` for stable identity. Refresh five minutes early. Hold the Task 1 inter-process lock across re-read, refresh, rejection update, and save; compare record generation before writing. A permanent rejection is keyed to the refused token and generation. Logout participates in the same lock.
+- [ ] **Step 3: Implement the service.** Use GitHub's JSON device and token endpoints, `read:user`, no client secret, and `GET /user` for stable identity. Refresh five minutes early when the GitHub token has an expiry. Hold the Task 1 inter-process lock across re-read, refresh, rejection update, and save; compare record generation before writing. A permanent rejection is keyed to the refused token and generation. Logout participates in the same lock.
 - [ ] **Step 4: Run green.** `cd auth && go test ./githubcopilot ./openai`; expect PASS.
 - [ ] **Step 5: Commit.** `git add auth/githubcopilot` and commit `feat(auth): add GitHub Copilot device login and refresh`.
 
@@ -86,7 +86,7 @@
 - `Copilot` implements `llm.Authenticator`, `llm.AuthScopeProvider`, and `llm.RequestPreparer`. It uses Task 2 runtime credentials and never falls back to ambient GitHub tokens.
 - `copilotLiveScenario` is the reusable opt-in table for this probe and Task 9's shipped-provider smoke.
 
-**Size budget:** 250 production lines.
+**Size budget:** 600 production lines, explicitly accepted by Jesse after the measured session-auth implementation exceeded the initial 250-line target.
 
 - [ ] **Step 1: Write authenticator and scoped-isolation tests.** Assert the bearer/account headers, state-root isolation, typed sign-in errors, build User-Agent, interaction IDs, user/agent initiator transitions, and vision header. Prove a Copilot token cannot authenticate Codex and vice versa. Add the new scheme to registration coverage. At the existing provider retry boundary, prove one 401 retry only when the on-disk record generation changed, no second 401 retry, no global 401 retry, and no replay after a stream was exposed.
 - [ ] **Step 2: Run red.** `go test ./llm/providers/tokenauth ./llm/providers/all ./llm`; expect failures naming the absent Copilot scheme/authenticator.
