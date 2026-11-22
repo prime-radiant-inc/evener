@@ -39,6 +39,7 @@ export function SessionInspectionActions({ sessionRef, paneId }: { sessionRef: s
       icon: <SearchIcon />,
       onSelect: () => requestFindInSession(sessionRef, { target: paneId }),
       pressed: undefined,
+      overviewRef: undefined,
     },
     {
       label: "Overview",
@@ -46,6 +47,7 @@ export function SessionInspectionActions({ sessionRef, paneId }: { sessionRef: s
       icon: <OverviewIcon />,
       onSelect: () => openSessionOverview(sessionRef, paneId, isMobile),
       pressed: overviewOpen,
+      overviewRef: sessionRef,
     },
   ];
 
@@ -57,6 +59,8 @@ export function SessionInspectionActions({ sessionRef, paneId }: { sessionRef: s
           icon={action.icon}
           variant={action.pressed ? "secondary" : "quiet"}
           aria-pressed={action.pressed}
+          data-session-overview-ref={action.overviewRef}
+          data-pane-id={paneId}
           onClick={action.onSelect}
         />
       </Tooltip>
@@ -68,6 +72,8 @@ export function SessionInspectionActions({ sessionRef, paneId }: { sessionRef: s
         icon={action.icon}
         aria-label={action.label}
         aria-pressed={action.pressed}
+        data-session-overview-ref={action.overviewRef}
+        data-pane-id={paneId}
         onClick={action.onSelect}
       >
         {action.text}
