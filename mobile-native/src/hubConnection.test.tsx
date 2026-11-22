@@ -161,6 +161,21 @@ it("connects and follows the client's transitions the same way native has always
 	expect(setError).toHaveBeenLastCalledWith(connectionFailure("protocol").message);
 });
 
+it("walls a hub below the protocol floor like any other version verdict", async () => {
+	const fake = new FakeHubClient();
+	harness.client = fake;
+	const { hook, setError } = mount();
+	await act(async () => {});
+	act(() => fake.succeed());
+	await act(async () => {
+		fake.fail("hub-below-floor");
+	});
+	expect(hook.result.current).toEqual({ client: fake, state: "closed", fatal: true });
+	// Structural: the branch connectionFailure("hub-below-floor") selects, not
+	// its prose (docs/developing-evener/testing.md, "Copy Is Not a Test Oracle").
+	expect(setError).toHaveBeenLastCalledWith(connectionFailure("hub-below-floor").message);
+});
+
 it.each([
 	{
 		label: "a switched hub",

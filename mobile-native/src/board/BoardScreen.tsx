@@ -1237,7 +1237,7 @@ function Board({
 					) : (
 						<>
 							{fatal ? (
-								<NoticeRow text={INCOMPATIBLE_VERSIONS} />
+								<NoticeRow text={error ?? INCOMPATIBLE_VERSIONS} />
 							) : !connected && error !== null ? (
 								// The close's own sentence, set but never shown before: the
 								// rows stay while the app retries on its own, so the Board says

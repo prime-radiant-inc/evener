@@ -320,8 +320,10 @@ describe("hub connections", () => {
 			return socket;
 		});
 		await expect(client.connect()).rejects.toThrow();
-		expect(client.terminalReason).toBe("protocol");
-		expect(connectionFailure(client.terminalReason).kind).toBe("protocol");
+		// A refusal with no upgradeRequired is a hub below the client's v7
+		// floor, not a client that needs updating.
+		expect(client.terminalReason).toBe("hub-below-floor");
+		expect(connectionFailure(client.terminalReason).kind).toBe("hub-below-floor");
 		expect(connectionFailure(null).kind).toBe("transport");
 	});
 });
