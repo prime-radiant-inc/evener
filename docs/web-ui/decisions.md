@@ -5,6 +5,14 @@ alternatives, and what source review found at the time. The current
 [design system](design-system.md#design-model-an-editorial-instrument) governs new work;
 dated verdicts below are not a competing current mandate.
 
+## 2026-11-22 the completed-turn end cap is removed
+
+Jesse asked to stop showing the settled-turn line "Done in <work time> · N
+tool calls". The end-cap and its two render sites are gone, so a completed
+turn no longer prints a standing duration or tool count. The opt-in turn
+separator still reports round timings, and a failed turn keeps its diagnostic
+end-cap.
+
 ## 2026-11-13 the accent becomes an indigo and the primary action wears it
 
 Jesse asked for a friendlier, more distinctive UI and lifted the earlier
