@@ -949,6 +949,11 @@ func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRe
 		if scheme == registry.AuthOAuthOpenAICodex {
 			return launchRefusal(&launchCredentialError{target: name, scheme: scheme, remedy: remedyCodexLogin})
 		}
+		// The Copilot transport reads no key either: its credential is the
+		// device-flow record, so point at that flow.
+		if scheme == registry.AuthOAuthGitHubCopilot {
+			return launchRefusal(&launchCredentialError{target: name, scheme: scheme, remedy: remedyCopilotLogin})
+		}
 		// gcp-adc reads no key either, and it can be unconfigured two ways
 		// (spec §5.1). Hidden means the base URL did not resolve — the
 		// registry says which variables this environment still owes it and
@@ -976,6 +981,8 @@ const (
 	remedyInstanceCredential launchRemedy = iota + 1
 	// remedyCodexLogin: sign the Codex instance in.
 	remedyCodexLogin
+	// remedyCopilotLogin: sign the Copilot instance in.
+	remedyCopilotLogin
 	// remedyConfigureProvider: the provider's base URL does not resolve, so
 	// set the variables it still needs or fix the ones it has.
 	remedyConfigureProvider
@@ -1012,6 +1019,8 @@ func (e *launchCredentialError) Error() string {
 	switch e.remedy {
 	case remedyCodexLogin:
 		return fmt.Sprintf("provider credentials missing for %s: run `evener openai login --instance %s`", e.target, e.target)
+	case remedyCopilotLogin:
+		return fmt.Sprintf("provider credentials missing for %s: run `evener github-copilot login --instance %s`", e.target, e.target)
 	case remedyConfigureProvider:
 		reasons := append([]string(nil), e.problems...)
 		if len(e.unset) > 0 {
