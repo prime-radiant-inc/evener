@@ -237,6 +237,9 @@ async function measureAt(cdpEndpoint, url, width) {
         })()`,
       );
       if (!closed) throw new Error("the Verbosity dialog did not close after Escape");
+      // Pressure assertions inspect the content-expanded chrome. Empty focus
+      // deliberately keeps the compact phone row.
+      await typeComposerDraft(send, "footer pressure draft");
       await waitForComposerSettled(send);
       const engaged = JSON.parse(await evaluate(send, "window.measure().then((result) => JSON.stringify(result))"));
       engagedFooter = engaged.footer;
