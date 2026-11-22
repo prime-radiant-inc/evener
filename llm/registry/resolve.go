@@ -907,20 +907,6 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 	// Surface, Family, and Headers are rebuilt by the replay so glob rows
 	// interleave with row entries in layer order.
 	row.Surface, row.Family, row.Headers = "", "", nil
-	// The account's roster carries the wire protocol and its endpoint shapes.
-	// A row that states neither of its own inherits them here; user layers
-	// replay after the live layer below, so an authored override still wins.
-	if includeLive {
-		if lr, _ := r.liveRowFor(rec.name, ref.Model, hit); lr != nil {
-			if row.Protocol == "" {
-				row.Protocol = lr.Protocol
-			}
-			if row.Transport == nil && lr.Transport != nil {
-				t := cloneTransport(*lr.Transport)
-				row.Transport = &t
-			}
-		}
-	}
 
 	caps := Caps{}
 	altID := hit.altRowID(ref.Model)
@@ -1002,7 +988,17 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 
 	var liveReplay func()
 	if includeLive {
-		liveReplay = func() { r.applyLive(&caps, &row, rec, ref.Model, hit, prov) }
+		liveReplay = func() {
+			r.applyLive(&caps, &row, rec, ref.Model, hit, prov)
+			// Live routing may have moved the row's protocol. Every layer
+			// after it — config provider caps and config globs — judges its
+			// field table against the protocol the account chose.
+			rowProto = rec.head.Protocol
+			if row.Protocol != "" {
+				rowProto = row.Protocol
+			}
+			crossProto = rowProto != rec.head.Protocol
+		}
 	}
 	r.replayOrdered(rec, replayScope{ref: ref.Model, altID: altID, exact: hit.rowID}, replayHooks{
 		live: liveReplay,
@@ -1029,6 +1025,14 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 			}
 		},
 	})
+	// The replay may have moved the row's protocol: the live layer lands after
+	// the bundled layers and an authored row after that. Everything below —
+	// the protocol field table, the transport shape, the endpoint gate — reads
+	// the protocol that actually won.
+	rowProto = rec.head.Protocol
+	if row.Protocol != "" {
+		rowProto = row.Protocol
+	}
 	seedFields(&caps, rowProto)
 	if aliasLockstep {
 		row.Disabled = aliasDisabled
@@ -1293,6 +1297,14 @@ func (r *Registry) applyGlobRow(c *Caps, row *Model, gr Model, tag, g, rowProto 
 // needs preset expansion.
 func applyRowScalars(row *Model, src Model, tag string, prov map[string]string) {
 	if src.Protocol != "" {
+		// An authored protocol retargets the wire: the previous protocol's
+		// endpoints do not survive as the new protocol's path unless this
+		// same layer also states a transport.
+		if src.Protocol != row.Protocol && src.Transport == nil && row.Transport != nil {
+			c := cloneTransport(*row.Transport)
+			clearProtocolTransport(&c)
+			row.Transport = &c
+		}
 		row.Protocol = src.Protocol
 		prov["Protocol"] = tag
 	}
@@ -1334,6 +1346,29 @@ func (r *Registry) applyLive(c *Caps, row *Model, rec *record, model string, hit
 	lr, byWireID := r.liveRowFor(rec.name, model, hit)
 	if lr == nil {
 		return
+	}
+	// The account's roster carries the wire protocol and its endpoint shapes.
+	// The live layer replays after the bundled layers and before config, so
+	// these outrank bundled routing while an authored row still overrides
+	// them. A protocol change drops the previous protocol's endpoints first:
+	// a Messages path must not survive as an openai-chat row's wire.
+	if lr.Protocol != "" {
+		if row.Protocol != "" && row.Protocol != lr.Protocol && row.Transport != nil {
+			c := cloneTransport(*row.Transport)
+			clearProtocolTransport(&c)
+			row.Transport = &c
+		}
+		row.Protocol = lr.Protocol
+		prov["Protocol"] = LayerLive
+	}
+	if lr.Transport != nil {
+		if row.Transport == nil {
+			row.Transport = &Transport{}
+		} else {
+			c := cloneTransport(*row.Transport)
+			row.Transport = &c
+		}
+		mergeTransport(row.Transport, *lr.Transport)
 	}
 	caps := lr.Caps
 	// A window the curated alias row declares describes that alias (a 1M

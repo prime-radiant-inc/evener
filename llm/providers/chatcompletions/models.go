@@ -187,8 +187,23 @@ func (m modelEntry) row() registry.Model {
 		caps.EffortValues = requestutil.DedupStrings(m.Reasoning.SupportedEfforts)
 	}
 	requestutil.ApplyGatewayFacts(&caps, m.Architecture, m.Capabilities.GatewayCapabilities, m.ClientCompat)
-	if m.Capabilities.Supports.Vision != nil {
-		if *m.Capabilities.Supports.Vision && provenImageModel(m.ID) {
+	// On the subscription's own roster, the live image proof outranks every
+	// shared gateway field. The account's supports.vision, the embedded
+	// gateway capabilities.vision, and the OpenAI-compatible
+	// architecture.input_modalities all advertise vision more broadly than the
+	// probe found working, so the modalities are settled only after all of
+	// that parsing: nothing but the proven row may accept images there.
+	if m.accountRow() {
+		wantsImages := false
+		for _, modality := range caps.InputModalities {
+			if strings.EqualFold(strings.TrimSpace(modality), "image") {
+				wantsImages = true
+			}
+		}
+		if v := m.Capabilities.Supports.Vision; v != nil && *v {
+			wantsImages = true
+		}
+		if provenImageModel(m.ID) && wantsImages {
 			caps.InputModalities = []string{"text", "image"}
 		} else {
 			caps.InputModalities = nil

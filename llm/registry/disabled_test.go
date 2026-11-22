@@ -737,6 +737,70 @@ endpoint = "/custom/chat"
 	}
 }
 
+// TestResolveProtocolOnlyOverrideUsesTheOverrideProtocol pins that a user
+// protocol override retargets the transport: the account's Messages endpoints
+// may not survive as the wire path of an openai-chat row.
+func TestResolveProtocolOnlyOverrideUsesTheOverrideProtocol(t *testing.T) {
+	t.Parallel()
+	const cfg = `
+[providers.work]
+base = "github-copilot"
+
+[providers.work.models."claude-haiku-5.5"]
+protocol = "openai-chat"
+`
+	r := copilotTestRegistry(t, cfg)
+	r.ApplyLiveListing("work", LiveListing{Rows: []Model{liveClaudeRow()}, Authoritative: true})
+	res, err := r.Resolve("work/claude-haiku-5.5")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if res.Protocol != ProtocolOpenAIChat {
+		t.Fatalf("protocol = %q, want the user's %q", res.Protocol, ProtocolOpenAIChat)
+	}
+	if res.Transport.Endpoint != "/chat/completions" || res.Transport.StreamEndpoint != "/chat/completions" {
+		t.Fatalf("transport = %+v, want the chat endpoints, not the account's Messages path", res.Transport)
+	}
+	if res.Transport.CountTokensEndpoint != EndpointUnsupported {
+		t.Fatalf("count tokens = %q, want unsupported", res.Transport.CountTokensEndpoint)
+	}
+	if got, want := res.Transport.BaseURL+res.Transport.Endpoint, "https://api.githubcopilot.com/chat/completions"; got != want {
+		t.Fatalf("final URL = %q, want %q", got, want)
+	}
+}
+
+// TestResolveEndpointOnlyOverrideKeepsAccountTransportFacts pins that an
+// endpoint override changes only the endpoint: the account's protocol and the
+// transport facts it advertised (stream path, unsupported count tokens) stay.
+func TestResolveEndpointOnlyOverrideKeepsAccountTransportFacts(t *testing.T) {
+	t.Parallel()
+	const cfg = `
+[providers.work]
+base = "github-copilot"
+
+[providers.work.models."claude-haiku-5.5"]
+endpoint = "/custom/chat"
+`
+	r := copilotTestRegistry(t, cfg)
+	r.ApplyLiveListing("work", LiveListing{Rows: []Model{liveClaudeRow()}, Authoritative: true})
+	res, err := r.Resolve("work/claude-haiku-5.5")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if res.Protocol != ProtocolAnthropic {
+		t.Fatalf("protocol = %q, want the account's %q", res.Protocol, ProtocolAnthropic)
+	}
+	if res.Transport.Endpoint != "/custom/chat" {
+		t.Fatalf("endpoint = %q, want the user's /custom/chat", res.Transport.Endpoint)
+	}
+	if res.Transport.StreamEndpoint != "/v1/messages" {
+		t.Fatalf("stream endpoint = %q, want the account's /v1/messages", res.Transport.StreamEndpoint)
+	}
+	if res.Transport.CountTokensEndpoint != EndpointUnsupported {
+		t.Fatalf("count tokens = %q, want the account's unsupported verdict", res.Transport.CountTokensEndpoint)
+	}
+}
+
 // TestApplyLiveStripsSyntheticAccountCost is Task 4's deferred regression:
 // a live row that carries a price must not become a live dollar price on a
 // Copilot instance, and no provenance may claim one.

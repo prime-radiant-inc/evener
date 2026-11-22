@@ -445,6 +445,8 @@ const copilotRoster = `{"data":[
  {"id":"picker-hidden","supported_endpoints":["/chat/completions"],"model_picker_enabled":false},
  {"id":"policy-disabled","supported_endpoints":["/chat/completions"],"policy":{"state":"Disabled"}},
  {"id":"image-unproven","supported_endpoints":["/chat/completions"],"capabilities":{"family":"gpt","supports":{"vision":true}}},
+ {"id":"gateway-vision","supported_endpoints":["/chat/completions"],"capabilities":{"family":"gpt","vision":true}},
+ {"id":"architecture-vision","supported_endpoints":["/chat/completions"],"architecture":{"input_modalities":["text","image"]},"capabilities":{"family":"gpt"}},
  {"id":"embedding-only","supported_endpoints":["/embeddings"],"capabilities":{"family":"gpt"}}
 ]}`
 
@@ -503,7 +505,13 @@ func TestListModelsRoutesAccountRoster(t *testing.T) {
 	if plain := byID["no-metadata"]; plain.Protocol != registry.ProtocolOpenAIChat {
 		t.Fatalf("no-metadata protocol = %q, want chat fallback", plain.Protocol)
 	}
-	if unproven := byID["image-unproven"]; unproven.Caps.AcceptsModality("image") {
-		t.Fatalf("only the live-proven id may accept images: %+v", unproven.Caps.InputModalities)
+	// Every shared gateway field that can advertise vision — the account's
+	// supports block, the embedded gateway capabilities, and the OpenAI-compatible
+	// architecture modalities — is outranked by the live proof: only
+	// claude-haiku-5.5 has an image path that works.
+	for _, id := range []string{"image-unproven", "gateway-vision", "architecture-vision"} {
+		if unproven := byID[id]; unproven.Caps.AcceptsModality("image") {
+			t.Fatalf("%s must stay text-only until its own live image proof: %+v", id, unproven.Caps.InputModalities)
+		}
 	}
 }

@@ -23,9 +23,11 @@ const instanceLiveListTimeout = llm.LiveModelListTimeout
 // minted at request start — is still current. A Reload landing mid-fetch
 // swaps in a fresh object (whose carryLive only knows the before
 // snapshot); the re-apply carries the listing forward instead of losing
-// it on the detached registry. An unusable provider result publishes an
-// empty snapshot so registry reads take the static fallback. Caller
-// cancellation leaves the last healthy snapshot untouched.
+// it on the detached registry. A failed fetch publishes the non-authoritative
+// static fallback, so a transient network or decode error never records an
+// account-owned roster. A successful listing with no usable rows publishes the
+// account's verdict, which hides that fallback. Caller cancellation leaves the
+// last healthy snapshot untouched.
 func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, auth *hubAuthController, name string) error {
 	// The listing sends the instance's credential, so what the provider
 	// answers is recorded as a probe of it (#3539). The probe begins before
@@ -54,7 +56,10 @@ func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, au
 	auth.settleCredentialProbe(probe, llm.ModelListing{Live: live, Usable: usable}, err)
 	if err != nil {
 		if ctx.Err() == nil {
-			holder.ReapplyLiveListing(tok, name, id, registry.LiveListing{Authoritative: authoritative})
+			// A failure grants no authority: publish the preexisting static
+			// fallback instead of an authoritative empty roster, which would
+			// hide the catalog and be recorded for reloads to restore.
+			holder.ReapplyLive(tok, name, id, nil)
 		}
 		return err
 	}
