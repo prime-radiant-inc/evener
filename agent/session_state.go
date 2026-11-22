@@ -300,6 +300,27 @@ func (s *Session) hasWakeableWork() bool {
 	return s.hasRunnableUserSteering() || s.autonomyInFlight() || s.HasPendingAsk()
 }
 
+// hasOneShotWakeableWork reports whether anything can wake a one-shot
+// (TurnEndsProcess) root session before its process exits. An unfired watch
+// alone does not hold DrainOwnedJobTree open, so only drainable subtree work,
+// live job retirement, in-flight watch/job emission, runnable user steering,
+// or a pending ask qualifies.
+func (s *Session) hasOneShotWakeableWork() (bool, error) {
+	work, err := s.treeHasOutstandingWork()
+	if err != nil || work {
+		return work, err
+	}
+	if s.jobManager != nil && s.jobManager.hasLiveRuns() {
+		return true, nil
+	}
+	for _, holder := range s.watchHolderSessions() {
+		if holder.jobManager.hasNoticeEmissionInFlight() {
+			return true, nil
+		}
+	}
+	return s.hasRunnableUserSteering() || s.HasPendingAsk(), nil
+}
+
 // cumulativeUsageSnapshot converts the context manager's llm.Usage total to
 // the lossy schema.CumulativeUsage persisted in SessionMeta (nil pointers→0,
 // Raw dropped).

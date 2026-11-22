@@ -88,13 +88,16 @@ func TestCommunicateQuietYieldRoot(t *testing.T) {
 		kind      EntryKind
 		job       bool
 		watch     bool
+		oneShot   bool
 		wantQuiet bool
 		wantError bool
 	}{
 		{name: "final reply defaults to ending", args: `{"message":"done"}`, kind: EntryUserInput},
 		{name: "no wake source", args: `{}`, kind: EntryUserInput, wantError: true},
 		{name: "self timer", args: `{}`, kind: EntryUserInput, watch: true, wantQuiet: true},
+		{name: "one-shot self timer refused", args: `{}`, kind: EntryUserInput, watch: true, oneShot: true, wantError: true},
 		{name: "managed shell", args: `{}`, kind: EntryUserInput, job: true, wantQuiet: true},
+		{name: "one-shot managed shell accepted", args: `{}`, kind: EntryUserInput, job: true, oneShot: true, wantQuiet: true},
 		{name: "legacy empty output", args: `{"message":"","output":{"message":"","data":{},"artifacts":[]}}`, kind: EntryUserInput, job: true, wantQuiet: true},
 		{name: "last notification", args: `{}`, kind: EntryNotification, wantQuiet: true},
 		{name: "message required for updates", args: `{"end_turn":false}`, kind: EntryUserInput, wantError: true},
@@ -112,7 +115,7 @@ func TestCommunicateQuietYieldRoot(t *testing.T) {
 			}
 			steps = append(steps, func(llm.Request) llm.Response { return quietYieldResponse("probe", tc.args) }, func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered") })
 			adapter := newFakeAdapter("openai", steps...)
-			s := newSession(t, withEnv(env), withAdapter(adapter), withStateDir(t.TempDir()))
+			s := newSession(t, withEnv(env), withAdapter(adapter), withStateDir(t.TempDir()), withConfig(SessionConfig{TurnEndsProcess: tc.oneShot}))
 			t.Cleanup(env.releaseJob)
 			var stops atomic.Int32
 			installCommunicateStopHook(s, func() string { stops.Add(1); return `{}` })
