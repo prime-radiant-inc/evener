@@ -1905,7 +1905,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				return reply, progressed, err
 			}
 			yieldToObserverCallback, steerErr := s.injectPostToolSteering(ctx, nil, nil, &toolSigs, &toolSigFailed)
-			if steerErr = errors.Join(steerErr, sessionLifecycleFault(ctx, "post_tool_steer")); steerErr != nil {
+			steerErr = errors.Join(steerErr, sessionLifecycleFault(ctx, "post_tool_steer"))
+			if steerErr != nil {
 				return "", progressed, steerErr
 			}
 			timings.TotalRound = time.Since(roundStart)

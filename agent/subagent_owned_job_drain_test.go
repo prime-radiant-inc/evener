@@ -1946,11 +1946,14 @@ func TestSubagentOwnedJobDrainQuietYieldDefersSubagentStopHook(t *testing.T) {
 		name               string
 		decision           string
 		childStopDecisions []string
+		steerDuringHook    string
+		resultSchema       map[string]any
 		steps              []func(llm.Request) llm.Response
 		stopAtDrain        bool
 		wantFiredAtDrain   bool
 		wantStdinSubstring string
 		wantFinalReport    string
+		wantStructured     string
 	}{
 		{
 			name:     "reports_on_wake",
@@ -2117,6 +2120,64 @@ func TestSubagentOwnedJobDrainQuietYieldDefersSubagentStopHook(t *testing.T) {
 			wantStdinSubstring: "SETTLED_PRIMARY_PROOF",
 			wantFinalReport:    `"settled primary report"`,
 		},
+		{
+			name:            "steer_during_post_drain_subagent_stop_preserves_drain_report",
+			decision:        `{}`,
+			steerDuringHook: "STEER_DURING_SUBAGENT_STOP_KEEP",
+			resultSchema: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"ok": map[string]any{"type": "boolean"}},
+				"required":   []any{"ok"},
+			},
+			steps: []func(llm.Request) llm.Response{
+				func(llm.Request) llm.Response {
+					return agenttest.ToolCallResponse(llm.ToolCallData{ID: "owned-job", Name: "shell", Arguments: json.RawMessage(`{"command":"go test","mode":"background"}`)})
+				},
+				func(llm.Request) llm.Response { return quietYieldResponse("quiet-1", `{}`) },
+				func(llm.Request) llm.Response {
+					return assistantAndCommunicate("DRAIN_STRUCTURED_PROOF", "drain-report", `{"message":"drain report","output":{"ok":true}}`)
+				},
+				func(req llm.Request) llm.Response {
+					if !requestContainsText(req, "STEER_DURING_SUBAGENT_STOP_KEEP") {
+						return assistantAndCommunicate("MISSING_STEER", "bad-steer", `{"message":"steer missing","output":{"ok":false}}`)
+					}
+					return quietYieldResponse("quiet-after-steer", `{}`)
+				},
+			},
+			wantFiredAtDrain:   false,
+			wantStdinSubstring: "DRAIN_STRUCTURED_PROOF",
+			wantFinalReport:    `"drain report"`,
+			wantStructured:     `{"ok":true}`,
+		},
+		{
+			name:            "steer_during_post_drain_subagent_stop_allows_replacement_report",
+			decision:        `{}`,
+			steerDuringHook: "STEER_DURING_SUBAGENT_STOP_REPLACE",
+			resultSchema: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"ok": map[string]any{"type": "boolean"}},
+				"required":   []any{"ok"},
+			},
+			steps: []func(llm.Request) llm.Response{
+				func(llm.Request) llm.Response {
+					return agenttest.ToolCallResponse(llm.ToolCallData{ID: "owned-job", Name: "shell", Arguments: json.RawMessage(`{"command":"go test","mode":"background"}`)})
+				},
+				func(llm.Request) llm.Response { return quietYieldResponse("quiet-1", `{}`) },
+				func(llm.Request) llm.Response {
+					return assistantAndCommunicate("DRAIN_INITIAL_PROOF", "drain-report", `{"message":"drain report","output":{"ok":true}}`)
+				},
+				func(req llm.Request) llm.Response {
+					if !requestContainsText(req, "STEER_DURING_SUBAGENT_STOP_REPLACE") {
+						return assistantAndCommunicate("MISSING_STEER", "bad-steer", `{"message":"steer missing","output":{"ok":true}}`)
+					}
+					return assistantAndCommunicate("REPLACED_AFTER_STEER_PROOF", "replacement-report", `{"message":"updated after steer","output":{"ok":false}}`)
+				},
+			},
+			wantFiredAtDrain:   false,
+			wantStdinSubstring: "DRAIN_INITIAL_PROOF",
+			wantFinalReport:    `"updated after steer"`,
+			wantStructured:     `{"ok":false}`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -2153,7 +2214,7 @@ func TestSubagentOwnedJobDrainQuietYieldDefersSubagentStopHook(t *testing.T) {
 			t.Cleanup(env.releaseJob)
 
 			ctx := tripwireCtx(t)
-			dArgs := delegateArgs{Task: "run job and report"}
+			dArgs := delegateArgs{Task: "run job and report", ResultSchema: tc.resultSchema}
 			if len(tc.childStopDecisions) > 0 {
 				dArgs.Sandbox = "off"
 			}
@@ -2190,6 +2251,19 @@ func TestSubagentOwnedJobDrainQuietYieldDefersSubagentStopHook(t *testing.T) {
 					t.Fatalf("StopSubtree: %v", stopErr)
 				}
 			}
+			if tc.steerDuringHook != "" {
+				var steerOnce sync.Once
+				updateSessionTestConfig(child.sess, func(testCfg *testConfig) {
+					testCfg.subagentBeforeSettlement = func(*subagent) {
+						steerOnce.Do(func() {
+							steered := (delegateRuntime{owner: parent}).send(ctx, result.DelegateID, tc.steerDuringHook, 0)
+							if steered.result.Err != nil || steered.result.Action != "steered" {
+								t.Errorf("steer after post-drain SubagentStop = %+v", steered.result)
+							}
+						})
+					}
+				})
+			}
 			env.releaseJob()
 			select {
 			case <-runDone:
@@ -2216,8 +2290,12 @@ func TestSubagentOwnedJobDrainQuietYieldDefersSubagentStopHook(t *testing.T) {
 			if !strings.Contains(lines[0], tc.wantStdinSubstring) {
 				t.Fatalf("SubagentStop stdin = %s, want substring %q", lines[0], tc.wantStdinSubstring)
 			}
-			if packet := loadDelegateTerminalPacket(t, parent, result.DelegateID); packet.Kind != delegatestore.PacketReported || string(packet.Message) != tc.wantFinalReport {
+			packet := loadDelegateTerminalPacket(t, parent, result.DelegateID)
+			if packet.Kind != delegatestore.PacketReported || string(packet.Message) != tc.wantFinalReport {
 				t.Fatalf("terminal packet = %+v, want message %s", packet, tc.wantFinalReport)
+			}
+			if tc.wantStructured != "" && string(packet.StructuredResult) != tc.wantStructured {
+				t.Fatalf("terminal packet StructuredResult = %s, want %s", packet.StructuredResult, tc.wantStructured)
 			}
 		})
 	}

@@ -966,34 +966,83 @@ func TestRootBareTextFallbackFinalEndTurnIndex(t *testing.T) {
 }
 
 func TestTranscriptHealth_QuietYieldsExcludedFromLongestIdenticalRun(t *testing.T) {
-	base := t.TempDir()
-	bucket := stateHomeBucket(base, "proj-quiet-run")
-	const sid = "0351uS7IJIgwIWumd4RtmZ"
 	quietState := json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true,"communicate_quiet":true}`)
-	var turns []schema.Turn
-	for _, id := range []string{"q0", "q1", "q2", "q3"} {
+	appendQuiet := func(turns []schema.Turn, id string) []schema.Turn {
 		res := healthToolResult(id, "communicate", `{"accepted":true,"end_turn":true,"inbox":[],"quiet":true}`, false)
 		res.ToolResult.ToolState = quietState
-		turns = append(turns,
+		return append(turns,
 			schema.NewTurn(schema.TurnAssistant, llm.Message{Content: []llm.ContentPart{healthToolCall(id, "communicate", `{}`)}}),
 			schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{res}}),
 		)
 	}
-	writeSessionsFixtureSession(t, bucket, sid,
-		transcript.Header{CreatedAt: time.Unix(1, 0).UTC()},
-		turns,
-		schema.SessionMeta{TurnCount: len(turns)},
-		nil,
-		time.Unix(2, 0).UTC(),
-	)
-	h, err := TranscriptHealth(t.Context(), base, sid)
-	if err != nil {
-		t.Fatalf("TranscriptHealth: %v", err)
+	appendInspect := func(turns []schema.Turn, id string) []schema.Turn {
+		return append(turns,
+			schema.NewTurn(schema.TurnAssistant, llm.Message{Content: []llm.ContentPart{healthToolCall(id, "shell", `{"command":"gh pr checks 7501"}`)}}),
+			schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{healthToolResult(id, "shell", "pending", false)}}),
+		)
 	}
-	if h.ToolCalls["communicate"] != 4 {
-		t.Errorf("ToolCalls[communicate] = %d, want 4", h.ToolCalls["communicate"])
-	}
-	if h.LongestIdenticalRun.Length != 0 {
-		t.Errorf("LongestIdenticalRun = %+v, want Length=0 (quiet yields are turn-ending acks, not a loop)", h.LongestIdenticalRun)
+
+	for _, tc := range []struct {
+		name           string
+		sid            string
+		buildTurns     func() []schema.Turn
+		wantCommCalls  int
+		wantShellCalls int
+		wantRunLength  int
+	}{
+		{
+			name: "only_quiet_yields",
+			sid:  "0351uS7IJIgwIWumd4RtmZ",
+			buildTurns: func() []schema.Turn {
+				var turns []schema.Turn
+				for _, id := range []string{"q0", "q1", "q2", "q3"} {
+					turns = appendQuiet(turns, id)
+				}
+				return turns
+			},
+			wantCommCalls: 4,
+			wantRunLength: 0,
+		},
+		{
+			name: "quiet_yield_breaks_identical_inspections_across_wakes",
+			sid:  "0351uS7IJIgwIWumd4RtmY",
+			buildTurns: func() []schema.Turn {
+				var turns []schema.Turn
+				for _, suffix := range []string{"1", "2", "3"} {
+					turns = appendInspect(turns, "inspect-"+suffix)
+					turns = appendQuiet(turns, "quiet-"+suffix)
+				}
+				return turns
+			},
+			wantCommCalls:  3,
+			wantShellCalls: 3,
+			wantRunLength:  1,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			bucket := stateHomeBucket(base, "proj-quiet-run")
+			turns := tc.buildTurns()
+			writeSessionsFixtureSession(t, bucket, tc.sid,
+				transcript.Header{CreatedAt: time.Unix(1, 0).UTC()},
+				turns,
+				schema.SessionMeta{TurnCount: len(turns)},
+				nil,
+				time.Unix(2, 0).UTC(),
+			)
+			h, err := TranscriptHealth(t.Context(), base, tc.sid)
+			if err != nil {
+				t.Fatalf("TranscriptHealth: %v", err)
+			}
+			if h.ToolCalls["communicate"] != tc.wantCommCalls {
+				t.Errorf("ToolCalls[communicate] = %d, want %d", h.ToolCalls["communicate"], tc.wantCommCalls)
+			}
+			if h.ToolCalls["shell"] != tc.wantShellCalls {
+				t.Errorf("ToolCalls[shell] = %d, want %d", h.ToolCalls["shell"], tc.wantShellCalls)
+			}
+			if h.LongestIdenticalRun.Length != tc.wantRunLength {
+				t.Errorf("LongestIdenticalRun = %+v, want Length=%d", h.LongestIdenticalRun, tc.wantRunLength)
+			}
+		})
 	}
 }

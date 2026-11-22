@@ -136,9 +136,10 @@ type HealthResult struct {
 // only long enough to compute the identical-run signature and pair it back
 // to its result by ToolCallID.
 type toolCallOccurrence struct {
-	signature string
-	tool      string
-	callID    string
+	signature  string
+	tool       string
+	callID     string
+	quietBreak bool
 }
 
 // TranscriptHealth computes HealthResult for one session: mechanical,
@@ -181,6 +182,7 @@ func TranscriptHealth(ctx context.Context, stateBase, selector string) (HealthRe
 				name := resolver.callName(part.ToolCall)
 				res.ToolCalls[name]++
 				if paired := pairedResults[toolCallPosition{i, j}]; paired.result != nil && !paired.result.IsError && schema.IsQuietCommunicateState(paired.result.ToolState) {
+					occurrences = append(occurrences, toolCallOccurrence{quietBreak: true})
 					continue
 				}
 				occurrences = append(occurrences, toolCallOccurrence{
@@ -280,8 +282,12 @@ func toolCallSignature(name string, tc *llm.ToolCallData) string {
 func longestIdenticalRun(occ []toolCallOccurrence, resultSeen, resultErrors map[string]bool) IdenticalRun {
 	var best IdenticalRun
 	for i := 0; i < len(occ); {
+		if occ[i].quietBreak {
+			i++
+			continue
+		}
 		j := i + 1
-		for j < len(occ) && occ[j].signature == occ[i].signature {
+		for j < len(occ) && !occ[j].quietBreak && occ[j].signature == occ[i].signature {
 			j++
 		}
 		if length := j - i; length > best.Length {

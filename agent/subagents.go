@@ -2584,7 +2584,6 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	var restoreParentDriveNotify func()
 	var finish delegateFinish
 	var noActionClaim *delegateSettlementClaim
-	settledInRun := false
 	iteration := 0
 	for {
 		iteration++
@@ -2594,12 +2593,11 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		runInput := func(inCtx context.Context, text string, images []ImageAttachment, inKind EntryKind) (string, error) {
 			return a.sess.processInputKindWithProvenance(inCtx, text, images, inKind, inputProvenance)
 		}
-		if iteration > 1 && settledInRun {
+		if iteration > 1 {
 			res, err = a.sess.keepingReport(runInput)(ctx, input, nil, kind)
 		} else {
 			res, err = runInput(ctx, input, nil, kind)
 		}
-		settledInRun = settledInRun || a.sess.communicatedUnblocked()
 		_, budgetExhausted := budgetExhaustionFromError(err)
 		a.mu.Lock()
 		cancelRequested := a.cancelRequested
