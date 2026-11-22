@@ -98,6 +98,19 @@ func (s *Session) resultToolName() string {
 	return tool.DefaultResultToolName
 }
 
+func (s *Session) resultToolNameOverride() string {
+	if s.cfg.ResultToolName == tool.DefaultResultToolName {
+		return ""
+	}
+	return s.cfg.ResultToolName
+}
+
+func (s *Session) newToolResultsTurn(m llm.Message) schema.Turn {
+	t := schema.NewTurn(schema.TurnToolResults, m)
+	t.ResultToolName = s.resultToolNameOverride()
+	return t
+}
+
 // registerTool registers a custom tool at runtime.
 func (s *Session) registerTool(name, description string, params map[string]any, fn func(ctx context.Context, args any) (any, error)) {
 	// s.reg self-synchronizes (see the Session.mu lock discipline comment), so
@@ -319,10 +332,12 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	// a PreToolUse updatedInput rewrote them after the model's bytes were read.
 	s.recordDispatchedToolArguments(call)
 
+	resultToolAlias := s.resultToolNameOverride()
 	startData := events.ToolCallStartData{
 		ToolName:      call.Name,
 		CallID:        call.ID,
 		ArgumentsJSON: argsJSON,
+		IsResultTool:  resultToolAlias != "" && call.Name == resultToolAlias,
 	}
 	// Promote intent to the top-level event field for observability.
 	var args map[string]any
@@ -814,15 +829,18 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 		} else if hasTerminalJobResult(calls, results) {
 			persistErr = s.appendToolResultsDurably(live, persisted, skillState)
 		} else if skillState != nil {
-			liveTurn := schema.NewTurn(schema.TurnToolResults, live)
+			liveTurn := s.newToolResultsTurn(live)
 			liveTurn.SkillState = skillState
-			persistedTurn := schema.NewTurn(schema.TurnToolResults, persisted)
+			persistedTurn := s.newToolResultsTurn(persisted)
 			persistedTurn.SkillState = skillState
 			// The obligation is already durable above, so a failed carrier write
 			// returns rather than reporting a recorded round.
 			persistErr = s.recordSkillCarrierDurably(liveTurn, persistedTurn)
 		} else {
-			s.appendTurnWithTranscriptMessage(schema.TurnToolResults, live, persisted)
+			liveTurn := s.newToolResultsTurn(live)
+			persistedTurn := liveTurn
+			persistedTurn.Message = persisted
+			s.recordTurn(liveTurn, persistedTurn)
 		}
 		if persistErr != nil {
 			return
@@ -919,9 +937,9 @@ func (s *Session) takeDelegateDeliveryCommits(calls []llm.ToolCallData) []delega
 // appendToolResultsDurably mirrors appendTurnWithDurableTranscriptMessage
 // (session.go) with the round's typed skill state attached to both copies.
 func (s *Session) appendToolResultsDurably(live, persisted llm.Message, skillState *schema.SkillTurnState) error {
-	liveTurn := schema.NewTurn(schema.TurnToolResults, live)
+	liveTurn := s.newToolResultsTurn(live)
 	liveTurn.SkillState = skillState.Clone()
-	persistedTurn := schema.NewTurn(schema.TurnToolResults, persisted)
+	persistedTurn := s.newToolResultsTurn(persisted)
 	persistedTurn.SkillState = skillState.Clone()
 	err := s.appendTurnAfterTranscriptWrite(
 		persistedTurn,
@@ -938,7 +956,7 @@ func (s *Session) appendToolResultsDurably(live, persisted llm.Message, skillSta
 // results durably with their delegate delivery commits and, when the round
 // included skill tool calls, the typed skill state on both turn copies.
 func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted llm.Message, commits []delegateToolCallDeliveryCommit, skillState *schema.SkillTurnState) error {
-	liveTurn := schema.NewTurn(schema.TurnToolResults, live)
+	liveTurn := s.newToolResultsTurn(live)
 	liveTurn.SkillState = skillState.Clone()
 	persistedTurn := liveTurn
 	persistedTurn.Message = persisted

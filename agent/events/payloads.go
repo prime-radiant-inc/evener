@@ -215,6 +215,7 @@ type ToolCallStartData struct {
 	CallID        string `json:"call_id"`
 	ArgumentsJSON string `json:"arguments_json,omitempty"`
 	Description   string `json:"description,omitempty"`
+	IsResultTool  bool   `json:"is_result_tool,omitempty"`
 }
 
 // ToolCallOutputDeltaData is the payload for an EventToolCallOutputDelta event.

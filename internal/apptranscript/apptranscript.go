@@ -768,7 +768,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 					continue
 				}
 				reg.Names[part.ToolCall.ID] = part.ToolCall.Name
-				if part.ToolCall.Name == "communicate" {
+				if IsCommunicateTool(part.ToolCall.Name, turn.ResultToolName) {
 					// Defer ALL communicate messages to the paired tool result.
 					// The assistant turn alone cannot disambiguate: a valid-JSON
 					// communicate rejected at prevalidation (PrevalOnly) has the
@@ -812,7 +812,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 			if name == "" {
 				name = reg.Names[part.ToolResult.ToolCallID]
 			}
-			if name == "communicate" || IsQuietCommunicate(part.ToolResult) {
+			if IsCommunicateTool(name, turn.ResultToolName) || IsQuietCommunicate(part.ToolResult) {
 				first := len(items)
 				// A rejected communicate (IsError=true, PrevalOnly=true) was
 				// never executed — live suppresses it entirely (no
@@ -829,7 +829,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 							ID:            fmt.Sprintf("item_tool_result_%d_%d", turnIndex, i),
 							TurnID:        turnID,
 							RoundID:       turn.RoundID,
-							ToolName:      "communicate",
+							ToolName:      name,
 							CallID:        part.ToolResult.ToolCallID,
 							ArgumentsJSON: rawArgs,
 							Status:        appwire.TurnStatusFailed,
@@ -1049,7 +1049,7 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, re
 				continue
 			}
 			reg.Names[part.ToolCall.ID] = part.ToolCall.Name
-			if part.ToolCall.Name == "communicate" {
+			if IsCommunicateTool(part.ToolCall.Name, turn.ResultToolName) {
 				if turn.Authorship != nil && turn.Authorship.Inherited {
 					if reg.CommRawArgs == nil {
 						reg.CommRawArgs = map[string]string{}

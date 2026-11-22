@@ -326,7 +326,7 @@ func communicateResultCallID(entry *schema.Turn, part int, seed map[string]strin
 	if name == "" {
 		name = seed[content.ToolResult.ToolCallID]
 	}
-	if name != "communicate" {
+	if !apptranscript.IsCommunicateTool(name, entry.ResultToolName) {
 		return "", false
 	}
 	return content.ToolResult.ToolCallID, true
@@ -382,7 +382,7 @@ func (b *builder) communicateContext(callID string) (strRef, error) {
 // pending calls by and the cut reconstruction's suffix scan answers, so the
 // two can never disagree on what counts as one.
 func deferredCommCall(entry *schema.Turn, part llm.ContentPart) bool {
-	return part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.Name == "communicate" &&
+	return part.Kind == llm.ContentToolCall && part.ToolCall != nil && apptranscript.IsCommunicateTool(part.ToolCall.Name, entry.ResultToolName) &&
 		(entry.Format != schema.TurnFormatIdentity || entry.Authorship != nil && entry.Authorship.Inherited)
 }
 
@@ -433,7 +433,7 @@ func (b *builder) recordCommState(entry *schema.Turn, turnID string, seed map[st
 		if name == "" {
 			name = seed[part.ToolResult.ToolCallID]
 		}
-		if name == "communicate" {
+		if apptranscript.IsCommunicateTool(name, entry.ResultToolName) || apptranscript.IsQuietCommunicate(part.ToolResult) {
 			delete(b.commCalls, part.ToolResult.ToolCallID)
 		}
 	}
@@ -986,7 +986,7 @@ func (b *builder) seed(entry *schema.Turn) (map[string]string, error) {
 				name = resolved.name
 			}
 		}
-		if name != "communicate" {
+		if !apptranscript.IsCommunicateTool(name, entry.ResultToolName) || apptranscript.IsQuietCommunicate(part.ToolResult) {
 			continue
 		}
 		// A rebuild-free extend also needs the deferred-communicate state
@@ -1028,7 +1028,7 @@ func (b *builder) recordNames(entry *schema.Turn, seed map[string]string) {
 			if name == "" {
 				name = seed[part.ToolResult.ToolCallID]
 			}
-			if name == "communicate" {
+			if apptranscript.IsCommunicateTool(name, entry.ResultToolName) || apptranscript.IsQuietCommunicate(part.ToolResult) {
 				b.setName(part.ToolResult.ToolCallID, toolName{})
 			}
 		}

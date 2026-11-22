@@ -1516,7 +1516,7 @@ func writeAssistantContent(b *strings.Builder, seq int, t schema.Turn, resultToo
 				if idx != nil {
 					idx.consumed[p.ToolCall.ID] = true
 					paired, hasResult := idx.byCallID[p.ToolCall.ID]
-					if hasResult && paired.result.IsError && !paired.result.PrevalOnly {
+					if hasResult && (apptranscript.IsQuietCommunicate(paired.result) || paired.result.IsError && !paired.result.PrevalOnly) {
 						continue
 					}
 					writeResultToolMessage(&sb, p.ToolCall, hasResult && !paired.result.IsError)

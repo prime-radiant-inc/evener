@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/argrepair"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
@@ -259,7 +260,7 @@ func outcomeHint(doc transcriptDoc, resultTool string) string {
 			if call == nil {
 				return "none"
 			}
-			return formatOutcome(call.Arguments)
+			return formatOutcome(communicateCallArguments(call))
 		}
 	}
 	return "none"
@@ -276,13 +277,22 @@ func outcomeCall(turn schema.Turn, resultTool string) (call *llm.ToolCallData, d
 		if part.Kind != llm.ContentToolCall || part.ToolCall == nil || part.ToolCall.Name != resultTool {
 			continue
 		}
-		if quietCommunicateArguments(part.ToolCall.Arguments) {
+		if quietCommunicateArguments(communicateCallArguments(part.ToolCall)) {
 			quiet = true
 		} else {
 			call = part.ToolCall
 		}
 	}
 	return call, call != nil || !quiet
+}
+
+// A healed call stores {} as replay-safe Arguments; use the same repair as
+// the transcript projection to distinguish its reply from a real empty call.
+func communicateCallArguments(call *llm.ToolCallData) json.RawMessage {
+	if call.RawArguments != "" {
+		return apptranscript.NormalizeCommunicateArguments(argrepair.RepairJSON(call.SentArgumentsBytes()))
+	}
+	return call.Arguments
 }
 
 func quietCommunicateArguments(raw json.RawMessage) bool {

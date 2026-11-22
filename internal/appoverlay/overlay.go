@@ -108,6 +108,8 @@ type call struct {
 	// covered reports that the entry settling the call (TOOL_RESULTS, or
 	// COMMUNICATE for a communicate call) is recorded.
 	covered bool
+	// resultTool suppresses the regular tool card for a renamed communicate.
+	resultTool bool
 }
 
 type slot struct {
@@ -499,6 +501,10 @@ func (o *Overlay) startTool(ev events.SessionEvent, data events.ToolCallStartDat
 	if !ok {
 		return nil
 	}
+	if data.IsResultTool {
+		c.resultTool = true
+		return nil
+	}
 	s := o.toolSlot(data.CallID, c)
 	s.item.Item.ToolName = data.ToolName
 	s.item.Item.ArgumentsJSON = data.ArgumentsJSON
@@ -551,11 +557,11 @@ func (o *Overlay) appendOutput(callID, text string) []Change {
 }
 
 func (o *Overlay) endTool(data events.ToolCallEndData) []Change {
-	if data.ToolName == "communicate" {
+	if data.ToolName == "communicate" || data.Error == "" && apptranscript.IsQuietCommunicateState(data.ToolState) {
 		return nil
 	}
 	c, ok := o.toolCall(data.CallID)
-	if !ok {
+	if !ok || c.resultTool {
 		return nil
 	}
 	s := o.toolSlot(data.CallID, c)

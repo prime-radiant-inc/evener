@@ -770,11 +770,18 @@ func (s *Session) runReplyStopHook(ctx context.Context, text string) hooks.StopR
 	return s.hookRunner.RunStop(s.apiLogContext(ctx), hi)
 }
 
-func (s *Session) deliverReplyStopHookMessages(result hooks.StopResult) error {
-	for _, m := range result.ModelContext {
+func (s *Session) deliverReplyStopHookContext(contexts []string) error {
+	for _, m := range contexts {
 		if err := s.deliverHookContext(m); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (s *Session) deliverReplyStopHookMessages(result hooks.StopResult) error {
+	if err := s.deliverReplyStopHookContext(result.ModelContext); err != nil {
+		return err
 	}
 	for _, m := range result.UserMessages {
 		s.deliverHookUserMessage(m)

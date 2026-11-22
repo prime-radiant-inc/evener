@@ -3,14 +3,19 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/llm"
 )
 
@@ -145,5 +150,103 @@ func TestRootBareTextFallbackStopHook(t *testing.T) {
 				t.Fatalf("assistant acceptance=%q, communicate=%q", marked, communicated)
 			}
 		})
+	}
+}
+
+func TestRootBareTextFallbackHookContextFailureIsNotTerminal(t *testing.T) {
+	s := newSession(t, withSteps(func(llm.Request) llm.Response {
+		return bareTextResponse("Unaccepted draft", llm.FinishReasonStop)
+	}), withStateDir(t.TempDir()))
+	controller, err := NewRetirementController(time.Second, RealRetirementClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller.phase = "retired"
+	installCommunicateStopHook(s, func() string {
+		// Deny subsequent hook-context admission, not the inbound user turn.
+		s.retirementController.Store(controller)
+		return `{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":"Required context"}}`
+	})
+	got, err := s.ProcessInput(tripwireCtx(t), "Question", nil)
+	s.retirementController.Store(nil)
+	if !errors.Is(err, ErrRetirementUnavailable) || got != "" || s.communicated() {
+		t.Fatalf("reply=%q, accepted=%t, error=%v", got, s.communicated(), err)
+	}
+	idx, err := transcriptindex.Open(s.TranscriptPath(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := idx.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	window, err := idx.Latest(40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var draft bool
+	for _, candidate := range window.Candidates {
+		if candidate.Item.Type != "agentMessage" || candidate.Item.Text != "Unaccepted draft" {
+			continue
+		}
+		draft = true
+		obs := candidate.Item.Observation
+		if obs != nil && obs.TerminalAccepted != nil && *obs.TerminalAccepted {
+			t.Error("replay accepted a failed draft")
+		}
+	}
+	if !draft {
+		t.Fatal("failed draft was not recorded")
+	}
+}
+
+func TestQuietYieldRenamedResultToolHasNoProjectedToolCard(t *testing.T) {
+	const name = "respond"
+	s := newSession(t, withConfig(SessionConfig{ResultToolName: name}), withSteps(func(llm.Request) llm.Response {
+		call := rawCommunicateCall("quiet", `{}`)
+		call.Name = name
+		return agenttest.ToolCallResponse(call)
+	}), withStateDir(t.TempDir()))
+	if _, err := s.jobManager.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, Source: "self", AfterSeconds: 3600}); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := s.ProcessInput(tripwireCtx(t), "Wait for work", nil); err != nil || out != "" || !s.quietlyYielded() {
+		t.Fatalf("reply=%q, quiet=%t, error=%v", out, s.quietlyYielded(), err)
+	}
+	requireQuietToolResult(t, s, "quiet")
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(s.TranscriptPath(), transcript.DefaultMaxLineBytes, func(entry schema.Turn, id string, i int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(id, i, entry, reg, nil, nil)
+		return items
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(source string, item appwire.ThreadItem) {
+		if item.Type == "commandExecution" || item.Type == "agentMessage" {
+			t.Errorf("%s: quiet call projected %s (call=%q status=%q)", source, item.Type, item.CallID, item.Status)
+		}
+	}
+	for _, turn := range turns {
+		for _, item := range turn.Items {
+			check("whole transcript", item)
+		}
+	}
+	idx, err := transcriptindex.Open(s.TranscriptPath(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := idx.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	window, err := idx.Latest(40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range window.Candidates {
+		check("index", candidate.Item)
 	}
 }

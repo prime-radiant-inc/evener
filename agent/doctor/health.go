@@ -318,7 +318,8 @@ func finalEndTurnIndex(entries []transcript.Entry, resultTool string) int {
 			if part.Kind != llm.ContentToolCall || part.ToolCall == nil || part.ToolCall.Name != resultTool {
 				continue
 			}
-			if callArgsEndTurn(part.ToolCall.Arguments) && !quietCommunicateArguments(part.ToolCall.Arguments) {
+			args := communicateCallArguments(part.ToolCall)
+			if callArgsEndTurn(args) && !quietCommunicateArguments(args) {
 				last = i
 			}
 		}

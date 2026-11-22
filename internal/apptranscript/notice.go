@@ -45,6 +45,11 @@ func CommunicateItem(turnID string, entryIndex int, entry schema.Turn) (appwire.
 			CausalKnown: entry.CausalKnown, Causal: provenance.Clone(entry.Causal),
 		},
 	}
+	// Older Hub watchers still recognize terminal replies by this wire value.
+	// It is a projection default, not an option in the communicate tool.
+	if item.Observation.EndTurn && item.Observation.EndReason == "" {
+		item.Observation.EndReason = "done"
+	}
 	if entry.AcceptedReply {
 		item.Observation.TerminalAccepted = new(true)
 	}
@@ -54,6 +59,12 @@ func CommunicateItem(turnID string, entryIndex int, entry schema.Turn) (appwire.
 	}
 	item.StartedAt = entryStartedAt(entry)
 	return item, true
+}
+
+// IsCommunicateTool identifies the result tool in a recorded assistant or
+// tool-result turn. Older entries only knew the default name.
+func IsCommunicateTool(name, recordedName string) bool {
+	return name == "communicate" || name != "" && name == recordedName
 }
 
 // IsQuietCommunicate reports typed evidence of a successful quiet yield.
@@ -82,7 +93,7 @@ func markAcceptedAssistantReply(items []appwire.ThreadItem, turnID string, entry
 	for i := len(items) - 1; i >= 0; i-- {
 		if items[i].Type == "agentMessage" && strings.TrimSpace(items[i].Text) != "" {
 			items[i].Observation = &appwire.SessionObservationMetadata{
-				TurnID: turnID, EndTurn: true, TerminalAccepted: new(true),
+				TurnID: turnID, EndTurn: true, EndReason: "done", TerminalAccepted: new(true),
 				CausalKnown: entry.CausalKnown, Causal: provenance.Clone(entry.Causal),
 			}
 			return

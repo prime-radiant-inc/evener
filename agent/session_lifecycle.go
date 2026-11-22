@@ -1818,13 +1818,18 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			!noContent && strings.TrimSpace(lastText) != "" && !s.communicated()
 		var bareStop hooks.StopResult
 		if bareReply {
-			// Decide acceptance before the append-only assistant record is written.
-			// Apply hook context after the response, so the next request still sees
-			// the draft followed by the hook's instructions.
 			bareStop = s.runReplyStopHook(ctx, lastText)
 		}
 		acceptedBareReply := bareReply && !bareStop.Blocked && !bareStop.Stopped
-		if abortErr := errors.Join(s.emitAssistantResponse(ctx, resp, modelResp, txt, skipHistory, attempt, acceptedBareReply), sessionLifecycleFault(ctx, "emit_assistant")); abortErr != nil {
+		var stopErr error
+		if acceptedBareReply {
+			// Finish fallible hook delivery before publishing terminal evidence.
+			// Model context is queued here and joins history on the next request,
+			// after the assistant response. Blocked drafts are recorded first.
+			stopErr = s.deliverReplyStopHookContext(bareStop.ModelContext)
+			bareStop.ModelContext = nil
+		}
+		if abortErr := errors.Join(s.emitAssistantResponse(ctx, resp, modelResp, txt, skipHistory, attempt, acceptedBareReply && stopErr == nil), sessionLifecycleFault(ctx, "emit_assistant"), stopErr); abortErr != nil {
 			return "", progressed, abortErr
 		}
 		if googleTerminalSettlement {

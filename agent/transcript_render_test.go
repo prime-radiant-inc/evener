@@ -2665,3 +2665,20 @@ func TestTranscriptRenderQuietCommunicate(t *testing.T) {
 		}
 	}
 }
+
+func TestQuietYieldMarkdownUsesPairedVerdict(t *testing.T) {
+	const suspect = `{"message":"",}`
+	for _, quiet := range []bool{false, true} {
+		call := rawCommunicateCall("quiet", `{}`)
+		call.RawArguments = suspect
+		result := &llm.ToolResultData{ToolCallID: call.ID, Name: call.Name}
+		if quiet {
+			result.ToolState = json.RawMessage(`{"communicate_quiet":true}`)
+		}
+		entries := []transcript.Entry{toolCallEntry(&call), toolResultEntry(result)}
+		out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
+		if rendered := strings.Contains(out, suspect); rendered == quiet {
+			t.Errorf("quiet=%t: raw bytes rendered=%t", quiet, rendered)
+		}
+	}
+}

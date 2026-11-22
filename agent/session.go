@@ -3918,6 +3918,7 @@ func (s *Session) appendAssistantTurnWithAcceptance(resp llm.Response, finalAtte
 		ResponseStorageScopeFingerprint: finalAttempt.StorageScopeFingerprint,
 		ResponseRequestFingerprint:      finalAttempt.RequestFingerprint,
 		ResponseContextMarker:           finalAttempt.ContextMarker,
+		ResultToolName:                  s.resultToolNameOverride(),
 		RoundID:                         s.roundIDForModelCall(),
 	}
 	t.Authorship = s.roundTranscriptAuthorship()

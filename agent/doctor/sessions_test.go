@@ -1033,3 +1033,16 @@ func TestRootBareTextFallbackOutcomeBeyondTrailingQuietTail(t *testing.T) {
 		t.Fatalf("outcome=%q", got)
 	}
 }
+
+func TestOutcomeHintHealedVisibleReply(t *testing.T) {
+	entries := finalReplyThenQuietEntries()
+	healed := healthToolCall("healed", "communicate", `{}`)
+	healed.ToolCall.RawArguments = `{message:"Recovered answer","output":{"decision":"reject"}}`
+	entries = append(entries[:1], transcript.Entry{Turn: schema.NewTurn(schema.TurnAssistant, llm.Message{Content: []llm.ContentPart{healed}})}, entries[1])
+	if got := outcomeHint(transcriptDoc{Entries: entries}, "communicate"); got != "end_turn=true decision=reject" {
+		t.Errorf("healed outcome=%q", got)
+	}
+	if got := finalEndTurnIndex(entries, "communicate"); got != 1 {
+		t.Errorf("healed final index=%d, want 1", got)
+	}
+}
