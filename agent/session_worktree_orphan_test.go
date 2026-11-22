@@ -812,6 +812,31 @@ func (l *sharedDescendantLane) reportAttentionID() string {
 	return delegateAttentionID(delegateDeliveryID(l.sharedDelegateID, 1))
 }
 
+// journal renders this lane delegate's start/finish/hold-release events for a
+// tripwire: the durable answer to "which generation carried which row".
+func (l *sharedDescendantLane) journal() string {
+	events, err := l.root.delegateController.store.Load()
+	if err != nil {
+		return fmt.Sprintf("load: %v", err)
+	}
+	parts := make([]string, 0, len(events))
+	for _, ev := range events {
+		if ev.DelegateID != l.fixture.delegateID {
+			continue
+		}
+		switch {
+		case ev.RunStarted != nil:
+			parts = append(parts, fmt.Sprintf("start gen=%d trigger=%v attention=%q",
+				ev.RunStarted.Generation, ev.RunStarted.Trigger, ev.RunStarted.AttentionID))
+		case ev.RunFinished != nil:
+			parts = append(parts, fmt.Sprintf("finish gen=%d outcome=%v", ev.RunFinished.Generation, ev.RunFinished.Outcome))
+		case ev.AttentionHoldReleased != nil:
+			parts = append(parts, fmt.Sprintf("hold-released gen=%d", ev.AttentionHoldReleased.Generation))
+		}
+	}
+	return strings.Join(parts, " | ")
+}
+
 // delegateAttentionDiagnostics is the controller-owned state a scripted
 // tripwire prints. The in-memory delivery queue a tripwire reads separately
 // is not the durable head: the report can wait in the journal while the
@@ -2924,6 +2949,26 @@ func attentionRunGenerations(t *testing.T, controller *delegateTreeController, d
 	return generations
 }
 
+// attentionRunGenerationFinished reports whether the journal holds the finish of
+// generation. A wait that only asked for the newest finish would accept a
+// successor's, so the run whose drain the test waits for is named exactly.
+func attentionRunGenerationFinished(t *testing.T, controller *delegateTreeController, delegateID string, generation uint64) bool {
+	t.Helper()
+	if generation == 0 {
+		return false
+	}
+	events, err := controller.store.Load()
+	if err != nil {
+		t.Fatalf("load the delegate journal: %v", err)
+	}
+	for _, event := range events {
+		if event.DelegateID == delegateID && event.RunFinished != nil && event.RunFinished.Generation == generation {
+			return true
+		}
+	}
+	return false
+}
+
 func TestDelegateAttentionUserStopHoldsUnpresentedRowFromStaleArmedWake(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -3369,6 +3414,11 @@ func TestDelegateAttentionHeldUpdateDoesNotLoopTheFinalizationDrain(t *testing.T
 	if pending := stopFold.pendingIDs(); len(pending) != 2 {
 		t.Fatalf("the stop's fold = pending:%v, want both rows pending", pending)
 	}
+	// The armed-wake baseline, read while the parked request still holds the
+	// delegate busy. The stop's own notify can already be driving by the time
+	// the settle tail returns, so a snapshot taken after the release may already
+	// name the successor generations; here no successor exists yet.
+	stopGenerations := attentionRunGenerations(t, lane.root.delegateController, lane.fixture.delegateID)
 	lane.delegateSub.mu.Lock()
 	runDone := lane.delegateSub.done
 	lane.delegateSub.mu.Unlock()
@@ -3405,12 +3455,12 @@ func TestDelegateAttentionHeldUpdateDoesNotLoopTheFinalizationDrain(t *testing.T
 	if !isDelegateUpdateAttentionID(updateID) {
 		t.Fatalf("the held row %q lost the update classification", updateID)
 	}
-	stopGenerations := attentionRunGenerations(t, lane.root.delegateController, lane.fixture.delegateID)
 
 	// The drain contract, read from the journal: the rider's run — the one the
-	// stale armed wake owes — must FINISH, and finishing means its finalization
-	// drain exited. The journal is the oracle because the run's own done channel
-	// belongs to whichever generation last started.
+	// stale armed wake owes — must start on a generation of its own and FINISH,
+	// and finishing means its finalization drain exited. The journal is the
+	// oracle because the run's own done channel belongs to whichever generation
+	// last started.
 	latestFinished := func() (uint64, bool) {
 		events, err := lane.root.delegateController.store.Load()
 		if err != nil {
@@ -3444,21 +3494,18 @@ func TestDelegateAttentionHeldUpdateDoesNotLoopTheFinalizationDrain(t *testing.T
 			liveResolutions = fmt.Sprintf("%v order=%v", liveFold.resolutions, liveFold.order)
 		}
 		gen, _ := latestFinished()
-		return fmt.Sprintf("pending=%d (%v) pendErr=%v delegateBusy=%t stoppedGen=%d latestFinishedGen=%d live: %s",
-			len(pending), pending, pendErr, delegateBusy, stoppedGen, gen, liveResolutions)
+		return fmt.Sprintf("pending=%d (%v) pendErr=%v delegateBusy=%t stoppedGen=%d latestFinishedGen=%d journal: %s live: %s",
+			len(pending), pending, pendErr, delegateBusy, stoppedGen, gen, lane.journal(), liveResolutions)
 	}
-	testwait.Until(t, "the rider's run to finish its finalization drain", func() bool {
-		gen, ok := latestFinished()
-		return ok && gen > stoppedGen
+	testwait.Until(t, "the rider's own generation to finish its finalization drain", func() bool {
+		generation := attentionRunGenerations(t, lane.root.delegateController, lane.fixture.delegateID)[riderRowID]
+		return generation > stopGenerations[riderRowID] && attentionRunGenerationFinished(t, lane.root.delegateController, lane.fixture.delegateID, generation)
 	})
-	// The held update never rode the rider's generation: the journal names no
-	// attention generation for it while the rider's run has already finished.
-	generations := attentionRunGenerations(t, lane.root.delegateController, lane.fixture.delegateID)
-	if generations[riderRowID] == stopGenerations[riderRowID] {
-		t.Fatalf("the rider never presented on a generation of its own (%s)", drainState())
-	}
-	if updateGeneration := generations[updateID]; updateGeneration != stopGenerations[updateID] {
-		t.Fatalf("the held update rode the rider's generation (%d; %s)", updateGeneration, drainState())
+	// The held update never rode the rider's generation: whatever generation
+	// presents it, it is not the rider's.
+	riderGeneration := attentionRunGenerations(t, lane.root.delegateController, lane.fixture.delegateID)[riderRowID]
+	if updateGeneration := attentionRunGenerations(t, lane.root.delegateController, lane.fixture.delegateID)[updateID]; updateGeneration == riderGeneration {
+		t.Fatalf("the held update rode the rider's generation %d (%s)", riderGeneration, drainState())
 	}
 
 	// The recovery contract: the rider's settle tail re-arms the remaining
@@ -3468,7 +3515,7 @@ func TestDelegateAttentionHeldUpdateDoesNotLoopTheFinalizationDrain(t *testing.T
 		live, err := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
 		return err == nil && live.resolutions[updateID] != ""
 	})
-	generations = attentionRunGenerations(t, lane.root.delegateController, lane.fixture.delegateID)
+	generations := attentionRunGenerations(t, lane.root.delegateController, lane.fixture.delegateID)
 	updateGeneration, riderGeneration := generations[updateID], generations[riderRowID]
 	if updateGeneration <= riderGeneration {
 		t.Fatalf("the held update rode the rider's generation instead of its own (update gen %d, rider gen %d; %s)",

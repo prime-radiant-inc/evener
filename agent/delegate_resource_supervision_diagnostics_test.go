@@ -145,11 +145,14 @@ func TestStableSupervisionFailureSnapshotCapturesAttentionReservation(t *testing
 	}
 	snapshot = uncontendedStableSupervisionSnapshot(t, root, sub, fixture.adapter)
 	wantReservation = []map[string]any{{"generation": uint64(2), "attention_id": attentionID, "admitted": true, "resolution_ready": true}}
-	if !reflect.DeepEqual(snapshot["attention_reservations"], wantReservation) || !reflect.DeepEqual(snapshot["blocking_predicates"], []string{"attention_reservations"}) {
+	if !reflect.DeepEqual(snapshot["attention_reservations"], wantReservation) ||
+		!reflect.DeepEqual(snapshot["blocking_predicates"], []string{"pending_attention_ids", "attention_reservations"}) {
 		t.Fatalf("accepted reservation diagnostics = %#v", snapshot)
 	}
-	if !reflect.DeepEqual(snapshot["attention_resolutions"], map[string]delegateAttentionResolution{attentionID: delegateAttentionConsumed}) ||
-		!reflect.DeepEqual(snapshot["attention_resume_generations"], map[string]uint64{attentionID: 2}) {
+	// Admission prepares the start and commits nothing: the row is still pending
+	// and no resolution marker exists until a request presents it.
+	if !reflect.DeepEqual(snapshot["attention_resolutions"], map[string]delegateAttentionResolution{}) ||
+		!reflect.DeepEqual(snapshot["attention_resume_generations"], map[string]uint64{}) {
 		t.Fatalf("accepted reservation transcript identity = %#v", snapshot)
 	}
 	started, err := root.delegateController.CommitStart(reservation)
@@ -214,8 +217,11 @@ func TestStableSupervisionFailureSnapshotCapturesSettlementClaim(t *testing.T) {
 	if snapshot["completion_requirement"] != delegateCompletionAttentionOnly || snapshot["completion_outcome"] != delegateCompletionOutcomeAttentionNoAction || snapshot["terminal_seen"] != false {
 		t.Fatalf("no-action settlement evidence = %#v", snapshot)
 	}
+	// The presenting turn consumes the row. The marker carries no resume
+	// generation: one generation can present several rider rows, so the marker
+	// no longer claims a generation for one row.
 	if !reflect.DeepEqual(snapshot["attention_resolutions"], map[string]delegateAttentionResolution{attentionID: delegateAttentionConsumed}) ||
-		!reflect.DeepEqual(snapshot["attention_resume_generations"], map[string]uint64{attentionID: 2}) ||
+		!reflect.DeepEqual(snapshot["attention_resume_generations"], map[string]uint64{attentionID: 0}) ||
 		!reflect.DeepEqual(snapshot["blocking_predicates"], []string{"subagent_finalizing", "current_run_open", "completion_channel"}) {
 		t.Fatalf("settlement transcript or blockers = %#v", snapshot)
 	}

@@ -498,6 +498,24 @@ func TestHeldAttentionProjectionSeedsNoContinuationAnchor(t *testing.T) {
 
 const acceptedTriggerText = `<delegate-notification delegate_id="dlg_worker" kind="update">TRIGGER_ITEM</delegate-notification>`
 
+// consumeAcceptedDelegateAttentionForLegacyFixture replays the pre-#5681 accept
+// path: the generation had already consumed its trigger at the reservation's
+// generation, and the latch named it for the request. Production now commits
+// first and consumes only when a request presents the row, so no live path
+// writes these markers; a fixture that models a journal written before the
+// upgrade is the only caller.
+func consumeAcceptedDelegateAttentionForLegacyFixture(t *testing.T, controller *delegateTreeController, sess *Session, reservation *delegateStartReservation) {
+	t.Helper()
+	attentionID, generation, err := controller.attentionReservationIdentity(reservation, sess)
+	if err != nil {
+		t.Fatalf("legacy accept identity: %v", err)
+	}
+	sess.holdAcceptedTrigger(attentionID)
+	if err := sess.resolveAttentionDurablyForGeneration([]string{attentionID}, delegateAttentionConsumed, generation); err != nil {
+		t.Fatalf("legacy accept consume: %v", err)
+	}
+}
+
 // acceptedTriggerSession is a delegate runtime that has accepted an attention
 // generation whose trigger is old enough for a fold to summarize away, with a
 // later item still pending.
@@ -531,6 +549,9 @@ func acceptedTriggerSession(t *testing.T) *Session {
 	if err := acceptDelegateAttentionForTest(controller, sess, reservation); err != nil {
 		t.Fatalf("acceptDelegateAttention: %v", err)
 	}
+	// LEGACY PRE-UPGRADE GENERATION (pre-#5681): the restored generation had
+	// consumed its trigger before it ran.
+	consumeAcceptedDelegateAttentionForLegacyFixture(t, controller, sess, reservation)
 	// No drive owns this accepted reservation, so nothing commits it; release
 	// it the way a drive that cannot commit does, before the session and the
 	// controller close (cleanups are LIFO), so Close finds no start to wait on.
@@ -1493,6 +1514,9 @@ func deriveHeldFixtureWithJournalTrigger(t *testing.T, trigger delegatestore.Run
 	if err := acceptDelegateAttentionForTest(controller, sess, reservation); err != nil {
 		t.Fatalf("acceptDelegateAttention: %v", err)
 	}
+	// LEGACY PRE-UPGRADE GENERATION (pre-#5681): the journal this case restores
+	// came from a release that consumed the trigger before its run.
+	consumeAcceptedDelegateAttentionForLegacyFixture(t, controller, sess, reservation)
 	// The claimed generation's rest: the run settled with the fixture's
 	// outcome, leaving the aggregate at that generation. The stop is journaled
 	// rather than seeded in memory, so a controller reopened from the journal —
@@ -1624,6 +1648,9 @@ func TestDeriveHoldsEachRowByItsOwnStop(t *testing.T) {
 	if err := acceptDelegateAttentionForTest(controller, sess, reservation); err != nil {
 		t.Fatalf("accept the second source row: %v", err)
 	}
+	// LEGACY PRE-UPGRADE GENERATION (pre-#5681): both stops in this journal came
+	// from a release that consumed its trigger before its run.
+	consumeAcceptedDelegateAttentionForLegacyFixture(t, controller, sess, reservation)
 	stopped := delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError, Message: json.RawMessage(`"stopped"`)}
 	controller.mu.Lock()
 	_, err = controller.appendLocked(

@@ -1550,7 +1550,13 @@ func (s *Session) stopQuietedDelegateAttentionRowsLocked(fold delegateAttentionF
 		if outcome, settled := runOutcomes[lease]; !settled || outcome.Status != delegatestore.OutcomeCancelled {
 			continue
 		}
-		carried[attentionID] = lease.generation
+		// Two cancelled generations can name the same row (a stop, then a
+		// successor stop after the row was presented again). The map visits them
+		// in no order, so keep the newest: an older stamp lets a wake at the
+		// newer stop's generation release a quiet that stop installed.
+		if previous, ok := carried[attentionID]; !ok || lease.generation > previous {
+			carried[attentionID] = lease.generation
+		}
 	}
 	var rows []delegateQuietedRow
 	// Only a pending row has a quiet this pass may rebuild. A resolved row has
@@ -2032,14 +2038,6 @@ func (s *Session) beginRootDelegateAttentionTurn() []string {
 	s.attentionMu.Lock()
 	ids := make([]string, 0, len(s.rootAttentionWakeIDs))
 	for id := range s.rootAttentionWakeIDs {
-		// A user-stopped row is held from every automatic presentation,
-		// including this rail: a stale armed wake still names it, and
-		// presenting it here would restart the very generation the stop
-		// cancelled. The ID stays noted, so the arm that releases the hold
-		// presents it exactly as it presents a fresh row.
-		if s.delegateAttentionHeldFromAutomaticDriveLocked(id) {
-			continue
-		}
 		ids = append(ids, id)
 	}
 	if len(ids) == 0 {

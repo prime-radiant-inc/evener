@@ -158,12 +158,20 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 		s.delegateController.retryDelegateAttentionLater()
 		return true
 	}
+	// Every refusal between the reservation and the commit releases it exactly
+	// once. CommitStart releases its own refusals; the flag keeps this cleanup
+	// off a committed generation, which owns the lease from then on.
+	committed := false
+	defer func() {
+		if !committed {
+			_ = s.delegateController.AbortStart(reservation)
+		}
+	}()
 	// Admission is what makes a concurrent stop or resumability closure wait
 	// for this start's commit instead of settling the row under it. It writes
 	// nothing to the transcript: the consume marker lands only when the launched
 	// turn presents the row (finishAttentionTurn).
 	if _, _, err := s.delegateController.attentionReservationIdentity(reservation, sub.sess); err != nil {
-		_ = s.delegateController.AbortStart(reservation)
 		s.delegateController.retryDelegateAttentionLater()
 		return true
 	}
@@ -174,20 +182,17 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 	// request will carry.
 	pending, err = sub.sess.automaticDelegateAttentionIDs()
 	if err != nil {
-		_ = s.delegateController.AbortStart(reservation)
 		s.emit(warningDataFromError("inspect delegate attention", err))
 		s.delegateController.retryDelegateAttentionLater()
 		return true
 	}
 	if !slices.Contains(pending, trigger) {
-		_ = s.delegateController.AbortStart(reservation)
 		if err := s.delegateController.clearResolvedDelegateAttention(sub.sess.owningDelegateID); err != nil {
 			s.emit(warningDataFromError("clear resolved delegate attention", err))
 		}
 		return false
 	}
 	if err := s.delegateController.prepareAttentionStart(reservation, sub.sess, pending); err != nil {
-		_ = s.delegateController.AbortStart(reservation)
 		s.delegateController.retryDelegateAttentionLater()
 		return true
 	}
@@ -200,11 +205,10 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 	s.mu.Unlock()
 	if fault != nil {
 		// A test seam, nil in production: its error stands in for a commit the
-		// controller refused. The refusal writes nothing, so the reservation is
-		// released here exactly as CommitStart releases its own refusals.
-		if commitErr = fault(); commitErr != nil {
-			_ = s.delegateController.AbortStart(reservation)
-		}
+		// controller refused. The refusal writes nothing, so the deferred abort
+		// releases the reservation exactly as CommitStart releases its own
+		// refusals.
+		commitErr = fault()
 	}
 	var started delegateStartCommit
 	if commitErr == nil {
@@ -215,6 +219,7 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 		s.delegateController.retryDelegateAttentionLater()
 		return true
 	}
+	committed = true
 	if observer := s.cfg.testOnly.delegateAttentionStartCommitted; observer != nil {
 		observer(sub)
 	}

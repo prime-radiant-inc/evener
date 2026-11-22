@@ -366,22 +366,28 @@ func TestDelegateAttention_StopLeavesBoundAttentionForDiscard(t *testing.T) {
 			sessionID   = "child-dlg_target"
 			attentionID = "delegate:delivery-admitted"
 		)
-		fs := newAttentionSyncBarrierFS()
-		c, runtime, path := newDelegateAttentionAcceptanceHarness(t, sessionID, fs, attentionID)
+		c, runtime, path := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, attentionID)
 		reservation, err := c.ReserveAttention(runtime, attentionID)
 		if err != nil {
 			t.Fatalf("ReserveAttention: %v", err)
 		}
-		fs.arm()
+		// The window under test is the span between the admission and the
+		// commit, which is the exact span every durable write of the start runs
+		// in: the stop must wait it out and the commit must still land.
+		admitted := make(chan struct{})
+		proceed := make(chan struct{})
 		accepted := make(chan error, 1)
 		go func() {
-			acceptErr := acceptDelegateAttentionForTest(c, runtime, reservation)
-			if acceptErr == nil {
-				_, acceptErr = c.CommitStart(reservation)
+			if acceptErr := acceptDelegateAttentionForTest(c, runtime, reservation); acceptErr != nil {
+				accepted <- acceptErr
+				return
 			}
+			close(admitted)
+			<-proceed
+			_, acceptErr := c.CommitStart(reservation)
 			accepted <- acceptErr
 		}()
-		<-fs.syncEntered
+		<-admitted
 		stopped := make(chan error, 1)
 		go func() {
 			_, _, _, stopErr := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
@@ -392,7 +398,7 @@ func TestDelegateAttention_StopLeavesBoundAttentionForDiscard(t *testing.T) {
 			t.Fatalf("stop returned before admitted acceptance committed: %v", err)
 		default:
 		}
-		fs.release()
+		close(proceed)
 		if err := <-accepted; err != nil {
 			t.Fatalf("accept admitted attention: %v", err)
 		}
@@ -403,7 +409,9 @@ func TestDelegateAttention_StopLeavesBoundAttentionForDiscard(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read admitted attention fold: %v", err)
 		}
-		if fold.resolutions[attentionID] != delegateAttentionConsumed || fold.resumeGenerations[attentionID] != 1 {
+		// The committed generation never presented the row, so the stop owns it
+		// still pending; only a request that carries it writes the marker.
+		if fold.resolutions[attentionID] != "" || fold.resumeGenerations[attentionID] != 0 {
 			t.Fatalf("admitted resolution = %q generation %d", fold.resolutions[attentionID], fold.resumeGenerations[attentionID])
 		}
 		events, err := c.store.Load()
@@ -460,18 +468,12 @@ func newDelegateAttentionAcceptanceHarness(t *testing.T, sessionID string, fs af
 	return c, runtime, path
 }
 
-// acceptDelegateAttentionForTest admits a reserved attention generation the way
-// the pre-#5681 accept path did: it latches the trigger, resolves it as
-// consumed at the reserved generation, then prepares the admission. Production
-// no longer consumes before commit; fixtures that only need an admitted
-// generation keep using this to exercise the presentation and stop paths.
+// acceptDelegateAttentionForTest admits a reserved attention generation exactly
+// as driveDelegateAttention does: identity read, the pending set read, then the
+// admission. Nothing is consumed or latched before the commit — a #5681 fixture
+// that models a restored pre-upgrade generation adds that legacy step itself.
 func acceptDelegateAttentionForTest(controller *delegateTreeController, runtime *Session, reservation *delegateStartReservation) error {
-	attentionID, generation, err := controller.attentionReservationIdentity(reservation, runtime)
-	if err != nil {
-		return err
-	}
-	runtime.holdAcceptedTrigger(attentionID)
-	if err := runtime.resolveAttentionDurablyForGeneration([]string{attentionID}, delegateAttentionConsumed, generation); err != nil {
+	if _, _, err := controller.attentionReservationIdentity(reservation, runtime); err != nil {
 		return err
 	}
 	pendingIDs, err := runtime.automaticDelegateAttentionIDs()
@@ -583,8 +585,10 @@ func TestDelegateAttention_ArmClaimSpansFoldAndOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read attention fold: %v", err)
 	}
-	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed {
-		t.Fatalf("attention resolution = %q, want consumed", got)
+	// Admission prepares the start and commits nothing; the row stays pending
+	// until a request presents it.
+	if got := fold.resolutions[attentionID]; got != "" {
+		t.Fatalf("attention resolution = %q, want the row still pending", got)
 	}
 	events, err := c.store.Load()
 	if err != nil {
@@ -594,8 +598,48 @@ func TestDelegateAttention_ArmClaimSpansFoldAndOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fold controller journal: %v", err)
 	}
-	if state["dlg_target"].NeedsAttention || len(attentionWakeIDsOf(c, "dlg_target")) != 0 {
-		t.Fatalf("consumed attention reopened: state=%#v wakeIDs=%#v", state["dlg_target"], attentionWakeIDsOf(c, "dlg_target"))
+	if wakes := attentionWakeIDsOf(c, "dlg_target"); !state["dlg_target"].NeedsAttention {
+		t.Fatalf("committed attention lost its projection: state=%#v wakeIDs=%#v", state["dlg_target"], wakes)
+	} else if _, noted := wakes[attentionID]; !noted {
+		t.Fatalf("committed attention lost its wake: wakeIDs=%#v", wakes)
+	}
+}
+
+// TestStopQuietedDelegateAttentionRowsKeepNewestGeneration pins the cold
+// restore's hold stamp when two cancelled attention generations named the same
+// row: the derivation walks a map, so only an explicit newest-wins comparison
+// keeps the later stop's generation. An older stamp lets a wake admitted at the
+// newer stop's generation release a quiet that stop installed.
+func TestStopQuietedDelegateAttentionRowsKeepNewestGeneration(t *testing.T) {
+	t.Parallel()
+	const (
+		delegateID = "dlg_quiet"
+		rowID      = "delegate:quieted-row"
+	)
+	fold := newDelegateAttentionFold()
+	fold.order = []string{rowID}
+	older := delegateLease{delegateID: delegateID, generation: 3}
+	newer := delegateLease{delegateID: delegateID, generation: 5}
+	runStarts := map[delegateLease]delegatestore.RunTrigger{
+		older: delegatestore.TriggerAttention,
+		newer: delegatestore.TriggerAttention,
+	}
+	runOutcomes := map[delegateLease]delegatestore.Outcome{
+		older: {Status: delegatestore.OutcomeCancelled},
+		newer: {Status: delegatestore.OutcomeCancelled},
+	}
+	runAttentionIDs := map[delegateLease]string{
+		older: rowID,
+		newer: rowID,
+	}
+	// The map visit order is random, so one pass could hide the bug: a stamp
+	// that follows the iteration order picks the older generation about half the
+	// time.
+	for i := range 50 {
+		rows := (&Session{}).stopQuietedDelegateAttentionRowsLocked(fold, 6, runStarts, runOutcomes, runAttentionIDs, delegateID)
+		if len(rows) != 1 || rows[0].attentionID != rowID || rows[0].generation != newer.generation {
+			t.Fatalf("pass %d quieted rows = %+v, want the row at the newest cancelled generation %d", i, rows, newer.generation)
+		}
 	}
 }
 

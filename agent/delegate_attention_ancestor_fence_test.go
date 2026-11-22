@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"runtime"
+	"slices"
 	"testing"
 	"time"
 
@@ -132,10 +133,12 @@ func TestDelegateAttentionWake_CommitStartRechecksAncestorFence(t *testing.T) {
 	}
 	fold, err := readDelegateAttentionFold(transcriptPath(c.stateDir, "child-dlg_child"), "child-dlg_child")
 	if err != nil {
-		t.Fatalf("read accepted attention marker: %v", err)
+		t.Fatalf("read accepted attention fold: %v", err)
 	}
-	if fold.resumeGenerations[attentionID] != started.lease.generation {
-		t.Fatalf("accepted marker generation = %d, want %d", fold.resumeGenerations[attentionID], started.lease.generation)
+	// The commit writes no consume marker: the committed generation presents
+	// the row, and the transcript keeps it pending until then.
+	if fold.resolutions[attentionID] != "" || !slices.Contains(fold.pendingIDs(), attentionID) {
+		t.Fatalf("accepted attention = resolution %q pending %v, want the row still pending", fold.resolutions[attentionID], fold.pendingIDs())
 	}
 }
 

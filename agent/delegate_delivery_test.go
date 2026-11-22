@@ -408,9 +408,9 @@ func TestDelegateRequeueWhileReceiverProcessingHoldsTheHead(t *testing.T) {
 // A transient refusal must not abort the attention start whose reservation
 // deferred the delivery. The kept claim is delivery work a start must ignore:
 // counting it makes CommitStart release the reservation with target_busy after
-// acceptDelegateAttention already consumed generation N, warning the user and
-// blocking ReserveAttention until the owner's queue is flushed. This runs the
-// real start flow rather than inserting and deleting a reservation by hand.
+// the admission, warning the user and blocking ReserveAttention until the
+// owner's queue is flushed. This runs the real start flow rather than inserting
+// and deleting a reservation by hand.
 func TestDelegateControllerTransientRefusalDoesNotBlockAttentionStart(t *testing.T) {
 	fixture := newColdDelegateFixture(t, "")
 	root := restoreSupervisionRoot(t, fixture, nil)
@@ -471,9 +471,12 @@ func TestDelegateControllerTransientRefusalDoesNotBlockAttentionStart(t *testing
 	if err != nil {
 		t.Fatalf("owner attention: %v", err)
 	}
-	want := delegateAttentionID(delegateDeliveryID("dlg_child", 1))
-	if len(pending) != 1 || pending[0] != want {
-		t.Fatalf("owner pending attention = %v, want %q", pending, want)
+	// No run presented the committed generation, so its trigger is still
+	// pending beside the report that landed after it: the commit writes no
+	// consume marker.
+	want := []string{attentionID, delegateAttentionID(delegateDeliveryID("dlg_child", 1))}
+	if !reflect.DeepEqual(pending, want) {
+		t.Fatalf("owner pending attention = %v, want %v", pending, want)
 	}
 }
 
