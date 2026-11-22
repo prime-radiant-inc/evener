@@ -75,10 +75,12 @@ The disposable probe uses a real Copilot subscription and performs these steps w
 3. Read the stable GitHub account identity through the documented `GET https://api.github.com/user` endpoint.
 4. Refresh the OAuth token once, proving that rotation works without a client secret, then use the replacement pair.
 5. Call `GET https://api.githubcopilot.com/models` with the GitHub access token as bearer.
-6. Complete a streamed tool call through each protocol the initial provider will expose: Chat Completions, Responses when advertised, and Anthropic Messages when advertised.
-7. Confirm the request headers and model metadata needed by the implementation.
+6. Build production-equivalent resolved rows and drive the real Evener adapters through a complete loop for each exposed family/protocol combination: user request, streamed tool call, tool result with `X-Initiator: agent`, and final response. A minimal raw request is insufficient.
+7. Exercise image requests before enabling image-capable rows, and confirm the request headers, final endpoint paths, and model metadata needed by the implementation.
 
-If direct GitHub-token bearer access fails, stop. Do not switch to `/copilot_internal/v2/token` without a new design decision. If a required protocol fails, stop its exposure and report whether the remaining provider is still useful before broadening the implementation. Remove the disposable probe after recording its non-secret evidence; retain an opt-in live smoke test with the shipped provider.
+If direct GitHub-token bearer access fails, stop. Do not switch to `/copilot_internal/v2/token` without a new design decision. If a required protocol or tool-result continuation fails, stop its exposure and report whether the remaining provider is still useful before broadening the implementation. Remove the disposable probe after recording its non-secret evidence. Before enabling the popular-provider card, rerun the complete loop through the shipped provider with an opt-in live smoke test.
+
+Build the probe and shipped-provider smoke from one opt-in scenario table and adapter driver. Only the temporary OAuth bootstrap is discarded; both gates run the same protocol, tool-loop, header, and image scenarios.
 
 ## Architecture
 
@@ -112,11 +114,15 @@ Add `oauth-github-copilot` to the registry auth vocabulary and load-time schema.
 - `base_url` defaulting to `https://api.githubcopilot.com`;
 - `GITHUB_COPILOT_BASE_URL` as the endpoint override;
 - `default_model = "gpt-5.5"` and `cheap_model = "gpt-5.4-mini"`;
-- inherited models.dev model facts and family-derived surfaces.
+- inherited models.dev model facts and family-derived surfaces, except monetary prices.
 
 Place `github-copilot` after `openai-codex` and before `openai` in `default_order`. Stored subscription access therefore ranks ahead of the OpenAI metered API key, while existing Anthropic and Codex defaults keep priority. An explicit `default` remains authoritative. If Copilot's live listing lacks the configured default, New session asks for a model instead of adopting another row.
 
-The OAuth record alone creates the implicit instance. Ambient GitHub variables do not. An explicit instance based on `github-copilot` uses its own instance-named record and may override the endpoint through the existing provider configuration rules.
+Add a per-auth-scheme credential-readiness hook for automatic instance and default selection. Existing schemes retain their current presence policy. Copilot readiness rejects corrupt, refresh-rejected, refresh-expired, and otherwise login-required records while allowing an expired access token with a usable refresh token. Keep an unhealthy Copilot instance visible in Settings. An explicit `default` still selects it and surfaces its sign-in error.
+
+A valid OAuth record creates the implicit instance. Ambient GitHub variables do not. An explicit instance based on `github-copilot` uses its own instance-named record and may override the endpoint through the existing provider configuration rules.
+
+Remove inherited monetary `Cost` facts for this subscription provider and ignore dollar prices in its live listing. Absent cost means no dollar estimate; it does not mean zero cost. Plan multipliers and quota are separate facts and are not rendered as API charges.
 
 Register the new environment variable through `envvars/envvars.go` and regenerate its documentation. Update the implicit-provider table and default-order documentation in the same change.
 
@@ -124,16 +130,22 @@ Register the new environment variable through `envvars/envvars.go` and regenerat
 
 Add `auth/githubcopilot`. Do not force Copilot into `auth/openai`: its device endpoints, account claims, errors, and refresh lifecycle differ. Use the existing atomic-file and state-directory primitives rather than copying OpenAI's storage implementation.
 
-The versioned JSON record lives at `<state-root>/auth/<instance>.json` with mode 0600. It contains:
+The versioned JSON record lives at `<state-root>/auth/github-copilot/<instance>.json` with mode 0600. The scheme-specific namespace leaves Codex paths and validation unchanged. The record contains:
 
-- the instance name, record version, and `oauth` source;
+- the instance name, required `auth_scheme = "oauth-github-copilot"`, and record version;
 - access token, refresh token, token type, scope, obtained-at time, access expiry, and refresh expiry;
 - stable GitHub account ID and optional account email;
 - a persisted refresh-rejected flag when GitHub permanently refuses the refresh token.
 
-Access token, refresh token, expiry, obtained-at, account ID, and instance identity are required. The record has no OpenAI ID token, ChatGPT workspace, environment fallback, or Copilot session token.
+Access token, refresh token, expiry, obtained-at, account ID, instance identity, and matching auth scheme are required. Both the scheme-namespaced path and the record discriminator are checked on every load. Changing an instance to another auth scheme leaves the Copilot record unusable by that scheme; no GitHub token can cross into Codex. The record has no OpenAI ID token, ChatGPT workspace, environment fallback, or Copilot session token.
 
-The service provides device login, status, logout, and runtime credential resolution. It refreshes five minutes before access expiry. Refresh rotates both tokens and atomically replaces the record. Serialize refresh by record path within a process, re-read after acquiring the lock, and do not overwrite a record replaced by a newer login. A permanent `bad_refresh_token` marks the record as needing login while retaining it for diagnosis. A new successful login or refresh clears that state.
+Derive the runtime and status credential source `oauth` from the auth scheme instead of storing a redundant source field.
+
+The service provides device login, status, logout, and runtime credential resolution. It refreshes five minutes before access expiry. Refresh rotates both tokens and atomically replaces the record.
+
+Use an inter-process lock keyed by the canonical record path around re-read, refresh, rejection updates, and save. Login, logout, rename, and rollback participate in the same record-lifecycle exclusion. After acquiring the lock, compare the current record with the generation read before the request. A refresh may save only over that unchanged, still-present generation; a newer login or logout wins. Re-read after `bad_refresh_token` and mark rejection only when the same refresh token and generation are still current. A request that receives a 401 after another process rotated the record reloads once and retries only when the record changed.
+
+A permanent `bad_refresh_token` on the current generation marks the record as needing login while retaining it for diagnosis. A new successful login or refresh clears that state. Tests cover two actual processes, stale success and rejection writes, and logout during refresh.
 
 Status is local. It reports signed-in state, account ID or email when available, refresh state, and stored-record presence. Logout deletes only the Evener-owned local record. Neither operation claims live Copilot access.
 
@@ -143,11 +155,13 @@ Keep the existing AppWire methods and response shapes. Extend scheme handling in
 
 - `authModesFor` returns `oauth` for both OAuth schemes.
 - Browser login start/complete remain Codex-only. Copilot device start returns a real device flow, never redirect fallback.
-- Device start/poll dispatch on the resolved auth scheme and retain flow TTL, polling intervals, endpoint fingerprints, restart responses, write locking, registry reload, and commit notifications.
+- Device start/poll dispatch on the resolved auth scheme and retain provider-owned flow state, actual device expiry, endpoint fingerprints, restart responses, write locking, registry reload, and commit notifications. The provider flow owns and updates the interval; the hub stores only `nextPollAt`, answers early client polls as local pending without contacting GitHub, and advances the deadline from the flow after each provider contact. This preserves the AppWire response shape while enforcing outbound cadence on `slow_down`.
 - Status and logout load or delete the record type selected by the instance's scheme.
 - API-key set and conditional-set refuse the Copilot OAuth scheme just as they refuse Codex OAuth.
 - Rename, removal, rollback, auth fingerprints, stray-record detection, and command-credential pinning recognize both record types. Rename updates the record's instance identity and preserves raw-byte rollback.
 - Scoped model-list, probe, and generation requests select the authenticator by scheme and state root. A Copilot credential never authenticates another scheme or provider.
+
+The hub's existing notice sweep also observes Copilot record existence, scheme, account identity, and login-health changes independently of `providers.toml`. External CLI login, account switch, and logout reload the registry, invalidate account-scoped live-model state, and broadcast visible changes. No credential value enters the change signature or notification.
 
 A corrupt or expired record produces an actionable sign-in state without deleting user configuration. Cancelling a dialog keeps the existing client-only semantics: an already-running exchange may still save the record, but a dismissed client flow performs no model check or model adoption.
 
@@ -162,14 +176,19 @@ For each live model:
 3. Otherwise use Chat Completions when advertised.
 4. When endpoint metadata is absent, use Chat Completions, matching the models.dev OpenAI-compatible declaration.
 5. Hide a live row that advertises only unsupported endpoints. Do not synthesize a protocol for it.
+6. Hide and refuse a row whose account policy explicitly marks it disabled. Missing policy metadata does not imply either enablement or disablement. Never enable a model through a policy write.
 
-Preserve family-derived surfaces, so Claude rows retain Anthropic agent behavior and Gemini rows retain Google agent behavior even though the provider is GitHub Copilot. Keep tool, media, reasoning, context, output, and plan-availability facts account-specific. Never enable a model through a policy write.
+Protocol selection also selects the transport. Messages uses `/v1/messages` for generation and streaming, Responses uses `/responses`, and Chat Completions uses `/chat/completions`. Copilot Messages count-token routing is unsupported unless separately proven. An explicit user transport override wins. Tests assert the final request URL through the real registry and adapter.
 
-The initial default and cheap models are compatibility choices, not entitlement guarantees. Live model absence leaves them unavailable and preserves the user's explicit model choice.
+Carry an authoritative-listing policy through the shared list-and-apply path, including empty results. Copilot opts in; existing providers retain static fallback. A successful Copilot `/models` response is therefore authoritative even when empty or wholly unsupported, and static rows cannot reappear through another caller. Setup succeeds only when the live listing is usable and at least one supported row resolves; otherwise it returns a non-success no-usable-models result. Fetch and parse failures retain diagnostic fallback behavior without being reported as verified access.
+
+Preserve family-derived surfaces, so Claude rows retain Anthropic agent behavior and Gemini rows retain Google agent behavior even though the provider is GitHub Copilot. Keep tool, media, reasoning, context, output, and plan-availability facts account-specific.
+
+The initial default and cheap models are compatibility choices, not entitlement guarantees. Validate direct CLI launches and auxiliary cheap-model selection against the current live roster when available. Reuse the single startup `ModelListing`, including an already-primed `StartupModelListing`, for both decisions; account/auth invalidation refreshes that shared snapshot instead of issuing a second `/models` request. An absent primary model returns an actionable available-models error rather than silently substituting another model. An absent cheap model uses an advertised cheap fallback or the session model, never a static unadvertised row.
 
 ## Request authentication and headers
 
-The Copilot authenticator reads the current record through the Copilot service and applies the refreshed GitHub access token as `Authorization: Bearer`. It also supplies the account scope used by continuation storage.
+The Copilot authenticator reads the current record through the Copilot service and applies the refreshed GitHub access token as `Authorization: Bearer`. It supplies stable account scope through the call-scoped authenticator, never the process-global authenticator.
 
 Start with the compatibility headers the probe validates:
 
@@ -185,11 +204,15 @@ Do not send VS Code, OpenCode, Pi, or Copilot CLI identifying headers. Remove or
 
 A missing, corrupt, expired-and-unrefreshable, or refresh-rejected credential returns the existing typed sign-in-required error with the Copilot login command. No ambient GitHub token fallback occurs.
 
+Give Copilot Responses a distinct endpoint family and disable Responses continuation for the initial version. Always send full history; do not inherit public OpenAI `previous_response_id`, conversation, or store-based continuation behavior. Account and state-root isolation tests cover two accounts and two state roots. Enabling continuation later requires live storage proof and use of the Copilot account scope.
+
 ## CLI and clients
 
 Add `evener github-copilot login`, `status`, and `logout`, defaulting `--instance` to `github-copilot` and retaining the existing state-directory and working-directory conventions. Login is device-only and prints the verification URL and user code without printing tokens. Status remains compact and machine-readable. Logout removes local state only.
 
-Add `github-copilot` to `ProviderConnection.tsx`'s presentation table. Its keys define the popular set, so this one addition places Copilot in initial provider discovery. The card offers GitHub sign-in rather than an API-key field, then performs the ordinary model-list check and preserves the originating draft.
+A running hub observes these external record changes through the notice sweep described above; CLI login and logout do not require a hub restart.
+
+After the shipped-provider live smoke passes, add `github-copilot` to `ProviderConnection.tsx`'s presentation table. Its keys define the popular set, so this one addition places Copilot in initial provider discovery. The card offers GitHub sign-in rather than an API-key field, then performs the ordinary model-list check and preserves the originating draft. An empty or wholly unsupported roster cannot complete setup.
 
 Generalize the web's host-device scheme gate and cross-language scheme pin to include both device-capable OAuth schemes. Parameterize device-dialog provider copy so it names GitHub rather than OpenAI. Existing shared TypeScript and native sign-in controllers need no new RPCs; add focused coverage proving they accept the new scheme.
 
@@ -199,13 +222,16 @@ Use scripted HTTP servers at the GitHub and Copilot boundaries and real Evener c
 
 Cover:
 
-- device pending, slow-down, denial, expiry, malformed responses, cancellation, and concurrent completion;
-- refresh rotation, refresh rejection, stale-record replacement, account stability, atomic writes, file permissions, and logout;
-- registry scheme registration, implicit-instance creation, no environment conjuring, default ranking, custom instance isolation, and corrupt records;
+- device pending, hub-enforced slow-down cadence, denial, actual provider expiry, malformed responses, cancellation, and concurrent completion;
+- two-process refresh rotation, refresh rejection keyed to record generation, stale-record replacement, one-time 401 reload after rotation, account stability, atomic writes, file permissions, and logout-during-refresh;
+- registry scheme registration, scheme-path binding, implicit-instance creation, no environment conjuring, healthy default ranking, custom instance isolation, and corrupt records;
 - scoped authenticator selection and proof that tokens never cross schemes or state roots;
-- live protocol selection, unsupported-model filtering, family surfaces, user overrides, request headers, images, and streamed tool calls;
-- hub endpoint fences, flow expiry/restart, rename/remove/rollback, stray records, auth notifications, and API-key refusal;
-- CLI login/status/logout behavior;
+- live protocol and transport selection, final `/v1/messages` paths, policy-disabled and unsupported-model filtering, authoritative empty rosters, family surfaces, user overrides, request headers, images, and complete tool loops;
+- disabled Copilot Responses continuation and account/state-root isolation;
+- absent live defaults and cheap-model fallback behavior;
+- absent monetary prices and no dollar estimates for subscription usage;
+- hub endpoint fences, flow expiry/restart, rename/remove/rollback, stray records, external CLI login/account-switch/logout reloads, auth notifications, and API-key refusal;
+- CLI login/status/logout behavior, including direct-launch roster validation;
 - Copilot's presence in the popular provider choices, web device sign-in and model check, remote-host sign-in, and native shared sign-in;
 - the transition from failed or expired access back to useful operation after a fresh login.
 
@@ -219,7 +245,7 @@ Update the evergreen provider, connection, launch-configuration, environment-var
 
 ## Size and delivery order
 
-This is a project-sized change, estimated at roughly 1,000–1,500 production lines plus tests and documentation. Keep the worktree and branch scoped to Copilot. Do not absorb unrelated auth redesign or existing main-checkout changes.
+This is a project-sized change, estimated at roughly 1,500–2,200 production lines plus tests and documentation after adversarial review. Keep the worktree and branch scoped to Copilot. Do not absorb unrelated auth redesign or existing main-checkout changes.
 
 Deliver in checked slices:
 
@@ -227,8 +253,8 @@ Deliver in checked slices:
 2. Copilot auth record, device service, refresh, status, and logout.
 3. Registry scheme, overlay, scoped authenticator, model discovery, and protocol routing.
 4. Hub dispatch and instance lifecycle.
-5. CLI and web/native setup surfaces, including the popular-provider option.
-6. Opt-in live smoke, evergreen docs, gates, simplification, and review.
+5. CLI, external-change recovery, and web/native setup surfaces.
+6. Shipped-provider live smoke, then the popular-provider option, evergreen docs, gates, simplification, and review.
 
 Each slice must leave existing providers working and add its behavior tests before the next slice.
 
