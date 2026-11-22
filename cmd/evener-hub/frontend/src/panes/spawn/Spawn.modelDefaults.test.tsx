@@ -17,6 +17,7 @@ import { readModuleCss } from "../../styles/cssBlock";
 import { Toast } from "../../widgets";
 import Spawn from "./Spawn";
 import {
+  chooseHost,
   effortControl,
   effortOptionValues,
   effortSelect,
@@ -1706,7 +1707,7 @@ test("switching host under an open model picker reloads it from scratch", async 
   await user.click(modelTrigger());
   await screen.findByRole("listbox", { name: "Model" });
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await act(async () => {});
   expect(screen.queryByRole("listbox", { name: "Model" })).toBeNull();
   await act(async () => release());

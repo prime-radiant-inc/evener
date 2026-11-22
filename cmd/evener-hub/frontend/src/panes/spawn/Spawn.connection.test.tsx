@@ -11,6 +11,7 @@ import { hostsStore } from "../../stores/hosts";
 import { ownClientId } from "../../stores/mutationClientIdentity";
 import { setDraftField, spawnDraftsStore } from "./spawnDrafts";
 import {
+  chooseHost,
   completionDraft,
   expectWorkingDir,
   fillPrompt,
@@ -109,7 +110,7 @@ test("remote model catalogue recovery retries the remote read without offering l
   connectionStore.getState().connect(client);
   renderSpawn(client);
   await settled();
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
 
   await user.click(modelTrigger());
@@ -1258,7 +1259,7 @@ test("a spawn retry that recovers the registry reads the selected host's listing
   connectionStore.getState().connect(fake);
   renderSpawn(fake);
   await settled();
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
 
   // The read is held while the registry has failed: nothing went out yet.
@@ -1303,7 +1304,7 @@ test("a selected host the cached registry predates is still resolved on that hos
   hostsStore.setState({ load: { phase: "ready", hosts: [hostRow("other")] } });
   renderSpawn(fake);
   await settled();
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
   await setWorkingDir(user, "/srv/app");
   await settled();

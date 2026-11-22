@@ -20,10 +20,12 @@ import { toastKinds } from "../../widgets/toast/toastTestUtils";
 import { loadDefaultsBlob } from "./spawnDefaults";
 import { resetSpawnDraftsForTests, selectSpawnDirectory, setDraftField } from "./spawnDrafts";
 import {
+  chooseHost,
   completionDraft,
   expectModelReadsDefault,
   expectWorkingDir,
   fillPrompt,
+  hostTrigger,
   installSpawnTestHooks,
   LAST_WORKING_DIR_KEY,
   modelListRequests,
@@ -31,6 +33,7 @@ import {
   modelTrigger,
   modelValue,
   openDesktopPluginSelection,
+  openHostPicker,
   pickModel,
   promptField,
   readyClient,
@@ -38,6 +41,7 @@ import {
   routedDiscoveryDefault,
   SPAWN_PLUGIN_PREVIEW,
   seedSources,
+  selectedHost,
   settled,
   setupUser,
   setWorkingDir,
@@ -66,7 +70,7 @@ test("a remote launch does not persist its cwd as the controller's global workin
   await act(async () => {
     setDraftField(completionDraft("/srv/app"), "model", "openai/gpt-5");
   });
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await fillPrompt(user, "run remotely");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
@@ -106,7 +110,7 @@ test("a remote launch's model does not become the cwd's local project default", 
   await act(async () => {
     setDraftField(completionDraft("/srv/app"), "model", "buildbox-only/gpt-5");
   });
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await fillPrompt(user, "run remotely");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
@@ -164,7 +168,7 @@ test("a fallback installed for one draft does not retire another draft's identic
   await setWorkingDir(user, "/tmp/fallback-owner");
   expect(modelTrigger().textContent).toContain(MODEL_A_FALLBACK);
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   // B's model is B's own sticky default, so it survives the remote switch.
   expect(modelTrigger().textContent).toContain(MODEL_A_FALLBACK);
   expect(modelState()).toBe("chosen");
@@ -209,7 +213,7 @@ test("a controller-catalog fallback model is still retired after a pane remount"
   await settled();
   expect(modelTrigger().textContent).toContain(MODEL_A_FALLBACK);
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
   await waitFor(expectModelReadsDefault);
   expect(modelTrigger().textContent).not.toContain("claude-sonnet-4-5");
@@ -259,7 +263,7 @@ test("a user's explicit model pick is preserved when the target becomes remote",
   await pickModel(user, "gpt-5", "openai/gpt-5");
   expect(modelTrigger().textContent).toContain("openai/gpt-5");
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   // The explicit pick is not the fallback's value, so it is not retired.
   expect(modelTrigger().textContent).toContain("openai/gpt-5");
   expect(modelState()).toBe("chosen");
@@ -302,7 +306,7 @@ test("a cwd picked for a remote target is not recorded as the controller's picke
   expect(localStorage.getItem(LAST_WORKING_DIR_KEY)).toBe("/tmp/seed-local-next");
 
   // With a remote host selected, the path belongs to that host instead.
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   localStorage.removeItem(LAST_WORKING_DIR_KEY);
   await setWorkingDir(user, "/srv/remote-only");
   expect(localStorage.getItem(LAST_WORKING_DIR_KEY)).toBeNull();
@@ -348,7 +352,7 @@ test("a remote target can select a directory this controller cannot see", async 
   await user.click(screen.getByRole("button", { name: "Cancel" }));
 
   // The same path on a remote target is the host's business: it can be picked.
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await setWorkingDir(user, "/srv/remote-only");
   expectWorkingDir("/srv/remote-only");
   expect(screen.queryByText("no such file or directory")).toBeNull();
@@ -378,7 +382,7 @@ test("the picker creates a folder on the selected host, never on the controller"
   renderSpawn(fake);
   await settled();
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await user.click(workingDir());
   const input = await screen.findByRole("textbox", { name: "Path" });
   await user.clear(input);
@@ -453,7 +457,7 @@ test("a remote target's advanced path value is not dropped for being invisible h
   // (A different string, not the one above: React suppresses a change event
   // whose value is unchanged, so re-typing the identical text would never reach
   // the field's own handler.)
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   // The target switch retires the previous host's schema until the selected
   // host's own answer lands, so the field reappears with the host's options.
   fireEvent.change(await screen.findByLabelText("Agent"), { target: { value: "remote-only-agent" } });
@@ -530,7 +534,7 @@ test.each([false, true])(
       expect(completionDraft("/tmp/registry-lag-path").fields.getState().advancedOverrides).toEqual({}),
     );
 
-    fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+    await chooseHost("buildbox");
     await settled();
     await act(async () => {
       registry.resolve({ hosts: [hostRow("other"), hostRow("buildbox")] });
@@ -563,19 +567,17 @@ test("the host picker keeps its host while the manifest revalidates", async () =
   window.history.pushState({}, "", "/new?dir=/tmp/host-revalidate");
   renderSpawn(fake);
   await settled();
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
 
   await act(async () => seedSources(sources, { loading: true, stale: true }));
-  const picker = screen.getByLabelText("Host") as HTMLSelectElement;
-  expect(picker.value).toBe("buildbox");
-  const options = within(picker).getAllByRole("option") as HTMLOptionElement[];
-  expect(options.slice(0, 3).map((option) => option.value)).toEqual(["local", "buildbox", "offline-host"]);
-  expect(within(picker).getByRole("option", { name: "Connect host" })).toBe(options[options.length - 1]);
+  expect(selectedHost()).toBe("Host: buildbox");
+  const panel = openHostPicker();
+  expect(within(panel).getByRole("button", { name: "buildbox" }).getAttribute("aria-current")).toBe("true");
   // The retained snapshot keeps its own offline labelling: a withheld list
   // reads as "unknown", which would flip this one to online.
-  const offline = options.find((option) => option.value === "offline-host") as HTMLOptionElement;
-  expect(offline.disabled).toBe(true);
-  expect(offline.textContent).toContain("offline");
+  expect(within(panel).getByText("offline-host")).toBeTruthy();
+  expect(within(panel).getByText("Offline")).toBeTruthy();
+  expect(within(panel).getByRole("button", { name: "Connect offline-host" })).toBeTruthy();
 
   // Unsettled, the draft's host is still the launch target (only a settled
   // manifest may confirm a fallback), so what the picker shows is what submits.
@@ -627,7 +629,7 @@ test("a remote target keeps the draft's model this controller's catalog calls st
   expect(modelValue().textContent).toContain("openai/retired");
 
   // The draft moves to the remote host while that request is in flight.
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await act(async () => global.resolve({ data: [{ provider: "openai", model: "gpt-5" }] }));
 
   // The controller's verdict is a fact about THIS controller: the host it is
@@ -686,7 +688,7 @@ test("a draft already on a remote host is never swept by the controller's catalo
   });
   const mounted = renderSpawn(fake, true, { connectStore: false });
   await settled();
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await act(async () => parked.resolve({ data: [{ provider: "openai", model: "gpt-5" }] }));
   expect(modelValue().textContent).toContain("openai/retired");
 
@@ -697,7 +699,7 @@ test("a draft already on a remote host is never swept by the controller's catalo
   renderSpawn(fake, true, { connectStore: false });
   await settled();
   await act(async () => {});
-  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox");
+  expect(selectedHost()).toBe("Host: buildbox");
   expect(routedRequests).toBeGreaterThan(0);
   expect(globalRequests).toBe(1);
   expect(modelValue().textContent).toContain("openai/retired");
@@ -760,7 +762,7 @@ test("a path marked invalid while local reaches the launch after switching host 
   // The Host picker moves to the remote source WITHOUT re-typing the value.
   // The host switch re-reads the launch schema, so the Advanced fields remount;
   // wait for the value to land in the draft before judging the field.
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await waitFor(() =>
     expect(completionDraft("/tmp/remote-switch-path").fields.getState().advancedOverrides).toEqual({
       agent: "host-only-agent",
@@ -771,12 +773,12 @@ test("a path marked invalid while local reaches the launch after switching host 
 
   // Back to local, the controller is the judge again: the same stored value is
   // re-marked and dropped rather than left silently flagged or silently kept.
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
+  await chooseHost("Local");
   expect(await screen.findByText("no such file or directory")).toBeTruthy();
   await waitFor(() =>
     expect(completionDraft("/tmp/remote-switch-path").fields.getState().advancedOverrides).toEqual({}),
   );
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await waitFor(() =>
     expect(completionDraft("/tmp/remote-switch-path").fields.getState().advancedOverrides).toEqual({
       agent: "host-only-agent",
@@ -1014,7 +1016,7 @@ test("a failed remote catalog load shows an empty harness list, not the previous
   const harness = screen.getByLabelText("Harness") as HTMLSelectElement;
   expect(within(harness).getByRole("option", { name: "external" })).toBeTruthy();
 
-  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
+  await chooseHost("buildbox");
 
   await waitFor(() => expect(within(harness).queryByRole("option", { name: "external" })).toBeNull());
   // The fallback the select renders with no host catalog, not the controller's.
@@ -1140,7 +1142,7 @@ test("the draft's host wrapped config notification reloads the catalog while the
   // Unsettled manifest: the settled list is withheld, so hostChoice is a
   // provisional "local" while the launch target and every discovery call stay
   // on the draft's host.
-  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox");
+  expect(selectedHost()).toBe("Host: buildbox");
 
   const catalogLoads = (params: unknown) =>
     fake.calls.filter(
@@ -1192,7 +1194,7 @@ test("a wrapper from a draft host the offline fallback replaced does not reload 
   // The offline fallback is written into the draft (round nine), so the pane's
   // own reads are controller-scoped from here on.
   await waitFor(() => expect(draft.fields.getState().source).toBe("local"));
-  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("local");
+  expect(selectedHost()).toBe("Host: Local");
   // Hydration: the controller's catalog has answered for the SETTLED scope (the
   // scoped load the fallback's write-back triggers). Everything before it is
   // the mount's own churn, and every consumer after it is a cache hit.
@@ -1235,7 +1237,6 @@ test("a wrapper from a draft host the offline fallback replaced does not reload 
 // offering the controller editor for a remote host would "connect" the wrong
 // machine and leave Start disabled. The controller's own path is unchanged.
 test("a remote spawn never offers the controller's Connect provider editor", async () => {
-  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   const fake = readyClient((f) => {
     answerRemoteHost(f);
@@ -1250,8 +1251,8 @@ test("a remote spawn never offers the controller's Connect provider editor", asy
   await screen.findByRole("button", { name: "Connect provider" });
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
 
-  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
-  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+  await chooseHost("buildbox");
+  await waitFor(() => expect(selectedHost()).toBe("Host: buildbox"));
 
   // The remote partition reports missing too, but the only offered remediation
   // is a message naming the host, never the controller's editor.
@@ -1260,7 +1261,7 @@ test("a remote spawn never offers the controller's Connect provider editor", asy
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
 
   // Back on the controller, the editor returns.
-  await user.selectOptions(screen.getByLabelText("Host"), "local");
+  await chooseHost("Local");
   await screen.findByRole("button", { name: "Connect provider" });
 });
 
@@ -1268,7 +1269,6 @@ test("a remote spawn never offers the controller's Connect provider editor", asy
 // hosts with the same directory must drop the previous host's HEAD immediately,
 // not display it until (or after) the new host's evener/git/head resolves.
 test("switching hosts with the same directory drops the previous host's branch readout", async () => {
-  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   const fake = readyClient((f) => {
     f.on("evener/git/head", () => ({ head: "local-branch" }));
@@ -1282,8 +1282,8 @@ test("switching hosts with the same directory drops the previous host's branch r
   await settled();
   await waitFor(() => expect(screen.getByTestId("spawn-branch").textContent).toContain("local-branch"));
 
-  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
-  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+  await chooseHost("buildbox");
+  await waitFor(() => expect(selectedHost()).toBe("Host: buildbox"));
 
   await waitFor(() => expect(screen.queryByTestId("spawn-branch")).toBeNull());
 });
@@ -1296,7 +1296,6 @@ test("switching hosts with the same directory drops the previous host's branch r
 // already answered for the draft's host, for the length of every revalidation
 // (component 07b review, residual).
 test("the branch readout keeps the draft's host while the manifest revalidates", async () => {
-  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   const fake = readyClient((f) => {
     f.on("evener/git/head", () => ({ head: "local-branch" }));
@@ -1307,14 +1306,14 @@ test("the branch readout keeps the draft's host while the manifest revalidates",
   renderSpawn(fake);
   await settled();
 
-  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
+  await chooseHost("buildbox");
   await waitFor(() => expect(screen.getByTestId("spawn-branch").textContent).toBe("host-branch"));
 
   // The fresh manifest is in flight: the settled list is withheld, so the
   // launch target stays the draft's host (round nine) and so does the host the
   // readout describes.
   await act(async () => seedSources(REMOTE_SOURCES, { loading: true, stale: true }));
-  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox");
+  expect(selectedHost()).toBe("Host: buildbox");
   expect(screen.getByTestId("spawn-branch").textContent).toBe("host-branch");
 });
 
@@ -1323,7 +1322,6 @@ test("the branch readout keeps the draft's host while the manifest revalidates",
 // previous host's default satisfy -- or fail -- the Start model check while the
 // new host's evener/launch/resolve is pending.
 test("switching hosts with the same directory drops the previous host's default-model verdict", async () => {
-  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   const fake = readyClient((f) => {
     // The controller has no default model: Start reads as model-required.
@@ -1338,8 +1336,8 @@ test("switching hosts with the same directory drops the previous host's default-
   await settled();
   await waitFor(() => expect(screen.getByRole("alert").dataset.reason).toBe("no-default-model"));
 
-  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
-  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+  await chooseHost("buildbox");
+  await waitFor(() => expect(selectedHost()).toBe("Host: buildbox"));
 
   await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
 });
@@ -1361,8 +1359,8 @@ test("switching to a host that does not offer the draft's harness drops it from 
   renderSpawn(fake);
   await settled();
 
-  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
-  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+  await chooseHost("buildbox");
+  await waitFor(() => expect(selectedHost()).toBe("Host: buildbox"));
   // The controller offered "external"; buildbox does not, so the draft's
   // selection drops back to the host's own default.
   await waitFor(() => expect(draft.fields.getState().harness).toBe(""));
@@ -1381,7 +1379,6 @@ test("switching to a host that does not offer the draft's harness drops it from 
 // Advanced fields at all - so a stale override would ride thread/start with
 // nothing on screen to account for it.
 test("switching to a host whose schema lacks the draft's advanced options drops them", async () => {
-  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   const controllerOption: LaunchOption = {
     field: "agent",
@@ -1405,8 +1402,8 @@ test("switching to a host whose schema lacks the draft's advanced options drops 
   await settled();
   expect(draft.fields.getState().advancedOverrides).toEqual({ agent: "controller-agent" });
 
-  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
-  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+  await chooseHost("buildbox");
+  await waitFor(() => expect(selectedHost()).toBe("Host: buildbox"));
 
   await waitFor(() => expect(draft.fields.getState().advancedOverrides).toEqual({}));
   expect(draft.fields.getState().advancedValues).toEqual({});
@@ -1419,7 +1416,6 @@ test("switching to a host whose schema lacks the draft's advanced options drops 
 // catalog is an answer, so a host that refuses one can never hold Start
 // hostage).
 test("Start is blocked only until the selected host's catalog answers settle", async () => {
-  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   let releaseHarnesses!: (result: HostForwardedResult) => void;
   const fake = readyClient((f) =>
@@ -1441,8 +1437,8 @@ test("Start is blocked only until the selected host's catalog answers settle", a
   // Nothing about the controller's own catalogs is pending.
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
 
-  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
-  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+  await chooseHost("buildbox");
+  await waitFor(() => expect(selectedHost()).toBe("Host: buildbox"));
   await settled();
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
 
@@ -1507,13 +1503,12 @@ test("the host picker is locked while a submit is in flight", async () => {
   renderSpawn(fake);
   await settled();
 
-  const picker = () => screen.getByLabelText("Host") as HTMLSelectElement;
-  await waitFor(() => expect(picker().disabled).toBe(false));
+  await waitFor(() => expect(hostTrigger().disabled).toBe(false));
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
 
-  expect(picker().disabled).toBe(true);
-  expect(picker().value).toBe("buildbox");
+  expect(hostTrigger().disabled).toBe(true);
+  expect(selectedHost()).toBe("Host: buildbox");
   const startedOn = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
   expect(startedOn.source).toBe("buildbox");
 });
@@ -1553,7 +1548,7 @@ test("a host switch drops an explicit plugin selection the new host never previe
   await waitFor(() => expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("alpha"));
   expect(draft.fields.getState().pluginSelection).toEqual({ mode: "explicit", names: ["alpha"] });
 
-  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
+  await chooseHost("buildbox");
   await waitForPluginPreviewState("error");
 
   // The controller's selection is gone with the switch...
@@ -1613,7 +1608,6 @@ test("a mount that starts on a remote draft waits for that host's catalogs", asy
 // catalogs and silently wipes the harness and every Advanced-options value the
 // restored host still offers - never restored once A's answers land.
 test("a switch away and back before the middle host answers keeps the draft", async () => {
-  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   const controllerOption: LaunchOption = {
     field: "agent",
@@ -1645,10 +1639,10 @@ test("a switch away and back before the middle host answers keeps the draft", as
   await settled();
   await waitFor(() => expect(draft.fields.getState().harness).toBe("external"));
 
-  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
-  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
-  await user.selectOptions(screen.getByLabelText("Host"), "local");
-  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("local"));
+  await chooseHost("buildbox");
+  await waitFor(() => expect(selectedHost()).toBe("Host: buildbox"));
+  await chooseHost("Local");
+  await waitFor(() => expect(selectedHost()).toBe("Host: Local"));
 
   // The controller's catalogs re-answer for the restored host, and the draft's
   // controller-offered config is still there to reconcile against them.
@@ -1688,7 +1682,6 @@ test("a remote directory pick never seeds the controller's last-working-dir", as
 // the error of a KEPT field must survive the filter - it explains a validation
 // the user still has to fix - while a dropped field's error goes with it.
 test("host reconciliation keeps the errors of the advanced fields it keeps", async () => {
-  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   const agentOption: LaunchOption = {
     field: "agent",
@@ -1724,8 +1717,8 @@ test("host reconciliation keeps the errors of the advanced fields it keeps", asy
   renderSpawn(fake);
   await settled();
 
-  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
-  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+  await chooseHost("buildbox");
+  await waitFor(() => expect(selectedHost()).toBe("Host: buildbox"));
 
   await waitFor(() => expect(draft.fields.getState().advancedOverrides).toEqual({ maxRounds: 7 }));
   expect(draft.fields.getState().advancedValues).toEqual({ maxRounds: { value: "7" } });
@@ -1880,7 +1873,6 @@ test("Retry re-reads the launch schema and keeps the answered harness list", asy
 // A previous host's catalog read that fails after the host changed says
 // nothing about the host now selected.
 test("a previous host's late catalog failure shows no notice", async () => {
-  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   let failHarnesses!: (err: Error) => void;
   const fake = readyClient((f) =>
@@ -1902,7 +1894,7 @@ test("a previous host's late catalog failure shows no notice", async () => {
   await settled();
   await waitFor(() => expect(routedHostCalls(fake, "evener/harnesses/list")).toHaveLength(1));
 
-  await user.selectOptions(screen.getByLabelText("Host"), "local");
+  await chooseHost("Local");
   await act(async () => {
     failHarnesses(new WireError("buildbox went away", -32014));
   });
@@ -1982,8 +1974,8 @@ test("a previous host's model cannot be submitted while the new host's model lis
   // A local mount is not host-derived, so it stays startable exactly as before.
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
 
-  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
-  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+  await chooseHost("buildbox");
+  await waitFor(() => expect(selectedHost()).toBe("Host: buildbox"));
   // buildbox answered for harnesses/schema, so the catalog gate is open and the
   // model list is the only thing still outstanding.
   await waitFor(() => expect(routedHostCalls(fake, "evener/harnesses/list")).toHaveLength(1));
@@ -2043,8 +2035,8 @@ test("a late path validation from the previous host never marks the field on the
   fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "review-agent" } });
   await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/path/validate")).toHaveLength(1));
 
-  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
-  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+  await chooseHost("buildbox");
+  await waitFor(() => expect(selectedHost()).toBe("Host: buildbox"));
   await waitFor(() => expect(routedHostCalls(fake, "evener/harnesses/list")).toHaveLength(1));
 
   // The controller finally accepts the path - after the user left it.
@@ -2121,8 +2113,8 @@ test("a late pathList validation from the previous host cannot re-add its entry 
   await user.click(screen.getByRole("button", { name: "Add" }));
   await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/path/validate")).toHaveLength(1));
 
-  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
-  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+  await chooseHost("buildbox");
+  await waitFor(() => expect(selectedHost()).toBe("Host: buildbox"));
   await waitFor(() => expect(routedHostCalls(fake, "evener/harnesses/list")).toHaveLength(1));
 
   // The controller accepts it only after the user has left it.
@@ -2312,7 +2304,7 @@ test("a host that drops offline while the create dialog is open never creates or
       { id: "buildbox", label: "buildbox", kind: "ssh", online: false },
     ]);
   });
-  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("local");
+  expect(selectedHost()).toBe("Host: Local");
 
   // The confirmation went with the host it was bound to...
   expect(screen.queryByRole("dialog")).toBeNull();
@@ -2350,7 +2342,7 @@ test("a restored create dialog whose preflight host is no longer selected aborts
   renderSpawn(fake);
   await settled();
 
-  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("local");
+  expect(selectedHost()).toBe("Host: Local");
   await user.click(await screen.findByRole("button", { name: "Create & start" }));
 
   expect(createDirCallHosts(fake)).toEqual([]);
@@ -2386,7 +2378,7 @@ test("a create confirmation waits for the selected host's catalogs before creati
   renderSpawn(fake);
   await settled();
 
-  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox");
+  expect(selectedHost()).toBe("Host: buildbox");
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
   await user.click(screen.getByRole("button", { name: "Create & start" }));
 

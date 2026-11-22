@@ -7,6 +7,7 @@ import { toastKinds } from "../../widgets/toast/toastTestUtils";
 import { selectEditorText } from "../session/testing/editor";
 import { selectSpawnDirectory } from "./spawnDrafts";
 import {
+  chooseHost,
   effortControl,
   effortOptionValues,
   effortSelect,
@@ -459,7 +460,7 @@ test("a remote /model value without a provider leaves Start usable", async () =>
   renderSpawn(fake);
   await settled();
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await user.type(promptField(), "/model foo");
   await user.keyboard("{Escape}");
   await user.click(screen.getByTestId("spawn-submit"));

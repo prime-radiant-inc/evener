@@ -271,27 +271,26 @@
   gap: var(--space-2);
 }
 
-/* The Connect affordance in the host picker's disconnected-hosts disclosure:
- * one row per offline remote host, so a never-attached host is reachable
- * without enabling its (spawn-disabled) option. */
-.hostConnectRow {
+/* The one host dropdown: every source in a single list, with an enabled
+ * Connect control on each offline row. Width follows the model picker's
+ * floating panel; the max-width reserves computePosition's two edge margins. */
+.hostPickerPanel {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-}
-
-.hostConnectItem {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-
-.hostConnectName {
+  width: 400px;
+  max-width: calc(100dvw - var(--space-4));
+  margin: 0;
+  padding: var(--space-2);
+  border: 0;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+}
+
+.hostPickerSeparator {
+  height: 0;
+  margin: var(--space-1) 0;
+  border: 0;
+  border-top: 1px solid var(--edge);
 }
 
 @media (max-width: 899px) {

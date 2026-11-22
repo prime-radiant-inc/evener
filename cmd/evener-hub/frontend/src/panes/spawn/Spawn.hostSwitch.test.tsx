@@ -4,26 +4,29 @@ import type { HostForwardedResult, HostRequestParams, ThreadStartParams } from "
 import { WireError } from "@evener/appwire-client";
 import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, expect, test, vi } from "vitest";
+import { expect, test, vi } from "vitest";
 import { connectionStore } from "../../stores/connection";
 import { navigationStore } from "../../stores/navigation/store";
-import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import { getToasts } from "../../widgets/toast/store";
 import { CONNECT_ATTACH_TIMEOUT_MS } from "./Spawn";
 import { selectSpawnDirectory, setDraftField, spawnDraftsStore } from "./spawnDrafts";
 import {
+  chooseHost,
   completionDraft,
   expectModelReadsDefault,
   expectWorkingDir,
   fillPrompt,
+  hostTrigger,
   installSpawnTestHooks,
   modelTrigger,
+  openHostPicker,
   promptField,
   readyClient,
   renderSpawn,
   routedDiscoveryDefault,
   SPAWN_PLUGIN_PREVIEW,
   seedSources,
+  selectedHost,
   settled,
   setupUser,
   setWorkingDir,
@@ -82,20 +85,11 @@ function attachCalls(fake: FakeClient): { host: string }[] {
     .map((call) => call.params as { host: string });
 }
 
-/** Opens the picker's disconnected-hosts disclosure, where each offline host's Connect lives. */
-function openDisconnectedHosts(): void {
-  const disclosure = screen.getByTestId("spawn-host-disconnected") as HTMLDetailsElement;
-  if (disclosure.open) return;
-  const summary = disclosure.querySelector("summary");
-  if (summary === null) throw new Error("the disconnected-hosts disclosure has no summary");
-  fireEvent.click(summary);
-}
 installSpawnTestHooks();
-beforeEach(() => resetDisclosureStoreForTests());
 
 // --- host picker (Component 06b) -------------------------------------------
 
-test("host picker lists sources, preselects local, and tucks disconnected hosts behind a disclosure", async () => {
+test("host picker lists every source in one dropdown, with Connect on offline hosts", async () => {
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -104,26 +98,21 @@ test("host picker lists sources, preselects local, and tucks disconnected hosts 
   renderSpawn(readyClient());
   await settled();
 
-  const picker = screen.getByLabelText("Host") as HTMLSelectElement;
-  expect(picker.value).toBe("local");
-  const options = within(picker).getAllByRole("option") as HTMLOptionElement[];
-  const connectHost = within(picker).getByRole("option", { name: "Connect host" }) as HTMLOptionElement;
-  expect(options[options.length - 1]).toBe(connectHost);
-  expect(options.filter((option) => option !== connectHost).map((option) => option.value)).toEqual([
-    "local",
-    "buildbox",
-    "offline-host",
-  ]);
-  expect((options.find((option) => option.value === "buildbox") as HTMLOptionElement).disabled).toBe(false);
-  const offline = options.find((option) => option.value === "offline-host") as HTMLOptionElement;
-  expect(offline.disabled).toBe(true);
-  // The reason is in the option's own accessible text, not only a tooltip.
-  expect(offline.textContent).toContain("offline");
+  expect(hostTrigger().disabled).toBe(false);
+  expect(selectedHost()).toBe("Host: Local");
+  expect(screen.queryByRole("group", { name: "Hosts" })).toBeNull();
 
-  const disclosure = screen.getByTestId("spawn-host-disconnected") as HTMLDetailsElement;
-  expect(disclosure.open).toBe(false);
-  openDisconnectedHosts();
-  expect(screen.getByRole("button", { name: "Connect offline-host" })).toBeTruthy();
+  const panel = openHostPicker();
+  expect(within(panel).getByRole("button", { name: "Local" }).getAttribute("aria-current")).toBe("true");
+  expect(within(panel).getByRole("button", { name: "buildbox" }).getAttribute("aria-current")).toBeNull();
+  // Every host is in this one list; only an offline one carries its own action.
+  expect(within(panel).getByText("offline-host")).toBeTruthy();
+  expect(within(panel).getByText("Offline")).toBeTruthy();
+  expect(within(panel).getByRole("button", { name: "Connect offline-host" })).toBeTruthy();
+  expect(within(panel).queryByRole("button", { name: "offline-host" })).toBeNull();
+  // The last row is the way to a host the hub does not list yet.
+  const controls = within(panel).getAllByRole("button");
+  expect(controls[controls.length - 1]).toBe(within(panel).getByRole("button", { name: "Connect host" }));
 });
 
 // The bottom of the picker is the way to a host the hub does not list yet: it
@@ -137,13 +126,12 @@ test("Connect host at the bottom of the picker opens the hosts settings", async 
   renderSpawn(readyClient());
   await settled();
 
-  const picker = screen.getByLabelText("Host") as HTMLSelectElement;
-  const connectHost = within(picker).getByRole("option", { name: "Connect host" }) as HTMLOptionElement;
-  fireEvent.change(picker, { target: { value: connectHost.value } });
+  const panel = openHostPicker();
+  fireEvent.click(within(panel).getByRole("button", { name: "Connect host" }));
   await settled();
 
   expect(window.location.pathname).toBe("/settings/hosts");
-  expect(picker.value).toBe("local");
+  expect(selectedHost()).toBe("Host: Local");
 });
 
 // The Host row sits above the working directory: the folder list, recents,
@@ -158,7 +146,7 @@ test("the host row renders above the working directory", async () => {
   renderSpawn(readyClient());
   await settled();
 
-  const host = screen.getByLabelText("Host");
+  const host = hostTrigger();
   const dir = workingDir();
   expect(host.compareDocumentPosition(dir) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
@@ -178,12 +166,12 @@ test("selecting an already-online remote host issues no attach call", async () =
   renderSpawn(fake);
   await settled();
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
 
   // The selection still moves the draft - and so the launch target - while
   // issuing no attach call at all.
-  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+  await waitFor(() => expect(selectedHost()).toBe("Host: buildbox"));
   expect(attachCalls(fake)).toEqual([]);
 });
 
@@ -212,8 +200,8 @@ test("a rapid double Connect dials the host once", async () => {
   renderSpawn(fake);
   await settled();
 
-  openDisconnectedHosts();
-  const connect = screen.getByRole("button", { name: "Connect offline-host" }) as HTMLButtonElement;
+  const panel = openHostPicker();
+  const connect = within(panel).getByRole("button", { name: "Connect offline-host" }) as HTMLButtonElement;
   act(() => {
     connect.click();
     connect.click();
@@ -224,13 +212,10 @@ test("a rapid double Connect dials the host once", async () => {
   await waitFor(() => expect(screen.queryByRole("button", { name: /Connecting offline-host/ })).toBeNull());
 });
 
-// Changing the host select never dials: an online row is already attached (a
-// dial would only be redundant), and an offline row's option is disabled, so a
-// select event cannot name it. The Connect button in the disconnected-hosts
-// disclosure is the single attach path. Before the fix the onChange branch
-// dialed any selected offline row, a latent double-attach if the disabled
-// rendering were ever relaxed.
-test("changing the host select issues no attach call", async () => {
+// Choosing a host never dials: an online row is already attached (a dial would
+// only be redundant), and an offline row is not selectable - the Connect
+// control on its own row is the single attach path.
+test("choosing a host in the dropdown issues no attach call", async () => {
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -241,21 +226,14 @@ test("changing the host select issues no attach call", async () => {
   await settled();
 
   // An online selection moves the draft without an attach.
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
-  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+  await waitFor(() => expect(selectedHost()).toBe("Host: buildbox"));
   expect(attachCalls(fake)).toEqual([]);
 
-  // Even a programmatic change to an offline row — unreachable through the
-  // disabled option in the real UI — still issues no attach: the Connect
-  // button owns that path.
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "offline-host" } });
-  await settled();
-  expect(attachCalls(fake)).toEqual([]);
-
-  // The Connect button in the disconnected-hosts disclosure still attaches it.
-  openDisconnectedHosts();
-  fireEvent.click(screen.getByRole("button", { name: "Connect offline-host" }));
+  // The Connect control on the offline row still attaches it.
+  const panel = openHostPicker();
+  fireEvent.click(within(panel).getByRole("button", { name: "Connect offline-host" }));
   await settled();
   await waitFor(() =>
     expect(
@@ -266,11 +244,9 @@ test("changing the host select issues no attach call", async () => {
   );
 });
 
-// A never-attached host is listed offline with a disabled spawn option
-// (component 06b), so the picker must offer a concrete, enabled Connect
-// affordance for it — otherwise a configured [[hosts]] entry is dead UI. The
-// disclosure holds that affordance; the Connect action issues the same
-// evener/host/attach call.
+// A never-attached host is listed in the same dropdown as the online ones, but
+// it is not selectable; its own Connect action is the concrete, enabled path
+// that keeps a configured [[hosts]] entry from being dead UI (component 06b).
 test("an offline host offers an enabled Connect action that attaches it", async () => {
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
@@ -280,12 +256,10 @@ test("an offline host offers an enabled Connect action that attaches it", async 
   renderSpawn(fake);
   await settled();
 
-  const picker = screen.getByLabelText("Host") as HTMLSelectElement;
-  const offline = within(picker).getByRole("option", { name: /offline-host/ }) as HTMLOptionElement;
-  expect(offline.disabled).toBe(true);
-
-  openDisconnectedHosts();
-  const connect = screen.getByRole("button", { name: "Connect offline-host" }) as HTMLButtonElement;
+  const panel = openHostPicker();
+  expect(within(panel).getByText("offline-host")).toBeTruthy();
+  expect(within(panel).queryByRole("button", { name: "offline-host" })).toBeNull();
+  const connect = within(panel).getByRole("button", { name: "Connect offline-host" }) as HTMLButtonElement;
   expect(connect.disabled).toBe(false);
   fireEvent.click(connect);
   await settled();
@@ -314,8 +288,8 @@ test("a failed Connect surfaces the attach error", async () => {
   renderSpawn(fake);
   await settled();
 
-  openDisconnectedHosts();
-  fireEvent.click(screen.getByRole("button", { name: "Connect offline-host" }));
+  const panel = openHostPicker();
+  fireEvent.click(within(panel).getByRole("button", { name: "Connect offline-host" }));
   expect(await screen.findByText(/Connect offline-host failed/i)).toBeTruthy();
 });
 
@@ -351,8 +325,8 @@ test("a slow Connect attach resolves inside the attach timeout with no failure t
   renderSpawn(fake);
   await settled();
 
-  openDisconnectedHosts();
-  fireEvent.click(screen.getByRole("button", { name: "Connect offline-host" }));
+  const panel = openHostPicker();
+  fireEvent.click(within(panel).getByRole("button", { name: "Connect offline-host" }));
   // The attach RPC carries the explicit attach timeout, not the 30s default.
   await waitFor(() =>
     expect(
@@ -371,7 +345,7 @@ test("no host picker renders when the manifest has only local", async () => {
   renderSpawn(readyClient());
   await settled();
 
-  expect(screen.queryByLabelText("Host")).toBeNull();
+  expect(screen.queryByRole("button", { name: /^Host:/ })).toBeNull();
 });
 
 test("choosing a non-local host sends source and persists it in the draft", async () => {
@@ -385,7 +359,7 @@ test("choosing a non-local host sends source and persists it in the draft", asyn
   renderSpawn(fake);
   await settled();
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await fillPrompt(user, "run on buildbox");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
@@ -422,7 +396,7 @@ test("an explicit Memory Off survives a host switch that can't honor it, and Sta
   await fillPrompt(user, "typed before the switch");
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
 
   // The choice survived the switch, and Start is held over it.
@@ -472,7 +446,7 @@ test("a Memory Off holds Start when the selected host's schema answer fails", as
   await fillPrompt(user, "typed before the switch");
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
 
   expect(draft.fields.getState().advancedOverrides.memoryEnabled).toBe(false);
@@ -504,7 +478,7 @@ test("the Mod+Enter chord cannot submit past a held Memory Off", async () => {
   await fillPrompt(user, "chord while held");
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true));
 
@@ -547,7 +521,7 @@ test("a Memory Off kept across an unoffering host rides the submission again onc
 
   // On buildbox the field is unoffered; an edit to another option re-collects
   // the overrides against buildbox's schema.
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
   if (screen.queryByLabelText("API log") === null) {
     await user.click(screen.getByText("Advanced options"));
@@ -556,7 +530,7 @@ test("a Memory Off kept across an unoffering host rides the submission again onc
 
   // Back on local, whose schema offers the field again: the choice rides the
   // submission again, not silently dropped by the edit made while away.
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
+  await chooseHost("Local");
   await settled();
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
   await user.click(screen.getByTestId("spawn-submit"));
@@ -614,9 +588,9 @@ test("a Memory Off kept across a host switch still rides the submission when its
   // is re-judged for the returning target while local's schema answer is
   // still in flight, so the validation lands after the schema settled and
   // Start has released.
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
+  await chooseHost("Local");
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
   await waitFor(() => expect(commandValidations.length).toBe(2));
   await act(async () => commandValidations[1]!.resolve({ path: command, valid: true }));
@@ -682,7 +656,7 @@ test("switching the host re-seeds the working directory from the selected host",
   await settled();
   expectWorkingDir("/tmp/controller-default");
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
 
   // The switch asks the SELECTED host about the controller's directory...
@@ -711,11 +685,11 @@ test("switching back to local restores the controller's own default directory", 
   renderSpawn(fake);
   await settled();
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
   expectWorkingDir("/home/buildbox");
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
+  await chooseHost("Local");
   await settled();
 
   // The reverse switch resolves the directory over the local host too: refused
@@ -740,7 +714,7 @@ test("a host switch moves the draft's typed state to the selected host's directo
   await settled();
   await fillPrompt(user, "typed before the switch");
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
   expectWorkingDir("/home/buildbox");
 
@@ -762,7 +736,7 @@ test("a same-host re-read neither re-resolves nor discards the working directory
   const mounted = renderSpawn(fake);
   await settled();
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
   expectWorkingDir("/home/buildbox");
   const resolutions = routedPathValidations(fake, "buildbox").filter((params) => params.path === "~").length;
@@ -821,14 +795,14 @@ test("a stale answer from an earlier visit to the same host cannot move the dire
   await settled();
 
   // local -> buildbox: this first question hangs.
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
   expect(buildboxDirectoryAsks).toBe(1);
   // buildbox -> local: the local host has the directory, so it stays.
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
+  await chooseHost("Local");
   await settled();
   // local -> buildbox again: the second question answers "this host has it".
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
   expect(buildboxDirectoryAsks).toBe(2);
   expectWorkingDir("/tmp/visit-a");
@@ -873,7 +847,7 @@ test("an answer still in flight when the pane unmounts cannot seed the remount",
   await settled();
 
   // local -> buildbox: this question hangs.
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
 
   // The pane goes away while the answer is out, and comes back on the same
@@ -924,7 +898,7 @@ test("an answer issued before a directory round trip cannot seed the returned dr
   await settled();
 
   // local -> buildbox: this question about trip-a hangs.
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
   expectWorkingDir("/tmp/trip-a");
 
@@ -968,7 +942,7 @@ test("a re-seed onto an occupied directory keeps the live draft", async () => {
   await fillPrompt(user, "live work");
 
   // ...and the live draft, which the switch re-seeds onto that same key.
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
 
   expectWorkingDir("/home/buildbox");
@@ -1008,7 +982,7 @@ test("a directory pick does not re-seed the picked directory's own draft", async
   renderSpawn(fake);
   await settled();
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
   expectWorkingDir("/home/buildbox");
 
@@ -1042,7 +1016,7 @@ test("a switch keeps a directory the selected host also has", async () => {
   renderSpawn(fake);
   await settled();
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
 
   expect(routedPathValidations(fake, "buildbox").some((params) => params.path === "/tmp/shared-repo")).toBe(true);
@@ -1069,7 +1043,7 @@ test("a host that cannot answer keeps the working directory", async () => {
   renderSpawn(fake);
   await settled();
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
 
   expectWorkingDir("/tmp/away-a");
@@ -1107,7 +1081,7 @@ test.each([
   await settled();
   expectWorkingDir("/tmp/foreign-a");
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
 
   // Nothing of the previous host's path is kept, and the form says so.
@@ -1138,7 +1112,7 @@ test("a host answering valid with no path seeds no directory", async () => {
   renderSpawn(fake);
   await settled();
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
 
   // Every draft key stays a directory string...
@@ -1184,8 +1158,8 @@ test("a draft naming a remote host submits it while the manifest is loading", as
   renderSpawn(fake);
   await settled();
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
-  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox");
+  await chooseHost("buildbox");
+  expect(selectedHost()).toBe("Host: buildbox");
 
   // The manifest drops back to in-flight (a reconnect reseeds the store): the
   // draft keeps the host, only the manifest's sources are unavailable.
@@ -1229,8 +1203,8 @@ test("a host that goes offline while a draft names it falls back to local", asyn
   renderSpawn(fake);
   await settled();
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
-  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox");
+  await chooseHost("buildbox");
+  expect(selectedHost()).toBe("Host: buildbox");
 
   await act(async () => {
     seedSources([
@@ -1240,7 +1214,7 @@ test("a host that goes offline while a draft names it falls back to local", asyn
   });
 
   // The option is still listed (disabled) but the effective choice is local.
-  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("local");
+  expect(selectedHost()).toBe("Host: Local");
 
   await fillPrompt(user, "no longer reachable");
   await user.click(screen.getByTestId("spawn-submit"));
@@ -1267,8 +1241,8 @@ test("a host that returns online after its offline fallback stays on local", asy
   renderSpawn(fake);
   await settled();
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
-  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox");
+  await chooseHost("buildbox");
+  expect(selectedHost()).toBe("Host: buildbox");
 
   await act(async () => {
     seedSources([
@@ -1276,7 +1250,7 @@ test("a host that returns online after its offline fallback stays on local", asy
       { id: "buildbox", label: "buildbox", kind: "ssh", online: false },
     ]);
   });
-  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("local");
+  expect(selectedHost()).toBe("Host: Local");
   // The fallback is recorded in the draft, so it is not merely a render value.
   expect(completionDraft("/tmp/reonline-target").fields.getState().source).toBe("local");
 
@@ -1286,7 +1260,7 @@ test("a host that returns online after its offline fallback stays on local", asy
       { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
     ]);
   });
-  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("local");
+  expect(selectedHost()).toBe("Host: Local");
 
   await fillPrompt(user, "still local");
   await user.click(screen.getByTestId("spawn-submit"));
@@ -1315,7 +1289,7 @@ test("a draft naming a host removed from the manifest shows local and omits sour
     setDraftField(draft, "source", "decommissioned");
   });
 
-  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("local");
+  expect(selectedHost()).toBe("Host: Local");
 
   await fillPrompt(user, "host is gone");
   await user.click(screen.getByTestId("spawn-submit"));
@@ -1348,7 +1322,7 @@ test("a remote host submission skips the controller-local directory preflight", 
   renderSpawn(fake);
   await settled();
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
 
@@ -1400,13 +1374,13 @@ test("a remote host submission is not blocked by missing controller-local provid
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
 
   // Remote: that same controller-local state must not block the launch.
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
   await waitFor(() => expect(screen.queryByRole("button", { name: "Connect provider" })).toBeNull());
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
 
   // Switching back restores the local block.
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
+  await chooseHost("Local");
   await settled();
   await screen.findByRole("button", { name: "Connect provider" });
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
@@ -1436,7 +1410,7 @@ test("a remote launch rejected by the selected host surfaces that host's own err
   renderSpawn(fake);
   await settled();
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await user.click(screen.getByTestId("spawn-submit"));
 
   await screen.findByText("Start failed: cwd: no such file or directory on buildbox");
@@ -1469,7 +1443,7 @@ test("a remote launch the selected host cannot serve reports that host's own fai
 
   // Starts blocked by the CONTROLLER's missing provider check (local target).
   await screen.findByRole("button", { name: "Connect provider" });
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
   await waitFor(() => expect(screen.queryByRole("button", { name: "Connect provider" })).toBeNull());
 
@@ -1520,9 +1494,9 @@ test("a remote host submission is not blocked by controller-local plugin issues"
   // each verdict below is read once the selected host's discovery has landed
   // (that window is pinned by the sibling "Start is blocked only until the
   // selected host's catalog answers settle" test - not by these assertions).
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
+  await chooseHost("Local");
   // Drain the local host's own catalog round-trip first: while it is in flight
   // Start is blocked by that window, not by the controller-local plugin issue
   // this assertion is about.
@@ -1536,7 +1510,7 @@ test("a remote host submission is not blocked by controller-local plugin issues"
     setDraftField(completionDraft("/tmp/remote-plugins"), "pluginSelection", { mode: "explicit", names: ["alpha"] });
   });
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true));
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
   // Re-establish the selection for the host now selected: component 07b's
   // round-four reset means an explicit selection only ever belongs to the host
@@ -1572,7 +1546,7 @@ test("a remote host does not pre-validate /model against the controller catalog"
   renderSpawn(fake);
   await settled();
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   // A model absent from the controller's catalog: a local target would toast
   // `unknown value` and never reach thread/start.
   await user.type(promptField(), "/model buildbox-only/model-x");
@@ -1600,7 +1574,7 @@ test("a remote host does not pre-validate /reasoning-effort against the controll
   renderSpawn(fake);
   await settled();
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   // A level outside the controller's ladder: a local target would toast
   // `unknown value` and never reach thread/start.
   await user.type(promptField(), "/reasoning-effort ultra");
@@ -1656,7 +1630,7 @@ test("a remote host does not inherit the controller's uncredentialed-default fal
   renderSpawn(fake);
   // Select the remote host before the fallback's CATALOG_SETTLE_MS window can
   // elapse, so this pins the remote-at-mount path.
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await waitFor(() =>
     expect(
       fake.calls.some(
@@ -1713,7 +1687,7 @@ test("a controller-catalog fallback model is retired when the target becomes rem
 
   // Switching to a remote host retires it: it is the controller's model, not
   // the selected host's.
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await settled();
   await waitFor(expectModelReadsDefault);
   expect(modelTrigger().textContent).not.toContain("claude-sonnet-4-5");
@@ -1744,7 +1718,7 @@ test("a remote /model value without a provider is refused before launch", async 
   renderSpawn(fake);
   await settled();
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await user.type(promptField(), "/model foo");
   await user.keyboard("{Escape}");
   await user.click(screen.getByTestId("spawn-submit"));
