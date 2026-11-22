@@ -561,9 +561,10 @@ func TestSubagentStart_StoppedLaunchStillRearmsPendingAttention(t *testing.T) {
 	}
 	// Two outcomes are legitimate and which one occurs depends on whether the
 	// stopped run presented the row before the tail ran: the row is presented
-	// and gone, or it survives under a reopened identity for a later event.
-	// Either way it must not be stranded, and the stopped child must never have
-	// reached the model.
+	// and gone, or it survives pending (under its original identity on a
+	// commit-before-consume drive, or a reopened identity on a legacy restored
+	// run) for a later event. Either way it must not be stranded, and the
+	// stopped child must never have reached the model.
 	presented := len(pend) == 0
 	if presented {
 		if got := subagentStartChildRequests(fixture.adapter, created.ChildSessionID); got != 0 {
@@ -571,14 +572,14 @@ func TestSubagentStart_StoppedLaunchStillRearmsPendingAttention(t *testing.T) {
 		}
 		return
 	}
-	reopened := false
+	preserved := false
 	for _, id := range pend {
-		if strings.HasPrefix(id, attention+"/reopened/") {
-			reopened = true
+		if id == attention || strings.HasPrefix(id, attention+"/reopened/") {
+			preserved = true
 			break
 		}
 	}
-	if !reopened {
+	if !preserved {
 		t.Fatalf("the row is neither re-armed nor presented: pending=%v", pend)
 	}
 	// The hook stops every launch, so the child never reached the model at all;

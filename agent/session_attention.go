@@ -1046,8 +1046,11 @@ func (s *Session) settleUnpresentedDelegateAttention(quietAt uint64) (string, er
 		// armed. Leaving that row pending would release finalization into a
 		// duplicate successor that presents the report a second time. An
 		// unpresented trigger keeps its latch and takes the hold path below;
-		// any other row keeps the failed turn's behaviour.
-		return s.consumePresentedDelegateTrigger(quietAt)
+		// a plain failed turn (quietAt == 0) keeps its rows pending.
+		if quietAt == 0 {
+			return "", nil
+		}
+		return s.consumePresentedDelegateTrigger()
 	}
 	if s.delegateController.attentionReopenRefused(s.owningDelegateID) {
 		s.clearAcceptedTrigger()
@@ -1079,19 +1082,14 @@ func (s *Session) settleUnpresentedDelegateAttention(quietAt uint64) (string, er
 	return latched, nil
 }
 
-// consumePresentedDelegateTrigger consumes a stopped generation's trigger
-// when a settled request of that generation already presented it. Promote
-// credits that presentation, so the report was delivered; a stop landing in a
-// later round has nothing left to re-deliver, and leaving the row pending
-// would drive a successor to present it again. quietAt is zero when no stop
-// owns the quiet: a plain failed turn keeps its rows pending, presented or
-// not, for a later generation. A trigger that was never presented keeps its
-// latch and the hold path, and a row already resolved under another
-// disposition is left alone.
-func (s *Session) consumePresentedDelegateTrigger(quietAt uint64) (string, error) {
-	if quietAt == 0 {
-		return "", nil
-	}
+// consumePresentedDelegateTrigger consumes a generation's trigger when a
+// settled request of that generation already presented it, for runs that end
+// without reaching finishAttentionTurn's normal consume (such as a mid-round
+// user stop or tool-round exhaustion). Promote credits that presentation, so
+// the report was delivered; leaving the row pending would drive a successor to
+// present it again. A trigger that was never presented keeps its latch and the
+// hold path, and a row already resolved under another disposition is left alone.
+func (s *Session) consumePresentedDelegateTrigger() (string, error) {
 	s.attentionMu.Lock()
 	trigger := s.attentionPresentedTrigger
 	s.attentionMu.Unlock()

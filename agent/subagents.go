@@ -2925,6 +2925,14 @@ func (a *subagent) finalizeRun(f subagentFinalize) {
 		if _, settleErr := a.sess.settleUnpresentedDelegateAttention(quietAt); settleErr != nil {
 			a.sess.emit(warningDataFromError("settle unpresented delegate attention", settleErr))
 		}
+	} else if f.stableRun && f.attentionRun && f.err != nil {
+		// A presented attention generation that ended with an error (such as
+		// tool-round exhaustion) skipped finishAttentionTurn's consume; consume
+		// its already-presented trigger here so releasing finalization does not
+		// immediately start another generation on the same wake.
+		if _, consumeErr := a.sess.consumePresentedDelegateTrigger(); consumeErr != nil {
+			a.sess.emit(warningDataFromError("consume presented delegate attention", consumeErr))
+		}
 	}
 	if f.stableRun && a.sess.delegateController != nil {
 		if hook := a.sess.cfg.testOnly.subagentBeforeGenerationAnnounced; hook != nil {

@@ -120,3 +120,73 @@ func TestDelegateAttentionStopAfterPresentedRequestConsumesTheTrigger(t *testing
 		t.Fatalf("the already-presented trigger ran again on generation %d after the stop, want only the stopped generation %d", got, stoppedGeneration)
 	}
 }
+
+// An automatic attention generation that presents its trigger in a settled
+// request and then hits its tool-round limit must consume that trigger before
+// finalization releases: leaving it pending with its commit-time wake armed
+// immediately starts a successor generation with a fresh tool-round budget.
+func TestDelegateAttentionExhaustedAfterPresentedRequestConsumesTheTrigger(t *testing.T) {
+	t.Parallel()
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
+		// The warm send's own answer.
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm retained runtime") },
+		// The attention run's first request presents the row and issues a
+		// mid-turn tool call, exhausting MaxToolRoundsPerInput=1.
+		func(llm.Request) llm.Response {
+			return agenttest.CommunicateResponse(false, "still working")
+		},
+		// If a duplicate successor starts on the same trigger, it would consume
+		// this extra step and advance the journal generation.
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("unexpected successor") },
+	})
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmDelegateUnservedRoot(t, root, fixture)
+	testwait.Until(t, "the warm generation to release its finalization fence", func() bool {
+		sub.mu.Lock()
+		defer sub.mu.Unlock()
+		return !sub.running && !sub.driving && !sub.finalizing
+	})
+	sub.sess.mu.Lock()
+	sub.sess.cfg.MaxToolRoundsPerInput = 1
+	sub.sess.mu.Unlock()
+
+	const rowID = "delegate:dlg_exhaustedpresented/watch/1"
+	const rowText = "exhausted-presented: check the release gate"
+	armStableSupervisionAttention(t, sub, rowID, rowText)
+	testwait.Until(t, "the exhausted attention run to start and settle", func() bool {
+		root.drivePendingDelegateAttention()
+		sub.mu.Lock()
+		settled := !sub.running && !sub.driving && !sub.finalizing
+		sub.mu.Unlock()
+		if !settled {
+			return false
+		}
+		return attentionRunGenerations(t, root.delegateController, fixture.delegateID)[rowID] != 0
+	})
+	exhaustedGen := attentionRunGenerations(t, root.delegateController, fixture.delegateID)[rowID]
+
+	// A duplicate successor would have fired step 3 (making 3 requests and
+	// flipping the delegate status from exhausted to completed).
+	if got := len(fixture.adapter.Requests()); got != 2 {
+		t.Fatalf("model requests = %d, want 2 (warm + single exhausted attention run): a duplicate successor ran after exhaustion", got)
+	}
+	if agg := settledDelegateAggregate(t, root, fixture.delegateID); agg.LatestOutcome == nil || string(agg.LatestOutcome.Status) != string(SubagentExhausted) {
+		t.Fatalf("delegate latest outcome = %+v, want status %q", agg.LatestOutcome, SubagentExhausted)
+	}
+
+	fold, err := readDelegateAttentionFold(sub.sess.TranscriptPath(), sub.sess.id)
+	if err != nil {
+		t.Fatalf("read the delegate's attention fold after exhaustion: %v", err)
+	}
+	if got := fold.resolutions[rowID]; got != delegateAttentionConsumed {
+		t.Fatalf("the exhausted generation's presented trigger resolution = %q, want consumed (pending=%v)", got, fold.pendingIDs())
+	}
+	if pending, err := sub.sess.pendingDelegateAttentionIDs(); err != nil || len(pending) != 0 {
+		t.Fatalf("pending attention after exhausted presented trigger = %v (%v), want none", pending, err)
+	}
+	root.drivePendingDelegateAttention()
+	if got := attentionRunGenerations(t, root.delegateController, fixture.delegateID)[rowID]; got != exhaustedGen {
+		t.Fatalf("the already-presented trigger ran again on generation %d after exhaustion, want only %d", got, exhaustedGen)
+	}
+}
