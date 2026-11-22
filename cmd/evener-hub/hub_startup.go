@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
@@ -661,6 +662,7 @@ func (r *hubRuntime) buildWeb(appwireTrace *appserver.WebSocketTrace) (*WebServe
 		NoUserLayer:               r.noUserLayer,
 		PokeAttention:             r.pokeAttention,
 		ScratchReconcile:          r.scratchReconcile.Kick,
+		ReapSessionJobs:           agent.ReapSessionBackgroundJobs,
 		Inputs:                    r.inputs,
 		RemoteThreadCache:         r.remoteCache,
 		RemoteHosts:               r.hostEntries,
@@ -850,6 +852,11 @@ func (r *hubRuntime) startBackground(web *WebServer) (context.Context, func()) {
 	// aged into the archive and ones whose daemon exited while the hub was down.
 	goBackground(func() { r.scratchReconcile.Run(ctx) })
 	r.scratchReconcile.Kick()
+	// A daemon that died while the hub was down gets no session-gone
+	// announcement: the first publication after a hub start has no earlier
+	// listing to leave. Sweep the roster's crashed entries once for background
+	// job process groups that outlived their daemon (#4843).
+	goBackground(func() { reapCrashedSessionJobs(roster.List(), web.cfg.ReapSessionJobs) })
 	// Start the resettable navigation scheduler only after the initial roster
 	// seed, so its first capture cannot publish a transient empty generation.
 	goBackground(func() { web.navigation.Start(ctx) })

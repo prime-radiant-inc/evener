@@ -247,6 +247,11 @@ type WebConfig struct {
 	// Nil when not wired (e.g. in tests that construct a WebServer directly).
 	ScratchReconcile func()
 
+	// ReapSessionJobs ends the surviving background shell job process groups of
+	// a session whose owning daemon is gone, and reports how many groups it
+	// signaled (see agent.ReapSessionBackgroundJobs). Nil when not wired.
+	ReapSessionJobs func(stateDir, sessionID string) int
+
 	RelayHooks RelayLifecycleHooks // test-only relay lifecycle seams; nil in production
 
 	// Log receives the hub's operational log lines. Nil writes them to
