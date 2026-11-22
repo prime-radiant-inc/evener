@@ -58,6 +58,35 @@ func embeddedLoad(t testing.TB, extra ...Option) *Registry {
 	return r
 }
 
+func TestLoad_EmbeddedCopilotInstance(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	saveCopilotRecordForTest(t, state, "github-copilot", healthyCopilotRecord("github-copilot"))
+	r := embeddedLoad(t, WithStateRoot(state))
+
+	inst, ok := r.Instance("github-copilot")
+	if !ok || inst.CredentialSource != "oauth" || inst.DefaultModel != "gpt-5.6-sol" {
+		t.Fatalf("embedded github-copilot listing = %+v, ok=%v", inst, ok)
+	}
+	ids, err := r.ModelIDs("github-copilot")
+	if err != nil || len(ids) == 0 {
+		t.Fatalf("embedded github-copilot models = %v, %v", ids, err)
+	}
+	res, err := r.Resolve("github-copilot/gpt-5.6-sol")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if res.Synthesized || res.Caps.ContextWindow == nil || *res.Caps.ContextWindow != 1050000 {
+		t.Fatalf("embedded row did not inherit catalog facts: synthesized=%v context=%v", res.Synthesized, res.Caps.ContextWindow)
+	}
+	if res.Caps.Cost != nil {
+		t.Fatalf("embedded Copilot row keeps a monetary cost: %+v", *res.Caps.Cost)
+	}
+	if res.DefaultModel != "gpt-5.6-sol" || res.CheapModel != "claude-haiku-5.5" || res.Surface != SurfaceOpenAI {
+		t.Fatalf("embedded Copilot defaults/surface = %q %q %q", res.DefaultModel, res.CheapModel, res.Surface)
+	}
+}
+
 func mapEnv(env map[string]string) func(string) (string, bool) {
 	return func(name string) (string, bool) { v, ok := env[name]; return v, ok }
 }

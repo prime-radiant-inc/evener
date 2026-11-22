@@ -460,6 +460,7 @@ func (r *Registry) resolveInstanceMode(name string, presence bool) (Resolved, er
 		warnings = append(warnings, "hidden: provider has no resolvable base URL or protocol")
 	}
 	warnings = append(warnings, rec.notes...)
+	stripCopilotCost(&caps, nil, prov, transport.Auth)
 	providerID := rec.providerID
 	if providerID == "" {
 		providerID = rec.name
@@ -472,6 +473,22 @@ func (r *Registry) resolveInstanceMode(name string, presence bool) (Resolved, er
 		ShadowedEnvVar: r.shadowedEnvVar(rec, transport, cred),
 		DefaultModel:   rec.head.DefaultModel, CheapModel: rec.head.CheapModel,
 	}, nil
+}
+
+// stripCopilotCost removes inherited monetary prices from a resolution on the
+// Copilot subscription scheme: usage is not billed per token, and an absent
+// Cost means no dollar estimate rather than zero. The strip runs after the
+// merge, so it covers static catalog rows and live listings alike, and the
+// provenance entry goes with the value it described.
+func stripCopilotCost(caps *Caps, row *Model, prov map[string]string, auth string) {
+	if auth != AuthOAuthGitHubCopilot {
+		return
+	}
+	caps.Cost = nil
+	if row != nil {
+		row.Caps.Cost = nil
+	}
+	delete(prov, "Cost")
 }
 
 // recordMintsCommandCredential reports whether a full-depth resolve of
@@ -928,6 +945,7 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 	}
 	transport, hostDerived, tw := r.buildTransport(rec, row, rowProto)
 	warnings = append(warnings, tw...)
+	stripCopilotCost(&caps, &row, prov, transport.Auth)
 	if depth == resolveTransport {
 		// The transport depth keeps the diagnostics and the host-rule
 		// flag the transport build produced: the hub's presence view

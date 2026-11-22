@@ -12,7 +12,9 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
+	"primeradiant.com/evener/auth/githubcopilot"
 	"primeradiant.com/evener/execsupport/valueexpr"
 )
 
@@ -22,6 +24,10 @@ type instance struct {
 	rec      *record
 	implicit bool
 	rank     int
+	// autoSelectable is false for a Copilot instance whose record exists but
+	// cannot launch: it stays listed, while DefaultInstance's automatic
+	// ranking skips it. Every other scheme keeps the listing's policy.
+	autoSelectable bool
 }
 
 // Instance is the listing view of an instance (spec §5.1, §11.2).
@@ -65,6 +71,44 @@ func InstanceKeyEnvVar(name string) string {
 // record (spec §9.5): auth/<instance>.json under the state root.
 func oauthRecordPath(stateRoot, instance string) string {
 	return filepath.Join(stateRoot, "auth", instance+".json")
+}
+
+// copilotRecordState classifies the record the Copilot auth scheme reads.
+type copilotRecordState int
+
+const (
+	copilotRecordMissing copilotRecordState = iota
+	copilotRecordUnusable
+	copilotRecordReady
+)
+
+// copilotAuthState reads the instance's Copilot record and reports whether
+// it can authenticate a launch without a fresh login. Corrupt,
+// scheme-mismatched, refresh-rejected, refresh-expired, and otherwise
+// login-required records are unusable; an expired access token with a usable
+// refresh token is ready.
+func (r *Registry) copilotAuthState(name string) copilotRecordState {
+	if r.stateRoot == "" {
+		return copilotRecordMissing
+	}
+	rec, err := githubcopilot.LoadAuth(r.stateRoot, name)
+	switch {
+	case errors.Is(err, githubcopilot.ErrAuthNotFound):
+		return copilotRecordMissing
+	case err != nil:
+		return copilotRecordUnusable
+	case rec.NeedsLogin(time.Now()):
+		return copilotRecordUnusable
+	}
+	return copilotRecordReady
+}
+
+// authReadyToLaunch reports whether automatic instance and default selection
+// may use the instance without an explicit `default`. Every scheme but
+// Copilot keeps the presence policy the listing already applied; Copilot
+// requires a record that can actually launch.
+func (r *Registry) authReadyToLaunch(name string, t Transport) bool {
+	return t.Auth != AuthOAuthGitHubCopilot || r.copilotAuthState(name) == copilotRecordReady
 }
 
 func fileExists(path string) bool {
@@ -503,7 +547,7 @@ func (r *Registry) shadowedEnvVar(rec *record, t Transport, cred Credential) str
 // credentialWithAuth (resolveCredentials), so there the header runs once
 // per resolution.
 func (r *Registry) credential(rec *record, t Transport) (Credential, []string) {
-	if t.Auth == AuthOAuthOpenAICodex || t.Auth == AuthGCPADC {
+	if t.Auth == AuthOAuthOpenAICodex || t.Auth == AuthGCPADC || t.Auth == AuthOAuthGitHubCopilot {
 		return r.credentialWithAuth(rec, authExpansion{}, t, false, true)
 	}
 	return r.credentialWithAuth(rec, r.authorizationMode(rec, t, true), t, false, true)
@@ -964,6 +1008,15 @@ func (r *Registry) credentialWithAuth(rec *record, auth authExpansion, t Transpo
 			return Credential{Source: "oauth"}, nil
 		}
 		return none(fmt.Sprintf("no credential (run `evener openai login --instance %s`)", rec.name))
+	case AuthOAuthGitHubCopilot:
+		switch r.copilotAuthState(rec.name) {
+		case copilotRecordReady:
+			return Credential{Source: "oauth"}, nil
+		case copilotRecordUnusable:
+			return none(fmt.Sprintf("no credential (the GitHub Copilot sign-in record for %q cannot be used; run `evener github-copilot login --instance %s`)", rec.name, rec.name))
+		default:
+			return none(fmt.Sprintf("no credential (run `evener github-copilot login --instance %s`)", rec.name))
+		}
 	case AuthGCPADC:
 		// A credential JSON stored under the instance name (a service-account
 		// key or an authorized_user file the hub accepted) outranks the ADC
@@ -1107,7 +1160,8 @@ func (r *Registry) computeInstances() {
 		if !ok {
 			pos = custom
 		}
-		r.instances[name] = &instance{name: name, rec: rec, rank: pos}
+		t := r.listingTransport(rec)
+		r.instances[name] = &instance{name: name, rec: rec, rank: pos, autoSelectable: r.authReadyToLaunch(name, t)}
 	}
 	for id, rec := range r.curated {
 		if rec.head.Implicit == nil || !*rec.head.Implicit || rec.head.Hidden {
@@ -1117,14 +1171,21 @@ func (r *Registry) computeInstances() {
 			continue
 		}
 		t := r.listingTransport(rec)
-		if cred, _ := r.credential(rec, t); cred.Source == "none" && t.Auth != AuthNone && t.Auth != AuthOptionalBearer {
+		if t.Auth == AuthOAuthGitHubCopilot {
+			// No record means the user never signed in, so no instance. A
+			// record that cannot launch stays listed for Settings to show
+			// and diagnose; only automatic selection skips it.
+			if r.copilotAuthState(id) == copilotRecordMissing {
+				continue
+			}
+		} else if cred, _ := r.credential(rec, t); cred.Source == "none" && t.Auth != AuthNone && t.Auth != AuthOptionalBearer {
 			continue
 		}
 		pos, ok := rank[id]
 		if !ok {
 			pos = custom // pseudo-providers: after every default_order entry
 		}
-		r.instances[id] = &instance{name: id, rec: rec, implicit: true, rank: pos}
+		r.instances[id] = &instance{name: id, rec: rec, implicit: true, rank: pos, autoSelectable: r.authReadyToLaunch(id, t)}
 	}
 }
 
@@ -1177,9 +1238,9 @@ func (r *Registry) validateDefault() error {
 var errNoDefaultInstance = errors.New("no default instance: set `default` in providers.toml or export a provider key")
 
 // DefaultInstance picks the default instance (spec §5.1): `default` when it
-// is an instance here; else the first ranked instance with a default model.
-// A `default` that is a credential-less or hidden implicit id warns and
-// falls through.
+// is an instance here; else the first ranked instance with a default model
+// whose auth scheme reports a launchable credential. A `default` that is a
+// credential-less or hidden implicit id warns and falls through.
 func (r *Registry) DefaultInstance() (string, []string, error) {
 	var warnings []string
 	if r.userDefault != "" {
@@ -1202,13 +1263,19 @@ func (r *Registry) DefaultInstance() (string, []string, error) {
 	}
 	var without []string
 	for _, inst := range ranked {
-		if inst.rec.head.DefaultModel != "" {
+		if inst.rec.head.DefaultModel == "" {
+			without = append(without, inst.name)
+			continue
+		}
+		if inst.autoSelectable {
 			return inst.name, warnings, nil
 		}
-		without = append(without, inst.name)
 	}
-	first := ranked[0].name
-	return "", warnings, fmt.Errorf("%s has no default model; pass `%s/<model>` or set `default` (instances without one: %s)", first, first, strings.Join(without, ", "))
+	if len(without) == len(ranked) {
+		first := ranked[0].name
+		return "", warnings, fmt.Errorf("%s has no default model; pass `%s/<model>` or set `default` (instances without one: %s)", first, first, strings.Join(without, ", "))
+	}
+	return "", warnings, fmt.Errorf("%w: every instance with a default model has no usable credential", errNoDefaultInstance)
 }
 
 // Instances lists every instance in default ranking with its credential
