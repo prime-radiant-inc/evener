@@ -27,11 +27,10 @@ const ROW_ICON_SIZE = 14;
 //   summaryWhenExpanded as the summary text), so the call never appears
 //   twice and the chevron keeps its line.
 //
-//   - the kind icon sits in a SEAT beside the rationale line: a rounded
-//     --field square in the column the row reserves in its own left padding
-//     (toolcallitem.module.css's .call), at every width. The kind is ambient
-//     context, not content, so it stays out of the text and the row's two
-//     lines share one left edge beside it;
+//   - the kind icon sits bare beside the rationale line, in the column the
+//     row reserves in its own left padding (toolcallitem.module.css's .call),
+//     at every width. The kind is ambient context, not content, so it stays
+//     out of the text and the row's two lines share one left edge beside it;
 //   - a COLLAPSED row with both an intent and a summary STACKS them: the
 //     intent (the agent's stated rationale, italic) on the first line, the
 //     verb/target summary demoted to a quiet second line (truncation
@@ -684,8 +683,8 @@ export function ToolRow({
   // The kind icon sits in the row's seat column, beside the rationale line
   // and out of the text. It is the row's first flex item: the .rowIconSlot
   // rule pulls it one --speaker-gutter to the left, into the padding the tool
-  // row (.call) reserves for it, paints the seat's ground behind it, and
-  // pins it to the first line (the rationale) at all times.
+  // row (.call) reserves for it, and pins it to the first line (the rationale)
+  // at all times.
   //
   // The slot is the badge's POSITIONING CONTEXT and the row's flex item. A
   // clean row renders it with only the seat inside, so success costs no extra

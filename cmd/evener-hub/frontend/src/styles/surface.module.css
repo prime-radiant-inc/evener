@@ -90,13 +90,8 @@
 }
 
 /* --- the field seat --------------------------------------------------
- * The rounded --field square a glyph sits on. .fieldSeat is the seat as an
- * element: a tile's leading box, --field-seat-size square, centring its
- * glyph. .fieldSeatBehind paints the same square BEHIND a glyph slot that
- * must keep its own one-line layout box: the slot is the positioning
- * context, and the ground is centred on its avatar column at the row size,
- * placed with insets rather than a transform so the slot creates no stacking
- * context. Painted, not laid out, and transparent to the pointer. */
+ * The rounded --field square a glyph sits on: a tile's leading box,
+ * --field-seat-size square, centring its glyph. */
 .fieldSeat {
   display: inline-flex;
   flex: none;
@@ -104,24 +99,6 @@
   justify-content: center;
   width: var(--field-seat-size);
   height: var(--field-seat-size);
-}
-
-.fieldSeatBehind {
-  position: relative;
-}
-
-.fieldSeatBehind::before {
-  content: "";
-  position: absolute;
-  top: calc(50% - var(--field-seat-size-row) / 2);
-  left: calc((var(--speaker-avatar-size) - var(--field-seat-size-row)) / 2);
-  width: var(--field-seat-size-row);
-  height: var(--field-seat-size-row);
-  pointer-events: none;
-}
-
-.fieldSeat,
-.fieldSeatBehind::before {
   border-radius: var(--radius-control);
   background: var(--field);
 }
