@@ -2,9 +2,11 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { copyText } from "./clipboard";
 
 const originalClipboard = navigator.clipboard;
+const originalExecCommand = document.execCommand;
 
 afterEach(() => {
   Object.defineProperty(navigator, "clipboard", { value: originalClipboard, configurable: true });
+  Object.defineProperty(document, "execCommand", { value: originalExecCommand, configurable: true, writable: true });
   vi.restoreAllMocks();
 });
 

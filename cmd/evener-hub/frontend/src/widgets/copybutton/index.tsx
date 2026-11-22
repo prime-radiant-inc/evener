@@ -1,16 +1,21 @@
-// CopyButton is the standard copy-to-clipboard control: an IconButton with
-// a copy glyph, "Copied" feedback with a timed reset, and a clipboard guard
-// for test/embed environments without navigator.clipboard. It replaces the
-// inline copy logic previously duplicated in CodeBlock, jobTools.tsx's
-// CopyTextButton, and DelegateStatusBody's CopyRawButton.
+// CopyButton is the standard copy-to-clipboard control. By default it is an
+// IconButton with a copy glyph and "Copied" feedback with a timed reset; the
+// "text" presentation is a labelled Button whose label carries the
+// confirmation, for copy actions that stand as visible text actions. Both
+// presentations use clipboard.ts's Clipboard API + execCommand fallback. It
+// replaces the inline copy logic previously duplicated in CodeBlock,
+// jobTools.tsx's CopyTextButton, DelegateStatusBody's CopyRawButton, and the
+// credentials device-code dialog.
 //
 // The label prop is the button's accessible name BEFORE copying; while the
 // "Copied" state is active, it becomes "Copied" automatically. Pass a
 // specific label ("Copy output", "Copy raw JSON") so screen readers
 // announce what the button copies.
 import { useEffect, useState } from "react";
+import { Button } from "../button";
 import type { IconButtonProps } from "../iconbutton";
 import { IconButton } from "../iconbutton";
+import { copyText } from "./clipboard";
 
 const COPIED_RESET_MS = 2_000;
 
@@ -41,16 +46,49 @@ export interface CopyButtonProps extends Omit<IconButtonProps, "label" | "icon" 
   variant?: IconButtonProps["variant"];
   /** IconButton size; defaults to "xs". */
   size?: IconButtonProps["size"];
+  /** "icon" (default) is the icon-only IconButton; "text" is a labelled
+   * Button, for a copy action whose label carries the confirmation. */
+  presentation?: "icon" | "text";
+  /** Called after each copy attempt settles: true when the text reached the
+   * clipboard, false when the Clipboard API and the execCommand fallback both
+   * failed. The text presentation's callers use it to report a failed copy
+   * and to enable a follow-up action. */
+  onResult?: (ok: boolean) => void;
 }
 
-export function CopyButton({ text, label = "Copy", variant = "quiet", size = "xs", ...rest }: CopyButtonProps) {
+export function CopyButton({
+  text,
+  label = "Copy",
+  variant = "quiet",
+  size,
+  presentation = "icon",
+  onResult,
+  ...rest
+}: CopyButtonProps) {
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    if (!copied) return;
+    // The text presentation keeps "Copied ✓" in place of the action label,
+    // like the device-code button it replaced, until it unmounts; the icon
+    // presentation's glyph is the one that resets.
+    if (!copied || presentation === "text") return;
     const timer = setTimeout(() => setCopied(false), COPIED_RESET_MS);
     return () => clearTimeout(timer);
-  }, [copied]);
+  }, [copied, presentation]);
+
+  async function handleCopy(): Promise<void> {
+    const ok = await copyText(text);
+    if (ok) setCopied(true);
+    onResult?.(ok);
+  }
+
+  if (presentation === "text") {
+    return (
+      <Button {...rest} variant={variant} size={size ?? "md"} onClick={() => void handleCopy()}>
+        {copied ? "Copied ✓" : label}
+      </Button>
+    );
+  }
 
   return (
     <IconButton
@@ -58,16 +96,8 @@ export function CopyButton({ text, label = "Copy", variant = "quiet", size = "xs
       label={copied ? "Copied" : label}
       icon={copied ? <CopiedIcon /> : <CopyIcon />}
       variant={variant}
-      size={size}
-      onClick={() => {
-        // Clipboard access requires a secure context and isn't implemented by
-        // every test/embed environment — degrade to a no-op rather than throw.
-        if (!navigator.clipboard?.writeText) return;
-        void navigator.clipboard.writeText(text).then(
-          () => setCopied(true),
-          () => {}, // swallow rejection — a failed copy is a no-op, not an error
-        );
-      }}
+      size={size ?? "xs"}
+      onClick={() => void handleCopy()}
     />
   );
 }

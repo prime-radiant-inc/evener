@@ -1,9 +1,7 @@
-// clipboard.ts: copy-to-clipboard for the device-code editor's "Copy code"
-// button (parity-m7-settings.md §7h). Tries the async Clipboard API first;
-// falls back to a hidden-textarea + execCommand("copy") when unavailable or
-// throwing (e.g. a non-secure-context remote hub, where navigator.clipboard
-// is undefined entirely) - mirrors templates/partials/credentials.html's own
-// fallback exactly.
+// clipboard.ts: the copy implementation behind CopyButton. Tries the async
+// Clipboard API first; falls back to a hidden-textarea + execCommand("copy")
+// when that API is unavailable or throwing (e.g. a non-secure-context remote
+// hub, where navigator.clipboard is undefined entirely).
 function copyViaExecCommand(text: string): boolean {
   const textarea = document.createElement("textarea");
   textarea.value = text;
@@ -25,6 +23,7 @@ function copyViaExecCommand(text: string): boolean {
   return ok;
 }
 
+/** Writes text to the clipboard, reporting whether either path succeeded. */
 export async function copyText(text: string): Promise<boolean> {
   if (navigator.clipboard?.writeText) {
     try {
