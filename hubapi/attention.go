@@ -41,10 +41,11 @@ func outranksApproval(state string) bool {
 
 // NeedsAction reports whether a normalized state plus its pending facts is
 // actionable enough to put the session in Needs you: a pending question, a
-// pending approval, a warning, or a restart. A turn that merely ended on
-// needs_response is finished, not blocked on a person, so it does not qualify
-// (#2629). A failure is not "needs action" here either; it has its own error
-// level and rank.
+// pending approval, a warning, or a restart. An awaiting state with no pending
+// question — the legacy shape an older daemon reported for a turn that ended
+// asking for a reply — is finished, not blocked on a person, so it does not
+// qualify (#2629). A failure is not "needs action" here either; it has its own
+// error level and rank.
 func NeedsAction(state string, askPending, approvalPending bool) bool {
 	if state == "errored" {
 		return false
@@ -119,9 +120,10 @@ func RollupRankWord(state string) int {
 	return RollupRank(state, state == "awaiting", false)
 }
 
-// NeedsResponse reports whether a normalized state is the needs_response
-// rest: awaiting with no pending question. The rest is informative, not
-// actionable: a finished turn is Idle and does not enter Needs you (#2629).
+// NeedsResponse reports whether a normalized state is a legacy awaiting rest:
+// awaiting with no pending question, the shape an older daemon reported for a
+// turn that ended asking for a reply. The rest is informative, not actionable:
+// a finished turn is Idle and does not enter Needs you (#2629).
 func NeedsResponse(state string, askPending bool) bool {
 	return state == "awaiting" && !askPending
 }
@@ -132,11 +134,12 @@ func NeedsResponse(state string, askPending bool) bool {
 // Callers sort NeedsYou rows by this band descending, then by recency within a
 // band. Meaningful only for the needs-you tier (errored, warning,
 // restartRequired, and the awaiting states a question or approval makes
-// actionable); callers outside that tier should not invoke it. A turn that
-// merely ended on needs_response is finished, not blocked, and is not in the
-// tier (#2629). An approval blocks mid-turn, so its session still reports
-// "active" and only approvalPending can place it; pass false where the caller
-// has no approval information. Both flags are ignored when state is "errored"
+// actionable); callers outside that tier should not invoke it. The legacy
+// awaiting state an older daemon reported for a turn that ended asking for a
+// reply is finished, not blocked, and is not in the tier (#2629). An approval
+// blocks mid-turn, so its session still reports "active" and only
+// approvalPending can place it; pass false where the caller has no approval
+// information. Both flags are ignored when state is "errored"
 // (errored always wins regardless), and approvalPending counts only where
 // ApprovalWaiting lets it escalate.
 func NeedsYouBand(state string, askPending, approvalPending bool) int {
