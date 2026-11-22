@@ -314,6 +314,7 @@ func (s *Session) rebuildToolDefsCache() {
 		if s != nil {
 			s.cachedToolDefs = nil
 			s.cachedToolDefsJSONBytes = 0
+			s.toolDefsGen++
 		}
 		return
 	}
@@ -464,6 +465,7 @@ func (s *Session) rebuildToolDefsCache() {
 
 	s.cachedToolDefs = defs
 	s.cachedToolDefsJSONBytes = llm.ToolsJSONBytes(defs)
+	s.toolDefsGen++
 }
 
 // normalizeRegistryToolDefinition keeps directly registered tools acceptable

@@ -590,6 +590,12 @@ type Session struct {
 	newestPublishedFoldRevision   int           // publication sequence (historyRevision at publish) of the newest fold publication, set inside publishFoldTransaction's s.mu window. Last-write-wins deferred effects (compaction naming, task/artifact steering) are suppressed — at flush time and again at async naming completion — for any fold with an older publication revision: suppression binds to PUBLICATION order, never flush order, so an older fold flushing while the newest is published-but-unflushed stays silent, and the newest fold's own flush can never be suppressed. Guarded by mu.
 	responsesContinuationDisabled map[responsesContinuationDisabledKey]bool
 
+	// requestMeasurement is the history prefix and request shape the round's
+	// model request was prepared from. recordResponseUsage records the
+	// provider's input count against it, so a reply that settles after a rewrite
+	// cannot charge its count to history it never sent. Guarded by mu.
+	requestMeasurement requestMeasurement
+
 	// currentRoundRecorder is the in-flight round's salvage recorder: per retry
 	// group, every attempt's stats and the best partial that group streamed.
 	// Installed fresh at each round's start (so a round that fails before its
@@ -1512,6 +1518,11 @@ type Session struct {
 	// re-serializing the list every round (#6406). It is written only where
 	// cachedToolDefs is, and must describe exactly the list beside it.
 	cachedToolDefsJSONBytes int
+	// toolDefsGen counts cachedToolDefs rebuilds. A saved input count covers the
+	// tool list and system prompt the request was measured with, so settlement
+	// reads this to notice a list that changed while the reply streamed.
+	// Guarded by mu.
+	toolDefsGen int
 
 	systemPromptOverride string
 	cachedSystemPrompt   string

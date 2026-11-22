@@ -128,6 +128,13 @@ func (s *Session) publishFoldedHistory(snapLen, snapRevision int, folded []schem
 	}
 	s.history = folded
 	s.bumpHistoryRevisionLocked()
+	// The count a reply recorded before this publication covers a prefix that no
+	// longer exists. Drop it in this same lock hold, so it cannot outlive the
+	// rewrite it describes: a reply settling later sees the bumped revision and
+	// drops its own count.
+	if s.contextMgr != nil {
+		s.contextMgr.ClearInputMeasurement()
+	}
 	// The prior read results are no longer in the model's context, so repeat
 	// reads after this fold are fresh reads. s.readFiles is deliberately kept:
 	// the read-before-write guard is about the session, not its context window.

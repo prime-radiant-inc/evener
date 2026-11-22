@@ -41,6 +41,16 @@ func (cm *Manager) recordInputTokensLocked(tokens int, historyLen int, anchor st
 	cm.measuredTarget = measurementTarget(cm.profile)
 }
 
+// ClearInputMeasurement drops the saved count together with its prefix identity
+// and producing target. A session calls it in the same lock hold that publishes
+// rewritten history, so a count measured against the pre-rewrite prefix cannot
+// outlive the publication.
+func (cm *Manager) ClearInputMeasurement() {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.clearMeasurementLocked()
+}
+
 // clearMeasurementLocked drops the count together with its prefix identity and
 // producing target. Callers hold cm.mu.
 func (cm *Manager) clearMeasurementLocked() {
