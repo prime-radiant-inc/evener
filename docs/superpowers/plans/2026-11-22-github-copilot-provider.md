@@ -21,7 +21,7 @@
 - Default tests are deterministic and network-free. Live tests require `EVENER_GITHUB_COPILOT_E2E=1` plus the credential/client ID. Do not log tokens or response bodies carrying them.
 - Assert behavior, structured values, final URLs, and sentinels, never human-readable copy. Keep existing providers' behavior unchanged except where a shared mechanism carries an explicit Copilot opt-in.
 - Work only in the `copilot-provider` worktree. Every task is TDD, commits its listed files, and uses the commit trailer supplied by the executor's own session. Report out-of-scope issues instead of absorbing them.
-- Approved production size budget is 1,500–2,200 lines. Each task also carries a local budget; stop and report the measured overage rather than expanding scope.
+- Approved task-budget total is 2,442 production lines after Jesse accepted the measured Task 1 and Task 2 sizes. Each task also carries a local budget; stop and report any new overage rather than expanding scope.
 
 ## Review Focus
 
@@ -64,7 +64,7 @@
 - `DefaultConfig()` uses public client ID `Ov23li2maTXwKrULBNZw`.
 - `RuntimeCredentials` carries bearer token, account ID, and expiry. `AuthStatus` derives source `oauth` from the scheme.
 
-**Size budget:** 300 production lines.
+**Size budget:** 650 production lines, explicitly accepted by Jesse after review removed the concrete duplication and no easy substantial reduction remained.
 
 - [ ] **Step 1: Write scripted GitHub tests.** Cover device start fields, pending, `slow_down` increasing the interval, denial, actual expiry, malformed responses, cancellation, account ID lookup, refresh rotation, `bad_refresh_token`, and recovery after fresh login. Use fake clocks, not sleeps. Two actual processes must race refresh and logout without stale saves or false rejection; an unchanged newer generation must win.
 - [ ] **Step 2: Run red.** `cd auth && go test ./githubcopilot`; expect missing symbols or failed device/refresh behavior.
