@@ -679,14 +679,14 @@ func (s *Session) drainPostToolWatchSends(ctx context.Context) (watchSendDrainRe
 func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool) (done bool, text string, err error) {
 	s.mu.Lock()
 	quiet := s.quietBoundaryLocked()
-	delivered := s.comm.called && !quiet
+	delivered := s.comm.hasAccepted() && !quiet
 	if delivered {
 		text = s.comm.reply
 	}
-	if quiet && s.comm.stopBlocked {
+	if quiet && s.comm.phase == commBoundaryStopBlocked {
 		// This round's only boundary is a quiet yield after an earlier Stop
 		// block: leave the blocked reply without terminal acceptance.
-		s.comm = communicateResult{updated: s.comm.updated, quietEnd: true}
+		s.discardBlockedForQuietLocked()
 	}
 	s.mu.Unlock()
 	if !delivered && !quiet && !askedThisRound {
@@ -725,9 +725,7 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 		if stopResult.Blocked {
 			// Don't finish — keep looping. The next Stop dispatch in this turn
 			// is a continuation, which is what stop_hook_active reports.
-			s.mu.Lock()
-			s.comm.stopBlocked = true
-			s.mu.Unlock()
+			s.blockStopBoundary()
 			s.stopHookActive.Store(true)
 			return false, "", nil
 		}
@@ -737,20 +735,25 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 
 func (s *Session) finishReplyBoundary(ctx context.Context, state SessionState, delivered bool, text string, replacement *string) (bool, string, error) {
 	var settlePending bool
+	var quiet bool
 	if delivered {
+		settlePending = s.settleCommunicateBoundary(replacement)
+	} else {
 		s.mu.Lock()
-		settlePending = s.comm.stopPending
-		s.comm.stopPending = false
-		s.comm.stopBlocked = false
-		s.latestReport = s.comm
-		if id := s.comm.stopPendingCallID; id != "" {
-			s.execution.acceptedCommunicateCallID = id
-			s.execution.replacementReply = replacement
-		}
+		quiet = s.quietBoundaryLocked()
 		s.mu.Unlock()
 	}
 	if settlePending {
 		s.recordDelegateTerminalSeen(ctx)
+	}
+	if !delivered && quiet && s.delegateController != nil {
+		if kind, _ := ctx.Value(communicateEntryKindKey{}).(EntryKind); kind == EntryDelegateAttention {
+			if lease, leased := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); leased {
+				if _, err := s.delegateController.recordAttentionNoAction(lease); err != nil {
+					return false, "", err
+				}
+			}
+		}
 	}
 	if delivered && s.cfg.TurnEndsProcess {
 		// The model has explicitly ended the turn that ends the process. Record
@@ -830,7 +833,7 @@ func (s *Session) deliverBareReply(ctx context.Context, text string, result hook
 		return false, "", nil
 	}
 	s.mu.Lock()
-	s.comm = communicateResult{called: true, text: text, reply: text}
+	s.comm = communicateResult{phase: commBoundarySettled, text: text, reply: text}
 	s.mu.Unlock()
 	return s.finishReplyBoundary(ctx, SessionIdle, true, text, nil)
 }
@@ -840,11 +843,11 @@ func (s *Session) deliverBareReply(ctx context.Context, text string, result hook
 // already accepted and recorded.
 func (s *Session) replaceAcceptedReply(text string) {
 	s.mu.Lock()
-	if s.comm.called {
+	if s.comm.hasAccepted() {
 		s.comm.text = text
 		s.comm.reply = text
 	}
-	if s.latestReport.called {
+	if s.latestReport.hasAccepted() {
 		s.latestReport.text = text
 		s.latestReport.reply = text
 	}

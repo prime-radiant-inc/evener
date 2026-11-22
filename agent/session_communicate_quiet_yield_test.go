@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -10,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
@@ -451,6 +453,401 @@ func TestCommunicateQuietYieldAfterBlockedStopHookDoesNotAcceptBlockedReply(t *t
 			t.Fatalf("AcceptedCommunicateCallID = %q, want %q", acceptedID, "first-winner")
 		}
 	})
+}
+
+func newAttentionDelegateTestSession(t *testing.T, dir string, adapter llm.ProviderAdapter) (*Session, *delegateTreeController, delegateLease) {
+	t.Helper()
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	const delegateID = "dlg_attention_target"
+	seedDelegateControllerIdle(t, c, delegateID, "")
+	cfg := SessionConfig{MaxSubagentDepth: 2}
+	cfg.AgentsDocPath = filepath.Join(t.TempDir(), "no-personal-AGENTS.md")
+	cfg.spawn.depth = 1
+	cfg.spawn.parentSessionID = "parent-session"
+	s := newSession(t, withDir(dir), withAdapter(adapter), withStateDir(t.TempDir()), withConfig(cfg))
+	ownController := s.delegateController
+	ownDelegateID := s.owningDelegateID
+	s.mu.Lock()
+	s.delegateController = c
+	s.owningDelegateID = delegateID
+	s.mu.Unlock()
+	t.Cleanup(func() {
+		s.mu.Lock()
+		s.delegateController = ownController
+		s.owningDelegateID = ownDelegateID
+		s.mu.Unlock()
+	})
+	return s, c, startDelegateAttentionEvidenceGenerationFor(t, c, delegateID, s)
+}
+
+func TestQuietYieldAttentionNoActionNotLatchedWhenRoundStoppedByHook(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		event   plugin.HookEvent
+		matcher string
+	}{
+		{name: "PostToolBatch", event: plugin.HookPostToolBatch, matcher: "*"},
+		{name: "PostToolUse_on_sibling", event: plugin.HookPostToolUse, matcher: "Read"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			probePath := filepath.Join(dir, "check.txt")
+			if err := os.WriteFile(probePath, []byte("ok\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			adapter := newFakeAdapter("openai", func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(
+					rawCommunicateCall("quiet-0", `{}`),
+					llm.ToolCallData{
+						ID:        "read-0",
+						Name:      "read_file",
+						Arguments: json.RawMessage(`{"file_path":` + mustJSONString(probePath) + `}`),
+						Type:      "function",
+					},
+				)
+			})
+			s, c, lease := newAttentionDelegateTestSession(t, dir, adapter)
+			var hookCalls atomic.Int32
+			hookClient := llm.NewClient()
+			hookClient.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
+				hookCalls.Add(1)
+				return llm.Response{Message: llm.Assistant(`{"continue":false,"stopReason":"hook stopped"}`)}
+			}})
+			runner := hooks.NewRunner(hookClient, "gpt-5.2")
+			runner.Add(tc.event, plugin.RegisteredHook{Matcher: tc.matcher, Type: "prompt", Prompt: "Check round"})
+			s.hookRunner = runner
+
+			ctx := context.WithValue(tripwireCtx(t), delegateRunLeaseContextKey{}, lease)
+			if _, _, err := s.processOneInput(ctx, "inspect", nil, EntryDelegateAttention, nil); err != nil {
+				t.Fatalf("processOneInput: %v", err)
+			}
+			if got := hookCalls.Load(); got != 1 {
+				t.Fatalf("%s hook calls = %d, want 1", tc.event, got)
+			}
+			requireQuietToolResult(t, s, "quiet-0")
+			if s.quietlyYielded() {
+				t.Fatalf("quietlyYielded() = true after %s stopped the round", tc.event)
+			}
+			decision, err := c.completionDecision(lease)
+			if err != nil {
+				t.Fatalf("completionDecision: %v", err)
+			}
+			if decision == delegateCompletionFinishNoAction {
+				t.Fatalf("completionDecision = %v, want not delegateCompletionFinishNoAction after %s stop", decision, tc.event)
+			}
+			snap, err := c.completionSnapshot(lease)
+			if err != nil {
+				t.Fatalf("completionSnapshot: %v", err)
+			}
+			if snap.outcome != delegateCompletionOutcomeNone {
+				t.Fatalf("evidence.outcome = %v, want delegateCompletionOutcomeNone", snap.outcome)
+			}
+		})
+	}
+}
+
+func TestQuietYieldAttentionNoActionNotLatchedAlongsideVisibleCommunicate(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		quietFirst bool
+	}{
+		{name: "quiet_before_visible", quietFirst: true},
+		{name: "visible_before_quiet", quietFirst: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			probePath := filepath.Join(dir, "check.txt")
+			if err := os.WriteFile(probePath, []byte("ok\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var s *Session
+			var c *delegateTreeController
+			var lease delegateLease
+			var secondRoundSnap delegateCompletionSnapshot
+			adapter := newFakeAdapter("openai", func(llm.Request) llm.Response {
+				quietCall := rawCommunicateCall("quiet-0", `{}`)
+				visibleCall := rawCommunicateCall("visible-0", `{"message":"real reply"}`)
+				if tc.quietFirst {
+					return agenttest.ToolCallResponse(quietCall, visibleCall)
+				}
+				return agenttest.ToolCallResponse(visibleCall, quietCall)
+			}, func(llm.Request) llm.Response {
+				var err error
+				secondRoundSnap, err = c.completionSnapshot(lease)
+				if err != nil {
+					t.Errorf("round 2 completionSnapshot: %v", err)
+				}
+				return agenttest.ToolCallResponse(llm.ToolCallData{
+					ID:        "read-0",
+					Name:      "read_file",
+					Arguments: json.RawMessage(`{"file_path":` + mustJSONString(probePath) + `}`),
+					Type:      "function",
+				})
+			})
+			s, c, lease = newAttentionDelegateTestSession(t, dir, adapter)
+			var stopCalls atomic.Int32
+			var stopHookSnap delegateCompletionSnapshot
+			installCommunicateStopHook(s, func() string {
+				if stopCalls.Add(1) == 1 {
+					var err error
+					stopHookSnap, err = c.completionSnapshot(lease)
+					if err != nil {
+						t.Errorf("Stop hook completionSnapshot: %v", err)
+					}
+					return `{"decision":"block","reason":"verify first"}`
+				}
+				return `{}`
+			})
+
+			ctx := context.WithValue(tripwireCtx(t), delegateRunLeaseContextKey{}, lease)
+			reply, _, err := s.processOneInput(ctx, "inspect", nil, EntryDelegateAttention, nil)
+			if err != nil {
+				t.Fatalf("processOneInput: %v", err)
+			}
+			if reply != "real reply" {
+				t.Fatalf("reply = %q, want %q", reply, "real reply")
+			}
+			if stopHookSnap.outcome != delegateCompletionOutcomeNone {
+				t.Fatalf("during Stop hook: evidence.outcome = %v, want delegateCompletionOutcomeNone", stopHookSnap.outcome)
+			}
+			if secondRoundSnap.outcome != delegateCompletionOutcomeNone {
+				t.Fatalf("between Stop block and settlement: evidence.outcome = %v, want delegateCompletionOutcomeNone", secondRoundSnap.outcome)
+			}
+			finalSnap, err := c.completionSnapshot(lease)
+			if err != nil {
+				t.Fatalf("final completionSnapshot: %v", err)
+			}
+			if finalSnap.outcome != delegateCompletionOutcomeNone || !finalSnap.terminalSeen {
+				t.Fatalf("final evidence = %+v, want outcome=None and terminalSeen=true", finalSnap)
+			}
+			decision, err := c.completionDecision(lease)
+			if err != nil {
+				t.Fatalf("completionDecision: %v", err)
+			}
+			if decision != delegateCompletionUseExistingTerminal {
+				t.Fatalf("completionDecision = %v, want delegateCompletionUseExistingTerminal", decision)
+			}
+		})
+	}
+}
+
+func TestCommunicateBoundaryStateMachine(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "None -> Settled",
+			run: func(t *testing.T) {
+				s := newSession(t)
+				s.mu.Lock()
+				s.state = SessionProcessing
+				s.mu.Unlock()
+				s.beginCommunicateRound()
+				if !s.acceptCommunicateTerminal(t.Context(), "msg", "reply", "out", nil) {
+					t.Fatal("expected terminal communicate to be accepted")
+				}
+				if s.comm.phase != commBoundarySettled || !s.comm.roundVisible || !s.communicated() || !s.communicatedUnblocked() || s.quietlyYielded() {
+					t.Fatalf("after accept: comm=%+v", s.comm)
+				}
+				done, text, err := s.deliverIfCommunicated(t.Context(), false)
+				if err != nil || !done || text != "reply" {
+					t.Fatalf("deliverIfCommunicated = done:%v text:%q err:%v, want done=true reply=reply", done, text, err)
+				}
+				if s.comm.phase != commBoundarySettled || s.latestReport.phase != commBoundarySettled || s.State() != SessionIdle {
+					t.Fatalf("after deliver: phase=%v latest=%v state=%v", s.comm.phase, s.latestReport.phase, s.State())
+				}
+			},
+		},
+		{
+			name: "None -> StopPending -> Settled",
+			run: func(t *testing.T) {
+				s := newSession(t)
+				installCommunicateStopHook(s, func() string { return `{}` })
+				s.mu.Lock()
+				s.state = SessionProcessing
+				s.mu.Unlock()
+				s.beginCommunicateRound()
+				ctx := context.WithValue(t.Context(), ctxToolCallID, "call-pending")
+				if !s.acceptCommunicateTerminal(ctx, "msg", "reply", "out", nil) {
+					t.Fatal("expected terminal communicate to be accepted")
+				}
+				if s.comm.phase != commBoundaryStopPending || s.comm.stopPendingCallID != "call-pending" || s.latestReport.phase != commBoundaryNone {
+					t.Fatalf("after pending accept: comm=%+v latest=%+v", s.comm, s.latestReport)
+				}
+				done, text, err := s.deliverIfCommunicated(ctx, false)
+				if err != nil || !done || text != "reply" {
+					t.Fatalf("deliverIfCommunicated = done:%v text:%q err:%v", done, text, err)
+				}
+				if s.comm.phase != commBoundarySettled || s.latestReport.phase != commBoundarySettled || s.execution.acceptedCommunicateCallID != "call-pending" {
+					t.Fatalf("after settle: phase=%v latest=%v callID=%q", s.comm.phase, s.latestReport.phase, s.execution.acceptedCommunicateCallID)
+				}
+			},
+		},
+		{
+			name: "None -> StopPending -> StopBlocked -> RoundVisible -> Settled",
+			run: func(t *testing.T) {
+				s := newSession(t)
+				var calls atomic.Int32
+				installCommunicateStopHook(s, func() string {
+					if calls.Add(1) == 1 {
+						return `{"decision":"block","reason":"verify first"}`
+					}
+					return `{}`
+				})
+				s.mu.Lock()
+				s.state = SessionProcessing
+				s.mu.Unlock()
+				s.beginCommunicateRound()
+				if !s.acceptCommunicateTerminal(t.Context(), "first", "first", "", nil) {
+					t.Fatal("expected first terminal communicate to win")
+				}
+				if done, _, err := s.deliverIfCommunicated(t.Context(), false); err != nil || done {
+					t.Fatalf("round 1 deliverIfCommunicated = done:%v err:%v, want blocked", done, err)
+				}
+				s.beginCommunicateRound()
+				s.recordQuietYield()
+				if s.acceptCommunicateTerminal(t.Context(), "second", "second", "", nil) {
+					t.Fatal("competing visible communicate must lose to blocked first winner")
+				}
+				if s.comm.phase != commBoundaryStopBlocked || !s.comm.roundVisible || s.quietlyYielded() {
+					t.Fatalf("after competing visible call: comm=%+v", s.comm)
+				}
+				done, text, err := s.deliverIfCommunicated(t.Context(), false)
+				if err != nil || !done || text != "first" {
+					t.Fatalf("round 2 deliverIfCommunicated = done:%v text:%q err:%v, want first", done, text, err)
+				}
+				if s.comm.phase != commBoundarySettled || s.quietlyYielded() {
+					t.Fatalf("after settle: comm=%+v", s.comm)
+				}
+			},
+		},
+		{
+			name: "Quiet + batchBlocked cleared",
+			run: func(t *testing.T) {
+				s := newSession(t)
+				s.beginCommunicateRound()
+				s.recordQuietYield()
+				if !s.comm.roundQuiet || !s.quietlyYielded() {
+					t.Fatalf("after recordQuietYield: comm=%+v", s.comm)
+				}
+				s.clearQuietBoundaryForBatchStop()
+				if s.comm.phase != commBoundaryNone || s.comm.roundQuiet || s.quietlyYielded() {
+					t.Fatalf("after clearQuietBoundaryForBatchStop: comm=%+v", s.comm)
+				}
+			},
+		},
+		{
+			name: "canRecordAttentionNoAction is read-only, reportRequired quiet settle is no-op, and stale lease keeps SessionProcessing",
+			run: func(t *testing.T) {
+				s, c, lease := newAttentionDelegateTestSession(t, t.TempDir(), newFakeAdapter("openai"))
+				c.mu.Lock()
+				versionBefore := c.evidenceVersion
+				c.mu.Unlock()
+
+				eligible, err := c.canRecordAttentionNoAction(lease)
+				if err != nil || !eligible {
+					t.Fatalf("canRecordAttentionNoAction = %t, %v; want true, nil", eligible, err)
+				}
+				snap, err := c.completionSnapshot(lease)
+				if err != nil {
+					t.Fatalf("completionSnapshot: %v", err)
+				}
+				c.mu.Lock()
+				versionAfter := c.evidenceVersion
+				c.mu.Unlock()
+				if snap.outcome != delegateCompletionOutcomeNone || versionAfter != versionBefore {
+					t.Fatalf("read-only probe mutated state: outcome=%v version=%d->%d", snap.outcome, versionBefore, versionAfter)
+				}
+
+				// Escalated reportRequired delegate with quiet boundary: finishReplyBoundary
+				// rechecks via recordAttentionNoAction safely without latching outcome.
+				if err := c.escalateCompletionRequirement(lease); err != nil {
+					t.Fatalf("escalateCompletionRequirement: %v", err)
+				}
+				attnCtx := context.WithValue(
+					context.WithValue(t.Context(), delegateRunLeaseContextKey{}, lease),
+					communicateEntryKindKey{}, EntryDelegateAttention,
+				)
+				s.mu.Lock()
+				s.state = SessionProcessing
+				s.mu.Unlock()
+				s.beginCommunicateRound()
+				s.recordQuietYield()
+				done, _, err := s.finishReplyBoundary(attnCtx, SessionIdle, false, "", nil)
+				if err != nil || !done || s.State() != SessionIdle {
+					t.Fatalf("reportRequired quiet finishReplyBoundary = done:%t err:%v state:%v; want done, nil, idle", done, err, s.State())
+				}
+				snap, err = c.completionSnapshot(lease)
+				if err != nil || snap.outcome != delegateCompletionOutcomeNone {
+					t.Fatalf("reportRequired snapshot = %+v, err=%v; want outcome=None", snap, err)
+				}
+
+				s.mu.Lock()
+				s.state = SessionProcessing
+				s.mu.Unlock()
+				if _, err := c.FinishGeneration(lease, delegateFinish{outcome: delegatestore.OutcomeCancelled, reason: "stale"}); err != nil {
+					t.Fatalf("FinishGeneration: %v", err)
+				}
+				done, _, err = s.finishReplyBoundary(attnCtx, SessionIdle, false, "", nil)
+				if err == nil || done || s.State() != SessionProcessing {
+					t.Fatalf("stale finishReplyBoundary = done:%t err:%v state:%v; want error, done=false, state=processing", done, err, s.State())
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tc.run(t)
+		})
+	}
+}
+
+func TestKeepingReportRestoresSettledReportWhenFollowUpAbortsBeforeStopSettles(t *testing.T) {
+	t.Parallel()
+	adapter := newFakeAdapter("openai",
+		func(llm.Request) llm.Response {
+			return quietYieldResponse("settled-call", `{"message":"settled report","output":{"message":"settled summary","data":{"version":1}}}`)
+		},
+		func(llm.Request) llm.Response {
+			return quietYieldResponse("aborted-call", `{"message":"aborted follow-up","output":{"message":"aborted summary","data":{"version":2}}}`)
+		},
+	)
+	s := newSession(t, withAdapter(adapter), withStateDir(t.TempDir()))
+	installCommunicateStopHook(s, func() string { return `{}` })
+
+	ctx := tripwireCtx(t)
+	const wantReply = `{"message":"settled summary","data":{"version":1},"artifacts":[]}`
+	reply, err := s.ProcessInput(ctx, "initial work", nil)
+	if err != nil || reply != wantReply {
+		t.Fatalf("initial ProcessInput = (%q, %v), want (%q, nil)", reply, err, wantReply)
+	}
+
+	execFault := errors.New("tool batch aborted before stop")
+	enqueueCompletedJobNotification(t, s, "followup-job")
+	faultCtx := context.WithValue(ctx, sessionLifecycleFaultsKey{}, map[string]error{"exec_tools": execFault})
+	res, err := s.keepingReport(s.ProcessInputKind)(faultCtx, "", nil, EntryNotification)
+	if !errors.Is(err, execFault) {
+		t.Fatalf("keepingReport err = %v, want preserved %v", err, execFault)
+	}
+	if res != wantReply {
+		t.Fatalf("keepingReport res = %q, want %q", res, wantReply)
+	}
+
+	inputs := delegateTerminalRunInputs{runErr: err}
+	inputs.captureCommunicateReport(s)
+	if !inputs.communicated || !inputs.structuredResultPresent || !errors.Is(inputs.runErr, execFault) {
+		t.Fatalf("captureCommunicateReport = communicated:%t structuredPresent:%t runErr:%v, want settled report and preserved error", inputs.communicated, inputs.structuredResultPresent, inputs.runErr)
+	}
+	gotStructured, marshalErr := json.Marshal(inputs.structuredResult)
+	if marshalErr != nil || string(gotStructured) != `{"data":{"version":1},"message":"settled summary"}` {
+		t.Fatalf("captured structuredResult = %s (err=%v), want prior settled output", gotStructured, marshalErr)
+	}
 }
 
 func TestStopHookContinuationPreservesOrInjectsInFlightSteer(t *testing.T) {

@@ -2002,22 +2002,53 @@ func (s *Session) resetJobNotificationRetry() {
 	s.pendingJobNotifsMu.Unlock()
 }
 
+// communicateBoundaryPhase tracks the lifecycle of any visible terminal
+// communicate/result reply within a ProcessInput call.
+type communicateBoundaryPhase uint8
+
+const (
+	commBoundaryNone communicateBoundaryPhase = iota
+	commBoundarySettled
+	commBoundaryStopPending
+	commBoundaryStopBlocked
+)
+
 // communicateResult records whether and how the agent delivered a result via
 // the communicate/result tool during the current ProcessInput call. It is
 // transient — reset at the top of each call, then read back by communicated,
 // communicateOutput, and the turn loop's deliver step. Guarded by s.mu.
 type communicateResult struct {
-	called            bool // terminal communicate/result was invoked this turn
+	phase             communicateBoundaryPhase
 	updated           bool // non-terminal communicate (end_turn=false) was invoked this turn
 	text              string
 	reply             string
 	output            string // canonical structured output (communicateOutput)
 	structured        any    // raw args["output"] object before communicate canonicalization
-	quietEnd          bool   // quiet yield was accepted without capturing a report
-	stopPending       bool   // terminal acceptance awaits a Stop hook decision
 	stopPendingCallID string // explicit winner whose observation awaits the Stop decision
-	stopBlocked       bool   // a Stop hook blocked the captured reply; preserved only if a later round settles visibly
+	roundQuiet        bool   // quiet yield was accepted in the current tool round
 	roundVisible      bool   // a visible terminal communicate was attempted in the current tool round
+}
+
+func (c communicateResult) hasAccepted() bool { return c.phase != commBoundaryNone }
+
+func (c communicateResult) isUnblocked() bool {
+	return c.phase == commBoundarySettled || c.phase == commBoundaryStopPending
+}
+
+func (c communicateResult) isSettled() bool { return c.phase == commBoundarySettled }
+
+func (c communicateResult) quietBoundary() bool {
+	if !c.roundQuiet {
+		return false
+	}
+	switch c.phase {
+	case commBoundaryNone:
+		return true
+	case commBoundaryStopBlocked:
+		return !c.roundVisible
+	default:
+		return false
+	}
 }
 
 // sessionName holds the session's auto-generated display name and its
@@ -3075,7 +3106,7 @@ func (s *Session) applyModelRequestMetadata(req *llm.Request) {
 func (s *Session) communicated() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.comm.called
+	return s.comm.hasAccepted()
 }
 
 // communicateUpdate reports whether a NON-terminal communicate (end_turn=false)
@@ -3109,17 +3140,31 @@ func (s *Session) communicateStructured() any {
 func (s *Session) communicatedReply() (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.comm.reply, s.comm.called
+	return s.comm.reply, s.comm.hasAccepted()
 }
 
 func (s *Session) quietBoundaryLocked() bool {
-	return s.comm.quietEnd && (!s.comm.called || (s.comm.stopBlocked && !s.comm.roundVisible))
+	return s.comm.quietBoundary()
+}
+
+func (s *Session) communicatedUnblockedLocked() bool {
+	return s.comm.isUnblocked()
 }
 
 func (s *Session) communicatedUnblocked() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.comm.called && !s.comm.stopBlocked
+	return s.communicatedUnblockedLocked()
+}
+
+func (s *Session) communicatedSettledLocked() bool {
+	return s.comm.isSettled()
+}
+
+func (s *Session) communicatedSettled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.communicatedSettledLocked()
 }
 
 // quietlyYielded reports a quiet boundary, not a visible final reply.
@@ -3129,10 +3174,61 @@ func (s *Session) quietlyYielded() bool {
 	return s.quietBoundaryLocked()
 }
 
+func (s *Session) beginCommunicateRound() {
+	s.mu.Lock()
+	s.comm.roundQuiet = false
+	s.comm.roundVisible = false
+	s.mu.Unlock()
+}
+
 func (s *Session) recordQuietYield() {
 	s.mu.Lock()
-	s.comm.quietEnd = true
+	s.comm.roundQuiet = true
 	s.mu.Unlock()
+}
+
+func (s *Session) clearQuietBoundaryForBatchStop() {
+	s.mu.Lock()
+	if s.quietBoundaryLocked() {
+		s.comm.roundQuiet = false
+	}
+	s.mu.Unlock()
+}
+
+func (s *Session) blockStopBoundary() {
+	s.mu.Lock()
+	if s.comm.hasAccepted() {
+		s.comm.phase = commBoundaryStopBlocked
+	}
+	s.mu.Unlock()
+}
+
+func (s *Session) settleCommunicateBoundary(replacement *string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.comm.hasAccepted() {
+		return false
+	}
+	if id := s.comm.stopPendingCallID; id != "" {
+		s.execution.acceptedCommunicateCallID = id
+		s.execution.replacementReply = replacement
+	}
+	wasPending := s.comm.phase == commBoundaryStopPending || s.comm.phase == commBoundaryStopBlocked
+	s.comm.phase = commBoundarySettled
+	s.comm.roundQuiet = false
+	s.comm.stopPendingCallID = ""
+	s.latestReport = s.comm
+	return wasPending
+}
+
+func (s *Session) discardBlockedForQuietLocked() {
+	if s.comm.phase != commBoundaryStopBlocked {
+		return
+	}
+	s.comm = communicateResult{
+		updated:    s.comm.updated,
+		roundQuiet: s.comm.roundQuiet,
+	}
 }
 
 // acceptCommunicateTerminal is the atomic terminal-result writer for the
@@ -3145,20 +3241,24 @@ func (s *Session) recordQuietYield() {
 // recorded after the lock is released.
 func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply, output string, structured any) bool {
 	s.mu.Lock()
-	if s.comm.called {
+	if s.comm.hasAccepted() {
 		s.comm.roundVisible = true
 		s.mu.Unlock()
 		return false
 	}
 	stopPending := s.hasReplyStopHook()
+	phase := commBoundarySettled
+	if stopPending {
+		phase = commBoundaryStopPending
+	}
 	s.comm = communicateResult{
-		called:       true,
+		phase:        phase,
+		updated:      s.comm.updated,
 		text:         message,
 		reply:        reply,
 		output:       output,
 		structured:   structured,
 		roundVisible: true,
-		stopPending:  stopPending,
 	}
 	if stopPending {
 		s.comm.stopPendingCallID = callIDFromContext(ctx)

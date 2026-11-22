@@ -290,8 +290,8 @@ func (s *Session) canQuietlyYield(ctx context.Context) error {
 	if leased && s.delegateController != nil {
 		switch kind {
 		case EntryDelegateAttention:
-			recorded, err := s.delegateController.recordAttentionNoAction(lease)
-			if err != nil || recorded {
+			eligible, err := s.delegateController.canRecordAttentionNoAction(lease)
+			if err != nil || eligible {
 				return err
 			}
 		case EntryNotification:

@@ -2803,7 +2803,7 @@ func TestDelegateResourceSupervision_SuccessExhaustionCancellationStopAndStaleSa
 	if err := final.persistSalvagedTurn("partial final draft", "gpt-5.2", "openai"); err != nil {
 		t.Fatalf("persist final salvage: %v", err)
 	}
-	final.comm.called = true
+	final.comm.phase = commBoundarySettled
 	stale := newTestSession(t)
 	stale.totalRounds = 1
 	if err := stale.persistSalvagedTurn("stale draft", "gpt-5.2", "openai"); err != nil {

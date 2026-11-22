@@ -3380,7 +3380,7 @@ func (inputs *delegateTerminalRunInputs) captureCommunicateReport(sess *Session)
 	}
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	settled := sess.comm.called && !sess.comm.stopBlocked
+	settled := sess.communicatedSettledLocked()
 	inputs.communicated = settled
 	if settled {
 		inputs.structuredResult = sess.comm.structured
