@@ -140,6 +140,16 @@
     padding-inline: 0;
     column-gap: 0;
   }
+  /* The composer's editor slot carries its own 8px inset there (and the 44px
+   * Attach inset when folded), so the field yields its padding: the 320px row
+   * spends the whole card on three 44px targets and the writing surface.
+   * composer.module.css's matching 340px rule moves Attach and the editor. */
+  :global([data-composer]) .field {
+    padding-inline: 0;
+  }
+  :global([data-composer]) .controls {
+    gap: 0;
+  }
 }
 
 /* The row never wraps. It once did, below 399px, for a three-verb cluster

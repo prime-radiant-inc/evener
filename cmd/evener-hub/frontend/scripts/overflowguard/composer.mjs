@@ -17,6 +17,11 @@ import { installTimeoutClock } from "./timeoutClock.mjs";
 const BOOT = { bootExpression: "typeof window.settled !== 'undefined'", bootLabel: "overflow harness" };
 const editor = '[role="textbox"][contenteditable="true"]';
 const control = (id) => `[data-testid="composer-${id}"]`;
+const TAP_MIN = 44;
+// Expansion must not move a persistent control, and a tap target may round a
+// fraction below its floor. The real geometry is integral, so half a pixel
+// only absorbs CDP rounding.
+const GEOMETRY_TOLERANCE = 0.5;
 
 // Condition waits are native-walltime tripwires, not timing sleeps. Gesture
 // pages flush due work without advancing their controlled timeout clock.
@@ -137,7 +142,7 @@ async function tabTo(send, selector) {
 
 // Expected placement is explicit input from the runner, never a production
 // constant or a verdict returned by the fixture.
-export function assertComposerPlacement(measurement, { contentWidth, primary, inlineSteer, menuSteer }) {
+export function assertComposerPlacement(measurement, { contentWidth, primary, inlineSteer, menuSteer, touch = true }) {
   const work = measurement.currentWork;
   assert.ok(Number.isFinite(contentWidth) && contentWidth > 0, "composer content-box width is measured");
   assert.equal(work.verbCluster.containerWidth, contentWidth, "actual composer content-box width");
@@ -148,13 +153,27 @@ export function assertComposerPlacement(measurement, { contentWidth, primary, in
   const expected = ["composer-attach", `composer-${primary}`, ...(inlineSteer ? ["composer-steer"] : [])].sort();
   assert.deepEqual(present, expected, "independent primary slot and inline Steer");
   assert.equal(work.verbCluster.controls, inlineSteer ? 2 : 1);
+  if (touch) {
+    const menu = measurement.trigger;
+    for (const [label, box] of [
+      ["Attach", work.controlGeometry?.["composer-attach"]],
+      ["session menu", menu ? { ...menu, width: menu.right - menu.left, height: menu.bottom - menu.top } : null],
+      [`the ${primary === "stop" ? "Send/Stop" : "Send"} action`, work.controlGeometry?.[`composer-${primary}`]],
+    ]) {
+      assert.ok(box, `${label} geometry is measured`);
+      assert.ok(
+        box.width >= TAP_MIN - GEOMETRY_TOLERANCE && box.height >= TAP_MIN - GEOMETRY_TOLERANCE,
+        `${label} keeps its ${TAP_MIN}px tap floor (${box.width}x${box.height})`,
+      );
+    }
+  }
   assert.ok(Number.isFinite(work.verbCluster.top), "primary control's top is measured");
   if (work.verbCluster.statusRowBottom === null) {
     // A compact folded phone has no status row. Its session menu is the other
     // control that must share the primary action's single row.
     assert.ok(Number.isFinite(measurement.trigger?.top), "compact session menu's top is measured");
     assert.ok(
-      Math.abs(measurement.trigger.top - work.verbCluster.top) <= 1,
+      Math.abs(measurement.trigger.top - work.verbCluster.top) <= GEOMETRY_TOLERANCE,
       "compact menu and primary action must share one row",
     );
   } else {
@@ -174,11 +193,12 @@ export async function measureComposerPlacement(endpoint, url, { viewportWidth, c
   const page = await connectOnlyPage(endpoint);
   const { send } = page;
   try {
+    const touch = viewportWidth < 900;
     await applyViewport(send, {
       width: viewportWidth,
       height: 900,
-      mobile: viewportWidth < 900,
-      touch: viewportWidth < 900,
+      mobile: touch,
+      touch,
     });
     if (safeArea > 0) await send("Emulation.setSafeAreaInsetsOverride", { insets: { bottom: safeArea } });
     await navigateTo(page, url, BOOT);
@@ -228,7 +248,13 @@ export async function measureComposerPlacement(endpoint, url, { viewportWidth, c
       }
       const measurement = await evaluate(send, "window.measure()");
       measurement.menuVerbs = await evaluate(send, "window.measureMenuVerbs()");
-      assertComposerPlacement(measurement, { contentWidth, primary, inlineSteer, menuSteer });
+      assertComposerPlacement(measurement, {
+        contentWidth,
+        primary,
+        inlineSteer,
+        menuSteer,
+        touch,
+      });
       await key(send, "Escape", "Escape", 27);
       results.push({
         primary,
@@ -246,7 +272,7 @@ export async function measureComposerPlacement(endpoint, url, { viewportWidth, c
     const stablePoint = (key, emptyPoint, draftedPoint, properties = ["left", "right", "top", "bottom"]) => {
       for (const property of properties) {
         assert.ok(
-          Math.abs(emptyPoint[property] - draftedPoint[property]) <= 1,
+          Math.abs(emptyPoint[property] - draftedPoint[property]) <= GEOMETRY_TOLERANCE,
           `${key} keeps its ${property} through expansion: ${emptyPoint[property]} -> ${draftedPoint[property]}`,
         );
       }

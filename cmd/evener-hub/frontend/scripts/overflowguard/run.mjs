@@ -459,6 +459,7 @@ async function measureComposerFooter(
             const attach = form?.querySelector('[data-testid="composer-attach"]');
             const submit = form?.querySelector('[data-testid="composer-submit"]');
             const stop = form?.querySelector('[data-testid="composer-stop"]');
+            const sessionMenu = form?.querySelector('[data-session-actions-ref]')?.closest('button');
             const rowChips = form ? [...form.querySelectorAll('[data-activity-tab]')] : [];
             const activityLine = pane?.querySelector('[data-testid="composer-activity-line"]');
             const activityChips = activityLine ? [...activityLine.querySelectorAll('[data-activity-tab]')] : [];
@@ -499,6 +500,7 @@ async function measureComposerFooter(
               statusPaddingBottom: statusbar ? Number.parseFloat(getComputedStyle(statusbar).paddingBottom) : null,
               tapMin: statusbar ? Number.parseFloat(getComputedStyle(statusbar).getPropertyValue('--tap-min')) || 44 : null,
               statusbar: rect(statusbar),
+              attach: rect(attach),
               attachVisible: visible(attach),
               submitVisible: visible(submit),
               stopVisible: visible(stop),
@@ -516,6 +518,29 @@ async function measureComposerFooter(
               card: rect(cards[0]),
               foldedCompact: cards[0]?.getAttribute('data-folded-compact') === 'true',
               field: rect(form?.querySelector('[class*="field"]')),
+              // The writing surface itself, not its wrapper: the folded
+              // editor's Attach inset lives between the two, and a clipped
+              // placeholder is invisible to a wrapper measurement.
+              textbox: rect(textbox),
+              textboxContent: textbox
+                ? {
+                    clientWidth: textbox.clientWidth,
+                    scrollWidth: textbox.scrollWidth,
+                    clientHeight: textbox.clientHeight,
+                    scrollHeight: textbox.scrollHeight,
+                    empty: textbox.dataset.empty === 'true',
+                    placeholderTextWidth:
+                      textbox.dataset.empty === 'true'
+                        ? (() => {
+                            const context = document.createElement('canvas').getContext('2d');
+                            if (context === null) return null;
+                            context.font = getComputedStyle(textbox).font;
+                            return context.measureText(textbox.dataset.placeholder ?? '').width;
+                          })()
+                        : null,
+                  }
+                : null,
+              sessionMenu: rect(sessionMenu),
               controls: rect(cards[0]?.querySelector('[data-testid="composer-controls"]')),
               modelTrigger: modelTrigger
                 ? {
@@ -592,6 +617,20 @@ function assertComposerFooter(measurement) {
     if (measurement.editorMinLines !== "1lh") failures.push("empty focus expanded the one-line editor");
     if (measurement.modelTrigger?.visible) failures.push("empty focus restored the model picker before content");
     if (measurement.rowChipCount !== 0) failures.push("activity chips must not ride in the composer control row");
+    // The folded row keeps Attach, the session menu, and Send/Stop as real
+    // 44px targets on every phone width, including the 320px card where the
+    // writing surface has the least room.
+    for (const [label, box] of [
+      ["Attach", measurement.attach],
+      ["the session menu", measurement.sessionMenu],
+      ["Send/Stop", measurement.primaryAction],
+    ]) {
+      if (box === null || box.width < 44 - GEOMETRY_TOLERANCE || box.height < 44 - GEOMETRY_TOLERANCE) {
+        failures.push(
+          `${label} is ${box === null ? "missing" : `${box.width.toFixed(1)}x${box.height.toFixed(1)}`}px, below the 44px tap floor`,
+        );
+      }
+    }
     if (measurement.card !== null && measurement.field !== null) {
       const fieldShare = measurement.field.width / measurement.card.width;
       if (fieldShare < 0.5) {
@@ -600,6 +639,28 @@ function assertComposerFooter(measurement) {
         );
       }
       failures.push(...assertCompactFoldedRow(measurement));
+    }
+    // An empty folded row must show the whole placeholder: the editor clips
+    // its own horizontal overflow, so a writing surface narrower than the
+    // placeholder spends the excess invisibly. At 320px this measured 82px
+    // (issue #7500); the real placeholder width is reported in the failure.
+    if (measurement.textbox === null || measurement.textboxContent === null) {
+      failures.push("the folded writing surface is missing");
+    } else if (measurement.textboxContent.empty) {
+      // The placeholder pseudo-element is absolutely positioned inside the
+      // editor, which is the scroll container: a placeholder wider than the
+      // writing surface wraps inside it and the second line is clipped away.
+      if (
+        measurement.textboxContent.scrollWidth > measurement.textboxContent.clientWidth + GEOMETRY_TOLERANCE ||
+        measurement.textboxContent.scrollHeight > measurement.textboxContent.clientHeight + GEOMETRY_TOLERANCE
+      ) {
+        failures.push(
+          `the empty placeholder clips on a ${measurement.textboxContent.clientWidth.toFixed(1)}x` +
+            `${measurement.textboxContent.clientHeight.toFixed(1)}px writing surface ` +
+            `(${measurement.textboxContent.scrollWidth.toFixed(1)}x${measurement.textboxContent.scrollHeight.toFixed(1)}px of placeholder, ` +
+            `${measurement.textboxContent.placeholderTextWidth?.toFixed(1) ?? "unknown"}px of placeholder text)`,
+        );
+      }
     }
     if (measurement.activityLine !== null) failures.push("empty composer renders its activity line before content");
     return failures;
@@ -2019,7 +2080,7 @@ async function main() {
             console.log(`${label} ... FAIL - ${failures.join("; ")}; ${JSON.stringify(measurement)}`);
           } else {
             console.log(
-              `${label} ... PASS - gap=${measurement.gap}px, total footer=${measurement.totalFooterHeight}px, editor=${measurement.editorMinLines}, metadata visible=${measurement.metadataVisible}`,
+              `${label} ... PASS - gap=${measurement.gap}px, total footer=${measurement.totalFooterHeight}px, editor=${measurement.editorMinLines}, writing=${measurement.textbox?.width?.toFixed(1) ?? "n/a"}px, metadata visible=${measurement.metadataVisible}`,
             );
           }
         }
