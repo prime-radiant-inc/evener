@@ -3939,6 +3939,7 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		ResponseStorageScopeFingerprint: finalAttempt.StorageScopeFingerprint,
 		ResponseRequestFingerprint:      finalAttempt.RequestFingerprint,
 		ResponseContextMarker:           finalAttempt.ContextMarker,
+		ResponseContextBoundary:         finalAttempt.ContextBoundary,
 		RoundID:                         s.roundIDForModelCall(),
 	}
 	t.Authorship = s.roundTranscriptAuthorship()

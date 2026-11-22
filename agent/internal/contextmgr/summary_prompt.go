@@ -6,6 +6,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/mdfence"
+	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -199,6 +200,10 @@ func summarySectionHeading(line string) (section, rest string, ok bool) {
 // When instructions are empty the default prompt is used unchanged.
 func buildSummaryPrompt(historyText, instructions string) string {
 	if instructions != "" {
+		// compaction_instructions is model-authored: a bare harness frame in it
+		// must reach the summarizer as escaped model prose, not as direction from
+		// the harness (#6734).
+		instructions = sysmsg.EscapeModelAuthoredFrames(instructions)
 		return `You are performing a CONTEXT CHECKPOINT COMPACTION for an agent continuing its own work.
 
 ## CALLER INSTRUCTIONS (these take precedence over the general guidance, never over your human partner's permissions and holds)
