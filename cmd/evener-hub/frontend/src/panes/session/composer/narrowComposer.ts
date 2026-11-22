@@ -22,7 +22,7 @@ import { useMediaQuery } from "../../../shell/useIsMobile";
 
 // The 466pt Duo cover is a viewport layout, not a narrow docked pane. Keep the
 // lower edge above ordinary portrait phones so their composer stays unchanged.
-const DUO_COVER_QUERY = "(min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4)";
+export const DUO_COVER_QUERY = "(min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4)";
 
 // A phone can cross the shell's 899px width boundary in landscape. The Duo's
 // inner display is 951x669pt there, so its session pane still needs the

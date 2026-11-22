@@ -139,7 +139,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   const footerCwd = !deletedRef && model ? model.cwd : null;
   const edgeFooter = useMemo(() => {
     // The phone layout keeps one bottom surface, the composer: its activity
-    // counts render on a line below the card instead, and the
+    // counts render on a line above the card instead, and the
     // working-directory line stays a desktop-line concern (a phone reads the
     // working directory and branch through the session menu's Overview), so
     // a landscape phone spends its height on content rather than chrome

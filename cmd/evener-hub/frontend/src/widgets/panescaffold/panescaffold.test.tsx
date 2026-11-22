@@ -256,8 +256,8 @@ test("the header and footer are fixed slots around the scrolling body", () => {
 // footer - not on StackHost's container (StackHost.module.css's .host
 // comment): the footer's own chrome fills the home-indicator band while its
 // padding keeps the composer controls above it. env() is 0 on desktop, so
-// the padding resolves to plain --space-3 there. The phone's safe-area-only
-// padding is checked geometrically by overflowguard against the real Session.
+// the padding resolves to plain --space-3 there. Overflowguard checks the
+// phone's folded and content-bearing states with a real nonzero safe area.
 test("the footer fills to the screen's bottom edge while keeping its content clear of the home indicator", () => {
   // Comments stripped: the rule's own comment names the inset (testing.md's
   // "a stylesheet assertion that matches its own comment" trap).
@@ -275,12 +275,6 @@ test("the footer fills to the screen's bottom edge while keeping its content cle
   // bottom edge and owns the band at every width, including a landscape phone
   // whose width crosses the desktop shell boundary.
   expect(topRuleBlock(css, ".footerBeforeEdge")).toContain("padding-bottom: var(--space-3)");
-  // The composer's activity line is the pane's bottom edge: its chips already
-  // occupy the tap floor, so reserving the home-indicator band below them
-  // spends that band twice and eats the transcript's height. A phone pane
-  // renders no edge footer, so this must address .footer - the composer's
-  // actual home on a phone - not the session's .footerBeforeEdge rule.
-  expect(css).toMatch(/\.footer:has\(:global\(\[data-composer-activity-line="true"\]\)\) \{[^}]*padding-bottom: 0;/);
 });
 
 // Footer-less panes (welcome, settings, spawn, doc) had their end-of-scroll

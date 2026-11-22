@@ -105,11 +105,26 @@ export async function typeComposerDraft(send, text = "browser-proof") {
   // the settled shape, never a frame in the middle of it.
   await waitForComposerSettled(send);
 }
-async function clearDraft(send) {
+async function clearDraft(send, { fold = false } = {}) {
   await tap(send, await point(send, editor), false);
   await key(send, "a", "KeyA", 65, process.platform === "darwin" ? 4 : 2);
   await key(send, "Backspace", "Backspace", 8);
   await until(send, `document.querySelector('${control("stop")}')`);
+  if (fold) {
+    await evaluate(
+      send,
+      `(() => {
+        document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+        document.activeElement?.blur();
+      })()`,
+    );
+    await evaluate(send, "new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    await evaluate(send, "document.body.click()");
+    await until(
+      send,
+      `document.querySelector('[data-testid="composer-input-card"]')?.getAttribute('data-folded') === 'true' && !document.querySelector('[data-composer]')?.hasAttribute('data-composer-editing')`,
+    );
+  }
   await waitForComposerSettled(send);
 }
 async function tabTo(send, selector) {
@@ -133,7 +148,18 @@ export function assertComposerPlacement(measurement, { contentWidth, primary, in
   const expected = ["composer-attach", `composer-${primary}`, ...(inlineSteer ? ["composer-steer"] : [])].sort();
   assert.deepEqual(present, expected, "independent primary slot and inline Steer");
   assert.equal(work.verbCluster.controls, inlineSteer ? 2 : 1);
-  assert.ok(work.verbCluster.top < work.verbCluster.statusRowBottom - 1, "verb row must not wrap");
+  assert.ok(Number.isFinite(work.verbCluster.top), "primary control's top is measured");
+  if (work.verbCluster.statusRowBottom === null) {
+    // A compact folded phone has no status row. Its session menu is the other
+    // control that must share the primary action's single row.
+    assert.ok(Number.isFinite(measurement.trigger?.top), "compact session menu's top is measured");
+    assert.ok(
+      Math.abs(measurement.trigger.top - work.verbCluster.top) <= 1,
+      "compact menu and primary action must share one row",
+    );
+  } else {
+    assert.ok(work.verbCluster.top < work.verbCluster.statusRowBottom - 1, "verb row must not wrap");
+  }
   assert.ok(
     work.controlsFound && work.controlsContained && work.controlsDoNotOverlap && work.sharedPaneWithoutOverflow,
     "controls contained without overlap or overflow",
@@ -144,7 +170,7 @@ export function assertComposerPlacement(measurement, { contentWidth, primary, in
   assert.equal(measurement.menuVerbs.steer, menuSteer, "independent menu Steer placement");
 }
 
-export async function measureComposerPlacement(endpoint, url, { viewportWidth, contentWidth, steer }) {
+export async function measureComposerPlacement(endpoint, url, { viewportWidth, contentWidth, steer, safeArea = 0 }) {
   const page = await connectOnlyPage(endpoint);
   const { send } = page;
   try {
@@ -154,6 +180,7 @@ export async function measureComposerPlacement(endpoint, url, { viewportWidth, c
       mobile: viewportWidth < 900,
       touch: viewportWidth < 900,
     });
+    if (safeArea > 0) await send("Emulation.setSafeAreaInsetsOverride", { insets: { bottom: safeArea } });
     await navigateTo(page, url, BOOT);
     await assertGuardOrigin(send, new URL(url).host);
     await evaluate(send, "window.settled");
@@ -164,7 +191,7 @@ export async function measureComposerPlacement(endpoint, url, { viewportWidth, c
     assert.equal(viewport.visualViewportWidth, viewportWidth);
     // Drafts intentionally survive navigation. Clear through the editor rather
     // than assuming a freshly loaded page has an empty local draft.
-    await clearDraft(send);
+    await clearDraft(send, { fold: true });
     // Calibrate only the fixture pane. Measure the actual content box again
     // after ResizeObserver commits, rather than calling 399 a viewport width.
     if (contentWidth !== undefined) {
@@ -185,16 +212,20 @@ export async function measureComposerPlacement(endpoint, url, { viewportWidth, c
       );
     }
     contentWidth ??= await evaluate(send, "window.measureComposerContentWidth()");
-    const inlineSteer = steer && contentWidth > 399;
-    const menuSteer = steer && contentWidth <= 399;
     const results = [];
     for (const primary of ["stop", "submit", "stop"]) {
       if (primary === "submit") await typeComposerDraft(send);
       else if (results.length) await clearDraft(send);
-      assert.ok(
-        await evaluate(send, `document.activeElement === document.querySelector('${editor}')`),
-        "typing and clearing preserve editor focus through slot replacement",
-      );
+      // The first empty Stop is folded. After a focused clear, the card keeps
+      // its expanded geometry and inline Steer remains in place beside Stop.
+      const inlineSteer = steer && contentWidth > 399 && (primary === "submit" || results.length > 0);
+      const menuSteer = steer && (contentWidth <= 399 || results.length === 0);
+      if (results.length > 0) {
+        assert.ok(
+          await evaluate(send, `document.activeElement === document.querySelector('${editor}')`),
+          "typing and clearing preserve editor focus through slot replacement",
+        );
+      }
       const measurement = await evaluate(send, "window.measure()");
       measurement.menuVerbs = await evaluate(send, "window.measureMenuVerbs()");
       assertComposerPlacement(measurement, { contentWidth, primary, inlineSteer, menuSteer });
@@ -202,10 +233,39 @@ export async function measureComposerPlacement(endpoint, url, { viewportWidth, c
       results.push({
         primary,
         contentWidth: measurement.currentWork.verbCluster.containerWidth,
+        fieldRight: measurement.currentWork.verbCluster.fieldRight,
+        fieldBottom: measurement.currentWork.verbCluster.fieldBottom,
         inline: measurement.currentWork.controls.filter((c) => c.present).map((c) => c.testId),
         menu: measurement.menuVerbs,
+        controlGeometry: measurement.currentWork.controlGeometry,
+        menuGeometry: measurement.trigger,
         horizontalScrollers: measurement.scrollers.length,
       });
+    }
+    const [empty, drafted] = results;
+    const stablePoint = (key, emptyPoint, draftedPoint, properties = ["left", "right", "top", "bottom"]) => {
+      for (const property of properties) {
+        assert.ok(
+          Math.abs(emptyPoint[property] - draftedPoint[property]) <= 1,
+          `${key} keeps its ${property} through expansion: ${emptyPoint[property]} -> ${draftedPoint[property]}`,
+        );
+      }
+    };
+    stablePoint("Attach", empty.controlGeometry["composer-attach"], drafted.controlGeometry["composer-attach"]);
+    stablePoint("session menu", empty.menuGeometry, drafted.menuGeometry);
+    stablePoint("primary action", empty.controlGeometry["composer-stop"], drafted.controlGeometry["composer-submit"], [
+      "right",
+      "top",
+      "bottom",
+    ]);
+    assert.ok(Number.isFinite(empty.fieldBottom), "message field's bottom is measured");
+    if (empty.fieldBottom > empty.menuGeometry.top + 1) {
+      // Only an inline field has to sit left of the menu. The fine-pointer
+      // narrow desktop card deliberately stacks the field above the controls.
+      assert.ok(
+        empty.fieldRight <= empty.menuGeometry.left + 1,
+        `message field stays left of the session menu: ${empty.fieldRight} -> ${empty.menuGeometry.left}`,
+      );
     }
     return {
       viewportWidth,
@@ -213,6 +273,7 @@ export async function measureComposerPlacement(endpoint, url, { viewportWidth, c
       states: results,
     };
   } finally {
+    if (safeArea > 0) await send("Emulation.setSafeAreaInsetsOverride", { insets: {} });
     await clearViewportOverride(send);
     page.close();
   }
@@ -473,9 +534,10 @@ export async function verifyComposerOutsidePressClick(endpoint, url, width) {
     await evaluate(send, "window.settled");
     await waitForFonts(send);
 
-    // Open the editor and settle on the expanded card. A trusted tap on the
-    // editor would itself move the footer, so focus it programmatically.
-    await evaluate(send, `document.querySelector('${editor}').focus()`);
+    // Type and clear through the real editor: content latches the expanded card
+    // while focused, so the empty editor can fold when the outside click lands.
+    await typeComposerDraft(send);
+    await clearDraft(send);
     await until(send, `!document.querySelector('[data-testid="composer-input-card"]').hasAttribute('data-folded')`);
     await waitForComposerSettled(send);
 
@@ -533,7 +595,10 @@ export async function verifyComposerOutsidePressClick(endpoint, url, width) {
     await until(send, toggledExpr);
     // The fold runs in a zero-delay timer after the click, so data-folded
     // lands in a later React commit than the disclosure's open.
-    await until(send, `document.querySelector('[data-testid="composer-input-card"]').getAttribute('data-folded') === 'true'`);
+    await until(
+      send,
+      `document.querySelector('[data-testid="composer-input-card"]').getAttribute('data-folded') === 'true'`,
+    );
     const settled = await evaluate(
       send,
       `({
@@ -552,7 +617,8 @@ export async function verifyComposerOutsidePressClick(endpoint, url, width) {
     assert.equal(settled.editing, false, "the click ends editing");
 
     // A press-drag produces no click and must leave the card as it was.
-    await evaluate(send, `document.querySelector('${editor}').focus()`);
+    await typeComposerDraft(send);
+    await clearDraft(send);
     await until(send, `!document.querySelector('[data-testid="composer-input-card"]').hasAttribute('data-folded')`);
     await waitForComposerSettled(send);
     const dragStart = await evaluate(

@@ -174,13 +174,13 @@ test("the field slot stretches the caller's field across the card", () => {
   expect(rule).toMatch(/flex-direction:\s*column/);
 });
 
-test("the card owns compact spacing for an empty, unfocused Duo composer", () => {
+test("the card owns compact spacing for an empty, folded Duo composer even when focused", () => {
   const css = moduleCss();
   const mediaStart = css.indexOf("@media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4)");
   expect(mediaStart).toBeGreaterThanOrEqual(0);
   const compact = blockBody(css, css.indexOf("{", mediaStart));
   expect(compact).toMatch(
-    /:global\(\[data-composer\]\):not\(\[data-composer-editing\]\) \.card:has\(\[role="textbox"\]\[data-empty="true"\]\)\s*\{[^}]*gap:\s*0;[^}]*padding-block:\s*0;/,
+    /:global\(\[data-composer\]\) \.card\[data-folded="true"\]:has\(\[role="textbox"\]\[data-empty="true"\]\)\s*\{[^}]*gap:\s*0;[^}]*padding-block:\s*0;/,
   );
 });
 

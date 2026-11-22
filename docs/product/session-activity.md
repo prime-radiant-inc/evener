@@ -1046,7 +1046,7 @@ acquires its holder; an abandoned render starts no read. Every visible ordinary
 session pane observes that pane's
 summary and its subtree summary (for the Agents count) by explicit ref on both
 viewports, through its flush status footer on desktop and through the
-activity line below the composer card on the phone, which renders no footer
+activity line above the composer card on the phone, which renders no footer
 strip. A folded resting composer hides that line but keeps observing through
 the session menu's hidden discovery owner, so a pane's counts are current the
 moment its card expands. Side-by-side panes retain independent counts while duplicate consumers of one

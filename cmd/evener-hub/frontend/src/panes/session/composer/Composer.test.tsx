@@ -22,11 +22,12 @@ import { resetPrefsStoreForTests } from "../../../stores/prefs";
 import { answerActivityRead } from "../../../stores/sessionActivityTestUtils";
 import { holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../stores/threads";
-import { readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
+import { mediaBlock, readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as FULL_CAPABILITIES } from "../../../threadTestUtils";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import statusRowStyles from "../chrome/statusrow.module.css";
+import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { createTestComposerSource } from "../testing/composerSource";
 import { editorCursor, pastePngInto, replaceEditorText, selectEditorText } from "../testing/editor";
 import { installMobileViewport } from "../testing/mobileViewport";
@@ -49,7 +50,7 @@ import {
   textarea,
 } from "./composerTestUtils";
 import { readDraft, writeComposerDraft } from "./draft";
-import { LANDSCAPE_PHONE_QUERY } from "./narrowComposer";
+import { DUO_COVER_QUERY, LANDSCAPE_PHONE_QUERY } from "./narrowComposer";
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 import { resetQuoteInsertStoreForTests } from "./quoteInsert";
@@ -89,91 +90,76 @@ class ControlledDiscardStorage extends MutationOutboxIndexedDB {
   }
 }
 
-function installDuoCoverViewport(): void {
-  vi.stubGlobal("matchMedia", (media: string) => ({
-    media,
-    matches: media === "(min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4)",
-    addEventListener() {},
-    removeEventListener() {},
-  }));
-}
+test.each([
+  { name: "wide desktop", compact: false, inlineSteer: true },
+  { name: "narrow desktop", compact: false, inlineSteer: false, width: 382 },
+  { name: "Duo cover", compact: false, inlineSteer: true, width: 450, duo: true },
+  { name: "phone portrait", compact: true, inlineSteer: false, width: 360, phone: true },
+  { name: "Duo landscape", compact: true, inlineSteer: true, width: 526, phoneQuery: LANDSCAPE_PHONE_QUERY },
+])(
+  "$name keeps the empty composer folded until content arrives",
+  async ({ compact, inlineSteer, width, duo, phone, phoneQuery }) => {
+    const restoreViewport =
+      phone || phoneQuery || duo ? installMobileViewport(duo ? DUO_COVER_QUERY : phoneQuery) : undefined;
+    if (width !== undefined) installNarrowComposer(width);
+    try {
+      await mountComposerWithHandle("ref_a", { status: { type: "active" } });
+      const editor = textarea();
+      const card = screen.getByTestId("composer-input-card");
+      const order = () =>
+        [...card.querySelectorAll("button")]
+          .map((button) => button.getAttribute("data-testid"))
+          .filter((id) => id === "composer-stop" || id === "composer-submit" || id === "composer-steer");
 
-test("the Duo cover composer expands on focus and retains its two-line draft height", async () => {
-  installDuoCoverViewport();
-  installNarrowComposer(450);
-  await mountComposerWithHandle("ref_a");
-  const editor = textarea();
-  expect(editor.style.minHeight).toBe("1lh");
-  act(() => editor.focus());
-  await waitFor(() => expect(editor.style.minHeight).toBe("2lh"));
-  await replaceEditorText(editor, "a saved draft");
-  expect(editor.style.minHeight).toBe("2lh");
-  act(() => editor.blur());
-  await waitFor(() => expect(editor.style.minHeight).toBe("2lh"));
-});
+      expect(editor.style.minHeight).toBe("1lh");
+      expect(card.getAttribute("data-folded")).toBe("true");
+      expect(card.getAttribute("data-folded-compact")).toBe(compact ? "true" : null);
+      expect(screen.getByTestId("composer-attach")).toBeTruthy();
+      expect(order()).toEqual(["composer-stop"]);
+      if (compact) expect(screen.queryByTestId("model-switch-trigger")).toBeNull();
 
-test("a narrow desktop pane folds its resting field to one line", async () => {
-  installNarrowComposer(382);
-  await mountComposerWithHandle("ref_a");
-  const editor = textarea();
-  expect(editor.style.minHeight).toBe("1lh");
-  act(() => editor.focus());
-  await waitFor(() => expect(editor.style.minHeight).toBe("2lh"));
-});
+      act(() => editor.focus());
+      expect(editor.style.minHeight).toBe("1lh");
+      expect(card.getAttribute("data-folded")).toBe("true");
+      expect(card.getAttribute("data-folded-compact")).toBe(compact ? "true" : null);
+      expect(order()).toEqual(["composer-stop"]);
 
-test("the wide empty composer folds to one line and unfolds on focus", async () => {
-  await mountComposerWithHandle("ref_a");
+      act(() => replaceEditorText(editor, "draft"));
+      expect(editor.style.minHeight).toBe("2lh");
+      expect(card.hasAttribute("data-folded")).toBe(false);
+      expect(card.hasAttribute("data-folded-compact")).toBe(false);
+      expect(order()).toEqual(inlineSteer ? ["composer-steer", "composer-submit"] : ["composer-submit"]);
+      if (compact) expect(screen.getByTestId("model-switch-trigger")).toBeTruthy();
+
+      act(() => editor.blur());
+      expect(card.hasAttribute("data-folded")).toBe(false);
+    } finally {
+      cleanup();
+      restoreViewport?.();
+    }
+  },
+);
+
+test("clearing a focused draft keeps the card open until an outside click", async () => {
+  await mountComposerWithHandle("ref_a", { status: { type: "active" } });
   const editor = textarea();
   const card = screen.getByTestId("composer-input-card");
-  expect(editor.style.minHeight).toBe("1lh");
-  expect(card.getAttribute("data-folded")).toBe("true");
-  expect(screen.queryByTestId("composer-attach")).toBeNull();
   act(() => editor.focus());
-  await waitFor(() => expect(card.hasAttribute("data-folded")).toBe(false));
-  expect(editor.style.minHeight).toBe("2lh");
-  expect(screen.getByTestId("composer-attach")).toBeTruthy();
-  act(() => editor.blur());
+  expect(card.getAttribute("data-folded")).toBe("true");
+  act(() => replaceEditorText(editor, "draft"));
+  expect(card.hasAttribute("data-folded")).toBe(false);
+
+  act(() => replaceEditorText(editor, ""));
+  expect(card.hasAttribute("data-folded")).toBe(false);
+  expect(screen.getByTestId("composer-stop")).toBeTruthy();
+
+  await act(async () => {
+    fireEvent.pointerDown(document.body);
+    editor.blur();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    fireEvent.click(document.body);
+  });
   await waitFor(() => expect(card.getAttribute("data-folded")).toBe("true"));
-  expect(editor.style.minHeight).toBe("1lh");
-});
-
-test("a phone's folded composer is compact, and focus reveals the full row", async () => {
-  const restoreViewport = installMobileViewport();
-  try {
-    await mountComposerWithHandle("ref_a");
-    const card = screen.getByTestId("composer-input-card");
-    expect(card.getAttribute("data-folded")).toBe("true");
-    expect(card.getAttribute("data-folded-compact")).toBe("true");
-    expect(screen.queryByTestId("composer-attach")).toBeNull();
-    expect(screen.queryByTestId("model-switch-trigger")).toBeNull();
-    expect(screen.getByTestId("composer-submit")).toBeTruthy();
-
-    act(() => textarea().focus());
-    await waitFor(() => expect(card.getAttribute("data-folded-compact")).toBeNull());
-    expect(screen.getByTestId("model-switch-trigger")).toBeTruthy();
-    expect(screen.getByTestId("composer-attach")).toBeTruthy();
-  } finally {
-    cleanup();
-    restoreViewport();
-  }
-});
-
-test("a landscape phone's folded composer uses the compact one-line row", async ({ onTestFinished }) => {
-  onTestFinished(installMobileViewport(LANDSCAPE_PHONE_QUERY));
-  // The Duo's 951pt landscape viewport uses the desktop shell, while its
-  // session pane leaves the PromptCard below the desktop folded threshold.
-  installNarrowComposer(526);
-  await mountComposerWithHandle("ref_a");
-  const card = screen.getByTestId("composer-input-card");
-  expect(card.getAttribute("data-folded")).toBe("true");
-  expect(card.getAttribute("data-folded-compact")).toBe("true");
-  expect(screen.queryByTestId("composer-attach")).toBeNull();
-  expect(screen.queryByTestId("model-switch-trigger")).toBeNull();
-
-  act(() => textarea().focus());
-  await waitFor(() => expect(card.getAttribute("data-folded-compact")).toBeNull());
-  expect(screen.getByTestId("composer-attach")).toBeTruthy();
-  expect(screen.getByTestId("model-switch-trigger")).toBeTruthy();
 });
 
 test("the composer's inline status row packs its facts to the far end", async () => {
@@ -578,15 +564,20 @@ test("the composer region fills pane height and bottom-anchors the replacement s
   expect(css).toContain("justify-content: flex-end");
 });
 
-// The word beside the paper plane collapses by PANE width, not viewport
-// width: a docked pane squeezed narrow on a desktop display needs the same
-// icon-only Send the phone gets, and a viewport media query cannot see that
+// The words beside the Send and Stop glyphs collapse by PANE width, not
+// viewport width: a docked pane squeezed narrow on a desktop display needs the
+// same icon-only controls the phone gets, and a viewport media query cannot see that
 // (the overflowguard's 390px-pane-in-desktop-window measurement proved it).
 // The 559px boundary matches the status row's own first compression threshold (statusrow.module.css).
-test("the Send button's word collapses to the glyph below the compact pane threshold", () => {
+test("the Send and Stop words collapse to glyphs below the compact pane threshold", () => {
   const css = readModuleCss(import.meta.url, "composer.module.css");
   expect(topRuleBlock(css, ".composer")).toMatch(/container-type:\s*inline-size/);
-  expect(css).toMatch(/@container \(max-width: 559px\)[\s\S]*?\.submitLabel\s*\{[^}]*display:\s*none/);
+  expect(css).toMatch(
+    /@container \(max-width: 559px\)[\s\S]*?\.submitLabel,\s*\.stopLabelStack\s*\{[^}]*display:\s*none/,
+  );
+  expect(mediaBlock(css, "max-width: 899px")).toMatch(
+    /\.composer\s+:global\(button\):has\(> \.submitLabel\),\s*\.composer\s+:global\(button\):has\(> \.stopLabelStack\)\s*\{[^}]*min-width:\s*var\(--tap-min\)/,
+  );
 });
 
 // The model and effort are the session's facts about the next turn, so they
@@ -594,9 +585,12 @@ test("the Send button's word collapses to the glyph below the compact pane thres
 // reserves the compact chrome rung for the leading's wrap calculation and
 // grows into the expanded row; the row's own `align="end"` places the facts
 // at its far end.
-test("the session chrome reserves its compact rung and fills the expanded row", () => {
+test("the session chrome reserves its compact rung only for one-line folded cards", () => {
   const css = readModuleCss(import.meta.url, "composer.module.css");
   expect(topRuleBlock(css, ".chromeSlot")).toMatch(/flex:\s*1 1 200px/);
+  expect(css).toMatch(
+    /@container \(min-width: 620px\) \{\s*\.leading\[data-folded="true"\]:not\(\[data-compact="true"\]\)\s*\{[^}]*flex-wrap:\s*nowrap/,
+  );
 });
 
 beforeEach(() => {
@@ -695,12 +689,9 @@ test.each([false, true])("repeated composer /status targets its ref, phone=%s", 
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
 });
 
-// A phone's composer rests by shedding what an empty editor does not need -
-// attach, the status chips and the activity chips - while the session menu
-// and Send stay, so a landscape phone spends its height on the transcript
-// and session actions stay reachable without focusing first. Focus engages
-// the full row again.
-test("a resting phone composer sheds attach, status chrome and its activity line", async ({ onTestFinished }) => {
+// A phone's composer rests without the status and activity chips, then
+// restores both with content.
+test("a phone composer restores status chrome and its activity line with content", async ({ onTestFinished }) => {
   onTestFinished(installMobileViewport());
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
@@ -712,34 +703,28 @@ test("a resting phone composer sheds attach, status chrome and its activity line
   );
   await screen.findByRole("textbox", { name: "Message" });
   await flushPendingTurnsProjectionForTests();
+  await settleActivityDiscovery("ref_a");
 
-  // At rest: no attach, no status chrome, and no activity line - the folded
-  // card is the phone's smallest surface and the counts return with it. The
-  // menu-only chrome keeps the session actions reachable, and Send stays.
-  expect(screen.queryByTestId("composer-attach")).toBeNull();
+  // At rest: no status chrome or activity line. The menu-only chrome keeps
+  // session actions reachable, and Send stays.
   expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
   const form = screen.getByTestId("composer-form");
   expect(form.querySelector("[data-activity-tab]")).toBeNull();
   expect(screen.queryByTestId("composer-activity-line")).toBeNull();
-  // The pane footer keys its home-indicator padding off this marker, so a
-  // folded card must not publish it.
-  expect(document.querySelector('[data-composer-activity-line="true"]')).toBeNull();
   expect(screen.getByTestId("session-chrome-menu")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Session actions" })).toBeTruthy();
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
 
-  // Focus engages the full row, and its activity line comes back with it.
-  fireEvent.focus(screen.getByRole("textbox", { name: "Message" }));
-  await waitFor(() => expect(screen.getByTestId("composer-attach")).toBeTruthy());
+  act(() => replaceEditorText(screen.getByRole("textbox", { name: "Message" }), "draft"));
   expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
   expect(screen.getByTestId("composer-activity-line").querySelector("[data-activity-tab]")).toBeTruthy();
-  expect(document.querySelector('[data-composer-activity-line="true"]')).toBeTruthy();
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
   expect(form.querySelector("[data-activity-tab]")).toBeNull();
   expect(screen.queryByTestId("session-chrome-menu")).toBeNull();
+  await settleActivityDiscovery("ref_a");
 });
 
-test("a phone composer leaves inspection actions to the top bar at rest and on engagement", async ({
+test("a phone composer leaves inspection actions to the top bar at rest and with content", async ({
   onTestFinished,
 }) => {
   onTestFinished(installMobileViewport());
@@ -761,9 +746,9 @@ test("a phone composer leaves inspection actions to the top bar at rest and on e
   const editor = await screen.findByRole("textbox", { name: "Message" });
   await flushPendingTurnsProjectionForTests();
 
-  for (const engaged of [false, true]) {
-    if (engaged) {
-      fireEvent.focus(editor);
+  for (const withContent of [false, true]) {
+    if (withContent) {
+      act(() => replaceEditorText(editor, "draft"));
       await waitFor(() => expect(screen.getByTestId("session-chrome-inline")).toBeTruthy());
     }
     await user.click(screen.getByRole("button", { name: "Session actions" }));
@@ -777,7 +762,7 @@ test("a phone composer leaves inspection actions to the top bar at rest and on e
 // A cascade column's chrome renders the conversation's activity controls
 // below the footer (CascadeColumn's ScopeActivityControls), so its seat
 // declares that ownership and the phone composer renders no second activity
-// line below its card.
+// line above its card.
 test("a composer whose seat owns the activity counts never mounts chips", async ({ onTestFinished }) => {
   onTestFinished(installMobileViewport());
   const fake = connectReadyFakeClient();
@@ -795,30 +780,15 @@ test("a composer whose seat owns the activity counts never mounts chips", async 
   );
   await screen.findByRole("textbox", { name: "Message" });
   await flushPendingTurnsProjectionForTests();
+  await settleActivityDiscovery("ref_owned_counts");
 
-  // The engaged row keeps the status chrome and attach, but no chips.
-  fireEvent.focus(screen.getByRole("textbox", { name: "Message" }));
-  await waitFor(() => expect(screen.getByTestId("session-chrome-inline")).toBeTruthy());
+  // The content-expanded row keeps the status chrome and attach, but no chips.
+  act(() => replaceEditorText(screen.getByRole("textbox", { name: "Message" }), "draft"));
+  expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
   expect(screen.getByTestId("composer-attach")).toBeTruthy();
   expect(document.querySelector('[data-testid="composer-form"] [data-activity-tab]')).toBeNull();
   expect(screen.queryByTestId("composer-activity-line")).toBeNull();
-});
-
-// A turn in flight keeps its Stop control even while the editor rests
-// collapsed: stopping a runaway turn must never depend on focusing first.
-test("a collapsed mobile composer still offers Stop while a turn is running", async ({ onTestFinished }) => {
-  onTestFinished(installMobileViewport());
-  const fake = connectReadyFakeClient();
-  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "active" } } as Partial<Thread>));
-  await threadsStore.getState().ensureThread("ref_a");
-  render(
-    <ClientProvider client={fake}>
-      <Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />
-    </ClientProvider>,
-  );
-  await screen.findByRole("textbox", { name: "Message" });
-  await flushPendingTurnsProjectionForTests();
-  await waitFor(() => expect(screen.getByTestId("composer-stop")).toBeTruthy());
+  await settleActivityDiscovery("ref_owned_counts");
 });
 
 // A press on a row control can blur the focused editor to body without
@@ -839,9 +809,10 @@ test("a phone press keeps the pressed control mounted through the press", async 
   const editor = await screen.findByRole("textbox", { name: "Message" });
   await flushPendingTurnsProjectionForTests();
 
-  // The editor's focus engages the full row.
+  // Real content engages the full row; focus alone no longer does.
   await act(async () => {
     editor.focus();
+    replaceEditorText(editor, "draft");
   });
   await waitFor(() => expect(screen.getByTestId("composer-attach")).toBeTruthy());
 
@@ -869,8 +840,7 @@ test("a phone press keeps the pressed control mounted through the press", async 
     await nextMacrotask();
   });
 
-  // The press released and focus stayed on body: the row rests again, with
-  // the controls that never shed still in it.
-  await waitFor(() => expect(screen.queryByTestId("composer-attach")).toBeNull());
+  // The press released without destroying the draft or its expanded controls.
+  expect(screen.getByTestId("composer-attach")).toBeTruthy();
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
 });

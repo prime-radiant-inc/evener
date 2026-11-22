@@ -942,16 +942,6 @@ async function measureOverview(send) {
       return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
     };
     const mobile = matchMedia('(max-width: 899px)').matches;
-    // A folded resting phone composer renders no activity line - the counts
-    // come back with the expanded card - so the phone measurement engages the
-    // editor first. That is the state whose chips this guard checks.
-    if (mobile) {
-      const editor = document.querySelector('[data-testid="composer-form"] [role="textbox"]');
-      if (editor && !document.querySelector('[data-testid="composer-activity-line"]')) {
-        editor.focus();
-        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      }
-    }
     // A category is a label line over an optional detail line (the stacked
     // SegmentedControl); each line must show its whole text.
     const categories = Array.from(aside.querySelectorAll('[role="radio"]'), element => {
@@ -969,7 +959,7 @@ async function measureOverview(send) {
     });
     const close = aside.querySelector('button[aria-label="Close Overview"]');
     // The activity surface: the pane's status bar on desktop, the quiet line
-    // below the composer card on a phone (the phone pane renders no footer
+    // above the composer card on a phone (the phone pane renders no footer
     // strip).
     const surface = mobile
       ? document.querySelector('[data-testid="composer-activity-line"]')
@@ -1143,7 +1133,7 @@ function assertOverview(result, viewport, theme) {
     if (!footer) {
       failures.push("engaged phone composer does not render its activity line");
     } else {
-      // The phone pane renders no footer strip: the quiet line below the
+      // The phone pane renders no footer strip: the quiet line above the
       // composer card carries the same four activity tabs, each at the tap
       // floor and never clipped.
       if (footer.chips.length !== 4) failures.push(`phone composer activity chips: ${JSON.stringify(footer.chips)}`);
@@ -1593,6 +1583,16 @@ export async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, chi
     await settleOverview(send);
     await openRailOverview(send);
     const fixture = preparePage && (await preparePage(send));
+    if (viewport.mobile) {
+      const editor = '[data-testid="composer-form"] [role="textbox"]';
+      await evaluate(send, `document.querySelector(${JSON.stringify(editor)}).focus()`);
+      await send("Input.insertText", { text: "overview phone draft" });
+      await waitForDom(
+        send,
+        `document.querySelector('[data-testid="composer-activity-line"]') !== null`,
+        "content expands the phone composer for its activity-line measurement",
+      );
+    }
     const result = await measureOverview(send);
     if (process.env.EVENER_SCRATCH_DIR) {
       await evaluate(
@@ -1615,6 +1615,17 @@ export async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, chi
     const padding = await measureActivityRowPadding(send, viewport);
     result.rowPadding = padding.result;
     failures.push(...padding.failures);
+    if (viewport.mobile) {
+      const editor = '[data-testid="composer-form"] [role="textbox"]';
+      await evaluate(send, `document.querySelector(${JSON.stringify(editor)}).focus()`);
+      await pressKey(send, "a", "KeyA", 65, process.platform === "darwin" ? 4 : 2);
+      await pressKey(send, "Backspace", "Backspace", 8);
+      await waitForDom(
+        send,
+        `document.querySelector(${JSON.stringify(editor)}).textContent === ''`,
+        "temporary activity-line draft cleared before trusted command journeys",
+      );
+    }
     try {
       result.keyboard = await trustedOverviewFlow(send, viewport, childGesture);
     } catch (error) {
