@@ -12,41 +12,24 @@ import (
 
 func defCompact() llm.ToolDefinition {
 	return llm.ToolDefinition{
-		Name: "compact_context",
-		Description: "Free up context-window headroom so you can keep working on a long task: " +
-			"fold your own older conversation history into a compact summary checkpoint. This " +
-			"reorganizes your working memory — it does NOT change your response style and does " +
-			"NOT touch any files. Call it at a clean stopping point: between tasks, after " +
-			"extracting what you need from bulky output, or before reading substantial new " +
-			"input. Your note_to_self survives the compaction untouched and is handed back to " +
-			"you verbatim immediately after — a message from your pre-compaction self — then " +
-			"cleared. compaction_instructions (optional) steer what the summary keeps vs. drops. " +
-			"In sessions without persistence, dropped detail is NOT recoverable, so be " +
-			"conservative about what you instruct to drop.",
+		Name:        "compact_context",
+		Description: "Fold older history into a checkpoint at a clean stopping point (no file/style change). `note_to_self` survives once and clears; dropped detail is unrecoverable without persistence.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"note_to_self": map[string]any{
-					"type": "string",
-					"description": "Message to your post-compaction self, handed back verbatim right after " +
-						"the compaction, then cleared. Put the exact strings a summary would mangle here: " +
-						"IDs, paths, numbers, decisions, next steps. Empty string clears a pending note. " +
-						"It requests no new compaction only when compaction_instructions is also empty " +
-						"and reload_skills is absent or null; any present reload_skills value, even [], " +
-						"requests one. A compaction requested by an earlier call still runs.",
+					"type":        "string",
+					"description": "Returned verbatim after compaction then cleared (IDs, paths, decisions, next steps). \"\" clears without compacting if other args unset.",
 				},
 				"compaction_instructions": map[string]any{
-					"type": "string",
-					"description": "Optional steering for the summary: what to preserve in detail vs. drop. " +
-						"Dropped detail is unrecoverable without persistence — steer toward keeping.",
+					"type":        "string",
+					"description": "Optional summary steering (prefer keeping).",
 				},
 				"reload_skills": map[string]any{
-					"type":  "array",
-					"items": map[string]any{"type": "string"},
-					"description": "Optional selection of skills to reload from disk after the compaction: exact " +
-						"canonical names from this session's loaded-skill inventory, in the order to reload " +
-						"them. An explicit empty array reloads none. Omit (or pass null) to make no selection.",
+					"type":        "array",
+					"items":       map[string]any{"type": "string"},
+					"description": "Skills to reload ([] = none; omit/null = unselected).",
 				},
 			},
 			"required": []string{"note_to_self"},

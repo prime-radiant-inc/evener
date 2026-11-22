@@ -285,13 +285,13 @@ type DelegateSandboxSchema struct {
 	ModelDescription string
 }
 
-const delegateModelOverrideDescription = "Model override. Default: the delegate captures your CURRENT model at the moment it is spawned (so a delegate spawned after you switch models inherits the new one, and one spawned before keeps the model it started with). An explicit value here pins the delegate to that model instead, regardless of your current or future model."
+const delegateModelOverrideDescription = "Model override. Default captures your current model at spawn (later switches do not affect existing delegates); an explicit value pins that model."
 
 // shortTaskTitleDescription is the shared "<10 words" contract for a task
 // item's short title, used by both task surfaces: the delegate brief's
 // seeded task_list items (field `title`) and the task_list tool's add items
 // (field `description`).
-const shortTaskTitleDescription = "Short task title, under 10 words."
+const shortTaskTitleDescription = "Title (<10 words)."
 
 // DelegateModelDescriptionAdditionBudget reports how many bytes may be
 // appended to the model parameter's fixed description without exceeding the
@@ -316,7 +316,7 @@ func delegateReasoningEffortLevels() []string {
 // delegateReasoningEffortDescription names the levels the schema enumerates,
 // built from the same source so the prose and the enum cannot drift.
 func delegateReasoningEffortDescription() string {
-	return fmt.Sprintf("Reasoning effort for this delegate (%s, or %s to turn thinking off where the model supports it). Default inherits from parent.",
+	return fmt.Sprintf("Effort (%s, or %s=off); default inherits.",
 		strings.Join(llm.ReasoningEffortVocabulary(), ", "), llm.ReasoningEffortNone)
 }
 
@@ -347,7 +347,7 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 // DelegateRoleWriteNote tells the model which role may write files. The
 // explorer role has no edit tools, so a seat that must write (a reviewer that
 // files its report, an implementer) takes subagent.
-const DelegateRoleWriteNote = "explorer is read-only and cannot edit or write files; a seat that must write files uses subagent."
+const DelegateRoleWriteNote = "explorer is read-only; write via subagent."
 
 // DefDelegateWithResultTool is DefDelegateWithSandbox for a session whose
 // result tool is named resultTool.
@@ -356,23 +356,17 @@ func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandbo
 	effortLevels := delegateReasoningEffortLevels()
 	agentTypeSchema := map[string]any{
 		"type":        "string",
-		"description": "Role for the delegate. Choose from the enum; the roles are described in your agents section. " + DelegateRoleWriteNote,
+		"description": "Role from enum (see agents section). " + DelegateRoleWriteNote,
 	}
 	if len(agentTypes) > 0 {
 		agentTypeSchema["enum"] = append([]string(nil), agentTypes...)
 	}
 	def := llm.ToolDefinition{
 		Name: "delegate",
-		Description: "Start a NEW delegate conversation to do independent agentic work; returns one durable `delegate_id` " +
-			"and stable conversation metadata, never an activation job identity. `delegate` never resumes an existing " +
-			"delegate: follow up on one with `delegate_send(to=<delegate_id>)`. Optional: `agent_type` picks a role from the " +
-			"enum (described in your agents section); `model` and `reasoning_effort` override the defaults; " +
-			"`result_schema` requests a validated structured result. Creation returns immediately after the delegate's stable " +
-			"metadata and initial input are durable; use notifications or `delegate_send` for subsequent interaction. " +
-			"A delegate may itself delegate: by default it gets an allowance one below yours; " +
-			"pass `delegation_allowance` 0 to make it a leaf, or a smaller value to cap its depth. Set watch_parent=true for an observer sidecar: the child can call job_watch(source=\"parent\"). " + ObserverReporting(resultTool) + " For delegate readiness, status, findings, and final reports, ask the " +
-			"delegate to call `" + resultTool + "` with the exact marker/report. Observer readiness results can include `watching:true` and `watches` when the observer installed watches. Use the delegate's output as the evidence for judging the work. " +
-			"A delegate's shell jobs end with its activation. A watch the delegate registers on its parent lives in the parent's job manager and survives the delegate, so clear it explicitly when observation should stop. Notifications from a delegate's own jobs wake the delegate, not you, so an external wait whose verdict you need (CI, a deploy) runs in your session, not a delegate's. A delegate completion notification may omit the full report; read the delegate's transcript for it before relying on the summary.",
+		Description: "Start a NEW delegate; returns durable `delegate_id` immediately (follow up via `delegate_send(to=<delegate_id>)`). " +
+			"Ask it to report via `" + resultTool + "`. `watch_parent=true` creates an observer (`job_watch(source=\"parent\")`). " +
+			ObserverReporting(resultTool) + " Observer readiness may list `watching:true`/`watches`. " +
+			"Child shell jobs end with its activation and wake the child, not you (run waits you need here); parent watches survive until cleared. Read transcript if notice omits report.",
 		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -380,19 +374,19 @@ func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandbo
 			"properties": map[string]any{
 				"prompt": map[string]any{
 					"type":        "string",
-					"description": "The delegate's assignment (task_list adds ordered step prompts). By default the delegate starts a clean session with no parent conversation. State the user's request for this unit (quote it), the facts it needs that you already know (environment, tools present or missing, paths, formats), exactly which files or paths it owns and must not touch, the acceptance check (the exact command(s) and the expected result), and the evidence to report back (paths, diffs, the check's output). With fork_context=true, inherited history supplies background but this prompt must still define the assignment, ownership, acceptance check, and report. For a unit with more than one step, put the steps in task_list rather than here. Each delegation also has its own durable artifacts directory, returned as artifacts_dir on creation — reference it in briefs and later seats, and file a seat's report there yourself, or let a seat with an unconfined shell write to it; a confined (sandboxed) seat can write only inside its workspace and its scratch directory, and its scratch is deleted when the session is archived, so have such a seat return its report in the result instead. Route by role: keep a read-only / non-writing seat scouting rather than mandating changes; when two or more writers would collide in your checkout, give the delegate isolation=\"worktree\"; the default (one writer, no conflict) keeps sharing your tree.",
+					"description": "Self-contained brief (clean unless fork_context=true): quoted request, facts/paths/tools, owned/forbidden paths, acceptance check, required evidence. Multi-step -> task_list. Confined seats write workspace/scratch only (return report in result, not artifacts_dir).",
 				},
 				"task_list": map[string]any{
 					"type":        "array",
-					"description": "Seed the delegate's task list, one item per step, in order. Items fill the role's parent_tasks slot when its default task list has one and follow the role's default tasks otherwise. The delegate's first turn carries the whole plan — every step's title, status, effort, and prompt — and names the step to work first, so write each prompt as if every worker can read it. The delegate works the list in order and marks each task done. Each item's prompt must define a self-contained step.",
+					"description": "Ordered steps seeding delegate's task list (fills parent_tasks or follows defaults); each prompt must stand alone.",
 					"items": map[string]any{
 						"type":                 "object",
 						"additionalProperties": false,
 						"properties": map[string]any{
 							"title":            map[string]any{"type": "string", "description": shortTaskTitleDescription},
-							"prompt":           map[string]any{"type": "string", "description": "Full, self-contained instruction for this step."},
-							"reasoning_effort": map[string]any{"type": "string", "enum": append(slices.Clone(effortLevels), "inherit"), "description": "Reasoning effort while this task is in progress; \"inherit\" uses the delegate's effort."},
-							"type":             map[string]any{"type": "string", "enum": []string{"research", "implement", "verify", "fix"}, "description": "Kind of work; defaults to implement."},
+							"prompt":           map[string]any{"type": "string", "description": "Self-contained step prompt."},
+							"reasoning_effort": map[string]any{"type": "string", "enum": append(slices.Clone(effortLevels), "inherit"), "description": "Step effort (\"inherit\" = delegate's)."},
+							"type":             map[string]any{"type": "string", "enum": []string{"research", "implement", "verify", "fix"}, "description": "Work kind (default implement)."},
 						},
 						"required": []string{"title", "prompt"},
 					},
@@ -400,29 +394,29 @@ func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandbo
 				"agent_type":           agentTypeSchema,
 				"model":                map[string]any{"type": "string", "description": delegateModelOverrideDescription},
 				"reasoning_effort":     map[string]any{"type": "string", "description": delegateReasoningEffortDescription(), "enum": effortLevels},
-				"delegation_allowance": map[string]any{"type": "integer", "description": "Absent (default): the delegate gets an allowance one below yours and may delegate in turn. 0: a leaf delegate that cannot itself delegate. >0: the delegate may delegate, granting onward allowances strictly smaller than this; must be strictly less than your own allowance. The allowance only takes effect if the chosen agent_type carries the `delegate` tool (the built-in `default` and `subagent` roles do; `explorer` does not)."},
-				"watch_parent":         map[string]any{"type": "boolean", "description": "Grant this child permission to observe your session with job_watch(source=\"parent\"). This does not grant delegation or any transitive watch permission."},
+				"delegation_allowance": map[string]any{"type": "integer", "description": "Default: yours-1; 0=leaf; >0=cap (<yours) if role has delegate."},
+				"watch_parent":         map[string]any{"type": "boolean", "description": "Grant job_watch(source=\"parent\") (non-transitive, no delegation)."},
 				"fork_context": map[string]any{
 					"type": "boolean", "default": false,
-					"description": "Copy the parent's full conversation history into this delegate. Use only when the assignment requires that full context and history. Defaults to false. When selected facts, decisions, or excerpts are sufficient, include them in the prompt and start a clean session. The snapshot excludes the unfinished tool round; the child keeps its own role and permissions. Requires the parent's model and provider.",
+					"description": "Copy parent history (excluding active round); needs parent model/provider. Default false.",
 				},
 				"isolation": map[string]any{
 					"type":        "string",
 					"enum":        []string{"worktree"},
-					"description": "Absent (default): the delegate runs in your current directory. \"worktree\": give the delegate its own managed git worktree lane (branched from your current HEAD), isolated from your checkout and every other lane; only valid when you are in a local git checkout. The delegate cannot create, switch, or remove worktrees itself; if it also carries a delegation_allowance it gets a dispose-only manage_worktree to retire its own sub-delegates' isolation lanes.",
+					"description": "\"worktree\": isolated git branch from HEAD (concurrent writers; delegating children get dispose-only manage_worktree). Default shares cwd.",
 				},
 				"name": map[string]any{
 					"type":        "string",
-					"description": "Short mnemonic name for the delegate (e.g. \"parser-rename\"), surfaced in job_list rows, job_status, and completion notifications so siblings read apart. Accepted for every delegate; addressing never uses it — delegate_send and every other surface stay keyed to the delegate id. With isolation:\"worktree\" it also names the lane's git branch, so `git branch` and merges read clearly; that spawn is refused if the name is invalid or the branch already exists, and an absent name branches with the opaque delegate id.",
+					"description": "Mnemonic label (addressing uses delegate_id); with isolation=\"worktree\", names git branch.",
 				},
 				"sandbox": map[string]any{
 					"type":        "string",
 					"enum":        []string{"off", "read-only", "workspace-write", "restricted"},
-					"description": "Run this delegate under its own sandbox, independent of your session. Each value encodes a sandbox mode and an optional network override: the base mode (e.g. \"read-only\") inherits your session's network; appending \"+nonet\" (e.g. \"read-only+nonet\") disables all IP networking. \"off\" = no confinement; \"read-only\" = reads anywhere but secret paths, no writes (a private temp dir only); \"workspace-write\" = reads anywhere but secret paths, writes the working tree; \"restricted\" = reads and writes only the working tree. All sandboxed modes mask credential/secret paths, give a private temp dir, and confine spawned shell commands too. \"nonet\" alone inherits your session's sandbox mode and disables network. Most useful with isolation=\"worktree\". The modes are a partial order: you may only pick a box at least as confining as your own on BOTH reads and writes — you cannot grant a delegate more access than you have. Omit to inherit your session's sandbox.",
+					"description": "Sandbox (at least as confining as yours on reads/writes): \"off\", \"read-only\" (no writes, temp dir), \"workspace-write\" (writes working tree), \"restricted\" (working tree only). \"+nonet\" disables net; \"nonet\" drops net only. Masks secrets, confines shells.",
 				},
 				"result_schema": map[string]any{
 					"type":                 "object",
-					"description":          "JSON Schema object (draft 2020-12) for structured delegate results: every property value must itself be a schema object, never a bare type name. Evener validates it for initial and resumed turns, surfaces structured_result when valid, and reports structured_result_reason when invalid.",
+					"description":          "Draft 2020-12 JSON Schema (properties must be schema objects); validated on initial/resumed turns -> structured_result or structured_result_reason.",
 					"additionalProperties": true,
 				},
 			},
@@ -549,23 +543,7 @@ func DefJobWatchNamed(eventKinds []string, resultTool string) llm.ToolDefinition
 	if kinds == "" {
 		kinds = "none available this session"
 	}
-	desc := "Wake yourself later: `after_seconds` fires once and `repeat_seconds` fires every interval. " +
-		"Source defaults to `self` for these. Use a timer for state Evener cannot tell you about, such as an external service; your delegates and jobs wake you when they finish, so never set a timer to learn whether one finished. " +
-		"To be nudged if a job is still running later, create a one-shot on yourself with a note naming the job (`after_seconds:600, note:\"job_x should be done; check job_status\"`) and call `job_status` when it fires. " +
-		"`note` is the watch's own prose payload: any create accepts one, and it comes back with every fire so you know why you armed it. " +
-		"Each `create` installs a new watch; to change a note, clear and create, and clear a timer before you report done. The block shows the note with `<` escaped; `inspect` returns it verbatim. " +
-		"Create, inspect, list, or clear standing triggers on a source you can observe. " +
-		"For operation=\"create\", set `source` to `self`, `parent`, a stable delegate ID (`dlg_...`), or a concrete shell `job_id`. " +
-		"`parent` is available only inside a delegate spawned with `watch_parent=true`. " +
-		"Delivery is implicit: matching frames are delivered to the session that created the watch. " +
-		"For cross-session session sources such as `parent`, omitting trigger fields watches all bounded public events for that source. " +
-		"Pick the trigger mode that matches the signal: session event frames use `events` (available: " + kinds + "), `event_filter`, and optional `every`; concrete job output uses `output_match`; periodic progress on a concrete job uses `progress_interval_ms`. " +
-		"`event_filter` narrows assistant.tool events by tool_name and ok/error status. " +
-		"Frames coalesce while the recipient is busy: it sees the latest state, not a backlog. " +
-		"Delivered assistant.tool frames include the matched `status` and the original tool `arguments_json`; use those frame fields as the first evidence before reaching for audit tools. " +
-		ObserverReporting(resultTool) + " " +
-		"A `self` watch on your own events can feed itself: when a frame responds to this watch's earlier frames, it carries a system reminder saying so and how many exchanges deep the loop runs. As the depth grows, stop acting on those frames, and clear the watch if the loop goes on; Evener drops frames past a depth limit. For sustained watching of your own work, use an observer delegate when you can start one, and use a timer for state outside Evener. " +
-		"`operation=\"clear\"` removes a watch by `watch_id`."
+	desc := "Wake yourself later: `after_seconds` (one-shot) or `repeat_seconds` (interval) on `self` for external state; never poll Evener jobs/delegates with timers (completions wake you; arm a one-shot with `note` to recheck a slow job). Clear timers before finishing. Create, inspect, list, or clear watches on a source you can observe (`self`, `parent` if `watch_parent=true`, `dlg_...`, or `job_id`). Delivery is implicit; frames coalesce while busy. Session sources: `events` (available: " + kinds + "; omitted = all public events cross-session), `event_filter`, `every`; jobs: `output_match` or `progress_interval_ms`. `assistant.tool` frames include `status` and `arguments_json`. " + ObserverReporting(resultTool) + " Stop acting on `self` loops as depth grows and clear (prefer an observer delegate)."
 	return llm.ToolDefinition{
 		Name:        "job_watch",
 		Description: desc,
@@ -575,29 +553,29 @@ func DefJobWatchNamed(eventKinds []string, resultTool string) llm.ToolDefinition
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"operation":            map[string]any{"type": "string", "description": "create, list, inspect, or clear.", "enum": []string{"create", "list", "inspect", "clear"}},
-				"watch_id":             map[string]any{"type": "string", "description": "watch_id returned by job_watch create/list; required for inspect and clear."},
-				"source":               map[string]any{"type": []string{"string", "null"}, "description": "`self`, `parent` when granted by delegate(watch_parent=true), a stable delegate ID (`dlg_...`), or a concrete shell job_id visible to this session."},
-				"output_match":         map[string]any{"type": []string{"string", "null"}, "description": "RE2 regex over the job's raw output bytes, scanned through a rolling 4096-byte window (not line by line), so output with no newlines still matches. A single match may be at most 4096 bytes, and each occurrence fires once. Case-sensitive unless (?i). ^ and $ are multiline by default and also anchor at the window edge, so $ matches at the end of the output produced so far. Prefer a narrow pattern (READY) over an open-ended one (.*READY.*). Invalid regex errors at creation."},
-				"progress_interval_ms": map[string]any{"type": []string{"integer", "null"}, "description": "Concrete job source only: periodic progress trigger interval in ms (min 1000, max 3600000; handler clamps later). Use events/event_filter for session event frames."},
-				"after_seconds":        map[string]any{"type": []string{"integer", "null"}, "description": "Fire once this many seconds from now (60 to 86400); source self only."},
-				"repeat_seconds":       map[string]any{"type": []string{"integer", "null"}, "description": "Fire every this many seconds until cleared (60 to 3600); source self only."},
-				"note":                 map[string]any{"type": []string{"string", "null"}, "description": "Delivered with every fire of any watch; use it to say why you armed it and, for a loop, where you are."},
+				"watch_id":             map[string]any{"type": "string", "description": "Watch ID (for inspect/clear)."},
+				"source":               map[string]any{"type": []string{"string", "null"}, "description": "`self`, `parent` (if `watch_parent=true`), `dlg_...`, or `job_id`."},
+				"output_match":         map[string]any{"type": []string{"string", "null"}, "description": "RE2 regex over rolling 4096B job output (max 4096B match, fires once/match, multiline ^/$)."},
+				"progress_interval_ms": map[string]any{"type": []string{"integer", "null"}, "description": "Job progress interval ms (1000-3600000)."},
+				"after_seconds":        map[string]any{"type": []string{"integer", "null"}, "description": "One-shot seconds (60 to 86400); self only."},
+				"repeat_seconds":       map[string]any{"type": []string{"integer", "null"}, "description": "Interval seconds (60 to 3600); self only."},
+				"note":                 map[string]any{"type": []string{"string", "null"}, "description": "Payload returned per fire (< escaped in block, raw in inspect)."},
 				"events": map[string]any{
 					"type":        []string{"array", "null"},
 					"items":       map[string]any{"type": "string"},
-					"description": "Event kinds to watch; [\"*\"] = all visible. Available: " + kinds + ". Watch communicate for result/status messages.",
+					"description": "Events to watch (available: " + kinds + "; [\"*\"] = all; `communicate` for messages).",
 				},
 				"every": map[string]any{
 					"type":        []string{"integer", "null"},
-					"description": "Fire on each Nth occurrence of the single watched event kind. 1 is the default (fire on every occurrence); values above 1 require `events` to contain exactly one kind.",
+					"description": "Fire every Nth event (default 1; >1 requires one kind in events).",
 				},
 				"event_filter": map[string]any{
 					"type":                 []string{"object", "null"},
 					"additionalProperties": false,
-					"description":          "Structured predicate for assistant.tool watches. With events [\"assistant.tool\"], match the emitted tool call by tool_name and/or status. Communicate content is delivered in event.message for the observer task to evaluate.",
+					"description":          "Filter `assistant.tool` events (`communicate` gives `event.message`).",
 					"properties": map[string]any{
-						"tool_name": map[string]any{"type": "string", "description": "For assistant.tool events, match the canonical tool name exactly."},
-						"status":    map[string]any{"type": "string", "description": "For assistant.tool events, match ok or error.", "enum": []string{"ok", "error"}},
+						"tool_name": map[string]any{"type": "string", "description": "Exact tool name."},
+						"status":    map[string]any{"type": "string", "description": "ok or error.", "enum": []string{"ok", "error"}},
 					},
 				},
 			},
@@ -664,7 +642,7 @@ func DefJobListNamed(resultTool string, hasEndReason bool) llm.ToolDefinition {
 	typeEnum := []any{"shell", "delegate"}
 	return llm.ToolDefinition{
 		Name:        "job_list",
-		Description: "List this session's durable shell jobs and stable delegates, newest first; filter by `status` or `type`. Rows include typed identity, status, phase, running_for_ms, quiet_for_ms, and transcript_ref, so this is usually enough to re-orient without a follow-up status call. Completion is notification-driven. " + EndTurnToWait(resultTool, hasEndReason) + " " + ObserverReporting(resultTool) + " Use transcript evidence after an observer's report when you need audit or diagnosis context. The result also includes your active watches. Terminal outcome statuses: completed, failed, command_exited_nonzero, command_killed, exhausted, cancelled, stopped. A short shell can finish before a running-only filter sees it, and an ended delegate becomes idle; when recency matters, list unfiltered or inspect the typed resource by id.",
+		Description: "List jobs, delegates (idle once ended), and watches, newest first (`status`, `phase`, timings, `transcript_ref`). " + EndTurnToWait(resultTool, hasEndReason) + " " + ObserverReporting(resultTool) + " Check transcripts after observer reports for audit or diagnosis. Terminal statuses include `command_exited_nonzero`, `command_killed`; list unfiltered or use `job_status` when short jobs may have finished.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -673,17 +651,17 @@ func DefJobListNamed(resultTool string, hasEndReason bool) llm.ToolDefinition {
 				"status": map[string]any{
 					"type":        "array",
 					"items":       map[string]any{"type": "string", "enum": statusEnum},
-					"description": "Keep only rows in these statuses (any listed value matches).",
+					"description": "Status filter.",
 				},
 				"type": map[string]any{
 					"type":        "array",
 					"items":       map[string]any{"type": "string", "enum": typeEnum},
-					"description": "Keep only rows of these types (any listed value matches).",
+					"description": "Type filter.",
 				},
-				"include_nested":      map[string]any{"type": "boolean", "default": false, "description": "Include nested rows owned by child sessions (spawned under this session's tree)."},
-				"include_descendants": map[string]any{"type": "boolean", "default": false, "description": "Walk the live descendant tree: include visible stable delegates and every live descendant's shell jobs, each annotated with owner_session_id and depth. A dead descendant contributes only retained durable state."},
-				"limit":               map[string]any{"type": "integer", "default": 50, "maximum": 100, "description": "Maximum rows to return (default 50, at most 100)."},
-				"offset":              map[string]any{"type": "integer", "default": 0, "description": "Window start into the newest-first listing; use with limit to page (footer reports 'showing A-B of N jobs')."},
+				"include_nested":      map[string]any{"type": "boolean", "default": false, "description": "Include child-session rows."},
+				"include_descendants": map[string]any{"type": "boolean", "default": false, "description": "Walk live descendant tree."},
+				"limit":               map[string]any{"type": "integer", "default": 50, "maximum": 100, "description": "Max rows (default 50, max 100)."},
+				"offset":              map[string]any{"type": "integer", "default": 0, "description": "Offset (default 0)."},
 			},
 			"required": []any{},
 		},
@@ -967,7 +945,7 @@ func WithCommunicateDelegatePointer(def llm.ToolDefinition) llm.ToolDefinition {
 }
 
 func DefTaskList(effortLevels []string) llm.ToolDefinition {
-	reasoningDesc := "Raise or lower the reasoning budget for this task. On create, \"inherit\" or omitting it uses the session's configured effort. On update, \"inherit\" or omitting it leaves the task's effort unchanged."
+	reasoningDesc := "Effort override (\"inherit\"/omit = unchanged/default)."
 	reasoningSchema := map[string]any{
 		"type":        "string",
 		"description": reasoningDesc,
@@ -980,7 +958,7 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "task_list",
-		Description: "Manage your task list. A bare call (or empty add/update) returns the current list. Use add to append new tasks (type, the field named description <10 words, detailed prompt, optional depends_on/reasoning_effort) and update to change existing tasks (id plus optional status, notes, depends_on, reasoning_effort) — both in the same call when useful. Newly added tasks stay open until started. When you mark a task done, the next eligible task auto-starts and its prompt is injected. Use depends_on to express ordering and notes to record what happened. Only one task may be in_progress at a time; to start a new one, complete or defer the current one in the same update array.",
+		Description: "Manage tasks (bare call lists them). `add` appends open tasks, `update` edits by `id` (`done` auto-starts next). Only one task may be in_progress at a time; to start a new one, complete or defer the current one in the same update array.",
 		// Strict is explicitly false: the OpenAI Responses adapter defaults
 		// strict=true when unset and force-requires every nested property,
 		// which would force strict-mode models to emit "status": "" (enum
@@ -995,7 +973,7 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 			"properties": map[string]any{
 				"add": map[string]any{
 					"type":        "array",
-					"description": "Tasks to add. Omit or [] for none. Each: type, the field named description (<10 words), a detailed prompt, optional depends_on (IDs of existing tasks, or of earlier tasks in this same add array which get sequential IDs), and optional reasoning_effort. Newly added tasks stay open until started.",
+					"description": "Tasks to add.",
 					"items": map[string]any{
 						"type":                 "object",
 						"additionalProperties": false,
@@ -1003,14 +981,14 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 							"type": map[string]any{
 								"type":        "string",
 								"enum":        []string{"research", "implement", "verify", "fix"},
-								"description": "Task type (default implement). Use 'fix' for targeted remediation after a specific failure or review finding.",
+								"description": "Work kind (default implement).",
 							},
 							"description": map[string]any{"type": "string", "description": shortTaskTitleDescription},
-							"prompt":      map[string]any{"type": "string", "description": "Full, self-contained instruction for the task."},
+							"prompt":      map[string]any{"type": "string", "description": "Task instruction."},
 							"depends_on": map[string]any{
 								"type":        "array",
 								"items":       map[string]any{"type": "integer"},
-								"description": "IDs of existing tasks (or earlier tasks in this same add array, which get sequential IDs) this one depends on. Optional.",
+								"description": "Prerequisite task IDs.",
 							},
 							"reasoning_effort": reasoningSchema,
 						},
@@ -1019,18 +997,18 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 				},
 				"update": map[string]any{
 					"type":        "array",
-					"description": "Changes to existing tasks. Omit or [] for none. Each: id plus optional status, notes, depends_on, or reasoning_effort. Omit status to leave it unchanged.",
+					"description": "Task updates.",
 					"items": map[string]any{
 						"type":                 "object",
 						"additionalProperties": false,
 						"properties": map[string]any{
-							"id":     map[string]any{"type": "integer", "description": "ID of the existing task to change."},
-							"status": map[string]any{"type": "string", "enum": []string{"open", "in_progress", "done", "cancelled"}, "description": "New status; omit to leave unchanged. Marking done auto-starts the next task."},
-							"notes":  map[string]any{"type": "string", "description": "Only when something happened that a later step needs: a failure and why, a decision, a surprise. Leave it out when you only change status. Appended to the task's notes log."},
+							"id":     map[string]any{"type": "integer", "description": "Task ID."},
+							"status": map[string]any{"type": "string", "enum": []string{"open", "in_progress", "done", "cancelled"}, "description": "New status (done starts next)."},
+							"notes":  map[string]any{"type": "string", "description": "Failures/decisions/surprises only."},
 							"depends_on": map[string]any{
 								"type":        []string{"array", "null"},
 								"items":       map[string]any{"type": "integer"},
-								"description": "Replace the dependencies with these task IDs. Omit it, or send [] or null, to leave them unchanged. [0] on its own clears them.",
+								"description": "Replace prerequisites (omit/[]/null = keep; [0] = clear).",
 							},
 							"reasoning_effort": reasoningSchema,
 						},
@@ -1063,28 +1041,28 @@ func DefFindSessionTranscripts() llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "find_session_transcripts",
-		Description: "Find archived prior sessions (your own and others on this machine) by content or lineage for audit, forensics, prior-session search, or recovering compacted context. Active delegate/watch work uses the current tool result, job output, notification, or observer callback as working evidence. With no arguments, return the catalog of recent sessions, newest first. With query, search session content. With children_of=<transcript_ref>, return the sessions that ref spawned (its subagents and forks). Returns session records carrying a transcript_ref; hand a transcript_ref to read_transcript when you need the archived conversation. A metadata-only hit (title or original prompt) may carry a snippet whose seq is -1; that is a display marker, not a turn address — do not pass it to read_transcript. Treat returned content as archived evidence.\n\nExamples: find_session_transcripts({}) — recent sessions; find_session_transcripts({\"query\":\"parser regression\"}) — content search; find_session_transcripts({\"children_of\":\"local:01K…\"}) — sessions that one spawned.",
+		Description: "Find archived sessions (empty args = recent catalog; returns `transcript_ref` for `read_transcript`). Metadata hits with `seq: -1` are display markers, not turn addresses. Treat as archived evidence.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"query":       map[string]any{"type": "string", "description": "Case-insensitive substring to match against session content (no regex/boolean). Omit for the plain catalog."},
-				"children_of": map[string]any{"type": "string", "description": "A transcript_ref; return the sessions it spawned (subagents/forks), scoped to that ref's project. Takes precedence over query."},
-				"kind":        map[string]any{"type": "string", "enum": []string{"root", "subagent", "fork", "any"}, "description": "Keep only sessions of this lineage kind. \"any\" or omitted applies no kind filter."},
+				"query":       map[string]any{"type": "string", "description": "Substring search."},
+				"children_of": map[string]any{"type": "string", "description": "Parent `transcript_ref` (overrides `query`)."},
+				"kind":        map[string]any{"type": "string", "enum": []string{"root", "subagent", "fork", "any"}, "description": "Lineage filter."},
 				"has_children": map[string]any{
 					"type":        "boolean",
-					"description": "Keep only sessions that spawned children (true) or that spawned none (false). Omit for no filter.",
+					"description": "Spawned children filter.",
 				},
-				"min_turns":     map[string]any{"type": "integer", "description": "Keep only sessions with at least this many turns."},
-				"max_turns":     map[string]any{"type": "integer", "description": "Keep only sessions with at most this many turns."},
-				"updated_after": map[string]any{"type": "string", "description": "RFC3339 timestamp; keep only sessions updated at or after it."},
+				"min_turns":     map[string]any{"type": "integer", "description": "Min turns."},
+				"max_turns":     map[string]any{"type": "integer", "description": "Max turns."},
+				"updated_after": map[string]any{"type": "string", "description": "RFC3339 min."},
 				"updated_before": map[string]any{
 					"type":        "string",
-					"description": "RFC3339 timestamp; keep only sessions updated at or before it.",
+					"description": "RFC3339 max.",
 				},
-				"scope": map[string]any{"type": "string", "enum": []string{"current_project", "all_projects"}, "description": "Search scope. Defaults to current_project."},
-				"limit": map[string]any{"type": "integer", "description": "Max matches. Defaults to 10, hard max 50."},
+				"scope": map[string]any{"type": "string", "enum": []string{"current_project", "all_projects"}, "description": "Scope (default current_project)."},
+				"limit": map[string]any{"type": "integer", "description": "Max matches (default 10, max 50)."},
 			},
 		},
 	}
@@ -1120,7 +1098,7 @@ func DefDoctorEvener() llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "doctor_evener",
-		Description: "Read-only forensic inspection of evener durable state — the in-process equivalent of the `evener doctor` CLI, run against this session's own state root by default (no shell, no PATH, no cwd dependence). Commands: locate (resolve a selector to its file paths), transcript (render turns; count=<tool> for the structural invocation count; health=true for mechanical per-session metrics), apilog (API-call diagnostics: empties, errors, cache spikes, summary, validate, recompute, health), jobs (job records for a session, or one --job), mutations (client-mutation journal and queue), watches (distinct deliveries, provenance, breaker telemetry; self_loops=true for runaway-only), tree (parent/delegate/observer tree; observers=true), turnids (reserved-turn-id sweep; since=<dur>, bucket=<id>), sessions (enumerate sessions; since=<dur> defaults to " + doctorSessionsDefaultSinceText + ", bucket=<id>), audit (run a runbook's mechanical checks over a session set; runbook required, sessions xor since), plugins (plugin-store health), lifecycle (the declared state machines: states, classes, terminality and legal transitions; takes no selector and reads no state root). First positional in the CLI is the `selector` argument here: " + DoctorEvenerSelectorDialect + ", searched across buckets. Results are the CLI's --json struct shapes. Read-only: it never mutates state (the plugins command's store-writability probe creates and removes one temp file, mirroring the CLI).",
+		Description: "Read-only in-process `evener doctor` (defaults to session state root; `--json` shapes). Commands: `locate`, `transcript` (`count`, `health`), `apilog` (`empty`/`errors`/`cache_spikes`/`summary`/`validate`/`recompute`/`health`), `jobs` (`job_id`), `mutations`, `watches` (`self_loops`), `tree` (`observers`), `turnids` (`since`/`bucket`), `sessions` (`since` default " + doctorSessionsDefaultSinceText + ", `bucket`), `audit` (`runbook`, `sessions` xor `since`), `plugins`, `lifecycle` (no selector/state). `selector`: " + DoctorEvenerSelectorDialect + ".",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -1129,40 +1107,40 @@ func DefDoctorEvener() llm.ToolDefinition {
 				"command": map[string]any{
 					"type":        "string",
 					"enum":        DoctorEvenerCommands(),
-					"description": "Doctor subcommand, matching `evener doctor <cmd>`.",
+					"description": "Subcommand.",
 				},
-				"selector":  map[string]any{"type": "string", "description": "Session selector: " + DoctorEvenerSelectorDialect + ". Required by selector-taking commands; rejected by sessions/audit/turnids/plugins/lifecycle."},
-				"state_dir": map[string]any{"type": "string", "description": "State root override. Defaults to this session's own state root. Rejected by plugins (the plugin store lives in the config root, not a state root) and lifecycle (the machines are compiled declarations)."},
-				"count":     map[string]any{"type": "string", "description": "transcript: print the structural invocation count of this tool name."},
-				"health":    map[string]any{"type": "boolean", "description": "transcript/apilog: mechanical health metrics / one-line API-health verdict."},
-				"range":     map[string]any{"type": "string", "description": "transcript: window of read_transcript turn numbers, with read_transcript's grammar: last:N | start:N | N-M. Omit for the whole transcript; a malformed range also renders it, with range_warning. Fold copies never appear; other entries read_transcript omits have no turn number and can still fall inside the selected window."},
-				"text_max":  map[string]any{"type": "integer", "description": "transcript: byte cap on each turn's rendered text and tool-result previews."},
-				"full_text": map[string]any{"type": "boolean", "description": "transcript: render turns whole, with no byte cap."},
-				"empty":     map[string]any{"type": "boolean", "description": "apilog: only empty responses."},
-				"errors":    map[string]any{"type": "boolean", "description": "apilog: only failed calls."},
+				"selector":  map[string]any{"type": "string", "description": DoctorEvenerSelectorDialect + " (invalid for sessions/audit/turnids/plugins/lifecycle)."},
+				"state_dir": map[string]any{"type": "string", "description": "State root override (invalid for plugins/lifecycle)."},
+				"count":     map[string]any{"type": "string", "description": "transcript: tool call count."},
+				"health":    map[string]any{"type": "boolean", "description": "transcript/apilog: health verdict."},
+				"range":     map[string]any{"type": "string", "description": "transcript: last:N|start:N|N-M."},
+				"text_max":  map[string]any{"type": "integer", "description": "transcript: turn preview byte cap."},
+				"full_text": map[string]any{"type": "boolean", "description": "transcript: unclipped turns."},
+				"empty":     map[string]any{"type": "boolean", "description": "apilog: empty responses."},
+				"errors":    map[string]any{"type": "boolean", "description": "apilog: failed calls."},
 				"cache_spikes": map[string]any{
 					"type":        "boolean",
-					"description": "apilog: only calls whose uncached input >= threshold.",
+					"description": "apilog: uncached >= threshold.",
 				},
-				"threshold": map[string]any{"type": "integer", "description": "apilog: uncached-input-token floor for cache_spikes."},
-				"summary":   map[string]any{"type": "boolean", "description": "apilog: render only the per-session aggregate."},
-				"validate":  map[string]any{"type": "boolean", "description": "apilog: whole-history integrity scan; the result carries clean=false when any problem is found."},
+				"threshold": map[string]any{"type": "integer", "description": "apilog: cache_spikes floor."},
+				"summary":   map[string]any{"type": "boolean", "description": "apilog: aggregate only."},
+				"validate":  map[string]any{"type": "boolean", "description": "apilog: integrity scan."},
 				"recompute": map[string]any{
 					"type":        "boolean",
-					"description": "apilog: re-extract text/tool-call counts from stored bodies for rows recorded empty.",
+					"description": "apilog: recount empty rows.",
 				},
-				"job_id":   map[string]any{"type": "string", "description": "jobs: scope to one job_id."},
-				"watch_id": map[string]any{"type": "string", "description": "watches: scope to one watch_id."},
+				"job_id":   map[string]any{"type": "string", "description": "jobs: scope to job_id."},
+				"watch_id": map[string]any{"type": "string", "description": "watches: scope to watch_id."},
 				"self_loops": map[string]any{
 					"type":        "boolean",
-					"description": "watches: only watches where the runaway fuse fired.",
+					"description": "watches: runaway-fuse only.",
 				},
-				"depth":     map[string]any{"type": "integer", "description": "tree: max depth to expand; 0 or omitted means the max (50)."},
+				"depth":     map[string]any{"type": "integer", "description": "tree: max depth (default 50)."},
 				"observers": map[string]any{"type": "boolean", "description": "tree: include observer edges."},
-				"since":     map[string]any{"type": "string", "description": "sessions/audit/turnids: only sessions with last activity within this duration (e.g. 120h). sessions defaults to " + doctorSessionsDefaultSinceText + "; audit and turnids have no default."},
-				"bucket":    map[string]any{"type": "string", "description": "sessions/turnids: scope to one bucket (project id). Enumerating every bucket is already the default (the CLI --all flag is that default made explicit, so it has no tool argument)."},
-				"runbook":   map[string]any{"type": "string", "description": "audit: runbook name, resolved from the bundled doctoring-evener skill's runbooks/."},
-				"sessions":  map[string]any{"type": "string", "description": "audit: comma-separated session selectors (mutually exclusive with since)."},
+				"since":     map[string]any{"type": "string", "description": "sessions/audit/turnids: duration (e.g. 120h; sessions default " + doctorSessionsDefaultSinceText + ")."},
+				"bucket":    map[string]any{"type": "string", "description": "sessions/turnids: bucket id (default all)."},
+				"runbook":   map[string]any{"type": "string", "description": "audit: doctoring-evener runbook name."},
+				"sessions":  map[string]any{"type": "string", "description": "audit: comma-separated selectors (xor since)."},
 			},
 			"required": []string{"command"},
 		},
@@ -1176,27 +1154,7 @@ func DefDoctorEvener() llm.ToolDefinition {
 // description and enforced by the handler, not the schema. Each arg's own
 // description names the operations that read it.
 func DefManageWorktree() llm.ToolDefinition {
-	desc := "Manage git worktrees for isolated, parallel, or risky work — a scratch lane to try something that might not pan out, " +
-		"parallel exploration of alternative approaches, or isolating a delegate's changes from the parent checkout. " +
-		"This is not for ordinary branch creation or switching; use plain git commands for that. " +
-		"Operations: create (make a new worktree from `name` and optional `base_ref`, default the active HEAD, then enter it); " +
-		"list (show known worktrees, plus any unmanaged worktrees found under the managed root); " +
-		"switch (enter an existing worktree by `name` or `path`, exactly one); " +
-		"adopt (take over an unmanaged worktree listed under the managed root by its `path`, so it can be switched to by " +
-		"name, removed and pruned like any other; nothing is ever adopted automatically); " +
-		"exit (return to the main checkout); remove (delete a worktree by `name`; `delete_branch` also deletes its branch, " +
-		"`force` overrides provenance/merge gating, `force_dirty` overrides the refusal to discard uncommitted changes); " +
-		"prune (remove worktrees that have no unmerged work — unchanged or already-merged lanes, including ones left behind " +
-		"by finished sessions — the one-call way to clean up; with orphaned_delegate_days it also releases the locks of " +
-		"delegate lanes whose parent session is gone or long-inactive — crash residue no other path may unlock); " +
-		"unlock (release a direct worktree-isolated delegate's lane lock by its delegate `id` without retiring it — the " +
-		"parent-only recovery path when that delegate can no longer be reached or revived; its resumability, worktree, " +
-		"branch and uncommitted work stay untouched, the lane becomes switchable, and a later send re-locks it); " +
-		"dispose (retire a delegate's isolation worktree lane by its delegate `id` once you are done with its work — unlocks, " +
-		"removes the worktree, deletes its branch, and marks the delegate disposed; `force` overrides the refusal to discard " +
-		"unmerged commits, `force_dirty` overrides the refusal to discard uncommitted changes). " +
-		"Subsequent tool calls after create/switch/exit operate inside the resulting checkout. There is no merge operation: " +
-		"to land a lane's work, exit and merge its branch from the main checkout with plain git."
+	desc := "Manage git worktrees for isolated, parallel, or risky work (not ordinary branch work; use plain git commands). Ops: `create` (`name`, `base_ref` default HEAD; enters it); `list`; `switch` (`name` xor `path`); `adopt` (unmanaged `path` from `list`); `exit` (to main checkout); `remove` (`name`, `delete_branch`, `force`, `force_dirty`); `prune` (removes lanes with no unmerged work; `orphaned_delegate_days` unlocks gone/inactive parents' lanes); `unlock` (parent recovery: release `id` lock keeping lane); `dispose` (retire `id` lane/branch; `force`/`force_dirty`). `create`/`switch`/`exit` change cwd; merge by `exit`ing + plain git."
 	return llm.ToolDefinition{
 		Name:        "manage_worktree",
 		Description: desc,
@@ -1206,53 +1164,53 @@ func DefManageWorktree() llm.ToolDefinition {
 			"properties": map[string]any{
 				"operation": map[string]any{
 					"type":        "string",
-					"description": "create, list, switch, adopt, exit, remove, prune, unlock, or dispose.",
+					"description": "Operation.",
 					"enum":        []string{"create", "list", "switch", "adopt", "exit", "remove", "prune", "unlock", "dispose"},
 				},
 				"name": map[string]any{
 					"type":        "string",
-					"description": "Worktree name; also used as the branch name. Required for create; for switch, exactly one of name/path; required for remove.",
+					"description": "Worktree/branch name.",
 				},
 				"id": map[string]any{
 					"type":        "string",
-					"description": "For unlock: the delegate id (dlg_…) whose isolation lane lock to release without retiring it. For dispose: the delegate id whose isolation worktree lane to retire.",
+					"description": "Delegate id (`dlg_…`).",
 				},
 				"base_ref": map[string]any{
 					"type":        "string",
-					"description": "For create: commit-ish to branch from. Defaults to the active HEAD.",
+					"description": "Base commit-ish (default HEAD).",
 				},
 				"path": map[string]any{
 					"type":        "string",
-					"description": "For switch: path to an existing worktree. Exactly one of name/path. For adopt: the path of an unmanaged worktree, as reported in list's unmanaged section.",
+					"description": "Worktree path (`switch`/`adopt`).",
 				},
 				"force": map[string]any{
 					"type":        "boolean",
-					"description": "For remove/dispose: override the merge-safety gating (unmanaged sidecar or unmerged branch deletion for remove; a lane with unmerged commits for dispose). Does NOT discard uncommitted changes — use force_dirty for that. Default false.",
+					"description": "Override merge/unmerged checks (keeps dirty check).",
 				},
 				"force_dirty": map[string]any{
 					"type":        "boolean",
-					"description": "For remove/dispose: proceed even if the worktree has uncommitted changes (they are discarded). Separate from force so overriding a merge refusal cannot silently discard an edit, and vice versa. Default false.",
+					"description": "Discard uncommitted changes.",
 				},
 				"delete_branch": map[string]any{
 					"type":        "boolean",
-					"description": "For remove: also delete the worktree's branch. Default false.",
+					"description": "Also delete branch (default false).",
 				},
 				"orphaned_delegate_days": map[string]any{
 					"type":        "number",
-					"description": "For prune: also release delegate-lane locks whose parent session provably cannot act as the disposer — its own disposal already ran (the store records the delegate's isolation disposal), or the session is gone or inactive at least this many days. Removal still requires the ordinary unchanged/merged gates; a released lane with unmerged work stays put, unlocked and visible to the merge and force paths. 0 (default) keeps the locked-lane rule absolute. A positive value below the supported minimum (one minute plus the refresh cadence's tick, ~0.00072 days) is refused: the activity evidence a live tree refreshes is only as fresh as that window, so a shorter threshold could release a lane under a running delegate.",
+					"description": "Unlock orphan delegate lanes inactive >= N days (min ~0.00072; 0 keeps locks).",
 				},
 				"limit": map[string]any{
 					"type":        "integer",
 					"default":     15,
 					"minimum":     1,
 					"maximum":     15,
-					"description": "For list: maximum worktree entries to return under the managed root (default 15, at most 15).",
+					"description": "Max entries (default/max 15).",
 				},
 				"offset": map[string]any{
 					"type":        "integer",
 					"default":     0,
 					"minimum":     0,
-					"description": "For list: 0-based start index into worktrees under the managed root (default 0). Use next_offset to advance.",
+					"description": "Start offset (default 0).",
 				},
 			},
 			"required": []string{"operation"},
@@ -1314,23 +1272,23 @@ func DefReadTranscript() llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "read_transcript",
-		Description: "Read retained evidence by transcript_ref. A session ref (from find_session_transcripts or a delegate result) keeps the existing semantic transcript contract: markdown by default, optional outline/jsonl, range windows, and expand_turn as exact transcript_v2_jsonl in fixed 16 KiB pages continued with offset_bytes. Session refs do not support output_match. A stable delegate's session ref reads its conversation; delegates never use job: refs. A `job:<job_id>` ref comes from job_status/job_list, a windowed shell result, or the `read with:` line of a watch frame and reads shell output only; job-control tools remain scoped even when the ref is readable. With no offset_bytes or output_match, a job: ref keeps the existing shell-process markdown view. Explicit offset_bytes selects a fixed 16 KiB raw page in lifetime byte coordinates; output_match selects bounded RE2 line search with 0–10 context_lines and is limited to 65,536 characters so the complete exact JSON envelope remains below the registry backstop. Job page/search responses include job_status and honest total_bytes/retained_start_bytes; output_unavailable means retention pruned the requested prefix. range and expand_turn are session-only; outline/jsonl are invalid for job: refs. format=markdown is a no-op for every job view, including paging/search; other explicit formats are invalid. An `artifact:<id>` ref is exact generic truncated tool output retained only for the current root session tree; an expired or unknown capability returns artifact_expired. Artifact reads default to raw page 0, also support offset_bytes or output_match/context_lines, always have retained_start_bytes 0, omit job_status, and reject every explicit format plus range/expand_turn with invalid_request. Post-open artifact read failures return path-free artifact_unavailable errors. Page and search continuations carry lifetime offset_bytes. API-log selectors are not part of this tool. Completion is notification-driven; do not poll this waiting for job completion.",
+		Description: "Read retained evidence by `transcript_ref`. A session ref (or delegate; never `job:`): `format` (markdown/outline/jsonl), `range`, `expand_turn` (exact `transcript_v2_jsonl`, fixed 16 KiB pages via `offset_bytes`), no `output_match`. `job:<id>` (from `job_status`/`job_list`, windowed shell, or watch frame): shell output as markdown, `offset_bytes` (fixed 16 KiB raw lifetime pages), or `output_match` (RE2, `context_lines` 0–10, <=65,536 chars); pages include `job_status`, `total_bytes`/`retained_start_bytes` (`output_unavailable` if pruned); rejects `range`/`expand_turn`/non-markdown `format`. `artifact:<id>` (root tree only; `artifact_expired`/`artifact_unavailable`): raw page 0, `offset_bytes`/`output_match`/`context_lines`, `retained_start_bytes` 0, no `job_status`, rejects `format`/`range`/`expand_turn`. Do not poll.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"transcript_ref": map[string]any{"type": "string", "description": "Opaque session ref, bare session id, current (default when omitted), job:<job_id>, or artifact:<id>."},
-				"format":         map[string]any{"type": []any{"string", "null"}, "enum": []any{"outline", "markdown", "jsonl", nil}, "description": "markdown (default) = readable evidence. Session refs also support outline and jsonl."},
-				"range":          map[string]any{"type": []any{"string", "null"}, "description": "For session refs, turn-number window: \"12-40\" | \"last:40\" | \"start:40\". doctor_evener transcript uses the same turn numbers. Omit for the default last 40, or for just the expanded turn with expand_turn."},
-				"expand_turn":    map[string]any{"type": []any{"integer", "null"}, "minimum": 0, "description": "Session markdown only: any semantic Turn N to expand as byte-paged exact transcript_v2_jsonl. Without range the markdown shows only Turn N and its paired tool results; with range it shows that window plus Turn N. Continue with offset_bytes from the returned handle."},
-				"offset_bytes":   map[string]any{"type": "integer", "minimum": 0, "description": "Ref-specific byte offset: session expansion continuation, or job:/artifact: raw page start or search start. Job offsets are lifetime offsets."},
-				"output_match":   map[string]any{"type": []any{"string", "null"}, "maxLength": 65_536, "description": "RE2 expression for bounded complete-line search of job: or artifact: retained output. Omit it (or send an empty/null materialized default) for the default retained-output view. Maximum 65,536 characters keeps the complete exact JSON response below the registry backstop."},
+				"transcript_ref": map[string]any{"type": "string", "description": "Session ref/id, current (default), job:<id>, or artifact:<id>."},
+				"format":         map[string]any{"type": []any{"string", "null"}, "enum": []any{"outline", "markdown", "jsonl", nil}, "description": "markdown (default), outline, or jsonl (session only)."},
+				"range":          map[string]any{"type": []any{"string", "null"}, "description": "Session turn window: \"12-40\", \"last:40\" (default), or \"start:40\"."},
+				"expand_turn":    map[string]any{"type": []any{"integer", "null"}, "minimum": 0, "description": "Session markdown: byte-paged transcript_v2_jsonl for any semantic Turn N (`offset_bytes` continues)."},
+				"offset_bytes":   map[string]any{"type": "integer", "minimum": 0, "description": "Byte offset (session expansion or job:/artifact: raw page/search)."},
+				"output_match":   map[string]any{"type": []any{"string", "null"}, "maxLength": 65_536, "description": "RE2 line search for job:/artifact: (max 65,536 chars)."},
 				"context_lines": map[string]any{
 					"type":        []any{"integer", "null"},
 					"minimum":     0,
 					"maximum":     10,
-					"description": "Lines before and after each output_match; requires output_match. Default 0.",
+					"description": "Context lines for output_match (0-10, default 0).",
 				},
 			},
 		},
