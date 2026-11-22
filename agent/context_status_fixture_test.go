@@ -59,7 +59,7 @@ func benchmarkContextStatusSampling(b *testing.B, sample func(*Session)) {
 		b.Run(tc.name, func(b *testing.B) {
 			s, _ := newContextStatusLargeFixture(tc.turns)
 			if tc.measured {
-				s.contextMgr.RecordInputTokens(40000, 5000)
+				s.contextMgr.RecordInputTokens(40000, 5000, "")
 			}
 			b.ReportAllocs()
 			b.ResetTimer()

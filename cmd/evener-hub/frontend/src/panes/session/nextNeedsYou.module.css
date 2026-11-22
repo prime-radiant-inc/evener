@@ -41,14 +41,6 @@
   font-size: var(--font-size-caption);
 }
 
-.nextDot {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: var(--radius-pill);
-  background: var(--attention);
-}
-
 .nextLabel {
   min-width: 0;
   overflow: hidden;

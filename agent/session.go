@@ -586,6 +586,12 @@ type Session struct {
 	newestPublishedFoldRevision   int           // publication sequence (historyRevision at publish) of the newest fold publication, set inside publishFoldTransaction's s.mu window. Last-write-wins deferred effects (compaction naming, task/artifact steering) are suppressed — at flush time and again at async naming completion — for any fold with an older publication revision: suppression binds to PUBLICATION order, never flush order, so an older fold flushing while the newest is published-but-unflushed stays silent, and the newest fold's own flush can never be suppressed. Guarded by mu.
 	responsesContinuationDisabled map[responsesContinuationDisabledKey]bool
 
+	// requestMeasurement is the history prefix and request shape the round's
+	// model request was prepared from. recordResponseUsage records the
+	// provider's input count against it, so a reply that settles after a rewrite
+	// cannot charge its count to history it never sent. Guarded by mu.
+	requestMeasurement requestMeasurement
+
 	// currentRoundRecorder is the in-flight round's salvage recorder: per retry
 	// group, every attempt's stats and the best partial that group streamed.
 	// Installed fresh at each round's start (so a round that fails before its
@@ -1197,9 +1203,10 @@ type Session struct {
 	// read-before-write guardrail
 	readFiles   map[string]bool
 	readFilesMu sync.RWMutex
-	// priorReads remembers each read_file path and range with the file's state
-	// at that read. Guarded by readFilesMu.
-	priorReads map[readRangeKey]priorRead
+	// priorReads remembers the line ranges already read from each read_file
+	// path, with the file's state and the turn of each read. Guarded by
+	// readFilesMu.
+	priorReads map[string][]priorReadSpan
 
 	// SESSION_END deduplication: emitted exactly once across ProcessInput and Close.
 	// Guarded by mu; read and written only in session_end.go.
@@ -1335,11 +1342,6 @@ type Session struct {
 
 	// stuck detection
 	loopDetectionCount int // how many times loop detection has fired
-	// loopEffortEscalated records that loop detection bumped the session's
-	// reasoning effort ("Your reasoning effort has been increased"). While set,
-	// a lower per-task effort override no longer wins over the escalated
-	// configured effort — the steering message must not lie. Guarded by s.mu.
-	loopEffortEscalated bool
 
 	// transcript writer (nil when StateDir is empty, or when opening it failed)
 	transcript *transcript.Writer
@@ -1482,6 +1484,11 @@ type Session struct {
 	// re-serializing the list every round (#6406). It is written only where
 	// cachedToolDefs is, and must describe exactly the list beside it.
 	cachedToolDefsJSONBytes int
+	// toolDefsGen counts cachedToolDefs rebuilds. A saved input count covers the
+	// tool list and system prompt the request was measured with, so settlement
+	// reads this to notice a list that changed while the reply streamed.
+	// Guarded by mu.
+	toolDefsGen int
 
 	systemPromptOverride string
 	cachedSystemPrompt   string
@@ -3918,6 +3925,7 @@ func (s *Session) appendAssistantTurnWithAcceptance(resp llm.Response, finalAtte
 		ResponseStorageScopeFingerprint: finalAttempt.StorageScopeFingerprint,
 		ResponseRequestFingerprint:      finalAttempt.RequestFingerprint,
 		ResponseContextMarker:           finalAttempt.ContextMarker,
+		ResponseContextBoundary:         finalAttempt.ContextBoundary,
 		ResultToolName:                  s.resultToolNameOverride(),
 		RoundID:                         s.roundIDForModelCall(),
 	}

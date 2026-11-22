@@ -325,6 +325,16 @@ type ResumeRequest struct {
 	// child exit, or caller/Stop cancellation instead of guessing its duration.
 	CompletionOwned bool
 	ActiveResume    *ActiveResume // hub-owned launch lifetime; never serialized on AppWire
+	// PendingLaunch is the per-session in-flight claim this launch owns. The
+	// spawner settles it when the child registers, dies, or is reaped, unless it
+	// has handed the child to a detached supervisor first. Never serialized.
+	PendingLaunch *PendingLaunch
+	// Caller is the request context exactly as it arrived, before registration
+	// replaced it with the launch's cancellable context. A launch may keep its
+	// child alive only when THIS context ended; Force Stop cancels the launch
+	// context too, and a deliberate stop must still reap the child. Nil when the
+	// launcher has no caller context to offer.
+	Caller context.Context
 }
 
 // DaemonTarget is the daemon a rendezvous entry names, as the process verifier

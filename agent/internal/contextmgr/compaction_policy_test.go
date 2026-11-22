@@ -39,7 +39,7 @@ func policyHistory() []schema.Turn {
 // usageAt records a measurement of fraction of the window as the last request's
 // input size, with no turns appended since.
 func usageAt(cm *Manager, history []schema.Turn, fraction float64) {
-	cm.RecordInputTokens(int(fraction*float64(millionTokenWindow)), len(history))
+	cm.RecordInputTokens(int(fraction*float64(millionTokenWindow)), len(history), "")
 }
 
 func compactionLayers(layers *[]string) func(events.EventKind, events.EventData) {

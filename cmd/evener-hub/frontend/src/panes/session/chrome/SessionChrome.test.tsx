@@ -35,6 +35,7 @@ import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { installMobileViewport } from "../testing/mobileViewport";
 import "../../sessionPanels";
 import { type SessionChromePlacement, SessionChrome as SessionChromeView } from "./SessionChrome";
+import { SessionInspectionActions } from "./SessionInspectionActions";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -155,6 +156,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetFindRequestsForTests();
   resetActivitySidebarStoreForTests();
   resetFocusedActivityScopeForTests();
   // @ts-expect-error jsdom has no matchMedia by default; individual mobile
@@ -422,6 +424,82 @@ test("Session actions asks this pane's conversation to open Find, except where t
   expect(screen.getByRole("menuitem", { name: /rename/i })).toBeTruthy();
   expect(screen.queryByRole("menuitem", { name: /find/i })).toBeNull();
   vi.unstubAllGlobals();
+});
+
+test("header Find asks the owning pane's conversation to open Find", async () => {
+  const user = userEvent.setup();
+  const asked = renderHook(() => useFindRequest("ref_header_find", "pane_header_find"));
+  render(<SessionInspectionActions sessionRef="ref_header_find" paneId="pane_header_find" />);
+
+  await user.click(screen.getByRole("button", { name: "Find in session" }));
+
+  expect(asked.result.current?.target).toBe("pane_header_find");
+});
+
+test("header actions place Find before Overview", () => {
+  render(<SessionInspectionActions sessionRef="ref_header_order" />);
+  const find = screen.getByRole("button", { name: "Find in session" });
+  const overview = screen.getByRole("button", { name: "Overview" });
+
+  expect(find.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+});
+
+test("header Overview toggles the session's sidebar and selected state", async () => {
+  const user = userEvent.setup();
+  workspaceStore.setState({
+    panes: [{ id: "pane_header_overview", type: "session", params: { ref: "ref_header_overview" }, slot: "main" }],
+    focusedPaneId: "pane_header_overview",
+  });
+  render(<SessionInspectionActions sessionRef="ref_header_overview" paneId="pane_header_overview" />);
+  const overview = screen.getByRole("button", { name: "Overview" });
+
+  expect(overview.getAttribute("aria-pressed")).toBe("false");
+  await user.click(overview);
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref: "ref_header_overview" });
+  expect(overview.getAttribute("aria-pressed")).toBe("true");
+  await user.click(overview);
+  expect(activitySidebarStore.getState().open).toBe(false);
+  expect(overview.getAttribute("aria-pressed")).toBe("false");
+});
+
+test("an ordinary session's composer leaves Find and Overview to the header but keeps Verbosity", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  const ref = "ref_composer_header_actions";
+  fake.on("thread/read", () => readResponse(ref));
+  await threadsStore.getState().ensureThread(ref);
+  const restoreSession = registerPaneForTests({
+    id: "session",
+    title: () => "session",
+    component: lazy(() => Promise.resolve({ default: () => null })),
+  });
+  try {
+    const paneId = workspaceStore.getState().openPane("session", { ref });
+    render(<SessionChromeView ref={ref} paneId={paneId} placement="composer" />);
+
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    expect(screen.queryByRole("menuitem", { name: /find/i })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /Overview/ })).toBeNull();
+    await user.click(screen.getByRole("menuitem", { name: "Verbosity…" }));
+    expect(screen.getByRole("dialog", { name: "Verbosity" })).toBeTruthy();
+  } finally {
+    restoreSession();
+  }
+});
+
+test("a composer without an ordinary session header retains its inspection menu actions", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  const ref = "ref_composer_without_header";
+  fake.on("thread/read", () => readResponse(ref));
+  await threadsStore.getState().ensureThread(ref);
+
+  render(<SessionChromeView ref={ref} placement="composer" />);
+
+  await user.click(screen.getByRole("button", { name: "Session actions" }));
+  expect(screen.getByRole("menuitem", { name: "Overview" })).toBeTruthy();
+  expect(screen.getByRole("menuitem", { name: "Find in session…" })).toBeTruthy();
+  expect(screen.getByRole("menuitem", { name: "Verbosity…" })).toBeTruthy();
 });
 
 test("desktop Session actions opens the full Verbosity Dialog, persists selection, and restores trigger focus", async () => {

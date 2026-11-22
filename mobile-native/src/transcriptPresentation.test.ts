@@ -233,9 +233,9 @@ it.each(["chat", "intent", "tools", "activity", "full"] as const)(
 	},
 );
 
-// The 2026-10-03 ruling recorded at conversationOnly: Chat drops daemon
-// steering notices, cards included, and keeps the conversation's own rows.
-it("drops daemon steering notices at Chat and keeps them at Intent", () => {
+// Chat drops daemon steering and every thinking row, cards included, and keeps
+// the conversation's own rows and ordinary failures.
+it("drops daemon steering and thinking at Chat and keeps them at Intent", () => {
 	const items: MobileTimelineItem[] = [
 		{ kind: "user", id: "u1", text: "Go on" },
 		{ kind: "user", id: "steered", text: "Use the other file", origin: "steered" },
@@ -280,6 +280,23 @@ it("drops daemon steering notices at Chat and keeps them at Intent", () => {
 			tone: "system",
 			text: "Model changed to GLM 5.3 Vision",
 		},
+		{
+			kind: "activity",
+			id: "thinking-live",
+			label: "reasoning",
+			family: "reasoning",
+			state: "running",
+			detail: {},
+		},
+		{
+			kind: "activity",
+			id: "thinking-settled",
+			label: "reasoning",
+			family: "reasoning",
+			state: "completed",
+			detail: {},
+		},
+		{ kind: "failure", id: "thought-failed", title: "Thought unavailable", detail: "hidden", thought: true },
 		{ kind: "assistant", id: "a1", markdown: "On it", streaming: false },
 		{ kind: "failure", id: "f1", title: "Provider exploded", detail: "" },
 	];

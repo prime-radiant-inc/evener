@@ -51,15 +51,6 @@ func replaceSteeringMarkerTurn(ctx context.Context, history *[]schema.Turn, mark
 	reportPostFoldInjection(ctx, len(*history)-preLen+removedBeforeBaseline)
 }
 
-// resetMeasurement drops the exact API token measurement so the next pressure
-// reading falls back to char/4 estimates that reflect in-place history changes.
-func (cm *Manager) resetMeasurement() {
-	cm.mu.Lock()
-	cm.lastInputTokens = 0
-	cm.historyLenAtMeasure = 0
-	cm.mu.Unlock()
-}
-
 // applyLayer runs one compaction layer over *history and reports it: fn
 // returns the new history, EventContextCompaction carries the turn and token
 // counts measured under prof, and a turn of headKind at the head of the result
@@ -137,7 +128,7 @@ func (cm *Manager) compactWithCheckpoint(
 	// One profile snapshot covers the window check and every diagnostic below:
 	// a model switch landing mid-compaction would otherwise bill one layer's
 	// numbers by another model's thinking rule and image family.
-	prof, _, _, _ := cm.profileSnapshot()
+	prof, _, _, _, _ := cm.profileSnapshot()
 	cw, _ := effectiveWindowOf(prof)
 	if cw <= 0 {
 		return
@@ -163,7 +154,7 @@ func (cm *Manager) compactWithCheckpoint(
 	// mutations). Without this, stale lastInputTokens causes both layers
 	// to cascade in a single pass.
 	if p >= th.checkpoint {
-		cm.resetMeasurement()
+		cm.ClearInputMeasurement()
 	}
 
 	// Layer 1: Checkpoint at the configured trigger.
@@ -193,7 +184,7 @@ func (cm *Manager) compactWithCheckpoint(
 
 	// Reset token measurement after compaction since history content changed.
 	if compacted {
-		cm.resetMeasurement()
+		cm.ClearInputMeasurement()
 	}
 }
 
@@ -309,11 +300,11 @@ func (cm *Manager) forceCompact(
 	suppressSummaryFailureRepeats bool,
 ) (summarized bool) {
 	// Reset token measurement so inter-layer estimates use char/4.
-	cm.resetMeasurement()
+	cm.ClearInputMeasurement()
 
 	// One profile snapshot covers every diagnostic below, for the same reason as
 	// MaybeCompact: the readings describe one model's rules, not two half-read.
-	prof, _, _, _ := cm.profileSnapshot()
+	prof, _, _, _, _ := cm.profileSnapshot()
 
 	// Layer 1: Deterministic checkpoint.
 	var checkpointed []schema.Turn
@@ -338,6 +329,6 @@ func (cm *Manager) forceCompact(
 	}
 
 	// Reset token measurement after compaction.
-	cm.resetMeasurement()
+	cm.ClearInputMeasurement()
 	return summarized
 }

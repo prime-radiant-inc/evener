@@ -87,6 +87,12 @@ type ContinuationMetadata struct {
 	ContextMarker           string
 	StoragePolicyLabel      string
 	StorageScopeFingerprint string
+	// ContextBoundary names the context boundary (the latest checkpoint or
+	// summary turn) in force when the request was planned. A response planned
+	// before a compaction published a new boundary carries the old name, so a
+	// later request can refuse to continue from it and send full history
+	// instead (#6734).
+	ContextBoundary string
 }
 
 // AuthScopeIdentity identifies the authenticated scope (auth source plus hashed

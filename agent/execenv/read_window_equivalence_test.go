@@ -27,10 +27,14 @@ type readWindowCase struct {
 	body string
 	off  *int
 	lim  *int
-	// want is the text the long-standing offset/limit contract renders for the
-	// unpadded body. The rows are a machine contract — a caller copies lines
-	// out of this display — so pinning them is legitimate.
-	want string
+	// wantRows is the exact numbered-row prefix rendered for the unpadded body
+	// (empty for empty/past-EOF notices, which assert structured meta fields).
+	wantRows   string
+	wantStart  int
+	wantEnd    int
+	wantTotal  int
+	wantPastEF bool
+	exactWhole bool // true when unbounded whole file (no footer)
 }
 
 // readFileWindowGolden pins the rendered window for the edge cases issue #6427
@@ -38,30 +42,30 @@ type readWindowCase struct {
 // UTF-8, blank lines, an empty file, an offset past the end, and the
 // no-offset/no-limit defaults.
 var readFileWindowGolden = []readWindowCase{
-	{name: "empty file", body: "", want: "   1\t\n"},
-	{name: "only newline", body: "\n", want: "   1\t\n"},
-	{name: "single line LF", body: "a\n", want: "   1\ta\n"},
-	{name: "single line no newline", body: "a", want: "   1\ta\n"},
-	{name: "single line CRLF", body: "a\r\n", want: "   1\ta\n"},
-	{name: "lone CR at end", body: "a\r", want: "   1\ta\r\n"},
-	{name: "CR mid line", body: "a\rb\nc", want: "   1\ta\rb\n   2\tc\n"},
-	{name: "CRLF two rows", body: "a\r\nb\r\n", want: "   1\ta\n   2\tb\n"},
-	{name: "CRLF window", body: "a\r\nb\r\nc\r\n", off: new(2), lim: new(1), want: "   2\tb\n"},
-	{name: "trailing blank lines", body: "a\n\n\n", want: "   1\ta\n   2\t\n   3\t\n"},
-	{name: "mixed endings", body: "a\r\nb\nc\r\n", want: "   1\ta\n   2\tb\n   3\tc\n"},
-	{name: "no trailing newline offset 2", body: "a\nb", off: new(2), lim: new(10), want: "   2\tb\n"},
-	{name: "offset past single line", body: "a\n", off: new(2), lim: new(10), want: ""},
-	{name: "offset past many lines", body: "a\nb\nc\n", off: new(9), lim: new(10), want: ""},
-	{name: "window from the middle", body: "1\n2\n3\n4\n5\n", off: new(3), lim: new(2), want: "   3\t3\n   4\t4\n"},
-	{name: "limit longer than the file", body: "1\n2\n", off: new(1), lim: new(100), want: "   1\t1\n   2\t2\n"},
-	{name: "non-UTF-8 bytes", body: "caf\xe9 \xff\xfe line\nsecond \x80 line\n", want: "   1\tcaf\xe9 \xff\xfe line\n   2\tsecond \x80 line\n"},
-	{name: "non-UTF-8 unterminated tail", body: "ok\n\xff\xfe\xfd", off: new(2), lim: new(1), want: "   2\t\xff\xfe\xfd\n"},
-	{name: "blank first line", body: "\nsecond\nthird\n", want: "   1\t\n   2\tsecond\n   3\tthird\n"},
-	{name: "CRLF without final terminator", body: "a\r\nb\r", want: "   1\ta\n   2\tb\r\n"},
-	{name: "offset only", body: "a\nb\nc\n", off: new(2), want: "   2\tb\n   3\tc\n"},
-	{name: "limit only", body: "a\nb\nc\n", lim: new(2), want: "   1\ta\n   2\tb\n"},
-	{name: "offset zero is the default", body: "a\nb\n", off: new(0), want: "   1\ta\n   2\tb\n"},
-	{name: "limit zero is the default", body: "a\nb\n", lim: new(0), want: "   1\ta\n   2\tb\n"},
+	{name: "empty file", body: "", wantStart: 0, wantEnd: 0, wantTotal: 0},
+	{name: "only newline", body: "\n", wantRows: "1\t\n", wantStart: 1, wantEnd: 1, wantTotal: 1, exactWhole: true},
+	{name: "single line LF", body: "a\n", wantRows: "1\ta\n", wantStart: 1, wantEnd: 1, wantTotal: 1, exactWhole: true},
+	{name: "single line no newline", body: "a", wantRows: "1\ta\n", wantStart: 1, wantEnd: 1, wantTotal: 1, exactWhole: true},
+	{name: "single line CRLF", body: "a\r\n", wantRows: "1\ta\n", wantStart: 1, wantEnd: 1, wantTotal: 1, exactWhole: true},
+	{name: "lone CR at end", body: "a\r", wantRows: "1\ta\r\n", wantStart: 1, wantEnd: 1, wantTotal: 1, exactWhole: true},
+	{name: "CR mid line", body: "a\rb\nc", wantRows: "1\ta\rb\n2\tc\n", wantStart: 1, wantEnd: 2, wantTotal: 2, exactWhole: true},
+	{name: "CRLF two rows", body: "a\r\nb\r\n", wantRows: "1\ta\n2\tb\n", wantStart: 1, wantEnd: 2, wantTotal: 2, exactWhole: true},
+	{name: "CRLF window", body: "a\r\nb\r\nc\r\n", off: new(2), lim: new(1), wantRows: "2\tb\n", wantStart: 2, wantEnd: 2, wantTotal: 3},
+	{name: "trailing blank lines", body: "a\n\n\n", wantRows: "1\ta\n2\t\n3\t\n", wantStart: 1, wantEnd: 3, wantTotal: 3, exactWhole: true},
+	{name: "mixed endings", body: "a\r\nb\nc\r\n", wantRows: "1\ta\n2\tb\n3\tc\n", wantStart: 1, wantEnd: 3, wantTotal: 3, exactWhole: true},
+	{name: "no trailing newline offset 2", body: "a\nb", off: new(2), lim: new(10), wantRows: "2\tb\n", wantStart: 2, wantEnd: 2, wantTotal: 2},
+	{name: "offset past single line", body: "a\n", off: new(2), lim: new(10), wantStart: 0, wantEnd: 0, wantTotal: 1, wantPastEF: true},
+	{name: "offset past many lines", body: "a\nb\nc\n", off: new(9), lim: new(10), wantStart: 0, wantEnd: 0, wantTotal: 3, wantPastEF: true},
+	{name: "window from the middle", body: "1\n2\n3\n4\n5\n", off: new(3), lim: new(2), wantRows: "3\t3\n4\t4\n", wantStart: 3, wantEnd: 4, wantTotal: 5},
+	{name: "limit longer than the file", body: "1\n2\n", off: new(1), lim: new(100), wantRows: "1\t1\n2\t2\n", wantStart: 1, wantEnd: 2, wantTotal: 2},
+	{name: "non-UTF-8 bytes", body: "caf\xe9 \xff\xfe line\nsecond \x80 line\n", wantRows: "1\tcaf\xe9 \xff\xfe line\n2\tsecond \x80 line\n", wantStart: 1, wantEnd: 2, wantTotal: 2, exactWhole: true},
+	{name: "non-UTF-8 unterminated tail", body: "ok\n\xff\xfe\xfd", off: new(2), lim: new(1), wantRows: "2\t\xff\xfe\xfd\n", wantStart: 2, wantEnd: 2, wantTotal: 2},
+	{name: "blank first line", body: "\nsecond\nthird\n", wantRows: "1\t\n2\tsecond\n3\tthird\n", wantStart: 1, wantEnd: 3, wantTotal: 3, exactWhole: true},
+	{name: "CRLF without final terminator", body: "a\r\nb\r", wantRows: "1\ta\n2\tb\r\n", wantStart: 1, wantEnd: 2, wantTotal: 2, exactWhole: true},
+	{name: "offset only", body: "a\nb\nc\n", off: new(2), wantRows: "2\tb\n3\tc\n", wantStart: 2, wantEnd: 3, wantTotal: 3},
+	{name: "limit only", body: "a\nb\nc\n", lim: new(2), wantRows: "1\ta\n2\tb\n", wantStart: 1, wantEnd: 2, wantTotal: 3},
+	{name: "offset zero is the default", body: "a\nb\n", off: new(0), wantRows: "1\ta\n2\tb\n", wantStart: 1, wantEnd: 2, wantTotal: 2, exactWhole: true},
+	{name: "limit zero is the default", body: "a\nb\n", lim: new(0), wantRows: "1\ta\n2\tb\n", wantStart: 1, wantEnd: 2, wantTotal: 2, exactWhole: true},
 }
 
 // TestReadFileWindowGoldenRows pins the exact rows for every golden case on the
@@ -80,19 +84,32 @@ func TestReadFileWindowGoldenRows(t *testing.T) {
 			if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
 				t.Fatalf("write fixture: %v", err)
 			}
-			got, err := env.ReadFileCtx(t.Context(), path, tc.off, tc.lim)
+			got, meta, err := env.ReadFileRichCtx(t.Context(), path, tc.off, tc.lim)
 			if err != nil {
 				t.Fatalf("offset/limit read: %v", err)
 			}
-			if got != tc.want {
-				t.Fatalf("offset/limit read = %q, want %q", got, tc.want)
+			if got == "" {
+				t.Fatalf("read returned empty string; empty/past-EOF should return non-empty notice")
 			}
-			whole, raw, err := env.ReadFileAndBytesCtx(t.Context(), path, tc.off, tc.lim)
+			if meta.StartLine != tc.wantStart || meta.EndLine != tc.wantEnd || meta.TotalLines != tc.wantTotal || meta.PastEOF != tc.wantPastEF {
+				t.Fatalf("meta = %+v, want start=%d end=%d total=%d pastEOF=%v", meta, tc.wantStart, tc.wantEnd, tc.wantTotal, tc.wantPastEF)
+			}
+			if tc.exactWhole {
+				if got != tc.wantRows {
+					t.Fatalf("whole read = %q, want %q", got, tc.wantRows)
+				}
+			} else if tc.wantRows != "" && !strings.HasPrefix(got, tc.wantRows) {
+				t.Fatalf("bounded read = %q, want prefix %q", got, tc.wantRows)
+			}
+			whole, raw, wholeMeta, err := env.ReadFileRichAndBytesCtx(t.Context(), path, tc.off, tc.lim)
 			if err != nil {
 				t.Fatalf("whole-file read: %v", err)
 			}
 			if whole != got {
 				t.Fatalf("whole-file read = %q, offset/limit read = %q", whole, got)
+			}
+			if wholeMeta != meta {
+				t.Fatalf("whole-file meta = %+v, offset/limit meta = %+v", wholeMeta, meta)
 			}
 			if string(raw) != tc.body {
 				t.Fatalf("whole-file read returned %q, want the file's bytes %q", raw, tc.body)
@@ -261,12 +278,10 @@ func TestReadFileWindowAgreesOnAMixedFile(t *testing.T) {
 	}
 }
 
-// TestReadFileWindowKeepsTheTruncationInputIdentical pins the input the tool
-// layer's truncation indicators are computed from. read_file's character-cap
-// cut, its OmittedLines window and its "unchanged since your earlier read"
-// marker are all derived from the text a read returns, never from the file, so
-// returning the same text for the same arguments keeps every indicator exactly
-// where it was.
+// TestReadFileWindowKeepsTheTruncationInputIdentical pins that a large multi-line
+// read stops cleanly at DefaultReadMaxBytes on a line boundary and agrees
+// byte-for-byte (and meta-for-meta) between ReadFileRichCtx and
+// ReadFileRichAndBytesCtx.
 func TestReadFileWindowKeepsTheTruncationInputIdentical(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -279,20 +294,24 @@ func TestReadFileWindowKeepsTheTruncationInputIdentical(t *testing.T) {
 		t.Fatalf("write many.txt: %v", err)
 	}
 	off, lim := 1, DefaultReadLines
-	want, _, err := env.ReadFileAndBytesCtx(t.Context(), path, &off, &lim)
+	want, _, wantMeta, err := env.ReadFileRichAndBytesCtx(t.Context(), path, &off, &lim)
 	if err != nil {
 		t.Fatalf("whole-file read: %v", err)
 	}
-	got, err := env.ReadFileCtx(t.Context(), path, &off, &lim)
+	got, gotMeta, err := env.ReadFileRichCtx(t.Context(), path, &off, &lim)
 	if err != nil {
 		t.Fatalf("offset/limit read: %v", err)
 	}
 	if got != want {
 		t.Fatalf("offset/limit read diverged from the whole-file read over %d rows", 5000)
 	}
-	// The default window is 2000 rows and the file holds more than that: both
-	// entries must render exactly the default count.
-	if rows := strings.Count(got, "\n"); rows != DefaultReadLines {
-		t.Fatalf("default window rendered %d rows, want %d", rows, DefaultReadLines)
+	if gotMeta != wantMeta {
+		t.Fatalf("meta diverged: got=%+v want=%+v", gotMeta, wantMeta)
+	}
+	if !gotMeta.Truncated || gotMeta.TruncatedBy != "chars" || gotMeta.StartLine != 1 || gotMeta.EndLine >= DefaultReadLines || gotMeta.TotalLines != 5000 {
+		t.Fatalf("gotMeta = %+v", gotMeta)
+	}
+	if len(got) > DefaultReadMaxBytes+512 {
+		t.Fatalf("output len = %d, want <= %d", len(got), DefaultReadMaxBytes+512)
 	}
 }

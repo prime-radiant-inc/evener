@@ -9,6 +9,7 @@ import "../../panes/session";
 import { resetConnectionStoreForTests } from "../../stores/connection";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetPrefsStoreForTests } from "../../stores/prefs";
+import { sessionReadProgress } from "../../stores/readProgress";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { resetToastStoreForTests } from "../../widgets/toast/store";
 import { toastKinds } from "../../widgets/toast/toastTestUtils";
@@ -21,6 +22,7 @@ import { Rail } from "./Rail";
 
 beforeEach(() => {
   localStorage.clear();
+  sessionReadProgress.reset();
   resetNavigationStoreForTests();
   resetPrefsStoreForTests();
   resetThreadsStoreForTests();
@@ -446,4 +448,34 @@ test("a needs-you row from a later page stays in the band across a refresh and a
   // failed one: the danger hue moved to a4 with the hub's fresh copy.
   expect(within(rowFor("local:a3")).getByTestId("rail-row-why-text").dataset.hue).not.toBe("danger");
   expect(pageRow()).toBeNull();
+});
+
+test("an unread session marks its row, and reading it clears the mark without leaving Needs you", async () => {
+  const unreadTurn = "2026-11-22T04:00:00.000Z";
+  const readTurn = "2026-11-22T03:00:00.000Z";
+  const { hub, announce } = await mountRail({
+    live: [
+      session("new", { state: "awaiting", ask_pending: true, turn_ended_at: unreadTurn, unseen: true }),
+      session("read", { state: "awaiting", ask_pending: true, turn_ended_at: readTurn }),
+    ],
+  });
+
+  // Two sessions that need a person; only one has a reply the browser has not read.
+  expect(within(rowFor("local:new")).getByTestId("rail-row-unread")).toBeTruthy();
+  expect(within(rowFor("local:read")).queryByTestId("rail-row-unread")).toBeNull();
+
+  // Opening the session records its read mark at once, before the hub's rows
+  // catch up. The needs-you band does not move: reading is not answering.
+  const unread = hub.live[0];
+  if (unread === undefined || unread.turn_ended_at === undefined) throw new Error("fixture row lost its turn end");
+  const seenThrough = Date.parse(unread.turn_ended_at);
+  act(() => sessionReadProgress.markRead(unread, seenThrough));
+  await waitFor(() => expect(within(rowFor("local:new")).queryByTestId("rail-row-unread")).toBeNull());
+  expect(rowsOf("needsYou")).toContain("local:new");
+
+  // The hub's next build carries the mark.
+  hub.live[0] = { ...unread, unseen: false };
+  await announce();
+  expect(within(rowFor("local:new")).queryByTestId("rail-row-unread")).toBeNull();
+  expect(rowsOf("needsYou")).toContain("local:new");
 });

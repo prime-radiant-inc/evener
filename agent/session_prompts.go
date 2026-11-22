@@ -201,6 +201,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 		ResultToolName:           s.resultToolName(),
 		UserInstructionOverride:  strings.TrimSpace(s.cfg.UserInstructionOverride),
 		ProjectDocs:              s.projectDocs,
+		IncludeProjectDocs:       s.includeProjectDocs(),
 		ActivatedSkillBodies:     append([]string(nil), s.cfg.spawn.activatedSkillBodies...),
 	}
 	var sources []promptSource
@@ -287,6 +288,14 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	}
 
 	return data, sources
+}
+
+// includeProjectDocs reports whether the system prompt renders the personal and
+// repo instruction files. The docs load for every session, but the read-only
+// explorer role omits them so its context stays small (#2579); every other
+// session, working delegates included, obeys the same files its root does.
+func (s *Session) includeProjectDocs() bool {
+	return s.cfg.AgentName != "explorer"
 }
 
 func (s *Session) canPromptDelegation() bool {

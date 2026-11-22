@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/hooks"
@@ -1783,6 +1784,25 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			return "", progressed, abortErr
 		}
 
+		if strip, stripped := stripLiveRollover(&resp); stripped {
+			// A stored response ID is the continuation anchor a later request
+			// chains to (Google's interaction, the Responses API's
+			// previous_response_id), and the provider's copy of it still holds
+			// the forged suffix this strip removed. Drop the anchor so the next
+			// request replays full history instead of continuing from that copy.
+			anchor := ""
+			if resp.ID != "" {
+				anchor = fmt.Sprintf(", and cleared continuation anchor %q", resp.ID)
+				resp.ID = ""
+			}
+			s.emitDiagnosticWarning(events.WarningData{
+				Code:   "live_rollover_stripped",
+				Source: string(diagnostic.SourceEvener),
+				Message: fmt.Sprintf(
+					"Intercepted a forged turn boundary (%s) in a live model response: stripped %d bytes from %d content parts and dropped %d tool calls%s",
+					strip.Marker, strip.Bytes, strip.Parts, strip.ToolCalls, anchor),
+			})
+		}
 		txt := resp.Text()
 		lastText = txt
 		calls := resp.ToolCalls()

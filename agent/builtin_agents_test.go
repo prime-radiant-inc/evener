@@ -601,54 +601,30 @@ func TestSpawnAgent_ReasoningEffortApplied(t *testing.T) {
 
 // --- stuck escalation ---
 
-func TestStuckEscalation_BumpsReasoning(t *testing.T) {
+// TestStuckEscalation_DoesNotChangeReasoningEffort: loop detection steers the
+// model, but it must not silently raise the session's reasoning effort. The
+// configured effort survives every detection tier.
+func TestStuckEscalation_DoesNotChangeReasoningEffort(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
+	for _, effort := range []string{"", "low", "medium", "high", "max"} {
+		t.Run("effort="+effort, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			c := llm.NewClient()
+			c.Register(&fakeAdapter{name: "openai"})
 
-	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
-	defer sess.Close()
+			sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{ReasoningEffort: effort}))
+			defer sess.Close()
 
-	// First stuck: should bump to high
-	msg := sess.stuckEscalation(1)
-	if !strings.Contains(msg, "stuck in a loop") {
-		t.Errorf("first escalation should mention stuck, got: %s", msg)
-	}
-	if sess.cfg.ReasoningEffort != "high" {
-		t.Errorf("first escalation should bump to high, got: %s", sess.cfg.ReasoningEffort)
-	}
-
-	// Second stuck: should tell agent to abandon approach
-	msg = sess.stuckEscalation(2)
-	if !strings.Contains(msg, "different strategy") {
-		t.Errorf("second escalation should say different strategy, got: %s", msg)
-	}
-
-	// Third: should tell agent to report
-	msg = sess.stuckEscalation(3)
-	if !strings.Contains(msg, "report what you tried") {
-		t.Errorf("third escalation should tell agent to report, got: %s", msg)
-	}
-}
-
-func TestStuckEscalation_BumpsFromHighToMax(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		ReasoningEffort: "high",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sess.Close()
-
-	sess.stuckEscalation(1)
-	if sess.cfg.ReasoningEffort != "max" {
-		t.Errorf("should bump high to max (per-model clamp lowers it to the model's top tier), got: %s", sess.cfg.ReasoningEffort)
+			for count := 1; count <= 3; count++ {
+				if msg := sess.stuckEscalation(count); msg == "" {
+					t.Fatalf("stuckEscalation(%d) returned no steering", count)
+				}
+				if got := sess.cfg.ReasoningEffort; got != effort {
+					t.Errorf("stuckEscalation(%d) changed ReasoningEffort from %q to %q", count, effort, got)
+				}
+			}
+		})
 	}
 }
 

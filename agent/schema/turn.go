@@ -541,10 +541,16 @@ type Turn struct {
 	OriginalOrdinal *uint64 `json:"original_ordinal,omitempty"`
 	// OwningTurnID identifies the logical turn that owns an ordinary steering
 	// entry. It differs from StableTurnID, which identifies the client mutation.
-	OwningTurnID           string `json:"owning_turn_id,omitempty"`
-	ResponseContextMarker  string `json:"response_context_marker,omitempty"`
-	ResponseEndpoint       string `json:"response_endpoint,omitempty"`
-	ResponseEndpointFamily string `json:"response_endpoint_family,omitempty"`
+	OwningTurnID string `json:"owning_turn_id,omitempty"`
+	// ResponseContextBoundary names the context boundary the request that
+	// produced this assistant turn was planned against: the latest checkpoint
+	// or summary turn at planning time, or "none" when history held none. It is
+	// empty on turns recorded before the field existed, which continuation
+	// eligibility leaves unchecked.
+	ResponseContextBoundary string `json:"response_context_boundary,omitempty"`
+	ResponseContextMarker   string `json:"response_context_marker,omitempty"`
+	ResponseEndpoint        string `json:"response_endpoint,omitempty"`
+	ResponseEndpointFamily  string `json:"response_endpoint_family,omitempty"`
 	// ResponseID is the provider's response identifier (from llm.Response.ID),
 	// recorded on assistant turns and surfaced in ATIF trajectory export.
 	ResponseID                      string `json:"response_id,omitempty"`

@@ -69,47 +69,56 @@ func DefMemoryWrite() llm.ToolDefinition {
 	}, "memory_write")
 }
 
-func DefReadFile() llm.ToolDefinition {
+// readFileCoreDescription is the description every read_file vision regime
+// shares. A regime appends its own vision_prompt sentence, or none when the
+// model sees images and PDFs inline.
+const readFileCoreDescription = "Read a file from the filesystem. Returns line-numbered content for text files (up to 2000 lines or ~48 KB per call; lines over 2000 chars are truncated, and passing limit=1 on a line returns it uncut up to ~48 KB). Prefer reading whole files or 300-500+ line windows over small 50-100 line slices, batch independent read_file calls in parallel, and use read_file instead of shell cat/head/tail/sed. Pass a negative offset (e.g. offset=-100) to read from the end of a file. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image (downscaled if oversized). For PDF files, returns the document (pass pages for PDFs over 10 pages or 20 MiB)."
+
+// defReadFile builds read_file's shared schema so the three vision regimes and
+// memory_read cannot drift on the core description, offset, limit, or pages.
+// visionSuffix is appended to the description, and visionParamDesc becomes the
+// vision_prompt property; both are empty in Regime 1, which omits vision_prompt
+// entirely (#6190).
+func defReadFile(visionSuffix, visionParamDesc string) llm.ToolDefinition {
+	props := map[string]any{
+		"file_path": map[string]any{"type": "string", "description": "Path of the file to read."},
+		"offset":    map[string]any{"type": "integer", "description": "1-based start line (default 1), or a negative integer to read from the end of the file (e.g. -100 reads the last 100 lines)."},
+		"limit":     map[string]any{"type": "integer", "description": "Maximum lines to return (default 2000; output is also bounded at ~48 KB). Pass 1 to read a single long line uncut."},
+		"pages":     map[string]any{"type": "string", "description": "PDF reads only: 1-based page or inclusive page range (e.g. \"1-5\" or \"3\"; max 20 pages per call). Required for PDFs over 10 pages or 20 MiB."},
+	}
+	if visionParamDesc != "" {
+		props["vision_prompt"] = map[string]any{"type": "string", "description": visionParamDesc}
+	}
 	return llm.ToolDefinition{
 		Name:        "read_file",
-		Description: "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis. When reading an image or PDF, put what you hope to learn in the `vision_prompt` argument — the system will provide a detailed description alongside the file.",
+		Description: readFileCoreDescription + visionSuffix,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
-			"properties": map[string]any{
-				"file_path":     map[string]any{"type": "string", "description": "Path of the file to read."},
-				"offset":        map[string]any{"type": "integer", "description": "For large files read in slices: 1-based start line (default 1)."},
-				"limit":         map[string]any{"type": "integer", "description": "For large files read in slices: line count to return, default 2000."},
-				"vision_prompt": map[string]any{"type": "string", "description": "Image/PDF reads only: describe what factual data you need extracted and why. Vision is an OCR + description service, not an analyst. It will extract and describe what you ask for; interpretation and classification are your job. Concrete asks work best: transcribe, list, extract, locate."},
-			},
-			"required": []string{"file_path"},
+			"properties":           props,
+			"required":             []string{"file_path"},
 		},
 	}
+}
+
+// DefReadFile returns read_file for Regime 3, where images and PDFs both use
+// the vision side-channel.
+func DefReadFile() llm.ToolDefinition {
+	return defReadFile(" When reading an image or PDF, put what you hope to learn in the `vision_prompt` argument — the system will provide a detailed description alongside the file.", "Image/PDF reads only: describe what factual data you need extracted and why. Vision is an OCR + description service, not an analyst. It will extract and describe what you ask for; interpretation and classification are your job. Concrete asks work best: transcribe, list, extract, locate.")
 }
 
 // DefReadFileNativeVision returns read_file tailored for Regime 1: neither images
 // nor PDFs run the side-channel. vision_prompt is omitted from advertised
 // properties and the description omits the vision_prompt sentence (#6190).
 func DefReadFileNativeVision() llm.ToolDefinition {
-	def := DefReadFile()
-	def.Description = "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis."
-	props := def.Parameters["properties"].(map[string]any)
-	delete(props, "vision_prompt")
-	return def
+	return defReadFile("", "")
 }
 
 // DefReadFilePDFVisionOnly returns read_file tailored for Regime 2: images are
 // native inline, while PDFs use the side-channel. vision_prompt is kept and
 // scoped to PDF files in both the tool description and parameter description (#6190).
 func DefReadFilePDFVisionOnly() llm.ToolDefinition {
-	def := DefReadFile()
-	def.Description = "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis. When reading a PDF, put what you hope to learn in the `vision_prompt` argument — the system will provide a detailed description alongside the file."
-	props := def.Parameters["properties"].(map[string]any)
-	props["vision_prompt"] = map[string]any{
-		"type":        "string",
-		"description": "PDF reads only: describe what factual data you need extracted and why. Vision is an OCR + description service, not an analyst. It will extract and describe what you ask for; interpretation and classification are your job. Concrete asks work best: transcribe, list, extract, locate.",
-	}
-	return def
+	return defReadFile(" When reading a PDF, put what you hope to learn in the `vision_prompt` argument — the system will provide a detailed description alongside the file.", "PDF reads only: describe what factual data you need extracted and why. Vision is an OCR + description service, not an analyst. It will extract and describe what you ask for; interpretation and classification are your job. Concrete asks work best: transcribe, list, extract, locate.")
 }
 
 func DefWriteFile() llm.ToolDefinition {
@@ -150,7 +159,7 @@ func defEditFile(readTool, writeTool string) llm.ToolDefinition {
 		Name: "edit_file",
 		Description: fmt.Sprintf(
 			"Apply one or more exact replacements to an existing file atomically. "+
-				"Read the file first with %s and never copy line-number prefixes (like '12\\t') into old_string or new_string. "+
+				"Read the file first with %s and never copy line-number prefixes (like '12\\t' or '12:') into old_string or new_string. "+
 				"Batch disjoint changes in the same file into one call via edits rather than separate calls. "+
 				"Every edits[].old_string matches the original file (not after earlier edits) and must not overlap any other edit; merge nearby changes into one entry. "+
 				"Keep each old_string as small as possible while unique, and use %s when replacing most or all of a file. "+

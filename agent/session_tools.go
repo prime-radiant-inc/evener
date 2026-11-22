@@ -403,13 +403,13 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		return skippedToolResult(call, err)
 	}
 	var res tool.ExecResult
-	var readKey readRangeKey
+	var readPath string
 	var readBefore readStamp
 	trackRepeat := false
 	if call.Name == "read_file" && prep.PrevalErr == "" {
-		if key, ok := s.readFileKey(call.Arguments); ok {
-			readBefore, trackRepeat = statReadStamp(key.path)
-			readKey = key
+		if path, ok := s.readFilePath(call.Arguments); ok {
+			readBefore, trackRepeat = statReadStamp(path)
+			readPath = path
 		}
 	}
 	if prep.PrevalErr != "" {
@@ -447,7 +447,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	}
 	res.DurationMS = time.Since(toolStart).Milliseconds()
 	if trackRepeat && !res.IsError {
-		s.noteReadFileRepeat(readKey, readBefore, &res)
+		s.noteReadFileRepeat(readPath, readBefore, &res)
 	}
 	// M7: on a sandbox denial in an interactive root session, raise a human approval
 	// card and block HERE — between dispatch and the TOOL_CALL_END emit, so the tool
@@ -1061,8 +1061,12 @@ func (s *Session) hasTranscriptWriter() bool {
 
 // trackReadFile records that a file has been read in this session.
 func (s *Session) trackReadFile(path string) {
+	// Resolve before taking readFilesMu: resolveFilePath calls currentEnv,
+	// which takes s.mu, and a fold publishing under s.mu takes readFilesMu
+	// (clearPriorReads), so the reverse order here would deadlock the two.
+	abs := s.resolveFilePath(path)
 	s.readFilesMu.Lock()
-	s.readFiles[s.resolveFilePath(path)] = true
+	s.readFiles[abs] = true
 	s.readFilesMu.Unlock()
 }
 

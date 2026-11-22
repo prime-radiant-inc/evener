@@ -92,7 +92,7 @@ function modelWithTurns(turns: TurnModel[]): ThreadModel {
 }
 
 // The palette reads the session's active display config to know which calls
-// project as action rows; messages and thoughts read the same at any level.
+// and thoughts project as searchable rows; message text is not level-gated.
 const VIEW = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" });
 const TOOLS = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
 const CHAT = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
@@ -272,8 +272,8 @@ test("findInSessionMatches reads a thought a later item overtook as settled", ()
   expect(findInSessionMatches(tail, "check the assumptions", VIEW).map((hit) => hit.itemId)).toEqual(["think"]);
 });
 
-// The chat preset shows only the placeholder before a live thought and hides a
-// settled one, so no thought summary is text Find could land on there.
+// Chat shows no reasoning row, so none of a thought's summary is text Find
+// could land on there.
 test("findInSessionMatches offers no thought summary the view hides", () => {
   const settled = modelWithTurns([
     turn("t1", [itemWith("think", { type: "reasoning", reasoningSummaries: [["check **the assumptions**"]] })]),
@@ -292,11 +292,11 @@ test("findInSessionMatches offers no thought summary the view hides", () => {
   expect(findInSessionMatches(live, "live thought needle", CHAT)).toEqual([]);
   expect(findInSessionMatches(live, "live thought needle", VIEW).map((hit) => hit.itemId)).toEqual(["think"]);
 
-  // A failed thought is a critical row with a neutral label, shown in chat too.
+  // A failed thought is reasoning too: Chat hides its row and offers no hit.
   const failed = modelWithTurns([
     turn("t1", [itemWith("think", { type: "reasoning", status: "failed", reasoningSummaries: [["the plan"]] })]),
   ]);
-  expect(findInSessionMatches(failed, "thought failed", CHAT).map((hit) => hit.itemId)).toEqual(["think"]);
+  expect(findInSessionMatches(failed, "thought failed", CHAT)).toEqual([]);
 });
 
 test("findInSessionMatches scans an action's rationale but not a system notice's description", () => {

@@ -689,6 +689,46 @@ func TestToolRegistry_SearchTruncationMarkersAreNotes(t *testing.T) {
 	}
 }
 
+// TestToolRegistry_IsTruncatedOutput pins the text predicate doctor's
+// transcript health uses to the output each truncation strategy really emits
+// through a Registry dispatch. Plain text is not counted, including
+// apply_patch's own compacted-diff note, which is not a registry limit.
+func TestToolRegistry_IsTruncatedOutput(t *testing.T) {
+	cases := []struct {
+		name  string
+		limit schema.ToolOutputLimit
+	}{
+		{"tail_chars", schema.ToolOutputLimit{MaxChars: 200, Strategy: schema.TruncTail}},
+		{"head_tail_chars", schema.ToolOutputLimit{MaxChars: 200, Strategy: schema.TruncHeadTail}},
+		{"head_tail_lines", schema.ToolOutputLimit{MaxChars: 100_000, MaxLines: 10, Strategy: schema.TruncHeadTail}},
+		{"head_count_lines", schema.ToolOutputLimit{MaxChars: 20_000, MaxLines: 10, Strategy: schema.TruncHeadCount}},
+		{"head_count_chars", schema.ToolOutputLimit{MaxChars: 200, MaxLines: 20, Strategy: schema.TruncHeadCount}},
+	}
+	body := strings.Repeat("body\n", 400)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := NewRegistry()
+			registerTextResultTool(t, reg, TextResult{Output: body}, tc.limit)
+			got := executeTestTool(t, reg)
+			if !got.Truncated {
+				t.Fatal("expected Truncated")
+			}
+			if !IsTruncatedOutput(got.Output) {
+				t.Fatalf("IsTruncatedOutput(%q) = false, want true", got.Output)
+			}
+		})
+	}
+
+	for _, plain := range []string{"", "file contents\n", "  ... 3 more lines omitted\n", "narrow the pattern to see the rest"} {
+		if IsTruncatedOutput(plain) {
+			t.Errorf("IsTruncatedOutput(%q) = true, want false", plain)
+		}
+	}
+	if !IsTruncatedOutput("[WARNING: Tool output was truncated. First 100 characters were removed.]") {
+		t.Error("legacy truncation wording is not recognized")
+	}
+}
+
 func TestToolRegistry_TruncatedMarkerCollisionsStillReportLimiting(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -1333,7 +1373,7 @@ func TestDefaultToolLimit_MatchesSpecTable(t *testing.T) {
 		strategy schema.TruncationStrategy
 	}
 	cases := []want{
-		{tool: "read_file", chars: 50_000, lines: 0, strategy: schema.TruncHeadTail},
+		{tool: "read_file", chars: 50_000, lines: 0, strategy: schema.TruncHead},
 		{tool: "shell", chars: 30_000, lines: 512, strategy: schema.TruncHeadTail},
 		{tool: "grep", chars: 20_000, lines: 200, strategy: schema.TruncHeadCount},
 		{tool: "glob", chars: 20_000, lines: 500, strategy: schema.TruncHeadCount},

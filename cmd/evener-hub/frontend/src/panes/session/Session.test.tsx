@@ -1125,7 +1125,7 @@ test("desktop session panes own separate location and activity footers", async (
   expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "jobs" });
 });
 
-test("same-session pane menus open Overview from their own instance", async ({ onTestFinished }) => {
+test("same-session pane headers open Overview from their own instance", async ({ onTestFinished }) => {
   vi.mocked(ComposerModule.Composer).mockRestore();
   vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
   onTestFinished(stubSessionSlots);
@@ -1155,10 +1155,11 @@ test("same-session pane menus open Overview from their own instance", async ({ o
     ),
   ).toEqual(["overview-first", "overview-second"]);
   const user = userEvent.setup();
-  const secondMenu = menus[1];
-  if (!secondMenu) throw new Error("second session menu is missing");
-  await user.click(secondMenu);
-  await user.click(screen.getByRole("menuitem", { name: "Overview" }));
+  const headers = await screen.findAllByRole("button", { name: "Overview" });
+  expect(headers).toHaveLength(2);
+  const secondHeader = headers[1];
+  if (!secondHeader) throw new Error("second session header is missing");
+  await user.click(secondHeader);
   expect(workspaceStore.getState().focusedPaneId).toBe("overview-second");
   expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref });
 });

@@ -53,6 +53,10 @@ losing the conversation that made the evidence relevant.
   Open navigates independently. Neither action should accidentally trigger the other.
   Progressive disclosure costs an extra action to inspect detail; it must not conceal
   the reason to inspect it.
+- **Keep thinking at intent density.** Chat omits reasoning rows. At Intent and above,
+  compact live and settled summaries share the icon rail, sans UI type, title line
+  height, and a `--rhythm-item` vertical inset. Their chevrons disclose the same quiet,
+  italic reading text. Full keeps the richer reasoning presentation.
 - **Keep different facts distinct.** Delegate lifecycle, attention, immutable launch receipt
   and child-authored report answer different questions. A successful launch is not finished
   work; an earlier report is not current activity. Prefer an honest unknown to an inferred
@@ -119,6 +123,14 @@ losing the conversation that made the evidence relevant.
   but separates reading from scanning. Shared size and width preferences remain available.
   Phones reflow speaker rows, controls and evidence rather than shrinking a desktop page;
   wide evidence scrolls within its surface instead of widening the page or shrinking targets.
+- **Keep session reading controls in the header.** Find in session, then Overview, occupy the
+  desktop pane header's action slot; below 900px `StackHost` mounts the same actions as icon
+  buttons with the ordinary touch floor. The ordinary composer menu leaves those two actions to
+  the header and retains Verbosity, turn verbs, and session management. Rail and embedded-column
+  menus keep their existing inspection access. Overview keeps one icon and shows its open state
+  through selected styling. Mobile session titles align left. A session with no real Back
+  destination gets Sessions as its only leading navigation control; a retained parent, valid
+  back-stack destination, or attention Back uses Back instead. Non-session top bars are unchanged.
 - **Keep session status inside its pane.** Every visible desktop session pane ends
   with its own
   flush status footer, never one strip spanning sibling panes. The footer leads with that
@@ -136,7 +148,7 @@ losing the conversation that made the evidence relevant.
   token: `--dock-clearance` in `tokens.css` (`max(0px, env(safe-area-inset-bottom) -
   var(--keyboard-inset, 0px))`). Every dock reads that one value, and it yields when the
   on-screen keyboard covers the band. The working-directory strip follows that shell breakpoint:
-  the narrow phone reads the session's working directory and branch through the session menu's
+  the narrow phone reads the session's working directory and branch through the top bar's
   Overview (About), while a primary-touch phone whose wider landscape viewport uses the desktop
   shell retains the separate status footer. A phone chip shows its
   glyph and a single active count (settled for Tasks); its category name and the full
@@ -1070,13 +1082,14 @@ reduced motion, and each is defined once:
   palette; delegate rows) and stops the moment the status authority stops reporting work. It
   communicates state, not frame throughput or percent complete. Needs-you (a solid dot) and
   failed (a diamond) stay static and shape-distinct.
-- **The pulsing grid.** The transcript's content-free "Thinking…" placeholder, shown for a
-  live reasoning item while the Reasoning content flag is off, uses the catalog `Loader`'s
-  pulsing pixel grid. It renders no reasoning text, disappears once the thought is no longer
-  the turn's current activity, and is the only animation the transcript itself adds. It is a
-  user-facing wait placeholder, not an agent-status indicator, and unlike Cadence it is not
-  activity-gated, so it keeps pulsing if the stream stalls; Cadence's decaying trace remains
-  the honest liveness signal.
+- **The pulsing grid.** At Intent and above, the transcript's compact live "Thinking…"
+  summary while the Reasoning content flag is off uses the catalog `Loader`'s pulsing
+  pixel grid. Its closed summary renders no reasoning text; the disclosure reveals the
+  trace on demand. The grid disappears once the thought is no longer the turn's current
+  activity, and is the only animation the transcript itself adds. It is a user-facing wait
+  placeholder, not an agent-status indicator, and unlike Cadence it is not activity-gated,
+  so it keeps pulsing if the stream stalls; Cadence's decaying trace remains the honest
+  liveness signal.
 - **The streaming caret.** A blinking bar at the end of text that is still streaming, in
   the surrounding ink; it exists only while the text is live.
 

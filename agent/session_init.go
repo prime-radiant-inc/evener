@@ -1252,7 +1252,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		stateDir:                 cfg.StateDir,
 		installID:                resolveInstallationID(cfg, cfg.StateDir),
 		state:                    SessionIdle,
-		loopEffortEscalated:      meta.ReasoningEffortEscalated,
 		events:                   make(chan events.SessionEvent, 256),
 		history:                  resumeHistory,
 		frontierStartupPending:   true,
@@ -1584,9 +1583,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 	}()
 
-	// Seed context manager with the meta's token count.
-	if meta.LastInputTokens > 0 && s.contextMgr != nil {
-		s.contextMgr.RecordInputTokens(meta.LastInputTokens, len(s.history))
+	// Seed the persisted measurement only when this resume restored the target
+	// that produced it and the history still holds the measured prefix. A meta
+	// written before the measured length existed has no prefix to check, and its
+	// count is not trusted rather than charged to the restored history's length.
+	if s.contextMgr != nil && meta.LastInputMeasuredLen != nil {
+		s.contextMgr.RestoreInputMeasurement(meta.LastInputTokens, *meta.LastInputMeasuredLen, meta.LastInputAnchor, meta.LastInputTarget, s.history)
 	}
 
 	// Seed persisted cumulative token totals before the first autosave can
@@ -1743,7 +1745,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		Model:             profile.Model(),
 		Restored:          true,
 		Turns:             s.modelResponses,
-		LastInputTokens:   meta.LastInputTokens,
+		LastInputTokens:   s.contextMgr.LastInputTokens(),
 		ContextWindowSize: profile.ContextWindowSize(),
 		State:             s.WireState(),
 		// TranscriptEntries is the exact count OpenWriterForSession validated
@@ -2193,6 +2195,12 @@ func modelFallbackEligible(err error, policy llm.RetryPolicy) bool {
 	// here rather than left to llm.Classify, which would walk into the wrapped
 	// attempt error and land wherever that happens to classify.
 	if _, ok := errors.AsType[*llm.ProviderUnhealthyError](err); ok {
+		return false
+	}
+	// A response discarded by the per-response tool-call cap indicts the shape
+	// of that one response. Replaying the same request against a fallback model
+	// would let the runaway loose again.
+	if _, ok := errors.AsType[*responseToolCallLimitError](err); ok {
 		return false
 	}
 	switch llm.Classify(err) {
