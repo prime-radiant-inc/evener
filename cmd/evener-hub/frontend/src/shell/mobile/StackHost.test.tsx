@@ -247,6 +247,11 @@ function openConversation(ref: string, parentRef?: unknown): string {
   return id;
 }
 
+async function openSessionsPanel(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+  await user.click(screen.getByRole("button", { name: "Sessions" }));
+  expect(screen.getByRole("dialog", { name: "Sessions" })).toBeTruthy();
+}
+
 class RestoreDockviewApi {
   panels: Array<{ id: string; params: unknown }> = [];
   activePanel: { id: string } | undefined = undefined;
@@ -392,6 +397,53 @@ test("opens the mobile panel when nothing is focused", async () => {
   await findStackedEmptyState("welcome");
   // The panel's Sheet title "Sessions" is the dialog's accessible name
   expect(screen.getByRole("dialog", { name: "Sessions" })).toBeTruthy();
+});
+
+test("a session without a Back destination uses Sessions as its only leading navigation", async () => {
+  const user = userEvent.setup();
+  workspaceStore.getState().openPane("session", { ref: "local:root-navigation" });
+  render(<StackHost />);
+  await screen.findByTestId("topbar-title");
+
+  expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+  await openSessionsPanel(user);
+});
+
+test("a focused session's top bar orders Find before Overview", async () => {
+  workspaceStore.getState().openPane("session", { ref: "local:header-order" });
+  render(<StackHost />);
+  const title = await screen.findByTestId("topbar-title");
+  const topBar = title.parentElement;
+  if (!topBar) throw new Error("session top bar is missing");
+
+  const find = await within(topBar).findByRole("button", { name: "Find in session" });
+  const overview = within(topBar).getByRole("button", { name: "Overview" });
+  expect(find.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+});
+
+test("a session with a retained parent keeps Back instead of Sessions", async () => {
+  const user = userEvent.setup();
+  const parent = openConversation("local:navigation-parent");
+  openConversation("local:navigation-child", "local:navigation-parent");
+  render(<StackHost />);
+  await screen.findByTestId("topbar-title");
+
+  expect(screen.queryByRole("button", { name: "Sessions" })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Back" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe(parent);
+});
+
+test("a session gaining a valid back-stack destination swaps Sessions for Back", async () => {
+  const user = userEvent.setup();
+  const documentPane = workspaceStore.getState().openPane("doc", { ref: "navigation-origin" });
+  render(<StackHost />);
+  await screen.findByText(/doc pane: navigation-origin/);
+
+  await act(async () => workspaceStore.getState().openPane("session", { ref: "local:backstack-navigation" }));
+
+  expect(screen.queryByRole("button", { name: "Sessions" })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Back" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe(documentPane);
 });
 
 test("Activity opened from the mobile drawer supersedes the drawer", async () => {
@@ -1072,7 +1124,7 @@ test.each([
   { reason: "closed pane", parentRef: "local:closed" },
   { reason: "self reference", parentRef: "local:leaf" },
   { reason: "non-transcript/session pane", parentRef: "local:document" },
-])("retained-parent Back: $reason keeps the Welcome fallback without creating a parent", async ({ parentRef }) => {
+])("retained-parent navigation: $reason opens Sessions without creating a parent", async ({ parentRef }) => {
   const workspace = workspaceStore.getState();
   workspace.openPane("session", { ref: "local:owner" }, { slot: "main" });
   workspace.openPane("doc", { ref: "local:document" }, { slot: "secondary" });
@@ -1083,12 +1135,11 @@ test.each([
   render(<StackHost />);
   expect(workspaceStore.getState().focusedPaneId).toBe(leaf);
   const user = userEvent.setup();
-  await user.click(screen.getByRole("button", { name: "Back" }));
-  await findStackedEmptyState("welcome");
-  const state = workspaceStore.getState();
-  expect(state.panes.find((pane) => pane.id === state.focusedPaneId)?.type).toBe("welcome");
-  expect(state.panes.filter((pane) => pane.type !== "welcome")).toEqual(retained);
   expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+  await openSessionsPanel(user);
+  const state = workspaceStore.getState();
+  expect(state.focusedPaneId).toBe(leaf);
+  expect(state.panes).toEqual(retained);
 });
 
 test("retained-parent Back: a non-transcript's parentRef does not override the Welcome fallback", async () => {
@@ -1128,8 +1179,8 @@ test.each([false, true])(
       slot: "main",
       composerSeatId: expect.any(String),
     });
-    await user.click(screen.getByRole("button", { name: "Back" }));
-    await findStackedEmptyState("welcome");
+    await openSessionsPanel(user);
+    expect(workspaceStore.getState().panes).toEqual(retained);
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
   },
 );
@@ -1204,7 +1255,7 @@ test.each([
 );
 
 test.each([false, true])(
-  "retained-parent cycle safety: longer=%s missing farther ancestor still permits exact immediate parents",
+  "retained-parent cycle safety: longer=%s missing farther ancestor permits exact parents then opens Sessions",
   async (longer) => {
     const workspace = workspaceStore.getState();
     const owner = workspace.openPane("session", { ref: "local:owner" }, { slot: "main" });
@@ -1221,9 +1272,8 @@ test.each([false, true])(
       expect(workspaceStore.getState().panes).toEqual(retained);
       expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
     }
-    await user.click(screen.getByRole("button", { name: "Back" }));
-    await findStackedEmptyState("welcome");
-    expect(workspaceStore.getState().panes.filter((pane) => pane.type !== "welcome")).toEqual(retained);
+    await openSessionsPanel(user);
+    expect(workspaceStore.getState().panes).toEqual(retained);
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
   },
 );
@@ -1725,10 +1775,9 @@ test.each(["session origin"])(
     if (shape === "session origin" || shape === "missing farther ancestor") {
       expect(workspaceStore.getState().focusedPaneId).toBe(shape === "session origin" ? siblingId : bId);
       expect(workspaceStore.getState().panes).toEqual(retained);
-      await user.click(screen.getByRole("button", { name: "Back" }));
+      await openSessionsPanel(user);
     }
-    await findStackedEmptyState("welcome");
-    expect(workspaceStore.getState().panes.filter((pane) => pane.type !== "welcome")).toEqual(retained);
+    expect(workspaceStore.getState().panes).toEqual(retained);
     expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
   },

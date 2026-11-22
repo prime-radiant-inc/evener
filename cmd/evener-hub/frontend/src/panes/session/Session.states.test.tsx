@@ -967,8 +967,8 @@ test("a first-ever visit shows no divider, and unmounting stores the last turn a
 // no composer (the conversation lifetime never starts, so no card and no
 // menu of its own), no status bar (the phone layout keeps one bottom
 // surface, the composer's own row), and no rail (a single-pane phone hides
-// it), so the fallback session menu is the only remaining way into Overview
-// and About - the desktop's status bar still carries one there.
+// it). The fallback menu retains session actions while StackHost's top bar
+// supplies Find and Overview.
 test("a phone keeps a session menu for a notLoaded remote share with no send surface", async ({ onTestFinished }) => {
   // This suite stubs SessionChrome for its placement pins; the fallback
   // menu's own behavior needs the real chrome back for this test.
