@@ -1054,28 +1054,38 @@ func TestDoctorOutcomeAfterRejectedStructuredReply(t *testing.T) {
 	t.Cleanup(func() { sessionRowTranscriptTailBytes = origTail })
 
 	for _, result := range []struct {
-		name    string
-		isError bool
-		state   json.RawMessage
+		name           string
+		isError        bool
+		state          json.RawMessage
+		content        any
+		legacyFallback bool
 	}{
 		{name: "missing_required_output", isError: true},
 		{name: "lost_terminal_capture", state: json.RawMessage(`{"communicate_accepted":false,"communicate_end_turn":true}`)},
 		{name: "quiet_result", state: json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true,"communicate_quiet":true}`)},
+		{name: "legacy_quiet_result", content: `{"accepted":true,"end_turn":true,"quiet":true}`},
+		{name: "legacy_no_verdict", content: `{}`, legacyFallback: true},
 	} {
 		t.Run(result.name, func(t *testing.T) {
 			for _, tc := range []struct {
 				name         string
 				earlierReply bool
+				reuseCallID  bool
 				wantOutcome  string
 				wantBoundary int
 			}{
 				{name: "only_attempt", wantOutcome: "none", wantBoundary: -1},
 				{name: "earlier_reply", earlierReply: true, wantOutcome: "end_turn=true decision=approve", wantBoundary: 0},
+				{name: "earlier_reply_reused_id", earlierReply: true, reuseCallID: true, wantOutcome: "end_turn=true decision=approve", wantBoundary: 0},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
+					const attemptID = "attempt"
 					var turns []schema.Turn
 					if tc.earlierReply {
 						prior := communicateCall(true, "approve")
+						if tc.reuseCallID {
+							prior.ToolCall.ID = attemptID
+						}
 						accepted := healthToolResult(prior.ToolCall.ID, "communicate", nil, false)
 						accepted.ToolResult.ToolState = json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true}`)
 						turns = append(turns,
@@ -1085,8 +1095,12 @@ func TestDoctorOutcomeAfterRejectedStructuredReply(t *testing.T) {
 					}
 					// Keep the earlier reply outside the first tail window.
 					turns = append(turns, schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("p", 12<<10))))
-					reply := healthToolCall("attempt", "communicate", `{"message":"done"}`)
-					verdict := healthToolResult("attempt", "communicate", nil, result.isError)
+					wantOutcome, wantBoundary := tc.wantOutcome, tc.wantBoundary
+					if result.legacyFallback {
+						wantOutcome, wantBoundary = "end_turn=true", len(turns)
+					}
+					reply := healthToolCall(attemptID, "communicate", `{"message":"done"}`)
+					verdict := healthToolResult(attemptID, "communicate", result.content, result.isError)
 					verdict.ToolResult.ToolState = result.state
 					// The transcript stops after the tool result, before a correction.
 					turns = append(turns,
@@ -1102,18 +1116,18 @@ func TestDoctorOutcomeAfterRejectedStructuredReply(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if got := outcomeHint(doc, "communicate"); got != tc.wantOutcome {
-						t.Errorf("full outcome = %q, want %q", got, tc.wantOutcome)
+					if got := outcomeHint(doc, "communicate"); got != wantOutcome {
+						t.Errorf("full outcome = %q, want %q", got, wantOutcome)
 					}
-					if got := finalEndTurnIndex(doc.Entries, "communicate"); got != tc.wantBoundary {
-						t.Errorf("final boundary = %d, want %d", got, tc.wantBoundary)
+					if got := finalEndTurnIndex(doc.Entries, "communicate"); got != wantBoundary {
+						t.Errorf("final boundary = %d, want %d", got, wantBoundary)
 					}
 					rows, err := ListSessions(t.Context(), base, SessionsOpts{})
 					if err != nil || len(rows.Sessions) != 1 || len(rows.Unreadable) != 0 {
 						t.Fatalf("ListSessions = %+v, %v", rows, err)
 					}
-					if got := rows.Sessions[0].Outcome; got != tc.wantOutcome {
-						t.Errorf("tail outcome = %q, want %q", got, tc.wantOutcome)
+					if got := rows.Sessions[0].Outcome; got != wantOutcome {
+						t.Errorf("tail outcome = %q, want %q", got, wantOutcome)
 					}
 				})
 			}

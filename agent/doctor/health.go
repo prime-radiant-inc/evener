@@ -305,7 +305,7 @@ func longestIdenticalRun(occ []toolCallOccurrence, resultSeen, resultErrors map[
 // or -1 if none exists. StaleNotifications and UserCorrections measure
 // trailing activity from this boundary.
 func finalEndTurnIndex(entries []transcript.Entry, resultTool string) int {
-	results := toolResultsByCallID(entries)
+	results := pairToolResults(entries)
 	last := -1
 	for i, e := range entries {
 		if e.Turn.AcceptedReply {
@@ -315,12 +315,12 @@ func finalEndTurnIndex(entries []transcript.Entry, resultTool string) int {
 		if e.Turn.Kind != schema.TurnAssistant {
 			continue
 		}
-		for _, part := range e.Turn.Message.Content {
+		for j, part := range e.Turn.Message.Content {
 			if part.Kind != llm.ContentToolCall || part.ToolCall == nil || part.ToolCall.Name != resultTool {
 				continue
 			}
-			if result := results[part.ToolCall.ID]; result != nil {
-				if endTurn := communicateResultEndTurn(result); endTurn != nil && *endTurn {
+			if endTurn, recorded := communicateResultEndTurn(results[toolCallPosition{i, j}]); recorded {
+				if endTurn != nil && *endTurn {
 					last = i
 				}
 				continue
