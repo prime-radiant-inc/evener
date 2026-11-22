@@ -162,8 +162,8 @@ losing the conversation that made the evidence relevant.
   and leaving the empty editor folds it again. The space
   around the card keeps its outgoing height until the animation starts, so a
   transcript resting at its end stays there through the fold. The folded empty row
-  hides inline Steer; Session actions keeps queue draining available at any
-  width while that row is folded. A focused clear preserves the
+  hides inline Steer; Session actions keeps queue draining available whenever
+  inline Steer is unavailable. A focused clear preserves the
   existing control geometry. Where the 559px pane-width compression rung
   hides Send and Stop's words, their glyphs and accessible names remain.
   At container widths up to 340px, the card yields its inline padding and column

@@ -105,11 +105,26 @@ export async function typeComposerDraft(send, text = "browser-proof") {
   // the settled shape, never a frame in the middle of it.
   await waitForComposerSettled(send);
 }
-async function clearDraft(send) {
+async function clearDraft(send, { fold = false } = {}) {
   await tap(send, await point(send, editor), false);
   await key(send, "a", "KeyA", 65, process.platform === "darwin" ? 4 : 2);
   await key(send, "Backspace", "Backspace", 8);
   await until(send, `document.querySelector('${control("stop")}')`);
+  if (fold) {
+    await evaluate(
+      send,
+      `(() => {
+        document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+        document.activeElement?.blur();
+      })()`,
+    );
+    await evaluate(send, "new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    await evaluate(send, "document.body.click()");
+    await until(
+      send,
+      `document.querySelector('[data-testid="composer-input-card"]')?.getAttribute('data-folded') === 'true' && !document.querySelector('[data-composer]')?.hasAttribute('data-composer-editing')`,
+    );
+  }
   await waitForComposerSettled(send);
 }
 async function tabTo(send, selector) {
@@ -176,7 +191,7 @@ export async function measureComposerPlacement(endpoint, url, { viewportWidth, c
     assert.equal(viewport.visualViewportWidth, viewportWidth);
     // Drafts intentionally survive navigation. Clear through the editor rather
     // than assuming a freshly loaded page has an empty local draft.
-    await clearDraft(send);
+    await clearDraft(send, { fold: true });
     // Calibrate only the fixture pane. Measure the actual content box again
     // after ResizeObserver commits, rather than calling 399 a viewport width.
     if (contentWidth !== undefined) {
@@ -204,11 +219,13 @@ export async function measureComposerPlacement(endpoint, url, { viewportWidth, c
       // The first empty Stop is folded. After a focused clear, the card keeps
       // its expanded geometry and inline Steer remains in place beside Stop.
       const inlineSteer = steer && contentWidth > 399 && (primary === "submit" || results.length > 0);
-      const menuSteer = steer && contentWidth <= 399;
-      assert.ok(
-        await evaluate(send, `document.activeElement === document.querySelector('${editor}')`),
-        "typing and clearing preserve editor focus through slot replacement",
-      );
+      const menuSteer = steer && (contentWidth <= 399 || results.length === 0);
+      if (results.length > 0) {
+        assert.ok(
+          await evaluate(send, `document.activeElement === document.querySelector('${editor}')`),
+          "typing and clearing preserve editor focus through slot replacement",
+        );
+      }
       const measurement = await evaluate(send, "window.measure()");
       measurement.menuVerbs = await evaluate(send, "window.measureMenuVerbs()");
       assertComposerPlacement(measurement, { contentWidth, primary, inlineSteer, menuSteer });

@@ -900,7 +900,7 @@ function ComposerWithSubmission({
   const resting = !contentEngaged && !hasContent && !mutationWriteStalled;
   const folded = !askPending && resting;
   const queueDepth = model?.queue?.depth ?? 0;
-  const menuSteer = (narrow && hasContent) || (folded && queueDepth > 0);
+  const menuSteer = (narrow && hasContent) || ((narrow || folded) && queueDepth > 0);
   const turnVerbs = useMemo<SessionMenuTurnVerbs>(() => {
     if (!model) return NO_TURN_VERBS;
     const available = controlsFor(model);
