@@ -106,7 +106,7 @@
    * outrank the base .effortTrigger { min-width: 0 } below. */
   .leading > .effortTrigger {
     flex: 0 1 auto;
-    min-width: calc(var(--tap-min) + 1ch);
+    min-width: calc(var(--tap-min, 0px) + 1ch);
   }
 }
 
