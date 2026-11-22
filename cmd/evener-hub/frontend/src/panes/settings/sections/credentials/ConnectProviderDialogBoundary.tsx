@@ -10,16 +10,13 @@
 // instance-credential editors): the spawn pane's below-the-fold dialog and the
 // credentials section's full editor.
 
+import { type JSX, type LazyExoticComponent, lazy, type ReactNode } from "react";
 import {
-  Component,
-  type JSX,
-  type LazyExoticComponent,
-  lazy,
-  type ReactNode,
-  useCallback,
-  useState,
-  useSyncExternalStore,
-} from "react";
+  type ChunkFailureFallbackProps,
+  createChunkFailureBoundary,
+  createLazyChunkStore,
+  useChunkRetry,
+} from "../../../../shell/chunkFailureBoundary";
 import { reloadPage } from "../../../../shell/pageReload";
 import { Button, Dialog } from "../../../../widgets";
 import { isStaleConnectDialogChunkError, loadConnectDialog } from "../../../spawn/connectDialogChunk";
@@ -34,34 +31,18 @@ function lazyConnectProviderDialog(cacheBust = false): ConnectProviderDialogChun
   return lazy(() => loadConnectDialog(cacheBust).then((m) => ({ default: m.ConnectProviderDialog })));
 }
 
-// Module scope, not per mount: every surface that can open the dialog shares
-// one payload, and a successful retry on one of them must reach the others. A
-// surface that captured its own mount-time payload would keep re-rendering the
-// rejected chunk it already recovered from.
-let sharedDialog: { Dialog: ConnectProviderDialogChunk; version: number } = {
-  Dialog: lazyConnectProviderDialog(),
-  version: 0,
-};
-const dialogListeners = new Set<() => void>();
-
-function publishDialog(Dialog: ConnectProviderDialogChunk): void {
-  sharedDialog = { Dialog, version: sharedDialog.version + 1 };
-  for (const listener of dialogListeners) listener();
-}
-
-function subscribeDialog(listener: () => void): () => void {
-  dialogListeners.add(listener);
-  return () => {
-    dialogListeners.delete(listener);
-  };
-}
+// One shared payload: every surface that can open the dialog mounts it, and a
+// successful retry on one of them must reach the others. A surface that
+// captured its own mount-time payload would keep re-rendering the rejected
+// chunk it already recovered from.
+const connectDialog = createLazyChunkStore(lazyConnectProviderDialog);
 
 // A payload caches its outcome for the life of the module, success or
 // failure, so one test's failed chunk would otherwise be every later test's
 // failed chunk. Mirrors the resetXForTests precedent every other module
 // singleton here follows; no production code should ever call it.
 export function resetConnectDialogChunkForTests(): void {
-  publishDialog(lazyConnectProviderDialog());
+  connectDialog.publish(lazyConnectProviderDialog());
 }
 
 // useConnectProviderDialogChunk owns the per-caller retry state while the
@@ -75,97 +56,73 @@ export function useConnectProviderDialogChunk(): {
   retry: () => void;
   reloadAvailable: boolean;
 } {
-  const { Dialog, version } = useSyncExternalStore(subscribeDialog, () => sharedDialog);
-  // A retry re-fetches the same hashed filename over a cache-busted URL:
-  // enough for a transient failure, useless once a deploy has removed the
-  // file. Counting retries lets the boundary offer a page reload on the
-  // second strike (the DockRegion chunk-boundary pattern).
-  const [retryCount, setRetryCount] = useState(0);
-  const retry = useCallback(() => {
-    setRetryCount((count) => count + 1);
-    // Publish before it resolves so every mounted surface - and any remount
-    // during the retry - shares the in-flight request instead of restoring
-    // the rejected payload that caused the boundary.
-    publishDialog(lazyConnectProviderDialog(true));
-  }, []);
-  return { Dialog, version, retry, reloadAvailable: retryCount > 0 };
+  const { Chunk, version, retry, reloadAvailable } = useChunkRetry(connectDialog, lazyConnectProviderDialog);
+  return { Dialog: Chunk, version, retry, reloadAvailable };
 }
+
+interface ConnectDialogFailureProps extends ChunkFailureFallbackProps {
+  onClose: () => void;
+}
+
+function ConnectDialogFailure({ failure, retry, reloadAvailable, isStaleFailure, onClose }: ConnectDialogFailureProps) {
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title="Couldn't load the connect dialog"
+      footer={
+        <>
+          <Button variant="quiet" onClick={onClose}>
+            Close
+          </Button>
+          <Button variant="primary" onClick={retry}>
+            Retry
+          </Button>
+          {/* reloadAvailable alone counts retries, so a logic bug that rode in
+              on a stale chunk URL would earn a page reload that cannot fix
+              it. The failed retry must itself name a stale hashed asset. */}
+          {reloadAvailable && isStaleFailure(failure) && (
+            <Button variant="quiet" onClick={reloadPage}>
+              Reload page
+            </Button>
+          )}
+        </>
+      }
+    >
+      <span data-testid="connect-dialog-load-failure">{failure}</span>
+    </Dialog>
+  );
+}
+
+const Boundary = createChunkFailureBoundary(isStaleConnectDialogChunkError);
 
 interface ConnectProviderDialogBoundaryProps {
   // Swaps in a fresh lazy component to load the chunk again. The boundary
   // clears its own failure state alongside it - both halves are needed, and
   // neither is any use without the other.
   onRetry: () => void;
-  // True once a cache-busted retry has already failed: a deploy that replaced
-  // the hashed chunk filename 404s forever under a new query param, so the
-  // second strike offers a page reload instead of another same-file fetch
-  // (the DockRegion chunk-boundary pattern).
   reloadAvailable: boolean;
   onClose: () => void;
   children: ReactNode;
-}
-
-interface ConnectProviderDialogBoundaryState {
-  // The failed chunk's own message ("Failed to fetch dynamically imported
-  // module: ..."), shown verbatim - a stated failure is worth more to
-  // whoever hits it than a generic apology.
-  failure: string | null;
 }
 
 // Scoped to the dialog: without it the lazy() rethrow would bubble into
 // whatever boundary happens to sit above the caller - on desktop the dock's
 // workspace-failure state (misleading, the workspace is fine) and on mobile
 // StackHost mounts panes with no boundary at all, so the whole app.
-export class ConnectProviderDialogBoundary extends Component<
-  ConnectProviderDialogBoundaryProps,
-  ConnectProviderDialogBoundaryState
-> {
-  state: ConnectProviderDialogBoundaryState = { failure: null };
-
-  static getDerivedStateFromError(error: unknown): ConnectProviderDialogBoundaryState {
-    // A logic bug inside the resolved dialog (module init, render) surfaces
-    // through this same boundary as a chunk-fetch failure does. Only a stale
-    // hashed-asset URL (JS or CSS) is a chunk-load failure worth a retry:
-    // anything else keeps unwinding to the next boundary above instead of
-    // being misreported - and retried - as a network fetch.
-    if (!isStaleConnectDialogChunkError(error)) throw error;
-    return { failure: error instanceof Error ? error.message : String(error) };
-  }
-
-  private retry = () => {
-    this.setState({ failure: null });
-    this.props.onRetry();
-  };
-
-  render(): ReactNode {
-    if (this.state.failure === null) return this.props.children;
-    return (
-      <Dialog
-        open
-        onClose={this.props.onClose}
-        title="Couldn't load the connect dialog"
-        footer={
-          <>
-            <Button variant="quiet" onClick={this.props.onClose}>
-              Close
-            </Button>
-            <Button variant="primary" onClick={this.retry}>
-              Retry
-            </Button>
-            {/* reloadAvailable alone counts retries, so a logic bug that rode
-                in on a stale chunk URL would earn a page reload that cannot
-                fix it. The failed retry must itself name a stale hashed
-                asset (the DockRegion chunk-boundary pattern). */}
-            {this.props.reloadAvailable && isStaleConnectDialogChunkError(this.state.failure) && (
-              <Button variant="quiet" onClick={reloadPage}>
-                Reload page
-              </Button>
-            )}
-          </>
-        }
-      >
-        <span data-testid="connect-dialog-load-failure">{this.state.failure}</span>
-      </Dialog>
-    );
-  }
+export function ConnectProviderDialogBoundary({
+  onRetry,
+  reloadAvailable,
+  onClose,
+  children,
+}: ConnectProviderDialogBoundaryProps): ReactNode {
+  return (
+    <Boundary
+      onRetry={onRetry}
+      reloadAvailable={reloadAvailable}
+      renderFailure={(state) => <ConnectDialogFailure {...state} onClose={onClose} />}
+    >
+      {children}
+    </Boundary>
+  );
 }

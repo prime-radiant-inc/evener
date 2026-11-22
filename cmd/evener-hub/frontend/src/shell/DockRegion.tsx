@@ -9,67 +9,38 @@
 // same failure costs the workspace and nothing else: the rail, the connection
 // banner, the toasts and the command palette all stay up.
 
-import { Component, type LazyExoticComponent, lazy, type ReactNode, Suspense, useState } from "react";
+import { type LazyExoticComponent, lazy, type ReactNode, Suspense, useCallback } from "react";
 import { cancelConversationHandoff, conversationHandoffGeneration } from "../stores/conversationClaimHandoff";
 import { Button, EmptyState, Loader } from "../widgets";
+import {
+  type ChunkFailureFallbackProps,
+  createChunkFailureBoundary,
+  createLazyChunkStore,
+  useChunkRetry,
+} from "./chunkFailureBoundary";
 import styles from "./DockRegion.module.css";
 import { isStaleDockHostChunkError, loadDockHost } from "./dockHostChunk";
 import { reloadPage } from "./pageReload";
 
-interface DockChunkBoundaryProps {
-  generation: number | undefined;
-  // Swaps in a fresh lazy component to load the chunk again. The boundary
-  // clears its own failure state alongside it - both halves are needed, and
-  // neither is any use without the other.
-  onRetry: () => void;
-  reloadAvailable: boolean;
-  children: ReactNode;
-}
-
-interface DockChunkBoundaryState {
-  // The failed chunk's own message ("Failed to fetch dynamically imported
-  // module: ..."), shown verbatim the way the rail shows a tree-load error -
-  // a stated failure is worth more to whoever hits it than a generic apology.
-  failure: string | null;
-}
-
-class DockChunkBoundary extends Component<DockChunkBoundaryProps, DockChunkBoundaryState> {
-  state: DockChunkBoundaryState = { failure: null };
-
-  componentDidCatch(): void {
-    cancelConversationHandoff(this.props.generation);
-  }
-
-  static getDerivedStateFromError(error: unknown): DockChunkBoundaryState {
-    return { failure: error instanceof Error ? error.message : String(error) };
-  }
-
-  private retry = () => {
-    this.setState({ failure: null });
-    this.props.onRetry();
-  };
-
-  render(): ReactNode {
-    if (this.state.failure === null) return this.props.children;
-    return (
-      <EmptyState
-        title="Couldn't load the workspace"
-        hint={this.state.failure}
-        action={
-          <>
-            <Button size="sm" onClick={this.retry}>
-              Retry
+function DockFailure({ failure, retry, reloadAvailable, isStaleFailure }: ChunkFailureFallbackProps): ReactNode {
+  return (
+    <EmptyState
+      title="Couldn't load the workspace"
+      hint={failure}
+      action={
+        <>
+          <Button size="sm" onClick={retry}>
+            Retry
+          </Button>
+          {reloadAvailable && isStaleFailure(failure) && (
+            <Button size="sm" variant="quiet" onClick={reloadPage}>
+              Reload page
             </Button>
-            {this.props.reloadAvailable && isStaleDockHostChunkError(this.state.failure) && (
-              <Button size="sm" variant="quiet" onClick={reloadPage}>
-                Reload page
-              </Button>
-            )}
-          </>
-        }
-      />
-    );
-  }
+          )}
+        </>
+      }
+    />
+  );
 }
 
 type DockHostComponent = () => ReactNode;
@@ -81,42 +52,38 @@ function lazyDockHost(cacheBust = false): DockHostChunk {
   return lazy(() => loadDockHost(cacheBust).then((m) => ({ default: m.DockHost })));
 }
 
-// Module scope, not per mount: a lazy() component caches its resolved module
-// on its own payload, so one shared component means the chunk is fetched once
-// per page load and every later mount of this region (a breakpoint crossing,
-// a route that swaps NotFound in and out) renders DockHost straight away
-// instead of suspending again.
-let dockHost = lazyDockHost();
+// One shared payload: the chunk is fetched once per page load and every later
+// mount of this region (a breakpoint crossing, a route that swaps NotFound in
+// and out) renders DockHost straight away instead of suspending again.
+const dockHost = createLazyChunkStore(lazyDockHost);
 
 // A payload caches its outcome for the life of the module, success or
 // failure, so one test's failed chunk would otherwise be every later test's
 // failed chunk. Mirrors the resetXForTests precedent every other module
-// singleton here follows (stores/navigation/store.ts's own note); no production code
-// should ever call it.
+// singleton here follows (stores/navigation/store.ts's own note); no
+// production code should ever call it.
 export function resetDockChunkForTests(): void {
-  dockHost = lazyDockHost();
+  dockHost.publish(lazyDockHost());
 }
 
+// The workspace boundary claims every error thrown below it (a module init or
+// render bug shows the same failure state as a fetch that never arrived), but
+// the reload stays gated on a stale hashed asset - a plain logic failure must
+// not prescribe a reload that cannot fix it.
+const DockChunkBoundary = createChunkFailureBoundary(() => true, isStaleDockHostChunkError);
+
 export function DockRegion() {
-  // A retry needs a NEW lazy component, not a re-render of the old one:
-  // React.lazy stores the rejection on its payload and rethrows that same
-  // error on every subsequent render, forever.
-  const [Host, setHost] = useState<DockHostChunk>(dockHost);
-  const [retryCount, setRetryCount] = useState(0);
   const generation = conversationHandoffGeneration("desktop");
-  const retry = () => {
-    cancelConversationHandoff(generation);
-    setRetryCount((count) => count + 1);
-    const nextHost = lazyDockHost(true);
-    // Publish the new payload before it resolves so an unmount/remount during
-    // the retry shares the in-flight request instead of restoring the rejected
-    // payload that caused the boundary.
-    dockHost = nextHost;
-    setHost(() => nextHost);
-  };
+  const cancelHandoff = useCallback(() => cancelConversationHandoff(generation), [generation]);
+  const { Chunk: Host, retry, reloadAvailable } = useChunkRetry(dockHost, lazyDockHost, cancelHandoff);
 
   return (
-    <DockChunkBoundary generation={generation} onRetry={retry} reloadAvailable={retryCount > 0}>
+    <DockChunkBoundary
+      onCatch={cancelHandoff}
+      onRetry={retry}
+      reloadAvailable={reloadAvailable}
+      renderFailure={(state) => <DockFailure {...state} />}
+    >
       <Suspense
         fallback={
           <div className={styles.loading} data-testid="dock-loading">
