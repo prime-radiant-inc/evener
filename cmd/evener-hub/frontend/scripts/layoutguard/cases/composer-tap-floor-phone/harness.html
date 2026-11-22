@@ -72,16 +72,23 @@
   </section>
 </template>
 <script>
-// One fixture at the existing phone width, plus the narrow composer card the
-// status row has to compress into. The 320px fixture keeps the long model
-// label so the model must ellipsize and the fixed effort control must keep
-// its separator plus tap-floor width instead of being clipped by .identity.
+// One fixture at the existing phone width, plus the narrow composer cards the
+// status row has to compress into. The 320px fixtures keep the long model
+// label so the model must ellipsize and the effort control must keep its
+// separator plus tap-floor width instead of being clipped by .identity. The
+// provider-default fixture exercises the widest readout the control carries.
 const fixtures = [
   { label: "390px phone, status row with a reasoning-effort control" },
   {
     width: 320,
     oneModel: true,
     label: "320px composer card, long model label, effort target not clipped",
+  },
+  {
+    width: 320,
+    oneModel: true,
+    effort: "none (provider default)",
+    label: "320px composer card, provider-default effort readout, effort target not clipped",
   },
 ];
 const template = document.querySelector("#fixture-template");
@@ -95,6 +102,10 @@ for (const spec of fixtures) {
   // wide-row companion. The narrow fixture mirrors the real single trigger so
   // the model-scroll assertion measures the component that ships.
   if (spec.oneModel) fixture.querySelector('[data-model="vision"]').closest(".model").remove();
+  if (spec.effort !== undefined) {
+    fixture.querySelector(".quietReadout").textContent = spec.effort;
+    fixture.querySelector(".quietSelect option").textContent = spec.effort;
+  }
   fixtureRoot.append(fragment);
 }
 

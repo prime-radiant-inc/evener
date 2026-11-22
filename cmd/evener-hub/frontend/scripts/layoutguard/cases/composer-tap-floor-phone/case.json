@@ -1,6 +1,6 @@
 {
   "name": "composer-tap-floor-phone",
-  "description": "At a phone viewport and in a 320px composer card the reasoning-effort trigger in the status row must still meet the app's 44px tap floor in both axes, and its full box must fit inside .identity's clip boundary instead of being clipped by a shrunken .effortTrigger; the status row must not gain horizontal overflow to make room for it.",
+  "description": "At a phone viewport and in 320px composer cards the reasoning-effort trigger in the status row must still meet the app's 44px tap floor in both axes, and its full box must fit inside .identity's clip boundary instead of being clipped by a shrunken .effortTrigger. A long model label must remain visible and the status row must not gain horizontal overflow to make room for it. The provider-default fixture covers the widest readout the control carries.",
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
@@ -24,9 +24,9 @@
     "touch": true
   },
   "mutation": {
-    "declaration": "Two manual probes: (1) select.module.css: remove the phone/coarse min-width and min-height from .quietVariant; (2) statusrow.module.css 399px block: change .effortTrigger back to flex: 0 1 auto with min-width: 0",
+    "declaration": "Three manual probes: (1) select.module.css: remove the phone/coarse min-width and min-height from .quietVariant; (2) statusrow.module.css 399px block: change .identity > .effortTrigger to flex: 0 1 auto with min-width: 0; (3) statusrow.module.css 399px block: restore .effortTrigger { flex: 0 0 auto }",
     "verified": "2026-11-22",
     "expect": "fail",
-    "note": "(1) the target measured 31.4x27.2 at both fixtures, below the 44px floor. (2) the target was clipped by .identity to 23.0 of 44.0px visible at 390px and 18.4 of 44.0px at 320px (2026-11-22)."
+    "note": "(1) the target measured 31.4x27.2 on the two earlier fixtures, below the 44px floor. (2) lowering the floor to min-width: 0 clipped all three: 23.0 of 44.0px visible at 390px, 18.4 of 44.0px at 320px, and 42.7 of 44.0px at 320px provider-default. (3) the pre-fix flex: 0 0 auto clipped the provider-default target to 107.8 of 134.0px visible and squeezed the model trigger to 0px, while the two earlier fixtures passed (2026-11-22)."
   }
 }
