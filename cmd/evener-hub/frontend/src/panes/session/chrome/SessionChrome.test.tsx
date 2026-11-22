@@ -30,6 +30,7 @@ import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../../stores/transcriptDisplay";
 import { escapeRegExp } from "../../../styles/cssBlock";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
+import type { SessionZoomParams } from "../../zoom/intent";
 import { resetFindRequestsForTests, useFindRequest } from "../find/findRequest";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { installMobileViewport } from "../testing/mobileViewport";
@@ -487,14 +488,32 @@ test("an ordinary session's composer leaves Find and Overview to the header but 
   }
 });
 
-test("a composer without an ordinary session header retains its inspection menu actions", async () => {
+test("a cascade composer keeps Find and Overview through the sessionZoom pane that owns it", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  const ref = "ref_composer_without_header";
+  const ref = "ref_cascade_owner";
+  const originRef = "ref_cascade_origin";
   fake.on("thread/read", () => readResponse(ref));
   await threadsStore.getState().ensureThread(ref);
+  // Zoom.tsx hands each cascade column its own sessionZoom pane ID
+  // (ConversationSeat.viewFallbackId), and Composer forwards it to
+  // SessionChrome. An ordinary session pane showing the same conversation
+  // stands beside it: were the explicit owner ignored, the fallback lookup
+  // would find that session pane and the header would take Find and Overview
+  // out of the menu.
+  const cascadeParams: SessionZoomParams = {
+    ref,
+    source: { type: "session", params: { ref: originRef } },
+    edges: [{ ownerRef: originRef, childRef: ref, delegateId: "d1" }],
+  };
+  workspaceStore.setState({
+    panes: [
+      { id: "pane_ordinary_owner", type: "session", params: { ref }, slot: "main" },
+      { id: "pane_cascade_owner", type: "sessionZoom", params: cascadeParams, slot: "secondary" },
+    ],
+  });
 
-  render(<SessionChromeView ref={ref} placement="composer" />);
+  render(<SessionChromeView ref={ref} paneId="pane_cascade_owner" placement="composer" />);
 
   await user.click(screen.getByRole("button", { name: "Session actions" }));
   expect(screen.getByRole("menuitem", { name: "Overview" })).toBeTruthy();
