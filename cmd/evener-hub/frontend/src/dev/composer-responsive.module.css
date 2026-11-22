@@ -1,9 +1,12 @@
 .page {
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: var(--space-8);
+  height: 100dvh;
   max-width: 1440px;
   margin: 0 auto;
+  overflow-y: auto;
   padding: var(--space-6);
 }
 

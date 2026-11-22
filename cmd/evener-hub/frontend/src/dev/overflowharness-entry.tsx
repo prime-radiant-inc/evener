@@ -2089,8 +2089,15 @@ async function measureMenuVerbs(): Promise<{ open: boolean; stop: boolean; steer
 
 function duoBox(element: Element | null | undefined) {
   if (!element) return null;
-  const { width, height, bottom } = geometryOf(element);
-  return { width, height, bottom };
+  return geometryOf(element);
+}
+
+function duoControlPositions(pane: HTMLElement) {
+  return {
+    attach: duoBox(pane.querySelector('[data-testid="composer-attach"]')),
+    menu: duoBox(findSessionMenuTrigger()),
+    primary: duoBox(pane.querySelector('[data-testid="composer-stop"], [data-testid="composer-submit"]')),
+  };
 }
 
 function measureDuoDraftState() {
@@ -2104,6 +2111,7 @@ function measureDuoDraftState() {
     totalFooterHeight: (footerBox?.height ?? 0) + (edgeBox?.height ?? 0),
     editorMinLines: pane?.querySelector<HTMLElement>('[data-composer] [role="textbox"]')?.style.minHeight ?? null,
     editing: pane?.querySelector("[data-composer]")?.hasAttribute("data-composer-editing") ?? false,
+    controlPositions: pane ? duoControlPositions(pane) : null,
     attachment: null,
     counters: Array.from(pane?.querySelectorAll<HTMLElement>("[data-activity-tab]") ?? []).map((counter) => ({
       ...duoBox(counter),
@@ -2136,6 +2144,7 @@ async function measureDuoCompactStates(phase: "focus" | "rest") {
       footerPaddingBottom: footer ? getComputedStyle(footer).paddingBottom : null,
       editorMinLines: editor.style.minHeight,
       editing: editor.closest("[data-composer]")?.hasAttribute("data-composer-editing") ?? false,
+      controlPositions: duoControlPositions(pane),
       cardHidden: card instanceof HTMLElement && card.hidden,
       question: duoBox(question),
       questionInTranscript: question?.closest('[data-testid="transcript-virtual-list"]') !== null,

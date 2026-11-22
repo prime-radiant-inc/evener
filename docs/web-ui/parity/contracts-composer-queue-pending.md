@@ -79,7 +79,8 @@ except where a line says so itself.
   Attach remains in the folded row, while the folded empty row hides inline Steer.
   Above a 399px composer content box, Steer is inline with content and keeps its
   slot through a focused clear; at or below it, content-bearing Steer stays in
-  the menu. Its draft and queue behavior does not change.
+  the menu. Queued follow-ups also keep menu Steer available with an empty
+  editor, so draining remains reachable. Its draft and queue behavior does not change.
 - At and below the 559px compact pane boundary, Send and Stop hide their words
   and keep their glyphs and accessible names. Stop uses a stop-sign outline in
   the existing dangerQuiet variant.

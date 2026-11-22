@@ -768,12 +768,19 @@ test("with enterToSend on, Steer's tooltip drops its chord and Send's names bare
 
 // --- steer / drain-as-steer routing -----------------------------------------
 
-test("an empty collapsed composer omits Steer from the narrow session menu", async () => {
+test.each([
+  { name: "without queued work", queue: { revision: 0 }, offersSteer: false },
+  {
+    name: "with queued work",
+    queue: { revision: 1, depth: 1, ids: ["q1"], texts: ["queued follow-up"], preview: ["queued follow-up"] },
+    offersSteer: true,
+  },
+])("an empty collapsed composer $name exposes Steer only when it can act", async ({ queue, offersSteer }) => {
   installNarrowComposer(399);
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue, activeTurnId: "turn_1" },
   });
   fake.on("turn/steer", (params) => ({
     receipt: appliedReceipt(params.clientMutationId, "thread_a"),
@@ -784,8 +791,16 @@ test("an empty collapsed composer omits Steer from the narrow session menu", asy
 
   await user.click(screen.getByRole("button", { name: "Session actions" }));
 
-  expect(fake.calls.filter((c) => c.method === "turn/steer" || c.method === "turn/drainAsSteer")).toHaveLength(0);
-  expect(screen.queryByRole("menuitem", { name: "Steer" })).toBeNull();
+  const steer = screen.queryByRole("menuitem", { name: "Steer" });
+  expect(steer !== null).toBe(offersSteer);
+  if (!offersSteer || !steer) {
+    expect(fake.calls.filter((c) => c.method === "turn/steer" || c.method === "turn/drainAsSteer")).toHaveLength(0);
+    return;
+  }
+  await user.click(steer);
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
+  expect(fake.calls.filter((c) => c.method === "turn/drainAsSteer")).toHaveLength(1);
 });
 
 test("a successful classic steer also clears the textarea and its draft (contracts §Drafts)", async () => {

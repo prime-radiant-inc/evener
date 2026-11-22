@@ -843,6 +843,19 @@ function assertDuoCompactStates(result) {
   }
   if (draft?.editorMinLines !== "2lh" || draft.editing)
     failures.push("a blurred draft did not retain its two-line resting state");
+  for (const name of ["attach", "menu", "primary"]) {
+    const emptyBox = empty?.controlPositions?.[name];
+    const draftBox = draft?.controlPositions?.[name];
+    if (!emptyBox || !draftBox) {
+      failures.push(`missing empty/draft ${name} geometry`);
+      continue;
+    }
+    for (const property of ["left", "right", "top", "bottom"]) {
+      if (Math.abs(emptyBox[property] - draftBox[property]) > 1) {
+        failures.push(`${name} ${property} moves through expansion: ${emptyBox[property]} -> ${draftBox[property]}`);
+      }
+    }
+  }
   if (
     !attachment?.attachment ||
     attachment.attachment.height < 80 ||
@@ -2071,6 +2084,8 @@ async function main() {
         const cases = [
           ...sweep.map((viewportWidth) => ({ viewportWidth })),
           ...[399, 400, 420, 480, 600, 699].map((contentWidth) => ({ viewportWidth: 800, contentWidth })),
+          { viewportWidth: 900, contentWidth: 480 },
+          { viewportWidth: 900, contentWidth: 600 },
           { viewportWidth: 1400, contentWidth: 399 },
           ...(safeAreaSupported ? [{ viewportWidth: 390, safeArea: 34 }] : []),
         ];

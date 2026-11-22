@@ -162,7 +162,9 @@ losing the conversation that made the evidence relevant.
   and leaving the empty editor folds it again. The space
   around the card keeps its outgoing height until the animation starts, so a
   transcript resting at its end stays there through the fold. The folded empty row
-  hides inline Steer; a focused clear preserves the existing control geometry. Where the 559px pane-width compression rung
+  hides inline Steer; the narrow session menu keeps Steer available for queued
+  follow-ups even when the editor is empty. A focused clear preserves the
+  existing control geometry. Where the 559px pane-width compression rung
   hides Send and Stop's words, their glyphs and accessible names remain.
   At container widths up to 340px, the card yields its inline padding and column
   gap in every state; the field's own text inset remains, leaving half the card
@@ -178,13 +180,12 @@ losing the conversation that made the evidence relevant.
   four activity counters stay in the app with their existing Overview links. The
   OS-owned Duo system rail is not a public customization surface, so no counters move
   there. The 466px cover treatment is a fit pass on that existing session screen, not
-  a new mode: content, controls and workflow stay, and an empty folded card gives its
-  own padding back to the transcript regardless of focus
-  (`promptcard.module.css`'s 440–500px portrait query, which zeroes the card's block padding
-  and field gap from their resting `--space-3` top, `--space-2` sides and bottom, and
-  `--space-2` gap, with the matching dock gap in
-  `composer.module.css`), while the activity count line keeps the 44px `--tap-min` floor
-  (`composer.module.css` `.activityRow`).
+  a new mode: content, controls and workflow stay, and an empty folded card gives
+  its block padding and field gap back to the transcript regardless of focus
+  (`promptcard.module.css`'s 440–500px portrait query, with the matching dock gap
+  in `composer.module.css`). Every Duo card keeps zero bottom padding and a zero
+  Attach inset, so persistent controls do not move when content expands the card.
+  The activity count line keeps the 44px `--tap-min` floor (`.activityRow`).
 - **Let the lowest footer own the safe area.** A pane with a flush `edgeFooter`
   below its padded composer footer gives that edge footer the home-indicator band
   at every width. The composer footer keeps only its ordinary `--space-3` gap, so a

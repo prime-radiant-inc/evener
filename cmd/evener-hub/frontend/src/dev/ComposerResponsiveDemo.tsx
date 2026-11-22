@@ -41,7 +41,7 @@ function ResponsiveSessionPreview({ frame, draft }: { frame: FrameName; draft: b
         <PaneScaffold
           title="A quieter session footer"
           scaffoldMarker={`session:${ref}`}
-          footer={<FixtureComposer ref={ref} focused draft={draft ? DEMO_DRAFT : undefined} />}
+          footer={<FixtureComposer ref={ref} focused draft={draft ? DEMO_DRAFT : ""} />}
         >
           <TranscriptBody
             model={transcript}

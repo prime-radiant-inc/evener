@@ -204,7 +204,7 @@ export async function measureComposerPlacement(endpoint, url, { viewportWidth, c
       // The first empty Stop is folded. After a focused clear, the card keeps
       // its expanded geometry and inline Steer remains in place beside Stop.
       const inlineSteer = steer && contentWidth > 399 && (primary === "submit" || results.length > 0);
-      const menuSteer = primary === "submit" && steer && contentWidth <= 399;
+      const menuSteer = steer && contentWidth <= 399;
       assert.ok(
         await evaluate(send, `document.activeElement === document.querySelector('${editor}')`),
         "typing and clearing preserve editor focus through slot replacement",

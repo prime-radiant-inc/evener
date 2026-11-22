@@ -895,9 +895,10 @@ function ComposerWithSubmission({
     }
     reconcileContentEngagement();
   }, [hasContent, reconcileContentEngagement]);
-  // Presence mirrors the row's capability gate, with Steer additionally
-  // waiting for content at the narrow menu placement just as it does inline.
-  const menuSteer = narrow && hasContent;
+  // Presence mirrors the row's capability gate. The narrow menu can steer a
+  // draft or drain queued follow-ups even when the editor itself is empty.
+  const queueDepth = model?.queue?.depth ?? 0;
+  const menuSteer = narrow && (hasContent || queueDepth > 0);
   const turnVerbs = useMemo<SessionMenuTurnVerbs>(() => {
     if (!model) return NO_TURN_VERBS;
     const available = controlsFor(model);
@@ -952,7 +953,6 @@ function ComposerWithSubmission({
     mutationStateAuthoritative: mutationAuthoritative,
   };
   const fence = recoveryFence(model, recoveryRequired, resumeOnlySignals);
-  const queueDepth = model.queue?.depth ?? 0;
   // What this session may be asked to do now: one derivation for every control
   // surface (stores/liveControls.ts), with the rationale (status alone, never
   // activeTurnId; capability is the harness's) in @evener/appwire-client's

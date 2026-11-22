@@ -52,7 +52,7 @@
 }
 
 @media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4) {
-  .composer:has([data-folded="true"] [role="textbox"][data-empty="true"]) .attachSlot {
+  .composer .attachSlot {
     inset-block-end: 0;
   }
 }
@@ -296,11 +296,13 @@
  * reservation's width is all gap there. WebKit sizes the control row from the
  * reservation rather than the compact basis, which collapsed the writing
  * field to a quarter of the card behind a dead 312px gap (iPhone Duo cover). */
-.leading[data-folded="true"]:not([data-compact="true"]) {
-  container-type: inline-size;
-  contain-intrinsic-inline-size: 356px;
-  flex: 0 1 auto;
-  flex-wrap: nowrap;
+@container (min-width: 620px) {
+  .leading[data-folded="true"]:not([data-compact="true"]) {
+    container-type: inline-size;
+    contain-intrinsic-inline-size: 356px;
+    flex: 0 1 auto;
+    flex-wrap: nowrap;
+  }
 }
 
 /* The phone's compact resting row keeps Attach and the menu in this slot; it

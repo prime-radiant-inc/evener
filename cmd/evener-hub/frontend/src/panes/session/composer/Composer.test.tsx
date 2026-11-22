@@ -585,10 +585,12 @@ test("the Send and Stop words collapse to glyphs below the compact pane threshol
 // reserves the compact chrome rung for the leading's wrap calculation and
 // grows into the expanded row; the row's own `align="end"` places the facts
 // at its far end.
-test("the session chrome reserves its compact rung and fills the expanded row", () => {
+test("the session chrome reserves its compact rung only for one-line folded cards", () => {
   const css = readModuleCss(import.meta.url, "composer.module.css");
   expect(topRuleBlock(css, ".chromeSlot")).toMatch(/flex:\s*1 1 200px/);
-  expect(topRuleBlock(css, '.leading[data-folded="true"]:not([data-compact="true"])')).toMatch(/flex-wrap:\s*nowrap/);
+  expect(css).toMatch(
+    /@container \(min-width: 620px\) \{\s*\.leading\[data-folded="true"\]:not\(\[data-compact="true"\]\)\s*\{[^}]*flex-wrap:\s*nowrap/,
+  );
 });
 
 beforeEach(() => {
