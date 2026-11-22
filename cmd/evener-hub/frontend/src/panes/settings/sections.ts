@@ -39,7 +39,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
       "desktop layout",
       "mobile layout",
       "unread",
-      "open at unread",
+      "open at unread replies",
     ],
     label: "Conversation display",
     cluster: "preferences",

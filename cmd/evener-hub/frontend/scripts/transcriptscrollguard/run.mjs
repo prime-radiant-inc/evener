@@ -375,7 +375,9 @@ async function main() {
       // The landing is opt-in (#4845 slice 2), so the same watermark under the
       // web's default preference has to open at the live end. Without this
       // control the pass below would not tell the opt-in from a page that
-      // always lands at the unseen reply.
+      // always lands at the unseen reply. The reopen restores the turns earlier
+      // passes appended, so it waits on the paged settle (at least the scripted
+      // turns) rather than the plain open's exact count.
       await navigateTo(
         page,
         `http://127.0.0.1:${vitePort}/transcriptscrollguard.html?seen=${UNSEEN_OPEN.seen}&openAtUnread=off`,
@@ -383,7 +385,7 @@ async function main() {
       );
       await waitForFonts(send);
       const unseenDefault = JSON.parse(
-        await evaluate(send, "(async () => JSON.stringify(await window.waitForTranscriptSettled()))()"),
+        await evaluate(send, "(async () => JSON.stringify(await window.waitForPagedOpenSettled()))()"),
       );
       if (Math.abs(unseenDefault.bottomGap) > BOTTOM_TOLERANCE_PX) {
         failures.push(

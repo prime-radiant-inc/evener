@@ -50,6 +50,7 @@ test.each([
   ["transcript", "transcript"],
   ["cost", "transcript"],
   ["open at unread", "transcript"],
+  ["Open at unread replies", "transcript"],
   ["mobile", "mobile"],
   ["session defaults", "launch-evener"],
   ["launch", "launch-evener"],
