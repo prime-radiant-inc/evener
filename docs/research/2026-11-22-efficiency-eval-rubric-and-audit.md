@@ -1,0 +1,132 @@
+# Evener Efficiency Program: Evaluation Rubric & Fresh-Eyes Audit (Round 2 & Round 3)
+
+**Date:** 2026-11-22
+**Base reference:** `origin/main` at `31e7d0ba4a` (includes `4759d4c0eb`, PR #7501 unified `communicate({})` quiet yield and root bare-text fallback)
+**Interactive report & complete 1,003-run per-run token ledger:** https://artifacts.trout-rigel.ts.net/p/evener-efficiency-audit-r3/
+**Extraction CLI:** `/home/jesse/.local/share/toolsmith/tools/bin/evener-eval-ledger` (read-only; normalizes token counts across Evener `.api.jsonl`/`.transcript.jsonl`, `pi` `sessions/*.jsonl`, and `opencode` `opencode.db`)
+
+---
+
+## 1. Executive Verdict
+
+None of the three Round 3 pull requests (#7505, #7503, #7504) should merge as written.
+
+1. **What actually helped and is already on `main`:** PR #7422 (atomic multi-edit `edit_file`, single edit tool per session) and PR #7469 (`read_file` v2) produced clear, unconfounded gains. On `overfull-hbox` real containers, `origin/main` (`b57dfc40eb`) improved over Round 2 `shipped` (`9fdbfd65d2`) from **2/3 to 3/3 pass**, cut mean tool calls **32.0 to 23.7 (-26%)**, cut mean input tokens **1.26M to 758k (-40%)**, and cut mean output tokens **27.6k to 14.6k (-47%)**. On `path-tracing-reverse`, mean calls dropped **41.3 to 32.0 (-23%)** and input tokens dropped **2.48M to 1.98M (-20%)**.
+2. **What full token accounting revealed:** Earlier comparisons understated `opencode` output tokens because Harbor's ATIF `trajectory.json` excludes `opencode`'s reasoning tokens. Reading `opencode.db` directly shows `opencode` uses a median of **22,958 total output tokens** (15,482 reasoning) across its 30 board trials — nearly identical to Evener `origin/main`'s **23,284 output tokens** (15,712 reasoning). Evener's real efficiency gap on most tasks is **input tokens**: `origin/main` starts Turn 1 at **22,456 tokens** (`system.md.tmpl` + 27 tool schemas), compared to **7,472** for `opencode` and **1,705** for `pi 1.2.0`. Across 30 container trials, that turns into **795k median input tokens** for Evener vs **498k** for `opencode` and **197k** for `pi`.
+3. **What Round 3 failed to prove:** Round 3 screened individual arms (`exp1`, `exp2`, `exp3`, `exp4`) only on the `overfull-hbox` fixture (`n=12`) and then jumped straight to a stacked binary (`exp134`) for Terminal-Bench 2.1 containers (`30 trials`). In isolation on the fixture, prompt/schema cuts reduced input tokens (`-13%` to `-38%`), but `exp3` (`9/12` pass, 3 timeouts) and `exp4` (`8/12` pass, 3 behavior timeouts + 1 outage) did not cleanly beat `main-r3` (`12/12` pass). On containers, stacked `exp134` cut median input tokens **-37.6%** (`795k -> 496k`, matching `opencode`) and cut calls 8% to 35% on 9 of 10 tasks, **but regressed `configure-git-webserver` from 2/3 to 0/3** and **left `largest-eigenval` unsolved at 1/3**. Because none of the three PRs was tested alone on containers, we cannot attribute either the wins or the `configure-git-webserver` regression to an individual PR.
+4. **Why the three open PRs are blocked:**
+   - **PR #7503 (`exp3-surface-diet`):** Failing CI (`TestModelListToolPreservesJSONUnderConfiguredOutputLimit`), direct merge conflict with `4759d4c0eb`, sloppy telegraphic prose that inverted a real background-process rule (*"stop all other background processes before ending"* / *"stop persistent processes before ending"*), and degraded `toolIntentDescription`. **Recommendation: close PR #7503 and replace with clean, grammatical schema edits on top of `4759d4c0eb`.**
+   - **PR #7505 (`exp1-oneshot-ceremony`):** Green CI, real mechanical gain on `notes_*`/`urls_*` omission, but 4 unresolved RoboRev findings (telling the model not to clean `$EVENER_SCRATCH_DIR` leaks files until the harness cleans scratch itself; symlink `--dir` git detection bug; stale prompt on `--resume`; unnecessary `Omit`/`IsReserved` map) and predates `4759d4c0eb`. **Recommendation: rework on `4759d4c0eb` and test in isolation.**
+   - **PR #7504 (`exp4-direct-exec`):** Green CI, but 3 unresolved RoboRev findings (narrowing backups to "binary or database" exposes irreplaceable text/CSV files; `/tmp/run.py` fails in Linux `bwrap` read-only `/tmp`; "stop immediately" contradicts `## Finishing` worktree cleanup), 3 fixture behavior timeouts in isolation, prime suspect in `configure-git-webserver` 0/3, and predates `4759d4c0eb`. **Recommendation: hold, fix all 3 findings, split hypotheses, and test in isolation on `4759d4c0eb`.**
+
+---
+
+## 2. Five-Gate Evaluation Rubric (Mandatory Promotion Standard)
+
+Every future efficiency experiment starts from `origin/main` including `4759d4c0eb` and must pass all five gates before opening a PR for review.
+
+### Gate 1 — Prose Quality & Contract Fidelity
+- Branch includes `4759d4c0eb` (#7501) and current `origin/main`.
+- Every edited line of `agent/prompts/system.md.tmpl` and `agent/internal/tool/definitions.go` is reviewed directly for clear, complete, grammatical English (Strunk/Hemingway style). Never compress prompts into telegraphic shorthand, semicolon pileups, or single-line crammed lists.
+- Never alter a safety, lifecycle, or cleanup qualifier while tightening prose.
+- All CI checks green, zero unresolved RoboRev findings, and a 5-model / multi-provider live E2E field test audited clean with `evener doctor transcript --health`.
+
+### Gate 2 — Isolated Attribution Before Stacking
+- Every candidate PR must be benchmarked **in isolation** against a same-day, same-fleet `origin/main` control before combining changes into a stack.
+- Never cite stacked container metrics (such as `exp134`) as evidence for an individual PR.
+- Screening tier: `overfull-hbox` fixture, `n >= 12` reps interleaved with control.
+- Promotion tier: all 10 Terminal-Bench 2.1 container tasks (`4 pi-win + 6 guard`), `n >= 3` attempts per task (`30 trials`), 1 trial per idle 8-vCPU host.
+
+### Gate 3 — Complete Normalized Token & Timing Accounting
+All numbers must be generated by `evener-eval-ledger` from raw API logs (`.api.jsonl`), transcripts (`.transcript.jsonl`), `pi` session logs (`sessions/*.jsonl`), and `opencode.db`, with zero missing logs and zero arithmetic anomalies.
+
+**Normalized token definitions (identical across Evener, `pi`, and `opencode`):**
+- `round1_input_tokens`: Total prompt tokens on Turn 1 (system prompt + tool schemas + initial user turn).
+- `input_tokens = uncached_input_tokens + cache_read_tokens`: Total prompt tokens summed across all agent rounds.
+  - Raw Evener `usage.input_tokens`, raw `pi` `usage.input`, and raw `opencode.db` `tokens.input` all exclude cached tokens and are normalized by adding `cache_read_tokens`.
+- `output_tokens = non_reasoning_output_tokens + reasoning_tokens`: Total generated tokens summed across all agent rounds.
+  - Raw `opencode` ATIF `trajectory.json` excludes reasoning tokens; `evener-eval-ledger` reads `opencode.db` so `opencode` output tokens include reasoning, matching Evener and `pi`.
+- `total_tokens = input_tokens + output_tokens`.
+- `max_single_round_output_tokens`: Peak output tokens in any single round (key diagnostic for runaway reasoning spirals).
+- Wall time broken down into `gen_s` (model generation), `stall_wait_s` (pre-first-byte gateway keep-alive queue wait), and `tool_s` (command execution).
+
+### Gate 4 — Zero Guard Regressions & Honest Outcome Reporting
+- **Automatic rejection:** any guard task dropping to `0/3`, or overall 10-task pass rate dropping below control (`>= 27/30`).
+- Never hide behavior timeouts inside "passed-only" averages. Always report raw `pass/n`, `behavior timeouts`, `gateway-limited timeouts`, and `gateway outages` side-by-side.
+
+### Gate 5 — Parity Targets vs `pi 1.2.0` and `opencode 1.19.5`
+
+| Metric | Current `origin/main` (`b57dfc4`) | `opencode 1.19.5` | `pi 1.2.0` | Target Bar |
+|---|---:|---:|---:|---:|
+| Headless Round 1 input tokens | 22,456 | 7,472 | 1,705 | **<= 10,000** |
+| TB 2.1 median total input tokens | 795,038 | 497,720 | 196,588 | **<= 450,000** |
+| TB 2.1 median output tokens (incl. reasoning) | 23,284 | 22,958 | 11,861 (R2) / 20,965 (board) | **<= 20,000** |
+| TB 2.1 median tool calls | 25.5 | 22.5 | 14.0 (R2) / 16.0 (board) | **<= 20.0** |
+| `largest-eigenval` clean pass rate | 1/3 (3 TO) | 3/3 (0 TO) | 3/3 (Nov 16) / 1/2 (R2) | **>= 2/3 (0 TO)** |
+| `configure-git-webserver` pass rate | 2/3 | n/a | 2/3 | **>= 2/3** |
+| Overall 10-task TB 2.1 pass rate | 27/30 (90%) | 12/12 (on 4 overlapping) | 25/29 (R2) | **>= 27/30 (90%)** |
+
+---
+
+## 3. Complete Token & Outcome Summary
+
+### A. Fixture Screening (`overfull-hbox`, medians over non-outage runs; all outcomes shown)
+
+| Arm | Source | n | Pass | Behav TO | GW TO | Outage | Med Calls | Med Pre/Post | Med R1 In | Med Total In | Med Uncached | Med Out | Med Reas | Med Wall |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `pi 1.2.0` | `r2-fixture` | 32 | 27/32 | 1 | 4 | 0 | 13.0 | 11.0 / 2.0 | 1,647 | 165,621 | 13,145 | 9,041 | 5,807 | 252s |
+| `plr2` (floor) | `r2-fixture` | 15 | 14/15 | 0 | 1 | 0 | 17.0 | 14.0 / 3.0 | 1,283 | 200,249 | 13,508 | 10,705 | 6,901 | 448s |
+| `main-chat` (`9fdbfd6`) | `r2-fixture` | 76 | 51/76 | 8 | 18 | 0 | 29.0 | 20.0 / 9.0 | 22,971 | 1,114,013 | 50,712 | 20,747 | 12,126 | 734s |
+| **`main-r3` (`b57dfc4`)** | `r3-fixture` | 12 | **12/12** | 0 | 0 | 0 | 28.0 | 13.5 / 10.5 | 22,448 | 1,025,500 | 47,815 | 19,191 | 11,451 | 411s |
+| `exp1` | `r3-fixture` | 12 | **12/12** | 0 | 0 | 0 | 28.5 | 20.0 / 7.0 | 19,437 | 990,876 | 44,877 | 19,799 | 13,318 | 385s |
+| `exp2` | `r3-fixture` | 12 | **12/12** | 0 | 0 | 0 | 25.0 | 18.0 / 8.0 | 22,595 | 861,057 | 47,386 | 18,929 | 12,557 | 291s |
+| `exp12` | `r3-fixture` | 12 | **12/12** | 0 | 0 | 0 | 29.0 | 18.5 / 7.0 | 19,587 | 927,670 | 42,942 | 17,740 | 10,330 | 343s |
+| `exp3` | `r3-fixture` | 12 | 9/12 | 1 | 2 | 1 | 26.0 | 17.0 / 8.0 | 16,025 | 743,856 | 40,458 | 20,858 | 11,719 | 377s |
+| `exp123` | `r3-fixture` | 12 | 9/12 | 2 | 1 | 1 | 25.0 | 17.0 / 5.0 | 13,836 | 661,851 | 37,723 | 16,274 | 8,614 | 452s |
+| `exp4` | `r3-fixture` | 12 | 8/12 | 3 | 0 | 1 | 25.0 | 20.0 / 5.0 | 21,199 | 823,325 | 46,372 | 16,340 | 10,584 | 287s |
+| `exp134` | `r3-fixture` | 12 | 10/12 | 1 | 0 | 1 | 27.0 | 18.0 / 9.0 | 13,817 | 734,280 | 36,556 | 18,999 | 11,296 | 352s |
+
+### B. Terminal-Bench 2.1 Containers (10 Tasks, Means per Task)
+
+| Task | Arm | Pass (TO) | Mean Calls | Mean R1 In | Mean Total In | Mean Out (Reas) | Max 1-Rnd Out |
+|---|---|---:|---:|---:|---:|---:|---:|
+| `sqlite-db-truncate` | R3 `main` / `exp134` / `opencode` / R2 `pi` | 3/3 / 3/3 / 3/3 / 3/3 | 11.7 / 9.7 / 9.0 / 11.0 | 22.4k / 13.9k / 7.4k / 1.7k | 264k / 189k / 127k / 83k | 13.9k (10.6k) / 13.1k (9.7k) / 8.0k (5.9k) / 10.8k (8.3k) | 11.7k / 8.8k / 4.3k / 7.7k |
+| `overfull-hbox` | R3 `main` / `exp134` / `opencode` / R2 `pi` | 3/3 / 3/3 / 3/3 / 3/3 | 23.7 / 21.7 / 15.3 / 15.3 | 22.4k / 13.9k / 7.4k / 1.7k | 758k / 549k / 227k / 193k | 14.6k (9.2k) / 15.5k (10.5k) / 8.2k (5.2k) / 10.9k (7.3k) | 2.7k / 4.4k / 5.4k / 6.0k |
+| `path-tracing-reverse` | R3 `main` / `exp134` / `opencode` / R2 `pi` | 3/3 / 3/3 / 3/3 / 2/3 | 32.0 / 31.7 / 28.7 / 27.7 | 22.4k / 14.0k / 7.5k / 1.7k | 1.98M / 2.08M / 1.45M / 1.28M | 70.6k (63.4k) / 57.4k (49.3k) / 46.5k (40.7k) / 45.0k (40.1k) | 44.1k / 34.2k / 22.4k / 16.4k |
+| `largest-eigenval` | R3 `main` / `exp134` / `opencode` / Nov16 `pi` | **1/3 (3)** / **1/3 (2)** / **3/3 (0)** / **3/3 (0)** | 35.0 / 30.7 / 46.3 / 51.0 | 22.5k / 14.0k / 7.5k / 1.7k | 2.04M / 1.61M / 2.40M / 1.75M | 68.3k (47.3k) / 64.7k (49.0k) / 45.6k (26.7k) / 53.3k (33.3k) | **30.0k** / **24.9k** / **13.6k** / **16.0k** |
+| `feal-linear-cryptanalysis` | R3 `main` / `exp134` / R2 `pi` | 3/3 / 3/3 / 3/3 | 16.3 / 14.3 / 12.0 | 22.5k / 14.0k / 1.7k | 560k / 480k / 150k | 26.3k (20.4k) / 29.6k (24.1k) / 11.4k (7.4k) | 19.4k / 26.3k / 5.7k |
+| `path-tracing` | R3 `main` / `exp134` / R2 `pi` | 3/3 / 3/3 / 2/3 (1) | 32.7 / 25.3 / 40.0 | 22.5k / 14.0k / 1.8k | 2.36M / 1.37M / 2.02M | 38.0k (30.3k) / 30.0k (23.0k) / 50.1k (34.4k) | 16.6k / 9.1k / 11.6k |
+| `configure-git-webserver` | R3 `main` / `exp134` / R2 `shipped` / R2 `pi` | **2/3** / **0/3** / **3/3 (1)** / **2/3** | 27.7 / 19.0 / 26.7 / 21.3 | 22.4k / 13.9k / 22.9k / 1.7k | 766k / 431k / 808k / 240k | 25.3k (19.3k) / 21.9k (16.5k) / 22.8k (16.8k) / 12.7k (8.7k) | 5.6k / 6.7k / 4.8k / 3.0k |
+| `portfolio-optimization` | R3 `main` / `exp134` / R2 `pi` | 3/3 / 3/3 / 3/3 | 29.7 / 19.3 / 10.3 | 22.5k / 14.1k / 1.8k | 982k / 387k / 86k | 27.6k (15.6k) / 20.0k (12.9k) / 10.5k (4.7k) | 11.5k / 12.4k / 6.0k |
+| `sqlite-with-gcov` | R3 `main` / `exp134` / R2 `pi` | 3/3 / 3/3 / 3/3 | 25.3 / 23.3 / 20.3 | 22.4k / 13.9k / 1.6k | 686k / 566k / 523k | 10.3k (5.8k) / 13.4k (8.9k) / 6.3k (3.7k) | 1.9k / 1.9k / 2.5k |
+| `sparql-university` | R3 `main` / `exp134` / R2 `pi` | 3/3 / 3/3 / 3/3 | 14.0 / 11.3 / 13.7 | 22.6k / 14.1k / 1.9k | 450k / 263k / 156k | 9.9k (6.2k) / 9.6k (6.0k) / 6.7k (4.7k) | 4.2k / 4.2k / 4.4k |
+
+*(Full per-run rows for all 1,003 runs are published in the interactive artifact and attached CSV/JSON.)*
+
+---
+
+## 4. Deep-Dive Root-Cause Analyses
+
+### A. `configure-git-webserver` (0/3 on `exp134` vs 2/3 on `origin/main` and 3/3 on R2 `shipped`)
+- **Verified verifier error:** All four Round 3 failures (`r3main-2`, `exp134-0`, `exp134-1`, `exp134-2`) failed identically: `Web server returned HTTP 404` alongside `fatal: not a git repository (or any of the parent directories): .git`.
+- **Verified transcript mechanism:** The task prompt gives `git clone user@server:/git/server` while also stating `"I'll setup login with the server to work"`. Both passing `origin/main` runs (`rep0`, `rep1`) created a literal Linux account `user` (`useradd`). All four failing runs configured `ubuntu` or `root` instead.
+- **Why this blocks PR #7504 and PR #7503:** In `exp134-0` and `exp134-1`, the model explicitly noticed the missing `user` account and reasoned itself out of creating it. Both Exp 4's strict *"stop immediately... nothing beyond what was asked"* rule and Exp 3's degraded prompt prose were active together; neither was isolated on this task. Under Gate 4, this 0/3 drop is an automatic reject until isolated and resolved.
+
+### B. `largest-eigenval` (1/3 on `origin/main` and `exp134` vs 3/3 on `opencode` and Nov 16 `pi`)
+- **What changed our understanding:** Comparing `evener-eval-ledger` across harnesses shows `opencode` (46.3 calls, 3/3, 0 TO) and `pi` (51.0 calls, 3/3, 0 TO) actually take **more** tool rounds than Evener (30.7–35.0 calls) and finish well inside 900s.
+- **The real bottleneck is reasoning tokens per round and uncapped `max_tokens`:**
+  - `opencode`: 576 reasoning tokens/call, hard cap `max_1rnd = 32,000` (observed task peak 13,560).
+  - `pi`: 653 reasoning tokens/call, hard cap `max_1rnd = 16,384` (observed task peak 16,015).
+  - Evener: 1,351–2,075 reasoning tokens/call, uncapped `max_tokens = 262,144` (observed task peaks 24,897 to 40,686 in a single round!).
+- Spending 25k–40k reasoning tokens in a single round hand-deriving custom C / LAPACK / Francis double-shift QR solvers consumes 250–400s in one request and burns 600–860s of generation time across 30 rounds, hitting the 900s wall with zero gateway stall.
+
+---
+
+## 5. Clean Round 4 Plan Starting From `4759d4c0eb`
+
+1. **Establish a fresh baseline on `origin/main` (`>= 4759d4c0eb`):** Measure how much #7501's unified `communicate({})` and root bare-text fallback already recover on both fixtures and the 10-task TB 2.1 suite.
+2. **Close PR #7503** (caveman prose + failing CI + conflict with `4759d4c0eb`).
+3. **Experiment R4-A (clean rework of #7505 on `4759d4c0eb`):** Fix all 4 RoboRev findings (actually auto-dispose/clean scratch in the harness or keep cleanup honest; resolve symlink `--dir`; avoid stale `--resume` prompt; use register -> check -> `Registry.Remove`), and benchmark **alone** on containers including `configure-git-webserver`.
+4. **Experiment R4-B (clean, grammatical tool-schema diet on `4759d4c0eb`):** Trim non-essential tool schemas and redundant examples using complete, Strunk-grade sentences (preserving `toolIntentDescription`'s hypothesis/why guidance and never touching lifecycle qualifiers), targeting `r1_in <= 10k` headless, and benchmark **alone** on fixtures and all 10 containers.
+5. **Experiment R4-C (`largest-eigenval` per-round output cap):** Test capping per-turn `max_tokens` to 16,384 or 32,768 (matching `pi` and `opencode`, vs Evener's 262,144) isolated on `largest-eigenval` + guard tasks to see whether stopping 25k–40k single-round reasoning spirals turns 1/3 into 3/3 without hurting any hard task.
+6. **Experiment R4-D (isolated behavioral prompts from #7504, fixed for RoboRev):** Fix the backup rule (never exclude irreplaceable text/CSV files), use `$EVENER_SCRATCH_DIR` instead of `/tmp/run.py`, and test foreground-default and inline-script guidance **separately** from any stop-when-done wording so `configure-git-webserver` is never regressed.
