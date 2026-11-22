@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -64,7 +66,7 @@ func TestReapSessionBackgroundJobsReapsVerifiedSurvivor(t *testing.T) {
 	sleeper := startProcessGroup(t)
 	writeRunningBackgroundRecord(t, stateDir, sessionID, "job_reap_survivor", sleeper.pid, sleeper.started)
 
-	if reaped := ReapSessionBackgroundJobs(stateDir, sessionID); reaped != 1 {
+	if reaped := ReapSessionBackgroundJobs(stateDir, sessionID, nil); reaped != 1 {
 		t.Fatalf("reaped %d groups, want 1", reaped)
 	}
 	exitErr, ended := sleeper.waitWithin(t, 10*time.Second)
@@ -86,7 +88,7 @@ func TestReapSessionBackgroundJobsLeavesRecycledIdentityAlone(t *testing.T) {
 	stale := sleeper.started.Add(-time.Hour)
 	writeRunningBackgroundRecord(t, stateDir, sessionID, "job_reap_recycled", sleeper.pid, stale)
 
-	if reaped := ReapSessionBackgroundJobs(stateDir, sessionID); reaped != 0 {
+	if reaped := ReapSessionBackgroundJobs(stateDir, sessionID, nil); reaped != 0 {
 		t.Fatalf("reaped %d groups, want none", reaped)
 	}
 	if !sleeper.running(t) {
@@ -115,7 +117,7 @@ func TestReapSessionBackgroundJobsLeavesDetachedAndUnrecordedAlone(t *testing.T)
 		Type: jobstore.JobShell, Background: true, OwnerSessionID: sessionID,
 	})
 
-	if reaped := ReapSessionBackgroundJobs(stateDir, sessionID); reaped != 0 {
+	if reaped := ReapSessionBackgroundJobs(stateDir, sessionID, nil); reaped != 0 {
 		t.Fatalf("reaped %d groups, want none", reaped)
 	}
 	for _, proc := range []*processGroup{detached, foreground, ungrouped} {
@@ -147,7 +149,7 @@ func TestReapSessionBackgroundJobsUsesTheReadablePrefixOfADamagedJournal(t *test
 		t.Fatal(err)
 	}
 
-	if reaped := ReapSessionBackgroundJobs(stateDir, sessionID); reaped != 1 {
+	if reaped := ReapSessionBackgroundJobs(stateDir, sessionID, nil); reaped != 1 {
 		t.Fatalf("reaped %d groups from a damaged journal, want 1", reaped)
 	}
 	if _, ended := sleeper.waitWithin(t, 10*time.Second); !ended {
@@ -159,7 +161,7 @@ func TestReapSessionBackgroundJobsUsesTheReadablePrefixOfADamagedJournal(t *test
 // session that never ran a job: nothing to read is nothing to reap.
 func TestReapSessionBackgroundJobsToleratesMissingJournal(t *testing.T) {
 	t.Parallel()
-	if reaped := ReapSessionBackgroundJobs(t.TempDir(), "sess_reap_missing"); reaped != 0 {
+	if reaped := ReapSessionBackgroundJobs(t.TempDir(), "sess_reap_missing", nil); reaped != 0 {
 		t.Fatalf("reaped %d groups from a missing journal, want none", reaped)
 	}
 }
@@ -195,6 +197,143 @@ func TestReconcileLostJobsReapsTheSurvivingGroup(t *testing.T) {
 	if rec := recs["job_restore_reap"]; rec == nil || rec.Status != jobstore.StatusStopped || rec.Reason != "runtime_lost" {
 		t.Fatalf("restored record = %+v, want stopped/runtime_lost", rec)
 	}
+}
+
+// TestReapSessionBackgroundJobsKillsTermIgnoringDescendants proves why the crash
+// reap escalates at once instead of granting a SIGTERM grace: a grace period
+// lets the leader exit on SIGTERM, frees its pid, and the verifying check before
+// any escalation then refuses to signal — so a descendant that ignores SIGTERM
+// keeps holding its ports. One verified SIGKILL must take the whole group.
+func TestReapSessionBackgroundJobsKillsTermIgnoringDescendants(t *testing.T) {
+	t.Parallel()
+	stateDir, sessionID := t.TempDir(), "sess_reap_termproud"
+	leader, childPid := startShellWithTermIgnoringChild(t)
+	writeRunningBackgroundRecord(t, stateDir, sessionID, "job_reap_termproud", leader.pid, leader.started)
+
+	if reaped := ReapSessionBackgroundJobs(stateDir, sessionID, nil); reaped != 1 {
+		t.Fatalf("reaped %d groups, want 1", reaped)
+	}
+	exitErr, ended := leader.waitWithin(t, 10*time.Second)
+	if !ended {
+		t.Fatal("reaped process group leader is still running")
+	}
+	if signal := exitSignal(exitErr); signal != syscall.SIGKILL {
+		t.Fatalf("crash reap ended the leader with %v, want SIGKILL at once", signal)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for syscall.Kill(childPid, 0) == nil && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := syscall.Kill(childPid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("SIGTERM-ignoring descendant %d survived the crash reap: %v", childPid, err)
+	}
+}
+
+// TestReapSessionBackgroundJobsReapsNestedDelegateGroups proves the subtree walk:
+// a nested delegate's start event is forwarded only to its immediate parent, so
+// its group is not in the root's journal. The reap must still end it.
+func TestReapSessionBackgroundJobsReapsNestedDelegateGroups(t *testing.T) {
+	t.Parallel()
+	const rootID = "02wMz5Txv1C3Hut0M8GCeG"
+	const childID = "02wMz5Txv1C3Hut0M8GCeH"
+	stateDir := t.TempDir()
+	writePastDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "child"))
+	sleeper := startProcessGroup(t)
+	writeRunningBackgroundRecord(t, stateDir, childID, "job_nested_reap", sleeper.pid, sleeper.started)
+
+	if reaped := ReapSessionBackgroundJobs(stateDir, rootID, nil); reaped != 1 {
+		t.Fatalf("reaped %d groups from the delegate subtree, want 1", reaped)
+	}
+	if _, ended := sleeper.waitWithin(t, 10*time.Second); !ended {
+		t.Fatal("a nested delegate's background group survived the reap")
+	}
+}
+
+// TestReapSessionBackgroundJobsHonorsTheSkipPredicate pins the hub's still-live
+// guard: a session the predicate names is left to whoever owns it now.
+func TestReapSessionBackgroundJobsHonorsTheSkipPredicate(t *testing.T) {
+	t.Parallel()
+	stateDir, sessionID := t.TempDir(), "sess_reap_skipped"
+	sleeper := startProcessGroup(t)
+	writeRunningBackgroundRecord(t, stateDir, sessionID, "job_reap_skipped", sleeper.pid, sleeper.started)
+
+	if reaped := ReapSessionBackgroundJobs(stateDir, sessionID, func(string) bool { return true }); reaped != 0 {
+		t.Fatalf("reaped %d groups for a skipped session, want none", reaped)
+	}
+	if !sleeper.running(t) {
+		t.Fatal("a skipped session's process group was signaled")
+	}
+}
+
+// TestDelegateShellRepairReapsTheSurvivingGroup proves the cold delegate repair
+// path: the delegate runtime that owned a running background job is gone, so its
+// process group survived, and the repair must end the group before recording the
+// job stopped (#4843).
+func TestDelegateShellRepairReapsTheSurvivingGroup(t *testing.T) {
+	t.Parallel()
+	stateDir, sessionID := t.TempDir(), "sess_repair_reap"
+	const jobID = "job_repair_reap"
+	sleeper := startProcessGroup(t)
+	writeRunningBackgroundRecord(t, stateDir, sessionID, jobID, sleeper.pid, sleeper.started)
+
+	err := executeDelegateShellRepair(delegateShellRepairPlan{
+		delegateID:    "dlg_target",
+		storePath:     filepath.Join(schema.SessionWorkDir(stateDir, sessionID), "jobs.jsonl"),
+		runningJobIDs: []string{jobID},
+	}, time.Unix(20, 0).UTC())
+	if err != nil {
+		t.Fatalf("executeDelegateShellRepair: %v", err)
+	}
+	if _, ended := sleeper.waitWithin(t, 10*time.Second); !ended {
+		t.Fatal("a repaired delegate's background group survived")
+	}
+}
+
+// startShellWithTermIgnoringChild starts a group leader shell whose child
+// ignores SIGTERM, and returns the leader plus the child's pid. It is the shape
+// a grace period cannot clean up once the leader has exited.
+func startShellWithTermIgnoringChild(t *testing.T) (*processGroup, int) {
+	t.Helper()
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	// The descendant must ignore SIGTERM at the process level — a shell that
+	// trapped TERM and loops, never an exec'd sleep (exec drops the trap) — and
+	// the leader must die on SIGTERM at once, leaving the descendant behind. The
+	// exec keeps the leader's pid and start time, so the record still names it.
+	cmd := exec.Command("sh", "-c", `sh -c 'trap "" TERM; while :; do sleep 1; done' & echo $! > "$1"; exec sleep 60`, "sh", pidFile)
+	cmd.SysProcAttr = procgroup.SysProcAttr()
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start shell with term-ignoring child: %v", err)
+	}
+	started, ok := processStartedAt(cmd.Process.Pid)
+	if !ok {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatal("start time unavailable for a freshly started shell")
+	}
+	leader := &processGroup{pid: cmd.Process.Pid, started: started, cmd: cmd}
+	var childPid int
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		data, err := os.ReadFile(pidFile)
+		if err == nil {
+			if pid, convErr := strconv.Atoi(strings.TrimSpace(string(data))); convErr == nil && pid > 0 {
+				childPid = pid
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			t.Fatalf("child pid never appeared in %s: %v", pidFile, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Kill(childPid, syscall.SIGKILL)
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	return leader, childPid
 }
 
 // processGroup is a real command in its own process group, the shape a
@@ -261,6 +400,19 @@ func (p *processGroup) waitWithin(t *testing.T, d time.Duration) (*exec.ExitErro
 func signalledExit(err *exec.ExitError) bool {
 	status, ok := err.Sys().(syscall.WaitStatus)
 	return ok && status.Signaled()
+}
+
+// exitSignal reports the signal that ended the process, or 0 when it exited on
+// its own.
+func exitSignal(err *exec.ExitError) syscall.Signal {
+	if err == nil {
+		return 0
+	}
+	status, ok := err.Sys().(syscall.WaitStatus)
+	if !ok || !status.Signaled() {
+		return 0
+	}
+	return status.Signal()
 }
 
 // writeRunningBackgroundRecord plants the durable state a crashed daemon leaves

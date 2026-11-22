@@ -856,7 +856,7 @@ func (r *hubRuntime) startBackground(web *WebServer) (context.Context, func()) {
 	// announcement: the first publication after a hub start has no earlier
 	// listing to leave. Sweep the roster's crashed entries once for background
 	// job process groups that outlived their daemon (#4843).
-	goBackground(func() { reapCrashedSessionJobs(roster.List(), web.cfg.ReapSessionJobs) })
+	goBackground(func() { reapCrashedSessionJobs(roster.List(), sessionStillLive(roster), web.cfg.ReapSessionJobs) })
 	// Start the resettable navigation scheduler only after the initial roster
 	// seed, so its first capture cannot publish a transient empty generation.
 	goBackground(func() { web.navigation.Start(ctx) })

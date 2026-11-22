@@ -91,8 +91,8 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 		// archive time, so a daemon's exit kicks the reconcile that removes it.
 		// A daemon that exited without teardown also leaves its background job
 		// process groups running, so the same announcement reaps them (#4843).
-		// The reap runs off this path because it may wait out a group's SIGTERM
-		// grace, and the announcement owes it no ordering; it is idempotent, so
+		// The reap runs off this path because it reads journals and signals process
+		// groups, and the announcement owes it no ordering; it is idempotent, so
 		// one cut short by a hub exit is finished by the next start's sweep.
 		stillLive := sessionStillLive(roster)
 		roster.SetOnSessionGone(func(gone hubcore.LiveEntry) {
