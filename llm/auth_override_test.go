@@ -56,8 +56,9 @@ func TestScopedAuthenticatorsAreSchemeSpecific(t *testing.T) {
 
 // TestAuthenticatorOverrideCannotCrossOAuthSchemes pins that the legacy
 // single-authenticator override cannot answer for either record-backed OAuth
-// scheme. Those schemes require an explicit per-scheme binding so a Codex
-// scope can never authenticate a Copilot request.
+// scheme or for a bearer transport. Those schemes require an explicit
+// per-scheme binding so a Codex scope can never authenticate a Copilot or
+// bearer request.
 func TestAuthenticatorOverrideCannotCrossOAuthSchemes(t *testing.T) {
 	t.Parallel()
 	generic := &recordingAuthenticator{}
@@ -67,7 +68,7 @@ func TestAuthenticatorOverrideCannotCrossOAuthSchemes(t *testing.T) {
 			t.Fatalf("%s override = %v, want nil without a scheme-specific binding", scheme, got)
 		}
 	}
-	if got := AuthenticatorOverrideFor(ctx, "bearer"); got != generic {
-		t.Fatalf("non-record scheme override = %v, want the legacy generic authenticator", got)
+	if got := AuthenticatorOverrideFor(ctx, registry.AuthBearer); got != nil {
+		t.Fatalf("bearer scheme override = %v, want nil: the generic override must not answer for another scheme", got)
 	}
 }

@@ -2,26 +2,22 @@ package llm
 
 import (
 	"context"
-
-	"primeradiant.com/evener/llm/registry"
 )
 
 type authenticatorOverrideKey struct{}
 
 // authenticatorOverrides carries one context's call-scoped authenticators.
-// Scheme-bound values take precedence; the legacy generic value serves only
-// schemes that do not read a shared OAuth record.
+// Only exact scheme-bound values answer; the legacy generic value is kept for
+// WithAuthenticatorOverride's API and never serves a request.
 type authenticatorOverrides struct {
 	generic  Authenticator
 	byScheme map[string]Authenticator
 }
 
-// WithAuthenticatorOverride carries a call-scoped authenticator for schemes
-// that do not read a shared OAuth record; those must use
-// WithScopedAuthenticator. It replaces the process-global AuthenticatorFor
-// lookup for protocol calls issued under the returned context: the caller
-// binds the authenticator to the request instead of racing a global rewire.
-// A nil override keeps the historical lookup.
+// WithAuthenticatorOverride records a legacy call-scoped authenticator, but
+// no scheme resolves through it: record-backed OAuth schemes require
+// WithScopedAuthenticator, and every other scheme resolves from its Resolved
+// record or the global registration. A nil override returns ctx unchanged.
 func WithAuthenticatorOverride(ctx context.Context, auth Authenticator) context.Context {
 	if auth == nil {
 		// context.WithValue panics on a nil value, and the documented
@@ -68,13 +64,8 @@ func AuthenticatorOverrideFor(ctx context.Context, scheme string) Authenticator 
 	if auth := overrides.byScheme[scheme]; auth != nil {
 		return auth
 	}
-	// The record-backed OAuth transports use scoped authenticators: their
-	// record lookup reads mutable process-global state (DefaultCodex.StateDir,
-	// DefaultCopilot.StateDir), so a launch binds its own state root instead.
-	// A generic override must not cross those schemes. Every other scheme
-	// resolves from the Resolved record alone and keeps the global lookup.
-	if scheme != registry.AuthOAuthOpenAICodex && scheme != registry.AuthOAuthGitHubCopilot {
-		return overrides.generic
-	}
+	// Record-backed OAuth schemes require an exact scheme-bound authenticator;
+	// every other scheme keeps the global lookup. A generic override answers
+	// neither, so it cannot run for a bearer request.
 	return nil
 }
