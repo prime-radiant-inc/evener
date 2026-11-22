@@ -1,0 +1,80 @@
+schema: 1
+id: read_file.no_copy_source
+tool: read_file
+prompt: |
+  Inspect alpha.go, beta.go, and gamma.go and report each port value plus their sum.
+  Finish with RESULT_NO_COPY_SOURCE.
+fixture:
+  files:
+    alpha.go: |
+      // Package config pins the network ports for each shard.
+      package config
+
+      // The alpha shard owns the customer-facing read path. These values must
+      // match deploy/shards/alpha.yaml, which the rollout job treats as the
+      // source of truth for the bind address.
+      const (
+      	// ALPHA_PORT is the gRPC port the alpha shard listens on.
+      	ALPHA_PORT = 8101
+
+      	// ALPHA_METRICS_PORT is the Prometheus scrape port for alpha.
+      	ALPHA_METRICS_PORT = 9101
+
+      	// ALPHA_HEALTH_PORT is the liveness probe port for alpha.
+      	ALPHA_HEALTH_PORT = 9102
+      )
+
+      // AlphaAddress reports the gRPC bind address for the alpha shard.
+      func AlphaAddress(host string) string {
+      	return host + ":8101"
+      }
+    beta.go: |
+      // Package config pins the network ports for each shard.
+      package config
+
+      // The beta shard serves the batch import path. These values must match
+      // deploy/shards/beta.yaml, which the rollout job treats as the source of
+      // truth for the bind address.
+      const (
+      	// BETA_PORT is the gRPC port the beta shard listens on.
+      	BETA_PORT = 8202
+
+      	// BETA_METRICS_PORT is the Prometheus scrape port for beta.
+      	BETA_METRICS_PORT = 9201
+
+      	// BETA_HEALTH_PORT is the liveness probe port for beta.
+      	BETA_HEALTH_PORT = 9202
+      )
+
+      // BetaAddress reports the gRPC bind address for the beta shard.
+      func BetaAddress(host string) string {
+      	return host + ":8202"
+      }
+    gamma.go: |
+      // Package config pins the network ports for each shard.
+      package config
+
+      // The gamma shard runs the analytics rollups. These values must match
+      // deploy/shards/gamma.yaml, which the rollout job treats as the source of
+      // truth for the bind address.
+      const (
+      	// GAMMA_PORT is the gRPC port the gamma shard listens on.
+      	GAMMA_PORT = 8303
+
+      	// GAMMA_METRICS_PORT is the Prometheus scrape port for gamma.
+      	GAMMA_METRICS_PORT = 9301
+
+      	// GAMMA_HEALTH_PORT is the liveness probe port for gamma.
+      	GAMMA_HEALTH_PORT = 9302
+      )
+
+      // GammaAddress reports the gRPC bind address for the gamma shard.
+      func GammaAddress(host string) string {
+      	return host + ":8303"
+      }
+expect:
+  calls:
+    - tool: read_file
+    - tool: communicate
+  forbidden_calls: [shell]
+  final_contains: ["RESULT_NO_COPY_SOURCE", "8101", "8202", "8303", "24606"]
