@@ -74,10 +74,9 @@ func TestDelegateRuntimeReclaim_RefusesSubtreeUnderLaneHandoff(t *testing.T) {
 	}
 }
 
-// TestSubtreeLaneHandoffAllowsReclaimingClose covers the other side: a
-// capacity reclamation keeps c.reclaiming set across its terminal teardowns,
-// and the evicted coordinator's own close-time lane cleanup must still acquire
-// the handoff for its child lanes. Independent handoffs are refused later by
+// TestSubtreeLaneHandoffAllowsReclaimingClose covers the other side: while a
+// reclamation claim is held, a session close racing it must still acquire the
+// handoff for its own child lanes. Independent handoffs are refused later by
 // the quiescence snapshot, which still sees the claim as active.
 func TestSubtreeLaneHandoffAllowsReclaimingClose(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 8, 4)
@@ -98,11 +97,12 @@ func TestSubtreeLaneHandoffAllowsReclaimingClose(t *testing.T) {
 	c.mu.Unlock()
 }
 
-// TestCapacityReclaimUnlocksKeptChildLane covers the full path the fence
-// exception exists for: capacity eviction tears down a coordinator whose
-// close-time lane cleanup must still unlock a dirty child lane while the
-// subtree is marked reclaiming.
-func TestCapacityReclaimUnlocksKeptChildLane(t *testing.T) {
+// TestCapacityReclaimKeepsChildLaneLocked covers the residency-only contract on
+// a real isolation lane: capacity reclamation releases the runtime without
+// touching the delegate's lane. The lane stays registered and locked with its
+// dirty contents intact, because the delegate it belongs to is still resumable
+// and its next cold restore runs in that lane.
+func TestCapacityReclaimKeepsChildLaneLocked(t *testing.T) {
 	r := newWorktreeRepo(t)
 	childID, lanePath, _ := r.seedIsolationLane(t)
 	const parentID = "dlg_parent_reclaim"
@@ -135,14 +135,20 @@ func TestCapacityReclaimUnlocksKeptChildLane(t *testing.T) {
 	seedDelegateReclaimRuntimeSession(t, c, parentID, "", time.Unix(20, 0).UTC(), false, false, parentSess)
 	c.maxRetainedTerminal = 1
 
+	if registered, locked, reason := r.laneLocked(t, lanePath); !registered || !locked {
+		t.Fatalf("fixture: child lane registered=%t locked=%t (%q) before reclamation", registered, locked, reason)
+	}
 	if err := r.s.reclaimDelegateRuntimeCapacity(1); err != nil {
 		t.Fatalf("reclaim capacity: %v", err)
 	}
-	if _, locked, reason := r.laneLocked(t, lanePath); locked {
-		t.Fatalf("kept child lane stayed locked with %q after the coordinator's close-time cleanup", reason)
+	if registered, locked, reason := r.laneLocked(t, lanePath); !registered || !locked {
+		t.Fatalf("residency-only reclamation deregistered or unlocked the kept child lane (registered=%t locked=%t, %q)", registered, locked, reason)
 	}
 	if _, err := os.Stat(lanePath); err != nil {
 		t.Fatalf("dirty child lane was removed instead of kept: %v", err)
+	}
+	if aggregate := delegateAggregateSnapshot(t, c, childID); !aggregate.Resumable {
+		t.Fatalf("child delegate lost resumability across reclamation: %+v", aggregate)
 	}
 }
 
@@ -174,7 +180,7 @@ func TestDelegateRuntimeReclaim_SubtreeWithANeverRunMemberIsRefused(t *testing.T
 	}
 }
 
-func TestDelegateRuntimeReclaim_ClosesPostorderAfterUnlock(t *testing.T) {
+func TestDelegateRuntimeReclaim_ReleasesPostorderAfterUnlock(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 8, 4)
 	c.maxRetainedTerminal = 2
 	parent := seedDelegateReclaimRuntime(t, c, "dlg_parent", "", time.Unix(10, 0).UTC(), false, false)
