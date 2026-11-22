@@ -285,8 +285,8 @@ function shownTexts(
     return texts === null ? [] : [texts.intent, texts.summary, ...texts.body].filter((text) => text !== "");
   }
   if (entry.item.type === "reasoning") {
-    // A chat view shows only the placeholder before a live thought: its
-    // summaries are not on screen, so they are not a match there.
+    // Find also accepts hand-built rows; a compact thought paired with Chat
+    // has no visible text even if an upstream projector would have filtered it.
     if (entry.kind === "thinking" && config !== undefined && hidesThinkingTraces(config.content)) return [];
     const texts: string[] = [];
     // A redacted thought shows its neutral label verbatim; what it can unfold
