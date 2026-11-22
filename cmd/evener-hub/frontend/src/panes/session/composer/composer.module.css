@@ -215,9 +215,9 @@
     margin-right: calc(var(--tap-min) / 2);
   }
 
-  /* The open control is ZoomableMedia's button, the tile's only direct
-   * button child (the remove IconButton sits inside .removeSlot). */
-  .imageTile > :global(button),
+  /* The pending slot is the tile's own child, so the tile rounds and clips
+   * it here. The settled trigger rounds and clips itself through
+   * ZoomableMedia's radius prop; no selector reaches into the widget. */
   .imagePending {
     border-radius: inherit;
     overflow: hidden;
