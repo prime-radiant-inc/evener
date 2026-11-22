@@ -633,14 +633,26 @@ func claimSettledIdleSubtree(t *testing.T, tree *delegateTreeController, delegat
 	t.Helper()
 	var claim *delegateRuntimeReclamationClaim
 	testwait.UntilSeen(t, "subtree of "+delegateID+" to settle with no delegate attention owed", func() (bool, string) {
+		// One pass over the members, so the detail describes the reads that
+		// blocked this poll rather than a later observation of them. An input
+		// in flight holds the claim too, so it counts as unsettled here instead
+		// of being discovered by a refused claim.
+		var blocked []string
 		for _, member := range members {
 			owed, err := member.pendingDelegateAttentionIDs()
 			if err != nil {
 				t.Fatalf("pendingDelegateAttentionIDs(%s): %v", member.id, err)
 			}
-			if len(owed) != 0 || !member.idleReleasePregatesClear() {
-				return false, idleSettleDetail(members)
+			pregates := member.idleReleasePregatesClear()
+			inputs := member.inputsInFlight.Load()
+			if len(owed) == 0 && pregates && inputs == 0 {
+				continue
 			}
+			blocked = append(blocked, fmt.Sprintf("%s owed=%v pregatesClear=%v inputsInFlight=%d",
+				member.id, owed, pregates, inputs))
+		}
+		if len(blocked) != 0 {
+			return false, strings.Join(blocked, "; ")
 		}
 		var err error
 		claim, _, err = tree.ClaimIdleRuntimeRelease(delegateID)
@@ -650,34 +662,9 @@ func claimSettledIdleSubtree(t *testing.T, tree *delegateTreeController, delegat
 		if claim != nil {
 			return true, ""
 		}
-		return false, idleSettleDetail(members)
+		return false, "every member settled, so the release claim itself was refused"
 	})
 	return claim
-}
-
-// idleSettleDetail renders each member that still owes attention, fails a
-// release pre-gate, or has an input in flight, so the settle timeout names the
-// blocked member and which of those it tripped instead of only the condition
-// it waited for. When no member is blocked it says the claim itself was
-// refused; the helper cannot see which of the release's other guards refused.
-func idleSettleDetail(members []*Session) string {
-	var parts []string
-	for _, member := range members {
-		owed, err := member.pendingDelegateAttentionIDs()
-		if err != nil {
-			parts = append(parts, fmt.Sprintf("%s owed-error=%v", member.id, err))
-			continue
-		}
-		if len(owed) == 0 && member.idleReleasePregatesClear() && member.inputsInFlight.Load() == 0 {
-			continue
-		}
-		parts = append(parts, fmt.Sprintf("%s owed=%v pregatesClear=%v inputsInFlight=%d",
-			member.id, owed, member.idleReleasePregatesClear(), member.inputsInFlight.Load()))
-	}
-	if len(parts) == 0 {
-		return "every member settled, so the release claim itself was refused"
-	}
-	return strings.Join(parts, "; ")
 }
 
 // wideSubtreeReleaseProbe records what the idle release's member-teardown
@@ -710,41 +697,29 @@ func driveWideSubtreeIdleRelease(t *testing.T, wideChildren, limit int, parkDead
 
 	workspace := t.TempDir()
 	// The adapter scripts the parent's turn as ONE response carrying
-	// every delegate spawn; each later step is an identical finish. The
-	// spawns all fire inside the parent's first turn, so the tree's SHAPE
-	// is fixed before any follow-up call happens: the parent's post-tool
-	// call and each child's first call consume the interchangeable finish
-	// steps in whatever global order they race, and each ends its
-	// member's turn. Spawning from a finished parent is not an option
-	// (its lease is spent), and spawning one-at-a-time across turns lets
-	// the parent eat a child's finish step — the one-response spawn wave
-	// avoids both.
-	steps := []func(req llm.Request) llm.Response{
-		func(llm.Request) llm.Response {
-			calls := make([]llm.ToolCallData, wideChildren)
-			for i := range calls {
-				calls[i] = llm.ToolCallData{
-					ID:        fmt.Sprintf("call_spawn_child_%d", i),
-					Name:      "delegate",
-					Arguments: json.RawMessage(`{"prompt":"wide child sentinel task","delegation_allowance":0}`),
-					Type:      "function",
-				}
+	// every delegate spawn. The spawns all fire inside the parent's first
+	// turn, so the tree's SHAPE is fixed before any follow-up call
+	// happens. Every later turn is answered by executionAdapter's
+	// exhausted-script fallback, a terminal communicate: the parent's
+	// post-tool call and each child's first call end their member's turn
+	// in whatever global order they race, and a wake that presents a
+	// report ends it with a result tool call rather than bare text.
+	// Spawning from a finished parent is not an option (its lease is
+	// spent), and spawning one-at-a-time across turns lets the parent eat
+	// a child's finish — the one-response spawn wave avoids both.
+	adapter := &executionAdapter{}
+	adapter.script(func(context.Context) (llm.Response, error) {
+		calls := make([]llm.ToolCallData, wideChildren)
+		for i := range calls {
+			calls[i] = llm.ToolCallData{
+				ID:        fmt.Sprintf("call_spawn_child_%d", i),
+				Name:      "delegate",
+				Arguments: json.RawMessage(`{"prompt":"wide child sentinel task","delegation_allowance":0}`),
+				Type:      "function",
 			}
-			return agenttest.ToolCallResponse(calls...)
-		},
-	}
-	// Every step here must be a finish: the parent's post-tool call, each
-	// child's first call, and each wake that presents one report all consume
-	// one. The wake count is not fixed — a report delivered after the
-	// parent's turn ends starts one more generation — so script spare finish
-	// steps rather than exactly the calls the first turn implies: a call past
-	// the script gets the adapter's bare-text fallback, and a delegate turn
-	// that ends on bare text can settle with its report rows still owed and no
-	// wake left to present them (the settle wait above then times out).
-	for range 2*wideChildren + 2 {
-		steps = append(steps, func(llm.Request) llm.Response { return agenttest.FinalResponse("member done") })
-	}
-	adapter := newFakeAdapter("openai", steps...)
+		}
+		return agenttest.ToolCallResponse(calls...), nil
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
@@ -897,19 +872,6 @@ func driveWideSubtreeIdleRelease(t *testing.T, wideChildren, limit int, parkDead
 		members = append(members, childRuntimes[id])
 	}
 	claim := claimSettledIdleSubtree(t, tree, parentRes.DelegateID, members...)
-	// A call past the script is served the fakeAdapter's bare-text fallback
-	// (a plain "done" with no tool call), and a delegate turn that ends on
-	// bare text can settle with pending report rows still owed. When that
-	// strands attention, the settle wait above fails first and its
-	// idleSettleDetail names the member, so this check never runs. Its job is
-	// the quieter case: the script ran off but the subtree still settled,
-	// which would otherwise pass silently.
-	adapter.mu.Lock()
-	adapterCalls := len(adapter.requests)
-	adapter.mu.Unlock()
-	if adapterCalls > len(steps) {
-		t.Fatalf("wide-subtree fixture ran the adapter off its script (%d calls, %d steps): a turn on the bare-text fallback can strand pending delegate attention", adapterCalls, len(steps))
-	}
 	want := append([]string(nil), childIDs...)
 	want = append(want, parentRes.DelegateID)
 	if got := reclamationDelegateIDs(claim); !reflect.DeepEqual(got, want) {
