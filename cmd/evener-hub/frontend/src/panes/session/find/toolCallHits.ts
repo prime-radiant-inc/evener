@@ -32,6 +32,13 @@ export interface ToolCallContext {
 /** How much of the folded text a landing shows around the match. */
 export const FIND_EXCERPT_MAX_CHARS = 400;
 
+/** The summary words the row paints: a delegate row renders none at all
+ * (subagentModule owns its presentation) even though its descriptor's own
+ * summary() returns text. Both the renderer and Find read this one rule. */
+export function displayedSummaryOf(item: ItemModel, summary: string): string {
+  return item.toolName === "delegate" ? "" : summary;
+}
+
 /** Tool output as a reader sees it: terminal control codes interpreted away,
  * so words split by a colour change still read as one phrase. */
 function outputAsShown(text: string): string {
@@ -75,7 +82,8 @@ export function toolCallTexts(item: ItemModel, context: ToolCallContext = {}): T
   } else if (output !== "") {
     body.push(outputAsShown(output));
   }
-  return { intent: context.intent ?? "", summary: descriptor.summary(item, { cwd: context.cwd }), body };
+  const summary = displayedSummaryOf(item, descriptor.summary(item, { cwd: context.cwd }));
+  return { intent: context.intent ?? "", summary, body };
 }
 
 // The needle is whitespace-collapsed and lowercased (findNeedle); in the text

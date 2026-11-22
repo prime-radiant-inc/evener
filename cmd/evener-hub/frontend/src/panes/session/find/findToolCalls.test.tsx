@@ -274,3 +274,32 @@ test("a summary-line match opens only the summary and shows no excerpt", async (
   await waitFor(() => expect(painted("evener-find-current")).toContain("needler"));
   expect(callRow("c1")?.querySelector("[data-find-excerpt]")).toBeNull();
 });
+
+// A delegate row deliberately paints no summary line (subagentModule owns its
+// presentation), so the descriptor's "Used delegate" words are on no screen and
+// Find must not count them. The brief on the row's intent line is on screen,
+// and a shell call's own summary still counts and paints.
+test("a delegate row's unpainted summary is not counted, its brief is", async () => {
+  const model = modelOf([
+    turn([
+      call("c1", {
+        toolName: "delegate",
+        argumentsJSON: JSON.stringify({ prompt: "look into the needlebrief" }),
+        output: "the needlebody",
+      }),
+      call("c2", { argumentsJSON: '{"command":"make needlesum"}' }),
+    ]),
+  ]);
+  render(<Harness model={model} config={TOOLS} />);
+
+  act(() => requestFindInSession(REF, { query: "used delegate" }));
+  await waitFor(() => expect(bar().getAttribute("data-find-status")).toBe("none"));
+  expect(count()).toBe(0);
+
+  act(() => requestFindInSession(REF, { query: "needlebrief" }));
+  await waitFor(() => expect(count()).toBe(1));
+
+  act(() => requestFindInSession(REF, { query: "needlesum" }));
+  await waitFor(() => expect(count()).toBe(1));
+  await waitFor(() => expect(painted("evener-find-current")).toContain("needlesum"));
+});

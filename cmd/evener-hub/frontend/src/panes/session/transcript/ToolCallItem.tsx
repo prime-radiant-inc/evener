@@ -21,7 +21,13 @@ import { type CadenceState, CodeBlock, StatusDot } from "../../../widgets";
 import { disclosureDefault, isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { useFindReveal } from "../find/findReveal";
-import { excerptAround, FIND_EXCERPT_MAX_CHARS, holdsNeedle, toolCallTexts } from "../find/toolCallHits";
+import {
+  displayedSummaryOf,
+  excerptAround,
+  FIND_EXCERPT_MAX_CHARS,
+  holdsNeedle,
+  toolCallTexts,
+} from "../find/toolCallHits";
 import { FileOpenBesideButton, fileDocParams } from "./fileOpenBeside";
 import { ImageGallery } from "./flow/ImageGallery";
 import { OpenTranscriptButton } from "./openTranscript";
@@ -350,7 +356,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // two-level path open an EMPTY one (the regression: a delegate took the
   // two-level path with an empty summary and moved the body chevron onto a
   // stray empty line).
-  const rowSummaryText = isDelegate ? "" : summary;
+  const rowSummaryText = displayedSummaryOf(item, summary);
   const hasSummaryText = rowSummaryText.trim() !== "";
 
   // Two-level disclosure: the summary line has its own open/closed state,
@@ -415,7 +421,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
           item={item}
           scope={disclosureScope}
           intent={intent ?? ""}
-          summary={summaryOpen ? summary : ""}
+          summary={summaryOpen ? rowSummaryText : ""}
           cwd={cwd}
         />
       </div>
@@ -479,7 +485,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
         item={item}
         scope={disclosureScope}
         intent={intent ?? ""}
-        summary={summaryOpen ? summary : ""}
+        summary={summaryOpen ? rowSummaryText : ""}
         cwd={cwd}
       />
       {/* The expanded content is one wrapper, so the open transition (A6) and

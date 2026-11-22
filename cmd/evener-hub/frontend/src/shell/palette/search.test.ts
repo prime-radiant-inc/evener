@@ -156,6 +156,24 @@ test("findInSessionMatches scans tool error text", () => {
   expect(findInSessionMatches(model, "frobnitz", TOOLS)).toHaveLength(1);
 });
 
+// A delegate row paints no summary line (subagentModule owns its presentation),
+// so the descriptor's "Used delegate" words are on no screen and the palette
+// must not offer them. The brief and the body are painted, so they still count.
+test("findInSessionMatches does not offer a delegate row's unpainted summary", () => {
+  const model = modelWithTurns([
+    turn("t1", [
+      itemWith("i1", {
+        type: "commandExecution",
+        toolName: "delegate",
+        argumentsJSON: JSON.stringify({ prompt: "look into the frobnitz" }),
+        output: "the frobnitz body",
+      }),
+    ]),
+  ]);
+  expect(findInSessionMatches(model, "used delegate", TOOLS)).toEqual([]);
+  expect(new Set(findInSessionMatches(model, "frobnitz", TOOLS).map((hit) => hit.itemId))).toEqual(new Set(["i1"]));
+});
+
 // The palette lists what the session's own Find counts. A call whose
 // descriptor suppresses its row renders nothing, so neither offers it; and at
 // a level that shows calls as action rows, only the rationale is on screen.
