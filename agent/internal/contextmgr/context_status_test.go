@@ -108,7 +108,7 @@ func TestContextManager_EstimateStatusMatchesFixtureValues(t *testing.T) {
 
 			cm := NewManager(tc.profile, nil, nil)
 			if tc.recordTokens != 0 {
-				cm.RecordInputTokens(tc.recordTokens, tc.recordLen)
+				cm.RecordInputTokens(tc.recordTokens, tc.recordLen, "")
 			}
 
 			got, gotPressure := cm.EstimateStatus(tc.history, tc.sysPromptChars)

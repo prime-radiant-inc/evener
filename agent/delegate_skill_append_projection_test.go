@@ -184,7 +184,7 @@ func TestDelegateRebuildEstimatesWithoutWithheldSteer(t *testing.T) {
 
 	// A grounded measured baseline makes the manager's estimate ride the
 	// request instead of being skipped as unmeasured.
-	runtime.contextMgr.RecordInputTokens(1, 0)
+	runtime.contextMgr.RecordInputTokens(1, 0, "")
 
 	marker := strings.Repeat("x", 600_000)
 	var once sync.Once

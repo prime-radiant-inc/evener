@@ -1584,11 +1584,12 @@ func (s *Session) recordResponseUsage(resp llm.Response, req llm.Request, answer
 	if record {
 		s.mu.Lock()
 		hLen := len(s.history)
+		anchor := contextmgr.PrefixAnchor(s.history, hLen)
 		s.mu.Unlock()
 		// Only the profile that answered may own this measurement: a SetModel
 		// during the request cleared the measurement it belonged to (roborev's
 		// fifteenth round).
-		s.contextMgr.RecordInputTokensFor(answeringProfile, tokens, hLen)
+		s.contextMgr.RecordInputTokensFor(answeringProfile, tokens, hLen, anchor)
 	}
 }
 
