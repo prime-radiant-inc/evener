@@ -502,6 +502,10 @@ async function measureComposerFooter(
               attachVisible: visible(attach),
               submitVisible: visible(submit),
               stopVisible: visible(stop),
+              // Send and Stop swap the same slot; measure whichever one the
+              // row shows so the coarse landscape tap-floor check reads the
+              // control the user actually presses.
+              primaryAction: rect([submit, stop].find((button) => visible(button))),
               rowChipCount: rowChips.filter((chip) => visible(chip)).length,
               activityChipCount: activityChips.filter((chip) => visible(chip)).length,
               activityLine: rect(activityLine),
@@ -645,6 +649,16 @@ function assertDuoLandscapeComposer(measurement) {
   if (!measurement.attachVisible) failures.push("the empty landscape phone lost Attach");
   if (measurement.modelTrigger?.visible) failures.push("empty landscape focus restored the model picker");
   if (measurement.editorMinLines !== "1lh") failures.push("empty landscape focus expanded the one-line field");
+  // A 951pt-wide coarse landscape phone is past the 899px phone boundary, so
+  // only the composer's own container query drops the Send/Stop words. The
+  // icon-only action still has to keep the 44px tap floor beside the other
+  // controls.
+  const action = measurement.primaryAction;
+  if (action === null || action.width < 44 - GEOMETRY_TOLERANCE || action.height < 44 - GEOMETRY_TOLERANCE) {
+    failures.push(
+      `the icon-only landscape Send/Stop is ${action === null ? "missing" : `${action.width.toFixed(1)}x${action.height.toFixed(1)}`}px, below the 44px tap floor`,
+    );
+  }
   failures.push(...assertLandscapeEdgeFooter(measurement));
   return failures;
 }
@@ -1959,7 +1973,7 @@ async function main() {
         } else {
           const shape = measurement.focus === "editor" ? "expanded editor and full controls" : "one folded row";
           console.log(
-            `${label} ... PASS - ${shape}, footer gap=${measurement.gap}px, status clearance=${measurement.safeArea}px`,
+            `${label} ... PASS - ${shape}, Send/Stop=${measurement.primaryAction.width.toFixed(1)}x${measurement.primaryAction.height.toFixed(1)}px, footer gap=${measurement.gap}px, status clearance=${measurement.safeArea}px`,
           );
         }
       }

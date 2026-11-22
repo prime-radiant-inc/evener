@@ -239,10 +239,12 @@
 
 /* Button intentionally owns no caller className API, so select the one
  * composer button that directly contains the Send-specific label class. The
- * shared phone Button rule already supplies this target's block-size floor;
- * this matching inline-size floor stays local to Send instead of widening
- * every xs Button consumer. */
-@media (max-width: 899px) {
+ * shared phone/coarse Button rule already supplies this target's block-size
+ * floor; this matching inline-size floor stays local to Send instead of
+ * widening every xs Button consumer. The coarse arm keeps the floor on a
+ * landscape Duo: 951pt is past the phone breakpoint, but its composer pane
+ * still folds the words away below 559px. */
+@media (max-width: 899px), (any-pointer: coarse) {
   .composer :global(button):has(> .submitLabel),
   .composer :global(button):has(> .stopLabelStack) {
     min-width: var(--tap-min);
