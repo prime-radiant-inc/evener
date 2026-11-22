@@ -898,8 +898,8 @@ test("an outside click clears editing without changing the folded card", async (
   await act(async () => {
     fireEvent.click(document.body);
   });
-  await waitFor(() => expect(card.getAttribute("data-folded")).toBe("true"));
-  expect(anchor?.hasAttribute("data-composer-editing")).toBe(false);
+  await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(false));
+  expect(card.getAttribute("data-folded")).toBe("true");
 });
 
 test("a press that never becomes a click leaves the folded card and editing state alone", async () => {
@@ -1000,8 +1000,8 @@ test("a clicked control that stops propagation still clears editing without chan
     expect(editingWhenControlClickRan).toBe(true);
     // The click's own handler stopped propagation; clearing editing still
     // arrives on a later task without changing the content-owned card shape.
-    await waitFor(() => expect(card.getAttribute("data-folded")).toBe("true"));
-    expect(anchor?.hasAttribute("data-composer-editing")).toBe(false);
+    await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(false));
+    expect(card.getAttribute("data-folded")).toBe("true");
   } finally {
     control.remove();
   }

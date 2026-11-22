@@ -768,15 +768,25 @@ test("with enterToSend on, Steer's tooltip drops its chord and Send's names bare
 
 // --- steer / drain-as-steer routing -----------------------------------------
 
+const queuedMenuFollowUp = {
+  revision: 1,
+  depth: 1,
+  ids: ["q1"],
+  texts: ["queued follow-up"],
+  preview: ["queued follow-up"],
+};
+
 test.each([
-  { name: "without queued work", queue: { revision: 0 }, offersSteer: false },
+  { name: "without queued work", queue: { revision: 0 }, offersSteer: false, width: 399 },
+  { name: "with queued work", queue: queuedMenuFollowUp, offersSteer: true, width: 399 },
   {
-    name: "with queued work",
-    queue: { revision: 1, depth: 1, ids: ["q1"], texts: ["queued follow-up"], preview: ["queued follow-up"] },
+    name: "with queued work in a folded wide composer",
+    queue: queuedMenuFollowUp,
     offersSteer: true,
+    width: 600,
   },
-])("an empty collapsed composer $name exposes Steer only when it can act", async ({ queue, offersSteer }) => {
-  installNarrowComposer(399);
+])("an empty collapsed composer $name exposes Steer only when it can act", async ({ queue, offersSteer, width }) => {
+  installNarrowComposer(width);
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },

@@ -48,6 +48,7 @@
 
 .preview {
   gap: var(--space-3);
+  overflow-x: auto;
 }
 
 .previewHeading {
@@ -68,7 +69,7 @@
 }
 
 .frame {
-  max-width: 100%;
+  max-width: none;
   height: 680px;
   border-radius: var(--radius-panel);
   overflow: hidden;

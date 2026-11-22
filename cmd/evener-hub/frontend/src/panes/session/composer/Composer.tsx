@@ -895,10 +895,12 @@ function ComposerWithSubmission({
     }
     reconcileContentEngagement();
   }, [hasContent, reconcileContentEngagement]);
-  // Presence mirrors the row's capability gate. The narrow menu can steer a
-  // draft or drain queued follow-ups even when the editor itself is empty.
+  // Presence mirrors the row's capability gate. A folded empty row hides inline
+  // Steer, so Session actions keeps queue draining available at every width.
+  const resting = !contentEngaged && !hasContent && !mutationWriteStalled;
+  const folded = !askPending && resting;
   const queueDepth = model?.queue?.depth ?? 0;
-  const menuSteer = narrow && (hasContent || queueDepth > 0);
+  const menuSteer = (narrow && hasContent) || (folded && queueDepth > 0);
   const turnVerbs = useMemo<SessionMenuTurnVerbs>(() => {
     if (!model) return NO_TURN_VERBS;
     const available = controlsFor(model);
@@ -1000,8 +1002,6 @@ function ComposerWithSubmission({
   // Focus alone never changes the composer's size: session autofocus and an
   // explicit click keep the same resting row. Content restores the full card
   // and keeps it stable until focus leaves an empty editor.
-  const resting = !contentEngaged && !hasContent && !mutationWriteStalled;
-  const folded = !askPending && resting;
   let minLines = 2;
   if (folded) minLines = 1;
   else if (ended) minLines = followUpEngaged ? 3 : 1;
