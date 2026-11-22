@@ -17,6 +17,7 @@ import userEvent from "@testing-library/user-event";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { connectionStore } from "../../../stores/connection";
+import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import {
   initTranscriptDisplay,
   resetTranscriptDisplayStoreForTests,
@@ -75,6 +76,7 @@ beforeEach(() => {
   resetTranscriptDisplayStoreForTests();
   initTranscriptDisplay();
   resetToastStoreForTests();
+  resetPrefsStoreForTests();
 });
 
 afterEach(() => {
@@ -154,6 +156,25 @@ test.each([false, true])("shows one layout initialized from the current viewport
     `transcript-display-card-${mobile ? "desktop" : "mobile"}`,
   ]);
   expect(screen.getByTestId(`transcript-display-preview-canvas-${mobile ? "desktop" : "mobile"}`)).toBeTruthy();
+});
+
+// #4845 slice 2: where a session opens is a browser-local choice, so the
+// switch stays live even when this hub cannot hold the synced display
+// defaults above it.
+test("open at unread replies is off by default and persists without the hub", async () => {
+  transcriptDisplayStore.setState({ hubSupport: "unsupported" });
+  renderWithToasts();
+
+  const control = screen.getByRole("switch", { name: "Open at unread replies" });
+  expect(control.getAttribute("aria-checked")).toBe("false");
+  expect(control.hasAttribute("disabled")).toBe(false);
+
+  await userEvent.setup().click(control);
+
+  expect(prefsStore.getState().openAtUnreadReplies).toBe(true);
+  expect(localStorage.getItem("evener.prefs.openAtUnreadReplies")).toBe("1");
+  expect(control.getAttribute("aria-checked")).toBe("true");
+  await savedOnce();
 });
 
 test("clearing the selected browser override follows shared defaults without writing them", async () => {

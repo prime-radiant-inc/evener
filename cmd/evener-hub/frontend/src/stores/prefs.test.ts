@@ -59,6 +59,11 @@ describe("defaults (empty localStorage)", () => {
   test("enterToSend defaults to false", () => {
     expect(prefsStore.getState().enterToSend).toBe(false);
   });
+  // #4845's ruling: landing at unread replies is opt-in on the web, so the
+  // absent-key default is off even though the phone defaults it on.
+  test("openAtUnreadReplies defaults to false (opt-in, as the phone's is not)", () => {
+    expect(prefsStore.getState().openAtUnreadReplies).toBe(false);
+  });
   // 2026-08-14 reversal (docs/web-ui/decisions.md): title-count is now the
   // one channel that defaults ON - the attention system was otherwise
   // invisible to anyone who never opened Settings. favicon/os/sound stay at
@@ -114,6 +119,12 @@ describe("hydration from existing localStorage", () => {
     localStorage.setItem(KEY("enterToSend"), "0");
     resetPrefsStoreForTests();
     expect(prefsStore.getState().enterToSend).toBe(false);
+  });
+
+  test("reads a previously stored openAtUnreadReplies", () => {
+    localStorage.setItem(KEY("openAtUnreadReplies"), "1");
+    resetPrefsStoreForTests();
+    expect(prefsStore.getState().openAtUnreadReplies).toBe(true);
   });
 
   test("reads previously stored notification toggles and loud scope", () => {
@@ -225,6 +236,17 @@ describe("pinned key contract: evener.prefs.enterToSend", () => {
     localStorage.setItem("evener.prefs.enterToSend", "0");
     resetPrefsStoreForTests();
     expect(prefsStore.getState().enterToSend).toBe(false);
+  });
+});
+
+describe("openAtUnreadReplies (Settings -> Conversation display)", () => {
+  test("persists under evener.prefs.openAtUnreadReplies with the shared '1'/'0' encoding", () => {
+    prefsStore.getState().setOpenAtUnreadReplies(true);
+    expect(localStorage.getItem("evener.prefs.openAtUnreadReplies")).toBe("1");
+    expect(prefsStore.getState().openAtUnreadReplies).toBe(true);
+    prefsStore.getState().setOpenAtUnreadReplies(false);
+    expect(localStorage.getItem("evener.prefs.openAtUnreadReplies")).toBe("0");
+    expect(prefsStore.getState().openAtUnreadReplies).toBe(false);
   });
 });
 
