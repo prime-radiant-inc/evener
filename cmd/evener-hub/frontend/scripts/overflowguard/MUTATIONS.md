@@ -128,7 +128,7 @@ measure rule of its own the ghosts start at the pane's raw left edge while
 every delivered message above sits clamped and centered - the same
 trailing-row rule `.intentGroup` and AskDock's `.dock` already carry. The
 horizontal-overflow scan cannot see this (nothing escapes a scroller), so
-this compares the `[data-testid="pending-message-stack"]` box against a
+this compares the `[data-testid="pending-row-stack"]` box against a
 `[data-testid="turn-block"]` box directly at 1024px. The fixture seeds its
 one ghost through the real durable outbox path (`enqueueIntent` + the shared
 projection refresh), never a direct store write.
