@@ -19,7 +19,7 @@ import { Fragment, useEffect } from "react";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { useEntityViews } from "../../../../transcriptDisplay/entityViews";
 import { useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
-import { Chevron, EmptyState, IconButton, Timestamp, Tooltip, VisuallyHidden } from "../../../../widgets";
+import { Chevron, EmptyState, Eyebrow, IconButton, Timestamp, Tooltip, VisuallyHidden } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { formatUsagePair } from "../../chrome/activityFormat";
@@ -64,7 +64,6 @@ const CLASS = {
   quoteMeta: requireClass(styles.quoteMeta, "subagentmodule.module.css", "quoteMeta"),
   quotesEmpty: requireClass(styles.quotesEmpty, "subagentmodule.module.css", "quotesEmpty"),
   section: requireClass(styles.section, "subagentmodule.module.css", "section"),
-  sectionLabel: requireClass(styles.sectionLabel, "subagentmodule.module.css", "sectionLabel"),
   mandate: requireClass(styles.mandate, "subagentmodule.module.css", "mandate"),
 };
 
@@ -173,7 +172,7 @@ function JobDetailSection({ row, stable }: { row: SubagentRow; stable: DelegateP
   }
   return (
     <section className={CLASS.section} data-testid="subagent-job-detail">
-      <div className={CLASS.sectionLabel}>Job</div>
+      <Eyebrow>Job</Eyebrow>
       <div className={CLASS.mandate}>
         Exhaustion budget: {exhaustionBudget ?? "?"} of {exhaustionLimit ?? "?"}
       </div>
