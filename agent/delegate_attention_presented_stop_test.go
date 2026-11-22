@@ -210,6 +210,8 @@ func TestDelegateAttentionStopAfterPresentedRequestConsumesTheTrigger(t *testing
 		releaseFirstOnce.Do(func() { close(releaseFirst) })
 		select {
 		case <-firstDone:
+		// TRIPWIRE: the cancelled run settles within seconds of the release; the
+		// bound only fires on a genuine hang.
 		case <-time.After(60 * time.Second):
 			t.Fatal("the first user-stopped run never completed its settle tail")
 		}
@@ -256,6 +258,8 @@ func TestDelegateAttentionStopAfterPresentedRequestConsumesTheTrigger(t *testing
 		releaseSecondOnce.Do(func() { close(releaseSecond) })
 		select {
 		case <-secondDone:
+		// TRIPWIRE: the cancelled run settles within seconds of the release; the
+		// bound only fires on a genuine hang.
 		case <-time.After(60 * time.Second):
 			t.Fatal("the second user-stopped run never completed its settle tail")
 		}
@@ -403,4 +407,122 @@ func TestDelegateAttentionExhaustedAfterPresentedRequestConsumesTheTrigger(t *te
 	if got := attentionRunGenerations(t, root.delegateController, fixture.delegateID)[rowID]; got != exhaustedGen {
 		t.Fatalf("the already-presented trigger ran again on generation %d after exhaustion, want only %d", got, exhaustedGen)
 	}
+}
+
+// An automatic attention generation whose first settled request presented the
+// trigger and whose later round fails on a provider error must still consume
+// that trigger and forget its commit-time wake so the root does not stay active
+// and keep retrying a fatal-gated delegate. A provider failure before the first
+// request settles keeps the unpresented trigger pending.
+func TestDelegateAttentionProviderFailureAfterPresentedRequestConsumesTheTrigger(t *testing.T) {
+	t.Parallel()
+	t.Run("mid-round provider failure consumes presented trigger and clears wake", func(t *testing.T) {
+		t.Parallel()
+		fixture := newColdDelegateFixture(t, "")
+		fixture.adapter.setSteps([]func(llm.Request) llm.Response{
+			// Request 0: warm send.
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("warm retained runtime") },
+			// Request 1: attention run's first settled request presents the
+			// trigger and returns a mid-turn tool call, moving the latch to
+			// attentionPresentedTrigger.
+			func(llm.Request) llm.Response {
+				return agenttest.CommunicateResponse(false, "processing report")
+			},
+			// Request 2 fails inside failingRequestAdapter below.
+			// Request 3 (root turn consuming the child's failure report).
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("root noted child failure") },
+		})
+		fixture.client.Register(&failingRequestAdapter{
+			fakeAdapter: fixture.adapter,
+			failAt:      2,
+			err:         llm.ErrorFromHTTPStatus("openai", 401, "unauthorized", nil, nil),
+		})
+		root := restoreSupervisionRoot(t, fixture, nil)
+		sub := warmDelegateUnservedRoot(t, root, fixture)
+		testwait.Until(t, "the warm generation to release its finalization fence", func() bool {
+			sub.mu.Lock()
+			defer sub.mu.Unlock()
+			return !sub.running && !sub.driving && !sub.finalizing
+		})
+
+		const rowID = "delegate:dlg_providerfail/watch/1"
+		const rowText = "provider-fail-after-present: check the build"
+		armStableSupervisionAttention(t, sub, rowID, rowText)
+		testwait.Until(t, "the failed attention run to settle with fatal gate", func() bool {
+			root.drivePendingDelegateAttention()
+			sub.mu.Lock()
+			settled := sub.fatalRunGated && !sub.running && !sub.driving && !sub.finalizing
+			sub.mu.Unlock()
+			return settled
+		})
+
+		// Let the root consume its own update and failed-child notifications so
+		// only a stale delegate attention wake can keep the root active.
+		for root.hasPendingDelegateDeliveries() || root.pendingRootDelegateAttention() || root.peekNotifications() > 0 {
+			fixture.adapter.appendSteps(func(llm.Request) llm.Response {
+				return agenttest.FinalResponse("root noted child event")
+			})
+			if _, err := root.ProcessInputKind(tripwireCtx(t), "", nil, EntryNotification); err != nil {
+				t.Fatalf("root ProcessInputKind(EntryNotification): %v", err)
+			}
+		}
+
+		fold, err := readDelegateAttentionFold(sub.sess.TranscriptPath(), sub.sess.id)
+		if err != nil {
+			t.Fatalf("read delegate attention fold: %v", err)
+		}
+		if got := fold.resolutions[rowID]; got != delegateAttentionConsumed {
+			t.Fatalf("presented trigger resolution after mid-round provider failure = %q, want consumed (pending=%v)", got, fold.pendingIDs())
+		}
+		if wakes := attentionWakeIDsOf(root.delegateController, fixture.delegateID); len(wakes) != 0 {
+			t.Fatalf("stale attention wakes remained after mid-round provider failure: %v", wakes)
+		}
+		if root.delegateController.hasPendingDelegateAttention() {
+			t.Fatal("controller still reports pending delegate attention after mid-round provider failure")
+		}
+		if got := root.WireState(); got != string(SessionIdle) {
+			t.Fatalf("root WireState = %q, want %q", got, SessionIdle)
+		}
+	})
+
+	t.Run("first-request provider failure keeps unpresented trigger pending", func(t *testing.T) {
+		t.Parallel()
+		fixture := newColdDelegateFixture(t, "")
+		fixture.adapter.setSteps([]func(llm.Request) llm.Response{
+			// Request 0: warm send.
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("warm retained runtime") },
+		})
+		// Request 1 is the attention run's first request, which fails before
+		// presenting the trigger.
+		fixture.client.Register(&failingRequestAdapter{
+			fakeAdapter: fixture.adapter,
+			failAt:      1,
+			err:         llm.ErrorFromHTTPStatus("openai", 401, "unauthorized", nil, nil),
+		})
+		root := restoreSupervisionRoot(t, fixture, nil)
+		sub := warmDelegateUnservedRoot(t, root, fixture)
+		testwait.Until(t, "the warm generation to release its finalization fence", func() bool {
+			sub.mu.Lock()
+			defer sub.mu.Unlock()
+			return !sub.running && !sub.driving && !sub.finalizing
+		})
+
+		const rowID = "delegate:dlg_providerfail/watch/unpresented-1"
+		armStableSupervisionAttention(t, sub, rowID, "unpresented first-request failure")
+		testwait.Until(t, "the unpresented failed attention run to settle with fatal gate", func() bool {
+			root.drivePendingDelegateAttention()
+			sub.mu.Lock()
+			settled := sub.fatalRunGated && !sub.running && !sub.driving && !sub.finalizing
+			sub.mu.Unlock()
+			return settled
+		})
+
+		fold, err := readDelegateAttentionFold(sub.sess.TranscriptPath(), sub.sess.id)
+		if err != nil {
+			t.Fatalf("read delegate attention fold: %v", err)
+		}
+		if got := fold.resolutions[rowID]; got != "" {
+			t.Fatalf("unpresented trigger resolution after first-request failure = %q, want still pending", got)
+		}
+	})
 }

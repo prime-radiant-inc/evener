@@ -137,7 +137,7 @@ func TestDelegateAttentionDriveFailedCommitLeavesRowPendingAndRetries(t *testing
 		func(llm.Request) llm.Response { return quietYieldResponse("quiet-ack", `{}`) },
 	})
 	root := restoreSupervisionRoot(t, fixture, nil)
-	sub := warmStableSupervisionDelegate(t, root, fixture)
+	sub := warmDelegateUnservedRoot(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	const attentionID = "attention:accepted-retry"
 	if appended, err := sub.sess.appendDelegateNotificationDurably(attentionID, "inspect completed work"); err != nil || !appended {

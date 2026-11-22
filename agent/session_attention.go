@@ -1040,16 +1040,13 @@ func (s *Session) settleUnpresentedDelegateAttention(quietAt uint64) (string, er
 	latched := s.attentionAcceptedID
 	s.attentionMu.Unlock()
 	if latched == "" {
-		// The latch clears when a settled request presents the trigger, so a
-		// turn the user then stops mid-round reaches this tail with an empty
-		// latch and an already-presented report whose commit-time wake is still
-		// armed. Leaving that row pending would release finalization into a
-		// duplicate successor that presents the report a second time. An
-		// unpresented trigger keeps its latch and takes the hold path below;
-		// a plain failed turn (quietAt == 0) keeps its rows pending.
-		if quietAt == 0 {
-			return "", nil
-		}
+		// The latch clears when a settled request presents the trigger, so any
+		// turn that then ends mid-round (user stop, hook stop, or a later
+		// provider failure) reaches this tail with an empty latch and an
+		// already-presented report whose commit-time wake is still armed.
+		// Consume that trigger and forget its wake so finalization never
+		// leaves a stale wake or launches a duplicate successor; an
+		// unpresented trigger keeps its latch and takes the path below.
 		return s.consumePresentedDelegateTrigger()
 	}
 	if s.delegateController.attentionReopenRefused(s.owningDelegateID) {

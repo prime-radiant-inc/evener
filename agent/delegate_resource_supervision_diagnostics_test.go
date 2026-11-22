@@ -119,7 +119,7 @@ func TestStableSupervisionFailureSnapshotCapturesAttentionReservation(t *testing
 	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
-		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("no action")} },
+		func(llm.Request) llm.Response { return quietYieldResponse("attention-no-action", `{}`) },
 	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
