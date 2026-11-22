@@ -156,8 +156,8 @@ func TestSystemEventWireFixtures(t *testing.T) {
 		},
 		{
 			Case: "steer-no-tool-calls",
-			Note: "The retry steer after an empty response (session_tool_round.go's first empty-response text, copied: it is inline there).",
-			Item: steer(t, "steer-no-tool-calls", events.SteeringKindNoToolCalls, "Your previous response was empty. Please continue working on the task."),
+			Note: "The retry steer after an empty response (session_tool_round.go's decideNoToolCalls first empty-response text, built from the producer as the harness reminder it is).",
+			Item: steer(t, "steer-no-tool-calls", events.SteeringKindNoToolCalls, decideNoToolCalls(true, retryTracker{}, "communicate").SteeringText),
 		},
 		{
 			Case: "steer-loop-detected",
