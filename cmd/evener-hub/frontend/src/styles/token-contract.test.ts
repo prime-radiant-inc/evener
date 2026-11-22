@@ -486,11 +486,6 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // the same meaning-per-hue split RailRow.module.css's signal-row family and
 // the subagent row's attribute-keyed state colors already established; every
 // terminal or neutral state stays on the ink ramp.
-//
-// attention-control: panes/session/nextNeedsYou.module.css earns the same
-// exact-path exception for the 6px dot that marks the floating needs-you
-// control. The dot IS the attention signal on a control whose text already
-// says "Needs you"; every word on the control stays on the ink scale.
 const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "shell/rail/RailRow.module.css",
   "panes/session/transcript/tools/subagentmodule.module.css",
@@ -498,7 +493,6 @@ const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "panes/session/transcript/tools/taskcheck.module.css",
   "panes/session/chrome/taskspanel.module.css",
   "panes/session/transcript/entityref.module.css",
-  "panes/session/nextNeedsYou.module.css",
 ]);
 
 function reachesSemanticHue(cssText: string): boolean {
