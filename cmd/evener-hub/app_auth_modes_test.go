@@ -21,22 +21,23 @@ import (
 // vocabulary, so a scheme added there is covered here with no edit.
 func TestAuthModesForCoversEveryScheme(t *testing.T) {
 	want := map[string][]string{
-		registry.AuthBearer:           {"apiKey"},
-		registry.AuthHeader:           {"apiKey"},
-		registry.AuthOptionalBearer:   {"none", "apiKey"},
-		registry.AuthNone:             {"none"},
-		registry.AuthGCPADC:           {"adc", "credentialJson"},
-		registry.AuthOAuthOpenAICodex: {"oauth"},
+		registry.AuthBearer:             {"apiKey"},
+		registry.AuthHeader:             {"apiKey"},
+		registry.AuthOptionalBearer:     {"none", "apiKey"},
+		registry.AuthNone:               {"none"},
+		registry.AuthGCPADC:             {"adc", "credentialJson"},
+		registry.AuthOAuthOpenAICodex:   {"oauth"},
+		registry.AuthOAuthGitHubCopilot: {"oauth"},
 	}
 	for scheme, modes := range want {
 		if got := authModesFor(scheme); !reflect.DeepEqual(got, modes) {
 			t.Errorf("authModesFor(%q) = %v, want %v", scheme, got, modes)
 		}
 	}
-	// Only the Codex transport has an OAuth flow, so no other scheme may
-	// advertise the "Sign in with ChatGPT" affordance.
+	// Only the two OAuth transports have an OAuth flow, so no other scheme may
+	// advertise a sign-in affordance.
 	for scheme := range want {
-		if scheme == registry.AuthOAuthOpenAICodex {
+		if scheme == registry.AuthOAuthOpenAICodex || scheme == registry.AuthOAuthGitHubCopilot {
 			continue
 		}
 		if slices.Contains(authModesFor(scheme), "oauth") {
@@ -79,6 +80,11 @@ func TestAuthStatusAuthModesFollowTheInstance(t *testing.T) {
 			name:  "gcp-adc instance",
 			toml:  "[providers.work]\nbase = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:8080/v1\"\nauth = \"gcp-adc\"\n",
 			modes: []string{"adc", "credentialJson"},
+		},
+		{
+			name:  "github-copilot instance",
+			toml:  "[providers.work]\nbase = \"github-copilot\"\n",
+			modes: []string{"oauth"},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

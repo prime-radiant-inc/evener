@@ -22,8 +22,14 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/auth/githubcopilot"
 	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/auth/openai/oaitest"
+)
+
+const (
+	copilotEndpointToml      = "[providers.work]\nbase = \"github-copilot\"\nbase_url = \"https://copilot-a.example.test/v1\"\n"
+	copilotMovedEndpointToml = "[providers.work]\nbase = \"github-copilot\"\nbase_url = \"https://copilot-b.example.test/v1\"\n"
 )
 
 // One Codex instance at two endpoints: base_url is what the record's transport
@@ -555,6 +561,84 @@ func TestAuth_DevicePollRestartsAFlowWhoseKeyWasLost(t *testing.T) {
 	poll, err = ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "work", FlowID: fresh.FlowID})
 	if err != nil || poll.State != "authorized" {
 		t.Fatalf("DevicePoll of the fresh flow = %+v, %v, want authorized", poll, err)
+	}
+}
+
+// TestAuth_CopilotDevicePollRefusesARecordForAnEndpointThatMoved is the same
+// binding on the Copilot flow: the poll is the long step, and a record must
+// not land on a destination the user did not sign in for.
+func TestAuth_CopilotDevicePollRefusesARecordForAnEndpointThatMoved(t *testing.T) {
+	ctrl, transport, now := newCopilotDeviceTestController(t, copilotEndpointToml)
+	transport.polls = []string{`{"access_token":"github-access-token","token_type":"bearer","scope":"read:user"}`}
+	flowID := startCopilotDeviceFlow(t, ctrl, "work")
+	renameProvidersEntry(t, ctrl, ctrl.providersConfigPath, copilotMovedEndpointToml)
+	*now = now.Add(5 * time.Second)
+
+	_, err := ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "work", FlowID: flowID})
+	if !errors.Is(err, errEndpointMoved) {
+		t.Fatalf("DevicePoll = %v, want the refusal for the endpoint the flow was started on", err)
+	}
+	if calls := transport.callCount("/login/oauth/access_token"); calls != 1 {
+		t.Fatalf("GitHub poll calls = %d, want 1: the refusal lands after the poll, before the save", calls)
+	}
+	if _, err := githubcopilot.LoadAuth(ctrl.stateDir, "work"); !errors.Is(err, githubcopilot.ErrAuthNotFound) {
+		t.Fatalf("LoadAuth(work) err = %v, want ErrAuthNotFound: the record must not land on the moved endpoint", err)
+	}
+}
+
+// TestAuth_CopilotDeviceStartRefusesADestinationItCannotKey is the start half:
+// the refusal lands before a device code is requested, so no round trip is
+// spent on a flow whose poll would have nothing to compare.
+func TestAuth_CopilotDeviceStartRefusesADestinationItCannotKey(t *testing.T) {
+	ctrl, transport, _ := newCopilotDeviceTestController(t, copilotEndpointToml)
+	unkeyableStateRoot(t, ctrl.stateDir)
+
+	_, err := ctrl.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "work"})
+	assertFlowEndpointRefusal(t, err)
+	if calls := transport.callCount("/login/device/code"); calls != 0 {
+		t.Fatalf("device-code requests = %d, want 0 before the unkeyable refusal", calls)
+	}
+}
+
+// TestAuth_CopilotDevicePollRestartsAFlowWhoseKeyWasLost is the restart half of
+// the Copilot binding: the poll lands on a state root that can no longer
+// produce the flow's key, so nothing can be compared. The flow is discarded
+// rather than completed, and once the root can be keyed again a fresh flow
+// completes.
+func TestAuth_CopilotDevicePollRestartsAFlowWhoseKeyWasLost(t *testing.T) {
+	ctrl, transport, now := newCopilotDeviceTestController(t, copilotEndpointToml)
+	transport.polls = []string{
+		`{"access_token":"github-access-token","token_type":"bearer","scope":"read:user"}`,
+		`{"access_token":"github-access-token-2","token_type":"bearer","scope":"read:user"}`,
+	}
+	keyPath := filepath.Join(ctrl.stateDir, endpointFingerprintKeyFile)
+	flowID := startCopilotDeviceFlow(t, ctrl, "work")
+	if err := os.Remove(keyPath); err != nil {
+		t.Fatalf("remove key: %v", err)
+	}
+	unkeyableStateRoot(t, ctrl.stateDir)
+	*now = now.Add(5 * time.Second)
+
+	poll, err := ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "work", FlowID: flowID})
+	if err != nil || poll.State != "restart" {
+		t.Fatalf("DevicePoll = %+v, %v, want the restart state", poll, err)
+	}
+	if _, err := githubcopilot.LoadAuth(ctrl.stateDir, "work"); !errors.Is(err, githubcopilot.ErrAuthNotFound) {
+		t.Fatalf("LoadAuth(work) err = %v, want ErrAuthNotFound: nothing completes unchecked", err)
+	}
+
+	// Back to useful operation once the state root can be keyed again.
+	if err := os.RemoveAll(keyPath); err != nil {
+		t.Fatalf("clear the obstacle: %v", err)
+	}
+	fresh := startCopilotDeviceFlow(t, ctrl, "work")
+	*now = now.Add(5 * time.Second)
+	poll, err = ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "work", FlowID: fresh})
+	if err != nil || poll.State != "authorized" {
+		t.Fatalf("DevicePoll of the fresh flow = %+v, %v, want authorized", poll, err)
+	}
+	if _, err := githubcopilot.LoadAuth(ctrl.stateDir, "work"); err != nil {
+		t.Fatalf("LoadAuth(work) err = %v, want the fresh flow's record", err)
 	}
 }
 
