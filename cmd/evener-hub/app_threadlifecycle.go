@@ -500,6 +500,7 @@ func hubThreadAutoResumeWithModel(ctx context.Context, cfg hubcore.WebConfig, so
 }
 
 func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadResumeParams, automatic bool, modelOverride string) (response appwire.ThreadResumeResponse, resumeErr error) {
+	callerCtx := ctx
 	var cleanupErr error
 	var activeResume *hubcore.ActiveResume
 	requestedRefID := ""
@@ -581,7 +582,10 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 				return appwire.ThreadResumeResponse{}, err
 			}
 			state := cfg.ResumeLocks.RecoveryState(id)
-			if state.Epoch != epochs[id] || state.Stopping > 0 || (automatic && state.ResumeRequired) {
+			// An in-flight launch is already serving the explicit resume that
+			// clears this fence, so an automatic caller joins it instead of
+			// being refused and respawning the restore.
+			if state.Epoch != epochs[id] || state.Stopping > 0 || (automatic && state.ResumeRequired && !cfg.ResumeLocks.HasPendingLaunch(id)) {
 				return appwire.ThreadResumeResponse{}, sessionRecoveryAdmissionError{appwire.Unavailable("session recovery requires a fresh explicit thread/resume request")}
 			}
 		}
@@ -614,7 +618,7 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 
 	lockedParams := params
 	lockedParams.Session = sessionID
-	launch := resumeLaunch{active: activeResume, completionOwned: !automatic, aliases: ownershipAliases}
+	launch := resumeLaunch{caller: callerCtx, active: activeResume, completionOwned: !automatic, aliases: ownershipAliases}
 	launched, launchErr := resumeThreadLockedLaunch(ctx, cfg, sources, lockedParams, &launch, modelOverride)
 	cleanupErr = launch.cleanupErr
 	return launched, launchErr
@@ -643,6 +647,11 @@ type resumeLaunch struct {
 	active          *hubcore.ActiveResume
 	completionOwned bool
 	cleanupErr      error
+	// caller is the request context exactly as it arrived, before registration
+	// replaced ctx with the launch's own cancellable context. A child may be
+	// kept alive only when THIS context ended: Force Stop cancels the launch
+	// context too, and a deliberate stop must still kill its child.
+	caller context.Context
 	// aliases is the caller's resolved ownership group when it holds one (the
 	// explicit Resume wrapper); the retirement wrapper holds no group and
 	// leaves it nil, and the launcher falls back to the requested/resolved
@@ -675,6 +684,14 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 	}
 	if err := deletionFenceErrorForGroup(cfg, group); err != nil {
 		return appwire.ThreadResumeResponse{}, err
+	}
+	// Join a launch already restoring this session before discovery or any
+	// fence consults the roster: its child is alive, so a second spawn would
+	// restart the restore from zero and race the first daemon's reservation.
+	if cfg.ResumeLocks != nil {
+		if pending, ok := cfg.ResumeLocks.PendingLaunch(sessionID); ok {
+			return joinPendingResume(ctx, cfg, sources, sessionID, pending, modelOverride)
+		}
 	}
 
 	var discoveryErr error
@@ -836,12 +853,37 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 	}
 	resumeReq.CompletionOwned = launch.completionOwned
 	resumeReq.ActiveResume = launch.active
-	entry, err := cfg.Spawner.Resume(ctx, resumeReq)
+	resumeReq.Caller = launch.caller
+	var entry rendezvous.Entry
+	var claim *hubcore.PendingLaunch
+	if cfg.ResumeLocks != nil {
+		var created bool
+		claim, created = cfg.ResumeLocks.ClaimPendingLaunch(sessionID, resumeRendezvousTimeout)
+		if !created {
+			return joinPendingResume(ctx, cfg, sources, sessionID, claim, modelOverride)
+		}
+		resumeReq.PendingLaunch = claim
+		// A spawner that returns without settling - one that refuses before
+		// starting a child - must not strand the claim: a stranded claim would
+		// park every later resume for this session until its budget expired.
+		defer func() {
+			if !claim.Detached() {
+				claim.Settle(entry, err)
+			}
+		}()
+	}
+	entry, err = cfg.Spawner.Resume(ctx, resumeReq)
 	if err != nil {
 		if cleanup, ok := errors.AsType[*resumeCleanupError](err); ok {
 			launch.cleanupErr = cleanup
 		}
-		launchErr := resumeFailureError(ctx, cfg, sessionID, err)
+		// A still-starting departure already names the live child's state; the
+		// roster refresh resumeFailureError runs only adds a canceled-context
+		// failure on top of it.
+		launchErr := err
+		if !errors.Is(err, errResumeStillStarting) {
+			launchErr = resumeFailureError(ctx, cfg, sessionID, err)
+		}
 		if supersededOwner != nil && cfg.ResumeLocks != nil && launchRefusalIsOwnership(err) {
 			cfg.ResumeLocks.NoteReplacementFailure(sessionID, rendezvous.OwnershipFingerprint(*supersededOwner), launchErr)
 		}
@@ -857,6 +899,32 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 		// direct confirmation and finish the retirement this one cannot.
 		cfg.ResumeLocks.NotePendingReplacement(sessionID, entry, *supersededOwner)
 	}
+	return confirmResumedThread(ctx, cfg, sources, sessionID, entry, supersededOwner)
+}
+
+// joinPendingResume attaches a caller to a launch already restoring this
+// session. It never spawns: the claim's outcome is either the published daemon
+// or the launch's failure, and a caller that walks away from this wait only
+// stops waiting — the child keeps restoring for the next caller.
+func joinPendingResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, sessionID string, pending *hubcore.PendingLaunch, modelOverride string) (appwire.ThreadResumeResponse, error) {
+	if err := modelPickNeedsStartError(modelOverride, sessionID); err != nil {
+		return appwire.ThreadResumeResponse{}, err
+	}
+	entry, err := pending.Await(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return appwire.ThreadResumeResponse{}, err
+		}
+		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(launchFailureError(launchFailurePrefix("resume", err), err, "").Error())
+	}
+	return confirmResumedThread(ctx, cfg, sources, sessionID, entry, nil)
+}
+
+// confirmResumedThread publishes a launched (or joined) daemon through
+// discovery and returns the resumed thread projection. supersededOwner is
+// non-nil only for a replacement this caller spawned, and retirement uses it
+// only after the replacement is confirmed.
+func confirmResumedThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, sessionID string, entry rendezvous.Entry, supersededOwner *rendezvous.Entry) (appwire.ThreadResumeResponse, error) {
 	replacementConfirmed := false
 	if cfg.Roster != nil {
 		refreshErr := hubRosterRefresh(ctx, cfg.Roster)

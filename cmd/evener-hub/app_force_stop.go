@@ -572,6 +572,11 @@ func drainEntryResume(ctx context.Context, cfg hubcore.WebConfig, ref appwire.Re
 		}
 		releaseReservations()
 	}
+	if canceledClaims, err := cancelPendingLaunches(ctx, cfg.ResumeLocks, []string{ref.ThreadID}); err != nil {
+		return false, entryResumeAliases, func() {}, forceStopResumeStopError(err)
+	} else if canceledClaims {
+		canceledResumes = true
+	}
 	return canceledResumes, entryResumeAliases, release, nil
 }
 
@@ -614,7 +619,43 @@ func cancelActiveResumes(ctx context.Context, locks *hubcore.ResumeLocks, aliase
 			}
 		}
 	}
+	if canceledClaims, err := cancelPendingLaunches(ctx, locks, aliases); err != nil {
+		release()
+		return nil, canceled, err
+	} else if canceledClaims {
+		canceled = true
+	}
 	return release, canceled, nil
+}
+
+// cancelPendingLaunches ends a restoring launch claimed under any of aliases and
+// waits for its supervisor to reap the child. A caller that walked away leaves
+// its child behind a pending-launch claim, which no ActiveResume covers: without
+// this, Stop would return and let that child register afterwards.
+func cancelPendingLaunches(ctx context.Context, locks *hubcore.ResumeLocks, aliases []string) (bool, error) {
+	canceled := false
+	seen := make(map[*hubcore.PendingLaunch]bool, len(aliases))
+	for _, alias := range aliases {
+		claim, ok := locks.PendingLaunch(alias)
+		if !ok || seen[claim] {
+			continue
+		}
+		seen[claim] = true
+		claim.Cancel()
+		canceled = true
+		// A settled outcome needs no reporting: the claim is cleared and the
+		// supervisor owns whatever the child did. The caller's context ending is
+		// the only failure this wait adds.
+		if _, err := claim.Await(ctx); err != nil && ctx.Err() != nil {
+			return canceled, err
+		}
+	}
+	return canceled, nil
+}
+
+// hasPendingLaunch reports whether any alias has a launch restoring its session.
+func hasPendingLaunch(locks *hubcore.ResumeLocks, aliases []string) bool {
+	return slices.ContainsFunc(aliases, locks.HasPendingLaunch)
 }
 
 // tryLockForceStopReservations takes every per-alias reservation without
@@ -701,7 +742,7 @@ func checkConfirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfi
 			fence.Reject()
 			return confirmedStoppedDecision{}, err
 		}
-	} else if cfg.ResumeLocks.HasActiveResume(aliases) {
+	} else if cfg.ResumeLocks.HasActiveResume(aliases) || hasPendingLaunch(cfg.ResumeLocks, aliases) {
 		// Ordinary shutdown is not force stop: do not cancel a pending restore,
 		// change its admission epochs, or wait behind it to manufacture a no-op.
 		return confirmedStoppedDecision{}, nil
@@ -815,7 +856,7 @@ func checkConfirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfi
 			return refuseAfterDrain(confirmedStoppedDecision{}, appwire.Unavailable("session recovery authority changed; retry force stop"))
 		}
 	}
-	if !stopResumes && cfg.ResumeLocks.HasActiveResume(aliases) {
+	if !stopResumes && (cfg.ResumeLocks.HasActiveResume(aliases) || hasPendingLaunch(cfg.ResumeLocks, aliases)) {
 		return confirmedStoppedDecision{}, nil
 	}
 	if err := ctx.Err(); err != nil {
