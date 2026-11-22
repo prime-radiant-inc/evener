@@ -268,7 +268,7 @@ type communicateEntryKindKey struct{}
 func (s *Session) canQuietlyYield(ctx context.Context) error {
 	kind, _ := ctx.Value(communicateEntryKindKey{}).(EntryKind)
 	if !s.reportsToParent() {
-		if kind == EntryNotification || s.communicated() || s.hasWakeableWork() {
+		if kind == EntryNotification || s.communicatedUnblocked() || s.hasWakeableWork() {
 			return nil
 		}
 		return errQuietYieldWithoutWake

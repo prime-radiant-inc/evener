@@ -2015,6 +2015,8 @@ type communicateResult struct {
 	structured        any    // raw args["output"] object before communicate canonicalization
 	quietEnd          bool   // quiet yield was accepted without capturing a report
 	stopPendingCallID string // explicit winner whose observation awaits the Stop decision
+	stopBlocked       bool   // a Stop hook blocked the captured reply; preserved only if a later round settles visibly
+	roundVisible      bool   // a visible terminal communicate was attempted in the current tool round
 }
 
 // sessionName holds the session's auto-generated display name and its
@@ -3109,11 +3111,21 @@ func (s *Session) communicatedReply() (string, bool) {
 	return s.comm.reply, s.comm.called
 }
 
+func (s *Session) quietBoundaryLocked() bool {
+	return s.comm.quietEnd && (!s.comm.called || (s.comm.stopBlocked && !s.comm.roundVisible))
+}
+
+func (s *Session) communicatedUnblocked() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.comm.called && !s.comm.stopBlocked
+}
+
 // quietlyYielded reports a quiet boundary, not a visible final reply.
 func (s *Session) quietlyYielded() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.comm.quietEnd && !s.comm.called
+	return s.quietBoundaryLocked()
 }
 
 func (s *Session) recordQuietYield() {
@@ -3133,20 +3145,23 @@ func (s *Session) recordQuietYield() {
 func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply, output string, structured any) bool {
 	s.mu.Lock()
 	if s.comm.called {
+		s.comm.roundVisible = true
 		s.mu.Unlock()
 		return false
 	}
 	s.comm = communicateResult{
-		called:     true,
-		text:       message,
-		reply:      reply,
-		output:     output,
-		structured: structured,
+		called:       true,
+		text:         message,
+		reply:        reply,
+		output:       output,
+		structured:   structured,
+		roundVisible: true,
 	}
 	if s.hasReplyStopHook() {
 		s.comm.stopPendingCallID = callIDFromContext(ctx)
+	} else {
+		s.latestReport = s.comm
 	}
-	s.latestReport = s.comm
 	s.mu.Unlock()
 	lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
 	if stableRun && s.delegateController != nil {

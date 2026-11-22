@@ -1936,6 +1936,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			}
 			return "", progressed, abortErr
 		}
+		s.mu.Lock()
+		s.comm.quietEnd = false
+		s.comm.roundVisible = false
+		s.mu.Unlock()
 
 		// --- Phase: ToolExec ---
 		tPhaseStart = s.sclock().Now()
@@ -2048,7 +2052,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			// never to a silent quiet yield: let batchBlocked publish and record
 			// its reason instead of settling silently.
 			s.mu.Lock()
-			if !s.comm.called {
+			if s.quietBoundaryLocked() {
 				s.comm.quietEnd = false
 			}
 			s.mu.Unlock()

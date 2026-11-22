@@ -610,7 +610,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 		if s.envContextDue() {
 			_ = s.maybeAppendEnvironmentContext()
 		}
-		if !s.communicated() && !s.quietlyYielded() {
+		if !s.communicatedUnblocked() && !s.quietlyYielded() {
 			if s.hasPendingSteering() {
 				yieldToObserverCallback = false
 			}
@@ -678,9 +678,16 @@ func (s *Session) drainPostToolWatchSends(ctx context.Context) (watchSendDrainRe
 // continue to the next round.
 func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool) (done bool, text string, err error) {
 	s.mu.Lock()
-	delivered := s.comm.called
-	quiet := s.comm.quietEnd && !delivered
-	text = s.comm.reply
+	quiet := s.quietBoundaryLocked()
+	delivered := s.comm.called && !quiet
+	if delivered {
+		text = s.comm.reply
+	}
+	if quiet && s.comm.stopBlocked {
+		// This round's only boundary is a quiet yield after an earlier Stop
+		// block: leave the blocked reply without terminal acceptance.
+		s.comm = communicateResult{updated: s.comm.updated, quietEnd: true}
+	}
 	s.mu.Unlock()
 	if !delivered && !quiet && !askedThisRound {
 		return false, "", nil
@@ -718,6 +725,9 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 		if stopResult.Blocked {
 			// Don't finish — keep looping. The next Stop dispatch in this turn
 			// is a continuation, which is what stop_hook_active reports.
+			s.mu.Lock()
+			s.comm.stopBlocked = true
+			s.mu.Unlock()
 			s.stopHookActive.Store(true)
 			return false, "", nil
 		}
@@ -728,6 +738,8 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 func (s *Session) finishReplyBoundary(ctx context.Context, state SessionState, delivered bool, text string, replacement *string) (bool, string, error) {
 	if delivered {
 		s.mu.Lock()
+		s.comm.stopBlocked = false
+		s.latestReport = s.comm
 		if id := s.comm.stopPendingCallID; id != "" {
 			s.execution.acceptedCommunicateCallID = id
 			s.execution.replacementReply = replacement

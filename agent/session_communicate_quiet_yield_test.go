@@ -359,3 +359,91 @@ func TestCommunicateQuietYieldPreservesInFlightClientSteering(t *testing.T) {
 		t.Fatal("in-flight client steer during quiet yield did not trigger a carrier model turn while background job remained held")
 	}
 }
+
+func TestCommunicateQuietYieldAfterBlockedStopHookDoesNotAcceptBlockedReply(t *testing.T) {
+	t.Parallel()
+	t.Run("quiet_yield_with_live_work_leaves_blocked_reply_unaccepted", func(t *testing.T) {
+		t.Parallel()
+		env := newHeldJobEnvironment(t.TempDir())
+		adapter := newFakeAdapter("openai", func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "bg-job", Name: "shell", Arguments: json.RawMessage(`{"command":"go test","mode":"background"}`)})
+		}, func(llm.Request) llm.Response {
+			return quietYieldResponse("early-reply", `{"message":"done too soon"}`)
+		}, func(llm.Request) llm.Response {
+			return quietYieldResponse("quiet-wait", `{}`)
+		})
+		s := newSession(t, withEnv(env), withAdapter(adapter), withStateDir(t.TempDir()), withConfig(SessionConfig{TurnEndsProcess: true}))
+		t.Cleanup(env.releaseJob)
+
+		var stopCalls atomic.Int32
+		installCommunicateStopHook(s, func() string {
+			if stopCalls.Add(1) == 1 {
+				return `{"decision":"block","reason":"wait for running job"}`
+			}
+			return `{}`
+		})
+
+		ctx := tripwireCtx(t)
+		reply, err := s.ProcessInput(ctx, "run and report", nil)
+		if err != nil {
+			t.Fatalf("ProcessInput: %v", err)
+		}
+		requireQuietToolResult(t, s, "quiet-wait")
+		if got := stopCalls.Load(); got != 1 {
+			t.Fatalf("Stop hook calls = %d, want 1 (quiet yield must not rerun Stop on the blocked reply)", got)
+		}
+		if reply != "" || !s.quietlyYielded() || s.communicated() || s.hasAcceptedTerminalCommunicate() {
+			t.Fatalf("reply=%q quiet=%v communicated=%v terminal=%v, want quiet yield without accepting the blocked reply",
+				reply, s.quietlyYielded(), s.communicated(), s.hasAcceptedTerminalCommunicate())
+		}
+		env.releaseJob()
+		s.Close()
+		for _, turn := range transcriptTurnsOf(t, s) {
+			if turn.Completion != nil && turn.Completion.AcceptedCommunicateCallID != "" {
+				t.Fatalf("TurnCompletion published AcceptedCommunicateCallID=%q for a Stop-blocked reply", turn.Completion.AcceptedCommunicateCallID)
+			}
+		}
+	})
+
+	t.Run("visible_continuation_preserves_first_winner_and_dead_wait_still_refused", func(t *testing.T) {
+		t.Parallel()
+		adapter := newFakeAdapter("openai", func(llm.Request) llm.Response {
+			return quietYieldResponse("first-winner", `{"message":"first reply"}`)
+		}, func(llm.Request) llm.Response {
+			return quietYieldResponse("dead-quiet", `{}`)
+		}, func(llm.Request) llm.Response {
+			return quietYieldResponse("second-loser", `{"message":"second reply"}`)
+		})
+		s := newSession(t, withAdapter(adapter), withStateDir(t.TempDir()))
+
+		var stopCalls atomic.Int32
+		installCommunicateStopHook(s, func() string {
+			if stopCalls.Add(1) <= 2 {
+				return `{"decision":"block","reason":"finish checking first"}`
+			}
+			return `{}`
+		})
+
+		ctx := tripwireCtx(t)
+		reply, err := s.ProcessInput(ctx, "answer", nil)
+		if err != nil {
+			t.Fatalf("ProcessInput: %v", err)
+		}
+		if !communicateToolResult(t, s, "dead-quiet").IsError {
+			t.Fatal("communicate({}) without wakeable work succeeded after a Stop-blocked reply")
+		}
+		if reply != "first reply" {
+			t.Fatalf("settled reply = %q, want first-winner %q", reply, "first reply")
+		}
+		s.Close()
+		acceptedID := ""
+		for _, turn := range transcriptTurnsOf(t, s) {
+			if turn.Completion != nil && turn.Completion.AcceptedCommunicateCallID != "" {
+				acceptedID = turn.Completion.AcceptedCommunicateCallID
+			}
+		}
+		if acceptedID != "first-winner" {
+			t.Fatalf("AcceptedCommunicateCallID = %q, want %q", acceptedID, "first-winner")
+		}
+	})
+}
