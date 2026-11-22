@@ -12,6 +12,7 @@ import { selectAttentionSummary, selectDisplaySources } from "../../stores/navig
 import { buildShutdownConvergence } from "../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { type SidebarGroupingPref, usePrefsStore } from "../../stores/prefs";
+import { sessionReadProgress, useSessionSeen } from "../../stores/readProgress";
 import { threadsStore } from "../../stores/threads";
 import {
   Button,
@@ -567,9 +568,16 @@ function NavigationRail({
       }
     }
   }, [resources, archivedLists]);
+  const seen = useSessionSeen();
+  // First run: adopt the newest update this browser has seen as the read
+  // epoch, so a fleet that predates it does not arrive all unread.
+  useEffect(() => {
+    if (resources.live.length > 0 || resources.needsYou.length > 0)
+      sessionReadProgress.adoptEpoch([...resources.live, ...resources.needsYou]);
+  }, [resources.live, resources.needsYou]);
   const currentLiveBands = useMemo(
-    () => railLiveBands(resources.live, resources.needsYou),
-    [resources.live, resources.needsYou],
+    () => railLiveBands(resources.live, resources.needsYou, seen.isSeen),
+    [resources.live, resources.needsYou, seen],
   );
   // A row that changes band is unmounted and mounted again under its new
   // fold, which would close a dialog opened from its menu and discard what

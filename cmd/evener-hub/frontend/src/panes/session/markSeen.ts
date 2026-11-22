@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { connectionStore } from "../../stores/connection";
 import { selectSessionSummary } from "../../stores/navigation/selectors";
 import { navigationStore } from "../../stores/navigation/store";
+import { sessionReadProgress } from "../../stores/readProgress";
 
 /** The seenThrough a pane opening on this row sends: the row's own
  * turn_ended_at in milliseconds, when the hub reports that turn unseen. A seen
@@ -31,9 +32,12 @@ export function seenThroughWithMotion(
   return motion === undefined ? turn : Math.max(turn, motion);
 }
 
-/** Marks a session seen on the hub when its pane opens, and again when the
- * page becomes visible with the pane still open, so its unseen dot clears on
- * every device (spec 18, S4). It marks only while the page is visible, so a
+/** Marks a session read when its pane opens, and again when the page becomes
+ * visible with the pane still open, so its unread marker clears here and on
+ * every device (spec 18, S4). The browser's own read progress records the
+ * opening too, so a row the hub cannot decide (an older hub, or a session that
+ * has not ended a turn) clears at once; the hub mark follows. It marks only
+ * while the page is visible, so a
  * pane restored in a background tab marks nothing until you look at it. Each
  * open marks the row as the pane first finds it, once: a turn that ends while
  * the pane stays open is not "opened since". A row still loading is marked
@@ -57,14 +61,19 @@ export function useMarkSessionSeenOnOpen(ref: string): void {
       // meanwhile marks nothing (showing it again marks afresh), and the mark
       // goes through the connection that is ready now, or waits for one.
       const send = (seenThrough: number | undefined) => {
-        if (disposed || seenThrough === undefined) return;
-        if (document.visibilityState !== "visible") return;
+        if (disposed || document.visibilityState !== "visible") return;
+        // The read is this browser's now; the hub's row catches up after.
+        sessionReadProgress.markRead(summary, seenThrough);
+        if (seenThrough === undefined) return;
         const current = connectionStore.getState();
         if (current.state !== "ready" || !current.client) {
           awaitingRow = true;
           return;
         }
-        current.client.request("evener/session/seen/set", { sessions: [{ ref, seenThrough }] }).catch(() => {});
+        current.client
+          .request("evener/session/seen/set", { sessions: [{ ref, seenThrough }] })
+          .then(() => sessionReadProgress.acknowledge(ref, seenThrough))
+          .catch(() => {});
       };
       // An older hub sends no seen_through, so its motion can't be compared.
       if (summary.seen_through === undefined) {

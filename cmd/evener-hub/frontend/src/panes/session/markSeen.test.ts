@@ -1,10 +1,11 @@
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { sessionReadProgress } from "../../stores/readProgress";
 import { seenThroughToMark, seenThroughWithMotion, useMarkSessionSeenOnOpen } from "./markSeen";
 
 const REF = "local:01SEEN";
@@ -80,6 +81,8 @@ function setVisibility(next: DocumentVisibilityState): void {
 beforeEach(() => {
   resetConnectionStoreForTests();
   resetNavigationStoreForTests();
+  sessionReadProgress.reset();
+  localStorage.clear();
   visibility = "visible";
   Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
 });
@@ -336,4 +339,19 @@ test("a read that fails because its connection was replaced is read again throug
   await settle();
   expect(second.calls.filter((call) => call.method === ACTIVITY_READ)).toHaveLength(1);
   expect(marks(second)).toEqual([{ sessions: [{ ref: REF, seenThrough: moved }] }]);
+});
+
+// The hub only decides rows that carry a turn end. An older hub's rows (and a
+// session that has not ended a turn yet) keep this browser's own read mark, so
+// opening one still clears its unread marker and the mark survives a reload.
+test("opening a row the hub cannot decide records this browser's read mark", async () => {
+  sessionReadProgress.adoptEpoch([{ updated_at: "2026-09-25T09:00:00.000Z" }]);
+  const updatedAt = "2026-09-26T11:58:00.123Z";
+  const afterReload = { ref: REF, updated_at: updatedAt };
+  expect(sessionReadProgress.isSeen(afterReload)).toBe(false);
+
+  connectFake();
+  showRow({ updated_at: updatedAt });
+  renderHook(() => useMarkSessionSeenOnOpen(REF));
+  await waitFor(() => expect(sessionReadProgress.isSeen(afterReload)).toBe(true));
 });
