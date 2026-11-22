@@ -143,10 +143,11 @@ export interface AttentionChanged {
   approvalPending?: boolean;
   /**
    * NeedsResponse is true while the session rests awaiting with no pending
-   * question: its turn ended with end_reason needs_response. The rest is
-   * informative rather than actionable — a plain reply and a finished turn
-   * both rest idle, and neither makes the session needs_you (#2629).
-   * Additive: an older hub omits it, decoding as false.
+   * question: the shape an older daemon reported for a turn that ended
+   * asking for a reply. The rest is informative rather than actionable — a
+   * plain reply and a finished turn both rest idle, and neither makes the
+   * session needs_you (#2629). Additive: an older hub omits it, decoding as
+   * false.
    */
   needsResponse?: boolean;
   pendingQuestion?: PendingQuestion;
@@ -3595,10 +3596,11 @@ export interface RosterEvent {
   approvalPending?: boolean;
   /**
    * NeedsResponse is true while the session rests awaiting with no pending
-   * question: its turn ended with end_reason needs_response. The rest is
-   * informative rather than actionable — a plain reply and a finished turn
-   * both rest idle, and neither makes the session needs_you (#2629).
-   * Additive: an older hub omits it, decoding as false.
+   * question: the shape an older daemon reported for a turn that ended
+   * asking for a reply. The rest is informative rather than actionable — a
+   * plain reply and a finished turn both rest idle, and neither makes the
+   * session needs_you (#2629). Additive: an older hub omits it, decoding as
+   * false.
    */
   needsResponse?: boolean;
   pendingQuestion?: PendingQuestion;
