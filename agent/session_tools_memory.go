@@ -299,13 +299,10 @@ func memoryIndexRowRange(rendered string) (first, last int, ok bool) {
 		n, err := strconv.Atoi(strings.TrimSpace(line[:sep]))
 		return n, err == nil && n > 0
 	}
-	firstLine := trimmed
-	if nl := strings.IndexByte(trimmed, '\n'); nl >= 0 {
-		firstLine = trimmed[:nl]
-	}
+	firstLine, _, _ := strings.Cut(trimmed, "\n")
 	lastLine := trimmed
-	if nl := strings.LastIndexByte(trimmed, '\n'); nl >= 0 {
-		lastLine = trimmed[nl+1:]
+	if _, after, found := strings.CutLast(trimmed, "\n"); found {
+		lastLine = after
 	}
 	f, okF := parseRowNum(firstLine)
 	l, okL := parseRowNum(lastLine)
