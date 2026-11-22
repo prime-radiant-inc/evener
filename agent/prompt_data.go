@@ -131,6 +131,9 @@ type promptData struct {
 
 	// Project docs
 	ProjectDocs []ProjectDoc
+	// IncludeProjectDocs gates the ProjectDocs block; the explorer role alone
+	// leaves it out (#2579). See includeProjectDocs for the full rule.
+	IncludeProjectDocs bool
 
 	// Result tool
 	ResultToolName string // "communicate" or override

@@ -320,9 +320,9 @@ Default task list:
 {{ end }}{{ else }}- none
 {{ end }}</agent>
 {{ end }}</available_agents>
-{{ end }}
+{{ end }}{{ end }}
 
-{{ range .ProjectDocs }}{{ if .Path }}
+{{ if .IncludeProjectDocs }}{{ range .ProjectDocs }}{{ if .Path }}
 ----- BEGIN {{ .Path }} -----
 {{ .Content }}
 ----- END {{ .Path }} -----
