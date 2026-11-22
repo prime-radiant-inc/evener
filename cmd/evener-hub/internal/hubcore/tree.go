@@ -1428,8 +1428,8 @@ func (b *treeBuilder) needsYouTier() []TreeNode {
 	b.markArchivedTree(needsYou, b.nodeProjectKey)
 	// Three bands, oldest-first inside each band (Track A §2 ask-tiering):
 	// errored (broken beats blocked) > blocked on a person (a question, an
-	// approval, or a turn that ended on needs_response, #4093) > the rest of
-	// the tier (warnings and restarts). hubapi.NeedsYouBand owns the bands.
+	// approval, #4093) > the rest of the tier (warnings and restarts).
+	// hubapi.NeedsYouBand owns the bands.
 	sortNeedsYou(needsYou)
 	return needsYou
 }

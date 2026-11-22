@@ -4,9 +4,9 @@
 after it had already declared itself done (`end_turn=true`)?
 
 `end_turn=true` ends a turn; it does not by itself mean the task is done. A
-session that ends a turn on `end_reason="waiting_on_work"` is waiting for
-work it started, and the next turn is that work reporting back. Only the
-session's last `end_turn=true` call, with nothing left waiting on, marks the
+session that ends a turn quietly with `communicate({})` is waiting for work
+it started, and the next turn is that work reporting back. Only the
+session's last turn-ending call, with nothing left waiting on, marks the
 point where a later notification is stale.
 
 ## HEALTHY

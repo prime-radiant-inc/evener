@@ -1038,8 +1038,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 				result, processErr = sess.ProcessInputKind(turnCtx, msg.Text, msg.Images, msg.Kind)
 			}
 			// The stored state changes only through the session's own events
-			// (SESSION_START, SESSION_END, STATUS_SETTLED): ending processing
-			// publishes what they stated.
+			// (SESSION_START, SESSION_END): ending processing publishes what
+			// they stated.
 			srv.SetProcessing(false)
 			srv.SetCancelFunc(nil)
 			currentCancel()
@@ -1282,8 +1282,9 @@ func printServeSandboxLine(w io.Writer, line string) {
 // the session will refuse (the flicker's active→awaiting edge would re-fire
 // the OS notification, notifications.js Task 11). Mirrors the gate's
 // predicate exactly — hasPendingAsk, not raw state (SessionAwaiting alone
-// does not imply a pending question: a needs_response rest with no ask
-// pending must NOT be held; async wakes may move it on). EntryUserInput is
+// does not imply a pending question: an awaiting rest with no ask pending,
+// as an older daemon could report, must NOT be held; async wakes may move
+// it on). EntryUserInput is
 // always let through since it is how the reply resolves a pending ask (spec
 // §5.2).
 func holdServeStateForAwaitingWake(kind agent.EntryKind, hasPendingAsk bool) bool {

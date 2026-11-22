@@ -11,9 +11,10 @@
 //
 // The rail is a TRIAGE surface. Broken is red, needs-you is yellow, and running
 // work is a grey spinner. Broken attention and anything waiting on a person
-// (a question, an approval, or an awaiting rest after a needs_response turn)
-// outrank work; a warning yields to work already in flight. Idle and ended
-// rows have no indicator. The stable one-line rhythm keeps the
+// (a question or an approval) outrank work; an awaiting frame from an older
+// daemon with no pending question is a finished turn and reads idle. A warning
+// yields to work already in flight. Idle and ended rows have no indicator. The
+// stable one-line rhythm keeps the
 // title list scannable while the HoverCard preserves project, host, branch,
 // jobs, subagents, watches, tier, and age without permanent visual noise.
 //
