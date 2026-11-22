@@ -33,12 +33,18 @@ export interface ButtonProps
    * "Jump back in: <session title>"). The size's height becomes a floor.
    * Ignored by variant="link", which already wraps with its prose. */
   wrap?: boolean;
+  /** Fill the width of the container instead of sizing to the label: for a
+   * button that IS its row - a sheet's stacked action, the rail's New
+   * session. The variant, size, height, and centered label are unchanged.
+   * Ignored by variant="link", which is inline text. */
+  block?: boolean;
 }
 
 const BASE_CLASS = {
   button: requireClass(styles.button, "button.module.css", "button"),
   icon: requireClass(styles.icon, "button.module.css", "icon"),
   wrap: requireClass(styles.wrap, "button.module.css", "wrap"),
+  block: requireClass(styles.block, "button.module.css", "block"),
 };
 
 const VARIANT_CLASS: Record<ButtonVariant, string> = {
@@ -102,6 +108,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
     disabled = false,
     type = "button",
     wrap = false,
+    block = false,
     ...rest
   },
   ref,
@@ -121,7 +128,13 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       className={
         variant === "link"
           ? `${BASE_CLASS.button} ${VARIANT_CLASS.link}`
-          : [BASE_CLASS.button, VARIANT_CLASS[variant], SIZE_CLASS[size], wrap && BASE_CLASS.wrap]
+          : [
+              BASE_CLASS.button,
+              VARIANT_CLASS[variant],
+              SIZE_CLASS[size],
+              wrap && BASE_CLASS.wrap,
+              block && BASE_CLASS.block,
+            ]
               .filter(Boolean)
               .join(" ")
       }

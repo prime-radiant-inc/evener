@@ -106,7 +106,6 @@ const CLASS = {
   wordmark: requireClass(styles.wordmark, "Rail.module.css", "wordmark"),
   brandActions: requireClass(styles.brandActions, "Rail.module.css", "brandActions"),
   needsYou: requireClass(styles.needsYou, "Rail.module.css", "needsYou"),
-  newSession: requireClass(styles.newSession, "Rail.module.css", "newSession"),
   body: requireClass(styles.body, "Rail.module.css", "body"),
   parentScrollRail: requireClass(styles.parentScrollRail, "Rail.module.css", "parentScrollRail"),
   parentScrollBody: requireClass(styles.parentScrollBody, "Rail.module.css", "parentScrollBody"),
@@ -1104,11 +1103,9 @@ function NavigationRail({
             </span>
           )}
         </div>
-        <div className={CLASS.newSession}>
-          <Button variant="secondary" onClick={() => navigate("/new")}>
-            + New session
-          </Button>
-        </div>
+        <Button block variant="secondary" data-testid="rail-new-session" onClick={() => navigate("/new")}>
+          + New session
+        </Button>
       </div>
       {/* The rail's clock (railNow.tsx): rows derive their relative stamps from
           it. It wraps the tree only - the header and the dialogs render no

@@ -614,7 +614,7 @@ function measureShell() {
   const shell = root.firstElementChild;
   // Select the rail directly, independently of header control placement.
   const rail = document.querySelector(`.${railStyles.rail}`);
-  const newSession = rail === null ? null : rail.querySelector<HTMLButtonElement>(`.${railStyles.newSession} button`);
+  const newSession = rail === null ? null : rail.querySelector<HTMLButtonElement>('[data-testid="rail-new-session"]');
   const railBody =
     rail === null ? null : ([...rail.children].find((el) => getComputedStyle(el).overflowY !== "visible") ?? null);
   // The rail's full ancestor chain up to <body>, with the computed properties
