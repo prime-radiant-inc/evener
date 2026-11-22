@@ -71,6 +71,13 @@ export interface TextareaProps {
    * the size stays the field's own, at or above the phone's control-size
    * floor. */
   monospace?: boolean;
+  /** Fill the host's width: width 100% plus min-width 0, so a flex/grid host
+   * can shrink the field below the native ~20-column default. The widget's
+   * own border box stays as it is (box-sizing is border-box app-wide), so the
+   * padding and edge remain inside the claimed width. Off, the native default
+   * width stands. A host that wants this must pass `fill` rather than reach
+   * into the widget's DOM with a `.host textarea` rule. */
+  fill?: boolean;
 }
 
 /** The field's smallest comfortable target, in text lines. Mirrored by
@@ -83,6 +90,7 @@ export const MAX_HEIGHT_VIEWPORT_FRACTION = 0.5;
 
 const BASE_CLASS = {
   textarea: requireClass(styles.textarea, "textarea.module.css", "textarea"),
+  fill: requireClass(styles.fill, "textarea.module.css", "fill"),
   seamless: requireClass(styles.seamless, "textarea.module.css", "seamless"),
   monospace: requireClass(styles.monospace, "textarea.module.css", "monospace"),
 };
@@ -142,6 +150,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
     "aria-label": ariaLabel,
     seamless = false,
     monospace = false,
+    fill = false,
   },
   forwardedRef,
 ) {
@@ -202,7 +211,12 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
       }}
       id={id}
       name={name}
-      className={[BASE_CLASS.textarea, seamless && BASE_CLASS.seamless, monospace && BASE_CLASS.monospace]
+      className={[
+        BASE_CLASS.textarea,
+        fill && BASE_CLASS.fill,
+        seamless && BASE_CLASS.seamless,
+        monospace && BASE_CLASS.monospace,
+      ]
         .filter(Boolean)
         .join(" ")}
       value={value}

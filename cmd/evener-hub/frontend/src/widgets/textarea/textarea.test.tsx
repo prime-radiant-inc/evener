@@ -152,6 +152,31 @@ test("monospace adds its modifier class alongside the unchanged base class", () 
   expect(screen.getByRole("textbox").className.split(" ")).not.toContain(rawStyles.monospace);
 });
 
+test("without fill, no fill modifier is applied", () => {
+  render(<Textarea value="" onChange={() => {}} />);
+  expect(screen.getByRole("textbox").className).toBe(rawStyles.textarea);
+});
+
+test("fill adds its modifier class alongside the unchanged base class", () => {
+  const { rerender } = render(<Textarea value="" onChange={() => {}} fill />);
+  const classes = screen.getByRole("textbox").className.split(" ");
+  expect(classes).toContain(rawStyles.textarea);
+  expect(classes).toContain(rawStyles.fill);
+
+  rerender(<Textarea value="" onChange={() => {}} />);
+  expect(screen.getByRole("textbox").className.split(" ")).not.toContain(rawStyles.fill);
+});
+
+// The host supplies the width; the widget keeps its own border box. Width and
+// shrink permission only - overriding box-sizing/padding/border here would
+// change the field's resting look, which the base variant owns.
+test("the fill modifier claims the host's width and can shrink, without changing the field's box", () => {
+  const rule = /\.fill\s*\{([^}]*)\}/.exec(moduleCss())?.[1] ?? "";
+  expect(rule).toContain("width: 100%");
+  expect(rule).toContain("min-width: 0");
+  expect(rule).not.toMatch(/box-sizing|padding|border/);
+});
+
 // The iOS 16px rule: a mono face must not drag the field under the phone's
 // control-size floor, so the modifier changes the face and nothing else.
 test("the monospace modifier sets the mono face and leaves the base size floor alone", () => {

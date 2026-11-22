@@ -46,7 +46,6 @@ export interface NotesPanelBodyProps {
 const CLASS = {
   section: requireClass(styles.section, "notespanel.module.css", "section"),
   editorGroup: requireClass(styles.editorGroup, "notespanel.module.css", "editorGroup"),
-  editor: requireClass(styles.editor, "notespanel.module.css", "editor"),
   prose: requireClass(styles.prose, "notespanel.module.css", "prose"),
   linkList: requireClass(styles.linkList, "notespanel.module.css", "linkList"),
   linkRow: requireClass(styles.linkRow, "notespanel.module.css", "linkRow"),
@@ -180,7 +179,7 @@ export function NotesPanelBody({ sessionRef, model, sourcePaneId, editorRef }: N
       <Section title="Your note">
         {live ? (
           <div className={CLASS.editorGroup}>
-            <div className={CLASS.editor} data-testid="shared-notes-editor">
+            <div data-testid="shared-notes-editor">
               <Textarea
                 ref={editorRef}
                 value={draft}
@@ -191,6 +190,7 @@ export function NotesPanelBody({ sessionRef, model, sourcePaneId, editorRef }: N
                 placeholder="Make a note…"
                 autoGrow
                 rows={4}
+                fill
               />
             </div>
             <HumanStatus saving={saving} saved={saved} error={error} idleWake={idleWake} />
