@@ -57,8 +57,8 @@ test("the seat is the avatar column: avatar-size wide, glyph centred, pinned to 
 
 test("the seat carries the rail ink; the ambient strength is a separate class", () => {
   expect(seat).toMatch(/\.seat\s*\{[^}]*color:\s*var\(--ink-mid\)/);
-  // Geometry and strength compose separately: a glyph that sits on its own
-  // ground takes the seat without receding.
+  // Geometry and strength compose separately: a bare glyph takes the seat
+  // without receding.
   expect(seat).not.toMatch(/\.seat\s*\{[^}]*opacity/);
   expect(seat).toMatch(/\.ambient\s*\{[^}]*opacity:\s*0\.5/);
 });
