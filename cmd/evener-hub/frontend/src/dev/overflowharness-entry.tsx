@@ -1880,9 +1880,8 @@ async function measure() {
       controls: controls.map(({ box: _box, ...control }) => control),
       controlGeometry: Object.fromEntries(
         controls.flatMap((control) => {
-          const box = control.box;
-          if (!control.present || !box) return [];
-          return [[control.testId, { left: box.left, right: box.right, top: box.top, bottom: box.bottom }]];
+          if (!control.present || !control.element) return [];
+          return [[control.testId, geometryOf(control.element)]];
         }),
       ),
       // Observed primary and secondary controls beside the status row.

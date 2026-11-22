@@ -50,7 +50,7 @@ import {
   textarea,
 } from "./composerTestUtils";
 import { readDraft, writeComposerDraft } from "./draft";
-import { LANDSCAPE_PHONE_QUERY } from "./narrowComposer";
+import { DUO_COVER_QUERY, LANDSCAPE_PHONE_QUERY } from "./narrowComposer";
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 import { resetQuoteInsertStoreForTests } from "./quoteInsert";
@@ -90,15 +90,6 @@ class ControlledDiscardStorage extends MutationOutboxIndexedDB {
   }
 }
 
-function installDuoCoverViewport(): void {
-  vi.stubGlobal("matchMedia", (media: string) => ({
-    media,
-    matches: media === "(min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4)",
-    addEventListener() {},
-    removeEventListener() {},
-  }));
-}
-
 test.each([
   { name: "wide desktop", compact: false, inlineSteer: true },
   { name: "narrow desktop", compact: false, inlineSteer: false, width: 382 },
@@ -108,8 +99,8 @@ test.each([
 ])(
   "$name keeps the empty composer folded until content arrives",
   async ({ compact, inlineSteer, width, duo, phone, phoneQuery }) => {
-    const restoreViewport = phone || phoneQuery ? installMobileViewport(phoneQuery) : undefined;
-    if (duo) installDuoCoverViewport();
+    const restoreViewport =
+      phone || phoneQuery || duo ? installMobileViewport(duo ? DUO_COVER_QUERY : phoneQuery) : undefined;
     if (width !== undefined) installNarrowComposer(width);
     try {
       await mountComposerWithHandle("ref_a", { status: { type: "active" } });

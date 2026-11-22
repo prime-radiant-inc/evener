@@ -105,6 +105,7 @@ import {
 import { consumeQuoteInsert, useQuoteInsertRequest } from "./quoteInsert";
 import { SkillEditor, type SkillEditorHandle } from "./SkillEditor";
 import { SlashCompletionMenu } from "./SlashCompletionMenu";
+import { StopIcon } from "./StopIcon";
 import { maskSkillAtoms, type SkillEditorValue } from "./skillDocument";
 import type { ComposerSourceState } from "./sourceState";
 import { recordStoplessComposer } from "./stoplessComposer";
@@ -165,20 +166,6 @@ const MemoizedSessionChrome = memo(function MemoizedSessionChrome(props: Session
 // {} on every recompute would defeat MemoizedSessionChrome's
 // shallow-equality bailout for a value that carries no information.
 const NO_TURN_VERBS: SessionMenuTurnVerbs = Object.freeze({});
-
-function StopIcon() {
-  return (
-    <svg viewBox="0 0 14 14" width="12" height="12" aria-hidden="true">
-      <path
-        d="M4.2 1.3h5.6l2.9 2.9v5.6l-2.9 2.9H4.2l-2.9-2.9V4.2z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
 
 // Whether a node belongs to the composer: its own subtree, or one of the
 // menus it portals outside it (the session menu, a completion list, a dialog).

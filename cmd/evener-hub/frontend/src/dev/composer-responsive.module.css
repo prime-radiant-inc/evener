@@ -67,10 +67,9 @@
 .frame {
   max-width: 100%;
   height: 680px;
-  outline: 1px solid var(--edge);
   border-radius: var(--radius-panel);
   overflow: hidden;
-  box-shadow: var(--shadow-raised);
+  box-shadow: var(--shadow-card-ringed);
 }
 
 .frame iframe {
@@ -78,18 +77,6 @@
   width: 100%;
   height: 100%;
   border: 0;
-}
-
-.phone {
-  width: 390px;
-}
-
-.tablet {
-  width: 768px;
-}
-
-.desktop {
-  width: 1180px;
 }
 
 .session {

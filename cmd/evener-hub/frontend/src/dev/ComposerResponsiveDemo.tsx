@@ -1,14 +1,13 @@
 import { hydrateThread, makeTranscriptDisplayConfig, type ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { useEffect, useMemo, useState } from "react";
-import { Composer } from "../panes/session/composer/Composer";
-import { type ComposerSourceState, createComposerSourceState } from "../panes/session/composer/sourceState";
 import { TranscriptBody } from "../panes/session/transcript/TranscriptBody";
 import { ClientProvider } from "../shell/clientContext";
 import { putThreadModel } from "../stores/threads";
 import { ALL_CAPABILITIES, testThread } from "../threadTestUtils";
 import { PaneScaffold, SegmentedControl } from "../widgets";
 import styles from "./composer-responsive.module.css";
+import { FixtureComposer } from "./surface-sections/composer";
 import { makeEditorialTranscriptModel } from "./surface-sections/transcript-fixture";
 
 const DEMO_DRAFT = "Keep the composer compact until this draft arrives, then let the full controls return.";
@@ -26,7 +25,6 @@ const FRAMES: readonly { id: FrameName; label: string; width: number }[] = [
 function ResponsiveSessionPreview({ frame, draft }: { frame: FrameName; draft: boolean }) {
   const ref = `dev-composer-responsive-${frame}`;
   const [client] = useState(() => new FakeClient("ready"));
-  const [source, setSource] = useState<ComposerSourceState | null>(null);
   const transcript = useMemo(() => makeEditorialTranscriptModel(), []);
 
   useEffect(() => {
@@ -35,11 +33,7 @@ function ResponsiveSessionPreview({ frame, draft }: { frame: FrameName; draft: b
       evener: { ref, capabilities: ALL_CAPABILITIES, activeTurnId: "turn_demo", queue: { revision: 0 } },
     });
     putThreadModel(ref, hydrateThread({ thread } as ThreadReadResponse, ref, Date.now()));
-    const owner = createComposerSourceState(ref);
-    if (draft) owner.writeDraft(DEMO_DRAFT, false);
-    setSource(owner);
-    return () => owner.dispose();
-  }, [draft, ref]);
+  }, [ref]);
 
   return (
     <ClientProvider client={client}>
@@ -47,7 +41,7 @@ function ResponsiveSessionPreview({ frame, draft }: { frame: FrameName; draft: b
         <PaneScaffold
           title="A quieter session footer"
           scaffoldMarker={`session:${ref}`}
-          footer={source ? <Composer ref={ref} source={source} focused /> : undefined}
+          footer={<FixtureComposer ref={ref} focused draft={draft ? DEMO_DRAFT : undefined} />}
         >
           <TranscriptBody
             model={transcript}
@@ -90,7 +84,7 @@ function ComparisonPage() {
               <h2>{label}</h2>
               <p>{width}px viewport</p>
             </div>
-            <div className={`${styles.frame} ${styles[id]}`}>
+            <div className={styles.frame} style={{ width }}>
               <iframe
                 title={`${label} session preview`}
                 data-frame={id}
