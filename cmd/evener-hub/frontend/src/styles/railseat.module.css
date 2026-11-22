@@ -15,11 +15,11 @@
  *
  * The notification head's .statusIcon composes the seat, the ambient
  * strength and the gutter pull. ToolRow's .rowIcon composes the seat alone -
- * its glyph sits on a --field ground at full strength - and its slot composes
- * the column pull. Loader's rail row composes the gutter pull alone (its slot
- * is a grid of cells, not a glyph box). ThinkBlock's bulb and SteeringItem's
- * diamond compose nothing: both are single-line, centred rows whose pull
- * rides the container (see thinkblock.module.css's .icon and
+ * its bare glyph stays at full strength - and its slot composes the column
+ * pull. Loader's rail row composes the gutter pull alone (its slot is a grid
+ * of cells, not a glyph box). ThinkBlock's bulb and SteeringItem's diamond
+ * compose nothing: both are single-line, centred rows whose pull rides the
+ * container (see thinkblock.module.css's .icon and
  * steeringitem.module.css's .railIcon). railseat.contract.test.ts pins the
  * seat and every consumer's wiring, and the layoutguard case
  * transcript-rail-icon-seats measures the column they must share.

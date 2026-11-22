@@ -452,10 +452,10 @@ test("the failure badge is an absolute overlay anchored to the icon glyph's box,
   expect(badgeRule).not.toMatch(/height:\s*\d/);
   expect(badgeRule).toMatch(/inset-block-end:\s*calc\(\(10px - var\(--tool-row-icon-size\)\) \/ 2\)/);
   expect(css).not.toMatch(/\.failureBadge > \[role="img"\]/);
-  // The slot is the badge's positioning context - the field seat it composes
-  // positions it - and carries the icon size the insets read.
+  // The slot is the badge's positioning context and carries the icon size
+  // the insets read.
   const slotRule = css.match(/\.rowIconSlot\s*\{([^}]*)\}/)?.[1] ?? "";
-  expect(slotRule).toContain('composes: fieldSeatBehind from "../../../styles/surface.module.css"');
+  expect(slotRule).toContain("position: relative");
   expect(slotRule).toContain("--tool-row-icon-size:");
 });
 

@@ -249,9 +249,8 @@ the grouped surface and its rows rule, the slices a turn draws across sibling ro
 the two insets every row reads (`--tool-card-inset`, and `--tool-card-row-pad`, one
 `--rhythm-item`). An intent group and an open folded run compose the same classes.
 
-The kind icon sits at full strength on the field seat at the head of its row: the shared
-`--field` square at `--field-seat-size-row`, the avatar column plus a half step. The
-seat is painted, not laid out, so a one-line row stays one line tall. Expanded evidence is
+The kind icon sits bare at full strength at the head of its row, in the avatar column
+the row reserves for it, so a one-line row stays one line tall. Expanded evidence is
 a band inside the same card: `--surface-inset`, one hairline above it, running to the
 card's edges and taking the card's lower corners when it is the last thing in it. The
 band never draws a card of its own; native renderers keep their own output boundaries.
@@ -639,10 +638,8 @@ grid; unchanged by the re-theme). `--space-half` (2px) is the one step below the
 hairline inset inside a pill or a tight two-line stack. It is written by name, never as
 arithmetic on `--space-1`.
 
-`--field-seat-size` (32px) and `--field-seat-size-row` (the 24px avatar column plus a half
-step) size the field seat, the rounded `--field` square a glyph sits on: a summary tile's
-leading box takes the first, a transcript tool row's painted seat the second. Both are one
-recipe in `styles/surface.module.css`.
+`--field-seat-size` (32px) sizes the field seat, the rounded `--field` square a glyph
+sits on: a summary tile's leading box. It is one recipe in `styles/surface.module.css`.
 
 The radius ladder has five steps, and each has named users:
 
