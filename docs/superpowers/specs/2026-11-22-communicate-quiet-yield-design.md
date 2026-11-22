@@ -187,9 +187,9 @@ In `(*subagent).run` (`agent/subagents.go:2613-2680`):
 - **Mechanics (`agent/session_lifecycle.go` & `agent/session_tool_round.go`):**
   - Instead of entering `handleNoToolCalls` scolding, accept `lastText` through a shared boundary helper:
     1. Record the accepted reply on `s.comm` (`s.comm = communicateResult{called: true, text: lastText, reply: lastText}`) **without** appending a duplicate `TurnCommunicate` entry (since `TurnAssistant` is already persisted in the transcript and rendered as `agentMessage` by `apptranscript`, Hub, mobile-native, and CLI `EventAssistantTextEnd`).
-    2. Run `deliverIfCommunicated` (`HookStop` with `LastAssistantMessage = lastText`). On **both** explicit `communicate` and root bare-text fallback:
-       - If `stopResult.Blocked` is `true`, clear the pending accepted-reply candidate (`s.comm = communicateResult{}`) so no stale candidate survives into the continued round and no `hubCompletion` verdict fires for a blocked reply.
-       - If `stopResult.Stopped` is `true`, `replaceAcceptedReply(text)` replaces the reply on both paths (`TurnCommunicate` replacement as today) and marks the replacement as the accepted final reply.
+    2. Run `deliverIfCommunicated` (`HookStop` with `LastAssistantMessage = lastText`):
+       - Explicit `communicate` preserves `#570` atomic first-winner capture across `stopResult.Blocked` (matching the already-persisted `communicate_accepted: true` tool state and `TestDelegateResourceRuntime_GenericStopUsesCanonicalFinish`); on root bare-text fallback (where no `communicate` tool result was written), `stopResult.Blocked` clears the unpersisted candidate so the continued round produces the accepted reply.
+       - If `stopResult.Stopped` is `true`, `replaceAcceptedReply(text)` replaces the reply on both paths (`TurnCommunicate` replacement as today).
     3. Emit an accepted-reply completion marker / observation (only after `Stop` hooks allow or replace the reply) so `cmd/evener/run.go` (`ProcessInput` return value), `doctor_evener` (`outcomeHint`), and `job_watch_hub.go` (`hubCompletion`, both live and replayed) see the accepted root reply identically to `communicate({"message": lastText})`.
 
 ### 5. Transcript Projection, Reload Parity, and Watch Suppression
