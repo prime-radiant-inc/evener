@@ -347,29 +347,9 @@ func TestRootBareTextFallbackNotifiesCommunicateWatches(t *testing.T) {
 			t.Fatalf("ack observer ready: %v", err)
 		}
 
-		evMu.Lock()
-		evStart := len(*evs)
-		evMu.Unlock()
 		got, err := root.ProcessInput(ctx, "Question", nil)
 		if err != nil || got != "Root bare answer" || rootTurnCount != 4 || root.State() != SessionIdle {
 			t.Fatalf("bare reply=%q calls=%d state=%v err=%v", got, rootTurnCount, root.State(), err)
-		}
-
-		testwait.Until(t, "Turn 2 SessionEnd recorded on event stream", func() bool {
-			evMu.Lock()
-			defer evMu.Unlock()
-			for _, ev := range (*evs)[evStart:] {
-				if ev.Kind == events.EventSessionEnd {
-					return true
-				}
-			}
-			return false
-		})
-		evMu.Lock()
-		turn2Comm := communicateEventsIn((*evs)[evStart:])
-		evMu.Unlock()
-		if len(turn2Comm) != 1 || !turn2Comm[0].EndTurn || turn2Comm[0].Message != "Root bare answer" {
-			t.Fatalf("Turn 2 EventCommunicate = %+v, want 1 EndTurn=\"Root bare answer\"", turn2Comm)
 		}
 
 		var obsReq llm.Request
@@ -392,6 +372,15 @@ func TestRootBareTextFallbackNotifiesCommunicateWatches(t *testing.T) {
 		})
 		root.Close()
 		<-evDone
+
+		evMu.Lock()
+		commEvs := communicateEventsIn(*evs)
+		evMu.Unlock()
+		if len(commEvs) != 2 ||
+			!commEvs[0].EndTurn || commEvs[0].Message != "Observer starting" ||
+			!commEvs[1].EndTurn || commEvs[1].Message != "Root bare answer" {
+			t.Fatalf("EventCommunicate = %+v, want setup reply \"Observer starting\" followed by one EndTurn=\"Root bare answer\"", commEvs)
+		}
 
 		var turn2ID string
 		turns := transcriptTurnsOf(t, root)
