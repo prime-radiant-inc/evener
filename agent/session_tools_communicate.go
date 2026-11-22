@@ -254,7 +254,7 @@ func drainCommunicateInbox(deps *toolDeps) []string {
 	return inbox
 }
 
-var errQuietYieldWithoutWake = errors.New("nothing can wake this turn. Start the work or arm a watch before yielding, or send your final reply with communicate(message=...)")
+var errQuietYieldWithoutWake = errors.New("nothing can wake this turn. Start the work or arm a watch before yielding, or send your final reply with the result tool")
 
 type communicateEntryKindKey struct{}
 
@@ -289,7 +289,7 @@ func (s *Session) canQuietlyYield(ctx context.Context) error {
 	if work, err := s.treeHasOutstandingWork(); work || err != nil {
 		return err
 	}
-	return errors.New("nothing can wake this turn, and you have not sent your report yet. Start the work, or send your final report with communicate(message=...)")
+	return errors.New("nothing can wake this turn, and you have not sent your report yet. Start the work, or send your final report with the result tool")
 }
 
 // unmarshalCommunicateArguments keeps the structured output's numbers exact.
