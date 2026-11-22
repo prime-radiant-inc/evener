@@ -194,7 +194,7 @@ func (s *Service) renewUnderLock(ctx context.Context, stateDir, instance string)
 			}
 			tokens, err := RefreshToken(ctx, s.client, s.cfg, current.RefreshToken)
 			if errors.Is(err, ErrBadRefreshToken) {
-				return s.recordRejection(stateDir, instance, current)
+				return s.saveRejected(stateDir, instance, current, current, ErrBadRefreshToken)
 			}
 			if err != nil {
 				return fmt.Errorf("refresh GitHub Copilot auth: %w", err)
@@ -210,6 +210,12 @@ func (s *Service) renewUnderLock(ctx context.Context, stateDir, instance string)
 				return s.saveRejected(stateDir, instance, current, renewed, ErrCopilotTokenRejected)
 			}
 			if err != nil {
+				if renewed != current {
+					if saveErr := s.saveIfCurrent(stateDir, instance, current, renewed); saveErr != nil &&
+						!errors.Is(saveErr, ErrAuthChanged) && !errors.Is(saveErr, ErrAuthNotFound) {
+						return fmt.Errorf("renew Copilot session: %w (persist refreshed GitHub credentials: %v)", err, saveErr)
+					}
+				}
 				return fmt.Errorf("renew Copilot session: %w", err)
 			}
 			renewed.CopilotToken = session.Token
@@ -220,12 +226,7 @@ func (s *Service) renewUnderLock(ctx context.Context, stateDir, instance string)
 			credentials = runtimeFromRecord(current)
 			return nil
 		}
-		// The lock makes the record immutable between the re-read and this
-		// compare-and-save, stating the stale-writer contract.
-		if _, err := LoadAuthIfCurrent(stateDir, instance, current); err != nil {
-			return err
-		}
-		if err := SaveAuth(stateDir, instance, renewed); err != nil {
+		if err := s.saveIfCurrent(stateDir, instance, current, renewed); err != nil {
 			return err
 		}
 		credentials = runtimeFromRecord(renewed)
@@ -234,28 +235,30 @@ func (s *Service) renewUnderLock(ctx context.Context, stateDir, instance string)
 	return credentials, err
 }
 
-func (s *Service) recordRejection(stateDir, instance string, refused AuthRecord) error {
-	return s.saveRejected(stateDir, instance, refused, refused, ErrBadRefreshToken)
-}
-
 // saveRejected marks the current generation rejected and saves rejected, which
 // may carry a GitHub token rotation from this renewal attempt. A newer login,
 // refresh, or logout wins instead of being overwritten.
 func (s *Service) saveRejected(stateDir, instance string, read, rejected AuthRecord, cause error) error {
 	// Key the flag to the exact refused token and generation: a newer record
 	// must not inherit this rejection.
-	_, err := LoadAuthIfCurrent(stateDir, instance, read)
-	if errors.Is(err, ErrAuthNotFound) || errors.Is(err, ErrAuthChanged) {
-		return loginRequired(cause)
-	}
-	if err != nil {
-		return err
-	}
 	rejected.RefreshRejected = true
-	if err := SaveAuth(stateDir, instance, rejected); err != nil {
+	if err := s.saveIfCurrent(stateDir, instance, read, rejected); err != nil {
+		if errors.Is(err, ErrAuthNotFound) || errors.Is(err, ErrAuthChanged) {
+			return loginRequired(cause)
+		}
 		return err
 	}
 	return loginRequired(cause)
+}
+
+// saveIfCurrent saves next only while read is still the stored generation.
+// The lock makes the record immutable between the re-read and this save,
+// stating the stale-writer contract.
+func (s *Service) saveIfCurrent(stateDir, instance string, read, next AuthRecord) error {
+	if _, err := LoadAuthIfCurrent(stateDir, instance, read); err != nil {
+		return err
+	}
+	return SaveAuth(stateDir, instance, next)
 }
 
 func statusFromRecord(record AuthRecord) AuthStatus {
@@ -279,8 +282,10 @@ func refreshedRecord(current AuthRecord, tokens TokenSet) (AuthRecord, error) {
 	record.TokenType = firstNonEmpty(tokens.TokenType, record.TokenType)
 	record.Scope = firstNonEmpty(tokens.Scope, record.Scope)
 	record.AccessExpiry = tokens.AccessExpiry
-	record.RefreshToken = tokens.RefreshToken
-	record.RefreshExpiry = tokens.RefreshExpiry
+	if tokens.RefreshToken != "" {
+		record.RefreshToken = tokens.RefreshToken
+		record.RefreshExpiry = tokens.RefreshExpiry
+	}
 	record.ObtainedAt = nowFunc()
 	record.RefreshRejected = false
 	return record, nil

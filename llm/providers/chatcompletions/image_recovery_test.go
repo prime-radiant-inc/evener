@@ -390,7 +390,7 @@ func finalWireMessages(t *testing.T, source string, req *llm.Request, res *regis
 		res.Transport.Body = map[string]any{"messages": json.RawMessage(raw)}
 	case "preparer":
 		res.Transport.Auth = registry.AuthOAuthOpenAICodex
-		ctx = llm.WithAuthenticatorOverride(ctx, imageRecoveryPreparer{messages: messages})
+		ctx = llm.WithScopedAuthenticator(ctx, registry.AuthOAuthOpenAICodex, imageRecoveryPreparer{messages: messages})
 	default:
 		t.Fatalf("unknown final-wire source %q", source)
 	}

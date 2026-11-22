@@ -28,6 +28,7 @@ type scriptedGitHub struct {
 	rotations      int
 	exchangeCalls  int
 	exchangeStatus []int
+	omitRefresh    bool
 	started        chan struct{}
 	release        chan struct{}
 }
@@ -167,7 +168,17 @@ func (g *scriptedGitHub) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	g.mu.Lock()
 	g.rotations++
 	n := g.rotations
+	omit := g.omitRefresh
 	g.mu.Unlock()
+	if omit {
+		writeJSON(w, map[string]any{
+			"access_token": fmt.Sprintf("access-%d", n),
+			"token_type":   "bearer",
+			"scope":        "read:user offline_access",
+			"expires_in":   28800,
+		})
+		return
+	}
 	writeJSON(w, tokenResponse(fmt.Sprintf("access-%d", n), fmt.Sprintf("refresh-%d", n)))
 }
 
@@ -457,6 +468,97 @@ func TestResolveRefreshesFiveMinutesBeforeExpiry(t *testing.T) {
 	}
 }
 
+// TestResolvePersistsRotatedGitHubTokenBeforeTransientSessionExchange proves a
+// successful GitHub refresh is not stranded when the following Copilot session
+// exchange fails transiently. The retry must redeem the new refresh token and
+// succeed without a fresh login.
+func TestResolvePersistsRotatedGitHubTokenBeforeTransientSessionExchange(t *testing.T) {
+	at := time.Date(2026, 11, 22, 2, 0, 0, 0, time.UTC)
+	swapNow(t, at)
+	gh, server := newScriptedGitHub(t)
+	gh.queueExchangeStatuses(http.StatusBadGateway)
+	stateDir := t.TempDir()
+	record := testRecord(at, -time.Minute, 24*time.Hour)
+	record.CopilotExpiry = at.Add(4 * time.Minute)
+	if err := SaveAuth(stateDir, record.Instance, record); err != nil {
+		t.Fatalf("SaveAuth() error = %v", err)
+	}
+	svc := newServiceForTest(server)
+	if _, err := svc.ResolveRuntimeCredentials(context.Background(), stateDir, record.Instance); err == nil {
+		t.Fatal("first ResolveRuntimeCredentials() error = nil, want the transient exchange failure")
+	} else if errors.Is(err, ErrLoginRequired) {
+		t.Fatalf("transient exchange failure was classified as login required: %v", err)
+	}
+	loaded, err := LoadAuth(stateDir, record.Instance)
+	if err != nil {
+		t.Fatalf("LoadAuth() after transient failure error = %v", err)
+	}
+	if loaded.AccessToken != "access-1" || loaded.RefreshToken != "refresh-1" {
+		t.Fatal("successful GitHub rotation was not persisted before the failed exchange")
+	}
+	if gh.refreshCount() != 1 {
+		t.Fatalf("refresh requests after first failure = %d, want 1", gh.refreshCount())
+	}
+	credentials, err := svc.ResolveRuntimeCredentials(context.Background(), stateDir, record.Instance)
+	if err != nil {
+		t.Fatalf("second ResolveRuntimeCredentials() error = %v", err)
+	}
+	if credentials.BearerToken != "copilot-2" {
+		t.Fatalf("retry bearer = %q, want the second exchange's session", credentials.BearerToken)
+	}
+	if gh.refreshCount() != 1 {
+		t.Fatalf("retry refresh requests = %d, want no second GitHub refresh", gh.refreshCount())
+	}
+	if got := gh.refreshTokenList(); len(got) != 1 || got[0] != "refresh-old" {
+		t.Fatalf("refresh tokens redeemed = %v, want only the original before rotation", got)
+	}
+	loaded, err = LoadAuth(stateDir, record.Instance)
+	if err != nil {
+		t.Fatalf("LoadAuth() after retry error = %v", err)
+	}
+	if loaded.AccessToken != "access-1" || loaded.RefreshToken != "refresh-1" || loaded.CopilotToken != "copilot-2" {
+		t.Fatal("retry did not keep the rotated GitHub pair and the renewed session")
+	}
+}
+
+// TestResolvePreservesRefreshTokenWhenResponseOmitsRotation proves a refresh
+// response without refresh_token or refresh_token_expires_in keeps the stored
+// pair, so a later refresh still redeems the original token.
+func TestResolvePreservesRefreshTokenWhenResponseOmitsRotation(t *testing.T) {
+	at := time.Date(2026, 11, 22, 2, 0, 0, 0, time.UTC)
+	clock := swapNow(t, at)
+	gh, server := newScriptedGitHub(t)
+	gh.omitRefresh = true
+	stateDir := t.TempDir()
+	record := testRecord(at, -time.Minute, 24*time.Hour)
+	record.CopilotExpiry = at.Add(30 * time.Hour)
+	if err := SaveAuth(stateDir, record.Instance, record); err != nil {
+		t.Fatalf("SaveAuth() error = %v", err)
+	}
+	svc := newServiceForTest(server)
+	if _, err := svc.ResolveRuntimeCredentials(context.Background(), stateDir, record.Instance); err != nil {
+		t.Fatalf("first ResolveRuntimeCredentials() error = %v", err)
+	}
+	loaded, err := LoadAuth(stateDir, record.Instance)
+	if err != nil {
+		t.Fatalf("LoadAuth() after first refresh error = %v", err)
+	}
+	if loaded.AccessToken != "access-1" {
+		t.Fatalf("access token = %q, want the refreshed token", loaded.AccessToken)
+	}
+	if loaded.RefreshToken != record.RefreshToken || !loaded.RefreshExpiry.Equal(record.RefreshExpiry) {
+		t.Fatal("refresh response without rotation erased the stored refresh pair")
+	}
+	*clock = at.Add(9 * time.Hour)
+	if _, err := svc.ResolveRuntimeCredentials(context.Background(), stateDir, record.Instance); err != nil {
+		t.Fatalf("second ResolveRuntimeCredentials() error = %v", err)
+	}
+	got := gh.refreshTokenList()
+	if len(got) != 2 || got[0] != "refresh-old" || got[1] != "refresh-old" {
+		t.Fatalf("refresh tokens redeemed = %v, want the original token twice", got)
+	}
+}
+
 func TestResolveWithoutRecordReportsLoginRequired(t *testing.T) {
 	_, server := newScriptedGitHub(t)
 	_, err := newServiceForTest(server).ResolveRuntimeCredentials(context.Background(), t.TempDir(), "work")
@@ -724,9 +826,9 @@ func TestRecordRejectionIgnoresNewerGeneration(t *testing.T) {
 	if err := SaveAuth(stateDir, newer.Instance, newer); err != nil {
 		t.Fatalf("SaveAuth() error = %v", err)
 	}
-	err := new(Service).recordRejection(stateDir, newer.Instance, refused)
+	err := new(Service).saveRejected(stateDir, newer.Instance, refused, refused, ErrBadRefreshToken)
 	if !errors.Is(err, ErrLoginRequired) {
-		t.Fatalf("recordRejection() error = %v, want ErrLoginRequired", err)
+		t.Fatalf("saveRejected() error = %v, want ErrLoginRequired", err)
 	}
 	loaded, err := LoadAuth(stateDir, newer.Instance)
 	if err != nil {
@@ -751,9 +853,9 @@ func TestRecordRejectionDoesNotResurrectDeletedRecord(t *testing.T) {
 	if err := DeleteAuth(stateDir, refused.Instance); err != nil {
 		t.Fatalf("DeleteAuth() error = %v", err)
 	}
-	err := new(Service).recordRejection(stateDir, refused.Instance, refused)
+	err := new(Service).saveRejected(stateDir, refused.Instance, refused, refused, ErrBadRefreshToken)
 	if !errors.Is(err, ErrLoginRequired) {
-		t.Fatalf("recordRejection() error = %v, want ErrLoginRequired", err)
+		t.Fatalf("saveRejected() error = %v, want ErrLoginRequired", err)
 	}
 	if _, err := LoadAuth(stateDir, refused.Instance); !errors.Is(err, ErrAuthNotFound) {
 		t.Fatalf("LoadAuth() error = %v, want the record to stay deleted", err)

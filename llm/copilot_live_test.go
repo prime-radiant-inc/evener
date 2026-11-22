@@ -250,7 +250,7 @@ func TestGitHubCopilotLiveProbe(t *testing.T) {
 		t.Fatal("GitHub Copilot advertised no models")
 	}
 	listingRes := copilotResolved(baseURL, "", "", "", nil)
-	listingCtx := llm.WithAuthenticatorOverride(probeCtx, tokenauth.ScopedCopilot(stateDir))
+	listingCtx := llm.WithScopedAuthenticator(probeCtx, registry.AuthOAuthGitHubCopilot, tokenauth.ScopedCopilot(stateDir))
 	listed, err := chatcompletions.DefaultProtocol.ListModels(listingCtx, listingRes)
 	if err != nil {
 		t.Fatalf("ListModels through the Chat Completions protocol: %v", err)
@@ -275,7 +275,7 @@ func TestGitHubCopilotLiveProbe(t *testing.T) {
 		logCopilotRosterDiagnostics(t, roster)
 		t.Fatal("no advertised family/protocol combination supports a tool loop")
 	}
-	probeCtx = llm.WithAuthenticatorOverride(probeCtx, tokenauth.ScopedCopilot(stateDir))
+	probeCtx = llm.WithScopedAuthenticator(probeCtx, registry.AuthOAuthGitHubCopilot, tokenauth.ScopedCopilot(stateDir))
 	for _, run := range runs {
 		run := run
 		t.Run(run.family+"/"+run.scenario.Name, func(t *testing.T) {

@@ -96,7 +96,7 @@ func TestCopilotApplySetsValidatedHeaders(t *testing.T) {
 	}
 }
 
-func TestCopilotApplyDevUserAgentAndPreservesCallerAgent(t *testing.T) {
+func TestCopilotApplyReplacesPreexistingPiUserAgent(t *testing.T) {
 	stateDir := t.TempDir()
 	saveCopilotRecord(t, stateDir, "github-copilot", "tok", "refresh")
 
@@ -105,12 +105,12 @@ func TestCopilotApplyDevUserAgentAndPreservesCallerAgent(t *testing.T) {
 	t.Cleanup(func() { ClientVersion = oldVersion })
 
 	req, _ := http.NewRequest(http.MethodPost, "https://api.githubcopilot.com/chat/completions", nil)
-	req.Header.Set("User-Agent", "caller-agent")
+	req.Header.Set("User-Agent", githubcopilot.PiUserAgent)
 	if err := (&Copilot{StateDir: stateDir}).Apply(context.Background(), req, copilotRes()); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if got := req.Header.Get("User-Agent"); got != "caller-agent" {
-		t.Fatalf("User-Agent = %q, want the caller's agent preserved", got)
+	if got := req.Header.Get("User-Agent"); got != "evener/dev" {
+		t.Fatalf("User-Agent = %q, want the Evener identity to replace a preexisting Pi agent", got)
 	}
 }
 
@@ -209,6 +209,45 @@ func TestCopilotAndCodexRecordsAreNotInterchangeable(t *testing.T) {
 	}
 	if got := codexReq.Header.Get("Authorization"); got != "" {
 		t.Fatalf("Authorization = %q from a Copilot record", got)
+	}
+}
+
+// TestScopedOAuthAuthenticatorsUseSeparateStateRoots proves one request context
+// can carry a Codex scope and a Copilot scope from different state roots, and
+// that each scheme resolves only its own record.
+func TestScopedOAuthAuthenticatorsUseSeparateStateRoots(t *testing.T) {
+	codexDir := codexState(t, "openai-codex", "acct_codex")
+	copilotDir := t.TempDir()
+	saveCopilotRecord(t, copilotDir, "github-copilot", "copilot-token", "refresh")
+
+	ctx := llm.WithScopedAuthenticator(context.Background(), registry.AuthOAuthOpenAICodex, ScopedCodex(codexDir))
+	ctx = llm.WithScopedAuthenticator(ctx, registry.AuthOAuthGitHubCopilot, ScopedCopilot(copilotDir))
+
+	codexAuth := llm.AuthenticatorForContext(ctx, registry.AuthOAuthOpenAICodex)
+	if codexAuth == nil {
+		t.Fatal("Codex scheme resolved no scoped authenticator")
+	}
+	codexReq, _ := http.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil)
+	if err := codexAuth.Apply(ctx, codexReq, codexRes("openai-codex")); err != nil {
+		t.Fatalf("Codex Apply: %v", err)
+	}
+	if got := codexReq.Header.Get("Authorization"); got != "Bearer stale" {
+		t.Fatalf("Codex Authorization = %q, want its own state root's record", got)
+	}
+	if got := codexReq.Header.Get("ChatGPT-Account-ID"); got != "acct_codex" {
+		t.Fatalf("Codex account header = %q", got)
+	}
+
+	copilotAuth := llm.AuthenticatorForContext(ctx, registry.AuthOAuthGitHubCopilot)
+	if copilotAuth == nil {
+		t.Fatal("Copilot scheme resolved no scoped authenticator")
+	}
+	copilotReq, _ := http.NewRequest(http.MethodPost, "https://api.githubcopilot.com/chat/completions", nil)
+	if err := copilotAuth.Apply(ctx, copilotReq, copilotRes()); err != nil {
+		t.Fatalf("Copilot Apply: %v", err)
+	}
+	if got := copilotReq.Header.Get("Authorization"); got != "Bearer copilot-token" {
+		t.Fatalf("Copilot Authorization = %q, want its own state root's record", got)
 	}
 }
 
@@ -410,7 +449,7 @@ func TestCopilotClientRetries401OnceWhenRecordGenerationChanged(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	client := newCopilotClient(t, ts.URL)
-	ctx := llm.WithAuthenticatorOverride(context.Background(), ScopedCopilot(stateDir))
+	ctx := llm.WithScopedAuthenticator(context.Background(), registry.AuthOAuthGitHubCopilot, ScopedCopilot(stateDir))
 	if err := completeOnce(t, client, ctx); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
@@ -432,7 +471,7 @@ func TestCopilotClientDoesNotRetry401WhenRecordUnchanged(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	client := newCopilotClient(t, ts.URL)
-	ctx := llm.WithAuthenticatorOverride(context.Background(), ScopedCopilot(stateDir))
+	ctx := llm.WithScopedAuthenticator(context.Background(), registry.AuthOAuthGitHubCopilot, ScopedCopilot(stateDir))
 	err := completeOnce(t, client, ctx)
 	if llm.Kind(err) != llm.KindAuthentication {
 		t.Fatalf("Complete error = %v (%v), want authentication", err, llm.Kind(err))
@@ -489,7 +528,7 @@ func TestCopilotClientRetries401OnlyOnce(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	client := newCopilotClient(t, ts.URL)
-	ctx := llm.WithAuthenticatorOverride(context.Background(), ScopedCopilot(stateDir))
+	ctx := llm.WithScopedAuthenticator(context.Background(), registry.AuthOAuthGitHubCopilot, ScopedCopilot(stateDir))
 	err := completeOnce(t, client, ctx)
 	if llm.Kind(err) != llm.KindAuthentication {
 		t.Fatalf("Complete error = %v, want authentication", err)
@@ -513,7 +552,7 @@ func TestCopilotClientDoesNotReplayAnExposedStream(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	client := newCopilotClient(t, ts.URL)
-	ctx := llm.WithAuthenticatorOverride(context.Background(), ScopedCopilot(stateDir))
+	ctx := llm.WithScopedAuthenticator(context.Background(), registry.AuthOAuthGitHubCopilot, ScopedCopilot(stateDir))
 	st, err := client.Stream(ctx, llm.Request{Model: "m", Provider: "copilot", Messages: []llm.Message{llm.User("hi")}})
 	if err != nil {
 		t.Fatalf("Stream open: %v", err)

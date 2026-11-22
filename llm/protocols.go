@@ -60,9 +60,9 @@ func AuthenticatorFor(scheme string) (Authenticator, bool) {
 }
 
 // AuthenticatorForContext returns the call-scoped authenticator carried
-// by ctx (see WithAuthenticatorOverride) when one is set for the call's
-// scheme, else the process-global registration for the scheme. A nil
-// return means no authenticator is bound for the scheme.
+// by ctx (see WithScopedAuthenticator and WithAuthenticatorOverride) when
+// one is set for the call's scheme, else the process-global registration
+// for the scheme. A nil return means no authenticator is bound.
 func AuthenticatorForContext(ctx context.Context, scheme string) Authenticator {
 	if auth := AuthenticatorOverrideFor(ctx, scheme); auth != nil {
 		return auth

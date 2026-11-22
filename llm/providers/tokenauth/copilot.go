@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"primeradiant.com/evener/auth/githubcopilot"
@@ -37,11 +36,6 @@ type Copilot struct {
 	// the record the launch was admitted with. A Copilot value must never be
 	// mutated after registration: concurrent launches bind ScopedCopilot instead.
 	StateDir string
-	// Credentials is the token seam; nil means a shared githubcopilot.Service.
-	Credentials func(ctx context.Context, stateDir, instance string) (githubcopilot.RuntimeCredentials, error)
-
-	mu      sync.Mutex
-	service *githubcopilot.Service
 }
 
 // Apply implements llm.Authenticator.
@@ -57,9 +51,7 @@ func (c *Copilot) Apply(ctx context.Context, req *http.Request, res registry.Res
 	}
 	req.Header.Set("Authorization", "Bearer "+creds.BearerToken)
 	githubcopilot.SetCopilotCompatibilityHeaders(req.Header)
-	if req.Header.Get("User-Agent") == "" {
-		req.Header.Set("User-Agent", copilotUserAgent())
-	}
+	req.Header.Set("User-Agent", copilotUserAgent())
 	req.Header.Set("X-GitHub-Api-Version", copilotAPIVersion)
 	return nil
 }
@@ -170,16 +162,7 @@ func (c *Copilot) credentials(ctx context.Context, instance string) (githubcopil
 	if err != nil {
 		return githubcopilot.RuntimeCredentials{}, err
 	}
-	if c.Credentials != nil {
-		return c.Credentials(ctx, stateDir, instance)
-	}
-	c.mu.Lock()
-	if c.service == nil {
-		c.service = githubcopilot.NewService(githubcopilot.DefaultConfig(), nil)
-	}
-	service := c.service
-	c.mu.Unlock()
-	return service.ResolveRuntimeCredentials(ctx, stateDir, instance)
+	return githubcopilot.NewService(githubcopilot.DefaultConfig(), nil).ResolveRuntimeCredentials(ctx, stateDir, instance)
 }
 
 // copilotSignIn is the typed sign-in-required error the CLI and hub render.
@@ -192,10 +175,9 @@ func copilotSignIn(instance string, cause error) error {
 }
 
 // ScopedCopilot returns a Copilot bound to stateDir that shares nothing mutable
-// with the registered shared instance. The Credentials seam is inherited so
-// scopes honor the same test seams as the shared instance.
+// with the registered shared instance.
 func ScopedCopilot(stateDir string) *Copilot {
-	return &Copilot{StateDir: stateDir, Credentials: DefaultCopilot.Credentials}
+	return &Copilot{StateDir: stateDir}
 }
 
 func copilotUserAgent() string {
