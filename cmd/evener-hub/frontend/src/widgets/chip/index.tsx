@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { CloseIcon } from "../dialog/CloseIcon";
 import { requireClass } from "../internal/requireClass";
 import styles from "./chip.module.css";
 
@@ -28,14 +29,6 @@ const TONE_CLASS: Record<ChipTone, string> = {
   danger: requireClass(styles.danger, "chip.module.css", "danger"),
 };
 
-function RemoveIcon() {
-  return (
-    <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
-      <path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 // children is arbitrary ReactNode (the locked API's exact shape), not
 // guaranteed to be a string, so it can only be safely folded into the
 // remove button's accessible name in the one case where it unambiguously
@@ -54,7 +47,7 @@ export function Chip({ children, tone = "neutral", onRemove, kind, mono = false 
       {children}
       {onRemove !== undefined && (
         <button type="button" className={BASE_CLASS.remove} aria-label={removeLabelFor(children)} onClick={onRemove}>
-          <RemoveIcon />
+          <CloseIcon size={10} />
         </button>
       )}
     </span>

@@ -14,6 +14,30 @@ test("its close glyph is exported from the widget barrel", () => {
   expect(FromBarrel).toBe(CloseIcon);
 });
 
+// The 10px remove controls (Chip, CollectionEditor, AttachmentTile) share
+// this glyph, so size must keep the stroke at 1.5 RENDERED px. The 16-grid
+// viewBox scales the attribute by size/16; leaving the close buttons' 1.5
+// attribute unadjusted at 10px would paint 0.94px.
+test("the close glyph defaults to the close buttons' 14px box on the 16 grid", () => {
+  const { container } = render(<CloseIcon />);
+  const svg = container.querySelector("svg");
+  const path = container.querySelector("path");
+  expect(svg?.getAttribute("width")).toBe("14");
+  expect(svg?.getAttribute("height")).toBe("14");
+  expect(svg?.getAttribute("viewBox")).toBe("0 0 16 16");
+  expect(svg?.getAttribute("aria-hidden")).toBe("true");
+  expect(Number(path?.getAttribute("stroke-width")) * (14 / 16)).toBeCloseTo(1.5, 1);
+});
+
+test("size keeps the rendered stroke at 1.5px, so the 10px remove glyphs are not thinned", () => {
+  const { container } = render(<CloseIcon size={10} />);
+  const svg = container.querySelector("svg");
+  const path = container.querySelector("path");
+  expect(svg?.getAttribute("width")).toBe("10");
+  expect(svg?.getAttribute("height")).toBe("10");
+  expect(Number(path?.getAttribute("stroke-width")) * (10 / 16)).toBeCloseTo(1.5, 1);
+});
+
 test("renders nothing when closed", () => {
   render(
     <Dialog open={false} onClose={vi.fn()} title="Delete session">

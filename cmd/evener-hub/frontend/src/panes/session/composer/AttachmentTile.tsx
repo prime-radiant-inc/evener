@@ -30,7 +30,7 @@
 // refuses any file whose type is not image/*, and recovery/recoveryDraft.ts
 // only lifts input items of type "image" out of a recovered mutation.
 import { useState } from "react";
-import { Dialog, IconButton, ZoomableMedia } from "../../../widgets";
+import { CloseIcon, Dialog, IconButton, ZoomableMedia } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import type { PendingAttachment } from "./attachments/useAttachments";
 import styles from "./composer.module.css";
@@ -48,14 +48,6 @@ const CLASS = {
   removeSlot: requireClass(styles.removeSlot, "composer.module.css", "removeSlot"),
   lightboxImage: requireClass(styles.lightboxImage, "composer.module.css", "lightboxImage"),
 };
-
-function RemoveIcon() {
-  return (
-    <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
-      <path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 export function AttachmentTile({ item, onRemove }: AttachmentTileProps) {
   const [lightboxOpen, setLightboxOpen] = useState(false);
@@ -93,7 +85,7 @@ export function AttachmentTile({ item, onRemove }: AttachmentTileProps) {
       <span className={CLASS.removeSlot}>
         <IconButton
           label={`Remove ${item.name}`}
-          icon={<RemoveIcon />}
+          icon={<CloseIcon size={10} />}
           variant="secondary"
           size="sm"
           onClick={onRemove}
