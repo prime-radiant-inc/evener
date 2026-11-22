@@ -21,7 +21,7 @@
 - Default tests are deterministic and network-free. Live tests require `EVENER_GITHUB_COPILOT_E2E=1` plus the credential/client ID. Do not log tokens or response bodies carrying them.
 - Assert behavior, structured values, final URLs, and sentinels, never human-readable copy. Keep existing providers' behavior unchanged except where a shared mechanism carries an explicit Copilot opt-in.
 - Work only in the `copilot-provider` worktree. Every task is TDD, commits its listed files, and uses the commit trailer supplied by the executor's own session. Report out-of-scope issues instead of absorbing them.
-- Approved task-budget ceiling is 2,792 production lines after Jesse accepted Task 1's 242 lines, Task 2's 650 lines, and a 600-line ceiling for Task 3. Each task also carries a local budget; stop and report any new overage rather than expanding scope.
+- Approved task-budget ceiling is 2,927 production lines after Jesse accepted Task 1's 242 lines, Task 2's 650 lines, a 600-line ceiling for Task 3, and Task 5's reviewed 435 net lines. Each task also carries a local budget; stop and report any new overage rather than expanding scope.
 
 ## Review Focus
 
@@ -124,7 +124,7 @@
 - Produces: `ResponsesEndpointFamilyGitHubCopilot`, disabled by default. Copilot always sends full history.
 - Consumes: one startup `ModelListing`/`StartupModelListing` for primary and cheap decisions; no second `/models` request.
 
-**Size budget:** 300 production lines.
+**Size budget:** 435 net production lines, explicitly accepted by Jesse after the corrected model-routing and authority diff passed re-review.
 
 - [ ] **Step 1: Write failing discovery and launch tests.** Script `supported_endpoints`, policy-disabled rows, tools/media/reasoning facts, and empty rosters. Assert Claude selects Messages with final `/v1/messages`, Responses selects `/responses`, Chat selects `/chat/completions`, absent metadata falls back to Chat, and count tokens is unsupported for Copilot Messages. Prove user protocol/transport overrides win. Empty/all-unsupported/disabled live results return no static rows and no setup success; fetch/parse failures retain existing diagnostics. Assert no live dollar prices.
 - [ ] **Step 2: Add failing startup/continuation tests.** A live-absent primary returns a typed available-models error; a live-absent curated cheap model uses the session model, while an explicit cheap override does not silently change. Both read the same primed listing. Copilot Responses never inherits public OpenAI continuation and two accounts/state roots remain isolated.
