@@ -496,13 +496,13 @@ func TestBreakerDispatch_DifferentLargeErrorsUnderTruncationDoNotPark(t *testing
 	ctx := context.Background()
 	call := breakerCall("c1", "verbose", `{"target":"a"}`)
 
-		for i := 1; i <= 3; i++ {
-			res := r.ExecuteCall(ctx, env, call)
-			if strings.HasPrefix(res.Output, "evener did not execute this call:") {
-				t.Fatalf("call %d was parked on a truncation-banner class: %q", i, res.Output)
-			}
+	for i := 1; i <= 3; i++ {
+		res := r.ExecuteCall(ctx, env, call)
+		if strings.HasPrefix(res.Output, "evener did not execute this call:") {
+			t.Fatalf("call %d was parked on a truncation-banner class: %q", i, res.Output)
 		}
 	}
+}
 
 func TestBreakerDispatch_QuietYieldsNeverDrawRepetitionNudge(t *testing.T) {
 	r := NewRegistry()
