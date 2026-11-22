@@ -2515,9 +2515,9 @@ func (s *Session) childFatalRunGated(childSessionID string) bool {
 // calling the result tool. Sent at most once.
 func communicateNudge(toolName string) string {
 	return "You stopped without calling " + toolName + ". " +
-		"You MUST call " + toolName + " with end_turn=true and a message summarizing your complete findings, or naming the work you are waiting on, " +
-		"before stopping. The parent agent receives ONLY the " + toolName + " message — " +
-		"it cannot see anything else you did. Report your results, or what you are waiting on, now."
+		"If running work or a delegate will wake you and you have nothing to report, call " + toolName + "({}) with no message. " +
+		"For complete findings, a blocker, or a readiness line, call " + toolName + " with end_turn=true and a message. " +
+		"Your parent receives only the " + toolName + " message, not the rest of your turn."
 }
 
 // communicateUpdateNudge is the reminder for a subagent that sent its parent a
@@ -2529,8 +2529,8 @@ func communicateNudge(toolName string) string {
 func communicateUpdateNudge(toolName string) string {
 	return "You ended your turn after sending the parent an update with " + toolName + " end_turn=false. " +
 		"The parent received that update; it is not a result. " +
-		delegateContinueAuthorized + ", then call " + toolName + " with end_turn=true and your complete findings. " +
-		"If you are genuinely blocked, report that blocker. " +
+		delegateContinueAuthorized + ". If running work or a delegate will wake you and you have nothing to report, call " + toolName + "({}) with no message. " +
+		"For complete findings, a blocker, or a readiness line, call " + toolName + " with end_turn=true and a message. " +
 		"This is an automatic runtime reminder, not a new instruction from the parent, and it authorizes no new work."
 }
 

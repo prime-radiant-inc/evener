@@ -485,7 +485,8 @@ func DefDelegateSendNamed(resultTool string) llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "delegate_send",
 		Description: "Sends a message to one of your own delegates, by the durable delegate_id you got when you created it. " +
-			"To reach your own parent, use `" + resultTool + "` instead: end_turn=false for an update, end_turn=true for your report, the one line naming the work you are waiting on, or a readiness line before a watch frame. " +
+			"To reach your own parent, use `" + resultTool + "` instead: end_turn=false for an update, end_turn=true for a report or readiness line. " +
+			"Use `" + resultTool + "({})` to end a turn quietly while waiting. " +
 			"`to` accepts only a `dlg_...` delegate_id this session owns; it rejects `caller`, job/turn handles, and runtime aliases. " +
 			"If the delegate is running, a send with max_wait_ms unset or 0 steers it and returns on delivery; a positive max_wait_ms is refused as target_busy, while a delegate that finishes before admission is started and the wait is honored. A delegate already being driven or otherwise busy is refused as target_busy. " +
 			"Idle delegates are started/resumed automatically through the existing restore path, so follow-up messages resume them without an explicit idle-mode flag.",
@@ -888,14 +889,14 @@ func communicateDelegateDescription(resultTool string) string {
 	return "Send a message to your parent agent; it is the only way your parent hears from you. Put the text your parent should read in `message`. " +
 		"With `end_turn=false` the message is an update: your parent receives it, and it wakes a parent that is waiting on you, so send one only when your parent needs to know something or act on it, never to narrate progress, and keep working in the following round. " +
 		"The result's `delivery` says whether your parent has the update (`delivered`), will get it at its next step (`queued`), or cannot get it (`not_delivered`, with a `reason`); the call succeeds either way. " +
-		"With `end_turn` true or omitted the message ends your turn with your report, your one line naming the work you are waiting on, or a readiness line before you wait for watch frames: put the complete result in a report. " +
+		"With `end_turn` true or omitted the message ends your turn with your report or a readiness line before you wait for watch frames: put the complete result in a report. " +
 		"When you have nothing to send while work you started keeps running, or when a notification or watch frame needs nothing from you, call `" + resultTool + "({})` with no message to end your turn quietly, keeping your report for when the work finishes. " +
 		"A `result_schema` requires its `output` on a final reply (a non-empty `message`), not on a progress update or a quiet yield; when you hand back completed work or machine-readable results, fill `output` with the evidence and structured data your parent needs."
 }
 
 // WithCommunicateDelegateUpdates returns a copy of a communicate definition
 // worded for a delegate: end_turn=false sends an update its parent receives,
-// end_turn=true (or omitted) its report, its wait line, or an observer
+// end_turn=true (or omitted) its report or an observer
 // readiness line, and a message-less call a quiet yield. The output schema
 // stays as the caller built it.
 func WithCommunicateDelegateUpdates(def llm.ToolDefinition) llm.ToolDefinition {

@@ -254,7 +254,7 @@ func drainCommunicateInbox(deps *toolDeps) []string {
 	return inbox
 }
 
-var errQuietYieldWithoutWake = errors.New("Nothing can wake this turn. Start the work or arm a watch before yielding, or send your final reply with communicate(message=...).")
+var errQuietYieldWithoutWake = errors.New("nothing can wake this turn. Start the work or arm a watch before yielding, or send your final reply with communicate(message=...)")
 
 type communicateEntryKindKey struct{}
 
@@ -271,12 +271,13 @@ func (s *Session) canQuietlyYield(ctx context.Context) error {
 	}
 	lease, leased := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
 	if leased && s.delegateController != nil {
-		if kind == EntryDelegateAttention {
+		switch kind {
+		case EntryDelegateAttention:
 			recorded, err := s.delegateController.recordAttentionNoAction(lease)
 			if err != nil || recorded {
 				return err
 			}
-		} else if kind == EntryNotification {
+		case EntryNotification:
 			// The same input can consume another notification after an
 			// attention-only acknowledgement. The lease still owns that verdict.
 			decision, err := s.delegateController.completionDecision(lease)
@@ -288,7 +289,7 @@ func (s *Session) canQuietlyYield(ctx context.Context) error {
 	if work, err := s.treeHasOutstandingWork(); work || err != nil {
 		return err
 	}
-	return errors.New("Nothing can wake this turn, and you have not sent your report yet. Start the work, or send your final report with communicate(message=...).")
+	return errors.New("nothing can wake this turn, and you have not sent your report yet. Start the work, or send your final report with communicate(message=...)")
 }
 
 // unmarshalCommunicateArguments keeps the structured output's numbers exact.
