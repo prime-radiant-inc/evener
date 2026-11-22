@@ -1,6 +1,5 @@
-// Package githubcopilot stores Evener's GitHub Copilot subscription
-// credentials in a scheme-namespaced record that device login, refresh, the
-// hub, and the CLI share.
+// Package githubcopilot stores Evener's GitHub Copilot subscription credentials
+// in a scheme-namespaced record shared by login, refresh, the hub, and the CLI.
 package githubcopilot
 
 import (
@@ -9,16 +8,13 @@ import (
 	"time"
 )
 
-// AuthScheme is the auth scheme of a GitHub Copilot subscription record. Every
-// record carries it and validation rejects any other scheme, so a record
-// written for another provider can never be used as Copilot credentials.
+// AuthScheme is the auth scheme of a Copilot record. Validation rejects any
+// other scheme, so another provider's record cannot be used as credentials.
 const AuthScheme = "oauth-github-copilot"
 
-const recordVersion = 1
-
 // AuthRecord is the persisted OAuth record for one Copilot instance. Email and
-// RefreshRejected are optional state; every other field is required. The
-// record deliberately has no OAuth source field: the scheme names the source.
+// RefreshRejected are optional; every other field is required. There is no
+// OAuth source field: the scheme names the source.
 type AuthRecord struct {
 	Instance        string    `json:"instance"`
 	Scheme          string    `json:"auth_scheme"`
@@ -38,12 +34,12 @@ type AuthRecord struct {
 // Validate reports whether the record is complete and bound to AuthScheme.
 func (r AuthRecord) Validate() error {
 	switch {
-	case r.Instance == "":
-		return errors.New("instance is required")
 	case r.Scheme != AuthScheme:
 		return fmt.Errorf("auth scheme %q is not %q", r.Scheme, AuthScheme)
-	case r.Version != recordVersion:
+	case r.Version != 1:
 		return fmt.Errorf("unsupported auth record version %d", r.Version)
+	case r.Instance == "":
+		return errors.New("instance is required")
 	case r.AccessToken == "":
 		return errors.New("access token is required")
 	case r.RefreshToken == "":
@@ -52,14 +48,14 @@ func (r AuthRecord) Validate() error {
 		return errors.New("token type is required")
 	case r.Scope == "":
 		return errors.New("scope is required")
+	case r.AccountID == "":
+		return errors.New("account ID is required")
 	case r.ObtainedAt.IsZero():
 		return errors.New("obtained_at is required")
 	case r.AccessExpiry.IsZero():
 		return errors.New("access expiry is required")
 	case r.RefreshExpiry.IsZero():
 		return errors.New("refresh expiry is required")
-	case r.AccountID == "":
-		return errors.New("account ID is required")
 	}
 	return nil
 }

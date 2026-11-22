@@ -1,4 +1,4 @@
-//go:build unix
+//go:build unix && !aix && !solaris
 
 package githubcopilot
 
@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -23,18 +24,14 @@ const (
 	lockHelperMarkersEnv = "EVENER_TEST_COPILOT_LOCK_MARKERS"
 )
 
-// lockIsolationWindow is how long the test waits to see whether a second
-// process enters the critical section while the first is still inside it. A
-// working lock blocks that process for the whole window; an unlocked
-// implementation lets it in almost immediately.
-const lockIsolationWindow = 200 * time.Millisecond
-
 // TestWithRecordLockSerializesReadModifyWriteAcrossProcesses starts two real
-// test processes that each take the lock, read the record, pause inside the
-// critical section, append a marker, and save. The test first proves mutual
-// exclusion: while one process is inside the lock, the other must not enter.
-// It then releases both and asserts both markers survived, which requires the
-// second reader to see the first writer's save.
+// test processes that each take the lock, read the record, signal that they
+// are inside the critical section, wait for the test to release them, append a
+// marker, and save. While one process is parked inside, the test probes the
+// lock file with a non-blocking flock: a blocking exclusive lock must already
+// be held. That probe is deterministic, unlike waiting out a fixed window that
+// a descheduled process can outlast. Both markers must then survive, which
+// requires the second reader to see the first writer's save.
 func TestWithRecordLockSerializesReadModifyWriteAcrossProcesses(t *testing.T) {
 	stateDir := t.TempDir()
 	record := sampleRecord()
@@ -47,15 +44,9 @@ func TestWithRecordLockSerializesReadModifyWriteAcrossProcesses(t *testing.T) {
 	first := startRecordLockHelper(t, stateDir, "serialize", "A", "", markersDir)
 	second := startRecordLockHelper(t, stateDir, "serialize", "B", "", markersDir)
 
-	waitForFile(t, markerPath(markersDir, "attempting-A"))
-	waitForFile(t, markerPath(markersDir, "attempting-B"))
-	entered := waitForAnyFile(t, markerPath(markersDir, "loaded-A"), markerPath(markersDir, "loaded-B"))
-	other := markerPath(markersDir, "loaded-A")
-	if entered == other {
-		other = markerPath(markersDir, "loaded-B")
-	}
-	if fileAppearsWithin(other, lockIsolationWindow) {
-		t.Fatalf("both helper processes entered WithRecordLock at once (%s and %s)", entered, other)
+	inside := waitForAnyFile(t, markerPath(markersDir, "inside-A"), markerPath(markersDir, "inside-B"))
+	if !lockFileHeld(t, AuthFilePath(stateDir, record.Instance)+lockSuffix) {
+		t.Fatalf("helper wrote %s but WithRecordLock does not hold an exclusive lock", inside)
 	}
 
 	writeGo(t, first)
@@ -76,6 +67,25 @@ func TestWithRecordLockSerializesReadModifyWriteAcrossProcesses(t *testing.T) {
 			t.Fatalf("access token %q lost marker %q; read-modify-write was not serialized", loaded.AccessToken, marker)
 		}
 	}
+}
+
+// lockFileHeld reports whether another process holds the lock file at path. A
+// non-blocking exclusive flock succeeds only when the lock is free.
+func lockFileHeld(t *testing.T, path string) bool {
+	t.Helper()
+	fd, err := syscall.Open(path, syscall.O_RDWR|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatalf("open lock file for probe: %v", err)
+	}
+	defer func() { _ = syscall.Close(fd) }()
+	err = syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB)
+	if err == nil {
+		return false
+	}
+	if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+		t.Fatalf("flock probe on %s: %v", path, err)
+	}
+	return true
 }
 
 // TestWithRecordLockStaleWriterCannotRecreateDeletedRecord proves the
@@ -232,13 +242,12 @@ func TestRecordLockHelperProcess(t *testing.T) {
 	case "serialize":
 		markersDir := os.Getenv(lockHelperMarkersEnv)
 		marker := os.Getenv(lockHelperMarkerEnv)
-		writeMarker(t, markersDir, "attempting-"+marker)
 		if err := WithRecordLock(stateDir, instance, func() error {
 			record, err := LoadAuth(stateDir, instance)
 			if err != nil {
 				return err
 			}
-			writeMarker(t, markersDir, "loaded-"+marker)
+			writeMarker(t, markersDir, "inside-"+marker)
 			waitForGo(t)
 			record.AccessToken += "+" + marker
 			return SaveAuth(stateDir, instance, record)

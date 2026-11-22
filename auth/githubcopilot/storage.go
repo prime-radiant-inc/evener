@@ -24,12 +24,13 @@ var (
 	// instance, so callers can treat the instance as signed out.
 	ErrAuthNotFound = errors.New("github copilot auth not found")
 	// ErrAuthCorrupt is returned (wrapped) by LoadAuth when the record exists
-	// but is not JSON, fails validation, or belongs to another scheme or
-	// instance.
+	// but is not JSON, fails validation, or belongs to another scheme or instance.
 	ErrAuthCorrupt = errors.New("github copilot auth is corrupt")
 	// ErrAuthInvalid is returned (wrapped) by SaveAuth when the record is
 	// incomplete or bound to another scheme or instance.
 	ErrAuthInvalid = errors.New("github copilot auth record is invalid")
+
+	errNoStateDir = errors.New("a state directory is required for GitHub Copilot auth")
 )
 
 // AuthFilePath returns the scheme-namespaced record path for instance under
@@ -37,31 +38,22 @@ var (
 // reduced to one path component so a name carrying separators or ".." cannot
 // escape the scheme directory. An empty stateDir yields "".
 func AuthFilePath(stateDir, instance string) string {
-	name := filepath.Base(instance) + ".json"
-	return userdirs.Subdir(stateDir, filepath.Join(authDirName, schemeDirName, name))
-}
-
-func recordPath(stateDir, instance string) (string, error) {
-	path := AuthFilePath(stateDir, instance)
-	if path == "" {
-		return "", errors.New("a state directory is required for GitHub Copilot auth")
-	}
-	return path, nil
+	return userdirs.Subdir(stateDir, filepath.Join(authDirName, schemeDirName, filepath.Base(instance)+".json"))
 }
 
 // LoadAuth reads and validates the record for instance. A missing record is
 // ErrAuthNotFound; unreadable, malformed, mis-schemed, mis-instanced, or
 // incomplete records wrap ErrAuthCorrupt.
 func LoadAuth(stateDir, instance string) (AuthRecord, error) {
-	path, err := recordPath(stateDir, instance)
-	if err != nil {
-		return AuthRecord{}, err
+	path := AuthFilePath(stateDir, instance)
+	if path == "" {
+		return AuthRecord{}, errNoStateDir
 	}
 	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return AuthRecord{}, ErrAuthNotFound
+	}
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return AuthRecord{}, ErrAuthNotFound
-		}
 		return AuthRecord{}, fmt.Errorf("read GitHub Copilot auth record: %w", err)
 	}
 	var record AuthRecord
@@ -80,9 +72,9 @@ func LoadAuth(stateDir, instance string) (AuthRecord, error) {
 // SaveAuth validates record and writes it atomically and durably as instance's
 // record, creating the scheme directory if needed. The file is mode 0600.
 func SaveAuth(stateDir, instance string, record AuthRecord) error {
-	path, err := recordPath(stateDir, instance)
-	if err != nil {
-		return err
+	path := AuthFilePath(stateDir, instance)
+	if path == "" {
+		return errNoStateDir
 	}
 	if record.Instance != instance {
 		return fmt.Errorf("%w: record instance %q does not match %q", ErrAuthInvalid, record.Instance, instance)
@@ -103,9 +95,9 @@ func SaveAuth(stateDir, instance string, record AuthRecord) error {
 // DeleteAuth removes instance's record and makes the removal durable. Deleting
 // a missing record is not an error.
 func DeleteAuth(stateDir, instance string) error {
-	path, err := recordPath(stateDir, instance)
-	if err != nil {
-		return err
+	path := AuthFilePath(stateDir, instance)
+	if path == "" {
+		return errNoStateDir
 	}
 	return fsatomic.Remove(path)
 }
@@ -120,9 +112,9 @@ func DeleteAuth(stateDir, instance string) error {
 // on. A save without that check can resurrect a record another process
 // deleted or overwrite a newer login.
 func WithRecordLock(stateDir, instance string, fn func() error) (err error) {
-	path, err := recordPath(stateDir, instance)
-	if err != nil {
-		return err
+	path := AuthFilePath(stateDir, instance)
+	if path == "" {
+		return errNoStateDir
 	}
 	if err := os.MkdirAll(filepath.Dir(path), authDirMode); err != nil {
 		return fmt.Errorf("create GitHub Copilot auth directory: %w", err)
