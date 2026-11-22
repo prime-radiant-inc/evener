@@ -564,7 +564,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 			lastFailure = results[i].Output
 		}
 	}
-	if s.cfg.EnableLoopDetection != nil && *s.cfg.EnableLoopDetection {
+	if len(calls) > 0 && s.cfg.EnableLoopDetection != nil && *s.cfg.EnableLoopDetection {
 		if detectLoop(*toolSigs, s.cfg.LoopDetectionWindow) {
 			s.mu.Lock()
 			s.loopDetectionCount++
@@ -736,8 +736,11 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 }
 
 func (s *Session) finishReplyBoundary(ctx context.Context, state SessionState, delivered bool, text string, replacement *string) (bool, string, error) {
+	var settlePending bool
 	if delivered {
 		s.mu.Lock()
+		settlePending = s.comm.stopPending
+		s.comm.stopPending = false
 		s.comm.stopBlocked = false
 		s.latestReport = s.comm
 		if id := s.comm.stopPendingCallID; id != "" {
@@ -745,6 +748,9 @@ func (s *Session) finishReplyBoundary(ctx context.Context, state SessionState, d
 			s.execution.replacementReply = replacement
 		}
 		s.mu.Unlock()
+	}
+	if settlePending {
+		s.recordDelegateTerminalSeen(ctx)
 	}
 	if delivered && s.cfg.TurnEndsProcess {
 		// The model has explicitly ended the turn that ends the process. Record

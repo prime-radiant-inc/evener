@@ -1904,6 +1904,21 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			if done || err != nil {
 				return reply, progressed, err
 			}
+			yieldToObserverCallback, steerErr := s.injectPostToolSteering(ctx, nil, nil, &toolSigs, &toolSigFailed)
+			if steerErr = errors.Join(steerErr, sessionLifecycleFault(ctx, "post_tool_steer")); steerErr != nil {
+				return "", progressed, steerErr
+			}
+			timings.TotalRound = time.Since(roundStart)
+			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.RequestBuild - timings.LLMCall
+			s.emit(timings)
+			if yieldToObserverCallback || sessionLifecycleFault(ctx, "yield_observer") != nil {
+				s.finishProcessingAtFailureBoundary(ctx)
+				return "", progressed, nil
+			}
+			if kind != EntryNotification && s.peekNotifications() > 0 {
+				s.finishProcessingAtFailureBoundary(ctx)
+				return "", progressed, nil
+			}
 			continue
 		}
 		if len(calls) == 0 {

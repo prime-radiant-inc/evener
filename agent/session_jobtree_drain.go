@@ -1091,7 +1091,7 @@ type keepingDelegateReportKey struct{}
 // already reported; any other error still propagates.
 func (s *Session) keepingReport(process func(context.Context, string, []ImageAttachment, EntryKind) (string, error)) func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
 	return func(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (string, error) {
-		reported := s.communicated()
+		reported := s.communicatedUnblocked()
 		if reported {
 			ctx = context.WithValue(ctx, keepingDelegateReportKey{}, s)
 		}
@@ -1100,7 +1100,7 @@ func (s *Session) keepingReport(process func(context.Context, string, []ImageAtt
 			return res, err
 		}
 		s.mu.Lock()
-		if !s.comm.called {
+		if !s.comm.called || s.comm.stopBlocked {
 			// The restore replaces the report fields, not the fact that this
 			// input sent a non-terminal update: keeping it makes a later
 			// missing-report reminder acknowledge that update instead of
@@ -1108,6 +1108,9 @@ func (s *Session) keepingReport(process func(context.Context, string, []ImageAtt
 			updated := s.comm.updated
 			s.comm = s.latestReport
 			s.comm.updated = updated
+			if res == "" {
+				res = s.latestReport.reply
+			}
 			if isNoReportFailure(err) {
 				err = nil
 			}

@@ -273,7 +273,7 @@ func (s *Session) canQuietlyYield(ctx context.Context) error {
 		}
 		return errQuietYieldWithoutWake
 	}
-	if s.communicated() || ctx.Value(keepingDelegateReportKey{}) == s {
+	if s.communicatedUnblocked() || ctx.Value(keepingDelegateReportKey{}) == s {
 		return nil
 	}
 	lease, leased := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
@@ -289,6 +289,11 @@ func (s *Session) canQuietlyYield(ctx context.Context) error {
 			// attention-only acknowledgement. The lease still owns that verdict.
 			decision, err := s.delegateController.completionDecision(lease)
 			if err != nil || decision != delegateCompletionNeedsNudge {
+				return err
+			}
+		default:
+			decision, err := s.delegateController.completionDecision(lease)
+			if err != nil || decision == delegateCompletionUseExistingTerminal {
 				return err
 			}
 		}

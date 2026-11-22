@@ -216,7 +216,7 @@ func (s *Session) pendingDelegateUpdateAttentionIDs() []string {
 	if err != nil {
 		return nil
 	}
-	if !s.communicated() {
+	if !s.communicatedUnblocked() {
 		// While parked at a quiet yield before delivering its own report, a
 		// coordinator delegate wakes on nested delegate reports as well as updates.
 		return ids
@@ -236,7 +236,7 @@ func (s *Session) pendingDelegateUpdateAttentionIDs() []string {
 // is not among them. Coverage alone answers, with no transcript read to fail,
 // so an update already marked consumed may be listed too.
 func (s *Session) presentedDelegateUpdateAttentionIDs() []string {
-	keepAll := !s.communicated()
+	keepAll := !s.communicatedUnblocked()
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 	var updates []string

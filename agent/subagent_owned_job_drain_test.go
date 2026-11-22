@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1944,6 +1945,7 @@ func TestSubagentOwnedJobDrainQuietYieldDefersSubagentStopHook(t *testing.T) {
 	for _, tc := range []struct {
 		name               string
 		decision           string
+		childStopDecisions []string
 		steps              []func(llm.Request) llm.Response
 		stopAtDrain        bool
 		wantFiredAtDrain   bool
@@ -2017,6 +2019,104 @@ func TestSubagentOwnedJobDrainQuietYieldDefersSubagentStopHook(t *testing.T) {
 			stopAtDrain:      true,
 			wantFiredAtDrain: false,
 		},
+		{
+			name:     "stop_blocked_report_then_quiet_yield",
+			decision: `{}`,
+			childStopDecisions: []string{
+				`{"decision":"block","reason":"start background check first"}`,
+				`{"decision":"block","reason":"start background check first"}`,
+				`{"decision":"block","reason":"wait for background check"}`,
+				`{"decision":"block","reason":"wait for background check"}`,
+				`{}`,
+			},
+			steps: []func(llm.Request) llm.Response{
+				// 1. Premature report with no background work -> blocked by Stop.
+				func(llm.Request) llm.Response {
+					return assistantAndCommunicate("PREMATURE_NO_WORK", "premature-no-work", `{"message":"premature without job"}`)
+				},
+				// 2. Quiet yield without outstanding work after block must be refused.
+				func(llm.Request) llm.Response { return quietYieldResponse("dead-quiet-after-block", `{}`) },
+				// 3. Start background check after dead-wait refusal, then attempt premature report while check runs -> blocked by Stop.
+				func(req llm.Request) llm.Response {
+					var deadQuietFailed bool
+					for _, msg := range req.Messages {
+						for _, part := range msg.Content {
+							if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID == "dead-quiet-after-block" && part.ToolResult.IsError {
+								deadQuietFailed = true
+							}
+						}
+					}
+					if !deadQuietFailed {
+						return assistantAndCommunicate("DEAD_WAIT_NOT_REFUSED", "bad-report", `{"message":"dead wait unexpectedly succeeded"}`)
+					}
+					return agenttest.ToolCallResponse(llm.ToolCallData{ID: "owned-job", Name: "shell", Arguments: json.RawMessage(`{"command":"go test","mode":"background"}`)})
+				},
+				func(llm.Request) llm.Response {
+					return assistantAndCommunicate("PREMATURE_WHILE_RUNNING", "premature-running", `{"message":"premature while running"}`)
+				},
+				// 4. Quiet yield to wait for the running background check (verifying first-winner capture rejected premature-running while Stop ran).
+				func(req llm.Request) llm.Response {
+					var secondLost bool
+					for _, msg := range req.Messages {
+						for _, part := range msg.Content {
+							if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID == "premature-running" {
+								if contentStr, ok := part.ToolResult.Content.(string); ok && strings.Contains(contentStr, `"accepted":false`) {
+									secondLost = true
+								}
+							}
+						}
+					}
+					if !secondLost {
+						return assistantAndCommunicate("SECOND_WINNER_LEAKED", "leaked-report", `{"message":"competing call won while Stop was active"}`)
+					}
+					return quietYieldResponse("quiet-wait-check", `{}`)
+				},
+				// 5. On notification wake after check finishes, try quiet yield without having settled a report -> refused, then send final report.
+				func(llm.Request) llm.Response { return quietYieldResponse("post-check-quiet", `{}`) },
+				func(req llm.Request) llm.Response {
+					var postCheckQuietFailed bool
+					for _, msg := range req.Messages {
+						for _, part := range msg.Content {
+							if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID == "post-check-quiet" && part.ToolResult.IsError {
+								postCheckQuietFailed = true
+							}
+						}
+					}
+					if !postCheckQuietFailed {
+						return assistantAndCommunicate("POST_CHECK_QUIET_NOT_REFUSED", "bad-post-check", `{"message":"post-check quiet yield unexpectedly succeeded"}`)
+					}
+					return assistantAndCommunicate("POST_BLOCK_DRAIN_ASSISTANT_PROOF", "verified-report", `{"message":"verified post-check report"}`)
+				},
+			},
+			wantFiredAtDrain:   false,
+			wantStdinSubstring: "POST_BLOCK_DRAIN_ASSISTANT_PROOF",
+			wantFinalReport:    `"verified post-check report"`,
+		},
+		{
+			name:     "already_settled_report_allows_quiet_yield_after_later_block",
+			decision: `{}`,
+			childStopDecisions: []string{
+				`{}`,
+				`{"decision":"block","reason":"keep the first settled report"}`,
+			},
+			steps: []func(llm.Request) llm.Response{
+				func(llm.Request) llm.Response {
+					return agenttest.ToolCallResponse(llm.ToolCallData{ID: "owned-job", Name: "shell", Arguments: json.RawMessage(`{"command":"go test","mode":"background"}`)})
+				},
+				// Settled primary report (Stop call #1 allows).
+				func(llm.Request) llm.Response {
+					return assistantAndCommunicate("SETTLED_PRIMARY_PROOF", "primary-report", `{"message":"settled primary report"}`)
+				},
+				// Housekeeping notification wake: attempted replacement report is blocked by Stop call #2, then quiet yield succeeds without outstanding work because primary-report already settled.
+				func(llm.Request) llm.Response {
+					return assistantAndCommunicate("BLOCKED_HOUSEKEEPING_DRAFT", "housekeeping-draft", `{"message":"blocked housekeeping draft"}`)
+				},
+				func(llm.Request) llm.Response { return quietYieldResponse("quiet-keep-settled", `{}`) },
+			},
+			wantFiredAtDrain:   true,
+			wantStdinSubstring: "SETTLED_PRIMARY_PROOF",
+			wantFinalReport:    `"settled primary report"`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -2025,9 +2125,21 @@ func TestSubagentOwnedJobDrainQuietYieldDefersSubagentStopHook(t *testing.T) {
 			env := newHeldJobEnvironment(workDir)
 			hookLog := filepath.Join(workDir, "subagent-stop-stdin.jsonl")
 			cmd := "(cat; printf '\\n') >> " + shellquote.Literal(hookLog) + "; printf '%s' " + shellquote.Literal(tc.decision)
-			hooksRaw, err := json.Marshal(map[string]any{"hooks": map[string]any{"SubagentStop": []any{
+			hookMap := map[string]any{"SubagentStop": []any{
 				map[string]any{"matcher": "*", "hooks": []any{map[string]any{"type": "command", "command": cmd}}},
-			}}})
+			}}
+			if len(tc.childStopDecisions) > 0 {
+				stopCounter := filepath.Join(workDir, "child-stop-count")
+				var cases strings.Builder
+				for i, d := range tc.childStopDecisions {
+					cases.WriteString(strconv.Itoa(i+1) + ") printf '%s' " + shellquote.Literal(d) + " ;;\n")
+				}
+				stopCmd := "n=0; [ -f " + shellquote.Literal(stopCounter) + " ] && n=$(cat " + shellquote.Literal(stopCounter) + "); n=$((n+1)); printf '%s' \"$n\" > " + shellquote.Literal(stopCounter) + "; case \"$n\" in\n" + cases.String() + "*) printf '{}' ;;\nesac"
+				hookMap["Stop"] = []any{
+					map[string]any{"matcher": "*", "hooks": []any{map[string]any{"type": "command", "command": stopCmd}}},
+				}
+			}
+			hooksRaw, err := json.Marshal(map[string]any{"hooks": hookMap})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2041,7 +2153,11 @@ func TestSubagentOwnedJobDrainQuietYieldDefersSubagentStopHook(t *testing.T) {
 			t.Cleanup(env.releaseJob)
 
 			ctx := tripwireCtx(t)
-			result := parent.createDelegate(ctx, delegateArgs{Task: "run job and report"})
+			dArgs := delegateArgs{Task: "run job and report"}
+			if len(tc.childStopDecisions) > 0 {
+				dArgs.Sandbox = "off"
+			}
+			result := parent.createDelegate(ctx, dArgs)
 			if result.Err != nil {
 				t.Fatal(result.Err)
 			}
@@ -2065,7 +2181,8 @@ func TestSubagentOwnedJobDrainQuietYieldDefersSubagentStopHook(t *testing.T) {
 			_, statErr := os.Stat(hookLog)
 			firedAtDrain := statErr == nil
 			if firedAtDrain != tc.wantFiredAtDrain {
-				t.Fatalf("SubagentStop fired before drain = %v (statErr=%v), want %v", firedAtDrain, statErr, tc.wantFiredAtDrain)
+				earlyLog, _ := os.ReadFile(hookLog)
+				t.Fatalf("SubagentStop fired before drain = %v (statErr=%v), want %v; earlyLog=%s", firedAtDrain, statErr, tc.wantFiredAtDrain, earlyLog)
 			}
 
 			if tc.stopAtDrain {

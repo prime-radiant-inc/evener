@@ -103,15 +103,25 @@ func TestRootBareTextFallbackStopHook(t *testing.T) {
 		name, firstResult, want string
 		wantCalls               int
 		wantAccepted            string
+		wantRetrySubstrings     []string
 	}{
-		{"allow", `{}`, "First draft", 1, "First draft"},
-		{"block", `{"decision":"block","reason":"Try again"}`, "Second draft", 2, "Second draft"},
-		{"replace", `{"continue":false,"stopReason":"Replacement"}`, "Replacement", 1, ""},
+		{"allow", `{}`, "First draft", 1, "First draft", nil},
+		{
+			"block",
+			`{"decision":"block","reason":"Try again","hookSpecificOutput":{"hookEventName":"Stop","additionalContext":"REQUIRED_NEXT_ACTION_SENTINEL"}}`,
+			"Second draft",
+			2,
+			"Second draft",
+			[]string{"REQUIRED_NEXT_ACTION_SENTINEL"},
+		},
+		{"replace", `{"continue":false,"stopReason":"Replacement"}`, "Replacement", 1, "", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			var retryReq llm.Request
 			s := newSession(t, withSteps(func(llm.Request) llm.Response {
 				return bareTextResponse("First draft", llm.FinishReasonStop)
-			}, func(llm.Request) llm.Response {
+			}, func(req llm.Request) llm.Response {
+				retryReq = req
 				return bareTextResponse("Second draft", llm.FinishReasonStop)
 			}, func(llm.Request) llm.Response { return agenttest.FinalResponse("Unexpected retry") }), withStateDir(t.TempDir()))
 			stops := 0
@@ -122,7 +132,13 @@ func TestRootBareTextFallbackStopHook(t *testing.T) {
 				}
 				return `{}`
 			})
-			got, err := s.ProcessInput(tripwireCtx(t), "Question", nil)
+			ctx := tripwireCtx(t)
+			got, err := s.ProcessInput(ctx, "Question", nil)
+			for _, sub := range tc.wantRetrySubstrings {
+				if !requestContainsText(retryReq, sub) {
+					t.Fatalf("blocked bare-text retry request omitted Stop hook instruction %q (messages=%d)", sub, len(retryReq.Messages))
+				}
+			}
 			if err != nil || got != tc.want || stops != tc.wantCalls || s.State() != SessionIdle {
 				t.Fatalf("reply=%q stop calls=%d state=%v err=%v", got, stops, s.State(), err)
 			}
@@ -149,6 +165,47 @@ func TestRootBareTextFallbackStopHook(t *testing.T) {
 			}
 			if tc.wantAccepted == "" && (len(marked) != 0 || len(communicated) != 1 || communicated[0] != tc.want) {
 				t.Fatalf("assistant acceptance=%q, communicate=%q", marked, communicated)
+			}
+			if tc.wantCalls == 1 {
+				var steerSess *Session
+				steered := false
+				carrierSawSteer := make(chan struct{})
+				steerSess = newSession(t, withSteps(func(llm.Request) llm.Response {
+					if !steered {
+						steered = true
+						if _, err := steerSess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+							ClientMutationID: "bare-stop-" + tc.name,
+							Input:            []appwire.InputItem{{Type: "text", Text: "BARE_CARRIER_STEER_" + tc.name}},
+						}); err != nil {
+							t.Errorf("AcceptClientMutationSteer: %v", err)
+						}
+					}
+					return bareTextResponse("First draft", llm.FinishReasonStop)
+				}, func(req llm.Request) llm.Response {
+					if requestContainsText(req, "BARE_CARRIER_STEER_"+tc.name) {
+						close(carrierSawSteer)
+					}
+					return agenttest.FinalResponse("Carrier handled steer")
+				}), withStateDir(t.TempDir()))
+				if err := steerSess.ensureClientMutationStore(); err != nil {
+					t.Fatal(err)
+				}
+				steerStops := 0
+				installCommunicateStopHook(steerSess, func() string {
+					steerStops++
+					if steerStops == 1 {
+						return tc.firstResult
+					}
+					return `{}`
+				})
+				if _, err := steerSess.ProcessInput(ctx, "Question", nil); err != nil {
+					t.Fatalf("steerSess ProcessInput: %v", err)
+				}
+				select {
+				case <-carrierSawSteer:
+				case <-ctx.Done():
+					t.Fatalf("client steer queued during %s bare-text reply did not reach carrier turn", tc.name)
+				}
 			}
 			if tc.name == "replace" {
 				var followUpReq llm.Request

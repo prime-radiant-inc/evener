@@ -2584,13 +2584,22 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	var restoreParentDriveNotify func()
 	var finish delegateFinish
 	var noActionClaim *delegateSettlementClaim
+	settledInRun := false
 	iteration := 0
 	for {
 		iteration++
 		if observer := a.sess.cfg.testOnly.subagentRunIteration; observer != nil {
 			observer(a, iteration)
 		}
-		res, err = a.sess.processInputKindWithProvenance(ctx, input, nil, kind, inputProvenance)
+		runInput := func(inCtx context.Context, text string, images []ImageAttachment, inKind EntryKind) (string, error) {
+			return a.sess.processInputKindWithProvenance(inCtx, text, images, inKind, inputProvenance)
+		}
+		if iteration > 1 && settledInRun {
+			res, err = a.sess.keepingReport(runInput)(ctx, input, nil, kind)
+		} else {
+			res, err = runInput(ctx, input, nil, kind)
+		}
+		settledInRun = settledInRun || a.sess.communicatedUnblocked()
 		_, budgetExhausted := budgetExhaustionFromError(err)
 		a.mu.Lock()
 		cancelRequested := a.cancelRequested
@@ -2620,7 +2629,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				needsNudge = decision == delegateCompletionNeedsNudge
 			}
 		} else {
-			needsNudge = !a.sess.communicated()
+			needsNudge = !a.sess.communicatedUnblocked()
 		}
 		shouldNudge := nudgeAvailable && !cancelRequested &&
 			!budgetExhausted &&
@@ -3373,11 +3382,14 @@ func (inputs *delegateTerminalRunInputs) captureCommunicateReport(sess *Session)
 	}
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	inputs.communicated = sess.comm.called
-	inputs.structuredResult = sess.comm.structured
-	inputs.structuredResultPresent = sess.comm.structured != nil
-	if inputs.communicated && inputs.runErr == nil {
-		inputs.result = sess.comm.text
+	settled := sess.comm.called && !sess.comm.stopBlocked
+	inputs.communicated = settled
+	if settled {
+		inputs.structuredResult = sess.comm.structured
+		inputs.structuredResultPresent = sess.comm.structured != nil
+		if inputs.runErr == nil {
+			inputs.result = sess.comm.text
+		}
 	}
 }
 

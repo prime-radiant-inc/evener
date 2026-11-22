@@ -2014,6 +2014,7 @@ type communicateResult struct {
 	output            string // canonical structured output (communicateOutput)
 	structured        any    // raw args["output"] object before communicate canonicalization
 	quietEnd          bool   // quiet yield was accepted without capturing a report
+	stopPending       bool   // terminal acceptance awaits a Stop hook decision
 	stopPendingCallID string // explicit winner whose observation awaits the Stop decision
 	stopBlocked       bool   // a Stop hook blocked the captured reply; preserved only if a later round settles visibly
 	roundVisible      bool   // a visible terminal communicate was attempted in the current tool round
@@ -3149,6 +3150,7 @@ func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply,
 		s.mu.Unlock()
 		return false
 	}
+	stopPending := s.hasReplyStopHook()
 	s.comm = communicateResult{
 		called:       true,
 		text:         message,
@@ -3156,18 +3158,25 @@ func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply,
 		output:       output,
 		structured:   structured,
 		roundVisible: true,
+		stopPending:  stopPending,
 	}
-	if s.hasReplyStopHook() {
+	if stopPending {
 		s.comm.stopPendingCallID = callIDFromContext(ctx)
 	} else {
 		s.latestReport = s.comm
 	}
 	s.mu.Unlock()
+	if !stopPending {
+		s.recordDelegateTerminalSeen(ctx)
+	}
+	return true
+}
+
+func (s *Session) recordDelegateTerminalSeen(ctx context.Context) {
 	lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
 	if stableRun && s.delegateController != nil {
 		_ = s.delegateController.recordTerminalSeen(lease)
 	}
-	return true
 }
 
 // extractOriginalPrompt returns a delegate's assignment or the first user
