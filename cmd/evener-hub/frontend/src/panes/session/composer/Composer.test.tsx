@@ -22,7 +22,7 @@ import { resetPrefsStoreForTests } from "../../../stores/prefs";
 import { answerActivityRead } from "../../../stores/sessionActivityTestUtils";
 import { holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../stores/threads";
-import { mediaBlock, readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
+import { readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as FULL_CAPABILITIES } from "../../../threadTestUtils";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
@@ -575,8 +575,11 @@ test("the Send and Stop words collapse to glyphs below the compact pane threshol
   expect(css).toMatch(
     /@container \(max-width: 559px\)[\s\S]*?\.submitLabel,\s*\.stopLabelStack\s*\{[^}]*display:\s*none/,
   );
-  expect(mediaBlock(css, "max-width: 899px")).toMatch(
-    /\.composer\s+:global\(button\):has\(> \.submitLabel\),\s*\.composer\s+:global\(button\):has\(> \.stopLabelStack\)\s*\{[^}]*min-width:\s*var\(--tap-min\)/,
+  // The floor reaches coarse pointers as well as phone widths: a 951pt
+  // landscape Duo is past the 899px phone boundary while its composer pane
+  // still folds the words away, so the icon-only action keeps 44px there.
+  expect(css).toMatch(
+    /@media \(max-width: 899px\), \(any-pointer: coarse\) \{\s*\.composer\s+:global\(button\):has\(> \.submitLabel\),\s*\.composer\s+:global\(button\):has\(> \.stopLabelStack\)\s*\{[^}]*min-width:\s*var\(--tap-min\)/,
   );
 });
 
