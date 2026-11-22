@@ -4,8 +4,10 @@ import {
   type SearchResponse,
   type ThreadModel,
   type TurnModel,
+  WarningCodeContextBudget,
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { notificationWireItem } from "@evener/appwire-client/testing/notificationWireFixtures";
 import { expect, test } from "vitest";
 import { ALL_CAPABILITIES } from "../../threadTestUtils";
 import { buildSnippet, fetchSearch, findInSessionMatches, highlightParts } from "./search";
@@ -428,6 +430,78 @@ test("a reply is searched as it reads, the way the session's Find reads it", () 
   expect(findInSessionMatches(model, "**fail**", VIEW)).toHaveLength(0);
 });
 
+// The palette reads the same projected words Find lands on: a notice's quiet
+// line, a warning's block, a scaffold's rendered Markdown. It never offers a
+// raw `item.text` the row does not show.
+const SHOWN = makeTranscriptDisplayConfig(
+  { kind: "preset", level: "tools" },
+  { systemEvents: true, promptEvents: true, roundTimings: true },
+);
+const FULL_WARNINGS = makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, { systemEvents: true });
+
+test("findInSessionMatches offers a visible system notice only under the config that shows it", () => {
+  const model = modelWithTurns([
+    turn("t1", [
+      itemWith("n", {
+        type: "systemMessage",
+        eventKind: "context_compaction",
+        text: "model switched to opus",
+      }),
+    ]),
+  ]);
+  // The default advanced settings hide routine system events.
+  expect(findInSessionMatches(model, "opus", VIEW)).toEqual([]);
+  expect(findInSessionMatches(model, "opus", SHOWN).map((h) => h.itemId)).toEqual(["n"]);
+});
+
+test("findInSessionMatches offers a warning's block words and hides one that renders nothing", () => {
+  const shown = modelWithTurns([
+    turn("t1", [itemWith("w", { type: "warning", text: "disk almost full", warning: { title: "Evener error" } })]),
+  ]);
+  expect(findInSessionMatches(shown, "Evener error", CHAT).map((h) => h.itemId)).toEqual(["w"]);
+  expect(findInSessionMatches(shown, "disk almost full", CHAT).map((h) => h.itemId)).toEqual(["w"]);
+
+  // warningWords is null, so WarningItem renders null and Find has no row.
+  const empty = modelWithTurns([turn("t1", [itemWith("x", { type: "warning", text: "", warning: {} })])]);
+  expect(findInSessionMatches(empty, "warning", CHAT)).toEqual([]);
+
+  // An informational warning shows only at Full, and its hint is on screen.
+  const quiet = modelWithTurns([
+    turn("t1", [
+      itemWith("q", {
+        type: "warning",
+        text: "context usage is high",
+        warning: { code: WarningCodeContextBudget, hint: "no action needed" },
+      }),
+    ]),
+  ]);
+  expect(findInSessionMatches(quiet, "no action needed", SHOWN)).toEqual([]);
+  expect(findInSessionMatches(quiet, "no action needed", FULL_WARNINGS).map((h) => h.itemId)).toEqual(["q"]);
+});
+
+test("findInSessionMatches reads a scaffold as its rendered Markdown, never the raw source", () => {
+  const model = modelWithTurns([
+    turn("t1", [itemWith("p", { type: "systemMessage", eventKind: "system_prompt", text: "You are **bold** here" })]),
+  ]);
+  expect(findInSessionMatches(model, "bold here", SHOWN).map((h) => h.itemId)).toEqual(["p"]);
+  expect(findInSessionMatches(model, "**bold**", SHOWN)).toEqual([]);
+});
+
+test("findInSessionMatches reads round timings as their headline, not the raw dump", () => {
+  const model = modelWithTurns([
+    turn("t1", [
+      itemWith("r", {
+        type: "systemMessage",
+        eventKind: "round_timings",
+        text: "Round 2 total=6.411312958s llm=4.935822084s",
+        raw: { roundTimings: { round: 2, total_round_ns: 6_411_312_958, llm_call_ns: 4_935_822_084 } },
+      }),
+    ]),
+  ]);
+  expect(findInSessionMatches(model, "Round 2", SHOWN).map((h) => h.itemId)).toEqual(["r"]);
+  expect(findInSessionMatches(model, "total=6.411", SHOWN)).toEqual([]);
+});
+
 // A steer's and a memory refresh's words are the ones their row shows. The
 // palette offers only those, so every row it lists is one Find can land on.
 function steerItem(id: string, text: string, fields: Partial<ItemModel> = {}): ItemModel {
@@ -473,4 +547,28 @@ test("findInSessionMatches reads a memory refresh's index, never the folded sour
   const model = modelWithTurns([turn("t1", [memoryRefreshItem("m1", "sourceFrobnitz", "- index frobnitz")])]);
   expect(findInSessionMatches(model, "index frobnitz", TOOLS).map((hit) => hit.itemId)).toEqual(["m1"]);
   expect(findInSessionMatches(model, "sourceFrobnitz", TOOLS)).toEqual([]);
+});
+
+// A steer's notification cards are offered by the words they show, never by
+// the markup behind them, so every row the palette lists is one Find lands on.
+test("findInSessionMatches reads a steer's notification card as its words, not its markup", () => {
+  const card = notificationWireItem("delegate-reported") as unknown as ItemModel;
+  const model = modelWithTurns([turn("t1", [{ ...card, id: "steer", turnId: "t1" }])]);
+  expect(findInSessionMatches(model, "the settle pass now waits for the drain", VIEW).map((hit) => hit.itemId)).toEqual(
+    ["steer"],
+  );
+  // The verbatim frame's attributes are not on the card.
+  expect(findInSessionMatches(model, 'delegate_id="dlg_1"', VIEW)).toEqual([]);
+  expect(findInSessionMatches(model, '"outcome":"completed"', VIEW)).toEqual([]);
+});
+
+test("findInSessionMatches reads a job card's rendered fields and excerpt, not its frame", () => {
+  const text =
+    '<job-notification job_id="job_7" event="completed" job_type="shell" status="completed" reason="exit_zero" intent="Run the agent tests">\nJob job_7 completed.\nexcerpt:\nok  \t12.3s\n</job-notification>';
+  const model = modelWithTurns([turn("t1", [itemWith("steer", { type: "steering", text })])]);
+  // The head's intent and the excerpt are on screen.
+  expect(findInSessionMatches(model, "Run the agent tests", VIEW).map((hit) => hit.itemId)).toEqual(["steer"]);
+  expect(findInSessionMatches(model, "12.3s", VIEW).map((hit) => hit.itemId)).toEqual(["steer"]);
+  // The frame's own words are not.
+  expect(findInSessionMatches(model, 'event="completed"', VIEW)).toEqual([]);
 });

@@ -162,10 +162,11 @@ function matchOf(hit: FindHit | undefined): Pick<FindState, "key" | "item" | "ro
   return hit === undefined ? NO_MATCH : { key: hit.key, item: hit.itemId, round: hit.roundId ?? null };
 }
 
-// A hit's disclosures as one comparable string: a re-projection that builds a
-// new array of the same ids is the same landing cause.
-function opensOf(hit: FindHit): string {
-  return (hit.opens ?? []).join("\u0000");
+// What hides a hit's words, as one comparable value: a hit can open more than
+// one disclosure (a steer with several matching cards, or a card whose words
+// sit inside its raw frame), and the landing reruns only when the list changes.
+function opensKey(hit: FindHit): string {
+  return hit.opens?.join("\u0000") ?? "";
 }
 
 export function useFindInSession({
@@ -219,7 +220,7 @@ export function useFindInSession({
   // being redone for nothing.
   const lastHits = useRef<FindHit[]>([]);
   const hits = useMemo(() => {
-    const next = isOpen ? findHits(rows, query, { config, version: renderVersion, cwd }) : [];
+    const next = isOpen ? findHits(rows, query, { config, version: renderVersion, sessionRef: ref, cwd }) : [];
     const previous = lastHits.current;
     const same =
       next.length === previous.length &&
@@ -230,13 +231,14 @@ export function useFindInSession({
           before.key === hit.key &&
           before.itemId === hit.itemId &&
           before.rowIndex === hit.rowIndex &&
-          opensOf(before) === opensOf(hit) &&
+          opensKey(before) === opensKey(hit) &&
+          before.opensIgnoreBaseline === hit.opensIgnoreBaseline &&
           (before.opensSession ?? []).join("\0") === (hit.opensSession ?? []).join("\0")
         );
       });
     if (!same) lastHits.current = next;
     return lastHits.current;
-  }, [isOpen, rows, query, renderVersion, config, cwd]);
+  }, [isOpen, rows, query, renderVersion, config, ref, cwd]);
   const currentIndex =
     find == null || find.key === null || find.item === null
       ? -1
@@ -258,7 +260,7 @@ export function useFindInSession({
       setState((previous) => {
         const kept = previous?.ref === ref ? previous : null;
         if (request?.query === undefined) return kept ?? { ref, query: "", ...NO_MATCH, seek: null };
-        const found = findHits(rowsRef.current, request.query, { config, cwd });
+        const found = findHits(rowsRef.current, request.query, { config, sessionRef: ref, cwd });
         const picked = found.find((hit) => hit.itemId === request.itemId) ?? found.at(-1);
         return { ref, query: request.query, ...matchOf(picked), seek: null };
       });
@@ -291,7 +293,7 @@ export function useFindInSession({
       // Typing lands on the newest loaded match, as the reader is usually at
       // the end. It never reads older history by itself: each keystroke of a
       // longer word would otherwise page the whole session for a prefix.
-      const newest = findHits(rowsRef.current, next, { config, cwd }).at(-1);
+      const newest = findHits(rowsRef.current, next, { config, sessionRef: ref, cwd }).at(-1);
       setState({ ref, query: next, ...matchOf(newest), seek: null });
     },
     [ref, config, cwd],
@@ -419,7 +421,7 @@ export function useFindInSession({
   // group). A match that only goes by a new key or item is the same match:
   // the reader may have scrolled on, and is not pulled back to it. Rows
   // prepending above it are not a landing either.
-  const currentOpens = current === null ? "" : opensOf(current);
+  const currentOpens = current === null ? "" : opensKey(current);
   // biome-ignore lint/correctness/useExhaustiveDependencies: the dependencies are the landing's causes, listed above
   useEffect(() => {
     if (current === null) {
@@ -432,9 +434,15 @@ export function useFindInSession({
     }
     // Whatever hides the matching words opens first, so the entry can mount
     // and show them. They stay open, as a reader's own toggle would.
-    for (const id of current.opens ?? []) {
-      const scoped = scopedDisclosureId(disclosureScope, id);
-      if (!isDisclosureOpenNow(scoped, false)) setDisclosureOpen(scoped, true);
+    // Every disclosure holding the words opens: the card and, when the words
+    // only sit there, its raw frame.
+    for (const disclosure of current.opens ?? []) {
+      const scoped = scopedDisclosureId(disclosureScope, disclosure);
+      // A notes snapshot ignores the expand-all baseline, so the baseline's
+      // "open" is not what its row shows: open it explicitly in that case too.
+      if (current.opensIgnoreBaseline) {
+        if (!isDisclosureOpenExplicitly(scoped)) setDisclosureOpen(scoped, true);
+      } else if (!isDisclosureOpenNow(scoped, false)) setDisclosureOpen(scoped, true);
     }
     // A steer's or a memory refresh's body folds by the session ref plus its
     // own id (SteeringDivider's key). Its owner may keep it closed through an

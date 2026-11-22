@@ -65,9 +65,11 @@ function itemSearchTexts(item: ItemModel, projected: ReadonlyMap<string, readonl
   // way the session's own Find reads it, so a message row here is one Find
   // can land on.
   const message = messageAsShown(item);
+  // A system notice or warning is read the way its row shows it (projected
+  // below), not from the raw wire text: a scaffold's raw Markdown and a
+  // failure's echoed line are not what is on screen. A thought's `text` is its
+  // trace, which no row shows, so only the summaries below are read for it.
   if (message !== null) texts.push(message);
-  // A thought's `text` is its trace, which no row shows, so only the
-  // summaries below are read for it.
   else if (!rowShowsOwnText(item) && item.type !== "reasoning" && item.text) texts.push(item.text);
   // What the view shows this item as - an action row's rationale, a thought's
   // summaries where the view shows the thought. Find's own rule, shared, so a
