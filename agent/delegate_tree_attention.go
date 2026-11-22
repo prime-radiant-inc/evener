@@ -363,10 +363,9 @@ func (c *delegateTreeController) openDelegateAttentionLocked(delegateID, attenti
 // While a stop is pending the stop's cleanup owns the wakes (it renews their
 // markers' durability first), so the clear leaves them.
 // A resolution can outrun the committed attention run that would otherwise
-// emit the clearing event (acceptDelegateAttention makes the marker durable
-// first, and a later-declined CommitStart leaves the journal's last event at
-// true), and the transcript-driven drive is the only witness of that state, so
-// it reconciles the projection itself rather than waiting for the next
+// emit the clearing event (a turn presents and consumes its report as it
+// settles), and the transcript-driven drive is the only witness of that state,
+// so it reconciles the projection itself rather than waiting for the next
 // bootstrap. An empty
 // fold is authoritative: a wake ID is only ever noted beside a durable
 // transcript entry, so no entry means the attention resolved. A missing
@@ -500,22 +499,6 @@ func (c *delegateTreeController) noteDelegateAttentionLocked(delegateID, attenti
 	// another round of attempts.
 	c.resetDelegateAttentionAttemptsLocked(delegateID)
 	return true
-}
-
-// rearmReopenedDelegateAttention unions a reopened row's fresh identity into
-// delegateID's wake set without resetting its delivery attempts: the row is the
-// same report re-keyed after a failed start, not new attention. This restores
-// the wake the failed start's commit replaced.
-func (c *delegateTreeController) rearmReopenedDelegateAttention(delegateID, attentionID string) {
-	if c == nil || delegateID == "" || attentionID == "" {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.durable[delegateID] == nil {
-		return
-	}
-	addCommittedWakeLocked(c.attentionStateLocked(delegateID), attentionID)
 }
 
 func addCommittedWakeLocked(state *delegateAttentionState, attentionID string) {

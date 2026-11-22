@@ -2895,44 +2895,35 @@ func (a *subagent) finalizeRun(f subagentFinalize) {
 	if f.restoreParentDriveNotify != nil && a.sess.peekNotifications() > 0 {
 		a.sess.notify()
 	}
-	// The unpresented trigger is reopened BEFORE the generation is announced:
-	// the announce's release wakes the parent's drive, and a drive that wins
-	// that wake can accept another pending row and re-latch the trigger before
-	// the tail below could read it — reopening the live generation's own
-	// trigger as a duplicate while the failed run's trigger stays consumed.
-	// Before the release no drive can reserve this delegate, so the latch the
-	// reopen reads is exactly the failed run's own. FinishGeneration has
+	// The unpresented trigger is settled BEFORE the generation is announced:
+	// the announce's release wakes the parent's drive, and that drive could
+	// start a successor that presents the report before the stop's quiet is
+	// recorded. Before the release no drive can reserve this delegate, so the
+	// latch the settle reads is exactly this run's own. FinishGeneration has
 	// already journaled the outcome, so the stop and close guards inside the
-	// reopen still see this run's settled state.
+	// settle still see this run's settled state.
 	if f.stableRun && f.attentionRun && (f.attentionUnpresented || !attentionRunPresentedItsReport(f.err)) {
-		// The presentation turn died before its request could carry the
-		// report, and the accept that started it consumed the row. Reopen
-		// it so the re-arm below wakes a drive that presents it instead of
-		// letting the consumed marker strand the report silently. A
-		// deliberately stopped child, a closing receiver and a closing
-		// tree are not reopened: their teardowns own the discard, and a
-		// fresh row would race it (reopenLatchedDelegateAttention guards).
+		// The turn died before its request could carry the report. A drive
+		// never consumed the row, so it is still pending and needs no reopen;
+		// a restored generation's consumed row is reopened under a fresh
+		// identity. A deliberately stopped child, a closing receiver and a
+		// closing tree are left to their teardowns, which own the discard.
 		// A user's stop owns the quiet on the drive's read too: the stopped
 		// generation's commit left the delegate armed for every other
 		// pending row, and that stale armed wake drives without any re-arm,
-		// so the reopened report would ride the next generation it starts.
+		// so the unpresented report would ride the next generation it starts.
 		// Hold it from the automatic drives; the rows the stop never touched
 		// keep their presentation, and the arm that later presents them —
-		// or any fresh arm — releases the hold. A row a hook stop reopened
-		// owes the same quiet: re-arming it at once relaunches SubagentStart,
-		// and a hook that keeps refusing would repeat launches, warnings and
-		// durable records without ever presenting the report.
-		//
-		// The quiet is an input to the reopen, not a follow-up to it: the
-		// append that publishes the row takes no note of a hold installed
-		// afterwards, so a drive selecting in that window would consume a
-		// marker for a request whose projection holds the row out.
+		// or any fresh arm — releases the hold. A row a hook stop leaves
+		// unpresented owes the same quiet: re-arming it at once relaunches
+		// SubagentStart, and a hook that keeps refusing would repeat launches,
+		// warnings and durable records without ever presenting the report.
 		quietAt := uint64(0)
 		if userStopped || f.attentionUnpresented {
 			quietAt = f.lease.generation
 		}
-		if _, reopenErr := a.sess.reopenLatchedDelegateAttention(quietAt); reopenErr != nil {
-			a.sess.emit(warningDataFromError("reopen unpresented delegate attention", reopenErr))
+		if _, settleErr := a.sess.settleUnpresentedDelegateAttention(quietAt); settleErr != nil {
+			a.sess.emit(warningDataFromError("settle unpresented delegate attention", settleErr))
 		}
 	}
 	if f.stableRun && a.sess.delegateController != nil {

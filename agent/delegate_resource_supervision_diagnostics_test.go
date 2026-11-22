@@ -140,7 +140,7 @@ func TestStableSupervisionFailureSnapshotCapturesAttentionReservation(t *testing
 	if !reflect.DeepEqual(snapshot["blocking_predicates"], []string{"pending_attention_ids", "attention_reservations"}) {
 		t.Fatalf("unaccepted reservation blockers = %#v", snapshot["blocking_predicates"])
 	}
-	if err := sub.sess.acceptDelegateAttention(reservation); err != nil {
+	if err := acceptDelegateAttentionForTest(root.delegateController, sub.sess, reservation); err != nil {
 		t.Fatalf("accept attention: %v", err)
 	}
 	snapshot = uncontendedStableSupervisionSnapshot(t, root, sub, fixture.adapter)

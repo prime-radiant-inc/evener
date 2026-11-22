@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -87,8 +88,8 @@ func TestDelegateAttentionDriveStaleSelectionPreservesNextOwnerRun(t *testing.T)
 	case <-time.After(30 * time.Second): // TRIPWIRE: await the delayed drive's return.
 		t.Fatal("delayed attention drive did not return")
 	}
-	if got := root.delegateController.reservedAttentionID(sub.sess); got != "" {
-		t.Fatalf("completed attention left stale reservation %q blocking future work", got)
+	if got := delegateReservationCount(root.delegateController, fixture.delegateID); got != 0 {
+		t.Fatalf("completed attention left %d reservations blocking future work", got)
 	}
 	if got := supervisionRequestCount(fixture.adapter); got != 7 {
 		t.Fatalf("provider requests = %d, want warm, attention, four follow-up attempts, and recovery report", got)
@@ -108,10 +109,27 @@ func TestDelegateAttentionDriveStaleSelectionPreservesNextOwnerRun(t *testing.T)
 	}
 }
 
-// An accepted marker belongs to an exact reserved generation even when its
-// journal commit failed. Revalidating fresh selections must not discard that
-// existing reservation just because the transcript ID is already consumed.
-func TestDelegateAttentionDriveRetriesAcceptedMarkerGeneration(t *testing.T) {
+// delegateReservationCount reports the attention/turn start reservations the
+// controller holds for delegateID. Nothing may outlive a failed attempt: a
+// reservation left behind blocks every later drive and owner send.
+func delegateReservationCount(c *delegateTreeController, delegateID string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	count := 0
+	for _, record := range c.reservations {
+		if record != nil && record.delegateID == delegateID {
+			count++
+		}
+	}
+	return count
+}
+
+// A commit the journal refuses must not consume the attention or leave a
+// reservation behind (#5681). The row stays pending in the transcript, and the
+// next drive over a healthy journal starts a clean generation. That generation
+// consumes the report once, when its turn presents it, and no later drive
+// fires it again.
+func TestDelegateAttentionDriveFailedCommitLeavesRowPendingAndRetries(t *testing.T) {
 	t.Parallel()
 	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
@@ -129,23 +147,28 @@ func TestDelegateAttentionDriveRetriesAcceptedMarkerGeneration(t *testing.T) {
 	if _, err := controller.openDelegateAttention(fixture.delegateID, attentionID); err != nil {
 		t.Fatalf("open attention: %v", err)
 	}
-	// Close the real journal to fail commit after the real transcript has
-	// durably accepted the generation. No provider turn has started yet.
+	// Close the real journal to refuse the commit. No provider turn has started.
 	if err := controller.store.Close(); err != nil {
 		t.Fatalf("close delegate journal: %v", err)
 	}
 	if !root.driveDelegateAttention(sub) {
 		t.Fatal("attention drive did not attempt the closed journal")
 	}
-	if got := controller.reservedAttentionID(sub.sess); got != attentionID {
-		t.Fatalf("failed commit reservation = %q, want %q", got, attentionID)
-	}
 	fold, err := readDelegateAttentionFold(sub.sess.TranscriptPath(), fixture.childID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fold.pendingIDs()) != 0 || fold.resumeGenerations[attentionID] != 2 {
-		t.Fatalf("accepted attention = pending:%v generations:%v, want consumed generation 2", fold.pendingIDs(), fold.resumeGenerations)
+	if pending := fold.pendingIDs(); !slices.Equal(pending, []string{attentionID}) {
+		t.Fatalf("failed commit left pending attention = %v, want the row still pending", pending)
+	}
+	if len(fold.resolutions) != 0 || len(fold.resumeGenerations) != 0 {
+		t.Fatalf("failed commit wrote attention markers: resolutions=%v generations=%v", fold.resolutions, fold.resumeGenerations)
+	}
+	if got := delegateReservationCount(controller, fixture.delegateID); got != 0 {
+		t.Fatalf("failed commit left %d reservations, want none", got)
+	}
+	if aggregate := controller.durable[fixture.delegateID]; aggregate.Generation != 1 || aggregate.CurrentRunOpen || !aggregate.NeedsAttention {
+		t.Fatalf("failed commit published aggregate: %#v, want the warm generation still settled and attention owed", aggregate)
 	}
 	if got := supervisionRequestCount(fixture.adapter); got != 1 {
 		t.Fatalf("provider requests before commit retry = %d, want warm only", got)
@@ -158,7 +181,7 @@ func TestDelegateAttentionDriveRetriesAcceptedMarkerGeneration(t *testing.T) {
 	controller.store = reopened
 	controller.mu.Unlock()
 	if !root.driveDelegateAttention(sub) {
-		t.Fatal("attention drive did not retry its accepted generation")
+		t.Fatal("attention drive did not retry the pending row")
 	}
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	finished := latestDelegateControllerRunFinished(t, controller, fixture.delegateID)
@@ -175,6 +198,13 @@ func TestDelegateAttentionDriveRetriesAcceptedMarkerGeneration(t *testing.T) {
 		}
 	}
 	if resolutions != 1 {
-		t.Fatalf("accepted attention resolution markers = %d, want one", resolutions)
+		t.Fatalf("attention resolution markers = %d, want one from the presenting turn", resolutions)
+	}
+	// The presented row is consumed, so a later pass has nothing to launch.
+	if root.driveDelegateAttention(sub) {
+		t.Fatal("a consumed attention row was driven again")
+	}
+	if got := supervisionRequestCount(fixture.adapter); got != 2 {
+		t.Fatalf("provider requests after consumed attention = %d, want no extra turn", got)
 	}
 }

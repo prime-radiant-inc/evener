@@ -72,14 +72,3 @@ func TestPermanentlyFencedDelegateAttention(t *testing.T) {
 		t.Fatalf("expected 0 fenced plans, got %d", len(plans))
 	}
 }
-
-// TestReservedAttentionID covers the reservedAttentionID method with no
-// reserved attention.
-func TestReservedAttentionID(t *testing.T) {
-	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerRunning(t, c, "dlg_target", "")
-	s := &Session{}
-	if got := c.reservedAttentionID(s); got != "" {
-		t.Fatalf("expected empty reserved attention ID, got %q", got)
-	}
-}

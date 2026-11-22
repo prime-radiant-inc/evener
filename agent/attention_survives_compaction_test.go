@@ -346,8 +346,8 @@ func TestSettledResponsesDeltaLeavesTheLatchedReopenOwed(t *testing.T) {
 	sess := acceptedTriggerSession(t)
 	sess.stagePresentedAttentionCoverage(leaseCtx, currentHistory(t, sess), nil)
 	sess.promoteStagedAttentionCoverage(llm.Request{HistoryMode: llm.HistoryModeResponsesDelta})
-	if _, err := sess.reopenLatchedDelegateAttention(0); err != nil {
-		t.Fatalf("reopenLatchedDelegateAttention: %v", err)
+	if _, err := sess.settleUnpresentedDelegateAttention(0); err != nil {
+		t.Fatalf("settleUnpresentedDelegateAttention: %v", err)
 	}
 	if reopened := pendingReopen(sess); reopened == "" {
 		t.Fatal("the reopen skipped a latched trigger a settled delta provably did not carry (no pending row holds a reopened identity)")
@@ -373,9 +373,9 @@ func TestReopenedTriggerKeepsTheCauseLatchCarried(t *testing.T) {
 	sess.holdAcceptedTrigger(trigger)
 	controller.attentionCauses.forget(trigger)
 
-	reopened, err := sess.reopenLatchedDelegateAttention(0)
+	reopened, err := sess.settleUnpresentedDelegateAttention(0)
 	if err != nil {
-		t.Fatalf("reopenLatchedDelegateAttention: %v", err)
+		t.Fatalf("settleUnpresentedDelegateAttention: %v", err)
 	}
 	if reopened == "" || reopened == trigger {
 		t.Fatalf("setup: the latch did not move to a reopened identity (got %q)", reopened)
@@ -528,7 +528,7 @@ func acceptedTriggerSession(t *testing.T) *Session {
 	if err != nil {
 		t.Fatalf("ReserveAttention: %v", err)
 	}
-	if err := sess.acceptDelegateAttention(reservation); err != nil {
+	if err := acceptDelegateAttentionForTest(controller, sess, reservation); err != nil {
 		t.Fatalf("acceptDelegateAttention: %v", err)
 	}
 	// No drive owns this accepted reservation, so nothing commits it; release
@@ -1490,7 +1490,7 @@ func deriveHeldFixtureWithJournalTrigger(t *testing.T, trigger delegatestore.Run
 	if err != nil {
 		t.Fatalf("ReserveAttention: %v", err)
 	}
-	if err := sess.acceptDelegateAttention(reservation); err != nil {
+	if err := acceptDelegateAttentionForTest(controller, sess, reservation); err != nil {
 		t.Fatalf("acceptDelegateAttention: %v", err)
 	}
 	// The claimed generation's rest: the run settled with the fixture's
@@ -1621,7 +1621,7 @@ func TestDeriveHoldsEachRowByItsOwnStop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reserve the second source row: %v", err)
 	}
-	if err := sess.acceptDelegateAttention(reservation); err != nil {
+	if err := acceptDelegateAttentionForTest(controller, sess, reservation); err != nil {
 		t.Fatalf("accept the second source row: %v", err)
 	}
 	stopped := delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError, Message: json.RawMessage(`"stopped"`)}

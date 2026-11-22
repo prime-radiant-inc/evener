@@ -214,6 +214,18 @@ func delegateRunStartIndex(events []delegatestore.Event) map[delegateLease]deleg
 	return index
 }
 
+// delegateRunAttentionIDIndex is each attention-triggered generation's row,
+// indexed beside the run-start triggers from the same events.
+func delegateRunAttentionIDIndex(events []delegatestore.Event) map[delegateLease]string {
+	index := make(map[delegateLease]string)
+	for _, event := range events {
+		if event.RunStarted != nil && event.RunStarted.AttentionID != "" {
+			index[delegateLease{delegateID: event.DelegateID, generation: event.RunStarted.Generation}] = event.RunStarted.AttentionID
+		}
+	}
+	return index
+}
+
 func (c *delegateTreeController) ReconcileRequirements() delegateReconcileRequirements {
 	c.mu.Lock()
 	defer c.mu.Unlock()

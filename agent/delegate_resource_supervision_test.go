@@ -1635,7 +1635,9 @@ func TestDelegateResourceSupervision_PostAcknowledgementAttentionBeforeRelease(t
 				t.Fatalf("post-ack attention finish = %#v, want reported generation 2", finished)
 			}
 			fold, err = readDelegateAttentionFold(transcriptPath(root.stateDir, fixture.childID), fixture.childID)
-			if err != nil || fold.resolutions[tc.attentionID] != delegateAttentionConsumed || fold.resumeGenerations[tc.attentionID] != 2 {
+			// The recovery generation's own request consumes the row, so the
+			// marker carries generation zero: no accepted start is owed a resume.
+			if err != nil || fold.resolutions[tc.attentionID] != delegateAttentionConsumed || fold.resumeGenerations[tc.attentionID] != 0 {
 				t.Fatalf("post-ack resolution identity = resolutions:%#v generations:%#v err:%v", fold.resolutions, fold.resumeGenerations, err)
 			}
 			requests := fixture.adapter.Requests()
@@ -4094,8 +4096,9 @@ func stableSupervisionRefusal(sub *subagent) string {
 // run — without waiting on any lock, refusing when a source is busy. It mirrors
 // what the predicate read through the Session helpers
 // (hasPendingDelegateAttentionArmRetry, pendingDelegateAttentionIDs ->
-// delegateAttentionFoldLocked) and through delegateTreeController.reservedAttentionID,
-// which take these locks blocking and so could hold the predicate past its bound.
+// delegateAttentionFoldLocked) and through the controller's reservation
+// records, which take these locks blocking and so could hold the predicate
+// past its bound.
 func stableSupervisionAttentionRefusal(sess *Session) string {
 	// The arm-retry ids and the pending-attention fold are both read under
 	// attentionMu (which also guards the fold cursor); reading them together
@@ -4167,12 +4170,12 @@ func stableSupervisionPendingAttentionLocked(sess *Session) ([]string, bool, err
 	return fold.pendingIDs(), false, nil
 }
 
-// stableSupervisionReservedAttentionIDLocked mirrors
-// delegateTreeController.reservedAttentionID while c.mu is held: that accessor
-// takes c.mu blocking, so the predicate cannot call it. It routes through
-// runtimeOwnerLocked and keeps the same three guards — the record's delegate id
-// matches, its trigger is TriggerAttention, and its runtime is this session — so
-// a reservation of another kind for the same delegate does not read as reserved.
+// stableSupervisionReservedAttentionIDLocked reads the controller's attention
+// reservation while c.mu is held, which the predicate cannot do through the
+// blocking accessors. It routes through runtimeOwnerLocked and keeps three
+// guards — the record's delegate id matches, its trigger is TriggerAttention,
+// and its runtime is this session — so a reservation of another kind for the
+// same delegate does not read as reserved.
 func stableSupervisionReservedAttentionIDLocked(c *delegateTreeController, runtime *Session) string {
 	delegateID, _, err := c.runtimeOwnerLocked(runtime)
 	if err != nil || delegateID == "" {

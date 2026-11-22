@@ -1844,19 +1844,17 @@ func (l *sharedDescendantLane) startDrive(stop <-chan struct{}) (func() error, <
 	return read, done
 }
 
-// A presentation start that consumes a retained child's report owes the
-// delegate that presentation no matter what its own launch does: the consume
-// marker acceptDelegateAttention writes is irreversible by design (it fences
-// concurrent double presentation), so a start that fails after it landed must
-// re-deliver the same content, or the report is silently lost — the fold
-// reads the row as resolved forever and no retry can even see what it owes.
-// The scripted failure is the lane's: the launch revalidates the isolation
-// lane and refuses while another session's lock holds it, the same refusal a
-// live tree can hit under a handoff or a foreign prune. Every failure between
-// the accept and the presented turn strands identically, so the contract the
-// test pins is the recovery, not the refusal's cause: after the failed start,
-// the report still reaches the lane-owning delegate's attention turn.
-func TestDelegateAttentionFailedStartReopensConsumedReport(t *testing.T) {
+// A presentation start that fails before its turn presents owes the delegate
+// that presentation no matter what its own launch does: the drive consumes
+// nothing before the launch, so the report stays pending under the identity
+// the child wrote and the retry presents it. The scripted failure is the
+// lane's: the launch revalidates the isolation lane and refuses while another
+// session's lock holds it, the same refusal a live tree can hit under a
+// handoff or a foreign prune. Every failure before the presented turn strands
+// identically, so the contract the test pins is the recovery, not the
+// refusal's cause: after the failed start, the report still reaches the
+// lane-owning delegate's attention turn.
+func TestDelegateAttentionFailedStartKeepsReportPending(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	entered := make(chan struct{})
@@ -1906,8 +1904,9 @@ func TestDelegateAttentionFailedStartReopensConsumedReport(t *testing.T) {
 		t.Fatal("the seeded window let a presentation launch before this test's own drives: the scripted step was stolen against the tree-held lane")
 	default:
 	}
-	if pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs(); pendErr != nil || len(pending) == 0 {
-		t.Fatalf("the retained child's report is not pending after the seeded window: pending=%v (%v)", pending, pendErr)
+	beforeRefusal, beforeErr := lane.delegateSess.pendingDelegateAttentionIDs()
+	if beforeErr != nil || len(beforeRefusal) == 0 {
+		t.Fatalf("the retained child's report is not pending after the seeded window: pending=%v (%v)", beforeRefusal, beforeErr)
 	}
 
 	// The restored runtime's notify edge can drive the presentation during the
@@ -1947,21 +1946,15 @@ func TestDelegateAttentionFailedStartReopensConsumedReport(t *testing.T) {
 	// recovery pass an empty fold between consume and reopen, with no wake.
 	close(setupStop)
 	waitForTestSignal(t, setupDone, "the setup drive worker to exit before recovery")
-	// The failed drive reopens the consumed report before it returns, so the
-	// join above makes the row's presence deterministic; the recovery driver
-	// needs it pending, and the reopen appends without a notify.
+	// The failed drive consumed nothing, so the row the recovery driver needs
+	// is still pending under the identity the child wrote: no reopen stands in
+	// for it.
 	pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
 	if pendErr != nil {
 		t.Fatalf("read the pending rows after the refusal: %v", pendErr)
 	}
-	reopened := false
-	for _, id := range pending {
-		if strings.Contains(id, delegateAttentionReopenMarker) {
-			reopened = true
-		}
-	}
-	if !reopened {
-		t.Fatalf("the failed start did not leave the reopened report pending: %v", pending)
+	if !slices.Equal(pending, beforeRefusal) {
+		t.Fatalf("the failed start changed the pending report identity: got %v, want %v", pending, beforeRefusal)
 	}
 
 	// Give the lane back: an unlocked lane is re-locked under the tree's own
@@ -2001,15 +1994,14 @@ func TestDelegateAttentionFailedStartReopensConsumedReport(t *testing.T) {
 	})
 }
 
-// The reopen a refused launch performs must also re-arm the fresh row as a
-// wake. The successful commitStart replaced the controller's wake set with the
-// accept's post-consume pending list, so the delegate left c.attention when the
-// report was its only pending item; appending the reopened row to the
-// transcript alone leaves it undriven in-process. This test pins the production
-// wake path rather than a test-owned drive: after the refusal, the root's
-// scheduled drive pass must select the delegate from its re-armed wake, and
-// once the foreign lane is given back the pass must present the report.
-func TestDelegateAttentionRefusedLaunchReopensThroughTheWakeMap(t *testing.T) {
+// A refused launch leaves the report pending and armed. The successful
+// commitStart records the still-pending row in the controller's wake set, so
+// the delegate stays selected for the paced retry even though nothing was
+// consumed. This test pins the production wake path rather than a test-owned
+// drive: after the refusal, the root's scheduled drive pass must select the
+// delegate from that wake, and once the foreign lane is given back the pass
+// must present the report.
+func TestDelegateAttentionRefusedLaunchKeepsWakeThroughTheWakeMap(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	entered := make(chan struct{})
@@ -2038,8 +2030,9 @@ func TestDelegateAttentionRefusedLaunchReopensThroughTheWakeMap(t *testing.T) {
 	case <-time.After(15 * time.Second):
 		t.Fatalf("the delegate's finalize tail never finished after the seeded announce release")
 	}
-	if pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs(); pendErr != nil || len(pending) == 0 {
-		t.Fatalf("the retained child's report is not pending after the seeded window: pending=%v (%v)", pending, pendErr)
+	beforeRefusal, beforeErr := lane.delegateSess.pendingDelegateAttentionIDs()
+	if beforeErr != nil || len(beforeRefusal) == 0 {
+		t.Fatalf("the retained child's report is not pending after the seeded window: pending=%v (%v)", beforeRefusal, beforeErr)
 	}
 	// Every later drive under test is the production pass this test calls, not
 	// the fixture's notify edges.
@@ -2050,8 +2043,7 @@ func TestDelegateAttentionRefusedLaunchReopensThroughTheWakeMap(t *testing.T) {
 	adoptForeignLane(t, r, lane.lanePath, foreignSID)
 
 	// Drive the presentation once through the test worker; the commit succeeds
-	// and the launch refuses the foreign lane, stamping the child abandoned and
-	// reopening the consumed report.
+	// and the launch refuses the foreign lane, stamping the child abandoned.
 	setupStop := make(chan struct{})
 	_, setupDone := lane.startDrive(setupStop)
 	testwait.Until(t, "the presentation start to refuse the foreign-held lane", func() bool {
@@ -2059,23 +2051,19 @@ func TestDelegateAttentionRefusedLaunchReopensThroughTheWakeMap(t *testing.T) {
 	})
 	close(setupStop)
 	waitForTestSignal(t, setupDone, "the setup drive worker to exit before recovery")
-	testwait.Until(t, "the reopen to leave the failed report pending", func() bool {
-		pending, err := lane.delegateSess.pendingDelegateAttentionIDs()
-		if err != nil {
-			return false
-		}
-		for _, id := range pending {
-			if strings.Contains(id, delegateAttentionReopenMarker) {
-				return true
-			}
-		}
-		return false
-	})
+	refusedPending, refusedErr := lane.delegateSess.pendingDelegateAttentionIDs()
+	if refusedErr != nil {
+		t.Fatalf("read the pending rows after the refusal: %v", refusedErr)
+	}
+	if !slices.Equal(refusedPending, beforeRefusal) {
+		t.Fatalf("the refused launch changed the pending report identity: got %v, want %v", refusedPending, beforeRefusal)
+	}
 
-	// The wake the committed start dropped must be back: this is the production
-	// selection state the paced retry and the root's scheduled pass read.
+	// The committed start's wake set carries the still-pending row: this is the
+	// production selection state the paced retry and the root's scheduled pass
+	// read.
 	if !lane.root.delegateController.owesDelegateAttention(lane.fixture.delegateID) {
-		t.Fatal("the refused launch left the reopened report without a wake: the controller no longer owes the delegate attention")
+		t.Fatal("the refused launch left the pending report without a wake: the controller no longer owes the delegate attention")
 	}
 
 	// The foreign lock is temporary, so a scheduled pass that refuses it must
@@ -2087,21 +2075,14 @@ func TestDelegateAttentionRefusedLaunchReopensThroughTheWakeMap(t *testing.T) {
 		lane.root.drivePendingDelegateAttention()
 	}
 	if !lane.root.delegateController.owesDelegateAttention(lane.fixture.delegateID) {
-		t.Fatal("the foreign lock counted toward the permanent restore-failure give-up: the delegate no longer owes the reopened report")
+		t.Fatal("the foreign lock counted toward the permanent restore-failure give-up: the delegate no longer owes the pending report")
 	}
 	if !lane.root.delegateController.coldRestoreDriveCandidateLocked(lane.fixture.delegateID) {
-		t.Fatal("repeated foreign-lock refusals parked the delegate: the reopened report has no scheduled restore left")
+		t.Fatal("repeated foreign-lock refusals parked the delegate: the pending report has no scheduled restore left")
 	}
 	heldPending, heldErr := lane.delegateSess.pendingDelegateAttentionIDs()
-	heldReopened := false
-	for _, id := range heldPending {
-		if strings.Contains(id, delegateAttentionReopenMarker) {
-			heldReopened = true
-			break
-		}
-	}
-	if !heldReopened {
-		t.Fatalf("the reopened report left the delegate while its lane was held: pending=%v (%v)", heldPending, heldErr)
+	if heldErr != nil || !slices.Equal(heldPending, beforeRefusal) {
+		t.Fatalf("the report left the delegate while its lane was held: pending=%v (%v), want %v", heldPending, heldErr, beforeRefusal)
 	}
 
 	// Give the lane back. An unlocked lane is re-locked under the tree's own
@@ -2110,7 +2091,7 @@ func TestDelegateAttentionRefusedLaunchReopensThroughTheWakeMap(t *testing.T) {
 	wtGit(t, r.mainRoot, "worktree", "unlock", lane.lanePath)
 
 	// The root's scheduled drive pass, not a test-owned child drive, must select
-	// the re-armed wake and present the reopened report.
+	// the armed wake and present the pending report.
 	lane.root.drivePendingDelegateAttention()
 	select {
 	case <-entered:
@@ -2119,10 +2100,10 @@ func TestDelegateAttentionRefusedLaunchReopensThroughTheWakeMap(t *testing.T) {
 	// scheduling delay.
 	case <-time.After(30 * time.Second):
 		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
-		t.Fatalf("the re-armed wake never drove the reopened report (pending attention=%d (%v))", len(pending), pendErr)
+		t.Fatalf("the armed wake never drove the pending report (pending attention=%d (%v))", len(pending), pendErr)
 	}
 	if got, _ := wedgedSession.Load().(string); got != lane.delegateSess.id {
-		t.Fatalf("the reopened presentation ran on session %q, want the lane-owning delegate %q", got, lane.delegateSess.id)
+		t.Fatalf("the presentation ran on session %q, want the lane-owning delegate %q", got, lane.delegateSess.id)
 	}
 
 	releaseOnce.Do(func() { close(release) })
@@ -2471,10 +2452,8 @@ func TestDelegateAttentionSupersededClaimDoesNotBlockSecondPendingRow(t *testing
 	var releaseOnce sync.Once
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 	var wedgeOnce sync.Once
-	var wedgedSession atomic.Value
 	var sawSecondRow atomic.Bool
 	wedge := func(req llm.Request) llm.Response {
-		wedgedSession.Store(req.SessionID)
 		if requestMessagesContainText(req.Messages, secondRowContent) {
 			sawSecondRow.Store(true)
 		}
@@ -2486,11 +2465,7 @@ func TestDelegateAttentionSupersededClaimDoesNotBlockSecondPendingRow(t *testing
 	// delivery executes at the child's finalize-tail announce, and a parked
 	// announce keeps it from classifying inside the fixture window, where a
 	// finishing run's finalization cleanup could resolve the noted row as
-	// consumed at generation zero ahead of this test's drives — the
-	// loaded-runner interleave whose stranded gate chains reopens on the
-	// second row forever. The release below lands the delivery after both
-	// notify edges are disarmed and the gate is live, so the drives own both
-	// rows.
+	// consumed at generation zero ahead of this test's drives.
 	holdSharedDescendantAnnounce("superseded-claim-second-row")
 	lane := spawnSharedDescendantLane(t, r, "superseded-claim-second-row", "dlg_superseded0001", "034superseded0001", wedge)
 	lane.delegateSess.SetNotifyFunc(nil)
@@ -2500,54 +2475,29 @@ func TestDelegateAttentionSupersededClaimDoesNotBlockSecondPendingRow(t *testing
 	// only driver.
 	lane.sharedSub.sess.SetNotifyFunc(nil)
 
-	// Refuse every attention commit as busy until two distinct base rows
-	// claim one generation: the first drive's consume-and-reopen leaves the
-	// superseded claim, and the takeover this test pins is the second base row
-	// claiming that same recycled generation. Until the report row has landed
-	// and been consumed the refusal keeps chaining reopens, so however late
-	// the spawn's delivery classified, the first committed generation is
-	// exactly the takeover's. The gate is installed before the second row
-	// lands: the fixture's own settle tail re-arms the delegate's pending
-	// report, and a paced-retry drive that fires into the setup window would
-	// otherwise commit ungated and present the report on its own.
+	// Refuse the first attention commit as busy: the drive must retry, and the
+	// rows a refused start leaves pending must not wedge the other row behind
+	// it. The refusal lands on whichever row the first drive selects.
+	var refusals atomic.Int32
 	updateSessionTestConfig(lane.root, func(cfg *testConfig) {
 		cfg.delegateAttentionCommitStartFault = func() error {
-			fold, err := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
-			if err != nil {
+			if refusals.Add(1) <= 1 {
 				return errDelegateTargetBusy
 			}
-			bases := map[uint64]map[string]bool{}
-			for id, gen := range fold.resumeGenerations {
-				if gen == 0 {
-					continue
-				}
-				base := stripDelegateAttentionReopenSegments(id)
-				if bases[gen] == nil {
-					bases[gen] = map[string]bool{}
-				}
-				bases[gen][base] = true
-			}
-			for _, claimed := range bases {
-				if len(claimed) >= 2 {
-					return nil
-				}
-			}
-			return errDelegateTargetBusy
+			return nil
 		}
 	})
 
-	// The second row lands only once the gate is live: whichever row the
-	// first drive consumes — the spawn's report, or this row when the
-	// report's delivery has not classified yet — the other is the takeover.
+	// The second row lands before any drive can claim, so a refused start can
+	// leave two pending rows behind it.
 	if _, err := lane.delegateSess.appendDelegateNotificationDurably(secondRowID, secondRowContent); err != nil {
 		t.Fatalf("pend the second row: %v", err)
 	}
 
 	// Release the parked announce: both tails resume — the child's announce
 	// lands the report delivery, and the delegate's own tail re-arms whatever
-	// survived. The waits below cover both parked tails and the re-arm before
-	// the loop starts, so the scenario's budgets begin from the rows'
-	// arrival.
+	// survived. The waits below cover both parked tails before the loop
+	// starts, so the scenario's budgets begin from the rows' arrival.
 	lane.announceRelease()
 	lane.sharedSub.mu.Lock()
 	sharedDone := lane.sharedSub.done
@@ -2555,8 +2505,7 @@ func TestDelegateAttentionSupersededClaimDoesNotBlockSecondPendingRow(t *testing
 	select {
 	case <-sharedDone:
 	// TRIPWIRE: the tail finishes within a couple of drain passes of the
-	// release; 15s only fires on a genuine hang, absorbing a loaded shard's
-	// stretched finalize tails and git retries.
+	// release; 15s only fires on a genuine hang.
 	case <-time.After(15 * time.Second):
 		t.Fatalf("the retained child's finalize tail never finished after the announce release")
 	}
@@ -2565,9 +2514,7 @@ func TestDelegateAttentionSupersededClaimDoesNotBlockSecondPendingRow(t *testing
 	lane.delegateSub.mu.Unlock()
 	select {
 	case <-delegateDone:
-	// TRIPWIRE: the delegate's own tail re-arms whatever survived at its very
-	// end; 15s only fires on a genuine hang, absorbing a loaded shard's
-	// stretched finalize tails and git retries.
+	// TRIPWIRE: the delegate's finalize tail never finishing means a hang.
 	case <-time.After(15 * time.Second):
 		t.Fatalf("the delegate's finalize tail never finished after the announce release")
 	}
@@ -2578,54 +2525,26 @@ func TestDelegateAttentionSupersededClaimDoesNotBlockSecondPendingRow(t *testing
 	flushErr := lane.driveUntil(entered)
 	select {
 	case <-entered:
-	// TRIPWIRE: the first committed generation presents within a couple of
-	// loop passes of the report row landing; the bound only fires on a
-	// genuine hang, not a loaded shard's scheduling delay.
+	// TRIPWIRE: the retried drive presents within a couple of loop passes of
+	// the refused commit; the bound only fires on a genuine hang.
 	case <-time.After(30 * time.Second):
 		lastFlushErr := flushErr()
-		fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
-		refusal := "fold unreadable"
-		if foldErr == nil {
-			claimedGen := uint64(0)
-			for _, gen := range fold.resumeGenerations {
-				if gen != 0 && gen > claimedGen {
-					claimedGen = gen
-				}
-			}
-			refusal = "none"
-			for _, id := range fold.pendingIDs() {
-				if fold.resumeGenerations[id] != 0 {
-					continue
-				}
-				if err := validateDelegateAttentionResolutions(fold, []string{id}, delegateAttentionConsumed, claimedGen); err != nil {
-					refusal = fmt.Sprintf("%s: %v", id, err)
-					break
-				}
-			}
-		}
 		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
-		t.Fatalf("the superseded claim stranded both rows (pending=%d (%v); claims=%v; unclaimed-row accept=%q; flush=%v)",
-			len(pending), pendErr, fold.resumeGenerations, refusal, lastFlushErr)
-	}
-	if got, _ := wedgedSession.Load().(string); got != lane.delegateSess.id {
-		t.Fatalf("the presentation ran on session %q, want the lane-owning delegate %q", got, lane.delegateSess.id)
+		fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
+		resolutions := fmt.Sprintf("%v", foldErr)
+		if foldErr == nil {
+			resolutions = fmt.Sprintf("%v pending=%v", fold.resolutions, fold.pendingIDs())
+		}
+		t.Fatalf("the retried drive never presented after a refused commit (pending=%d (%v); refusals=%d; fold=%s; flush=%v)",
+			len(pending), pendErr, refusals.Load(), resolutions, lastFlushErr)
 	}
 	if !sawSecondRow.Load() {
 		t.Fatal("the presentation's request did not carry the second row's content")
 	}
 
-	// The wedged turn settles cleanly once released.
+	// The wedged turn settles cleanly once released, and it consumes both rows
+	// the request presented — the refused start left nothing stranded.
 	releaseOnce.Do(func() { close(release) })
-	testwait.Until(t, "the delegate's attention turn to finish after release", func() bool {
-		lane.delegateSub.mu.Lock()
-		running := lane.delegateSub.running
-		lane.delegateSub.mu.Unlock()
-		return !running
-	})
-
-	// Both rows delivered: the fold holds nothing pending, one generation is
-	// claimed by two distinct base rows — the takeover this test pins — and
-	// the first-consumed row's reopen resolved after riding the presentation.
 	testwait.Until(t, "both rows to resolve after the presentation", func() bool {
 		fold, err := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
 		return err == nil && len(fold.pendingIDs()) == 0
@@ -2634,37 +2553,8 @@ func TestDelegateAttentionSupersededClaimDoesNotBlockSecondPendingRow(t *testing
 	if foldErr != nil {
 		t.Fatalf("read the delegate's attention fold after the presentation: %v", foldErr)
 	}
-	genBases := map[uint64]map[string]bool{}
-	for id, gen := range fold.resumeGenerations {
-		if gen == 0 {
-			continue
-		}
-		base := stripDelegateAttentionReopenSegments(id)
-		if genBases[gen] == nil {
-			genBases[gen] = map[string]bool{}
-		}
-		genBases[gen][base] = true
-	}
-	takeover := false
-	for _, bases := range genBases {
-		if len(bases) >= 2 {
-			takeover = true
-		}
-	}
-	if !takeover {
-		t.Fatalf("no second base row claimed a recycled generation (claims=%v resolutions=%v)", fold.resumeGenerations, fold.resolutions)
-	}
-	reopenedResolved := false
-	for id, gen := range fold.resumeGenerations {
-		if gen == 0 {
-			continue
-		}
-		if _, resolved := fold.resolutions[delegateAttentionReopenID(id, gen)]; resolved {
-			reopenedResolved = true
-		}
-	}
-	if !reopenedResolved {
-		t.Fatalf("the first-consumed row's reopen never resolved (claims=%v resolutions=%v)", fold.resumeGenerations, fold.resolutions)
+	if len(fold.order) == 0 || fold.resolutions[secondRowID] == "" {
+		t.Fatalf("the second row did not present (order=%v resolutions=%v)", fold.order, fold.resolutions)
 	}
 }
 
@@ -2870,15 +2760,15 @@ func TestDelegateAttentionHeldRowPresentsFromTheHistoryTail(t *testing.T) {
 }
 
 // A user's stop of an in-flight attention presentation owns the quiet. The
-// settle tail still reopens the consumed report — the row stays pending and
-// recoverable through a wake from a new event — a later attention row, a
-// restart reconcile or an explicit send — never the armed wake the stopped
-// generation's commit left behind. Nothing may re-arm the automatic drive: a
-// re-arm would at once start
-// the generation the user just cancelled and re-present the report. The
-// owner's notify hop is wired the way the daemon runs it, so the arm's
-// consequence reaches a committed generation without the test driving it.
-func TestDelegateAttentionUserStopsRunWithoutReArmingTheReport(t *testing.T) {
+// drive consumed nothing, so the report stays pending under the identity the
+// child wrote and is recoverable through a wake from a new event — a later
+// attention row, a restart reconcile or an explicit send — never the armed
+// wake the stopped generation's commit left behind. The settle holds that row
+// from the automatic drives: without the hold the stale armed wake would at
+// once start the generation the user just cancelled and re-present the report.
+// The owner's notify hop is wired the way the daemon runs it, so the hold's
+// consequence reaches a production drive pass without the test driving it.
+func TestDelegateAttentionUserStopHoldsTheUnpresentedReport(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	entered := make(chan struct{})
@@ -2969,49 +2859,72 @@ func TestDelegateAttentionUserStopsRunWithoutReArmingTheReport(t *testing.T) {
 		t.Fatal("the user-stopped run never completed its settle tail")
 	}
 
-	// The contract, read from the state the settle left: nothing arms the
-	// stopped delegate's wake — the controller holds no pending attention
-	// entry, and the session owes no arm retry — so no drive can select it
-	// and no generation can commit. The settle tail ran before runDone
-	// closed, so the re-arm decision is already final here; the owner's
-	// wired notify hop would drive anything that armed.
-	if lane.root.delegateController.hasPendingDelegateAttention() {
-		t.Fatalf("the user's stop left the delegate's attention armed, want nothing armed to drive the cancelled generation")
-	}
-	if lane.delegateSess.hasPendingDelegateAttentionArmRetry() {
-		t.Fatal("the user's stop left a pending attention arm retry, want nothing armed to drive the cancelled generation")
-	}
-
-	// The stop owned the quiet, not the loss: the reopen kept the report
-	// pending under its fresh identity, recoverable by a later wake, a
-	// restart reconcile or an explicit send.
+	// The contract, read from the state the settle left: the drive consumed
+	// nothing, so the report is still pending under the identity the child
+	// wrote, and the stop holds it out of the automatic drives. The settle tail
+	// ran before runDone closed, so the hold is already final here.
 	fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
 	if foldErr != nil {
 		t.Fatalf("read the delegate's attention fold after the stop: %v", foldErr)
 	}
-	var reopenedPending bool
-	for _, id := range fold.pendingIDs() {
-		if strings.Contains(id, "/reopened/") {
-			reopenedPending = true
-		}
+	pending := fold.pendingIDs()
+	if len(pending) != 1 || strings.Contains(pending[0], delegateAttentionReopenMarker) {
+		t.Fatalf("the user-stopped run's report is not pending under its own identity (pending=%v resolutions=%v)", pending, fold.resolutions)
 	}
-	if !reopenedPending {
-		t.Fatalf("the user-stopped run's report was not left pending and recoverable (pending=%v resolutions=%v)", fold.pendingIDs(), fold.resolutions)
+	if _, resolved := fold.resolutions[pending[0]]; resolved {
+		t.Fatalf("the user's stop consumed the report (resolutions=%v)", fold.resolutions)
+	}
+	lane.delegateSess.attentionMu.Lock()
+	held := lane.delegateSess.delegateAttentionHeldFromAutomaticDriveLocked(pending[0])
+	lane.delegateSess.attentionMu.Unlock()
+	if !held {
+		t.Fatal("the user's stop did not hold the unpresented report from automatic drives")
+	}
+	// A production drive pass must find nothing to start: the held row cannot
+	// commit a successor generation, so the commit is the observable.
+	lane.root.delegateController.mu.Lock()
+	generation := lane.root.delegateController.durable[lane.fixture.delegateID].Generation
+	lane.root.delegateController.mu.Unlock()
+	lane.root.drivePendingDelegateAttention()
+	lane.root.delegateController.mu.Lock()
+	startedGeneration := lane.root.delegateController.durable[lane.fixture.delegateID].Generation
+	lane.root.delegateController.mu.Unlock()
+	if startedGeneration != generation {
+		t.Fatalf("the user's stop let a successor generation start: generation %d -> %d", generation, startedGeneration)
 	}
 }
 
 // A user's stop must keep its quiet when another row was pending at the
-// stopped generation's commitStart: the accept's capture replaced the
-// controller's wake with the pending rows it excluded, so the stale armed
-// wake still fires once the announce releases — the tail's skipped re-arm
-// disarms nothing — and without a drive-side hold the next generation
-// presents the other row PLUS the reopened report riding it, the immediate
-// restart the stop exists to prevent. The other row's owed presentation must
-// survive the hold, and the reopened report must stay recoverable: the other
-// row's own tail re-arms the remaining attention, and that fresh arm is a
-// wake from a new event that presents the report — never the stale armed
-// one.
-func TestDelegateAttentionUserStopHoldsReopenedRowFromStaleArmedWake(t *testing.T) {
+// stopped generation's commitStart: the commit's wake set still carries the
+// unpresented trigger, so the stale armed wake fires once the announce
+// releases, and without a drive-side hold the next generation presents the
+// other row PLUS the stopped report riding it, the immediate restart the stop
+// exists to prevent. The other row's owed presentation must survive the hold,
+// and the stopped report must stay recoverable: the other row's own tail
+// re-arms the remaining attention, and that fresh arm is a wake from a new
+// event that presents the report — never the stale armed one.
+// attentionRunGenerations maps each attention row the journal names to the
+// generation that was started to present it. It is the durable answer to
+// "did this row present on its own generation, and was that generation later
+// than another row's": the fold carries no ordering of its own once the reopen
+// machinery is gone, and a request log is not a durable oracle.
+func attentionRunGenerations(t *testing.T, controller *delegateTreeController, delegateID string) map[string]uint64 {
+	t.Helper()
+	events, err := controller.store.Load()
+	if err != nil {
+		t.Fatalf("load the delegate journal: %v", err)
+	}
+	generations := make(map[string]uint64)
+	for _, event := range events {
+		if event.DelegateID != delegateID || event.RunStarted == nil || event.RunStarted.AttentionID == "" {
+			continue
+		}
+		generations[event.RunStarted.AttentionID] = event.RunStarted.Generation
+	}
+	return generations
+}
+
+func TestDelegateAttentionUserStopHoldsUnpresentedRowFromStaleArmedWake(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	const secondRowID = "delegate:user-stop-second-pending-row"
@@ -3118,26 +3031,10 @@ func TestDelegateAttentionUserStopHoldsReopenedRowFromStaleArmedWake(t *testing.
 	if stopFoldErr != nil {
 		t.Fatalf("read the delegate's attention fold at the stop: %v", stopFoldErr)
 	}
-	var claimedID, otherID string
-	for _, id := range stopFold.order {
-		if strings.Contains(id, delegateAttentionReopenMarker) {
-			t.Fatalf("the stop's fold already holds a reopened row (%q)", id)
-		}
-		if _, resolved := stopFold.resolutions[id]; resolved {
-			if claimedID != "" {
-				t.Fatalf("two original rows were consumed before the stop (%q, %q)", claimedID, id)
-			}
-			claimedID = id
-		} else {
-			if otherID != "" {
-				t.Fatalf("two original rows survived the stop pending (%q, %q)", otherID, id)
-			}
-			otherID = id
-		}
-	}
-	if claimedID == "" || otherID == "" {
-		t.Fatalf("the stop did not leave the one-consumed-one-pending shape (claimed=%q other=%q resolutions=%v)",
-			claimedID, otherID, stopFold.resolutions)
+	// The drive consumed nothing before the stop, so both originals are still
+	// pending and nothing is resolved yet.
+	if pending := stopFold.pendingIDs(); len(pending) != 2 || len(stopFold.resolutions) != 0 {
+		t.Fatalf("the stop's fold = pending:%v resolutions:%v, want both originals pending", pending, stopFold.resolutions)
 	}
 	lane.delegateSub.mu.Lock()
 	runDone := lane.delegateSub.done
@@ -3166,25 +3063,33 @@ func TestDelegateAttentionUserStopHoldsReopenedRowFromStaleArmedWake(t *testing.
 	if foldErr != nil {
 		t.Fatalf("read the delegate's attention fold after the stop: %v", foldErr)
 	}
-	var reopenedID string
+	// The settle consumed nothing and re-delivered nothing: the trigger is
+	// still pending under its own identity, and the stop holds exactly it out
+	// of the automatic drives. The other original stays presentable.
+	var claimedID, otherID string
+	lane.delegateSess.attentionMu.Lock()
 	for _, id := range fold.order {
-		if strings.Contains(id, delegateAttentionReopenMarker) {
-			if reopenedID != "" {
-				t.Fatalf("the settle left two reopened rows (%q, %q)", reopenedID, id)
+		if _, resolved := fold.resolutions[id]; resolved {
+			lane.delegateSess.attentionMu.Unlock()
+			t.Fatalf("the user's stop consumed a row (resolutions=%v)", fold.resolutions)
+		}
+		if lane.delegateSess.delegateAttentionHeldFromAutomaticDriveLocked(id) {
+			if claimedID != "" {
+				lane.delegateSess.attentionMu.Unlock()
+				t.Fatalf("the settle held two rows (%q, %q)", claimedID, id)
 			}
-			reopenedID = id
+			claimedID = id
 			continue
 		}
+		if otherID != "" {
+			lane.delegateSess.attentionMu.Unlock()
+			t.Fatalf("the settle left two unheld rows (%q, %q)", otherID, id)
+		}
+		otherID = id
 	}
-	if reopenedID == "" {
-		t.Fatalf("the stop's settle did not reopen the claimed row (claimed=%q resolutions=%v)",
-			claimedID, fold.resolutions)
-	}
-	if stripDelegateAttentionReopenSegments(reopenedID) != claimedID {
-		t.Fatalf("the reopened row %q does not reopen the claimed row %q", reopenedID, claimedID)
-	}
-	if _, resolved := fold.resolutions[reopenedID]; resolved {
-		t.Fatalf("the reopened row was presented before the other original's own presentation (resolutions=%v)", fold.resolutions)
+	lane.delegateSess.attentionMu.Unlock()
+	if claimedID == "" || otherID == "" {
+		t.Fatalf("the stop's settle did not leave one held row and one presentable row (order=%v resolutions=%v)", fold.order, fold.resolutions)
 	}
 	claimedText, otherText := fold.content[claimedID].Text(), fold.content[otherID].Text()
 	stateDump := func() string {
@@ -3239,28 +3144,33 @@ func TestDelegateAttentionUserStopHoldsReopenedRowFromStaleArmedWake(t *testing.
 	if foldErr != nil {
 		t.Fatalf("read the delegate's attention fold after the other row presented: %v", foldErr)
 	}
-	otherGen := fold.resumeGenerations[otherID]
-	// The reopened report must resolve on a LATER generation than the other
-	// row's: riding the other row's presentation resolves at its generation,
-	// while the hold keeps it out of that presentation entirely and the fresh
-	// arm — the other row's own settle tail re-arming the remaining
-	// attention — presents it on a generation of its own. The wait tolerates
-	// the recovery having fired before the other row's resolution was even
-	// observed; the generation comparison separates the two either way.
-	testwait.Until(t, "the reopened report to resolve", func() bool {
+	// The held report must be presented on its own, later request: riding the
+	// other row's presentation (the parked request carried both) is exactly the
+	// immediate restart the hold prevents, and the fresh arm — the other row's
+	// own settle tail re-arming the remaining attention — presents it after.
+	testwait.Until(t, "the held report to resolve", func() bool {
 		live, err := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
-		return err == nil && live.resolutions[reopenedID] != ""
+		return err == nil && live.resolutions[claimedID] != ""
 	})
 	fold, foldErr = readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
 	if foldErr != nil {
-		t.Fatalf("read the delegate's attention fold after the reopened row resolved: %v", foldErr)
+		t.Fatalf("read the delegate's attention fold after the held row resolved: %v", foldErr)
 	}
-	if fold.resumeGenerations[reopenedID] <= otherGen {
-		t.Fatalf("the stale armed wake presented the stopped run's reopened report riding the other row's generation (reopened gen %d, other row gen %d; %s)",
-			fold.resumeGenerations[reopenedID], otherGen, stateDump())
+	if fold.resolutions[claimedID] != delegateAttentionConsumed {
+		t.Fatalf("the held row did not resolve as presented on the fresh arm (resolutions=%v; %s)", fold.resolutions, stateDump())
 	}
-	if fold.resolutions[reopenedID] != delegateAttentionConsumed {
-		t.Fatalf("the reopened row did not resolve as presented on the fresh arm (resolutions=%v; %s)", fold.resolutions, stateDump())
+	// Each row must have presented on a generation of its own, the held report
+	// later than the row the stale armed wake carried. The journal names each
+	// attention generation's row, so the order is durable and exact.
+	generations := attentionRunGenerations(t, lane.root.delegateController, lane.fixture.delegateID)
+	reportGeneration, otherGeneration := generations[claimedID], generations[otherID]
+	if reportGeneration == 0 || otherGeneration == 0 {
+		t.Fatalf("the journal does not name both rows' generations (report gen=%d, other gen=%d; %s)",
+			reportGeneration, otherGeneration, stateDump())
+	}
+	if reportGeneration <= otherGeneration {
+		t.Fatalf("the stale armed wake presented the held report riding the other row's generation (report gen=%d, other gen=%d; %s)",
+			reportGeneration, otherGeneration, stateDump())
 	}
 }
 
@@ -3447,40 +3357,24 @@ func TestDelegateAttentionHeldUpdateDoesNotLoopTheFinalizationDrain(t *testing.T
 	stopLanded.Store(true)
 	// The stop's shape, read while the parked request still holds the delegate
 	// busy: every drive skips a busy delegate, so the pending set cannot move
-	// under this read. The update is the consumed claim; exactly one rider
-	// survives pending.
+	// under this read. Nothing is consumed before a run presents, so both rows
+	// are still pending.
 	stopFold, stopFoldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
 	if stopFoldErr != nil {
 		t.Fatalf("read the delegate's attention fold at the stop: %v", stopFoldErr)
 	}
-	if _, claimed := stopFold.resolutions[updateID]; !claimed {
-		t.Fatalf("the first drive did not claim the child's update (pending=%v resolutions=%v)",
-			stopFold.pendingIDs(), stopFold.resolutions)
+	if stopFold.resolutions[updateID] != "" || stopFold.resolutions[riderRowID] != "" {
+		t.Fatalf("a scenario row was consumed before the presentation (%v)", stopFold.resolutions)
 	}
-	var riderID string
-	for _, id := range stopFold.pendingIDs() {
-		if strings.Contains(id, delegateAttentionReopenMarker) {
-			t.Fatalf("the stop's fold already holds a reopened row (%q)", id)
-		}
-		if riderID != "" {
-			t.Fatalf("two rider rows survived the stop pending (%q, %q)", riderID, id)
-		}
-		riderID = id
-	}
-	if riderID == "" {
-		t.Fatalf("the stop left no rider pending, so no stale armed wake exists (pending=%v resolutions=%v)",
-			stopFold.pendingIDs(), stopFold.resolutions)
-	}
-	if riderID != riderRowID {
-		t.Fatalf("the pending rider %q is not the scenario's second row, so earlier rows are still in play (pending=%v resolutions=%v)",
-			riderID, stopFold.pendingIDs(), stopFold.resolutions)
+	if pending := stopFold.pendingIDs(); len(pending) != 2 {
+		t.Fatalf("the stop's fold = pending:%v, want both rows pending", pending)
 	}
 	lane.delegateSub.mu.Lock()
 	runDone := lane.delegateSub.done
 	lane.delegateSub.mu.Unlock()
 	// The parked request settles through the cancel; the settle tail — the
-	// reopen and the re-arm decision included — runs before the run's done
-	// channel closes.
+	// stop's hold and the re-arm decision included — runs before the run's
+	// done channel closes.
 	releaseOnce.Do(func() { close(release) })
 	select {
 	case <-runDone:
@@ -3490,37 +3384,33 @@ func TestDelegateAttentionHeldUpdateDoesNotLoopTheFinalizationDrain(t *testing.T
 		t.Fatal("the user-stopped run never completed its settle tail")
 	}
 
-	// The settle's shape: the update reopened under a fresh identity that
-	// keeps the update classification — the premise this scenario turns on —
-	// and held out of the automatic drives, so its pending state is
-	// deterministic here.
+	// The settle holds exactly the update — the trigger the stopped run
+	// carried — out of the automatic drives; the rider stays presentable. That
+	// hold is what keeps the update out of the finalization drain's list.
 	fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
 	if foldErr != nil {
 		t.Fatalf("read the delegate's attention fold after the stop: %v", foldErr)
 	}
-	var reopenedID string
-	for _, id := range fold.order {
-		if strings.Contains(id, delegateAttentionReopenMarker) {
-			if reopenedID != "" {
-				t.Fatalf("the settle left two reopened rows (%q, %q)", reopenedID, id)
-			}
-			reopenedID = id
-		}
+	if fold.resolutions[updateID] != "" || fold.resolutions[riderRowID] != "" {
+		t.Fatalf("the stop consumed a scenario row (resolutions=%v)", fold.resolutions)
 	}
-	if reopenedID == "" {
-		t.Fatalf("the stop's settle did not reopen the update (resolutions=%v)", fold.resolutions)
+	lane.delegateSess.attentionMu.Lock()
+	heldUpdate := lane.delegateSess.delegateAttentionHeldFromAutomaticDriveLocked(updateID)
+	heldRider := lane.delegateSess.delegateAttentionHeldFromAutomaticDriveLocked(riderRowID)
+	lane.delegateSess.attentionMu.Unlock()
+	if !heldUpdate || heldRider {
+		t.Fatalf("the settle held the wrong rows (update held=%t, rider held=%t; pending=%v)",
+			heldUpdate, heldRider, fold.pendingIDs())
 	}
-	if stripDelegateAttentionReopenSegments(reopenedID) != updateID {
-		t.Fatalf("the reopened row %q does not reopen the update %q", reopenedID, updateID)
+	if !isDelegateUpdateAttentionID(updateID) {
+		t.Fatalf("the held row %q lost the update classification", updateID)
 	}
-	if !isDelegateUpdateAttentionID(reopenedID) {
-		t.Fatalf("the reopened row %q lost the update classification", reopenedID)
-	}
+	stopGenerations := attentionRunGenerations(t, lane.root.delegateController, lane.fixture.delegateID)
 
 	// The drain contract, read from the journal: the rider's run — the one the
-	// stale armed wake owes — must FINISH, and finishing means its
-	// finalization drain exited. The journal is the oracle because the run's
-	// own done channel belongs to whichever generation last started.
+	// stale armed wake owes — must FINISH, and finishing means its finalization
+	// drain exited. The journal is the oracle because the run's own done channel
+	// belongs to whichever generation last started.
 	latestFinished := func() (uint64, bool) {
 		events, err := lane.root.delegateController.store.Load()
 		if err != nil {
@@ -3561,29 +3451,35 @@ func TestDelegateAttentionHeldUpdateDoesNotLoopTheFinalizationDrain(t *testing.T
 		gen, ok := latestFinished()
 		return ok && gen > stoppedGen
 	})
+	// The held update never rode the rider's generation: the journal names no
+	// attention generation for it while the rider's run has already finished.
+	generations := attentionRunGenerations(t, lane.root.delegateController, lane.fixture.delegateID)
+	if generations[riderRowID] == stopGenerations[riderRowID] {
+		t.Fatalf("the rider never presented on a generation of its own (%s)", drainState())
+	}
+	if updateGeneration := generations[updateID]; updateGeneration != stopGenerations[updateID] {
+		t.Fatalf("the held update rode the rider's generation (%d; %s)", updateGeneration, drainState())
+	}
 
 	// The recovery contract: the rider's settle tail re-arms the remaining
 	// attention, and that fresh arm — a wake from a new event — releases the
-	// hold and presents the held update on a generation of its own, never
-	// riding the rider's presentation.
-	testwait.Until(t, "the held reopened update to resolve", func() bool {
+	// hold and presents the update on a generation of its own.
+	testwait.Until(t, "the held update to present", func() bool {
 		live, err := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
-		return err == nil && live.resolutions[reopenedID] != ""
+		return err == nil && live.resolutions[updateID] != ""
 	})
+	generations = attentionRunGenerations(t, lane.root.delegateController, lane.fixture.delegateID)
+	updateGeneration, riderGeneration := generations[updateID], generations[riderRowID]
+	if updateGeneration <= riderGeneration {
+		t.Fatalf("the held update rode the rider's generation instead of its own (update gen %d, rider gen %d; %s)",
+			updateGeneration, riderGeneration, drainState())
+	}
 	fold, foldErr = readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
 	if foldErr != nil {
 		t.Fatalf("read the delegate's attention fold after the update resolved: %v", foldErr)
 	}
-	riderGen, riderResolved := fold.resumeGenerations[riderID]
-	if !riderResolved {
-		t.Fatalf("the rider row never presented (resolutions=%v; %s)", fold.resolutions, drainState())
-	}
-	if fold.resumeGenerations[reopenedID] <= riderGen {
-		t.Fatalf("the held update rode the rider's generation instead of its own (reopened gen %d, rider gen %d; %s)",
-			fold.resumeGenerations[reopenedID], riderGen, drainState())
-	}
-	if fold.resolutions[reopenedID] != delegateAttentionConsumed {
-		t.Fatalf("the reopened update did not resolve as presented on its own generation (resolutions=%v; %s)",
+	if fold.resolutions[updateID] != delegateAttentionConsumed {
+		t.Fatalf("the held update did not resolve as presented on its own generation (resolutions=%v; %s)",
 			fold.resolutions, drainState())
 	}
 }
@@ -3639,7 +3535,12 @@ func TestDelegateAttentionResidentDrivePassDoesNotRebuildReleasedStopHold(t *tes
 	var releaseOnce sync.Once
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 	var wedgeOnce sync.Once
+	var requestsMu sync.Mutex
+	var requests [][]llm.Message
 	wedge := func(req llm.Request) llm.Response {
+		requestsMu.Lock()
+		requests = append(requests, append([]llm.Message{}, req.Messages...))
+		requestsMu.Unlock()
 		wedgeOnce.Do(func() { close(entered) })
 		<-release
 		return agenttest.FinalResponse("done")
@@ -3682,7 +3583,7 @@ func TestDelegateAttentionResidentDrivePassDoesNotRebuildReleasedStopHold(t *tes
 		stopGated := lane.root.childStopGated(lane.delegateSess.id)
 		fatalGated := lane.root.childFatalRunGated(lane.delegateSess.id)
 		committedStart := lane.root.childCommittedSendStart(lane.delegateSess.id)
-		reserved := lane.root.delegateController.reservedAttentionID(lane.delegateSub.sess)
+		reservedCount := delegateReservationCount(lane.root.delegateController, lane.fixture.delegateID)
 		reopenRefused := lane.root.delegateController.attentionReopenRefused(lane.fixture.delegateID)
 		diag := lane.attentionDiagnostics()
 		// The parked presentation holds the scripted adapter's mutex while it
@@ -3713,10 +3614,10 @@ func TestDelegateAttentionResidentDrivePassDoesNotRebuildReleasedStopHold(t *tes
 		if len(historyLog) > 24 {
 			historyLog = historyLog[len(historyLog)-24:]
 		}
-		t.Fatalf("the presentation never reached its model request (pending attention=%d (%v), child pending=%d (%v), flush=%v, deferred deliveries=%v, requests=%v; delegate sub closed=%v running=%v driving=%v finalizing=%v attentionDriveRefused=%v, child run=%v/%v/%v status=%v turns=%d endEmitted=%v; gates: stop=%v fatal=%v committedSendStart=%v, reserved attention=%q, reopen refused=%v; controller: blockingStartWork=%v hasReservation=%v needsAttention=%v notedWakes=%v; durable: delegate phase=%s gen=%d open=%v pending=%v, own delivery %s claim=%v(held=%v startRefused=%v) receipt=%v(retryable=%v inline=%v); child phase=%s gen=%d open=%v prepared=%v pending=%v; report %s claim=%v(waiter=%v held=%v startRefused=%v) receipt=%v(retryable=%v inline=%v); owner live=%v runtimeIsDelegate=%v receiver=%s; classified=%v; live fold: %s; resident history: %v)",
+		t.Fatalf("the presentation never reached its model request (pending attention=%d (%v), child pending=%d (%v), flush=%v, deferred deliveries=%v, requests=%v; delegate sub closed=%v running=%v driving=%v finalizing=%v attentionDriveRefused=%v, child run=%v/%v/%v status=%v turns=%d endEmitted=%v; gates: stop=%v fatal=%v committedSendStart=%v, attention reservations=%d, reopen refused=%v; controller: blockingStartWork=%v hasReservation=%v needsAttention=%v notedWakes=%v; durable: delegate phase=%s gen=%d open=%v pending=%v, own delivery %s claim=%v(held=%v startRefused=%v) receipt=%v(retryable=%v inline=%v); child phase=%s gen=%d open=%v prepared=%v pending=%v; report %s claim=%v(waiter=%v held=%v startRefused=%v) receipt=%v(retryable=%v inline=%v); owner live=%v runtimeIsDelegate=%v receiver=%s; classified=%v; live fold: %s; resident history: %v)",
 			len(pending), pendErr, len(childPending), childPendErr, lastFlushErr, deferred, requestLog,
 			closed, running, driving, finalizing, attentionRefused, childRunning, childClosed, childFinalizing, childStatus, childTurns, childEndEmitted,
-			stopGated, fatalGated, committedStart, reserved, reopenRefused,
+			stopGated, fatalGated, committedStart, reservedCount, reopenRefused,
 			diag.blockingStartWork, diag.hasReservation, diag.needsAttention, diag.notedWakes,
 			diag.delegatePhase, diag.delegateGen, diag.delegateOpen, diag.delegateDurable,
 			diag.ownDeliveryID, diag.ownClaimPresent, diag.ownClaimHeld, diag.ownClaimStartRefused, diag.ownReceiptPresent, diag.ownReceiptRetryable, diag.ownReceiptInline,
@@ -3730,8 +3631,8 @@ func TestDelegateAttentionResidentDrivePassDoesNotRebuildReleasedStopHold(t *tes
 	// the explicit root drive this test pins.
 	waitForTestSignal(t, setupDone, "the setup drive worker to exit after the parked request entered")
 
-	// The user stops the parked run; its settle reopens the consumed report
-	// and holds the reopened row from automatic drives.
+	// The user stops the parked run; the drive consumed nothing, so its settle
+	// holds the still-pending report from automatic drives.
 	if got, err := lane.root.StopDelegateRun(lane.fixture.delegateID); err != nil || got != appwire.DelegateStopStopping {
 		t.Fatalf("StopDelegateRun = %q, %v; want stopping", got, err)
 	}
@@ -3750,21 +3651,15 @@ func TestDelegateAttentionResidentDrivePassDoesNotRebuildReleasedStopHold(t *tes
 	if foldErr != nil {
 		t.Fatalf("read the delegate's attention fold after the stop: %v", foldErr)
 	}
-	var reopenedID string
-	for _, id := range fold.order {
-		if strings.Contains(id, delegateAttentionReopenMarker) {
-			if reopenedID != "" {
-				t.Fatalf("the settle left two reopened rows (%q, %q)", reopenedID, id)
-			}
-			reopenedID = id
-		}
+	pendingAfterStop := fold.pendingIDs()
+	if len(pendingAfterStop) != 1 || strings.Contains(pendingAfterStop[0], delegateAttentionReopenMarker) {
+		t.Fatalf("the stop's settle left pending=%v, want the report pending under its own identity", pendingAfterStop)
 	}
-	if reopenedID == "" {
-		t.Fatalf("the stop's settle did not reopen the consumed report (resolutions=%v)", fold.resolutions)
-	}
+	reopenedID := pendingAfterStop[0]
 	if _, resolved := fold.resolutions[reopenedID]; resolved {
-		t.Fatalf("the stop's settle presented its own reopened report (resolutions=%v)", fold.resolutions)
+		t.Fatalf("the stop's settle consumed its own unpresented report (resolutions=%v)", fold.resolutions)
 	}
+	reportText := fold.content[reopenedID].Text()
 	lane.delegateSess.attentionMu.Lock()
 	held := lane.delegateSess.delegateAttentionHeldFromAutomaticDriveLocked(reopenedID)
 	lane.delegateSess.attentionMu.Unlock()
@@ -3810,24 +3705,35 @@ func TestDelegateAttentionResidentDrivePassDoesNotRebuildReleasedStopHold(t *tes
 	// timer, and disarming it here beats the first tick by its whole pacing.
 	lane.root.resetDelegateAttentionRetry()
 
-	// The released report and the new row shared one presentation: exactly
-	// one of them carries the pass's resume claim and the other rode it — a
-	// rider resolves with no claim of its own generation. The pre-fix
-	// delayed shape instead gives each row its own claim, the released
-	// report's strictly the later.
+	// The released report and the new row shared one presentation: the request
+	// that presents the new row also carries the released report. The pre-fix
+	// delayed shape instead presents the new row alone and lets the report
+	// reach the model only after that row's own settle re-arms it.
+	sharedPresentation := false
+	newRowSeen := false
 	testwait.Until(t, "the new event's row and the released report to present together", func() bool {
 		live, err := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
-		return err == nil && live.resolutions[newEventRowID] != "" && live.resolutions[reopenedID] != ""
+		if err != nil {
+			return false
+		}
+		newResolved := live.resolutions[newEventRowID] != ""
+		reportResolved := live.resolutions[reopenedID] != ""
+		if newResolved && !newRowSeen {
+			// The turn's finish resolves every row its request carried in one
+			// append, so both appearing at first sight of the new row is the
+			// shared presentation; a report that resolves later rode a
+			// separate generation.
+			newRowSeen = true
+			sharedPresentation = reportResolved
+		}
+		return newResolved && reportResolved
 	})
 	fold, foldErr = readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
 	if foldErr != nil {
 		t.Fatalf("read the delegate's attention fold after the presentation: %v", foldErr)
 	}
-	reopenedGen := fold.resumeGenerations[reopenedID]
-	newRowGen := fold.resumeGenerations[newEventRowID]
-	if (reopenedGen == 0) == (newRowGen == 0) {
-		t.Fatalf("the released report and the new row did not share one presentation (reopened gen %d, new row gen %d; resolutions=%v)",
-			reopenedGen, newRowGen, fold.resolutions)
+	if !sharedPresentation {
+		t.Fatalf("the released report %q did not share the new row's presentation (resolutions=%v)", reportText, fold.resolutions)
 	}
 }
 
@@ -4123,43 +4029,39 @@ func TestDelegateAttentionUserStopHoldSurvivesIdleReleaseRestore(t *testing.T) {
 		t.Fatal("the user-stopped run never completed its settle tail")
 	}
 
-	// The scenario's own shape, read from the fold the settle left: exactly
-	// one original consumed — the claimed row, reopened under a fresh
-	// identity — the other original still pending, and the reopened row
-	// pending too. The parked request carried both originals, the proof the
-	// claim captured its rider: that capture is what left the stale armed
-	// wake behind.
+	// The scenario's own shape, read from the fold the settle left: nothing is
+	// consumed, the row the stopped run carried is held out of the automatic
+	// drives, and the other original stays presentable. The parked request
+	// carried both originals, the proof the run's accept captured its rider:
+	// that capture is what left the stale armed wake behind.
 	fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
 	if foldErr != nil {
 		t.Fatalf("read the delegate's attention fold after the stop: %v", foldErr)
 	}
-	var claimedID, otherID, reopenedID string
+	var claimedID, otherID string
+	lane.delegateSess.attentionMu.Lock()
 	for _, id := range fold.order {
-		if strings.Contains(id, delegateAttentionReopenMarker) {
-			if reopenedID != "" {
-				t.Fatalf("the settle left two reopened rows (%q, %q)", reopenedID, id)
-			}
-			reopenedID = id
-			continue
-		}
-		if _, resolved := fold.resolutions[id]; resolved {
+		if lane.delegateSess.delegateAttentionHeldFromAutomaticDriveLocked(id) {
 			if claimedID != "" {
-				t.Fatalf("two original rows were consumed before the stop (%q, %q)", claimedID, id)
+				lane.delegateSess.attentionMu.Unlock()
+				t.Fatalf("the settle held two rows (%q, %q)", claimedID, id)
 			}
 			claimedID = id
-		} else {
-			if otherID != "" {
-				t.Fatalf("two original rows survived the stop pending (%q, %q)", otherID, id)
-			}
-			otherID = id
+			continue
 		}
+		if otherID != "" {
+			lane.delegateSess.attentionMu.Unlock()
+			t.Fatalf("the settle left two unheld rows (%q, %q)", otherID, id)
+		}
+		otherID = id
 	}
-	if claimedID == "" || otherID == "" || reopenedID == "" {
-		t.Fatalf("the stop's settle did not leave the two-row shape (claimed=%q other=%q reopened=%q resolutions=%v)",
-			claimedID, otherID, reopenedID, fold.resolutions)
+	lane.delegateSess.attentionMu.Unlock()
+	if claimedID == "" || otherID == "" {
+		t.Fatalf("the stop's settle did not leave one held row and one presentable row (order=%v resolutions=%v)",
+			fold.order, fold.resolutions)
 	}
-	if stripDelegateAttentionReopenSegments(reopenedID) != claimedID {
-		t.Fatalf("the reopened row %q does not reopen the claimed row %q", reopenedID, claimedID)
+	if fold.resolutions[claimedID] != "" || fold.resolutions[otherID] != "" {
+		t.Fatalf("the stop consumed a row it left pending (resolutions=%v)", fold.resolutions)
 	}
 	claimedText, otherText := fold.content[claimedID].Text(), fold.content[otherID].Text()
 	stateDump := func() string {
@@ -4249,6 +4151,7 @@ func TestDelegateAttentionUserStopHoldSurvivesIdleReleaseRestore(t *testing.T) {
 	// pass through the cold restore; the release unhooked the resident sub
 	// record the earlier drives used, so the pass is the wake-path drive
 	// that owns the restore.
+	rodeShape := ""
 	testwait.UntilSeen(t, "the released delegate's cold-restored drive to present the other row", func() (bool, string) {
 		lane.root.drivePendingDelegateAttention()
 		live, err := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
@@ -4256,11 +4159,20 @@ func TestDelegateAttentionUserStopHoldSurvivesIdleReleaseRestore(t *testing.T) {
 			return false, fmt.Sprintf("transcript read err=%v (%s)", err, stateDump())
 		}
 		if live.resolutions[otherID] != "" {
+			// The turn's finish resolves every row its request carried in one
+			// append, so the held report appearing with the other row's first
+			// resolution is the report riding that presentation.
+			if live.resolutions[claimedID] != "" {
+				rodeShape = fmt.Sprintf("resolutions=%v order=%v", live.resolutions, live.order)
+			}
 			return true, ""
 		}
 		return false, fmt.Sprintf("resolutions=%v order=%v gens=%v (%s)",
 			live.resolutions, live.order, live.resumeGenerations, stateDump())
 	})
+	if rodeShape != "" {
+		t.Fatalf("the cold-restored drive presented the stopped run's report riding the other row's presentation (%s; %s)", rodeShape, stateDump())
+	}
 
 	// The proof the presentation rode the cold restore: the delegate's live
 	// runtime is a session the release did not know — the resident runtime
@@ -4277,208 +4189,26 @@ func TestDelegateAttentionUserStopHoldSurvivesIdleReleaseRestore(t *testing.T) {
 	if foldErr != nil {
 		t.Fatalf("read the delegate's attention fold after the other row presented: %v", foldErr)
 	}
-	otherGen := fold.resumeGenerations[otherID]
-	// The reopened report must resolve on a LATER generation than the other
-	// row's: riding the cold-restored drive resolves at its generation, while
-	// the restored quiet keeps it out of that presentation entirely and the
-	// fresh arm — the other row's own settle tail re-arming the remaining
-	// attention — presents it on a generation of its own. The wait tolerates
-	// the recovery having fired before the other row's resolution was even
-	// observed; the generation comparison separates the two either way.
-	testwait.UntilSeen(t, "the reopened report to resolve after the cold-restored presentation", func() (bool, string) {
+	// The fresh arm — the other row's own settle tail re-arming the remaining
+	// attention — presents the held report afterwards, on a presentation of its
+	// own.
+	testwait.UntilSeen(t, "the held report to present after the cold-restored presentation", func() (bool, string) {
 		lane.root.drivePendingDelegateAttention()
 		live, err := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
 		if err != nil {
 			return false, fmt.Sprintf("transcript read err=%v (%s)", err, stateDump())
 		}
-		if live.resolutions[reopenedID] != "" {
+		if live.resolutions[claimedID] != "" {
 			return true, ""
 		}
-		return false, fmt.Sprintf("resolutions=%v order=%v gens=%v (%s)",
-			live.resolutions, live.order, live.resumeGenerations, stateDump())
+		return false, fmt.Sprintf("resolutions=%v order=%v (%s)", live.resolutions, live.order, stateDump())
 	})
 	fold, foldErr = readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
 	if foldErr != nil {
-		t.Fatalf("read the delegate's attention fold after the reopened row resolved: %v", foldErr)
+		t.Fatalf("read the delegate's attention fold after the held report resolved: %v", foldErr)
 	}
-	if fold.resumeGenerations[reopenedID] <= otherGen {
-		t.Fatalf("the cold-restored drive presented the stopped run's reopened report riding the other row's generation (reopened gen %d, other row gen %d; %s)",
-			fold.resumeGenerations[reopenedID], otherGen, stateDump())
-	}
-	if fold.resolutions[reopenedID] != delegateAttentionConsumed {
-		t.Fatalf("the reopened row did not resolve as presented on the fresh arm (resolutions=%v; %s)", fold.resolutions, stateDump())
-	}
-}
-
-// A stop admitted between a reopen's teardown guards and its durable append
-// owns the row the append then lands: the stop's discard enumerated attention
-// by the ids it knew at plan time, and nothing notes the fresh identity, so
-// without a re-check the row would survive as pending on a deliberately
-// stopped delegate. The seam pins the race — it admits the stop exactly inside
-// the guard-to-append window — and a failing attention-transcript opener
-// holds that stop in flight for the whole assertion: the stop driver's
-// completion cannot collect its evidence, while the reopen's own append and
-// the re-check's discard write through the receiver's resident writer. The
-// reopen must re-check the teardown predicates after its append and hand the
-// fresh row to the stop that admitted mid-window.
-func TestDelegateAttentionStopAdmittedDuringReopenResolvesFreshRow(t *testing.T) {
-	t.Parallel()
-	r := newWorktreeRepo(t)
-	// Seed the loaded-runner interleave this test pins, the same shape the
-	// busy-commit test holds: the release lands the retained child's report
-	// delivery inside this test's window, and the wait below starts the
-	// scenario's budgets from the row's arrival instead of racing the
-	// landing — the race whose loop exit and mid-chain timeout dropped CI
-	// runs.
-	holdSharedDescendantAnnounce("stop-during-reopen")
-	lane := spawnSharedDescendantLane(t, r, "stop-during-reopen", "dlg_stopreopen0001", "034stopreopen0001")
-	lane.releaseSeededAnnounceHold(t)
-	lane.delegateSess.SetNotifyFunc(nil)
-
-	// Hold the stop the seam admits in flight: its driver cannot complete
-	// without reading the covered members' attention transcripts, and the
-	// failing opener refuses that read until the test restores it for cleanup.
-	tree := lane.root.delegateController
-	tree.mu.Lock()
-	realAttentionOpen := tree.attentionOpen
-	tree.attentionOpen = func(path, expectedSessionID string) (*transcript.Writer, []transcript.Entry, error) {
-		return nil, nil, errors.New("test: attention transcript unavailable")
-	}
-	tree.mu.Unlock()
-	var restoreOnce sync.Once
-	t.Cleanup(func() {
-		restoreOnce.Do(func() {
-			tree.mu.Lock()
-			tree.attentionOpen = realAttentionOpen
-			tree.mu.Unlock()
-		})
-	})
-
-	// Refuse exactly the delegate's first attention commit as busy: its
-	// reopen is the one the stop must catch.
-	var faults atomic.Int32
-	updateSessionTestConfig(lane.root, func(cfg *testConfig) {
-		cfg.delegateAttentionCommitStartFault = func() error {
-			if faults.Add(1) <= 1 {
-				return errDelegateTargetBusy
-			}
-			return nil
-		}
-	})
-
-	// Admit the stop exactly inside the reopen's guard-to-append window. The
-	// reopen reads its seam on the delegate's own config, and the idle
-	// delegate's cancel plan is empty — the admission itself is the event.
-	stopAdmitted := make(chan struct{})
-	var stopOnce sync.Once
-	updateSessionTestConfig(lane.delegateSess, func(cfg *testConfig) {
-		cfg.delegateAttentionBeforeReopenAppend = func() {
-			stopOnce.Do(func() {
-				_, cancelPlan, _, err := lane.root.delegateController.StopSubtree(rootDelegateActor(lane.root.delegateRootSessionID), lane.fixture.delegateID)
-				if err != nil {
-					t.Errorf("StopSubtree inside the reopen window: %v", err)
-					return
-				}
-				executeDelegateCancelPlan(cancelPlan)
-				close(stopAdmitted)
-			})
-		}
-	})
-
-	// Drive the presentation: the busy arm reopens the consumed report, the
-	// seam admits the stop mid-window, and the first drive is enough — its
-	// flush pumps the delivery the spawn deferred past its last drain cut, so
-	// a stranded deferred row still presents. The pass runs in the worker, so
-	// a hook stall cannot keep the test from reaching the tripwire below.
-	flushErr, driveDone := lane.startDrive(stopAdmitted)
-	select {
-	case <-stopAdmitted:
-	// TRIPWIRE: the seam admits the stop inside the first reopen window, a
-	// couple of drive passes in; the bound only fires on a genuine hang.
-	case <-time.After(testwait.Budget(t)):
-		lastFlushErr := flushErr()
-		deferred := lane.delegateSess.hasPendingDelegateDeliveries()
-		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
-		t.Fatalf("the reopen window never admitted the stop (pending attention=%d (%v); deferred deliveries=%v flush=%v)",
-			len(pending), pendErr, deferred, lastFlushErr)
-	}
-	// Join the worker before reading the fold: the first pass is the reopen
-	// itself, and its append and re-check must land before the reads below.
-	select {
-	case <-driveDone:
-	// TRIPWIRE: a drive that already admitted the stop returns just after its
-	// append and re-check; the bound only fires on a wedged worker.
-	case <-time.After(testwait.Budget(t)):
-		t.Fatalf("the admitted stop's first drive never returned (flush=%v)", flushErr())
-	}
-
-	// The re-check's contract: the stop owns the freshly appended row, so
-	// nothing pending survives and the fold records the hand-off.
-	// The seam admits the stop BEFORE the reopen's append lands, so the wait
-	// must await the append's own durable outcome — a reopened row the
-	// re-check resolved as discarded — and not merely the absence of a
-	// pending reopened row, which is vacuously true until the append lands
-	// and lets a loaded shard's scheduling race the fold read past it.
-	testwait.Until(t, "the reopen's fresh row to be resolved for the stop admitted mid-window", func() bool {
-		fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
-		if foldErr != nil {
-			return false
-		}
-		for id, disposition := range fold.resolutions {
-			if strings.Contains(id, "/reopened/") && disposition == delegateAttentionDiscarded {
-				return true
-			}
-		}
-		return false
-	})
-	// With the hand-off recorded, nothing pending survives.
-	testwait.Until(t, "the stop's hand-off to leave no reopened row pending", func() bool {
-		fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
-		if foldErr != nil {
-			return false
-		}
-		for _, id := range fold.pendingIDs() {
-			if strings.Contains(id, "/reopened/") {
-				return false
-			}
-		}
-		return true
-	})
-	fold, foldErr := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
-	if foldErr != nil {
-		t.Fatalf("read the delegate's attention fold: %v", foldErr)
-	}
-	resolved := false
-	for id, disposition := range fold.resolutions {
-		if !strings.Contains(id, "/reopened/") {
-			continue
-		}
-		resolved = true
-		if disposition != delegateAttentionDiscarded {
-			t.Fatalf("the reopened row resolved as %q, want discarded for the admitted stop", disposition)
-		}
-	}
-	if !resolved {
-		t.Fatal("the reopen never appended a fresh row for the re-check to resolve")
-	}
-	// pendingTurns keeps the row the latch names even once it is resolved, so a
-	// latch left on either identity — the discarded reopened row or the source
-	// it superseded — would re-present the report this stop threw away and
-	// survive a compaction that should drop it. The latch must be clear.
-	lane.delegateSess.attentionMu.Lock()
-	latched := lane.delegateSess.attentionAcceptedID
-	latchedCause := lane.delegateSess.attentionAcceptedCause
-	lane.delegateSess.attentionMu.Unlock()
-	if latched != "" {
-		t.Fatalf("the latch still names %q after the teardown discarded the reopened row", latched)
-	}
-	if latchedCause != nil {
-		t.Fatal("the discarded row's cause is still latched")
-	}
-	// The stop the re-check answered really is the one in flight: the failing
-	// opener keeps its driver from completing past this point.
-	if !lane.root.delegateController.attentionReopenRefused(lane.fixture.delegateID) {
-		t.Fatal("the stop admitted mid-window is no longer in flight")
+	if fold.resolutions[claimedID] != delegateAttentionConsumed {
+		t.Fatalf("the held row did not resolve as presented on the fresh arm (resolutions=%v; %s)", fold.resolutions, stateDump())
 	}
 }
 

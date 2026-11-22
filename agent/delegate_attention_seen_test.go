@@ -103,8 +103,10 @@ func TestDelegateAttentionAfterLastRequestStillWakesTheDelegate(t *testing.T) {
 	if got := attentionRunStarts(t, fixture); got != 1 {
 		t.Fatalf("attention generations = %d, want 1", got)
 	}
-	if resolution, generation := childAttentionResolution(t, sub, "attention:late"); resolution != delegateAttentionConsumed || generation == 0 {
-		t.Fatalf("late attention resolution = %q for generation %d, want consumed by its own attention generation", resolution, generation)
+	// The presenting request consumes the row itself, which records generation
+	// zero: no start is owed a resume, so nothing may re-run it.
+	if resolution, generation := childAttentionResolution(t, sub, "attention:late"); resolution != delegateAttentionConsumed || generation != 0 {
+		t.Fatalf("late attention resolution = %q for generation %d, want consumed by the request that presented it", resolution, generation)
 	}
 }
 

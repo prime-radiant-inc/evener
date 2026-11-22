@@ -978,10 +978,9 @@ func (c *delegateTreeController) hasDeliveryWorkForOwnerLocked(ownerDelegateID s
 // hasDeliveryWorkForOwnerBlockingStartLocked is hasDeliveryWorkForOwnerLocked
 // for a start admission. A claim the transient delivery arm kept for its retry
 // is deferred delivery, not work in flight: counting it would release the very
-// attention start whose reservation deferred the delivery, after
-// acceptDelegateAttention already consumed its trigger. The marker lives only
-// on the claim and dies with it — every admission deletes the claim — so it
-// can never suppress a later real delivery-work check.
+// attention start whose reservation deferred the delivery. The marker lives
+// only on the claim and dies with it — every admission deletes the claim — so
+// it can never suppress a later real delivery-work check.
 func (c *delegateTreeController) hasDeliveryWorkForOwnerBlockingStartLocked(ownerDelegateID string) bool {
 	return c.deliveryWorkForOwnerLocked(ownerDelegateID, true)
 }

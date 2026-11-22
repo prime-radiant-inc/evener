@@ -217,13 +217,10 @@ func (c *delegateTreeController) ReserveAttention(runtime *Session, attentionID 
 	if attentionID == "" || aggregate == nil {
 		return nil, errDelegateTargetBusy
 	}
-	for _, record := range c.reservations {
-		if record.delegateID != delegateID {
-			continue
-		}
-		if record.trigger == delegatestore.TriggerAttention && record.runtime == runtime && record.attentionID == attentionID {
-			return record.receipt, nil
-		}
+	// One reservation per delegate. A record already here is another attempt
+	// that has not committed or released yet; this pass declines rather than
+	// sharing its receipt, so no second drive can commit or launch it.
+	if c.reservationForDelegateLocked(delegateID) != nil {
 		return nil, errDelegateTargetBusy
 	}
 	if !c.delegateAttentionWakeEligibleLocked(delegateID) || c.hasDeliveryWorkForOwnerLocked(delegateID) {
@@ -269,24 +266,10 @@ func (c *delegateTreeController) attentionReservationIdentity(reservation *deleg
 	return attentionID, generation, nil
 }
 
-func (c *delegateTreeController) reservedAttentionID(runtime *Session) string {
-	if c == nil || runtime == nil {
-		return ""
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	delegateID, _, err := c.runtimeOwnerLocked(runtime)
-	if err != nil || delegateID == "" {
-		return ""
-	}
-	for _, record := range c.reservations {
-		if record != nil && record.delegateID == delegateID && record.trigger == delegatestore.TriggerAttention && record.runtime == runtime {
-			return record.attentionID
-		}
-	}
-	return ""
-}
-
+// prepareAttentionStart records the rows the reserved generation carries at
+// commit time, read from the child transcript after the reservation's
+// admission. It consumes nothing: the trigger stays pending until the launched
+// turn presents it, so a start that never runs leaves the report deliverable.
 func (c *delegateTreeController) prepareAttentionStart(reservation *delegateStartReservation, runtime *Session, pendingIDs []string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -299,7 +282,7 @@ func (c *delegateTreeController) prepareAttentionStart(reservation *delegateStar
 	}
 	seen := make(map[string]struct{}, len(pendingIDs))
 	for _, attentionID := range pendingIDs {
-		if attentionID == "" || attentionID == record.attentionID {
+		if attentionID == "" {
 			return errDelegateTargetBusy
 		}
 		if _, duplicate := seen[attentionID]; duplicate {
@@ -810,12 +793,20 @@ func (c *delegateTreeController) commitStart(reservation *delegateStartReservati
 			},
 		})
 	}
-	events = append(events, delegateControllerRunStartedEvent(
+	started := delegateControllerRunStartedEvent(
 		record.delegateID,
 		record.generation,
 		record.trigger,
 		startedAt,
-	))
+	)
+	if record.trigger == delegatestore.TriggerAttention {
+		// The journal names the row this run presents. The row stays pending —
+		// this is provenance, not a consume marker — so a crashed run leaves
+		// nothing to reopen and a cold restore can still tell which pending row
+		// a user-stopped run was carrying.
+		started.RunStarted.AttentionID = record.attentionID
+	}
+	events = append(events, started)
 	if record.create {
 		events = append([]delegatestore.Event{{
 			Kind:       delegatestore.EventDelegateCreated,
@@ -825,9 +816,9 @@ func (c *delegateTreeController) commitStart(reservation *delegateStartReservati
 	}
 	_, err = c.appendLocked(events...)
 	if err != nil {
-		if record.trigger == delegatestore.TriggerAttention {
-			return delegateStartCommit{}, err
-		}
+		// The append is the commit. A failed one leaves no durable start, so
+		// the reservation is released for every trigger: there is no pre-commit
+		// marker to replay with the same receipt.
 		cancel = c.releaseReservationLocked(record)
 		return delegateStartCommit{}, err
 	}

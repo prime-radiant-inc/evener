@@ -48,7 +48,14 @@ type DelegateCreated struct {
 type RunStarted struct {
 	Generation uint64     `json:"generation"`
 	Trigger    RunTrigger `json:"trigger"`
-	StartedAt  time.Time  `json:"started_at"`
+	// AttentionID names the attention row an attention-triggered run was
+	// started to present. It is the run's provenance, not a claim about the
+	// row: the row stays pending until the run settles, so a crash between
+	// this event and the presentation re-presents it. A cold restore reads it
+	// to find the row a user-stopped run was carrying, and it is empty for
+	// every other trigger.
+	AttentionID string    `json:"attention_id,omitempty"`
+	StartedAt   time.Time `json:"started_at"`
 }
 
 type TerminalPrepared struct {

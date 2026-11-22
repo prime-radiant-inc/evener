@@ -429,7 +429,7 @@ func TestDelegateControllerTransientRefusalDoesNotBlockAttentionStart(t *testing
 	if err != nil {
 		t.Fatalf("ReserveAttention: %v", err)
 	}
-	if err := owner.acceptDelegateAttention(reservation); err != nil {
+	if err := acceptDelegateAttentionForTest(c, owner, reservation); err != nil {
 		t.Fatalf("accept attention: %v", err)
 	}
 

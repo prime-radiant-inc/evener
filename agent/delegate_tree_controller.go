@@ -160,6 +160,11 @@ type delegateTreeController struct {
 	// later generation's outcome says nothing about an earlier row. A restore
 	// therefore asks this index the row's own generation.
 	runOutcomes map[delegateLease]delegatestore.Outcome
+	// runAttentionIDs is the attention row each attention-triggered generation
+	// was started to present, indexed beside runStarts. The pending row itself
+	// stays deliverable until the run settles, so this index is the durable
+	// answer a cold restore needs to find the row a user-stopped run carried.
+	runAttentionIDs map[delegateLease]string
 	// latestAttentionStop is the newest generation per delegate whose run was
 	// attention-triggered and settled cancelled. Wake admission asks whether a
 	// stop newer than the release floor still exists; scanning every generation
@@ -512,6 +517,7 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		return nil, err
 	}
 	runStarts := delegateRunStartIndex(events)
+	runAttentionIDs := delegateRunAttentionIDIndex(events)
 	c := &delegateTreeController{
 		store:               cfg.store,
 		durable:             durable,
@@ -548,6 +554,7 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		reconcileOrder:      delegateOpenRunOrder(events, durable),
 		runStarts:           runStarts,
 		runOutcomes:         delegateRunOutcomeIndex(events),
+		runAttentionIDs:     runAttentionIDs,
 		latestAttentionStop: delegateLatestAttentionStopIndex(events, runStarts),
 		owedAdmission:       true,
 	}
@@ -628,7 +635,11 @@ func (c *delegateTreeController) appendLocked(events ...delegatestore.Event) ([]
 	c.durable = next
 	for _, event := range appended {
 		if event.RunStarted != nil {
-			c.runStarts[delegateLease{delegateID: event.DelegateID, generation: event.RunStarted.Generation}] = event.RunStarted.Trigger
+			lease := delegateLease{delegateID: event.DelegateID, generation: event.RunStarted.Generation}
+			c.runStarts[lease] = event.RunStarted.Trigger
+			if event.RunStarted.AttentionID != "" {
+				c.runAttentionIDs[lease] = event.RunStarted.AttentionID
+			}
 		}
 		if event.RunFinished != nil {
 			c.runOutcomes[delegateLease{delegateID: event.DelegateID, generation: event.RunFinished.Generation}] = event.RunFinished.Outcome
