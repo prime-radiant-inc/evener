@@ -168,6 +168,13 @@ type SessionMeta struct {
 	// LastInputTokens is the prompt-token count from the most recent LLM call,
 	// used to display context-window pressure on resume.
 	LastInputTokens int `json:"last_input_tokens,omitempty"`
+	// LastInputMeasuredLen is the history length LastInputTokens was measured at,
+	// LastInputAnchor fingerprints the turn at that index, and LastInputTarget names
+	// the producer. A restore seeds the count only when all three still describe
+	// this session, a nil length marking a meta written before it existed.
+	LastInputMeasuredLen *int   `json:"last_input_measured_len,omitempty"`
+	LastInputAnchor      string `json:"last_input_anchor,omitempty"`
+	LastInputTarget      string `json:"last_input_target,omitempty"`
 	// ContextWindow is the window the session budgets against, and
 	// ContextWindowSource where it came from ("live", "overlay", "config",
 	// "snapshot", or "assumed"). They are rewritten on every save, so a resumed

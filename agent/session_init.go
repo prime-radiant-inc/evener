@@ -1587,9 +1587,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 	}()
 
-	// Seed context manager with the meta's token count.
-	if meta.LastInputTokens > 0 && s.contextMgr != nil {
-		s.contextMgr.RecordInputTokens(meta.LastInputTokens, len(s.history))
+	// Seed the persisted measurement only when this resume restored the target
+	// that produced it and the history still holds the measured prefix. A meta
+	// written before the measured length existed has no prefix to check, and its
+	// count is not trusted rather than charged to the restored history's length.
+	if s.contextMgr != nil && meta.LastInputMeasuredLen != nil {
+		s.contextMgr.RestoreInputMeasurement(meta.LastInputTokens, *meta.LastInputMeasuredLen, meta.LastInputAnchor, meta.LastInputTarget, s.history)
 	}
 
 	// Seed persisted cumulative token totals before the first autosave can
@@ -1769,7 +1772,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		Model:             profile.Model(),
 		Restored:          true,
 		Turns:             s.modelResponses,
-		LastInputTokens:   meta.LastInputTokens,
+		LastInputTokens:   s.contextMgr.LastInputTokens(),
 		ContextWindowSize: profile.ContextWindowSize(),
 		State:             s.WireState(),
 		// TranscriptEntries is the exact count OpenWriterForSession validated
