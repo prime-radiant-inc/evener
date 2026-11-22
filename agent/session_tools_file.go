@@ -7,6 +7,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/llm"
 )
 
 func registerFileTools(reg *tool.Registry, deps *toolDeps) error {
@@ -82,6 +83,23 @@ func execFileReadWith(ctx context.Context, args map[string]any, guard readGuard,
 		// If the file is an image or document (PDF), return an
 		// tool.ImageResult so the vision side-channel can process it.
 		if img := tool.ParseImageResult(path, result); img != nil {
+			prepared, err := llm.PrepareImageForModel(img.Data)
+			if err != nil {
+				// Keep the malformed-raster wording the registry's own
+				// post-decode check produces, so a truncated image fails
+				// here exactly as it did after dispatch.
+				return "", fmt.Errorf("invalid image data: %w", err)
+			}
+			img.Data = prepared.Data
+			img.MediaType = prepared.MediaType
+			if prepared.Scaled {
+				scale := float64(prepared.OriginalWidth) / float64(prepared.Width)
+				if vertical := float64(prepared.OriginalHeight) / float64(prepared.Height); vertical > scale {
+					scale = vertical
+				}
+				img.Text += fmt.Sprintf("\n[Image: original %dx%d, displayed at %dx%d (multiply coordinates by %.2f to map to original)]",
+					prepared.OriginalWidth, prepared.OriginalHeight, prepared.Width, prepared.Height, scale)
+			}
 			img.Prompt = visionAsk
 			return *img, nil
 		}
