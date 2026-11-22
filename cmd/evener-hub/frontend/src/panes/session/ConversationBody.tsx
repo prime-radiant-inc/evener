@@ -780,18 +780,26 @@ function RestartRequiredNotice({ sessionRef, ownerRef }: { sessionRef: string; o
     }
   };
   return (
-    <div role="alert" data-reason={ownerRef ? "owner-retained" : "version-mismatch"}>
+    <InlineNotice
+      tone="danger"
+      live="alert"
+      data-reason={ownerRef ? "owner-retained" : "version-mismatch"}
+      action={
+        ownerRef ? (
+          <>
+            <Button disabled={refreshing} onClick={() => void refresh()}>
+              Refresh session
+            </Button>
+            {error && <span>{error}</span>}
+          </>
+        ) : undefined
+      }
+    >
       {ownerRef
         ? "This session is retained by its owning session. Its uncertain messages cannot be checked here until the owner releases it."
         : DEGRADED_VERSION_NOTICE}
       {ownerRef && <a href={paneToURL("session", { ref: ownerRef }) ?? undefined}>Open owning session</a>}
-      {ownerRef && (
-        <Button disabled={refreshing} onClick={() => void refresh()}>
-          Refresh session
-        </Button>
-      )}
-      {error && <span>{error}</span>}
-    </div>
+    </InlineNotice>
   );
 }
 
