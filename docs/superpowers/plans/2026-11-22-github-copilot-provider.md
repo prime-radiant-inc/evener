@@ -13,11 +13,11 @@
 ## Global Constraints
 
 - Implement the selected direct provider. Do not substitute Copilot SDK/CLI, another client's OAuth identity, or another client's stored credentials.
-- Jesse supplied the Evener-owned GitHub OAuth App's public client ID `Ov23li2maTXwKrULBNZw` with device flow and expiring user tokens enabled. Use it as `githubcopilot.ClientID`; never request or store a client secret for this flow.
-- Use scopes `read:user offline_access`, GitHub-token bearer access, and no `/copilot_internal/v2/token` exchange. A failed live stop/go probe ends implementation before Task 4.
+- Jesse explicitly approved the temporary Pi-compatible path after controlled probes and partnership research. Use public Copilot client ID `Iv1.b507a08c87ecfe98`, device scope `read:user`, and Pi's `/copilot_internal/v2/token` session exchange. Never request a client secret or claim GitHub approval for this compatibility path.
+- Store the GitHub access token plus the short-lived Copilot session token and session expiry. Renew the session token through the exchange five minutes early. The current identity returns a non-expiring GitHub token with no refresh token; retain support for the already-tested expiring-token path.
 - Copilot records use `oauth-github-copilot` and `<state-root>/auth/github-copilot/<instance>.json`, mode 0600. Codex records and validation stay unchanged.
 - Default endpoint is `https://api.githubcopilot.com`, overridden by `GITHUB_COPILOT_BASE_URL`. Do not add GHES, account-discovered hosts, `/auto`, PAT login, policy writes, or remote revocation.
-- Use `default_model = "gpt-5.5"`, `cheap_model = "gpt-5.4-mini"`, and default rank after `openai-codex` and before `openai`.
+- Use `default_model = "gpt-5.6-sol"`, `cheap_model = "claude-haiku-5.5"`, and default rank after `openai-codex` and before `openai`.
 - Default tests are deterministic and network-free. Live tests require `EVENER_GITHUB_COPILOT_E2E=1` plus the credential/client ID. Do not log tokens or response bodies carrying them.
 - Assert behavior, structured values, final URLs, and sentinels, never human-readable copy. Keep existing providers' behavior unchanged except where a shared mechanism carries an explicit Copilot opt-in.
 - Work only in the `copilot-provider` worktree. Every task is TDD, commits its listed files, and uses the commit trailer supplied by the executor's own session. Report out-of-scope issues instead of absorbing them.
@@ -61,7 +61,7 @@
 **Interfaces:**
 - Produces: `Config`, `DefaultConfig()`, `DeviceCode`, `TokenSet`, `Account`, `AuthStatus`, `RuntimeCredentials`, `RequestDeviceCode`, `PollDeviceOnce`, `RefreshToken`, and `FetchAccount`.
 - `NewService(Config, *http.Client) *Service` exposes `LoginWithDevice`, `Status`, `Logout`, and `ResolveRuntimeCredentials`. `DeviceCode` owns device code, user code, verification URL, interval, and expiry. `PollDeviceOnce` returns authorized/pending/expired state plus the effective interval.
-- `DefaultConfig()` uses public client ID `Ov23li2maTXwKrULBNZw`.
+- `DefaultConfig()` eventually uses public Copilot client ID `Iv1.b507a08c87ecfe98`; Task 3 adapts the merged Task 2 service to the Pi-compatible session-token path.
 - `RuntimeCredentials` carries bearer token, account ID, and expiry. `AuthStatus` derives source `oauth` from the scheme.
 
 **Size budget:** 650 production lines, explicitly accepted by Jesse after review removed the concrete duplication and no easy substantial reduction remained.
@@ -72,15 +72,17 @@
 - [ ] **Step 4: Run green.** `cd auth && go test ./githubcopilot ./openai`; expect PASS.
 - [ ] **Step 5: Commit.** `git add auth/githubcopilot` and commit `feat(auth): add GitHub Copilot device login and refresh`.
 
-### Task 3: Runtime Authenticator and Real-Adapter Live Probe
+### Task 3: Pi-Compatible Session Auth, Runtime Authenticator, and Live Probe
 
 **Files:**
+- Modify: `auth/githubcopilot/config.go`, `auth/githubcopilot/record.go`, `auth/githubcopilot/storage.go`, `auth/githubcopilot/device.go`, `auth/githubcopilot/tokens.go`, `auth/githubcopilot/service.go`
 - Modify: `llm/registry/types.go`, `llm/providers/tokenauth/tokenauth.go`, `llm/auth_override.go`, `llm/client.go`, `llm/retry_util.go`, `cmdutil/registry.go`
 - Create: `llm/providers/tokenauth/copilot.go`, `llm/providers/tokenauth/copilot_test.go`, `llm/copilot_live_test.go`
-- Test: `llm/auth_override_test.go`, `llm/retry_util_test.go`, `llm/providers/all/all_test.go`
+- Test: `auth/githubcopilot/record_test.go`, `auth/githubcopilot/storage_test.go`, `auth/githubcopilot/device_test.go`, `auth/githubcopilot/tokens_test.go`, `auth/githubcopilot/service_test.go`, `auth/githubcopilot/service_process_test.go`, `llm/auth_override_test.go`, `llm/retry_util_test.go`, `llm/providers/all/all_test.go`
 
 **Interfaces:**
 - Produces: `registry.AuthOAuthGitHubCopilot`, `tokenauth.DefaultCopilot`, `tokenauth.ScopedCopilot(stateDir string) *Copilot`.
+- Extends Task 2 with the Pi-compatible public client identity, Copilot session exchange/renewal, and a record carrying both the GitHub token and Copilot session token/expiry. GitHub refresh fields remain optional for the current non-expiring identity.
 - `Copilot` implements `llm.Authenticator`, `llm.AuthScopeProvider`, and `llm.RequestPreparer`. It uses Task 2 runtime credentials and never falls back to ambient GitHub tokens.
 - `copilotLiveScenario` is the reusable opt-in table for this probe and Task 9's shipped-provider smoke.
 
@@ -88,9 +90,9 @@
 
 - [ ] **Step 1: Write authenticator and scoped-isolation tests.** Assert the bearer/account headers, state-root isolation, typed sign-in errors, build User-Agent, interaction IDs, user/agent initiator transitions, and vision header. Prove a Copilot token cannot authenticate Codex and vice versa. Add the new scheme to registration coverage. At the existing provider retry boundary, prove one 401 retry only when the on-disk record generation changed, no second 401 retry, no global 401 retry, and no replay after a stream was exposed.
 - [ ] **Step 2: Run red.** `go test ./llm/providers/tokenauth ./llm/providers/all ./llm`; expect failures naming the absent Copilot scheme/authenticator.
-- [ ] **Step 3: Implement the authenticator and rotation retry.** Register it, bind state root/build version in `cmdutil`, and let `AuthenticatorOverrideFor` accept both record-backed OAuth schemes. Set only the spec's validated compatibility headers; do not spoof another client. Add the one-attempt record-generation check at the existing retry boundary without changing 401 classification for other providers.
-- [ ] **Step 4: Add and run the live probe.** In `llm/copilot_live_test.go`, authenticate into `t.TempDir()`, force one token refresh without printing tokens, list models through the real Chat Completions protocol, and use `llm.ProtocolFor(...).Stream` with production-equivalent `registry.Resolved` rows. For each advertised family/protocol combination, require user request → streamed tool call → tool result with agent initiator → final response; include images before enabling them. Run `cd llm && EVENER_GITHUB_COPILOT_E2E=1 EVENER_GITHUB_COPILOT_CLIENT_ID=Ov23li2maTXwKrULBNZw go test . -run TestGitHubCopilotLiveProbe -v`. A failed direct-token, refresh, roster, or required tool-loop result stops the plan and is reported to Jesse.
-- [ ] **Step 5: Run deterministic tests and commit only after the probe passes.** Re-run Step 2's packages, expect PASS, then `git add llm/registry/types.go llm/providers/tokenauth llm/auth_override.go llm/auth_override_test.go llm/client.go llm/retry_util.go llm/retry_util_test.go llm/providers/all/all_test.go cmdutil/registry.go llm/copilot_live_test.go` and commit `feat(llm): authenticate Copilot provider requests`.
+- [ ] **Step 3: Implement session exchange, the authenticator, and rotation retry.** Adapt the merged auth service through failing tests first. Use public Copilot client ID `Iv1.b507a08c87ecfe98`, `read:user`, and the Pi-compatible exchange/editor/integration headers. Register the authenticator, bind state root/build version, and accept both record-backed OAuth schemes. Model requests use Evener's User-Agent plus the live-proven compatibility headers. Renew Copilot sessions five minutes early and preserve the record-generation 401 retry.
+- [ ] **Step 4: Run the reusable live probe.** In `llm/copilot_live_test.go`, authenticate into the optional private `EVENER_GITHUB_COPILOT_PROBE_STATE_DIR`, force one session renewal without printing tokens, list models through the real Chat Completions protocol, and use real protocol streams with production-equivalent resolved rows. Require the complete tool loop for each advertised family/protocol combination. Keep both image scenarios pinned to `claude-haiku-5.5` and fail rather than silently skip a missing pin. Run `cd llm && EVENER_GITHUB_COPILOT_E2E=1 EVENER_GITHUB_COPILOT_CLIENT_ID=Iv1.b507a08c87ecfe98 EVENER_GITHUB_COPILOT_PROBE_STATE_DIR=<session-scratch> go test . -run TestGitHubCopilotLiveProbe -v`. Any enabled failure stops the plan and is reported to Jesse.
+- [ ] **Step 5: Run deterministic tests and commit only after the probe passes.** Re-run all auth and LLM packages touched, expect PASS, then stage exactly the files listed above and commit `feat(llm): authenticate Copilot provider requests`.
 
 ### Task 4: Copilot Registry Instance, Configuration, and Healthy Defaults
 

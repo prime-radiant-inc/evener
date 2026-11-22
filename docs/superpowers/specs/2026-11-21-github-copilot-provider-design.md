@@ -10,14 +10,16 @@ Evener keeps its own agent loop, history, tools, model profiles, streaming, and 
 
 GitHub documents third-party subscription access through the Copilot SDK and CLI. The reviewed documentation does not define a stable public HTTP contract for direct calls to `api.githubcopilot.com`. OpenCode and Pi maintain direct HTTP integrations, but they differ in token handling and request routing.
 
-Jesse selected a direct provider despite that compatibility risk. Production wiring therefore waits for a successful live probe with an Evener-owned GitHub OAuth App and a real subscription. The probe must prove the exact behavior this design uses. A failed probe stops the direct implementation; it does not trigger silent use of the SDK, another client's OAuth identity, or another client's stored credentials.
+Jesse selected a direct provider despite that compatibility risk. Controlled probes then showed that an Evener-owned OAuth App receives only legacy GPT models and cannot complete the Copilot session-token exchange. After reviewing OpenCode's formal partnership and Pi's source history, Jesse explicitly chose a temporary Pi-compatible authentication path. It uses Pi's public Copilot client identity and VS Code-compatible exchange headers, with no claim of GitHub approval or stability. Model requests retain Evener's User-Agent.
+
+Production wiring waits for the complete live probe with a real subscription. A failed probe stops the direct implementation; it does not trigger a switch to the SDK, OpenCode's identity, or another unapproved path.
 
 Sources current on 2026-11-21:
 
 - [GitHub's Copilot SDK OAuth guide](https://github.com/github/docs/blob/d7487f5debb5a5a2a6e65e6f9fa539266f5f8db6/content/copilot/how-tos/copilot-sdk/setup/github-oauth.md) supports OAuth Apps acting for users with active Copilot subscriptions. The application owns token storage, refresh, and expiry handling.
 - [GitHub's OAuth device-flow guide](https://github.com/github/docs/blob/d7487f5debb5a5a2a6e65e6f9fa539266f5f8db6/content/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps.md) defines device authorization and refresh. Device-flow tokens need no embedded client secret.
 - [OpenCode's pinned Copilot provider](https://github.com/anomalyco/opencode/blob/9a2f16d16588a37427614cd18c8bd44c6d8e2e95/packages/core/src/plugin/provider/github-copilot.ts) is the primary compatibility reference for direct GitHub-token bearer access and per-model endpoint discovery.
-- [Pi's pinned Copilot provider](https://github.com/earendil-works/pi/blob/780bf31fcaeb252fa9b68df3964c735eae75bde3/packages/ai/src/auth/oauth/github-copilot.ts) documents an older Copilot-session-token exchange. This design does not use that exchange.
+- [Pi's pinned Copilot provider](https://github.com/earendil-works/pi/blob/780bf31fcaeb252fa9b68df3964c735eae75bde3/packages/ai/src/auth/oauth/github-copilot.ts) is the compatibility reference for the public Copilot client identity, session-token exchange, expiry, and required headers.
 
 ## Goals
 
@@ -34,7 +36,7 @@ Sources current on 2026-11-21:
 ## Non-goals
 
 - Embedding Copilot CLI or the Copilot SDK as Evener's agent runtime.
-- Reusing OpenCode, Pi, VS Code, or Copilot CLI OAuth client IDs or credential stores.
+- Claiming GitHub approval for the temporary Pi-compatible identity, reusing OpenCode's formally partnered identity, or reading another application's credential store.
 - Automatic use of `GITHUB_TOKEN`, `GH_TOKEN`, `COPILOT_GITHUB_TOKEN`, or a PAT for the subscription instance.
 - GitHub App server-to-server authentication, organization billing, or a multi-tenant token broker.
 - Copilot's `/auto` model router, model-policy writes, or remote OAuth revocation.
@@ -44,7 +46,7 @@ Sources current on 2026-11-21:
 
 ## Anti-goals
 
-- Do not spoof another client's identity or copy its private compatibility constants without a demonstrated need.
+- Do not conceal the temporary compatibility identity or copy private client secrets. Use only public values Jesse explicitly approved and the live probe verified.
 - Do not make ambient GitHub credentials change Evener's default provider.
 - Do not add a second agent orchestration owner.
 - Do not weaken existing OpenAI auth behavior while generalizing shared surfaces.
@@ -52,33 +54,33 @@ Sources current on 2026-11-21:
 
 ## Approaches considered
 
-### Direct provider, Evener OAuth App, and live probe — selected
+### Pi-compatible direct provider and live probe — selected for now
 
-Evener owns the GitHub OAuth identity, device login, token lifecycle, registry instance, and model requests. This preserves Evener's semantics and delivers the requested provider. Its cost is a new auth service and compatibility risk around the undocumented direct HTTP API.
+Evener uses the public Copilot client identity Pi uses, device login, session-token exchange, and the registry/model requests. This preserves Evener's semantics and delivers the requested provider. Its cost is an explicit dependency on an undocumented compatibility identity that Evener does not own. GitHub's partner/support path remains the durable route to an Evener-owned identity.
 
 ### Official Copilot SDK or CLI runtime
 
 This is GitHub's documented application path. It also gives Copilot CLI ownership of sessions, tool selection, history, and streaming. That is a nested agent integration, not a model provider, and would change Evener's behavior.
 
-### Another client's identity or stored login
+### Evener-owned OAuth App or GitHub App
 
-This avoids registering an Evener app but couples authorization and token lifecycle to another application. It does not provide an Evener-owned first-class login. Rejected.
+Controlled probes showed that Evener's OAuth App receives only eight older GPT models and that its `gho_` tokens cannot complete session exchange, regardless of expiry. An Evener GitHub App produced `ghu_` but also returned 403 before any organization installation granted Copilot Requests. This path is paused for GitHub approval, not presented as working.
 
 ## Prerequisites and stop conditions
 
-Before the live probe, Jesse supplies the public client ID of an Evener-owned GitHub OAuth App with **Device flow** enabled. The source contains only that public identifier. It contains no client secret.
+Use the public Copilot client identity `Iv1.b507a08c87ecfe98`, decoded by Pi's source, for this temporary compatibility path. The source contains no client secret. Login must make clear that authorization uses this public Copilot identity; documentation must not imply a GitHub partnership with Evener.
 
 The disposable probe uses a real Copilot subscription and performs these steps without logging credentials:
 
-1. Request `read:user offline_access` through GitHub device flow.
-2. Complete user authorization and obtain an expiring GitHub access token plus refresh token.
+1. Request `read:user` through the Pi-compatible device flow. The current identity returns a non-expiring GitHub access token with no refresh token.
+2. Exchange the GitHub token at `GET https://api.github.com/copilot_internal/v2/token` with Pi's compatibility headers, obtaining a Copilot session token and `expires_at`.
 3. Read the stable GitHub account identity through the documented `GET https://api.github.com/user` endpoint.
-4. Refresh the OAuth token once, proving that rotation works without a client secret, then use the replacement pair.
-5. Call `GET https://api.githubcopilot.com/models` with the GitHub access token as bearer.
+4. Repeat the session exchange before expiry, proving session renewal without a client secret, then use the replacement session token.
+5. Call `GET https://api.githubcopilot.com/models` with the Copilot session token as bearer.
 6. Build production-equivalent resolved rows and drive the real Evener adapters through a complete loop for each exposed family/protocol combination: user request, streamed tool call, tool result with `X-Initiator: agent`, and final response. A minimal raw request is insufficient.
 7. Exercise image requests before enabling image-capable rows, and confirm the request headers, final endpoint paths, and model metadata needed by the implementation.
 
-If direct GitHub-token bearer access fails, stop. Do not switch to `/copilot_internal/v2/token` without a new design decision. If a required protocol or tool-result continuation fails, stop its exposure and report whether the remaining provider is still useful before broadening the implementation. Remove the disposable probe after recording its non-secret evidence. Before enabling the popular-provider card, rerun the complete loop through the shipped provider with an opt-in live smoke test.
+If device login, session exchange, session renewal, model discovery, or an enabled tool-loop scenario fails, stop. Do not switch to another client identity without a new decision from Jesse. Remove disposable bootstrap code after recording non-secret evidence; retain the opt-in live smoke test. Before enabling the popular-provider card, rerun the complete loop through the shipped provider.
 
 Build the probe and shipped-provider smoke from one opt-in scenario table and adapter driver. Only the temporary OAuth bootstrap is discarded; both gates run the same protocol, tool-loop, header, and image scenarios.
 
@@ -90,7 +92,7 @@ flowchart LR
   Web[Web and native sign-in] --> RPC[Existing AppWire auth RPCs]
   RPC --> Hub[Hub scheme dispatch]
   Hub --> Auth
-  Auth --> GitHub[GitHub device authorization and refresh]
+  Auth --> GitHub[GitHub device authorization and Copilot session exchange]
   Auth --> Record[Per-instance OAuth record]
   Record --> Registry[Registry resolves implicit instance]
   Registry --> Models[Live account model discovery]
@@ -113,7 +115,7 @@ Add `oauth-github-copilot` to the registry auth vocabulary and load-time schema.
 - `api_key_env = []`;
 - `base_url` defaulting to `https://api.githubcopilot.com`;
 - `GITHUB_COPILOT_BASE_URL` as the endpoint override;
-- `default_model = "gpt-5.5"` and `cheap_model = "gpt-5.4-mini"`;
+- `default_model = "gpt-5.6-sol"` and `cheap_model = "claude-haiku-5.5"`, both present in the proven modern roster;
 - inherited models.dev model facts and family-derived surfaces, except monetary prices.
 
 Place `github-copilot` after `openai-codex` and before `openai` in `default_order`. Stored subscription access therefore ranks ahead of the OpenAI metered API key, while existing Anthropic and Codex defaults keep priority. An explicit `default` remains authoritative. If Copilot's live listing lacks the configured default, New session asks for a model instead of adopting another row.
@@ -133,19 +135,20 @@ Add `auth/githubcopilot`. Do not force Copilot into `auth/openai`: its device en
 The versioned JSON record lives at `<state-root>/auth/github-copilot/<instance>.json` with mode 0600. The scheme-specific namespace leaves Codex paths and validation unchanged. The record contains:
 
 - the instance name, required `auth_scheme = "oauth-github-copilot"`, and record version;
-- access token, refresh token, token type, scope, obtained-at time, access expiry, and refresh expiry;
+- the GitHub access token, its optional refresh token and expiry fields, and token type/scope;
+- the Copilot session token, its required session expiry, and obtained-at time;
 - stable GitHub account ID and optional account email;
 - a persisted refresh-rejected flag when GitHub permanently refuses the refresh token.
 
-Access token, refresh token, expiry, obtained-at, account ID, instance identity, and matching auth scheme are required. Both the scheme-namespaced path and the record discriminator are checked on every load. Changing an instance to another auth scheme leaves the Copilot record unusable by that scheme; no GitHub token can cross into Codex. The record has no OpenAI ID token, ChatGPT workspace, environment fallback, or Copilot session token.
+GitHub access token, Copilot session token, session expiry, obtained-at, account ID, instance identity, and matching auth scheme are required. GitHub refresh/access-expiry fields are optional because the current compatibility identity returns a non-expiring token; when present, they must form a valid refreshable pair. Both the scheme-namespaced path and record discriminator are checked on every load. Changing an instance to another auth scheme leaves the Copilot record unusable by that scheme. The record has no OpenAI ID token or ChatGPT workspace.
 
 Derive the runtime and status credential source `oauth` from the auth scheme instead of storing a redundant source field.
 
-The service provides device login, status, logout, and runtime credential resolution. It refreshes five minutes before access expiry. Refresh rotates both tokens and atomically replaces the record.
+The service provides device login, session exchange, status, logout, and runtime credential resolution. It renews the Copilot session token five minutes before session expiry by repeating the exchange with the stored GitHub token. If that GitHub token has an expiry, the existing refresh path refreshes it first. Every refreshed record replaces the old one atomically.
 
 Use an inter-process lock keyed by the canonical record path around re-read, refresh, rejection updates, and save. Login, logout, rename, and rollback participate in the same record-lifecycle exclusion. After acquiring the lock, compare the current record with the generation read before the request. A refresh may save only over that unchanged, still-present generation; a newer login or logout wins. Re-read after `bad_refresh_token` and mark rejection only when the same refresh token and generation are still current. A request that receives a 401 after another process rotated the record reloads once and retries only when the record changed.
 
-A permanent `bad_refresh_token` on the current generation marks the record as needing login while retaining it for diagnosis. A new successful login or refresh clears that state. Tests cover two actual processes, stale success and rejection writes, and logout during refresh.
+A permanent GitHub `bad_refresh_token` on a refreshable generation, or a permanent rejection of the GitHub token during session exchange, marks the current record as needing login while retaining it for diagnosis. A successful login or renewal clears that state. Tests cover two actual processes, stale success and rejection writes, and logout during session renewal.
 
 Status is local. It reports signed-in state, account ID or email when available, refresh state, and stored-record presence. Logout deletes only the Evener-owned local record. Neither operation claims live Copilot access.
 
@@ -188,11 +191,12 @@ The initial default and cheap models are compatibility choices, not entitlement 
 
 ## Request authentication and headers
 
-The Copilot authenticator reads the current record through the Copilot service and applies the refreshed GitHub access token as `Authorization: Bearer`. It supplies stable account scope through the call-scoped authenticator, never the process-global authenticator.
+The Copilot authenticator reads the current record through the Copilot service and applies the renewed Copilot session token as `Authorization: Bearer`. It supplies stable account scope through the call-scoped authenticator, never the process-global authenticator.
 
 Start with the compatibility headers the probe validates:
 
 - `User-Agent: evener/<build-version>`;
+- `Editor-Version: vscode/1.107.0`, `Editor-Plugin-Version: copilot-chat/0.35.0`, and `Copilot-Integration-Id: vscode-chat`, the compatibility identity headers the live probe proved necessary;
 - `X-GitHub-Api-Version: 2026-08-01`;
 - `Openai-Intent: conversation-edits`;
 - `X-Interaction-Type: conversation-agent`;
@@ -200,7 +204,7 @@ Start with the compatibility headers the probe validates:
 - `X-Initiator: user` when the latest input is a user message and `agent` for subsequent tool-driven steps;
 - `Copilot-Vision-Request: true` when the request contains images.
 
-Do not send VS Code, OpenCode, Pi, or Copilot CLI identifying headers. Remove or adjust any compatibility header the live probe disproves, and record the final non-secret request contract in the provider documentation.
+Use only the compatibility headers this path needs. Do not use OpenCode's identity or Pi's User-Agent on model requests. Record the final non-secret request contract and the lack of a GitHub approval claim in the provider documentation.
 
 A missing, corrupt, expired-and-unrefreshable, or refresh-rejected credential returns the existing typed sign-in-required error with the Copilot login command. No ambient GitHub token fallback occurs.
 
@@ -245,7 +249,7 @@ Update the evergreen provider, connection, launch-configuration, environment-var
 
 ## Size and delivery order
 
-This is a project-sized change, estimated at roughly 1,500–2,200 production lines plus tests and documentation after adversarial review. Keep the worktree and branch scoped to Copilot. Do not absorb unrelated auth redesign or existing main-checkout changes.
+The accepted task-budget total before the Pi session adaptation is 2,442 production lines. Measure the adaptation separately and report any overage instead of hiding it. Keep the worktree and branch scoped to Copilot. Do not absorb unrelated auth redesign or existing main-checkout changes.
 
 Deliver in checked slices:
 
@@ -260,4 +264,4 @@ Each slice must leave existing providers working and add its behavior tests befo
 
 ## Builder discretion
 
-The builder may choose concrete function decomposition, test helpers, internal interfaces, and the smallest scheme-dispatch implementation that preserves these contracts. The builder may adjust model defaults or compatibility headers only from live evidence and must record that evidence. The builder does not change the selected direct-provider approach, OAuth ownership, credential sources, endpoint scope, cancellation semantics, or stop conditions without returning to Jesse.
+The builder may choose concrete function decomposition, test helpers, internal interfaces, and the smallest scheme-dispatch implementation that preserves these contracts. The builder may adjust model defaults or compatibility headers only from live evidence and must record that evidence. The builder does not change the selected Pi-compatible approach, credential sources, endpoint scope, cancellation semantics, or stop conditions without returning to Jesse.
