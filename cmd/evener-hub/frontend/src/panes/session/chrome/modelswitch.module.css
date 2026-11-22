@@ -41,3 +41,14 @@
 .sheetBody {
   padding-bottom: var(--dock-clearance);
 }
+
+/* Touch target floor (2026-07-30-mobile-session-layout-design.md, decision
+ * 4): the trigger is the only way to open the model picker, so a coarse
+ * pointer needs the platform's 44px tap floor - min-height, not height, so
+ * the row's own sizing stays untouched. (any-pointer: coarse), not a width
+ * breakpoint: this is not a widgets/button consumer. */
+@media (any-pointer: coarse) {
+  .trigger {
+    min-height: var(--tap-min);
+  }
+}

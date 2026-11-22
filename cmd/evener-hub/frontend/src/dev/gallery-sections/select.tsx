@@ -15,17 +15,18 @@ const HOST_OPTIONS = [
   { value: "gpu-box", label: "gpu-box (offline)", disabled: true },
 ];
 
-function LiveSelect({ options = OPTIONS }: { options?: SelectOption[] }) {
-  const [value, setValue] = useState(options[0]?.value ?? "");
-  return <Select value={value} options={options} onChange={(e) => setValue(e.target.value)} />;
-}
-
-function LiveQuietSelect({ options = OPTIONS }: { options?: SelectOption[] }) {
+function LiveSelect({
+  options = OPTIONS,
+  variant = "default",
+}: {
+  options?: SelectOption[];
+  variant?: "default" | "quiet";
+}) {
   const [value, setValue] = useState(options[0]?.value ?? "");
   return (
     <Select
-      variant="quiet"
-      ariaLabel="Region"
+      variant={variant}
+      ariaLabel={variant === "quiet" ? "Region" : undefined}
       value={value}
       options={options}
       onChange={(e) => setValue(e.target.value)}
@@ -52,11 +53,11 @@ export default function SelectGallerySection() {
         </div>
         <div className={styles.row}>
           <p className={styles.rowLabel}>quiet</p>
-          <LiveQuietSelect />
+          <LiveSelect variant="quiet" />
         </div>
         <div className={styles.row}>
           <p className={styles.rowLabel}>quiet, a disabled option</p>
-          <LiveQuietSelect options={HOST_OPTIONS} />
+          <LiveSelect variant="quiet" options={HOST_OPTIONS} />
         </div>
         <div className={styles.row}>
           <p className={styles.rowLabel}>quiet disabled</p>

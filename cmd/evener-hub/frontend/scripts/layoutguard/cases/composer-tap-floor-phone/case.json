@@ -1,6 +1,6 @@
 {
   "name": "composer-tap-floor-phone",
-  "description": "At a phone viewport the reasoning-effort trigger in the composer status row must still meet the app's 44px tap floor in both axes, and the status row must not gain horizontal overflow to make room for it.",
+  "description": "At a phone viewport and in a 320px composer card the reasoning-effort trigger in the status row must still meet the app's 44px tap floor in both axes, and its full box must fit inside .identity's clip boundary instead of being clipped by a shrunken .effortTrigger; the status row must not gain horizontal overflow to make room for it.",
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
@@ -24,9 +24,9 @@
     "touch": true
   },
   "mutation": {
-    "declaration": "select.module.css: remove the phone/coarse min-width and min-height from .quietVariant",
+    "declaration": "Two manual probes: (1) select.module.css: remove the phone/coarse min-width and min-height from .quietVariant; (2) statusrow.module.css 399px block: change .effortTrigger back to flex: 0 1 auto with min-width: 0",
     "verified": "2026-11-22",
     "expect": "fail",
-    "note": "The shared quietTrigger recipe still supplies the coarse min-height; without Select's own rule the trigger measured 16.8x44.0 at 390px (2026-11-22), so the case fails on width."
+    "note": "(1) the target measured 31.4x27.2 at both fixtures, below the 44px floor. (2) the target was clipped by .identity to 23.0 of 44.0px visible at 390px and 18.4 of 44.0px at 320px (2026-11-22)."
   }
 }

@@ -148,17 +148,12 @@
     display: inline;
   }
 
-  /* The two model triggers share this narrow identity run. Let the effort
-   * control yield width too, while retaining its native select; otherwise the
-   * fixed effort width squeezes both model buttons below their icon/gap
-   * footprint and their content becomes horizontally scrollable. */
+  /* The two model triggers share this narrow identity run. The effort control
+   * keeps its separator plus the 44px native select: shrinking the wrapper
+   * lets .identity clip the select even though its unclipped rect still
+   * measures a full tap target. The model names yield and ellipsize instead. */
   .effortTrigger {
-    flex: 0 1 auto;
-    min-width: 0;
-  }
-
-  .effortTrigger [data-quiet-chevron] {
-    display: none;
+    flex: 0 0 auto;
   }
 }
 

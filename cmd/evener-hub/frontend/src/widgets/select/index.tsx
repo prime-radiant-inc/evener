@@ -62,6 +62,24 @@ export function Select({
   "data-testid": testId,
   valueTestId,
 }: SelectProps) {
+  const nativeSelect = (
+    <select
+      id={id}
+      name={name}
+      className={variant === "quiet" ? BASE_CLASS.quietSelect : BASE_CLASS.select}
+      value={value}
+      onChange={onChange}
+      disabled={disabled}
+      aria-label={ariaLabel}
+      data-testid={variant === "default" ? testId : undefined}
+    >
+      {options.map((option) => (
+        <option key={option.value} value={option.value} disabled={option.disabled}>
+          {option.label}
+        </option>
+      ))}
+    </select>
+  );
   if (variant === "quiet") {
     // The select still renders every option; the readout is just the label of
     // the one it currently holds, kept in sync by the same controlled value.
@@ -71,43 +89,12 @@ export function Select({
         <span className={BASE_CLASS.quietReadout} data-testid={valueTestId} aria-hidden="true">
           {currentLabel}
         </span>
-        <span className={BASE_CLASS.quietCaret} data-quiet-chevron="true" aria-hidden="true">
+        <span className={BASE_CLASS.quietCaret} aria-hidden="true">
           <Chevron direction="down" />
         </span>
-        <select
-          id={id}
-          name={name}
-          className={BASE_CLASS.quietSelect}
-          value={value}
-          onChange={onChange}
-          disabled={disabled}
-          aria-label={ariaLabel}
-        >
-          {options.map((option) => (
-            <option key={option.value} value={option.value} disabled={option.disabled}>
-              {option.label}
-            </option>
-          ))}
-        </select>
+        {nativeSelect}
       </span>
     );
   }
-  return (
-    <select
-      id={id}
-      name={name}
-      className={BASE_CLASS.select}
-      value={value}
-      onChange={onChange}
-      disabled={disabled}
-      aria-label={ariaLabel}
-      data-testid={testId}
-    >
-      {options.map((option) => (
-        <option key={option.value} value={option.value} disabled={option.disabled}>
-          {option.label}
-        </option>
-      ))}
-    </select>
-  );
+  return nativeSelect;
 }

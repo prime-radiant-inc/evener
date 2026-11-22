@@ -51,6 +51,15 @@
   composes: quietChevron from "../internal/quietTrigger.module.css";
 }
 
+/* The compact composer status row has no room for the chevron beside a
+ * tap-floor trigger; the control still reads as a picker through its value
+ * and native select. */
+@container (max-width: 399px) {
+  .quietCaret {
+    display: none;
+  }
+}
+
 /* A REAL native <select>, laid over its own readout at zero opacity: the
  * control keeps every native behavior a hand-built listbox would have thrown
  * away - tab order, arrow keys, type-ahead, and the platform's own dropdown.

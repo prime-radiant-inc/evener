@@ -59,13 +59,3 @@
   flex: none;
   color: var(--ink-mid);
 }
-
-/* Touch target floor (2026-07-30-mobile-session-layout-design.md, decision
- * 4): a coarse pointer needs the platform's 44px target. min-height only, so
- * each site's own width breakpoint can add what its layout needs - Select's
- * quiet variant adds min-width and centring. */
-@media (any-pointer: coarse) {
-  .quietTrigger {
-    min-height: var(--tap-min);
-  }
-}

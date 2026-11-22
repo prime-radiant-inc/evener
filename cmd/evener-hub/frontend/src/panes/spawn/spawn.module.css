@@ -100,8 +100,8 @@
     gap: 0;
   }
 
-  .effortTrigger [data-quiet-chevron] {
-    display: none;
+  .effortTrigger {
+    flex: 0 0 auto;
   }
 }
 
