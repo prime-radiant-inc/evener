@@ -156,14 +156,6 @@ func lookupDaemonOwnerIn(ctx context.Context, cfg hubcore.WebConfig, view roster
 	if err := view.ownershipError(); err != nil {
 		return hubcore.LiveEntry{}, false, &daemonDiscoveryError{err: err}
 	}
-	if cfg.ResumeLocks != nil {
-		if _, ok := cfg.ResumeLocks.PendingLaunch(threadID); ok {
-			// A child is restoring this session but has not registered yet.
-			// Reporting absence would let a caller act as if no daemon were
-			// coming; the retryable answer is to wait for the launch.
-			return hubcore.LiveEntry{}, false, fmt.Errorf("%w: session %s", errResumeStillStarting, threadID)
-		}
-	}
 	return hubcore.LiveEntry{}, false, nil
 }
 

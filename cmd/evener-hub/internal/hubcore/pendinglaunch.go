@@ -81,6 +81,11 @@ func (r *ResumeLocks) HasPendingLaunch(sessionID string) bool {
 // cancels it so a supervisor reaps the child on shutdown.
 func (p *PendingLaunch) Context() context.Context { return p.ctx }
 
+// Cancel ends the launch's budget early, which makes its supervisor reap the
+// child and settle the claim. Force Stop uses it for a child that no
+// ActiveResume covers: one whose caller walked away mid-restore.
+func (p *PendingLaunch) Cancel() { p.cancel() }
+
 // Await waits for the launch to publish or be reaped, or for ctx to end.
 func (p *PendingLaunch) Await(ctx context.Context) (rendezvous.Entry, error) {
 	select {

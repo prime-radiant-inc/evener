@@ -504,6 +504,90 @@ func TestLongRunningResumeHubCancelsOwnedChild(t *testing.T) {
 	}
 }
 
+// Force Stop must still reach a child whose caller abandoned it. The detached
+// supervisor keeps that child alive, and no ActiveResume covers it, so Stop has
+// to cancel the session's pending-launch claim and wait for the reap.
+func TestForceStopKillsDetachedRestoringChild(t *testing.T) {
+	root := t.TempDir()
+	chdirTemp(t, root)
+	t.Setenv(envvars.XDGStateHome.Name, filepath.Join(root, "state-home"))
+	runDir := filepath.Join(root, "run")
+	if err := os.MkdirAll(runDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(root, "fixture-evener")
+	writeFakeEvener(t, binary, "#!/bin/sh\nif [ \"$1\" = launch-check ]; then\n printf '%s\\n' '{\"protocol\":\"evener-appwire-v7\",\"launch_flags\":[\"api-log\"]}'\n exit 0\nfi\nexit 2\n")
+	waiting, killed, allowExit := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	original := startResumeChild
+	defer func() { startResumeChild = original }()
+	startResumeChild = func(*exec.Cmd) (resumeChild, error) {
+		return resumeChild{pid: 4242, kill: func() error { close(killed); return nil }, wait: func() error {
+			close(waiting)
+			<-allowExit
+			return nil
+		}}, nil
+	}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			close(allowExit)
+		}
+	}
+	defer release()
+	locks := hubcore.NewResumeLocks()
+	defer locks.Close()
+	spawner := &HubSpawner{Cfg: DefaultConfig(), RunDir: runDir, EvenerBinary: binary}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, ResumeLocks: locks, Spawner: spawner})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{}); err != nil {
+		t.Fatal(err)
+	}
+	sessionID := hubtest.SessionID(t)
+	resumed := make(chan error, 1)
+	go func() {
+		var response appwire.ThreadResumeResponse
+		resumed <- client.Request(t.Context(), "thread/resume", appwire.ThreadResumeParams{Ref: "local:" + sessionID}, &response)
+	}()
+	select {
+	case <-waiting:
+	case err := <-resumed:
+		t.Fatalf("Resume did not reach child launch: %v", err)
+	}
+	// The caller walks away: the child keeps restoring behind its claim.
+	client.Close()
+	if err := <-resumed; err == nil {
+		t.Fatal("canceled Resume reported success")
+	}
+	if _, ok := locks.PendingLaunch(sessionID); !ok {
+		t.Fatal("caller departure dropped the pending-launch claim")
+	}
+
+	recovery := dialHubRPC(t, hub)
+	defer recovery.Close()
+	if _, err := recovery.Initialize(t.Context(), appwire.InitializeParams{}); err != nil {
+		t.Fatal(err)
+	}
+	stopped := make(chan error, 1)
+	go func() {
+		var response appwire.EmptyResponse
+		stopped <- recovery.Request(t.Context(), appwire.MethodEvenerThreadForceStop, appwire.ThreadForceStopParams{Ref: "local:" + sessionID}, &response)
+	}()
+	select {
+	case <-killed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("force stop did not kill the detached restoring child")
+	}
+	release()
+	if err := <-stopped; err == nil {
+		t.Fatal("pre-ready cleanup alone fabricated durable stopped authority")
+	}
+	if _, ok := locks.PendingLaunch(sessionID); ok {
+		t.Fatal("pending-launch claim survived force stop")
+	}
+}
+
 func TestLongRunningResumeShutdownProofNeverCancelsOrKills(t *testing.T) {
 	for _, reason := range []string{"active resume", "daemon claim"} {
 		t.Run(reason, func(t *testing.T) {

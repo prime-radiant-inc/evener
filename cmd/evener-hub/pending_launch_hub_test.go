@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -144,8 +145,52 @@ func TestPendingLaunchDeduplicatesConcurrentResumes(t *testing.T) {
 				t.Fatalf("joined resume = %v", err)
 			}
 		}
+
 		if got := calls.Load(); got != 0 {
 			t.Fatalf("joined resumes reached the spawner: calls = %d", got)
 		}
 	})
+}
+
+// A launch in flight must not fail read-only callers. thread/read and
+// thread/list serve a saved projection for a session whose daemon has not
+// registered yet: a pending launch is a reason to wait for the resume, never a
+// reason to refuse the transcript.
+func TestPendingLaunchKeepsPastSessionReadAndListServing(t *testing.T) {
+	cfg, _, sessionID, _ := pendingLaunchFixture(t)
+	locks := hubcore.NewResumeLocks()
+	defer locks.Close()
+	cfg.ResumeLocks = locks
+	claim, created := locks.ClaimPendingLaunch(sessionID, time.Minute)
+	if !created {
+		t.Fatal("claim was not created")
+	}
+	// Registered after the Close defer, so it settles first: this claim has no
+	// supervisor, and Close waits for every claim to settle.
+	defer claim.Settle(rendezvous.Entry{}, errResumeStillStarting)
+
+	var entry hubcore.PastEntry
+	for _, candidate := range cfg.Past.All() {
+		if candidate.Meta.ID == sessionID {
+			entry = candidate
+		}
+	}
+	if entry.Meta.ID == "" {
+		t.Fatal("past index did not index the session")
+	}
+	thread, err := pastEntryThread(t.Context(), cfg, entry, false)
+	if err != nil {
+		t.Fatalf("thread/read of a restoring session failed: %v", err)
+	}
+	if thread.ID != sessionID {
+		t.Fatalf("thread/read returned %q, want %q", thread.ID, sessionID)
+	}
+
+	list, err := hubThreadList(t.Context(), cfg, appsource.NewRegistry(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("thread/list failed while a session was restoring: %v", err)
+	}
+	if !slices.ContainsFunc(list.Data, func(candidate appwire.Thread) bool { return candidate.ID == sessionID }) {
+		t.Fatal("thread/list omitted the restoring session's saved projection")
+	}
 }
