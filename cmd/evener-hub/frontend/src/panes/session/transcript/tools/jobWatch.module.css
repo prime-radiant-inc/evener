@@ -13,13 +13,6 @@
    for no --attention/--alive/--danger var and needs no token-contract
    exception. */
 
-.card {
-  background: var(--surface-1);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-pane);
-  overflow: hidden;
-}
-
 .section {
   padding: var(--space-3) var(--space-4);
 }
