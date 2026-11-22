@@ -234,6 +234,9 @@ func reasoningReplayField(parts []llm.ContentPart, caps registry.Caps) string {
 	}
 	for _, p := range parts {
 		if p.Kind == llm.ContentThinking && p.Thinking != nil {
+			if p.Thinking.GoogleInteraction {
+				continue
+			}
 			if p.Thinking.ScalarReasoningText != "" && llm.IsOpenAICompatReasoningField(p.Thinking.ScalarReasoningField) {
 				return p.Thinking.ScalarReasoningField
 			}
@@ -286,6 +289,7 @@ func encryptedDetailsFromParts(parts []llm.ContentPart) []json.RawMessage {
 	var out []json.RawMessage
 	for _, p := range parts {
 		if p.Kind == llm.ContentThinking && p.Thinking != nil &&
+			!p.Thinking.GoogleInteraction &&
 			llm.IsOpenAICompatEncryptedReasoning(p.Thinking.EncryptedContent) {
 			// The guard also keeps a foreign provider's opaque blob (OpenAI
 			// Responses encrypted_content) off the wire on a cross-provider
@@ -449,9 +453,11 @@ func toolCallsFromParts(parts []llm.ContentPart) []map[string]any {
 					"arguments": openaichat.ToolArgumentsString(json.RawMessage(p.ToolCall.WireArguments())),
 				},
 			}
-			if sig := strings.TrimSpace(p.ToolCall.ThoughtSignature); sig != "" {
-				call["extra_content"] = map[string]any{
-					"google": map[string]any{"thought_signature": sig},
+			if !p.ToolCall.GoogleInteraction {
+				if sig := strings.TrimSpace(p.ToolCall.ThoughtSignature); sig != "" {
+					call["extra_content"] = map[string]any{
+						"google": map[string]any{"thought_signature": sig},
+					}
 				}
 			}
 			calls = append(calls, call)

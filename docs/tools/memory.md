@@ -33,7 +33,7 @@ All rows below also require `scope`. Unknown arguments are rejected.
 | --- | --- | --- | --- |
 | `memory_read` | `file_path` | `offset` (1-based start line, default 1), `limit` (line count, default 2000), `vision_prompt` (image/PDF extraction request) | Ordinary `ReadFile` presentation, including line-numbered text and existing image/PDF handling. An explicit missing read fails normally. A text page other than `MEMORY.md` longer than 4096 bytes ends with a note giving its size in KB (rounded up), pointing at the `gardening-memory` skill when the session can load it and has the save tools it uses (never in a delegate), otherwise saying a page should hold one fact. `MEMORY.md` at the scope root is not a file: the read renders the generated index in full, with no size cap, paged by `offset`/`limit`, or says the scope has no pages yet. |
 | `memory_write` | `file_path`, `when`, `body` | None | Write one page: a frontmatter block holding `when`, the `updated` and `by` stamps, then `body`. Creates the file and parent directories if needed, or replaces the entire existing file. A blank or missing `when`, and a `body` that opens with a frontmatter block, are refused and write nothing. `MEMORY.md` at the scope root (any case) is refused, and so is a path holding an ASCII control character other than tab (a newline, say), which no index line can link to. |
-| `memory_edit` | `file_path`, `old_string`, `new_string` | `replace_all` (default false) | Ordinary `EditFile`: replace a unique exact match, or deliberately replace every occurrence when `replace_all` is true. Read first and include enough context for a unique match. `MEMORY.md` at the scope root (any case) is refused, and so is a path holding an ASCII control character other than tab. |
+| `memory_edit` | `file_path`, `edits` (non-empty array of `{old_string, new_string, replace_all?}`) | None (per-edit `replace_all` defaults to false) | Ordinary `EditFile`: apply one or more non-overlapping exact replacements atomically. Every `edits[].old_string` matches the original file (not after earlier edits) and must be unique unless `replace_all` is true; merge nearby changes into one entry. Read first with `memory_read`. Legacy top-level `old_string`/`new_string` without `edits` is healed at dispatch by argument repair, while mixed calls carrying both are rejected. `MEMORY.md` at the scope root (any case) is refused, and so is a path holding an ASCII control character other than tab. |
 | `memory_search` | `pattern` (regex) | `path`, `glob_filter`, `case_insensitive`, `max_results` (default 100), `context_lines` (0–10, default 0), `output_mode` (`content`, `files_with_matches`, `count`, default `content`) | Ordinary `Grep`, with matching lines, filenames or per-file counts. `glob_filter` supports `*`, `?`, `[]`, `**` and bounded brace alternatives. Dotfiles and gitignored paths are excluded by default; a `glob_filter` naming such a file surfaces it (ripgrep `-g` override), while hidden and gitignored directories stay pruned either way. It never searches a root `MEMORY.md` (any case). A result names a file whose path holds an ASCII control character other than tab as a JSON string, so every result stays one line. A search that found more results than `max_results` (output lines in `content` mode, context lines and `--` separators included) shows the first `max_results`, then a blank line and a note saying it was truncated and how to see the rest. |
 | `memory_delete` | `file_path` | None | Remove one regular file through shared captured-parent confinement, without reading its body or requiring file read permission. Missing files or parents are a no-op. Directories, symlinks and special files are refused. Directories the removal leaves empty are removed too, deepest first, up to but never including the scope root; the first that still holds anything stops the climb. Parent permissions and other removal errors still apply. `MEMORY.md` at the scope root (any case) is refused; a path holding a control character is taken, so a file named that way outside the tools can be removed. The page's index line disappears with it; repair links from other pages separately. |
 
@@ -66,20 +66,22 @@ from a missing file or parent, and does not count deleted bytes.
 
 ## Focused correction
 
-Read the page, make one exact edit, then read it back:
+Read the page, apply one or more disjoint exact edits atomically, then read it back:
 
 ```json
 {"scope":"project","file_path":"lessons.txt","offset":1,"limit":40}
 ```
 
 ```json
-{"scope":"project","file_path":"lessons.txt","old_string":"outdated fact","new_string":"verified correction"}
+{"scope":"project","file_path":"lessons.txt","edits":[{"old_string":"outdated fact","new_string":"verified correction"}]}
 ```
 
-The first argument object is for `memory_read`; the second is for `memory_edit`.
+The first argument object is for `memory_read`; the second is for `memory_edit`
+(every `edits[].old_string` matches the original page, and legacy top-level
+`old_string`/`new_string` without `edits` is healed at dispatch).
 The index follows the pages; there is no index edit. After an uncertain write result,
 reread before retrying. Whole-file writes can overwrite concurrent changes;
-there is no revision protocol, batch or atomic multi-file operation.
+there is no revision protocol or atomic multi-file operation.
 
 ## Large results and recovery
 

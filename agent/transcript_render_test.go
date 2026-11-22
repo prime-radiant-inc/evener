@@ -1159,6 +1159,91 @@ func TestToolInputSummary(t *testing.T) {
 	})
 }
 
+// TestTranscriptRenderEditFileSummary pins the one-line edit_file summary for
+// canonical edits[], the historical top-level old_string/new_string call, and
+// malformed edits values.
+func TestTranscriptRenderEditFileSummary(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		args string
+		want string
+	}{
+		{
+			name: "canonical single edit",
+			args: `{"file_path":"a.go","edits":[{"old_string":"aaaa","new_string":"bbbbbb"}]}`,
+			want: "a.go (replace 4→6 chars)",
+		},
+		{
+			name: "canonical single edit replace all",
+			args: `{"file_path":"a.go","edits":[{"old_string":"aaaa","new_string":"bbbbbb","replace_all":true}]}`,
+			want: "a.go (replace 4→6 chars, all)",
+		},
+		{
+			name: "canonical multi edit aggregates chars",
+			args: `{"file_path":"a.go","edits":[{"old_string":"aa","new_string":"bbb"},{"old_string":"cccc","new_string":"d"}]}`,
+			want: "a.go (2 edits, replace 6→4 chars)",
+		},
+		{
+			name: "canonical multi edit omits all marker",
+			args: `{"file_path":"a.go","edits":[{"old_string":"aa","new_string":"b","replace_all":true},{"old_string":"c","new_string":"dd"}]}`,
+			want: "a.go (2 edits, replace 3→3 chars)",
+		},
+		{
+			name: "stringified edits array falls back to path",
+			args: `{"file_path":"a.go","edits":"[{\"old_string\":\"aa\",\"new_string\":\"bbb\"},{\"old_string\":\"c\",\"new_string\":\"dd\"}]"}`,
+			want: "a.go",
+		},
+		{
+			name: "bare edit object falls back to path",
+			args: `{"file_path":"a.go","edits":{"old_string":"aa","new_string":"bbb"}}`,
+			want: "a.go",
+		},
+		{
+			name: "non-canonical alias keys fall back to path",
+			args: `{"file_path":"a.go","edits":[{"old_str":"aa","newText":"bbb","replaceAll":true}]}`,
+			want: "a.go",
+		},
+		{
+			name: "malformed edits elements fall back to path",
+			args: `{"file_path":"a.go","edits":[null,"bad",{"old_string":123}]}`,
+			want: "a.go",
+		},
+		{
+			name: "empty edits array falls back to path",
+			args: `{"file_path":"a.go","edits":[]}`,
+			want: "a.go",
+		},
+		{
+			name: "non-array edits falls back to path",
+			args: `{"file_path":"a.go","edits":42}`,
+			want: "a.go",
+		},
+		{
+			name: "edits key present blocks legacy fallback",
+			args: `{"file_path":"a.go","edits":null,"old_string":"aaaa","new_string":"bbb"}`,
+			want: "a.go",
+		},
+		{
+			name: "legacy top-level edit preserved",
+			args: `{"file_path":"a.go","old_string":"aaaa","new_string":"bbbbbb"}`,
+			want: "a.go (replace 4→6 chars)",
+		},
+		{
+			name: "legacy top-level replace all preserved",
+			args: `{"file_path":"a.go","old_string":"x","new_string":"y","replace_all":true}`,
+			want: "a.go (replace 1→1 chars, all)",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := toolInputSummary("edit_file", []byte(tc.args)); got != tc.want {
+				t.Fatalf("summary = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestRenderMarkdown_ResultBodyFenceCollision verifies that a result body which
 // itself contains a ``` fence does not close the wrapping code fence early. The
 // wrapper fence must be at least one backtick longer than the longest backtick

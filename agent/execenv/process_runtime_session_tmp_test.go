@@ -11,18 +11,10 @@ import (
 )
 
 // processRuntimeSessionTmpError reports why a spawned session's TMPDIR shape is
-// wrong, or nil when it matches the platform's contract. Where a world-usable
-// session temp container exists (sandbox.SessionTmpSupported), TMPDIR names an
+// wrong, or nil when it matches the shipped platform's contract: TMPDIR names an
 // existing 1777 sticky <host-temp>/evener-sandbox-*/tmp container distinct from
-// the private scratch. Where none can exist — Windows — production keeps TMPDIR
-// on that scratch (local_scratch.go's tmpDirNamesScratch), so the two are equal.
-func processRuntimeSessionTmpError(name, tmpDir, scratch string, tmpSupported bool) error {
-	if !tmpSupported {
-		if tmpDir != scratch {
-			return fmt.Errorf("%s TMPDIR = %q, want the session scratch %q on this platform", name, tmpDir, scratch)
-		}
-		return nil
-	}
+// the private scratch.
+func processRuntimeSessionTmpError(name, tmpDir, scratch string) error {
 	if tmpDir == "" || tmpDir == scratch {
 		return fmt.Errorf("%s TMPDIR = %q, want a world-usable temp container distinct from the private scratch %q",
 			name, tmpDir, scratch)
@@ -42,10 +34,9 @@ func processRuntimeSessionTmpError(name, tmpDir, scratch string, tmpSupported bo
 }
 
 // TestProcessRuntimeSessionTmpError exercises processRuntimeSessionTmpError
-// directly so both platform answers are covered on any host. Only the accepting
-// supported case needs a real sticky container, which a platform that never
-// reports os.ModeSticky cannot supply; every rejection arm is platform
-// independent and runs everywhere.
+// directly. Only the accepting case needs a real sticky container, which a
+// platform that never reports os.ModeSticky cannot supply; every rejection arm
+// is platform independent and runs everywhere.
 func TestProcessRuntimeSessionTmpError(t *testing.T) {
 	t.Parallel()
 	scratch := t.TempDir()
@@ -56,33 +47,29 @@ func TestProcessRuntimeSessionTmpError(t *testing.T) {
 	nonDir := sessionTmpFileForTest(t)
 
 	cases := []struct {
-		name         string
-		tmpDir       string
-		scratch      string
-		tmpSupported bool
-		needsSticky  bool
-		wantErr      bool
+		name        string
+		tmpDir      string
+		scratch     string
+		needsSticky bool
+		wantErr     bool
 	}{
-		{"supported accepts container", container, scratch, true, true, false},
-		{"supported rejects scratch", scratch, scratch, true, false, true},
-		{"supported rejects empty", "", scratch, true, false, true},
-		{"supported rejects wrong leaf", wrongLeaf, scratch, true, false, true},
-		{"supported rejects unprefixed parent", wrongPrefix, scratch, true, false, true},
-		{"supported rejects non-world mode", wrongMode, scratch, true, false, true},
-		{"supported rejects non-directory", nonDir, scratch, true, false, true},
-		{"unsupported accepts scratch", scratch, scratch, false, false, false},
-		{"unsupported rejects container", container, scratch, false, false, true},
-		{"unsupported rejects empty", "", scratch, false, false, true},
+		{"accepts container", container, scratch, true, false},
+		{"rejects scratch", scratch, scratch, false, true},
+		{"rejects empty", "", scratch, false, true},
+		{"rejects wrong leaf", wrongLeaf, scratch, false, true},
+		{"rejects unprefixed parent", wrongPrefix, scratch, false, true},
+		{"rejects non-world mode", wrongMode, scratch, false, true},
+		{"rejects non-directory", nonDir, scratch, false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.needsSticky && !sandbox.SessionTmpSupported {
 				t.Skip("this platform never reports os.ModeSticky, so it cannot mint the container this case accepts")
 			}
-			err := processRuntimeSessionTmpError("env", tc.tmpDir, tc.scratch, tc.tmpSupported)
+			err := processRuntimeSessionTmpError("env", tc.tmpDir, tc.scratch)
 			if (err != nil) != tc.wantErr {
-				t.Fatalf("processRuntimeSessionTmpError(%q, %q, supported=%t) = %v, wantErr=%t",
-					tc.tmpDir, tc.scratch, tc.tmpSupported, err, tc.wantErr)
+				t.Fatalf("processRuntimeSessionTmpError(%q, %q) = %v, wantErr=%t",
+					tc.tmpDir, tc.scratch, err, tc.wantErr)
 			}
 		})
 	}

@@ -25,9 +25,10 @@ import {
   mergeTranscriptItemVersioned,
   mergeTranscriptTurnVersioned,
   olderFrontierOf,
+  pruneBackgroundHistoryBodies,
 } from "./transcriptHistory";
 import { markItemTextOmitted } from "./transcriptItems";
-import type { OverlayItem, ThreadHistoryTurnsListResponse, ThreadReadResponse, Turn } from "./types.gen";
+import type { OverlayItem, Thread, ThreadHistoryTurnsListResponse, ThreadReadResponse, Turn } from "./types.gen";
 
 // A v6 read response for the standard test thread. `olderCursor` absent is a
 // source read that named no older history; a value is the opaque continuation.
@@ -1903,6 +1904,351 @@ test("a wait-free read of the same running turn keeps the wake's zero-delay chip
   expect(after.quotaWaitStartedAt).toBeUndefined();
   expect(after.quotaWaitEndedStamp).toBe(4);
   expect(after.quotaResumesAt).toBeUndefined();
+});
+
+// The retrying turn as a read reports it: the pre-wake steer the client
+// already holds, plus whatever the read carries now.
+function retryReadTurn(
+  items: Array<{
+    id: string;
+    type: "userMessage" | "agentMessage" | "reasoning" | "commandExecution" | "steering";
+    version?: number;
+  }>,
+): Turn {
+  return {
+    id: "turn_1",
+    status: "active",
+    itemsView: "fragment",
+    items: items.map((item) => ({
+      id: item.id,
+      turnId: "turn_1",
+      type: item.type,
+      text: item.id,
+      status: "completed",
+      version: item.version,
+    })),
+  } as Turn;
+}
+
+// The held state the new tests share: turn_1 running, holding the pre-wake
+// steer; the wait starts (stamp 4) and its wake leaves the zero-delay chip and
+// the ended stamp 4 — copied from the two tests above.
+function modelAwaitingRetriedOutput(start?: ThreadModel): ThreadModel {
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  let model =
+    start ??
+    testHydrate({
+      status: { type: "active" },
+      evener: { activeTurnId: "turn_1" },
+      turns: [retryReadTurn([{ id: "item_user", type: "userMessage" }])],
+    });
+  // The wait starts...
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: 21_600_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 0,
+        waitStartedAt: 4,
+        resumesAt: deadline,
+      },
+    },
+    1500,
+  );
+  // ...and its wake clears the hold, leaving the progress chip and the ended
+  // stamp.
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: 0,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 0,
+        waitStartedAt: 4,
+      },
+    },
+    1600,
+  );
+  return model;
+}
+
+// The retried call as a recovering read reports it: the pre-wake steer the
+// client already holds, plus the post-wake output it does not.
+function retriedOutputTurn(): Turn {
+  return retryReadTurn([
+    { id: "item_user", type: "userMessage" },
+    { id: "item_out", type: "agentMessage", version: 6 },
+  ]);
+}
+
+function liveReadOfRetriedOutput(): Thread {
+  return testThread({
+    status: { type: "active" },
+    evener: { activeTurnId: "turn_1" },
+    turns: [retriedOutputTurn()],
+  });
+}
+
+// A read the hub serves from the saved index because the live read failed. It
+// names no live daemon and may not retire the held wait (#7338), but it carries
+// the retried call's post-wake output all the same.
+function savedFallbackRead(turns: Turn[]) {
+  return {
+    thread: testThread({ status: { type: "active" }, evener: { activeTurnId: "turn_1" }, turns }),
+    bootGeneration: "",
+    epoch: 0,
+    snapshot: { incarnation: "saved-inc", length: 1 },
+    servedFrom: "saved-index",
+    fallbackReason: "live-read-failed",
+    asOf: "2026-11-08T00:00:01Z",
+  };
+}
+
+// The wake's zero-delay chip is the retry's PROGRESS state, so the read stops
+// being "not news" as soon as it carries model output the client does not
+// hold: the call has produced something after the wake, and the chip has
+// nothing left to describe.
+test("a wait-free read that shows post-wake model output in the retrying turn retires the zero-delay chip", () => {
+  const model = modelAwaitingRetriedOutput();
+  const read = testThread({
+    status: { type: "active" },
+    evener: { activeTurnId: "turn_1" },
+    turns: [
+      retryReadTurn([
+        { id: "item_user", type: "userMessage" },
+        { id: "item_out", type: "agentMessage", version: 6 },
+      ]),
+    ],
+  });
+
+  const after = applyReadResponse(model, { thread: read }, 2000);
+
+  expect(after.modelRetry).toBeUndefined();
+  expect(after.quotaWaitEndedStamp).toBe(4);
+  expect(after.quotaResumesAt).toBeUndefined();
+});
+
+// A re-issued model-output item is output even though its identity is old: the
+// daemon raises the version when the entry that produced it grew.
+test("a wait-free read that re-issues a model-output item at a higher version retires the zero-delay chip", () => {
+  const model = modelAwaitingRetriedOutput(
+    testHydrate({
+      status: { type: "active" },
+      evener: { activeTurnId: "turn_1" },
+      turns: [
+        retryReadTurn([
+          { id: "item_user", type: "userMessage" },
+          { id: "item_out", type: "agentMessage", version: 3 },
+        ]),
+      ],
+    }),
+  );
+  const read = testThread({
+    status: { type: "active" },
+    evener: { activeTurnId: "turn_1" },
+    turns: [
+      retryReadTurn([
+        { id: "item_user", type: "userMessage" },
+        { id: "item_out", type: "agentMessage", version: 6 },
+      ]),
+    ],
+  });
+
+  const after = applyReadResponse(model, { thread: read }, 2000);
+
+  expect(after.modelRetry).toBeUndefined();
+  expect(after.quotaWaitEndedStamp).toBe(4);
+});
+
+// A pruned background model keeps identities and versions in recorded history
+// but drops the rows from its display turns. A read restoring the same
+// recorded row is not output, so the comparison must use the recorded side.
+test("a pruned background model keeps the zero-delay chip when the read restores an already-recorded row", () => {
+  const held = hydrateThread(
+    {
+      thread: testThread({
+        status: { type: "active" },
+        evener: { activeTurnId: "turn_1" },
+        turns: [
+          retryReadTurn([
+            { id: "item_user", type: "userMessage" },
+            { id: "item_out", type: "agentMessage", version: 3 },
+          ]),
+        ],
+      }),
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+    },
+    "ref_t",
+    1000,
+  );
+  const model = pruneBackgroundHistoryBodies(modelAwaitingRetriedOutput(held));
+  // The pruned display hides the row; recorded history still holds it.
+  expect(model.turns.flatMap((turn) => turn.items).map((item) => item.id)).not.toContain("item_out");
+  expect(model.history?.turns.flatMap((turn) => turn.items).map((item) => item.id)).toContain("item_out");
+
+  const read = testThread({
+    status: { type: "active" },
+    evener: { activeTurnId: "turn_1" },
+    turns: [
+      retryReadTurn([
+        { id: "item_user", type: "userMessage" },
+        { id: "item_out", type: "agentMessage", version: 3 },
+      ]),
+    ],
+  });
+  const after = applyReadResponse(model, { thread: read }, 2000);
+
+  expect(after.modelRetry?.delayMs).toBe(0);
+  expect(after.quotaWaitEndedStamp).toBe(4);
+});
+
+// The mobile shape (applyReadModel on a caller-hydrated model) gets the same
+// verdict from the same guard: the read's recorded turns carry the output.
+test("applyReadModel retires the zero-delay chip when the hydrated read shows new model output", () => {
+  const model = modelAwaitingRetriedOutput();
+  const fresh = hydrateThread(
+    {
+      thread: testThread({
+        status: { type: "active" },
+        evener: { activeTurnId: "turn_1" },
+        turns: [
+          retryReadTurn([
+            { id: "item_user", type: "userMessage" },
+            { id: "item_out", type: "agentMessage", version: 6 },
+          ]),
+        ],
+      }),
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+    },
+    "ref_t",
+    2000,
+  );
+
+  const after = applyReadModel(model, fresh);
+
+  expect(after.modelRetry).toBeUndefined();
+  expect(after.quotaWaitEndedStamp).toBe(4);
+});
+
+// A saved-index fallback carrying the retried call's post-wake output is not
+// authority on the wait (#7338), so its own arrival leaves the wake's
+// zero-delay chip standing — but its merge still adopts that output into held
+// history. Comparing the next live read against that enriched cache would call
+// the same version old and leave the chip saying a finished call is retrying
+// (#7391): the fallback merge must not consume the evidence the live read
+// retires the chip with.
+test("a saved-index fallback read cannot consume the post-wake output a later live read retires the chip with", () => {
+  const model = modelAwaitingRetriedOutput();
+  const afterFallback = applyReadResponse(model, savedFallbackRead([retriedOutputTurn()]), 2000);
+  // The saved read may not retire the live wait's chip...
+  expect(afterFallback.modelRetry?.delayMs).toBe(0);
+  // ...but its merge did adopt the post-wake output into held history.
+  expect(afterFallback.history?.turns.flatMap((turn) => turn.items).map((item) => item.id)).toContain("item_out");
+
+  const liveRead = liveReadOfRetriedOutput();
+  const after = applyReadResponse(afterFallback, { thread: liveRead }, 3000);
+
+  expect(after.modelRetry).toBeUndefined();
+  expect(after.quotaWaitEndedStamp).toBe(4);
+});
+
+// The mobile shape gets the same protection: the fallback merge through
+// applyReadModel must not hide the output its own hydration adopted.
+test("applyReadModel keeps the post-wake output evidence across a saved-index fallback merge", () => {
+  const model = modelAwaitingRetriedOutput(
+    hydrateThread(
+      {
+        thread: testThread({
+          status: { type: "active" },
+          evener: { activeTurnId: "turn_1" },
+          turns: [retryReadTurn([{ id: "item_user", type: "userMessage" }])],
+        }),
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+      },
+      "ref_t",
+      1000,
+    ),
+  );
+  const fallback = hydrateThread(savedFallbackRead([retriedOutputTurn()]), "ref_t", 2000);
+  const afterFallback = applyReadModel(model, fallback);
+  expect(afterFallback.modelRetry?.delayMs).toBe(0);
+
+  const live = hydrateThread(
+    {
+      thread: liveReadOfRetriedOutput(),
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+    },
+    "ref_t",
+    3000,
+  );
+  const after = applyReadModel(afterFallback, live);
+
+  expect(after.modelRetry).toBeUndefined();
+  expect(after.quotaWaitEndedStamp).toBe(4);
+});
+
+// The same running turn with nothing the client does not already hold is not
+// news about the call: the chip and its receipt instant stand.
+test("a wait-free read that shows only already-held items in the retrying turn keeps the zero-delay chip", () => {
+  const model = modelAwaitingRetriedOutput();
+  const read = testThread({
+    status: { type: "active" },
+    evener: { activeTurnId: "turn_1" },
+    turns: [retryReadTurn([{ id: "item_user", type: "userMessage" }])],
+  });
+
+  const after = applyReadResponse(model, { thread: read }, 2000);
+
+  expect(after.modelRetry?.delayMs).toBe(0);
+  expect(after.modelRetry?.attempt).toBe(1);
+  expect(after.modelRetry?.receivedAt).toBe(1600);
+  expect(after.quotaWaitEndedStamp).toBe(4);
+});
+
+// A steer arriving mid-grind is not model output: it must not retire the
+// chip the way an assistant message, reasoning row, or generated command does.
+test("a wait-free read that adds only a user steer to the retrying turn keeps the zero-delay chip", () => {
+  const model = modelAwaitingRetriedOutput();
+  const read = testThread({
+    status: { type: "active" },
+    evener: { activeTurnId: "turn_1" },
+    turns: [
+      retryReadTurn([
+        { id: "item_user", type: "userMessage" },
+        { id: "item_steer", type: "steering" },
+      ]),
+    ],
+  });
+
+  const after = applyReadResponse(model, { thread: read }, 2000);
+
+  expect(after.modelRetry?.delayMs).toBe(0);
+  expect(after.modelRetry?.attempt).toBe(1);
+  expect(after.modelRetry?.receivedAt).toBe(1600);
+  expect(after.quotaWaitEndedStamp).toBe(4);
 });
 
 // The daemon's retired-input list is the only durable evidence that a canceled

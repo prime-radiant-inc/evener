@@ -498,7 +498,7 @@ func TestToolCallWireFixtures(t *testing.T) {
 		{
 			id: "call_edit_file", tool: "edit_file",
 			note: "One replacement in one file.",
-			args: map[string]any{"file_path": "agent/tree.go", "old_string": "func settle() {}\n", "new_string": "func settle() {\n\tdrain()\n}\n"},
+			args: map[string]any{"file_path": "agent/tree.go", "edits": []any{map[string]any{"old_string": "func settle() {}\n", "new_string": "func settle() {\n\tdrain()\n}\n"}}},
 		},
 		{
 			id: "call_write_file", tool: "write_file",

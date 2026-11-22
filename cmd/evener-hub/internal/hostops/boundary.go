@@ -20,13 +20,13 @@ const MaxIncarnationIDBytes = 128
 // the generation, reconciled by the same boot rule, and rolled back by the same
 // rollback rule" (deploy-pipeline spec §§4, 8 cite the schema). The store never
 // interprets the values: it persists the triples the registry's writes commit,
-// and cursor validation (a later slice) reads the mirrored value instead of
-// re-reading hub.toml.
+// and the operations read resolves a host's current pair from the mirrored
+// value instead of re-reading hub.toml.
 //
 // The record outlives the host's live entry by design: §4's retention rule
 // keeps "the historical (generation, incarnation id, presenceEpoch) boundary"
 // in this record until the host's last operation record compacts, so a removed
-// host's pagination still validates against a boundary. Retention deletion —
+// host's history stays readable under its recorded pair. Retention deletion —
 // compacting that last record — belongs to the slice that owns retention; the
 // one deletion this layer performs is the ownership prune MirrorBoundaries
 // applies to a name the writing mutation no longer carries (a compensated add,

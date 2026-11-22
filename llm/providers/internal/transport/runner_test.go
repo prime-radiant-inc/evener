@@ -5,7 +5,9 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -322,10 +324,27 @@ func TestRun_TerminalErrorHookIsNotConsultedOnCancelOrFatal(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "caller deadline",
+			ctx: func(t *testing.T) context.Context {
+				t.Helper()
+				ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Millisecond))
+				t.Cleanup(cancel)
+				return ctx
+			},
+			onEvent: func(llm.SSEEvent) error { return nil },
+			want: func(t *testing.T, err error) {
+				t.Helper()
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("terminal error = %v, want wrapped context.DeadlineExceeded", err)
+				}
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			finished := false
 			hookCalls := 0
+			runCtx := tc.ctx(t)
 			r := &StreamRunner{
 				Provider:      "responses",
 				Resp:          respFrom("data: {\"a\":1}\n\n"),
@@ -338,7 +357,7 @@ func TestRun_TerminalErrorHookIsNotConsultedOnCancelOrFatal(t *testing.T) {
 					return errors.New("the hook must not run here")
 				},
 			}
-			got := drain(tc.ctx(t), t, r)
+			got := drain(runCtx, t, r)
 			if hookCalls != 0 {
 				t.Fatalf("TerminalError ran %d times for %s", hookCalls, tc.name)
 			}
@@ -348,7 +367,104 @@ func TestRun_TerminalErrorHookIsNotConsultedOnCancelOrFatal(t *testing.T) {
 			tc.want(t, got[0].Err)
 		})
 	}
+
+	t.Run("adapter-owned deadline consults TerminalError", func(t *testing.T) {
+		attemptCtx, cancel := llm.ApplyAdapterTimeout(context.Background(), &llm.AdapterTimeout{Request: time.Nanosecond}, true)
+		defer cancel()
+		<-attemptCtx.Done()
+		sentinel := errors.New("stored stream accepted before adapter deadline")
+		finished := false
+		hookCalls := 0
+		var sawCause error
+		r := &StreamRunner{
+			Provider:      "google",
+			Resp:          &http.Response{Body: io.NopCloser(errReader{err: io.ErrUnexpectedEOF})},
+			Stream:        llm.NewChanStream(nil),
+			OnEvent:       func(llm.SSEEvent) error { return nil },
+			Finished:      &finished,
+			IncompleteMsg: "google stream ended without completion",
+			TerminalError: func(parseErr error) error {
+				hookCalls++
+				sawCause = parseErr
+				return sentinel
+			},
+		}
+		got := drain(attemptCtx, t, r)
+		if hookCalls != 1 || !errors.Is(sawCause, context.DeadlineExceeded) {
+			t.Fatalf("hookCalls=%d sawCause=%v, want 1 and context.DeadlineExceeded", hookCalls, sawCause)
+		}
+		if len(got) != 1 || got[0].Type != llm.StreamEventError || !errors.Is(got[0].Err, sentinel) {
+			t.Fatalf("events = %+v, want TerminalError sentinel", got)
+		}
+	})
+
+	for _, nilErrsAfterEOF := range []int32{0, 1, 2} {
+		t.Run("adapter deadline expiring after EOF nilErrs="+strconv.Itoa(int(nilErrsAfterEOF)), func(t *testing.T) {
+			attemptCtx, cancel := llm.ApplyAdapterTimeout(context.Background(), &llm.AdapterTimeout{Request: time.Nanosecond}, true)
+			defer cancel()
+			<-attemptCtx.Done()
+
+			raceCtx := &postEOFDeadlineContext{Context: attemptCtx}
+			raceCtx.remainingNilErr.Store(nilErrsAfterEOF)
+
+			sentinel := errors.New("stored stream accepted before post-EOF adapter deadline")
+			finished := false
+			hookCalls := 0
+			r := &StreamRunner{
+				Provider:      "google",
+				Resp:          &http.Response{Body: io.NopCloser(&eofSignalReader{r: strings.NewReader("data: {\"a\":1}\n\n"), onEOF: func() { raceCtx.eofReached.Store(true) }})},
+				Stream:        llm.NewChanStream(nil),
+				OnEvent:       func(llm.SSEEvent) error { return nil },
+				Finished:      &finished,
+				IncompleteMsg: "google stream ended without completion",
+				TerminalError: func(error) error {
+					hookCalls++
+					return sentinel
+				},
+			}
+			got := drain(raceCtx, t, r)
+			if hookCalls != 1 {
+				t.Fatalf("nilErrsAfterEOF=%d: TerminalError hookCalls=%d, want 1 (events=%+v)", nilErrsAfterEOF, hookCalls, got)
+			}
+			if len(got) != 1 || got[0].Type != llm.StreamEventError || !errors.Is(got[0].Err, sentinel) {
+				t.Fatalf("nilErrsAfterEOF=%d: events = %+v, want TerminalError sentinel", nilErrsAfterEOF, got)
+			}
+		})
+	}
 }
+
+type postEOFDeadlineContext struct {
+	context.Context
+	eofReached      atomic.Bool
+	remainingNilErr atomic.Int32
+}
+
+func (c *postEOFDeadlineContext) Err() error {
+	if !c.eofReached.Load() {
+		return nil
+	}
+	if c.remainingNilErr.Add(-1) >= 0 {
+		return nil
+	}
+	return c.Context.Err()
+}
+
+type eofSignalReader struct {
+	r     io.Reader
+	onEOF func()
+}
+
+func (r *eofSignalReader) Read(p []byte) (int, error) {
+	n, err := r.r.Read(p)
+	if errors.Is(err, io.EOF) && r.onEOF != nil {
+		r.onEOF()
+	}
+	return n, err
+}
+
+type errReader struct{ err error }
+
+func (r errReader) Read([]byte) (int, error) { return 0, r.err }
 
 // TestFinish_PublishesFinishEventOnceAndStopsParse pins Finish for both attempt
 // states: the Finish event reaches the stream exactly once, the runner counts

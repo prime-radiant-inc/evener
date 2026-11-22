@@ -22,6 +22,12 @@
   (subpath "/var/db")
   (subpath "/private/var/db"))
 
+; The child-env fd reader is /usr/bin/perl, which dyld-loads its runtime from
+; /System/Library/Perl. This is system code, not user data: the grant is the
+; same read-only system-root allowance every other platform runtime gets.
+(allow file-read* file-test-existence (subpath "/System/Library/Perl"))
+(allow file-map-executable (subpath "/System/Library/Perl"))
+
 ; Map system frameworks + dylibs for the loader.
 (allow file-map-executable
   (subpath "/Library/Apple/System/Library/Frameworks")

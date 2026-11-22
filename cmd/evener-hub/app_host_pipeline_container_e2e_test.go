@@ -439,9 +439,6 @@ func runHostPipelineEndpointCase(t *testing.T, endpointCase hostPipelineEndpoint
 	if page.Generation != attached.Generation || page.IncarnationID != attached.IncarnationID {
 		t.Fatalf("the host-pinned page identity pair = (%d, %q), want the row's (%d, %q)", page.Generation, page.IncarnationID, attached.Generation, attached.IncarnationID)
 	}
-	if len(page.HostBoundaries) != 0 {
-		t.Fatalf("a host-pinned page carries no hostBoundaries map, got %v", page.HostBoundaries)
-	}
 	if len(page.Operations) == 0 {
 		t.Fatalf("the operations page listed no records; at least the deploy and restart records were expected")
 	}
@@ -470,30 +467,6 @@ func runHostPipelineEndpointCase(t *testing.T, endpointCase hostPipelineEndpoint
 		if record.Kind != want.kind || record.State != appwire.OperationStateComplete {
 			t.Fatalf("listed record %s = kind %q state %q, want the complete %s operation", want.id, record.Kind, record.State, want.kind)
 		}
-	}
-
-	// The store mints a continuation whenever a page listed at least one record
-	// (hostops/cursor.go's OperationsPage.NextCursor contract: "present exactly
-	// when the page listed at least one record"), so a cursor here is expected
-	// even though the page exhausted this host's records — the first live run
-	// confirmed one is returned. The assertion deliberately does not hinge on
-	// that: it follows the chain when a cursor is present and requires the
-	// continuation to be the empty tail, which is what proves the first page
-	// listed every record this run created.
-	if page.NextCursor != "" {
-		tail, err := clientRequest[appwire.HostOperationsResponse](ctx, client, appwire.MethodEvenerHostOperations, appwire.HostOperationsParams{Name: hostName, Limit: 50, Cursor: page.NextCursor})
-		if err != nil {
-			t.Fatalf("step evener/host/operations (continuation): %v", err)
-		}
-		if len(tail.Operations) != 0 {
-			t.Fatalf("the continuation page listed %v; the first page was expected to hold every record this run created", hostPipelineRecordIDs(tail.Operations))
-		}
-		if tail.NextCursor != "" {
-			t.Fatalf("the empty continuation page carries a further cursor (%q); the mint rule gives no cursor to a page that listed no record", tail.NextCursor)
-		}
-		t.Log("operations page: followed the returned cursor to an empty tail (no records, no further cursor)")
-	} else {
-		t.Logf("operations page: no continuation cursor was returned; the page listed %d records", len(page.Operations))
 	}
 
 	// Deterministic evidence of the pipeline's one-operation-at-a-time

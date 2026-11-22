@@ -7,8 +7,9 @@ import { expect, test, vi } from "vitest";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { deferred } from "@evener/appwire-client/testing/deferred";
+import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { SubagentTree } from "./subagentTree";
-import { installActivityFixture } from "./sessionActivityTestUtils";
+import { activityFixture, installActivityFixture } from "./sessionActivityTestUtils";
 
 /** A coordinator hub whose delegate page reports `holdSequence: 7` while
  * `held`, the replacement daemon's own live hold of 9 while `replacement`, and
@@ -90,6 +91,50 @@ function hub(options: HubOptions = {}): FakeClient {
 	return client;
 }
 
+/** A hub whose summary response lands while both membership lists stay in
+ * flight: context and counts exist, and no collection has returned. */
+function summaryOnlyHub(gate: Promise<void>): FakeClient {
+	const client = new FakeClient("ready");
+	const fixture = () =>
+		activityFixture(
+			{
+				revision: 1,
+				root: {
+					kind: "session",
+					sessionId: "coord",
+					ref: "local:coord",
+					label: "Coordinator",
+					aggregate: "working",
+					counts: { active: 0, failed: 0, completed: 0, complete: true },
+					branch: {},
+					entries: [],
+				},
+			},
+			{ ref: "local:coord", scope: "subtree" },
+		);
+	client.on("evener/thread/activity/read", async () => fixture().summary);
+	client.on("evener/thread/delegates/list", async ({ scope }) => {
+		await gate;
+		return {
+			context: fixture().context,
+			scope: scope ?? "subtree",
+			delegates: [],
+			page: { complete: true, issues: [] },
+		};
+	});
+	client.on("evener/thread/jobs/list", async ({ scope }) => {
+		await gate;
+		return {
+			context: fixture().context,
+			scope: scope ?? "subtree",
+			jobs: [],
+			page: { complete: true, issues: [] },
+		};
+	});
+	client.on("thread/unsubscribe", () => ({}));
+	return client;
+}
+
 /** The follow read's answer, naming `bootGeneration` unless it is omitted. */
 function answerReads(client: FakeClient, bootGeneration: string | undefined): void {
 	client.on("thread/read", ({ ref }) => ({
@@ -99,6 +144,14 @@ function answerReads(client: FakeClient, bootGeneration: string | undefined): vo
 }
 
 const heldSequence = (subject: SubagentTree) => subject.getSnapshot().pages?.delegates.rows[0]?.holdSequence;
+
+/** The delegate row the cached presentation renders while no store is
+ * connected -- what the Agents list shows during an offline period. */
+function cachedDelegate(subject: SubagentTree) {
+	const entries = subject.getSnapshot().tree?.root.entries ?? [];
+	for (const entry of entries) if (entry.kind === "delegate") return entry.delegate;
+	return undefined;
+}
 
 async function opened(): Promise<SubagentTree> {
 	const subject = new SubagentTree("local:coord", "coord");
@@ -171,6 +224,9 @@ test("a relay resync's replacement generation outlives the client swap that foll
 	await vi.waitFor(() => expect(heldSequence(subject)).toBe(9));
 	expect(heldSequence(subject)).toBe(9);
 
+	// The screen lets go before the next connection arrives.
+	await subject.setClient(null);
+
 	// The client is swapped. The new store is handed the retained rows, whose
 	// samples generation 2 published -- not generation 1, which is the last
 	// generation the follow read named. Its own page is held back, so the follow
@@ -185,6 +241,71 @@ test("a relay resync's replacement generation outlives the client swap that foll
 	// the hold survives. Had the swap walked the rows back to 1, adopting 2
 	// would have retired exactly this still-live wait.
 	expect(heldSequence(subject)).toBe(9);
+});
+
+test("a page-served hold the replacement generation did not publish is not retained as its own", async () => {
+	const subject = new SubagentTree("local:coord", "coord");
+	subject.observeActivity();
+	const focused = hub();
+	answerReads(focused, "1");
+	await subject.setClient(focused);
+	await subject.follow();
+	expect(heldSequence(subject)).toBe(7);
+
+	// Relay recovery names generation 2 and the store adopts it from the recovery
+	// read, while the refreshed delegates page is still in flight. The loaded
+	// row's hold was served by a page, which names no generation: after the
+	// transition nothing proves whether the replaced daemon or its replacement
+	// sampled it.
+	const landing = deferred<void>();
+	serveDelegates(focused, { replacement: true, gate: landing.promise });
+	answerReads(focused, "2");
+	focused.emitNotification({ method: "evener/thread/resync", params: { ref: "local:coord", threadId: "coord" } });
+	await nextMacrotask();
+
+	// The screen lets go before the replacement's page lands.
+	await subject.setClient(null);
+
+	// The disconnected binding renders the tree it cached, not the store's
+	// pages. The sanitized snapshot must reach that tree before the
+	// disconnect publishes, so the row keeps its durable fields and loses the
+	// wait nothing can attribute -- otherwise the Agents list reports it as
+	// waiting on subagents for the whole offline period.
+	const offline = cachedDelegate(subject);
+	expect(offline?.delegateId).toBe("a");
+	expect(offline?.lifecycle).toBe("running");
+	expect(offline?.holdSequence).toBeUndefined();
+
+	// The new store inherits the rows. Its page is held back, and the follow read
+	// names generation 2; the unresolved sample must not be read as 2's own.
+	const page = deferred<void>();
+	const client = hub({ held: false, gate: page.promise });
+	answerReads(client, "2");
+	void subject.setClient(client);
+	await subject.follow();
+
+	expect(heldSequence(subject)).toBeUndefined();
+});
+
+test("a disconnect before any collection returns keeps the tree unset", async () => {
+	const subject = new SubagentTree("local:coord", "coord");
+	subject.observeActivity();
+	const gate = deferred<void>();
+	const client = summaryOnlyHub(gate.promise);
+	answerReads(client, "1");
+	void subject.setClient(client);
+	await vi.waitFor(() => expect(subject.getSnapshot().summary).not.toBeNull());
+	// Context and counts arrived; membership has not, so no tree is accepted yet.
+	expect(subject.getSnapshot().tree).toBeNull();
+
+	// The phone disconnects before either list answers. No row lost a hold, so
+	// the cached presentation stays as it was: projecting the context-only state
+	// would publish an empty tree, and the lists hide their loading skeleton once
+	// a tree exists -- blank for the whole offline period.
+	await subject.setClient(null);
+	expect(subject.getSnapshot().tree).toBeNull();
+	expect(subject.getSnapshot().pages).toBeNull();
+	gate.resolve();
 });
 
 test("a follow read answered from saved history keeps the live hold", async () => {

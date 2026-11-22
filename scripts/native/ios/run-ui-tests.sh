@@ -131,6 +131,17 @@ run_xcodebuild() {
 	return "$status"
 }
 
+# capture_simulator_system_log OUTPUT UDID START reads the device's unified log
+# for the window from START through the end of the finishing second into
+# OUTPUT/simulator-system.log. Issue #5992's diagnostic: the capture is best
+# effort, so a failed one names its error log and does not fail the run.
+capture_simulator_system_log() {
+	xcrun simctl spawn "$2" log show \
+		--start "$3" --end "$(date -v+1S '+%Y-%m-%d %H:%M:%S')" \
+		--style compact >"$1/simulator-system.log" 2>"$1/simulator-system-capture.log" ||
+		echo "$SCRIPT_NAME: simulator system log capture failed, see $1/simulator-system-capture.log" >&2
+}
+
 # The runner's fixture test sources this file to drive the real cleanup and
 # cancellable xcodebuild wait; stop before argument parsing or state is minted.
 if [ "${RUN_UI_TESTS_LIB_ONLY:-0}" = "1" ]; then
@@ -433,6 +444,10 @@ inject_environment EVENER_QUALIFICATION_HUB_TOKEN "$hub_token"
 chmod 600 "$private_run"
 
 xcresult="$output/ui.xcresult"
+# Issue #5992's diagnostic: the uploaded set carried no device or app system
+# log, so record the measured window and read the device's unified log for it
+# back below.
+run_start="$(date '+%Y-%m-%d %H:%M:%S')"
 log "running the qualification journeys"
 set +e
 run_xcodebuild "$output/xcodebuild-test.log" \
@@ -446,6 +461,12 @@ test_exit=$?
 set -e
 echo "$test_exit" >"$output/xcodebuild-test.exit"
 log "xcodebuild exit: $test_exit"
+
+# Issue #5992's diagnostic: the measured window just ended; capture it at the
+# default level into the uploaded set so a slow first launch can be compared
+# with a normal one. It covers the fixture-only simulator this run created; a
+# failed capture must not fail an otherwise green run.
+capture_simulator_system_log "$output" "$sim_udid" "$run_start"
 
 # Validate the result bundle: every intended test identity must have
 # actually executed, none skipped, zero failures. An unreadable or partial

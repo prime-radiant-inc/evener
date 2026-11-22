@@ -32,7 +32,7 @@ var modelListProviderOperations = []providerOperationCase{
 	{name: "google", base: "google", model: "gemini-2.5-flash"},
 }
 
-var tokenCountProviderOperations = modelListProviderOperations
+var tokenCountProviderOperations = modelListProviderOperations[:2]
 
 func TestClientProviderOperationsWriteCanonicalAPILog(t *testing.T) {
 	// Not parallel: uses t.Setenv.
@@ -69,11 +69,6 @@ func TestClientProviderOperationsWriteCanonicalAPILog(t *testing.T) {
 		{
 			name: "anthropic input token count", instance: tokenCountProviderOperations[1],
 			pathSuffix: "/messages/count_tokens", responseBody: `{"input_tokens":8}`, requestModel: "claude-sonnet-4-5",
-			call: countInputTokens,
-		},
-		{
-			name: "google input token count", instance: tokenCountProviderOperations[2],
-			pathSuffix: ":countTokens", responseBody: `{"totalTokens":9}`, requestModel: "gemini-2.5-flash",
 			call: countInputTokens,
 		},
 	}
@@ -202,12 +197,12 @@ func TestClientProviderOperationFailurePreservesErrorAndSettlement(t *testing.T)
 	}))
 	t.Cleanup(server.Close)
 
-	client, provider := newProviderOperationClient(t, tokenCountProviderOperations[2], server.URL)
+	client, provider := newProviderOperationClient(t, tokenCountProviderOperations[1], server.URL)
 	logger, logPath := attachProviderOperationLogger(t, client)
 	defer func() { _ = logger.Close() }()
 
 	_, callErr := client.CountInputTokens(context.Background(), llm.Request{
-		Provider: provider, Model: "gemini-2.5-flash", Messages: []llm.Message{llm.User("count this")},
+		Provider: provider, Model: tokenCountProviderOperations[1].model, Messages: []llm.Message{llm.User("count this")},
 	})
 	if callErr == nil {
 		t.Fatal("CountInputTokens error = nil")

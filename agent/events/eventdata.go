@@ -63,6 +63,7 @@ func (QueueChangedData) eventKind() EventKind       { return EventQueueChanged }
 func (TaskUpdatedData) eventKind() EventKind        { return EventTaskUpdated }
 func (SessionNameChangedData) eventKind() EventKind { return EventSessionNameChanged }
 func (ModelChangedData) eventKind() EventKind       { return EventModelChanged }
+func (NextModelChangedData) eventKind() EventKind   { return EventNextModelChanged }
 func (ReasoningEffortChangedData) eventKind() EventKind {
 	return EventReasoningEffortChanged
 }
@@ -130,6 +131,7 @@ var (
 	_ EventData = TaskUpdatedData{}
 	_ EventData = SessionNameChangedData{}
 	_ EventData = ModelChangedData{}
+	_ EventData = NextModelChangedData{}
 	_ EventData = VisionModelChangedData{}
 	_ EventData = ReasoningEffortChangedData{}
 	_ EventData = TurnLimitData{}

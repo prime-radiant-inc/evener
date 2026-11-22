@@ -1,8 +1,9 @@
 // The transcript's icon-rail seats, held to one column (2026-09-20 rail pass):
 //
 // 1. Above the 700px breakpoint every run row's leading glyph - the live
-//    thinking row's bulb, the content-free thinking row's Loader grid, and
-//    the notification head's status glyph - seats in the SAME avatar column:
+//    thinking row's bulb, the compact settled thought's bulb, the compact live
+//    thinking row's Loader grid, and the notification head's status glyph -
+//    seats in the SAME avatar column:
 //    each 24px slot starts at the turn's left edge (one --speaker-gutter out
 //    of .runContent's reserved padding, via each row's own pull), and every
 //    row's text starts at the content edge regardless of which row it is.
@@ -31,11 +32,13 @@ export default function assert(measurement) {
     return { pass: false, reason: `expected the phone(390) and desktop(920) regime frames, measured [${regimes.join(", ")}] - an iframe failed to load or render` };
   }
   for (const m of measurement) {
-    const { mode, turn, probe, think, loader, notification } = m;
+    const { mode, turn, probe, think, compact, loader, notification } = m;
+    if (!compact) return { pass: false, reason: `${mode}: the compact settled thought row is missing` };
     // One row per seat, slot and text together: the pairing is structural,
-    // not positional, so adding a fourth row is a one-line change.
+    // not positional, so adding another row is a one-line change.
     const rows = [
       { row: "think", slot: think.slot, text: think.text },
+      { row: "compact", slot: compact.slot, text: compact.text },
       { row: "loader", slot: loader.slot, text: loader.text },
       { row: "notification", slot: notification.slot, text: notification.text },
     ];
@@ -54,11 +57,11 @@ export default function assert(measurement) {
           return { pass: false, reason: `${mode}: the ${row} row's slot does not sit at the rail's origin (slot.left=${slot.left.toFixed(1)}, turn.left=${turn.left.toFixed(1)}) - its gutter pull is off` };
         }
       }
-      // One column: all three slot centres coincide.
+      // One column: all four slot centres coincide.
       const centres = rows.map((r) => r.slot.left + r.slot.width / 2);
       const spread = Math.max(...centres) - Math.min(...centres);
       if (spread > 1) {
-        return { pass: false, reason: `${mode}: the three icon seats do not share one avatar column (slot centres ${centres.map((c) => c.toFixed(1)).join(", ")}, spread ${spread.toFixed(1)}px)` };
+        return { pass: false, reason: `${mode}: the four icon seats do not share one avatar column (slot centres ${centres.map((c) => c.toFixed(1)).join(", ")}, spread ${spread.toFixed(1)}px)` };
       }
       // Text at the content edge on every row.
       for (const { row, text } of rows) {
@@ -92,6 +95,6 @@ export default function assert(measurement) {
 
   return {
     pass: true,
-    reason: "all three rail seats share the avatar column above the breakpoint with their text at the content edge and a 10px speaker gap, lead inline below it, and never escape the turn's box",
+    reason: "all four rail seats share the avatar column above the breakpoint with their text at the content edge and a 10px speaker gap, lead inline below it, and never escape the turn's box",
   };
 }

@@ -84,6 +84,22 @@ func TestStreamMixedReasoningMatchesNonStreaming(t *testing.T) {
 		// growth must reach the pane even when the structured item catches up
 		// in the next frame, so the preview keeps the stream's order.
 		{"staggered-mirror-keeps-scalar-growth", `{"reasoning_content":"abc","reasoning_details":[{"type":"reasoning.text","text":"abc","index":0}]}`, "abc", "a|b|c", `{"reasoning_content":"a"}` + "\x00" + `{"reasoning_content":"b","reasoning_details":[{"type":"reasoning.text","text":"a","index":0}]}` + "\x00" + `{"reasoning_content":"c"}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"bc","index":0}]}`},
+		// A later scalar frame can mirror the items in assembled order rather
+		// than the preview's arrival order; it must be recognized against the
+		// assembled text instead of being appended to the arrival-order pane.
+		{"mirror-assembled-item-order", `{"reasoning_content":"ac\nb","reasoning_details":[{"type":"reasoning.text","text":"ac","index":0},{"type":"reasoning.text","text":"b","index":1}]}`, "ac\nb", "a|\nb|\nc", `{"reasoning_details":[{"type":"reasoning.text","text":"a","index":0}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"b","index":1}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"c","index":0}]}` + "\x00" + `{"reasoning_content":"ac\nb"}`},
+		// A scalar mirror recognized in assembled order may grow before the
+		// next frame: only its unseen part is new, not the suffix once more.
+		{"assembled-mirror-continuation", `{"reasoning_content":"ac\nbde","reasoning_details":[{"type":"reasoning.text","text":"ac","index":0},{"type":"reasoning.text","text":"b","index":1}]}`, "ac\nb", "a|\nb|\nc|d|e", `{"reasoning_details":[{"type":"reasoning.text","text":"a","index":0}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"b","index":1}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"c","index":0}]}` + "\x00" + `{"reasoning_content":"ac\nbd"}` + "\x00" + `{"reasoning_content":"e"}`},
+		// An item may grow by a line break alone; the assembled path must emit
+		// it even though the content count does not change.
+		{"assembled-mirror-line-break-growth", `{"reasoning_content":"ac\nbd\ne","reasoning_details":[{"type":"reasoning.text","text":"ac","index":0},{"type":"reasoning.text","text":"bd\n","index":1}]}`, "ac\nbd\n", "a|\nb|\nc|\nd|\ne", `{"reasoning_details":[{"type":"reasoning.text","text":"a","index":0}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"b","index":1}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"c","index":0}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"d","index":1}]}` + "\x00" + `{"reasoning_content":"ac\nbd"}` + "\x00" + `{"reasoning_content":"\ne","reasoning_details":[{"type":"reasoning.text","text":"\n","index":1}]}`},
+		// A scalar that runs ahead of a recognized assembled prefix must not be
+		// repeated when the lagging item catches up on a later frame.
+		{"assembled-mirror-catch-up", `{"reasoning_content":"acd\nb","reasoning_details":[{"type":"reasoning.text","text":"acd","index":0},{"type":"reasoning.text","text":"b","index":1}]}`, "acd\nb", "a|\nb|\nc|d", `{"reasoning_details":[{"type":"reasoning.text","text":"a","index":0}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"b","index":1}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"c","index":0}]}` + "\x00" + `{"reasoning_content":"ac"}` + "\x00" + `{"reasoning_content":"d"}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"d","index":0}]}` + "\x00" + `{"reasoning_content":"\nb"}`},
+		// A trailing line break the scalar already showed must not be emitted
+		// again by a later scalar fragment.
+		{"assembled-mirror-trailing-line-break", `{"reasoning_content":"ac\nb\nd","reasoning_details":[{"type":"reasoning.text","text":"ac","index":0},{"type":"reasoning.text","text":"b","index":1}]}`, "ac\nb", "a|\nb|\nc|\n|d", `{"reasoning_details":[{"type":"reasoning.text","text":"a","index":0}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"b","index":1}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"c","index":0}]}` + "\x00" + `{"reasoning_content":"ac\nb\n"}` + "\x00" + `{"reasoning_content":"d"}`},
 		// An unindexed text-bearing entry registers the implicit item on first
 		// appearance even when its text is empty, so later unindexed text keeps
 		// the position of its earlier empty appearance.

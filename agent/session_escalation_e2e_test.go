@@ -243,7 +243,7 @@ func TestE2E_FileToolEscalation_ApprovedEditThroughSymlinkLandsAtResolvedTarget(
 		t.Fatal(err)
 	}
 	sess, _ := sbxRestrictedTurnSession(t, fileToolTurn("edit_file", map[string]any{
-		"file_path": filepath.Join(link, "target.txt"), "old_string": "before", "new_string": "after",
+		"file_path": filepath.Join(link, "target.txt"), "edits": []any{map[string]any{"old_string": "before", "new_string": "after"}},
 	})...)
 	watchAndResolveCard(sess, true, func(events.SandboxEscalationRequestedData) {})
 	runApprovalTurn(t, sess)
@@ -313,7 +313,7 @@ func TestE2E_FileToolEscalation_ApprovedEditOutsideRootsSucceeds(t *testing.T) {
 		t.Fatal(err)
 	}
 	sess, _ := sbxRestrictedTurnSession(t, fileToolTurn("edit_file", map[string]any{
-		"file_path": outside, "old_string": "before", "new_string": "after",
+		"file_path": outside, "edits": []any{map[string]any{"old_string": "before", "new_string": "after"}},
 	})...)
 	watchAndResolveCard(sess, true, func(events.SandboxEscalationRequestedData) {})
 	runApprovalTurn(t, sess)

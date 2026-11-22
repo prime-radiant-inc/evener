@@ -691,76 +691,6 @@ func TestLiveVertexOneRequest(t *testing.T) {
 	t.Logf("%s: POST %s (wire %s) → %d, %d chars of reply text", ref, res.Transport.Endpoint, res.WireID, status, len(text))
 }
 
-const vertexExpressInstance = "google-vertex-express"
-
-// TestVertexExpressRequestShape pins the express row before any network is
-// involved (spec 2026-09-04 google-vertex-express §1): header auth with
-// x-goog-api-key, the constant project-less v1 base URL, the publisher
-// generateContent path with the wire id in it, listing unsupported.
-func TestVertexExpressRequestShape(t *testing.T) {
-	env := map[string]string{envvars.GoogleVertexAPIKey.Name: "k-offline"}
-	r, err := registry.Load(
-		registry.WithOffline(true),
-		registry.WithoutCache(),
-		registry.WithNoUserLayer(),
-		registry.WithEnv(func(name string) (string, bool) { v, ok := env[name]; return v, ok }),
-	)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	ref := vertexExpressInstance + "/gemini-2.5-flash-lite"
-	res, err := r.Resolve(ref)
-	if err != nil {
-		t.Fatalf("resolve %s: %v", ref, err)
-	}
-	if res.Synthesized {
-		t.Fatalf("%s: synthesized; the express row must inherit google's catalog", ref)
-	}
-	if res.Transport.Auth != registry.AuthHeader || res.Transport.AuthHeader != "x-goog-api-key" {
-		t.Fatalf("%s: auth %q/%q", ref, res.Transport.Auth, res.Transport.AuthHeader)
-	}
-	if res.Transport.BaseURL != "https://aiplatform.googleapis.com/v1" {
-		t.Fatalf("%s: base URL %q", ref, res.Transport.BaseURL)
-	}
-	if res.Transport.Endpoint != "/publishers/google/models/{model}:generateContent" || res.Transport.ModelsEndpoint != registry.EndpointUnsupported {
-		t.Fatalf("%s: endpoints %+v", ref, res.Transport)
-	}
-	if res.Credential.Value != "k-offline" || res.Credential.Source != "env:"+envvars.GoogleVertexAPIKey.Name {
-		t.Fatalf("%s: credential %+v", ref, res.Credential)
-	}
-	t.Logf("%s: base=%s endpoint=%s wire=%s", ref, res.Transport.BaseURL, res.Transport.Endpoint, res.WireID)
-}
-
-// TestLiveVertexExpressOneRequest sends one generateContent through the
-// express row with the key in GOOGLE_VERTEX_API_KEY. Run with:
-//
-//	EVENER_LIVE_TESTS=1 GOOGLE_VERTEX_API_KEY=… go test ./cmd/evener/ -run TestLiveVertexExpressOneRequest -v -count=1 -args -live-config=/path/to/providers.toml
-func TestLiveVertexExpressOneRequest(t *testing.T) {
-	requireLiveGate(t, "the Vertex express live pin")
-	if os.Getenv(envvars.GoogleVertexAPIKey.Name) == "" {
-		t.Skipf("set %s to run the Vertex express live pin", envvars.GoogleVertexAPIKey.Name)
-	}
-	r := loadLiveRegistry(t)
-	ref := vertexExpressInstance + "/gemini-3.8-flash"
-	res, err := r.Resolve(ref)
-	if err != nil {
-		t.Fatalf("resolve %s: %v", ref, err)
-	}
-	url, body, ok := liveBody(res)
-	if !ok {
-		t.Fatalf("%s: protocol %s builds no request body", ref, res.Protocol)
-	}
-	client := &http.Client{Timeout: 90 * time.Second}
-	status, resp := liveRequest(t, client, http.MethodPost, url, body, res)
-	if status != http.StatusOK {
-		t.Fatalf("%s: POST %s → %d: %s", ref, res.Transport.Endpoint, status, excerpt(resp, 300))
-	}
-	if text := strings.TrimSpace(string(liveText(res.Protocol, resp))); text == "" {
-		t.Fatalf("%s: %d with no reply text: %s", ref, status, excerpt(resp, 300))
-	}
-	t.Logf("%s: POST %s → %d", ref, res.Transport.Endpoint, status)
-}
-
 // TestLiveVertexListModels lists the project's Gemini publisher models through
 // the google protocol's Vertex branch with application-default credentials and
 // the quota-project header (spec §2). Needs GOOGLE_VERTEX_PROJECT/LOCATION.
@@ -791,7 +721,7 @@ func TestLiveVertexListModels(t *testing.T) {
 	t.Logf("google-vertex lists %d text models: %s", len(ids), strings.Join(ids, ", "))
 }
 
-// TestLiveVertexStoredCredentialOneRequest sends one generateContent through
+// TestLiveVertexStoredCredentialOneRequest sends one /interactions request through
 // google-vertex resolved from a credentials-store JSON entry (spec §4): it
 // skips unless the live config's credentials.toml holds one under
 // "google-vertex", so the registry reports source store.
@@ -809,15 +739,17 @@ func TestLiveVertexStoredCredentialOneRequest(t *testing.T) {
 	if res.Credential.Source != "store" {
 		t.Skipf("%s resolves from %q, not a stored credential JSON; add one under google-vertex in %s", ref, res.Credential.Source, liveStorePath())
 	}
-	url, body, ok := liveBody(res)
-	if !ok {
-		t.Fatalf("%s: protocol %s builds no request body", ref, res.Protocol)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	req := llm.ShapeRequest(llm.Request{Model: res.ModelID, Messages: []llm.Message{llm.User(liveSmokePrompt)}, MaxTokens: new(64)}, res)
+	resp, err := (&google.Protocol{Client: &http.Client{Timeout: 90 * time.Second}}).Complete(ctx, req, res)
+	if err != nil {
+		t.Fatalf("%s: Complete: %v", ref, err)
 	}
-	status, resp := liveRequest(t, &http.Client{Timeout: 90 * time.Second}, http.MethodPost, url, body, res)
-	if status != http.StatusOK {
-		t.Fatalf("%s: POST %s → %d: %s", ref, res.Transport.Endpoint, status, excerpt(resp, 300))
+	if strings.TrimSpace(resp.Text()) == "" {
+		t.Fatalf("%s: empty reply text", ref)
 	}
-	t.Logf("%s (source store): POST %s → %d", ref, res.Transport.Endpoint, status)
+	t.Logf("%s (source store): POST %s → %d chars", ref, res.Transport.Endpoint, len(resp.Text()))
 }
 
 // liveWireRecorder keeps the request body of the call it forwards so a
@@ -911,8 +843,10 @@ func liveBody(res registry.Resolved) (string, map[string]any, bool) {
 		body["max_tokens"] = 64
 		body["messages"] = []map[string]any{{"role": "user", "content": liveSmokePrompt}}
 	case registry.ProtocolGoogle:
-		body["contents"] = []map[string]any{{"role": "user", "parts": []map[string]any{{"text": liveSmokePrompt}}}}
-		body["generationConfig"] = map[string]any{"maxOutputTokens": 64}
+		body["model"] = res.WireID
+		body["store"] = false
+		body["input"] = []map[string]any{{"type": "user_input", "content": []map[string]any{{"type": "text", "text": liveSmokePrompt}}}}
+		body["generation_config"] = map[string]any{"max_output_tokens": 64}
 	default:
 		return "", nil, false
 	}
@@ -1076,11 +1010,13 @@ func liveText(protocol string, body []byte) []byte {
 			}
 		}
 	case registry.ProtocolGoogle:
-		if cands, ok := doc["candidates"].([]any); ok && len(cands) > 0 {
-			if content, ok := cands[0].(map[string]any)["content"].(map[string]any); ok {
-				if parts, ok := content["parts"].([]any); ok && len(parts) > 0 {
-					if p, ok := parts[0].(map[string]any); ok {
-						return []byte(fmt.Sprint(p["text"]))
+		if steps, ok := doc["steps"].([]any); ok {
+			for _, stepAny := range steps {
+				if step, ok := stepAny.(map[string]any); ok && step["type"] == "model_output" {
+					if content, ok := step["content"].([]any); ok && len(content) > 0 {
+						if item, ok := content[0].(map[string]any); ok && item["type"] == "text" {
+							return []byte(fmt.Sprint(item["text"]))
+						}
 					}
 				}
 			}

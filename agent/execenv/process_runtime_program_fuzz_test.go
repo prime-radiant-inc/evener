@@ -598,9 +598,7 @@ func runProcessRuntimeProgram(t *testing.T, program []byte) processRuntimeTrace 
 		{"env", parentTmp, scratch},
 		{"child", childTmp, childScratch},
 	} {
-		// The predicate encodes both platform answers; the oracle supplies the
-		// real one.
-		if err := processRuntimeSessionTmpError(got.name, got.tmpDir, got.scratch, sandbox.SessionTmpSupported); err != nil {
+		if err := processRuntimeSessionTmpError(got.name, got.tmpDir, got.scratch); err != nil {
 			t.Fatal(err)
 		}
 	}

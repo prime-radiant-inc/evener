@@ -145,22 +145,62 @@ func DefListDir() llm.ToolDefinition {
 	}
 }
 
-func DefEditFile() llm.ToolDefinition {
+func defEditFile(readTool, writeTool string) llm.ToolDefinition {
 	return llm.ToolDefinition{
-		Name:        "edit_file",
-		Description: "Replace an exact string occurrence in an existing file. Always read the file first so you know the exact text to match. old_string must identify a unique location in the file, so include enough surrounding context to make it unambiguous. Keep each call small and focused. Set replace_all only for deliberate whole-file replacements such as a symbol rename.",
+		Name: "edit_file",
+		Description: fmt.Sprintf(
+			"Apply one or more exact replacements to an existing file atomically. "+
+				"Read the file first with %s and never copy line-number prefixes (like '12\\t') into old_string or new_string. "+
+				"Batch disjoint changes in the same file into one call via edits rather than separate calls. "+
+				"Every edits[].old_string matches the original file (not after earlier edits) and must not overlap any other edit; merge nearby changes into one entry. "+
+				"Keep each old_string as small as possible while unique, and use %s when replacing most or all of a file. "+
+				"If any edit fails to match, is ambiguous, or overlaps another edit, nothing is written.",
+			readTool, writeTool,
+		),
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"file_path":   map[string]any{"type": "string", "description": "Path of the existing file to edit."},
-				"old_string":  map[string]any{"type": "string", "description": "Exact text to replace; must be unique unless replace_all is true."},
-				"new_string":  map[string]any{"type": "string", "description": "The replacement text."},
-				"replace_all": map[string]any{"type": "boolean", "description": "Replace every occurrence instead of requiring a unique match."},
+				"file_path": map[string]any{
+					"type":        "string",
+					"description": "Path of the existing file to edit.",
+				},
+				"edits": map[string]any{
+					"type":        "array",
+					"minItems":    1,
+					"description": "Disjoint replacements matched against the original file and applied atomically.",
+					"items": map[string]any{
+						"type":                 "object",
+						"additionalProperties": false,
+						"properties": map[string]any{
+							"old_string": map[string]any{
+								"type":        "string",
+								"description": "Non-empty exact text from the original file to replace (unique unless replace_all is true).",
+							},
+							"new_string": map[string]any{
+								"type":        "string",
+								"description": "Replacement text.",
+							},
+							"replace_all": map[string]any{
+								"type":        "boolean",
+								"description": "Replace every occurrence in the original file instead of requiring a unique match (default false).",
+							},
+						},
+						"required": []string{"old_string", "new_string"},
+					},
+				},
 			},
-			"required": []string{"file_path", "old_string", "new_string"},
+			"required": []string{"file_path", "edits"},
 		},
 	}
+}
+
+func DefEditFile() llm.ToolDefinition {
+	return defEditFile("read_file", "write_file")
+}
+
+func DefMemoryEdit() llm.ToolDefinition {
+	return MemoryDefinition(defEditFile("memory_read", "memory_write"), "memory_edit")
 }
 
 // DefShell is the fully capable seed form, equivalent to
@@ -783,24 +823,6 @@ func DefWebFetch() llm.ToolDefinition {
 				"question": map[string]any{"type": "string", "description": "What you want to know about the page content."},
 			},
 			"required": []string{"url", "question"},
-		},
-	}
-}
-
-func DefWebSearch() llm.ToolDefinition {
-	return llm.ToolDefinition{
-		Name:        "web_search",
-		Description: "Search the web for current information. Returns grounded results from Google Search. Use when you need up-to-date facts, documentation, error messages, or API references.",
-		Parameters: map[string]any{
-			"type":                 "object",
-			"additionalProperties": false,
-			"properties": map[string]any{
-				"query": map[string]any{
-					"type":        "string",
-					"description": "The search query.",
-				},
-			},
-			"required": []string{"query"},
 		},
 	}
 }

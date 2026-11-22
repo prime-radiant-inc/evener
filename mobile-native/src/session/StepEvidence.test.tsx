@@ -120,6 +120,57 @@ describe("an edit's diff", () => {
 		expect(byText(tree.root, "--- a.go")?.props.style).toMatchObject({ color: INK_LOW });
 		expect(background("--- a.go")).toBeUndefined();
 	});
+
+	it("styles @@ edit N @@ headers muted and washes deleted --- / added +++ content lines in multi-edit diffs", () => {
+		const multi = step("edit_file", {
+			arguments: JSON.stringify({
+				file_path: "doc.md",
+				edits: [
+					{ old_string: "--", new_string: "kept" },
+					{ old_string: "old", new_string: "++" },
+				],
+			}),
+		});
+		const tree = render(<StepEvidence step={multi} evidence={stepEvidence(multi)} hubId="hub-1" />);
+		const background = (value: string) => byText(tree.root, value)?.props.style.backgroundColor;
+		expect(byText(tree.root, "+2")?.props.style).toMatchObject({ color: ALIVE_INK });
+		expect(byText(tree.root, "−2")?.props.style).toMatchObject({ color: DANGER_INK });
+		expect(byText(tree.root, "--- doc.md")?.props.style).toMatchObject({ color: INK_LOW });
+		expect(background("--- doc.md")).toBeUndefined();
+		expect(byText(tree.root, "+++ doc.md")?.props.style).toMatchObject({ color: INK_LOW });
+		expect(background("+++ doc.md")).toBeUndefined();
+		expect(byText(tree.root, "@@ edit 1 @@")?.props.style).toMatchObject({ color: INK_LOW });
+		expect(background("@@ edit 1 @@")).toBeUndefined();
+		expect(byText(tree.root, "@@ edit 2 @@")?.props.style).toMatchObject({ color: INK_LOW });
+		expect(background("@@ edit 2 @@")).toBeUndefined();
+		expect(background("---")).toBe(DIFF_DEL);
+		expect(background("+++")).toBe(DIFF_ADD);
+	});
+
+	it("washes deleted --- / added +++ content lines in flat single-edit diffs", () => {
+		const flat = step("edit_file", {
+			arguments: JSON.stringify({ file_path: "doc.md", old_string: "--", new_string: "++" }),
+		});
+		const tree = render(<StepEvidence step={flat} evidence={stepEvidence(flat)} hubId="hub-1" />);
+		const background = (value: string) => byText(tree.root, value)?.props.style.backgroundColor;
+		expect(byText(tree.root, "--- doc.md")?.props.style).toMatchObject({ color: INK_LOW });
+		expect(background("--- doc.md")).toBeUndefined();
+		expect(byText(tree.root, "+++ doc.md")?.props.style).toMatchObject({ color: INK_LOW });
+		expect(background("+++ doc.md")).toBeUndefined();
+		expect(background("---")).toBe(DIFF_DEL);
+		expect(background("+++")).toBe(DIFF_ADD);
+	});
+
+	it("renders a deleted --- line after --- a.md and +++ a.md with diffDel even when passed directly as diff evidence", () => {
+		const flat = { kind: "diff" as const, text: "--- a.md\n+++ a.md\n---", added: 0, removed: 1 };
+		const tree = render(<StepEvidence step={step("edit_file", {})} evidence={[flat]} hubId="hub-1" />);
+		const allTexts = texts(tree.root);
+		const headerLine = allTexts.find((node) => textOf(node) === "--- a.md");
+		const deletedContentLine = allTexts.find((node) => textOf(node) === "---");
+		expect(headerLine?.props.style).toMatchObject({ color: INK_LOW });
+		expect(headerLine?.props.style.backgroundColor).toBeUndefined();
+		expect(deletedContentLine?.props.style.backgroundColor).toBe(DIFF_DEL);
+	});
 });
 
 describe("a write and an error", () => {

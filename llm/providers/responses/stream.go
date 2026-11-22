@@ -22,6 +22,7 @@ type responsesToolState struct {
 	// issuedCallID is the provider's own call_id for this call. A call the stream
 	// named only by item ID leaves it empty, so settlement still matches it by item ID.
 	issuedCallID string
+	hasIndex     bool
 	started      bool
 	args         bytes.Buffer
 }
@@ -36,9 +37,9 @@ type responsesToolState struct {
 // (decodeStream) and offline recomputation, so the two can't silently drift
 // apart.
 type responsesOutputAccumulator struct {
-	toolStates   map[string]*responsesToolState
-	itemToCallID map[string]string
-	entries      []responsesAccumEntry
+	toolStates map[string]*responsesToolState
+	toolIndex  map[int]*responsesToolState
+	entries    []responsesAccumEntry
 	// reasoningTextSeen records that some reasoning item has already emitted text, so a
 	// later item's first part still needs the blank line the live preview renders.
 	reasoningTextSeen bool
@@ -110,8 +111,8 @@ func (e *responsesAccumEntry) settleReasoning(item map[string]any) {
 }
 func newResponsesOutputAccumulator() *responsesOutputAccumulator {
 	return &responsesOutputAccumulator{
-		toolStates:   map[string]*responsesToolState{},
-		itemToCallID: map[string]string{},
+		toolStates: map[string]*responsesToolState{},
+		toolIndex:  map[int]*responsesToolState{},
 	}
 }
 
@@ -265,22 +266,89 @@ func (acc *responsesOutputAccumulator) HandleReasoningPart(payload map[string]an
 	return false
 }
 
-// toolStateFor is the accumulated state for one function call: the entry
-// filed under call_id, else the one an earlier event filed under item_id,
-// else a fresh state keyed by call_id. The callers already resolved call_id
-// through itemToCallID, so an item_id hit here is a call the stream named by
-// item alone.
-func (acc *responsesOutputAccumulator) toolStateFor(callID, itemID, name string) *responsesToolState {
-	if st := acc.toolStates[callID]; st != nil {
+// responsesToolRef is how one event names a function call: the provider's
+// call_id, the wire item ID, a bare payload id, and the output index.
+type responsesToolRef struct {
+	callID, itemID, id string
+	index              int
+	hasIndex           bool
+}
+
+func toolRefFromPayload(payload map[string]any) responsesToolRef {
+	ref := responsesToolRef{}
+	ref.callID, _ = payload["call_id"].(string)
+	ref.itemID, _ = payload["item_id"].(string)
+	ref.id, _ = payload["id"].(string)
+	if v := payload["output_index"]; v != nil {
+		ref.index, ref.hasIndex = llm.IntFromAny(v), true
+	}
+	return ref
+}
+
+// assignItem records a call's wire item ID. An item ID two issued calls share
+// stops selecting either one, so only output_index can disambiguate it then.
+func (acc *responsesOutputAccumulator) assignItem(st *responsesToolState, itemID string) {
+	if itemID == "" {
+		return
+	}
+	st.itemID = itemID
+	if prev, ok := acc.toolStates[itemID]; ok {
+		if prev == nil {
+			return
+		}
+		if prev != st && prev.id != itemID && st.id != itemID {
+			acc.toolStates[itemID] = nil
+			return
+		}
+	}
+	acc.toolStates[itemID] = st
+}
+
+func (acc *responsesOutputAccumulator) assignIndex(st *responsesToolState, index int, hasIndex bool) {
+	if !hasIndex || st.hasIndex {
+		return
+	}
+	st.hasIndex = true
+	acc.toolIndex[index] = st
+}
+
+// names reports whether st is the call this reference names. A reference
+// without a call_id names any call its item ID or index identifies.
+func (ref responsesToolRef) names(st *responsesToolState) bool {
+	return st != nil && (ref.callID == "" || st.id == ref.callID || st.issuedCallID == ref.callID || st.id == ref.itemID)
+}
+
+func (acc *responsesOutputAccumulator) findToolState(ref responsesToolRef, fallback bool) *responsesToolState {
+	if st := acc.toolStates[ref.callID]; ref.callID != "" && st != nil {
 		return st
 	}
-	if itemID != "" {
-		if st := acc.toolStates[itemID]; st != nil {
+	if ref.hasIndex {
+		if st := acc.toolIndex[ref.index]; ref.names(st) {
 			return st
 		}
 	}
-	st := &responsesToolState{id: callID, name: name}
-	acc.toolStates[callID] = st
+	if st := acc.toolStates[ref.itemID]; ref.itemID != "" && st != nil && (fallback || ref.names(st)) {
+		return st
+	}
+	if ref.id != "" {
+		return acc.toolStates[ref.id]
+	}
+	return nil
+}
+
+func (acc *responsesOutputAccumulator) toolStateFor(ref responsesToolRef, fallback bool, name string) *responsesToolState {
+	if st := acc.findToolState(ref, fallback); st != nil {
+		return st
+	}
+	id := cmp.Or(ref.callID, ref.itemID, ref.id)
+	if id == "" {
+		return nil
+	}
+	st := &responsesToolState{id: id, name: name}
+	acc.toolStates[id] = st
+	if ref.callID == "" && ref.itemID != "" {
+		acc.assignItem(st, ref.itemID)
+	}
 	return st
 }
 
@@ -312,31 +380,27 @@ func (acc *responsesOutputAccumulator) HandleOutputItemAdded(payload, item map[s
 	callID, _ := item["call_id"].(string)
 	itemID, _ := item["id"].(string)
 	name, _ := item["name"].(string)
-	stateID := callID
-	if stateID == "" {
-		stateID = itemID
-	}
-	if stateID == "" {
+	if callID == "" && itemID == "" {
 		return
 	}
-	st := acc.toolStates[stateID]
+	ref := responsesToolRef{callID: callID, itemID: itemID}
+	if v := payload["output_index"]; v != nil {
+		ref.index, ref.hasIndex = llm.IntFromAny(v), true
+	}
+	st := acc.toolStateFor(ref, false, name)
 	if st == nil {
-		st = &responsesToolState{id: stateID}
+		return
 	}
 	if callID != "" {
 		st.id = callID
 		st.noteIssuedCallID(callID, itemID)
-		acc.toolStates[callID] = st
 	}
-	if itemID != "" {
-		st.itemID = itemID
-		acc.itemToCallID[itemID] = st.id
-		acc.toolStates[itemID] = st
-	}
+	acc.assignItem(st, itemID)
+	acc.assignIndex(st, ref.index, ref.hasIndex)
 	if st.name == "" && name != "" {
 		st.name = name
 	}
-	acc.toolStates[stateID] = st
+	acc.toolStates[st.id] = st
 }
 
 // HandleFunctionCallArgumentsDelta merges one
@@ -352,24 +416,18 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload 
 	if delta == "" {
 		delta, _ = payload["arguments"].(string)
 	}
-	issuedCallID, _ := payload["call_id"].(string)
-	callID := issuedCallID
-	itemID, _ := payload["item_id"].(string)
-	if callID == "" && itemID != "" {
-		callID = acc.itemToCallID[itemID]
-	}
-	if callID == "" {
-		callID = itemID
-	}
-	if callID == "" {
-		callID, _ = payload["id"].(string)
-	}
+	ref := toolRefFromPayload(payload)
 	name, _ := payload["name"].(string)
-	if callID == "" || (delta == "" && name == "") {
+	if (ref.callID == "" && ref.itemID == "" && ref.id == "" && !ref.hasIndex) || (delta == "" && name == "") {
 		return nil, "", false
 	}
-	st := acc.toolStateFor(callID, itemID, name)
-	st.noteIssuedCallID(issuedCallID, itemID)
+	// A delta cannot wait for a later record: emit it against the item's
+	// current owner, as the provider's references have always fallen back.
+	st := acc.toolStateFor(ref, true, name)
+	if st == nil {
+		return nil, "", false
+	}
+	st.noteIssuedCallID(ref.callID, ref.itemID)
 	if st.name == "" && name != "" {
 		st.name = name
 	}
@@ -395,23 +453,20 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload 
 // caller should pass the raw payload through.
 func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload map[string]any, eventData []byte) (state *responsesToolState, ok bool) {
 	argsStr, _ := payload["arguments"].(string)
-	issuedCallID, _ := payload["call_id"].(string)
-	callID := issuedCallID
-	itemID, _ := payload["item_id"].(string)
-	if callID == "" && itemID != "" {
-		callID = acc.itemToCallID[itemID]
-	}
-	if callID == "" {
-		callID = itemID
-	}
-	if callID == "" {
+	ref := toolRefFromPayload(payload)
+	name, _ := payload["name"].(string)
+	if ref.callID == "" && ref.itemID == "" && ref.id == "" {
 		return nil, false
 	}
-	st := acc.toolStateFor(callID, itemID, "")
-	st.noteIssuedCallID(issuedCallID, itemID)
-	if itemID != "" {
-		st.itemID = itemID
-		acc.itemToCallID[itemID] = st.id
+	// A finalized frame naming a call whose item belongs to another call starts
+	// that call instead of overwriting the item's owner.
+	st := acc.toolStateFor(ref, false, name)
+	if st == nil {
+		return nil, false
+	}
+	st.noteIssuedCallID(ref.callID, ref.itemID)
+	if st.name == "" && name != "" {
+		st.name = name
 	}
 	if argsStr != "" {
 		st.args.Reset()
@@ -486,18 +541,22 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 		}
 	}
 	if callID == "" && itemID != "" {
-		callID = acc.itemToCallID[itemID]
+		if st := acc.toolStates[itemID]; st != nil {
+			callID = st.id
+		}
 	}
 	if callID == "" {
 		return item, nil, "", false
 	}
-	st := acc.toolStateFor(callID, itemID, name)
-	st.noteIssuedCallID(issuedCallID, itemID)
-	if itemID != "" {
-		st.itemID = itemID
-		acc.itemToCallID[itemID] = st.id
-		acc.toolStates[itemID] = st
+	st := acc.findToolState(responsesToolRef{callID: callID, itemID: itemID, index: index, hasIndex: index >= 0}, false)
+	if st == nil {
+		st = &responsesToolState{id: callID}
 	}
+	if issuedCallID != "" {
+		st.noteIssuedCallID(issuedCallID, itemID)
+	}
+	acc.assignItem(st, itemID)
+	acc.assignIndex(st, index, index >= 0)
 	if st.name == "" && name != "" {
 		st.name = name
 	}
@@ -508,6 +567,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 	if argsStr == "" {
 		argsStr = st.args.String()
 	}
+	acc.toolStates[st.id] = st
 	acc.entries = append(acc.entries, responsesAccumEntry{index: index, settled: true, raw: rawItemToken,
 		issuedCallID: st.issuedCallID,
 		item:         map[string]any{"type": "function_call", "call_id": st.id, "id": st.itemID, "name": st.name, "arguments": argsStr}})
@@ -655,6 +715,8 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 		// implements.
 		TerminalError: func(parseErr error) error {
 			switch {
+			case errors.Is(parseErr, context.DeadlineExceeded):
+				return llm.WrapContextError(res.Instance, parseErr)
 			case errors.Is(parseErr, llm.ErrSSEReadTimeout), errors.Is(parseErr, llm.ErrResponseIdleTimeout):
 				// The stream went idle past the read timeout. Named separately
 				// from the read failures below because a stall is the one an
@@ -800,7 +862,7 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 				built := fromResponses(rawResp, req.Model, respBody)
 				settleResponsesTerminalOutput(&built, rawResp, acc)
 				built.Provider = res.Instance
-				p.stampResponseIDHash(sctx, &built)
+				llm.StampContinuationIDHash(sctx, &built, p.Hasher)
 				llm.StampEndpointURL(&built, r.EndpointURL, r.Material)
 				// Ensure text segment is closed.
 				if textStarted {

@@ -65,6 +65,22 @@ func APITimeoutSourceForTransport(parent, attempt context.Context, transportErr 
 	return APITimeoutNone
 }
 
+type adapterTimeoutParentKey struct{}
+
+// APITimeoutSourceFromContext reports whether ctx expired under an adapter
+// deadline installed by ApplyAdapterTimeout while its parent context remained
+// active.
+func APITimeoutSourceFromContext(ctx context.Context) APITimeoutSource {
+	if ctx == nil {
+		return APITimeoutNone
+	}
+	parent, ok := ctx.Value(adapterTimeoutParentKey{}).(context.Context)
+	if !ok {
+		return APITimeoutNone
+	}
+	return APITimeoutSourceForContext(parent, ctx)
+}
+
 // APITimeoutSourceForContext identifies an adapter-owned context deadline while
 // preserving caller-owned cancellation and deadlines. It is used after an HTTP
 // response has arrived, when no transport error exists to classify.
@@ -130,7 +146,8 @@ func ApplyAdapterTimeout(ctx context.Context, at *AdapterTimeout, _ bool) (conte
 		return ctx, func() {}
 	}
 	if at.Request > 0 {
-		return context.WithTimeout(ctx, at.Request)
+		tctx, cancel := context.WithTimeout(ctx, at.Request)
+		return context.WithValue(tctx, adapterTimeoutParentKey{}, ctx), cancel
 	}
 	return ctx, func() {}
 }

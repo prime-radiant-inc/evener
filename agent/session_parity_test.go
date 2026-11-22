@@ -941,6 +941,6 @@ func makeEditCall(provider, id, file, old, new_ string) llm.ContentPart {
 	}
 	return llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
 		ID: id, Name: "edit_file", Type: "function",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"file_path":%q,"old_string":%q,"new_string":%q}`, file, old, new_)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"file_path":%q,"edits":[{"old_string":%q,"new_string":%q}]}`, file, old, new_)),
 	}}
 }

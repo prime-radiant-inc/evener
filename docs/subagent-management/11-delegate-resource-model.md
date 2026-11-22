@@ -752,13 +752,14 @@ model produced a reply. Stop may linearize immediately afterward and cancel
 the generation. A failed transcript append returns a delivery error and leaves
 no accepted steer.
 
-At each model boundary, BeginModelRequest validates the exact lease and claims
-the current pending steering admissions under the controller mutex. The child
-then snapshots its transcript after unlock. CompleteModelRequest re-enters the
-controller with that exact process claim, revalidates stop/lease, consumes only
-the claimed entries present in the snapshot, and returns the immutable provider
-history. No transcript/history lock is acquired under the controller. The
-provider call starts only after claim completion and runs outside the mutex.
+At each model boundary of a leased generation, BeginModelRequest validates the
+exact lease and claims the current pending steering admissions under the
+controller mutex. The child then snapshots its transcript after unlock.
+CompleteModelRequest re-enters the controller with that exact process claim,
+revalidates stop/lease, consumes only the claimed entries present in the
+snapshot, and returns the immutable provider history. No transcript/history
+lock is acquired under the controller. The provider call starts only after
+claim completion and runs outside the mutex.
 
 Normal settlement cannot strand an accepted steer. Before ordinary completion
 or communicate(end_turn=true) changes running to settling, BeginSettlement
@@ -790,10 +791,11 @@ outcome; it does not delete either process claim to manufacture progress.
 
 ### Model and tool admission
 
-Before each provider call and before each new tool execution, the child Session
-asks the controller to validate its exact lease. BeginModelRequest also binds
-all pending steering admissions to the request. The validation checks in one
-locked operation that:
+A turn that runs inside a delegate generation carries that generation's lease.
+Before each provider call and before each new tool execution of such a turn,
+the child Session asks the controller to validate its exact lease.
+BeginModelRequest also binds all pending steering admissions to the request.
+The validation checks in one locked operation that:
 
 - the delegate and every ancestor remain open;
 - the generation is current;
@@ -805,12 +807,26 @@ Stop owns the current generation's cancellation context, so work that was
 admitted immediately before stop is cancelled/drained through the existing
 context rather than requiring the lock to cover external execution.
 
+A model-bearing turn with no lease in context is not admitted against a
+generation, because it has none: the notification drive of a resident stable
+child runs this way (see "Notification drives are input turns" below). Only a
+stable child holds durable delegate attention, so on that child the request
+instead passes the unleased projection filter, which omits every watch row the
+attention fold still resolves as pending. The filter keys on the watch
+identities only; it withholds no other durable attention row. The turn also
+writes no consumption marker, because only a leased generation credits a
+presentation, and ordinary queued completions are not attention and ride the
+turn unchanged.
+
 The controller is also the tree-wide delegate-turn capacity authority. A
 starting reservation holds capacity immediately so concurrent constructors
 cannot overbook the tree. delegate_run_started converts that reservation into
 the running generation; abort releases it, and delegate_run_finished releases
-the running slot. Notification/attention drives are normal generations and use
-the existing separately bounded drive capacity.
+the running slot. Attention drives are normal generations and use the existing
+separately bounded drive capacity. The notification drive of a resident stable
+child is the one drive that takes no controller capacity: it is admitted as an
+input on that runtime, not as a generation (see "Notification drives are input
+turns").
 
 ### Delegate reservations and shell admission receipts
 
@@ -1646,8 +1662,62 @@ is ignored even on a resumable delegate, and anything still pending blocks
 through the fold. The non-blocking retirement snapshot, which deliberately
 skips transcript reads, keeps the wakes as its conservative proxy.
 
-There are no recordless model-bearing drive turns. A drive is not a JobRecord,
-but it is an exact delegate generation governed by the same lease.
+An attention drive is not a JobRecord, but it is an exact delegate generation
+governed by the same lease.
+
+#### Notification drives are input turns
+
+The notification drive is the one model-bearing drive that is not a generation.
+It exists to run a resident stable child's own `EntryNotification` queue -- the
+ordinary completions, with every watch notice beside them deferred to leased
+attention by the unleased split -- on a child with no generation running or
+finalizing, and the controller has nothing of its own to admit it into:
+
+- `ReserveAttention` needs a pending attention ID and a `PhaseIdle`, resumable
+  delegate, and reserves drive capacity for a generation keyed to that row;
+- `ReserveStart` refuses a delegate whose previous generation is still
+  finalizing, and reserves a delegate-turn slot for a public send; and
+- `idleDelegateRestoreCommit` commits a lease for an idle, resumable delegate's
+  existing generation and builds a cold runtime, taking no trigger of its own.
+
+Issue #6797 records why none of the existing lease paths fits this drive. Until
+the resource model gains a notification generation, the drive is admitted as
+an input and its bounds are these:
+
+- **Admission is the runtime input claim.** `admitIdleRuntimeInput` delegates to
+  the controller's `admitRuntimeInput`, which takes the controller mutex,
+  refuses while a reclamation claim covers the delegate, and counts the drive in
+  `inputsInFlight`. A claim and an admission are therefore ordered: neither can
+  tear down a runtime the other holds.
+- **Spawning draws one tree-wide drive budget.** The root mints a single
+  notification-drive counter and every descendant inherits it, so a drive at
+  any level reserves a slot on the same tree-wide counter, separate from
+  delegate fan-out. The turn is bounded by the drive's hung-turn bound, which
+  pauses while a model call waits out a usage limit and gives the slot back for
+  the wait.
+- **A Stop reaches it through the drive's own cancellation context**, not a
+  generation fence: a stop-cancelled turn is the ordinary nonfatal end of a
+  stopped run, and the work the delegate owns survives.
+- **It presents no watch attention that needs a lease, and credits nothing.**
+  An unleased stable-child turn withholds every watch row the attention fold
+  still resolves as pending -- the unleased projection filter keys on the watch
+  identities only, not on attention in general -- and the split defers each
+  withheld notice to leased attention. The turn commits no consumption marker,
+  because only a leased generation credits a presentation. Ordinary queued
+  completions are not attention and ride the turn unchanged.
+
+A drive mints no JobRecord and settles no delegate result. A notification turn
+carries no report requirement either: settlement and terminal capture take a
+lease, which this turn does not hold, so the delegate's own generations remain
+the only thing that finishes or reports it. A drive turn that fails for any
+reason other than a stop sets the child's fatal-run gate and stops the work it
+owns. The gate is read before an automatic drive reserves or launches anything
+(`driveDelegateAttention`), so the drive's own retries stay refused while it is
+set. Only a run that actually launches for the child clears it: an explicit
+send or an accepted attention start (`launchAcceptedDelegateAttention`), which
+the post-restart owed-attention bootstrap also reaches without the drive gate
+(`admitOwedDelegateAttentionStarts`). A failed drive is therefore visible on
+the delegate without being settled as its result.
 
 Attention does not use a public delegate actor, because an idle resource has no
 active generation lease to authenticate. The controller instead verifies that

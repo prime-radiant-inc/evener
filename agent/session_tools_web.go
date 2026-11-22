@@ -10,8 +10,7 @@ import (
 )
 
 // egressDeniedByNet returns a typed DeniedError when env is a sandboxed session
-// whose network egress is off, else nil. evener's own web egress (web_fetch,
-// web_search) is part of the tool plane that --sandbox-net off governs; the LLM
+// whose network egress is off, else nil. evener's own web egress (web_fetch) is part of the tool plane that --sandbox-net off governs; the LLM
 // inference connection is not. In a non-sandboxed session (the wrapper is nil —
 // every session until the flag goes live) this is always a no-op, so the web
 // tools behave exactly as before.
@@ -46,21 +45,4 @@ func registerWebTools(reg *tool.Registry, deps *toolDeps) {
 			return deps.web.fetch(ctx, rawURL, question)
 		},
 	})
-
-	// Web search (Gemini only — see tool_web_search.go for why).
-	// OpenAI and Anthropic handle web search natively via req.WebSearch;
-	// registering a function tool named "web_search" for those providers
-	// causes a duplicate name collision with the adapter-injected server tool.
-	if deps.webSearchEnabled {
-		_ = reg.Register(tool.RegisteredTool{
-			Definition: tool.DefWebSearch(),
-			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-				if err := egressDeniedByNet(env, "web_search"); err != nil {
-					return nil, err
-				}
-				query := fmt.Sprint(args["query"])
-				return deps.web.search(ctx, query)
-			},
-		})
-	}
 }

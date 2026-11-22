@@ -1562,15 +1562,12 @@ export interface HostOperationsParams {
   incarnationId?: string;
   id?: string;
   limit?: number;
-  cursor?: string;
 }
 
 export interface HostOperationsResponse {
   operations: OperationRecord[];
   generation?: number;
   incarnationId?: string;
-  hostBoundaries?: Record<string, unknown>;
-  nextCursor?: string;
 }
 
 export interface HostPlan {

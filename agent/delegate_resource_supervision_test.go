@@ -645,6 +645,115 @@ func TestDelegateResourceSupervision_MixedBatchCarriesTheCompletionAndDefersTheW
 	}
 }
 
+// TestDelegateResourceSupervision_NotificationDriveIsAnUnleasedInputTurn pins
+// the documented drive exception (#6797). A stable child's notification drive
+// is an admitted input on the resident runtime, not a leased generation
+// (docs/subagent-management/11-delegate-resource-model.md, "Notification drives
+// are input turns"), and the bounds written there are what make it safe:
+//
+//   - the ordinary completion the drive exists to serve rides the drive turn, and
+//   - the watch notice beside it does NOT, because an unleased turn withholds
+//     every pending watch row and defers the notice to leased attention, which
+//     then presents it and credits the presentation.
+//
+// This is the regression guard for the documented contract. If a later change
+// gives the drive a lease of its own, the watch notice may ride the turn and
+// this test's expectation has to move with the doc.
+func TestDelegateResourceSupervision_NotificationDriveIsAnUnleasedInputTurn(t *testing.T) {
+	adapter := &streamingAdapter{name: "openai"}
+	recoverProvider(adapter)
+	root, _ := newQuotaDelegateRoot(t, adapter)
+	sub, _ := startQuotaDelegate(t, root)
+	testwait.Until(t, "the delegate's first run finishes", func() bool { return subagentDone(sub) })
+
+	// The structural premise: this child is a stable delegate child (it carries
+	// an owning delegate id), so any turn without a lease in its context is the
+	// unleased case this contract describes. The drive passes none.
+	if !sub.sess.stableChildTurnNeedsLease(context.Background()) {
+		t.Fatal("the child is not the unleased stable-turn case this contract describes")
+	}
+
+	// The drive turn answers with bare text, which finishes a notification turn
+	// idle (routeNoToolCalls). That makes its provider-request boundary exact:
+	// exactly one request belongs to the drive turn, so the assertions below
+	// cover the whole turn rather than its first round.
+	const driveAck = "noted the completion"
+	adapter.mu.Lock()
+	adapter.streamScript = func(st *llm.ChanStream) {
+		st.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: "t0"})
+		st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: "t0", Delta: driveAck})
+		resp := llm.Response{
+			Message: llm.Assistant(driveAck),
+			Finish:  llm.FinishReason{Reason: llm.FinishReasonStop},
+		}
+		st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &resp.Finish, Usage: &resp.Usage, Response: &resp})
+	}
+	adapter.mu.Unlock()
+
+	// One deliverable completion beside one watch notice, both owed by the child.
+	enqueueCompletedJobNotification(t, sub.sess, "job_drive_completion")
+	const watchSentinel = "drivewatch-sentinel"
+	sub.sess.enqueueJobNotification(watchSendDiagnosticNotification(
+		"watch:drive", "job:drive", "watch send failed: delivery_id="+watchSentinel,
+	))
+	if queuedWatchNotices(t, sub.sess) != 1 || queuedOrdinaryNotices(t, sub.sess) != 1 {
+		t.Fatalf("the mixed batch did not land as one watch notice plus one ordinary completion: watch=%d ordinary=%d",
+			queuedWatchNotices(t, sub.sess), queuedOrdinaryNotices(t, sub.sess))
+	}
+
+	preDrive := len(adapterRequests(adapter))
+	if !root.driveSubagentNotificationTurn(sub) {
+		t.Fatal("the notification drive did not launch")
+	}
+	testwait.Until(t, "the drive delivers its ordinary completion", func() bool {
+		return sub.sess.jobNotificationsDelivered() == 1 && !driving(sub)
+	})
+
+	// The drive turn carried the completion and not the watch notice. An
+	// unleased turn must not present attention a leased generation has to
+	// credit.
+	requests := adapterRequests(adapter)
+	if len(requests) <= preDrive {
+		t.Fatal("the drive turn made no provider request")
+	}
+	driveReq := requests[preDrive : preDrive+1]
+	if !requestsContain(driveReq, "job_drive_completion") {
+		t.Fatal("the drive turn did not carry the queued completion")
+	}
+	if requestsContain(driveReq, watchSentinel) {
+		t.Fatal("the drive turn presented a watch notice unleased: no generation can credit that presentation")
+	}
+	if got := queuedWatchNotices(t, sub.sess); got != 0 {
+		t.Fatalf("watch notices still queued after the drive turn = %d, want the notice deferred", got)
+	}
+	fold, err := readDelegateAttentionFold(transcriptPath(sub.sess.stateDir, sub.sess.id), sub.sess.id)
+	if err != nil {
+		t.Fatalf("read the child's attention fold: %v", err)
+	}
+	if !slices.ContainsFunc(fold.order, func(id string) bool {
+		return strings.HasPrefix(id, deferredWatchAttentionPrefix)
+	}) {
+		t.Fatalf("child attention rows = %v, want the watch notice deferred under %q", fold.order, deferredWatchAttentionPrefix)
+	}
+
+	// The deferral is not a drop: a leased generation presents the notice and
+	// credits the presentation. Only a leased turn covers an attention row, so
+	// the consumed marker is the proof that the presentation was leased.
+	testwait.Until(t, "a leased generation presents the deferred watch notice", func() bool {
+		return requestsContain(adapterRequests(adapter)[preDrive:], watchSentinel)
+	})
+	fold, err = readDelegateAttentionFold(transcriptPath(sub.sess.stateDir, sub.sess.id), sub.sess.id)
+	if err != nil {
+		t.Fatalf("read the child's attention fold after the presentation: %v", err)
+	}
+	consumed := slices.ContainsFunc(fold.order, func(id string) bool {
+		return strings.HasPrefix(id, deferredWatchAttentionPrefix) && fold.resolutions[id] == delegateAttentionConsumed
+	})
+	if !consumed {
+		t.Fatalf("attention resolutions = %v, want the deferred row consumed by its presentation", fold.resolutions)
+	}
+}
+
 // TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedWake
 // pins the deferred-wake regression the id-keyed committed-send-start claim
 // introduced (#940). While the claim is held a wake-edge drive refuses, so a

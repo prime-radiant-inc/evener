@@ -195,6 +195,10 @@ describe("pressRailRowExpr finds, hit-tests and presses in one turn", () => {
       text.addEventListener("click", () => clicks.push(text.textContent));
       text.scrollIntoView = () => {};
     }
+    // A pressed control needs real area: the shared uncoveredCenter refuses a
+    // zero-area element, whose center belongs to whatever holds that pixel.
+    for (const el of document.querySelectorAll("*"))
+      el.getBoundingClientRect = () => ({ x: 0, y: 0, width: 10, height: 10 });
     return clicks;
   }
 
@@ -231,13 +235,16 @@ describe("pressRailRowExpr finds, hit-tests and presses in one turn", () => {
 describe("slashRowPointExpr hit-tests the skill's own row", () => {
   function renderMenu() {
     document.body.innerHTML = `<div data-testid="composer-slash-menu"><button><span>/other</span></button><button><span>/review</span></button></div>`;
-    for (const button of document.querySelectorAll("button")) button.scrollIntoView = () => {};
+    for (const el of document.querySelectorAll("*")) {
+      el.scrollIntoView = () => {};
+      el.getBoundingClientRect = () => ({ x: 0, y: 0, width: 10, height: 10 });
+    }
   }
 
   test("returns the row's center while the row is topmost there", () => {
     renderMenu();
     document.elementFromPoint = () => document.querySelectorAll("button span")[1];
-    expect(evaluateExpr(driver.slashRowPointExpr("/review"))).toEqual({ x: 0, y: 0 });
+    expect(evaluateExpr(driver.slashRowPointExpr("/review"))).toEqual({ x: 5, y: 5 });
   });
 
   test("reports not ready while another row is at its center", () => {
@@ -263,6 +270,8 @@ describe("removeAttachmentExpr presses the first tile's remove button in one tur
       button.scrollIntoView = () => {};
       button.addEventListener("click", () => removed.push(button.getAttribute("aria-label")));
     }
+    for (const el of document.querySelectorAll("*"))
+      el.getBoundingClientRect = () => ({ x: 0, y: 0, width: 10, height: 10 });
     return removed;
   }
 

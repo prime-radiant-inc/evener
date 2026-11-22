@@ -82,6 +82,19 @@ func TestWrapContextError_PassThrough(t *testing.T) {
 	}
 }
 
+func TestWrapContextError_PreservesPermanentProviderErrorWrappingDeadline(t *testing.T) {
+	t.Parallel()
+	perm := NewNoObjectGeneratedError("stored interaction accepted before deadline", "", context.DeadlineExceeded)
+	wrapped := WrapContextError("google", perm)
+	le, ok := errors.AsType[Error](wrapped)
+	if !ok || le.Retryable() || !errors.Is(wrapped, context.DeadlineExceeded) {
+		t.Fatalf("WrapContextError(permanent Error) = %T %v, want non-retryable Error preserving DeadlineExceeded cause", wrapped, wrapped)
+	}
+	if _, isTimeout := errors.AsType[*requestTimeoutError](wrapped); isTimeout {
+		t.Fatalf("WrapContextError overwrote permanent Error with retryable requestTimeoutError: %T %v", wrapped, wrapped)
+	}
+}
+
 // Classify's output must be identical after honest Unwrap: its context-sentinel
 // branches and its typed-error branches already agreed for these inputs.
 func TestClassify_UnchangedByHonestUnwrap(t *testing.T) {

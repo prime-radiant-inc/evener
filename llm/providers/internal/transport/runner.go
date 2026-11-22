@@ -9,6 +9,7 @@
 package transport
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"net/http"
@@ -58,9 +59,9 @@ type StreamRunner struct {
 	IncompleteMsg string
 	// TerminalError, when set, replaces the IncompleteMsg wrap: the runner
 	// publishes what it returns as the stream's terminal error. It is called
-	// only for the endings the runner does not already classify — never for a
-	// caller cancellation or a FatalStreamError, both of which stay the
-	// runner's. An adapter needs it when "the stream ended without
+	// for incomplete streams and adapter-owned context deadlines — never for a
+	// caller cancellation, a caller-owned context deadline, or a FatalStreamError,
+	// all of which stay the runner's. An adapter needs it when "the stream ended without
 	// completing" is more than one condition: the Responses transport has to
 	// tell a stall from a broken read from a stream that produced nothing its
 	// API can produce, and only the last of those says anything about whether
@@ -96,6 +97,10 @@ func (r *StreamRunner) incomplete(parseErr error) error {
 	return llm.NewStreamError(r.Provider, r.IncompleteMsg, parseErr)
 }
 
+func (r *StreamRunner) adapterTimeoutSource(ctx context.Context) llm.APITimeoutSource {
+	return cmp.Or(r.Attempt.TimeoutSource(), llm.APITimeoutSourceFromContext(ctx))
+}
+
 // Run drives the SSE decode loop. It never cancels: cancellation happens in
 // Finish or in the adapter's OnEvent.
 func (r *StreamRunner) Run(ctx context.Context) {
@@ -104,10 +109,19 @@ func (r *StreamRunner) Run(ctx context.Context) {
 	}, r.SSEOpts...)
 
 	terminalEvent := r.final
+	ctxErr := ctx.Err()
+	var adapterTimeout llm.APITimeoutSource
+	if ctxErr != nil {
+		adapterTimeout = r.adapterTimeoutSource(ctx)
+	}
 	var terminalErr error
 	if !*r.Finished {
-		if err := ctx.Err(); err != nil {
-			terminalErr = llm.WrapContextError(r.Provider, err)
+		if ctxErr != nil {
+			if adapterTimeout != llm.APITimeoutNone && r.TerminalError != nil {
+				terminalErr = r.TerminalError(ctxErr)
+			} else {
+				terminalErr = llm.WrapContextError(r.Provider, ctxErr)
+			}
 		} else if fatal, ok := errors.AsType[*FatalStreamError](parseErr); ok {
 			terminalErr = fatal.Err
 		} else {
@@ -127,10 +141,10 @@ func (r *StreamRunner) Run(ctx context.Context) {
 	}
 	timeoutSource := llm.APITimeoutSourceForSSE(parseErr)
 	if timeoutSource == llm.APITimeoutNone {
-		timeoutSource = r.Attempt.TimeoutSource()
+		timeoutSource = cmp.Or(adapterTimeout, r.Attempt.TimeoutSource())
 	}
 	outcome := apilog.AttemptOutcomeClass("")
-	if !*r.Finished && ctx.Err() == context.Canceled {
+	if !*r.Finished && ctxErr == context.Canceled {
 		outcome = apilog.AttemptCallerCancel
 	}
 	r.Attempt.Complete(llm.APIAttemptResult{

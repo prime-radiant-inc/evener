@@ -78,7 +78,7 @@ func exerciseTranscriptSurface(t testing.TB) {
 	})
 	ItemTurnsFromFile(path, 1<<20, func(schema.Turn, string, int) []appwire.ThreadItem { return nil })
 
-	PreludeTurn(transcript.Header{})
+	PreludeTurn(transcript.Header{}, "")
 	_ = CompactionDescription("checkpoint")
 	ImagePlaceholder(0)
 	ImagePlaceholder(1)

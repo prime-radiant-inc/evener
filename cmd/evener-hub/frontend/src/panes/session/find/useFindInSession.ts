@@ -10,19 +10,26 @@
 //
 // The transcript's scroll owner moves the reader (jumpToRow); Find only names
 // the row and then settles the entry into view inside it.
-import { ACTIONS, findNeedle } from "@evener/appwire-client";
+import { ACTIONS, findNeedle, scopedDisclosureId, type TranscriptDisplayConfigV1 } from "@evener/appwire-client";
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { keybindingsRegistry } from "../../../keybindings/appRegistry";
 import { createKeybindingDispatcher } from "../../../keybindings/dispatcher";
 import { installKeybindings } from "../../../shell/installKeybindings";
 import { paletteStore } from "../../../shell/palette/paletteController";
 import type { VirtualListHandle } from "../../../widgets";
+import {
+  isDisclosureOpenExplicitly,
+  isDisclosureOpenNow,
+  setDisclosureOpen,
+} from "../../../widgets/disclosure/disclosureStore";
 import { mermaidRenderVersion, subscribeMermaidRender } from "../../../widgets/mermaid/renderState";
 import { requestComposerFocus } from "../composer/composerFocus";
 import type { TranscriptBodyRow } from "../transcript/TranscriptBody";
+import { itemScopeKey } from "../transcript/tools/subagentModuleStore";
 import { type FindHit, findHits, indexOfMatch, isOverlay } from "./findHits";
 import { landingScrollTop, markTranscript } from "./findMarks";
 import { consumeFindRequest, useFindRequest } from "./findRequest";
+import { revealForFind } from "./findReveal";
 
 /** How the search stands, for the bar to say:
  *  - idle: no words yet.
@@ -56,6 +63,12 @@ interface FindInSessionOptions {
   /** The seat's pane id: the request address and the composer focus target. */
   paneId: string;
   rows: readonly TranscriptBodyRow[];
+  /** What the rows show, so a thought the view hides is not counted. */
+  config: TranscriptDisplayConfigV1;
+  /** The session's working directory, which a tool call's summary reads at. */
+  cwd?: string;
+  /** The transcript view the rows' disclosures belong to. */
+  disclosureScope: string;
   listRef: RefObject<VirtualListHandle | null>;
   ownerDocument: Document;
   jumpToRow(index: number): void;
@@ -149,10 +162,20 @@ function matchOf(hit: FindHit | undefined): Pick<FindState, "key" | "item" | "ro
   return hit === undefined ? NO_MATCH : { key: hit.key, item: hit.itemId, round: hit.roundId ?? null };
 }
 
+// What hides a hit's words, as one comparable value: a hit can open more than
+// one disclosure (a steer with several matching cards, or a card whose words
+// sit inside its raw frame), and the landing reruns only when the list changes.
+function opensKey(hit: FindHit): string {
+  return hit.opens?.join("\u0000") ?? "";
+}
+
 export function useFindInSession({
   ref,
   paneId,
   rows,
+  config,
+  cwd,
+  disclosureScope,
   listRef,
   ownerDocument,
   jumpToRow,
@@ -197,7 +220,7 @@ export function useFindInSession({
   // being redone for nothing.
   const lastHits = useRef<FindHit[]>([]);
   const hits = useMemo(() => {
-    const next = isOpen ? findHits(rows, query, renderVersion) : [];
+    const next = isOpen ? findHits(rows, query, { config, version: renderVersion, sessionRef: ref, cwd }) : [];
     const previous = lastHits.current;
     const same =
       next.length === previous.length &&
@@ -207,12 +230,15 @@ export function useFindInSession({
           before !== undefined &&
           before.key === hit.key &&
           before.itemId === hit.itemId &&
-          before.rowIndex === hit.rowIndex
+          before.rowIndex === hit.rowIndex &&
+          opensKey(before) === opensKey(hit) &&
+          before.opensIgnoreBaseline === hit.opensIgnoreBaseline &&
+          (before.opensSession ?? []).join("\0") === (hit.opensSession ?? []).join("\0")
         );
       });
     if (!same) lastHits.current = next;
     return lastHits.current;
-  }, [isOpen, rows, query, renderVersion]);
+  }, [isOpen, rows, query, renderVersion, config, ref, cwd]);
   const currentIndex =
     find == null || find.key === null || find.item === null
       ? -1
@@ -234,12 +260,12 @@ export function useFindInSession({
       setState((previous) => {
         const kept = previous?.ref === ref ? previous : null;
         if (request?.query === undefined) return kept ?? { ref, query: "", ...NO_MATCH, seek: null };
-        const found = findHits(rowsRef.current, request.query);
+        const found = findHits(rowsRef.current, request.query, { config, sessionRef: ref, cwd });
         const picked = found.find((hit) => hit.itemId === request.itemId) ?? found.at(-1);
         return { ref, query: request.query, ...matchOf(picked), seek: null };
       });
     },
-    [ref, listRef, ownerDocument],
+    [ref, listRef, ownerDocument, config, cwd],
   );
   const open = useCallback(() => openWith(), [openWith]);
 
@@ -267,10 +293,10 @@ export function useFindInSession({
       // Typing lands on the newest loaded match, as the reader is usually at
       // the end. It never reads older history by itself: each keystroke of a
       // longer word would otherwise page the whole session for a prefix.
-      const newest = findHits(rowsRef.current, next).at(-1);
+      const newest = findHits(rowsRef.current, next, { config, sessionRef: ref, cwd }).at(-1);
       setState({ ref, query: next, ...matchOf(newest), seek: null });
     },
-    [ref],
+    [ref, config, cwd],
   );
 
   const step = useCallback(
@@ -391,9 +417,11 @@ export function useFindInSession({
 
   // A landing is owed for a new current match, for one named again by a
   // caller, and for new words inside the same message (the place in it
-  // moves). A match that only goes by a new key or item is the same match:
+  // moves), and when what hides it opens (a thought's disclosure or an action
+  // group). A match that only goes by a new key or item is the same match:
   // the reader may have scrolled on, and is not pulled back to it. Rows
   // prepending above it are not a landing either.
+  const currentOpens = current === null ? "" : opensKey(current);
   // biome-ignore lint/correctness/useExhaustiveDependencies: the dependencies are the landing's causes, listed above
   useEffect(() => {
     if (current === null) {
@@ -403,6 +431,25 @@ export function useFindInSession({
       if (landed.current !== null) releaseHold();
       landed.current = null;
       return;
+    }
+    // Whatever hides the matching words opens first, so the entry can mount
+    // and show them. They stay open, as a reader's own toggle would.
+    // Every disclosure holding the words opens: the card and, when the words
+    // only sit there, its raw frame.
+    for (const disclosure of current.opens ?? []) {
+      const scoped = scopedDisclosureId(disclosureScope, disclosure);
+      // A notes snapshot ignores the expand-all baseline, so the baseline's
+      // "open" is not what its row shows: open it explicitly in that case too.
+      if (current.opensIgnoreBaseline) {
+        if (!isDisclosureOpenExplicitly(scoped)) setDisclosureOpen(scoped, true);
+      } else if (!isDisclosureOpenNow(scoped, false)) setDisclosureOpen(scoped, true);
+    }
+    // A steer's or a memory refresh's body folds by the session ref plus its
+    // own id (SteeringDivider's key). Its owner may keep it closed through an
+    // expand-all baseline, so only the reader's own choice says it is open.
+    for (const id of current.opensSession ?? []) {
+      const scoped = itemScopeKey(ref, id);
+      if (!isDisclosureOpenExplicitly(scoped)) setDisclosureOpen(scoped, true);
     }
     const before = landed.current;
     if (before !== null && before.item === current.itemId && before.needle === needle && before.epoch === jumpEpoch) {
@@ -435,7 +482,16 @@ export function useFindInSession({
       const view = listRef.current?.getScrollElement()?.ownerDocument.defaultView ?? window;
       settleFrame.current = { id: view.requestAnimationFrame(tick), view };
     }
-  }, [currentKey, current?.itemId, jumpEpoch, needle]);
+  }, [currentKey, current?.itemId, jumpEpoch, needle, currentOpens, disclosureScope]);
+  // A row that folds its own text away - a tool body's tail fold or line clip -
+  // renders the stretch holding the words while Find is landed on it, and goes
+  // back to its own rendering as soon as Find moves on or closes.
+  const currentItemId = current?.itemId ?? null;
+  useEffect(() => {
+    if (currentItemId === null) return;
+    revealForFind(disclosureScope, currentItemId, needle);
+    return () => revealForFind(disclosureScope, null, "");
+  }, [disclosureScope, currentItemId, needle]);
   // Marks are document state, not React output, so they follow what is
   // mounted: the virtual list mounting a row, a fold opening, a streamed
   // reply growing. One pass per frame at most; closing Find, or this

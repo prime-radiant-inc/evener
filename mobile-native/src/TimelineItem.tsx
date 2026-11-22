@@ -33,7 +33,7 @@ import { SubagentRow } from "./session/SubagentRow";
 import { SystemEvent } from "./session/SystemEvent";
 import { subagentLine } from "./session/subagentLine";
 import { ThoughtRow } from "./session/ThoughtRow";
-import { askRowQuestions, stepWords, timeMarkerText } from "./session/transcriptRows";
+import { askRowQuestions, isThoughtRow, stepWords, timeMarkerText } from "./session/transcriptRows";
 import { useStepEvidence } from "./session/useStepEvidence";
 import { subagentOutcome } from "./subagents/subagentModel";
 import { TranscriptImages } from "./TranscriptImages";
@@ -62,9 +62,7 @@ const NO_STEP = { label: "", summaryOnly: true, detail: {} } as const;
 // default" switch; runs and every other activity keep the expand-details
 // posture. Everything else starts closed.
 function rowOpensByDefault(item: TimelineRow, expandByDefault: boolean, thinkingOpenByDefault: boolean): boolean {
-	const isThoughtRow =
-		(item.kind === "activity" && item.family === "reasoning") || (item.kind === "failure" && item.thought === true);
-	if (isThoughtRow) return thinkingOpenByDefault;
+	if (isThoughtRow(item)) return thinkingOpenByDefault;
 	const expandable = item.kind === "activity" || item.kind === "run";
 	return expandable && expandByDefault;
 }

@@ -326,7 +326,10 @@ func (s *Session) treeHasOutstandingWorkBesidesOwnJobs() (bool, error) {
 	if s.hasPendingDelegateAttentionArmRetry() {
 		return true, nil
 	}
-	if s.hasPendingDelegateAttention() {
+	// Attention a foreign-held lane has quieted is owed and retried, not
+	// deliverable: counting it would hold this drain open until its context is
+	// cancelled, the same give-up the drain-abandoned child gate below grants.
+	if s.hasDeliverableDelegateAttention() {
 		return true, nil
 	}
 	for _, sub := range s.liveDirectSubagents() {
@@ -622,7 +625,9 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 	if s.hasPendingDelegateAttentionArmRetry() {
 		return true, nil
 	}
-	if s.hasPendingDelegateAttention() {
+	// See treeHasOutstandingWorkBesidesOwnJobs: a lane-held row is not live
+	// deliverable work, so it must not keep the stall watchdog from arming.
+	if s.hasDeliverableDelegateAttention() {
 		return true, nil
 	}
 	for _, sub := range s.liveDirectSubagents() {
@@ -916,6 +921,10 @@ func (s *Session) recordDrainAbandonedChildOnLaneRefusal(sub *subagent, reason s
 		return
 	}
 	s.recordDrainAbandonedChild(sub.sess.id, row.id, row.generation, reason)
+	// The same refusal leaves any attention this delegate owes behind the
+	// foreign lane: it stays owed and the paced retry keeps probing the lane,
+	// but the drain's give-up scans must not count it as deliverable work.
+	s.delegateController.quietLaneHeldAttention(row.id)
 }
 
 // childDrainAbandoned reports whether the one-shot drain has given up waiting on
@@ -965,6 +974,9 @@ func (s *Session) clearDrainAbandonedDelegate(delegateID string) {
 		}
 	}
 	s.drainAbandonedMu.Unlock()
+	if s.delegateController != nil {
+		s.delegateController.clearLaneHeldAttention(delegateID)
+	}
 }
 
 // subtreeUndisposableStoppedDelegates names the delegates this session and its

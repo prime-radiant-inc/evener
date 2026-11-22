@@ -163,10 +163,18 @@ func TestNewSessionRejectsResultToolNameCollidingWithProviderWireName(t *testing
 }
 
 // TestNewSessionRejectsResultToolNameOfProfileDeclaredTool covers a native name
-// that only some provider profiles declare: web_search rides with a
-// google-protocol profile that serves provider-native web search.
+// that only some provider profiles declare: list_dir rides with a google profile.
 func TestNewSessionRejectsResultToolNameOfProfileDeclaredTool(t *testing.T) {
-	requireResultToolRejected(t, newGeminiProfile("gemini-test"), SessionConfig{ResultToolName: "web_search", StateDir: t.TempDir()})
+	requireResultToolRejected(t, newGeminiProfile("gemini-test"), SessionConfig{ResultToolName: "list_dir", StateDir: t.TempDir()})
+}
+
+func TestNewSessionAllowsWebSearchResultToolNameOnGoogle(t *testing.T) {
+	sess, err := newResultToolSession(t, withWebSearch(newGeminiProfile("gemini-test"), true), SessionConfig{ResultToolName: "web_search", StateDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("NewSession refused ResultToolName=web_search on Google: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+	requireResultToolShape(t, sess, "web_search")
 }
 
 // TestNewSessionRejectsResultToolNameOfProviderNativeWebSearch covers the name

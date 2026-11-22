@@ -5,7 +5,7 @@
 
 import { compareBootGeneration, liveBootGeneration } from "./bootGeneration";
 import { historyFallback, historyReplacesWindow, historyServingFacts } from "./historyServing";
-import type { HistoryState, ItemModel, OlderFrontier, ThreadModel, TurnModel } from "./model";
+import type { HistoryState, ItemModel, OlderFrontier, QuotaRetryOutputBaseline, ThreadModel, TurnModel } from "./model";
 import { comparePositions, SYSTEM_PRELUDE_TURN_ID } from "./model";
 import { frontierFromCursor, olderFrontierOf, withOlderFrontier } from "./olderFrontier";
 
@@ -119,6 +119,14 @@ export function overlayRecord(items: readonly OverlayItem[] | undefined): Record
 
 function itemIdentity(item: Pick<ItemModel, "id" | "transcriptKey">): string {
   return item.transcriptKey ?? item.id;
+}
+
+// An item list's [identity, version] pairs: the recorded form of what a model
+// holds, for version novelty and for the baseline that records what a LIVE
+// observation held (QuotaRetryOutputBaseline). A missing version stays
+// undefined, which the novelty comparison reads as the lowest.
+function identityVersions(items: readonly ItemModel[]): ReadonlyArray<readonly [string, number | undefined]> {
+  return items.map((item) => [itemIdentity(item), item.version] as const);
 }
 
 // Payload fields whose ABSENCE on a wire item means "this entry said nothing
@@ -1065,25 +1073,35 @@ export function applyReadResponse<M extends ThreadModel>(
   // retire, and the wait-free clear below keeps its own long-standing rule.
   const quotaWait = reconcileQuotaWait(
     model,
-    { ...fields, bootGeneration: resp.bootGeneration, runningTurnId: resp.thread.evener.activeTurnId, fallback },
+    {
+      ...fields,
+      bootGeneration: resp.bootGeneration,
+      runningTurnId: resp.thread.evener.activeTurnId,
+      turns,
+      fallback,
+    },
     postCutWaitStamps,
   );
   const retireQuotaRetry = quotaWait.retireChip === true;
   const { modelRetry: _retainedRetry, ...baseWithoutRetry } = base;
   const carried = retireQuotaRetry ? baseWithoutRetry : base;
-  let next = withDisplay(
-    {
-      ...carried,
-      ...fields,
-      ...quotaWait,
-      ...clearedArtifacts,
-      ...clearedScratch,
-      ...runningTurn(resp.thread),
-      olderCursor,
-      olderFrontier,
-    },
-    history,
-    overlayRecord(resp.overlay),
+  let next = withRetryOutputBaseline(
+    model,
+    withDisplay(
+      {
+        ...carried,
+        ...fields,
+        ...quotaWait,
+        ...clearedArtifacts,
+        ...clearedScratch,
+        ...runningTurn(resp.thread),
+        olderCursor,
+        olderFrontier,
+      },
+      history,
+      overlayRecord(resp.overlay),
+    ),
+    readIsNonLive({ bootGeneration: resp.bootGeneration, fallback }),
   );
   for (const deferred of held.deferredPages) {
     if (deferred.snapshot?.incarnation === history.incarnation) {
@@ -1161,6 +1179,112 @@ interface QuotaWaitFields {
    * ordinary (non-quota) retry the read says nothing about. */
   retireChip?: boolean;
 }
+
+// item/completed kinds that count as the model actually producing something
+// (design doc Component 1): assistant message, reasoning, tool call. A
+// systemMessage or userMessage item (a steer "are you stuck?" completing its
+// own systemMessage item, say) arrives mid-grind and must not be mistaken for
+// the retry's wait being over. Defined here, not in reducer.ts, because
+// reducer.ts imports this module and the live fold and the read merge must
+// agree on the set.
+export const MODEL_OUTPUT_ITEM_TYPES = new Set(["agentMessage", "reasoning", "commandExecution"]);
+
+// Whether the read's merge shows the retried call producing model output. The
+// wake's zero-delay chip is the retry's PROGRESS state, so a read naming the
+// retrying turn running is not news about the call only while it shows nothing
+// new from the model in that turn. An item the held model does not have, or
+// has only at a lower version, is new output: the chip has stopped describing
+// anything and the read retires it. Versions are daemon-issued ordinals, so
+// this needs no clock and no receipt time, and the merge's own turns are
+// compared, so a version raised through `changes` counts too. Undefined
+// versions (pre-v6 reads, overlay items) fall back to identity novelty — a new
+// identity is still news, an unchanged one is not. That is deliberately not
+// `supersedes`, which calls two unversioned items a supersession.
+function readCarriesNewModelOutput(held: ThreadModel, turns: readonly TurnModel[], turnId: string): boolean {
+  const turn = turns.find((candidate) => candidate.id === turnId);
+  if (turn === undefined) return false;
+  // Recorded history is the baseline when the model has it: a pruned
+  // background model keeps identities and versions there while its display
+  // turns drop the rows (pruneBackgroundHistoryBodies), so comparing against
+  // the display would call a restored, unchanged row new output.
+  const recorded = held.history?.turns ?? held.turns;
+  // A fallback merge may have enriched recorded history with this read's own
+  // post-wake output (#7391); the baseline it captured names what the last
+  // LIVE observation held instead.
+  const observed = held.quotaRetryOutputBaseline;
+  const baseline =
+    observed !== undefined && observed.turnId === turnId && observed.waitStamp === (held.quotaWaitEndedStamp ?? 0)
+      ? observed
+      : undefined;
+  const heldVersions =
+    baseline !== undefined
+      ? new Map(baseline.versions)
+      : new Map(identityVersions(recorded.find((candidate) => candidate.id === turnId)?.items ?? []));
+  return turn.items.some((item) => {
+    if (!MODEL_OUTPUT_ITEM_TYPES.has(item.type)) return false;
+    const identity = itemIdentity(item);
+    const before = heldVersions.get(identity);
+    return !heldVersions.has(identity) || (item.version ?? 0) > (before ?? 0);
+  });
+}
+
+// The baseline one read leaves behind for the wake chip's novelty check
+// (#7391; see QuotaRetryOutputBaseline). While the zero-delay chip stands, a
+// non-live read captures what held history said BEFORE its merge — unless an
+// earlier fallback already captured this same wait, since the earliest capture
+// is the last live observation. Any other read keeps the matching baseline,
+// and a model without the chip drops it.
+function retryOutputBaselineAfterRead(
+  model: ThreadModel,
+  next: ThreadModel,
+  nonLive: boolean,
+): QuotaRetryOutputBaseline | undefined {
+  const chip = next.modelRetry;
+  if (chip === undefined || chip.delayMs !== 0 || chip.errorClass !== "quota_exceeded") return undefined;
+  const retryingTurn = chip.turnId ?? next.runningTurnId;
+  if (retryingTurn === undefined) return undefined;
+  const waitStamp = next.quotaWaitEndedStamp ?? 0;
+  // Only a stamped wake leaves an ended stamp for the novelty check to key on;
+  // without one nothing ever consults a baseline, so leave none behind.
+  if (waitStamp === 0) return undefined;
+  // A baseline naming another wait or turn is a previous chip's evidence, not
+  // this one's: carry it no further (and never let a restart's stamp reuse
+  // read it).
+  const existing = model.quotaRetryOutputBaseline;
+  const matching =
+    existing !== undefined && existing.waitStamp === waitStamp && existing.turnId === retryingTurn
+      ? existing
+      : undefined;
+  if (!nonLive || matching !== undefined) return matching;
+  const recorded = model.history?.turns ?? model.turns;
+  const retrying = recorded.find((candidate) => candidate.id === retryingTurn);
+  return {
+    waitStamp,
+    turnId: retryingTurn,
+    versions: identityVersions(retrying?.items ?? []),
+  };
+}
+
+// The read merge's baseline is not part of the read: install it on the applied
+// model, deleting it rather than assigning undefined so spreads never carry a
+// named-but-empty field.
+function withRetryOutputBaseline<M extends ThreadModel>(model: ThreadModel, next: M, nonLive: boolean): M {
+  const baseline = retryOutputBaselineAfterRead(model, next, nonLive);
+  if (baseline === undefined) delete next.quotaRetryOutputBaseline;
+  else next.quotaRetryOutputBaseline = baseline;
+  return next;
+}
+
+// Whether a read carries no live generation: a saved-index success, or a
+// failed-live fallback. Neither says anything about whether the live daemon
+// still serves a held wait (see reconcileQuotaWait), and neither is a live
+// observation of the retrying call's output.
+function readIsNonLive(read: { bootGeneration?: string; fallback?: boolean }): boolean {
+  return read.bootGeneration === undefined
+    ? read.fallback === true
+    : liveBootGeneration(read.bootGeneration) === undefined;
+}
+
 function reconcileQuotaWait(
   held: ThreadModel,
   fresh: {
@@ -1169,6 +1293,8 @@ function reconcileQuotaWait(
     quotaResumesAt?: string;
     quotaWaitStartedAt?: number;
     runningTurnId?: string;
+    // The read's merged turns, for the wait-free branch's output check.
+    turns: readonly TurnModel[];
     // The read was served from the saved history index because its live read
     // failed. A fallback's wait fields are not authority (see the early
     // return below).
@@ -1185,11 +1311,7 @@ function reconcileQuotaWait(
   // no items): the hub keeps the live token and thread metadata, so that
   // read is a witness to the runtime. Absent tokens (an older peer) keep the
   // unscoped behavior below.
-  const nonLiveRead =
-    fresh.bootGeneration === undefined
-      ? fresh.fallback === true
-      : liveBootGeneration(fresh.bootGeneration) === undefined;
-  if (nonLiveRead) {
+  if (readIsNonLive(fresh)) {
     return {
       quotaResumesAt: held.quotaResumesAt,
       quotaWaitStartedAt: held.quotaWaitStartedAt,
@@ -1322,9 +1444,14 @@ function reconcileQuotaWait(
   // endedStamp), the read is not news about the call and the chip stands. An
   // ordinary provider retry (no quota state anywhere) keeps its chip too:
   // this reconciliation never retires what is not quota.
+  // The read stops being not-news once its merge carries model output the
+  // model does not hold (readCarriesNewModelOutput).
   const retryingTurn = held.modelRetry?.turnId ?? held.runningTurnId;
   const liveZeroDelayRetry =
-    held.modelRetry?.delayMs === 0 && retryingTurn !== undefined && fresh.runningTurnId === retryingTurn;
+    held.modelRetry?.delayMs === 0 &&
+    retryingTurn !== undefined &&
+    fresh.runningTurnId === retryingTurn &&
+    !readCarriesNewModelOutput(held, fresh.turns, retryingTurn);
   const endedQuotaChip =
     heldStamp === 0 &&
     endedStamp > 0 &&
@@ -1464,25 +1591,34 @@ export function applyReadModel<M extends ThreadModel>(
   // equal-stamp refresh keeps it, and an ordinary retry is untouched.
   const quotaWait = reconcileQuotaWait(
     model,
-    { ...fresh, bootGeneration: fresh.history?.bootGeneration, fallback },
+    {
+      ...fresh,
+      bootGeneration: fresh.history?.bootGeneration,
+      turns,
+      fallback,
+    },
     postCutWaitStamps,
   );
   const retireQuotaRetry = quotaWait.retireChip === true;
   const { modelRetry: _retainedRetry, ...baseWithoutRetry } = base;
   const carried = retireQuotaRetry ? baseWithoutRetry : base;
-  let next = withDisplay(
-    {
-      ...carried,
-      ...fields,
-      ...quotaWait,
-      ...clearedArtifacts,
-      ...clearedScratch,
-      ...(freshRunningTurnId ? { runningTurnId: freshRunningTurnId } : {}),
-      olderCursor,
-      olderFrontier,
-    },
-    history,
-    freshOverlay ?? {},
+  let next = withRetryOutputBaseline(
+    model,
+    withDisplay(
+      {
+        ...carried,
+        ...fields,
+        ...quotaWait,
+        ...clearedArtifacts,
+        ...clearedScratch,
+        ...(freshRunningTurnId ? { runningTurnId: freshRunningTurnId } : {}),
+        olderCursor,
+        olderFrontier,
+      },
+      history,
+      freshOverlay ?? {},
+    ),
+    readIsNonLive({ bootGeneration: fresh.history?.bootGeneration, fallback }),
   );
   for (const deferred of held.deferredPages) {
     if (deferred.snapshot?.incarnation === history.incarnation) {

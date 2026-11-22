@@ -8,21 +8,6 @@ import (
 	"testing"
 )
 
-// gemGen turns a fuzz input into a deterministic stream of small choices and
-// accumulates a valid Gemini streamGenerateContent (alt=sse) event sequence. It
-// is the inverse of decodeStream: rather than emitting the minimal wire bytes (as
-// the difftest encoder does), it walks the decoder's whole event vocabulary —
-// candidates[].content.parts holding thought / text / functionCall parts (a
-// functionCall optionally carrying a thoughtSignature), groundingMetadata web
-// search results, a separate-chunk usageMetadata, and a finishReason chunk that
-// (the bug-fixed shape) commonly carries usageMetadata on the SAME chunk and may
-// also carry trailing content parts — so the metamorphic oracle explores the
-// STRUCTURED stream space instead of bytes that almost always die at the first
-// SSE/JSON parse.
-//
-// Determinism: every choice comes from the byte source (no maps for ORDER, no
-// rand, no time). JSON is built with json.Marshal over map[string]any, which
-// sorts object keys, so the same input always yields byte-identical SSE.
 type gemGen struct {
 	b   []byte
 	i   int
@@ -38,7 +23,6 @@ func (g *gemGen) next() byte {
 	return v
 }
 
-// intn returns a value in [0,n). n<=0 yields 0.
 func (g *gemGen) intn(n int) int {
 	if n <= 0 {
 		return 0
@@ -48,8 +32,6 @@ func (g *gemGen) intn(n int) int {
 
 func (g *gemGen) boolean() bool { return g.next()%2 == 0 }
 
-// gemAlphabet includes a space, a double-quote and a newline so generated
-// strings exercise the decoder's JSON unescaping on the way back in.
 var gemAlphabet = []rune{'a', 'b', 'c', ' ', '"', '\n'}
 
 func (g *gemGen) text(maxLen int) string {
@@ -61,7 +43,6 @@ func (g *gemGen) text(maxLen int) string {
 	return string(r)
 }
 
-// name returns a short non-empty lowercase tool name.
 func (g *gemGen) name() string {
 	n := 1 + g.intn(4)
 	r := make([]byte, n)
@@ -71,21 +52,18 @@ func (g *gemGen) name() string {
 	return string(r)
 }
 
-// frame appends one `data: <json>\n\n` SSE frame. Gemini's alt=sse stream is a
-// sequence of data-only frames carrying GenerateContentResponse JSON. Marshalling
-// a map guarantees valid JSON and deterministic key order.
-func (g *gemGen) frame(payload map[string]any) {
+func (g *gemGen) frame(event string, payload map[string]any) {
 	data, err := json.Marshal(payload)
 	if err != nil {
-		panic(fmt.Sprintf("structured gemini gen: marshal frame: %v", err))
+		panic(fmt.Sprintf("structured interactions gen: marshal frame: %v", err))
 	}
-	g.out.WriteString("data: ")
+	g.out.WriteString("event: ")
+	g.out.WriteString(event)
+	g.out.WriteString("\ndata: ")
 	g.out.Write(data)
 	g.out.WriteString("\n\n")
 }
 
-// argsObj builds a small JSON object (as a map, the Gemini functionCall.args wire
-// shape) for a tool call.
 func (g *gemGen) argsObj() map[string]any {
 	obj := map[string]any{}
 	for k := 0; k <= g.intn(3); k++ {
@@ -94,174 +72,177 @@ func (g *gemGen) argsObj() map[string]any {
 	return obj
 }
 
-// usage builds a usageMetadata object covering the prompt / candidates / total
-// counts plus the optional cached-content and thoughts token breakdowns.
 func (g *gemGen) usage() map[string]any {
 	in := g.intn(120)
 	out := g.intn(120)
 	u := map[string]any{
-		"promptTokenCount":     in,
-		"candidatesTokenCount": out,
-		"totalTokenCount":      in + out,
+		"total_input_tokens":  in,
+		"total_output_tokens": out,
+		"total_tokens":        in + out,
 	}
 	if g.boolean() {
-		u["cachedContentTokenCount"] = g.intn(50)
+		u["total_cached_tokens"] = g.intn(50)
 	}
 	if g.boolean() {
-		u["thoughtsTokenCount"] = g.intn(50)
+		u["total_thought_tokens"] = g.intn(50)
 	}
 	return u
 }
 
-// finishReason returns one of the Gemini finish-reason strings the decoder
-// normalizes.
-func (g *gemGen) finishReason() string {
+func (g *gemGen) status(hasTools bool) string {
+	if hasTools && g.boolean() {
+		return "requires_action"
+	}
 	switch g.intn(4) {
 	case 1:
-		return "MAX_TOKENS"
+		return "incomplete"
 	case 2:
-		return "SAFETY"
+		return "cancelled"
 	case 3:
-		return "RECITATION"
+		return "requires_continuation"
 	default:
-		return "STOP"
+		return "completed"
 	}
 }
 
-// contentParts builds 1..3 candidate parts of mixed kind: a thought part (which
-// the decoder must classify before text because both carry a "text" field), a
-// plain text part, or a functionCall part that sometimes carries a
-// thoughtSignature. Some text is empty so the decoder's empty-part guards fire.
-func (g *gemGen) contentParts() []any {
-	n := 1 + g.intn(3)
-	parts := make([]any, 0, n)
-	for range n {
-		switch g.intn(3) {
-		case 0:
-			parts = append(parts, map[string]any{"thought": true, "text": g.text(5)})
-		case 1:
-			parts = append(parts, map[string]any{"text": g.text(5)})
-		default:
-			p := map[string]any{"functionCall": map[string]any{"name": "t" + g.name(), "args": g.argsObj()}}
-			if g.boolean() {
-				p["thoughtSignature"] = g.text(4)
-			}
-			parts = append(parts, p)
-		}
-	}
-	return parts
-}
-
-// structuredGeminiSSE builds a valid-but-adversarial Gemini streamGenerateContent
-// SSE event sequence from fuzz bytes. The returned bytes are always parseable SSE
-// whose frames carry well-formed JSON, so the decoder reaches its content,
-// tool-mapping, reasoning, grounding, and finish logic instead of the
-// malformed-JSON passthrough.
-func structuredGeminiSSE(raw []byte) []byte {
+func structuredInteractionsSSE(raw []byte) []byte {
 	g := &gemGen{b: raw}
+	g.frame("interaction.created", map[string]any{
+		"event_type": "interaction.created",
+		"interaction": map[string]any{
+			"id":     "int_fuzz",
+			"model":  "gemini-3.8-flash",
+			"status": "in_progress",
+		},
+	})
 
-	// 0..3 content chunks, each carrying a mix of thought/text/functionCall parts.
-	for c := g.intn(4); c > 0; c-- {
-		g.frame(map[string]any{
-			"candidates": []any{map[string]any{
-				"content": map[string]any{"parts": g.contentParts()},
-			}},
-		})
-	}
-
-	// Optional groundingMetadata chunk (web search results surface as a WebSearch
-	// part).
-	if g.boolean() {
-		g.frame(map[string]any{
-			"candidates": []any{map[string]any{
-				"groundingMetadata": map[string]any{
-					"webSearchQueries": []any{g.text(4), g.text(4)},
+	idx := 0
+	hasTools := false
+	nSteps := g.intn(4)
+	for range nSteps {
+		switch g.intn(4) {
+		case 0: // thought
+			g.frame("step.start", map[string]any{
+				"event_type": "step.start",
+				"index":      idx,
+				"step":       map[string]any{"type": "thought"},
+			})
+			if txt := g.text(5); txt != "" {
+				g.frame("step.delta", map[string]any{
+					"event_type": "step.delta",
+					"index":      idx,
+					"delta":      map[string]any{"type": "thought_summary", "content": map[string]any{"type": "text", "text": txt}},
+				})
+			}
+			if g.boolean() {
+				g.frame("step.delta", map[string]any{
+					"event_type": "step.delta",
+					"index":      idx,
+					"delta":      map[string]any{"type": "thought_signature", "signature": "sig_" + g.name()},
+				})
+			}
+			g.frame("step.stop", map[string]any{"event_type": "step.stop", "index": idx})
+		case 1: // model_output
+			g.frame("step.start", map[string]any{
+				"event_type": "step.start",
+				"index":      idx,
+				"step":       map[string]any{"type": "model_output"},
+			})
+			for c := g.intn(3); c > 0; c-- {
+				g.frame("step.delta", map[string]any{
+					"event_type": "step.delta",
+					"index":      idx,
+					"delta":      map[string]any{"type": "text", "text": g.text(5)},
+				})
+			}
+			g.frame("step.stop", map[string]any{"event_type": "step.stop", "index": idx, "usage": g.usage()})
+		case 2: // function_call
+			hasTools = true
+			argsBytes, _ := json.Marshal(g.argsObj())
+			g.frame("step.start", map[string]any{
+				"event_type": "step.start",
+				"index":      idx,
+				"step": map[string]any{
+					"type":      "function_call",
+					"id":        fmt.Sprintf("call_%d", idx),
+					"name":      "t" + g.name(),
+					"arguments": map[string]any{},
 				},
-			}},
+			})
+			if g.boolean() {
+				g.frame("step.delta", map[string]any{
+					"event_type": "step.delta",
+					"index":      idx,
+					"delta":      map[string]any{"type": "arguments_delta", "arguments": string(argsBytes)},
+				})
+			}
+			g.frame("step.stop", map[string]any{"event_type": "step.stop", "index": idx})
+		default: // google_search_call + result
+			cid := fmt.Sprintf("gs_%d", idx)
+			g.frame("step.start", map[string]any{
+				"event_type": "step.start",
+				"index":      idx,
+				"step":       map[string]any{"type": "google_search_call", "id": cid, "arguments": map[string]any{"queries": []any{g.text(4)}}},
+			})
+			g.frame("step.stop", map[string]any{"event_type": "step.stop", "index": idx})
+			idx++
+			g.frame("step.start", map[string]any{
+				"event_type": "step.start",
+				"index":      idx,
+				"step":       map[string]any{"type": "google_search_result", "call_id": cid, "result": []any{map[string]any{"url": "https://example.test"}}},
+			})
+			g.frame("step.stop", map[string]any{"event_type": "step.stop", "index": idx})
+		}
+		idx++
+	}
+
+	if g.next()%8 != 7 {
+		g.frame("interaction.completed", map[string]any{
+			"event_type": "interaction.completed",
+			"interaction": map[string]any{
+				"id":     "int_fuzz",
+				"status": g.status(hasTools),
+				"usage":  g.usage(),
+			},
 		})
 	}
-
-	// Optional separate-chunk usageMetadata (usage arriving ahead of the finish).
-	separateUsage := g.boolean()
-	if separateUsage {
-		g.frame(map[string]any{"usageMetadata": g.usage()})
-	}
-
-	// Finish: candidates[0].finishReason, which commonly rides the SAME chunk as
-	// trailing content parts and usageMetadata (the dominant Gemini shape, and the
-	// site of a real bug where same-chunk usage was dropped). Occasionally truncate
-	// so the metamorphic oracle holds on a mid-stream cutoff too. The truncate
-	// token is a live nonzero value so an exhausted byte source (which reads back
-	// zeros) produces a completed stream rather than always truncating.
-	if g.next()%8 != 7 {
-		cand := map[string]any{"finishReason": g.finishReason()}
-		if g.boolean() {
-			cand["content"] = map[string]any{"parts": g.contentParts()}
-		}
-		chunk := map[string]any{"candidates": []any{cand}}
-		// usageMetadata on the finish chunk (same-chunk shape) when there was no
-		// separate usage chunk, or sometimes in addition to it (a re-stated total).
-		if !separateUsage || g.boolean() {
-			chunk["usageMetadata"] = g.usage()
-		}
-		g.frame(chunk)
-	}
-
 	return g.out.Bytes()
 }
 
-// FuzzGeminiStreamStructured drives the REAL Gemini streamGenerateContent SSE
-// decoder with structure-aware, valid-but-adversarial event sequences and asserts
-// the SAME metamorphic property as FuzzGeminiStreamMetamorphic: a
-// semantics-preserving transform (re-chunking, interstitial SSE comments) must
-// not change the accumulated llm.Response. Where the raw-byte metamorphic target
-// mostly dies at the first parse, this target reaches the decoder's
-// content/tool/reasoning/grounding/finish logic on nearly every input (see
-// TestStructuredGeminiReachesDeeper). A divergence here is a real decoder bug
-// (state that leaks across read boundaries or mishandles benign framing), not a
-// test artifact. The synthetic per-call tool-call ID is normalized away (see
-// normalizeGeminiResponse) since it is random by construction, not a function of
-// the bytes.
 func FuzzGeminiStreamStructured(f *testing.F) {
 	seeds := [][]byte{
 		{},
 		{0x00},
 		{0x00, 0x01, 0x02, 0x03, 0x04, 0x05},
-		{0x01, 0x02, 0x61, 0x62, 0x63, 0x64}, // content + tool call
-		{0x02, 0x00, 0x02, 0x10, 0x20, 0x30, 0x40, 0x50},       // thought + text + tool
-		{0x03, 0x01, 0x01, 0x02, 0x10, 0x20, 0x30, 0x40, 0x50}, // grounding + separate usage
-		{0xff, 0xfe, 0xfd, 0xfc, 0xfb, 0xfa, 0xf9, 0xf8},       // truncated finish
+		{0x01, 0x02, 0x61, 0x62, 0x63, 0x64},
+		{0x02, 0x00, 0x02, 0x10, 0x20, 0x30, 0x40, 0x50},
+		{0x03, 0x01, 0x01, 0x02, 0x10, 0x20, 0x30, 0x40, 0x50},
+		{0xff, 0xfe, 0xfd, 0xfc, 0xfb, 0xfa, 0xf9, 0xf8},
 	}
 	for _, s := range seeds {
 		f.Add(s)
 	}
 
 	f.Fuzz(func(t *testing.T, raw []byte) {
-		sse := structuredGeminiSSE(raw)
+		sse := structuredInteractionsSSE(raw)
 
-		base, baseErr := accumulateGeminiSSE(sse, false) // Oracle (floor): never panics.
+		base, baseErr := accumulateInteractionsSSE(sse, false)
 
-		rechunked, reErr := accumulateGeminiSSE(sse, true)
-		if !sameGeminiResponse(base, baseErr, rechunked, reErr) {
+		rechunked, reErr := accumulateInteractionsSSE(sse, true)
+		if !sameInteractionsResponse(base, baseErr, rechunked, reErr) {
 			t.Fatalf("re-chunk boundary changed the accumulated response:\n base=%+v (err=%v)\n one-byte=%+v (err=%v)\n sse=%q",
 				base, baseErr, rechunked, reErr, sse)
 		}
 
 		commented := bytes.ReplaceAll(sse, []byte("\n\n"), []byte("\n\n: fuzz-keepalive\n\n"))
-		withComments, cErr := accumulateGeminiSSE(commented, false)
-		if !sameGeminiResponse(base, baseErr, withComments, cErr) {
+		withComments, cErr := accumulateInteractionsSSE(commented, false)
+		if !sameInteractionsResponse(base, baseErr, withComments, cErr) {
 			t.Fatalf("interstitial SSE comments changed the accumulated response:\n base=%+v (err=%v)\n commented=%+v (err=%v)\n sse=%q",
 				base, baseErr, withComments, cErr, sse)
 		}
 	})
 }
 
-// TestStructuredGeminiReachesDeeper is the evidence (and a regression guard) that
-// the structure-aware generator explores deeper decoder states than feeding the
-// same bytes raw. Over a fixed-seed Monte Carlo, it measures the fraction of
-// inputs whose stream reaches a finishReason chunk (a non-nil accumulated
-// Response). Raw bytes interpreted as SSE essentially never form a valid finish
-// chunk; the structured generator does so on most inputs.
 func TestStructuredGeminiReachesDeeper(t *testing.T) {
 	t.Parallel()
 	const iters = 2000
@@ -272,23 +253,23 @@ func TestStructuredGeminiReachesDeeper(t *testing.T) {
 		raw := make([]byte, rng.Intn(64))
 		_, _ = rng.Read(raw)
 
-		if resp, _ := accumulateGeminiSSE(raw, false); resp != nil {
+		if resp, _ := accumulateInteractionsSSE(raw, false); resp != nil {
 			rawCompleted++
 		}
-		if resp, _ := accumulateGeminiSSE(structuredGeminiSSE(raw), false); resp != nil {
+		if resp, _ := accumulateInteractionsSSE(structuredInteractionsSSE(raw), false); resp != nil {
 			structCompleted++
 		}
 	}
 
 	rawRate := float64(rawCompleted) / iters
 	structRate := float64(structCompleted) / iters
-	t.Logf("reached finishReason: raw=%.1f%% (%d/%d)  structured=%.1f%% (%d/%d)",
+	t.Logf("reached interaction.completed: raw=%.1f%% (%d/%d)  structured=%.1f%% (%d/%d)",
 		rawRate*100, rawCompleted, iters, structRate*100, structCompleted, iters)
 
 	if rawRate > 0.05 {
 		t.Fatalf("raw-byte completion rate unexpectedly high (%.1f%%); the comparison is meaningless", rawRate*100)
 	}
 	if structRate < 0.5 {
-		t.Fatalf("structured generator reached finishReason only %.1f%% of the time; expected >50%%", structRate*100)
+		t.Fatalf("structured generator reached interaction.completed only %.1f%% of the time; expected >50%%", structRate*100)
 	}
 }

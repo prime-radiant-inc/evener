@@ -1,5 +1,7 @@
 import {
   clip,
+  editOperationsOf,
+  filePathOf,
   memoryDeleteSummary,
   memoryEditSummary,
   memoryReadSummary,
@@ -7,12 +9,11 @@ import {
   memoryWritePage,
   memoryWriteSummary,
   parseArgs,
-  str,
 } from "@evener/appwire-client";
 import { Markdown } from "../../../../widgets";
 import { defaultToolBody, registerToolRenderer, type ToolRenderProps } from "../toolRenderers";
 import {
-  EditFileBody,
+  EditDiffBody,
   HeadClippedOutputBody,
   TailFoldedOutputBody,
   TOOL_BODY_MAX_CHARS,
@@ -31,16 +32,14 @@ function MemoryWriteBody({ item, live }: ToolRenderProps) {
   return <WriteFileBody item={item} live={live} />;
 }
 
-// A memory_edit with neither old nor new string is a malformed call: mirror
-// the native evidence's fallback to the generic arguments/result display
-// rather than an empty diff. edit_file keeps its own always-render shape,
-// which predates this sharing.
+// A memory_edit with no valid edit operations is a malformed call: mirror the
+// native evidence's fallback to the generic arguments/result display rather
+// than an empty diff.
 function MemoryEditBody(props: ToolRenderProps) {
   const args = parseArgs(props.item.argumentsJSON);
-  const oldString = str(args, "old_string");
-  const newString = str(args, "new_string");
-  if (oldString === undefined && newString === undefined) return defaultToolBody(props);
-  return <EditFileBody {...props} />;
+  const ops = editOperationsOf(args);
+  if (ops === null) return defaultToolBody(props);
+  return <EditDiffBody path={filePathOf(args) ?? ""} ops={ops} />;
 }
 
 registerToolRenderer({

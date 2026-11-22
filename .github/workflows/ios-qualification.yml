@@ -75,6 +75,11 @@ jobs:
   simulator-build:
     runs-on: macos-26
     timeout-minutes: 120
+    # The DerivedData save below deletes the entry it supersedes first
+    # (#7025).
+    permissions:
+      contents: read
+      actions: write
     steps:
       - name: Set the run-owned output and DerivedData paths
         run: |
@@ -215,6 +220,39 @@ jobs:
           if [ -d "$IOS_DERIVED_DATA/Build" ] && [ -f "$QUALIFICATION_OUTPUT/xcodebuild-release.log" ]; then
             echo "IOS_DERIVED_DATA_READY=true" >> "$GITHUB_ENV"
           fi
+      # Two live generations do not fit the repository's 10GB cache budget: a
+      # main push that saved beside the previous generation pushed the total
+      # over it, and GitHub then evicted the least recently accessed entries,
+      # this tree among them, before any run could restore it (issue #7025).
+      # A restore only ever takes the newest entry of the prefix, so delete the
+      # predecessor before the save below. The delete never fails the lane:
+      # when the cache API will not answer, the save still runs and the next
+      # main push's ci.yml cache-prune collects the predecessor.
+      - name: Delete the DerivedData cache entry this save supersedes
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.deriveddata-restore.outputs.cache-hit != 'true' && env.IOS_DERIVED_DATA_READY == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREFIX: ${{ steps.deriveddata-cache.outputs.prefix }}
+          KEPT_KEY: ${{ steps.deriveddata-cache.outputs.prefix }}${{ github.sha }}
+        run: |
+          # A step whose key resolver did not run sets neither, and
+          # `gh cache list --key ""` lists every cache in the repository, Go
+          # and iOS alike. Deleting on that would empty the budget.
+          if [ -z "$PREFIX" ] || [ -z "$KEPT_KEY" ]; then
+            echo "::warning::No cache prefix or key to supersede; leaving the cache entries alone."
+            exit 0
+          fi
+          if ! listing="$(gh cache list --repo "$GITHUB_REPOSITORY" --ref refs/heads/main \
+            --key "$PREFIX" --limit 100 --json id,key --jq '.[] | "\(.id) \(.key)"')"; then
+            echo "::warning::Could not list the $PREFIX entries; cache-prune will delete the predecessor."
+            exit 0
+          fi
+          while read -r id key; do
+            if [ -n "$id" ] && [ "$key" != "$KEPT_KEY" ]; then
+              gh cache delete "$id" --repo "$GITHUB_REPOSITORY" \
+                || echo "Cache entry $id was not deleted; another main run may have deleted it first."
+            fi
+          done <<< "$listing"
       - name: Save the DerivedData build cache
         if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.deriveddata-restore.outputs.cache-hit != 'true' && env.IOS_DERIVED_DATA_READY == 'true' }}
         uses: actions/cache/save@v6
@@ -442,6 +480,11 @@ jobs:
       - name: Upload journey diagnostics
         # The prerequisite gate fails before the output path exists; without
         # this condition the paths below would glob from the filesystem root.
+        # Adoption is the only copier from JOURNEY_SIMULATOR into the uploaded
+        # JOURNEY_OUTPUT and never runs after a failed pre-boot, so glob the
+        # pre-boot directory too (#7237). The second search-path root moves the
+        # artifact root to RUNNER_TEMP, upload-artifact's least common ancestor,
+        # so entries are nested under their run directory.
         if: ${{ always() && env.JOURNEY_OUTPUT != '' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -453,5 +496,7 @@ jobs:
             ${{ env.JOURNEY_OUTPUT }}/ui/*.json
             ${{ env.JOURNEY_OUTPUT }}/ui/*.exit
             ${{ env.JOURNEY_OUTPUT }}/ui/ui.xcresult
+            ${{ env.JOURNEY_SIMULATOR }}/*.log
+            ${{ env.JOURNEY_SIMULATOR }}/*.json
           retention-days: 7
           if-no-files-found: warn

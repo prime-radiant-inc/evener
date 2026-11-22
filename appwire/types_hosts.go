@@ -504,15 +504,14 @@ type HostRestartResponse struct {
 }
 
 // HostOperationsParams is the evener/host/operations payload (deploy pipeline
-// 08b §10): every filter is optional, and empty params list the first
-// unfiltered cross-host page. `operationId` matches the client-supplied
+// 08b §10): every filter is optional, and empty params list the bounded
+// unfiltered cross-host window. `operationId` matches the client-supplied
 // clientOperationId, never the controller-assigned `id`; `generation` selects
 // the incarnation after client operation-ID reuse (omitted: the current
 // generation) and `incarnationId` narrows that selection to the exact
 // incarnation, required alongside `generation` whenever the caller names a
 // superseded pair; `id` is the detail filter for the controller-assigned
-// record id; `limit` defaults to 50 and caps at 200; `cursor` is the opaque
-// continuation the previous page returned.
+// record id; `limit` defaults to 50 and caps at 200.
 type HostOperationsParams struct {
 	Name          string         `json:"name,omitempty"`
 	OperationID   string         `json:"operationId,omitempty"`
@@ -521,39 +520,17 @@ type HostOperationsParams struct {
 	IncarnationID string         `json:"incarnationId,omitempty"`
 	ID            string         `json:"id,omitempty"`
 	Limit         int            `json:"limit,omitempty"`
-	Cursor        string         `json:"cursor,omitempty"`
 }
-
-// HostBoundary is one host's boundary in an operations page's hostBoundaries
-// map (deploy pipeline 08b §10): the {generation, incarnationId,
-// presenceEpoch} object. The map's value is the union of this object and the
-// literal "absent" string (HostBoundaryAbsent), carried as `unknown` in the
-// generated client — the generator has no value-union emission, so the
-// protocol-shapes test pins both arms' bytes instead.
-type HostBoundary struct {
-	Generation    uint64 `json:"generation"`
-	IncarnationID string `json:"incarnationId"`
-	PresenceEpoch uint64 `json:"presenceEpoch"`
-}
-
-// HostBoundaryAbsent is the literal string §10's hostBoundaries union encodes
-// a host with no records in the query as — never an omission.
-const HostBoundaryAbsent = "absent"
 
 // HostOperationsResponse is evener/host/operations' result (deploy pipeline
-// 08b §10): the bounded page of records plus the identity the client pages
-// under. `generation`/`incarnationId` are present exactly on host-pinned pages
-// (the single host named by the request) and absent on unfiltered cross-host
-// pages, where `hostBoundaries` is authoritative instead: one boundary per
-// every host in the query at cursor creation, the object triple or the literal
-// "absent" (HostBoundaryAbsent) for hosts with no records. `nextCursor` is
-// present exactly when the page listed at least one record.
+// 08b §10): the bounded listing of records plus the identity a host-pinned read
+// served. `generation`/`incarnationId` are present exactly on host-pinned
+// reads (the single host named by the request) and absent on unfiltered
+// cross-host reads.
 type HostOperationsResponse struct {
-	Operations     []OperationRecord `json:"operations"`
-	Generation     uint64            `json:"generation,omitempty"`
-	IncarnationID  string            `json:"incarnationId,omitempty"`
-	HostBoundaries map[string]any    `json:"hostBoundaries,omitempty"`
-	NextCursor     string            `json:"nextCursor,omitempty"`
+	Operations    []OperationRecord `json:"operations"`
+	Generation    uint64            `json:"generation,omitempty"`
+	IncarnationID string            `json:"incarnationId,omitempty"`
 }
 
 // OperationState is one durable operation record's lifecycle state (deploy

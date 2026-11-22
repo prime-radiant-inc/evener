@@ -6,6 +6,7 @@ import path from "node:path";
 import { Driver } from "../skillguard/run.mjs";
 import { evaluate, navigateTo, queryAccessibilityTree, REFUSED_BUTTON_SELECTOR } from "../browserGuardCdp.mjs";
 import { revealControlStep, revealReadyExpr } from "./revealControl.mjs";
+import { pressRowExpr } from "./pressRow.mjs";
 import { retainsNewerReadingPoint } from "./releaseRetained.mjs";
 import { attentionJourney } from "./attention.mjs";
 import { isHistoryReadMethod } from "../lib/historyMethods.mjs";
@@ -1835,7 +1836,10 @@ async function reconnect({ expectRefs } = {}) {
 async function drill(edge, level) {
   await wait(sidebarEntranceSettled, `sidebar entrance settled before drill ${level}`);
   const selector = await reveal(edge, '[data-testid="activity-sidebar"]');
-  await driver.click(selector);
+  // Press the row reveal returned, in one page turn (see pressRowExpr): a
+  // press measured separately can land on a neighbour once the Overview
+  // restores its retained scroll anchor (#7314).
+  await wait(pressRowExpr(selector), `drill ${level}'s row for ${edge.delegateId} is exposed and pressed`);
   await wait(`document.querySelector(${q(column(edge.childRef))}) !== null`, `selected column at level ${level}`);
   const track = drilledTrack(level);
   await wait(`${scopeRefs("cascade-column")} === ${q(JSON.stringify(track.columns))} && ${scopeRefs("cascade-spine")} === ${q(JSON.stringify(track.spines))}`, `exact column and spine sets ${level}`);

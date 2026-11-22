@@ -13,9 +13,9 @@
 // Disclosure (Jesse, 2026-11-01) whose closed summary is the placeholder
 // grammar - live: the pulsing Loader label "Thinking… · ~N tokens"; settled:
 // "Thought · ~N tokens"; a broken turn: the projector's neutral summary -
-// and whose body is the same Markdown trace the full grammar renders. The
-// chat preset alone keeps the plain placeholder with no disclosure
-// (conversation-only; see hidesThinkingTraces). Thinking disclosures key by
+// and whose body is the same Markdown trace the full grammar renders. Chat
+// omits these entries in the shared projector; compact live and settled rows
+// share one railed, UI-sized summary grammar. Thinking disclosures key by
 // the entry's displayKey, so a reader's choice survives the stream ->
 // recorded id change; their initial state is the "Thinking open by default"
 // switch (thinkingOpenByDefault), with an explicit reader choice always
@@ -59,13 +59,7 @@
 // Expanded-trace anatomy adapted from Beautiful UI's Thinking component (beautifului.dev, MIT © 2026 Shane Levine) — see LICENSES/beautiful-ui.txt.
 
 import type { ItemModel, TurnModel } from "@evener/appwire-client";
-import {
-  formatDurationMs,
-  formatTokenCount,
-  hidesThinkingTraces,
-  isLiveCurrentReasoning,
-  scopedDisclosureId,
-} from "@evener/appwire-client";
+import { formatDurationMs, formatTokenCount, isLiveCurrentReasoning, scopedDisclosureId } from "@evener/appwire-client";
 import { memo, type ReactNode } from "react";
 import {
   disclosureScopeForSession,
@@ -92,6 +86,8 @@ const CLASS = {
   summaryIcon: requireClass(styles.summaryIcon, "thinkblock.module.css", "summaryIcon"),
   liveBody: requireClass(styles.liveBody, "thinkblock.module.css", "liveBody"),
   summaryText: requireClass(styles.summaryText, "thinkblock.module.css", "summaryText"),
+  compactSummary: requireClass(styles.compactSummary, "thinkblock.module.css", "compactSummary"),
+  compactLiveSummary: requireClass(styles.compactLiveSummary, "thinkblock.module.css", "compactLiveSummary"),
   body: requireClass(styles.body, "thinkblock.module.css", "body"),
   trace: requireClass(styles.trace, "thinkblock.module.css", "trace"),
   step: requireClass(styles.step, "thinkblock.module.css", "step"),
@@ -115,6 +111,15 @@ const settledThoughtIcon = (
     <ToolIcon kind="thought" />
   </span>
 );
+
+function CompactThoughtSummary({ children }: { children: ReactNode }) {
+  return (
+    <span className={CLASS.compactSummary}>
+      {thoughtIcon}
+      <span className={CLASS.summaryText}>{children}</span>
+    </span>
+  );
+}
 
 const THOUGHT_PREVIEW_MAX_LENGTH = 120;
 
@@ -209,7 +214,7 @@ function thinkingPlaceholderLabel(paragraphs: string[]): string {
 // formatting is visible WHILE streaming instead of literal marker source.
 function LiveThoughtBody({ paragraphs }: { paragraphs: string[] }) {
   return (
-    <div className={CLASS.liveBody} data-testid="think-block-live-body">
+    <div className={CLASS.liveBody} data-testid="think-block-live-body" data-message-body="">
       {paragraphs.length > 0 && <Markdown source={paragraphs.join("\n\n")} live />}
     </div>
   );
@@ -218,7 +223,7 @@ function LiveThoughtBody({ paragraphs }: { paragraphs: string[] }) {
 // The settled body wrapper every thinking disclosure unfolds into.
 function ThoughtBody({ paragraphs }: { paragraphs: string[] }) {
   return (
-    <div className={CLASS.body}>
+    <div className={CLASS.body} data-message-body="">
       <TraceBody paragraphs={paragraphs} />
     </div>
   );
@@ -233,11 +238,13 @@ function ThoughtDisclosure({
   defaultOpen,
   summary,
   paragraphs,
+  compact = false,
 }: {
   disclosureKey: string;
   defaultOpen: boolean;
   summary: ReactNode;
   paragraphs: string[];
+  compact?: boolean;
 }) {
   return (
     <Disclosure
@@ -245,10 +252,14 @@ function ThoughtDisclosure({
       id={disclosureKey}
       defaultOpen={defaultOpen}
       summary={
-        <>
-          {settledThoughtIcon}
-          <span className={CLASS.summaryText}>{summary}</span>
-        </>
+        compact ? (
+          <CompactThoughtSummary>{summary}</CompactThoughtSummary>
+        ) : (
+          <>
+            {settledThoughtIcon}
+            <span className={CLASS.summaryText}>{summary}</span>
+          </>
+        )
       }
     >
       <ThoughtBody paragraphs={paragraphs} />
@@ -288,31 +299,6 @@ function TraceBody({ paragraphs }: { paragraphs: string[] }) {
   );
 }
 
-// The content-free counterpart to LiveThinkBlock: the chat preset's plain
-// placeholder (conversation-only - no disclosure to unfold at that level).
-// The brain glyph and body are deliberately absent; only the Loader and its
-// label render.
-function ContentFreeThinkBlock({ item }: { item: ItemModel }) {
-  const paragraphs = joinedReasoningParagraphs(item.reasoningSummaries);
-  const estimatedTokens = estimateThoughtTokens(paragraphs);
-  return (
-    <div
-      className={CLASS.block}
-      data-testid="think-block"
-      data-live="true"
-      data-content-free="true"
-      data-estimated-tokens={estimatedTokens > 0 ? estimatedTokens : undefined}
-    >
-      {/* rail: the grid IS this row's status glyph, so it seats in the icon
-       * rail the live and settled rows seat their bulb glyph in (the Loader
-       * variant owns the slot geometry and the gutter pull - see
-       * loader.module.css), keeping all three thinking states' icons on one
-       * column while their labels all start at the content edge. */}
-      <Loader label={thinkingPlaceholderLabel(paragraphs)} rail />
-    </div>
-  );
-}
-
 // The compact trace row (the reasoning content flag off): an unfoldable
 // Disclosure whose closed summary is the placeholder grammar - live: the
 // pulsing Loader label; settled: "Thought · ~N tokens" - and whose body is
@@ -347,9 +333,11 @@ function CompactThinkBlock({
           isLive ? (
             // The live summary is today's placeholder row, seated in the
             // icon rail by the Loader's own rail variant.
-            <Loader label={thinkingPlaceholderLabel(paragraphs)} rail />
+            <span className={CLASS.compactLiveSummary}>
+              <Loader label={thinkingPlaceholderLabel(paragraphs)} rail />
+            </span>
           ) : (
-            <>
+            <CompactThoughtSummary>
               Thought
               {estimatedTokens > 0 && (
                 <>
@@ -357,7 +345,7 @@ function CompactThinkBlock({
                   <span data-slot="tokens">~{formatTokenCount(estimatedTokens)} tokens</span>
                 </>
               )}
-            </>
+            </CompactThoughtSummary>
           )
         }
       >
@@ -393,19 +381,25 @@ function RedactedThinkBlock({
   if (paragraphs.length === 0) {
     return (
       <div className={CLASS.block} data-testid="think-block" data-redacted="true">
-        <span className={CLASS.label} data-testid="think-block-redacted">
-          {thoughtIcon}
-          {summary}
-        </span>
+        <CompactThoughtSummary>
+          <span data-testid="think-block-redacted" data-message-body="">
+            {summary}
+          </span>
+        </CompactThoughtSummary>
       </div>
     );
   }
   return (
     <div className={CLASS.block} data-testid="think-block" data-redacted="true">
       <ThoughtDisclosure
+        compact
         disclosureKey={disclosureKey}
         defaultOpen={defaultOpen}
-        summary={<span data-testid="think-block-redacted">{summary}</span>}
+        summary={
+          <span data-testid="think-block-redacted" data-message-body="">
+            {summary}
+          </span>
+        }
         paragraphs={paragraphs}
       />
     </div>
@@ -480,10 +474,9 @@ export const ThinkBlock = memo(function ThinkBlock({
   const open = isDisclosureOpen(disclosureKey, disclosureFallback);
   // The compact family: the reasoning content flag is off. Every thinking row
   // is an unfoldable disclosure (collapsed by default at non-full levels, open
-  // when "Thinking open by default" is on), except at the chat preset, which
-  // stays conversation-only with the plain placeholder.
+  // when "Thinking open by default" is on). Chat filters these entries in the
+  // shared projector.
   if (contentFree) {
-    if (hidesThinkingTraces(config.content)) return <ContentFreeThinkBlock item={item} />;
     const isLive = effectiveCompactLive({ item, turn, live, sessionRef, displayKey, contentFree, contentFreeLive });
     const paragraphs = joinedReasoningParagraphs(item.reasoningSummaries);
     // Empty settled thoughts render nothing (the full grammar's removal rule);

@@ -386,6 +386,9 @@ function decisionFor(
 
   if (item.type === "reasoning") {
     if (vector.reasoning) return "item";
+    // Thinking begins at Intent. Chat shows no live, settled, or critical
+    // reasoning row; the turn's own failure presentation remains independent.
+    if (hidesThinkingTraces(config.content)) return "hidden";
     // With reasoning off, a live current thought becomes a compact trace
     // row: a collapsed, reader-unfoldable disclosure whose closed label is
     // the pulsing "Thinking…" placeholder grammar. Only an in-progress turn
@@ -393,11 +396,10 @@ function decisionFor(
     // any more.
     if (isLiveCurrentReasoning(item, turn)) return "thinking";
     if (hasFailureStatus(item) || isTerminalTurn(turn)) return "critical";
-    // A settled healthy thought stays as a compact trace row at every level
-    // but the chat preset, which stays conversation-only (see
-    // hidesThinkingTraces). The renderer derives live vs settled itself; a
-    // stale inProgress item on a completed turn renders settled.
-    return hidesThinkingTraces(config.content) ? "hidden" : "thinking";
+    // A settled healthy thought stays as a compact trace row. The renderer
+    // derives live vs settled itself; a stale inProgress item on a completed
+    // turn renders settled.
+    return "thinking";
   }
 
   if (item.type === "systemMessage") return systemDecision(item, config, vector);
@@ -483,6 +485,11 @@ function terminalFallbackEntry(
   // informational-notice trade above keeps its narrower shape, trading only
   // where the error end cap renders.
   if (isDaemonSteer(sourceItem) && hidesDaemonSteering(config.content)) {
+    return undefined;
+  }
+  // Chat's hidden reasoning never returns as a terminal fallback. The source
+  // turn still owns and renders any genuine turn failure.
+  if (redactsReasoning(sourceItem, vector) && hidesThinkingTraces(config.content)) {
     return undefined;
   }
   // A hidden snapshot cannot explain a failure and must not defeat filtering.

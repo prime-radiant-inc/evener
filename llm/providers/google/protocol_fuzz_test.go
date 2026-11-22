@@ -8,24 +8,11 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-// FuzzGoogleProtocolBuildBody drives the Resolved-driven generateContent
-// request builder (Protocol.BuildBody), the path Complete/Stream use to turn
-// an llm.Request into Gemini wire JSON. It reuses buildFuzzRequest
-// (requestbuild_fuzz_test.go) for the request bytes and additionally flips,
-// via capSel, the row-level caps BuildBody and toGeminiContents branch on:
-// MultimodalToolResults, WebSearch, and Reasoning.
-//
-// Oracles:
-//   - BuildBody never panics (floor);
-//   - when the build succeeds, the result always re-marshals to valid JSON;
-//   - the body never carries a "model" key (the model rides in the URL);
-//   - "tools" never carries both google_search and functionDeclarations.
 func FuzzGoogleProtocolBuildBody(f *testing.F) {
 	f.Add("gemini-test", "be terse", "hello", []byte(`{"city":"paris"}`), []byte(`{"type":"object","properties":{"x":{"type":"string"}}}`), byte(0), byte(0))
-	f.Add("gemini-2.5-pro", "", "", []byte(`{}`), []byte(`{"type":["string","null"]}`), byte(3), byte(255))
+	f.Add("gemini-3.8-flash", "", "", []byte(`{}`), []byte(`{"type":["string","null"]}`), byte(3), byte(255))
 	f.Add("m", "sys", "u", []byte(`not json`), []byte(`{"$ref":"#/x"}`), byte(11), byte(2))
 	f.Add("", "s", "u", []byte(``), []byte(`{"anyOf":[1,2]}`), byte(20), byte(4))
-	// sel=2 selects tool_choice mode "none" (functionCallingConfig mode NONE).
 	f.Add("gemini-test", "be terse", "hello", []byte(`{"city":"paris"}`), []byte(`{"type":"object","properties":{"x":{"type":"string"}}}`), byte(2), byte(0))
 
 	p := &Protocol{}
@@ -36,11 +23,16 @@ func FuzzGoogleProtocolBuildBody(f *testing.F) {
 			c.MultimodalToolResults = new(capSel&1 == 1)
 			c.WebSearch = new(capSel&2 == 2)
 			c.Reasoning = new(capSel&4 == 4)
+			c.CombinedSearchAndFunctions = new(capSel&8 == 8)
 		})
+		if capSel&16 == 16 {
+			req.Store = new(true)
+			res.Caps.Fields["previous_interaction_id"] = true
+		}
 
 		body, err := p.BuildBody(req, res)
 		if err != nil {
-			return // a structured build error (e.g. unsupported tool_choice, tool-result image without the cap) is acceptable.
+			return
 		}
 
 		b, err := json.Marshal(body)
@@ -51,35 +43,30 @@ func FuzzGoogleProtocolBuildBody(f *testing.F) {
 		if err := json.Unmarshal(b, &round); err != nil {
 			t.Fatalf("request body is not valid JSON: %v\njson=%s", err, b)
 		}
-		if _, has := round["model"]; has {
-			t.Fatalf("request body must never carry a model key: json=%s", b)
+		if round["model"] != res.WireID {
+			t.Fatalf("request body must carry model=%q: json=%s", res.WireID, b)
 		}
-		if tools, ok := round["tools"].([]any); ok {
+		if tools, ok := round["tools"].([]any); ok && !registry.BoolValue(res.Caps.CombinedSearchAndFunctions) {
 			hasSearch, hasFuncs := false, false
 			for _, toolAny := range tools {
 				tool, ok := toolAny.(map[string]any)
 				if !ok {
 					continue
 				}
-				if _, ok := tool["google_search"]; ok {
+				switch tool["type"] {
+				case "google_search":
 					hasSearch = true
-				}
-				if _, ok := tool["functionDeclarations"]; ok {
+				case "function":
 					hasFuncs = true
 				}
 			}
 			if hasSearch && hasFuncs {
-				t.Fatalf("tools must never carry both google_search and functionDeclarations: json=%s", b)
+				t.Fatalf("tools must not combine google_search and function when CombinedSearchAndFunctions=false: json=%s", b)
 			}
 		}
 	})
 }
 
-// buildFuzzRequest assembles a moderately rich llm.Request from fuzz primitives,
-// routing the fuzzer's bytes into tool-call argument JSON, tool parameter
-// schemas, and JSON-schema response formats — the spots the Gemini request
-// translation (toGeminiContents + buildRequestBody + sanitizeGeminiSchema) has
-// to survive.
 func buildFuzzRequest(model, system, user string, toolArgs, toolParams []byte, sel byte) llm.Request {
 	var params map[string]any
 	_ = json.Unmarshal(toolParams, &params)

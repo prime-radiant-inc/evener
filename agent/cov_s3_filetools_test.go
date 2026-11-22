@@ -25,7 +25,7 @@ func TestS3Cov_FileTools_ReadWriteEdit(t *testing.T) {
 	}
 
 	// edit_file replaces text after a tracked read (no warning expected).
-	res = s3cov_exec(t, s, "edit_file", `{"file_path":"note.txt","old_string":"hello","new_string":"goodbye"}`)
+	res = s3cov_exec(t, s, "edit_file", `{"file_path":"note.txt","edits":[{"old_string":"hello","new_string":"goodbye"}]}`)
 	if res.IsError {
 		t.Fatalf("edit_file error: %s", res.Output)
 	}
