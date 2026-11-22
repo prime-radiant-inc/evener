@@ -103,12 +103,27 @@
     align-items: center;
   }
 
+  /* Keep the leading utilities and trailing verbs in their expanded slots.
+   * The field yields between them instead of pushing Attach across the card. */
+  .card[data-folded="true"] .controls {
+    display: contents;
+  }
+
+  .card[data-folded="true"] .controls > :first-child {
+    order: 0;
+  }
+
   /* Folded: the field and the control row become one line. The control row
    * keeps its natural width and the field yields, so a resting composer
    * shows its placeholder beside the model, effort, menu and verbs instead
    * of above them. */
   .card[data-folded="true"] .field {
     flex: 1 1 10ch;
+    order: 1;
+  }
+
+  .card[data-folded="true"] .actions {
+    order: 2;
   }
 }
 
@@ -117,7 +132,7 @@
 }
 
 /* A caller that knows its control row is compact can use the same one-line
- * shape below the normal width threshold (the phone's menu-only resting row). */
+ * shape below the normal width threshold (the phone's Attach/menu resting row). */
 .card[data-folded="true"][data-folded-compact="true"] {
   flex-direction: row;
   align-items: center;
@@ -125,6 +140,19 @@
 
 .card[data-folded="true"][data-folded-compact="true"] .field {
   flex: 1 1 10ch;
+  order: 1;
+}
+
+.card[data-folded="true"][data-folded-compact="true"] .controls {
+  display: contents;
+}
+
+.card[data-folded="true"][data-folded-compact="true"] .controls > :first-child {
+  order: 0;
+}
+
+.card[data-folded="true"][data-folded-compact="true"] .actions {
+  order: 2;
 }
 
 /* The row never wraps. It once did, below 399px, for a three-verb cluster

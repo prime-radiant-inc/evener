@@ -55,10 +55,9 @@
   min-width: 0;
 }
 
-/* The phone's activity counts sit on a glance line below the composer card,
- * where the desktop status bar puts them: not a control in the writing row.
- * The line is the pane's bottom edge, and the chips are already the tap
- * floor, so it adds no height of its own. */
+/* The phone's activity counts sit on a glance line above the composer card,
+ * not as controls in the writing row. Appearing there leaves the card and its
+ * persistent controls stationary. The chips keep the tap floor. */
 .activityRow {
   display: flex;
   align-items: center;
@@ -213,7 +212,8 @@
  * this matching inline-size floor stays local to Send instead of widening
  * every xs Button consumer. */
 @media (max-width: 899px) {
-  .composer :global(button):has(> .submitLabel) {
+  .composer :global(button):has(> .submitLabel),
+  .composer :global(button):has(> .stopLabel) {
     min-width: var(--tap-min);
   }
 }
@@ -254,6 +254,7 @@
 .leading[data-folded="true"]:not([data-compact="true"]) {
   container-type: inline-size;
   contain-intrinsic-inline-size: 356px;
+  flex: 0 1 auto;
   flex-wrap: nowrap;
 }
 

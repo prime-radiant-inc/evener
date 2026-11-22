@@ -83,6 +83,9 @@ except where a line says so itself.
 - At and below the 559px compact pane boundary, Send and Stop hide their words
   and keep their glyphs and accessible names. Stop uses a stop-sign outline in
   the existing dangerQuiet variant.
+- Attach, the session menu, and Send/Stop keep their positions as content
+  expands the card. Steer enters to the primary action's left. On phones the
+  returning activity line sits above the card rather than pushing the controls up.
 - A Send-to-Stop swap shows a distinct Stop button immediately, disabled for
   500 ms to reject accidental double-taps. A Stop present when the composer
   opens needs no delay. The delay expires automatically and cannot outlive

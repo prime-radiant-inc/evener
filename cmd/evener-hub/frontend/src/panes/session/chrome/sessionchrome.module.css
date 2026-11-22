@@ -76,6 +76,12 @@
   flex: none;
 }
 
+/* In the composer the menu is a persistent utility beside Attach. Keep it
+ * before the status facts so content arriving does not move it. */
+.inline .right {
+  order: -1;
+}
+
 /* Every trailing trigger lives inside its presentation's final overflow
  * boundary. An outside outline would be cut off when the actions menu sits
  * flush with that boundary, so the complete trailing group uses the same inset

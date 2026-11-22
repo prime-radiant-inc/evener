@@ -22,7 +22,7 @@ import { resetPrefsStoreForTests } from "../../../stores/prefs";
 import { answerActivityRead } from "../../../stores/sessionActivityTestUtils";
 import { holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../stores/threads";
-import { readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
+import { mediaBlock, readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as FULL_CAPABILITIES } from "../../../threadTestUtils";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
@@ -137,7 +137,7 @@ test.each([
       expect(editor.style.minHeight).toBe("2lh");
       expect(card.hasAttribute("data-folded")).toBe(false);
       expect(card.hasAttribute("data-folded-compact")).toBe(false);
-      expect(order()).toEqual(inlineSteer ? ["composer-submit", "composer-steer"] : ["composer-submit"]);
+      expect(order()).toEqual(inlineSteer ? ["composer-steer", "composer-submit"] : ["composer-submit"]);
       if (compact) expect(screen.getByTestId("model-switch-trigger")).toBeTruthy();
 
       act(() => editor.blur());
@@ -582,6 +582,9 @@ test("the Send and Stop words collapse to glyphs below the compact pane threshol
   const css = readModuleCss(import.meta.url, "composer.module.css");
   expect(topRuleBlock(css, ".composer")).toMatch(/container-type:\s*inline-size/);
   expect(css).toMatch(/@container \(max-width: 559px\)[\s\S]*?\.submitLabel,\s*\.stopLabel\s*\{[^}]*display:\s*none/);
+  expect(mediaBlock(css, "max-width: 899px")).toMatch(
+    /\.composer\s+:global\(button\):has\(> \.submitLabel\),\s*\.composer\s+:global\(button\):has\(> \.stopLabel\)\s*\{[^}]*min-width:\s*var\(--tap-min\)/,
+  );
 });
 
 // The model and effort are the session's facts about the next turn, so they

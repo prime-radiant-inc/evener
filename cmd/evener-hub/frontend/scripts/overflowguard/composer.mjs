@@ -217,9 +217,28 @@ export async function measureComposerPlacement(endpoint, url, { viewportWidth, c
         contentWidth: measurement.currentWork.verbCluster.containerWidth,
         inline: measurement.currentWork.controls.filter((c) => c.present).map((c) => c.testId),
         menu: measurement.menuVerbs,
+        controlGeometry: measurement.currentWork.controlGeometry,
+        menuGeometry: measurement.trigger,
         horizontalScrollers: measurement.scrollers.length,
       });
     }
+    const [empty, drafted] = results;
+    const stablePoint = (key, emptyPoint, draftedPoint, properties = ["left", "right", "top", "bottom"]) => {
+      for (const property of properties) {
+        assert.ok(
+          Math.abs(emptyPoint[property] - draftedPoint[property]) <= 1,
+          `${key} keeps its ${property} through expansion: ${emptyPoint[property]} -> ${draftedPoint[property]}`,
+        );
+      }
+    };
+    stablePoint("Attach", empty.controlGeometry["composer-attach"], drafted.controlGeometry["composer-attach"]);
+    stablePoint("session menu", empty.menuGeometry, drafted.menuGeometry);
+    stablePoint(
+      "primary action",
+      empty.controlGeometry["composer-stop"],
+      drafted.controlGeometry["composer-submit"],
+      ["right", "top", "bottom"],
+    );
     return {
       viewportWidth,
       paneWidth: await evaluate(send, "document.getElementById('oh-pane').getBoundingClientRect().width"),

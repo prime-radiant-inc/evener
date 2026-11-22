@@ -1877,6 +1877,13 @@ async function measure() {
       ),
       controlsDoNotOverlap,
       controls: controls.map(({ box: _box, ...control }) => control),
+      controlGeometry: Object.fromEntries(
+        controls.flatMap((control) => {
+          const box = control.box;
+          if (!control.present || !box) return [];
+          return [[control.testId, { left: box.left, right: box.right, top: box.top, bottom: box.bottom }]];
+        }),
+      ),
       // Observed primary and secondary controls beside the status row.
       verbCluster: (() => {
         const verbs = controls.filter(

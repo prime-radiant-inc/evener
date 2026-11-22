@@ -25,6 +25,7 @@ import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/fl
 import type { SessionPaneParams } from "./Session";
 import "./index";
 import { CommittedSession as Session } from "./testing/CommittedSession";
+import { replaceEditorText } from "./testing/editor";
 import { installMobileViewport } from "./testing/mobileViewport";
 import { installTranscriptGeometry } from "./transcript/transcriptReadingGeometryTestUtils";
 import { resetTranscriptPagingForTests } from "./transcript/useTranscript";
@@ -924,10 +925,11 @@ test("the mobile stack host offers attention navigation over its focused session
 });
 
 // The phone layout keeps one bottom surface: the composer's own control
-// row. The pane's status strip is gone there - its activity chips moved
-// into that row - so a landscape phone spends its height on content, and a
-// resting composer sheds its chips and attach instead of showing them.
-test("a mobile session pane keeps its activity chips on the composer's below-card line", async ({ onTestFinished }) => {
+// row. The pane's status strip is gone there, and activity chips use their
+// own line above the card when content expands it.
+test("a mobile session pane gives activity chips their own line outside the composer form", async ({
+  onTestFinished,
+}) => {
   vi.mocked(ComposerModule.Composer).mockRestore();
   onTestFinished(() => {
     vi.restoreAllMocks();
@@ -955,30 +957,15 @@ test("a mobile session pane keeps its activity chips on the composer's below-car
   await screen.findByText("attention content");
   await flushPendingTurnsProjectionForTests();
   act(() => editor.focus());
+  act(() => replaceEditorText(editor, "draft"));
 
   // No footer strip under the composer on a phone.
   expect(screen.queryByTestId("statusbar")).toBeNull();
 
-  // Focus engages the control row deterministically: the session open
-  // autofocuses this editor, but that races this read, so engage it here -
-  // attach and the status chrome ride inside the card. The activity line
-  // stays below the card, outside the form.
+  // Content engages the full control row. The activity line remains outside
+  // the form rather than becoming another editor control.
   const form = screen.getByTestId("composer-form");
   expect(form.querySelector('[data-testid="composer-attach"]')).toBeTruthy();
   expect(form.querySelector("[data-activity-tab]")).toBeNull();
   expect(screen.getByTestId("composer-activity-line").querySelector("[data-activity-tab]")).toBeTruthy();
-
-  // Blurring the resting editor rests the row again: no attach and no
-  // activity line, which returns with the expanded card. Send stays (the
-  // actions slot never sheds), so the resting card remains a usable one-line
-  // composer. A real blur() moves focus off the editor, which the engagement
-  // reconcile reads; a synthetic blur event alone would leave activeElement
-  // on the editor.
-  act(() => {
-    editor.blur();
-  });
-  await waitFor(() => expect(form.querySelector('[data-testid="composer-attach"]')).toBeNull());
-  expect(form.querySelector("[data-activity-tab]")).toBeNull();
-  expect(screen.queryByTestId("composer-activity-line")).toBeNull();
-  expect(form.querySelector('[data-testid="composer-submit"]')).toBeTruthy();
 });

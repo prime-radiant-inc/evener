@@ -129,10 +129,9 @@ losing the conversation that made the evidence relevant.
   At the narrow shell breakpoint (899px and below), phones keep one bottom surface:
   the pane renders no separate footer strip below the
   composer, so the composer's own control row carries Attach, the model and reasoning
-  chrome line, and Send or Stop. The activity counts sit on a quiet line below the card,
-  where the desktop status bar puts them, and that line is the pane's bottom edge: on
-  the phone the chips fill the home-indicator band themselves, so the dock reserves no
-  space below them. The composer dock owns the home-indicator band, and that band is one
+  chrome line, and Send or Stop. The activity counts sit on a quiet line above the card,
+  so their arrival never moves the card's persistent controls. The card remains the
+  lowest interactive surface. The composer dock owns the home-indicator band, and that band is one
   token: `--dock-clearance` in `tokens.css` (`max(0px, env(safe-area-inset-bottom) -
   var(--keyboard-inset, 0px))`). Every dock reads that one value, and it yields when the
   on-screen keyboard covers the band. The working-directory strip follows that shell breakpoint:
@@ -141,8 +140,10 @@ losing the conversation that made the evidence relevant.
   shell retains the separate status footer. A phone chip shows its
   glyph and a single active count (settled for Tasks); its category name and the full
   active/total fraction stay in its accessible name and tooltip. An empty composer
-  with room folds to one row: the placeholder beside the model and effort, with Attach,
-  the session menu and Send or Stop at the right. Focus, including session-opening
+  with room folds to one row: Attach and the session menu keep their leading utility
+  slots, the placeholder yields between them and Send or Stop at the right, and Steer
+  enters to the primary action's left. These positions do not move when content arrives.
+  Focus, including session-opening
   autofocus, never grows the empty card; typing or another content contribution expands
   it on the spatial recipe (§5). Clearing while focused keeps that expanded shape stable,
   and leaving the empty editor folds it again. The space

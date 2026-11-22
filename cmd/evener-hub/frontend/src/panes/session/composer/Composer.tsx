@@ -906,6 +906,7 @@ function ComposerWithSubmission({
   }, [hasContent, reconcileContentEngagement]);
   // Presence mirrors the row's capability gate, with Steer additionally
   // waiting for content at the narrow menu placement just as it does inline.
+  const menuSteer = narrow && hasContent;
   const turnVerbs = useMemo<SessionMenuTurnVerbs>(() => {
     if (!model) return NO_TURN_VERBS;
     const available = controlsFor(model);
@@ -918,7 +919,7 @@ function ComposerWithSubmission({
         disabled: actionPending,
       };
     }
-    if (available.steer && narrow && hasContent) {
+    if (available.steer && menuSteer) {
       items.steer = {
         onSelect: () => steerClickRef.current(),
         // A refused draft cannot be steered either. The press names its reason
@@ -927,7 +928,7 @@ function ComposerWithSubmission({
       };
     }
     return items;
-  }, [narrow, model, actionPending, hasUnbackedImage, hasContent]);
+  }, [menuSteer, model, actionPending, hasUnbackedImage]);
   const inlineStop = !!model && controlsFor(model).stop && !hasContent;
   const inlineStopReady = useInlineStopReady(ref, !model || askPending ? null : inlineStop ? "stop" : "send");
 
@@ -1022,11 +1023,9 @@ function ComposerWithSubmission({
   // slot never sheds, so Stop stays reachable while a turn runs.
   const controlsCollapsed = (isMobile || landscapePhoneLayout) && resting;
 
-  // The phone's activity counts are a glance line below the card. A folded
-  // resting card is the phone's smallest surface, so it shows no line; the
-  // counts return with the expanded card. The composer publishes the line's
-  // presence so the pane footer can drop the home-indicator band the chips
-  // already fill.
+  // The phone's activity counts are a glance line above the card. A folded
+  // resting card is the phone's smallest surface, so it shows no line; content
+  // returns the counts above the expanded card without moving its controls.
   const showActivityLine = isMobile && !ownsActivityCounts && !folded && (!ended || showFollowUpCard);
 
   function handleTextChange(value: SkillEditorValue, caret: number): void {
@@ -1403,6 +1402,13 @@ function ComposerWithSubmission({
           This will discard the current composer contents.
         </ConfirmDialog>
       )}
+      {/* Content returns the phone's activity counts ABOVE the card, so the
+          card and its persistent controls never move upward when it expands. */}
+      {showActivityLine && (
+        <div className={CLASS.activityRow} data-testid="composer-activity-line">
+          <ActivityChips sessionRef={ref} paneId={paneId} />
+        </div>
+      )}
       {(!ended || showFollowUpCard) && (
         // data-composer is the hold-hints overlay's anchor (shell/holdhints):
         // the composer.focus chip positions itself above this wrapper. The
@@ -1497,6 +1503,37 @@ function ComposerWithSubmission({
                 leading={leadingControls}
                 actions={
                   <>
+                    {/* Steer enters to the LEFT of Send/Stop, keeping the
+                        primary action's right edge fixed as content arrives. */}
+                    {showSteer && !narrow && !folded && (
+                      <Tooltip
+                        label={steerTooltipLabel({
+                          recoveryFenced: steerRecoveryFenced,
+                          unbackedImage: hasUnbackedImage,
+                          enterToSend,
+                        })}
+                      >
+                        <Button
+                          variant="primary"
+                          size="xs"
+                          type="button"
+                          data-testid="composer-steer"
+                          onClick={handleSteerClick}
+                          // Same as Stop above: busy + the steer capability
+                          // already gate this control's existence. The recovery
+                          // fence gates the press the same way the Send button's
+                          // does, and the tooltip says why (kata 2f41) instead of
+                          // describing an action the fence refuses. The fence is
+                          // an aria-disabled refusal, not the native attribute, so
+                          // the button keeps focus and hover and that reason
+                          // stays reachable.
+                          aria-disabled={steerRecoveryFenced || hasUnbackedImage || undefined}
+                          disabled={actionPending}
+                        >
+                          Steer
+                        </Button>
+                      </Tooltip>
+                    )}
                     {/* Distinct keys replace the actual button, so a press
                         begun on Send cannot finish on Stop. */}
                     {inlineStop ? (
@@ -1558,52 +1595,12 @@ function ComposerWithSubmission({
                         </Button>
                       </Tooltip>
                     )}
-                    {/* Steer rides in the menu when the row cannot fit it. */}
-                    {showSteer && !narrow && !folded && (
-                      <Tooltip
-                        label={steerTooltipLabel({
-                          recoveryFenced: steerRecoveryFenced,
-                          unbackedImage: hasUnbackedImage,
-                          enterToSend,
-                        })}
-                      >
-                        <Button
-                          variant="primary"
-                          size="xs"
-                          type="button"
-                          data-testid="composer-steer"
-                          onClick={handleSteerClick}
-                          // Same as Stop above: busy + the steer capability
-                          // already gate this control's existence. The recovery
-                          // fence gates the press the same way the Send button's
-                          // does, and the tooltip says why (kata 2f41) instead of
-                          // describing an action the fence refuses. The fence is
-                          // an aria-disabled refusal, not the native attribute, so
-                          // the button keeps focus and hover and that reason
-                          // stays reachable.
-                          aria-disabled={steerRecoveryFenced || hasUnbackedImage || undefined}
-                          disabled={actionPending}
-                        >
-                          Steer
-                        </Button>
-                      </Tooltip>
-                    )}
                   </>
                 }
               />
             </Dropzone>
             <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={handleFilePickerChange} />
           </form>
-        </div>
-      )}
-      {/* The phone's activity counts are a glance line below the card, the
-          same place the desktop status bar puts them. They are not a control
-          in the writing row. A folded resting card is the phone's smallest
-          surface, so it shows no line: the counts come back with the expanded
-          card, which is also when the transcript can spare the height. */}
-      {showActivityLine && (
-        <div className={CLASS.activityRow} data-testid="composer-activity-line">
-          <ActivityChips sessionRef={ref} paneId={paneId} />
         </div>
       )}
     </div>

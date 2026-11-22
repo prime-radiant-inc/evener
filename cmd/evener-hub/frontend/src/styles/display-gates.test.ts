@@ -250,7 +250,7 @@ test("the folded-run summary meets the phone tap floor", () => {
 });
 
 // A phone mounts no status bar: the session's activity counts sit on their
-// own line below the composer card, where the desktop strip puts them, and
+// own line above the composer card, and
 // the writing row carries only its controls. The line stays a flex strip at
 // the phone tap floor and drops the category names rather than scrolling
 // sideways: four named chips do not fit a card line, so each chip keeps its
