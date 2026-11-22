@@ -295,3 +295,79 @@ func TestReadFilePDFPagesAndRepeatTracking(t *testing.T) {
 		}
 	})
 }
+
+// TestReadFilePDFPagesViaSessionExecTool proves the advertised read_file schema
+// accepts pages and that Session.execTool performs PDF slicing and range-aware
+// repeat tracking end to end. Task 4's direct execFileReadWith tests bypassed
+// the advertised schema: pages was not a declared property, so argument repair
+// dropped it before dispatch and the handler saw an unpaged read.
+func TestReadFilePDFPagesViaSessionExecTool(t *testing.T) {
+	raw15, _ := readFileMediaPDF(t, 15)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "big.pdf"), raw15, 0o644); err != nil {
+		t.Fatalf("write 15-page PDF: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("1\tplain text\n"), 0o644); err != nil {
+		t.Fatalf("write text fixture: %v", err)
+	}
+	sess := newSession(t, withDir(dir))
+
+	readPDF := func(id, pages string) tool.ExecResult {
+		t.Helper()
+		args, err := json.Marshal(map[string]any{"file_path": "big.pdf", "pages": pages})
+		if err != nil {
+			t.Fatalf("marshal args: %v", err)
+		}
+		res := sess.execTool(context.Background(), llm.ToolCallData{
+			ID: id, Name: "read_file", Arguments: args, Type: "function",
+		}, "")
+		if res.IsError {
+			t.Fatalf("read_file(pages %q) failed through Session.execTool: %q", pages, res.Output)
+		}
+		if len(res.ImageData) == 0 {
+			t.Fatalf("read_file(pages %q) returned no PDF bytes", pages)
+		}
+		return res
+	}
+
+	first := readPDF("read-pdf-1-3", "1-3")
+	if first.ReadPages != "1-3" {
+		t.Fatalf("read pages 1-3 ReadPages = %q, want %q", first.ReadPages, "1-3")
+	}
+	if got := readFilePDFPageCount(t, first.ImageData); got != 3 {
+		t.Fatalf("read pages 1-3 returned a %d-page PDF, want 3", got)
+	}
+	if first.UnchangedSinceTurn != nil {
+		t.Fatal("first read of pages 1-3 was marked unchanged")
+	}
+
+	second := readPDF("read-pdf-4-6", "4-6")
+	if second.ReadPages != "4-6" {
+		t.Fatalf("read pages 4-6 ReadPages = %q, want %q", second.ReadPages, "4-6")
+	}
+	if got := readFilePDFPageCount(t, second.ImageData); got != 3 {
+		t.Fatalf("read pages 4-6 returned a %d-page PDF, want 3", got)
+	}
+	if second.UnchangedSinceTurn != nil {
+		t.Fatal("pages 4-6 was marked unchanged after pages 1-3 of the same file; want distinct ranges distinguished")
+	}
+
+	again := readPDF("read-pdf-1-3-repeat", "1-3")
+	if again.UnchangedSinceTurn == nil {
+		t.Fatal("re-reading pages 1-3 through Session.execTool was not detected as an unchanged repeat")
+	}
+	if len(again.ImageData) == 0 {
+		t.Fatal("repeat PDF read dropped the PDF bytes; content must always be returned")
+	}
+
+	args, err := json.Marshal(map[string]any{"file_path": "notes.txt", "pages": "1-2"})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	res := sess.execTool(context.Background(), llm.ToolCallData{
+		ID: "read-pdf-pages-on-text", Name: "read_file", Arguments: args, Type: "function",
+	}, "")
+	if !res.IsError {
+		t.Fatalf("pages on notes.txt succeeded with %d PDF bytes; want a clean error", len(res.ImageData))
+	}
+}
