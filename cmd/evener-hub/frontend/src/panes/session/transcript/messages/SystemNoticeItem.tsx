@@ -36,6 +36,7 @@ import {
   scopedDisclosureId,
   systemEventWords,
 } from "@evener/appwire-client";
+import type { ReactNode } from "react";
 import {
   disclosureScopeForSession,
   expandDetailsByDefault,
@@ -80,14 +81,10 @@ const CLASS = {
 
 // The quiet one-liner itself. data-fallback marks a line whose event said
 // nothing, so it reads the category label.
-function NoticeLine({ item }: { item: ItemModel }) {
+function NoticeLine({ text, fallback }: { text: ReactNode; fallback?: boolean }) {
   return (
-    <div
-      className={CLASS.line}
-      data-testid="system-notice-line"
-      data-fallback={systemEventWords(item).text ? undefined : "true"}
-    >
-      {noticeText(item)}
+    <div className={CLASS.line} data-testid="system-notice-line" data-fallback={fallback ? "true" : undefined}>
+      {text}
     </div>
   );
 }
@@ -168,14 +165,10 @@ function ScaffoldDisclosure({ item, sessionRef }: { item: ItemModel; sessionRef?
 // something rather than nothing.
 function RoundTimingsLine({ item }: { item: ItemModel }) {
   const summary = roundTimingsSummary(item.raw);
-  if (!summary) return <NoticeLine item={item} />;
+  if (!summary) return <NoticeLine text={noticeText(item)} fallback={!systemEventWords(item).text} />;
   if (!summary.dominant) {
     // Every tracked phase rounded under 1ms - nothing to break down further.
-    return (
-      <div className={CLASS.line} data-testid="system-notice-line">
-        {roundTimingsHeadline(summary)}
-      </div>
-    );
+    return <NoticeLine text={roundTimingsHeadline(summary)} />;
   }
   const headline = roundTimingsHeadline(summary);
   const breakdown = [
@@ -268,7 +261,7 @@ function SystemLine({
   if (isScaffoldItem(item)) return <ScaffoldDisclosure item={item} sessionRef={sessionRef} />;
   if (isRoundTimingsItem(item)) return <RoundTimingsLine item={item} />;
   if (item.eventKind === APPROVAL_DECISION_EVENT_KIND) return <ApprovalDecisionLine item={item} />;
-  return <NoticeLine item={item} />;
+  return <NoticeLine text={noticeText(item)} fallback={!systemEventWords(item).text} />;
 }
 
 function SystemGroup({
