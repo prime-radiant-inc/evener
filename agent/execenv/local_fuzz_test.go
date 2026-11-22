@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -387,8 +388,8 @@ func verifyFuzzedReferenceWindow(t *testing.T, content string, offsetLine, limit
 	if tailMode && !explicitLimit {
 		sum := 0
 		idx := len(cand)
-		for i := len(cand) - 1; i >= 0; i-- {
-			rl := len(fmt.Sprintf("%d\t%s\n", cand[i].num, cand[i].content))
+		for i, row := range slices.Backward(cand) {
+			rl := len(fmt.Sprintf("%d\t%s\n", row.num, row.content))
 			if i < len(cand)-1 && sum+rl > DefaultReadMaxBytes {
 				break
 			}

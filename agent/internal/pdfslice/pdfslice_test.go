@@ -32,7 +32,7 @@ func syntheticPDF(t *testing.T, pageCount int) []byte {
 		kids[i] = fmt.Sprintf("%d 0 R", i+3)
 	}
 	writeObject(2, fmt.Sprintf("<< /Type /Pages /Kids [%s] /Count %d >>", strings.Join(kids, " "), pageCount))
-	for i := 0; i < pageCount; i++ {
+	for i := range pageCount {
 		writeObject(i+3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> >>")
 	}
 	xrefOffset := buf.Len()
@@ -51,7 +51,10 @@ func syntheticPDF(t *testing.T, pageCount int) []byte {
 // function's own return values.
 func pdfPageCount(t *testing.T, pageCount []byte) int {
 	t.Helper()
-	conf := model.NewDefaultConfiguration()
+	conf, err := api.LoadConfiguration(api.ConfigurationOptions{Mode: api.ConfigurationModeStateless})
+	if err != nil {
+		t.Fatalf("LoadConfiguration: %v", err)
+	}
 	conf.ValidationMode = model.ValidationRelaxed
 	count, err := api.PageCount(context.Background(), bytes.NewReader(pageCount), conf)
 	if err != nil {
@@ -207,7 +210,7 @@ func TestSlicePDFRangesAndClamping(t *testing.T) {
 	}
 }
 
-// TestSlicePDFDoesNotTouchConfigDir proves init's api.DisableConfigDir keeps
+// TestSlicePDFDoesNotTouchConfigDir proves ConfigurationModeStateless keeps
 // pdfcpu hermetic: with HOME and XDG_CONFIG_HOME pointed at an empty directory,
 // a page count plus a trim must create nothing on disk.
 func TestSlicePDFDoesNotTouchConfigDir(t *testing.T) {

@@ -29,8 +29,8 @@ func imageScaleEncodePNG(t *testing.T, img image.Image) []byte {
 // downscale has a visible edge to preserve but compresses to a small PNG.
 func imageScalePatternedImage(width, height int) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
+	for y := range height {
+		for x := range width {
 			if x < width/2 {
 				img.SetRGBA(x, y, color.RGBA{R: 0x20, G: 0x80, B: 0xC0, A: 0xFF})
 			} else {
@@ -63,7 +63,7 @@ func imageScaleAnimatedGIF(t *testing.T, size, frames int) []byte {
 		color.RGBA{B: 0xFF, A: 0xFF},
 	}
 	anim := &gif.GIF{}
-	for frame := 0; frame < frames; frame++ {
+	for frame := range frames {
 		paletted := image.NewPaletted(image.Rect(0, 0, size, size), palette)
 		for i := range paletted.Pix {
 			paletted.Pix[i] = uint8((i + frame) % len(palette))
@@ -104,7 +104,7 @@ func imageScaleCraftGrayPNG(t *testing.T, width, height int) []byte {
 		t.Fatalf("zlib writer: %v", err)
 	}
 	row := make([]byte, 1+width) // filter byte 0 followed by zero pixels
-	for y := 0; y < height; y++ {
+	for y := range height {
 		if _, err := zw.Write(row); err != nil {
 			t.Fatalf("zlib write row %d: %v", y, err)
 		}
@@ -187,14 +187,14 @@ func TestPrepareImageForModelDownscalesOversizedDimension(t *testing.T) {
 // An image within the dimension limit but over the byte cap is re-encoded
 // below the cap. Not parallel: it lowers the package-level cap on purpose.
 func TestPrepareImageForModelCompressesOversizedBytes(t *testing.T) {
-	const cap = 100_000
+	const maxBytes = 100_000
 	old := MaxModelImageBytes
-	MaxModelImageBytes = cap
+	MaxModelImageBytes = maxBytes
 	defer func() { MaxModelImageBytes = old }()
 
 	data := imageScaleEncodePNG(t, imageScaleNoisyGray(1000, 1000))
-	if len(data) <= cap {
-		t.Fatalf("fixture PNG is %d bytes, want > %d so the byte cap is the trigger", len(data), cap)
+	if len(data) <= maxBytes {
+		t.Fatalf("fixture PNG is %d bytes, want > %d so the byte cap is the trigger", len(data), maxBytes)
 	}
 	got, err := PrepareImageForModel(data)
 	if err != nil {
@@ -208,8 +208,8 @@ func TestPrepareImageForModelCompressesOversizedBytes(t *testing.T) {
 		t.Fatalf("Scaled = %v, want %v for %dx%d -> %dx%d", got.Scaled, wantScaled,
 			got.OriginalWidth, got.OriginalHeight, got.Width, got.Height)
 	}
-	if len(got.Data) > cap {
-		t.Fatalf("compressed bytes = %d, want <= %d", len(got.Data), cap)
+	if len(got.Data) > maxBytes {
+		t.Fatalf("compressed bytes = %d, want <= %d", len(got.Data), maxBytes)
 	}
 	if _, _, err := image.DecodeConfig(bytes.NewReader(got.Data)); err != nil {
 		t.Fatalf("compressed bytes do not decode: %v", err)

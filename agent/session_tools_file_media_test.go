@@ -28,8 +28,8 @@ import (
 // encode, so a downscale has an edge to preserve.
 func readFileMediaImage(width, height int) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
+	for y := range height {
+		for x := range width {
 			if x < width/2 {
 				img.SetRGBA(x, y, color.RGBA{R: 0x20, G: 0xA0, B: 0x40, A: 0xFF})
 			} else {
@@ -150,7 +150,7 @@ func readFileMediaPDF(t *testing.T, pageCount int) ([]byte, string) {
 		kids[i] = fmt.Sprintf("%d 0 R", i+3)
 	}
 	writeObject(2, fmt.Sprintf("<< /Type /Pages /Kids [%s] /Count %d >>", strings.Join(kids, " "), pageCount))
-	for i := 0; i < pageCount; i++ {
+	for i := range pageCount {
 		writeObject(i+3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> >>")
 	}
 	xrefOffset := buf.Len()
@@ -171,7 +171,10 @@ func readFileMediaPDF(t *testing.T, pageCount int) ([]byte, string) {
 // proves the returned PDF's page count with a parser.
 func readFilePDFPageCount(t *testing.T, raw []byte) int {
 	t.Helper()
-	conf := model.NewDefaultConfiguration()
+	conf, err := api.LoadConfiguration(api.ConfigurationOptions{Mode: api.ConfigurationModeStateless})
+	if err != nil {
+		t.Fatalf("LoadConfiguration: %v", err)
+	}
 	conf.ValidationMode = model.ValidationRelaxed
 	count, err := api.PageCount(context.Background(), bytes.NewReader(raw), conf)
 	if err != nil {

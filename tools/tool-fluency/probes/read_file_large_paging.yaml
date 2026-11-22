@@ -2,7 +2,7 @@ schema: 1
 id: read_file.large_paging
 tool: read_file
 prompt: |
-  Read big_config.txt using read_file and report the exact values of ALPHA_KEY, MID_KEY, and OMEGA_KEY.
+  Read big_config.txt using read_file and report the exact values of ALPHA_MARKER, MID_MARKER, and OMEGA_MARKER.
   Do not use shell or grep. Finish with RESULT_LARGE_PAGING.
 fixture:
   files:
@@ -21,7 +21,7 @@ fixture:
       entry_0012: status=ok shard=primary region=us-west-2
       entry_0013: status=ok shard=primary region=us-west-2
       entry_0014: status=ok shard=primary region=us-west-2
-      ALPHA_KEY=PAGING_HEAD_771
+      ALPHA_MARKER=PAGING_HEAD_771
       entry_0016: status=ok shard=primary region=us-west-2
       entry_0017: status=ok shard=primary region=us-west-2
       entry_0018: status=ok shard=primary region=us-west-2
@@ -626,7 +626,7 @@ fixture:
       entry_0617: status=ok shard=primary region=us-west-2
       entry_0618: status=ok shard=primary region=us-west-2
       entry_0619: status=ok shard=primary region=us-west-2
-      MID_KEY=PAGING_MIDDLE_482
+      MID_MARKER=PAGING_MIDDLE_482
       entry_0621: status=ok shard=primary region=us-west-2
       entry_0622: status=ok shard=primary region=us-west-2
       entry_0623: status=ok shard=primary region=us-west-2
@@ -1186,7 +1186,7 @@ fixture:
       entry_1177: status=ok shard=primary region=us-west-2
       entry_1178: status=ok shard=primary region=us-west-2
       entry_1179: status=ok shard=primary region=us-west-2
-      OMEGA_KEY=PAGING_TAIL_993
+      OMEGA_MARKER=PAGING_TAIL_993
       entry_1181: status=ok shard=primary region=us-west-2
       entry_1182: status=ok shard=primary region=us-west-2
       entry_1183: status=ok shard=primary region=us-west-2

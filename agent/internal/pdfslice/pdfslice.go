@@ -60,7 +60,7 @@ var (
 func slicedMemoKey(raw []byte, from, to int) [sha256.Size]byte {
 	hash := sha256.New()
 	hash.Write(raw)
-	fmt.Fprintf(hash, "\x00%d-%d", from, to)
+	_, _ = fmt.Fprintf(hash, "\x00%d-%d", from, to)
 	var key [sha256.Size]byte
 	copy(key[:], hash.Sum(nil))
 	return key
@@ -100,11 +100,16 @@ func rememberSliced(key [sha256.Size]byte, data []byte, actualTo, totalPages int
 	}
 }
 
-func init() {
-	// Without this, model.NewDefaultConfiguration reads and can create
-	// ~/.config/pdfcpu. read_file must not touch the user's config directory
-	// (or any writable state) to parse a PDF.
-	api.DisableConfigDir()
+// newStatelessConfig builds a relaxed pdfcpu configuration without reading or
+// creating ~/.config/pdfcpu, so read_file stays hermetic and sandbox-safe.
+func newStatelessConfig() (*model.Configuration, error) {
+	conf, err := api.LoadConfiguration(api.ConfigurationOptions{Mode: api.ConfigurationModeStateless})
+	if err != nil {
+		return nil, err
+	}
+	conf.ValidationMode = model.ValidationRelaxed
+	conf.WriteXRefStream = true
+	return conf, nil
 }
 
 // ParsePageRange parses read_file's pages parameter: "N" selects one 1-based
@@ -165,9 +170,10 @@ func SlicePDF(ctx context.Context, raw []byte, spec string) (sliced []byte, from
 		return nil, 0, 0, 0, err
 	}
 
-	conf := model.NewDefaultConfiguration()
-	conf.ValidationMode = model.ValidationRelaxed
-	conf.WriteXRefStream = true
+	conf, err := newStatelessConfig()
+	if err != nil {
+		return nil, 0, 0, 0, fmt.Errorf("read_file: cannot initialize PDF config: %w", err)
+	}
 
 	// A provided range that was sliced before answers from the memo without
 	// re-counting the document's pages. The entry carries the canonical facts

@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"math"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -258,8 +259,8 @@ func renderPreparedRows(rows []preparedRow, unnumbered bool, maxBytes int, tailK
 	if tailKeepLast {
 		total := 0
 		startIdx := len(rows)
-		for i := len(rows) - 1; i >= 0; i-- {
-			rl := rows[i].renderedLen(unnumbered)
+		for i, row := range slices.Backward(rows) {
+			rl := row.renderedLen(unnumbered)
 			if i < len(rows)-1 && total+rl > maxBytes {
 				stoppedByBytes = true
 				break
@@ -800,10 +801,7 @@ func renderTextReadRich(displayPath string, b []byte, offsetLine, limitLines *in
 	window := body[offset:]
 	bodyMax, headerReserve := readBodyBudget(displayPath, false, p)
 	rows, consumed, moreRemain, stoppedByBytes := collectBytesRows(window, p.start, p.effLimit, true, p.singleLineEscape, false, bodyMax)
-	stoppedByLines := false
-	if moreRemain && !stoppedByBytes && !p.explicitLimit {
-		stoppedByLines = true
-	}
+	stoppedByLines := moreRemain && !stoppedByBytes && !p.explicitLimit
 
 	totalLines := 0
 	if !moreRemain {
@@ -1014,7 +1012,7 @@ func scanTailWindowSeekerRich(ctx context.Context, rs io.ReadSeeker, size int64,
 		logicalEnd -= 2
 		lastChunk = lastChunk[:len(lastChunk)-2]
 	} else if len(lastChunk) >= 1 && lastChunk[len(lastChunk)-1] == '\n' {
-		logicalEnd -= 1
+		logicalEnd--
 		lastChunk = lastChunk[:len(lastChunk)-1]
 	}
 

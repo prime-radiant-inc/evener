@@ -102,7 +102,7 @@ func PrepareImageForModel(data []byte) (PreparedImage, error) {
 		return PreparedImage{}, err
 	}
 	width, height := scaledImageDimensions(cfg.Width, cfg.Height, MaxModelImageDimension)
-	var display image.Image = decoded
+	display := decoded
 	if width != cfg.Width || height != cfg.Height {
 		display = resizeImage(decoded, width, height)
 	}
