@@ -65,7 +65,7 @@ export function MemoryContextBody({
     // complete original Text.
     return (
       <div className={CLASS.body} data-testid="memory-context-body">
-        <pre className={CLASS.fallback} data-testid="memory-context-fallback">
+        <pre className={CLASS.fallback} data-testid="memory-context-fallback" data-message-body="">
           {item.text}
         </pre>
       </div>
@@ -89,17 +89,19 @@ export function MemoryContextBody({
         )}
       </div>
       {hasContent ? (
-        <div className={CLASS.content} data-testid="memory-context-content">
+        <div className={CLASS.content} data-testid="memory-context-content" data-message-body="">
           <Markdown source={observation.content} />
         </div>
       ) : (
         // A current index that read as nothing is empty; every other state
         // could not read it at all. The meta row above names which state.
-        <EmptyState
-          size="compact"
-          title={memoryContextEmptyText(observation.state)}
-          reason={observation.state === "current" ? "empty" : "unavailable"}
-        />
+        <div data-message-body="">
+          <EmptyState
+            size="compact"
+            title={memoryContextEmptyText(observation.state)}
+            reason={observation.state === "current" ? "empty" : "unavailable"}
+          />
+        </div>
       )}
       <MemorySource text={item.text} />
     </div>

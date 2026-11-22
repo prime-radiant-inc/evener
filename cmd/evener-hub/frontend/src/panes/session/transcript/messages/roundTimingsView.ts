@@ -13,6 +13,8 @@
 // does nothing to surface it - see SystemNoticeItem.tsx's RoundTimingsLine
 // for the summary/detail split this produces.
 
+import { formatDurationMs } from "@evener/appwire-client";
+
 const NS_PER_MS = 1_000_000;
 
 export interface RoundTimingsPhase {
@@ -88,4 +90,19 @@ export function roundTimingsSummary(raw: unknown): RoundTimingsSummary | undefin
   phases.sort((a, b) => b.ms - a.ms);
 
   return { round, totalMs: totalNs / NS_PER_MS, dominant: phases[0], phases, omittedCount };
+}
+
+// pctLabel renders a phase's share of the round: whole percents plain, "<1%"
+// for a real nonzero share too small to round to 1 - "0%" would read as "took
+// no time", which a phase that reached the >=1ms floor never did.
+export function pctLabel(pct: number): string {
+  return pct > 0 ? `${pct}%` : "<1%";
+}
+
+// The one line RoundTimingsLine paints, and the same words Find and the
+// palette search. The hover-only breakdown stays out: it is not DOM text.
+export function roundTimingsHeadline(summary: RoundTimingsSummary): string {
+  const total = formatDurationMs(summary.totalMs);
+  if (!summary.dominant) return `Round ${summary.round} · ${total}`;
+  return `Round ${summary.round} · ${total} — ${summary.dominant.label} ${formatDurationMs(summary.dominant.ms)} (${pctLabel(summary.dominant.pct)})`;
 }

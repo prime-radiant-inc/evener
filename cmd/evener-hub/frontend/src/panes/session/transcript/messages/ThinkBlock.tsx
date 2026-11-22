@@ -214,7 +214,7 @@ function thinkingPlaceholderLabel(paragraphs: string[]): string {
 // formatting is visible WHILE streaming instead of literal marker source.
 function LiveThoughtBody({ paragraphs }: { paragraphs: string[] }) {
   return (
-    <div className={CLASS.liveBody} data-testid="think-block-live-body">
+    <div className={CLASS.liveBody} data-testid="think-block-live-body" data-message-body="">
       {paragraphs.length > 0 && <Markdown source={paragraphs.join("\n\n")} live />}
     </div>
   );
@@ -223,7 +223,7 @@ function LiveThoughtBody({ paragraphs }: { paragraphs: string[] }) {
 // The settled body wrapper every thinking disclosure unfolds into.
 function ThoughtBody({ paragraphs }: { paragraphs: string[] }) {
   return (
-    <div className={CLASS.body}>
+    <div className={CLASS.body} data-message-body="">
       <TraceBody paragraphs={paragraphs} />
     </div>
   );
@@ -382,7 +382,9 @@ function RedactedThinkBlock({
     return (
       <div className={CLASS.block} data-testid="think-block" data-redacted="true">
         <CompactThoughtSummary>
-          <span data-testid="think-block-redacted">{summary}</span>
+          <span data-testid="think-block-redacted" data-message-body="">
+            {summary}
+          </span>
         </CompactThoughtSummary>
       </div>
     );
@@ -393,7 +395,11 @@ function RedactedThinkBlock({
         compact
         disclosureKey={disclosureKey}
         defaultOpen={defaultOpen}
-        summary={<span data-testid="think-block-redacted">{summary}</span>}
+        summary={
+          <span data-testid="think-block-redacted" data-message-body="">
+            {summary}
+          </span>
+        }
         paragraphs={paragraphs}
       />
     </div>

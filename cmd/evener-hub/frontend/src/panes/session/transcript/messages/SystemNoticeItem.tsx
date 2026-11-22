@@ -28,7 +28,6 @@ import {
   APPROVAL_DECISION_EVENT_KIND,
   approvalDecisionOf,
   attentionWarningNotice,
-  echoesTurnError,
   firstLine,
   formatCharCount,
   formatDurationMs,
@@ -46,12 +45,21 @@ import { Disclosure, FailureGlyph, Markdown } from "../../../../widgets";
 import { disclosureDefault } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { SYSTEM_PROMPT_ITEM_ID } from "../transcriptVisibility";
-import { asTurnError } from "../turnFailure";
+import { FAILURE_FALLBACK_LABEL, failureText } from "../turnFailure";
 import { type ItemRenderProps, registerItemRenderer } from "../types";
 import { MemoryContextDisclosure } from "./MemoryContextItem";
 import { MessageTimestamp } from "./MessageTimestamp";
-import { roundTimingsSummary } from "./roundTimingsView";
-import { type SystemRun, shouldGroup, systemRunFor } from "./systemGrouping";
+import { pctLabel, roundTimingsHeadline, roundTimingsSummary } from "./roundTimingsView";
+import {
+  FALLBACK_LABEL,
+  isCompactHookFailure,
+  isRoundTimingsItem,
+  isScaffoldItem,
+  noticeText,
+  renderSystemRunFor,
+  type SystemRun,
+  shouldGroup,
+} from "./systemGrouping";
 import styles from "./systemnoticeitem.module.css";
 import { WarningBlock } from "./WarningItem";
 
@@ -69,36 +77,6 @@ const CLASS = {
 // system prompt projected by an older daemon that predates the typed
 // system_prompt eventKind - see its definition in transcriptVisibility.ts,
 // which classifies the same item for the "Prompt loaded" setting.
-
-// The systemMessage eventKinds (appwire.ThreadItemEventKind*) whose text is a
-// scaffolding block a reader collapses by default rather than a quiet
-// one-liner: the session system prompt, and a compaction summary/checkpoint
-// (apptranscript.go's ProjectTurn "Context summary"/"Context checkpoint",
-// each a wall of markdown). Every other kind (model switch, skill activation,
-// the short live context_compaction stats line, ...) stays a plain quiet
-// line. Shared-notes snapshots also get a disclosure, with a literal body.
-// Classification is by this typed wire field, never the item's own char
-// count (kata ckgw).
-const SCAFFOLD_EVENT_KINDS = new Set(["system_prompt", "compaction", "notes-context"]);
-
-function isScaffoldItem(item: ItemModel): boolean {
-  if (item.eventKind !== undefined && item.eventKind !== "") return SCAFFOLD_EVENT_KINDS.has(item.eventKind);
-  return item.id === SYSTEM_PROMPT_ITEM_ID;
-}
-
-// FALLBACK_LABEL covers a systemMessage item with no text at all (e.g. a
-// plugin-loaded event with no resolved plugin name) - a category label
-// beats an invisible row, without fabricating specifics the wire didn't
-// provide.
-const FALLBACK_LABEL = "System event";
-
-// What a quiet line says: the package's systemEventWords, which the phone
-// reads too. A plugin load carries its summary in the description and no
-// text, and a compaction pass's text is the engine's "Layer / Turns /
-// Estimated tokens" report, so both read their structured raw there.
-function noticeText(item: ItemModel): string {
-  return systemEventWords(item).text || FALLBACK_LABEL;
-}
 
 // The quiet one-liner itself. data-fallback marks a line whose event said
 // nothing, so it reads the category label.
@@ -163,28 +141,11 @@ function ScaffoldDisclosure({ item, sessionRef }: { item: ItemModel; sessionRef?
         </span>
       }
     >
-      <div className={CLASS.scaffoldBody} data-testid="system-notice-scaffold-body">
+      <div className={CLASS.scaffoldBody} data-testid="system-notice-scaffold-body" data-message-body="">
         {isNotesSnapshot ? <pre className={CLASS.literalBody}>{item.text}</pre> : <Markdown source={item.text} />}
       </div>
     </Disclosure>
   );
-}
-
-// ROUND_TIMINGS_EVENT_KIND matches transcriptVisibility.ts's own constant of
-// the same name/value (the visibility gate and this render-time
-// classification read the same typed field independently, same pattern as
-// SCAFFOLD_EVENT_KINDS above).
-const ROUND_TIMINGS_EVENT_KIND = "round_timings";
-
-function isRoundTimingsItem(item: ItemModel): boolean {
-  return item.eventKind === ROUND_TIMINGS_EVENT_KIND;
-}
-
-// pctLabel renders a phase's share of the round: whole percents plain,
-// "<1%" for a real nonzero share too small to round to 1 - "0%" would read
-// as "took no time", which a phase that reached the >=1ms floor never did.
-function pctLabel(pct: number): string {
-  return pct > 0 ? `${pct}%` : "<1%";
 }
 
 // RoundTimingsLine is the round_timings systemMessage item's redesigned
@@ -208,16 +169,15 @@ function pctLabel(pct: number): string {
 function RoundTimingsLine({ item }: { item: ItemModel }) {
   const summary = roundTimingsSummary(item.raw);
   if (!summary) return <NoticeLine item={item} />;
-  const total = formatDurationMs(summary.totalMs);
   if (!summary.dominant) {
     // Every tracked phase rounded under 1ms - nothing to break down further.
     return (
       <div className={CLASS.line} data-testid="system-notice-line">
-        Round {summary.round} · {total}
+        {roundTimingsHeadline(summary)}
       </div>
     );
   }
-  const headline = `Round ${summary.round} · ${total} — ${summary.dominant.label} ${formatDurationMs(summary.dominant.ms)} (${pctLabel(summary.dominant.pct)})`;
+  const headline = roundTimingsHeadline(summary);
   const breakdown = [
     ...summary.phases.map((phase) => `${phase.label} ${formatDurationMs(phase.ms)} (${pctLabel(phase.pct)})`),
     ...(summary.omittedCount > 0
@@ -251,33 +211,12 @@ function ApprovalDecisionLine({ item }: { item: ItemModel }) {
       data-testid="system-notice-approval"
       data-approved={decision ? String(decision.approved) : undefined}
     >
-      <span data-testid="system-notice-approval-text">{noticeText(item)}</span>
+      <span data-testid="system-notice-approval-text" data-message-body="">
+        {noticeText(item)}
+      </span>
       {Number.isFinite(decidedAt) && <MessageTimestamp value={decidedAt} />}
     </div>
   );
-}
-
-// FAILURE_FALLBACK_LABEL names a failure the wire described with neither a
-// message nor a description. It is the same category-label-over-invisible-row
-// rule FALLBACK_LABEL follows, worded for the one event where the generic
-// "System event" would be worst: a row that says a failure happened beats one
-// that files it under nothing in particular.
-const FAILURE_FALLBACK_LABEL = "Turn failed";
-
-// What the failure row says. The end cap that closes a failed turn (TurnBlock
-// renders it on exactly this condition) already states the message with its
-// taxonomy chip, hint and recovery action, so the row that echoes that error
-// (echoesTurnError, the check the phone uses to drop it) names the event and
-// lets the cap carry the detail - saying the same sentence twice, ten pixels
-// apart, is what a reloaded failure did before. Any other error row leads with
-// its own message, since the cap speaks only for the turn's failure: with no
-// cap at all, or an earlier, distinct error in the same turn, nothing else
-// carries it, and a failure is never left unstated.
-function failureText(item: ItemModel, turn: TurnModel): string | undefined {
-  const named = item.description?.trim();
-  const message = item.text.trim();
-  const preferred = echoesTurnError(item, asTurnError(turn.error)) ? [named, message] : [message, named];
-  return preferred.find((candidate) => candidate);
 }
 
 // FailureLine is a turn failure: the one systemMessage a reader is hunting for
@@ -296,17 +235,10 @@ function FailureLine({ item, turn }: { item: ItemModel; turn: TurnModel }) {
       data-fallback={text ? undefined : "true"}
     >
       <FailureGlyph />
-      <span className={CLASS.failureText}>{text ?? FAILURE_FALLBACK_LABEL}</span>
+      <span className={CLASS.failureText} data-message-body="">
+        {text ?? FAILURE_FALLBACK_LABEL}
+      </span>
     </div>
-  );
-}
-
-function isCompactHookFailure(item: ItemModel, hookExits: TranscriptMetadataVisibility["hookExits"]): boolean {
-  return (
-    item.eventKind === "hook_completed" &&
-    hookExits !== "all" &&
-    typeof item.exitCode === "number" &&
-    item.exitCode !== 0
   );
 }
 
@@ -378,7 +310,7 @@ function SystemGroup({
         </span>
       }
     >
-      <div className={CLASS.groupBody}>
+      <div className={CLASS.groupBody} data-message-body="">
         {run.items.map((it) => (
           <SystemLine key={it.id} item={it} turn={turn} sessionRef={sessionRef} metadata={metadata} />
         ))}
@@ -401,37 +333,6 @@ function SystemGroup({
 // because its render is cheap - one linear systemRunFor scan plus a few
 // divs, no markdown/diff work - unlike the heavy renderers ignoringTurn
 // exists to protect.
-function renderSystemRunFor(
-  turnItems: ItemModel[],
-  itemId: string,
-  metadata: TranscriptMetadataVisibility,
-): SystemRun | undefined {
-  const run = systemRunFor(turnItems, itemId);
-  if (!run) return undefined;
-  const index = run.items.findIndex((candidate) => candidate.id === itemId);
-  if (index < 0) return undefined;
-  const current = run.items[index];
-  if (!current) return undefined;
-
-  const isCritical = (candidate: ItemModel) => isCompactHookFailure(candidate, metadata.hookExits);
-  if (!run.items.some(isCritical)) return run;
-  if (isCritical(current)) return { items: [current], isFirst: true };
-
-  let start = index;
-  while (start > 0) {
-    const previous = run.items[start - 1];
-    if (!previous || isCritical(previous)) break;
-    start -= 1;
-  }
-  let end = index;
-  while (end < run.items.length - 1) {
-    const next = run.items[end + 1];
-    if (!next || isCritical(next)) break;
-    end += 1;
-  }
-  return { items: run.items.slice(start, end + 1), isFirst: start === index };
-}
-
 export function SystemNoticeItem({ item, turn, sessionRef }: ItemRenderProps) {
   const { metadata } = useTranscriptRenderContext();
   const run = renderSystemRunFor(turn.items, item.id, metadata);

@@ -3,7 +3,8 @@
 //   - fetchSearch: the backend session search over the typed AppWire method.
 //   - findInSessionMatches: the "In session · N" section, scanning the focused
 //     session's loaded ThreadModel (turns -> items -> text). Choosing a
-//     message row opens the session's own Find on it (panes/session/find).
+//     message, thought or action row opens the session's own Find on it
+//     (panes/session/find).
 //   - buildSnippet / highlightParts: the <mark>-highlighted context strings.
 //     Returned as structured parts (not HTML) so the React overlay renders
 //     <mark> without dangerouslySetInnerHTML - React escapes for us, so the
@@ -16,7 +17,9 @@ import {
   type ItemModel,
   type SearchResponse,
   type ThreadModel,
+  type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
+import { projectedSearchTexts, rowShowsOwnText } from "../../panes/session/find/findHits";
 import { messageAsShown } from "../../panes/session/find/messageText";
 
 // One text run of a highlighted string: `mark` true means it is the matched
@@ -49,34 +52,49 @@ function normalizeWhitespace(text: string): string {
 // `output` and `error`, and each live reasoning summary (its streamed chunks
 // joined). Each source that matches produces its own hit, all sharing the
 // item's turn label.
-function itemSearchTexts(item: ItemModel): string[] {
+// A steer's or a memory refresh's row shows only what the shared projection
+// reads for it (Find's rule, shared): a suppressed task steer renders nothing,
+// a daemon steer's reminder wrapper is stripped on screen, and a refresh's
+// recorded Text stays behind a folded Source. Its raw `text` is therefore not a
+// word a hit could land on.
+function itemSearchTexts(item: ItemModel, projected: ReadonlyMap<string, readonly string[]>): string[] {
   const texts: string[] = [];
   // A message is read as its row shows it (a reply's Markdown rendered), the
   // way the session's own Find reads it, so a message row here is one Find
   // can land on.
   const message = messageAsShown(item);
+  // A system notice or warning is read the way its row shows it (projected
+  // below), not from the raw wire text: a scaffold's raw Markdown and a
+  // failure's echoed line are not what is on screen. A thought's `text` is its
+  // trace, which no row shows, so only the summaries below are read for it.
   if (message !== null) texts.push(message);
-  else if (item.text) texts.push(item.text);
+  else if (!rowShowsOwnText(item) && item.type !== "reasoning" && item.text) texts.push(item.text);
+  // What the view shows this item as - an action row's rationale, a thought's
+  // summaries where the view shows the thought. Find's own rule, shared, so a
+  // hit here is always one Find can land on.
+  const shown = projected.get(item.id);
+  if (shown !== undefined) texts.push(...shown);
   if (item.output) texts.push(item.output);
   if (item.error) texts.push(item.error);
-  for (const summary of item.reasoningSummaries ?? []) {
-    const joined = summary.join("");
-    if (joined) texts.push(joined);
-  }
   return texts;
 }
 
-export function findInSessionMatches(model: ThreadModel, query: string): InSessionMatch[] {
+export function findInSessionMatches(
+  model: ThreadModel,
+  query: string,
+  config: TranscriptDisplayConfigV1,
+): InSessionMatch[] {
   // The shared find needle: case and the shape of whitespace never decide a
   // match, here or in the session's Find.
   const q = findNeedle(query);
   if (!q) return [];
+  const projected = projectedSearchTexts(model, config);
   const out: InSessionMatch[] = [];
   let turnNumber = 0;
   for (const turn of model.turns) {
     turnNumber += 1;
     for (const item of turn.items) {
-      for (const raw of itemSearchTexts(item)) {
+      for (const raw of new Set(itemSearchTexts(item, projected))) {
         const text = normalizeWhitespace(raw);
         if (!text) continue;
         const hit = findIndexIn(text, q);
