@@ -1119,6 +1119,9 @@ func (s *Session) consumePresentedDelegateTrigger() (string, error) {
 		s.attentionPresentedTrigger = ""
 	}
 	s.attentionMu.Unlock()
+	if s.delegateController != nil && s.owningDelegateID != "" {
+		s.delegateController.forgetDelegateAttention(s.owningDelegateID, trigger)
+	}
 	return trigger, nil
 }
 
