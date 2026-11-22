@@ -27,7 +27,6 @@ const CLASS = {
   body: requireClass(styles.body, "oauthDialogs.module.css", "body"),
   help: requireClass(styles.help, "oauthDialogs.module.css", "help"),
   actions: requireClass(styles.actions, "oauthDialogs.module.css", "actions"),
-  error: requireClass(styles.error, "oauthDialogs.module.css", "error"),
   code: requireClass(styles.code, "oauthDialogs.module.css", "code"),
   status: requireClass(styles.status, "oauthDialogs.module.css", "status"),
   url: requireClass(styles.url, "oauthDialogs.module.css", "url"),
