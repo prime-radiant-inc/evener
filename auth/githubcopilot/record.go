@@ -59,3 +59,16 @@ func (r AuthRecord) Validate() error {
 	}
 	return nil
 }
+
+// SameGeneration reports whether other is the same record generation: the same
+// refresh token and ObtainedAt. ObtainedAt advances on every login or
+// successful refresh even when GitHub does not rotate the refresh token.
+func (r AuthRecord) SameGeneration(other AuthRecord) bool {
+	return r.RefreshToken == other.RefreshToken && r.ObtainedAt.Equal(other.ObtainedAt)
+}
+
+// NeedsLogin reports whether the record cannot be refreshed without a fresh
+// login: GitHub refused its refresh token or the refresh token expired.
+func (r AuthRecord) NeedsLogin(now time.Time) bool {
+	return r.RefreshRejected || r.RefreshExpiry.IsZero() || !r.RefreshExpiry.After(now)
+}

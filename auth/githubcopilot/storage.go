@@ -29,9 +29,28 @@ var (
 	// ErrAuthInvalid is returned (wrapped) by SaveAuth when the record is
 	// incomplete or bound to another scheme or instance.
 	ErrAuthInvalid = errors.New("github copilot auth record is invalid")
+	// ErrAuthChanged is returned by LoadAuthIfCurrent when a locked re-read
+	// found a record generation other than the one the caller read before
+	// deciding what to save.
+	ErrAuthChanged = errors.New("github copilot auth record changed")
 
 	errNoStateDir = errors.New("a state directory is required for GitHub Copilot auth")
 )
+
+// LoadAuthIfCurrent re-reads instance's record under the caller's
+// WithRecordLock and returns it only when it is still expected's generation.
+// ErrAuthChanged or ErrAuthNotFound means a newer login, refresh, or logout
+// won, so the caller must not save over it.
+func LoadAuthIfCurrent(stateDir, instance string, expected AuthRecord) (AuthRecord, error) {
+	current, err := LoadAuth(stateDir, instance)
+	if err != nil {
+		return AuthRecord{}, err
+	}
+	if !expected.SameGeneration(current) {
+		return AuthRecord{}, ErrAuthChanged
+	}
+	return current, nil
+}
 
 // AuthFilePath returns the scheme-namespaced record path for instance under
 // stateDir: <stateDir>/auth/github-copilot/<instance>.json. The instance is
