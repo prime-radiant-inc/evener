@@ -36,10 +36,35 @@
   gap: var(--space-1);
   flex: 1 1 auto;
   min-width: 0;
+  padding-inline-start: calc(var(--tap-min, var(--space-5)) + var(--space-1));
   /* The attach control and the chrome's compact rung cannot share one line
      with the verbs at the narrowest engaged panes; the chrome takes the next
      line and keeps the model picker at a readable width. */
   flex-wrap: wrap;
+}
+
+/* Attach is a fixed utility at the card's lower leading corner. Taking it out
+ * of the flex flow keeps it beside the editor without moving on expansion. */
+.attachSlot {
+  position: absolute;
+  inset-inline-start: var(--space-2);
+  inset-block-end: var(--space-2);
+}
+
+@media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4) {
+  .composer .attachSlot {
+    inset-block-end: 0;
+  }
+}
+
+.editorSlot {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.editorSlot[data-folded="true"] {
+  padding-inline-start: calc(var(--tap-min, var(--space-5)) + var(--space-1));
 }
 
 /* The session's own status (model · effort, context, menu) sits at the row's
@@ -55,16 +80,21 @@
   min-width: 0;
 }
 
-/* The phone's activity counts sit on a glance line below the composer card,
- * where the desktop status bar puts them: not a control in the writing row.
- * The line is the pane's bottom edge, and the chips are already the tap
- * floor, so it adds no height of its own. */
+/* The phone's activity counts sit on a glance line above the composer card,
+ * not as controls in the writing row. Appearing there leaves the card and its
+ * persistent controls stationary. The chips keep the tap floor. */
 .activityRow {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   min-height: var(--tap-min);
   flex: none;
+}
+
+/* An empty folded row hides Steer but reserves its slot, so the session menu
+ * and primary action do not move when content arrives. */
+.steerSlot[data-hidden="true"] {
+  visibility: hidden;
 }
 
 .attachments {
@@ -213,20 +243,36 @@
  * this matching inline-size floor stays local to Send instead of widening
  * every xs Button consumer. */
 @media (max-width: 899px) {
-  .composer :global(button):has(> .submitLabel) {
+  .composer :global(button):has(> .submitLabel),
+  .composer :global(button):has(> .stopLabelStack) {
     min-width: var(--tap-min);
   }
 }
 
-/* The Send button's word. It rides beside the paper-plane glyph while the
- * pane has room; at the compact boundary (the same 559px as the status
- * row's first container query) the word drops and the glyph carries the button - the button
- * keeps aria-label="Send", so the accessible name survives. Pane width, not
+/* Stop's visible label and Send's hidden sizing label share one grid area,
+ * so the danger/primary wording changes cannot resize their shared slot. */
+.stopLabelStack {
+  display: grid;
+}
+
+.stopLabelStack > span {
+  grid-area: 1 / 1;
+}
+
+.stopMeasure {
+  visibility: hidden;
+}
+
+/* The Send and Stop words ride beside their glyphs while the pane has room;
+ * at the compact boundary (the same 559px as the status row's first container
+ * query) the words drop and the glyphs carry the buttons - the buttons keep
+ * their accessible names, so the labels survive. Pane width, not
  * viewport width: a narrow docked pane on a desktop display needs the same
  * collapse the phone gets. The spawn pane's Start button plays the same
  * collapse (spawn.module.css's own .submitLabel). */
 @container (max-width: 559px) {
-  .submitLabel {
+  .submitLabel,
+  .stopLabelStack {
     display: none;
   }
 }
@@ -250,17 +296,28 @@
  * reservation's width is all gap there. WebKit sizes the control row from the
  * reservation rather than the compact basis, which collapsed the writing
  * field to a quarter of the card behind a dead 312px gap (iPhone Duo cover). */
-.leading[data-folded="true"]:not([data-compact="true"]) {
-  container-type: inline-size;
-  contain-intrinsic-inline-size: 356px;
+@container (min-width: 620px) {
+  .leading[data-folded="true"]:not([data-compact="true"]) {
+    container-type: inline-size;
+    contain-intrinsic-inline-size: 356px;
+    flex: 0 1 auto;
+    flex-wrap: nowrap;
+  }
 }
 
-/* The phone's compact resting row keeps only the menu in this slot; it must
- * hug that menu so the field keeps the line and Send stays at the far edge.
+/* The phone's compact resting row keeps Attach and the menu in this slot; it
+ * hugs both controls so the field keeps the line and Send stays at the far edge.
  * The explicit basis also overrides the folded reservation's contribution in
  * engines that size the row from it. */
 .leading[data-compact="true"] {
+  flex: 0 0 calc(var(--tap-min) * 2 + var(--space-1));
+  min-width: calc(var(--tap-min) * 2 + var(--space-1));
+  contain-intrinsic-inline-size: none;
+}
+
+/* The menu-only chrome otherwise takes its root's width:100%, wrapping below
+ * Attach and doubling the folded phone card's height. Its slot is one tap. */
+.menuSlot {
   flex: 0 0 var(--tap-min);
   min-width: var(--tap-min);
-  contain-intrinsic-inline-size: none;
 }

@@ -24,6 +24,8 @@ const TypeSpecimen = import.meta.env.DEV ? lazy(() => import("./dev/TypeSpecimen
 // contents, session launcher) rendered from the real widgets with fixture
 // data - see dev/PluginsMockups.tsx's own header.
 const PluginsMockups = import.meta.env.DEV ? lazy(() => import("./dev/PluginsMockups")) : null;
+// Real session transcripts and composers at phone, tablet and desktop widths.
+const ComposerResponsiveDemo = import.meta.env.DEV ? lazy(() => import("./dev/ComposerResponsiveDemo")) : null;
 // DevHarness is a named export (dev/DevHarness.tsx), not a default one -
 // React.lazy needs a Promise<{default}>, so this adapts the import rather
 // than changing DevHarness's own export shape (which dev/DevHarness.test.tsx
@@ -64,6 +66,13 @@ export function App() {
     return (
       <Suspense fallback={null}>
         <PluginsMockups />
+      </Suspense>
+    );
+  }
+  if (ComposerResponsiveDemo !== null && window.location.pathname === "/dev/composer-responsive") {
+    return (
+      <Suspense fallback={null}>
+        <ComposerResponsiveDemo />
       </Suspense>
     );
   }

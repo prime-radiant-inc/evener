@@ -141,10 +141,9 @@ losing the conversation that made the evidence relevant.
   At the narrow shell breakpoint (899px and below), phones keep one bottom surface:
   the pane renders no separate footer strip below the
   composer, so the composer's own control row carries Attach, the model and reasoning
-  chrome line, and Send or Stop. The activity counts sit on a quiet line below the card,
-  where the desktop status bar puts them, and that line is the pane's bottom edge: on
-  the phone the chips fill the home-indicator band themselves, so the dock reserves no
-  space below them. The composer dock owns the home-indicator band, and that band is one
+  chrome line, and Send or Stop. The activity counts sit on a quiet line above the card,
+  so their arrival never moves the card's persistent controls. The card remains the
+  lowest interactive surface. The composer dock owns the home-indicator band, and that band is one
   token: `--dock-clearance` in `tokens.css` (`max(0px, env(safe-area-inset-bottom) -
   var(--keyboard-inset, 0px))`). Every dock reads that one value, and it yields when the
   on-screen keyboard covers the band. The working-directory strip follows that shell breakpoint:
@@ -152,41 +151,41 @@ losing the conversation that made the evidence relevant.
   Overview (About), while a primary-touch phone whose wider landscape viewport uses the desktop
   shell retains the separate status footer. A phone chip shows its
   glyph and a single active count (settled for Tasks); its category name and the full
-  active/total fraction stay in its accessible name and tooltip. While the card rests —
-  empty, unfocused, no send in flight — a composer
-  with room folds to one row: the placeholder beside the model and effort, with the
-  session menu and Send at the right. The paperclip returns with the expanded card,
-  and focusing or typing grows it back on the spatial recipe (§5). The space
+  active/total fraction stay in its accessible name and tooltip. An empty composer
+  with room folds to one row: Attach keeps its leading utility slot, the message field
+  stays left of the session menu, and the menu and Send or Stop keep their trailing
+  slots. Steer enters to the primary action's left. These positions do not move when
+  content arrives.
+  Focus, including session-opening
+  autofocus, never grows the empty card; typing or another content contribution expands
+  it on the spatial recipe (§5). Clearing while focused keeps that expanded shape stable,
+  and leaving the empty editor folds it again. The space
   around the card keeps its outgoing height until the animation starts, so a
-  transcript resting at its end stays there through the fold. The fold runs
-  after a completed click outside the card, never at the press: the card is in
-  flow, so folding mid-press would move the pressed control out from under the
-  pointer and swallow its click. The listener reads that click in the capture
-  phase, because a transcript control may consume its own click with
-  `stopPropagation`, and folds on the task after it, so the card's height
-  change cannot land under the control's own handlers. A press that never
-  becomes a click — selecting text, dragging a scroll — leaves the card as it
-  was. A phone's
-  resting composer is one line too, but it keeps only the session menu and Send
-  there; engaging the editor restores the full row, including Attach and the model
-  picker. This phone treatment also holds on a primary-touch landscape viewport up
-  to 1000px wide and 700px tall, including the Duo's 951×669pt inner display, even
-  though that width uses the desktop shell. A fine-pointer desktop card under 620px keeps the stacked
-  control row and the folded one-line field. The phone's resting card sheds Attach, the model chrome and the
-  activity line: the folded card is the phone's smallest surface, and the counts come
-  back with the expanded card. At the 466px Duo cover width the control row
-  tightens; focus, drafts, attachments, and question/approval docks keep their writing
-  and response space. The
-  four activity counters stay in the
-  app with their existing Overview links. The OS-owned Duo system rail is not a public
-  customization surface, so no counters move there. The 466px cover treatment is a fit
-  pass on that existing session screen, not a new mode: content, controls and workflow
-  stay, and an empty, unfocused card gives its own padding back to the transcript
-  (`promptcard.module.css`'s 440–500px portrait query, which zeroes the card's block padding
-  and field gap from their resting `--space-3` top, `--space-2` sides and bottom, and
-  `--space-2` gap, with the matching dock gap in
-  `composer.module.css`), while the activity count line keeps the 44px `--tap-min` floor
-  (`composer.module.css` `.activityRow`).
+  transcript resting at its end stays there through the fold. The folded empty row
+  hides inline Steer; Session actions keeps queue draining available whenever
+  inline Steer is unavailable. A focused clear preserves the
+  existing control geometry. Where the 559px pane-width compression rung
+  hides Send and Stop's words, their glyphs and accessible names remain.
+  At container widths up to 340px, the card yields its inline padding and column
+  gap in every state; the field's own text inset remains, leaving half the card
+  for writing beside three tap targets without moving them when content arrives.
+  A phone's resting composer is one line too, keeping Attach, the session menu and Send
+  or Stop while shedding the model chrome and activity line. Content restores the full
+  row, including the model picker and activity counts. This phone treatment also holds
+  on a primary-touch landscape viewport up to 1000px wide and 700px tall, including the
+  Duo's 951×669pt inner display, even though that width uses the desktop shell. A
+  fine-pointer desktop card under 620px keeps the stacked control row and the folded
+  one-line field. At the 466px Duo cover width the control row tightens; drafts,
+  attachments, and question/approval docks keep their writing and response space. The
+  four activity counters stay in the app with their existing Overview links. The
+  OS-owned Duo system rail is not a public customization surface, so no counters move
+  there. The 466px cover treatment is a fit pass on that existing session screen, not
+  a new mode: content, controls and workflow stay, and an empty folded card gives
+  its block padding and field gap back to the transcript regardless of focus
+  (`promptcard.module.css`'s 440–500px portrait query, with the matching dock gap
+  in `composer.module.css`). Every Duo card keeps zero bottom padding and a zero
+  Attach inset, so persistent controls do not move when content expands the card.
+  The activity count line keeps the 44px `--tap-min` floor (`.activityRow`).
 - **Let the lowest footer own the safe area.** A pane with a flush `edgeFooter`
   below its padded composer footer gives that edge footer the home-indicator band
   at every width. The composer footer keeps only its ordinary `--space-3` gap, so a

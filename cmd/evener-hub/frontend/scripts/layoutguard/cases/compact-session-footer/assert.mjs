@@ -54,9 +54,8 @@ export default function assert(measurements) {
       if (m.card.height > m.controls.height + tolerance + m.cardFraming) {
         fail("folded card is taller than one control row plus its framing");
       }
-    } else {
-      expectContained(m.attachment, m.controls, "attachment control");
     }
+    expectContained(m.attachment, m.card, "attachment control");
     expectContained(m.modelTrigger, m.controls, "model control");
     expectContained(m.effort, m.controls, "effort control");
     expectContained(m.context, m.controls, "context control");
@@ -75,9 +74,11 @@ export default function assert(measurements) {
     ]) {
       expectSameRow(box, label);
     }
-    if (!m.folded) expectSameRow(m.attachment, "attachment control");
+    if (Math.abs(m.attachment.bottom - m.controls.bottom) > tolerance) {
+      fail("attachment control is not bottom-aligned with the composer controls");
+    }
 
-    if (!m.folded) expectBefore(m.attachment, m.modelTrigger, "attachment → model");
+    expectBefore(m.attachment, m.modelTrigger, "attachment → model");
     expectBefore(m.modelTrigger, m.effort, "model → effort");
     expectBefore(m.effort, m.context, "effort → context");
     expectBefore(m.context, m.sessionActions, "context → session actions");

@@ -121,7 +121,7 @@
 }
 
 /* A phone mounts no status bar (Session renders the strip desktop-only; the
- * composer renders these counts on their own line below the card instead), so
+ * composer renders these counts on their own line above the card instead), so
  * on a phone these rules address that line alone: compact padding, and the
  * glyph at every width so each tab stays identifiable without its name. The
  * chips themselves are touch targets via the shared tap-floor block above. */
