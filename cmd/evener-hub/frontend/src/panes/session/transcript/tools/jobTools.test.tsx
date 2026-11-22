@@ -290,14 +290,21 @@ test("job_status: body shows a disclosure for a multi-paragraph mandate", () => 
   expect(screen.getByTestId("delegate-mandate-rest")).toBeTruthy();
 });
 
-test("job_status: body renders available tools with a count", () => {
+test("job_status: body renders available tools as mono chips with a count", () => {
   const d = toolRendererFor("job_status");
   const Body = d.body!;
   const raw = delegateStatusRaw();
-  render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
+  const { container } = render(
+    <Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />,
+  );
   expect(screen.getByText("Available tools (5)")).toBeTruthy();
   expect(screen.getByText("apply_patch")).toBeTruthy();
   expect(screen.getByText("write_file")).toBeTruthy();
+  const chips = container.querySelectorAll('[data-kind="tool"]');
+  expect(chips).toHaveLength(5);
+  for (const chip of chips) {
+    expect(chip.className).toContain("mono");
+  }
 });
 
 test("job_status: body renders environment fields (cwd, isolation, sandbox, network)", () => {

@@ -9,6 +9,7 @@ import rawStyles from "./chip.module.css";
 import { Chip, type ChipTone } from "./index";
 
 const styles = {
+  mono: requireClass(rawStyles.mono, "chip.module.css", "mono"),
   neutral: requireClass(rawStyles.neutral, "chip.module.css", "neutral"),
   attention: requireClass(rawStyles.attention, "chip.module.css", "attention"),
   alive: requireClass(rawStyles.alive, "chip.module.css", "alive"),
@@ -23,6 +24,22 @@ test("renders its children as the visible label", () => {
 test("defaults to the neutral tone", () => {
   const { container } = render(<Chip>backend</Chip>);
   expect(container.firstElementChild!.classList.contains(styles.neutral)).toBe(true);
+});
+
+test("defaults to the sans face", () => {
+  const { container } = render(<Chip>backend</Chip>);
+  expect(container.firstElementChild!.classList.contains(styles.mono)).toBe(false);
+});
+
+test("mono puts the label in the mono face", () => {
+  const { container } = render(<Chip mono>apply_patch</Chip>);
+  expect(container.firstElementChild!.classList.contains(styles.mono)).toBe(true);
+});
+
+test("the mono modifier declares the mono font token", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "chip.module.css"), "utf8");
+  expect(css).toMatch(/\.mono\s*\{[^}]*font-family:\s*var\(--font-mono\)/);
 });
 
 const TONES: ChipTone[] = ["neutral", "attention", "alive", "danger"];
