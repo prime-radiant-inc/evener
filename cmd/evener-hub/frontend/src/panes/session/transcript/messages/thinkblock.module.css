@@ -93,11 +93,8 @@
  * the pull; the text remains the flex item that yields to the chevron. */
 .compactSummary {
   composes: label;
-  flex: 0 1 auto;
-  min-width: 0;
   margin-bottom: 0;
   font-size: var(--font-size-ui);
-  line-height: var(--line-height-title);
 }
 
 /* The thinking body is ALWAYS italic (Jesse, 2026-08-03): a thought reads
@@ -137,18 +134,18 @@
   white-space: nowrap;
 }
 
-.compactSummaryText {
-  composes: summaryText;
-}
-
 /* Loader owns the live label's UI font size; this wrapper owns the matching
  * intent-line height without changing the widget or the expanded body. */
+.compactSummary,
 .compactLiveSummary {
-  display: inline-flex;
-  align-items: center;
   flex: 0 1 auto;
   min-width: 0;
   line-height: var(--line-height-title);
+}
+
+.compactLiveSummary {
+  display: inline-flex;
+  align-items: center;
 }
 
 /* A settled thought renders through the Markdown widget, which sets its own

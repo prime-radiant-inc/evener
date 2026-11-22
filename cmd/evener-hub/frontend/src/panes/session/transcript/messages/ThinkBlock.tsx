@@ -87,7 +87,6 @@ const CLASS = {
   liveBody: requireClass(styles.liveBody, "thinkblock.module.css", "liveBody"),
   summaryText: requireClass(styles.summaryText, "thinkblock.module.css", "summaryText"),
   compactSummary: requireClass(styles.compactSummary, "thinkblock.module.css", "compactSummary"),
-  compactSummaryText: requireClass(styles.compactSummaryText, "thinkblock.module.css", "compactSummaryText"),
   compactLiveSummary: requireClass(styles.compactLiveSummary, "thinkblock.module.css", "compactLiveSummary"),
   body: requireClass(styles.body, "thinkblock.module.css", "body"),
   trace: requireClass(styles.trace, "thinkblock.module.css", "trace"),
@@ -112,6 +111,15 @@ const settledThoughtIcon = (
     <ToolIcon kind="thought" />
   </span>
 );
+
+function CompactThoughtSummary({ children }: { children: ReactNode }) {
+  return (
+    <span className={CLASS.compactSummary}>
+      {thoughtIcon}
+      <span className={CLASS.summaryText}>{children}</span>
+    </span>
+  );
+}
 
 const THOUGHT_PREVIEW_MAX_LENGTH = 120;
 
@@ -238,18 +246,21 @@ function ThoughtDisclosure({
   paragraphs: string[];
   compact?: boolean;
 }) {
-  const content = (
-    <>
-      {compact ? thoughtIcon : settledThoughtIcon}
-      <span className={compact ? CLASS.compactSummaryText : CLASS.summaryText}>{summary}</span>
-    </>
-  );
   return (
     <Disclosure
       variant="quiet"
       id={disclosureKey}
       defaultOpen={defaultOpen}
-      summary={compact ? <span className={CLASS.compactSummary}>{content}</span> : content}
+      summary={
+        compact ? (
+          <CompactThoughtSummary>{summary}</CompactThoughtSummary>
+        ) : (
+          <>
+            {settledThoughtIcon}
+            <span className={CLASS.summaryText}>{summary}</span>
+          </>
+        )
+      }
     >
       <ThoughtBody paragraphs={paragraphs} />
     </Disclosure>
@@ -314,28 +325,19 @@ function CompactThinkBlock({
       data-content-free="true"
       data-estimated-tokens={estimatedTokens > 0 ? estimatedTokens : undefined}
     >
-      {isLive ? (
-        <Disclosure
-          variant="quiet"
-          id={disclosureKey}
-          defaultOpen={defaultOpen}
-          summary={
+      <Disclosure
+        variant="quiet"
+        id={disclosureKey}
+        defaultOpen={defaultOpen}
+        summary={
+          isLive ? (
             // The live summary is today's placeholder row, seated in the
             // icon rail by the Loader's own rail variant.
             <span className={CLASS.compactLiveSummary}>
               <Loader label={thinkingPlaceholderLabel(paragraphs)} rail />
             </span>
-          }
-        >
-          <LiveThoughtBody paragraphs={paragraphs} />
-        </Disclosure>
-      ) : (
-        <ThoughtDisclosure
-          compact
-          disclosureKey={disclosureKey}
-          defaultOpen={defaultOpen}
-          summary={
-            <>
+          ) : (
+            <CompactThoughtSummary>
               Thought
               {estimatedTokens > 0 && (
                 <>
@@ -343,11 +345,12 @@ function CompactThinkBlock({
                   <span data-slot="tokens">~{formatTokenCount(estimatedTokens)} tokens</span>
                 </>
               )}
-            </>
-          }
-          paragraphs={paragraphs}
-        />
-      )}
+            </CompactThoughtSummary>
+          )
+        }
+      >
+        {isLive ? <LiveThoughtBody paragraphs={paragraphs} /> : <ThoughtBody paragraphs={paragraphs} />}
+      </Disclosure>
     </div>
   );
 }
@@ -378,12 +381,9 @@ function RedactedThinkBlock({
   if (paragraphs.length === 0) {
     return (
       <div className={CLASS.block} data-testid="think-block" data-redacted="true">
-        <span className={CLASS.compactSummary}>
-          {thoughtIcon}
-          <span className={CLASS.compactSummaryText} data-testid="think-block-redacted">
-            {summary}
-          </span>
-        </span>
+        <CompactThoughtSummary>
+          <span data-testid="think-block-redacted">{summary}</span>
+        </CompactThoughtSummary>
       </div>
     );
   }

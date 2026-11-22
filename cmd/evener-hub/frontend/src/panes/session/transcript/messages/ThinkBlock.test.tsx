@@ -220,7 +220,7 @@ test("a settled compact thought shares the live row's railed icon and summary te
   // The test CSS-modules stub does not expand `composes`; the following
   // declaration test pins the shared label/text recipes these classes compose.
   expect(row?.className).toContain(rawThinkStyles.compactSummary);
-  expect(row?.lastElementChild?.className).toContain(rawThinkStyles.compactSummaryText);
+  expect(row?.lastElementChild?.className).toContain(rawThinkStyles.summaryText);
 });
 
 test("compact summaries reuse the railed label and UI type while keeping the measured item padding", () => {
@@ -229,13 +229,9 @@ test("compact summaries reuse the railed label and UI type while keeping the mea
   expect(row).not.toBeNull();
   expect(row![1]).toContain("composes: label");
   expect(row![1]).toContain("font-size: var(--font-size-ui)");
-  expect(row![1]).toContain("line-height: var(--line-height-title)");
-  const text = /\.compactSummaryText\s*\{([^}]*)\}/.exec(css);
-  expect(text).not.toBeNull();
-  expect(text![1]).toContain("composes: summaryText");
-  const live = /\.compactLiveSummary\s*\{([^}]*)\}/.exec(css);
-  expect(live).not.toBeNull();
-  expect(live![1]).toContain("line-height: var(--line-height-title)");
+  const shared = /\.compactSummary\s*,\s*\.compactLiveSummary\s*\{([^}]*)\}/.exec(css);
+  expect(shared).not.toBeNull();
+  expect(shared![1]).toContain("line-height: var(--line-height-title)");
   // The block's 4px plus Disclosure's 4px summary padding total the intent
   // row's 8px rhythm-item inset. Keep both halves intact.
   const block = /\.block\s*\{([^}]*)\}/.exec(css);

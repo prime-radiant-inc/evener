@@ -489,7 +489,7 @@ function terminalFallbackEntry(
   }
   // Chat's hidden reasoning never returns as a terminal fallback. The source
   // turn still owns and renders any genuine turn failure.
-  if (sourceItem.type === "reasoning" && !vector.reasoning && hidesThinkingTraces(config.content)) {
+  if (redactsReasoning(sourceItem, vector) && hidesThinkingTraces(config.content)) {
     return undefined;
   }
   // A hidden snapshot cannot explain a failure and must not defeat filtering.

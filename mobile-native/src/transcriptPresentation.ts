@@ -7,7 +7,7 @@ import {
 	type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import type { ActivityMember, MobileConversation, MobileTimelineItem } from "./projectedRows";
-import { isStep } from "./session/transcriptRows";
+import { isStep, isThoughtRow } from "./session/transcriptRows";
 
 export type ActivityPresentation = {
 	mode: "full" | "intent" | "critical";
@@ -198,15 +198,6 @@ function conversationOnly(items: MobileTimelineItem[]): MobileTimelineItem[] {
 			!isDaemonSteering(item) &&
 			!(item.kind === "notice" && item.eventKind === "notes-context") &&
 			!isThoughtRow(item),
-	);
-}
-
-// Native Chat projects through Intent, then removes every reasoning row here:
-// thinking begins at Intent. A thought-specific failure is still reasoning;
-// ordinary failure rows do not carry that marker and stay visible.
-function isThoughtRow(item: MobileTimelineItem): boolean {
-	return (
-		(item.kind === "activity" && item.family === "reasoning") || (item.kind === "failure" && item.thought === true)
 	);
 }
 
