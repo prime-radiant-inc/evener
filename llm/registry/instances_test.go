@@ -264,6 +264,22 @@ func TestInstances_CopilotExplicitDefaultStaysAuthoritative(t *testing.T) {
 	}
 }
 
+func TestInstances_CopilotExplicitDefaultWithoutRecordStaysAuthoritative(t *testing.T) {
+	t.Parallel()
+	r := fixtureLoad(t, map[string]string{"ANTHROPIC_API_KEY": "k"}, "default = \"github-copilot\"\n", WithStateRoot(t.TempDir()))
+	name, warns, err := r.DefaultInstance()
+	if err != nil || name != "github-copilot" {
+		t.Fatalf("an explicit default must select Copilot before sign-in: %q %v %v", name, warns, err)
+	}
+	if len(warns) != 0 {
+		t.Fatalf("a missing record must not fall through: %v", warns)
+	}
+	inst, ok := r.Instance("github-copilot")
+	if !ok || inst.CredentialSource != "none" || len(inst.Warnings) == 0 {
+		t.Fatalf("the signed-out explicit default must surface the Copilot sign-in error: %+v ok=%v", inst, ok)
+	}
+}
+
 func TestInstances_CopilotCustomInstanceUsesItsOwnRecord(t *testing.T) {
 	t.Parallel()
 	state := t.TempDir()

@@ -1172,10 +1172,13 @@ func (r *Registry) computeInstances() {
 		}
 		t := r.listingTransport(rec)
 		if t.Auth == AuthOAuthGitHubCopilot {
-			// No record means the user never signed in, so no instance. A
-			// record that cannot launch stays listed for Settings to show
-			// and diagnose; only automatic selection skips it.
-			if r.copilotAuthState(id) == copilotRecordMissing {
+			// No record means the user never signed in. The row is listed
+			// only when `default` names it, so the explicit default reports
+			// the sign-in state instead of falling through to another
+			// provider; automatic selection skips it either way. A record
+			// that cannot launch stays listed for Settings to show and
+			// diagnose.
+			if r.copilotAuthState(id) == copilotRecordMissing && r.userDefault != id {
 				continue
 			}
 		} else if cred, _ := r.credential(rec, t); cred.Source == "none" && t.Auth != AuthNone && t.Auth != AuthOptionalBearer {
