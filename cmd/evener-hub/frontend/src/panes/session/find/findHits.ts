@@ -1,10 +1,10 @@
 // Which entries hold the words being looked for: a message's words, a
 // thought's summaries, an action row's rationale, a steer's visible text and
-// notification cards, and a memory refresh's index (tool calls and other
-// system notices are not searched). A hit is one projected entry, and its words
-// are on screen once its row mounts: a message never folds, a thought's, an
-// action's, a steer's or a refresh's words sit behind a disclosure Find opens
-// before it lands.
+// notification cards, a memory refresh's index, and a system notice's or
+// warning's words as its row paints them (tool calls are not searched). A hit is
+// one projected entry, and its words are on screen once its row mounts: a
+// message never folds, a thought's, an action's, a steer's, a refresh's or a
+// notice's words sit behind a disclosure Find opens before it lands.
 import {
   entryDisplayKey,
   findNeedle,
@@ -17,6 +17,7 @@ import {
   MEMORY_CONTEXT_EVENT_KIND,
   memoryContextEmptyText,
   type ProjectedEntry,
+  type ProjectedTurn,
   parseMemoryContext,
   projectThread,
   steeringNotificationFragments,
@@ -37,6 +38,12 @@ import { toolRendererFor } from "../transcript/toolRenderers";
 import { intentGroupId, intentRunAt } from "../transcript/toolRuns";
 import { markdownAsRead, messageAsShown, reasoningSummariesAsRead } from "./messageText";
 import { notificationCardsFor, notificationShownTexts } from "./notificationHits";
+import {
+  type SystemNoticePlacement,
+  systemMessageTexts,
+  systemNoticePlacement,
+  warningTexts,
+} from "./systemNoticeHits";
 
 export interface FindHit {
   /** The entry's display key: its identity across paging and re-projection,
@@ -55,6 +62,9 @@ export interface FindHit {
    * names the card(s) that hold the words - plus a card's raw frame when that
    * is the only place they sit. */
   readonly opens?: readonly string[];
+  /** The disclosure ignores the expand-all baseline (a notes snapshot), so
+   * Find must open it explicitly even when the baseline reads open. */
+  readonly opensIgnoreBaseline?: boolean;
   /** The session-scoped dividers that hide the matching words: a steer's and a
    * memory refresh's body folds by the session ref plus its own id
    * (SteeringDivider's key), not by the view's disclosure scope. */
@@ -190,10 +200,12 @@ function dividerSpans(item: ItemModel): readonly ShownSpan[] | null {
   return null;
 }
 
-/** Whether a steer's or a memory refresh's row decides what its words are, so
- * its raw `text` is never one of them. Other rows show their own text. */
+/** Whether a row decides what its words are, so its raw `text` is never one of
+ * them: a steer's and a memory refresh's body fold behind a divider, and a
+ * system notice or warning paints its own line, scaffold body or warning block.
+ * Other rows show their own text. */
 export function rowShowsOwnText(item: ItemModel): boolean {
-  return item.type === "steering" || (item.type === "systemMessage" && item.eventKind === MEMORY_CONTEXT_EVENT_KIND);
+  return item.type === "steering" || item.type === "warning" || item.type === "systemMessage";
 }
 
 // What an action row actually says: the same intent line ToolCallItem paints
@@ -221,10 +233,16 @@ function shownTexts(
     const text = intentText(entry);
     return text === null ? [] : [text];
   }
+  // A steer's or a memory refresh's row decides its words (its body folds
+  // behind a session-scoped divider), so it never reads its raw text.
   const spans = dividerSpans(entry.item);
   // A steer paints its interstitial text as dividers and its notification
   // cards beside them; both are words a match can land on.
   if (spans !== null) return [...spans.map((span) => span.text), ...notificationShownTexts(entry.item, version)];
+  if (entry.item.type === "warning") return warningTexts(entry.item);
+  if (entry.item.type === "systemMessage") {
+    return config === undefined ? [] : systemMessageTexts(entry.item, turn, config, version);
+  }
   if (entry.item.type === "reasoning") {
     // A chat view shows only the placeholder before a live thought: its
     // summaries are not on screen, so they are not a match there.
@@ -270,8 +288,8 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string, view
   if (needle === "") return [];
   const version = view.version ?? mermaidRenderVersion();
   const hits: FindHit[] = [];
-  const add = (entry: ProjectedEntry, rowIndex: number, turn: TurnModel | undefined, opens?: string) => {
-    const texts = shownTexts(entry, turn, view.config, version);
+  const add = (entry: ProjectedEntry, rowIndex: number, turn: ProjectedTurn | undefined, groupId?: string) => {
+    const texts = shownTexts(entry, turn?.source, view.config, version);
     const shownHere = texts.some((text) => readable(text).includes(needle));
     // A steer's cards open one by one: only a card whose painted words hold
     // the needle opens, and a card's raw frame opens only when its face does
@@ -299,19 +317,29 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string, view
       }
       if (disclosures.length === 0) return;
     }
-    if (opens !== undefined) disclosures.push(opens);
+    // Where the words sit is read only for a matched row: grouping a notice
+    // run costs a scan, and Find runs on every keystroke.
+    let placement: SystemNoticePlacement | null = null;
+    if (groupId !== undefined) placement = { opens: groupId };
+    // A thought opens its own row; no other rule applies to it.
+    else if (entry.item.type === "reasoning") placement = { opens: entryDisplayKey(entry) };
+    else if (turn !== undefined && view.config !== undefined)
+      placement = systemNoticePlacement(entry, turn, view.config);
     const { id, callId, roundId } = entry.item;
     const itemId = entry.kind === "intent" ? entry.sourceItemId : id;
     const opensSession = dividerSpans(entry.item)?.flatMap((span) =>
       span.divider !== undefined && readable(span.text).includes(needle) ? [span.divider] : [],
     );
     hits.push({
-      key: entryDisplayKey(entry),
+      key: placement?.key ?? entryDisplayKey(entry),
       itemId,
       rowIndex,
       ...(callId ? { callId } : {}),
       ...(roundId ? { roundId } : {}),
-      ...(disclosures.length > 0 ? { opens: disclosures } : {}),
+      ...(placement?.opens !== undefined || disclosures.length > 0
+        ? { opens: [...(placement?.opens !== undefined ? [placement.opens] : []), ...disclosures] }
+        : {}),
+      ...(placement?.opensIgnoreBaseline ? { opensIgnoreBaseline: true } : {}),
       ...(opensSession?.length ? { opensSession } : {}),
     });
   };
@@ -330,11 +358,11 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string, view
         // TurnBlock groups consecutive action rows under the first one's id.
         const run = intentRunAt(laidOut, index);
         const group = intentGroupId(run.entries[0]?.id);
-        for (const member of run.entries) add(member, rowIndex, row.turn.source, group);
+        for (const member of run.entries) add(member, rowIndex, row.turn, group);
         index = run.end - 1;
         continue;
       }
-      add(entry, rowIndex, row.turn.source, entry.item.type === "reasoning" ? entryDisplayKey(entry) : undefined);
+      add(entry, rowIndex, row.turn);
     }
   });
   return hits;

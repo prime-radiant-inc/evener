@@ -228,6 +228,7 @@ export function useFindInSession({
           before.itemId === hit.itemId &&
           before.rowIndex === hit.rowIndex &&
           opensKey(before) === opensKey(hit) &&
+          before.opensIgnoreBaseline === hit.opensIgnoreBaseline &&
           (before.opensSession ?? []).join("\0") === (hit.opensSession ?? []).join("\0")
         );
       });
@@ -433,7 +434,11 @@ export function useFindInSession({
     // only sit there, its raw frame.
     for (const disclosure of current.opens ?? []) {
       const scoped = scopedDisclosureId(disclosureScope, disclosure);
-      if (!isDisclosureOpenNow(scoped, false)) setDisclosureOpen(scoped, true);
+      // A notes snapshot ignores the expand-all baseline, so the baseline's
+      // "open" is not what its row shows: open it explicitly in that case too.
+      if (current.opensIgnoreBaseline) {
+        if (!isDisclosureOpenExplicitly(scoped)) setDisclosureOpen(scoped, true);
+      } else if (!isDisclosureOpenNow(scoped, false)) setDisclosureOpen(scoped, true);
     }
     // A steer's or a memory refresh's body folds by the session ref plus its
     // own id (SteeringDivider's key). Its owner may keep it closed through an

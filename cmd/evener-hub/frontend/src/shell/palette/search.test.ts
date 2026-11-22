@@ -4,6 +4,7 @@ import {
   type SearchResponse,
   type ThreadModel,
   type TurnModel,
+  WarningCodeContextBudget,
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { notificationWireItem } from "@evener/appwire-client/testing/notificationWireFixtures";
@@ -349,6 +350,78 @@ test("a reply is searched as it reads, the way the session's Find reads it", () 
   const model = { turns: [{ id: "t", status: "completed", items: [reply] }] } as unknown as ThreadModel;
   expect(findInSessionMatches(model, "build failed", VIEW)).toHaveLength(1);
   expect(findInSessionMatches(model, "**fail**", VIEW)).toHaveLength(0);
+});
+
+// The palette reads the same projected words Find lands on: a notice's quiet
+// line, a warning's block, a scaffold's rendered Markdown. It never offers a
+// raw `item.text` the row does not show.
+const SHOWN = makeTranscriptDisplayConfig(
+  { kind: "preset", level: "tools" },
+  { systemEvents: true, promptEvents: true, roundTimings: true },
+);
+const FULL_WARNINGS = makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, { systemEvents: true });
+
+test("findInSessionMatches offers a visible system notice only under the config that shows it", () => {
+  const model = modelWithTurns([
+    turn("t1", [
+      itemWith("n", {
+        type: "systemMessage",
+        eventKind: "context_compaction",
+        text: "model switched to opus",
+      }),
+    ]),
+  ]);
+  // The default advanced settings hide routine system events.
+  expect(findInSessionMatches(model, "opus", VIEW)).toEqual([]);
+  expect(findInSessionMatches(model, "opus", SHOWN).map((h) => h.itemId)).toEqual(["n"]);
+});
+
+test("findInSessionMatches offers a warning's block words and hides one that renders nothing", () => {
+  const shown = modelWithTurns([
+    turn("t1", [itemWith("w", { type: "warning", text: "disk almost full", warning: { title: "Evener error" } })]),
+  ]);
+  expect(findInSessionMatches(shown, "Evener error", CHAT).map((h) => h.itemId)).toEqual(["w"]);
+  expect(findInSessionMatches(shown, "disk almost full", CHAT).map((h) => h.itemId)).toEqual(["w"]);
+
+  // warningWords is null, so WarningItem renders null and Find has no row.
+  const empty = modelWithTurns([turn("t1", [itemWith("x", { type: "warning", text: "", warning: {} })])]);
+  expect(findInSessionMatches(empty, "warning", CHAT)).toEqual([]);
+
+  // An informational warning shows only at Full, and its hint is on screen.
+  const quiet = modelWithTurns([
+    turn("t1", [
+      itemWith("q", {
+        type: "warning",
+        text: "context usage is high",
+        warning: { code: WarningCodeContextBudget, hint: "no action needed" },
+      }),
+    ]),
+  ]);
+  expect(findInSessionMatches(quiet, "no action needed", SHOWN)).toEqual([]);
+  expect(findInSessionMatches(quiet, "no action needed", FULL_WARNINGS).map((h) => h.itemId)).toEqual(["q"]);
+});
+
+test("findInSessionMatches reads a scaffold as its rendered Markdown, never the raw source", () => {
+  const model = modelWithTurns([
+    turn("t1", [itemWith("p", { type: "systemMessage", eventKind: "system_prompt", text: "You are **bold** here" })]),
+  ]);
+  expect(findInSessionMatches(model, "bold here", SHOWN).map((h) => h.itemId)).toEqual(["p"]);
+  expect(findInSessionMatches(model, "**bold**", SHOWN)).toEqual([]);
+});
+
+test("findInSessionMatches reads round timings as their headline, not the raw dump", () => {
+  const model = modelWithTurns([
+    turn("t1", [
+      itemWith("r", {
+        type: "systemMessage",
+        eventKind: "round_timings",
+        text: "Round 2 total=6.411312958s llm=4.935822084s",
+        raw: { roundTimings: { round: 2, total_round_ns: 6_411_312_958, llm_call_ns: 4_935_822_084 } },
+      }),
+    ]),
+  ]);
+  expect(findInSessionMatches(model, "Round 2", SHOWN).map((h) => h.itemId)).toEqual(["r"]);
+  expect(findInSessionMatches(model, "total=6.411", SHOWN)).toEqual([]);
 });
 
 // A steer's and a memory refresh's words are the ones their row shows. The
