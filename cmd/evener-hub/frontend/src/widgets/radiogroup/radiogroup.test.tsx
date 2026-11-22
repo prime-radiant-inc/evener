@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { expect, test, vi } from "vitest";
@@ -24,6 +24,7 @@ function ControlledRadioGroup(props: {
   initial: string;
   onChange?: (value: string) => void;
   disabled?: boolean;
+  variant?: "stack" | "list";
 }) {
   const [value, setValue] = useState(props.initial);
   return (
@@ -32,6 +33,7 @@ function ControlledRadioGroup(props: {
       value={value}
       options={props.options}
       disabled={props.disabled}
+      variant={props.variant}
       onChange={(next) => {
         setValue(next);
         props.onChange?.(next);
@@ -204,6 +206,54 @@ test("declares a :focus-visible rule in its CSS module, using only tokens", () =
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "radiogroup.module.css"), "utf8");
   expect(css).toContain(":focus-visible");
+});
+
+test("list variant renders each option through ListRow as a radio", () => {
+  render(<RadioGroup variant="list" label="Theme" value="dark" options={THEME_OPTIONS} onChange={() => {}} />);
+
+  const group = screen.getByRole("radiogroup", { name: "Theme" });
+  expect(within(group).getAllByRole("radio")).toHaveLength(3);
+  const dark = screen.getByRole("radio", { name: "Dark" });
+  expect(dark.tagName).toBe("BUTTON");
+  expect(dark.getAttribute("aria-checked")).toBe("true");
+  expect(screen.getByRole("radio", { name: "System" }).getAttribute("aria-checked")).toBe("false");
+});
+
+test("list variant rows meet the 48px floor and mark only the checked option", () => {
+  render(<RadioGroup variant="list" label="Theme" value="dark" options={THEME_OPTIONS} onChange={() => {}} />);
+
+  for (const radio of screen.getAllByRole("radio")) expect((radio as HTMLElement).style.minHeight).toBe("48px");
+  expect(screen.getByRole("radio", { name: "Dark" }).querySelector("[data-selected-mark]")).not.toBeNull();
+  expect(screen.getByRole("radio", { name: "System" }).querySelector("[data-selected-mark]")).toBeNull();
+  expect(screen.getByRole("radio", { name: "Light" }).querySelector("[data-selected-mark]")).toBeNull();
+});
+
+test("list variant keeps the roving tabindex and checks the arrow-key target", async () => {
+  const user = userEvent.setup();
+  const onChange = vi.fn();
+  render(<ControlledRadioGroup options={THEME_OPTIONS} initial="dark" onChange={onChange} variant="list" />);
+  expect(screen.getByRole("radio", { name: "Dark" }).getAttribute("tabindex")).toBe("0");
+  expect(screen.getByRole("radio", { name: "System" }).getAttribute("tabindex")).toBe("-1");
+
+  screen.getByRole("radio", { name: "Dark" }).focus();
+  await user.keyboard("{ArrowDown}");
+
+  expect(onChange).toHaveBeenCalledWith("light");
+  expect(document.activeElement).toBe(screen.getByRole("radio", { name: "Light" }));
+  expect(screen.getByRole("radio", { name: "Light" }).getAttribute("aria-checked")).toBe("true");
+});
+
+test("list variant disables an option's row", async () => {
+  const user = userEvent.setup();
+  const onChange = vi.fn();
+  render(
+    <RadioGroup variant="list" label="Loud for" value="asks" options={OPTIONS_WITH_DISABLED} onChange={onChange} />,
+  );
+
+  const disabled = screen.getByRole("radio", { name: "Everything" }) as HTMLButtonElement;
+  expect(disabled.disabled).toBe(true);
+  await user.click(disabled);
+  expect(onChange).not.toHaveBeenCalled();
 });
 
 // Beautiful UI treatment (docs/superpowers/specs/2026-08-13-webui-

@@ -483,7 +483,7 @@ async function selectLongSpawnModel(): Promise<true> {
 }
 
 function openSpawnPlugins(): void {
-  const row = document.querySelector<HTMLButtonElement>('[data-label="Plugins"] button');
+  const row = document.querySelector<HTMLButtonElement>('button[data-label="Plugins"]');
   if (row && isElementVisible(row)) {
     row.click();
     return;
@@ -512,7 +512,7 @@ async function exerciseDirectoryPicker() {
   connectionStore.getState().connect(fake);
   const mobile = window.innerWidth <= 899;
   const trigger = await directoryElement<HTMLButtonElement>(
-    mobile ? '[data-label="Working directory"] button' : "#spawn-cwd",
+    mobile ? 'button[data-label="Working directory"]' : "#spawn-cwd",
   );
   trigger.focus();
   trigger.click();
