@@ -31,21 +31,21 @@ type RuntimeCredentials struct {
 	Expiry      time.Time
 }
 
-// Service drives the Copilot record lifecycle. Its clock is nowFunc and its
-// sleep seam exists so tests never wait on wall time.
+// Service drives the Copilot record lifecycle; sleep is a test seam.
 type Service struct {
 	cfg    Config
 	client *http.Client
 	sleep  func(context.Context, time.Duration) error
 }
 
+// beforeRecordLock is a test seam that runs immediately before a record-lock
+// acquisition, letting process tests signal the lock wait.
+var beforeRecordLock = func() {}
+
 // NewService resolves cfg defaults and creates a client when none is supplied.
 func NewService(cfg Config, client *http.Client) *Service {
 	cfg = mergeConfigDefaults(cfg)
-	if client == nil {
-		client = &http.Client{Timeout: cfg.HTTPTimeout}
-	}
-	return &Service{cfg: cfg, client: client, sleep: ctxSleep}
+	return &Service{cfg: cfg, client: httpClient(client, cfg), sleep: ctxSleep}
 }
 
 // LoginWithDevice runs the device flow, shows the user code once, polls until
@@ -70,6 +70,8 @@ func (s *Service) LoginWithDevice(ctx context.Context, stateDir, instance string
 		if err != nil {
 			return AuthStatus{}, err
 		}
+		// Carry slow_down's effective interval into the next poll.
+		dc.Interval = interval
 		switch state {
 		case PollAuthorized:
 			return s.saveLogin(ctx, stateDir, instance, tokens)
@@ -83,21 +85,19 @@ func (s *Service) LoginWithDevice(ctx context.Context, stateDir, instance string
 }
 
 func (s *Service) saveLogin(ctx context.Context, stateDir, instance string, tokens TokenSet) (AuthStatus, error) {
-	if strings.TrimSpace(tokens.AccessToken) == "" || strings.TrimSpace(tokens.RefreshToken) == "" || tokens.AccessExpiry.IsZero() || tokens.RefreshExpiry.IsZero() {
-		return AuthStatus{}, fmt.Errorf("%w: token response lacks required tokens or expiry", ErrMalformedResponse)
+	if err := validateTokenSet(tokens, true); err != nil {
+		return AuthStatus{}, err
 	}
 	account, err := FetchAccount(ctx, s.client, s.cfg, tokens.AccessToken)
 	if err != nil {
 		return AuthStatus{}, err
 	}
-	record := AuthRecord{
-		Instance: instance, Scheme: AuthScheme, Version: 1,
+	record := AuthRecord{Instance: instance, Scheme: AuthScheme, Version: 1,
 		AccessToken: tokens.AccessToken, RefreshToken: tokens.RefreshToken,
-		TokenType:  firstNonEmpty(tokens.TokenType, "Bearer"),
-		Scope:      firstNonEmpty(tokens.Scope, s.cfg.scope()),
-		ObtainedAt: nowFunc(), AccessExpiry: tokens.AccessExpiry,
-		RefreshExpiry: tokens.RefreshExpiry, AccountID: account.ID, Email: account.Email,
-	}
+		TokenType: firstNonEmpty(tokens.TokenType, "Bearer"), Scope: firstNonEmpty(tokens.Scope, s.cfg.scope()),
+		ObtainedAt: nowFunc(), AccessExpiry: tokens.AccessExpiry, RefreshExpiry: tokens.RefreshExpiry,
+		AccountID: account.ID, Email: account.Email}
+	beforeRecordLock()
 	if err := WithRecordLock(stateDir, instance, func() error {
 		return SaveAuth(stateDir, instance, record)
 	}); err != nil {
@@ -123,6 +123,7 @@ func (s *Service) Status(stateDir, instance string) (AuthStatus, error) {
 // an error.
 func (s *Service) Logout(stateDir, instance string) (bool, error) {
 	existed := false
+	beforeRecordLock()
 	err := WithRecordLock(stateDir, instance, func() error {
 		_, err := LoadAuth(stateDir, instance)
 		switch {
@@ -162,9 +163,9 @@ func (s *Service) ResolveRuntimeCredentials(ctx context.Context, stateDir, insta
 	return s.refreshUnderLock(ctx, stateDir, instance)
 }
 
-func (s *Service) refreshUnderLock(ctx context.Context, stateDir, instance string) (RuntimeCredentials, error) {
-	var credentials RuntimeCredentials
-	err := WithRecordLock(stateDir, instance, func() error {
+func (s *Service) refreshUnderLock(ctx context.Context, stateDir, instance string) (credentials RuntimeCredentials, err error) {
+	beforeRecordLock()
+	err = WithRecordLock(stateDir, instance, func() error {
 		current, err := LoadAuth(stateDir, instance)
 		if errors.Is(err, ErrAuthNotFound) {
 			return loginRequired(err)
@@ -203,10 +204,7 @@ func (s *Service) refreshUnderLock(ctx context.Context, stateDir, instance strin
 		credentials = runtimeFromRecord(refreshed)
 		return nil
 	})
-	if err != nil {
-		return RuntimeCredentials{}, err
-	}
-	return credentials, nil
+	return credentials, err
 }
 
 func (s *Service) recordRejection(stateDir, instance string, refused AuthRecord) error {
@@ -228,12 +226,9 @@ func (s *Service) recordRejection(stateDir, instance string, refused AuthRecord)
 
 func statusFromRecord(record AuthRecord) AuthStatus {
 	now := nowFunc()
-	return AuthStatus{
-		SignedIn: true, Source: AuthSourceOAuth, AccountID: record.AccountID,
+	return AuthStatus{SignedIn: true, Source: AuthSourceOAuth, AccountID: record.AccountID,
 		Email: record.Email, Expiry: record.AccessExpiry,
-		NeedsRefresh: needsRefresh(now, record.AccessExpiry),
-		NeedsLogin:   record.NeedsLogin(now),
-	}
+		NeedsRefresh: needsRefresh(now, record.AccessExpiry), NeedsLogin: record.NeedsLogin(now)}
 }
 
 func runtimeFromRecord(record AuthRecord) RuntimeCredentials {
@@ -241,8 +236,8 @@ func runtimeFromRecord(record AuthRecord) RuntimeCredentials {
 }
 
 func refreshedRecord(current AuthRecord, tokens TokenSet) (AuthRecord, error) {
-	if strings.TrimSpace(tokens.AccessToken) == "" || tokens.AccessExpiry.IsZero() {
-		return AuthRecord{}, fmt.Errorf("%w: refresh response lacks an access token or expiry", ErrMalformedResponse)
+	if err := validateTokenSet(tokens, false); err != nil {
+		return AuthRecord{}, err
 	}
 	record := current
 	record.AccessToken = tokens.AccessToken

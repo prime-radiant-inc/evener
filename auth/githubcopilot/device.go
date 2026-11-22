@@ -60,10 +60,7 @@ func RequestDeviceCode(ctx context.Context, client *http.Client, cfg Config) (De
 	if payload.DeviceCode == "" || payload.UserCode == "" || payload.VerificationURL == "" || payload.ExpiresIn <= 0 {
 		return DeviceCode{}, fmt.Errorf("%w: missing device authorization fields", ErrMalformedResponse)
 	}
-	interval := time.Duration(payload.Interval) * time.Second
-	if interval <= 0 {
-		interval = deviceInterval
-	}
+	interval := max(time.Duration(payload.Interval)*time.Second, deviceInterval)
 	return DeviceCode{
 		DeviceCode: payload.DeviceCode, UserCode: payload.UserCode,
 		VerificationURL: payload.VerificationURL, Interval: interval,
@@ -76,25 +73,24 @@ func RequestDeviceCode(ctx context.Context, client *http.Client, cfg Config) (De
 // both return PollExpired.
 func PollDeviceOnce(ctx context.Context, client *http.Client, cfg Config, dc DeviceCode) (TokenSet, PollState, time.Duration, error) {
 	cfg = mergeConfigDefaults(cfg)
-	interval := dc.Interval
-	if interval <= 0 {
-		interval = deviceInterval
-	}
+	interval := max(dc.Interval, deviceInterval)
 	if !dc.Expiry.IsZero() && !nowFunc().Before(dc.Expiry) {
 		return TokenSet{}, PollExpired, interval, nil
 	}
-	payload, err := postOAuthForm(ctx, client, cfg, url.Values{
+	var payload tokenResponsePayload
+	err := postFormJSON(ctx, client, cfg, "/login/oauth/access_token", url.Values{
 		"client_id": {cfg.ClientID}, "device_code": {dc.DeviceCode}, "grant_type": {deviceGrantType},
-	})
+	}, &payload)
 	if err != nil {
 		return TokenSet{}, PollPending, interval, err
 	}
 	switch payload.Error {
 	case "":
-		if payload.AccessToken == "" {
-			return TokenSet{}, PollPending, interval, fmt.Errorf("%w: missing access token", ErrMalformedResponse)
+		tokens := payload.tokenSet(nowFunc())
+		if err := validateTokenSet(tokens, true); err != nil {
+			return TokenSet{}, PollPending, interval, err
 		}
-		return payload.tokenSet(nowFunc()), PollAuthorized, interval, nil
+		return tokens, PollAuthorized, interval, nil
 	case "authorization_pending":
 		return TokenSet{}, PollPending, interval, nil
 	case "slow_down":

@@ -48,6 +48,5 @@ func FetchAccount(ctx context.Context, client *http.Client, cfg Config, accessTo
 	if payload.ID == "" {
 		return Account{}, fmt.Errorf("%w: missing account id", ErrMalformedResponse)
 	}
-	account := Account{ID: payload.ID.String(), Login: payload.Login, Email: payload.Email}
-	return account, nil
+	return Account{ID: payload.ID.String(), Login: payload.Login, Email: payload.Email}, nil
 }

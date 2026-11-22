@@ -15,7 +15,6 @@ const (
 	AuthSourceSignedOut = "signed-out"
 	defaultGitHubURL    = "https://github.com"
 	defaultAPIURL       = "https://api.github.com"
-	defaultScope        = "read:user offline_access"
 	refreshSkew         = 5 * time.Minute
 	deviceInterval      = 5 * time.Second
 	deviceGrantType     = "urn:ietf:params:oauth:grant-type:device_code"

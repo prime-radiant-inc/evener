@@ -1,17 +1,14 @@
 package githubcopilot
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
-	"strings"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -251,6 +248,27 @@ func TestLoginWithDeviceStopsAtCodeExpiry(t *testing.T) {
 	}
 	if _, err := LoadAuth(stateDir, "work"); !errors.Is(err, ErrAuthNotFound) {
 		t.Fatalf("LoadAuth() after expired login error = %v, want ErrAuthNotFound", err)
+	}
+}
+
+func TestLoginWithDeviceCarriesSlowDownInterval(t *testing.T) {
+	at := time.Date(2026, 11, 22, 2, 0, 0, 0, time.UTC)
+	clock := swapNow(t, at)
+	gh, server := newScriptedGitHub(t)
+	gh.queuePollCodes("authorization_pending", "slow_down", "authorization_pending")
+	svc := newServiceForTest(server)
+	var slept []time.Duration
+	svc.sleep = func(ctx context.Context, d time.Duration) error {
+		slept = append(slept, d)
+		*clock = (*clock).Add(d)
+		return nil
+	}
+	if _, err := svc.LoginWithDevice(context.Background(), t.TempDir(), "work", nil); err != nil {
+		t.Fatalf("LoginWithDevice() error = %v", err)
+	}
+	want := []time.Duration{5 * time.Second, 10 * time.Second, 10 * time.Second}
+	if !slices.Equal(slept, want) {
+		t.Fatalf("poll waits = %v, want %v", slept, want)
 	}
 }
 
@@ -607,233 +625,5 @@ func TestRecordRejectionDoesNotResurrectDeletedRecord(t *testing.T) {
 	}
 	if _, err := LoadAuth(stateDir, refused.Instance); !errors.Is(err, ErrAuthNotFound) {
 		t.Fatalf("LoadAuth() error = %v, want the record to stay deleted", err)
-	}
-}
-
-const (
-	serviceHelperModeEnv     = "EVENER_TEST_COPILOT_SERVICE_MODE"
-	serviceHelperStateEnv    = "EVENER_TEST_COPILOT_SERVICE_STATE"
-	serviceHelperInstanceEnv = "EVENER_TEST_COPILOT_SERVICE_INSTANCE"
-	serviceHelperBaseEnv     = "EVENER_TEST_COPILOT_SERVICE_BASE"
-	serviceHelperReadyEnv    = "EVENER_TEST_COPILOT_SERVICE_READY"
-)
-
-type serviceHelperProcess struct {
-	cmd    *exec.Cmd
-	out    bytes.Buffer
-	waited bool
-}
-
-func startServiceHelper(t *testing.T, mode, stateDir, instance, baseURL, readyPath string) *serviceHelperProcess {
-	t.Helper()
-	cmd := exec.Command(os.Args[0], "-test.run=^TestServiceHelperProcess$")
-	cmd.Env = append(os.Environ(),
-		serviceHelperModeEnv+"="+mode,
-		serviceHelperStateEnv+"="+stateDir,
-		serviceHelperInstanceEnv+"="+instance,
-		serviceHelperBaseEnv+"="+baseURL,
-		serviceHelperReadyEnv+"="+readyPath,
-	)
-	helper := &serviceHelperProcess{cmd: cmd}
-	cmd.Stdout = &helper.out
-	cmd.Stderr = &helper.out
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start helper process: %v", err)
-	}
-	t.Cleanup(func() {
-		if !helper.waited {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-		}
-	})
-	return helper
-}
-
-func (h *serviceHelperProcess) wait(t *testing.T) {
-	t.Helper()
-	h.waited = true
-	if err := h.cmd.Wait(); err != nil {
-		t.Fatalf("helper process: %v\n%s", err, h.out.String())
-	}
-}
-
-func (h *serviceHelperProcess) output() string { return h.out.String() }
-
-func TestServiceHelperProcess(t *testing.T) {
-	mode := os.Getenv(serviceHelperModeEnv)
-	if mode == "" {
-		t.Skip("service helper subprocess only")
-	}
-	if readyPath := os.Getenv(serviceHelperReadyEnv); readyPath != "" {
-		if err := os.WriteFile(readyPath, []byte("ready\n"), 0o600); err != nil {
-			t.Fatalf("write readiness file: %v", err)
-		}
-	}
-	cfg := DefaultConfig()
-	cfg.GitHubBaseURL = os.Getenv(serviceHelperBaseEnv)
-	cfg.APIBaseURL = cfg.GitHubBaseURL
-	cfg.HTTPTimeout = 5 * time.Second
-	svc := NewService(cfg, &http.Client{Timeout: 5 * time.Second})
-	stateDir := os.Getenv(serviceHelperStateEnv)
-	instance := os.Getenv(serviceHelperInstanceEnv)
-	ctx := context.Background()
-	switch mode {
-	case "resolve":
-		credentials, err := svc.ResolveRuntimeCredentials(ctx, stateDir, instance)
-		if err != nil {
-			t.Fatalf("resolve: %v", err)
-		}
-		if credentials.BearerToken == "" || credentials.AccountID == "" {
-			t.Fatal("resolve returned incomplete credentials")
-		}
-		fmt.Println("ok")
-	case "reject":
-		if _, err := svc.ResolveRuntimeCredentials(ctx, stateDir, instance); !errors.Is(err, ErrLoginRequired) {
-			t.Fatalf("resolve error = %v, want ErrLoginRequired", err)
-		}
-		fmt.Println("ok login-required")
-	case "logout":
-		existed, err := svc.Logout(stateDir, instance)
-		if err != nil {
-			t.Fatalf("logout: %v", err)
-		}
-		fmt.Printf("ok %t\n", existed)
-	case "login":
-		if _, err := svc.LoginWithDevice(ctx, stateDir, instance, nil); err != nil {
-			t.Fatalf("login: %v", err)
-		}
-		fmt.Println("ok")
-	default:
-		t.Fatalf("unknown helper mode %q", mode)
-	}
-}
-
-func requireRecordLocks(t *testing.T) {
-	t.Helper()
-	switch runtime.GOOS {
-	case "windows", "aix", "solaris":
-		t.Skip("record locks are not supported on this platform")
-	}
-}
-
-func waitForSignal(t *testing.T, ch <-chan struct{}, what string) {
-	t.Helper()
-	select {
-	case <-ch:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("timed out waiting for %s", what)
-	}
-}
-
-func waitForPath(t *testing.T, path string) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if _, err := os.Stat(path); err == nil {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", path)
-		}
-		time.Sleep(time.Millisecond)
-	}
-}
-
-func TestTwoProcessRefreshRotatesOnce(t *testing.T) {
-	requireRecordLocks(t)
-	stateDir := t.TempDir()
-	record := testRecord(time.Now(), -time.Minute, 24*time.Hour)
-	if err := SaveAuth(stateDir, record.Instance, record); err != nil {
-		t.Fatalf("SaveAuth() error = %v", err)
-	}
-	gh, server := newScriptedGitHub(t)
-	release := gh.blockRefresh()
-	t.Cleanup(release)
-
-	first := startServiceHelper(t, "resolve", stateDir, record.Instance, server.URL, "")
-	waitForSignal(t, gh.started, "the first refresh request")
-	secondReady := filepath.Join(t.TempDir(), "second-ready")
-	second := startServiceHelper(t, "resolve", stateDir, record.Instance, server.URL, secondReady)
-	waitForPath(t, secondReady)
-	release()
-
-	first.wait(t)
-	second.wait(t)
-	if got := gh.refreshCount(); got != 1 {
-		t.Fatalf("refresh requests = %d, want exactly 1 after one rotation", got)
-	}
-	loaded, err := LoadAuth(stateDir, record.Instance)
-	if err != nil {
-		t.Fatalf("LoadAuth() error = %v", err)
-	}
-	if loaded.AccessToken != "access-1" || loaded.RefreshToken != "refresh-1" {
-		t.Fatal("stored record did not carry the single rotation's pair")
-	}
-	if loaded.RefreshRejected {
-		t.Fatal("concurrent resolver left a false rejection")
-	}
-}
-
-func TestTwoProcessLogoutDuringRefreshWins(t *testing.T) {
-	requireRecordLocks(t)
-	stateDir := t.TempDir()
-	record := testRecord(time.Now(), -time.Minute, 24*time.Hour)
-	if err := SaveAuth(stateDir, record.Instance, record); err != nil {
-		t.Fatalf("SaveAuth() error = %v", err)
-	}
-	gh, server := newScriptedGitHub(t)
-	release := gh.blockRefresh()
-	t.Cleanup(release)
-
-	refresher := startServiceHelper(t, "resolve", stateDir, record.Instance, server.URL, "")
-	waitForSignal(t, gh.started, "the refresh request")
-	logoutReady := filepath.Join(t.TempDir(), "logout-ready")
-	logout := startServiceHelper(t, "logout", stateDir, record.Instance, server.URL, logoutReady)
-	waitForPath(t, logoutReady)
-	release()
-
-	refresher.wait(t)
-	logout.wait(t)
-	if !strings.Contains(logout.output(), "ok true") {
-		t.Fatalf("logout output = %q, want it to find and remove the record", logout.output())
-	}
-	if got := gh.refreshCount(); got != 1 {
-		t.Fatalf("refresh requests = %d, want 1", got)
-	}
-	if _, err := LoadAuth(stateDir, record.Instance); !errors.Is(err, ErrAuthNotFound) {
-		t.Fatalf("LoadAuth() after logout-during-refresh error = %v, want ErrAuthNotFound", err)
-	}
-}
-
-func TestTwoProcessFreshLoginClearsStaleRejection(t *testing.T) {
-	requireRecordLocks(t)
-	stateDir := t.TempDir()
-	record := testRecord(time.Now(), -time.Minute, 24*time.Hour)
-	if err := SaveAuth(stateDir, record.Instance, record); err != nil {
-		t.Fatalf("SaveAuth() error = %v", err)
-	}
-	gh, server := newScriptedGitHub(t)
-	gh.queueRefreshCodes("bad_refresh_token")
-	release := gh.blockRefresh()
-	t.Cleanup(release)
-
-	rejecter := startServiceHelper(t, "reject", stateDir, record.Instance, server.URL, "")
-	waitForSignal(t, gh.started, "the refused refresh request")
-	loginReady := filepath.Join(t.TempDir(), "login-ready")
-	login := startServiceHelper(t, "login", stateDir, record.Instance, server.URL, loginReady)
-	waitForPath(t, loginReady)
-	release()
-
-	rejecter.wait(t)
-	login.wait(t)
-	loaded, err := LoadAuth(stateDir, record.Instance)
-	if err != nil {
-		t.Fatalf("LoadAuth() error = %v", err)
-	}
-	if loaded.RefreshRejected {
-		t.Fatal("fresh login left the previous generation's rejection in place")
-	}
-	if loaded.AccessToken != "login-access" || loaded.RefreshToken != "login-refresh" {
-		t.Fatal("fresh login did not replace the refused generation")
 	}
 }

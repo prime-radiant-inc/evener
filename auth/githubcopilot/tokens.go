@@ -64,12 +64,6 @@ func postFormJSON(ctx context.Context, client *http.Client, cfg Config, path str
 	return nil
 }
 
-func postOAuthForm(ctx context.Context, client *http.Client, cfg Config, form url.Values) (tokenResponsePayload, error) {
-	var payload tokenResponsePayload
-	err := postFormJSON(ctx, client, cfg, "/login/oauth/access_token", form, &payload)
-	return payload, err
-}
-
 func (p tokenResponsePayload) tokenSet(now time.Time) TokenSet {
 	tokens := TokenSet{AccessToken: p.AccessToken, RefreshToken: p.RefreshToken,
 		TokenType: p.TokenType, Scope: p.Scope}
@@ -82,6 +76,16 @@ func (p tokenResponsePayload) tokenSet(now time.Time) TokenSet {
 	return tokens
 }
 
+// validateTokenSet enforces the tokens a record needs. Refresh may omit a
+// rotated refresh token, but a record always needs an access token and expiry.
+func validateTokenSet(tokens TokenSet, needRefresh bool) error {
+	if strings.TrimSpace(tokens.AccessToken) == "" || tokens.AccessExpiry.IsZero() ||
+		(needRefresh && (strings.TrimSpace(tokens.RefreshToken) == "" || tokens.RefreshExpiry.IsZero())) {
+		return fmt.Errorf("%w: missing token or expiry", ErrMalformedResponse)
+	}
+	return nil
+}
+
 // RefreshToken redeems refreshToken for a rotated pair. bad_refresh_token is
 // permanent; transport and server failures stay ordinary errors so callers can
 // retry without overwriting the record.
@@ -90,9 +94,10 @@ func RefreshToken(ctx context.Context, client *http.Client, cfg Config, refreshT
 	if strings.TrimSpace(refreshToken) == "" {
 		return TokenSet{}, ErrBadRefreshToken
 	}
-	payload, err := postOAuthForm(ctx, client, cfg, url.Values{
+	var payload tokenResponsePayload
+	err := postFormJSON(ctx, client, cfg, "/login/oauth/access_token", url.Values{
 		"client_id": {cfg.ClientID}, "grant_type": {"refresh_token"}, "refresh_token": {refreshToken},
-	})
+	}, &payload)
 	if err != nil {
 		return TokenSet{}, err
 	}
@@ -103,8 +108,9 @@ func RefreshToken(ctx context.Context, client *http.Client, cfg Config, refreshT
 	default:
 		return TokenSet{}, fmt.Errorf("github token refresh failed: %s", payload.Error)
 	}
-	if payload.AccessToken == "" {
-		return TokenSet{}, fmt.Errorf("%w: missing access token", ErrMalformedResponse)
+	tokens := payload.tokenSet(nowFunc())
+	if err := validateTokenSet(tokens, false); err != nil {
+		return TokenSet{}, err
 	}
-	return payload.tokenSet(nowFunc()), nil
+	return tokens, nil
 }
