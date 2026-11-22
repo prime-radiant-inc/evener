@@ -1,9 +1,15 @@
 import type { AppwireClientLike } from "@evener/appwire-client";
-import { AppwireClient, type ConnectionState, rpcURLFromLocation } from "@evener/appwire-client";
+import {
+  APPWIRE_PROTOCOL_VERSION,
+  AppwireClient,
+  type ConnectionState,
+  rpcURLFromLocation,
+  type TerminalReason,
+} from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import { checkAuthStatus, SIGN_IN_PROMPT_MESSAGE } from "../auth";
 import { connectionStore, useConnectionStore } from "../stores/connection";
-import { Banner } from "../widgets";
+import { Banner, type BannerAction } from "../widgets";
 import { checkWebNotBuilt, NOT_BUILT_MESSAGE } from "./chrome/webNotBuilt";
 import { reloadPage } from "./pageReload";
 
@@ -42,6 +48,14 @@ const CLOSED_MESSAGE = "Connection closed.";
 // THIS page's bundle, which is the thing the server rejected. Reloading is what
 // fetches a client the server will talk to.
 const PROTOCOL_MESSAGE = "This page is out of date with the server. Reload to continue.";
+// The wire version's number is the readable form of the floor a person acts
+// on; deriving it keeps the copy from naming a version the client no longer
+// speaks.
+const MINIMUM_HUB_PROTOCOL = APPWIRE_PROTOCOL_VERSION.replace(/^evener-appwire-/, "");
+// A hub below the client's floor answers the handshake with a plain
+// incompatibility (no upgradeRequired). Neither a retry nor a reload can help:
+// the hub has to be upgraded on its host, which no in-page action can do.
+const HUB_BELOW_FLOOR_MESSAGE = `This hub is older than the minimum supported protocol (${MINIMUM_HUB_PROTOCOL}). Upgrade Evener on the hub's host to continue.`;
 
 function defaultCreateClient(): AppwireClientLike {
   return new AppwireClient({ url: rpcURLFromLocation(window.location) });
@@ -63,7 +77,16 @@ function defaultCreateClient(): AppwireClientLike {
 // stays offered in every case, since reconnecting the /rpc socket can help
 // regardless (an auth cookie set in another tab, or a hub that's back up
 // with nothing actually wrong).
-type ClosedReason = "auth" | "not-built" | "protocol" | null;
+// The protocol verdicts come from the client's own TerminalReason, so a new
+// one reaches this banner instead of silently reading as a generic close.
+type ClosedReason = Exclude<TerminalReason, null> | "auth" | "not-built" | null;
+
+const CLOSED_MESSAGES: Record<NonNullable<ClosedReason>, string> = {
+  auth: SIGN_IN_PROMPT_MESSAGE,
+  "not-built": NOT_BUILT_MESSAGE,
+  protocol: PROTOCOL_MESSAGE,
+  "hub-below-floor": HUB_BELOW_FLOOR_MESSAGE,
+};
 
 // The states that warrant a banner once the reveal delay has elapsed. Every
 // other state (idle/connecting/ready) is silent - no banner, no timer.
@@ -139,8 +162,9 @@ export function ConnectionBanner({
     }
     // The client already knows when the close was a protocol rejection, and it
     // knows it exactly -- no probe can tell that apart from an ordinary drop.
-    if (connectionStore.getState().client?.terminalReason === "protocol") {
-      setClosedReason("protocol");
+    const terminalReason = connectionStore.getState().client?.terminalReason;
+    if (terminalReason) {
+      setClosedReason(terminalReason);
       return;
     }
     let cancelled = false;
@@ -216,21 +240,15 @@ export function ConnectionBanner({
 
   if (state !== "closed") return null;
 
-  const message =
-    closedReason === "auth"
-      ? SIGN_IN_PROMPT_MESSAGE
-      : closedReason === "not-built"
-        ? NOT_BUILT_MESSAGE
-        : closedReason === "protocol"
-          ? PROTOCOL_MESSAGE
-          : CLOSED_MESSAGE;
+  const message = closedReason ? CLOSED_MESSAGES[closedReason] : CLOSED_MESSAGE;
 
   // A protocol close can only be fixed by reloading (this bundle is what the
-  // server rejected); every other close can be retried with a fresh client.
-  const action =
-    closedReason === "protocol"
-      ? { label: "Reload", onClick: reloadPage }
-      : { label: "Retry", onClick: () => void handleRetry(), inFlight: retrying };
+  // server rejected). A hub below the floor cannot be fixed from this page at
+  // all, so it has no action; every other close can be retried with a fresh
+  // client.
+  let action: BannerAction | undefined = { label: "Retry", onClick: () => void handleRetry(), inFlight: retrying };
+  if (closedReason === "protocol") action = { label: "Reload", onClick: reloadPage };
+  else if (closedReason === "hub-below-floor") action = undefined;
 
   return <Banner tone="danger" message={message} action={action} reason={closedReason ?? "closed"} />;
 }
