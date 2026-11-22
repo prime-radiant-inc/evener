@@ -48,15 +48,17 @@ function normalizeWhitespace(text: string): string {
 
 // itemSearchTexts gathers every user-VISIBLE text an item renders in the
 // transcript, so search finds what the user can see (reviewer adjudication
-// I2), not just the settled message text: an item's `text`, a tool call's
-// `output` and `error`, and each live reasoning summary (its streamed chunks
-// joined). Each source that matches produces its own hit, all sharing the
-// item's turn label.
+// I2), not just the settled message text. What the view shows is read from
+// projectedSearchTexts, the same rule the session's own Find counts, so a
+// tool call is offered by its summary and body words - never by raw output a
+// suppressed or unprojected row would not paint. Each source that matches
+// produces its own hit, all sharing the item's turn label.
 // A steer's or a memory refresh's row shows only what the shared projection
 // reads for it (Find's rule, shared): a suppressed task steer renders nothing,
 // a daemon steer's reminder wrapper is stripped on screen, and a refresh's
 // recorded Text stays behind a folded Source. Its raw `text` is therefore not a
-// word a hit could land on.
+// word a hit could land on - and a tool call's raw `text` is not what its row
+// paints either.
 function itemSearchTexts(item: ItemModel, projected: ReadonlyMap<string, readonly string[]>): string[] {
   const texts: string[] = [];
   // A message is read as its row shows it (a reply's Markdown rendered), the
@@ -74,8 +76,6 @@ function itemSearchTexts(item: ItemModel, projected: ReadonlyMap<string, readonl
   // hit here is always one Find can land on.
   const shown = projected.get(item.id);
   if (shown !== undefined) texts.push(...shown);
-  if (item.output) texts.push(item.output);
-  if (item.error) texts.push(item.error);
   return texts;
 }
 

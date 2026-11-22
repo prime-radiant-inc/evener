@@ -17,9 +17,17 @@ import {
   type TranscriptRenderContextValue,
   useTranscriptRenderContext,
 } from "../../../transcriptDisplay/renderContext";
-import { type CadenceState, StatusDot } from "../../../widgets";
+import { type CadenceState, CodeBlock, StatusDot } from "../../../widgets";
 import { disclosureDefault, isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { useFindReveal } from "../find/findReveal";
+import {
+  displayedSummaryOf,
+  excerptAround,
+  FIND_EXCERPT_MAX_CHARS,
+  holdsNeedle,
+  toolCallTexts,
+} from "../find/toolCallHits";
 import { FileOpenBesideButton, fileDocParams } from "./fileOpenBeside";
 import { ImageGallery } from "./flow/ImageGallery";
 import { OpenTranscriptButton } from "./openTranscript";
@@ -77,6 +85,43 @@ export function displayedIntentOf(item: ItemModel, projectedSummary?: string): s
   const stated = statedIntentOf(item);
   if (projectedSummary !== undefined && stated !== undefined) return projectedSummary;
   return stated;
+}
+
+/** What Find is landed on in this row, when the row's own body folds or clips
+ * the matching words away: the stretch of body text holding them, so the
+ * words mount and can be painted. Nothing when they are already on the row's
+ * visible lines, and nothing when Find is not landed here. */
+function FindExcerpt({
+  item,
+  scope,
+  intent,
+  summary,
+  cwd,
+}: {
+  item: ItemModel;
+  scope: string;
+  /** The intent line as shown, always visible. */
+  intent: string;
+  /** The summary line as shown, empty while it is closed. */
+  summary: string;
+  /** The session's working directory, which the summary line reads at. */
+  cwd: string | undefined;
+}) {
+  const needle = useFindReveal(scope, item.id);
+  if (needle === "") return null;
+  const texts = toolCallTexts(item, { intent, cwd });
+  if (texts === null) return null;
+  if (holdsNeedle(intent, needle) || (summary !== "" && holdsNeedle(summary, needle))) return null;
+  for (const text of [...texts.body, texts.summary]) {
+    const excerpt = excerptAround(text, needle, FIND_EXCERPT_MAX_CHARS);
+    if (excerpt === null) continue;
+    return (
+      <div data-find-excerpt="">
+        <CodeBlock text={excerpt} copyText={text} copyLabel="Copy matched text" fold={false} />
+      </div>
+    );
+  }
+  return null;
 }
 
 // summaryWhenExpanded resolves through one seam: a fixed string passes
@@ -311,7 +356,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // two-level path open an EMPTY one (the regression: a delegate took the
   // two-level path with an empty summary and moved the body chevron onto a
   // stray empty line).
-  const rowSummaryText = isDelegate ? "" : summary;
+  const rowSummaryText = displayedSummaryOf(item, summary);
   const hasSummaryText = rowSummaryText.trim() !== "";
 
   // Two-level disclosure: the summary line has its own open/closed state,
@@ -351,7 +396,12 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // disclosure that would open to nothing.
   if (bodyless) {
     return (
-      <div className={CLASS.call} data-testid="tool-call-item" data-tool-name={item.toolName ?? ""}>
+      <div
+        data-item-id={item.id}
+        className={CLASS.call}
+        data-testid="tool-call-item"
+        data-tool-name={item.toolName ?? ""}
+      >
         <ToolRow
           summary={rowSummaryText}
           summaryLink={summaryLink}
@@ -367,6 +417,13 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
           trailingAfter={trailingAfter}
         />
         {statusLine}
+        <FindExcerpt
+          item={item}
+          scope={disclosureScope}
+          intent={intent ?? ""}
+          summary={summaryOpen ? rowSummaryText : ""}
+          cwd={cwd}
+        />
       </div>
     );
   }
@@ -381,6 +438,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
     // is fully controlled from disclosureStore, so a plain div wrapper is all
     // the structure that remains.
     <div
+      data-item-id={item.id}
       className={CLASS.call}
       data-testid="tool-call-item"
       data-tool-name={item.toolName ?? ""}
@@ -423,6 +481,13 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
         bodyId={bodyId}
       />
       {statusLine}
+      <FindExcerpt
+        item={item}
+        scope={disclosureScope}
+        intent={intent ?? ""}
+        summary={summaryOpen ? rowSummaryText : ""}
+        cwd={cwd}
+      />
       {/* The expanded content is one wrapper, so the open transition (A6) and
           the row-to-body spacing live in one rule rather than per-descriptor.
           Rendered only when open: an unmounted body can animate in on the next

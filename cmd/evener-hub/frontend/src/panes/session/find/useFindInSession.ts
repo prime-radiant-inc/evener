@@ -29,6 +29,7 @@ import { itemScopeKey } from "../transcript/tools/subagentModuleStore";
 import { type FindHit, findHits, indexOfMatch, isOverlay } from "./findHits";
 import { landingScrollTop, markTranscript } from "./findMarks";
 import { consumeFindRequest, useFindRequest } from "./findRequest";
+import { revealForFind } from "./findReveal";
 
 /** How the search stands, for the bar to say:
  *  - idle: no words yet.
@@ -64,6 +65,8 @@ interface FindInSessionOptions {
   rows: readonly TranscriptBodyRow[];
   /** What the rows show, so a thought the view hides is not counted. */
   config: TranscriptDisplayConfigV1;
+  /** The session's working directory, which a tool call's summary reads at. */
+  cwd?: string;
   /** The transcript view the rows' disclosures belong to. */
   disclosureScope: string;
   listRef: RefObject<VirtualListHandle | null>;
@@ -171,6 +174,7 @@ export function useFindInSession({
   paneId,
   rows,
   config,
+  cwd,
   disclosureScope,
   listRef,
   ownerDocument,
@@ -216,7 +220,7 @@ export function useFindInSession({
   // being redone for nothing.
   const lastHits = useRef<FindHit[]>([]);
   const hits = useMemo(() => {
-    const next = isOpen ? findHits(rows, query, { config, version: renderVersion, sessionRef: ref }) : [];
+    const next = isOpen ? findHits(rows, query, { config, version: renderVersion, sessionRef: ref, cwd }) : [];
     const previous = lastHits.current;
     const same =
       next.length === previous.length &&
@@ -234,7 +238,7 @@ export function useFindInSession({
       });
     if (!same) lastHits.current = next;
     return lastHits.current;
-  }, [isOpen, rows, query, renderVersion, config, ref]);
+  }, [isOpen, rows, query, renderVersion, config, ref, cwd]);
   const currentIndex =
     find == null || find.key === null || find.item === null
       ? -1
@@ -256,12 +260,12 @@ export function useFindInSession({
       setState((previous) => {
         const kept = previous?.ref === ref ? previous : null;
         if (request?.query === undefined) return kept ?? { ref, query: "", ...NO_MATCH, seek: null };
-        const found = findHits(rowsRef.current, request.query, { config });
+        const found = findHits(rowsRef.current, request.query, { config, sessionRef: ref, cwd });
         const picked = found.find((hit) => hit.itemId === request.itemId) ?? found.at(-1);
         return { ref, query: request.query, ...matchOf(picked), seek: null };
       });
     },
-    [ref, listRef, ownerDocument, config],
+    [ref, listRef, ownerDocument, config, cwd],
   );
   const open = useCallback(() => openWith(), [openWith]);
 
@@ -289,10 +293,10 @@ export function useFindInSession({
       // Typing lands on the newest loaded match, as the reader is usually at
       // the end. It never reads older history by itself: each keystroke of a
       // longer word would otherwise page the whole session for a prefix.
-      const newest = findHits(rowsRef.current, next, { config }).at(-1);
+      const newest = findHits(rowsRef.current, next, { config, sessionRef: ref, cwd }).at(-1);
       setState({ ref, query: next, ...matchOf(newest), seek: null });
     },
-    [ref, config],
+    [ref, config, cwd],
   );
 
   const step = useCallback(
@@ -479,6 +483,15 @@ export function useFindInSession({
       settleFrame.current = { id: view.requestAnimationFrame(tick), view };
     }
   }, [currentKey, current?.itemId, jumpEpoch, needle, currentOpens, disclosureScope]);
+  // A row that folds its own text away - a tool body's tail fold or line clip -
+  // renders the stretch holding the words while Find is landed on it, and goes
+  // back to its own rendering as soon as Find moves on or closes.
+  const currentItemId = current?.itemId ?? null;
+  useEffect(() => {
+    if (currentItemId === null) return;
+    revealForFind(disclosureScope, currentItemId, needle);
+    return () => revealForFind(disclosureScope, null, "");
+  }, [disclosureScope, currentItemId, needle]);
   // Marks are document state, not React output, so they follow what is
   // mounted: the virtual list mounting a row, a fold opening, a streamed
   // reply growing. One pass per frame at most; closing Find, or this

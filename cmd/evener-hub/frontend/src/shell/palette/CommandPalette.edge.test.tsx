@@ -315,10 +315,11 @@ test("choosing an in-session result from a companion pane brings up the conversa
 test("an in-session row Find cannot land on is listed and only closes the palette", async () => {
   const user = userEvent.setup();
   scriptSearch({ live: [], past: [] });
-  // Find searches messages; a tool's output is listed here but is not a place
-  // Find can go.
-  const call: ItemModel = { ...item("c1", ""), type: "commandExecution", output: "search term in output" };
-  focusSession("ref_a", { turns: [turn([call])] });
+  // The palette reads a plain `text` for any item, but the transcript renders
+  // no row for a wire entry type it has no renderer for, so Find cannot land
+  // on the hit and the palette only closes.
+  const notice: ItemModel = { ...item("n1", "search term in text"), type: "checkpoint" };
+  focusSession("ref_a", { turns: [turn([notice])] });
   const paneId = workspaceStore.getState().focusedPaneId ?? "";
   const request = renderHook(() => useFindRequest("ref_a", paneId));
 

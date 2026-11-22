@@ -172,6 +172,27 @@ function turnRow(id: string, entries: ProjectedEntry[], status = "completed"): T
   return { kind: "turn", id, turn, sourceTurnIndex: 0, showTurnSeparator: true };
 }
 
+/** A tool call rendered on its own row (the tool-call levels project every
+ * non-interaction call this way), with the fields each case needs. */
+function toolCallEntry(id: string, fields: Partial<ItemModel> = {}): ProjectedEntry {
+  return {
+    kind: "item",
+    id,
+    turnId: "t",
+    sourceIndex: 0,
+    isMessage: false,
+    item: {
+      id,
+      turnId: "t",
+      type: "commandExecution",
+      text: "",
+      toolName: "shell",
+      status: "completed",
+      ...fields,
+    } as ItemModel,
+  };
+}
+
 const TOOLS = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
 const CHAT = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
 const COLLAPSED_INTENT = makeTranscriptDisplayConfig({
@@ -234,11 +255,11 @@ test("an in-progress reply searches auto-closed Markdown as its live row reads",
 });
 
 // The invariant the rest of Find leans on: a counted match is one Find can
-// land on with its words on screen. A thought's summaries and an action's
-// rationale are readable once their disclosure opens, and so are a steer's
-// visible text and a human note's divider body. A system notice's line and a
-// warning's words are rows of their own. Tool output is not searched.
-test("messages, thought summaries, action rationales, steers, notices and warnings are searched", () => {
+// land on with its words on screen. A thought's summaries, an action's
+// rationale and a tool call's own words are readable once their disclosures
+// open, and so are a steer's visible text and a human note's divider body. A
+// system notice's line and a warning's words are rows of their own.
+test("messages, thoughts, actions, tool calls, steers, notices and warnings are searched", () => {
   const items = [
     { id: "u", type: "userMessage", text: "find the needle" },
     { id: "think", type: "reasoning", text: "needle", reasoningSummaries: [["a needle thought"]] },
@@ -260,13 +281,14 @@ test("messages, thought summaries, action rationales, steers, notices and warnin
   for (const level of ["chat", "tools", "full"] as const) {
     const config = makeTranscriptDisplayConfig({ kind: "preset", level });
     const rows = transcriptRowsForProjection(projectThread(model, config));
-    // Chat hides a settled thought; the other levels show its summary. A
-    // routine notice and an uncoded warning are rows at every level, and the
-    // parent's steer and a human note show at every level.
+    // Chat hides a settled thought and projects no tool row; the other levels
+    // show the thought's summary, and the call's summary and output hold the
+    // words. A routine notice and an uncoded warning are rows at every level,
+    // and the parent's steer and a human note show at every level.
     const expected =
       level === "chat"
         ? ["u", "steer", "note", "notice", "warn", "a"]
-        : ["u", "think", "steer", "note", "notice", "warn", "a"];
+        : ["u", "think", "call", "steer", "note", "notice", "warn", "a"];
     expect(findHits(rows, "needle", { config }).map((hit) => hit.itemId)).toEqual(expected);
     expect([...findableItemIds(model, config, "needle")].sort()).toEqual([...expected].sort());
   }
@@ -394,6 +416,83 @@ test("an action row with no stated rationale is not searched by the projector's 
 test("a suppressed action row is not searched, because it renders nothing", () => {
   const rows = [turnRow("t", [suppressedAction("c1", "view the task list", '{"action":"view"}')])];
   expect(findHits(rows, "view the task list", { config: COLLAPSED_INTENT })).toEqual([]);
+});
+
+// A tool call is searched by the three texts its row can paint: the intent
+// line (always on screen), the summary line (behind its own disclosure), and
+// the body - output, error, and the arguments a body renders.
+test("a tool call is searched where its row shows each text, and its hit opens what hides it", () => {
+  const rows = [
+    turnRow("t", [
+      toolCallEntry("c1", {
+        description: "list the sources",
+        argumentsJSON: '{"command":"ls src"}',
+        output: "frobnitz.txt",
+      }),
+    ]),
+  ];
+  const hit = (query: string) => findHits(rows, query, { config: TOOLS }).map((found) => [found.itemId, found.opens]);
+  // The intent line is on screen at every level.
+  expect(hit("list the sources")).toEqual([["c1", undefined]]);
+  // The summary line quotes the command; landing opens that line.
+  expect(hit("ls src")).toEqual([["c1", ["summary:c1"]]]);
+  // Output sits behind the body, which the landing opens.
+  expect(hit("frobnitz.txt")).toEqual([["c1", ["c1"]]]);
+  // The text Find cannot land on is not counted at all.
+  expect(hit("command")).toEqual([]);
+});
+
+test("a tool call inside a folded run opens the run before the call's own body", () => {
+  const rows = [
+    turnRow("t", [
+      toolCallEntry("c1", { argumentsJSON: '{"command":"echo one"}', output: "one" }),
+      toolCallEntry("c2", { argumentsJSON: '{"command":"echo two"}', output: "the needle" }),
+      toolCallEntry("c3", { argumentsJSON: '{"command":"echo three"}', output: "three" }),
+    ]),
+  ];
+  expect(findHits(rows, "needle", { config: TOOLS })).toEqual([
+    { key: "c2", itemId: "c2", rowIndex: 0, opens: ["run:c1", "c2"] },
+  ]);
+});
+
+test("coloured tool output is searched with its terminal controls interpreted", () => {
+  const rows = [
+    turnRow("t", [
+      toolCallEntry("c1", {
+        argumentsJSON: '{"command":"make"}',
+        output: "error \u001b[31mcode\u001b[0m here",
+      }),
+    ]),
+  ];
+  // The escape sequence sits between the two words, so only the interpreted
+  // text holds the phrase.
+  expect(findHits(rows, "error code here", { config: TOOLS }).map((hit) => hit.itemId)).toEqual(["c1"]);
+});
+
+// The argument values are words a body renders (the generic arguments block);
+// the JSON around them - keys, braces, quotes - is not.
+test("argument values are searched where the row renders its arguments, and no JSON syntax is", () => {
+  const rows = [
+    turnRow("t", [
+      toolCallEntry("c1", {
+        toolName: "github: create_issue",
+        argumentsJSON: JSON.stringify({ title: "Add needle support", labels: ["bug"] }),
+      }),
+    ]),
+  ];
+  const keys = (query: string) => findHits(rows, query, { config: TOOLS }).map((hit) => hit.itemId);
+  expect(keys("needle support")).toEqual(["c1"]);
+  expect(keys("labels")).toEqual([]);
+  expect(keys('{"title"')).toEqual([]);
+});
+
+test("a suppressed tool call is not searched, because it renders nothing", () => {
+  const rows = [
+    turnRow("t", [
+      toolCallEntry("c1", { toolName: "task_list", argumentsJSON: '{"action":"view"}', output: "needle" }),
+    ]),
+  ];
+  expect(findHits(rows, "needle", { config: TOOLS })).toEqual([]);
 });
 
 // A delegate with no stated description shows its brief, clipped to the intent
