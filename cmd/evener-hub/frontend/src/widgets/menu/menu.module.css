@@ -8,7 +8,10 @@
 /* The trigger is a real button: it composes the bordered md recipe, so the
  * hairline, fill, lift, face, press and focus ring all come from Button. */
 .trigger {
-  composes: button md secondary from "../button/button.module.css";
+  composes: button from "../button/button.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: md from "../button/button.module.css";
+  composes: secondary from "../button/button.module.css";
 }
 
 /* "quiet" variant (index.tsx's own MenuProps.variant doc comment): no
