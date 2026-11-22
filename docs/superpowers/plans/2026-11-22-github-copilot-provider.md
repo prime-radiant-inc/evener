@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Implement the selected direct provider. Do not substitute Copilot SDK/CLI, another client's OAuth identity, or another client's stored credentials.
-- Do not start Task 2 until Jesse supplies the Evener-owned GitHub OAuth App's public client ID with device flow enabled. Never request or store a client secret for this flow.
+- Jesse supplied the Evener-owned GitHub OAuth App's public client ID `Ov23li2maTXwKrULBNZw` with device flow and expiring user tokens enabled. Use it as `githubcopilot.ClientID`; never request or store a client secret for this flow.
 - Use scopes `read:user offline_access`, GitHub-token bearer access, and no `/copilot_internal/v2/token` exchange. A failed live stop/go probe ends implementation before Task 4.
 - Copilot records use `oauth-github-copilot` and `<state-root>/auth/github-copilot/<instance>.json`, mode 0600. Codex records and validation stay unchanged.
 - Default endpoint is `https://api.githubcopilot.com`, overridden by `GITHUB_COPILOT_BASE_URL`. Do not add GHES, account-discovered hosts, `/auto`, PAT login, policy writes, or remote revocation.
@@ -61,6 +61,7 @@
 **Interfaces:**
 - Produces: `Config`, `DefaultConfig()`, `DeviceCode`, `TokenSet`, `Account`, `AuthStatus`, `RuntimeCredentials`, `RequestDeviceCode`, `PollDeviceOnce`, `RefreshToken`, and `FetchAccount`.
 - `NewService(Config, *http.Client) *Service` exposes `LoginWithDevice`, `Status`, `Logout`, and `ResolveRuntimeCredentials`. `DeviceCode` owns device code, user code, verification URL, interval, and expiry. `PollDeviceOnce` returns authorized/pending/expired state plus the effective interval.
+- `DefaultConfig()` uses public client ID `Ov23li2maTXwKrULBNZw`.
 - `RuntimeCredentials` carries bearer token, account ID, and expiry. `AuthStatus` derives source `oauth` from the scheme.
 
 **Size budget:** 300 production lines.
@@ -88,7 +89,7 @@
 - [ ] **Step 1: Write authenticator and scoped-isolation tests.** Assert the bearer/account headers, state-root isolation, typed sign-in errors, build User-Agent, interaction IDs, user/agent initiator transitions, and vision header. Prove a Copilot token cannot authenticate Codex and vice versa. Add the new scheme to registration coverage. At the existing provider retry boundary, prove one 401 retry only when the on-disk record generation changed, no second 401 retry, no global 401 retry, and no replay after a stream was exposed.
 - [ ] **Step 2: Run red.** `go test ./llm/providers/tokenauth ./llm/providers/all ./llm`; expect failures naming the absent Copilot scheme/authenticator.
 - [ ] **Step 3: Implement the authenticator and rotation retry.** Register it, bind state root/build version in `cmdutil`, and let `AuthenticatorOverrideFor` accept both record-backed OAuth schemes. Set only the spec's validated compatibility headers; do not spoof another client. Add the one-attempt record-generation check at the existing retry boundary without changing 401 classification for other providers.
-- [ ] **Step 4: Add and run the live probe.** In `llm/copilot_live_test.go`, authenticate into `t.TempDir()`, force one token refresh without printing tokens, list models through the real Chat Completions protocol, and use `llm.ProtocolFor(...).Stream` with production-equivalent `registry.Resolved` rows. For each advertised family/protocol combination, require user request → streamed tool call → tool result with agent initiator → final response; include images before enabling them. Run `cd llm && EVENER_GITHUB_COPILOT_E2E=1 EVENER_GITHUB_COPILOT_CLIENT_ID=<public-id> go test . -run TestGitHubCopilotLiveProbe -v`. A failed direct-token, refresh, roster, or required tool-loop result stops the plan and is reported to Jesse.
+- [ ] **Step 4: Add and run the live probe.** In `llm/copilot_live_test.go`, authenticate into `t.TempDir()`, force one token refresh without printing tokens, list models through the real Chat Completions protocol, and use `llm.ProtocolFor(...).Stream` with production-equivalent `registry.Resolved` rows. For each advertised family/protocol combination, require user request → streamed tool call → tool result with agent initiator → final response; include images before enabling them. Run `cd llm && EVENER_GITHUB_COPILOT_E2E=1 EVENER_GITHUB_COPILOT_CLIENT_ID=Ov23li2maTXwKrULBNZw go test . -run TestGitHubCopilotLiveProbe -v`. A failed direct-token, refresh, roster, or required tool-loop result stops the plan and is reported to Jesse.
 - [ ] **Step 5: Run deterministic tests and commit only after the probe passes.** Re-run Step 2's packages, expect PASS, then `git add llm/registry/types.go llm/providers/tokenauth llm/auth_override.go llm/auth_override_test.go llm/client.go llm/retry_util.go llm/retry_util_test.go llm/providers/all/all_test.go cmdutil/registry.go llm/copilot_live_test.go` and commit `feat(llm): authenticate Copilot provider requests`.
 
 ### Task 4: Copilot Registry Instance, Configuration, and Healthy Defaults
