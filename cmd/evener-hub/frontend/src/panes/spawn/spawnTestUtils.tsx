@@ -80,6 +80,13 @@ export function seedSources(
 // The working directory is changed through an explicit-confirmation picker.
 export const LAST_WORKING_DIR_KEY = "evener-hub.spawn-defaults.global.last-working-dir";
 
+/** The local source's display name: the address the browser reached this hub
+ * at, plus the hub marker. Kept in one place so tests name what the pane
+ * actually renders. */
+export function localHostLabel(): string {
+  return `${window.location.hostname || "this host"} (hub)`;
+}
+
 /** The closed host picker's trigger, named by the field and its current host. */
 export function hostTrigger(): HTMLButtonElement {
   return screen.getByRole("button", { name: /^Host:/ }) as HTMLButtonElement;
@@ -93,7 +100,7 @@ export function selectedHost(): string {
 /** Opens the host picker's one dropdown and returns its panel. */
 export function openHostPicker(): HTMLElement {
   fireEvent.click(hostTrigger());
-  return screen.getByRole("group", { name: "Hosts" });
+  return screen.getByRole("group", { name: "Host options" });
 }
 
 /** Chooses an online host through the dropdown, by the row's visible label.

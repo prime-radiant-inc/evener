@@ -18,6 +18,7 @@ import {
   fillPrompt,
   hostTrigger,
   installSpawnTestHooks,
+  localHostLabel,
   modelTrigger,
   openHostPicker,
   promptField,
@@ -99,11 +100,11 @@ test("host picker lists every source in one dropdown, with Connect on offline ho
   await settled();
 
   expect(hostTrigger().disabled).toBe(false);
-  expect(selectedHost()).toBe("Host: Local");
-  expect(screen.queryByRole("group", { name: "Hosts" })).toBeNull();
+  expect(selectedHost()).toBe(`Host: ${localHostLabel()}`);
+  expect(screen.queryByRole("group", { name: "Host options" })).toBeNull();
 
   const panel = openHostPicker();
-  expect(within(panel).getByRole("button", { name: "Local" }).getAttribute("aria-current")).toBe("true");
+  expect(within(panel).getByRole("button", { name: localHostLabel() }).getAttribute("aria-current")).toBe("true");
   expect(within(panel).getByRole("button", { name: "buildbox" }).getAttribute("aria-current")).toBeNull();
   // Every host is in this one list; only an offline one carries its own action.
   expect(within(panel).getByText("offline-host")).toBeTruthy();
@@ -131,7 +132,7 @@ test("Connect host at the bottom of the picker opens the hosts settings", async 
   await settled();
 
   expect(window.location.pathname).toBe("/settings/hosts");
-  expect(selectedHost()).toBe("Host: Local");
+  expect(selectedHost()).toBe(`Host: ${localHostLabel()}`);
 });
 
 // The Host row sits above the working directory: the folder list, recents,
@@ -530,7 +531,7 @@ test("a Memory Off kept across an unoffering host rides the submission again onc
 
   // Back on local, whose schema offers the field again: the choice rides the
   // submission again, not silently dropped by the edit made while away.
-  await chooseHost("Local");
+  await chooseHost(localHostLabel());
   await settled();
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
   await user.click(screen.getByTestId("spawn-submit"));
@@ -590,7 +591,7 @@ test("a Memory Off kept across a host switch still rides the submission when its
   // Start has released.
   await chooseHost("buildbox");
   await settled();
-  await chooseHost("Local");
+  await chooseHost(localHostLabel());
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
   await waitFor(() => expect(commandValidations.length).toBe(2));
   await act(async () => commandValidations[1]!.resolve({ path: command, valid: true }));
@@ -689,7 +690,7 @@ test("switching back to local restores the controller's own default directory", 
   await settled();
   expectWorkingDir("/home/buildbox");
 
-  await chooseHost("Local");
+  await chooseHost(localHostLabel());
   await settled();
 
   // The reverse switch resolves the directory over the local host too: refused
@@ -799,7 +800,7 @@ test("a stale answer from an earlier visit to the same host cannot move the dire
   await settled();
   expect(buildboxDirectoryAsks).toBe(1);
   // buildbox -> local: the local host has the directory, so it stays.
-  await chooseHost("Local");
+  await chooseHost(localHostLabel());
   await settled();
   // local -> buildbox again: the second question answers "this host has it".
   await chooseHost("buildbox");
@@ -1214,7 +1215,7 @@ test("a host that goes offline while a draft names it falls back to local", asyn
   });
 
   // The option is still listed (disabled) but the effective choice is local.
-  expect(selectedHost()).toBe("Host: Local");
+  expect(selectedHost()).toBe(`Host: ${localHostLabel()}`);
 
   await fillPrompt(user, "no longer reachable");
   await user.click(screen.getByTestId("spawn-submit"));
@@ -1250,7 +1251,7 @@ test("a host that returns online after its offline fallback stays on local", asy
       { id: "buildbox", label: "buildbox", kind: "ssh", online: false },
     ]);
   });
-  expect(selectedHost()).toBe("Host: Local");
+  expect(selectedHost()).toBe(`Host: ${localHostLabel()}`);
   // The fallback is recorded in the draft, so it is not merely a render value.
   expect(completionDraft("/tmp/reonline-target").fields.getState().source).toBe("local");
 
@@ -1260,7 +1261,7 @@ test("a host that returns online after its offline fallback stays on local", asy
       { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
     ]);
   });
-  expect(selectedHost()).toBe("Host: Local");
+  expect(selectedHost()).toBe(`Host: ${localHostLabel()}`);
 
   await fillPrompt(user, "still local");
   await user.click(screen.getByTestId("spawn-submit"));
@@ -1289,7 +1290,7 @@ test("a draft naming a host removed from the manifest shows local and omits sour
     setDraftField(draft, "source", "decommissioned");
   });
 
-  expect(selectedHost()).toBe("Host: Local");
+  expect(selectedHost()).toBe(`Host: ${localHostLabel()}`);
 
   await fillPrompt(user, "host is gone");
   await user.click(screen.getByTestId("spawn-submit"));
@@ -1380,7 +1381,7 @@ test("a remote host submission is not blocked by missing controller-local provid
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
 
   // Switching back restores the local block.
-  await chooseHost("Local");
+  await chooseHost(localHostLabel());
   await settled();
   await screen.findByRole("button", { name: "Connect provider" });
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
@@ -1496,7 +1497,7 @@ test("a remote host submission is not blocked by controller-local plugin issues"
   // selected host's catalog answers settle" test - not by these assertions).
   await chooseHost("buildbox");
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
-  await chooseHost("Local");
+  await chooseHost(localHostLabel());
   // Drain the local host's own catalog round-trip first: while it is in flight
   // Start is blocked by that window, not by the controller-local plugin issue
   // this assertion is about.

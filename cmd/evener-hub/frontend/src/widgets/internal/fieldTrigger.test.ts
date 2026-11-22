@@ -1,9 +1,10 @@
 // @vitest-environment node
-// fieldTrigger.module.css is the ONE field-shaped picker-trigger recipe. Both
-// composing widgets (pathfield, modelCatalog) previously carried their own
-// copy of the box, and the copies drifted before they were folded back
-// together. These tests keep the recipe single-sourced: a widget that
-// re-declares the box locally instead of composing this module fails here.
+// fieldTrigger.module.css is the ONE field-shaped picker-trigger recipe. Every
+// composing widget (pathfield, modelCatalog, listpicker) previously carried or
+// would otherwise carry its own copy of the box, and the copies drifted before
+// they were folded back together. These tests keep the recipe single-sourced: a
+// widget that re-declares the box locally instead of composing this module
+// fails here.
 //
 // Every read strips CSS comments FIRST. A contract test in this tree once
 // passed with its implementation deleted because a doc comment quoted the
@@ -56,16 +57,34 @@ test("the shared recipe leaves the type face to the composing widget", () => {
 });
 
 const COMPOSERS = [
-  { widget: "modelCatalog", face: "var(--font-sans)", triggerClass: "trigger" },
-  { widget: "pathfield", face: "var(--font-mono)", triggerClass: "pathTrigger" },
+  {
+    widget: "modelCatalog",
+    face: "var(--font-sans)",
+    triggerClass: "trigger",
+    parts: ["trigger", "value", "default", "chevron", "srOnly"],
+  },
+  {
+    widget: "pathfield",
+    face: "var(--font-mono)",
+    triggerClass: "pathTrigger",
+    parts: ["trigger", "value", "default", "chevron", "srOnly"],
+  },
+  {
+    widget: "listpicker",
+    face: "var(--font-sans)",
+    triggerClass: "trigger",
+    // ListPicker names its trigger with aria-label, not a visually-hidden
+    // suffix, so it has no use for the srOnly recipe.
+    parts: ["trigger", "value", "default", "chevron"],
+  },
 ];
 
-for (const { widget, face, triggerClass } of COMPOSERS) {
+for (const { widget, face, triggerClass, parts } of COMPOSERS) {
   const triggerRule = new RegExp(`\\.${triggerClass}\\s*\\{([^}]*)\\}`);
   const css = declarations(`${widget}/${widget}.module.css`);
 
   test(`${widget} composes the shared trigger rather than copying it`, () => {
-    for (const part of ["trigger", "value", "default", "chevron", "srOnly"]) {
+    for (const part of parts) {
       expect(css).toContain(`composes: ${part} from "../internal/fieldTrigger.module.css"`);
     }
   });

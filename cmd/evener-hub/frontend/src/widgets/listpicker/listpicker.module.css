@@ -1,0 +1,57 @@
+/* The closed trigger is the shared form-picker box; only the sans face is
+ * this widget's own, since a button does not inherit the body font. */
+.trigger {
+  composes: trigger from "../internal/fieldTrigger.module.css";
+  font-family: var(--font-sans);
+}
+
+.value {
+  composes: value from "../internal/fieldTrigger.module.css";
+}
+
+.default {
+  composes: default from "../internal/fieldTrigger.module.css";
+}
+
+.chevron {
+  composes: chevron from "../internal/fieldTrigger.module.css";
+}
+
+/* Popover's chassis supplies position/background/border/radius/animation;
+ * this widget adds the content padding and a width that matches the model
+ * picker's panel. The viewport cap reserves both of computePosition's edge
+ * margins. */
+.popoverPanel {
+  padding: var(--space-3);
+  width: 380px;
+  max-width: calc(100dvw - var(--space-4));
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+/* The list scrolls internally; the separator and footer stay in place. */
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-height: min(320px, 60vh);
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.separator {
+  height: 0;
+  margin: var(--space-1) 0;
+  border: 0;
+  border-top: 1px solid var(--edge);
+}

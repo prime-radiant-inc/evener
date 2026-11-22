@@ -40,17 +40,7 @@ import {
   slashCommandInvocation,
   withPluginSelection,
 } from "@evener/appwire-client";
-import {
-  type JSX,
-  memo,
-  type KeyboardEvent as ReactKeyboardEvent,
-  Suspense,
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
+import { type JSX, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { useStore } from "zustand";
 import { useClient } from "../../shell/clientContext";
@@ -70,7 +60,6 @@ import { useNavigationStore } from "../../stores/navigation/store";
 import {
   Button,
   Card,
-  Chevron,
   CloseIcon,
   ConfirmDialog,
   chordLabel,
@@ -82,12 +71,12 @@ import {
   FormRow,
   IconButton,
   InlineNotice,
-  ListRow,
+  ListPicker,
+  type ListPickerOption,
   Loader,
   type ModelCatalog,
   type ModelCatalogEntry,
   PaneScaffold,
-  Popover,
   PromptCard,
   Select,
   SendIcon,
@@ -244,12 +233,15 @@ const CLASS = {
   pluginDesktop: requireClass(pluginSelectionStyles.desktopSurface, "pluginSelection.module.css", "desktopSurface"),
   pluginSummary: requireClass(pluginSelectionStyles.summary, "pluginSelection.module.css", "summary"),
   pluginSummaryAction: requireClass(pluginSelectionStyles.summaryAction, "pluginSelection.module.css", "summaryAction"),
-  // The host picker's one dropdown: every source in a single list, with an
-  // enabled Connect control on each offline row so a never-attached host is
-  // reachable rather than dead UI.
-  hostPickerPanel: requireClass(styles.hostPickerPanel, "spawn.module.css", "hostPickerPanel"),
-  hostPickerSeparator: requireClass(styles.hostPickerSeparator, "spawn.module.css", "hostPickerSeparator"),
 };
+
+// The local source is the hub the browser is connected to, so it is named by
+// the address the reader used ("magic-kingdom" over the tailnet) rather than
+// the wire's contextual "this host".
+function displaySourceLabel(candidate: Source): string {
+  if (candidate.kind !== "local") return candidate.label;
+  return `${window.location.hostname || "this host"} (hub)`;
+}
 
 // kata xgk8: the empty-value label Model shows when the hub has confirmed it
 // has no default to fall back to - never "(default)", which reads exactly
@@ -271,132 +263,6 @@ const StartingLoader = memo(function StartingLoader({ startedAt }: { startedAt: 
   useVisibleInterval(() => setNow(Date.now()), 1000, true, ownerDocument);
   return <Loader label="Starting" startedAt={startedAt} now={now} />;
 });
-
-interface HostPickerProps {
-  /** The trigger's id, so FormRow's label association lands on the control. */
-  id: string;
-  /** The selected host as displayed; "this host" before the manifest names one. */
-  label: string;
-  value: string;
-  sources: readonly Source[];
-  connectingHosts: ReadonlySet<string>;
-  disabled: boolean;
-  onSelect: (source: string) => void;
-  onConnect: (host: string) => void;
-  onConnectHost: () => void;
-}
-
-// A bespoke picker, kept local on purpose: the rows carry their own actions.
-// Select's options hold text only, and Menu closes on every item activation,
-// so neither can keep an offline host's Connect control in the same list the
-// online hosts come from (docs/developing-evener/design-system.md step 4).
-function HostPicker({
-  id,
-  label,
-  value,
-  sources,
-  connectingHosts,
-  disabled,
-  onSelect,
-  onConnect,
-  onConnectHost,
-}: HostPickerProps): JSX.Element {
-  const [open, setOpen] = useState(false);
-  const panelId = `${id}-options`;
-
-  // Arrow keys move through the rows and their Connect controls in one order,
-  // so a keyboard reader reaches an offline host's action without tabbing
-  // through the whole list first.
-  function handleKeyDown(event: ReactKeyboardEvent<HTMLElement>): void {
-    if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Home" && event.key !== "End") {
-      return;
-    }
-    const controls = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
-    if (controls.length === 0) return;
-    event.preventDefault();
-    const current = (event.target as HTMLElement).closest("button");
-    const index = current === null ? -1 : controls.indexOf(current as HTMLButtonElement);
-    let next: number;
-    if (event.key === "Home") next = 0;
-    else if (event.key === "End") next = controls.length - 1;
-    else if (event.key === "ArrowDown") next = index < 0 ? 0 : (index + 1) % controls.length;
-    else next = index < 0 ? controls.length - 1 : (index - 1 + controls.length) % controls.length;
-    controls[next]?.focus();
-  }
-
-  return (
-    <Popover
-      open={open}
-      onClose={() => setOpen(false)}
-      data-testid={`${id}-popover`}
-      trigger={
-        <Button
-          id={id}
-          variant="secondary"
-          size="md"
-          type="button"
-          disabled={disabled}
-          aria-label={`Host: ${label}`}
-          aria-expanded={open}
-          aria-controls={panelId}
-          onClick={() => setOpen((current) => !current)}
-        >
-          {label}
-          <span aria-hidden="true">
-            <Chevron direction="down" />
-          </span>
-        </Button>
-      }
-    >
-      <fieldset id={panelId} aria-label="Hosts" className={CLASS.hostPickerPanel} onKeyDown={handleKeyDown}>
-        {sources.map((candidate) =>
-          candidate.online ? (
-            <ListRow
-              key={candidate.id}
-              variant="plain"
-              label={candidate.label}
-              aria-current={candidate.id === value ? "true" : undefined}
-              onSelect={() => {
-                onSelect(candidate.id);
-                setOpen(false);
-              }}
-            />
-          ) : (
-            <ListRow
-              key={candidate.id}
-              variant="plain"
-              label={candidate.label}
-              meta="Offline"
-              action={
-                <Button
-                  variant="quiet"
-                  size="xs"
-                  type="button"
-                  aria-label={
-                    connectingHosts.has(candidate.id) ? `Connecting ${candidate.label}…` : `Connect ${candidate.label}`
-                  }
-                  disabled={connectingHosts.has(candidate.id)}
-                  onClick={() => onConnect(candidate.id)}
-                >
-                  {connectingHosts.has(candidate.id) ? "Connecting…" : "Connect"}
-                </Button>
-              }
-            />
-          ),
-        )}
-        <hr className={CLASS.hostPickerSeparator} />
-        <ListRow
-          variant="plain"
-          label="Connect host"
-          onSelect={() => {
-            setOpen(false);
-            onConnectHost();
-          }}
-        />
-      </fieldset>
-    </Popover>
-  );
-}
 
 export default function Spawn({ focused }: PaneProps<SpawnPaneParams>) {
   const draft = useStore(spawnDraftsStore, (state) => state.current);
@@ -615,7 +481,6 @@ function SpawnForm({
   // the round-eight preselection and offline fallback unchanged.
   const displaySource = displaySources.find((candidate) => candidate.id === source);
   const displayHostChoice = sources.length > 0 ? hostChoice : (displaySource?.id ?? hostChoice);
-  const displayHostLabel = displaySources.find((candidate) => candidate.id === displayHostChoice)?.label ?? "this host";
   const displayRemoteHosts = displaySources.filter((candidate) => candidate.id !== "local");
   const cwd = draft.cwd;
   const setCwd = selectSpawnDirectory;
@@ -968,6 +833,40 @@ function SpawnForm({
   // label, which is the honest UI reflection of `busyRef` once React catches
   // up - this ref is only the guard of record.
   const busyRef = draft.busyRef;
+  const hostOptions: ListPickerOption[] = displaySources.map((candidate) => {
+    const label = displaySourceLabel(candidate);
+    if (!candidate.online) {
+      return {
+        id: candidate.id,
+        label,
+        meta: "Offline",
+        action: (
+          <Button
+            variant="quiet"
+            size="xs"
+            type="button"
+            aria-label={connectingHosts.has(candidate.id) ? `Connecting ${label}…` : `Connect ${label}`}
+            disabled={connectingHosts.has(candidate.id)}
+            onClick={() => connectHost(candidate.id)}
+          >
+            {connectingHosts.has(candidate.id) ? "Connecting…" : "Connect"}
+          </Button>
+        ),
+      };
+    }
+    return {
+      id: candidate.id,
+      label,
+      onSelect: () => {
+        if (busyRef.current) return;
+        // Selecting a host is never itself an attach request: an online row is
+        // already attached (a dial would only be redundant), and an offline
+        // row is not selectable, so the Connect control on its row is the
+        // single path that reaches an offline host.
+        setSource(candidate.id);
+      },
+    };
+  });
   // The two edges of a launch attempt. busyRef is the synchronous re-entrancy
   // guard, busy and busyStartedAt are the draft state the Start button renders;
   // every exit from an attempt (success, refusal, thrown error) hands Start
@@ -2995,31 +2894,21 @@ function SpawnForm({
             pick-the-machine first, then the folder on it. */}
         {displayRemoteHosts.length > 0 && (
           <FormRow label="Host" htmlFor="spawn-host">
-            <HostPicker
+            <ListPicker
               id="spawn-host"
-              label={displayHostLabel}
+              label="Host"
               value={displayHostChoice}
-              sources={displaySources}
-              connectingHosts={connectingHosts}
+              options={hostOptions}
               // A submit snapshots this choice (handleSpawn's closure carries
               // the submittedSource/remoteLaunch that thread/start and
               // saveDefaults receive) and then awaits the local directory
               // preflight, so a change mid-submit would silently diverge from
               // what actually launches and from which defaults are saved.
-              // Disabled while busy; the guard in onSelect also covers the
-              // same-tick window before that attribute commits (kata 61v2's
-              // busyRef discipline).
+              // Disabled while busy; the guard in each online row's onSelect
+              // also covers the same-tick window before that attribute commits
+              // (kata 61v2's busyRef discipline).
               disabled={busy}
-              onSelect={(next) => {
-                if (busyRef.current) return;
-                // Selecting a host is never itself an attach request: an online
-                // row is already attached (a dial would only be redundant), and
-                // an offline row is not selectable, so the Connect control on
-                // its row is the single path that reaches an offline host.
-                setSource(next);
-              }}
-              onConnect={connectHost}
-              onConnectHost={() => navigate("/settings/hosts")}
+              footer={{ label: "Connect host", onSelect: () => navigate("/settings/hosts") }}
             />
           </FormRow>
         )}

@@ -28,6 +28,7 @@ import {
   hostTrigger,
   installSpawnTestHooks,
   LAST_WORKING_DIR_KEY,
+  localHostLabel,
   modelListRequests,
   modelState,
   modelTrigger,
@@ -773,7 +774,7 @@ test("a path marked invalid while local reaches the launch after switching host 
 
   // Back to local, the controller is the judge again: the same stored value is
   // re-marked and dropped rather than left silently flagged or silently kept.
-  await chooseHost("Local");
+  await chooseHost(localHostLabel());
   expect(await screen.findByText("no such file or directory")).toBeTruthy();
   await waitFor(() =>
     expect(completionDraft("/tmp/remote-switch-path").fields.getState().advancedOverrides).toEqual({}),
@@ -1194,7 +1195,7 @@ test("a wrapper from a draft host the offline fallback replaced does not reload 
   // The offline fallback is written into the draft (round nine), so the pane's
   // own reads are controller-scoped from here on.
   await waitFor(() => expect(draft.fields.getState().source).toBe("local"));
-  expect(selectedHost()).toBe("Host: Local");
+  expect(selectedHost()).toBe(`Host: ${localHostLabel()}`);
   // Hydration: the controller's catalog has answered for the SETTLED scope (the
   // scoped load the fallback's write-back triggers). Everything before it is
   // the mount's own churn, and every consumer after it is a cache hit.
@@ -1261,7 +1262,7 @@ test("a remote spawn never offers the controller's Connect provider editor", asy
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
 
   // Back on the controller, the editor returns.
-  await chooseHost("Local");
+  await chooseHost(localHostLabel());
   await screen.findByRole("button", { name: "Connect provider" });
 });
 
@@ -1641,8 +1642,8 @@ test("a switch away and back before the middle host answers keeps the draft", as
 
   await chooseHost("buildbox");
   await waitFor(() => expect(selectedHost()).toBe("Host: buildbox"));
-  await chooseHost("Local");
-  await waitFor(() => expect(selectedHost()).toBe("Host: Local"));
+  await chooseHost(localHostLabel());
+  await waitFor(() => expect(selectedHost()).toBe(`Host: ${localHostLabel()}`));
 
   // The controller's catalogs re-answer for the restored host, and the draft's
   // controller-offered config is still there to reconcile against them.
@@ -1894,7 +1895,7 @@ test("a previous host's late catalog failure shows no notice", async () => {
   await settled();
   await waitFor(() => expect(routedHostCalls(fake, "evener/harnesses/list")).toHaveLength(1));
 
-  await chooseHost("Local");
+  await chooseHost(localHostLabel());
   await act(async () => {
     failHarnesses(new WireError("buildbox went away", -32014));
   });
@@ -2304,7 +2305,7 @@ test("a host that drops offline while the create dialog is open never creates or
       { id: "buildbox", label: "buildbox", kind: "ssh", online: false },
     ]);
   });
-  expect(selectedHost()).toBe("Host: Local");
+  expect(selectedHost()).toBe(`Host: ${localHostLabel()}`);
 
   // The confirmation went with the host it was bound to...
   expect(screen.queryByRole("dialog")).toBeNull();
@@ -2342,7 +2343,7 @@ test("a restored create dialog whose preflight host is no longer selected aborts
   renderSpawn(fake);
   await settled();
 
-  expect(selectedHost()).toBe("Host: Local");
+  expect(selectedHost()).toBe(`Host: ${localHostLabel()}`);
   await user.click(await screen.findByRole("button", { name: "Create & start" }));
 
   expect(createDirCallHosts(fake)).toEqual([]);
