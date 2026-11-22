@@ -54,7 +54,6 @@ import { useNavigationStore } from "../../stores/navigation/store";
 import {
   Button,
   Card,
-  Chevron,
   CloseIcon,
   ConfirmDialog,
   chordLabel,
@@ -78,7 +77,6 @@ import {
   ToolIcon,
   Tooltip,
   useToasts,
-  VisuallyHidden,
 } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
@@ -218,10 +216,6 @@ const CLASS = {
   modelTrigger: requireClass(styles.modelTrigger, "spawn.module.css", "modelTrigger"),
   effortTrigger: requireClass(styles.effortTrigger, "spawn.module.css", "effortTrigger"),
   effortSeparator: requireClass(styles.effortSeparator, "spawn.module.css", "effortSeparator"),
-  effortValue: requireClass(styles.effortValue, "spawn.module.css", "effortValue"),
-  effortChevron: requireClass(styles.effortChevron, "spawn.module.css", "effortChevron"),
-  effortSelect: requireClass(styles.effortSelect, "spawn.module.css", "effortSelect"),
-  effortLabel: requireClass(styles.effortLabel, "spawn.module.css", "effortLabel"),
   mobileConfig: requireClass(styles.mobileConfig, "spawn.module.css", "mobileConfig"),
   promptIntro: requireClass(styles.promptIntro, "spawn.module.css", "promptIntro"),
   promptHeading: requireClass(styles.promptHeading, "spawn.module.css", "promptHeading"),
@@ -2738,16 +2732,16 @@ function SpawnForm({
                       valueTestId="spawn-model-value"
                     />
                   </span>
-                  {/* StatusRow's quiet-effort recipe (statusrow.module.css's
-                      .effortTrigger): the current value IS the visible control -
-                      a real native <select> laid over its own readout at zero
-                      opacity - so the row stays one quiet line instead of
-                      growing a bordered box. The readout names the effort the
-                      select holds; an unset effort whose resolved default is
-                      known shows that tier ("high"), the effort a session
-                      started now would run at, while the open list keeps
-                      "high (default)" so following the default stays distinct
-                      from pinning it. Same ladder contract the removed
+                  {/* Select's quiet variant, the same closed-state trigger
+                      StatusRow's effort control uses: the current value IS the
+                      visible control - a real native <select> laid over its own
+                      readout at zero opacity - so the row stays one quiet line
+                      instead of growing a bordered box. The readout names the
+                      effort the select holds; an unset effort whose resolved
+                      default is known shows that tier ("high"), the effort a
+                      session started now would run at, while the open list
+                      keeps "high (default)" so following the default stays
+                      distinct from pinning it. Same ladder contract the removed
                       FormRow select kept: the selected model's own
                       levels, the fallback ladder when the catalog can't say,
                       and a disabled control when the model cannot reason at all
@@ -2762,28 +2756,17 @@ function SpawnForm({
                     <span className={CLASS.effortSeparator} aria-hidden="true">
                       ·
                     </span>
-                    <span className={CLASS.effortValue} data-testid="spawn-effort-value" aria-hidden="true">
-                      {effortReadout(reasoningEffort, effortLevels, resolvedEffortDefault)}
-                    </span>
-                    <span className={CLASS.effortChevron} aria-hidden="true">
-                      <Chevron direction="down" />
-                    </span>
-                    <label className={CLASS.effortLabel} htmlFor="spawn-reasoning-effort">
-                      <VisuallyHidden>Prompt reasoning effort</VisuallyHidden>
-                    </label>
-                    <select
+                    <Select
+                      variant="quiet"
                       id="spawn-reasoning-effort"
-                      className={CLASS.effortSelect}
+                      ariaLabel="Prompt reasoning effort"
                       value={reasoningEffort}
+                      options={effortOptions}
+                      readout={effortReadout(reasoningEffort, effortLevels, resolvedEffortDefault)}
                       onChange={(e) => handleEffortChange(e.target.value)}
                       disabled={effortDisabled}
-                    >
-                      {effortOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
+                      valueTestId="spawn-effort-value"
+                    />
                   </span>
                 </div>
               }

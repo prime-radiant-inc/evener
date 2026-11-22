@@ -148,94 +148,25 @@
     display: inline;
   }
 
-  /* The two model triggers share this narrow identity run. Let the effort
-   * readout yield width too, while retaining its native select and chevron;
-   * otherwise the fixed effort width squeezes both model buttons below their
-   * icon/gap footprint and their content becomes horizontally scrollable. */
-  .effortTrigger {
+  /* The two model triggers share this narrow identity run. The effort control
+   * must keep its separator plus the 44px native select: shrinking the wrapper
+   * lets .identity clip the select even though its unclipped rect still
+   * measures a full tap target. It must not reserve the readout's full
+   * intrinsic width either - "none (provider default)" can otherwise squeeze
+   * the model trigger to zero. The specificity-matched floor keeps the tap
+   * target, the readout ellipsizes, and the model names yield. */
+  .identity > .effortTrigger {
     flex: 0 1 auto;
-    min-width: 0;
-  }
-
-  .effortValue {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .effortTrigger .effortChevron {
-    display: none;
+    min-width: calc(var(--tap-min, 0px) + 1ch);
   }
 }
 
-/* Quiet effort trigger, matching ModelSwitch's own (modelswitch.module.css):
- * the current value IS the control. `position: relative` is the containing
- * block for the real <select> laid over it below. */
+/* The effort control's wrapper: it carries the row's separator and keeps the
+ * control one direct child of the identity run. Select's quiet variant owns
+ * the pill face, the transparent native <select>, the readout and the tap
+ * floor (widgets/select composes widgets/internal/quietTrigger.module.css). */
 .effortTrigger {
-  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-1);
-  border-radius: var(--radius-pill);
-  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
-}
-
-.effortTrigger:hover {
-  background: var(--hover-1);
-}
-
-/* The focus ring belongs to the trigger's visible face even though focus lands
- * on the transparent <select> inside it - :focus-within is what carries it
- * across. */
-.effortTrigger:focus-within {
-  outline: var(--focus-ring);
-  outline-offset: -2px;
-}
-
-.effortValue {
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-}
-
-.effortChevron {
-  display: inline-flex;
-  align-items: center;
-  color: var(--ink-mid);
-}
-
-/* The effort trigger is the row's only control that the status line's own
- * compact rules can shrink below the app's tap floor. At phone and coarse
- * widths keep a full 44px target in both axes; the value stays centred in it. */
-@media (max-width: 899px), (any-pointer: coarse) {
-  .effortTrigger {
-    justify-content: center;
-    min-width: var(--tap-min);
-    min-height: var(--tap-min);
-  }
-}
-
-/* A REAL native <select>, laid over its own readout at zero opacity: the row
- * gets a borderless value-as-control, and the control keeps every native
- * behavior a hand-built listbox would have thrown away - tab order, arrow keys,
- * type-ahead, and the platform's own dropdown. `opacity: 0` rather than
- * `visibility: hidden` or a clip rect: it must stay hittable and focusable,
- * which both of those would end. The readout beneath is aria-hidden, so this
- * element is also the row's single spoken source for the value. */
-.effortSelect {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  padding: 0;
-  border: none;
-  background: transparent;
-  opacity: 0;
-  cursor: pointer;
-  font: inherit;
-  /* A real native select: it must not inherit the trigger's caption size,
-   * or iOS zooms into it on focus (--font-size-control is 16px on phones). */
-  font-size: var(--font-size-control);
+  min-width: 0;
 }

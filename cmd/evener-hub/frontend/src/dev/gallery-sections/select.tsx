@@ -15,9 +15,23 @@ const HOST_OPTIONS = [
   { value: "gpu-box", label: "gpu-box (offline)", disabled: true },
 ];
 
-function LiveSelect({ options = OPTIONS }: { options?: SelectOption[] }) {
+function LiveSelect({
+  options = OPTIONS,
+  variant = "default",
+}: {
+  options?: SelectOption[];
+  variant?: "default" | "quiet";
+}) {
   const [value, setValue] = useState(options[0]?.value ?? "");
-  return <Select value={value} options={options} onChange={(e) => setValue(e.target.value)} />;
+  return (
+    <Select
+      variant={variant}
+      ariaLabel={variant === "quiet" ? "Region" : undefined}
+      value={value}
+      options={options}
+      onChange={(e) => setValue(e.target.value)}
+    />
+  );
 }
 
 export default function SelectGallerySection() {
@@ -36,6 +50,18 @@ export default function SelectGallerySection() {
         <div className={styles.row}>
           <p className={styles.rowLabel}>disabled</p>
           <Select value="us-east" options={OPTIONS} onChange={() => {}} disabled />
+        </div>
+        <div className={styles.row}>
+          <p className={styles.rowLabel}>quiet</p>
+          <LiveSelect variant="quiet" />
+        </div>
+        <div className={styles.row}>
+          <p className={styles.rowLabel}>quiet, a disabled option</p>
+          <LiveSelect variant="quiet" options={HOST_OPTIONS} />
+        </div>
+        <div className={styles.row}>
+          <p className={styles.rowLabel}>quiet disabled</p>
+          <Select variant="quiet" ariaLabel="Region" value="us-east" options={OPTIONS} onChange={() => {}} disabled />
         </div>
       </ThemeFlip>
     </section>
