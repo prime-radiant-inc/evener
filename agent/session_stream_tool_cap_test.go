@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -140,5 +141,16 @@ func TestProcessInput_ToolCallCap_DispatchesNothingAndDoesNotFallBack(t *testing
 	}
 	if got := a.Models(); len(got) != 1 || got[0] != "primary" {
 		t.Errorf("streamed models = %v, want exactly [primary]: the cap error must not retry or fall back", got)
+	}
+	// The capped round must persist nothing about the runaway: no salvaged
+	// assistant draft, and no provider-failure steering that would tell the next
+	// round to reuse that draft.
+	for _, turn := range sessionHistory(sess) {
+		switch turn.Kind {
+		case schema.TurnAssistant:
+			t.Errorf("capped turn persisted a salvaged assistant turn: %q", turn.Message.Text())
+		case schema.TurnSteering:
+			t.Errorf("capped turn persisted a failure-steering turn: %q", turn.Message.Text())
+		}
 	}
 }
