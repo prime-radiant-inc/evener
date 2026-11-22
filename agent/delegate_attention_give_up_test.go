@@ -201,8 +201,7 @@ func TestLeavingThePendingSetClearsParkedAndCountedState(t *testing.T) {
 		c.recordDelegateAttentionRestoreFailure(id)
 	}
 	c.forgetDelegateAttention("dlg_forgotten", "delegate:dlg_forgotten")
-	c.mu.Lock()
-	c.replaceDelegateAttentionLocked("dlg_replaced", []string{"delegate:dlg_replaced-again"})
+	c.replaceDelegateAttentionForTest("dlg_replaced", []string{"delegate:dlg_replaced-again"})
 	for _, id := range []string{"dlg_forgotten", "dlg_replaced"} {
 		if attentionParkedOf(c, id) {
 			t.Errorf("%s still parked after leaving the pending set", id)
@@ -211,7 +210,6 @@ func TestLeavingThePendingSetClearsParkedAndCountedState(t *testing.T) {
 			t.Errorf("%s still counts %d failures after leaving the pending set", id, count)
 		}
 	}
-	c.mu.Unlock()
 }
 
 // A delegate whose transcript is gone has nothing to hand over: the

@@ -225,11 +225,11 @@ func (c *delegateTreeController) retirementOwnerScanLocked(members map[string]st
 // PhaseClosed requires !Resumable. Callers must hold c.mu.
 func (c *delegateTreeController) retirementWakeBlockersLocked() []RetirementBlocker {
 	var blockers []RetirementBlocker
-	for id, state := range c.attention {
-		if state == nil || len(state.wakeIDs) == 0 {
+	for id, aggregate := range c.durable {
+		if aggregate == nil || len(aggregate.PendingAttention) == 0 {
 			continue
 		}
-		if aggregate := c.durable[id]; aggregate == nil || !aggregate.Resumable {
+		if !aggregate.Resumable {
 			continue
 		}
 		blockers = append(blockers, RetirementBlocker{Category: "delegate", SessionID: c.rootSessionID, DelegateID: id})

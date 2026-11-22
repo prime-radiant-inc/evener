@@ -189,7 +189,7 @@ func startDelegateAttentionEvidenceGenerationFor(t *testing.T, c *delegateTreeCo
 		t.Fatalf("append attention projection: %v", err)
 	}
 	c.live[delegateID] = &delegateLiveState{runtime: runtime}
-	c.noteDelegateAttentionLocked(delegateID, "attention-"+delegateID)
+	c.noteDelegateAttentionLockedForTest(delegateID, "attention-"+delegateID)
 	c.mu.Unlock()
 
 	reservation, err := c.ReserveAttention(runtime, "attention-"+delegateID)

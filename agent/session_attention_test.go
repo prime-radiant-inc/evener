@@ -133,7 +133,7 @@ func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	tail := events[len(events)-2:]
-	if tail[0].Kind != delegatestore.EventDelegateAttentionChanged || tail[0].AttentionChanged == nil || tail[0].AttentionChanged.NeedsAttention || tail[1].Kind != delegatestore.EventDelegateRunStarted || tail[1].RunStarted.Generation != second.lease.generation {
+	if tail[0].Kind != delegatestore.EventDelegateAttentionResolved || tail[0].AttentionResolved == nil || tail[0].AttentionResolved.AttentionID != secondID || tail[1].Kind != delegatestore.EventDelegateRunStarted || tail[1].RunStarted.Generation != second.lease.generation {
 		t.Fatalf("final-clear/run-start batch tail = %#v", tail)
 	}
 }
@@ -515,8 +515,11 @@ func TestDelegateAttention_StopLeavesBoundAttentionForDiscard(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Load: %v", err)
 		}
-		if events[len(events)-2].Kind != delegatestore.EventDelegateRunStarted || events[len(events)-1].Kind != delegatestore.EventDelegateSubtreeStopRequested {
-			t.Fatalf("acceptance/stop ordering = %#v", events[len(events)-2:])
+		tail := events[len(events)-3:]
+		if tail[0].Kind != delegatestore.EventDelegateAttentionResolved || tail[0].AttentionResolved == nil || tail[0].AttentionResolved.AttentionID != attentionID ||
+			tail[1].Kind != delegatestore.EventDelegateRunStarted ||
+			tail[2].Kind != delegatestore.EventDelegateSubtreeStopRequested {
+			t.Fatalf("acceptance/stop ordering = %#v", tail)
 		}
 	})
 }
@@ -559,7 +562,7 @@ func newDelegateAttentionAcceptanceHarness(t *testing.T, sessionID string, fs af
 	}
 	c.live["dlg_target"] = &delegateLiveState{runtime: runtime}
 	for _, attentionID := range attentionIDs {
-		c.noteDelegateAttentionLocked("dlg_target", attentionID)
+		c.noteDelegateAttentionLockedForTest("dlg_target", attentionID)
 	}
 	c.mu.Unlock()
 	return c, runtime, path
@@ -4888,8 +4891,7 @@ func TestDelegateAttention_PrelaunchStopWakesRetriedDeliveryOwner(t *testing.T) 
 	}
 	attentionID := delegateAttentionID(f.deliveries[0].deliveryID)
 	f.controller.mu.Lock()
-	state := f.controller.attention["dlg_owner"]
-	_, noted := state.wakeIDs[attentionID]
+	_, noted := f.controller.delegateAttentionWakeIDsLocked("dlg_owner")[attentionID]
 	f.controller.mu.Unlock()
 	if !noted {
 		t.Fatalf("owner attention %q was not recorded for the retried acknowledgment", attentionID)

@@ -800,15 +800,11 @@ func (c *delegateTreeController) commitStart(reservation *delegateStartReservati
 	}
 	startedAt := c.now()
 	events := make([]delegatestore.Event, 0, 2)
-	attentionNeeded := len(record.attentionPendingIDs) != 0
-	if record.trigger == delegatestore.TriggerAttention && aggregate.NeedsAttention != attentionNeeded {
-		events = append(events, delegatestore.Event{
-			Kind:       delegatestore.EventDelegateAttentionChanged,
-			DelegateID: record.delegateID,
-			AttentionChanged: &delegatestore.DelegateAttentionChanged{
-				NeedsAttention: attentionNeeded,
-			},
-		})
+	if record.trigger == delegatestore.TriggerAttention {
+		// The start's queue replacement rides this batch, before the run starts:
+		// the generation carries exactly the transcript rows the replacement
+		// leaves queued.
+		events = append(events, c.attentionReplacementEventsLocked(record.delegateID, record.attentionPendingIDs)...)
 	}
 	events = append(events, delegateControllerRunStartedEvent(
 		record.delegateID,
@@ -853,9 +849,6 @@ func (c *delegateTreeController) commitStart(reservation *delegateStartReservati
 		cancel:   record.cancel,
 		ready:    record.trigger == delegatestore.TriggerAttention,
 		evidence: &delegateGenerationEvidence{requirement: requirement},
-	}
-	if record.trigger == delegatestore.TriggerAttention {
-		c.replaceDelegateAttentionLocked(record.delegateID, record.attentionPendingIDs)
 	}
 	if record.runtime != nil {
 		c.setResidentRuntimeLocked(live, record.runtime)

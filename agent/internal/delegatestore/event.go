@@ -19,6 +19,9 @@ const (
 	EventDelegateUpdatePosted          EventKind = "delegate_update_posted"
 	EventDelegateIntentStated          EventKind = "delegate_intent_stated"
 	EventDelegateAttentionHoldReleased EventKind = "delegate_attention_hold_released"
+	EventDelegateAttentionQueued       EventKind = "delegate_attention_queued"
+	EventDelegateAttentionResolved     EventKind = "delegate_attention_resolved"
+	EventDelegateAttentionHeld         EventKind = "delegate_attention_held"
 )
 
 type Event struct {
@@ -39,6 +42,9 @@ type Event struct {
 	UpdatePosted          *UpdatePosted             `json:"update_posted,omitempty"`
 	IntentStated          *IntentStated             `json:"intent_stated,omitempty"`
 	AttentionHoldReleased *AttentionHoldReleased    `json:"attention_hold_released,omitempty"`
+	AttentionQueued       *AttentionQueued          `json:"attention_queued,omitempty"`
+	AttentionResolved     *AttentionResolved        `json:"attention_resolved,omitempty"`
+	AttentionHeld         *AttentionHeld            `json:"attention_held,omitempty"`
 }
 
 type DelegateCreated struct {
@@ -124,6 +130,40 @@ type IntentStated struct {
 // by a wake or an ack. The fold accepts any nonzero sample at or below it.
 type AttentionHoldReleased struct {
 	Generation uint64 `json:"generation"`
+}
+
+// AttentionQueued adds an owed attention row to a delegate's durable queue, or
+// updates the row already queued under the same identity. It is idempotent by
+// AttentionID, so a replay or a repeated arm adds nothing.
+//
+// Committed marks the wake as published. AdmittedGeneration is the settled
+// generation the wake superseded: a fresh wake ends every stop quiet at or
+// below it, exactly as appendAttentionWakeAtLocked journals the release it
+// carries.
+type AttentionQueued struct {
+	AttentionID        string `json:"attention_id"`
+	Committed          bool   `json:"committed,omitempty"`
+	AdmittedGeneration uint64 `json:"admitted_generation,omitempty"`
+}
+
+// AttentionResolved removes one attention row from the queue, consumed or
+// discarded. Removal is by identity and out of order: the row need not be the
+// queue head, and resolving a row that is already gone is a no-op so a
+// journal replay of a resolution stays valid.
+type AttentionResolved struct {
+	AttentionID string `json:"attention_id"`
+}
+
+// AttentionHeld installs or releases a user-stop quiet on queued attention.
+// With AttentionID set, it stamps that pending row's HeldThrough with
+// Generation. With AttentionID empty, it is a release: every row held through
+// Generation or earlier becomes presentable again, and the aggregate's
+// AttentionHoldReleasedGeneration floor advances, so a cold restore cannot
+// rebuild a quiet a newer event already ended. Generation is always a settled
+// generation: a stop's own quiet or a wake's newer sample, never an open run's.
+type AttentionHeld struct {
+	AttentionID string `json:"attention_id,omitempty"`
+	Generation  uint64 `json:"generation"`
 }
 
 type versionRecord struct {

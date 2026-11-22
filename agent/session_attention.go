@@ -1491,8 +1491,8 @@ type delegateQuietedRow struct {
 // evidence the resident quiet was built from, asked of the row rather than of
 // the delegate's newest generation. Which of them a restore rebuilds a hold for
 // is a separate question, answered per row against the release floor and the
-// noted wake set. The caller holds attentionMu and passes the run index read
-// under the controller lock with the aggregate.
+// controller's durable queue. The caller holds attentionMu and passes the run
+// index read under the controller lock with the aggregate.
 func (s *Session) stopQuietedDelegateAttentionRowsLocked(fold delegateAttentionFold, generation uint64, runStarts map[delegateLease]delegatestore.RunTrigger, runOutcomes map[delegateLease]delegatestore.Outcome, delegateID string) []delegateQuietedRow {
 	var rows []delegateQuietedRow
 	// Only a pending row has a quiet this pass may rebuild. A resolved row has
@@ -1535,10 +1535,10 @@ func (s *Session) stopQuietedDelegateAttentionRowsLocked(fold delegateAttentionF
 // well-formed reopen whose immediate source's resume claim sits at the
 // delegate's current durable generation — the generation the user-stopped run
 // settled — and that generation's last run was attention-triggered and settled
-// cancelled, and the controller does not already note the row's wake: the
-// resident quiet holds an attention run's report alone, and a send that
+// cancelled, and the controller's durable queue does not already hold the row:
+// the resident quiet holds an attention run's report alone, and a send that
 // commits a recycled generation settles the same cancelled outcome without
-// owing that quiet. A noted wake is a new event's arm (a restart reconcile or
+// owing that quiet. A queued row is a new event's arm (a restart reconcile or
 // a fresh delivery), which presents the row exactly as it would have
 // presented it against the resident hold. Every other reopen stays
 // presentable on the restore: a busy reopen whose send settled the recycled
@@ -1550,14 +1550,14 @@ func (s *Session) stopQuietedDelegateAttentionRowsLocked(fold delegateAttentionF
 // releases it exactly as it releases the resident one.
 //
 // The derivation's inputs are unordered snapshots — the aggregate, the fold,
-// and the in-memory wake set — so a cancelled outcome alone cannot say whether
-// its quiet is still current. The invariant it must hold is that the derived
-// hold reflects the newest authoritative evidence: the quiet stands only while
-// no event newer than the stopped generation's settle ended it. The durable
-// release record (delegatestore.AttentionHoldReleasedGeneration) supplies that
-// order, and it is read from the same locked aggregate snapshot the outcome
-// comes from, so a release that landed after a stop is visible to the derive
-// even though the wake set it emptied did not survive the reclaim.
+// and the queue — so a cancelled outcome alone cannot say whether its quiet is
+// still current. The invariant it must hold is that the derived hold reflects
+// the newest authoritative evidence: the quiet stands only while no event
+// newer than the stopped generation's settle ended it. The durable release
+// record (delegatestore.AttentionHoldReleasedGeneration) supplies that order,
+// and it is read from the same locked aggregate snapshot the outcome comes
+// from, so a release that landed after a stop is visible to the derive even
+// though the queue it emptied did not survive the reclaim.
 func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 	if s == nil || s.delegateController == nil || s.owningDelegateID == "" {
 		return
@@ -1604,10 +1604,7 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 			runOutcomes[lease] = outcome
 		}
 	}
-	var noted map[string]struct{}
-	if state := controller.attention[s.owningDelegateID]; state != nil {
-		noted = maps.Clone(state.wakeIDs)
-	}
+	noted := controller.delegateAttentionWakeIDsLocked(s.owningDelegateID)
 	controller.mu.Unlock()
 	// Only a stop's own rows are in question here. Every other restored session
 	// presents its pending rows exactly as the resident one would, and has no
@@ -1623,26 +1620,26 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 	// than the stop that quieted it, so that quiet must not come back: the row
 	// presents, and presenting it means ending the request on it, which is what
 	// the release path's tail move exists for. A row whose generation the floor
-	// has not reached keeps its quiet. A wake the controller already notes is a
-	// new event's arm that presents the row on its own, so it needs no hold —
-	// but that question is asked only of rows whose quiet still stands, never of
-	// rows a release freed, because a restart leaves both the freed report and
-	// the fresh frame noted and the report still has to move.
+	// has not reached keeps its quiet. A row the controller's queue already
+	// holds is a new event's arm that presents the row on its own, so it needs
+	// no hold — but that question is asked only of rows whose quiet still
+	// stands, never of rows a release freed, because a restart leaves both the
+	// freed report and the fresh frame queued and the report still has to move.
 	var releasedRows, heldRows, rearmedRows []string
 	for _, row := range quieted {
 		if delegateAttentionHoldStands(row.generation, released) {
 			if _, wakeNoted := noted[row.attentionID]; wakeNoted {
-				// A noted wake is a new event's arm, and that arm presents the
+				// A queued row is a new event's arm, and that arm presents the
 				// row on its own — so this row needs no hold. A hold found here
 				// was installed by an earlier pass of this same derivation, made
-				// before the controller had noted the wake: a daemon restart
+				// before the controller had queued the row: a daemon restart
 				// rebuilds ancestors for an owed start and derives their quiet
-				// before bootstrap reconciles the transcript's wakes. The pass
-				// that can see the wake must therefore also undo that hold, or
+				// before bootstrap reconciles the transcript's rows. The pass
+				// that can see the row must therefore also undo that hold, or
 				// the ancestor keeps suppressing the very report the restart
 				// re-armed. The evidence is read here, not predicted, so an
-				// ordinary same-process reclaim — where the noted set is the
-				// live one — decides exactly as it did before.
+				// ordinary same-process reclaim — where the queue is the live
+				// one — decides exactly as it did before.
 				rearmedRows = append(rearmedRows, row.attentionID)
 				continue
 			}
@@ -2020,7 +2017,7 @@ func (s *Session) finishAttentionTurn(ids []string, turnErr error) error {
 	if len(covered) == 0 {
 		return nil
 	}
-	// The delegate's noted wakes stay; see clearResolvedDelegateAttention.
+	// The delegate's queue rows stay; see reconcileResolvedDelegateAttention.
 	if err := s.resolveAttentionDurably(covered, delegateAttentionConsumed); err != nil {
 		return err
 	}

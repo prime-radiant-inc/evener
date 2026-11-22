@@ -64,8 +64,8 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 		// journal event is not left at needs_attention:true forever. This
 		// reconciliation launches no run, so it never claims the wake: return
 		// false and let the notification drive proceed as it did before.
-		if err := s.delegateController.clearResolvedDelegateAttention(sub.sess.owningDelegateID); err != nil {
-			s.emit(warningDataFromError("clear resolved delegate attention", err))
+		if err := s.delegateController.reconcileResolvedDelegateAttention(sub.sess.owningDelegateID); err != nil {
+			s.emit(warningDataFromError("reconcile resolved delegate attention", err))
 		}
 		return false
 	}
@@ -156,8 +156,8 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 			return true
 		}
 		if len(pending) == 0 {
-			if err := s.delegateController.clearResolvedDelegateAttention(sub.sess.owningDelegateID); err != nil {
-				s.emit(warningDataFromError("clear resolved delegate attention", err))
+			if err := s.delegateController.reconcileResolvedDelegateAttention(sub.sess.owningDelegateID); err != nil {
+				s.emit(warningDataFromError("reconcile resolved delegate attention", err))
 			}
 			return false
 		}
@@ -236,12 +236,11 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 		s.releaseFinishedGeneration(started.lease, sub.sess)
 		s.emit(warningDataFromError("launch delegate attention", errors.Join(launchErr, finishErr)))
 		// The committed start closed and the launch refused, so this
-		// generation will never present the report it consumed.
-		// The committed start already replaced the controller's wake set with
-		// the accept's post-consume pending list, dropping this delegate from
-		// c.attention when the report was its only pending item. Reopening the
-		// row must therefore re-arm it, or no in-process drive ever selects the
-		// delegate again.
+		// generation will never present the report it consumed. The committed
+		// start already replaced the durable queue with the accept's
+		// post-consume pending list, resolving this row when the report was its
+		// only pending item. Reopening the row must therefore queue it again,
+		// or no in-process drive ever selects the delegate again.
 		s.reopenFailedDelegateAttention(sub, ids[0], true)
 		s.delegateController.retryDelegateAttentionLater()
 	}
@@ -255,10 +254,10 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 // tree would only race the discard.
 //
 // armWake re-arms the reopened row's wake in the controller. The launch-refusal
-// arm needs it: its committed start replaced the wake set with the accept's
-// post-consume pending list. The busy-commit arm does not: its failed commit
-// never replaced the wake, so the delegate is still selected and the driven
-// presentation reads the reopened transcript row.
+// arm needs it: its committed start replaced the durable queue with the accept's
+// post-consume pending list and resolved the consumed row. The busy-commit arm
+// does not: its failed commit never replaced the queue, so the delegate is still
+// selected and the driven presentation reads the reopened transcript row.
 func (s *Session) reopenFailedDelegateAttention(sub *subagent, attentionID string, armWake bool) {
 	if s == nil || sub == nil || sub.sess == nil || attentionID == "" {
 		return
@@ -283,7 +282,9 @@ func (s *Session) reopenFailedDelegateAttention(sub *subagent, attentionID strin
 		return
 	}
 	if armWake && reopenID != "" {
-		s.delegateController.rearmReopenedDelegateAttention(sub.sess.owningDelegateID, reopenID)
+		if err := s.delegateController.rearmReopenedDelegateAttention(sub.sess.owningDelegateID, reopenID); err != nil {
+			s.emit(warningDataFromError("rearm reopened delegate attention", err))
+		}
 	}
 }
 

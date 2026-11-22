@@ -788,7 +788,7 @@ func loadHistoricalStableActivityWithAttention(ctx context.Context, stateDir, ro
 		aggregate := state[id]
 		row := captureDelegateSnapshot(aggregate)
 		row.needsAttention = false
-		if delegateAttentionProjectionEligible(state, id) {
+		if delegatestore.AttentionProjectionEligible(state, id) {
 			transcriptPath, childSessionID, err := delegateTranscriptPathFromRef(stateDir, aggregate.Descriptor.TranscriptRef)
 			if err != nil {
 				return nil, nil, fmt.Errorf("delegate %s attention transcript: %w", id, err)

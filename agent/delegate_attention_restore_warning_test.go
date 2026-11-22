@@ -129,7 +129,9 @@ func TestDelegateAttentionWarningEpisodeEndsWhenTheAttentionIsNoLongerOwed(t *te
 		t.Fatalf("NewSession: %v", err)
 	}
 	eventsDone := captureSessionEvents(sess)
-	controller := &delegateTreeController{attention: map[string]*delegateAttentionState{"d1": {wakeIDs: map[string]struct{}{"a1": {}}}}}
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, controller, "d1", "")
+	controller.seedAttentionRowForTest("d1", "a1", true)
 	sess.delegateController = controller
 	busy := errors.New("delegate runtime is busy")
 
@@ -138,9 +140,7 @@ func TestDelegateAttentionWarningEpisodeEndsWhenTheAttentionIsNoLongerOwed(t *te
 	sess.warnDelegateAttentionFailed(delegateAttentionRestoreLabel, "d1", busy) // still owed: same episode
 	controller.forgetDelegateAttention("d1", "a1")
 	sess.forgetSettledDelegateAttentionWarnings()
-	controller.mu.Lock()
-	controller.replaceDelegateAttentionLocked("d1", []string{"a2"})
-	controller.mu.Unlock()
+	controller.replaceDelegateAttentionForTest("d1", []string{"a2"})
 	sess.warnDelegateAttentionFailed(delegateAttentionRestoreLabel, "d1", busy) // owed again: a new episode
 	sess.delegateController = nil
 	sess.Close()

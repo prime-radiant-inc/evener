@@ -1659,9 +1659,11 @@ The first canonical terminal durable record/event for a job defines `terminal_ge
 Stable delegate lifecycle, descriptor, lineage, resumability, transcript
 reference, last outcome, and ordered owner delivery live in the root
 `delegates.jsonl` journal. The stable controller folds that journal directly;
-it never reconstructs a delegate through a job record. Receiver transcripts are
-the sole durable authority for pending delegate/watch/shell attention. Startup
-does not translate legacy activation rows: retired delegate job rows and
+it never reconstructs a delegate through a job record. The same journal owns
+each child delegate's pending-attention queue and its `NeedsAttention`
+projection; receiver transcripts remain the rendered message history a request
+presents and the durable rail for root and shell/watch attention. Startup does
+not translate legacy activation rows: retired delegate job rows and
 job-addressed watch rows stay in the job journal, are ignored, and the session
 reports `legacy_delegate_state` as a warning.
 
@@ -1813,11 +1815,14 @@ Rules:
   its own report, a report from a nested delegate wakes it the same way; once
   its own report is accepted, a later nested report waits for the generation's
   end unless an update's turn presents it first.
-- Receiver transcripts are the sole durable attention authority. Attention is
-  appended and fsynced by exact private ID before a process-local wake. A
-  successful notification turn appends and fsyncs the matching consumed marker;
-  failure leaves it pending for retry. Restart folds and re-arms those IDs
-  provider-free, and job-tree drain includes them until consumed or discarded.
+- Child-delegate pending attention is a durable queue in the delegate journal,
+  keyed by exact private ID; the queue and `NeedsAttention` move in the same
+  `Apply`. The rendered message is still appended and fsynced to the receiver
+  transcript before the wake, and receiver transcripts remain the durable rail
+  for root and shell/watch attention. A successful notification turn appends
+  and fsyncs the matching consumed marker and resolves the queue row; failure
+  leaves it pending for retry. Restart re-arms those IDs provider-free, and
+  job-tree drain includes them until consumed or discarded.
 - If an owner is permanently unreachable, unresolved attention transfers
   idempotently to the nearest reachable ancestor only after the ancestor append
   fsyncs. A stopping subtree durably discards its own unresolved attention.
@@ -2214,10 +2219,13 @@ their direct owner's attention.
 
 Drive-down uses existing parent-owned lifecycle machinery: `serve.go` wakes the
 root, and each parent starts one child's `EntryNotification` turn at a safe loop
-boundary. The receiver transcript, not a flat scheduler or queue file, remains
-the durable authority. This preserves post-order close and exact drain joins;
-a cross-process child requirement or demonstrated parent-cadence correctness
-failure would require a separate scheduler design.
+boundary. The delegate store (`delegatestore`) owns each child delegate's
+pending-attention queue and its `NeedsAttention` projection, updated in the same
+journal `Apply` that queues or resolves a row; the receiver transcript remains
+the rendered message history a request presents, not a second queue. This
+preserves post-order close and exact drain joins; a cross-process child
+requirement or demonstrated parent-cadence correctness failure would require a
+separate scheduler design.
 
 ## Implementation notes that are not part of the contract
 

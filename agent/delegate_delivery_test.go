@@ -866,7 +866,7 @@ func TestDelegateControllerCommittedDeliveryCompletionAcknowledgesExactHead(t *t
 		t.Fatalf("Load: %v", err)
 	}
 	tail := events[len(events)-2:]
-	if tail[0].Kind != delegatestore.EventDelegateAttentionChanged || tail[0].DelegateID != "dlg_owner" || tail[0].AttentionChanged == nil || !tail[0].AttentionChanged.NeedsAttention || tail[1].Kind != delegatestore.EventDelegateDeliveryAcknowledged || tail[1].DelegateID != "dlg_target" || tail[1].DeliveryAcknowledged == nil || tail[1].DeliveryAcknowledged.DeliveryID != firstPlan.deliveryID {
+	if tail[0].Kind != delegatestore.EventDelegateAttentionQueued || tail[0].DelegateID != "dlg_owner" || tail[0].AttentionQueued == nil || tail[0].AttentionQueued.AttentionID != attentionID || !tail[0].AttentionQueued.Committed || tail[1].Kind != delegatestore.EventDelegateDeliveryAcknowledged || tail[1].DelegateID != "dlg_target" || tail[1].DeliveryAcknowledged == nil || tail[1].DeliveryAcknowledged.DeliveryID != firstPlan.deliveryID {
 		t.Fatalf("serialized delivery batch tail = %#v", tail)
 	}
 	if len(plans.updates) != 2 {
