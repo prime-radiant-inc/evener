@@ -69,4 +69,33 @@ describe("copyText", () => {
       button.remove();
     }
   });
+
+  test("the execCommand fallback uses the document that owns the copy button", async () => {
+    const frame = document.createElement("iframe");
+    document.body.appendChild(frame);
+    try {
+      const popout = frame.contentDocument;
+      const popoutWindow = frame.contentWindow;
+      if (!popout || !popoutWindow) throw new Error("iframe has no contentDocument");
+      Object.defineProperty(popoutWindow.navigator, "clipboard", { value: undefined, configurable: true });
+      const execCommand = vi.fn().mockImplementation(() => {
+        expect(popout.querySelector("textarea")).not.toBeNull();
+        return true;
+      });
+      popout.execCommand = execCommand;
+      const button = popout.createElement("button");
+      popout.body.appendChild(button);
+      button.focus();
+      expect(popout.activeElement).toBe(button);
+
+      const ok = await copyText("ABCD-1234", popout);
+
+      expect(ok).toBe(true);
+      expect(execCommand).toHaveBeenCalledExactlyOnceWith("copy");
+      expect(popout.activeElement).toBe(button);
+      expect(document.querySelector("textarea")).toBeNull();
+    } finally {
+      frame.remove();
+    }
+  });
 });

@@ -76,15 +76,20 @@ export function CopyButton({
     return () => clearTimeout(timer);
   }, [copied, presentation]);
 
-  async function handleCopy(): Promise<void> {
-    const ok = await copyText(text);
+  async function handleCopy(doc: Document): Promise<void> {
+    const ok = await copyText(text, doc);
     if (ok) setCopied(true);
     onResult?.(ok);
   }
 
   if (presentation === "text") {
     return (
-      <Button {...rest} variant={variant} size={size ?? "md"} onClick={() => void handleCopy()}>
+      <Button
+        {...rest}
+        variant={variant}
+        size={size ?? "md"}
+        onClick={(event) => void handleCopy(event.currentTarget.ownerDocument)}
+      >
         {copied ? "Copied ✓" : label}
       </Button>
     );
@@ -97,7 +102,7 @@ export function CopyButton({
       icon={copied ? <CopiedIcon /> : <CopyIcon />}
       variant={variant}
       size={size ?? "xs"}
-      onClick={() => void handleCopy()}
+      onClick={(event) => void handleCopy(event.currentTarget.ownerDocument)}
     />
   );
 }
