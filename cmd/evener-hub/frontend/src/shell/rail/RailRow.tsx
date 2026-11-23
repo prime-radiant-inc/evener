@@ -49,7 +49,7 @@ import {
   waitingForQuotaText,
   whyLine,
 } from "@evener/appwire-client/state/navigation";
-import { memo, type ReactNode, useCallback, useRef } from "react";
+import { memo, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { settingsURLWithQuery } from "../../panes/settings/settingsHost";
 import {
   relativeAge,
@@ -1001,13 +1001,53 @@ function HostGlyph({ className, testId }: { className: string; testId: string })
 // The name is the row's content, so this is both what a reader sees and what
 // assistive tech announces.
 function OverflowRow({ node, info }: { node: OverflowRailNode; info: TreeRowInfo }) {
+  // The archive loads itself as you reach it (docs/web-ui/design-system.md
+  // §12): an overflow row that pages an archived tier activates its load
+  // when it scrolls into view, so the archived list extends the way it
+  // reads - one continuous reach - while every other overflow keeps its
+  // explicit activation (the live sections' foreground-demand paging is a
+  // pinned contract in Rail.backgroundDemand.test.tsx). The activation is
+  // the same path a tap takes, so the pending-page dedupe and error
+  // handling there own this too.
+  const pagesArchive = node.pages.some((page) => page.tier === "archived");
+  const activateRef = useRef(info.activate);
+  activateRef.current = info.activate;
+  const element = useRef<HTMLSpanElement>(null);
+  const [visible, setVisible] = useState(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: node.pages is the re-arm signal, not a read value: a loaded page advances the descriptor and a row still in view must re-observe
+  useEffect(() => {
+    if (!pagesArchive || typeof IntersectionObserver !== "function") return;
+    const target = element.current;
+    if (target === null) return;
+    let active = true;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!active) return;
+        setVisible(entries.some((entry) => entry.isIntersecting));
+      },
+      { rootMargin: "200px" },
+    );
+    observer.observe(target);
+    return () => {
+      active = false;
+      observer.disconnect();
+    };
+    // Re-observe when the row's page descriptor advances: a page that
+    // loaded while the row was already in view leaves it there, and the
+    // next page must load without another scroll.
+  }, [pagesArchive, node.pages]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: node.pages is the re-admit signal, not a read value: a loaded page advances the descriptor and a row still in view must load the next one
+  useEffect(() => {
+    if (!pagesArchive || !visible) return;
+    activateRef.current();
+  }, [pagesArchive, visible, node.pages]);
   return (
     <span className={CLASS.railRow}>
       {/* The treeitem's Enter handler is the keyboard path; this click makes
           the visible affordance usable with a mouse as well. */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: treeitem owns keyboard activation and accessible semantics */}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: treeitem owns keyboard activation */}
-      <span data-testid="rail-row-overflow" className={CLASS.overflow} onClick={info.activate}>
+      <span ref={element} data-testid="rail-row-overflow" className={CLASS.overflow} onClick={info.activate}>
         {node.scope ? `${BAND_LABEL[node.scope]} · +${node.count} older` : `+${node.count} older`}
       </span>
     </span>

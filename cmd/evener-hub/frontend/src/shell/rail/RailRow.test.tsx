@@ -1128,6 +1128,74 @@ describe("overflow row", () => {
     expect(scoped).not.toBe(compact);
     expect(scoped).toContain(compact);
   });
+
+  // The archive loads itself as you reach it (docs/web-ui/design-system.md
+  // §12): an archived overflow row that scrolls into view activates its page
+  // load without a tap, while every other overflow - the live sections keep
+  // their foreground-demand paging, which Rail.backgroundDemand.test.tsx
+  // pins - still needs the explicit activation.
+  class RailBoundaryObserver {
+    static observers: RailBoundaryObserver[] = [];
+    constructor(private readonly callback: IntersectionObserverCallback) {
+      RailBoundaryObserver.observers.push(this);
+    }
+    observe(): void {}
+    disconnect(): void {}
+    emit(visible: boolean): void {
+      this.callback(
+        [{ isIntersecting: visible } as IntersectionObserverEntry],
+        this as unknown as IntersectionObserver,
+      );
+    }
+  }
+
+  test("an archived overflow row loads its page when it scrolls into view", async () => {
+    vi.stubGlobal("IntersectionObserver", RailBoundaryObserver);
+    try {
+      const rowInfo = info();
+      render(
+        <RailRow
+          node={{
+            ...overflowRailNode(12),
+            pages: [{ projectKey: "p1", tier: "archived", catalog: "projects", offset: 50, limit: 50 }],
+          }}
+          info={rowInfo}
+          actions={actions()}
+        />,
+      );
+      await act(async () => {
+        RailBoundaryObserver.observers.at(-1)?.emit(true);
+      });
+      await waitFor(() => expect(rowInfo.activate).toHaveBeenCalledTimes(1));
+    } finally {
+      vi.unstubAllGlobals();
+      RailBoundaryObserver.observers = [];
+    }
+  });
+
+  test("a live overflow row does not load itself when it scrolls into view", async () => {
+    vi.stubGlobal("IntersectionObserver", RailBoundaryObserver);
+    try {
+      const rowInfo = info();
+      render(
+        <RailRow
+          node={{ ...overflowRailNode(12), pages: [{ section: "live", offset: 50, limit: 50 }] }}
+          info={rowInfo}
+          actions={actions()}
+        />,
+      );
+      act(() => {
+        RailBoundaryObserver.observers.at(-1)?.emit(true);
+      });
+      // One microtask beat: a wrong implementation could activate
+      // asynchronously, so absence is only meaningful after a tick.
+      await Promise.resolve();
+      expect(rowInfo.activate).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      RailBoundaryObserver.observers = [];
+    }
+  });
 });
 
 describe("row alignment", () => {

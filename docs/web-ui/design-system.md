@@ -1494,9 +1494,11 @@ tabs are underline tabs, never pills.
 Live → Pinned → Projects → Idle → Archive. Live sorts needs-first. A board
 row carries its state in its StatusDot and relative time, never a text badge
 ("needs answer"/"working" words are banned — the dot already says it). Idle
-shows its first rows immediately, with no "show more" tap. Archive is a nav
-row into a single infinite-scroll list driven by a sentinel, not pagination.
-One search field; no ⌘K hint text anywhere in the UI.
+shows its first rows immediately, with no "show more" tap. The archive keeps
+its existing grouping (archived projects, then per-project archived lists)
+and loads itself: an archived overflow row that scrolls into view fetches
+its next page, so reaching the end of the list extends it rather than paging
+it. One search field; no ⌘K hint text anywhere in the UI.
 
 **Tablet splits board and conversation side-by-side** at the existing
 breakpoint. The collapse control is one glyph living on the interior edge of
