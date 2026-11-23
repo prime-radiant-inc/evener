@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"primeradiant.com/evener/envvars"
 )
 
 // ErrLoginRequired reports that the instance cannot produce a runtime
@@ -114,7 +116,7 @@ func (s *Service) PrepareLogin(ctx context.Context, instance string, tokens Toke
 	}
 	return AuthRecord{Instance: instance, Scheme: AuthScheme, Version: 1,
 		AccessToken: tokens.AccessToken, RefreshToken: tokens.RefreshToken,
-		TokenType: firstNonEmpty(tokens.TokenType, "Bearer"), Scope: firstNonEmpty(tokens.Scope, s.cfg.scope()),
+		TokenType: envvars.FirstNonEmpty(tokens.TokenType, "Bearer"), Scope: envvars.FirstNonEmpty(tokens.Scope, s.cfg.scope()),
 		ObtainedAt: nowFunc(), AccessExpiry: tokens.AccessExpiry, RefreshExpiry: tokens.RefreshExpiry,
 		CopilotToken: session.Token, CopilotExpiry: session.Expiry,
 		AccountID: account.ID, Email: account.Email}, nil
@@ -301,8 +303,8 @@ func refreshedRecord(current AuthRecord, tokens TokenSet) (AuthRecord, error) {
 	}
 	record := current
 	record.AccessToken = tokens.AccessToken
-	record.TokenType = firstNonEmpty(tokens.TokenType, record.TokenType)
-	record.Scope = firstNonEmpty(tokens.Scope, record.Scope)
+	record.TokenType = envvars.FirstNonEmpty(tokens.TokenType, record.TokenType)
+	record.Scope = envvars.FirstNonEmpty(tokens.Scope, record.Scope)
 	record.AccessExpiry = tokens.AccessExpiry
 	if tokens.RefreshToken != "" {
 		record.RefreshToken = tokens.RefreshToken
