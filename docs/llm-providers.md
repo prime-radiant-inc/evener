@@ -333,13 +333,13 @@ providers need their location/region variables as well as their credential:
 Nothing else conjures an instance from the environment alone — `GITHUB_TOKEN`,
 `HF_TOKEN`, or `DATABRICKS_TOKEN` in a shell must not produce a
 `github-copilot`, `huggingface`, or `databricks` instance. `github-copilot`
-exists only while its own record can launch; no ambient GitHub token
-substitutes for that record. A fresh install
-writes no starter `providers.toml`: the hub and CLI compute the same implicit
-set from the environment and the credentials store, and the file is created
-only on the first write (the hub's instances pane, or `evener providers
-add`); every write is dry-parsed first, so a config the registry couldn't
-read back is refused rather than written.
+exists only while its own record exists; no ambient GitHub token substitutes
+for that record, and only a launchable record can become an automatic default.
+A fresh install writes no starter `providers.toml`: the hub and CLI compute
+the same implicit set from the environment and the credentials store, and the
+file is created only on the first write (the hub's instances pane, or `evener
+providers add`); every write is dry-parsed first, so a config the registry
+couldn't read back is refused rather than written.
 
 ### The default instance
 

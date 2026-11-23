@@ -83,8 +83,11 @@ subscriptions do not automatically include separately billed API access.
 OpenAI API keys and **OpenAI Codex** sign-in are separate connections, and
 **GitHub Copilot** sign-in is its own connection. For either sign-in, choose
 that provider's route and follow the device prompt instead of pasting an API
-key; Copilot sign-in is device-only. A Copilot connection refuses a stored API
-key. Availability depends on your account and provider terms.
+key. The web client and the native client both offer that route through the
+provider's sign-in action, and both use the same device-only Copilot flow: they
+show GitHub's verification code and URL, then wait for the authorization. A
+Copilot connection refuses a stored API key. Availability depends on your
+account and provider terms.
 
 ## Other access routes
 

@@ -121,7 +121,8 @@ directory, task draft, provider, and model all belong to this launch form:
    closes.
 2. If the form says a provider is required, select **Connect provider**. Choose
    the provider you intend to use. An ordinary chat subscription is not
-   necessarily an API account.
+   necessarily an API account. **GitHub Copilot** is in the popular set shown
+   first; **Show all providers** reveals the rest.
 3. For an API connection, paste the actual key into the masked field and select
    **Save and test**. For a supported ChatGPT/Codex subscription, choose the
    separate **OpenAI Codex** sign-in route instead; it is not the `openai` API-key

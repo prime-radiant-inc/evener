@@ -307,7 +307,7 @@ github.com OAuth endpoint with the `read:user` scope; GitHub Enterprise Server
 and personal access tokens are not supported.
 
 The provider uses a temporary, Pi-compatible public OAuth client identity and
-direct HTTPS requests to the Copilot backend. That is an approved compatibility
+direct HTTPS requests to the Copilot backend. That is a temporary compatibility
 boundary, not a GitHub-approved or partner integration: it uses no GitHub SDK
 or CLI, and the raw inference responses it consumes are not a stable public
 contract.
