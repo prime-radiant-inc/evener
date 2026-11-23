@@ -3174,50 +3174,6 @@ func (s *Session) quietlyYielded() bool {
 	return s.quietBoundaryLocked()
 }
 
-func (s *Session) rootDeliveredReplySinceLastUserInput() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	resultTool := s.resultToolName()
-	quietInTurn := map[string]bool{}
-	for _, turn := range slices.Backward(s.history) {
-		if turn.Kind == schema.TurnUserInput {
-			return false
-		}
-		if turn.Kind == schema.TurnAssistant && turn.AcceptedReply {
-			return true
-		}
-		if turn.Kind != schema.TurnToolResults && turn.Kind != schema.TurnTool {
-			continue
-		}
-		for _, part := range turn.Message.Content {
-			if part.Kind != llm.ContentToolResult || part.ToolResult == nil || part.ToolResult.IsError {
-				continue
-			}
-			res := part.ToolResult
-			if res.Name != "" && res.Name != resultTool && res.Name != tool.DefaultResultToolName {
-				continue
-			}
-			state, ok := schema.DecodeCommunicateToolState(res.ToolState)
-			if !ok {
-				continue
-			}
-			if state.IsQuiet() {
-				if turn.TurnID != "" {
-					quietInTurn[turn.TurnID] = true
-				}
-				continue
-			}
-			if state.Accepted != nil && *state.Accepted && state.EndTurn != nil && *state.EndTurn {
-				if state.BoundaryPending && turn.TurnID != "" && quietInTurn[turn.TurnID] {
-					continue
-				}
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func (s *Session) beginCommunicateRound() {
 	s.mu.Lock()
 	s.comm.roundQuiet = false

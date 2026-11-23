@@ -1550,14 +1550,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	goalControlsCap := goalControlsRoundCap(s.cfg.MaxToolRoundsPerInput, kind)
 	roundCap := goalRoundCap(s.cfg.MaxToolRoundsPerInput, kind)
 
-	var (
-		initialLiveWork    map[string]struct{}
-		initialLiveWorkErr error
-	)
-	if kind == EntryUserInput && !s.reportsToParent() {
-		initialLiveWork, initialLiveWorkErr = s.activeLiveWorkIDs()
-	}
-
 	admittedToRounds = true
 	s.beginAttentionCoverageRounds()
 	defer s.endAttentionCoverageRounds()
@@ -1855,25 +1847,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				bareQuiet = !bareReply && ((workErr == nil && drainable) ||
 					(kind == EntryDelegateAttention && s.canQuietlyYield(roundCtx) == nil))
 			} else {
-				outstanding, workErr := s.treeHasOutstandingWorkAtBoundary()
-				replied := kind == EntryNotification && s.rootDeliveredReplySinceLastUserInput()
-				oneShotDraining := kind == EntryNotification && s.hasAcceptedTerminalCommunicate()
-				turnStartedLiveWork := false
-				if kind == EntryUserInput && workErr == nil {
-					turnStartedLiveWork = round > 0 && outstanding
-					if initialLiveWorkErr == nil {
-						if currentLiveWork, currentErr := s.activeLiveWorkIDs(); currentErr == nil {
-							turnStartedLiveWork = hasNewLiveWork(currentLiveWork, initialLiveWork)
-						}
-					}
-				}
-				bareReply = s.usesDefaultCommunicateOutputEnvelope() && workErr == nil &&
-					(kind == EntryUserInput && !turnStartedLiveWork ||
-						kind == EntryNotification && !s.hasWakeableWorkAtBoundary() && !replied && !oneShotDraining)
-				bareQuiet = !bareReply && workErr == nil &&
-					((kind == EntryUserInput && turnStartedLiveWork) ||
-						(kind != EntryUserInput && outstanding) ||
-						(oneShotDraining && !s.hasWakeableWorkAtBoundary()))
+				bareReply = s.usesDefaultCommunicateOutputEnvelope() && kind == EntryUserInput
+				bareQuiet = kind == EntryNotification && s.hasAcceptedTerminalCommunicate()
 			}
 		}
 		var bareStop hooks.StopResult

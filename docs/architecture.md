@@ -247,11 +247,13 @@ allowed) and ends the current turn without emitting `EventCommunicate`, recordin
 `TurnCommunicate`, or waking a parent: on an unanswered user turn it requires wakeable work (and
 in one-shot `TurnEndsProcess` runs, drainable work rather than an unfired self-timer alone), while
 on an admitted notification or attention-only wake it acknowledges the wake silently. Untyped
-idle interactive/one-shot roots and untyped idle subagents on `EntryUserInput` accept a clean
-tool-free `stop` response as the final reply when `communicate` was not called, while bare-text
-`stop` responses during live wakeable work or on notification/attention wakes park quietly
-automatically (`Turn.QuietYield`). `SessionAwaiting` belongs solely to pending `ask_user`
-questions; every other clean turn boundary rests `SessionIdle`, and restore derives the same
+roots and untyped idle subagents with no drainable owned work accept a clean tool-free `stop`
+response on `EntryUserInput` as the final reply when `communicate` was not called. Bare-text `stop`
+responses park quietly automatically (`Turn.QuietYield`) on subagents with live owned work,
+attention-only delegate wakes (`canQuietlyYield == nil`), and one-shot `TurnEndsProcess`
+shutdown-drain notifications after an accepted terminal reply; interactive
+notification wakes and structured-schema sessions steer via `no-tool-calls` so the model calls
+`communicate` explicitly. `SessionAwaiting` belongs solely to pending `ask_user` questions; every other clean turn boundary rests `SessionIdle`, and restore derives the same
 state from the transcript.
 
 ### The repeated-call breaker

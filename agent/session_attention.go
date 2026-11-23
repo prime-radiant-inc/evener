@@ -1968,35 +1968,12 @@ func (s *Session) hasPendingRootDelegateAttention() bool {
 // counts as work again. The raw signal stays for the rail's own machinery,
 // which must see the cached IDs to re-arm them on release.
 func (s *Session) pendingRootDelegateAttention() bool {
-	return s.pendingRootDelegateAttentionFiltered(false)
-}
-
-// pendingUncoveredRootDelegateAttention matches pendingRootDelegateAttention
-// except that attention IDs already credited in s.attentionCoveredIDs during
-// the active turn (and about to be resolved on unwind) are excluded.
-func (s *Session) pendingUncoveredRootDelegateAttention() bool {
-	return s.pendingRootDelegateAttentionFiltered(true)
-}
-
-func (s *Session) pendingRootDelegateAttentionFiltered(uncoveredOnly bool) bool {
 	if s == nil {
 		return false
 	}
 	s.attentionMu.Lock()
 	deferred := s.rootAttentionPaused && !s.rootAttentionWake && !s.rootAttentionRetry.active
-	var pending bool
-	if !deferred {
-		if !uncoveredOnly || !s.attentionCoverageActive {
-			pending = len(s.rootAttentionWakeIDs) != 0
-		} else {
-			for id := range s.rootAttentionWakeIDs {
-				if _, covered := s.attentionCoveredIDs[id]; !covered {
-					pending = true
-					break
-				}
-			}
-		}
-	}
+	pending := len(s.rootAttentionWakeIDs) != 0 && !deferred
 	s.attentionMu.Unlock()
 	return pending && !s.rootAttentionRailParked()
 }

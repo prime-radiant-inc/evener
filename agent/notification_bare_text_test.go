@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -68,38 +69,50 @@ func TestNotificationQuietYieldAndBareTextRetry(t *testing.T) {
 		t.Fatalf("Case 1b model calls = %d, want 2 (1 context-length recovery + 1 quiet yield)", case1bCalls.Load())
 	}
 
-	// Notification wake bare text on an untyped root with zero wakeable work delivers a visible final reply.
-	adapterBare := newFakeAdapter("openai", func(llm.Request) llm.Response {
-		return bareStopResponse("Final answer after wake.")
-	})
+	// Interactive root notification bare text steers via no-tool-calls so the model calls communicate explicitly.
+	adapterBare := newFakeAdapter("openai",
+		func(llm.Request) llm.Response {
+			return bareStopResponse("Final answer after wake.")
+		},
+		func(llm.Request) llm.Response {
+			return agenttest.FinalResponse("Final answer after wake.")
+		},
+	)
 	sessBare := newSession(t, withAdapter(adapterBare), withStateDir(t.TempDir()))
 	enqueueCompletedJobNotification(t, sessBare, "job_bare_first")
 	if reply, err := sessBare.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil || reply != "Final answer after wake." {
-		t.Fatalf("idle root notification bare reply = (%q, %v), want %q", reply, err, "Final answer after wake.")
+		t.Fatalf("interactive root notification = (%q, %v), want %q", reply, err, "Final answer after wake.")
 	}
-	if got := len(adapterBare.Requests()); got != 1 || sessBare.quietlyYielded() || !sessBare.communicated() {
-		t.Fatalf("requests=%d quiet=%t communicated=%t, want 1/false/true", len(adapterBare.Requests()), sessBare.quietlyYielded(), sessBare.communicated())
+	if got := len(adapterBare.Requests()); got != 2 || sessBare.quietlyYielded() || !sessBare.communicated() {
+		t.Fatalf("requests=%d quiet=%t communicated=%t, want 2/false/true", len(adapterBare.Requests()), sessBare.quietlyYielded(), sessBare.communicated())
 	}
-	var sawAcceptedBareTurn bool
+	var bareSteers int
 	for _, turn := range transcriptTurnsOf(t, sessBare) {
-		if turn.Kind == schema.TurnAssistant && turn.AcceptedReply && !turn.QuietYield {
-			sawAcceptedBareTurn = true
+		if turn.Kind == schema.TurnSteering && turn.SteeringKind == events.SteeringKindNoToolCalls {
+			bareSteers++
 		}
 	}
-	if !sawAcceptedBareTurn {
-		t.Fatal("idle root notification bare reply did not persist AcceptedReply=true without QuietYield")
+	if bareSteers != 1 {
+		t.Fatalf("interactive root notification bareSteers = %d, want 1", bareSteers)
 	}
 
-	// Notification wake bare text while another background job still runs parks quietly automatically.
+	// Interactive root notification bare text while another background job still runs also steers to explicit communicate.
 	envHeld := newHeldJobEnvironment(t.TempDir())
 	t.Cleanup(envHeld.releaseJob)
-	adapterHeld := newFakeAdapter("openai", func(llm.Request) llm.Response {
-		return agenttest.ToolCallResponse(llm.ToolCallData{ID: "bg-held", Name: "shell", Arguments: json.RawMessage(`{"command":"go test","mode":"background"}`)})
-	}, func(llm.Request) llm.Response {
-		return quietYieldResponse("quiet-held", `{"message":"waiting on held job","next":"log_quietly_and_end_turn"}`)
-	}, func(llm.Request) llm.Response {
-		return bareStopResponse("Still waiting on running job.")
-	})
+	adapterHeld := newFakeAdapter("openai",
+		func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "bg-held", Name: "shell", Arguments: json.RawMessage(`{"command":"go test","mode":"background"}`)})
+		},
+		func(llm.Request) llm.Response {
+			return quietYieldResponse("quiet-held", `{"message":"waiting on held job","next":"log_quietly_and_end_turn"}`)
+		},
+		func(llm.Request) llm.Response {
+			return bareStopResponse("Still waiting on running job.")
+		},
+		func(llm.Request) llm.Response {
+			return quietYieldResponse("quiet-held-2", `{"message":"still waiting on running job","next":"log_quietly_and_end_turn"}`)
+		},
+	)
 	sessHeld := newSession(t, withEnv(envHeld), withAdapter(adapterHeld), withStateDir(t.TempDir()))
 	if _, err := sessHeld.ProcessInput(ctx, "start background job", nil); err != nil {
 		t.Fatal(err)
@@ -108,17 +121,17 @@ func TestNotificationQuietYieldAndBareTextRetry(t *testing.T) {
 	if _, err := sessHeld.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
 		t.Fatal(err)
 	}
-	if got := len(adapterHeld.Requests()); got != 3 || !sessHeld.quietlyYielded() || sessHeld.communicated() {
-		t.Fatalf("held job requests=%d quiet=%t communicated=%t, want 3/true/false", len(adapterHeld.Requests()), sessHeld.quietlyYielded(), sessHeld.communicated())
+	if got := len(adapterHeld.Requests()); got != 4 || !sessHeld.quietlyYielded() || sessHeld.communicated() {
+		t.Fatalf("held job requests=%d quiet=%t communicated=%t, want 4/true/false", len(adapterHeld.Requests()), sessHeld.quietlyYielded(), sessHeld.communicated())
 	}
-	var sawBareQuietTurn bool
+	var heldNoToolSteers int
 	for _, turn := range transcriptTurnsOf(t, sessHeld) {
-		if turn.Kind == schema.TurnAssistant && turn.QuietYield {
-			sawBareQuietTurn = true
+		if turn.Kind == schema.TurnSteering && turn.SteeringKind == events.SteeringKindNoToolCalls {
+			heldNoToolSteers++
 		}
 	}
-	if !sawBareQuietTurn {
-		t.Fatal("notification bare-text park with live job did not persist QuietYield=true")
+	if heldNoToolSteers != 1 {
+		t.Fatalf("notification bare text while live job ran heldNoToolSteers = %d, want 1", heldNoToolSteers)
 	}
 
 	// Case 2: Notification wake executes a tool on round 0, then gets cut off with FinishReasonLength
