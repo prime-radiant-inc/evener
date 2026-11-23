@@ -84,6 +84,7 @@ native:llm:./providers/anthropic:FuzzAnthropicStreamStructured
 native:llm:./providers/google:FuzzGeminiStreamMetamorphic
 native:llm:./providers/google:FuzzGeminiStreamStructured
 native:llm:./providers/chatcompletions:FuzzChatCompletionsBuildBody
+native:llm:./providers/chatcompletions:FuzzChatCompletionsListModels
 native:llm:./providers/chatcompletions:FuzzChatCompletionsStreamMetamorphic
 native:llm:./internal/imagerepair:FuzzICC
 native:llm:./internal/imagerepair:FuzzOrientation

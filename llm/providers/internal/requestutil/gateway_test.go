@@ -36,6 +36,30 @@ func TestGatewayInputModalities(t *testing.T) {
 	}
 }
 
+// TestNormalizeReasoningEfforts pins the ladder normalization once at its
+// source: trim, drop empties and duplicates, drop `ultra` (a Codex client
+// delegation preset, not a wire effort), keep served order. Both /models
+// readers route through it, so their own tests pin only their decode shapes.
+func TestNormalizeReasoningEfforts(t *testing.T) {
+	t.Parallel()
+	got := NormalizeReasoningEfforts([]string{" high ", "", "ultra", "Ultra", "high", "none"})
+	if want := []string{"high", "none"}; !slices.Equal(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	if NormalizeReasoningEfforts(nil) != nil {
+		t.Fatal("no levels must stay nil")
+	}
+	if got := NormalizeDefaultReasoningEffort(" Ultra "); got != "" {
+		t.Fatalf("ultra default = %q, want dropped", got)
+	}
+	if got := NormalizeDefaultReasoningEffort(" high "); got != "high" {
+		t.Fatalf("default = %q, want high", got)
+	}
+	if got := NormalizeDefaultReasoningEffort("   "); got != "" {
+		t.Fatalf("blank default = %q, want dropped", got)
+	}
+}
+
 func TestDedupStrings(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

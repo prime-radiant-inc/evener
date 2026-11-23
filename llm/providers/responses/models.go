@@ -103,31 +103,22 @@ func (m codexModelListEntry) row() registry.Model {
 	}
 	// The Codex backend is the only listing that states the effort a model
 	// runs at when the request omits one (spec §7.4).
-	if d := strings.TrimSpace(m.DefaultReasoningLevel); d != "" && !strings.EqualFold(d, "ultra") {
+	if d := requestutil.NormalizeDefaultReasoningEffort(m.DefaultReasoningLevel); d != "" {
 		caps.DefaultEffort = new(d)
 	}
 	caps.InputModalities = requestutil.DedupStrings(m.InputModalities)
 	return registry.Model{ID: m.id(), Caps: caps}
 }
 
-// codexReasoningEfforts dedupes and trims a Codex row's reasoning-level
-// list into API effort names. Ultra is a Codex client delegation preset,
-// not an effort the Responses API accepts.
+// codexReasoningEfforts maps a Codex row's supported_reasoning_levels to
+// plain effort names; the shared normalizer trims them and drops `ultra`, a
+// Codex client delegation preset the Responses API does not accept.
 func codexReasoningEfforts(levels []codexReasoningLevel) []string {
-	if len(levels) == 0 {
-		return nil
+	names := make([]string, len(levels))
+	for i, level := range levels {
+		names[i] = level.Effort
 	}
-	out := make([]string, 0, len(levels))
-	seen := make(map[string]bool, len(levels))
-	for _, level := range levels {
-		effort := strings.TrimSpace(level.Effort)
-		if effort == "" || strings.EqualFold(effort, "ultra") || seen[effort] {
-			continue
-		}
-		seen[effort] = true
-		out = append(out, effort)
-	}
-	return out
+	return requestutil.NormalizeReasoningEfforts(names)
 }
 
 // ListModels implements llm.Protocol. The platform API answers with data[]
