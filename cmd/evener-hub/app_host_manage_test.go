@@ -708,7 +708,7 @@ func TestHostManageAddWiresAttachableSource(t *testing.T) {
 	}
 	// The added host is not an unknown name on the attach path: the dial the
 	// attach triggers fails in the runner (no real ssh), never at validation.
-	_, err = hubHostAttach(context.Background(), cfg, sources, reg, appwire.HostAttachParams{Host: "side"})
+	_, err = hubHostAttach(context.Background(), cfg, sources, reg, nil, appwire.HostAttachParams{Host: "side"})
 	if err == nil {
 		t.Fatal("attach against the refusing runner succeeded; it must not")
 	}
@@ -717,7 +717,7 @@ func TestHostManageAddWiresAttachableSource(t *testing.T) {
 		t.Fatalf("attach for the added host = %v; want a dial failure, not a validation refusal", err)
 	}
 	// An unknown name still fails validation: the add did not open the registry.
-	if _, err := hubHostAttach(context.Background(), cfg, sources, reg, appwire.HostAttachParams{Host: "ghost"}); err == nil {
+	if _, err := hubHostAttach(context.Background(), cfg, sources, reg, nil, appwire.HostAttachParams{Host: "ghost"}); err == nil {
 		t.Fatal("attach(ghost) accepted, want InvalidParams")
 	} else {
 		assertWireCode(t, err, appwire.CodeInvalidParams)

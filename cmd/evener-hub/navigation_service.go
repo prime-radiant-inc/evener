@@ -84,7 +84,12 @@ type navigationSource interface {
 }
 
 type navigationChangeHint struct {
-	Projects          []string
+	Projects []string
+	// Sources marks a change to the source set or its liveness. It forces a
+	// manifest target even when the rebuild's fingerprint is unchanged, so a
+	// client whose cached manifest predates the hub's current one re-reads
+	// it; without the forced target a client that missed an earlier
+	// publication could stay stale indefinitely.
 	Sources           bool
 	Time              bool
 	AllLoadedProjects bool
@@ -1464,6 +1469,16 @@ func (s *NavigationService) commitTargetsLocked(changes map[navigationResourceKe
 			if target, ok := navigationTargetForResource(dependency, dependencyState.Revision); ok {
 				targetSet[navigationTargetIdentity(target)] = target
 			}
+		}
+	}
+	// A source change is announced even when this rebuild produced no
+	// manifest delta: the hub's projection can already carry the new online
+	// state while a client's cached manifest predates it, so the target must
+	// carry the current manifest revision and let that client re-read.
+	if hint.Sources {
+		manifestKey := navigationResourceKey{Kind: navigationResourceManifest}
+		if target, ok := navigationTargetForResource(manifestKey, s.resources[manifestKey].Revision); ok {
+			targetSet[navigationTargetIdentity(target)] = target
 		}
 	}
 	if len(targetSet) == 0 {

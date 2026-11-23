@@ -28,7 +28,7 @@ import (
 // It is a controller-LOCAL method, not a forwarded evener/host/request admin
 // call: there is no host to forward to until the attach succeeds, so it is
 // deliberately absent from the AppWire host-request catalog (see app_host_admin.go).
-func registerHostAttachHandler(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry, hosts *hostreg.Registry) {
+func registerHostAttachHandler(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry, hosts *hostreg.Registry, navigation *NavigationService) {
 	// hosts is the one live registry the server constructor resolved — in
 	// production the same *hostreg.Registry the SSH manager dials through and
 	// the host-management surface mutates, so a host added at runtime
@@ -37,7 +37,7 @@ func registerHostAttachHandler(server *appserver.Server, cfg hubcore.WebConfig, 
 	// instance to every host handler, so add and attach can never validate
 	// against divergent copies.
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostAttach, func(ctx context.Context, params appwire.HostAttachParams) (appwire.HostAttachResponse, error) {
-		return hubHostAttach(ctx, cfg, sources, hosts, params)
+		return hubHostAttach(ctx, cfg, sources, hosts, navigation, params)
 	})
 }
 
@@ -78,7 +78,7 @@ func hostRegistryFromConfig(cfg hubcore.WebConfig) *hostreg.Registry {
 // state. It is idempotent: Ensure returns the installed channel's client when
 // the host is already attached, so a repeated Connect is safe and simply returns
 // the current facts.
-func hubHostAttach(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, hosts *hostreg.Registry, params appwire.HostAttachParams) (appwire.HostAttachResponse, error) {
+func hubHostAttach(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, hosts *hostreg.Registry, navigation *NavigationService, params appwire.HostAttachParams) (appwire.HostAttachResponse, error) {
 	name := strings.TrimSpace(params.Host)
 	if _, ok := hosts.Get(name); !ok {
 		return appwire.HostAttachResponse{}, appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
@@ -118,6 +118,14 @@ func hubHostAttach(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			return appwire.HostAttachResponse{}, cerr
 		}
 		return appwire.HostAttachResponse{}, classifyHostAttachError(sources, name, err)
+	}
+	// A successful dial is a source-state change every manifest reader must
+	// observe. Ensure can return an already-live channel without emitting an
+	// attach event, and the hub's projection may already carry the online state
+	// while a client's cached manifest predates it, so ask for a source
+	// invalidation instead of relying on an event's fingerprint delta.
+	if navigation != nil {
+		navigation.Invalidate(navigationChangeHint{Sources: true})
 	}
 	resp := appwire.HostAttachResponse{Attached: true, Host: name}
 	// The handshake seam is optional (tests and embedders may leave it unset).
