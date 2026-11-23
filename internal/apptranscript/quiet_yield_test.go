@@ -307,4 +307,94 @@ func TestQuietYieldProjectionAndCompanionDemotion(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("provisional_prose_flushes_on_error_result_and_turn_completion", func(t *testing.T) {
+		t.Parallel()
+		t.Run("error_result", func(t *testing.T) {
+			t.Parallel()
+			turnID := "turn_err_flush"
+			inheritedAuthor := &schema.TranscriptAuthorship{Inherited: true, Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "root-session"}}
+			entries := []schema.Turn{
+				{Format: schema.TurnFormatIdentity, TurnID: turnID, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("start"), Timestamp: ts},
+				{Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: "r1", Authorship: inheritedAuthor.Clone(), Kind: schema.TurnAssistant, Timestamp: ts.Add(time.Second), Message: llm.Message{
+					Role: llm.RoleAssistant,
+					Content: []llm.ContentPart{
+						{Kind: llm.ContentText, Text: "Companion before error"},
+						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_q_err", Name: "communicate", Arguments: json.RawMessage(`{}`)}},
+					},
+				}},
+				{Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: "r1", Kind: schema.TurnToolResults, Timestamp: ts.Add(2 * time.Second), Message: llm.Message{
+					Role: llm.RoleTool,
+					Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
+						ToolCallID: "call_q_err", Name: "communicate", IsError: true, PrevalOnly: true, Content: "cannot end turn",
+					}}},
+				}},
+				{Format: schema.TurnFormatIdentity, TurnID: turnID, Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}},
+			}
+			path := writeTranscriptEntries(t, entries...)
+			reg := NewToolCallRegistry()
+			turns, err := ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, id string, idx int) []appwire.ThreadItem {
+				items, _ := ProjectEntryParts(id, idx, turn, reg, nil, nil)
+				return items
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var msgs, errs []appwire.ThreadItem
+			for _, it := range turns[0].Items {
+				if it.Type == "agentMessage" {
+					msgs = append(msgs, it)
+				}
+				if it.Type == "commandExecution" && it.PrevalOnly {
+					errs = append(errs, it)
+				}
+			}
+			if len(msgs) != 1 || msgs[0].Text != "Companion before error" {
+				t.Fatalf("agentMessages=%+v, want Companion before error flushed", msgs)
+			}
+			if msgs[0].Authorship == nil || msgs[0].Authorship.Author.SessionRef != "local:root-session" {
+				t.Fatalf("Authorship=%+v, want local:root-session", msgs[0].Authorship)
+			}
+			if len(errs) != 1 || errs[0].CallID != "call_q_err" {
+				t.Fatalf("errs=%+v, want preval error item", errs)
+			}
+		})
+
+		t.Run("interrupted_completion_without_result", func(t *testing.T) {
+			t.Parallel()
+			turnID := "turn_interrupted_flush"
+			entries := []schema.Turn{
+				{Format: schema.TurnFormatIdentity, TurnID: turnID, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("start"), Timestamp: ts},
+				{Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: "r1", Authorship: author.Clone(), Kind: schema.TurnAssistant, Timestamp: ts.Add(time.Second), Message: llm.Message{
+					Role: llm.RoleAssistant,
+					Content: []llm.ContentPart{
+						{Kind: llm.ContentText, Text: "Companion before crash"},
+						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_q_crash", Name: "communicate", Arguments: json.RawMessage(`{}`)}},
+					},
+				}},
+				{Format: schema.TurnFormatIdentity, TurnID: turnID, Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnInterrupted}},
+			}
+			path := writeTranscriptEntries(t, entries...)
+			reg := NewToolCallRegistry()
+			turns, err := ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, id string, idx int) []appwire.ThreadItem {
+				items, _ := ProjectEntryParts(id, idx, turn, reg, nil, nil)
+				return items
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var msgs []appwire.ThreadItem
+			for _, it := range turns[0].Items {
+				if it.Type == "agentMessage" {
+					msgs = append(msgs, it)
+				}
+			}
+			if len(msgs) != 1 || msgs[0].Text != "Companion before crash" {
+				t.Fatalf("agentMessages=%+v, want Companion before crash flushed on TurnCompletion", msgs)
+			}
+			if msgs[0].Authorship == nil || msgs[0].Authorship.Author.SessionRef != "local:root-session" {
+				t.Fatalf("Authorship=%+v, want local:root-session", msgs[0].Authorship)
+			}
+		})
+	})
 }

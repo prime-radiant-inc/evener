@@ -120,7 +120,7 @@ func TestQuietYieldIndexParityColdAndIncremental(t *testing.T) {
 		})
 	}
 
-	t.Run("split_catchup_rotates_incarnation_and_demotes", func(t *testing.T) {
+	t.Run("split_catchup_keeps_prose_provisional_and_preserves_incarnation", func(t *testing.T) {
 		t.Parallel()
 		fx := quietYieldFixture(true)
 		path, lines := writeHeaderOnly(t, fx)
@@ -133,25 +133,21 @@ func TestQuietYieldIndexParityColdAndIncremental(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		sawCompanionBefore := false
 		for _, c := range before.Candidates {
 			if c.Item.Type == "agentMessage" && c.Item.Text == "companion-sentinel" {
-				sawCompanionBefore = true
+				t.Fatalf("before TurnToolResults, companion prose must stay provisional, got %+v", c.Item)
 			}
-		}
-		if !sawCompanionBefore {
-			t.Fatalf("before TurnToolResults, expected provisional companion agentMessage, got %+v", before.Candidates)
 		}
 		for _, line := range lines[4:] {
 			appendBytes(t, path, line)
 		}
 		catchUp(t, x)
-		after, err := x.Latest(40)
+		after, changes, err := x.LatestSince(40, appwire.SnapshotIdentity{Incarnation: before.Incarnation, Length: before.Length})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if after.Incarnation == before.Incarnation {
-			t.Fatalf("split CatchUpTo kept incarnation %q; want rotated incarnation so live clients discard demoted agentMessage", after.Incarnation)
+		if after.Incarnation != before.Incarnation || changes == nil {
+			t.Fatalf("split CatchUpTo rotated incarnation (%q -> %q) or lost incremental changes", before.Incarnation, after.Incarnation)
 		}
 		ref := referenceCandidates(t, path)
 		if !reflect.DeepEqual(after.Candidates, ref) {
@@ -349,6 +345,99 @@ func TestQuietYieldIndexParityColdAndIncremental(t *testing.T) {
 		}
 		if !reflect.DeepEqual(cutWin.Candidates, preCut.Candidates) {
 			t.Fatalf("historical cut before quiet result diverges from preCut:\ncut: %s\npre: %s", dump(cutWin.Candidates), dump(preCut.Candidates))
+		}
+	})
+
+	t.Run("split_catchup_flushes_provisional_prose_on_error_result_without_rotation", func(t *testing.T) {
+		t.Parallel()
+		fx := quietYieldFixture(true)
+		fx.lines[3].turn.Authorship = &schema.TranscriptAuthorship{Inherited: true, Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "root-session"}}
+		fx.lines[4].turn.Message.Content[1] = llm.ContentPart{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_quiet", Name: "communicate", IsError: true, PrevalOnly: true, Content: "cannot end turn",
+			},
+		}
+		path, lines := writeHeaderOnly(t, fx)
+		for _, line := range lines[:4] {
+			appendBytes(t, path, line)
+		}
+		x := openIndex(t, path, t.TempDir())
+		before, err := x.Latest(40)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range before.Candidates {
+			if c.Item.Type == "agentMessage" && c.Item.Text == "companion-sentinel" {
+				t.Fatalf("before error result, companion prose must stay provisional, got %+v", c.Item)
+			}
+		}
+		for _, line := range lines[4:] {
+			appendBytes(t, path, line)
+		}
+		catchUp(t, x)
+		after, changes, err := x.LatestSince(40, appwire.SnapshotIdentity{Incarnation: before.Incarnation, Length: before.Length})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if after.Incarnation != before.Incarnation || changes == nil {
+			t.Fatalf("error CatchUpTo rotated incarnation (%q -> %q)", before.Incarnation, after.Incarnation)
+		}
+		ref := referenceCandidates(t, path)
+		if !reflect.DeepEqual(after.Candidates, ref) {
+			t.Fatalf("after error catchup diverges from reference:\nindex: %s\nref:   %s", dump(after.Candidates), dump(ref))
+		}
+		var sawProse, sawErr bool
+		for _, c := range after.Candidates {
+			if c.Item.Type == "agentMessage" && c.Item.Text == "companion-sentinel" {
+				sawProse = true
+			}
+			if c.Item.Type == "commandExecution" && c.Item.CallID == "call_quiet" && c.Item.PrevalOnly {
+				sawErr = true
+			}
+		}
+		if !sawProse || !sawErr {
+			t.Fatalf("sawProse=%v sawErr=%v, want both flushed prose and preval error item", sawProse, sawErr)
+		}
+	})
+
+	t.Run("provisional_prose_flushes_on_turn_completion_without_result", func(t *testing.T) {
+		t.Parallel()
+		fx := quietYieldFixture(true)
+		fx.lines = append(fx.lines[:4], entryLine(at(schema.Turn{
+			Format: schema.TurnFormatIdentity, TurnID: "turn_1", Kind: schema.TurnCompletion,
+			Completion: &schema.TurnCompletionInfo{Status: schema.TurnInterrupted},
+		}, 5)))
+		path, lines := writeHeaderOnly(t, fx)
+		for _, line := range lines[:4] {
+			appendBytes(t, path, line)
+		}
+		x := openIndex(t, path, t.TempDir())
+		before, err := x.Latest(40)
+		if err != nil {
+			t.Fatal(err)
+		}
+		appendBytes(t, path, lines[4])
+		catchUp(t, x)
+		after, changes, err := x.LatestSince(40, appwire.SnapshotIdentity{Incarnation: before.Incarnation, Length: before.Length})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if after.Incarnation != before.Incarnation || changes == nil {
+			t.Fatalf("interrupted CatchUpTo rotated incarnation (%q -> %q)", before.Incarnation, after.Incarnation)
+		}
+		ref := referenceCandidates(t, path)
+		if !reflect.DeepEqual(after.Candidates, ref) {
+			t.Fatalf("after interrupted catchup diverges from reference:\nindex: %s\nref:   %s", dump(after.Candidates), dump(ref))
+		}
+		var sawProse bool
+		for _, c := range after.Candidates {
+			if c.Item.Type == "agentMessage" && c.Item.Text == "companion-sentinel" {
+				sawProse = true
+			}
+		}
+		if !sawProse {
+			t.Fatalf("expected provisional companion-sentinel flushed on TurnCompletion, got %+v", after.Candidates)
 		}
 	})
 }

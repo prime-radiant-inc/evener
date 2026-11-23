@@ -239,4 +239,45 @@ describe("useFindInSession disclosure opening for quiet yields", () => {
 		expect(isRowOpen(standalone)).toBe(true);
 		expect(hasRenderedProse(tree, "quokka-standalone-prose")).toBe(true);
 	});
+
+	it("opens a collapsed quiet-yield group when Find selects a round_timings child inside it", () => {
+		const timingChild: Extract<TimelineRow, { kind: "notice" }> = {
+			kind: "notice",
+			id: "rt_1",
+			turnId: "t1",
+			origin: "system",
+			family: "diagnostic",
+			tone: "system",
+			eventKind: "round_timings",
+			text: "quokka-timing-120ms",
+		};
+		const q1: Extract<TimelineRow, { kind: "notice" }> = {
+			kind: "notice",
+			id: "qy_1",
+			turnId: "t1",
+			origin: "system",
+			family: "lifecycle",
+			tone: "system",
+			eventKind: "quiet_yield",
+			text: "Ended turn quietly",
+		};
+		const q2: Extract<TimelineRow, { kind: "notice" }> = { ...q1, id: "qy_2", turnId: "t2" };
+		const groupRow: TimelineRow = {
+			kind: "details",
+			id: "quiet-yields:qy_1",
+			entries: [q1, timingChild, q2],
+			summary: "2 quiet yields",
+		};
+		let tree!: ReactTestRenderer;
+		act(() => {
+			tree = render(
+				<Harness
+					rows={[groupRow]}
+					initialFind={{ query: "quokka-timing-120ms", key: "quiet-yields:qy_1", seeking: false, exhausted: false }}
+				/>,
+			);
+		});
+		expect(isRowOpen(groupRow)).toBe(true);
+		expect(hasRenderedProse(tree, "quokka-timing-120ms")).toBe(true);
+	});
 });

@@ -125,43 +125,6 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 		awaitingNames map[string]string
 		awaitingEntry int
 	}
-	demotedEntries := map[int]bool{}
-	refAssistantByCall := map[string]int{}
-	for i, entry := range entries {
-		if _, bad := unreadable[i]; bad || entry.OriginalOrdinal != nil {
-			continue
-		}
-		entryIndex := i + 1
-		switch entry.Kind {
-		case schema.TurnAssistant:
-			hasText := assistantEntryHasText(&entry)
-			for _, part := range entry.Message.Content {
-				if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
-					if hasText {
-						refAssistantByCall[part.ToolCall.ID] = entryIndex
-					} else {
-						delete(refAssistantByCall, part.ToolCall.ID)
-					}
-				}
-			}
-		case schema.TurnTool, schema.TurnToolResults:
-			for _, part := range entry.Message.Content {
-				if part.Kind != llm.ContentToolResult || part.ToolResult == nil {
-					continue
-				}
-				if apptranscript.IsQuietCommunicate(part.ToolResult) {
-					if idx, ok := refAssistantByCall[part.ToolResult.ToolCallID]; ok {
-						demotedEntries[idx] = true
-					}
-				}
-				delete(refAssistantByCall, part.ToolResult.ToolCallID)
-			}
-		case schema.TurnCommunicate:
-			if entry.Communicate != nil {
-				delete(refAssistantByCall, entry.Communicate.CallID)
-			}
-		}
-	}
 	var turns []*turnState
 	byID := map[string]*turnState{}
 	var grouper apptranscript.TurnGrouper
@@ -206,9 +169,7 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 			if entry.Model != "" {
 				s.model = entry.Model
 			}
-			reg.SkipAssistantText = entry.Kind == schema.TurnAssistant && demotedEntries[entryIndex]
 			items, parts := apptranscript.ProjectTurnParts(id, entryIndex, entry, reg, nil, apptranscript.ToolResultOutputImages)
-			reg.SkipAssistantText = false
 			for j, item := range items {
 				if apptranscript.MergesByCallID(item) {
 					if at, ok := s.calls[item.CallID]; ok {
@@ -282,7 +243,7 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 			}
 		}
 		if entry.Kind == schema.TurnCommunicate && entry.Communicate != nil && s.awaiting != nil &&
-			!demotedEntries[s.awaitingEntry] &&
+			!identityReg.HasProvisionalAt(s.awaitingEntry) &&
 			apptranscript.EchoesAssistantText(referenceLastTextRun(s.awaiting.Message.Content), entry.Communicate.Message) {
 			reason := entry.Communicate.EndReason
 			if reason == "" && entry.Communicate.EndTurn {
@@ -301,15 +262,9 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 			}
 			continue
 		}
-		entryReg := &apptranscript.ToolCallRegistry{
-			Names:             seed,
-			QuietCalls:        identityReg.QuietCalls,
-			SkipAssistantText: entry.Kind == schema.TurnAssistant && demotedEntries[entryIndex],
-		}
-		if entry.Kind == schema.TurnCommunicate && entry.Communicate != nil {
-			delete(identityReg.QuietCalls, entry.Communicate.CallID)
-		}
-		items, parts := apptranscript.ProjectEntryParts(s.id, entryIndex, entry, entryReg, nil, apptranscript.ToolResultOutputImages)
+		identityReg.Names = seed
+		items, parts := apptranscript.ProjectEntryParts(s.id, entryIndex, entry, identityReg, nil, apptranscript.ToolResultOutputImages)
+		identityReg.Names = nil
 		added := map[int]int{} // part -> item
 		for j, item := range items {
 			if entry.Kind == schema.TurnTool || entry.Kind == schema.TurnToolResults {

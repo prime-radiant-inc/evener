@@ -100,7 +100,15 @@ function isQuietYieldNotice(item: MobileTimelineItem | undefined): boolean {
 	return item?.kind === "notice" && isQuietYield(item) && !isCriticalNotice(item);
 }
 
-function isNotificationSteeringNotice(item: MobileTimelineItem | undefined): boolean {
+const QUIET_WAKE_BOUNDARY_EVENT_KINDS: ReadonlySet<string> = new Set([
+	"warning",
+	"interrupted",
+	"loop_detection",
+	"turn_limit",
+	"tool_repair",
+]);
+
+function isRoutineNotificationSteeringNotice(item: MobileTimelineItem | undefined): boolean {
 	if (
 		item?.kind !== "notice" ||
 		item.origin !== "steering" ||
@@ -115,8 +123,16 @@ function isNotificationSteeringNotice(item: MobileTimelineItem | undefined): boo
 	return item.steeringKind === "notification" || fragments !== null;
 }
 
-function isSettledReasoningActivity(item: MobileTimelineItem | undefined): boolean {
-	return item?.kind === "activity" && item.family === "reasoning" && item.state === "completed";
+function isRoutineQuietWakeItem(item: MobileTimelineItem | undefined): item is DetailsEntry {
+	if (item === undefined) return false;
+	if (item.kind === "activity") {
+		return item.family === "reasoning" && item.state === "completed";
+	}
+	if (item.kind !== "notice") return false;
+	if (item.origin === "steering") return isRoutineNotificationSteeringNotice(item);
+	if (isCriticalNotice(item) || item.tone === "attention" || item.family === "approval") return false;
+	if (item.eventKind !== undefined && QUIET_WAKE_BOUNDARY_EVENT_KINDS.has(item.eventKind)) return false;
+	return true;
 }
 
 // Keep technical context available without putting it between the reader and the conversation.
@@ -127,16 +143,14 @@ export function groupTimeline(items: readonly MobileTimelineItem[]): TimelineRow
 		if (item.turnId === undefined) continue;
 		if (isQuietYieldNotice(item)) {
 			quietTurns.add(item.turnId);
-		} else if (!isNotificationSteeringNotice(item) && !isSettledReasoningActivity(item)) {
+		} else if (!isRoutineQuietWakeItem(item)) {
 			nonQuietTurns.add(item.turnId);
 		}
 	}
 	const isQuietWakeItem = (item: MobileTimelineItem | undefined): item is DetailsEntry => {
-		if (item === undefined) return false;
-		if (item.turnId !== undefined && (nonQuietTurns.has(item.turnId) || !quietTurns.has(item.turnId))) {
-			return false;
-		}
-		return isQuietYieldNotice(item) || isNotificationSteeringNotice(item) || isSettledReasoningActivity(item);
+		if (!isRoutineQuietWakeItem(item)) return false;
+		if (item.turnId === undefined) return isQuietYieldNotice(item);
+		return quietTurns.has(item.turnId) && !nonQuietTurns.has(item.turnId);
 	};
 	const rows: TimelineRow[] = [];
 	let index = 0;
@@ -148,13 +162,10 @@ export function groupTimeline(items: readonly MobileTimelineItem[]): TimelineRow
 		}
 		if (isQuietWakeItem(item)) {
 			let end = index + 1;
-			let lastQuiet = isQuietYieldNotice(item) ? index : -1;
-			while (end < items.length) {
-				if (!isQuietWakeItem(items[end])) break;
-				if (isQuietYieldNotice(items[end])) lastQuiet = end;
+			while (end < items.length && isQuietWakeItem(items[end])) {
 				end += 1;
 			}
-			const groupEnd = lastQuiet >= index ? lastQuiet + 1 : index;
+			const groupEnd = end;
 			const entries = items.slice(index, groupEnd) as DetailsEntry[];
 			const quietCount = entries.filter((entry) => isQuietYieldNotice(entry)).length;
 			if (quietCount >= 2) {

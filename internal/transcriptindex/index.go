@@ -24,7 +24,6 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/execsupport/fsatomic"
 	"primeradiant.com/evener/internal/apptranscript"
-	"primeradiant.com/evener/llm"
 )
 
 const (
@@ -32,7 +31,7 @@ const (
 	// its records reproduce; either changing rebuilds every index.
 	formatVersion = 8
 	// Accepted bare replies and quiet communicate yields change the items.
-	projectionID = "transcript-read-model-v13"
+	projectionID = "transcript-read-model-v14"
 
 	// tailBytes is how much of the covered prefix's end validation compares,
 	// the check the attention fold cursor uses (agent/session_attention.go).
@@ -218,10 +217,10 @@ type meta struct {
 	// this, since a deferred communicate call projects no item of its own
 	// until it is paired or flushed.
 	CommCalls []persistedCommCall `json:"comm_calls,omitempty"`
-	// QuietAssistants persists open TurnAssistant tool calls so an adopting
-	// handle knows whether a later quiet communicate({}) result needs a paired
-	// TurnAssistant context (commentary/authorship) or demotes committed text.
-	QuietAssistants []persistedQuietAssistant `json:"quiet_assistants,omitempty"`
+	// ProvisionalQuiet persists open TurnAssistant entries holding provisional
+	// companion prose or authorship until their possibly-quiet communicate call(s)
+	// resolve or the turn closes.
+	ProvisionalQuiet []persistedProvisionalQuiet `json:"provisional_quiet,omitempty"`
 	// LastAssistant* persists the builder's sticky last-assistant-text state
 	// (builder.lastAssistantText/TurnID/Pos/Known), for the same reason: the
 	// healed-communicate echo check needs it, and only a full build or a
@@ -274,10 +273,13 @@ type persistedCommCall struct {
 	TurnID       string `json:"turn_id"`
 }
 
-type persistedQuietAssistant struct {
-	ID            string `json:"id"`
-	HasText       bool   `json:"has_text,omitempty"`
-	HasAuthorship bool   `json:"has_authorship,omitempty"`
+type persistedProvisionalQuiet struct {
+	PendingQuiet  []string `json:"pending_quiet,omitempty"`
+	AllCallIDs    []string `json:"all_call_ids"`
+	HasText       bool     `json:"has_text,omitempty"`
+	HasAuthorship bool     `json:"has_authorship,omitempty"`
+	Flushed       bool     `json:"flushed,omitempty"`
+	SettledQuiet  bool     `json:"settled_quiet,omitempty"`
 	persistedPos
 	TurnID string `json:"turn_id"`
 }
@@ -816,7 +818,7 @@ func (x *Index) adopt(m meta) error {
 			return err
 		}
 	}
-	for _, c := range m.QuietAssistants {
+	for _, c := range m.ProvisionalQuiet {
 		if err := validatePersistedPos(m, c.persistedPos); err != nil {
 			return err
 		}
@@ -961,15 +963,7 @@ func (x *Index) extend(length int64) error {
 			return err
 		}
 	}
-	x.builder.committedEntries = x.meta.Entries
 	if err := x.scan(length); err != nil {
-		if demoteErr, ok := errors.AsType[quietDemoteRebuildError](err); ok {
-			incarnation := x.meta.Incarnation
-			if demoteErr.rotate {
-				incarnation = ""
-			}
-			return x.rebuild(length, incarnation)
-		}
 		// The records may hold part of this scan; only a full build is
 		// known to be consistent. The transcript still extends the covered
 		// prefix when the index only needed the whole file's tool names.
@@ -1172,9 +1166,26 @@ func restoreDeferredState(b *builder, m meta, below uint64) {
 			b.commCalls[c.ID] = commState{rawArgs: c.RawArgs, pos: c.contributor(), turnID: c.TurnID}
 		}
 	}
-	for _, c := range m.QuietAssistants {
+	for _, c := range m.ProvisionalQuiet {
 		if c.Ordinal < below {
-			b.quietAssistants[c.ID] = quietAssistantState{hasText: c.HasText, hasAuthorship: c.HasAuthorship, pos: c.contributor(), turnID: c.TurnID}
+			pending := make(map[string]bool, len(c.PendingQuiet))
+			for _, id := range c.PendingQuiet {
+				pending[id] = true
+			}
+			q := &provisionalQuietState{
+				pendingQuiet:  pending,
+				allCallIDs:    append([]string(nil), c.AllCallIDs...),
+				hasText:       c.HasText,
+				hasAuthorship: c.HasAuthorship,
+				flushed:       c.Flushed,
+				settledQuiet:  c.SettledQuiet,
+				pos:           c.contributor(),
+				turnID:        c.TurnID,
+			}
+			b.provisional = append(b.provisional, q)
+			for _, id := range q.allCallIDs {
+				b.provisionalByCall[id] = q
+			}
 		}
 	}
 	b.lastAssistantText, b.lastAssistantTurnID, b.lastAssistantKnown = m.LastAssistantText, m.LastAssistantTurnID, m.LastAssistantKnown
@@ -1319,14 +1330,6 @@ func liveBuildName(dir string) (string, error) {
 }
 
 func (x *Index) buildNew(length int64, incarnation string) error {
-	demoted, err := x.discoverDemotedAssistants(length)
-	if err != nil {
-		return err
-	}
-	return x.buildPass(length, incarnation, demoted)
-}
-
-func (x *Index) buildPass(length int64, incarnation string, demoted map[uint64]bool) error {
 	if err := x.closeBuild(); err != nil {
 		return err
 	}
@@ -1357,9 +1360,6 @@ func (x *Index) buildPass(length int64, incarnation string, demoted map[uint64]b
 	x.builder = newBuilder(x)
 	x.builder.global = map[string]string{}
 	x.rebuilds++
-	if demoted != nil {
-		x.builder.demotedAssistants = demoted
-	}
 	if err := x.scan(length); err != nil {
 		return err
 	}
@@ -1397,125 +1397,6 @@ func (x *Index) buildPass(length int64, incarnation string, demoted map[uint64]b
 	x.removeOtherBuilds()
 	x.pruneSupersededSidecars(pruneCandidates)
 	return nil
-}
-
-// discoverDemotedAssistants scans transcript entries up to length read-only
-// (no table writes, string interning, fsync, or CURRENT publish) to find every
-// TurnAssistant ordinal whose companion text must be demoted because a paired
-// tool result succeeded quietly.
-func (x *Index) discoverDemotedAssistants(length int64) (map[uint64]bool, error) {
-	if length <= 0 {
-		return nil, nil
-	}
-	f, err := os.Open(x.path)
-	if err != nil {
-		return nil, fmt.Errorf("open transcript: %w", err)
-	}
-	defer f.Close() //nolint:errcheck // read-only discovery pass
-	info, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	return discoverDemotedAssistantsFrom(f, min(length, info.Size()))
-}
-
-func discoverDemotedAssistantsFrom(src io.ReaderAt, length int64) (map[uint64]bool, error) {
-	if length <= 0 {
-		return nil, nil
-	}
-	// Fast raw-byte prescan: transcripts without "communicate_quiet" cannot hold
-	// any quiet tool result, so cold builds skip decoding every entry a second time.
-	bufSize := max(min(length, 64<<10), 4<<10)
-	reader := bufio.NewReaderSize(io.NewSectionReader(src, 0, length), int(bufSize))
-	var lines transcript.LineBuffer
-	hasQuiet := false
-	quietNeedle := []byte("communicate_quiet")
-	for {
-		line, complete, _, err := lines.ReadLine(reader, maxLineBytes)
-		if err != nil {
-			return nil, err
-		}
-		if !complete {
-			break
-		}
-		if bytes.Contains(line, quietNeedle) {
-			hasQuiet = true
-			break
-		}
-	}
-	if !hasQuiet {
-		return nil, nil
-	}
-	reader.Reset(io.NewSectionReader(src, 0, length))
-	seenHeader := false
-	var ordinal uint64
-	assistantByCall := map[string]uint64{}
-	var demoted map[uint64]bool
-	assistantNeedle := []byte(`"ASSISTANT"`)
-	toolNeedle := []byte(`"TOOL"`)
-	toolResultsNeedle := []byte(`"TOOL_RESULTS"`)
-	commNeedle := []byte(`"COMMUNICATE"`)
-	for {
-		line, complete, _, err := lines.ReadLine(reader, maxLineBytes)
-		if err != nil {
-			return nil, err
-		}
-		if !complete {
-			break
-		}
-		trimmed := bytes.TrimSpace(line)
-		if len(trimmed) == 0 {
-			continue
-		}
-		if !seenHeader {
-			seenHeader = true
-			continue
-		}
-		if !bytes.Contains(trimmed, assistantNeedle) &&
-			!bytes.Contains(trimmed, toolNeedle) &&
-			!bytes.Contains(trimmed, toolResultsNeedle) &&
-			!bytes.Contains(trimmed, commNeedle) {
-			ordinal++
-			continue
-		}
-		entry, err := transcript.DecodeEntry(trimmed)
-		if err == nil && entry.Turn.OriginalOrdinal == nil {
-			switch entry.Turn.Kind {
-			case schema.TurnAssistant:
-				hasText := assistantEntryHasText(&entry.Turn)
-				for _, part := range entry.Turn.Message.Content {
-					if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
-						if hasText {
-							assistantByCall[part.ToolCall.ID] = ordinal
-						} else {
-							delete(assistantByCall, part.ToolCall.ID)
-						}
-					}
-				}
-			case schema.TurnTool, schema.TurnToolResults:
-				for _, part := range entry.Turn.Message.Content {
-					if part.Kind != llm.ContentToolResult || part.ToolResult == nil {
-						continue
-					}
-					if apptranscript.IsQuietCommunicate(part.ToolResult) {
-						if assistantOrdinal, ok := assistantByCall[part.ToolResult.ToolCallID]; ok {
-							if demoted == nil {
-								demoted = map[uint64]bool{}
-							}
-							demoted[assistantOrdinal] = true
-						}
-					}
-					delete(assistantByCall, part.ToolResult.ToolCallID)
-				}
-			case schema.TurnCommunicate:
-				if entry.Turn.Communicate != nil {
-					delete(assistantByCall, entry.Turn.Communicate.CallID)
-				}
-			}
-		}
-		ordinal++
-	}
-	return demoted, nil
 }
 
 // removeOtherBuilds deletes every build but the live one. A reader in another
@@ -1751,7 +1632,7 @@ func (x *Index) publishMeta() error {
 	x.meta.Open, x.meta.OpenTurnID = b.grouper.Open, b.grouper.TurnID
 	x.meta.TurnSlot = b.turnSlot
 	x.meta.CommCalls = persistCommCalls(b.commCalls)
-	x.meta.QuietAssistants = persistQuietAssistants(b.quietAssistants)
+	x.meta.ProvisionalQuiet = persistProvisionalQuiet(b.provisional)
 	x.meta.LastAssistantText, x.meta.LastAssistantTurnID, x.meta.LastAssistantKnown = b.lastAssistantText, b.lastAssistantTurnID, b.lastAssistantKnown
 	x.meta.LastAssistantPos = posOf(b.lastAssistantPos)
 	data, err := json.Marshal(x.meta)
@@ -1780,15 +1661,28 @@ func persistCommCalls(m map[string]commState) []persistedCommCall {
 	return list
 }
 
-func persistQuietAssistants(m map[string]quietAssistantState) []persistedQuietAssistant {
-	if len(m) == 0 {
+func persistProvisionalQuiet(items []*provisionalQuietState) []persistedProvisionalQuiet {
+	if len(items) == 0 {
 		return nil
 	}
-	list := make([]persistedQuietAssistant, 0, len(m))
-	for id, state := range m {
-		list = append(list, persistedQuietAssistant{ID: id, HasText: state.hasText, HasAuthorship: state.hasAuthorship, persistedPos: posOf(state.pos), TurnID: state.turnID})
+	list := make([]persistedProvisionalQuiet, 0, len(items))
+	for _, q := range items {
+		var pending []string
+		for id := range q.pendingQuiet {
+			pending = append(pending, id)
+		}
+		sort.Strings(pending)
+		list = append(list, persistedProvisionalQuiet{
+			PendingQuiet:  pending,
+			AllCallIDs:    append([]string(nil), q.allCallIDs...),
+			HasText:       q.hasText,
+			HasAuthorship: q.hasAuthorship,
+			Flushed:       q.flushed,
+			SettledQuiet:  q.settledQuiet,
+			persistedPos:  posOf(q.pos),
+			TurnID:        q.turnID,
+		})
 	}
-	sort.Slice(list, func(i, j int) bool { return list[i].ID < list[j].ID })
 	return list
 }
 

@@ -988,4 +988,53 @@ test("quiet_yield demoted commentary is searchable standalone and inside a quiet
   expect(findHits(fullRows, "quokka-commentary", fullOpts)).toEqual([
     { key: "qy_w2", itemId: "qy_w2", rowIndex: 0, opens: [groupId, "qy_w2"], opensIgnoreBaseline: true },
   ]);
+
+  const housekeepingConfig = makeTranscriptDisplayConfig(
+    { kind: "preset", level: "full" },
+    { roundTimings: true, systemEvents: true },
+  );
+  const housekeepingModel: ThreadModel = {
+    ...makeTranscriptPreviewModel(),
+    ref: "ref_a",
+    turns: [
+      {
+        id: "turn_h1",
+        status: "completed",
+        items: [
+          {
+            id: "rt_1",
+            turnId: "turn_h1",
+            type: "systemMessage",
+            eventKind: "round_timings",
+            text: "Round 1 · 120ms · quokka-timing",
+            status: "completed",
+          },
+          {
+            id: "notes_1",
+            turnId: "turn_h1",
+            type: "systemMessage",
+            eventKind: "notes-context",
+            text: "quokka-notes",
+            status: "completed",
+          },
+          quietItem("qy_h1", "turn_h1"),
+        ],
+      },
+      { id: "turn_h2", status: "completed", items: [quietItem("qy_h2", "turn_h2")] },
+    ],
+  };
+  const hkRows = transcriptRowsForProjection(projectThread(housekeepingModel, housekeepingConfig));
+  const hkOpts = { config: housekeepingConfig, sessionRef: "ref_a" };
+  expect(findHits(hkRows, "quokka-timing", hkOpts)).toEqual([
+    { key: "rt_1", itemId: "rt_1", rowIndex: 0, opens: ["quiet-yield-group:rt_1"], opensIgnoreBaseline: true },
+  ]);
+  expect(findHits(hkRows, "quokka-notes", hkOpts)).toEqual([
+    {
+      key: "notes_1",
+      itemId: "notes_1",
+      rowIndex: 0,
+      opens: ["quiet-yield-group:rt_1", "notes_1"],
+      opensIgnoreBaseline: true,
+    },
+  ]);
 });

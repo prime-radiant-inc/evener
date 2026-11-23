@@ -7,11 +7,14 @@ import type {
   TurnModel,
 } from "@evener/appwire-client";
 import {
+  APPROVAL_DECISION_EVENT_KIND,
+  attentionWarningNotice,
   configFingerprint,
   entryDisplayKey,
   hasFailedNotification,
   hasItemFailure,
   isActiveItem,
+  isErrorEvent,
   isParentSteer,
   isQuietYield,
   projectThread,
@@ -80,7 +83,15 @@ function quietYieldGroupId(firstEntryKey: string): string {
   return `quiet-yield-group:${firstEntryKey}`;
 }
 
-function isNotificationSteeringItem(item: ItemModel): boolean {
+const QUIET_WAKE_BOUNDARY_EVENT_KINDS: ReadonlySet<string> = new Set([
+  "warning",
+  "interrupted",
+  "loop_detection",
+  "turn_limit",
+  "tool_repair",
+]);
+
+function isRoutineDaemonNotificationSteer(item: ItemModel): boolean {
   if (
     item.type !== "steering" ||
     item.source === "user" ||
@@ -94,13 +105,29 @@ function isNotificationSteeringItem(item: ItemModel): boolean {
   return item.steeringKind === "notification" || fragments !== null;
 }
 
-function isSettledHealthyReasoning(
-  entry: ProjectedEntry,
-  turnStatus: string | undefined,
-): entry is Extract<ProjectedEntry, { kind: "thinking" | "item" }> {
-  if (turnStatus === "failed" || turnStatus === "interrupted" || hasItemFailure(entry.item)) return false;
-  if (entry.kind === "thinking") return !entry.live;
-  return entry.kind === "item" && entry.item.type === "reasoning" && !isActiveItem(entry.item, turnStatus);
+function isQuietWakeSystemBoundary(item: ItemModel, turnStatus: string | undefined): boolean {
+  if (isErrorEvent(item) || attentionWarningNotice(item) !== null) return true;
+  if (item.eventKind === APPROVAL_DECISION_EVENT_KIND) return true;
+  if (item.eventKind !== undefined && QUIET_WAKE_BOUNDARY_EVENT_KINDS.has(item.eventKind)) return true;
+  if (item.eventKind === "hook_completed" && typeof item.exitCode === "number" && item.exitCode !== 0) return true;
+  return hasItemFailure(item) || isActiveItem(item, turnStatus);
+}
+
+function isQuietWakeBoundary(entry: ProjectedEntry, turnStatus: string | undefined): boolean {
+  if (entry.kind === "intent") return true;
+  if (entry.kind === "critical") return !isRoutineDaemonNotificationSteer(entry.item);
+  if (entry.kind === "thinking") return entry.live || hasItemFailure(entry.item);
+  const item = entry.item;
+  switch (item.type) {
+    case "reasoning":
+      return isActiveItem(item, turnStatus) || hasItemFailure(item);
+    case "steering":
+      return !isRoutineDaemonNotificationSteer(item);
+    case "systemMessage":
+      return isQuietWakeSystemBoundary(item, turnStatus);
+    default:
+      return true;
+  }
 }
 
 function isEmptyHiddenTurn(turn: ProjectedTurn): boolean {
@@ -109,20 +136,17 @@ function isEmptyHiddenTurn(turn: ProjectedTurn): boolean {
 
 function quietWakeEntries(turn: ProjectedTurn): { entries: readonly QuietWakeEntry[]; quietCount: number } | undefined {
   if (turn.entries.length === 0) return undefined;
-  if (asTurnError(turn.source.error)) return undefined;
+  if (asTurnError(turn.source.error) || turn.source.status === "failed" || turn.source.status === "interrupted") {
+    return undefined;
+  }
   const entries: QuietWakeEntry[] = [];
   let quietCount = 0;
   for (const entry of turn.entries) {
+    if (isQuietWakeBoundary(entry, turn.source.status)) return undefined;
     if (entry.kind === "item" && entry.item.type === "systemMessage" && isQuietYield(entry.item)) {
       quietCount += 1;
-      entries.push(entry);
-    } else if ((entry.kind === "item" || entry.kind === "critical") && isNotificationSteeringItem(entry.item)) {
-      entries.push(entry);
-    } else if (isSettledHealthyReasoning(entry, turn.source.status)) {
-      entries.push(entry);
-    } else {
-      return undefined;
     }
+    entries.push(entry as QuietWakeEntry);
   }
   return quietCount > 0 ? { entries, quietCount } : undefined;
 }

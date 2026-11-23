@@ -96,11 +96,6 @@ func (x *Index) readAtLocked(length int64, fn func(*Snapshot) error) error {
 			view.strings = blob{buf: []byte{}}
 			view.builder = newBuilder(view)
 			view.builder.global = map[string]string{}
-			demoted, err := discoverDemotedAssistantsFrom(view.transcript, length)
-			if err != nil {
-				return err
-			}
-			view.builder.demotedAssistants = demoted
 			if err := view.scan(length); err != nil {
 				return err
 			}

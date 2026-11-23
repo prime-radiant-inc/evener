@@ -131,6 +131,9 @@ export function groupedSystemNoticePlacement(
   matchesText: (rendered: string) => boolean,
   ignoreGroupBaseline = false,
 ): SystemNoticePlacement {
+  if (isScaffoldItem(item)) {
+    return { opens: [groupId, item.id], ...(ignoreGroupBaseline ? { opensIgnoreBaseline: true } : {}) };
+  }
   if (!isQuietYield(item)) return { opens: [groupId], ...(ignoreGroupBaseline ? { opensIgnoreBaseline: true } : {}) };
   const words = systemEventWords(item);
   if (words.rendersMarkdown && matchesText(markdownAsRead(words.text))) {

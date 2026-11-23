@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"primeradiant.com/evener/agent/argrepair"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
@@ -65,6 +66,36 @@ func CommunicateItem(turnID string, entryIndex int, entry schema.Turn) (appwire.
 // tool-result turn. Older entries only knew the default name.
 func IsCommunicateTool(name, recordedName string) bool {
 	return name == "communicate" || name != "" && name == recordedName
+}
+
+// PossiblyQuietCommunicateCall reports whether call is a communicate tool call
+// whose sent arguments carry no reply message (for example `{}` or unrecoverable
+// malformed bytes) and may therefore settle quietly.
+func PossiblyQuietCommunicateCall(call *llm.ToolCallData, resultToolName string) bool {
+	if call == nil || !IsCommunicateTool(call.Name, resultToolName) {
+		return false
+	}
+	raw := strings.TrimSpace(call.SentArguments())
+	if raw == "" || CommunicateArgumentsWithoutMessage(json.RawMessage(raw)) {
+		return true
+	}
+	repaired := argrepair.RepairJSON([]byte(raw))
+	return CommunicateMessageFromArguments(NormalizeCommunicateArguments(repaired)) == ""
+}
+
+// PossiblyQuietCommunicateCallIDs returns the tool call IDs in a TurnAssistant
+// entry that may settle quietly, in content order.
+func PossiblyQuietCommunicateCallIDs(turn schema.Turn) []string {
+	if turn.Kind != schema.TurnAssistant {
+		return nil
+	}
+	var ids []string
+	for _, part := range turn.Message.Content {
+		if part.Kind == llm.ContentToolCall && PossiblyQuietCommunicateCall(part.ToolCall, turn.ResultToolName) {
+			ids = append(ids, part.ToolCall.ID)
+		}
+	}
+	return ids
 }
 
 // IsQuietCommunicate reports typed evidence of a successful quiet yield.

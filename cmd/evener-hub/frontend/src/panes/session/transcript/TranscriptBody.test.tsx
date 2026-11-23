@@ -1,4 +1,4 @@
-import type { ThreadModel } from "@evener/appwire-client";
+import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
 import * as appwireClient from "@evener/appwire-client";
 import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
@@ -2422,5 +2422,90 @@ describe("consecutive quiet_yield cross-turn grouping", () => {
     for (const notice of screen.getAllByTestId("system-notice-quiet-yield")) {
       expect((notice as HTMLDetailsElement).open).toBe(false);
     }
+  });
+
+  test("folds quiet wakes carrying routine housekeeping (round_timings, exit-0 hooks) while breaking on boundaries", () => {
+    const config = makeTranscriptDisplayConfig(
+      { kind: "preset", level: "full" },
+      { roundTimings: true, hookExits: "all", systemEvents: true },
+    );
+    const wake = (id: string, extraItems: TurnModel["items"] = []): TurnModel => ({
+      id,
+      status: "completed",
+      items: [
+        ...extraItems,
+        { id: `qy_${id}`, turnId: id, type: "systemMessage", text: "quiet-sentinel", eventKind: "quiet_yield" },
+      ],
+    });
+    const timingItem = (id: string, turnId: string): ItemModel => ({
+      id,
+      turnId,
+      type: "systemMessage",
+      eventKind: "round_timings",
+      text: "Round 1 timing",
+      status: "completed",
+    });
+    const hookOk = (id: string, turnId: string): ItemModel => ({
+      id,
+      turnId,
+      type: "systemMessage",
+      eventKind: "hook_completed",
+      text: "Hook ok",
+      exitCode: 0,
+      status: "completed",
+    });
+    const hookFail = (id: string, turnId: string): ItemModel => ({
+      id,
+      turnId,
+      type: "systemMessage",
+      eventKind: "hook_completed",
+      text: "Hook failed",
+      exitCode: 1,
+      status: "completed",
+    });
+    const model: ThreadModel = {
+      ...fixture,
+      turns: [
+        {
+          id: "turn_u",
+          status: "completed",
+          items: [{ id: "u1", turnId: "turn_u", type: "userMessage", text: "watch", status: "completed" }],
+        },
+        wake("turn_rt1", [timingItem("rt_1", "turn_rt1"), hookOk("hk_1", "turn_rt1")]),
+        {
+          id: "turn_rt2",
+          status: "completed",
+          items: [
+            {
+              id: "qy_turn_rt2",
+              turnId: "turn_rt2",
+              type: "systemMessage",
+              text: "quiet-sentinel",
+              eventKind: "quiet_yield",
+            },
+            timingItem("rt_2", "turn_rt2"),
+          ],
+        },
+        wake("turn_hk_fail", [hookFail("hk_fail", "turn_hk_fail")]),
+        wake("turn_warn", [{ id: "w_1", turnId: "turn_warn", type: "warning", text: "Heads up", status: "completed" }]),
+        wake("turn_tool", [
+          {
+            id: "t_1",
+            turnId: "turn_tool",
+            type: "commandExecution",
+            text: "",
+            toolName: "shell",
+            status: "completed",
+          },
+        ]),
+        wake("turn_msg", [{ id: "m_1", turnId: "turn_msg", type: "agentMessage", text: "Hello", status: "completed" }]),
+      ],
+    };
+    const rows = transcriptRowsForProjection(appwireClient.projectThread(model, config));
+    expect(rows.map((row) => row.kind)).toEqual(["turn", "quietYieldGroup", "turn", "turn", "turn", "turn"]);
+    const group = rows[1];
+    if (group?.kind !== "quietYieldGroup") throw new Error("expected quietYieldGroup");
+    expect(group.sourceTurnIds).toEqual(["turn_rt1", "turn_rt2"]);
+    expect(group.quietCount).toBe(2);
   });
 });

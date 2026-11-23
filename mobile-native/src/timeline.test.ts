@@ -389,3 +389,73 @@ it.each(["intent", "tools", "full"] as const)(
 		expect(group.entries.map((entry) => entry.id)).toEqual(["r_t1", "qy_t1", "r_t2", "qy_t2"]);
 	},
 );
+
+it("folds quiet wakes carrying round_timings and routine hooks while breaking on warnings, errors, and tool actions", () => {
+	const quiet = (id: string, turnId: string): MobileTimelineItem => ({
+		kind: "notice",
+		id,
+		turnId,
+		origin: "system",
+		family: "lifecycle",
+		tone: "system",
+		eventKind: "quiet_yield",
+		text: "quiet-sentinel",
+	});
+	const timing = (id: string, turnId: string): MobileTimelineItem => ({
+		kind: "notice",
+		id,
+		turnId,
+		origin: "system",
+		family: "diagnostic",
+		tone: "system",
+		eventKind: "round_timings",
+		text: "120ms",
+	});
+	const hookOk: MobileTimelineItem = {
+		kind: "notice",
+		id: "hk_ok",
+		turnId: "t1",
+		origin: "system",
+		family: "lifecycle",
+		tone: "system",
+		eventKind: "hook_completed",
+		exitCode: 0,
+		text: "Hook ok",
+	};
+	const hookFail: MobileTimelineItem = {
+		...hookOk,
+		id: "hk_fail",
+		turnId: "t_fail",
+		exitCode: 1,
+	};
+	const repair: MobileTimelineItem = {
+		kind: "notice",
+		id: "rep_1",
+		turnId: "t_rep",
+		origin: "system",
+		family: "lifecycle",
+		tone: "system",
+		eventKind: "tool_repair",
+		text: "Repaired call",
+	};
+	const rows = groupTimeline([
+		hookOk,
+		quiet("q1", "t1"),
+		timing("rt1", "t1"),
+		quiet("q2", "t2"),
+		timing("rt2", "t2"),
+		hookFail,
+		quiet("qf", "t_fail"),
+		repair,
+		quiet("qr", "t_rep"),
+	]);
+	expect(rows).toMatchObject([
+		{ kind: "details", id: "quiet-yields:hk_ok", summary: "2 quiet yields" },
+		hookFail,
+		quiet("qf", "t_fail"),
+		repair,
+		quiet("qr", "t_rep"),
+	]);
+	const group = rows[0] as Extract<TimelineRow, { kind: "details" }>;
+	expect(group.entries.map((entry) => entry.id)).toEqual(["hk_ok", "q1", "rt1", "q2", "rt2"]);
+});
