@@ -2,7 +2,6 @@ package requestutil
 
 import (
 	"slices"
-	"strings"
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
@@ -213,38 +212,4 @@ func DedupStrings(in []string) []string {
 		}
 	}
 	return out
-}
-
-// NormalizeReasoningEfforts trims a listing's advertised reasoning-effort
-// names and drops the empty ones, the duplicates and `ultra` — a Codex
-// client delegation preset, not an effort the wire accepts. Served order
-// survives. Both /models readers share it, so a level list keeps one
-// meaning across listings.
-func NormalizeReasoningEfforts(levels []string) []string {
-	if len(levels) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(levels))
-	seen := make(map[string]bool, len(levels))
-	for _, level := range levels {
-		effort := strings.TrimSpace(level)
-		if effort == "" || strings.EqualFold(effort, "ultra") || seen[effort] {
-			continue
-		}
-		seen[effort] = true
-		out = append(out, effort)
-	}
-	return out
-}
-
-// NormalizeDefaultReasoningEffort returns the effort name a listing states
-// a model runs at when the request omits one, or "" when it states nothing
-// usable. `ultra` is the Codex client's delegation preset, not an effort
-// the wire accepts.
-func NormalizeDefaultReasoningEffort(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" || strings.EqualFold(s, "ultra") {
-		return ""
-	}
-	return s
 }

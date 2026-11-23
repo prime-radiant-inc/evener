@@ -246,7 +246,7 @@ listing makes the visible ID set **live IDs + exact curated-overlay rows +
 exact user-config rows**; snapshot/cache-only IDs disappear. If the endpoint
 is unsupported, errors, times out, or returns no usable chat rows, the visible
 set falls back to **snapshot/cache + curated overlay + user config**. The
-rows of a chat listing decode independently: a row whose shape the reader
+rows of a models listing decode independently: a row whose shape the reader
 cannot decode is dropped while its siblings load, so one alien row cannot
 fail the refresh, and a body whose every row fails to decode counts as no
 usable rows and takes the same fallback. The
@@ -270,7 +270,7 @@ gateway's per-model `capabilities.tools` verdict; an explicit verdict wins
 over the parameter-list inference in both directions. `Reasoning` and
 `EffortValues` come from OpenRouter's `supported_parameters` /
 `reasoning.supported_efforts`, the `supported_reasoning_levels` an
-OpenAI-compatible chat row may publish in the Codex backend's spelling
+OpenAI-compatible listing row may publish in the Codex backend's spelling
 (effort objects or plain strings, `ultra` — the client's delegation preset —
 dropped) with its `default_reasoning_level` becoming the row's
 `DefaultEffort`, a plain top-level `reasoning` boolean verdict, or a

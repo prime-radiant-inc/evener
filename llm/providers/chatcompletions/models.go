@@ -1,7 +1,6 @@
 package chatcompletions
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -27,98 +26,27 @@ import (
 // server may cap output under a limits object and state the reasoning fact
 // as a plain boolean.
 type modelEntry struct {
-	ID                  string                          `json:"id"`
-	ContextLength       int                             `json:"context_length"`
-	ContextWindow       int                             `json:"context_window"`
-	MaxInputTokens      int                             `json:"max_input_tokens"`
-	MaxCompletionTokens int                             `json:"max_completion_tokens"`
-	MaxOutputTokens     int                             `json:"max_output_tokens"`
-	SupportedParameters []string                        `json:"supported_parameters"`
-	Architecture        requestutil.GatewayArchitecture `json:"architecture"`
-	Capabilities        requestutil.GatewayCapabilities `json:"capabilities"`
-	Reasoning           reasoningField                  `json:"reasoning"`
-	// SupportedReasoningLevels and DefaultReasoningLevel are the Codex
-	// backend's spellings for the effort ladder and its default; other
-	// OpenAI-compatible servers publish them on a chat row as plain
-	// strings where the Codex backend publishes effort objects.
-	SupportedReasoningLevels reasoningLevelsField `json:"supported_reasoning_levels"`
-	DefaultReasoningLevel    string               `json:"default_reasoning_level"`
-	// Limits is a server's own output-cap object.
-	Limits struct {
-		MaxOutputTokens int `json:"max_output_tokens"`
-	} `json:"limits"`
-	ClientCompat requestutil.GatewayClientCompat `json:"client_compat"`
-	Pricing      struct {
+	ID                       string                            `json:"id"`
+	ContextLength            int                               `json:"context_length"`
+	ContextWindow            int                               `json:"context_window"`
+	MaxInputTokens           int                               `json:"max_input_tokens"`
+	MaxCompletionTokens      int                               `json:"max_completion_tokens"`
+	MaxOutputTokens          int                               `json:"max_output_tokens"`
+	SupportedParameters      []string                          `json:"supported_parameters"`
+	Architecture             requestutil.GatewayArchitecture   `json:"architecture"`
+	Capabilities             requestutil.GatewayCapabilities   `json:"capabilities"`
+	Reasoning                requestutil.ListedReasoning       `json:"reasoning"`
+	SupportedReasoningLevels requestutil.ListedReasoningLevels `json:"supported_reasoning_levels"`
+	DefaultReasoningLevel    string                            `json:"default_reasoning_level"`
+	Limits                   requestutil.ListedLimits          `json:"limits"`
+	ClientCompat             requestutil.GatewayClientCompat   `json:"client_compat"`
+	Pricing                  struct {
 		Prompt     string `json:"prompt"`
 		Completion string `json:"completion"`
 	} `json:"pricing"`
 	TopProvider struct {
 		MaxCompletionTokens *int `json:"max_completion_tokens"`
 	} `json:"top_provider"`
-}
-
-// reasoningField is a row's reasoning fact. OpenRouter publishes an object
-// (mandatory, default_enabled, supported_efforts); other OpenAI-compatible
-// servers publish a plain boolean verdict. Both spell one fact — whether
-// the model reasons — and neither may fail the listing, so any shape
-// evener cannot read states nothing.
-type reasoningField struct {
-	Mandatory        *bool
-	DefaultEnabled   *bool
-	SupportedEfforts []string
-	Verdict          *bool
-}
-
-// UnmarshalJSON reads the verdict and the object as one fact: a decode of
-// either shape that fails leaves the field at its zero value rather than
-// failing the row.
-func (f *reasoningField) UnmarshalJSON(b []byte) error {
-	if bytes.Equal(bytes.TrimSpace(b), []byte("null")) {
-		return nil
-	}
-	var verdict bool
-	if err := json.Unmarshal(b, &verdict); err == nil {
-		f.Verdict = &verdict
-		return nil
-	}
-	var obj struct {
-		Mandatory        *bool    `json:"mandatory"`
-		DefaultEnabled   *bool    `json:"default_enabled"`
-		SupportedEfforts []string `json:"supported_efforts"`
-	}
-	if err := json.Unmarshal(b, &obj); err == nil {
-		f.Mandatory, f.DefaultEnabled, f.SupportedEfforts = obj.Mandatory, obj.DefaultEnabled, obj.SupportedEfforts
-	}
-	return nil
-}
-
-// reasoningLevelsField is a row's supported_reasoning_levels ladder: the
-// Codex backend publishes effort objects, other OpenAI-compatible servers
-// plain strings. An entry of any other shape states nothing, and neither
-// spelling may fail the listing.
-type reasoningLevelsField []string
-
-func (l *reasoningLevelsField) UnmarshalJSON(b []byte) error {
-	var entries []json.RawMessage
-	if err := json.Unmarshal(b, &entries); err != nil {
-		return nil
-	}
-	out := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		var name string
-		if err := json.Unmarshal(entry, &name); err == nil {
-			out = append(out, name)
-			continue
-		}
-		var obj struct {
-			Effort string `json:"effort"`
-		}
-		if err := json.Unmarshal(entry, &obj); err == nil {
-			out = append(out, obj.Effort)
-		}
-	}
-	*l = out
-	return nil
 }
 
 // advertises reports whether the supported_parameters list names any of the
@@ -153,34 +81,7 @@ func (m modelEntry) row() registry.Model {
 		caps.Tools = new(advertises(m.SupportedParameters, "tools"))
 		caps.Reasoning = new(advertises(m.SupportedParameters, "reasoning", "reasoning_effort"))
 	}
-	// The ladder and its default: a row states them either in the Codex
-	// backend's spellings or, for OpenRouter, under the reasoning object —
-	// alternative spellings of the same facts, so the last one the row
-	// carries wins. A usable ladder is itself evidence the model tunes
-	// effort.
-	if efforts := requestutil.NormalizeReasoningEfforts(m.SupportedReasoningLevels); len(efforts) > 0 {
-		caps.EffortValues = efforts
-		caps.Reasoning = new(true)
-	}
-	if d := requestutil.NormalizeDefaultReasoningEffort(m.DefaultReasoningLevel); d != "" {
-		caps.DefaultEffort = new(d)
-	}
-	if m.Reasoning.Mandatory != nil || m.Reasoning.DefaultEnabled != nil || len(m.Reasoning.SupportedEfforts) > 0 {
-		caps.Reasoning = new(true)
-		if m.Reasoning.Mandatory != nil && *m.Reasoning.Mandatory {
-			caps.ThinkingAlwaysOn = new(true)
-		}
-		caps.EffortValues = requestutil.DedupStrings(m.Reasoning.SupportedEfforts)
-	}
-	// A boolean verdict is the row's own statement about the model, so it
-	// wins in both directions; a false one carries no ladder, whatever
-	// levels the row also lists.
-	if v := m.Reasoning.Verdict; v != nil {
-		caps.Reasoning = v
-		if !*v {
-			caps.EffortValues = nil
-		}
-	}
+	requestutil.ApplyListedReasoningFacts(&caps, m.Reasoning, m.SupportedReasoningLevels, m.DefaultReasoningLevel)
 	requestutil.ApplyGatewayFacts(&caps, m.Architecture, m.Capabilities, m.ClientCompat)
 	if in, ok := perTokenCostToPerMillion(m.Pricing.Prompt); ok {
 		if out, ok := perTokenCostToPerMillion(m.Pricing.Completion); ok {
@@ -208,15 +109,8 @@ func (p *Protocol) ListModels(ctx context.Context, res registry.Resolved) ([]reg
 		// read is dropped, so one alien row cannot fail the healthy ones.
 		// Only a listing with no usable row at all fails, and it fails
 		// with the row's own decode error.
-		var rowErr error
-		for _, raw := range payload.Data {
-			var e modelEntry
-			if err := json.Unmarshal(raw, &e); err != nil {
-				if rowErr == nil {
-					rowErr = err
-				}
-				continue
-			}
+		entries, rowErr := requestutil.DecodeListingRows[modelEntry](payload.Data)
+		for _, e := range entries {
 			if e.ID != "" {
 				rows = append(rows, e.row())
 			}
