@@ -286,9 +286,8 @@ function SystemGroup({
   // plus the run's first item id - the run's stable identity across renders -
   // so an expanded group survives a remount without cross-session collision.
   const context = useTranscriptRenderContext();
-  const disclosureScope = disclosureScopeForSession(context, sessionRef);
   const disclosure = useTranscriptDisclosure({
-    scope: disclosureScope,
+    scope: disclosureScopeForSession(context, sessionRef),
     id: firstItem.id,
     defaultOpen: expandDetailsByDefault(context.config),
   });

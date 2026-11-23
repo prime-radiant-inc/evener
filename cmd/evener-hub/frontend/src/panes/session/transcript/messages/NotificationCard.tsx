@@ -339,6 +339,7 @@ export function NotificationCard({
   // The card's own identity and its raw frame's, both scoped to this view:
   // Find opens the same keys (notificationText's identity rule).
   const scopedNotificationId = notificationDisclosureId(notification, sessionRef, disclosureId);
+  const rawNotificationId = rawDisclosureId(scopedNotificationId);
   const disclosure = useTranscriptDisclosure({
     scope: disclosureScope,
     id: scopedNotificationId,
@@ -538,11 +539,7 @@ export function NotificationCard({
                   <div className={CLASS.concerns}>Concerns: {notification.concerns.join("; ")}</div>
                 )}
                 {notification.type !== "delegate" && (
-                  <RawNotification
-                    scope={disclosureScope}
-                    id={rawDisclosureId(scopedNotificationId)}
-                    text={notification.rawText}
-                  />
+                  <RawNotification scope={disclosureScope} id={rawNotificationId} text={notification.rawText} />
                 )}
               </div>
             </Card>
