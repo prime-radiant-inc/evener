@@ -1452,6 +1452,68 @@ session already being read: the tap chose a reader, and the list must not stay
 over it.
 
 
+## 12. Phone and tablet fluency: floating chrome, reading first
+
+Below the 899px boundary the phone layout is the product, on phones, tablets,
+and the iPhone Duo's interior. The transcript owns the screen: at rest the
+persistent chrome is the StackHost bar, the whiteboard's one quiet line, and
+the floating composer — around 126px of an 844px viewport, 15%. The fluency
+pass (Jesse 2026-11-22, artifact `evener-fluent-prototype-v8a`; evolution
+spec `docs/superpowers/specs/2026-11-22-mobile-fluency-evolution.md`) adds no
+tokens: it removes backgrounds and borders that carry no information.
+Desktop's DockHost layout is unchanged by this pass.
+
+**The header collapses on transcript scroll, never on the board.** On a
+session-family pane (session, sessionZoom, transcript), scrolling down past
+48px makes the solid bar transparent and floats its Back and trailing
+controls as blur capsules over the content, clear of the platform status bar
+(`top: calc(env(safe-area-inset-top) + 6px)`); scrolling up 8px or reaching
+the top restores the solid bar. The title fades; the controls stay. The board
+keeps a sticky header always — its search and groups are how you navigate.
+
+**The composer is one floating pill.** No outer rectangle, no border-top, no
+hint row. The outer container is transparent; the pill itself is
+`--field` on `--radius-pill` with a 16px backdrop blur and a soft shadow,
+centered with a comfortable max-width. The transcript's scroll carries
+bottom padding so the last turn slides under the pill instead of stopping
+above a boxed footer.
+
+**The whiteboard is one quiet line at the head of the scroll**, not a bar:
+an em-dash-framed `Whiteboard · N notes · N links` line that expands to the
+note, agent note, and links on tap, and compacts its padding when the header
+collapses. It belongs to the reading surface, not the chrome.
+
+**One entry to the inspectors.** The header's ⋯ control opens a bottom sheet
+holding the session facts — model, context meter, effort, work time, queue —
+plus activity counts (tap → the shared ActivitySidebar tabs) and links.
+Nothing in the transcript scroll renders chips for model, effort, skills, or
+plugins; effort is set on the settings surface, not in chat chrome. Activity
+tabs are underline tabs, never pills.
+
+**The board keeps the session list's organization** (Jesse 2026-11-22):
+Live → Pinned → Projects → Idle → Archive. Live sorts needs-first. A board
+row carries its state in its StatusDot and relative time, never a text badge
+("needs answer"/"working" words are banned — the dot already says it). Idle
+shows its first rows immediately, with no "show more" tap. Archive is a nav
+row into a single infinite-scroll list driven by a sentinel, not pagination.
+One search field; no ⌘K hint text anywhere in the UI.
+
+**Tablet splits board and conversation side-by-side** at the existing
+breakpoint. The collapse control is one glyph living on the interior edge of
+the divider — the board's trailing edge while visible, the conversation's
+leading edge while hidden — rotating 180° to indicate direction; never two
+collapse controls at once. The Duo interior is the same split with
+hinge-aware width `min(380, max(280, round(w×0.36)))`, a 1px divider, and
+DetailPaneWidthContext; the Duo exterior is the single phone stack on the
+cover, not a second two-pane.
+
+Verification for changes to any of this: screenshots at 390×844 (phone),
+768×1024 and 1024×768 (tablet), 840×600 (Duo interior); chrome at rest
+within the 126px budget; transcript content scrolling under the composer
+pill; header collapse only on session-family scroll; `node scripts/ds-audit.mjs`
+counts no higher than before.
+
+
 ## Source Serif 4 license notice
 
 From `@fontsource-variable/source-serif-4` 5.3.0, distributed unmodified.
