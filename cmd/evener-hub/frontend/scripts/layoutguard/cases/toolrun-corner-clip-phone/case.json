@@ -13,6 +13,11 @@
   "cssClassPrefixes": {
     "widgets/disclosure/disclosure.module.css": "disclosure-"
   },
+  "allowlist": {
+    ".body": "The case prefixes disclosure.module.css's classes to disclosure-*, so resolved.css has no shared .body selector; the collision is only in the raw stylesheet.",
+    ".chevron": "The case prefixes disclosure.module.css's classes to disclosure-*, so resolved.css has no shared .chevron selector; the fixture's only chevron uses widgets/chevron/chevron.module.css.",
+    ".summary": "Same prefixing: Disclosure's summary and ToolRunGroup's summary resolve to different selectors in this case."
+  },
   "viewport": {
     "width": 390,
     "height": 844,
