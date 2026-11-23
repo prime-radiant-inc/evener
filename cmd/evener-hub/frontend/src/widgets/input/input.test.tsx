@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, useState } from "react";
 import { expect, test, vi } from "vitest";
@@ -112,6 +112,43 @@ test("aria-describedby passes through only when supplied", () => {
   expect(screen.getByRole("textbox").getAttribute("aria-describedby")).toBeNull();
 });
 
+// --- native pass-through: combobox semantics, data attributes, handlers ----
+test("passes combobox semantics and data attributes to the native input", () => {
+  render(
+    <Input
+      value=""
+      onChange={() => {}}
+      role="combobox"
+      aria-label="Command palette"
+      aria-expanded="true"
+      aria-controls="palette-results"
+      aria-activedescendant="palette-row-0"
+      aria-labelledby="palette-label"
+      data-testid="palette-input"
+    />,
+  );
+  const input = screen.getByRole("combobox", { name: "Command palette" });
+  expect(input.tagName).toBe("INPUT");
+  expect(input.getAttribute("aria-expanded")).toBe("true");
+  expect(input.getAttribute("aria-controls")).toBe("palette-results");
+  expect(input.getAttribute("aria-activedescendant")).toBe("palette-row-0");
+  expect(input.getAttribute("aria-labelledby")).toBe("palette-label");
+  expect(input.getAttribute("data-testid")).toBe("palette-input");
+});
+
+test("forwards onKeyDown from the native input", () => {
+  const onKeyDown = vi.fn();
+  render(<Input value="" onChange={() => {}} onKeyDown={onKeyDown} />);
+  fireEvent.keyDown(screen.getByRole("textbox"), { key: "ArrowDown" });
+  expect(onKeyDown).toHaveBeenCalledTimes(1);
+  expect(onKeyDown.mock.calls[0]?.[0]).toMatchObject({ key: "ArrowDown" });
+});
+
+test("autoFocus focuses the native input on mount", () => {
+  render(<Input value="" onChange={() => {}} autoFocus />);
+  expect(document.activeElement).toBe(screen.getByRole("textbox"));
+});
+
 // --- ref + fill: opt-in imperative access and an opt-in width -------------
 test("forwards a ref to the underlying native input element", () => {
   const ref = createRef<HTMLInputElement>();
@@ -135,6 +172,24 @@ test("the fill modifier sets width 100% and min-width 0", () => {
   const rule = /\.fillWidth\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
   expect(rule).toContain("width: 100%");
   expect(rule).toContain("min-width: 0");
+});
+
+test("roomy adds its modifier class alongside the unchanged base class", () => {
+  const { rerender } = render(<Input value="" onChange={() => {}} padding="roomy" />);
+  const classes = screen.getByRole("textbox").className.split(" ");
+  expect(classes).toContain(rawStyles.input);
+  expect(classes).toContain(rawStyles.roomy);
+
+  rerender(<Input value="" onChange={() => {}} />);
+  expect(screen.getByRole("textbox").className.split(" ")).not.toContain(rawStyles.roomy);
+});
+
+test("the roomy modifier carries the palette's padding and control-floored body size", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "input.module.css"), "utf8");
+  const rule = /\.input\.roomy\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rule).toContain("padding: var(--space-3)");
+  expect(rule).toContain("font-size: max(var(--font-size-control), var(--font-size-body))");
 });
 
 test("declares a :focus-visible rule in its CSS module, using only tokens", () => {
