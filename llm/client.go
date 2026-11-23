@@ -590,6 +590,21 @@ func (c *Client) LiveListingUsable(instance string, rows []registry.Model) bool 
 	return false
 }
 
+// ListingProvesUnavailable reports whether listing is proof that the instance
+// serves no model: its account-owned roster answered successfully and offered
+// no usable row. A failed fetch (Live false) and a non-authoritative fallback
+// prove nothing about availability.
+func (c *Client) ListingProvesUnavailable(instance string, listing ModelListing) bool {
+	if c == nil || !listing.Live || listing.Usable {
+		return false
+	}
+	instance = normalizeProviderName(instance)
+	if c.isOverride(instance) {
+		return false
+	}
+	return c.Registry().LiveListingAuthoritative(instance)
+}
+
 // isOverride reports whether name is a registered adapter override.
 func (c *Client) isOverride(name string) bool {
 	c.overridesMu.RLock()

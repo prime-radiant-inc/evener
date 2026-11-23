@@ -348,6 +348,76 @@ func TestValidateModelSwitchMembership_RegistryOnlyListingAcceptsEveryID(t *test
 	}
 }
 
+// authoritativeMembershipClient builds a client whose "copilot-plan" instance
+// is account-owned and whose "gateway" instance is not. Both carry one static
+// row so the servability check resolves before membership is judged.
+func authoritativeMembershipClient(t *testing.T) (*llm.Client, *provider.Profile, *provider.Profile) {
+	t.Helper()
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(map[string]registry.Provider{
+			"copilot-plan": {
+				Base:      "github-copilot",
+				Protocol:  registry.ProtocolOpenAIChat,
+				Transport: registry.Transport{Auth: registry.AuthOAuthGitHubCopilot},
+				Models:    map[string]registry.Model{"gpt-5.6-sol": {ID: "gpt-5.6-sol"}},
+			},
+			"gateway": {
+				Base: "openai", Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceGeneric,
+				APIKey:    "test-key",
+				Transport: registry.Transport{Auth: registry.AuthBearer, BaseURL: "https://gw.example.com/v1"},
+				Models:    map[string]registry.Model{"gpt-5.5": {ID: "gpt-5.5"}},
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	copilot, err := provider.Resolve(r, "copilot-plan/gpt-5.6-sol")
+	if err != nil {
+		t.Fatalf("copilot profile: %v", err)
+	}
+	gateway, err := provider.Resolve(r, "gateway/gpt-5.5")
+	if err != nil {
+		t.Fatalf("gateway profile: %v", err)
+	}
+	return llm.NewClient(llm.WithRegistry(r)), copilot, gateway
+}
+
+// TestValidateModelSwitchMembership_AuthoritativeEmptyRosterRejects pins the
+// account roster rule at the switch: a successful answer with no usable row
+// is proof the target is unavailable, so the switch must not be accepted. A
+// failed fetch and a non-authoritative listing stay fail-open.
+func TestValidateModelSwitchMembership_AuthoritativeEmptyRosterRejects(t *testing.T) {
+	t.Parallel()
+	client, copilot, gateway := authoritativeMembershipClient(t)
+	if !client.CanServe(copilot.ID(), copilot.Model()) {
+		t.Fatal("fixture precondition: the copilot model must resolve")
+	}
+	if !client.CanServe(gateway.ID(), gateway.Model()) {
+		t.Fatal("fixture precondition: the gateway model must resolve")
+	}
+
+	err := validateModelSwitchMembership(client, copilot, llm.ModelListing{Live: true})
+	if err == nil {
+		t.Fatal("authoritative empty roster accepted the switch, want a refusal")
+	}
+
+	if err := validateModelSwitchMembership(client, copilot, llm.ModelListing{
+		Models: []registry.Resolved{{ModelID: gateway.Model()}},
+	}); err != nil {
+		t.Fatalf("a failed roster fetch is not evidence of absence: %v", err)
+	}
+	if err := validateModelSwitchMembership(client, gateway, llm.ModelListing{
+		Live:   true,
+		Models: []registry.Resolved{{ModelID: gateway.Model()}},
+	}); err != nil {
+		t.Fatalf("a non-authoritative listing is not evidence of absence: %v", err)
+	}
+}
+
 // documentTurn and audioTurn build a user-role Turn carrying a document (or
 // audio) ContentPart directly, so unrepresentable-history tests don't depend
 // on the tool path that produces these parts in production.
