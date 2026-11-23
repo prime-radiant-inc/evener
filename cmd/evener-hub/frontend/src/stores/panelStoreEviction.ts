@@ -1,5 +1,6 @@
 import type { SessionActivityContext } from "@evener/appwire-client";
 import { deriveCascadePath, parseZoomParams } from "../panes/zoom/intent";
+import { refParam } from "../shell/routing";
 import { type OpenPaneRecord, type WorkspaceStoreState, workspaceStore } from "../shell/workspace";
 import { connectionStore } from "./connection";
 import { sessionActivitySnapshot } from "./sessionActivity";
@@ -20,9 +21,7 @@ let evictionScheduled = false;
 let evictionGeneration = 0;
 
 function paramsRef(params: unknown): string | undefined {
-  if (!params || typeof params !== "object" || Array.isArray(params)) return undefined;
-  const ref = (params as { ref?: unknown }).ref;
-  return typeof ref === "string" && ref !== "" ? ref : undefined;
+  return refParam(params) ?? undefined;
 }
 
 function paneRef(pane: { type: string; params: unknown }): string | undefined {
