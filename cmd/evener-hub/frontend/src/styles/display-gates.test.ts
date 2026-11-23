@@ -277,9 +277,12 @@ test("the phone's activity line keeps every chip a tappable glyph", () => {
   expect(widgetFloor!.body).toMatch(/\.root\s*\{[^}]*min-height:\s*var\(--tap-min\)[^}]*min-width:\s*var\(--tap-min\)/);
   // compact drops the visible name; the accessible name keeps it.
   expect(widgetCss).toMatch(/\.root\[data-compact="true"\]\s+\.label\s*\{[^}]*display:\s*none/);
-  // Only the narrow-pane container drops the glyph; the phone keeps it.
-  const narrow = /@container\s*\(max-width:\s*320px\)\s*\{([\s\S]*?)\n\}/.exec(widgetCss);
-  expect(narrow, "countbutton.module.css must have its 320px container rule").not.toBeNull();
+  // Only the statusbar's narrow container drops the glyph; the phone keeps
+  // it. The name matters: a phone composer is an inline-size container too,
+  // so an unnamed query would resolve there and hide the phone's glyphs.
+  const narrow = /@container\s+statusbar\s*\(max-width:\s*320px\)\s*\{([\s\S]*?)\n\}/.exec(widgetCss);
+  expect(narrow, "countbutton.module.css must have its named 320px statusbar container rule").not.toBeNull();
+  expect(widgetCss).toMatch(/@container\s+statusbar\s*\(max-width:\s*600px\)/);
   expect(narrow![1]).toMatch(/\.glyph\s*\{[^}]*display:\s*none/);
   expect(
     widgetBlocks

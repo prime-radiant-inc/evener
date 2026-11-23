@@ -89,15 +89,18 @@
 
 /* The status bar's own width container used to collapse these chips: names
  * drop first at 600px, then glyphs at 320px. The widget owns that now so no
- * caller styles its internals; a surface without a width container (the zoom
- * columns) uses the compact/orientation props instead. */
-@container (max-width: 600px) {
+ * caller styles its internals, but the queries stay named: a phone composer
+ * is also an inline-size container at 320px, and an unnamed query there would
+ * hide the glyphs on the activity line that keeps them instead. A surface
+ * without the statusbar container (the zoom columns) uses the
+ * compact/orientation props instead. */
+@container statusbar (max-width: 600px) {
   .label {
     display: none;
   }
 }
 
-@container (max-width: 320px) {
+@container statusbar (max-width: 320px) {
   .glyph {
     display: none;
   }

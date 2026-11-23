@@ -977,9 +977,19 @@ async function measureOverview(send) {
         return {
           box: box(mobile ? (chipRow ?? surface) : surface),
           path: !mobile && path ? box(path) : null,
-          chips: chips.map(element => ({
-            tab: element.dataset.activityTab, box: box(element)
-          })),
+          chips: chips.map(element => {
+            // The category glyph is the CountButton's decorative wrapper. A
+            // phone keeps it at every width; only the statusbar's own named
+            // 320px container may drop it.
+            const glyph = element.querySelector('[aria-hidden="true"]');
+            const style = glyph ? getComputedStyle(glyph) : null;
+            const glyphBox = glyph ? glyph.getBoundingClientRect() : null;
+            return {
+              tab: element.dataset.activityTab, box: box(element),
+              glyphVisible: !!style && style.display !== 'none' && style.visibility !== 'hidden' &&
+                glyphBox.width > 0 && glyphBox.height > 0,
+            };
+          }),
           chipRow: chipRow && {
             box: box(chipRow), scrollWidth: chipRow.scrollWidth, clientWidth: chipRow.clientWidth
           },
@@ -1138,6 +1148,8 @@ function assertOverview(result, viewport, theme) {
       // floor and never clipped.
       if (footer.chips.length !== 4) failures.push(`phone composer activity chips: ${JSON.stringify(footer.chips)}`);
       for (const chip of footer.chips) {
+        if (!chip.glyphVisible)
+          failures.push(`phone composer activity chip ${chip.tab} lost its glyph: ${JSON.stringify(chip)}`);
         if (
           chip.box.width < result.tapMin - 1 ||
           chip.box.height < result.tapMin - 1 ||

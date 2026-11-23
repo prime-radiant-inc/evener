@@ -11,7 +11,7 @@ import { CountButton } from "./index";
 const CSS = readModuleCss(import.meta.url, "countbutton.module.css");
 
 function containerBlock(condition: string): string {
-  const marker = `@container (${condition})`;
+  const marker = `@container statusbar (${condition})`;
   const start = CSS.indexOf(marker);
   expect(start, `countbutton.module.css must declare ${marker}`).toBeGreaterThanOrEqual(0);
   return blockBody(CSS, CSS.indexOf("{", start));
