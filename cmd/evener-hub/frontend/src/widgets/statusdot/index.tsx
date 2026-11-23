@@ -1,7 +1,7 @@
 import type { DelegateDotFields, DelegateDotState } from "@evener/appwire-client";
 import { delegateDotState } from "@evener/appwire-client";
 import type { CadenceState } from "../cadence";
-import { STATE_LABELS } from "../cadence";
+import { STATE_LABELS, type StatusFamily, stateFamily } from "../cadence";
 import { requireClass } from "../internal/requireClass";
 import styles from "./statusdot.module.css";
 
@@ -15,26 +15,11 @@ export interface StatusDotProps {
   decorative?: boolean;
 }
 
-// Mirrors Cadence's own state -> family -> label mapping (see
-// src/widgets/cadence/index.tsx). Not shared code: Cadence keeps its
-// mapping private (unexported), and its directory is out of scope for this
-// stream, so StatusDot - a plain standalone status dot built for contexts
-// that don't want Cadence's full activity trace - carries its own copy.
-type Family = "alive" | "attention" | "danger" | "neutral";
-
-const STATE_FAMILY: Record<CadenceState, Family> = {
-  working: "alive",
-  "needs-you": "attention",
-  failed: "danger",
-  idle: "neutral",
-  ended: "neutral",
-};
-
 /** StatusDot's accessible names. Re-exported from the one table so a caller
  * that already imports this widget keeps working without a second spelling. */
 export const STATUS_LABEL = STATE_LABELS;
 
-const FAMILY_CLASS: Record<Family, string> = {
+const FAMILY_CLASS: Record<StatusFamily, string> = {
   alive: requireClass(styles.alive, "statusdot.module.css", "alive"),
   attention: requireClass(styles.attention, "statusdot.module.css", "attention"),
   danger: requireClass(styles.danger, "statusdot.module.css", "danger"),
@@ -58,7 +43,7 @@ const BASE_CLASS = {
  * runtime label) passes `decorative`, which drops the role and the name so the
  * glyph is not announced a second time. */
 export function StatusDot({ state, decorative = false }: StatusDotProps) {
-  const family = STATE_FAMILY[state];
+  const family = stateFamily(state);
   const working = state === "working" ? ` ${BASE_CLASS.working}` : "";
   const attrs = {
     "data-state": state,
@@ -78,14 +63,14 @@ export function StatusDot({ state, decorative = false }: StatusDotProps) {
 // active work, never a dead grey dot.
 const SUBAGENT_DOT: Record<
   Exclude<DelegateDotState, "quiet">,
-  { family: Family; label: string; shape: "dot" | "diamond"; working: boolean } | null
+  { family: StatusFamily; label: string; shape: "dot" | "diamond"; working: boolean } | null
 > = {
   // The shared states speak the session vocabulary's own words and hues, so a
   // session-status ruling reaches the subagent dot with no second table to
   // update. Quiet is normalized to fresh before lookup.
-  fresh: { family: STATE_FAMILY.working, label: STATUS_LABEL.working, shape: "dot", working: true },
-  attention: { family: STATE_FAMILY["needs-you"], label: STATUS_LABEL["needs-you"], shape: "dot", working: false },
-  failed: { family: STATE_FAMILY.failed, label: STATUS_LABEL.failed, shape: "diamond", working: false },
+  fresh: { family: stateFamily("working"), label: STATUS_LABEL.working, shape: "dot", working: true },
+  attention: { family: stateFamily("needs-you"), label: STATUS_LABEL["needs-you"], shape: "dot", working: false },
+  failed: { family: stateFamily("failed"), label: STATUS_LABEL.failed, shape: "diamond", working: false },
   // A settled row shows no dot, exactly as the main sessions' idle and
   // ended scopes show no glyph.
   idle: null,

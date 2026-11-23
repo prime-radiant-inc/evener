@@ -5,6 +5,7 @@ import { Button } from "../button";
 import { Dialog } from "../dialog";
 import { ownerDocumentOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
+import { useDirectoryListing } from "../internal/useDirectoryListing";
 import { usePortalDocument } from "../internal/usePortalDocument";
 import { ToolIcon } from "../toolicon";
 import styles from "./directorypicker.module.css";
@@ -58,18 +59,24 @@ export function DirectoryPicker({
   onClose,
 }: DirectoryPickerProps) {
   const initialPath = value || fallbackDir || "~";
+  const listing = useDirectoryListing({
+    path: initialPath,
+    debounceMs: 0,
+    source: {
+      complete,
+      listRecents: listRecents === undefined ? undefined : () => listRecents().then((paths) => [...new Set(paths)]),
+      validatePath,
+    },
+  });
   const [current, setCurrent] = useState(initialPath);
   const [typed, setTyped] = useState(initialPath);
   const [pathEdited, setPathEdited] = useState(false);
-  const [entries, setEntries] = useState<string[] | null>(null);
   const [initialCanonical, setInitialCanonical] = useState<{ id: number; path: string } | null>(null);
   const [validatedInput, setValidatedInput] = useState<string | null>(null);
-  const [recents, setRecents] = useState<string[]>([]);
-  const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [folderName, setFolderName] = useState("");
   const [busy, setBusy] = useState(false);
-  const request = useRef(0);
+  const navigation = useRef(0);
   const mounted = useRef(true);
   const pathInput = useRef<HTMLInputElement>(null);
   const pathFocused = useRef(false);
@@ -89,33 +96,18 @@ export function DirectoryPicker({
     // Rows disappear during navigation. Keep focus on a persistent control
     // without opening the phone keyboard when browsing by touch.
     if (ownerDocumentOf(pathInput.current).activeElement !== pathInput.current) goButton.current?.focus();
-    const id = ++request.current;
+    const id = ++navigation.current;
     setPathEdited(false);
     setValidatedInput(null);
-    setEntries(null);
-    setError(null);
     setCreating(false);
-    try {
-      const result = await validatePath(path.trim(), "dir");
-      if (!mounted.current || request.current !== id) return;
-      // Selection requires an existing directory; New folder explicitly creates
-      // a child before it becomes a selectable destination.
-      if (!result.valid) {
-        setError(result.error || "This path is not a directory.");
-        return;
-      }
-      const canonical = result.path || path.trim();
-      setCurrent(canonical);
-      // Initial validation must not collapse a selection made before the first
-      // input event. Explicit navigation still canonicalizes its submitted path.
-      if (preserveFocusedInput) setInitialCanonical({ id, path: canonical });
-      else setTyped(canonical);
-      setValidatedInput(path);
-      const children = await complete(childrenPrefix(canonical), false);
-      if (mounted.current && request.current === id) setEntries(children);
-    } catch (err) {
-      if (mounted.current && request.current === id) setError(friendlyErrorMessage(err));
-    }
+    const canonical = await listing.browse(path);
+    if (canonical === null || !mounted.current || navigation.current !== id) return;
+    setCurrent(canonical);
+    // Initial validation must not collapse a selection made before the first
+    // input event. Explicit navigation still canonicalizes its submitted path.
+    if (preserveFocusedInput) setInitialCanonical({ id, path: canonical });
+    else setTyped(canonical);
+    setValidatedInput(path);
   }
 
   // Callers key this draft by the committed directory so external route changes
@@ -125,15 +117,9 @@ export function DirectoryPicker({
   useEffect(() => {
     mounted.current = true;
     void browse(initialPath, true);
-    listRecents?.().then(
-      (paths) => {
-        if (mounted.current) setRecents([...new Set(paths)]);
-      },
-      () => {},
-    );
     return () => {
       mounted.current = false;
-      request.current++;
+      navigation.current++;
     };
   }, []);
 
@@ -157,7 +143,7 @@ export function DirectoryPicker({
   useLayoutEffect(() => {
     if (
       initialCanonical !== null &&
-      request.current === initialCanonical.id &&
+      navigation.current === initialCanonical.id &&
       ownerDocumentOf(pathInput.current).activeElement !== pathInput.current
     )
       setTyped(initialCanonical.path);
@@ -178,23 +164,23 @@ export function DirectoryPicker({
     if (!ready) return;
     const name = folderName.trim();
     if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\0")) {
-      setError("Enter a folder name without slashes.");
+      listing.setError("Enter a folder name without slashes.");
       return;
     }
     const path = `${childrenPrefix(current)}${name}`;
-    if (entries?.includes(path)) {
-      setError("A folder with this name already exists.");
+    if (listing.entries?.includes(path)) {
+      listing.setError("A folder with this name already exists.");
       return;
     }
     setBusy(true);
-    setError(null);
+    listing.setError(null);
     try {
       await createDirectory(path);
       if (!mounted.current) return;
       // Creation is complete; browsing owns validation and listing independently.
       void browse(path);
     } catch (err) {
-      if (mounted.current) setError(friendlyErrorMessage(err));
+      if (mounted.current) listing.setError(friendlyErrorMessage(err));
     } finally {
       if (mounted.current) setBusy(false);
     }
@@ -231,7 +217,7 @@ export function DirectoryPicker({
       <div className={CLASS.browser}>
         <aside className={CLASS.recents} aria-label={listRecents ? "Recent directories" : "Locations"}>
           {listRecents && <h3>Recent</h3>}
-          {recents.map((path) => (
+          {listing.recents.map((path) => (
             <button
               className={CLASS.row}
               type="button"
@@ -248,7 +234,7 @@ export function DirectoryPicker({
               <span className={CLASS.path}>{parentOf(path)}</span>
             </button>
           ))}
-          {listRecents && recents.length === 0 && <p className={CLASS.status}>No recent directories.</p>}
+          {listRecents && listing.recents.length === 0 && <p className={CLASS.status}>No recent directories.</p>}
           <h3>Locations</h3>
           <Button variant="quiet" disabled={busy} onClick={() => void browse("~")}>
             Home
@@ -312,15 +298,14 @@ export function DirectoryPicker({
                 if (validatedInput !== null && !pathEdited && typed === validatedInput) setTyped(current);
               }}
               onChange={(event) => {
-                request.current++;
+                navigation.current++;
+                listing.cancel();
                 setTyped(event.target.value);
                 setPathEdited(true);
-                setEntries(null);
                 setValidatedInput(null);
                 // Editing Path closes creation without moving focus away.
                 wasCreating.current = false;
                 setCreating(false);
-                setError(null);
               }}
             />
             <Button ref={goButton} variant="secondary" type="submit" disabled={busy || !typed.trim()}>
@@ -336,7 +321,7 @@ export function DirectoryPicker({
               onClick={() => {
                 setCreating(true);
                 setFolderName("");
-                setError(null);
+                listing.setError(null);
               }}
             >
               New folder
@@ -360,7 +345,7 @@ export function DirectoryPicker({
                   disabled={busy}
                   onClick={() => {
                     setCreating(false);
-                    setError(null);
+                    listing.setError(null);
                   }}
                 >
                   Cancel new folder
@@ -371,32 +356,28 @@ export function DirectoryPicker({
               </div>
             </form>
           )}
-          {error && (
+          {listing.error && (
             <p className={CLASS.status} role="alert">
-              {error}
+              {listing.error}
             </p>
           )}
-          <section
-            className={CLASS.folders}
-            aria-label="Folders"
-            aria-busy={!pathEdited && entries === null && error === null}
-          >
+          <section className={CLASS.folders} aria-label="Folders" aria-busy={!pathEdited && listing.loading}>
             {pathEdited ? (
               <p className={CLASS.status} role="status" data-state="edited">
                 Press Go to browse this path.
               </p>
-            ) : entries === null ? (
-              !error && (
+            ) : listing.entries === null ? (
+              !listing.error && (
                 <p className={CLASS.status} role="status" data-state="loading">
                   Loading directories…
                 </p>
               )
-            ) : entries.length === 0 ? (
+            ) : listing.entries.length === 0 ? (
               <p className={CLASS.status} role="status" data-state="empty">
                 No subfolders to display.
               </p>
             ) : (
-              entries.map((path) => (
+              listing.entries.map((path) => (
                 <button
                   type="button"
                   className={CLASS.row}
