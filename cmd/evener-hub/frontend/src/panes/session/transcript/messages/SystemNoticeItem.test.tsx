@@ -2,7 +2,7 @@ import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { makeTranscriptDisplayConfig, projectThread, WarningCodeMCPReconnected } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
-import { readModuleCss } from "../../../../styles/cssBlock";
+import { readModuleCss, topRuleBlock } from "../../../../styles/cssBlock";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { TurnBlock } from "../TurnBlock";
@@ -641,19 +641,17 @@ test("a clean quiet_yield notice renders in agent-message prose tokens with no d
   expect(container.querySelector("details")).toBeNull();
 
   const css = readModuleCss(import.meta.url, "systemnoticeitem.module.css");
-  const rule = (selector: string): string => {
-    const match = css.match(new RegExp(`\\.${selector}\\s*\\{([^}]*)\\}`));
-    return match?.[1] ?? "";
-  };
-  const summaryBody = rule("quietYieldSummary");
+  const summaryBody = topRuleBlock(css, ".quietYieldSummary");
   expect(summaryBody).toMatch(/font-family:\s*var\(--font-prose\)/);
   expect(summaryBody).toMatch(/font-size:\s*var\(--font-size-prose\)/);
   expect(summaryBody).toMatch(/line-height:\s*var\(--line-height-prose\)/);
   expect(summaryBody).toMatch(/color:\s*var\(--ink-low\)/);
-  expect(rule("quietYield")).toMatch(/composes:\s*quietYieldSummary;/);
-  expect(rule("quietYield")).toMatch(/padding:\s*var\(--rhythm-line\)\s+0/);
-  expect(rule("line")).toMatch(/font-family:\s*var\(--font-sans\)/);
-  expect(rule("line")).toMatch(/font-size:\s*var\(--font-size-caption\)/);
+  const quietYieldBody = topRuleBlock(css, ".quietYield");
+  expect(quietYieldBody).toMatch(/composes:\s*quietYieldSummary;/);
+  expect(quietYieldBody).toMatch(/padding:\s*var\(--rhythm-line\)\s+0/);
+  const lineBody = topRuleBlock(css, ".line");
+  expect(lineBody).toMatch(/font-family:\s*var\(--font-sans\)/);
+  expect(lineBody).toMatch(/font-size:\s*var\(--font-size-caption\)/);
 
   cleanup();
   renderTurnTools(turnWith([item("regular_1", { text: "model switched" })]));
