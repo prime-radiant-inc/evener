@@ -1,0 +1,34 @@
+{
+  "name": "joblog-long-command-starves-output",
+  "description": "A job log pane in a narrow workspace column keeps a real output viewport under a long command. The command block is bounded and scrolls inside itself, the virtual list keeps at least half of the log column and a nonzero height, and a short command stays fully visible rather than clipped. The fixtures reproduce JobLog.tsx's PaneScaffold > transcript column > command block > .joblog chain with the real component stylesheets; the long command is the 832-character barrier script the background-jobs browser guard renders, recovered from its retained failure DOM.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/panescaffold/panescaffold.module.css",
+    "widgets/codeblock/codeblock.module.css",
+    "widgets/virtuallist/virtuallist.module.css",
+    "panes/transcript/transcript.module.css"
+  ],
+  "cssClassPrefixes": {
+    "widgets/codeblock/codeblock.module.css": "code-",
+    "widgets/virtuallist/virtuallist.module.css": "list-",
+    "panes/transcript/transcript.module.css": "log-"
+  },
+  "allowlist": {
+    ".body": "transcript.module.css is prefixed to log-*, so resolved.css has no shared .body selector; the raw sheets both define it and the scaffold body uses panescaffold.module.css.",
+    ".header": "codeblock.module.css is prefixed to code-*, so resolved.css has no shared .header selector; the raw sheets both define it and the pane header uses panescaffold.module.css.",
+    ".root": "virtuallist.module.css is prefixed to list-*, so resolved.css has no shared .root selector; the raw sheets both define it and the command block uses codeblock.module.css."
+  },
+  "viewport": {
+    "width": 1440,
+    "height": 1000,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "mutation": {
+    "declaration": "panes/transcript/transcript.module.css: remove .joblogCommand's max-height and its overflow-y/overflow-x pair, leaving flex: 0 0 auto so the command grows to its full wrapped content height",
+    "verified": "2026-11-23",
+    "expect": "fail",
+    "note": "Measured 2026-11-23 at the 402px-wide, 700px-tall pane the guard screenshotted: without the cap the long fixture's list viewport collapses to 0px and its command block is 802px of the 602px log column (the pane body then scrolls by 204px); restoring the cap returns the list to 334px and bounds the command to 240px, while the short fixture stays at a 468px list and an unscrolled 106px command either way. The cap alone is not enough without min-height:0 - a flex item's automatic minimum size is its content, and a minimum larger than max-height wins the clamp."
+  }
+}
