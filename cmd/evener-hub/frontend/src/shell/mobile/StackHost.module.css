@@ -176,3 +176,83 @@
   composes: slideRight from "../../styles/motion.module.css";
   z-index: var(--z-raised);
 }
+
+/* --- Tablet band: the board split (§12) ------------------------------------
+ * In the 768–899px band the rail renders beside the conversation instead
+ * of inside the drawer sheet: a persistent board column, the hairline
+ * divider, and the conversation filling the rest. The column width is the
+ * guide's hinge-aware clamp - 280px at the band's floor, ~36% of the
+ * viewport, 380px at the widest - so the Duo interior's 840px resolves to
+ * ~302px and a 768px tablet keeps ~487px of conversation. */
+
+.split {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  position: relative;
+}
+
+.boardColumn {
+  flex: none;
+  width: clamp(280px, 36vw, 380px);
+  border-right: 1px solid var(--edge);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  /* The mobile rail is built parent-owns-scroll (RailHost's scrollOwner
+   * "parent": .parentScrollRail grows to content and the host scrolls) -
+   * in the drawer that host is the Sheet body; in the band it is this
+   * column. One scroll region for header and rows, same as the drawer. */
+  overflow-y: auto;
+}
+
+/* min-width: 0 keeps the conversation shrinkable - a flex child defaults to
+ * min-width auto, which would floor the pane at its content's width and
+ * push it off-screen instead of letting the board hold its clamp. */
+.paneColumn {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* One toggle for both directions (§12): the glyph rides the interior seam -
+ * hugging the divider's conversation lip while the board is visible, the
+ * conversation's leading edge while it is collapsed - floating as a blur
+ * capsule (the same recipe as the collapsed top bar's) over the pane's own
+ * content, so it never occludes a single rail control. IconButton takes no
+ * className, so this wrapper owns the ride. */
+.boardToggle {
+  position: absolute;
+  top: var(--space-2);
+  left: 0;
+  z-index: var(--z-raised);
+  padding: var(--space-1);
+  transform: translateX(var(--space-2));
+  border-radius: var(--radius-pill);
+  background: color-mix(in oklab, var(--surface-1) 88%, transparent);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: var(--shadow-card);
+}
+
+.split[data-board="visible"] .boardToggle {
+  transform: translateX(calc(clamp(280px, 36vw, 380px) + var(--space-2)));
+}
+
+/* The glyph rotates - never swaps icons - to announce the expand. */
+.boardGlyph {
+  display: inline-block;
+}
+
+.split[data-board="collapsed"] .boardGlyph {
+  transform: rotate(180deg);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .boardToggle,
+  .boardGlyph {
+    transition: transform var(--motion-duration-spatial) var(--motion-easing-standard);
+  }
+}

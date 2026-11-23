@@ -1454,14 +1454,14 @@ over it.
 
 ## 12. Phone and tablet fluency: floating chrome, reading first
 
-Below the 899px boundary the phone layout is the product, on phones, tablets,
-and the iPhone Duo's interior. The transcript owns the screen: at rest the
-persistent chrome is the StackHost bar, the session notes' one quiet line, and
-the floating composer — around 105px of an 844px viewport, 12%. The fluency
-pass (Jesse 2026-11-22, artifact `evener-fluent-prototype-v8a`; evolution
-spec `docs/superpowers/specs/2026-11-22-mobile-fluency-evolution.md`) adds no
-tokens: it removes backgrounds and borders that carry no information.
-Desktop's DockHost layout is unchanged by this pass.
+Below the 899px boundary the phone stack is the product, on phones and the
+iPhone Duo's cover, with the tablet band adding the board column beside it.
+The transcript owns the screen: at rest the persistent chrome is the
+StackHost bar, the session notes' one quiet line, and the floating composer —
+around 105px of an 844px viewport, 12%. The fluency pass (Jesse 2026-11-22,
+artifact `evener-fluent-prototype-v8a`) adds no tokens: it removes
+backgrounds and borders that carry no information. Desktop's DockHost layout
+is unchanged by this pass.
 
 **The header collapses on transcript scroll, never on the board.** On a
 session-family pane (session, sessionZoom, transcript), scrolling down past
@@ -1507,18 +1507,23 @@ and loads itself: an archived overflow row that scrolls into view fetches
 its next page, so reaching the end of the list extends it rather than paging
 it. One search field; no ⌘K hint text anywhere in the UI.
 
-**Tablet splits board and conversation side-by-side** at the existing
-breakpoint. The collapse control is one glyph living on the interior edge of
-the divider — the board's trailing edge while visible, the conversation's
-leading edge while hidden — rotating 180° to indicate direction; never two
-collapse controls at once. The Duo interior is the same split with
-hinge-aware width `min(380, max(280, round(w×0.36)))`, a 1px divider, and
-DetailPaneWidthContext; the Duo exterior is the single phone stack on the
-cover, not a second two-pane.
+**Tablet splits board and conversation side-by-side.** The 768–899px band is
+the tablet: StackHost keeps its phone anatomy, but the rail leaves the drawer
+and becomes a persistent board column `clamp(280px, 36vw, 380px)` wide (the
+Duo interior's 840px resolves to 302px) with a 1px divider and the
+conversation flexing beside it. The column scrolls as one region, the same
+parent-owns-scroll contract as the drawer sheet. The collapse control is one
+glyph riding the interior seam of the divider — hugging the divider's
+conversation lip while the board is visible, the conversation's leading edge
+while hidden — rotating 180° to indicate direction; never two collapse
+controls at once, and never over the rail's own controls. The drawer trigger
+does not exist in the band, and a blank stack shows the board column, not the
+sheet. The Duo exterior is the single phone stack on the cover, not a second
+two-pane.
 
 Verification for changes to any of this: screenshots at 390×844 (phone),
-768×1024 and 1024×768 (tablet), 840×600 (Duo interior); chrome at rest
-within the 105px budget; transcript content scrolling under the composer
+768×1024 (tablet portrait, inside the band), 840×600 (Duo interior); chrome at
+rest within the 105px budget; transcript content scrolling under the composer
 pill; header collapse only on session-family scroll; `node scripts/ds-audit.mjs`
 counts no higher than before.
 

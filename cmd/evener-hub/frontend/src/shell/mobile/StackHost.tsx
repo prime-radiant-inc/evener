@@ -59,6 +59,7 @@ import { PaneVisibilityContext } from "../paneVisibility";
 import { navigate, paneToURL, refParam, urlToPane } from "../routing";
 import { openSessionByRef } from "../sessionPlacement";
 import { isSinglePaneRoute } from "../singlePane";
+import { TABLET_QUERY, useMediaQuery } from "../useIsMobile";
 import {
   conversationOpenParentRef,
   documentPaneState,
@@ -258,6 +259,17 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const activityOpen = useActivitySidebarStore((s) => s.open);
   const [panelOpen, setPanelOpen] = useState(false);
   const closePanel = useCallback(() => setPanelOpen(false), []);
+  // The 768–899px tablet band (docs/web-ui/design-system.md §12): the stack
+  // keeps its phone anatomy, but the rail leaves the drawer and becomes a
+  // persistent board column beside the conversation. The band is the tablet
+  // query AND-ed into the mobile range StackHost already lives in, so <768
+  // keeps the phone drawer and 900+ never mounts this host at all.
+  const tabletBand = useMediaQuery(TABLET_QUERY);
+  // A /thread share link keeps its chrome-free floor: neither the drawer nor
+  // the column exists there.
+  const tabletSplit = tabletBand && !singlePane;
+  const [boardCollapsed, setBoardCollapsed] = useState(false);
+  const boardVisible = tabletSplit && !boardCollapsed;
   // The floating top bar (docs/web-ui/design-system.md §12): true while a
   // session-family pane's body is scrolled down, trading the solid bar for
   // floating control capsules. The state is a paint-only class flip - the
@@ -455,8 +467,16 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   // declines to publish over, see its own comment).
   useEffect(() => {
     if (routeDeferred) return;
+    if (boardVisible) return;
     if (nothingFocused) setPanelOpen(true);
-  }, [nothingFocused, routeDeferred]);
+  }, [nothingFocused, routeDeferred, boardVisible]);
+
+  // Crossing into the band while the sheet hangs open would show the same
+  // rail twice - the column behind it, the sheet in front - so the sheet
+  // closes; the column is the board now.
+  useEffect(() => {
+    if (boardVisible) setPanelOpen(false);
+  }, [boardVisible]);
 
   useEffect(() => {
     if (activityOpen) setPanelOpen(false);
@@ -794,7 +814,10 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       backStackRef.current.some((id) => id !== focusedPane.id && livePaneIds.has(id)));
   const showBack =
     focusedPane !== null && focusedPane.type !== "welcome" && (focusedSessionRef === undefined || sessionBackAvailable);
-  const drawer = !singlePane ? <TreeDrawer onToggle={() => setPanelOpen((v) => !v)} /> : null;
+  // In the tablet band the column replaces the drawer entirely - its trigger
+  // is not rendered on either end of the top bar, and the ◧ toggle owns the
+  // way back to the board.
+  const drawer = !singlePane && !tabletBand ? <TreeDrawer onToggle={() => setPanelOpen((v) => !v)} /> : null;
 
   function handlePanelBack(): void {
     if (!focusedPane) return;
@@ -805,6 +828,30 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     popPendingRef.current = true;
     workspaceStore.getState().openPane("session", { ref });
   }
+
+  // The single stack body, host to the pane slot. Rendered directly under
+  // the top bar on a phone; inside the split's pane column in the tablet band
+  // (the same element and ref either way, so the scroll-offset and
+  // float-collapse listeners that read stackBodyRef are position-agnostic).
+  const stackBody = (
+    <div ref={stackBodyRef} className={styles.stackBody} data-stacked-pane-type={focusedPane?.type}>
+      {focusedPane && (
+        // key forces a fresh mount on every distinct pane id, including
+        // switching BACK to a previously-seen one - without it, two
+        // panes of the SAME registered type (same Component reference)
+        // would just re-render in place instead of remounting, breaking
+        // the unmount-not-hide contract every pane is designed around
+        // (see StackedPane's own comment). Two different pane TYPES
+        // already remount naturally (React unmounts on element type
+        // change), but same-type-different-params (e.g. two session
+        // panes) would not, without this. The slot is keyed with it, so
+        // the slot React detaches is the old pane's whole last frame.
+        <div key={focusedPane.id} ref={paneSlotRef} className={styles.paneSlot} data-stack-pane={focusedPane.id}>
+          <StackedPane pane={focusedPane} />
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div className={styles.host} onPointerDownCapture={clearPendingPop} onKeyDownCapture={clearPendingPop}>
@@ -837,23 +884,35 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
           {focusedSessionRef === undefined && drawer}
         </div>
       </div>
-      <div ref={stackBodyRef} className={styles.stackBody} data-stacked-pane-type={focusedPane?.type}>
-        {focusedPane && (
-          // key forces a fresh mount on every distinct pane id, including
-          // switching BACK to a previously-seen one - without it, two
-          // panes of the SAME registered type (same Component reference)
-          // would just re-render in place instead of remounting, breaking
-          // the unmount-not-hide contract every pane is designed around
-          // (see StackedPane's own comment). Two different pane TYPES
-          // already remount naturally (React unmounts on element type
-          // change), but same-type-different-params (e.g. two session
-          // panes) would not, without this. The slot is keyed with it, so
-          // the slot React detaches is the old pane's whole last frame.
-          <div key={focusedPane.id} ref={paneSlotRef} className={styles.paneSlot} data-stack-pane={focusedPane.id}>
-            <StackedPane pane={focusedPane} />
+      {tabletSplit ? (
+        <div className={styles.split} data-board={boardVisible ? "visible" : "collapsed"}>
+          {boardVisible && (
+            <aside className={styles.boardColumn} data-testid="board-column">
+              {railSlot}
+            </aside>
+          )}
+          <div className={styles.paneColumn} data-testid="pane-column">
+            {stackBody}
           </div>
-        )}
-      </div>
+          {/* One toggle for both directions (§12): the same glyph slides
+              along the interior seam - hugging the divider while the board
+              is visible, the conversation's leading edge while collapsed -
+              and rotates 180° to announce the expand, so the control never
+              duplicates and the icon never changes. */}
+          <div className={styles.boardToggle}>
+            <IconButton
+              data-testid="board-toggle"
+              label="Board"
+              aria-expanded={boardVisible}
+              variant="quiet"
+              icon={<span className={styles.boardGlyph}>◧</span>}
+              onClick={() => setBoardCollapsed((v) => !v)}
+            />
+          </div>
+        </div>
+      ) : (
+        stackBody
+      )}
       <div className={styles.activityOverlay}>
         <ActivitySidebar mobile />
       </div>

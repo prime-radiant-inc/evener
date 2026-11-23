@@ -249,15 +249,16 @@ test("the folded-run summary meets the phone tap floor", () => {
   expect(phone![1]).toMatch(/\.summary\s*\{[^}]*min-height:\s*var\(--tap-min\)/);
 });
 
-// A phone mounts no status bar: the session's activity counts sit on their
-// own line above the composer card, and
-// the writing row carries only its controls. The line stays a flex strip at
-// the phone tap floor and drops the category names rather than scrolling
-// sideways: four named chips do not fit a card line, so each chip keeps its
-// glyph and count and its accessible name carries the label. CountButton
-// owns the collapse and the floor now; this pins where they live so a
-// statusbar rule cannot shadow the widget's.
-test("the phone's activity line keeps every chip a tappable glyph", () => {
+// A phone mounts no status bar, and the composer has carried no activity
+// line since the counts folded into the header's Overview sheet (§12): the
+// engaged composer is chips-free, and nothing may regrow a counts row over
+// it. The chip vocabulary that remains is the statusbar's own strip, whose
+// chips keep the coarse-pointer tap floor and drop the category names
+// rather than scrolling sideways: each chip keeps its glyph and count, and
+// its accessible name carries the label. CountButton owns the collapse and
+// the floor; this pins where they live so a statusbar rule cannot shadow
+// the widget's.
+test("chips keep the coarse-pointer tap floor and the phone composer carries no activity line", () => {
   const srcRoot = dirname(dirname(fileURLToPath(import.meta.url)));
   const css = readFileSync(join(srcRoot, "shell/statusbar/statusbar.module.css"), "utf8");
   const blocks = mediaBlocks(css);
@@ -294,15 +295,8 @@ test("the phone's activity line keeps every chip a tappable glyph", () => {
     /\/\*[\s\S]*?\*\//g,
     " ",
   );
-  const activityRow = /\.activityRow\s*\{[^}]*display:\s*flex[^}]*min-height:\s*var\(--tap-min\)/.exec(composerCss);
-  expect(activityRow, "composer.module.css must give the phone's activity line the tap floor").not.toBeNull();
-  // The line break itself is decided by honest bases, not a threshold query:
-  // the chrome's .body container containment hides its status content from
-  // the flex algorithm, so the composer placement's .inline must carry its
-  // measured compact rung as the basis. With the rung honest, the leading's
-  // flex-wrap breaks the line - the strip takes its own line - exactly when
-  // one line cannot hold both the rung and the strip, and no band of widths
-  // starves the model picker beside the counts.
+  // The removal is the contract: no counts row may return over the composer.
+  expect(composerCss).not.toMatch(/activityRow/);
   const chromeCss = readFileSync(join(srcRoot, "panes/session/chrome/sessionchrome.module.css"), "utf8").replace(
     /\/\*[\s\S]*?\*\//g,
     " ",

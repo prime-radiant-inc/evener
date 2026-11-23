@@ -1,6 +1,11 @@
 import { useCallback, useSyncExternalStore } from "react";
 
 export const MOBILE_QUERY = "(max-width: 899px)";
+// The tablet band inside the mobile range: StackHost owns the whole <900px
+// range, and at-or-above 768px it trades the drawer for a persistent board
+// column (docs/web-ui/design-system.md §12). Same single-source style as
+// MOBILE_QUERY so the band can never drift from the shell that hosts it.
+export const TABLET_QUERY = "(min-width: 768px)";
 type ViewportListener = () => void;
 type MatchMediaFactory = typeof window.matchMedia;
 

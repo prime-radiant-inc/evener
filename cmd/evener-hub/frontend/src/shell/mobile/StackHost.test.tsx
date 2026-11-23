@@ -10,7 +10,7 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
 import { openDocBeside } from "../../panes/doc/openDoc";
 import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
-import { MOBILE_QUERY } from "../useIsMobile";
+import { MOBILE_QUERY, TABLET_QUERY } from "../useIsMobile";
 import "../../panes/transcript";
 import { cascadeClient, cascadeContext } from "../../panes/zoom/cascadeTestUtils";
 import { recordCascadeOrigin } from "../../panes/zoom/inspectionOrigin";
@@ -2188,4 +2188,113 @@ test("a slide away from a scrolled pane keeps the discarded pane's scroller out 
   } finally {
     slides.restore();
   }
+});
+
+// === Tablet band: the persistent board column (§12) ========================
+// AppShell mounts StackHost for the whole <900px range. Inside it, the
+// 768–899px band trades the drawer for a persistent board column: the rail
+// (railSlot) renders beside the pane instead of inside the MobilePanel sheet,
+// with one ◧ toggle on the interior seam. jsdom cannot evaluate the media
+// queries or the CSS, so these install both band queries and assert the DOM
+// contract; the geometry itself is pinned by the CSS-source test below.
+
+test("in the tablet band the rail renders as a persistent board column and the drawer trigger is gone", async () => {
+  const restoreViewport = installMobileViewport([MOBILE_QUERY, TABLET_QUERY]);
+  workspaceStore.getState().openPane("doc", { ref: "tablet_band" });
+  try {
+    render(<StackHost railSlot={<div data-testid="rail-slot" />} />);
+    const board = await screen.findByTestId("board-column");
+    expect(within(board).getByTestId("rail-slot")).toBeTruthy();
+    // Exactly one toggle glyph on the interior seam; the phone's drawer
+    // trigger does not exist anywhere in the band - the column is the nav.
+    expect(screen.getAllByTestId("board-toggle")).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "Sessions" })).toBeNull();
+    // The conversation column is the board column's sibling inside the split.
+    const split = board.parentElement;
+    if (!split) throw new Error("the board column has no split parent");
+    expect(split.querySelector('[data-testid="pane-column"]')).toBeTruthy();
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("the board toggle is one control that collapses the column and re-expands it", async () => {
+  const restoreViewport = installMobileViewport([MOBILE_QUERY, TABLET_QUERY]);
+  workspaceStore.getState().openPane("doc", { ref: "tablet_toggle" });
+  const user = userEvent.setup();
+  try {
+    render(<StackHost />);
+    const split = (await screen.findByTestId("board-column")).parentElement;
+    if (!split) throw new Error("the board column has no split parent");
+    expect(split.getAttribute("data-board")).toBe("visible");
+    expect(screen.getByTestId("board-toggle").getAttribute("aria-expanded")).toBe("true");
+
+    await user.click(screen.getByTestId("board-toggle"));
+    expect(screen.queryByTestId("board-column")).toBeNull();
+    expect(split.getAttribute("data-board")).toBe("collapsed");
+    // Never two collapse controls: the same single glyph slides to the
+    // conversation's leading edge and flips to announce the expand.
+    expect(screen.getAllByTestId("board-toggle")).toHaveLength(1);
+    expect(screen.getByTestId("board-toggle").getAttribute("aria-expanded")).toBe("false");
+
+    await user.click(screen.getByTestId("board-toggle"));
+    expect(screen.getByTestId("board-column")).toBeTruthy();
+    expect(split.getAttribute("data-board")).toBe("visible");
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("in the tablet band a blank stack shows the board column, not the auto-opened drawer sheet", async () => {
+  const restoreViewport = installMobileViewport([MOBILE_QUERY, TABLET_QUERY]);
+  try {
+    render(<StackHost />);
+    // The phone backstop auto-opens the Sessions sheet when nothing is
+    // focused; in the band the column IS the board, so the sheet stays shut.
+    expect(await screen.findByTestId("board-column")).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: "Sessions" })).toBeNull();
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("below the tablet band the phone anatomy is unchanged: drawer sheet, no board column", async () => {
+  const restoreViewport = installMobileViewport();
+  workspaceStore.getState().openPane("doc", { ref: "phone_band" });
+  try {
+    render(<StackHost />);
+    await screen.findByText(/doc pane: phone_band /);
+    expect(screen.queryByTestId("board-column")).toBeNull();
+    expect(screen.queryByTestId("board-toggle")).toBeNull();
+    expect(screen.getByRole("button", { name: "Sessions" })).toBeTruthy();
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("the split carries the §12 geometry: clamp width, hairline divider, sliding rotating toggle", () => {
+  const css = readModuleCss(import.meta.url, "StackHost.module.css");
+  // The board column pins the hinge-aware width (min 280, ~36% of the
+  // viewport, max 380 - the Duo interior's 840px resolves to ~302px) and the
+  // 1px divider the guide names.
+  const boardRule = css.match(/\.boardColumn \{([^}]*)\}/)?.[1] ?? "";
+  expect(boardRule).toContain("clamp(280px, 36vw, 380px)");
+  expect(boardRule).toContain("border-right: 1px solid var(--edge)");
+  // The conversation column stays shrinkable so the split can never push it
+  // off-screen: flex children default to min-width auto, which would floor
+  // the pane at its content's width.
+  const paneRule = css.match(/\.paneColumn \{([^}]*)\}/)?.[1] ?? "";
+  expect(paneRule).toContain("min-width: 0");
+  // The toggle rides the interior seam: 8px off the divider while the board
+  // is visible, 8px off the screen's leading edge while collapsed.
+  const visibleRule = css.match(/\.split\[data-board="visible"\] \.boardToggle \{([^}]*)\}/)?.[1] ?? "";
+  expect(visibleRule).toContain("clamp(280px, 36vw, 380px)");
+  // The same glyph rotates 180° to announce the expand - the control never
+  // duplicates and the direction never changes icon.
+  const collapsedGlyph = css.match(/\.split\[data-board="collapsed"\] \.boardGlyph \{([^}]*)\}/)?.[1] ?? "";
+  expect(collapsedGlyph).toContain("rotate(180deg)");
+  // One base rule each - line-anchored, so the data-board-scoped rules above
+  // do not double-count: the control never duplicates.
+  expect((css.match(/(?:^|\n)\.boardToggle \{/g) ?? []).length).toBe(1);
+  expect((css.match(/(?:^|\n)\.boardGlyph \{/g) ?? []).length).toBe(1);
 });
