@@ -272,7 +272,7 @@ func (s *Session) autonomyInFlight() bool {
 	if s.hasWorkingSubagent() {
 		return true
 	}
-	return s.sessionWorkPending()
+	return s.nonMutationWorkPending() || s.hasWakeableClientMutationStart()
 }
 
 // hasWakeableWork reports whether anything can wake a resting session. Used by
@@ -301,7 +301,7 @@ func (s *Session) hasWakeableWork() bool {
 			return true
 		}
 	}
-	return s.hasRunnableUserSteering() || s.nonMutationWorkPending() || s.hasWakeableClientMutationStart() || s.HasPendingAsk()
+	return s.hasRunnableUserSteering() || s.autonomyInFlight() || s.HasPendingAsk()
 }
 
 // hasOneShotWakeableWork reports whether anything can wake a one-shot

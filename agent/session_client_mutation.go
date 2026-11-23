@@ -1570,20 +1570,32 @@ func (s *Session) hasRunnableClientMutationStart() bool {
 	return runnable
 }
 
-// hasWakeableClientMutationStart reports whether the durable store holds other
-// runnable client-mutation input beyond the currently executing turn's own
-// incorporated start or queue entry (such as an accepted follow-up start or a
-// reclaimable unheld queue head). Unlike hasRunnableClientMutationStart, which
-// treats an active incorporated turn as runnable for crash recovery,
-// hasWakeableWork excludes it so a running turn cannot satisfy its own
-// quiet-yield wake guard.
+// hasWakeableClientMutationStart reports whether the durable store holds an
+// actionable client turn/start beyond the currently executing turn's own
+// incorporated entry (such as an accepted follow-up start). Unlike
+// hasRunnableClientMutationStart, which treats an active incorporated turn as
+// runnable for crash recovery, hasWakeableWork excludes it so a running turn
+// cannot satisfy its own quiet-yield wake guard; queued input is covered
+// separately by pendingQueueDepth.
 func (s *Session) hasWakeableClientMutationStart() bool {
 	if s == nil || s.clientMutations == nil {
 		return false
 	}
 	wakeable := false
 	s.clientMutations.read(func(snapshot *clientMutationSnapshot) {
-		_, wakeable = s.runnableClientMutationStartTurnIn(snapshot, true)
+		if snapshot.InterruptFence != nil {
+			return
+		}
+		for _, pending := range snapshot.PendingExecutions {
+			if !isClaimableStartPending(pending) || pending.TurnID == "" {
+				continue
+			}
+			if pending.ExecutionState == "incorporated" && snapshot.ActiveTurnID == pending.TurnID {
+				continue
+			}
+			wakeable = true
+			return
+		}
 	})
 	return wakeable
 }
@@ -1654,7 +1666,7 @@ func (s *Session) runnableClientMutationStartTurnID() (string, bool) {
 	// beside the queued-input probe, and the journal only grows.
 	turnID, runnable := "", false
 	s.clientMutations.read(func(snapshot *clientMutationSnapshot) {
-		turnID, runnable = s.runnableClientMutationStartTurnIn(snapshot, false)
+		turnID, runnable = s.runnableClientMutationStartTurnIn(snapshot)
 	})
 	return turnID, runnable
 }
@@ -1675,22 +1687,12 @@ func (snapshot *clientMutationSnapshot) queueHeadTurnID() (string, bool) {
 }
 
 // runnableClientMutationStartTurnIn is runnableClientMutationStartTurnID's
-// decision over one generation. It touches no lock and nothing outside the
-// snapshot it is handed, which is what lets the caller read a generation in
-// place. When excludeActiveIncorporated is true (used by hasWakeableWork), it
-// ignores the active turn's own incorporated start/queue entry and parked queue
-// heads so a running turn cannot satisfy its own quiet-yield wake guard.
-func (s *Session) runnableClientMutationStartTurnIn(snapshot *clientMutationSnapshot, excludeActiveIncorporated bool) (string, bool) {
+// whole decision over one generation. It touches no lock and nothing outside
+// the snapshot it is handed, which is what lets the caller read a generation in
+// place.
+func (s *Session) runnableClientMutationStartTurnIn(snapshot *clientMutationSnapshot) (string, bool) {
 	if snapshot.InterruptFence == nil {
-		if excludeActiveIncorporated {
-			for _, pending := range snapshot.PendingExecutions {
-				if isClaimableStartPending(pending) &&
-					pending.TurnID != "" &&
-					!(pending.ExecutionState == "incorporated" && snapshot.ActiveTurnID == pending.TurnID) {
-					return pending.TurnID, true
-				}
-			}
-		} else if startIDs := s.claimableClientMutationStartIDs(snapshot); len(startIDs) > 0 {
+		if startIDs := s.claimableClientMutationStartIDs(snapshot); len(startIDs) > 0 {
 			// The start branch is settled BEFORE the queue branches, because the claim
 			// path claims the ordered start head whenever a start is claimable, fence
 			// aside. Answering from the map's order instead could name a claimable queue
@@ -1699,20 +1701,16 @@ func (s *Session) runnableClientMutationStartTurnIn(snapshot *clientMutationSnap
 			return startTurnID, startTurnID != ""
 		}
 	}
-	if !excludeActiveIncorporated {
-		for _, pending := range snapshot.PendingExecutions {
-			if pending.Method == clientMutationMethodQueue &&
-				pending.ExecutionState == "incorporated" &&
-				pending.TurnID != "" &&
-				snapshot.ActiveTurnID == pending.TurnID {
-				return pending.TurnID, true
-			}
+	for _, pending := range snapshot.PendingExecutions {
+		if pending.Method == clientMutationMethodQueue &&
+			pending.ExecutionState == "incorporated" &&
+			pending.TurnID != "" &&
+			snapshot.ActiveTurnID == pending.TurnID {
+			return pending.TurnID, true
 		}
 	}
-	if !excludeActiveIncorporated || !snapshot.QueueHeld {
-		if turnID, ok := snapshot.queueHeadTurnID(); ok {
-			return turnID, true
-		}
+	if turnID, ok := snapshot.queueHeadTurnID(); ok {
+		return turnID, true
 	}
 	return "", false
 }
