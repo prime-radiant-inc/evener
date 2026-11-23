@@ -134,3 +134,35 @@ test("busy defaults to false: buttons are enabled", () => {
   expect((screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(false);
   expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
 });
+
+test("pendingLabel replaces the confirm label only while busy", () => {
+  const { rerender } = render(
+    <ConfirmDialog
+      open
+      title="Rename section"
+      confirmLabel="Rename section"
+      pendingLabel="Renaming…"
+      busy
+      onConfirm={vi.fn()}
+      onCancel={vi.fn()}
+    >
+      Body
+    </ConfirmDialog>,
+  );
+  expect(screen.getByRole("button", { name: "Renaming…" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Rename section" })).toBeNull();
+
+  rerender(
+    <ConfirmDialog
+      open
+      title="Rename section"
+      confirmLabel="Rename section"
+      pendingLabel="Renaming…"
+      onConfirm={vi.fn()}
+      onCancel={vi.fn()}
+    >
+      Body
+    </ConfirmDialog>,
+  );
+  expect(screen.getByRole("button", { name: "Rename section" })).toBeTruthy();
+});

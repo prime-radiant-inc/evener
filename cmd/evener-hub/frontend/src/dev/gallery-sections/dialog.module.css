@@ -42,3 +42,11 @@
   top: var(--space-3);
   left: var(--space-3);
 }
+
+/* The panelClassName/bodyClassName demo: both land on the shared chassis. */
+.customPanel {
+  border: 1px solid var(--accent);
+}
+.customBody {
+  background: var(--surface-inset);
+}

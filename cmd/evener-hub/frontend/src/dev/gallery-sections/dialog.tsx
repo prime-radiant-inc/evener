@@ -7,6 +7,7 @@ import styles from "./dialog.module.css";
 interface DialogDemoProps {
   title: string;
   danger?: boolean;
+  customClasses?: boolean;
 }
 
 // Rendered open by default (open-by-default state, not a portal - see this
@@ -15,7 +16,7 @@ interface DialogDemoProps {
 // stays genuinely interactive: closing it (Escape, scrim click, or the
 // close button) reveals a "Reopen" affordance rather than leaving a dead
 // gap, so every close path is still explorable.
-function DialogDemo({ title, danger }: DialogDemoProps) {
+function DialogDemo({ title, danger, customClasses }: DialogDemoProps) {
   const [open, setOpen] = useState(true);
 
   return (
@@ -29,6 +30,8 @@ function DialogDemo({ title, danger }: DialogDemoProps) {
         open={open}
         onClose={() => setOpen(false)}
         title={title}
+        panelClassName={customClasses ? styles.customPanel : undefined}
+        bodyClassName={customClasses ? styles.customBody : undefined}
         footer={
           danger ? (
             <>
@@ -65,6 +68,9 @@ export default function DialogGallerySection() {
       </ThemeFlip>
       <ThemeFlip>
         <DialogDemo title="Delete session" danger />
+      </ThemeFlip>
+      <ThemeFlip>
+        <DialogDemo title="Custom panel and body classes" customClasses />
       </ThemeFlip>
     </section>
   );

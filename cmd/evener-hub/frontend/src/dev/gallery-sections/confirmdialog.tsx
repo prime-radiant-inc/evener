@@ -8,13 +8,15 @@ interface ConfirmDialogDemoProps {
   title: string;
   confirmLabel: string;
   destructive?: boolean;
+  pendingLabel?: string;
+  busy?: boolean;
   body: string;
 }
 
 // Rendered open by default, same "explorable, not a dead gap" shape as the
 // Dialog gallery section's own DialogDemo (see dialog.tsx): closing it
 // (Cancel, Escape, confirm) reveals a "Reopen" affordance.
-function ConfirmDialogDemo({ title, confirmLabel, destructive, body }: ConfirmDialogDemoProps) {
+function ConfirmDialogDemo({ title, confirmLabel, destructive, pendingLabel, busy, body }: ConfirmDialogDemoProps) {
   const [open, setOpen] = useState(true);
 
   return (
@@ -29,6 +31,8 @@ function ConfirmDialogDemo({ title, confirmLabel, destructive, body }: ConfirmDi
         title={title}
         confirmLabel={confirmLabel}
         destructive={destructive}
+        pendingLabel={pendingLabel}
+        busy={busy}
         onConfirm={() => setOpen(false)}
         onCancel={() => setOpen(false)}
       >
@@ -55,6 +59,15 @@ export default function ConfirmDialogGallerySection() {
           confirmLabel="Install"
           destructive={false}
           body="Plugins can run arbitrary code on the hub. Only install ones you trust."
+        />
+      </ThemeFlip>
+      <ThemeFlip>
+        <ConfirmDialogDemo
+          title="Delete pin section?"
+          confirmLabel="Delete section"
+          pendingLabel="Deleting…"
+          busy
+          body="In flight: the confirm reads its pending label and both buttons are disabled."
         />
       </ThemeFlip>
     </section>
