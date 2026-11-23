@@ -2259,8 +2259,7 @@ func TestBuildInitialProfileResumeKeepsRosterMembershipRejection(t *testing.T) {
 	 {"id":"claude-haiku-5.5","supported_endpoints":["/v1/messages"],"capabilities":{"family":"claude"}}
 	]}`)
 	_, _, err := buildInitialProfile(ctx, client, cmdutil.ModelRef{Provider: "work", Model: "gpt-5.6-sol"}, "", true)
-	var absent *llm.ModelNotAvailableError
-	if !errors.As(err, &absent) {
+	if _, ok := errors.AsType[*llm.ModelNotAvailableError](err); !ok {
 		t.Fatalf("error = %v, want the available-models refusal", err)
 	}
 }

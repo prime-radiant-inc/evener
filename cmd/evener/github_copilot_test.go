@@ -398,7 +398,7 @@ func TestGitHubCopilotNormalizesInstanceNames(t *testing.T) {
 	useScriptedGitHubCopilot(t, server)
 	stateDir := t.TempDir()
 
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := range 2 {
 		var stdout, stderr bytes.Buffer
 		if err := runGitHubCopilot([]string{"login", "--state-dir", stateDir, "--instance", "GitHub-Copilot"}, strings.NewReader(""), &stdout, &stderr); err != nil {
 			t.Fatalf("login %d error = %v (%s)", attempt+1, err, stderr.String())
