@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WireError } from "@evener/appwire-client";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, test, vi } from "vitest";
 // ModelCatalog is both the component (value) and the envelope interface (type);
@@ -124,6 +124,31 @@ test("the closed state has no separate Change-model button - the chip itself is 
   renderPicker({ value: "openai/gpt-5" });
   expect(screen.queryByRole("button", { name: "Change model" })).toBeNull();
   expect(openTrigger()).toBeTruthy();
+});
+
+// The panel's search field drives a listbox popup, so the trigger has to say
+// so and report whether the popup is open. ModelCatalog rendered neither
+// attribute before the shared trigger owned them; PathField's directory
+// trigger had both for its dialog, which is how the drift went unnoticed.
+test("the trigger announces a listbox popup and whether it is open", async () => {
+  const user = userEvent.setup();
+  renderPicker({ value: "openai/gpt-5" });
+  const trigger = openTrigger();
+  expect(trigger.getAttribute("aria-haspopup")).toBe("listbox");
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  await user.click(trigger);
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
+});
+
+// The ARIA 1.2 activedescendant pattern keeps real focus on the combobox
+// input, so a mousedown on a row must not blur it. jsdom does not move focus
+// for a plain li, so this pins the guard itself: the event is cancelled.
+test("a mousedown on an option is cancelled so the input keeps focus", async () => {
+  const user = userEvent.setup();
+  renderPicker();
+  await openPicker(user);
+  const option = await screen.findByRole("option", { name: /Claude Sonnet/ });
+  expect(fireEvent.mouseDown(option)).toBe(false);
 });
 
 test("clicking the chip trigger opens the panel as a portaled overlay, not an inline sibling that reflows", async () => {
@@ -501,6 +526,91 @@ describe("keyboard", () => {
 
     expect(onChange).toHaveBeenCalledWith("openai/gpt-5");
     expect(screen.queryByRole("combobox", { name: "Model" })).toBeNull();
+  });
+
+  // The prefill is selected on open, so Backspace clears it to the same empty
+  // query the list already shows. The rows do not change, but the first match
+  // still has to become active - otherwise Enter silently re-picks the old
+  // model - and arrow keys must keep walking from that activated row.
+  test("clearing the prefilled value activates the first match", async () => {
+    const user = userEvent.setup();
+    const { onChange } = renderPicker({ value: "openai/gpt-5" });
+
+    const combo = await openPicker(user);
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
+    const activeText = () => {
+      const id = combo.getAttribute("aria-activedescendant");
+      return id ? document.getElementById(id)?.textContent : null;
+    };
+
+    await user.clear(combo);
+    expect(activeText()).toContain("Claude Sonnet 4.5");
+
+    await user.keyboard("{ArrowDown}");
+    expect(activeText()).toContain("Claude Haiku 4.5");
+    await user.keyboard("{ArrowUp}{Enter}");
+    expect(onChange).toHaveBeenCalledWith("anthropic/claude-sonnet-4-5");
+  });
+
+  // Typing while the catalogue is still in flight has no rows to activate yet.
+  // The request has to stay pending until the result arrives, or Enter after
+  // the list appears does nothing.
+  test("typing before the catalog resolves still activates the first match", async () => {
+    const user = userEvent.setup();
+    let deliverCatalog: (catalog: ModelCatalog) => void = () => {};
+    const loadCatalog = vi.fn(
+      () =>
+        new Promise<ModelCatalog>((resolve) => {
+          deliverCatalog = resolve;
+        }),
+    );
+    const { onChange } = renderPicker({ loadCatalog });
+
+    const combo = await openPicker(user);
+    await user.type(combo, "haiku");
+    deliverCatalog(CATALOG);
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
+
+    const id = combo.getAttribute("aria-activedescendant");
+    expect(id ? document.getElementById(id)?.textContent : null).toContain("Claude Haiku 4.5");
+    await user.keyboard("{Enter}");
+    expect(onChange).toHaveBeenCalledWith("anthropic/claude-haiku-4-5");
+  });
+
+  // Row keys carry the row's position, so a background catalog refresh (here:
+  // the same model also arriving under Recent) re-keys the row the user is on
+  // even though the query and its match are unchanged. Enter must still pick
+  // the first match instead of finding a stale highlight and doing nothing.
+  test("a refresh that re-keys the active row keeps Enter on the first match", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <ModelCatalog value="" onChange={onChange} loadCatalog={vi.fn().mockResolvedValue(CATALOG)} />,
+    );
+
+    const combo = await openPicker(user);
+    await user.type(combo, "sonnet");
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
+    await waitFor(() => {
+      const id = combo.getAttribute("aria-activedescendant");
+      expect(id ? document.getElementById(id)?.textContent : null).toContain("Claude Sonnet 4.5");
+    });
+
+    rerender(
+      <ModelCatalog
+        value=""
+        onChange={onChange}
+        loadCatalog={vi.fn().mockResolvedValue({ models: [SONNET, HAIKU, GPT5], recent: [SONNET] })}
+      />,
+    );
+    // The Recent copy appears above the provider group: a shifted key set.
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+    await waitFor(() => {
+      const id = combo.getAttribute("aria-activedescendant");
+      expect(id ? document.getElementById(id)?.textContent : null).toContain("Claude Sonnet 4.5");
+    });
+    await user.keyboard("{Enter}");
+    expect(onChange).toHaveBeenCalledWith("anthropic/claude-sonnet-4-5");
   });
 
   test("Escape closes the picker without changing the value", async () => {

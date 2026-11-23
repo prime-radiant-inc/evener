@@ -122,6 +122,18 @@ test("the default variant keeps the control-shaped trigger", () => {
   expect(fieldTrigger.querySelector(`.${styles.pathChevron}`)).not.toBeNull();
 });
 
+// A file field opens the completion listbox, not the directory dialog, so the
+// trigger's aria-haspopup follows the kind it opens. The directory case is
+// pinned in the navigation test above.
+test("a file field's trigger announces the listbox it opens", async () => {
+  const { user } = setup({ kind: "file", value: "/etc/hosts" });
+  const fieldTrigger = trigger();
+  expect(fieldTrigger.getAttribute("aria-haspopup")).toBe("listbox");
+  expect(fieldTrigger.getAttribute("aria-expanded")).toBe("false");
+  await open(user);
+  expect(fieldTrigger.getAttribute("aria-expanded")).toBe("true");
+});
+
 test.each(["Cancel", "Escape"])("%s preserves a directory field's committed value", async (action) => {
   const { user, onChange, onPanelClose } = setup();
   const input = await open(user);

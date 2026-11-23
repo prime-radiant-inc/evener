@@ -65,7 +65,7 @@ for (const { widget, face, triggerClass } of COMPOSERS) {
   const css = declarations(`${widget}/${widget}.module.css`);
 
   test(`${widget} composes the shared trigger rather than copying it`, () => {
-    for (const part of ["trigger", "value", "default", "chevron", "srOnly"]) {
+    for (const part of ["trigger", "value", "default", "chevron"]) {
       expect(css).toContain(`composes: ${part} from "../internal/fieldTrigger.module.css"`);
     }
   });

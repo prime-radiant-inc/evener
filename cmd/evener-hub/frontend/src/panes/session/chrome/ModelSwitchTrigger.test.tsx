@@ -74,6 +74,19 @@ test("the trigger is a non-submitting button", () => {
   expect((screen.getByTestId("trigger") as HTMLButtonElement).type).toBe("button");
 });
 
+// The desktop popover is a combobox/listbox picker; mobile swaps in a dialog
+// Sheet (pinned below). The trigger reported neither haspopup nor expanded
+// before the shared trigger owned the attributes.
+test("the desktop trigger announces a listbox popup and whether it is open", async () => {
+  const user = userEvent.setup();
+  renderTrigger();
+  const trigger = screen.getByTestId("trigger");
+  expect(trigger.getAttribute("aria-haspopup")).toBe("listbox");
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  await user.click(trigger);
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
+});
+
 // --- sizing: the panes' slot contracts, owned here ---------------------------
 
 test("fill stretches the desktop Popover wrapper", () => {
@@ -491,6 +504,7 @@ test("Escape closes the mobile sheet and returns focus to the trigger", async ()
     renderTrigger();
 
     const trigger = screen.getByTestId("trigger");
+    expect(trigger.getAttribute("aria-haspopup")).toBe("dialog");
     await user.click(trigger);
     await screen.findByRole("dialog", { name: "Choose model" });
     await user.keyboard("{Escape}");

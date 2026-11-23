@@ -27,10 +27,6 @@
   composes: chevron from "../internal/fieldTrigger.module.css";
 }
 
-.srOnly {
-  composes: srOnly from "../internal/fieldTrigger.module.css";
-}
-
 /* The floating panel's own content padding/sizing - widgets/popover's shared
  * chassis supplies position/background/border/radius/animation; this widget
  * only adds the padding and a sane width so the search field and the grouped
@@ -75,17 +71,6 @@
   margin: 0;
   color: var(--ink-mid);
   font-size: var(--font-size-ui);
-}
-
-/* The list scrolls INTERNALLY (the popover never grows past the viewport,
- * and scrolling here never dismisses the picker - see closeOnScroll at the
- * ModelCatalog call site). */
-.list {
-  margin: 0;
-  padding: 0;
-  max-height: min(320px, 60vh);
-  overflow-y: auto;
-  list-style: none;
 }
 
 /* Provider (and Recent) section eyebrow: small, quiet, not an option. */
@@ -187,11 +172,12 @@
   gap: 0;
 }
 
-/* The list is the sheet's whole body: no internal max-height - the Sheet's
- * own body already scrolls and caps the panel at min(480px, 100vh). */
+/* The list is the sheet's whole body: no internal max-height or scrolling -
+ * the Sheet's own body already scrolls and caps the panel at
+ * min(480px, 100vh). The shared listbox recipe reads these hooks. */
 .listSheet {
-  max-height: none;
-  overflow-y: visible;
+  --listbox-max-height: none;
+  --listbox-overflow-y: visible;
 }
 
 .sheetRowItem {
