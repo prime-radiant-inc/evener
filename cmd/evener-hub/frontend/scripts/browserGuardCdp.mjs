@@ -36,7 +36,7 @@ import os from "node:os";
  * @param {string} operation - Name of the operation for error message
  * @returns {Promise} - The operation result or a timeout error
  */
-function withTimeout(promise, ms, operation) {
+export function withTimeout(promise, ms, operation) {
   let timer;
   return Promise.race([
     promise,

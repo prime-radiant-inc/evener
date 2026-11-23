@@ -16,8 +16,10 @@ export function readerWheelDelta({ scrollTop }) {
 // swallowing the wheel or the sample that follows it. Retry the whole gesture
 // inside one budget, so a swallowed gesture costs an attempt rather than the
 // precondition, and a page that never answers fails within the budget instead
-// of once per attempt. Each stage of the gesture gets the smaller of the
-// per-attempt cap and the budget that remains.
+// of once per attempt. Each stage samples the smaller of the per-attempt cap
+// and the budget that remains immediately before every wait and dispatch it
+// runs; that sample is a HARD cap, so a load-widened tripwire cannot stretch
+// one stage past the retry budget.
 export async function repositionReader({
   wheel,
   tallEntry,
@@ -27,13 +29,13 @@ export async function repositionReader({
   now = Date.now,
 }) {
   const deadline = now() + budgetMs;
-  const timeoutMs = () => Math.max(1, Math.min(attemptTimeoutMs, deadline - now()));
+  const remaining = () => Math.max(1, Math.min(attemptTimeoutMs, deadline - now()));
   let lastError;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     if (attempt > 1 && now() >= deadline) break;
     try {
-      await wheel(timeoutMs());
-      return await tallEntry(timeoutMs(), attempt);
+      await wheel(remaining);
+      return await tallEntry(remaining, attempt);
     } catch (error) {
       // A missed gesture can clear once the re-render settles. A violated
       // input guarantee cannot, so it fails the guard without another attempt.

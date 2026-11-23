@@ -785,15 +785,20 @@ export class Driver {
   // fails with the rejection instead of waiting out the missing-condition
   // deadline. A healthy page that answers "not yet" still times out as before,
   // and its error now says whether any polls failed on the way.
-  async waitPage(exprSource, { timeoutMs = 15000, label, settleMs = 0, observe = true } = {}) {
+  async waitPage(exprSource, { timeoutMs = 15000, label, settleMs = 0, observe = true, hardTimeoutMs } = {}) {
     const startedAt = Date.now();
     // The caller's timeoutMs is the FLOOR of a hang tripwire, not a fixed
     // budget: a run that has already proven this machine slow widens it (up to
     // the ceiling), so a correct-but-slow reaction under load is not read as a
     // wedged page. The wait is still released ONLY by the awaited condition --
     // the budget decides only how long silence is tolerated (see budgets.mjs).
-    const budgetMs = this.reactions.deadline(timeoutMs);
+    // A caller that must fit several stages into one budget passes
+    // hardTimeoutMs: an absolute cap on this wait that the load-derived
+    // widening may not exceed. Every other wait keeps the scaled tripwire.
+    const hardMs = Number.isFinite(hardTimeoutMs) && hardTimeoutMs > 0 ? hardTimeoutMs : null;
+    const budgetMs = hardMs === null ? this.reactions.deadline(timeoutMs) : Math.min(this.reactions.deadline(timeoutMs), hardMs);
     let deadline = startedAt + budgetMs;
+    const hardDeadline = hardMs === null ? Infinity : startedAt + hardMs;
     let heldSince = null;
     // A completed wait is the driver's observation of how slow the app is on
     // this machine. With settleMs the reaction is the time to the FIRST hold --
@@ -833,7 +838,7 @@ export class Driver {
           heldSince += unobserved;
           const refund = Math.min(unobserved, refundLeft);
           refundLeft -= refund;
-          deadline += refund;
+          deadline = Math.min(deadline + refund, hardDeadline);
         }
       } else {
         failureStreak = 0;
@@ -847,7 +852,7 @@ export class Driver {
           heldSince = now;
           if (!settleAccounted) {
             settleAccounted = true;
-            deadline = Math.max(deadline, now + settleMs);
+            deadline = Math.min(Math.max(deadline, now + settleMs), hardDeadline);
           }
         }
         if (now - heldSince >= settleMs) return settled(value);

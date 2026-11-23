@@ -4,7 +4,13 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Driver } from "../skillguard/run.mjs";
-import { evaluate, navigateTo, queryAccessibilityTree, REFUSED_BUTTON_SELECTOR } from "../browserGuardCdp.mjs";
+import {
+  evaluate,
+  navigateTo,
+  queryAccessibilityTree,
+  REFUSED_BUTTON_SELECTOR,
+  withTimeout,
+} from "../browserGuardCdp.mjs";
 import { revealControlStep, revealReadyExpr } from "./revealControl.mjs";
 import { pressRowExpr } from "./pressRow.mjs";
 import { retainsNewerReadingPoint } from "./releaseRetained.mjs";
@@ -61,6 +67,13 @@ const scopeRefs = (testid) => `JSON.stringify([...document.querySelectorAll('[da
 const wait = (expression, label, options = {}) => {
   new Function(`return (${expression})`);
   return driver.waitPage(expression, { label, ...options });
+};
+// A repositioning stage may spend only the hard slice of the retry budget that
+// remains to it. Pass that slice as both the floor and the cap: load-derived
+// widening still applies to every other wait, but cannot stretch this one.
+const hardWait = (expression, label, remaining) => {
+  const timeoutMs = remaining();
+  return wait(expression, label, { timeoutMs, hardTimeoutMs: timeoutMs });
 };
 const read = (expression) => evaluate(driver.send, expression);
 const scope = (ref) => `${inspectorRoot} [data-scope-ref=${q(ref)}]`;
@@ -277,8 +290,8 @@ async function settledReadingContinuity(before, portExpr, label) {
   })()`, `${label}, actual source reading position finishes restoration`);
 }
 
-async function nativeReaderWheel(portExpr, deltaY, { timeoutMs } = {}) {
-  const point = await wait(`(() => {
+async function nativeReaderWheel(portExpr, deltaY, { remaining } = {}) {
+  const point = await hardWait(`(() => {
     const port = ${portExpr};
     if (!port || port.clientWidth <= 0 || port.clientHeight <= 0) return null;
     const r = port.getBoundingClientRect();
@@ -299,17 +312,25 @@ async function nativeReaderWheel(portExpr, deltaY, { timeoutMs } = {}) {
     return { x:r.x + r.width / 2, y:r.y + r.height / 2, scrollTop:port.scrollTop, eventIndex:window.__cascadeReaderWheels.length,
       portBox:box(port), intendedAtMeasure:port.contains(target), viewport:innerWidth,
       hitSurface:target?.closest('[data-pane-scaffold]')?.dataset.paneScaffold };
-  })()`, "native wheel midpoint actually hits its intended reader", { timeoutMs });
+  })()`, "native wheel midpoint actually hits its intended reader", remaining);
   const delta = typeof deltaY === "function" ? deltaY(point) : deltaY;
   const observation = { kind:"wheel-target", point };
   readingPoints.push(observation);
-  await driver.send("Input.dispatchMouseEvent", { type:"mouseMoved", x:point.x, y:point.y });
-  await driver.send("Input.dispatchMouseEvent", { type:"mouseWheel", deltaX:0, deltaY:delta, x:point.x, y:point.y });
-  const observed = await wait(`window.__cascadeReaderWheels[${point.eventIndex}]`, "native wheel event reaches the page", { timeoutMs });
+  await withTimeout(
+    driver.send("Input.dispatchMouseEvent", { type:"mouseMoved", x:point.x, y:point.y }),
+    remaining(),
+    "native wheel mouseMoved",
+  );
+  await withTimeout(
+    driver.send("Input.dispatchMouseEvent", { type:"mouseWheel", deltaX:0, deltaY:delta, x:point.x, y:point.y }),
+    remaining(),
+    "native wheel dispatch",
+  );
+  const observed = await hardWait(`window.__cascadeReaderWheels[${point.eventIndex}]`, "native wheel event reaches the page", remaining);
   observation.observed = observed;
   assert.equal(observed.trusted, true, "reader movement uses genuine native wheel input");
   assert.equal(observed.intended, true, "native wheel targets its intended reader");
-  await wait(`(${portExpr})?.scrollTop !== ${point.scrollTop}`, "native wheel actually moves its intended reader", { timeoutMs });
+  await hardWait(`(${portExpr})?.scrollTop !== ${point.scrollTop}`, "native wheel actually moves its intended reader", remaining);
 }
 
 // The interruption and reflow measurements need a reading point inside a tall
@@ -321,13 +342,13 @@ function insideUsefulTallEntry(point) {
 
 async function readInsideTallEntry(portExpr, label) {
   return repositionReader({
-    wheel: (timeoutMs) => nativeReaderWheel(portExpr, readerWheelDelta, { timeoutMs }),
-    tallEntry: (timeoutMs, attempt) => wait(`(() => {
+    wheel: (remaining) => nativeReaderWheel(portExpr, readerWheelDelta, { remaining }),
+    tallEntry: (remaining, attempt) => hardWait(`(() => {
       const point = ${readingPointExpr(portExpr)};
       window.__cascadeReadingAttempt = { label:${q(label)}, attempt:${attempt}, point };
       ${insideUsefulTallEntry.toString()}
       return point?.useful && insideUsefulTallEntry(point) ? point : null;
-    })()`, `${label}, native wheel selects useful content inside a tall entry`, { timeoutMs }),
+    })()`, `${label}, native wheel selects useful content inside a tall entry`, remaining),
   });
 }
 

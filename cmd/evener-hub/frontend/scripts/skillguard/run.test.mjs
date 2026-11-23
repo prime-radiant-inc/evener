@@ -696,3 +696,62 @@ describe("Chrome DevTools announcement budget", () => {
     }
   });
 });
+
+// A repositioning reader fits several stages inside one retry budget, so each
+// stage carries a hard slice. The driver's load-derived widening is right for
+// a standalone wait but must not spend that slice: an earlier 2s reaction
+// turns a 100ms floor into a 400ms tripwire, and a stage that then waited
+// 400ms has already outlived a 300ms retry budget.
+describe("waitPage hard cap", () => {
+  function silentPage() {
+    return { send: async () => ({ result: { result: { value: null } } }) };
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("a hard-capped wait expires at its slice, not the load-widened budget", async () => {
+    vi.useFakeTimers();
+    const d = newDriver();
+    d.page = silentPage();
+    d.reactions.observe(2000);
+    let settled = false;
+    const waited = d.waitPage("null", { timeoutMs: 100, hardTimeoutMs: 100, label: "hard-capped" }).then(
+      () => {
+        settled = true;
+        return null;
+      },
+      (error) => {
+        settled = true;
+        return error;
+      },
+    );
+    await vi.advanceTimersByTimeAsync(250);
+    expect(settled).toBe(true);
+    await expect(waited).resolves.toBeInstanceOf(Error);
+  });
+
+  test("a wait without a hard cap still widens from the slowest observed reaction", async () => {
+    vi.useFakeTimers();
+    const d = newDriver();
+    d.page = silentPage();
+    d.reactions.observe(2000);
+    let settled = false;
+    const waited = d.waitPage("null", { timeoutMs: 100, label: "load-widened" }).then(
+      () => {
+        settled = true;
+        return null;
+      },
+      (error) => {
+        settled = true;
+        return error;
+      },
+    );
+    await vi.advanceTimersByTimeAsync(250);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(settled).toBe(true);
+    await expect(waited).resolves.toBeInstanceOf(Error);
+  });
+});

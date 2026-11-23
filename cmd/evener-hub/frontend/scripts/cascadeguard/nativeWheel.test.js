@@ -11,7 +11,8 @@
 // its source text. The retry composition is exercised through its own
 // behavior tests below.
 import { readFileSync } from "node:fs";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
+import { Driver } from "../skillguard/run.mjs";
 import { readerWheelDelta, repositionReader } from "./nativeWheel.mjs";
 
 const RUN_MJS = new URL("./run.mjs", import.meta.url);
@@ -105,30 +106,71 @@ test("one budget covers every attempt", async () => {
   expect(wheels).toBe(2);
 });
 
-test("the sampling wait gets only the budget the wheel left", async () => {
+test("each stage gets only the budget the previous stage left", async () => {
   let now = 0;
+  let wheelTimeout;
   let sampleTimeout;
   const result = await repositionReader({
     now: () => now,
     budgetMs: 6000,
     attemptTimeoutMs: 5000,
-    wheel: async () => {
+    wheel: async (remaining) => {
+      wheelTimeout = remaining();
       now += 3000;
     },
-    tallEntry: async (timeoutMs) => {
-      sampleTimeout = timeoutMs;
+    tallEntry: async (remaining) => {
+      sampleTimeout = remaining();
       return "inside a tall entry";
     },
   });
   expect(result).toBe("inside a tall entry");
+  expect(wheelTimeout).toBe(5000);
   expect(sampleTimeout).toBe(3000);
+});
+
+// A run that already observed a slow reaction widens every later wait by load.
+// A nominal 100ms wheel wait becomes 400ms, more than the whole reposition
+// budget below. Without a hard slice on the stage, the first, swallowed wheel
+// would run out the budget and the retry would never start.
+test("a load-widened wheel wait is capped so the retry still runs", async () => {
+  vi.useFakeTimers();
+  try {
+    const d = new Driver({ url: "http://127.0.0.1/", artifactDir: "", controlPath: "", milestonePath: "" });
+    d.reactions.observe(2000);
+    d.page = { send: async () => ({ result: { result: { value: null } } }) };
+    let wheels = 0;
+    let waits = 0;
+    const gesture = repositionReader({
+      budgetMs: 300,
+      attemptTimeoutMs: 100,
+      wheel: async (remaining) => {
+        wheels += 1;
+        if (wheels > 1) return;
+        const timeoutMs = remaining();
+        waits += 1;
+        await d.waitPage("null", {
+          timeoutMs,
+          hardTimeoutMs: timeoutMs,
+          label: "native wheel actually moves its intended reader",
+        });
+      },
+      tallEntry: async () => "inside a tall entry",
+    });
+    await vi.advanceTimersByTimeAsync(600);
+    await expect(gesture).resolves.toBe("inside a tall entry");
+    expect(wheels).toBe(2);
+    expect(waits).toBe(1);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("the tall-entry gesture is retried as a unit at the call site", () => {
   const source = readFileSync(RUN_MJS, "utf8");
   expect(source).toContain('import { readerWheelDelta, repositionReader } from "./nativeWheel.mjs";');
   expect(source).toContain(
-    "wheel: (timeoutMs) => nativeReaderWheel(portExpr, readerWheelDelta, { timeoutMs })",
+    "wheel: (remaining) => nativeReaderWheel(portExpr, readerWheelDelta, { remaining })",
   );
+  expect(source.match(/withTimeout\(\s*driver\.send\("Input\.dispatchMouseEvent"/g) ?? []).toHaveLength(2);
   expect(source).not.toContain("await nativeReaderWheel(portExpr, -900);");
 });
