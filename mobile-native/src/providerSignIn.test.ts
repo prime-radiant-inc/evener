@@ -95,6 +95,29 @@ it("polls the returned device flow at its interval and stops after authorization
 	expect(authCalls(calls)).toHaveLength(2);
 	flow.dispose();
 });
+
+it("accepts a Copilot instance's device flow and polls it under the Copilot provider", async () => {
+	vi.useFakeTimers();
+	const copilotDevice = { ...device, provider: "github-copilot", verificationUrl: "https://github.com/login/device" };
+	const { flow, calls, io } = kit(
+		(method) => (method.endsWith("/start") ? copilotDevice : { state: "pending" }),
+		"github-copilot",
+	);
+	await flow.start();
+	expect(flow.getSnapshot().phase).toBe("device");
+	expect(calls[0]).toEqual({
+		method: "evener/auth/device/start",
+		params: { provider: "github-copilot" },
+	});
+	io.request = async () => ({ state: "authorized", status: { ...authorizedStatus, provider: "github-copilot" } });
+	await vi.advanceTimersByTimeAsync(2000);
+	expect(calls[1]).toEqual({
+		method: "evener/auth/device/poll",
+		params: { provider: "github-copilot", flowId: "flow-1", originClientId: "native-test" },
+	});
+	expect(flow.getSnapshot().phase).toBe("authorized");
+	flow.dispose();
+});
 it("clamps a huge device interval instead of overflowing into a tight poll loop", async () => {
 	vi.useFakeTimers();
 	const { flow, calls, io } = boundary();

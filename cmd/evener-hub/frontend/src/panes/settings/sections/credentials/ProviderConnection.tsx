@@ -47,7 +47,7 @@ import {
 import type { FormError } from "./formError";
 import { draftFor, type InstanceDraft, varRows } from "./instanceEdit";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
-import { CODEX_AUTH_SCHEME, type OAuthEditor, startOAuthFlow } from "./oauthFlow";
+import { CODEX_AUTH_SCHEME, COPILOT_AUTH_SCHEME, type OAuthEditor, startOAuthFlow } from "./oauthFlow";
 import styles from "./ProviderConnection.module.css";
 import { appliedSelfRead, confirmListingState, refreshListingAfterMutation } from "./reconcileListing";
 import { useEditorLifetime } from "./useEditorLifetime";
@@ -132,6 +132,11 @@ const PROVIDERS: Record<string, { label: string; keyUrl?: string; billing?: stri
     label: "OpenAI Codex",
     keyUrl: "https://developers.openai.com/codex",
     billing: "Codex access comes from your ChatGPT/Codex subscription. Sign in instead of pasting a key.",
+  },
+  "github-copilot": {
+    label: "GitHub Copilot",
+    billing:
+      "Copilot access comes from your GitHub Copilot subscription. Sign in with GitHub instead of pasting a key.",
   },
   google: {
     label: "Gemini",
@@ -612,6 +617,9 @@ function SelectedConnection({
   // refuses edits, or a landed write still owes its confirming read.
   const mutationsBlocked = instanceEditsBlocked || confirmationOwed;
   const providerLabel = presentation?.label ?? effectiveProvider.name ?? effectiveProvider.id;
+  // Copilot setup requires a usable model roster, so its card has no
+  // unverified completion. Other providers keep that escape hatch.
+  const unverifiedCompletionBlocked = row?.auth === COPILOT_AUTH_SCHEME;
   const status = statusOf();
 
   const setPhase = useCallback((next: Phase) => {
@@ -1655,6 +1663,7 @@ function SelectedConnection({
       <DeviceCodeDialog
         key={oauth.flowId}
         name={oauth.name}
+        provider={providerLabel}
         flowId={oauth.flowId}
         userCode={oauth.userCode}
         verificationUrl={oauth.verificationUrl}
@@ -1947,9 +1956,11 @@ function SelectedConnection({
               Reload connection
             </Button>
           ) : result?.status === "unsupported" ? (
-            <Button variant="secondary" disabled={busy} onClick={() => leave(() => onConnected(name))}>
-              Continue without verification
-            </Button>
+            unverifiedCompletionBlocked ? null : (
+              <Button variant="secondary" disabled={busy} onClick={() => leave(() => onConnected(name))}>
+                Continue without verification
+              </Button>
+            )
           ) : (
             <Button
               type="submit"

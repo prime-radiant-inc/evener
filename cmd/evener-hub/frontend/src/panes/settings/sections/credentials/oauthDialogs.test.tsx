@@ -338,7 +338,7 @@ describe("DeviceCodeDialog", () => {
     expect(anchors).toHaveLength(0);
   });
 
-  test("'Send me to OpenAI' stays disabled until the code is copied, then opens the verification URL without an opener", async () => {
+  test("the verification action stays disabled until the code is copied, then opens the URL without an opener", async () => {
     connectReadyFakeClient();
     Object.defineProperty(navigator, "clipboard", {
       value: { writeText: vi.fn().mockResolvedValue(undefined) },
@@ -357,7 +357,12 @@ describe("DeviceCodeDialog", () => {
         onRestart={() => {}}
       />,
     );
-    const sendButton = screen.getByRole("button", { name: /send me to openai/i }) as HTMLButtonElement;
+    // The action is identified by its behavior - it is the control the flow
+    // withholds until the code is copied - rather than by its words.
+    const sendButton = within(screen.getByRole("dialog"))
+      .getAllByRole("button")
+      .find((button) => (button as HTMLButtonElement).disabled) as HTMLButtonElement;
+    expect(sendButton).toBeTruthy();
     expect(sendButton.disabled).toBe(true);
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /copy code/i }));
@@ -365,6 +370,75 @@ describe("DeviceCodeDialog", () => {
     expect(sendButton.disabled).toBe(false);
     await user.click(sendButton);
     expect(openedNewTab(anchors)).toEqual({ url: "https://verify", target: "_blank", rel: NEW_TAB_POLICY });
+  });
+
+  test("labels the verification action with the provider this sign-in belongs to", () => {
+    connectReadyFakeClient();
+    render(
+      <DeviceCodeDialog
+        name="work"
+        provider="Acme Labs"
+        flowId="flow-2"
+        userCode="ABCD-EFGH"
+        verificationUrl="https://verify"
+        intervalSeconds={5}
+        onCancel={() => {}}
+        onSuccess={() => {}}
+        onRestart={() => {}}
+      />,
+    );
+    const action = within(screen.getByRole("dialog"))
+      .getAllByRole("button")
+      .find((button) => (button as HTMLButtonElement).disabled);
+    // "Acme Labs" is this test's own name, not shipped copy: the dialog has to
+    // carry whichever provider the signing-in row names, never a fixed one.
+    expect(action?.textContent).toContain("Acme Labs");
+  });
+
+  test("resolves the provider from the listing when the caller names only the instance", () => {
+    connectReadyFakeClient();
+    credentialsStore.setState({
+      instances: [
+        {
+          name: "work",
+          providerId: "acme",
+          protocol: "openai-chat",
+          auth: "oauth-github-copilot",
+          implicit: false,
+          isDefault: false,
+          activeSource: "none",
+          hasStoredOAuth: false,
+          credentialRequired: true,
+          authModes: ["oauth"],
+        },
+      ],
+      availableProviders: [
+        {
+          id: "acme",
+          name: "Acme Labs",
+          protocol: "openai-chat",
+          auth: "oauth-github-copilot",
+          implicit: true,
+          authModes: ["oauth"],
+        },
+      ],
+    });
+    render(
+      <DeviceCodeDialog
+        name="work"
+        flowId="flow-2"
+        userCode="ABCD-EFGH"
+        verificationUrl="https://verify"
+        intervalSeconds={5}
+        onCancel={() => {}}
+        onSuccess={() => {}}
+        onRestart={() => {}}
+      />,
+    );
+    const action = within(screen.getByRole("dialog"))
+      .getAllByRole("button")
+      .find((button) => (button as HTMLButtonElement).disabled);
+    expect(action?.textContent).toContain("Acme Labs");
   });
 
   // A verification URL the opener refuses (a non-http(s) scheme, or one the URL
@@ -391,9 +465,12 @@ describe("DeviceCodeDialog", () => {
       />,
     );
     const user = userEvent.setup();
+    const sendButton = within(screen.getByRole("dialog"))
+      .getAllByRole("button")
+      .find((button) => (button as HTMLButtonElement).disabled) as HTMLButtonElement;
     await user.click(screen.getByRole("button", { name: /copy code/i }));
-    const sendButton = await screen.findByRole("button", { name: /send me to openai/i });
-    expect((sendButton as HTMLButtonElement).disabled).toBe(false);
+    await screen.findByRole("button", { name: /copied/i });
+    expect(sendButton.disabled).toBe(false);
     // React 19 routes an event-handler throw to reportGlobalError instead of
     // rethrowing it out of dispatch, so "does not throw" here describes this
     // handler's own contract: the refusal has to become a toast, not an

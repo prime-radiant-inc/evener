@@ -157,6 +157,9 @@ export function OAuthRedirectDialog({
 
 export interface DeviceCodeDialogProps {
   name: string;
+  /** The provider this flow signs in to, when the caller knows it. Shared
+   * Settings callers name only the instance, so the listing resolves it. */
+  provider?: string;
   flowId: string;
   userCode: string;
   verificationUrl: string;
@@ -181,6 +184,7 @@ export interface DeviceCodeDialogProps {
  * authorization, and offers Start again once expired/errored. */
 export function DeviceCodeDialog({
   name,
+  provider,
   flowId,
   userCode,
   verificationUrl,
@@ -205,6 +209,11 @@ export function DeviceCodeDialog({
   // re-render from restarting the poll timer.
   const onRestartRef = useRef(onRestart);
   onRestartRef.current = onRestart;
+  // A device flow signs in to one provider, and the dialog's copy has to name
+  // that provider rather than one fixed vendor. A remote host's listing is not
+  // this client's, so its dialog resolves nothing from the local listing; the
+  // host itself is already named in the title and help.
+  const providerLabel = provider ?? providerFromListing(name, host === undefined);
 
   useEffect(() => {
     let cancelled = false;
@@ -360,7 +369,9 @@ export function DeviceCodeDialog({
       <div className={CLASS.body}>
         <p className={CLASS.help}>
           {host === undefined
-            ? "Copy this code, then continue to OpenAI and paste it to authorize:"
+            ? providerLabel === undefined
+              ? "Copy this code, then open the verification page and paste it to authorize:"
+              : `Copy this code, then continue to ${providerLabel} and paste it to authorize:`
             : `Copy this code, then open the verification URL below on any device and paste it to authorize the sign-in to ${name} on ${host}:`}
         </p>
         <p className={CLASS.code}>{userCode}</p>
@@ -382,7 +393,7 @@ export function DeviceCodeDialog({
                 {copied ? "Copied ✓" : "Copy code"}
               </Button>
               <Button type="button" disabled={!copied} onClick={handleOpenVerificationUrl}>
-                Send me to OpenAI
+                {providerLabel === undefined ? "Open verification page" : `Continue to ${providerLabel}`}
               </Button>
             </>
           )}
@@ -393,4 +404,14 @@ export function DeviceCodeDialog({
       </div>
     </Dialog>
   );
+}
+
+/** providerFromListing resolves the provider label behind an instance name from
+ * the credential listing, when the caller supplied only the instance. */
+function providerFromListing(name: string, lookUp: boolean): string | undefined {
+  if (!lookUp) return undefined;
+  const state = credentialsStore.getState();
+  const providerId = state.instances.find((candidate) => candidate.name === name)?.providerId;
+  if (providerId === undefined) return undefined;
+  return state.availableProviders.find((candidate) => candidate.id === providerId)?.name ?? providerId;
 }
