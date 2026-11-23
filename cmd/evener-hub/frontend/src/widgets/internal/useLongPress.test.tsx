@@ -13,6 +13,7 @@ function PressTarget({ onPress, ...options }: Partial<LongPressOptions> & { onPr
   const longPress = useLongPress({ onLongPress: () => {}, ...options });
   return (
     <button
+      type="button"
       data-testid="target"
       {...longPress.handlers}
       onClick={(event) => {
