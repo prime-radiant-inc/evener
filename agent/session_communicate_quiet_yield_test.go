@@ -476,6 +476,183 @@ func TestCommunicateQuietYieldAfterBlockedStopHookDoesNotAcceptBlockedReply(t *t
 	})
 }
 
+func TestRestoredLegacyPromptEmitsCommunicateContractDiffOnce(t *testing.T) {
+	t.Parallel()
+	legacyPrompt := "Legacy prompt fixture. Use communicate with end_turn=false for updates and communicate({}) to wait."
+	upgradedPrompt := "Upgraded prompt fixture. Use communicate with next=\"log_quietly_and_end_turn\" to end quietly."
+
+	setupLegacySession := func(t *testing.T, stateDir string, prompt, resultTool string, withInitialTurn bool) string {
+		t.Helper()
+		seedToolName := resultTool
+		if seedToolName == "" {
+			seedToolName = tool.DefaultResultToolName
+		}
+		s := newSession(t, withDir(stateDir), withSteps(func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(llm.ToolCallData{
+				ID: "seed-call", Name: seedToolName, Arguments: json.RawMessage(`{"message":"seed","next":"send_and_end_turn"}`), Type: "function",
+			})
+		}), withConfig(SessionConfig{
+			StateDir:       stateDir,
+			ResultToolName: resultTool,
+			testOnly: testConfig{
+				skipGitSnapshot:     true,
+				minimalSystemPrompt: true,
+				noSyncJobStore:      true,
+				envProbes:           fixedEnvProbes(),
+			},
+		}))
+		if withInitialTurn {
+			if _, err := s.ProcessInput(tripwireCtx(t), "seed turn", nil); err != nil {
+				t.Fatalf("seed ProcessInput: %v", err)
+			}
+		}
+		id := s.ID()
+		s.Close()
+		rewriteLegacyForkHeader(t, stateDir, id, prompt)
+		meta, err := schema.LoadSessionMeta(stateDir, id)
+		if err != nil {
+			t.Fatalf("LoadSessionMeta: %v", err)
+		}
+		meta.LaunchSystemPrompt = ""
+		meta.LaunchEnvBaseline.CommunicateContract = ""
+		if !withInitialTurn {
+			meta.EnvContext = nil
+		}
+		if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+			t.Fatalf("SaveSessionMeta: %v", err)
+		}
+		return id
+	}
+
+	for _, tc := range []struct {
+		name            string
+		prompt          string
+		resultTool      string
+		withInitialTurn bool
+		entryKind       EntryKind
+		wantDiff        bool
+	}{
+		{
+			name:            "legacy_user_input_emits_once_and_replays_silently",
+			prompt:          legacyPrompt,
+			withInitialTurn: true,
+			entryKind:       EntryUserInput,
+			wantDiff:        true,
+		},
+		{
+			name:            "legacy_notification_first_wake_emits_before_steering",
+			prompt:          legacyPrompt,
+			withInitialTurn: false,
+			entryKind:       EntryNotification,
+			wantDiff:        true,
+		},
+		{
+			name:            "legacy_custom_result_tool_named_respond",
+			prompt:          "Legacy prompt fixture. Call respond({}) when waiting.",
+			resultTool:      "respond",
+			withInitialTurn: true,
+			entryKind:       EntryUserInput,
+			wantDiff:        true,
+		},
+		{
+			name:            "upgraded_prompt_emits_no_contract_diff",
+			prompt:          upgradedPrompt,
+			withInitialTurn: true,
+			entryKind:       EntryUserInput,
+			wantDiff:        false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			stateDir := t.TempDir()
+			id := setupLegacySession(t, stateDir, tc.prompt, tc.resultTool, tc.withInitialTurn)
+
+			toolName := tc.resultTool
+			if toolName == "" {
+				toolName = tool.DefaultResultToolName
+			}
+			finalResp := func(msg string) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{
+					ID:        "done-" + msg,
+					Name:      toolName,
+					Arguments: json.RawMessage(`{"message":` + mustJSONString(msg) + `,"next":"send_and_end_turn"}`),
+					Type:      "function",
+				})
+			}
+
+			r1 := restoreQueuePersistTestSessionWith(t, stateDir, id, RestoreSessionConfig{
+				testOnly: testConfig{
+					skipGitSnapshot: true,
+					noSyncJobStore:  true,
+					envProbes:       fixedEnvProbes(),
+				},
+			})
+			adapter1 := newFakeAdapter("openai", func(llm.Request) llm.Response { return finalResp("first") }, func(llm.Request) llm.Response { return finalResp("second") })
+			r1.client.Register(adapter1)
+			if tc.entryKind == EntryNotification {
+				enqueueCompletedJobNotification(t, r1, "job_legacy_restore")
+				if _, err := r1.ProcessInputKind(tripwireCtx(t), "", nil, EntryNotification); err != nil {
+					t.Fatalf("ProcessInputKind(notification): %v", err)
+				}
+			} else {
+				if _, err := r1.ProcessInput(tripwireCtx(t), "after restore", nil); err != nil {
+					t.Fatalf("ProcessInput(turn 1): %v", err)
+				}
+			}
+			reqs1 := adapter1.Requests()
+			if len(reqs1) != 1 {
+				t.Fatalf("restored turn 1 requests = %d, want 1", len(reqs1))
+			}
+			if gotSys := reqs1[0].Messages[0].Text(); gotSys != tc.prompt {
+				t.Fatalf("saved system prompt was altered (prefix cache broken):\ngot  %q\nwant %q", gotSys, tc.prompt)
+			}
+			contractCount := 0
+			for _, msg := range reqs1[0].Messages {
+				txt := msg.Text()
+				if strings.Contains(txt, "<environment_context>") && strings.Contains(txt, "communicate contract:") {
+					contractCount++
+					if !strings.Contains(txt, toolName) ||
+						!strings.Contains(txt, schema.CommunicateNextSendAndEndTurn) ||
+						!strings.Contains(txt, schema.CommunicateNextSendAndContinue) ||
+						!strings.Contains(txt, schema.CommunicateNextLogQuietlyAndEndTurn) {
+						t.Fatalf("contract diff missing result tool or next values:\n%s", txt)
+					}
+				}
+			}
+			if want := map[bool]int{false: 0, true: 1}[tc.wantDiff]; contractCount != want {
+				t.Fatalf("first restored request contract diff count = %d, want %d", contractCount, want)
+			}
+			beforeSecondTurn := countEnvironmentTurns(r1)
+			if _, err := r1.ProcessInput(tripwireCtx(t), "follow up", nil); err != nil {
+				t.Fatalf("ProcessInput(turn 2): %v", err)
+			}
+			if countEnvironmentTurns(r1) != beforeSecondTurn {
+				t.Fatalf("second turn in same process re-emitted environment turn: before=%d after=%d", beforeSecondTurn, countEnvironmentTurns(r1))
+			}
+			r1.Close()
+
+			r2 := restoreQueuePersistTestSessionWith(t, stateDir, id, RestoreSessionConfig{
+				testOnly: testConfig{
+					skipGitSnapshot: true,
+					noSyncJobStore:  true,
+					envProbes:       fixedEnvProbes(),
+				},
+			})
+			adapter2 := newFakeAdapter("openai", func(llm.Request) llm.Response { return finalResp("third") })
+			r2.client.Register(adapter2)
+			defer r2.Close()
+			beforeSecondRestoreTurn := countEnvironmentTurns(r2)
+			if _, err := r2.ProcessInput(tripwireCtx(t), "after second restore", nil); err != nil {
+				t.Fatalf("ProcessInput(second restore): %v", err)
+			}
+			if countEnvironmentTurns(r2) != beforeSecondRestoreTurn {
+				t.Fatalf("second restore duplicated environment turn (ReplayBlock missed communicate contract): before=%d after=%d",
+					beforeSecondRestoreTurn, countEnvironmentTurns(r2))
+			}
+		})
+	}
+}
+
 func TestCommunicateQuietNoteNormalizationAndBound(t *testing.T) {
 	t.Parallel()
 	longMessage := "Waiting on:\n\t  " + strings.Repeat("x", 260)

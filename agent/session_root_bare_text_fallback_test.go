@@ -946,7 +946,7 @@ func TestRootBareTextFallbackArmedWatchSteers(t *testing.T) {
 	}
 }
 
-func TestRootBareTextFallbackPostReplyDrainNotificationParksQuietly(t *testing.T) {
+func TestRootBareTextFallbackOneShotPostReplyDrainNotificationParksQuietly(t *testing.T) {
 	t.Parallel()
 	for _, viaTool := range []bool{true, false} {
 		name := "after_bare_reply"
@@ -995,6 +995,7 @@ func TestRootBareTextFallbackPostReplyDrainNotificationParksQuietly(t *testing.T
 				*c = minimalTestSessionConfig(t)
 				c.StateDir = t.TempDir()
 				c.MaxSubagentDepth = 1
+				c.TurnEndsProcess = true
 			})
 			evs, evMu, evDone := collectEvents(s)
 			defer func() {
@@ -1039,6 +1040,56 @@ func TestRootBareTextFallbackPostReplyDrainNotificationParksQuietly(t *testing.T
 				t.Fatalf("EventCommunicate = %+v, want only REPORT_A", commEvs)
 			}
 		})
+	}
+}
+
+func TestRootBareTextFallbackInteractivePostReplyNotificationSteers(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	s := newSession(t, withStateDir(t.TempDir()), withSteps(
+		func(llm.Request) llm.Response {
+			calls.Add(1)
+			return agenttest.FinalResponse("Scheduled.")
+		},
+		func(llm.Request) llm.Response {
+			calls.Add(1)
+			return bareTextResponse("Reminder: check deploy", llm.FinishReasonStop)
+		},
+		func(llm.Request) llm.Response {
+			calls.Add(1)
+			return agenttest.FinalResponse("Reminder: check deploy")
+		},
+	))
+	evs, evMu, evDone := collectEvents(s)
+	ctx := tripwireCtx(t)
+	if out, err := s.ProcessInput(ctx, "Remind me in a bit", nil); err != nil || out != "Scheduled." {
+		t.Fatalf("initial confirmation = (%q, %v), want Scheduled.", out, err)
+	}
+
+	// A one-shot timer or completed notification fires and retires before the
+	// wake runs, leaving zero wakeable work at the notification boundary.
+	enqueueCompletedJobNotification(t, s, "one-shot-timer")
+	got, err := s.ProcessInputKind(ctx, "", nil, EntryNotification)
+	if err != nil {
+		t.Fatalf("notification ProcessInputKind: %v", err)
+	}
+	if got != "Reminder: check deploy" || calls.Load() != 3 || s.quietlyYielded() || !s.communicated() {
+		t.Fatalf("interactive notification got=%q calls=%d quiet=%t communicated=%t, want Reminder: check deploy / 3 / false / true",
+			got, calls.Load(), s.quietlyYielded(), s.communicated())
+	}
+
+	s.Close()
+	<-evDone
+	evMu.Lock()
+	commEvs := communicateEventsIn(*evs)
+	evMu.Unlock()
+	if len(commEvs) != 2 || commEvs[0].Message != "Scheduled." || commEvs[1].Message != "Reminder: check deploy" {
+		t.Fatalf("EventCommunicate = %+v, want [Scheduled., Reminder: check deploy]", commEvs)
+	}
+	for _, turn := range transcriptTurnsOf(t, s) {
+		if turn.Kind == schema.TurnAssistant && turn.QuietYield {
+			t.Fatalf("interactive post-reply reminder was misparked as QuietYield")
+		}
 	}
 }
 

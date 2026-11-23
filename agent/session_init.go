@@ -2091,6 +2091,9 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 			s.launchEnvBaseline = s.envRuntimeSnapshot(envctx.Snapshot{})
 			s.launchEnvBaseline.GitBranch = cmp.Or(s.launchEnvBaseline.GitBranch, s.envInfo.GitBranch)
 			s.envTracker.SeedRuntime(s.launchEnvBaseline)
+		} else if !restoredPromptHasLegacyCommunicateGuidance(restoredPrompt, s.resultToolName()) {
+			s.launchEnvBaseline.CommunicateContract = cmp.Or(s.launchEnvBaseline.CommunicateContract, s.communicateContractLine())
+			s.envTracker.SeedRuntime(envctx.Snapshot{CommunicateContract: s.launchEnvBaseline.CommunicateContract})
 		}
 	}
 	if warning := s.commitProvenanceWarning(); warning != "" {
@@ -2106,6 +2109,18 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	s.acquireSessionLivelock()
 
 	return s.promptSourceLog, nil
+}
+
+func restoredPromptHasLegacyCommunicateGuidance(prompt, resultTool string) bool {
+	if prompt == "" || strings.Contains(prompt, schema.CommunicateNextLogQuietlyAndEndTurn) {
+		return false
+	}
+	if resultTool == "" {
+		resultTool = tool.DefaultResultToolName
+	}
+	return strings.Contains(prompt, "end_turn") ||
+		strings.Contains(prompt, "communicate({})") ||
+		strings.Contains(prompt, resultTool+"({})")
 }
 
 func (s *Session) validateModelFallbacks() error {

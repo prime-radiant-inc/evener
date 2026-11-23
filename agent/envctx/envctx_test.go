@@ -248,3 +248,28 @@ func TestRenderDiffFirstAfterGitLaunchOutsideGitEmitsNotInRepo(t *testing.T) {
 		t.Fatal("replayed block did not keep subsequent non-git turn quiet")
 	}
 }
+
+func TestRenderDiffCommunicateContractAndReplay(t *testing.T) {
+	t.Parallel()
+	launch := fullSnap()
+	launch.CommunicateContract = `communicate uses required "message" and optional "next"`
+	tr := NewTracker(State{})
+	tr.SeedRuntime(launch)
+	if first := tr.RenderDiff(launch); strings.Contains(first, "communicate contract:") {
+		t.Fatalf("first block restated launch communicate contract:\n%s", first)
+	}
+
+	legacy := NewTracker(State{Last: fullSnap(), HasSent: true})
+	if !legacy.RuntimeDrifted(launch) {
+		t.Fatal("RuntimeDrifted = false when launch communicate contract is absent from base")
+	}
+	diff := legacy.RenderDiff(launch)
+	if !strings.Contains(diff, "communicate contract: "+launch.CommunicateContract) {
+		t.Fatalf("expected communicate contract diff, got:\n%s", diff)
+	}
+
+	replayed := NewTracker(State{Last: fullSnap(), HasSent: true})
+	if !replayed.ReplayBlock(diff) || replayed.RuntimeDrifted(launch) || replayed.RenderDiff(launch) != "" {
+		t.Fatal("replayed communicate contract diff did not quiet subsequent turns")
+	}
+}

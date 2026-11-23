@@ -3431,7 +3431,17 @@ func (s *Session) envRuntimeSnapshot(snap envctx.Snapshot) envctx.Snapshot {
 		snap.ScratchDir = le.SessionScratchDir()
 	}
 	snap.CallableTools, snap.AvailableSkills = envctx.JoinNames(toolNamesFromDefinitions(s.cachedToolDefs)), envctx.JoinNames(skills)
+	snap.CommunicateContract = s.communicateContractLine()
 	return snap
+}
+
+func (s *Session) communicateContractLine() string {
+	name := s.resultToolName()
+	if name == "" {
+		return ""
+	}
+	return fmt.Sprintf(`%s uses required "message" and optional "next" (%q default, %q for progress updates, %q with a brief note to end quietly); this supersedes retired "end_turn" and "{}" instructions from earlier prompts`,
+		name, schema.CommunicateNextSendAndEndTurn, schema.CommunicateNextSendAndContinue, schema.CommunicateNextLogQuietlyAndEndTurn)
 }
 
 // appendEnvironmentContext can persist recovery context without publishing a

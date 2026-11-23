@@ -1849,10 +1849,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			} else {
 				outstanding, workErr := s.treeHasOutstandingWorkAtBoundary()
 				replied := kind == EntryNotification && s.rootDeliveredReplySinceLastUserInput()
+				oneShotDraining := kind == EntryNotification && s.hasAcceptedTerminalCommunicate()
 				bareReply = s.usesDefaultCommunicateOutputEnvelope() && workErr == nil &&
 					(kind == EntryUserInput && !outstanding ||
-						kind == EntryNotification && !replied && !s.hasWakeableWorkAtBoundary())
-				bareQuiet = !bareReply && workErr == nil && (outstanding || (replied && !s.hasWakeableWorkAtBoundary()))
+						kind == EntryNotification && !s.hasWakeableWorkAtBoundary() && !replied && !oneShotDraining)
+				bareQuiet = !bareReply && workErr == nil &&
+					(outstanding || (oneShotDraining && !s.hasWakeableWorkAtBoundary()))
 			}
 		}
 		var bareStop hooks.StopResult
