@@ -15,6 +15,15 @@ type authenticatorOverrides struct {
 	byScheme map[string]Authenticator
 }
 
+// StateRootAuthenticator is a record-backed authenticator that can bind itself
+// to one registry state root without sharing mutable state. A client binds the
+// registered implementation for a resolved scheme to its own registry root, so
+// two clients with separate roots read separate records.
+type StateRootAuthenticator interface {
+	Authenticator
+	WithStateRoot(root string) Authenticator
+}
+
 // WithAuthenticatorOverride records the library's single call-scoped
 // authenticator for the Codex transport: the one record-backed scheme this
 // legacy entry point names. Every other scheme resolves from its Resolved

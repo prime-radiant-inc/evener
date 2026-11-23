@@ -240,6 +240,15 @@ func (s *Service) renewUnderLock(ctx context.Context, stateDir, instance string)
 						return fmt.Errorf("renew Copilot session: %w (persist refreshed GitHub credentials: %w)", err, saveErr)
 					}
 				}
+				// The renewal window is an early-renewal margin, not an expiry:
+				// while the stored session is still live and the caller is
+				// still asking, a transient exchange failure must not block
+				// inference. The persisted record keeps the old expiry, so the
+				// next request retries the renewal.
+				if ctx.Err() == nil && copilotSessionValid(nowFunc(), renewed) {
+					credentials = runtimeFromRecord(renewed)
+					return nil
+				}
 				return fmt.Errorf("renew Copilot session: %w", err)
 			}
 			renewed.CopilotToken = session.Token
@@ -317,6 +326,12 @@ func refreshedRecord(current AuthRecord, tokens TokenSet) (AuthRecord, error) {
 
 func needsRefresh(now, expiry time.Time) bool {
 	return expiry.IsZero() || !expiry.After(now.Add(refreshSkew))
+}
+
+// copilotSessionValid reports whether the stored Copilot session token is
+// inside its actual lifetime, as opposed to the early-renewal window.
+func copilotSessionValid(now time.Time, record AuthRecord) bool {
+	return record.CopilotToken != "" && record.CopilotExpiry.After(now)
 }
 
 func loginRequired(err error) error {

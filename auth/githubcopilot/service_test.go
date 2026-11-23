@@ -558,8 +558,9 @@ func TestResolveRefreshesFiveMinutesBeforeExpiry(t *testing.T) {
 
 // TestResolvePersistsRotatedGitHubTokenBeforeTransientSessionExchange proves a
 // successful GitHub refresh is not stranded when the following Copilot session
-// exchange fails transiently. The retry must redeem the new refresh token and
-// succeed without a fresh login.
+// exchange fails transiently: the rotated pair is persisted and the still-valid
+// stored session answers the call. The retry must redeem the new refresh token
+// and succeed without a fresh login.
 func TestResolvePersistsRotatedGitHubTokenBeforeTransientSessionExchange(t *testing.T) {
 	at := time.Date(2026, 11, 22, 2, 0, 0, 0, time.UTC)
 	swapNow(t, at)
@@ -572,10 +573,12 @@ func TestResolvePersistsRotatedGitHubTokenBeforeTransientSessionExchange(t *test
 		t.Fatalf("SaveAuth() error = %v", err)
 	}
 	svc := newServiceForTest(server)
-	if _, err := svc.ResolveRuntimeCredentials(context.Background(), stateDir, record.Instance); err == nil {
-		t.Fatal("first ResolveRuntimeCredentials() error = nil, want the transient exchange failure")
-	} else if errors.Is(err, ErrLoginRequired) {
-		t.Fatalf("transient exchange failure was classified as login required: %v", err)
+	credentials, err := svc.ResolveRuntimeCredentials(context.Background(), stateDir, record.Instance)
+	if err != nil {
+		t.Fatalf("first ResolveRuntimeCredentials() error = %v, want the still-valid stored session", err)
+	}
+	if credentials.BearerToken != "copilot-old" {
+		t.Fatalf("first bearer = %q, want the stored session while it has not expired", credentials.BearerToken)
 	}
 	loaded, err := LoadAuth(stateDir, record.Instance)
 	if err != nil {
@@ -587,7 +590,7 @@ func TestResolvePersistsRotatedGitHubTokenBeforeTransientSessionExchange(t *test
 	if gh.refreshCount() != 1 {
 		t.Fatalf("refresh requests after first failure = %d, want 1", gh.refreshCount())
 	}
-	credentials, err := svc.ResolveRuntimeCredentials(context.Background(), stateDir, record.Instance)
+	credentials, err = svc.ResolveRuntimeCredentials(context.Background(), stateDir, record.Instance)
 	if err != nil {
 		t.Fatalf("second ResolveRuntimeCredentials() error = %v", err)
 	}
@@ -606,6 +609,120 @@ func TestResolvePersistsRotatedGitHubTokenBeforeTransientSessionExchange(t *test
 	}
 	if loaded.AccessToken != "access-1" || loaded.RefreshToken != "refresh-1" || loaded.CopilotToken != "copilot-2" {
 		t.Fatal("retry did not keep the rotated GitHub pair and the renewed session")
+	}
+}
+
+// TestResolveUsesValidSessionWhenRenewalExchangeFailsTransiently proves the
+// five-minute window is an early-renewal margin, not an expiry: a transient
+// session exchange failure keeps answering with the stored token while it is
+// still valid, and the next resolve retries the renewal.
+func TestResolveUsesValidSessionWhenRenewalExchangeFailsTransiently(t *testing.T) {
+	at := time.Date(2026, 11, 22, 2, 0, 0, 0, time.UTC)
+	swapNow(t, at)
+	gh, server := newScriptedGitHub(t)
+	gh.queueExchangeStatuses(http.StatusBadGateway)
+	stateDir := t.TempDir()
+	record := testRecord(at, 10*time.Minute, 24*time.Hour)
+	record.AccessExpiry = time.Time{}
+	record.RefreshToken = ""
+	record.RefreshExpiry = time.Time{}
+	record.CopilotExpiry = at.Add(4 * time.Minute)
+	if err := SaveAuth(stateDir, record.Instance, record); err != nil {
+		t.Fatalf("SaveAuth() error = %v", err)
+	}
+	svc := newServiceForTest(server)
+
+	credentials, err := svc.ResolveRuntimeCredentials(context.Background(), stateDir, record.Instance)
+	if err != nil {
+		t.Fatalf("ResolveRuntimeCredentials() error = %v, want the still-valid stored session", err)
+	}
+	if credentials.BearerToken != record.CopilotToken || !credentials.Expiry.Equal(record.CopilotExpiry) {
+		t.Fatalf("runtime credentials = %q expiring %v, want the stored session %q expiring %v",
+			credentials.BearerToken, credentials.Expiry, record.CopilotToken, record.CopilotExpiry)
+	}
+	loaded, err := LoadAuth(stateDir, record.Instance)
+	if err != nil {
+		t.Fatalf("LoadAuth() after fallback error = %v", err)
+	}
+	if loaded.CopilotToken != record.CopilotToken || !loaded.CopilotExpiry.Equal(record.CopilotExpiry) {
+		t.Fatal("a failed renewal changed the stored session, want the still-valid generation kept")
+	}
+	if gh.exchangeCount() != 1 {
+		t.Fatalf("session exchanges = %d, want 1", gh.exchangeCount())
+	}
+
+	credentials, err = svc.ResolveRuntimeCredentials(context.Background(), stateDir, record.Instance)
+	if err != nil {
+		t.Fatalf("retry ResolveRuntimeCredentials() error = %v", err)
+	}
+	if credentials.BearerToken != "copilot-2" {
+		t.Fatalf("retry bearer = %q, want the renewed session", credentials.BearerToken)
+	}
+	if gh.exchangeCount() != 2 {
+		t.Fatalf("session exchanges after retry = %d, want the renewal to be retried", gh.exchangeCount())
+	}
+}
+
+// TestResolveSessionRenewalFailureWithExpiredSessionReturnsError proves the
+// fallback stops at the session's actual expiry: a transient exchange failure
+// with an expired stored token stays an ordinary error the caller can retry.
+func TestResolveSessionRenewalFailureWithExpiredSessionReturnsError(t *testing.T) {
+	at := time.Date(2026, 11, 22, 2, 0, 0, 0, time.UTC)
+	swapNow(t, at)
+	gh, server := newScriptedGitHub(t)
+	gh.queueExchangeStatuses(http.StatusBadGateway)
+	stateDir := t.TempDir()
+	record := testRecord(at, 10*time.Minute, 24*time.Hour)
+	record.AccessExpiry = time.Time{}
+	record.RefreshToken = ""
+	record.RefreshExpiry = time.Time{}
+	record.CopilotExpiry = at.Add(-time.Minute)
+	if err := SaveAuth(stateDir, record.Instance, record); err != nil {
+		t.Fatalf("SaveAuth() error = %v", err)
+	}
+	svc := newServiceForTest(server)
+
+	credentials, err := svc.ResolveRuntimeCredentials(context.Background(), stateDir, record.Instance)
+	if err == nil {
+		t.Fatalf("ResolveRuntimeCredentials() = %+v, want an error for an expired session", credentials)
+	}
+	if errors.Is(err, ErrLoginRequired) {
+		t.Fatalf("transient exchange failure was classified as login required: %v", err)
+	}
+	if gh.exchangeCount() != 1 {
+		t.Fatalf("session exchanges = %d, want 1", gh.exchangeCount())
+	}
+}
+
+// TestResolveSessionRenewalFailureWithCancelledContextReturnsError proves a
+// cancelled caller is never answered from the stored session: the fallback
+// serves only an active request.
+func TestResolveSessionRenewalFailureWithCancelledContextReturnsError(t *testing.T) {
+	at := time.Date(2026, 11, 22, 2, 0, 0, 0, time.UTC)
+	swapNow(t, at)
+	_, server := newScriptedGitHub(t)
+	stateDir := t.TempDir()
+	record := testRecord(at, 10*time.Minute, 24*time.Hour)
+	record.AccessExpiry = time.Time{}
+	record.RefreshToken = ""
+	record.RefreshExpiry = time.Time{}
+	record.CopilotExpiry = at.Add(4 * time.Minute)
+	if err := SaveAuth(stateDir, record.Instance, record); err != nil {
+		t.Fatalf("SaveAuth() error = %v", err)
+	}
+	svc := newServiceForTest(server)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	credentials, err := svc.ResolveRuntimeCredentials(ctx, stateDir, record.Instance)
+	if err == nil {
+		t.Fatalf("ResolveRuntimeCredentials() = %+v, want the cancelled exchange", credentials)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ResolveRuntimeCredentials() error = %v, want context.Canceled", err)
+	}
+	if errors.Is(err, ErrLoginRequired) {
+		t.Fatalf("cancellation was classified as login required: %v", err)
 	}
 }
 

@@ -147,6 +147,33 @@ func (c *Client) Resolve(ref string) (registry.Resolved, error) {
 	return c.Registry().Resolve(ref)
 }
 
+// withRegistryAuthenticator binds the resolved scheme's registered
+// authenticator to the client registry's state root, unless the caller already
+// scoped one for that scheme. A record-backed authenticator reads one root, so
+// without the binding a client whose registry resolved an instance under its
+// own root would authenticate against whatever root the process-global default
+// last named. Schemes that are not record-backed, a caller's explicit scope,
+// and a registry without a root all keep their current behavior.
+func (c *Client) withRegistryAuthenticator(ctx context.Context, res registry.Resolved) context.Context {
+	scheme := res.Transport.Auth
+	if scheme == "" || AuthenticatorOverrideFor(ctx, scheme) != nil {
+		return ctx
+	}
+	root := c.Registry().StateRoot()
+	if root == "" {
+		return ctx
+	}
+	registered, ok := AuthenticatorFor(scheme)
+	if !ok {
+		return ctx
+	}
+	binder, ok := registered.(StateRootAuthenticator)
+	if !ok {
+		return ctx
+	}
+	return WithScopedAuthenticator(ctx, scheme, binder.WithStateRoot(root))
+}
+
 // CanServe reports whether provider/model would dispatch: an override is
 // registered under the name, or the reference resolves (spec §7.3: every
 // model resolves except an id off the Codex allowlist).
@@ -357,6 +384,7 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 	handler := applyMiddlewareComplete(base, c.middlewareSnapshot())
 	var rotation authRotation
 	if t.resolved && t.override == nil {
+		ctx = c.withRegistryAuthenticator(ctx, t.res)
 		rotation = authRotationFor(ctx, t.res)
 	}
 	resp, err := retryOnAuthRotation(ctx, rotation, t.res, func() (Response, error) {
@@ -419,6 +447,7 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 	handler := applyMiddlewareStream(base, c.middlewareSnapshot())
 	var rotation authRotation
 	if t.resolved && t.override == nil {
+		ctx = c.withRegistryAuthenticator(ctx, t.res)
 		rotation = authRotationFor(ctx, t.res)
 	}
 	st, err := retryOnAuthRotation(ctx, rotation, t.res, func() (Stream, error) {
@@ -680,6 +709,7 @@ func (c *Client) listLive(ctx context.Context, instance string) ([]registry.Mode
 	if err != nil {
 		return nil, false, &ConfigurationError{Message: err.Error()}
 	}
+	ctx = c.withRegistryAuthenticator(ctx, res)
 	// A Copilot instance's roster is parsed by the Chat Completions listing
 	// parser whatever generation protocol the user configured: the transport's
 	// auth scheme owns the account's picker/policy filter and per-row routing,

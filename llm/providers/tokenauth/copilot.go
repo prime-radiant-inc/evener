@@ -21,9 +21,10 @@ import (
 const copilotAPIVersion = "2026-08-01"
 
 var (
-	_ llm.Authenticator     = (*Copilot)(nil)
-	_ llm.AuthScopeProvider = (*Copilot)(nil)
-	_ llm.RequestPreparer   = (*Copilot)(nil)
+	_ llm.Authenticator          = (*Copilot)(nil)
+	_ llm.AuthScopeProvider      = (*Copilot)(nil)
+	_ llm.RequestPreparer        = (*Copilot)(nil)
+	_ llm.StateRootAuthenticator = (*Copilot)(nil)
 )
 
 // Copilot is the oauth-github-copilot transport. Apply resolves the instance's
@@ -179,6 +180,12 @@ func copilotSignIn(instance string, cause error) error {
 // with the registered shared instance.
 func ScopedCopilot(stateDir string) *Copilot {
 	return &Copilot{StateDir: stateDir}
+}
+
+// WithStateRoot implements llm.StateRootAuthenticator: the returned Copilot
+// reads records under root and shares nothing mutable with c.
+func (*Copilot) WithStateRoot(root string) llm.Authenticator {
+	return ScopedCopilot(root)
 }
 
 func copilotUserAgent() string {
