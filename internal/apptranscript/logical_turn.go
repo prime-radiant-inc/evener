@@ -1,7 +1,9 @@
 package apptranscript
 
 import (
+	"slices"
 	"sort"
+	"strings"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
@@ -88,12 +90,13 @@ type groupedTurn struct {
 type logicalTurnAccumulator struct {
 	turns   []groupedTurn
 	grouper TurnGrouper
-	// stampedStatus holds, per stamped turn id, the status the file's
-	// transcript-only completion and reopen records fold in file order, the
-	// same fold the index makes: a completion sets the status, a reopen
-	// clears it to in progress, and the last record wins. They join no group,
-	// but the status belongs to the turn they name.
-	stampedStatus map[string]string
+	// stampedStatus holds, per stamped turn id, the completion state the
+	// file's transcript-only completion and reopen records fold in file order,
+	// the same fold the index makes: a completion sets the status and its
+	// duration and completion time, a reopen clears them to in progress, and
+	// the last record wins. They join no group, but the state belongs to the
+	// turn they name.
+	stampedStatus map[string]stampedState
 	// stampedFailure holds, per stamped turn id, the file's latest
 	// TURN_FAILURE entry. The index keeps one diagnostic per execution, so a
 	// failed stamped turn reports it on every visible fragment, not only on
@@ -111,36 +114,69 @@ type logicalTurnAccumulator struct {
 	// interruptAwaitedCalls), but a call announced after a later reopen is not
 	// its concern.
 	stampedCompletionAt map[string][]int
+	// suppressedComms and quietHookDemote stay nil except in the rare case
+	// where a PreToolUse hook turns a non-empty communicate call into
+	// communicate_quiet after its TurnAssistant already committed prose.
+	suppressedComms []suppressedCommEntry
+	quietHookDemote map[int]bool
+}
+
+type suppressedCommEntry struct {
+	turn       schema.Turn
+	turnID     string
+	entryIndex int
+	turnSlot   int
+	insertAt   int
+}
+
+// stampedState is one stamped turn's folded completion state: the status the
+// file's completion and reopen records give it, and the completion figures the
+// index keeps alongside the status (build.go's stampFold).
+type stampedState struct {
+	status string
+	// hasCompletion is true once a completion recorded an end cap. A
+	// completion with a zero duration still sets it, so the duration survives
+	// as a zero rather than being dropped.
+	hasCompletion bool
+	durationMS    int64
+	// completedAt is the recorded completion time in Unix milliseconds, or
+	// zero when the record carried none.
+	completedAt int64
 }
 
 // foldStampedStatus folds a transcript-only TURN_COMPLETION or TURN_REOPEN
-// into its stamped turn's status, in file order. Only an identity-format
-// record carries a turn id to fold the status into.
+// into its stamped turn's completion state, in file order. Only an
+// identity-format record carries a turn id to fold the state into.
 func (a *logicalTurnAccumulator) foldStampedStatus(turn *schema.Turn) {
 	if turn.Format != schema.TurnFormatIdentity || turn.TurnID == "" {
 		return
 	}
-	var status string
+	var state stampedState
 	switch turn.Kind {
 	case schema.TurnCompletion:
-		status = appwire.TurnStatusCompleted
+		state.status = appwire.TurnStatusCompleted
+		state.hasCompletion = true
 		if turn.Completion != nil {
 			switch turn.Completion.Status {
 			case schema.TurnFailed:
-				status = appwire.TurnStatusFailed
+				state.status = appwire.TurnStatusFailed
 			case schema.TurnInterrupted:
-				status = appwire.TurnStatusInterrupted
+				state.status = appwire.TurnStatusInterrupted
+			}
+			state.durationMS = turn.Completion.DurationMS
+			if !turn.Completion.CompletedAt.IsZero() {
+				state.completedAt = turn.Completion.CompletedAt.UnixMilli()
 			}
 		}
 	case schema.TurnReopen:
-		status = appwire.TurnStatusInProgress
+		state.status = appwire.TurnStatusInProgress
 	default:
 		return
 	}
 	if a.stampedStatus == nil {
-		a.stampedStatus = map[string]string{}
+		a.stampedStatus = map[string]stampedState{}
 	}
-	a.stampedStatus[turn.TurnID] = status
+	a.stampedStatus[turn.TurnID] = state
 }
 
 // foldStampedFailure records the file's latest TURN_FAILURE for a stamped
@@ -280,17 +316,26 @@ func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, t
 		// and a NOTICE there — so project it and attach what it shows to the
 		// turn it names. A completion or reopen names its turn's status.
 		if project != nil && turn.TurnID != "" {
-			if items := project(turn, turn.TurnID, entryIndex); len(items) > 0 {
-				for i := len(acc.turns) - 1; i >= 0; i-- {
-					if acc.turns[i].turnID != turn.TurnID {
-						continue
-					}
+			items := project(turn, turn.TurnID, entryIndex)
+			for i := len(acc.turns) - 1; i >= 0; i-- {
+				if acc.turns[i].turnID != turn.TurnID {
+					continue
+				}
+				if len(items) > 0 {
 					acc.turns[i].items = append(acc.turns[i].items, items...)
 					for range items {
 						acc.turns[i].itemEntries = append(acc.turns[i].itemEntries, entryIndex)
 					}
-					break
+				} else if turn.Kind == schema.TurnCommunicate && turn.Communicate != nil {
+					acc.suppressedComms = append(acc.suppressedComms, suppressedCommEntry{
+						turn:       turn,
+						turnID:     turn.TurnID,
+						entryIndex: entryIndex,
+						turnSlot:   i,
+						insertAt:   len(acc.turns[i].items),
+					})
 				}
+				break
 			}
 		}
 		if turn.Kind == schema.TurnCompletion && turn.Format == schema.TurnFormatIdentity && turn.TurnID != "" {
@@ -314,6 +359,91 @@ func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, t
 		items = project(turn, turnID, entryIndex)
 	}
 	acc.appendEntry(turn, entryIndex, items)
+	if (turn.Kind == schema.TurnTool || turn.Kind == schema.TurnToolResults) && turnHasQuietCommunicate(&turn) {
+		acc.recordUnexpectedQuietDemotions(&turn)
+	}
+}
+
+func turnHasQuietCommunicate(turn *schema.Turn) bool {
+	for _, part := range turn.Message.Content {
+		if part.Kind == llm.ContentToolResult && part.ToolResult != nil && IsQuietCommunicate(part.ToolResult) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *logicalTurnAccumulator) recordUnexpectedQuietDemotions(resultTurn *schema.Turn) {
+	for _, part := range resultTurn.Message.Content {
+		if part.Kind != llm.ContentToolResult || part.ToolResult == nil || !IsQuietCommunicate(part.ToolResult) {
+			continue
+		}
+		callID := part.ToolResult.ToolCallID
+	findAssistant:
+		for ti, g := range slices.Backward(a.turns) {
+			for ei, entry := range slices.Backward(g.entries) {
+				if entry.Kind != schema.TurnAssistant {
+					continue
+				}
+				for _, cpart := range entry.Message.Content {
+					if cpart.Kind == llm.ContentToolCall && cpart.ToolCall != nil && cpart.ToolCall.ID == callID {
+						entryIdx := g.entryIndexes[ei]
+						for j, item := range g.items {
+							if a.turns[ti].itemEntries[j] == entryIdx && item.Type == "agentMessage" {
+								if a.quietHookDemote == nil {
+									a.quietHookDemote = map[int]bool{}
+								}
+								a.quietHookDemote[entryIdx] = true
+								break
+							}
+						}
+						break findAssistant
+					}
+				}
+			}
+		}
+	}
+}
+
+func applyQuietHookDemotions(acc *logicalTurnAccumulator) {
+	if len(acc.quietHookDemote) == 0 {
+		return
+	}
+	for _, sc := range acc.suppressedComms {
+		if item, ok := CommunicateItem(sc.turnID, sc.entryIndex, sc.turn); ok && sc.turnSlot >= 0 && sc.turnSlot < len(acc.turns) {
+			g := &acc.turns[sc.turnSlot]
+			lastShownAssistant := 0
+			for ei, idx := range g.entryIndexes {
+				if idx < sc.entryIndex && g.entries[ei].Kind == schema.TurnAssistant {
+					for j, it := range g.items {
+						if g.itemEntries[j] == idx && it.Type == "agentMessage" {
+							lastShownAssistant = idx
+							break
+						}
+					}
+				}
+			}
+			if acc.quietHookDemote[lastShownAssistant] {
+				at := min(sc.insertAt, len(g.items))
+				g.items = append(g.items[:at], append([]appwire.ThreadItem{item}, g.items[at:]...)...)
+				g.itemEntries = append(g.itemEntries[:at], append([]int{sc.entryIndex}, g.itemEntries[at:]...)...)
+			}
+		}
+	}
+	for ti := range acc.turns {
+		g := &acc.turns[ti]
+		var kept []appwire.ThreadItem
+		var keptEntries []int
+		for j, item := range g.items {
+			entryIdx := g.itemEntries[j]
+			if acc.quietHookDemote[entryIdx] && item.Type == "agentMessage" && !strings.HasPrefix(item.ID, "item_"+string(appwire.ThreadItemEventKindQuietYield)+"_") {
+				continue
+			}
+			kept = append(kept, item)
+			keptEntries = append(keptEntries, entryIdx)
+		}
+		g.items, g.itemEntries = kept, keptEntries
+	}
 }
 
 // groupedAppTurnProjection flushes the accumulator into AppWire turns under
@@ -325,11 +455,12 @@ func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, t
 // Items get their Position/TranscriptKey here — the full item read, the
 // bounded readers, and the item-window path must all agree on these keys (PR
 // #822 F3).
-func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Header) (ItemTurnProjection, error) {
+func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Header, launchPrompt string) (ItemTurnProjection, error) {
+	applyQuietHookDemotions(acc)
 	turns := []appwire.Turn{}
 	entryOrdinal := uint64(0)
 	var prelude *appwire.Turn
-	if p := PreludeTurn(header); p != nil {
+	if p := PreludeTurn(header, launchPrompt); p != nil {
 		positioned, err := positionPreludeItems(p.Items)
 		if err != nil {
 			return ItemTurnProjection{}, err
@@ -421,9 +552,15 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 				// only while the folded status is failed.
 				turn.Status = appwire.TurnStatusInProgress
 				turn.Error = nil
-				if status, ok := acc.stampedStatus[group.turnID]; ok {
-					turn.Status = status
-					if status == appwire.TurnStatusFailed {
+				if state, ok := acc.stampedStatus[group.turnID]; ok {
+					turn.Status = state.status
+					if state.hasCompletion {
+						turn.DurationMS = &state.durationMS
+						if state.completedAt != 0 {
+							turn.CompletedAt = &state.completedAt
+						}
+					}
+					if state.status == appwire.TurnStatusFailed {
 						if failure, ok := acc.stampedFailure[group.turnID]; ok {
 							StampTurnFailure(&turn, failure)
 						}

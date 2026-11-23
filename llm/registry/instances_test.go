@@ -656,16 +656,16 @@ func TestProviderRenameLeavesInstance(t *testing.T) {
 	}
 	t.Run("set environment variable re-derives", func(t *testing.T) {
 		env := baseEnv(t)
-		env["GOOGLE_VERTEX_API_KEY"] = "gk"
+		env["GEMINI_API_KEY"] = "gk"
 		r := fixtureLoad(t, env, "")
-		if !r.ProviderRenameLeavesInstance("google-vertex-express") {
-			t.Fatal("google-vertex-express: want true, the curated provider reads GOOGLE_VERTEX_API_KEY which is set")
+		if !r.ProviderRenameLeavesInstance("google") {
+			t.Fatal("google: want true, the curated provider reads GEMINI_API_KEY which is set")
 		}
 	})
 	t.Run("unset environment variable leaves nothing", func(t *testing.T) {
 		r := fixtureLoad(t, baseEnv(t), "")
-		if r.ProviderRenameLeavesInstance("google-vertex-express") {
-			t.Fatal("google-vertex-express: want false, the curated provider holds no other credential")
+		if r.ProviderRenameLeavesInstance("google") {
+			t.Fatal("google: want false, the curated provider holds no other credential")
 		}
 	})
 	t.Run("keyless curated provider re-derives", func(t *testing.T) {

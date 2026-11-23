@@ -1,5 +1,5 @@
 import { Meter, type MeterTone } from "../../widgets/meter";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./meter.module.css";
 
 // Realistic labels per row, not a repeated placeholder - label is Meter's
@@ -25,13 +25,10 @@ function ToneRow({ tone, label }: { tone: MeterTone; label: string }) {
 
 export default function MeterGallerySection() {
   return (
-    <section>
-      <h2>Meter</h2>
-      <ThemeFlip>
-        {SAMPLES.map(({ tone, label }) => (
-          <ToneRow key={tone} tone={tone} label={label} />
-        ))}
-      </ThemeFlip>
-    </section>
+    <GallerySection title="Meter">
+      {SAMPLES.map(({ tone, label }) => (
+        <ToneRow key={tone} tone={tone} label={label} />
+      ))}
+    </GallerySection>
   );
 }

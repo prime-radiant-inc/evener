@@ -84,6 +84,13 @@ const (
 	EventSessionNameChanged EventKind = "SESSION_NAME_CHANGED"
 	// EventModelChanged reports that SetModel committed a provider/model switch.
 	EventModelChanged EventKind = "MODEL_CHANGED"
+	// EventNextModelChanged reports that the model a live session's next turn
+	// will run on changed: SetModel accepted a pick and queued it for the turn
+	// boundary, or a queued pick's deferred validation rejected it and the
+	// current model owns the next turn again. Unlike EventModelChanged this
+	// announces acceptance, not a commit - the running turn still finishes on
+	// the model it started with.
+	EventNextModelChanged EventKind = "NEXT_MODEL_CHANGED"
 	// EventReasoningEffortChanged reports that SetReasoningEffort committed a
 	// reasoning-effort change.
 	EventReasoningEffortChanged EventKind = "REASONING_EFFORT_CHANGED"
@@ -124,10 +131,6 @@ const (
 	EventPromptLoaded EventKind = "PROMPT_LOADED"
 	// EventRoundTimings carries round timing information.
 	EventRoundTimings EventKind = "ROUND_TIMINGS"
-	// EventStatusSettled announces a resting session's new state outside a
-	// turn: a needs_response rest moving to awaiting once its quiet period
-	// passes.
-	EventStatusSettled EventKind = "STATUS_SETTLED"
 	// EventTurnEnded marks a single turn reaching its terminal boundary, carrying
 	// the turn's wall-clock duration.
 	EventTurnEnded EventKind = "TURN_ENDED"

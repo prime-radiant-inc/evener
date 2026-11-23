@@ -16,28 +16,31 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-// modelEntry is one /models row: the core OpenAI shape plus OpenRouter's
-// extensions, which are absent (and therefore not advertised) elsewhere. A
-// gateway in the OpenAI-compatible shape publishes context_window,
-// max_input_tokens, max_completion_tokens and max_output_tokens at the row's
-// top level instead of under top_provider, so those are read too.
+// modelEntry is one /models row: the core OpenAI shape plus the extensions
+// OpenAI-compatible servers publish on it, each absent (and therefore not
+// advertised) wherever a server does not state it. OpenRouter's shape
+// carries context_window, max_input_tokens, max_completion_tokens and
+// max_output_tokens at the row's top level instead of under top_provider;
+// the Codex backend's spellings (supported_reasoning_levels,
+// default_reasoning_level) travel on other servers' chat rows too; a local
+// server may cap output under a limits object and state the reasoning fact
+// as a plain boolean.
 type modelEntry struct {
-	ID                  string                          `json:"id"`
-	ContextLength       int                             `json:"context_length"`
-	ContextWindow       int                             `json:"context_window"`
-	MaxInputTokens      int                             `json:"max_input_tokens"`
-	MaxCompletionTokens int                             `json:"max_completion_tokens"`
-	MaxOutputTokens     int                             `json:"max_output_tokens"`
-	SupportedParameters []string                        `json:"supported_parameters"`
-	Architecture        requestutil.GatewayArchitecture `json:"architecture"`
-	Capabilities        requestutil.GatewayCapabilities `json:"capabilities"`
-	Reasoning           struct {
-		Mandatory        *bool    `json:"mandatory"`
-		DefaultEnabled   *bool    `json:"default_enabled"`
-		SupportedEfforts []string `json:"supported_efforts"`
-	} `json:"reasoning"`
-	ClientCompat requestutil.GatewayClientCompat `json:"client_compat"`
-	Pricing      struct {
+	ID                       string                            `json:"id"`
+	ContextLength            int                               `json:"context_length"`
+	ContextWindow            int                               `json:"context_window"`
+	MaxInputTokens           int                               `json:"max_input_tokens"`
+	MaxCompletionTokens      int                               `json:"max_completion_tokens"`
+	MaxOutputTokens          int                               `json:"max_output_tokens"`
+	SupportedParameters      []string                          `json:"supported_parameters"`
+	Architecture             requestutil.GatewayArchitecture   `json:"architecture"`
+	Capabilities             requestutil.GatewayCapabilities   `json:"capabilities"`
+	Reasoning                requestutil.ListedReasoning       `json:"reasoning"`
+	SupportedReasoningLevels requestutil.ListedReasoningLevels `json:"supported_reasoning_levels"`
+	DefaultReasoningLevel    string                            `json:"default_reasoning_level"`
+	Limits                   requestutil.ListedLimits          `json:"limits"`
+	ClientCompat             requestutil.GatewayClientCompat   `json:"client_compat"`
+	Pricing                  struct {
 		Prompt     string `json:"prompt"`
 		Completion string `json:"completion"`
 	} `json:"pricing"`
@@ -71,20 +74,14 @@ func (m modelEntry) row() registry.Model {
 		caps.MaxInputTokens = new(m.MaxInputTokens)
 	}
 	topProviderCap := requestutil.PositivePointerInt(m.TopProvider.MaxCompletionTokens)
-	if o := requestutil.FirstPositiveInt(topProviderCap, m.MaxCompletionTokens, m.MaxOutputTokens); o > 0 {
+	if o := requestutil.FirstPositiveInt(topProviderCap, m.MaxCompletionTokens, m.MaxOutputTokens, m.Limits.MaxOutputTokens); o > 0 {
 		caps.MaxOutputTokens = new(o)
 	}
 	if len(m.SupportedParameters) > 0 {
 		caps.Tools = new(advertises(m.SupportedParameters, "tools"))
 		caps.Reasoning = new(advertises(m.SupportedParameters, "reasoning", "reasoning_effort"))
 	}
-	if m.Reasoning.Mandatory != nil || m.Reasoning.DefaultEnabled != nil || len(m.Reasoning.SupportedEfforts) > 0 {
-		caps.Reasoning = new(true)
-		if m.Reasoning.Mandatory != nil && *m.Reasoning.Mandatory {
-			caps.ThinkingAlwaysOn = new(true)
-		}
-		caps.EffortValues = requestutil.DedupStrings(m.Reasoning.SupportedEfforts)
-	}
+	requestutil.ApplyListedReasoningFacts(&caps, m.Reasoning, m.SupportedReasoningLevels, m.DefaultReasoningLevel)
 	requestutil.ApplyGatewayFacts(&caps, m.Architecture, m.Capabilities, m.ClientCompat)
 	if in, ok := perTokenCostToPerMillion(m.Pricing.Prompt); ok {
 		if out, ok := perTokenCostToPerMillion(m.Pricing.Completion); ok {
@@ -103,15 +100,21 @@ func (p *Protocol) ListModels(ctx context.Context, res registry.Resolved) ([]reg
 	var rows []registry.Model
 	err := protocolhttp.Do(ctx, call, func(r *protocolhttp.Result) (*llm.Response, error) {
 		var payload struct {
-			Data []modelEntry `json:"data"`
+			Data []json.RawMessage `json:"data"`
 		}
 		if err := json.Unmarshal(r.Body, &payload); err != nil {
 			return nil, fmt.Errorf("models.list: %w", err)
 		}
-		for _, e := range payload.Data {
+		// Rows decode independently; the guard below fails only a listing
+		// with no usable row, wrapping the row's own decode error.
+		entries, rowErr := requestutil.DecodeListingRows[modelEntry](payload.Data)
+		for _, e := range entries {
 			if e.ID != "" {
 				rows = append(rows, e.row())
 			}
+		}
+		if rowErr != nil && len(rows) == 0 {
+			return nil, fmt.Errorf("models.list: %w", rowErr)
 		}
 		sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
 		return nil, nil

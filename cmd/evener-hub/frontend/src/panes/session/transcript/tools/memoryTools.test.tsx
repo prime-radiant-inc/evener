@@ -8,10 +8,24 @@ import {
 } from "@evener/appwire-client";
 import { render, screen, within } from "@testing-library/react";
 import { expect, test } from "vitest";
+import rawDiffStyles from "../../../../widgets/diffblock/diffblock.module.css";
+import { requireClass } from "../../../../widgets/internal/requireClass";
 import { ToolCallItem } from "../ToolCallItem";
 import { toolRendererFor } from "../toolRenderers";
 import { HeadClippedOutputBody, TailFoldedOutputBody } from "./bodies";
 import "./index";
+
+const diffStyles = {
+  line: requireClass(rawDiffStyles.line, "diffblock.module.css", "line"),
+  content: requireClass(rawDiffStyles.content, "diffblock.module.css", "content"),
+  header: requireClass(rawDiffStyles.header, "diffblock.module.css", "header"),
+  add: requireClass(rawDiffStyles.add, "diffblock.module.css", "add"),
+  del: requireClass(rawDiffStyles.del, "diffblock.module.css", "del"),
+};
+
+function diffLines(container: HTMLElement): Element[] {
+  return Array.from(container.querySelectorAll(`.${diffStyles.line}`));
+}
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
@@ -199,6 +213,76 @@ test("a memory_edit with neither old nor new string renders the arguments and re
   );
 
   expect(screen.getByText("edited MEMORY.md: 1 replacement(s)")).toBeTruthy();
+});
+
+test("memory_edit renders multi-edit edits[] with @@ edit N @@ headers and all hunks", () => {
+  const Body = toolRendererFor("memory_edit").body!;
+  render(
+    <Body
+      item={item({
+        toolName: "memory_edit",
+        argumentsJSON: JSON.stringify({
+          scope: "project",
+          file_path: "MEMORY.md",
+          edits: [
+            { old_string: "first old", new_string: "first new" },
+            { old_string: "second old", new_string: "second new" },
+          ],
+        }),
+      })}
+      live={false}
+    />,
+  );
+
+  expect(screen.getByText("@@ edit 1 @@")).toBeTruthy();
+  expect(screen.getByText("@@ edit 2 @@")).toBeTruthy();
+  expect(screen.getByText("first old")).toBeTruthy();
+  expect(screen.getByText("first new")).toBeTruthy();
+  expect(screen.getByText("second old")).toBeTruthy();
+  expect(screen.getByText("second new")).toBeTruthy();
+});
+
+test("malformed memory_edit shapes fall back to defaultToolBody", () => {
+  const Body = toolRendererFor("memory_edit").body!;
+  for (const malformed of [
+    { scope: "project", file_path: "MEMORY.md", edits: [] },
+    { scope: "project", file_path: "MEMORY.md", edits: "not-json" },
+    { scope: "project", file_path: "MEMORY.md", edits: [{ old_str: "a", new_str: "b" }] },
+  ]) {
+    const { unmount } = render(
+      <Body
+        item={item({
+          toolName: "memory_edit",
+          argumentsJSON: JSON.stringify(malformed),
+          output: "fallback output",
+        })}
+        live={false}
+      />,
+    );
+    expect(screen.getByText("fallback output")).toBeTruthy();
+    unmount();
+  }
+});
+
+test("memory_edit removing a Markdown --- line renders with del class in flat and multi-edit diffs", () => {
+  const Body = toolRendererFor("memory_edit").body!;
+  const flat = render(
+    <Body
+      item={item({
+        toolName: "memory_edit",
+        argumentsJSON: JSON.stringify({ scope: "project", file_path: "MEMORY.md", old_string: "--", new_string: "++" }),
+      })}
+      live={false}
+    />,
+  );
+  const flatLines = diffLines(flat.container);
+  expect(flatLines).toHaveLength(4);
+  expect(flatLines[0]!.classList.contains(diffStyles.header)).toBe(true);
+  expect(flatLines[1]!.classList.contains(diffStyles.header)).toBe(true);
+  expect(flatLines[2]!.classList.contains(diffStyles.del)).toBe(true);
+  expect(flatLines[2]!.querySelector(`.${diffStyles.content}`)?.textContent).toBe("--");
+  expect(flatLines[3]!.classList.contains(diffStyles.add)).toBe(true);
+  expect(flatLines[3]!.querySelector(`.${diffStyles.content}`)?.textContent).toBe("++");
 });
 
 test("memory_delete renders its output text", () => {

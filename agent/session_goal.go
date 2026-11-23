@@ -37,10 +37,8 @@ func (s *Session) SetKickFunc(f func(prompt string)) {
 // in-flight turn for a drain-loop gate to back it, so without this check the
 // idle-kick branch below would drive a turn straight past the unanswered ask.
 // The goal is still stored active; it resumes at the first settle once the
-// reply resolves the ask. The hold is keyed on the pending-ask set
-// (len(s.askPending) > 0), NOT on SessionAwaiting: SessionAwaiting also
-// covers a turn that ended on needs_response with nothing pending, where an
-// idle /goal must kick normally, exactly as it would on SessionIdle.
+// reply resolves the ask. The hold checks the pending-ask set directly,
+// including while the session is processing.
 func (s *Session) SetGoal(ctx context.Context, objective string) (started bool, err error) {
 	release, admissionErr := s.beginRetirementMutation("autonomous")
 	if admissionErr != nil {
@@ -379,14 +377,8 @@ func (s *Session) reportGoalEnded() {
 // s.mu and would deadlock here), so an active goal is left armed in the store
 // instead of being kicked past the user's unanswered ask. The normal resume
 // fold (armGoalContinuation's non-continuation branch, folded at the reply
-// turn's own drain tail) picks it up once the reply resolves it. The hold is
-// keyed on the pending-ask set, NOT on SessionAwaiting: SessionAwaiting also
-// covers a turn that ended on needs_response with nothing pending, where the
-// goal must kick normally.
-//
-// It reports whether it kicked, so the settle-state upgrade knows autonomy is
-// in flight (attention-status-model v5: a kicked goal suppresses awaiting —
-// suppressor condition 3 of the idle→awaiting upgrade).
+// turn's own drain tail) picks it up once the reply resolves it. This method
+// reports whether it kicked a goal continuation.
 func (s *Session) settleGoalOnIdle() bool {
 	// Probe the hold flag first so the delegate-tree snapshot is paid only when
 	// a hold actually stands. The flag can only transition true→false between

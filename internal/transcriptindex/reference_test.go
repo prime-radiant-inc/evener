@@ -6,9 +6,11 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -97,6 +99,10 @@ func referenceProjection(t testing.TB, path string) []referenceTurn {
 // ToolCallRegistry state the scan ended on, which flushProjection needs to
 // reproduce a trailing unpaired communicate call.
 func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn, *apptranscript.ToolCallRegistry) {
+	return referenceProjectionWithForce(t, path, nil)
+}
+
+func referenceProjectionWithForce(t testing.TB, path string, forceProvisional map[int]bool) ([]referenceTurn, *apptranscript.ToolCallRegistry) {
 	t.Helper()
 	header, entries, unreadable := readFixtureFile(t, path)
 	type turnState struct {
@@ -105,6 +111,7 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 		entries   []schema.Turn // legacy: the group's entries, for its stamp
 		items     []appwire.ThreadItem
 		positions []appwire.ThreadItemPosition
+		entryIdx  []int
 		calls     map[string]int // legacy: call id -> item
 		version   uint64
 		model     string
@@ -121,15 +128,18 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 		awaiting      *schema.Turn
 		awaitingItem  map[string]int
 		awaitingNames map[string]string
+		awaitingEntry int
 	}
 	var turns []*turnState
 	byID := map[string]*turnState{}
 	var grouper apptranscript.TurnGrouper
-	reg := apptranscript.NewToolCallRegistry()
+	reg := &apptranscript.ToolCallRegistry{Names: map[string]string{}, CommRawArgs: map[string]string{}, CommAuthorship: map[string]*schema.TranscriptAuthorship{}, ForceProvisional: forceProvisional}
+	identityReg := &apptranscript.ToolCallRegistry{Names: map[string]string{}, CommRawArgs: map[string]string{}, CommAuthorship: map[string]*schema.TranscriptAuthorship{}, ForceProvisional: forceProvisional}
 	add := func(s *turnState, item appwire.ThreadItem, entryIndex, part int) int {
 		item.Version = uint64(entryIndex)
 		s.items = append(s.items, item)
 		s.positions = append(s.positions, appwire.ThreadItemPosition{Entry: uint64(entryIndex), Item: uint32(part)})
+		s.entryIdx = append(s.entryIdx, entryIndex)
 		return len(s.items) - 1
 	}
 	for i, entry := range entries {
@@ -238,12 +248,17 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 			}
 		}
 		if entry.Kind == schema.TurnCommunicate && entry.Communicate != nil && s.awaiting != nil &&
+			!identityReg.HasProvisionalAt(s.awaitingEntry) &&
 			apptranscript.EchoesAssistantText(referenceLastTextRun(s.awaiting.Message.Content), entry.Communicate.Message) {
+			reason := entry.Communicate.EndReason
+			if reason == "" && entry.Communicate.EndTurn {
+				reason = "done"
+			}
 			for at := len(s.items) - 1; at >= 0; at-- {
 				if s.items[at].Type == "agentMessage" {
 					s.items[at].CallID = entry.Communicate.CallID
 					s.items[at].Observation = &appwire.SessionObservationMetadata{
-						TurnID: s.id, EndTurn: entry.Communicate.EndTurn, EndReason: entry.Communicate.EndReason,
+						TurnID: s.id, EndTurn: entry.Communicate.EndTurn, EndReason: reason,
 						CausalKnown: entry.CausalKnown, Causal: entry.Causal,
 					}
 					s.items[at].Version = uint64(entryIndex)
@@ -252,7 +267,9 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 			}
 			continue
 		}
-		items, parts := apptranscript.ProjectEntryParts(s.id, entryIndex, entry, &apptranscript.ToolCallRegistry{Names: seed}, nil, apptranscript.ToolResultOutputImages)
+		identityReg.Names = seed
+		items, parts := apptranscript.ProjectEntryParts(s.id, entryIndex, entry, identityReg, nil, apptranscript.ToolResultOutputImages)
+		identityReg.Names = nil
 		added := map[int]int{} // part -> item
 		for j, item := range items {
 			if entry.Kind == schema.TurnTool || entry.Kind == schema.TurnToolResults {
@@ -285,12 +302,22 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 			}
 			if len(calls) > 0 {
 				awaiting := entry
-				s.awaiting, s.awaitingItem, s.awaitingNames = &awaiting, calls, names
+				s.awaiting, s.awaitingItem, s.awaitingNames, s.awaitingEntry = &awaiting, calls, names, entryIndex
 			}
 		}
 	}
+	if (reg.UnexpectedQuiet || identityReg.UnexpectedQuiet) && forceProvisional == nil {
+		merged := map[int]bool{}
+		maps.Copy(merged, reg.ForceProvisional)
+		maps.Copy(merged, identityReg.ForceProvisional)
+		return referenceProjectionWithForce(t, path, merged)
+	}
 	var out []referenceTurn
-	if prelude := apptranscript.PreludeTurn(header); prelude != nil {
+	launchPrompt := ""
+	if strings.TrimSpace(header.SystemPrompt) == "" {
+		launchPrompt = schema.LaunchSystemPromptBesideTranscript(path)
+	}
+	if prelude := apptranscript.PreludeTurn(header, launchPrompt); prelude != nil {
 		for i := range prelude.Items {
 			position := appwire.ThreadItemPosition{Entry: 0, Item: uint32(i)}
 			prelude.Items[i].Position = &position

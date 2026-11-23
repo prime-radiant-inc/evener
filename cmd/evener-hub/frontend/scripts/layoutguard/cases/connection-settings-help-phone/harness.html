@@ -13,7 +13,7 @@
     font-family: var(--font-sans);
   }
   /* The settings disclosure's own container, at a phone body width. The
-     media query under test is the real one in ConnectionFacts.module.css. */
+     media query under test is the real one in propertylist.module.css. */
   .page {
     box-sizing: border-box;
     width: 390px;
@@ -23,19 +23,21 @@
 </head>
 <body data-font-size="m">
 <div class="page" id="page">
-  <div class="settingsRow" id="settings-row">
-    <label class="rowLabel" for="credential-header">Credential header</label>
-    <span class="settingField">
-      <input
-        class="input"
-        id="credential-header"
-        value="Authorization=Bearer $PORTKEY_KEY"
-        aria-describedby="credential-header-help"
-      >
-    </span>
-    <span class="rowHelp settingHelp" id="credential-header-help">
-      NAME=VALUE; the value must reference a $VARIABLE or run a $(command), never a literal secret.
-    </span>
+  <div class="list settingsList" id="settings-list">
+    <div class="settingsRow" id="settings-row">
+      <label class="settingsLabel" for="credential-header">Credential header</label>
+      <span class="settingsValue">
+        <input
+          class="input fillWidth"
+          id="credential-header"
+          value="Authorization=Bearer $PORTKEY_KEY"
+          aria-describedby="credential-header-help"
+        >
+        <span class="help valueHelp" id="credential-header-help">
+          NAME=VALUE; the value must reference a $VARIABLE or run a $(command), never a literal secret.
+        </span>
+      </span>
+    </div>
   </div>
 </div>
 <script>
@@ -45,23 +47,21 @@ window.measure = () => {
     return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
   };
   const row = document.querySelector("#settings-row");
-  const label = document.querySelector("#settings-row .rowLabel");
-  const field = document.querySelector("#settings-row .settingField");
+  const label = document.querySelector("#settings-row .settingsLabel");
+  const value = document.querySelector("#settings-row .settingsValue");
   const input = document.querySelector("#credential-header");
   const help = document.querySelector("#credential-header-help");
   const rowStyle = getComputedStyle(row);
-  const helpStyle = getComputedStyle(help);
   return {
     viewportWidth: window.innerWidth,
     row: box(row),
     label: box(label),
-    field: box(field),
+    value: box(value),
     input: box(input),
     help: box(help),
     rowScrollWidth: row.scrollWidth,
     rowClientWidth: row.clientWidth,
     rowColumns: rowStyle.gridTemplateColumns,
-    helpGridColumn: helpStyle.gridColumnStart,
   };
 };
 </script>

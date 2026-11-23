@@ -12,8 +12,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// A root that ends its turn on communicate(end_turn=true,
-// end_reason="waiting_on_work") while a delegate still runs sleeps idle with
+// A root that yields with communicate({}) while a delegate still runs sleeps idle with
 // the delegate blocked, and the delegate's report wakes it into a turn that
 // presents the report to the model. This is the contract the prompt's wait
 // line promises: ending the turn on a running delegate loses nothing, because
@@ -30,7 +29,7 @@ func TestWaitingRootIsWokenByItsDelegateReport(t *testing.T) {
 			return delegateToolResponse("del_wait", "WAITED-CHILD: report the answer.")
 		},
 		func(llm.Request) llm.Response {
-			return endReasonResponse("waiting on the child", "waiting_on_work")
+			return quietYieldResponse("wait-for-child", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 		},
 		func(req llm.Request) llm.Response {
 			if !requestContainsText(req, "CHILD-ANSWER") {
@@ -61,6 +60,8 @@ func TestWaitingRootIsWokenByItsDelegateReport(t *testing.T) {
 	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
+
+	requireQuietToolResult(t, root, "wait-for-child")
 
 	// The root accepted the waiting turn end and rested: it is idle, it asks
 	// nobody for attention, and the child has not answered yet.

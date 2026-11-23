@@ -23,21 +23,21 @@ func TestNumberLinesWindowBoundaries(t *testing.T) {
 		limitLines *int
 		want       string
 	}{
-		{name: "whole file", text: "a\nb\nc", want: "   1\ta\n   2\tb\n   3\tc\n"},
-		{name: "offset past the first line", text: "a\nb\nc", offsetLine: new(2), want: "   2\tb\n   3\tc\n"},
-		{name: "limit short of the end", text: "a\nb\nc", limitLines: new(2), want: "   1\ta\n   2\tb\n"},
-		{name: "limit from an offset", text: "a\nb\nc", offsetLine: new(2), limitLines: new(1), want: "   2\tb\n"},
+		{name: "whole file", text: "a\nb\nc", want: "1\ta\n2\tb\n3\tc\n"},
+		{name: "offset past the first line", text: "a\nb\nc", offsetLine: new(2), want: "2\tb\n3\tc\n"},
+		{name: "limit short of the end", text: "a\nb\nc", limitLines: new(2), want: "1\ta\n2\tb\n"},
+		{name: "limit from an offset", text: "a\nb\nc", offsetLine: new(2), limitLines: new(1), want: "2\tb\n"},
 		{name: "offset past the end", text: "a\nb\nc", offsetLine: new(4), want: ""},
-		{name: "trailing newline is not an extra row", text: "a\n", want: "   1\ta\n"},
+		{name: "trailing newline is not an extra row", text: "a\n", want: "1\ta\n"},
 		{name: "offset past a single-line file", text: "a\n", offsetLine: new(2), want: ""},
 		{name: "offset past a trailing newline", text: "a\n", offsetLine: new(3), want: ""},
-		{name: "empty file is one empty line", text: "", want: "   1\t\n"},
-		{name: "crlf normalized before numbering", text: "a\r\nb", want: "   1\ta\n   2\tb\n"},
-		{name: "interior empty line with a trailing newline", text: "a\n\nb\n", want: "   1\ta\n   2\t\n   3\tb\n"},
-		{name: "genuine trailing blank line stays a row", text: "a\n\n", want: "   1\ta\n   2\t\n"},
-		{name: "lone newline is one empty row", text: "\n", want: "   1\t\n"},
-		{name: "single line beyond a large limit", text: "a", limitLines: new(5), want: "   1\ta\n"},
-		{name: "last line from an offset", text: "a\nb", offsetLine: new(2), limitLines: new(5), want: "   2\tb\n"},
+		{name: "empty file is one empty line", text: "", want: "1\t\n"},
+		{name: "crlf normalized before numbering", text: "a\r\nb", want: "1\ta\n2\tb\n"},
+		{name: "interior empty line with a trailing newline", text: "a\n\nb\n", want: "1\ta\n2\t\n3\tb\n"},
+		{name: "genuine trailing blank line stays a row", text: "a\n\n", want: "1\ta\n2\t\n"},
+		{name: "lone newline is one empty row", text: "\n", want: "1\t\n"},
+		{name: "single line beyond a large limit", text: "a", limitLines: new(5), want: "1\ta\n"},
+		{name: "last line from an offset", text: "a\nb", offsetLine: new(2), limitLines: new(5), want: "2\tb\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -83,8 +83,8 @@ func TestNearestFileRegionWindowBoundaries(t *testing.T) {
 		old     string
 		want    string
 	}{
-		{name: "window spans the matching line and the next", content: "one\ntwo\nthree", old: "two\nthree", want: "two\nthree"},
-		{name: "window past the end keeps the trailing empty segment", content: "alpha\nneedle line\n", old: "needle line\nmore", want: "needle line\n"},
+		{name: "window spans the matching line and the next", content: "one\ntwo\nthree", old: "two\nthree", want: "L2:\ntwo\nthree"},
+		{name: "window past the end keeps the trailing empty segment", content: "alpha\nneedle line\n", old: "needle line\nmore", want: "L2:\nneedle line\n"},
 		{name: "nothing similar enough", content: "one\ntwo\nthree", old: "four five", want: ""},
 		{name: "empty content", content: "", old: "x", want: ""},
 	}

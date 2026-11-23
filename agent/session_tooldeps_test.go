@@ -193,7 +193,7 @@ func TestToolDeps_WriteFileCreditsEditFile(t *testing.T) {
 		t.Fatalf("unexpected error: %q", res.Output)
 	}
 
-	editArgs, _ := json.Marshal(map[string]any{"file_path": written, "old_string": "a", "new_string": "b"})
+	editArgs, _ := json.Marshal(map[string]any{"file_path": written, "edits": []any{map[string]any{"old_string": "a", "new_string": "b"}}})
 	res = reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
 		ID:        "e1",
 		Name:      "edit_file",
@@ -208,7 +208,7 @@ func TestToolDeps_WriteFileCreditsEditFile(t *testing.T) {
 
 	// A file written by some path other than write_file's handler (simulating a
 	// shell heredoc) never calls TrackRead, so editing it afterward must still warn.
-	shellEditArgs, _ := json.Marshal(map[string]any{"file_path": shellWritten, "old_string": "a", "new_string": "b"})
+	shellEditArgs, _ := json.Marshal(map[string]any{"file_path": shellWritten, "edits": []any{map[string]any{"old_string": "a", "new_string": "b"}}})
 	res = reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
 		ID:        "e2",
 		Name:      "edit_file",

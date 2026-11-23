@@ -62,7 +62,7 @@ import {
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { ConnectionFacts, ConnectionSettingsDisclosure, connectionSettingsFields } from "./ConnectionFacts";
 import { CREDENTIAL_DOT, credentialState } from "./credentialState";
-import type { FormError } from "./formError";
+import { checkCredentialHeader, type FormError } from "./formError";
 import { InstanceModelEditor } from "./InstanceModelEditor";
 import styles from "./InstanceSheet.module.css";
 import { draftFor, type InstanceDraft, instanceEditParams, varRows } from "./instanceEdit";
@@ -85,7 +85,6 @@ const CLASS = {
   layer: requireClass(styles.layer, "InstanceSheet.module.css", "layer"),
   unconfigured: requireClass(styles.unconfigured, "InstanceSheet.module.css", "unconfigured"),
   actionRows: requireClass(styles.actionRows, "InstanceSheet.module.css", "actionRows"),
-  fullRow: requireClass(styles.fullRow, "InstanceSheet.module.css", "fullRow"),
   divider: requireClass(styles.divider, "InstanceSheet.module.css", "divider"),
   modelNote: requireClass(styles.modelNote, "InstanceSheet.module.css", "modelNote"),
   modelHeaderActions: requireClass(styles.modelHeaderActions, "InstanceSheet.module.css", "modelHeaderActions"),
@@ -95,8 +94,6 @@ const CLASS = {
   modelSummary: requireClass(styles.modelSummary, "InstanceSheet.module.css", "modelSummary"),
 };
 
-const LITERAL_HEADER_ERROR =
-  "Credential header must reference a $VARIABLE or run a $(command), never a literal secret.";
 const EMPTY_NAME_ERROR = "Name cannot be empty.";
 // The save landed, but its response was superseded, so nothing reseeded the
 // form: the toast says what the sheet is showing - the user's own draft - and
@@ -641,8 +638,9 @@ export function InstanceSheet({
       return;
     }
     if (params === null) return;
-    if (params.credentialHeader !== undefined && !params.credentialHeader.includes("$")) {
-      setFormError({ reason: "literal-header", message: LITERAL_HEADER_ERROR });
+    const headerError = checkCredentialHeader(params.credentialHeader);
+    if (headerError) {
+      setFormError(headerError);
       return;
     }
     // The endpoint the draft was seeded from travels with the save, so the hub
@@ -972,7 +970,6 @@ export function InstanceSheet({
                     data-testid="connection-facts"
                     rows={[
                       {
-                        key: "name",
                         label: "Name",
                         htmlFor: `${ids}-name`,
                         value: (
@@ -981,17 +978,16 @@ export function InstanceSheet({
                             value={draft.name}
                             onChange={(event) => update({ name: event.target.value })}
                             disabled={busy}
+                            fill
                           />
                         ),
                         help: nameHelp,
                       },
                       {
-                        key: "base-provider",
                         label: "Base provider",
                         value: <span data-testid="base-provider">{instance.providerId}</span>,
                       },
                       {
-                        key: "base-url",
                         label: "Base URL",
                         htmlFor: `${ids}-baseurl`,
                         value: (
@@ -1001,6 +997,7 @@ export function InstanceSheet({
                             onChange={(event) => update({ baseUrl: event.target.value })}
                             placeholder="https://…"
                             disabled={busy}
+                            fill
                           />
                         ),
                         help: clearingBaseUrl ? "Resets the endpoint to the provider's default." : undefined,
@@ -1161,56 +1158,49 @@ export function InstanceSheet({
                 </>
               )}
               <div className={CLASS.actionRows}>
-                <div className={CLASS.fullRow}>
-                  <Button
-                    variant="quiet"
-                    onClick={renameGap ? refuseDuringRename : onTestCredentials}
-                    aria-disabled={testCredentialsPending}
-                    disabled={busy}
-                  >
-                    {testCredentialsPending ? "Testing credentials…" : "Test credentials"}
-                  </Button>
-                </div>
+                <Button
+                  block
+                  variant="quiet"
+                  onClick={renameGap ? refuseDuringRename : onTestCredentials}
+                  aria-disabled={testCredentialsPending}
+                  disabled={busy}
+                >
+                  {testCredentialsPending ? "Testing credentials…" : "Test credentials"}
+                </Button>
                 {safeTestResult && (
                   <InlineNotice data-state={safeTestResult.status}>
                     {safeTestResult.status}: {safeCredentialTestMessage(safeTestResult.status)}
                   </InlineNotice>
                 )}
                 {supportsApiKey && (
-                  <div className={CLASS.fullRow}>
-                    <Button variant="quiet" onClick={renameGap ? refuseDuringRename : onSetApiKey} disabled={busy}>
-                      {instance.hasStoredFile ? "Replace key" : "Set key"}
-                    </Button>
-                  </div>
+                  <Button block variant="quiet" onClick={renameGap ? refuseDuringRename : onSetApiKey} disabled={busy}>
+                    {instance.hasStoredFile ? "Replace key" : "Set key"}
+                  </Button>
                 )}
                 {supportsCredentialJson && (
-                  <div className={CLASS.fullRow}>
-                    <Button
-                      variant="quiet"
-                      onClick={renameGap ? refuseDuringRename : onSetCredentialJson}
-                      disabled={busy}
-                    >
-                      {instance.hasStoredFile ? "Replace credential JSON" : "Set credential JSON"}
-                    </Button>
-                  </div>
+                  <Button
+                    block
+                    variant="quiet"
+                    onClick={renameGap ? refuseDuringRename : onSetCredentialJson}
+                    disabled={busy}
+                  >
+                    {instance.hasStoredFile ? "Replace credential JSON" : "Set credential JSON"}
+                  </Button>
                 )}
                 {supportsOAuth && (
-                  <div className={CLASS.fullRow}>
-                    <Button variant="quiet" onClick={renameGap ? refuseDuringRename : onOAuthStart} disabled={busy}>
-                      {instance.hasStoredOAuth ? "Refresh OAuth" : "Sign in…"}
-                    </Button>
-                  </div>
+                  <Button block variant="quiet" onClick={renameGap ? refuseDuringRename : onOAuthStart} disabled={busy}>
+                    {instance.hasStoredOAuth ? "Refresh OAuth" : "Sign in…"}
+                  </Button>
                 )}
                 {!instance.isDefault && (
-                  <div className={CLASS.fullRow}>
-                    <Button
-                      variant="quiet"
-                      onClick={renameGap ? refuseDuringRename : onSetDefault}
-                      disabled={busy || writesRefused}
-                    >
-                      ★ make default
-                    </Button>
-                  </div>
+                  <Button
+                    block
+                    variant="quiet"
+                    onClick={renameGap ? refuseDuringRename : onSetDefault}
+                    disabled={busy || writesRefused}
+                  >
+                    ★ make default
+                  </Button>
                 )}
               </div>
               {showDangerZone && (
@@ -1218,37 +1208,34 @@ export function InstanceSheet({
                   <hr className={CLASS.divider} />
                   <div className={CLASS.actionRows}>
                     {showClearStoredKey && (
-                      <div className={CLASS.fullRow}>
-                        <Button
-                          variant="dangerQuiet"
-                          onClick={renameGap ? refuseDuringRename : onClearStoredKey}
-                          disabled={busy}
-                        >
-                          {supportsCredentialJson ? "Clear stored credential JSON" : "Clear stored key"}
-                        </Button>
-                      </div>
+                      <Button
+                        block
+                        variant="dangerQuiet"
+                        onClick={renameGap ? refuseDuringRename : onClearStoredKey}
+                        disabled={busy}
+                      >
+                        {supportsCredentialJson ? "Clear stored credential JSON" : "Clear stored key"}
+                      </Button>
                     )}
                     {showClear && (
-                      <div className={CLASS.fullRow}>
-                        <Button
-                          variant="dangerQuiet"
-                          onClick={renameGap ? refuseDuringRename : onClear}
-                          disabled={busy}
-                        >
-                          Clear
-                        </Button>
-                      </div>
+                      <Button
+                        block
+                        variant="dangerQuiet"
+                        onClick={renameGap ? refuseDuringRename : onClear}
+                        disabled={busy}
+                      >
+                        Clear
+                      </Button>
                     )}
                     {!fromEnvironment(instance) && (
-                      <div className={CLASS.fullRow}>
-                        <Button
-                          variant="danger"
-                          onClick={renameGap ? refuseDuringRename : onRemove}
-                          disabled={busy || writesRefused}
-                        >
-                          Remove
-                        </Button>
-                      </div>
+                      <Button
+                        block
+                        variant="danger"
+                        onClick={renameGap ? refuseDuringRename : onRemove}
+                        disabled={busy || writesRefused}
+                      >
+                        Remove
+                      </Button>
                     )}
                   </div>
                 </>

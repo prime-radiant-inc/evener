@@ -38,7 +38,7 @@ const pxResponsesProbe = `[{"type":"reasoning","id":"rs_1","summary":[{"type":"s
 
 const pxChatProbe = `{"role":"assistant","reasoning_content":"  why  ","reasoning_details":[{"z":1,"type":"reasoning.encrypted","id":"r1","data":"blob"}],"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"probe","arguments":"{ \"b\" : 2, \"a\" : \"<x&y>\" }"}}]}`
 
-const pxDoneArgs = `{"message":"done","end_turn":true,"output":{"message":"","data":{},"artifacts":[]}}`
+const pxDoneArgs = `{"message":"done","next":"send_and_end_turn","output":{"message":"","data":{},"artifacts":[]}}`
 
 const pxResponsesFrame = "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":%q,\"status\":\"completed\",\"output\":%s}}\n\n"
 

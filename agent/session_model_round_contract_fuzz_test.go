@@ -83,7 +83,7 @@ func FuzzModelRoundContracts(f *testing.F) {
 			StorageScopeFingerprint: modelRoundChoice(r, "scope", "", text),
 			StoragePolicyLabel:      modelRoundChoice(r, "store", "none", ""),
 		}
-		full := responsesContinuationFullHistoryRequestForPlan(routeForRow(registry.Resolved{Instance: "fuzz", ModelID: "fuzz"}, normalized, false), normalized, plan)
+		full := responsesContinuationFullHistoryRequestForPlan(routeForRow(registry.Resolved{Instance: "fuzz", ModelID: "fuzz"}, normalized, false), normalized, plan, contextBoundaryNone)
 		if full.HistoryMode != llm.HistoryModeFullHistory || full.Continuation == nil {
 			t.Fatalf("full-history plan was not materialized: %+v", full)
 		}
@@ -166,6 +166,7 @@ func FuzzModelRoundContracts(f *testing.F) {
 			consecutiveEmpty:    r.intn(maxEmptyRetries + 2),
 			totalEmpty:          r.intn(maxTotalEmptyResponses + 2),
 			consecutiveBareText: r.intn(maxBareTextRetries + 2),
+			totalBareText:       r.intn(maxTotalBareTextResponses + 2),
 		}
 		_, _ = sess.handleNoToolCalls(r.boolean(), &tracker)
 		for _, tc := range []struct {
@@ -178,6 +179,7 @@ func FuzzModelRoundContracts(f *testing.F) {
 			{false, retryTracker{}},
 			{true, retryTracker{consecutiveEmpty: maxEmptyRetries, totalEmpty: maxTotalEmptyResponses}},
 			{false, retryTracker{consecutiveBareText: maxBareTextRetries}},
+			{false, retryTracker{totalBareText: maxTotalBareTextResponses}},
 		} {
 			tracker := tc.tracker
 			_, _ = sess.handleNoToolCalls(tc.noContent, &tracker)

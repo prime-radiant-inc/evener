@@ -419,7 +419,7 @@ func TestDeriveRestoredAskPending_FailedAskPairNeverCollects(t *testing.T) {
 			if len(pending) != 0 || isAskRound {
 				t.Fatalf("deriveRestoredAskPending = %d pending (isAskRound=%v), want 0: a failed ask has no completed non-error ask_user result to collect from", len(pending), isAskRound)
 			}
-			if got := deriveRestoredState(history, 0, nil, nil); got != SessionIdle {
+			if got, _, _ := deriveRestoredState(history, 0, nil); got != SessionIdle {
 				t.Fatalf("deriveRestoredState = %q, want %q", got, SessionIdle)
 			}
 		})

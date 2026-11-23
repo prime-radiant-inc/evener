@@ -42,19 +42,33 @@ func TestDelegateStopDrainScopesAttentionToMembers(t *testing.T) {
 	if err := c.drainStopForClose(context.Background(), stop); err != nil {
 		t.Fatalf("stop read attention outside its subtree: %v", err)
 	}
-	for _, input := range []struct{ path, id string }{{targetPath, "child-dlg_target"}, {childPath, "child-dlg_child"}} {
-		pending, err := readPendingDelegateAttention(input.path, input.id)
-		if err != nil {
-			t.Fatal(err)
+	c.mu.Lock()
+	aggregates := make(map[string]*delegatestore.Aggregate, 3)
+	for _, id := range []string{"dlg_target", "dlg_child", "dlg_unrelated"} {
+		aggregates[id] = c.durable[id]
+	}
+	c.mu.Unlock()
+	for _, input := range []struct{ id, attentionID string }{{"dlg_target", "target-attention"}, {"dlg_child", "child-attention"}} {
+		aggregate := aggregates[input.id]
+		if aggregate == nil {
+			t.Fatalf("stop dropped delegate %q from the journal", input.id)
 		}
-		if len(pending) != 0 {
-			t.Fatal("stop left member attention unresolved")
+		if _, resolved := aggregate.ResolvedAttention[input.attentionID]; !resolved {
+			t.Fatalf("stop left member attention %q unresolved in delegatestore", input.attentionID)
+		}
+		for _, row := range aggregate.PendingAttention {
+			if row.AttentionID == input.attentionID {
+				t.Fatalf("stop left member attention %q pending in delegatestore", input.attentionID)
+			}
+		}
+		if aggregate.NeedsAttention {
+			t.Fatalf("stop left delegate %q needing attention", input.id)
 		}
 	}
 	if c.stop != nil {
 		t.Fatal("stop did not complete")
 	}
-	if a := c.durable["dlg_unrelated"]; a.Phase != delegatestore.PhaseIdle || !a.Resumable {
+	if a := aggregates["dlg_unrelated"]; a == nil || a.Phase != delegatestore.PhaseIdle || !a.Resumable {
 		t.Fatal("stop changed unrelated delegate status")
 	}
 	got, err := os.ReadFile(unrelatedPath)

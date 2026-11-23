@@ -1,5 +1,6 @@
-import { type CSSProperties, type KeyboardEvent, useId, useRef } from "react";
+import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, useEffect, useId, useRef } from "react";
 import { requireClass } from "../internal/requireClass";
+import { firstEnabledIndex, useRovingRadio } from "../internal/rovingRadio";
 import styles from "./segmentedcontrol.module.css";
 
 export interface SegmentedControlOption<T extends string = string> {
@@ -20,6 +21,10 @@ export interface SegmentedControlProps<T extends string = string> {
   disabled?: boolean;
   size?: "sm" | "md";
   fullWidth?: boolean;
+  /** Break labels and details onto more lines inside their columns instead of ellipsizing; the track grows in block size. */
+  wrap?: boolean;
+  /** Focus the selected option (not the group container) in the frame after the control mounts. */
+  autoFocus?: boolean;
   id?: string;
   "aria-describedby"?: string;
 }
@@ -34,6 +39,7 @@ const CLASS = {
   optionLabel: requireClass(styles.optionLabel, "segmentedcontrol.module.css", "optionLabel"),
   optionDetail: requireClass(styles.optionDetail, "segmentedcontrol.module.css", "optionDetail"),
   stacked: requireClass(styles.stacked, "segmentedcontrol.module.css", "stacked"),
+  wrap: requireClass(styles.wrap, "segmentedcontrol.module.css", "wrap"),
   sm: requireClass(styles.sm, "segmentedcontrol.module.css", "sm"),
   md: requireClass(styles.md, "segmentedcontrol.module.css", "md"),
 };
@@ -60,32 +66,6 @@ function hasDetail<T extends string>(option: SegmentedControlOption<T>): boolean
   return option.detail !== undefined && option.detail.trim() !== "";
 }
 
-function firstEnabledIndex<T extends string>(options: readonly SegmentedControlOption<T>[]): number {
-  return options.findIndex((option) => !option.disabled);
-}
-
-function lastEnabledIndex<T extends string>(options: readonly SegmentedControlOption<T>[]): number {
-  for (let index = options.length - 1; index >= 0; index--) {
-    if (!options[index]?.disabled) return index;
-  }
-  return -1;
-}
-
-function stepEnabledIndex<T extends string>(
-  options: readonly SegmentedControlOption<T>[],
-  from: number,
-  delta: 1 | -1,
-): number {
-  const count = options.length;
-  if (count === 0) return -1;
-  let index = from;
-  for (let step = 0; step < count; step++) {
-    index = (index + delta + count) % count;
-    if (!options[index]?.disabled) return index;
-  }
-  return -1;
-}
-
 export function SegmentedControl<T extends string = string>({
   label,
   hideLabel = false,
@@ -95,6 +75,8 @@ export function SegmentedControl<T extends string = string>({
   disabled = false,
   size = "md",
   fullWidth = false,
+  wrap = false,
+  autoFocus = false,
   id,
   "aria-describedby": ariaDescribedby,
 }: SegmentedControlProps<T>) {
@@ -117,6 +99,18 @@ export function SegmentedControl<T extends string = string>({
   let sizeClass = size === "sm" ? CLASS.sm : CLASS.md;
   if (stacked) sizeClass = CLASS.stacked;
 
+  // Auto-focus is the control's entry event: focusing the selected option as
+  // it appears is the caller's focus plan, and repeating it whenever options
+  // or the value change would steal focus from wherever the reader moved it.
+  // The queued frame lets a caller's own focus restore, such as a closing
+  // drawer's, land first.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: tabbableIndex is read once, on mount, by design.
+  useEffect(() => {
+    if (!autoFocus) return;
+    const frame = requestAnimationFrame(() => optionRefs.current[tabbableIndex]?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [autoFocus]);
+
   function choose(index: number) {
     const option = options[index];
     if (!option || disabled || option.disabled === true || option.value === value) return;
@@ -129,30 +123,10 @@ export function SegmentedControl<T extends string = string>({
     optionRefs.current[index]?.focus();
   }
 
-  function handleKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+  const moveFocus = useRovingRadio({ items: options, onMove: focusAndChoose });
+  function handleKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>, index: number) {
     if (disabled || options[index]?.disabled) return;
-    switch (event.key) {
-      case "ArrowRight":
-      case "ArrowDown":
-        event.preventDefault();
-        focusAndChoose(stepEnabledIndex(options, index, 1));
-        break;
-      case "ArrowLeft":
-      case "ArrowUp":
-        event.preventDefault();
-        focusAndChoose(stepEnabledIndex(options, index, -1));
-        break;
-      case "Home":
-        event.preventDefault();
-        focusAndChoose(firstEnabledIndex(options));
-        break;
-      case "End":
-        event.preventDefault();
-        focusAndChoose(lastEnabledIndex(options));
-        break;
-      default:
-        break;
-    }
+    moveFocus(event, index);
   }
 
   return (
@@ -190,15 +164,17 @@ export function SegmentedControl<T extends string = string>({
             aria-label={option.accessibleLabel ?? option.label}
             disabled={disabled || option.disabled === true}
             tabIndex={index === tabbableIndex ? 0 : -1}
-            className={`${CLASS.option} ${sizeClass}`}
+            className={`${CLASS.option} ${sizeClass}${wrap ? ` ${CLASS.wrap}` : ""}`}
             ref={(node) => {
               optionRefs.current[index] = node;
             }}
             onClick={() => choose(index)}
             onKeyDown={(event) => handleKeyDown(event, index)}
           >
-            <span className={CLASS.optionLabel}>{option.label}</span>
-            {hasDetail(option) ? <span className={CLASS.optionDetail}>{option.detail}</span> : null}
+            <span className={`${CLASS.optionLabel}${wrap ? ` ${CLASS.wrap}` : ""}`}>{option.label}</span>
+            {hasDetail(option) ? (
+              <span className={`${CLASS.optionDetail}${wrap ? ` ${CLASS.wrap}` : ""}`}>{option.detail}</span>
+            ) : null}
           </button>
         ))}
       </div>

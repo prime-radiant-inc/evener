@@ -18,7 +18,6 @@ import (
 	"primeradiant.com/evener/agent/skill"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/registry"
 )
 
 // toolDeps is the dependency surface the core tool handler closures need from
@@ -49,11 +48,8 @@ type toolDeps struct {
 	abort func(ctx context.Context) error
 
 	// resultToolName is the effective name of the communicate tool.
-	resultToolName func() string
-
-	// offersEndReason reports that communicate takes end_reason
-	// (Session.hasHumanPartnerToAsk).
-	offersEndReason bool
+	resultToolName         func() string
+	communicateOutputBound bool
 
 	// memoryToolsStripped reports that this session has no memory namespace
 	// (memoryNamespaceUnavailable), so filterUnavailableMemoryTools will remove
@@ -142,18 +138,17 @@ type toolDeps struct {
 	// canonicalization, for delegate structured_result capture. Nil means the
 	// call carried no explicit structured output; an explicit JSON null is
 	// passed as json.RawMessage("null"), which is non-nil and therefore present.
-	setCommunicateTerminal func(ctx context.Context, message, reply, output string, structured any, endReason string) bool
+	setCommunicateTerminal func(ctx context.Context, message, reply, output string, structured any) bool
+	communicateStopPending func() bool
 
 	// runningJobIDs lists this session's own running (session-launched,
 	// non-nested) job ids. The communicate handler uses it to warn when
 	// end_turn=true is called while work is still in flight.
 	runningJobIDs func() []string
 
-	// wakeableWork reports whether a resting session can be woken; see
-	// Session.hasWakeableWork for the sources it counts. The communicate
-	// handler refuses end_reason waiting_on_work when it returns false.
-	// Nil disables the refusal.
-	wakeableWork func() bool
+	// Quiet yields end the turn without capturing or delivering a report.
+	canQuietlyYield  func(context.Context) error
+	recordQuietYield func()
 
 	// turnEndsProcess mirrors SessionConfig.TurnEndsProcess so the end_turn
 	// warning can tell the truth about what happens to those jobs. Captured by
@@ -171,11 +166,6 @@ type toolDeps struct {
 
 	// reasoningEffortLevels is captured once for the task_list tool definition.
 	reasoningEffortLevels []string
-
-	// webSearchEnabled is the resolved decision (the google protocol on a row
-	// that serves web search) for whether the function-tool web_search should
-	// be registered.
-	webSearchEnabled bool
 
 	// stateDir and sessionID locate the current session's transcript bucket and
 	// transcript file. They are the inputs the transcript tools pass to
@@ -303,8 +293,7 @@ func (g notesGuard) SnapshotAll() (human, agent string, urls []schema.SessionURL
 // webDeps holds the bound web tool functions. The profile and client stay
 // hidden inside the closures captured here.
 type webDeps struct {
-	fetch  func(ctx context.Context, rawURL, question string) (any, error)
-	search func(ctx context.Context, query string) (any, error)
+	fetch func(ctx context.Context, rawURL, question string) (any, error)
 }
 
 // newToolDeps builds the tool dependency surface from a session. Every member
@@ -312,16 +301,17 @@ type webDeps struct {
 // unchanged. Built once in registerCoreTools.
 func newToolDeps(s *Session) *toolDeps {
 	return &toolDeps{
-		registerTool:        s.cfg.testOnly.registerTool,
-		emit:                s.emit,
-		deliverCommunicate:  s.deliverCommunicate,
-		postDelegateUpdate:  s.postDelegateUpdate,
-		steer:               s.steerKind,
-		steerTaskCompletion: s.steerTaskCompletion,
-		drainSteering:       s.drainSteeringForCommunicate,
-		prependSteering:     s.prependSteering,
-		abort:               s.abortIfClosing,
-		resultToolName:      s.resultToolName,
+		registerTool:           s.cfg.testOnly.registerTool,
+		emit:                   s.emit,
+		deliverCommunicate:     s.deliverCommunicate,
+		postDelegateUpdate:     s.postDelegateUpdate,
+		steer:                  s.steerKind,
+		steerTaskCompletion:    s.steerTaskCompletion,
+		drainSteering:          s.drainSteeringForCommunicate,
+		prependSteering:        s.prependSteering,
+		abort:                  s.abortIfClosing,
+		resultToolName:         s.resultToolName,
+		communicateOutputBound: s.profile.HasCommunicateOutputOverride(),
 		cmdTimeouts: func() (int, int) {
 			return s.cfg.DefaultCommandTimeoutMS, s.cfg.MaxCommandTimeoutMS
 		},
@@ -375,18 +365,18 @@ func newToolDeps(s *Session) *toolDeps {
 		},
 		now: s.sclock().Now,
 		web: webDeps{
-			fetch:  s.webFetch,
-			search: s.webSearch,
+			fetch: s.webFetch,
 		},
 		requestSkillCompaction: s.requestSkillCompaction,
 		pressure:               s.contextPressure,
 		hasFoldableHistory:     s.hasFoldableHistory,
 		skillInventory:         s.skillInventorySnapshot,
 		setCommunicateTerminal: s.acceptCommunicateTerminal,
+		communicateStopPending: s.hasReplyStopHook,
 		runningJobIDs:          func() []string { return sessionRunningWorkIDs(s) },
-		wakeableWork:           s.hasWakeableWork,
+		canQuietlyYield:        s.canQuietlyYield,
+		recordQuietYield:       s.recordQuietYield,
 		turnEndsProcess:        s.cfg.TurnEndsProcess,
-		offersEndReason:        s.hasHumanPartnerToAsk(),
 		memoryToolsStripped:    memoryNamespaceUnavailable(s.cfg),
 		toolNameMap:            s.profile.ToolNameMap(),
 		nativeWebSearch:        s.providerWebSearchEnabled(s.profile) && protocolInjectsNativeWebSearch(s.profile.Protocol()),
@@ -396,7 +386,6 @@ func newToolDeps(s *Session) *toolDeps {
 		},
 		skillActivate:         s.skillToolActivate,
 		reasoningEffortLevels: s.profile.ReasoningEffortLevels(),
-		webSearchEnabled:      s.profile.Protocol() == registry.ProtocolGoogle && s.profile.SupportsWebSearch(),
 		stateDir:              s.stateDir,
 		sessionID:             s.id,
 		currentMeta:           s.Meta,

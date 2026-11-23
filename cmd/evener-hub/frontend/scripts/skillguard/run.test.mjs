@@ -195,6 +195,10 @@ describe("pressRailRowExpr finds, hit-tests and presses in one turn", () => {
       text.addEventListener("click", () => clicks.push(text.textContent));
       text.scrollIntoView = () => {};
     }
+    // A pressed control needs real area: the shared uncoveredCenter refuses a
+    // zero-area element, whose center belongs to whatever holds that pixel.
+    for (const el of document.querySelectorAll("*"))
+      el.getBoundingClientRect = () => ({ x: 0, y: 0, width: 10, height: 10 });
     return clicks;
   }
 
@@ -231,13 +235,16 @@ describe("pressRailRowExpr finds, hit-tests and presses in one turn", () => {
 describe("slashRowPointExpr hit-tests the skill's own row", () => {
   function renderMenu() {
     document.body.innerHTML = `<div data-testid="composer-slash-menu"><button><span>/other</span></button><button><span>/review</span></button></div>`;
-    for (const button of document.querySelectorAll("button")) button.scrollIntoView = () => {};
+    for (const el of document.querySelectorAll("*")) {
+      el.scrollIntoView = () => {};
+      el.getBoundingClientRect = () => ({ x: 0, y: 0, width: 10, height: 10 });
+    }
   }
 
   test("returns the row's center while the row is topmost there", () => {
     renderMenu();
     document.elementFromPoint = () => document.querySelectorAll("button span")[1];
-    expect(evaluateExpr(driver.slashRowPointExpr("/review"))).toEqual({ x: 0, y: 0 });
+    expect(evaluateExpr(driver.slashRowPointExpr("/review"))).toEqual({ x: 5, y: 5 });
   });
 
   test("reports not ready while another row is at its center", () => {
@@ -263,6 +270,8 @@ describe("removeAttachmentExpr presses the first tile's remove button in one tur
       button.scrollIntoView = () => {};
       button.addEventListener("click", () => removed.push(button.getAttribute("aria-label")));
     }
+    for (const el of document.querySelectorAll("*"))
+      el.getBoundingClientRect = () => ({ x: 0, y: 0, width: 10, height: 10 });
     return removed;
   }
 
@@ -685,5 +694,93 @@ describe("Chrome DevTools announcement budget", () => {
       vi.useRealTimers();
       await d.lifecycle?.cleanup();
     }
+  });
+});
+
+// A repositioning reader fits several stages inside one retry budget, so each
+// stage carries a hard slice. The driver's load-derived widening is right for
+// a standalone wait but must not spend that slice: an earlier 2s reaction
+// turns a 100ms floor into a 400ms tripwire, and a stage that then waited
+// 400ms has already outlived a 300ms retry budget.
+describe("waitPage hard cap", () => {
+  function silentPage() {
+    return { send: async () => ({ result: { result: { value: null } } }) };
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("a hard-capped wait expires at its slice, not the load-widened budget", async () => {
+    vi.useFakeTimers();
+    const d = newDriver();
+    d.page = silentPage();
+    d.reactions.observe(2000);
+    let settled = false;
+    const waited = d.waitPage("null", { timeoutMs: 100, hardTimeoutMs: 100, label: "hard-capped" }).then(
+      () => {
+        settled = true;
+        return null;
+      },
+      (error) => {
+        settled = true;
+        return error;
+      },
+    );
+    await vi.advanceTimersByTimeAsync(250);
+    expect(settled).toBe(true);
+    await expect(waited).resolves.toBeInstanceOf(Error);
+  });
+
+  test("a wait without a hard cap still widens from the slowest observed reaction", async () => {
+    vi.useFakeTimers();
+    const d = newDriver();
+    d.page = silentPage();
+    d.reactions.observe(2000);
+    let settled = false;
+    const waited = d.waitPage("null", { timeoutMs: 100, label: "load-widened" }).then(
+      () => {
+        settled = true;
+        return null;
+      },
+      (error) => {
+        settled = true;
+        return error;
+      },
+    );
+    await vi.advanceTimersByTimeAsync(250);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(settled).toBe(true);
+    await expect(waited).resolves.toBeInstanceOf(Error);
+  });
+
+  test("a capped wait ends at its slice when a poll reply stalls", async () => {
+    vi.useFakeTimers();
+    const d = newDriver();
+    let sends = 0;
+    d.page = {
+      send: () => {
+        sends += 1;
+        return new Promise((resolve) =>
+          setTimeout(() => resolve({ result: { result: { value: null } } }), 30000),
+        );
+      },
+    };
+    let settled = false;
+    const waited = d.waitPage("null", { timeoutMs: 100, hardTimeoutMs: 100, label: "stalled poll" }).then(
+      () => {
+        settled = true;
+        return null;
+      },
+      (error) => {
+        settled = true;
+        return error;
+      },
+    );
+    await vi.advanceTimersByTimeAsync(250);
+    expect(settled).toBe(true);
+    await expect(waited).resolves.toBeInstanceOf(Error);
+    expect(sends).toBe(1);
   });
 });

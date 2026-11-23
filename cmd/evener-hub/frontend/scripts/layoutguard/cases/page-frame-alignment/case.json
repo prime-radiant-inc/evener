@@ -7,6 +7,7 @@
     "widgets/panescaffold/panescaffold.module.css",
     "panes/session/transcript/turnblock.module.css",
     "styles/surface.module.css",
+    "styles/sendbutton.module.css",
     "panes/spawn/spawn.module.css",
     "panes/settings/settings.module.css"
   ],
@@ -16,10 +17,7 @@
     "deviceScaleFactor": 1,
     "mobile": false
   },
-  "widthMatrix": [
-    { "width": 1440 },
-    { "width": 1920 }
-  ],
+  "widthMatrix": [{ "width": 1440 }, { "width": 1920 }],
   "mutation": {
     "declaration": "panescaffold.module.css: remove the .pane:has(> .body[data-pane-scaffold^=\"session:\"]) > .header and .pane:has(> .body[data-pane-scaffold=\"spawn\"]) > .header padding-inline rule",
     "verified": "2026-11-06",

@@ -10,74 +10,39 @@
  * the segment's corner properties (styles/surface.module.css): the summary
  * while it is the whole row, and the last row of an open run, whose evidence
  * band inherits them. */
-.group {
-  min-width: 0;
-}
 
 .summary {
   composes: toolRowInsets from "../../../styles/surface.module.css";
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
   padding: var(--tool-card-row-pad) var(--tool-card-inset);
   border-radius: var(--tool-card-radius-top, 0) var(--tool-card-radius-top, 0) var(--tool-card-radius-bottom, 0)
     var(--tool-card-radius-bottom, 0);
-  color: var(--ink-mid);
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
-  cursor: pointer;
-  /* Suppress the UA's own disclosure triangle: this summary draws the app's
-   * shared Chevron instead (widgets/chevron). */
-  list-style: none;
 }
 
-.group[open] > .summary {
+/* Disclosure's summary owns the flex layout, hover wash, and phone tap floor;
+ * this row adds only its card geometry above, the card's squared seam while
+ * its body is open, and the control-radius focus ring. */
+details[open] > .summary {
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
 }
 
-.summary::-webkit-details-marker {
-  display: none;
-}
-
-.summary:hover {
-  background: var(--hover-1);
-}
-
 /* Inset: the summary spans the card, so an outset ring would sit on its edge. */
 .summary:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: -2px;
   border-radius: var(--radius-control);
 }
 
 /* Phone tap floor (2026-07-30-mobile-session-layout-design.md, decision 4):
- * the summary is the one control that opens a folded run, so it takes the
- * same --tap-min widgets/disclosure's summary does. min-height, not height,
- * so the desktop row keeps its own rhythm. */
+ * the summary is the one control that opens a folded run. Disclosure's summary
+ * states the same floor, but this row keeps its own declaration because
+ * styles/display-gates.test.ts pins it here and the row's geometry is owned
+ * here; both declarations set the same --tap-min. min-height, not height, so
+ * the desktop row keeps its own rhythm. */
 @media (max-width: 899px) {
   .summary {
     min-height: var(--tap-min);
   }
-}
-
-/* The chevron turns to point down when the run opens - the same rotation
- * toolcallitem.module.css gives a tool row's own chevron, so one disclosure
- * gesture reads the same everywhere in the transcript. */
-.chevron {
-  display: inline-flex;
-  flex: none;
-  color: var(--ink-mid);
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .chevron > svg {
-    transition: transform var(--motion-duration-hover) var(--motion-easing-standard);
-  }
-}
-
-.chevron[data-open="true"] > svg {
-  transform: rotate(90deg);
 }
 
 .label {
@@ -91,6 +56,9 @@
  * and from the header above by the body's own top edge. */
 .body {
   composes: groupedRows from "../../../styles/surface.module.css";
+  /* Disclosure wraps its children in a body with a --space-1 gap. A run's
+   * rows are flush with their header inside one card, so cancel it. */
+  margin-top: calc(-1 * var(--space-1));
   border-top: 1px solid var(--edge);
 }
 

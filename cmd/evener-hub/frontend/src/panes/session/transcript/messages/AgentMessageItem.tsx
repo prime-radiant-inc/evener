@@ -34,6 +34,7 @@ import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../typ
 import { AgentMarkdown } from "./AgentMarkdown";
 import styles from "./agentmessageitem.module.css";
 import { MessageTimestamp } from "./MessageTimestamp";
+import { SpeakerHeader } from "./SpeakerHeader";
 
 const CLASS = {
   message: requireClass(styles.message, "agentmessageitem.module.css", "message"),
@@ -42,9 +43,7 @@ const CLASS = {
   terminal: requireClass(styles.terminal, "agentmessageitem.module.css", "terminal"),
   opener: requireClass(styles.opener, "agentmessageitem.module.css", "opener"),
   column: requireClass(styles.column, "agentmessageitem.module.css", "column"),
-  header: requireClass(styles.header, "agentmessageitem.module.css", "header"),
-  name: requireClass(styles.name, "agentmessageitem.module.css", "name"),
-  meta: requireClass(styles.meta, "agentmessageitem.module.css", "meta"),
+  speakerSpacing: requireClass(styles.speakerSpacing, "agentmessageitem.module.css", "speakerSpacing"),
   stamp: requireClass(styles.stamp, "agentmessageitem.module.css", "stamp"),
   stream: requireClass(styles.stream, "agentmessageitem.module.css", "stream"),
 };
@@ -65,17 +64,14 @@ export const AgentMessageItem = memo(function AgentMessageItem({
   const timestamp = hasTime ? <MessageTimestamp value={time} /> : null;
   const meta =
     agentLabel || hasTime ? (
-      <span className={CLASS.meta}>
+      <>
         {agentLabel && <span data-slot="label">{agentLabel}</span>}
         {agentLabel && hasTime ? " · " : null}
         {timestamp}
-      </span>
-    ) : null;
+      </>
+    ) : undefined;
   const speaker = opensExchange ? (
-    <div className={CLASS.header} data-testid="agent-speaker-header">
-      <span className={CLASS.name}>Agent</span>
-      {meta}
-    </div>
+    <SpeakerHeader name="Agent" meta={meta} className={CLASS.speakerSpacing} testId="agent-speaker-header" />
   ) : null;
 
   // Openers wrap in a flex row [avatar][column(header, prose)] - the avatar

@@ -153,22 +153,8 @@ type delegateTreeController struct {
 	closing         bool
 	reconcileOrder  []delegateLease
 	runStarts       map[delegateLease]delegatestore.RunTrigger
-	// runOutcomes is each generation's own settled outcome, indexed beside
-	// runStarts. The delegate aggregate keeps only the newest, which is not
-	// enough to answer whether an individual reopened row was quieted by its own
-	// stop: several rows can be unreleased at once after successive stops, and a
-	// later generation's outcome says nothing about an earlier row. A restore
-	// therefore asks this index the row's own generation.
-	runOutcomes map[delegateLease]delegatestore.Outcome
-	// latestAttentionStop is the newest generation per delegate whose run was
-	// attention-triggered and settled cancelled. Wake admission asks whether a
-	// stop newer than the release floor still exists; scanning every generation
-	// under this lock made that question quadratic on a long-lived delegate,
-	// because the floor stays zero when nothing was ever stopped. The answer is
-	// a lookup into this index and a comparison with the floor.
-	latestAttentionStop map[string]uint64
-	owedAdmission       bool
-	emitUpdate          func(delegateUpdatePlan)
+	owedAdmission   bool
+	emitUpdate      func(delegateUpdatePlan)
 	// appendFault, when set, fails appendLocked's durable append before it
 	// reaches the store. Tests inject a chosen append error; nil in
 	// production.
@@ -470,11 +456,6 @@ type delegateMutationPlans struct {
 	attentionFinalization *delegateSettlementClaim
 	shellRepairs          []delegateShellRepairPlan
 	warnings              []events.WarningData
-	// ackWakeGeneration is the settled generation the acknowledgment this batch
-	// committed superseded, sampled at delivery admission, not where its release
-	// was journaled. The post-commit wake releases against this sample so a stop
-	// that settles in between is not cleared by a delivery older than it.
-	ackWakeGeneration uint64
 }
 
 func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTreeController, error) {
@@ -546,8 +527,6 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		releasing:           make(map[string]*Session),
 		reconcileOrder:      delegateOpenRunOrder(events, durable),
 		runStarts:           runStarts,
-		runOutcomes:         delegateRunOutcomeIndex(events),
-		latestAttentionStop: delegateLatestAttentionStopIndex(events, runStarts),
 		owedAdmission:       true,
 	}
 	for _, event := range events {
@@ -565,53 +544,9 @@ func rootDelegateActor(rootSessionID string) delegateActor {
 	return delegateActor{rootSessionID: rootSessionID}
 }
 
-// delegateRunOutcomeIndex is each generation's own settled outcome, folded from
-// the same journal the aggregate comes from. The aggregate keeps only the
-// newest, and a cold restore that asked it which rows a stop quieted would apply
-// one generation's answer to every row: after two successive stops it would
-// rebuild the later quiet and present the earlier report on a stale wake that
-// never released it. Every row's own generation is the thing consulted, so this
-// index answers per row.
-func delegateRunOutcomeIndex(events []delegatestore.Event) map[delegateLease]delegatestore.Outcome {
-	index := make(map[delegateLease]delegatestore.Outcome)
-	for _, event := range events {
-		if event.RunFinished != nil {
-			index[delegateLease{delegateID: event.DelegateID, generation: event.RunFinished.Generation}] = event.RunFinished.Outcome
-		}
-	}
-	return index
-}
-
-// delegateLatestAttentionStopIndex is the newest generation per delegate whose
-// run was attention-triggered and settled cancelled. Wake admission asks
-// whether a stop newer than the release floor still exists, and scanning every
-// generation under the controller lock made that quadratic on a long-lived
-// delegate: the floor stays zero when nothing was ever stopped, so the scan
-// never shortened. This index answers the same question in constant time.
-// starts is the caller's run-start index over the same events.
-func delegateLatestAttentionStopIndex(events []delegatestore.Event, starts map[delegateLease]delegatestore.RunTrigger) map[string]uint64 {
-	stops := make(map[string]uint64)
-	for _, event := range events {
-		if event.RunFinished == nil {
-			continue
-		}
-		lease := delegateLease{delegateID: event.DelegateID, generation: event.RunFinished.Generation}
-		if starts[lease] != delegatestore.TriggerAttention {
-			continue
-		}
-		if event.RunFinished.Outcome.Status != delegatestore.OutcomeCancelled {
-			continue
-		}
-		if event.RunFinished.Generation > stops[event.DelegateID] {
-			stops[event.DelegateID] = event.RunFinished.Generation
-		}
-	}
-	return stops
-}
-
 func (c *delegateTreeController) appendLocked(events ...delegatestore.Event) ([]delegatestore.Event, error) {
 	for _, event := range events {
-		if event.ResumabilityClosed != nil && c.attentionStartBlockerLocked(event.DelegateID, true) != nil {
+		if event.ResumabilityClosed != nil && c.attentionStartBlockerLocked(event.DelegateID) != nil {
 			return nil, errDelegateTargetBusy
 		}
 	}
@@ -628,21 +563,6 @@ func (c *delegateTreeController) appendLocked(events ...delegatestore.Event) ([]
 	for _, event := range appended {
 		if event.RunStarted != nil {
 			c.runStarts[delegateLease{delegateID: event.DelegateID, generation: event.RunStarted.Generation}] = event.RunStarted.Trigger
-		}
-		if event.RunFinished != nil {
-			c.runOutcomes[delegateLease{delegateID: event.DelegateID, generation: event.RunFinished.Generation}] = event.RunFinished.Outcome
-			// A stop recorded here must be reachable by the index immediately:
-			// wake admission asks it before any replay, and an appended settle
-			// is the same evidence a replayed one is.
-			if c.runStarts[delegateLease{delegateID: event.DelegateID, generation: event.RunFinished.Generation}] == delegatestore.TriggerAttention &&
-				event.RunFinished.Outcome.Status == delegatestore.OutcomeCancelled {
-				if event.RunFinished.Generation > c.latestAttentionStop[event.DelegateID] {
-					if c.latestAttentionStop == nil {
-						c.latestAttentionStop = make(map[string]uint64)
-					}
-					c.latestAttentionStop[event.DelegateID] = event.RunFinished.Generation
-				}
-			}
 		}
 		if event.Created != nil {
 			c.noteActivityAdmissionLocked(event)
@@ -1420,7 +1340,7 @@ func (c *delegateTreeController) closeStableWorktreeResumability(owner *Session,
 			c.mu.Unlock()
 			return delegateWorktreeSnapshot{}, false, delegateMutationPlans{}, errDelegateTargetBusy
 		}
-		if blocker := c.attentionStartBlockerLocked(delegateID, true); blocker != nil {
+		if blocker := c.attentionStartBlockerLocked(delegateID); blocker != nil {
 			c.mu.Unlock()
 			<-blocker
 			c.mu.Lock()
@@ -1483,7 +1403,7 @@ func (c *delegateTreeController) closeSharedDelegateResumability(owner *Session,
 			c.mu.Unlock()
 			return delegateMutationPlans{}, errDelegateTargetBusy
 		}
-		if blocker := c.attentionStartBlockerLocked(delegateID, true); blocker != nil {
+		if blocker := c.attentionStartBlockerLocked(delegateID); blocker != nil {
 			c.mu.Unlock()
 			<-blocker
 			c.mu.Lock()
@@ -1561,6 +1481,13 @@ func (c *delegateTreeController) escalateCompletionRequirement(lease delegateLea
 func (c *delegateTreeController) escalateCompletionRequirementLocked(lease delegateLease) error {
 	decision := c.reduceWorkAdmittedIntent(finishIntent{lease: lease})
 	return decision.err
+}
+
+func (c *delegateTreeController) canRecordAttentionNoAction(lease delegateLease) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	decision := c.reduceCanAttentionNoActionIntent(finishIntent{lease: lease})
+	return decision.recorded, decision.err
 }
 
 func (c *delegateTreeController) recordAttentionNoAction(lease delegateLease) (bool, error) {

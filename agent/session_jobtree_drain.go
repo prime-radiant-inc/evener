@@ -297,6 +297,50 @@ func (s *Session) treeHasOutstandingWork() (bool, error) {
 	return s.treeHasOutstandingWorkBesidesOwnJobs()
 }
 
+// subagentHasDrainableWork reports whether a subagent has live owned work or an
+// unpresented automatic delegate attention row (such as a completed owned shell
+// persisted by persistStableShellAttention or a nested delegate update/report)
+// that drainForFinalization will run a notification turn for.
+//
+// treeHasOutstandingWork runs BEFORE reading automatic delegate attention:
+// armFinalizedJob persists stable shell attention before deleting the job from
+// jm.running, so checking running/pending first and persisted attention second
+// closes the handoff window between them. Attention rows already presented in
+// the currently active turn (attentionCoverageActive && attentionCoveredIDs)
+// are excluded because the model already read them and finishAttentionTurn
+// resolves them on turn exit.
+func (s *Session) subagentHasDrainableWork() (bool, error) {
+	outstanding, err := s.treeHasOutstandingWork()
+	if err != nil || outstanding {
+		return outstanding, err
+	}
+	if s == nil || s.owningDelegateID == "" {
+		return false, nil
+	}
+	ids, err := s.automaticDelegateAttentionIDs()
+	if err != nil {
+		return false, err
+	}
+	if len(ids) == 0 {
+		return false, nil
+	}
+	keepAll := !s.communicatedUnblocked()
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	for _, id := range ids {
+		if !keepAll && !isDelegateUpdateAttentionID(id) {
+			continue
+		}
+		if s.attentionCoverageActive {
+			if _, covered := s.attentionCoveredIDs[id]; covered {
+				continue
+			}
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
 // treeHasOutstandingWorkBesidesOwnJobs is treeHasOutstandingWork with this
 // session's OWN outstanding managed jobs left out — every other signal, at every
 // level, including a descendant's managed jobs.
@@ -326,7 +370,10 @@ func (s *Session) treeHasOutstandingWorkBesidesOwnJobs() (bool, error) {
 	if s.hasPendingDelegateAttentionArmRetry() {
 		return true, nil
 	}
-	if s.hasPendingDelegateAttention() {
+	// Attention a foreign-held lane has quieted is owed and retried, not
+	// deliverable: counting it would hold this drain open until its context is
+	// cancelled, the same give-up the drain-abandoned child gate below grants.
+	if s.hasDeliverableDelegateAttention() {
 		return true, nil
 	}
 	for _, sub := range s.liveDirectSubagents() {
@@ -622,7 +669,9 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 	if s.hasPendingDelegateAttentionArmRetry() {
 		return true, nil
 	}
-	if s.hasPendingDelegateAttention() {
+	// See treeHasOutstandingWorkBesidesOwnJobs: a lane-held row is not live
+	// deliverable work, so it must not keep the stall watchdog from arming.
+	if s.hasDeliverableDelegateAttention() {
 		return true, nil
 	}
 	for _, sub := range s.liveDirectSubagents() {
@@ -916,6 +965,10 @@ func (s *Session) recordDrainAbandonedChildOnLaneRefusal(sub *subagent, reason s
 		return
 	}
 	s.recordDrainAbandonedChild(sub.sess.id, row.id, row.generation, reason)
+	// The same refusal leaves any attention this delegate owes behind the
+	// foreign lane: it stays owed and the paced retry keeps probing the lane,
+	// but the drain's give-up scans must not count it as deliverable work.
+	s.delegateController.quietLaneHeldAttention(row.id)
 }
 
 // childDrainAbandoned reports whether the one-shot drain has given up waiting on
@@ -965,6 +1018,9 @@ func (s *Session) clearDrainAbandonedDelegate(delegateID string) {
 		}
 	}
 	s.drainAbandonedMu.Unlock()
+	if s.delegateController != nil {
+		s.delegateController.clearLaneHeldAttention(delegateID)
+	}
 }
 
 // subtreeUndisposableStoppedDelegates names the delegates this session and its
@@ -1068,6 +1124,8 @@ func (s *Session) drainJobTreeUsing(ctx context.Context, process func(context.Co
 	return s.drainJobTreeWith(ctx, ticker.C(), s.kickDriveTree, process)
 }
 
+type keepingDelegateReportKey struct{}
+
 // keepingReport wraps a drain turn. Every input starts with a fresh
 // communicate result, so a turn that ends without a terminal communicate would
 // erase the report the delegate already gave. That turn restores the latest
@@ -1077,13 +1135,16 @@ func (s *Session) drainJobTreeUsing(ctx context.Context, process func(context.Co
 // already reported; any other error still propagates.
 func (s *Session) keepingReport(process func(context.Context, string, []ImageAttachment, EntryKind) (string, error)) func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
 	return func(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (string, error) {
-		reported := s.communicated()
+		reported := s.communicatedSettled()
+		if reported {
+			ctx = context.WithValue(ctx, keepingDelegateReportKey{}, s)
+		}
 		res, err := process(ctx, input, images, kind)
 		if !reported {
 			return res, err
 		}
 		s.mu.Lock()
-		if !s.comm.called {
+		if !s.communicatedSettledLocked() {
 			// The restore replaces the report fields, not the fact that this
 			// input sent a non-terminal update: keeping it makes a later
 			// missing-report reminder acknowledge that update instead of
@@ -1091,6 +1152,9 @@ func (s *Session) keepingReport(process func(context.Context, string, []ImageAtt
 			updated := s.comm.updated
 			s.comm = s.latestReport
 			s.comm.updated = updated
+			if res == "" {
+				res = s.latestReport.reply
+			}
 			if isNoReportFailure(err) {
 				err = nil
 			}
@@ -1314,6 +1378,12 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// and resume restores them; see
 		// TestRootDelegateAttention_PendingContentSurvivesCompactionRestart),
 		// so a request after a compaction or a failed turn still presents it.
+		// An update the last turn showed whose journal resolution failed is
+		// withheld from the predicate below until the retry lands, or the
+		// drain would run a second turn for a message the model already read.
+		if flushErr := s.flushAwaitingDelegateAttentionResolutions(); flushErr != nil {
+			s.warnDelegateAttentionFailed(delegateAttentionResolveLabel, s.owningDelegateID, flushErr)
+		}
 		notificationTurnOwed := s.peekNotifications() > 0 || s.pendingRootDelegateAttention() || s.hasUndrivenDelegateUpdate(drivenUpdates)
 		if s.hasPendingStableSteering() && !notificationTurnOwed {
 			return lastResult, nil

@@ -1198,7 +1198,7 @@ func TestCapacityReclamationSparesADelegateWaitingForQuota(t *testing.T) {
 // active goal stays active.
 func TestModelSwitchWhileWaitingFiltersThisTurnsEarlierReasoning(t *testing.T) {
 	limit := usageLimitError(t, "anthropic", quotaResetAt)
-	progress := communicateCallArgs("progress-update", map[string]any{"message": "halfway there", "end_turn": false})
+	progress := communicateCallArgs("progress-update", map[string]any{"message": "halfway there", "next": "send_and_continue"})
 	done := communicateCall("finished", "back at work")
 	steps := []func(llm.Request) (llm.Response, error){
 		// The old model's first round thinks (signed) and makes progress.

@@ -33,8 +33,9 @@ working procedure.
   `src/styles/motion.contract.test.ts` fails a stylesheet that breaks the rules.
 - **Galleries:** run the frontend dev server (`npm run dev` in
   `cmd/evener-hub/frontend`) and open `/dev/widgets` (every widget, every
-  state, both themes), `/dev/surfaces` (composed surfaces), and `/dev/type`
-  (the type ramp). They exist only in dev builds.
+  state, both themes), `/dev/surfaces` (composed surfaces), `/dev/type`
+  (the type ramp), and `/dev/composer-responsive` (real session transcripts
+  and composers at phone, tablet, and desktop widths). They exist only in dev builds.
 
 ## The rules
 

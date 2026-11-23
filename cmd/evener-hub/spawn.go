@@ -603,6 +603,16 @@ func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.
 }
 
 func resumeDaemonWithProviderConfig(ctx context.Context, evenerBinary, runDir string, req hubcore.ResumeRequest, timeout time.Duration, hubLog io.Writer, providerConfig *childProviderConfig) (entry rendezvous.Entry, launchErr error) {
+	claim := req.PendingLaunch
+	if claim != nil {
+		// Whichever path owns the child when this returns settles the claim:
+		// this launch, or a detached supervisor that took it over.
+		defer func() {
+			if !claim.Detached() {
+				claim.Settle(entry, launchErr)
+			}
+		}()
+	}
 	if evenerBinary == "" {
 		evenerBinary = "evener"
 	}
@@ -685,8 +695,24 @@ func resumeDaemonWithProviderConfig(ctx context.Context, evenerBinary, runDir st
 	}
 	waitCtx, cancel := withRendezvousTimeout(ctx, timeout)
 	defer cancel()
+	if claim != nil {
+		// Shutdown cancels the claim so this wait returns and reaps the child
+		// instead of leaving the launcher parked for the rest of the budget.
+		stop := context.AfterFunc(claim.Context(), cancel)
+		defer stop()
+	}
 	entry, err = waitForRendezvousOrExit(waitCtx, runDir, child.pid, exited, WithStartedAfter(startedAt))
 	if err != nil {
+		if claim != nil && req.Caller != nil && errors.Is(err, errRendezvousCanceled) && req.Caller.Err() != nil && claim.Context().Err() == nil {
+			// The caller walked away while its child was still restoring. Keep
+			// the healthy child and its log: the claim hands both to a detached
+			// supervisor, and a retry joins them instead of restarting the
+			// restore from zero.
+			claim.HandOff()
+			_ = finishLaunch(false, nil)
+			go superviseDetachedResume(claim, runDir, child, exited, reaped, dlog, hubLog, startedAt)
+			return rendezvous.Entry{}, launchFailureError(launchFailurePrefix("resume", errResumeStillStarting), errResumeStillStarting, "")
+		}
 		err = errors.Join(err, finishLaunch(true, reapResumeChild(child, reaped, activeResume)))
 		tail := dlog.tail(daemonLaunchOutputLimit)
 		failure := launchFailureError(launchFailurePrefix("resume", err), err, tail)
@@ -703,6 +729,29 @@ func resumeDaemonWithProviderConfig(ctx context.Context, evenerBinary, runDir st
 	_ = finishLaunch(false, nil)
 	_, _ = io.WriteString(hubLog, daemonSpawnBanner(entry.SessionID, entry.PID, dlog.path))
 	return entry, nil
+}
+
+// superviseDetachedResume owns the restoring child whose caller stopped
+// waiting. It runs without that caller's context: the claim's budget bounds the
+// restore, a rendezvous publication ends it, and a child exit, the budget, or
+// hub shutdown reaps the child. Settling the claim is what clears it from the
+// resume locks and unblocks callers waiting to join.
+func superviseDetachedResume(claim *hubcore.PendingLaunch, runDir string, child resumeChild, exited <-chan error, reaped <-chan struct{}, dlog *daemonLog, hubLog io.Writer, startedAt time.Time) {
+	entry, err := waitForRendezvousOrExit(claim.Context(), runDir, child.pid, exited, WithStartedAfter(startedAt))
+	if err == nil {
+		if promoteErr := dlog.promote(); promoteErr != nil {
+			err = fmt.Errorf("promote daemon log: %w", promoteErr)
+		} else {
+			_, _ = io.WriteString(hubLog, daemonSpawnBanner(entry.SessionID, entry.PID, dlog.path))
+		}
+	}
+	if err != nil {
+		err = errors.Join(err, reapResumeChild(child, reaped, nil))
+		dlog.removeIfUncommitted()
+		claim.Settle(rendezvous.Entry{}, err)
+		return
+	}
+	claim.Settle(entry, nil)
 }
 
 type tailBuffer struct {
@@ -753,6 +802,13 @@ var errRendezvousCanceled = errors.New("request canceled before rendezvous")
 // registered, which ends the wait at once.
 var errExitedBeforeRendezvous = errors.New("process exited before rendezvous")
 
+// errResumeStillStarting is the fourth rendezvous outcome: the caller stopped
+// waiting while its child was still alive and restoring. Unlike a cancel, the
+// child was NOT reaped and the operator's next move is to retry and join it —
+// the pending-launch claim keeps a retry from spawning a second child. The text
+// keeps "rendezvous" so it stays inside diagnostic.HubFailureKeywords.
+var errResumeStillStarting = errors.New("daemon still restoring before rendezvous")
+
 // rendezvousWaitError says which way a done rendezvous-wait context ended.
 // ctx.Err() separates the two outright, so nothing has to be inferred from
 // timing: Canceled is the caller walking away, DeadlineExceeded is time
@@ -775,6 +831,8 @@ func launchFailurePrefix(action string, err error) string {
 	switch {
 	case errors.Is(err, errRendezvousTimeout):
 		return action + " timed out"
+	case errors.Is(err, errResumeStillStarting):
+		return action + " still starting"
 	case errors.Is(err, errRendezvousCanceled):
 		return action + " canceled"
 	default:

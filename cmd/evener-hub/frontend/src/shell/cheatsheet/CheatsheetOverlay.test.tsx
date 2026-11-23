@@ -81,6 +81,15 @@ async function openDialog(): Promise<HTMLElement> {
   return screen.findByRole("dialog", { name: "Keyboard shortcuts" });
 }
 
+/** A ShortcutList row: the definition (action title) and its term (chords)
+ * share the item's own div. */
+function rowFor(dialog: HTMLElement, label: string): HTMLElement {
+  const definition = within(dialog).getByText(label).closest("dd");
+  const row = definition?.parentElement;
+  if (!(row instanceof HTMLElement)) throw new Error(`no row for ${label}`);
+  return row;
+}
+
 beforeAll(async () => {
   globalThis.ResizeObserver = StubResizeObserver;
   installLocalStorage(new MemoryStorage());
@@ -134,16 +143,15 @@ test("opens on ⌘/ and lists every action with its effective chord, grouped", a
   }
   // One row per action (the overlay's two trigger entries share one action
   // id), sourced live from the default map via keybindings/display.ts.
-  const rows = within(dialog).getAllByRole("listitem");
+  const rows = within(dialog).getAllByRole("term");
   expect(rows).toHaveLength(new Set(DEFAULT_BINDINGS.map((b) => b.actionId)).size);
   // jsdom resolves $mod to Control: palette.open's row shows Ctrl + K, and
   // the cheatsheet row shows Ctrl + / with the "?" trigger alongside.
-  const paletteRow = within(dialog).getByText("Open the command palette").closest("li");
-  if (paletteRow === null) throw new Error("no palette row");
+  const paletteRow = rowFor(dialog, "Open the command palette");
   expect(within(paletteRow).getByText("Ctrl")).toBeTruthy();
   expect(within(paletteRow).getByText("K")).toBeTruthy();
-  const cheatsheetRow = within(dialog).getByText("Show the keyboard shortcuts overlay").closest("li");
-  if (cheatsheetRow === null) throw new Error("no cheatsheet row");
+  // Two alternative bindings for one action render in the same row.
+  const cheatsheetRow = rowFor(dialog, "Show the keyboard shortcuts overlay");
   expect(within(cheatsheetRow).getByText("/")).toBeTruthy();
   expect(within(cheatsheetRow).getByText("?")).toBeTruthy();
   // The hold-hints footer line (the feature itself is the next task).
@@ -190,8 +198,7 @@ test("? does NOT fire while the character-key toggle is off, and comes back when
   // ⌘/ is unaffected (it is not a character-key trigger).
   fireEvent.keyDown(document.body, { key: "/", code: "Slash", ctrlKey: true });
   const dialog = await openDialog();
-  const row = within(dialog).getByText("Show the keyboard shortcuts overlay").closest("li");
-  if (row === null) throw new Error("no cheatsheet row");
+  const row = rowFor(dialog, "Show the keyboard shortcuts overlay");
   expect(within(row).queryByText("?")).toBeNull();
   expect(within(row).getByText("/")).toBeTruthy();
   act(() => closeCheatsheet());
@@ -256,17 +263,31 @@ test("unmounting (the mobile breakpoint swap) resets the open state - a remount 
 test("rows reflect an applied hub override (registry-sourced, not hardcoded)", async () => {
   const client = new FakeClient("ready");
   client.on("evener/settings/keybindings/get", () =>
-    overridesPayload(3, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]),
+    overridesPayload(3, [{ action: ACTIONS.paletteOpen, chord: "Control+P Control+P" }]),
   );
   await wireClient(client, true);
   render(<CheatsheetOverlay />);
   act(() => openCheatsheet());
 
   const dialog = await openDialog();
-  const paletteRow = within(dialog).getByText("Open the command palette").closest("li");
-  if (paletteRow === null) throw new Error("no palette row");
-  expect(within(paletteRow).getByText("P")).toBeTruthy();
+  const paletteRow = rowFor(dialog, "Open the command palette");
+  // A multi-press override renders every press, in order.
+  expect(within(paletteRow).getAllByText("P")).toHaveLength(2);
   expect(within(paletteRow).queryByText("K")).toBeNull();
+});
+
+test("an action with no effective binding shows Unbound", async () => {
+  const registry = keybindingsRegistry.getState();
+  for (const binding of registry.bindings.filter((b) => b.actionId === ACTIONS.nextNeedsYou)) {
+    registry.unregisterBinding(binding.id);
+  }
+  render(<CheatsheetOverlay />);
+  act(() => openCheatsheet());
+
+  const dialog = await openDialog();
+  const row = rowFor(dialog, "Go to the next session needing you");
+  expect(within(row).getByText("Unbound")).toBeTruthy();
+  expect(row.querySelectorAll("kbd")).toHaveLength(0);
 });
 
 // The override-restore half of the character-key reconcile (the stated

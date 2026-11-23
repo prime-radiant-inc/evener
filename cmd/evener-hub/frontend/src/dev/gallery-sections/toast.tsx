@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { Button } from "../../widgets/button";
 import { Toast, type ToastKind, useToasts } from "../../widgets/toast";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./toast.module.css";
 
 const SAMPLES: { kind: ToastKind; text: string }[] = [
@@ -45,11 +45,8 @@ function ToastDemo() {
 
 export default function ToastGallerySection() {
   return (
-    <section>
-      <h2>Toast</h2>
-      <ThemeFlip>
-        <ToastDemo />
-      </ThemeFlip>
-    </section>
+    <GallerySection title="Toast">
+      <ToastDemo />
+    </GallerySection>
   );
 }

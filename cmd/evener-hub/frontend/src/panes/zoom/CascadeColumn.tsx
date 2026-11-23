@@ -46,7 +46,7 @@ export function CascadeColumn({
             <h3 className={CLASS.title}>{scope.leaf.title}</h3>
             <ScopeRuntimeState scope={scope} />
           </div>
-          {!selected && <ScopeActivityControls paneId={paneId} scope={scope} />}
+          {!selected && <ScopeActivityControls paneId={paneId} scope={scope} compact />}
         </header>
       )}
       <div className={CLASS.content} data-testid="cascade-column-content">
@@ -61,7 +61,7 @@ export function CascadeColumn({
       {!mobile && conversationFooter && <div className={CLASS.columnComposerBar}>{conversationFooter}</div>}
       {/* Mobile omits the pane-wide StatusBar, so the column's own activity
        * controls stay as its single bottom activity strip. */}
-      {mobile && <ScopeActivityControls paneId={paneId} scope={scope} />}
+      {mobile && <ScopeActivityControls paneId={paneId} scope={scope} compact />}
     </>
   );
 }

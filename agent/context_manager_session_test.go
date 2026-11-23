@@ -241,10 +241,11 @@ func contextWindowForRead(t *testing.T, dir, input string) (profile *provider.Pr
 	if standing <= 0 {
 		t.Fatalf("standingRequestTokens = %d, want a positive measurement", standing)
 	}
-	// read_file renders each line as "%4d\t" + content + newline: 21 bytes for
-	// the 16-byte fixture line, which the estimator prices at 5.25 tokens.
-	// Cap the body at 2,300 lines so the rendered result stays under the
-	// 50,000-character output limit instead of being truncated.
+	// read_file renders each line as "%d\t" + content + newline: about 20 bytes
+	// for the 16-byte fixture line (the 21-byte estimate also covers 4-digit
+	// line numbers), which the estimator prices at 5.25 tokens per 21 bytes.
+	// Cap the body at 2,300 lines so the rendered result stays under
+	// read_file's 48,000-byte head-only cap instead of being truncated.
 	lines := standing * 38 / 100 * 4 / 21
 	if maxLines := 2_300; lines > maxLines {
 		lines = maxLines

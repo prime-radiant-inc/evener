@@ -62,6 +62,10 @@ test("the most-read quiet text sits in --ink-mid, not --ink-low", () => {
   expect(rule(think, ".label")).toMatch(/color: var\(--ink-mid\)/);
   const liveness = read("panes/session/transcript/flow/livenessline.module.css");
   expect(rule(liveness, ".line")).toMatch(/color: var\(--ink-mid\)/);
-  const agent = read("panes/session/transcript/messages/agentmessageitem.module.css");
-  expect(rule(agent, ".meta")).toMatch(/color: var\(--ink-mid\)/);
+  const speaker = read("panes/session/transcript/messages/speakerheader.module.css");
+  // The ink now lives in the shared textSecondary recipe, pinned once in
+  // text.contract.test.ts; this site pins that it composes that recipe.
+  expect(rule(speaker, ".meta")).toMatch(
+    /composes: textSecondary from "\.\.\/\.\.\/\.\.\/\.\.\/styles\/text\.module\.css"/,
+  );
 });

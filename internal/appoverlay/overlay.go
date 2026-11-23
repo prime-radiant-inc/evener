@@ -108,6 +108,8 @@ type call struct {
 	// covered reports that the entry settling the call (TOOL_RESULTS, or
 	// COMMUNICATE for a communicate call) is recorded.
 	covered bool
+	// resultTool also suppresses end events that predate the result-tool flag.
+	resultTool bool
 }
 
 type slot struct {
@@ -244,6 +246,9 @@ func (o *Overlay) Event(ev events.SessionEvent) []Change {
 	case events.CommunicatePreviewDeltaData:
 		return o.appendText(o.callPreviewKey(data.CallID), data.Delta)
 	case events.CommunicatePreviewResetData:
+		if data.Quiet {
+			return o.retireQuietPreview(data.CallID)
+		}
 		return o.resetPreview(data.CallID)
 	case events.ToolCallStartData:
 		return o.startTool(ev, data)
@@ -286,6 +291,9 @@ func (o *Overlay) Recorded(rec transcript.Record) {
 				c := o.call(part.ToolResult.ToolCallID)
 				c.covered = true
 				delete(o.slots, c.toolKey)
+				if apptranscript.IsQuietCommunicate(part.ToolResult) {
+					delete(o.slots, previewKey(part.ToolResult.ToolCallID))
+				}
 			}
 		}
 	case schema.TurnCommunicate:
@@ -481,6 +489,35 @@ func (o *Overlay) resetPreview(callID string) []Change {
 	return o.resetStream(preview.item.StreamID)
 }
 
+// retireQuietPreview removes one settled quiet communicate call's preview
+// while notifying live clients to drop it and preserving any surviving sibling
+// previews or streams on the same stream attempt.
+func (o *Overlay) retireQuietPreview(callID string) []Change {
+	key := previewKey(callID)
+	preview, ok := o.slots[key]
+	if !ok {
+		return nil
+	}
+	delete(o.slots, key)
+	streamID := preview.item.StreamID
+	if streamID == "" {
+		return nil
+	}
+	var siblings []*slot
+	for _, s := range o.slots {
+		if s.item.StreamID == streamID && (s.item.Kind == appwire.OverlayStream || s.item.Kind == appwire.OverlayPreview) {
+			siblings = append(siblings, s)
+		}
+	}
+	slices.SortFunc(siblings, func(a, b *slot) int { return cmp.Compare(a.order, b.order) })
+	changes := make([]Change, 0, 1+len(siblings))
+	changes = append(changes, Change{Method: appwire.NotifyOverlayReset, Params: appwire.OverlayResetParams{StreamID: streamID}})
+	for _, s := range siblings {
+		changes = append(changes, o.upsert(s)...)
+	}
+	return changes
+}
+
 // appendText appends to the text of the stream or preview at key.
 func (o *Overlay) appendText(key, text string) []Change {
 	s, ok := o.slots[key]
@@ -491,8 +528,18 @@ func (o *Overlay) appendText(key, text string) []Change {
 	return []Change{{Method: appwire.NotifyOverlayDelta, Params: appwire.OverlayDeltaParams{Key: key, Field: appwire.OverlayDeltaText, Delta: text}}}
 }
 
+func isResultTool(toolName string, marked bool) bool {
+	return marked || toolName == "communicate"
+}
+
 func (o *Overlay) startTool(ev events.SessionEvent, data events.ToolCallStartData) []Change {
-	if data.ToolName == "communicate" {
+	if isResultTool(data.ToolName, data.IsResultTool) {
+		// Old end events did not carry the flag for a renamed result tool.
+		if data.ToolName != "communicate" {
+			if c, ok := o.toolCall(data.CallID); ok {
+				c.resultTool = true
+			}
+		}
 		return nil
 	}
 	c, ok := o.toolCall(data.CallID)
@@ -551,11 +598,17 @@ func (o *Overlay) appendOutput(callID, text string) []Change {
 }
 
 func (o *Overlay) endTool(data events.ToolCallEndData) []Change {
-	if data.ToolName == "communicate" {
+	if data.Error == "" && apptranscript.IsQuietCommunicateState(data.ToolState) {
+		if c, ok := o.toolCall(data.CallID); ok {
+			c.covered = true
+		}
+		return o.retireQuietPreview(data.CallID)
+	}
+	if isResultTool(data.ToolName, data.IsResultTool) {
 		return nil
 	}
 	c, ok := o.toolCall(data.CallID)
-	if !ok {
+	if !ok || c.resultTool {
 		return nil
 	}
 	s := o.toolSlot(data.CallID, c)

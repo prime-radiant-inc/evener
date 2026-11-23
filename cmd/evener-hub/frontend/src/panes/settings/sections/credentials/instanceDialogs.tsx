@@ -37,7 +37,7 @@ import {
   useToasts,
 } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import type { FormError } from "./formError";
+import { checkCredentialHeader, type FormError } from "./formError";
 import styles from "./instanceDialogs.module.css";
 import { byCodePoint, PROTOCOL_OPTIONS, SURFACE_OPTIONS } from "./instanceEdit";
 import { confirmListingState, refreshListingAfterMutation } from "./reconcileListing";
@@ -187,12 +187,9 @@ export function AddInstanceDialog({
       setError({ reason: "name-required", message: "Name is required." });
       return;
     }
-    const trimmedCredentialHeader = credentialHeader.trim();
-    if (trimmedCredentialHeader && !trimmedCredentialHeader.includes("$")) {
-      setError({
-        reason: "literal-header",
-        message: "Credential header must reference a $VARIABLE or run a $(command), never a literal secret.",
-      });
+    const headerError = checkCredentialHeader(credentialHeader);
+    if (headerError) {
+      setError(headerError);
       return;
     }
     setError(null);
@@ -206,7 +203,7 @@ export function AddInstanceDialog({
         surface: surface || undefined,
         vars: nonEmptyVars(vars),
         apiKeyEnv: apiKeyEnv.trim() || undefined,
-        credentialHeader: trimmedCredentialHeader || undefined,
+        credentialHeader: credentialHeader.trim() || undefined,
       });
       // The listing a superseded create answered with was discarded by the
       // store's generation guard - reconcile before steering on the create,

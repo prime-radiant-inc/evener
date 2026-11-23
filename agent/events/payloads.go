@@ -133,9 +133,12 @@ type CommunicatePreviewDeltaData struct {
 	Delta  string `json:"delta"`
 }
 
-// CommunicatePreviewResetData discards a failed provisional communicate item.
+// CommunicatePreviewResetData discards a provisional communicate item.
+// Quiet is true when the call turned out to be a quiet yield and only that
+// preview should be retired without discarding the attempt's other live work.
 type CommunicatePreviewResetData struct {
 	CallID string `json:"call_id"`
+	Quiet  bool   `json:"quiet,omitempty"`
 }
 
 // ModelRetryData is the payload for an EventModelRetry event: a model call
@@ -215,6 +218,7 @@ type ToolCallStartData struct {
 	CallID        string `json:"call_id"`
 	ArgumentsJSON string `json:"arguments_json,omitempty"`
 	Description   string `json:"description,omitempty"`
+	IsResultTool  bool   `json:"is_result_tool,omitempty"`
 }
 
 // ToolCallOutputDeltaData is the payload for an EventToolCallOutputDelta event.
@@ -324,6 +328,7 @@ type ToolCallEndData struct {
 	ToolName      string `json:"tool_name"`
 	CallID        string `json:"call_id"`
 	ArgumentsJSON string `json:"arguments_json,omitempty"`
+	IsResultTool  bool   `json:"is_result_tool,omitempty"`
 	// Output is a bounded excerpt of the tool's output, not the whole of it.
 	// The same bytes already streamed as TOOL_CALL_OUTPUT_DELTA events, so a
 	// consumer that watched them accumulates the tail itself; this field is
@@ -623,6 +628,31 @@ type ModelChangedData struct {
 	ContextPressure     float64 `json:"context_pressure,omitempty"`
 	ContextAssumed      bool    `json:"context_assumed,omitempty"`
 	CompactionThreshold int     `json:"compaction_threshold,omitempty"`
+}
+
+// NextModelChangedData is the payload for an EventNextModelChanged event: the
+// model a live session's next turn will run on, announced when SetModel
+// accepts and queues a mid-turn pick, and again naming the session's current
+// profile when a queued pick's deferred validation rejects it. It carries what
+// EventModelChanged cannot: a ModelChangedData on the stream is a commit
+// publication, serialized by the commit lock and ordered with the switch
+// marker, so an accepted-but-not-yet-applied pick rides its own kind. The
+// reasoning fields describe the announced profile so a client's pickers re-key
+// without a model/list round trip. The context fields are the settlement
+// current at announcement - the running model's - so a subscriber's context
+// meter does not re-basis against a model that has not started a turn yet;
+// the boundary's ModelChangedData re-settles them against the new profile.
+type NextModelChangedData struct {
+	Provider               string   `json:"provider"`
+	Model                  string   `json:"model"`
+	ReasoningEffortLevels  []string `json:"reasoning_effort_levels,omitempty"`
+	SupportsReasoning      bool     `json:"supports_reasoning,omitempty"`
+	DefaultReasoningEffort string   `json:"default_reasoning_effort,omitempty"`
+	ContextUsed            int      `json:"context_used,omitempty"`
+	ContextWindow          int      `json:"context_window,omitempty"`
+	ContextPressure        float64  `json:"context_pressure,omitempty"`
+	ContextAssumed         bool     `json:"context_assumed,omitempty"`
+	CompactionThreshold    int      `json:"compaction_threshold,omitempty"`
 }
 
 // ReasoningEffortChangedData is the payload for an EventReasoningEffortChanged
@@ -1074,12 +1104,6 @@ type EnvironmentData struct {
 // EnvironmentChangedData is the payload for an EventEnvironmentChanged event.
 type EnvironmentChangedData struct {
 	WorkingDir string `json:"working_dir"`
-}
-
-// StatusSettledData is the payload for an EventStatusSettled event: the
-// session's wire state after the change.
-type StatusSettledData struct {
-	State string `json:"state"`
 }
 
 // TurnEndedData is the payload for an EventTurnEnded event.

@@ -814,6 +814,13 @@ function stepEnabledIndex(items: MenuEntry[], from: number, delta: 1 | -1): numb
  * its own chrome's "..." menu, an unrelated pane - leaves the trigger's rect
  * exactly where it was, so the menu stays open (kata: the session's "..."
  * menu must survive transcript scrolling).
+ *
+ * The trigger carries `data-open="true"` while the popup is open and
+ * `data-open="false"` otherwise. That attribute is the trigger's public
+ * open-state hook for callers whose own CSS must follow it (see
+ * shell/rail/RailRow.module.css, which keeps a row's actions revealed while
+ * its menu is open), so a caller never mirrors this state in React or keys
+ * its selectors on `aria-expanded`.
  */
 export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "default" }: MenuProps) {
   const [isOpen, setIsOpen] = useState(false);
@@ -2214,6 +2221,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         aria-label={label}
         aria-haspopup="menu"
         aria-expanded={isOpen}
+        data-open={isOpen ? "true" : "false"}
         onClick={handleTriggerClick}
         onKeyDown={handleTriggerKeyDown}
       >

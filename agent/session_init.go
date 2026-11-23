@@ -43,6 +43,7 @@ import (
 	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // BuildVersion is recorded in each session's metadata (SessionMeta.BuildVersion).
@@ -955,6 +956,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err := schema.ValidateSessionID(meta.ID); err != nil {
 		return nil, fmt.Errorf("invalid session id: %w", err)
 	}
+	if err := validateVertexInteractionsModel(client, profile); err != nil {
+		return nil, err
+	}
 	restoreComplete := false
 	ownershipAcquired := false
 	if restoreCfg.AcquireSessionOwnership != nil {
@@ -1057,6 +1061,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		// belongs to this delegate; the first inherited input belongs to its parent.
 		cfg.spawn.subagentTask = meta.OriginalPrompt
 	}
+	savedModelFallbacks := restoreCfg.ModelFallbacks == nil && len(cfg.ModelFallbacks) > 0
 	if restoreCfg.ModelFallbacks != nil {
 		cfg.ModelFallbacks = append([]string(nil), restoreCfg.ModelFallbacks...)
 	}
@@ -1148,12 +1153,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err := env.Initialize(); err != nil {
 		return nil, fmt.Errorf("env initialize: %w", err)
 	}
-	// Restore the cheap/fast model routing from the persisted meta. On resume the
-	// caller's profile carries no cheap model (the launch arg is intentionally
-	// not re-passed), so this is the only place it is re-applied.
-	if meta.CheapModel != "" {
-		profile = provider.WithCheapModel(profile, meta.CheapModel)
-	}
 
 	// Reconcile the typed compaction handoff receipts from ALL decoded
 	// transcript entries into the persisted lifecycle snapshot BEFORE
@@ -1168,9 +1167,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// Recover history from transcript JSONL. No snapshot fallback.
 	var resumeHistory []schema.Turn
 	var repairInsertions []int
-	// Where each reopened turn's latest attempt begins in resumeHistory: the
-	// restored state reads an end reason from that attempt alone.
-	var attemptStarts map[string]int
 	// The superseded attention identities the history build and the
 	// coordinate mappers below share: the transcript folds for them once,
 	// not once per reopen marker and boundary they map.
@@ -1180,7 +1176,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	} else if len(transcriptEntries) > 0 {
 		superseded = supersededDelegateAttentionIDs(transcriptEntries)
 		resumeHistory, repairInsertions = resumeHistoryIndexedWithSuperseded(transcriptEntries, superseded)
-		attemptStarts = latestAttemptStarts(transcriptEntries, repairInsertions, superseded)
 	}
 	if resumeHistory == nil {
 		resumeHistory = []schema.Turn{}
@@ -1245,6 +1240,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		client:                   client,
 		profile:                  profile,
 		resolveProfile:           cfg.ResolveProfile,
+		savedModelFallbacks:      savedModelFallbacks,
 		depth:                    cfg.spawn.depth,
 		delegationAllowance:      delegationAllowance,
 		jobActivityClock:         jobClock,
@@ -1256,7 +1252,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		stateDir:                 cfg.StateDir,
 		installID:                resolveInstallationID(cfg, cfg.StateDir),
 		state:                    SessionIdle,
-		loopEffortEscalated:      meta.ReasoningEffortEscalated,
 		events:                   make(chan events.SessionEvent, 256),
 		history:                  resumeHistory,
 		frontierStartupPending:   true,
@@ -1310,7 +1305,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		},
 		meta, restoredTranscriptHeader.SystemPrompt,
 	)
-	persistFallbackPrompt := validSavedSystemPrompt(restoredTranscriptHeader.SystemPrompt) == "" || validSavedSystemPrompt(meta.LaunchSystemPrompt) != "" || ignoreLaunchBaseline
+	persistFallbackPrompt := schema.ValidSavedSystemPrompt(restoredTranscriptHeader.SystemPrompt) == "" || schema.ValidSavedSystemPrompt(meta.LaunchSystemPrompt) != "" || ignoreLaunchBaseline
 	s.envTracker = envctx.NewTracker(envctx.State{})
 	s.envContextState = nil
 	if !ignoreLaunchBaseline {
@@ -1343,6 +1338,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err := s.bootstrapDelegateResources(); err != nil {
 		return nil, err
 	}
+	defer func() {
+		if !restoreComplete {
+			_ = s.closeOwnedDelegateStore()
+		}
+	}()
 	// Delegate reconciliation is durable, local startup work. Complete it before
 	// any provider metadata access so caller-delivery crash replay cannot depend
 	// on provider availability or latency.
@@ -1368,13 +1368,36 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	} else {
 		profile, selectedModels = resolveStartupModelProfileWithReuse(client, profile, s.id, *s.providerAdapterTimeout(), restoreCfg.StartupModelListing)
 	}
+	if err := validateVertexInteractionsModel(client, profile); err != nil {
+		return nil, err
+	}
 	s.profile = profile
-	s.captureModelAvailability(selectedModels)
-	defer func() {
-		if !restoreComplete {
-			_ = s.closeOwnedDelegateStore()
+	// Restore the cheap/fast model routing from the persisted meta, pruning any
+	// retired provider (e.g. google-vertex-express) or unsupported Vertex model.
+	if meta.CheapModel != "" {
+		candidate := provider.WithCheapModel(s.profile, meta.CheapModel)
+		if err := s.googleMigrationCheapModelError(candidate); err != nil {
+			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{
+				Message: fmt.Sprintf("restore: ignored saved cheap_model %q: %v", meta.CheapModel, err),
+			})
+		} else {
+			s.profile = candidate
 		}
-	}()
+	}
+	if savedModelFallbacks {
+		kept := make([]string, 0, len(s.cfg.ModelFallbacks))
+		for _, fbModel := range s.cfg.ModelFallbacks {
+			if err := s.googleMigrationFallbackError(fbModel); err != nil {
+				s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{
+					Message: fmt.Sprintf("restore: pruned saved model_fallbacks entry %q: %v", fbModel, err),
+				})
+				continue
+			}
+			kept = append(kept, fbModel)
+		}
+		s.cfg.ModelFallbacks = kept
+	}
+	s.captureModelAvailability(selectedModels)
 	s.subagents = newSubagentManager(cfg.MaxRetainedTerminal)
 	newJM := newJobManager
 	if cfg.testOnly.noSyncJobStore || testSpeedIO(cfg) {
@@ -1525,7 +1548,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// entries that no longer validate against the picked profile drop per
 	// entry, before initSessionState's all-or-nothing check can strand a valid
 	// pick. An ordinary resume revalidates nothing and keeps the strict check.
-	if modelChanged {
+	if modelChanged && savedModelFallbacks {
 		s.mu.Lock()
 		dropped := s.revalidateModelFallbacksLocked()
 		s.lastDroppedModelFallbacks = dropped
@@ -1560,9 +1583,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 	}()
 
-	// Seed context manager with the meta's token count.
-	if meta.LastInputTokens > 0 && s.contextMgr != nil {
-		s.contextMgr.RecordInputTokens(meta.LastInputTokens, len(s.history))
+	// Seed the persisted measurement only when this resume restored the target
+	// that produced it and the history still holds the measured prefix. A meta
+	// written before the measured length existed has no prefix to check, and its
+	// count is not trusted rather than charged to the restored history's length.
+	if s.contextMgr != nil && meta.LastInputMeasuredLen != nil {
+		s.contextMgr.RestoreInputMeasurement(meta.LastInputTokens, *meta.LastInputMeasuredLen, meta.LastInputAnchor, meta.LastInputTarget, s.history)
 	}
 
 	// Seed persisted cumulative token totals before the first autosave can
@@ -1699,29 +1725,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		return nil, err
 	}
 
-	// Re-derive the at-rest state from the restored history's tail: an
-	// unanswered ask_user call, or a last input that ended on needs_response,
-	// rests awaiting (deriveRestoredState's own doc comment has the full
-	// walk). NewSession never runs this scan — a fresh session always starts
-	// idle. steeringOrigins() gives the boundary its durable steering
-	// provenance, so a kindless legacy human-note turn is still read as a
-	// note rather than an answering steer.
-	// divergenceTurn (computed above for escapeHistoryWithSessionProvenance,
-	// and still in the same units s.history uses since escaping never
-	// changes its length) scopes the provenance to this session's own turns
-	// alone, so a forked child's inherited prefix is never decided by a
-	// reused client mutation id in the child's OWN journal.
+	// Only an unanswered ask can restore awaiting. The divergence scopes
+	// steering provenance to this session's own turns, never its inherited prefix.
 	steeringProvenance := s.clientMutations.steeringOrigins()
-	restoredState := deriveRestoredState(s.history, divergenceTurn, steeringProvenance, attemptStarts)
-	// Rebuild the pending-ask SET alongside the state (ask-attention-tiering
-	// spec §2): deriveRestoredState alone only re-derives that the session
-	// rests awaiting, but every hold keyed on askPending itself — the entry
-	// gate, the goal engine's arm-don't-kick paths, Compact's guard — stays
-	// inert after a restart unless the set is repopulated too.
-	// isAskRound distinguishes "nothing was pending" from "an ask was pending
-	// but none of its arguments parsed"; only the latter warrants a warning,
-	// and neither may ever fail the restore.
-	restoredAskPending, isAskRound := deriveRestoredAskPending(s.history, divergenceTurn, steeringProvenance)
+	restoredState, restoredAskPending, isAskRound := deriveRestoredState(s.history, divergenceTurn, steeringProvenance)
 	if isAskRound && len(restoredAskPending) == 0 {
 		s.emit(events.WarningData{Message: "restore: found a pending ask_user round but could not parse any of its questions; the pending-ask holds will not apply this session"})
 	}
@@ -1733,16 +1740,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// maintains the invariant, restore included.
 	s.setAskPendingLocked(restoredAskPending)
 	s.mu.Unlock()
-	// Settle before the session start announces the state.
-	if !restoreCfg.deferRestoreSideEffects {
-		s.recomputeRestoredState(divergenceTurn, attemptStarts)
-	}
 	s.emitSessionStartEnvelope(events.SessionStartData{
 		Profile:           profile.ID(),
 		Model:             profile.Model(),
 		Restored:          true,
 		Turns:             s.modelResponses,
-		LastInputTokens:   meta.LastInputTokens,
+		LastInputTokens:   s.contextMgr.LastInputTokens(),
 		ContextWindowSize: profile.ContextWindowSize(),
 		State:             s.WireState(),
 		// TranscriptEntries is the exact count OpenWriterForSession validated
@@ -1775,6 +1778,15 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			// durability.
 			s.maybeAutoSave()
 		}
+		// The transcript header of a role- or plugin-changing fork records no
+		// prompt, so the session meta is the only place a reader can find the one this
+		// session launched with. Persist a freshly rendered one now, before the
+		// restored session is exposed: a history index opened on the first read
+		// computes its prelude once, at open, so a periodic or first-turn save
+		// would arrive too late for that handle.
+		if s.persistFallbackPrompt && s.systemPromptFrozen && s.cachedSystemPrompt != meta.LaunchSystemPrompt {
+			s.maybeAutoSave()
+		}
 	}
 	restoreComplete = true
 	return s, nil
@@ -1801,7 +1813,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// resolution over two saved fields can land on either one. Clearing it here
 	// keeps the render below the only way such a session gets a prompt, and keeps
 	// the --system-prompt read asked for below.
-	restoredPrompt = validSavedSystemPrompt(restoredPrompt)
+	restoredPrompt = schema.ValidSavedSystemPrompt(restoredPrompt)
 	s.cheap = cheapmodel.New(s.client)
 	s.cheap.AdapterTimeout = s.providerAdapterTimeout()
 	env := s.currentEnv()
@@ -1827,6 +1839,11 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// snapshot: both are the launch-time environment snapshot, and a test whose
 	// contract sits below that layer must not fork for either.
 	if !s.cfg.testOnly.skipGitSnapshot {
+		// The fork is refused when a test moved the config home the `go env`
+		// probe would write its telemetry sidecar into (session_capabilities.go).
+		if err := snapshotConfigHomeForkError(); err != nil {
+			return nil, err
+		}
 		s.capabilities = probeCapabilities(env, ei.WorkingDir)
 	}
 
@@ -2074,6 +2091,9 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 			s.launchEnvBaseline = s.envRuntimeSnapshot(envctx.Snapshot{})
 			s.launchEnvBaseline.GitBranch = cmp.Or(s.launchEnvBaseline.GitBranch, s.envInfo.GitBranch)
 			s.envTracker.SeedRuntime(s.launchEnvBaseline)
+		} else if !restoredPromptHasLegacyCommunicateGuidance(restoredPrompt, s.resultToolName()) {
+			s.launchEnvBaseline.CommunicateContract = cmp.Or(s.launchEnvBaseline.CommunicateContract, s.communicateContractLine())
+			s.envTracker.SeedRuntime(envctx.Snapshot{CommunicateContract: s.launchEnvBaseline.CommunicateContract})
 		}
 	}
 	if warning := s.commitProvenanceWarning(); warning != "" {
@@ -2089,6 +2109,18 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	s.acquireSessionLivelock()
 
 	return s.promptSourceLog, nil
+}
+
+func restoredPromptHasLegacyCommunicateGuidance(prompt, resultTool string) bool {
+	if prompt == "" || strings.Contains(prompt, schema.CommunicateNextLogQuietlyAndEndTurn) {
+		return false
+	}
+	if resultTool == "" {
+		resultTool = tool.DefaultResultToolName
+	}
+	return strings.Contains(prompt, "end_turn") ||
+		strings.Contains(prompt, "communicate({})") ||
+		strings.Contains(prompt, resultTool+"({})")
 }
 
 func (s *Session) validateModelFallbacks() error {
@@ -2111,13 +2143,28 @@ func (s *Session) validateModelFallbacks() error {
 func (s *Session) validateModelFallbackEntry(fbModel string) error {
 	parts := strings.SplitN(fbModel, "/", 2)
 	if len(parts) != 2 || !s.profile.CrossProviderRef(fbModel) {
-		// A ref reaching this point is same-instance. resolveProfileForRef only
-		// invokes the injected resolver for cross-instance refs, so a
-		// same-instance ref is a direct WithModel projection.
+		if s.profile != nil {
+			fbProfile := s.profile.WithModel(fbModel)
+			if err := validateVertexInteractionsModel(s.client, fbProfile); err != nil {
+				return fmt.Errorf("model_fallbacks entry %q: %w", fbModel, err)
+			}
+		}
 		return nil
 	}
 	fbProfile, crossProvider, err := s.resolveProfileForRef(s.profile, fbModel)
 	if err != nil {
+		if s.savedModelFallbacks && errors.Is(err, registry.ErrModelDisabled) {
+			reg := s.profile.Registry()
+			if reg == nil && s.client != nil {
+				reg = s.client.Registry()
+			}
+			if reg != nil {
+				if res, ferr := reg.ResolveInstanceModelFacts(parts[0], parts[1]); ferr == nil && res.Surface != s.profile.Surface() {
+					return fmt.Errorf("model_fallbacks entry %q switches surface from %q to %q; cross-surface fallbacks are not supported because prompt/tool surfaces differ", fbModel, s.profile.Surface(), res.Surface)
+				}
+			}
+			return nil
+		}
 		return fmt.Errorf("model_fallbacks entry %q: %w", fbModel, err)
 	}
 	if !crossProvider {
@@ -2128,6 +2175,9 @@ func (s *Session) validateModelFallbackEntry(fbModel string) error {
 	}
 	if fbProfile.Surface() != s.profile.Surface() {
 		return fmt.Errorf("model_fallbacks entry %q switches surface from %q to %q; cross-surface fallbacks are not supported because prompt/tool surfaces differ", fbModel, s.profile.Surface(), fbProfile.Surface())
+	}
+	if err := validateVertexInteractionsModel(s.client, fbProfile); err != nil {
+		return fmt.Errorf("model_fallbacks entry %q: %w", fbModel, err)
 	}
 	return nil
 }
@@ -2160,6 +2210,12 @@ func modelFallbackEligible(err error, policy llm.RetryPolicy) bool {
 	// here rather than left to llm.Classify, which would walk into the wrapped
 	// attempt error and land wherever that happens to classify.
 	if _, ok := errors.AsType[*llm.ProviderUnhealthyError](err); ok {
+		return false
+	}
+	// A response discarded by the per-response tool-call cap indicts the shape
+	// of that one response. Replaying the same request against a fallback model
+	// would let the runaway loose again.
+	if _, ok := errors.AsType[*responseToolCallLimitError](err); ok {
 		return false
 	}
 	switch llm.Classify(err) {

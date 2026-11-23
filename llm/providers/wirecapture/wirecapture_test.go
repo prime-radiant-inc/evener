@@ -81,6 +81,8 @@ protocol = "anthropic"
 surface = "anthropic"
 [providers.ollama.models."qwen3*"]
 context_window = 40960
+[providers.google]
+web_search = true
 `
 
 // secrets are the fixture credentials; the test asserts none of them, nor
@@ -88,7 +90,7 @@ context_window = 40960
 var secrets = map[string]string{
 	"ANTHROPIC_API_KEY": "SECRET-anthropic", "OPENAI_API_KEY": "SECRET-openai", "GROQ_API_KEY": "SECRET-groq",
 	"OPENROUTER_API_KEY": "SECRET-openrouter", "GEMINI_API_KEY": "SECRET-gemini", "AZURE_API_KEY": "SECRET-azure",
-	"AWS_BEARER_TOKEN_BEDROCK": "SECRET-bedrock", "PORTKEY_KEY": "SECRET-portkey", "GOOGLE_VERTEX_API_KEY": "SECRET-vertex-express",
+	"AWS_BEARER_TOKEN_BEDROCK": "SECRET-bedrock", "PORTKEY_KEY": "SECRET-portkey",
 }
 
 var env = map[string]string{
@@ -140,8 +142,8 @@ var canned = map[string]map[bool]string{
 		true:  "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"m\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
 	},
 	registry.ProtocolGoogle: {
-		false: `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`,
-		true:  "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"ok\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":1,\"totalTokenCount\":2}}\n\n",
+		false: `{"id":"int_1","model":"m","status":"completed","steps":[{"type":"model_output","content":[{"type":"text","text":"ok"}]}],"usage":{"total_input_tokens":1,"total_output_tokens":1,"total_tokens":2}}`,
+		true:  "event: interaction.created\ndata: {\"event_type\":\"interaction.created\",\"interaction\":{\"id\":\"int_1\",\"model\":\"m\",\"status\":\"in_progress\"}}\n\nevent: step.start\ndata: {\"event_type\":\"step.start\",\"index\":0,\"step\":{\"type\":\"model_output\"}}\n\nevent: step.delta\ndata: {\"event_type\":\"step.delta\",\"index\":0,\"delta\":{\"type\":\"text\",\"text\":\"ok\"}}\n\nevent: step.stop\ndata: {\"event_type\":\"step.stop\",\"index\":0}\n\nevent: interaction.completed\ndata: {\"event_type\":\"interaction.completed\",\"interaction\":{\"id\":\"int_1\",\"status\":\"completed\",\"usage\":{\"total_input_tokens\":1,\"total_output_tokens\":1,\"total_tokens\":2}}}\n\n",
 	},
 	registry.ProtocolOpenAIChat: {
 		false: `{"id":"c1","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
@@ -264,9 +266,7 @@ var cases = []wireCase{
 	{"bedrock-sonnet-5-stream", "bedrock/anthropic.claude-sonnet-5", true, webSearchRequest()},
 	{"vertex-opus-5", "vertex/claude-opus-5", false, toolsRequest("high")},
 	{"vertex-opus-5-stream", "vertex/claude-opus-5", true, toolsRequest("high")},
-	{"vertex-gemini-stream", "google-vertex/gemini-2.5-flash", true, toolsRequest("")},
-	{"vertex-express-gemini", "google-vertex-express/gemini-2.5-flash", false, toolsRequest("")},
-	{"vertex-express-gemini-stream", "google-vertex-express/gemini-2.5-flash", true, toolsRequest("")},
+	{"vertex-gemini-stream", "google-vertex/gemini-3.8-flash", true, toolsRequest("")},
 	{"google-flash-lite-web-search", "google/gemini-2.5-flash-lite", false, webSearchRequest()},
 	{"ollama-llama3-optional-bearer", "ollama/llama3:8b", false, toolsRequest("")},
 }
@@ -542,17 +542,12 @@ func TestWireCaptureAssertions(t *testing.T) {
 	check(strings.HasSuffix(vertexStream.URL, ":streamRawPredict"), "vertex stream url = %s", vertexStream.URL)
 	check(bodyOf(t, vertexStream)["stream"] == true && bodyOf(t, vertexStream)["anthropic_version"] == "vertex-2023-10-16" && bodyOf(t, vertexStream)["model"] == nil, "vertex stream body: %s", vertexStream.Body)
 	vertexGemini := byName["vertex-gemini-stream"]
-	check(strings.HasPrefix(vertexGemini.URL, "https://aiplatform.googleapis.com/v1/projects/my-project/locations/global/publishers/google/models/gemini-2.5-flash:streamGenerateContent") && vertexGemini.Headers["Authorization"] == "Bearer <credential>", "vertex gemini: %s %v", vertexGemini.URL, vertexGemini.Headers)
+	check(vertexGemini.URL == "https://aiplatform.googleapis.com/v1/projects/my-project/locations/global/interactions" && vertexGemini.Headers["Authorization"] == "Bearer <credential>" && bodyOf(t, vertexGemini)["model"] == "gemini-3.8-flash" && bodyOf(t, vertexGemini)["stream"] == true, "vertex gemini: %s %v", vertexGemini.URL, vertexGemini.Headers)
 	check(vertexGemini.Headers["X-Goog-User-Project"] == "my-project" && vertexStream.Headers["X-Goog-User-Project"] == "my-project", "vertex quota project: %v %v", vertexGemini.Headers, vertexStream.Headers)
 
 	gemini := byName["google-flash-lite-web-search"]
-	check(gemini.URL == "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent" && gemini.Headers["X-Goog-Api-Key"] == "<credential>", "gemini: %s %v", gemini.URL, gemini.Headers)
-	check(bodyOf(t, gemini)["tools"].([]any)[0].(map[string]any)["google_search"] != nil, "gemini google_search: %s", gemini.Body)
-
-	express := byName["vertex-express-gemini"]
-	check(express.URL == "https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:generateContent" && express.Headers["X-Goog-Api-Key"] == "<credential>" && express.Headers["Authorization"] == "" && express.Headers["X-Goog-User-Project"] == "", "vertex express: %s %v", express.URL, express.Headers)
-	expressStream := byName["vertex-express-gemini-stream"]
-	check(strings.HasSuffix(expressStream.URL, ":streamGenerateContent?alt=sse") && expressStream.Headers["X-Goog-Api-Key"] == "<credential>", "vertex express stream: %s %v", expressStream.URL, expressStream.Headers)
+	check(gemini.URL == "https://generativelanguage.googleapis.com/v1beta/interactions" && gemini.Headers["X-Goog-Api-Key"] == "<credential>", "gemini: %s %v", gemini.URL, gemini.Headers)
+	check(bodyOf(t, gemini)["tools"].([]any)[0].(map[string]any)["type"] == "google_search", "gemini google_search: %s", gemini.Body)
 
 	or := bodyOf(t, byName["openrouter-opus-5-signed-tool-turn"])
 	msgs := or["messages"].([]any)
@@ -582,7 +577,7 @@ func TestWireCaptureAssertions(t *testing.T) {
 			{"openai-codex/gpt-5.6", true, []any{"input", 1, "content", 0, "text"}, []any{"input", 1, "content", 0, "text"}},
 			{"groq/openai/gpt-oss-120b", false, []any{"messages", 0, "content"}, []any{"messages", 0, "content"}},
 			{"anthropic/claude-sonnet-4-5", false, []any{"system", 0, "text"}, []any{"messages", 0, "content", 0, "text"}},
-			{"google/gemini-2.5-flash-lite", false, []any{"systemInstruction", "parts", 0, "text"}, []any{"contents", 0, "parts", 0, "text"}},
+			{"google/gemini-2.5-flash-lite", false, []any{"system_instruction"}, []any{"input", 0, "content", 0, "text"}},
 		} {
 			for _, prompt := range []struct{ name, text string }{{"edges", " \t\r\nP_8a7\u2003 "}, {"whitespace", " \t\r\n\u2003 "}} {
 				modes := []string{"system", "developer", "leading-user", "separate-user"}

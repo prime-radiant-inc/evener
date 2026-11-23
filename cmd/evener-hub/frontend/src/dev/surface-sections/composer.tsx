@@ -123,14 +123,15 @@ function seedComposerFixtures(): void {
   writeDraft(DRAFTED_REF, "One more thing - can you also add a CHANGELOG entry for this?");
 }
 
-function FixtureComposer({ ref }: { ref: string }) {
+export function FixtureComposer({ ref, focused = false, draft }: { ref: string; focused?: boolean; draft?: string }) {
   const [source, setSource] = useState<ComposerSourceState | null>(null);
   useEffect(() => {
     const owner = createComposerSourceState(ref);
+    if (draft !== undefined) owner.writeDraft(draft, false);
     setSource(owner);
     return () => owner.dispose();
-  }, [ref]);
-  return source && <Composer ref={ref} source={source} focused={false} />;
+  }, [draft, ref]);
+  return source && <Composer ref={ref} source={source} focused={focused} />;
 }
 
 export default function ComposerSurfaceSection() {

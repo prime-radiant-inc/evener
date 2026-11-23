@@ -109,10 +109,6 @@
   outline-offset: 2px;
 }
 
-/* Fenced code blocks are rendered through codeblock.module.css's own
- * classes (imported directly in index.tsx) so they're visually identical
- * to the standalone CodeBlock widget - nothing to style here for those. */
-
 /* Inline machine text stays mono, underlined rather than chipped, and
  * scales with the surrounding prose even when a caller overrides its size. */
 .inlineCode {

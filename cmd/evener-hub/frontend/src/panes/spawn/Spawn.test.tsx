@@ -7,8 +7,10 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { expect, onTestFinished, test, vi } from "vitest";
 import { MOBILE_QUERY } from "../../shell/useIsMobile";
 import { connectionStore } from "../../stores/connection";
-import { readModuleCss } from "../../styles/cssBlock";
+import { readModuleCss, topRuleBlock } from "../../styles/cssBlock";
+import popoverStyles from "../../widgets/popover/popover.module.css";
 import promptCardStyles from "../../widgets/promptcard/promptcard.module.css";
+import modelSwitchStyles from "../session/chrome/modelswitch.module.css";
 import editorStyles from "../session/composer/skilleditor.module.css";
 import Welcome from "../welcome/Welcome";
 import { applySpawnURL, spawnDraftsStore } from "./spawnDrafts";
@@ -79,7 +81,7 @@ test("the desktop directory trigger announces the confirmed path", async () => {
   renderSpawn(readyClient());
   await settled();
   await setWorkingDir(user, "/tmp/project");
-  expect(screen.getByLabelText("Working directory: /tmp/project", { selector: "#spawn-cwd" })).toBe(workingDir());
+  expect(screen.getByLabelText(/^Working directory: \/tmp\/project/, { selector: "#spawn-cwd" })).toBe(workingDir());
 });
 
 // Issue #198: the attach button, model trigger, and effort control are the
@@ -207,7 +209,10 @@ test("mobile-only spawn hierarchy and row scale stay gated from desktop", () => 
   expect(spawnCss).not.toContain(".mobilePromptIntro");
   expect(spawnCss).toContain(".mobileConfig");
   expect(spawnCss).toContain(`@media ${MOBILE_QUERY}`);
-  expect(rowsCss).toContain("min-height: 48px");
+  // The 48px floor now rides each rendered ListRow (MobileSettingRows.test
+  // asserts it, spawnguard measures it); this file still owns the phone gate
+  // and the trailing value's body type.
+  expect(rowsCss).toContain(`@media ${MOBILE_QUERY}`);
   expect(rowsCss).toContain("font-size: var(--font-size-body)");
   expect(paneCss).toContain(".desktopTitle");
   expect(paneCss).toContain(".mobileTitle");
@@ -252,10 +257,11 @@ test("the primary verb is Start, in the card's own corner, and the page is title
 // The 559px boundary matches the composer cluster's own compact threshold
 // (the status row's first container query, statusrow.module.css).
 test("the Start button's word collapses to the glyph below the compact pane threshold", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "spawn.module.css"), "utf8");
+  const css = readModuleCss(import.meta.url, "spawn.module.css");
   expect(css).toMatch(/\.form\s*\{[^}]*container-type:\s*inline-size/);
-  expect(css).toMatch(/@container \(max-width: 559px\)[\s\S]*?\.submitLabel\s*\{[^}]*display:\s*none/);
+  expect(topRuleBlock(css, ".submitLabel")).toMatch(
+    /composes:\s*sendWord from "\.\.\/\.\.\/styles\/sendbutton\.module\.css"/,
+  );
 });
 
 // Writing the prompt is what starting an agent IS, so the caret starts there
@@ -337,6 +343,16 @@ test("the prompt card IS the shared PromptCard widget, not a lookalike", async (
 test("the model trigger hugs effort at the row's far end", () => {
   const css = readModuleCss(import.meta.url, "spawn.module.css");
   expect(css).toMatch(/\.modelTrigger\s*\{[^}]*flex:\s*0 1 auto;[^}]*margin-left:\s*auto/);
+});
+
+// The nested shrink contract belongs to the shared trigger, not to selectors
+// that reach into its Popover DOM: the card asks for the fill/shrink shape.
+test("the card's model trigger fills its slot and opts into truncation", async () => {
+  renderSpawn(readyClient());
+  await settled();
+  const trigger = modelTrigger();
+  expect(trigger.className.split(" ")).toContain(modelSwitchStyles.triggerShrink);
+  expect(trigger.parentElement?.className.split(" ")).toContain(popoverStyles.triggerStretch);
 });
 
 // The card draws the one border and owns the focus ring, so the field inside
@@ -588,6 +604,7 @@ test("only confirming a directory updates the launch defaults", async () => {
 
 test("Escape discards directory browsing while preserving the prompt and launch directory", async () => {
   const user = setupUser();
+  localStorage.setItem(LAST_WORKING_DIR_KEY, "/home/me/lastone");
   window.history.pushState({}, "", "/new?dir=%2Ftmp%2Fproject");
   const fake = readyClient((f) => f.on("evener/paths/complete", () => ({ data: ["/tmp/project/src"] })));
   renderSpawn(fake);
@@ -604,6 +621,9 @@ test("Escape discards directory browsing while preserving the prompt and launch 
     "my important draft text",
   );
   expectWorkingDir("/tmp/project");
+  // Dismissal is not confirmation: the browse history keeps the last folder
+  // the user actually picked, not the prefilled path the cancelled panel held.
+  expect(localStorage.getItem(LAST_WORKING_DIR_KEY)).toBe("/home/me/lastone");
 });
 
 // The read side of that same global (spec 3.4): with no ?dir= prefill and no

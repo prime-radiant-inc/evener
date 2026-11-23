@@ -37,14 +37,14 @@ function statusAnnouncement(view: FindView): string {
 }
 
 export function FindBar({ view }: { view: FindView }) {
-  const root = useRef<HTMLDivElement>(null);
-  // The widget owns its input element; focus reaches it through the bar, as
-  // the pane scaffold's own focus selector does for the composer.
+  const inputRef = useRef<HTMLInputElement>(null);
+  // Each focus request focuses the field and selects its query, so a reader
+  // can replace it by typing. The widget hands out its own element now; the
+  // bar no longer queries for it.
   // biome-ignore lint/correctness/useExhaustiveDependencies: each focus request is one event
   useEffect(() => {
-    const input = root.current?.querySelector("input");
-    input?.focus();
-    input?.select();
+    inputRef.current?.focus();
+    inputRef.current?.select();
   }, [view.focusEpoch]);
 
   function onKeyDown(event: KeyboardEvent<HTMLElement>) {
@@ -73,7 +73,6 @@ export function FindBar({ view }: { view: FindView }) {
           every browser the app serves. Its keys belong to the field inside. */}
       {/* biome-ignore lint/a11y/useSemanticElements: see above */}
       <div
-        ref={root}
         className={styles.bar}
         role="search"
         aria-label="Find in session"
@@ -87,6 +86,7 @@ export function FindBar({ view }: { view: FindView }) {
       >
         <div className={styles.field}>
           <Input
+            ref={inputRef}
             type="search"
             value={view.query}
             onChange={(event) => view.setQuery(event.target.value)}

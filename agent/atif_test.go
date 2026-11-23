@@ -23,7 +23,7 @@ import (
 func TestSession_ExcludesConfiguredCredentialFromResponseEndpointArtifacts(t *testing.T) {
 	t.Parallel()
 	const credential = "endpoint-path-credential-sentinel"
-	const communicateArgs = `{\"message\":\"done\",\"end_turn\":true,\"output\":{\"message\":\"\",\"data\":{},\"artifacts\":[]}}`
+	const communicateArgs = `{\"message\":\"done\",\"next\":\"send_and_end_turn\",\"output\":{\"message\":\"\",\"data\":{},\"artifacts\":[]}}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/"+credential+"/chat/completions" {
 			http.NotFound(w, r)
@@ -379,4 +379,39 @@ func readExportedATIF(t *testing.T, path string) atif.Trajectory {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 	return traj
+}
+
+// A fork that starts with an empty transcript header saves the prompt it
+// rendered to its meta. The export must record that prompt as the session's
+// system prompt, or the trajectory loses the launch context entirely.
+func TestExportATIF_ProjectsLaunchSystemPromptSavedInMeta(t *testing.T) {
+	t.Parallel()
+	const (
+		id           = "launch-prompt-sess"
+		launchPrompt = "You are the forked agent."
+	)
+	dir := t.TempDir()
+	transcriptPath := schema.SessionTranscriptPath(dir, id)
+
+	tw, err := transcript.NewWriter(transcriptPath, transcript.Header{SessionID: id})
+	if err != nil {
+		t.Fatalf("transcript.NewWriter: %v", err)
+	}
+	if err := tw.Append(schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("hello")}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := schema.SaveSessionMeta(dir, schema.SessionMeta{ID: id, LaunchSystemPrompt: launchPrompt}); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+
+	outputPath := filepath.Join(dir, "trajectory.json")
+	if err := exportATIF(transcriptPath, outputPath, ""); err != nil {
+		t.Fatalf("exportATIF: %v", err)
+	}
+	if got := readExportedATIF(t, outputPath).Extra["system_prompt"]; got != launchPrompt {
+		t.Fatalf("ATIF system_prompt = %#v, want the meta launch prompt %q", got, launchPrompt)
+	}
 }

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/runetrim"
 
 	"primeradiant.com/evener/agent/internal/mdfence"
@@ -1515,7 +1516,7 @@ func writeAssistantContent(b *strings.Builder, seq int, t schema.Turn, resultToo
 				if idx != nil {
 					idx.consumed[p.ToolCall.ID] = true
 					paired, hasResult := idx.byCallID[p.ToolCall.ID]
-					if hasResult && paired.result.IsError && !paired.result.PrevalOnly {
+					if hasResult && (apptranscript.IsQuietCommunicate(paired.result) || paired.result.IsError && !paired.result.PrevalOnly) {
 						continue
 					}
 					writeResultToolMessage(&sb, p.ToolCall, hasResult && !paired.result.IsError)
@@ -1734,40 +1735,27 @@ func writeUnpairedResults(b *strings.Builder, idx *resultIndex, opt renderOpts) 
 // arguments string if the message field is absent.
 func writeResultToolMessage(b *strings.Builder, tc *llm.ToolCallData, healed bool) {
 	args := json.RawMessage(tc.SentArgumentsBytes())
-	if len(args) > 0 {
-		var m map[string]any
-		if err := json.Unmarshal(args, &m); err == nil {
-			if msg, ok := m["message"]; ok {
-				fmt.Fprintf(b, "%v\n", msg)
-				return
-			}
-		}
-		// For a healed communicate (result is "ok"), the raw bytes are malformed
-		// but were repaired and delivered live. Repair them here to recover the
-		// message — matching what live delivered — instead of showing the raw
-		// malformed bytes. For a rejected communicate (result is "error") or a
-		// pending call (no result), the raw fallback is correct: the user sees
-		// the raw bytes the model sent.
-		if healed && tc.RawArguments != "" {
-			repaired, _ := repair.RepairJSON([]byte(tc.RawArguments))
-			// Replay the communicate-specific normalization (promote string
-			// output to object, copy output.message into message) so a healed
-			// call with a string-valued output renders the same message live
-			// delivered — matching the apptranscript projection path.
-			normalized := apptranscript.NormalizeCommunicateArguments(repaired)
-			if err := json.Unmarshal(normalized, &m); err == nil {
-				if msg, ok := m["message"]; ok {
-					fmt.Fprintf(b, "%v\n", msg)
-					return
-				}
-			}
-		}
-		// No "message" key or unparseable: render the raw arguments.
-		// Bound the raw fallback so one pathological line cannot dominate the
-		// card, mirroring the summary path's resultLineMaxRunes limit.
-		b.WriteString(runetrim.OneLine(truncRunes(string(args), resultLineMaxRunes)))
-		b.WriteString("\n")
+	if len(args) == 0 {
+		return
 	}
+	if msg := apptranscript.CommunicateMessageFromArguments(args); msg != "" {
+		fmt.Fprintln(b, msg)
+		return
+	}
+	if apptranscript.CommunicateArgumentsWithoutMessage(args) {
+		return
+	}
+	// Reconstruct a healed call's delivered message; only malformed bytes
+	// that still carry no recoverable message fall back to the raw excerpt.
+	if healed && tc.RawArguments != "" {
+		repaired, _ := repair.RepairJSON([]byte(tc.RawArguments))
+		if msg := apptranscript.CommunicateMessageFromArguments(apptranscript.NormalizeCommunicateArguments(repaired)); msg != "" {
+			fmt.Fprintln(b, msg)
+			return
+		}
+	}
+	b.WriteString(runetrim.OneLine(truncRunes(string(args), resultLineMaxRunes)))
+	b.WriteByte('\n')
 }
 
 const (
@@ -2229,6 +2217,57 @@ func formatNumber(f float64) string {
 	return strconv.FormatFloat(f, 'g', -1, 64)
 }
 
+// extractRenderedEditOps decodes a stored edit_file call's edit operations from
+// canonical edits[] or falls back to historical top-level fields.
+func extractRenderedEditOps(m map[string]any) []execenv.FileEdit {
+	if raw, hasEdits := m["edits"]; hasEdits {
+		items, ok := raw.([]any)
+		if !ok || len(items) == 0 {
+			return nil
+		}
+		ops := make([]execenv.FileEdit, 0, len(items))
+		for _, item := range items {
+			obj, ok := item.(map[string]any)
+			if !ok {
+				return nil
+			}
+			oldStr, okOld := obj["old_string"].(string)
+			newStr, okNew := obj["new_string"].(string)
+			if !okOld || !okNew {
+				return nil
+			}
+			replaceAll, _ := obj["replace_all"].(bool)
+			ops = append(ops, execenv.FileEdit{OldString: oldStr, NewString: newStr, ReplaceAll: replaceAll})
+		}
+		return ops
+	}
+	return []execenv.FileEdit{{
+		OldString:  scalarString(m["old_string"]),
+		NewString:  scalarString(m["new_string"]),
+		ReplaceAll: scalarString(m["replace_all"]) == "true",
+	}}
+}
+
+// editFileSummary renders the single-edit summary or the batch aggregate.
+func editFileSummary(path string, edits []execenv.FileEdit) string {
+	if len(edits) == 0 {
+		return path
+	}
+	if len(edits) == 1 {
+		s := fmt.Sprintf("%s (replace %d→%d chars", path, len(edits[0].OldString), len(edits[0].NewString))
+		if edits[0].ReplaceAll {
+			s += ", all"
+		}
+		return s + ")"
+	}
+	oldChars, newChars := 0, 0
+	for _, edit := range edits {
+		oldChars += len(edit.OldString)
+		newChars += len(edit.NewString)
+	}
+	return fmt.Sprintf("%s (%d edits, replace %d→%d chars)", path, len(edits), oldChars, newChars)
+}
+
 // toolInputSummary returns a one-line, bounded summary of a tool call's input
 // per the known-tool list in spec §Tool Call Condensation. It never emits full
 // file contents or full edit strings. Unknown tools fall back to up to three
@@ -2275,12 +2314,7 @@ func toolInputSummary(name string, args json.RawMessage) string {
 		summary = fmt.Sprintf("%s (%d bytes)", path, len(get("content")))
 
 	case "edit_file":
-		path := get("file_path")
-		s := fmt.Sprintf("%s (replace %d→%d chars", path, len(get("old_string")), len(get("new_string")))
-		if get("replace_all") == "true" {
-			s += ", all"
-		}
-		summary = s + ")"
+		summary = editFileSummary(get("file_path"), extractRenderedEditOps(m))
 
 	case "grep":
 		summary = joinSummary(quoteIfSet(get("pattern")), pathSegment(get("path")))

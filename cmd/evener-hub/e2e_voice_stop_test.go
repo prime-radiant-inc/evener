@@ -446,7 +446,7 @@ func voiceStopNotification(t *testing.T, f *voiceCorrectionStack, client *appwir
 
 func voiceStopContinue(call *fakellm.Call, text string) {
 	args := communicateArgs(text)
-	args["end_turn"] = false
+	args["next"] = "send_and_continue"
 	call.RespondToolCall("communicate", args)
 }
 

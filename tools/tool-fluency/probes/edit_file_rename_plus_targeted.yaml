@@ -1,0 +1,45 @@
+schema: 1
+id: edit_file.rename_plus_targeted
+tool: edit_file
+prompt: |
+  Read widget.go, then use edit_file with replace_all to rename every occurrence
+  of oldName to newName. Also change the package comment
+  "// Package widget builds demo widgets." to
+  "// Package widget builds production widgets."
+  Use only read_file and edit_file (do not run shell commands).
+  Finish with RESULT_RENAME_PLUS_TARGETED.
+fixture:
+  files:
+    widget.go: |
+      // Package widget builds demo widgets.
+      package widget
+
+      import "strings"
+
+      // oldName returns the display name of the widget.
+      func oldName() string {
+              return "widget"
+      }
+
+      // Render renders the widget using oldName.
+      func Render() string {
+              return strings.ToUpper("render " + oldName())
+      }
+expect:
+  calls:
+    - tool: read_file
+    - tool: edit_file
+    - tool: communicate
+  forbidden_calls: [shell]
+  artifacts:
+    - path: widget.go
+      contains: "// Package widget builds production widgets.\n"
+    - path: widget.go
+      contains: "// newName returns the display name of the widget.\n"
+    - path: widget.go
+      contains: "func newName() string {\n"
+    - path: widget.go
+      contains: "// Render renders the widget using newName.\n"
+    - path: widget.go
+      contains: "return strings.ToUpper(\"render \" + newName())\n"
+  final_contains: ["RESULT_RENAME_PLUS_TARGETED"]

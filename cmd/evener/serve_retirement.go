@@ -87,10 +87,10 @@ func (r *serveRetirement) consumeClaim(reqCtx context.Context, claim *agent.Reti
 	drainCancel()
 	var teardownErr error
 	if drainErr != nil {
-		serveLogf(r.deps.diagnosticOut(), root.ID(), "retirement reader drain failed: %v", drainErr)
+		serveLogf(r.deps.serveDiagnosticOut(), root.ID(), "retirement reader drain failed: %v", drainErr)
 		teardownErr = fmt.Errorf("retirement reader drain: %w", drainErr)
 	} else if err := agent.ReleaseForRetirement(r.ctx, prepared); err != nil {
-		serveLogf(r.deps.diagnosticOut(), root.ID(), "retirement release failed: %v", err)
+		serveLogf(r.deps.serveDiagnosticOut(), root.ID(), "retirement release failed: %v", err)
 		teardownErr = fmt.Errorf("retirement release: %w", err)
 	} else {
 		r.observe("released", root.ID())

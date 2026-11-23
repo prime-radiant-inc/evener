@@ -56,7 +56,6 @@ func benchResumeEntries(reopenMarkers int) []transcript.Entry {
 func benchResumeCoordinates(entries []transcript.Entry) {
 	superseded := supersededDelegateAttentionIDs(entries)
 	history, insertions := resumeHistoryIndexedWithSuperseded(entries, superseded)
-	_ = latestAttemptStarts(entries, insertions, superseded)
 	_ = resumedDivergence(entries, len(entries), insertions, superseded)
 	_ = history
 }

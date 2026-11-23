@@ -375,6 +375,14 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
 	finishRestore(sub, nil)
+	// A committed send releases the stop holds in the same store Apply that
+	// starts its generation, so every row a stop held is presentable again. A
+	// compaction that ran while the hold stood kept only unheld rows, so the
+	// row's turn may be missing from the resident history; restore it, in
+	// transcript arrival order, before the run builds its first request.
+	if err := sub.sess.restorePendingDelegateAttentionTurns(); err != nil {
+		s.emit(warningDataFromError("restore pending delegate attention for send", err))
+	}
 	if observer := s.cfg.testOnly.delegateSendStartCommitted; observer != nil {
 		observer(sub)
 	}

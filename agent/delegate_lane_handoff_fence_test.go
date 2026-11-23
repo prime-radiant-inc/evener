@@ -196,7 +196,7 @@ func TestDelegateLaneHandoffFenceAdmissions(t *testing.T) {
 	}
 	reservation, err := c.ReserveStart(rootDelegateActor("root-session"), parentID)
 	assertBusyReservation(t, c, reservation, err, "target start under the handoff")
-	reservation, err = c.reserveOwedAttentionStart(nestedID, "attention-sentinel", 1, nil)
+	reservation, err = c.reserveOwedAttentionStart(nestedID, "attention-sentinel", 1)
 	assertBusyReservation(t, c, reservation, err, "nested owed attention start under the handoff")
 
 	if _, _, err := c.idleDelegateRestoreCommit(siblingID); err != nil {

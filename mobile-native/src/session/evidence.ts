@@ -9,7 +9,8 @@ import {
 	capitalized,
 	delegateSendEarlierLabel,
 	diffStats,
-	editDiffText,
+	editBatchDiffText,
+	editOperationsOf,
 	filePathOf,
 	freshNotes,
 	jobStatusDisplay,
@@ -254,10 +255,9 @@ function memoryEvidence(label: string, detail: ActivityDetail): Evidence[] {
 		}
 		case "memory_edit": {
 			const args = parseArgs(detail.arguments);
-			const oldString = str(args, "old_string");
-			const newString = str(args, "new_string");
-			if (oldString === undefined && newString === undefined) return jsonEvidence(detail, text);
-			return [diff(editDiffText(filePathOf(args) ?? "", oldString ?? "", newString ?? ""))];
+			const ops = editOperationsOf(args);
+			if (ops === null) return jsonEvidence(detail, text);
+			return [diff(editBatchDiffText(filePathOf(args) ?? "", ops))];
 		}
 		case "memory_read":
 		case "memory_search":
@@ -284,11 +284,9 @@ export function stepEvidence(step: EvidenceSource): Evidence[] {
 		const args = parseArgs(detail.arguments);
 		const path = filePathOf(args);
 		if (step.label === "edit_file") {
-			const oldString = str(args, "old_string");
-			const newString = str(args, "new_string");
-			// Arguments that carry neither side (a malformed call) have no diff.
-			if (oldString !== undefined || newString !== undefined)
-				evidence.push(diff(editDiffText(path ?? "", oldString ?? "", newString ?? "")));
+			const ops = editOperationsOf(args);
+			// Arguments that carry no valid edit operations (a malformed call) have no diff.
+			if (ops !== null) evidence.push(diff(editBatchDiffText(path ?? "", ops)));
 		} else if (step.label === "apply_patch") {
 			const patch = str(args, "patch");
 			if (patch) evidence.push(diff(patch));

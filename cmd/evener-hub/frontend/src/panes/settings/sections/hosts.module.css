@@ -1,7 +1,5 @@
 .root {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+  composes: stack3 from "../../../styles/surface.module.css";
 }
 
 .help {
@@ -49,9 +47,7 @@
 /* HostSheet (design-system §10): the host's state and its operation, then
  * its actions as one full-width column, Remove below a divider. */
 .sheetBody {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+  composes: stack3 from "../../../styles/surface.module.css";
 }
 
 .chipRow {

@@ -4,6 +4,8 @@ package schema
 type TruncationStrategy string
 
 const (
+	// TruncHead keeps the start of the output up to MaxChars and removes the end.
+	TruncHead TruncationStrategy = "head"
 	// TruncHeadTail keeps the head and tail of the output, removing the middle.
 	TruncHeadTail TruncationStrategy = "head_tail"
 	// TruncTail keeps the last portion of the output, removing the start.

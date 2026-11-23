@@ -70,6 +70,13 @@ describe("resource-local optimistic rail projection", () => {
     const op: PendingOp = { kind: "sessionPin", ref: "missing", source: cached, section: section("target") };
     expect(applyPending(source, [op], { pinSources: index }).pinSections).toEqual([]);
   });
+  test("never indexes a nested row as a pin source", () => {
+    const nested = session({ ref: "child", kind: "subagent" });
+    const source = resources({ projects: [project({ sessions: [nested] })] });
+    expect(buildPinSourceIndex(source).rowsByIdentity.size).toBe(0);
+    const op: PendingOp = { kind: "sessionPin", ref: "child", source: nested, section: section("target") };
+    expect(applyPending(source, [op]).pinSections).toEqual([]);
+  });
   test("unpins and clears annotations without removing unrelated sections", () => {
     const row = session({ pin_section_id: "old" });
     const source = resources({

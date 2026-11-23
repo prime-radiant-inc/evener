@@ -46,7 +46,6 @@ func promptConfigs() []promptConfig {
 		{"root interactive anthropic", buildRootInteractiveAnthropicSession, func(t *testing.T, d promptData) {
 			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, true)
-			checkPromptInput(t, "HasEndReason", d.HasEndReason, true)
 			checkPromptInput(t, "CanDelegate", d.CanDelegate, true)
 			checkPromptInput(t, "NonInteractive", d.NonInteractive, false)
 			checkPromptInput(t, "TurnEndsProcess", d.TurnEndsProcess, false)
@@ -80,14 +79,14 @@ func promptConfigs() []promptConfig {
 			checkPromptInput(t, "an available agent with tasks", withTasks, true)
 			checkPromptInput(t, "an available agent without tasks", withoutTasks, true)
 			checkPromptInput(t, "a task that inserts parent tasks", insertsParentTasks, true)
-			for _, name := range []string{"read_transcript", "find_session_transcripts", "job_watch", "compact_context", "apply_patch"} {
+			for _, name := range []string{"read_transcript", "find_session_transcripts", "job_watch", "compact_context", "edit_file"} {
 				checkPromptInput(t, "HasTool "+name, d.HasTool(name), true)
 			}
+			checkPromptInput(t, "HasTool apply_patch", d.HasTool("apply_patch"), false)
 		}},
 		{"root headless openai coordinator", buildRootHeadlessCoordinatorSession, func(t *testing.T, d promptData) {
 			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
-			checkPromptInput(t, "HasEndReason", d.HasEndReason, false)
 			checkPromptInput(t, "NonInteractive", d.NonInteractive, true)
 			checkPromptInput(t, "TurnEndsProcess", d.TurnEndsProcess, true)
 			checkPromptInput(t, "HasTool job_watch", d.HasTool("job_watch"), true)
@@ -112,7 +111,6 @@ func promptConfigs() []promptConfig {
 			checkPromptInput(t, "CanDelegate", d.CanDelegate, true)
 			checkPromptInput(t, "DelegationAllowance", d.DelegationAllowance, 1)
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
-			checkPromptInput(t, "HasEndReason", d.HasEndReason, false)
 			checkPromptInput(t, "IsSubagent", d.IsSubagent, true)
 			checkPromptInput(t, "Role is the delegating subagent override",
 				d.Role == strings.TrimSpace(defaultDelegatingSubagentInstructions), true)
@@ -121,7 +119,6 @@ func promptConfigs() []promptConfig {
 			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")
 			checkPromptInput(t, "CanDelegate", d.CanDelegate, false)
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
-			checkPromptInput(t, "HasEndReason", d.HasEndReason, false)
 			checkPromptInput(t, "IsSubagent", d.IsSubagent, true)
 			checkPromptInput(t, "Role is the bundled subagent body", d.Role == bundledAgentBody(t, "subagent"), true)
 		}},
@@ -146,7 +143,6 @@ func promptConfigs() []promptConfig {
 		{"delegate with role override and preloaded skills", buildDelegateWithRoleOverrideSession, func(t *testing.T, d promptData) {
 			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
-			checkPromptInput(t, "HasEndReason", d.HasEndReason, false)
 			checkPromptInput(t, "ActivatedSkillBodies holds the preloaded body",
 				len(d.ActivatedSkillBodies) == 1 && d.ActivatedSkillBodies[0] == sentinelActivatedSkill, true)
 			checkPromptInput(t, "IsSubagent", d.IsSubagent, true)
@@ -159,7 +155,6 @@ func promptConfigs() []promptConfig {
 			// read isSubagentSession must agree with it.
 			checkPromptInput(t, "IsSubagent", d.IsSubagent, true)
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
-			checkPromptInput(t, "HasEndReason", d.HasEndReason, false)
 		}},
 	}
 }

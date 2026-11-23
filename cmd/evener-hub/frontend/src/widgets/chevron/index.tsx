@@ -25,10 +25,20 @@
 // squareness is asserted in this widget's own test rather than trusted to
 // each caller.
 //
-// Consumers that ANIMATE the turn (a disclosure opening) keep rotating a
-// `direction="right"` icon in CSS, which is now safe. Consumers with a fixed
-// direction (a dropdown caret, a tree row's current state) pass `direction`
-// and get a different PATH - no transform to collide with.
+// Consumers that ANIMATE the turn (a disclosure opening) pass `open`; this
+// widget sets `data-open` on the svg and owns the 90-degree rotation and its
+// reduced-motion-gated transition in chevron.module.css. Callers no longer
+// reach into `> svg` to turn it, and every rotation targets the same square
+// element. Consumers with a fixed direction (a dropdown caret, a tree row's
+// current state) pass `direction` and get a different PATH - no transform to
+// collide with.
+
+import { requireClass } from "../internal/requireClass";
+import styles from "./chevron.module.css";
+
+const CLASS = {
+  chevron: requireClass(styles.chevron, "chevron.module.css", "chevron"),
+};
 
 export type ChevronDirection = "right" | "down" | "left" | "up";
 
@@ -46,24 +56,30 @@ export interface ChevronProps {
   direction?: ChevronDirection;
   /** Box edge in px. Square by construction - see this widget's own test. */
   size?: number;
+  /** Whether the thing this chevron marks is open. Sets `data-open` on the
+   * svg and turns it 90 degrees, so a disclosure's leading glyph learns the
+   * state from the disclosure rather than from a caller descendant selector. */
+  open?: boolean;
 }
 
 // 14px: the same edge CloseIcon and BackIcon use, so every icon in the app
 // occupies one box size unless it has a reason not to.
 const DEFAULT_SIZE = 14;
 
-export function Chevron({ direction = "right", size = DEFAULT_SIZE }: ChevronProps = {}) {
+export function Chevron({ direction = "right", size = DEFAULT_SIZE, open }: ChevronProps = {}) {
   return (
     <svg
+      className={CLASS.chevron}
       viewBox="0 0 16 16"
       width={size}
       height={size}
       aria-hidden="true"
       focusable="false"
-      // Inline rather than a class: this widget has no stylesheet of its own,
-      // and `display` here is correctness (an inline SVG would sit in a line
-      // box taller than itself, undoing the square box above), not styling a
-      // consumer should be able to override.
+      data-open={open === undefined ? undefined : open ? "true" : "false"}
+      // Inline rather than a class: `display` here is correctness (an inline
+      // SVG would sit in a line box taller than itself, undoing the square box
+      // above), not styling a consumer should be able to override. The class
+      // carries only the open rotation in chevron.module.css.
       style={{ display: "block" }}
     >
       <path

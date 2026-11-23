@@ -174,16 +174,36 @@ function ActivityWatchTimeline({ watch, now }: { watch: SessionWatch; now: numbe
 // delivery timeline. A condition watch gets the explanatory line instead:
 // there is no period to draw, and the block must not pretend there is.
 //
+// A named delegate reading its own session is not in its own delegates
+// collection, so the viewed session's proven identity arrives as `viewing`
+// and names the watch only when that session is the watch's receiver. A
+// mismatch keeps the ordinary title precedence and the raw-ref fallback.
+//
 // The sidebar passes the row's own ticking `now` on every render, so reading
 // the clock HERE, rather than in the row, is what keeps a collapsed watch row
 // from re-rendering on every tick with identical output. The optional `now` is
 // a deterministic seam for direct tests; a caller that omits it gets a fixed
 // zero, never a second production clock source.
-export function ActivityWatchDetail({ row, now = 0 }: { row: ActivityWatchRow; now?: number }): JSX.Element {
+export interface ViewingSession {
+  readonly ref: string;
+  readonly delegateName?: string;
+}
+
+export function ActivityWatchDetail({
+  row,
+  now = 0,
+  viewing,
+}: {
+  row: ActivityWatchRow;
+  now?: number;
+  viewing?: ViewingSession;
+}): JSX.Element {
   const { watch } = row;
   const recipientName = useThreadsStore((state) => state.threads.get(watch.receiverRef)?.name);
   const entities = useEntityViews();
   const navigationName = useNavigationStore((state) => navigationSummaryFor(watch.receiverRef, state)?.title);
+  const viewingDelegateName =
+    viewing !== undefined && viewing.ref === watch.receiverRef ? viewing.delegateName?.trim() : undefined;
   const notifiedDelegateName = useMemo(() => {
     for (const entity of entities?.values() ?? []) {
       if (entity.kind === "delegate" && entity.open.ref === watch.receiverRef) return entity.name?.trim();
@@ -208,7 +228,12 @@ export function ActivityWatchDetail({ row, now = 0 }: { row: ActivityWatchRow; n
         {watchFacts(watch, now, targetLabel)}
       </p>
       <p className={CLASS.watchFacts}>
-        Notifies {recipientName?.trim() || navigationName?.trim() || notifiedDelegateName || watch.receiverRef}
+        Notifies{" "}
+        {recipientName?.trim() ||
+          navigationName?.trim() ||
+          notifiedDelegateName ||
+          viewingDelegateName ||
+          watch.receiverRef}
       </p>
       {watchIsScheduled(watch) ? (
         <ActivityWatchTimeline watch={watch} now={now} />

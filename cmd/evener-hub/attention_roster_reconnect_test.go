@@ -251,7 +251,7 @@ func rosterRegister(toolCallID string) llm.Response {
 // send rail has not delivered yet can arrive in the next notification turn.
 func rosterContinue(message string) llm.Response {
 	args := communicateArgs(message)
-	args["end_turn"] = false
+	args["next"] = "send_and_continue"
 	return activityRelayTool("communicate", args)
 }
 

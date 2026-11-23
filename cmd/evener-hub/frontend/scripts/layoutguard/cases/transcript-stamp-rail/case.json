@@ -5,6 +5,7 @@
     "styles/global.css",
     "styles/tokens.css",
     "styles/motion.module.css",
+    "styles/text.module.css",
     "panes/session/transcript/turnblock.module.css",
     "panes/session/transcript/messages/agentmessageitem.module.css",
     "widgets/timestamp/timestamp.module.css",

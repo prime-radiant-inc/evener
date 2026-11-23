@@ -16,6 +16,7 @@ import { Button, EmptyState, Input } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { InstalledPluginRow } from "../../../plugins/PluginRow";
 import { samePluginTarget } from "../../../plugins/pluginRowFocus";
+import { pluginMatchesQuery } from "../../../plugins/pluginSearch";
 import { useExtensionsHostState } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
 import { PluginDetailBody, type PluginDetailTarget } from "./PluginDetailBody";
@@ -39,12 +40,7 @@ export function InstalledSection({ expanded, onToggle, onBrowse }: InstalledSect
   const [filterQuery, setFilterQuery] = useState("");
 
   const trimmedQuery = filterQuery.trim().toLowerCase();
-  const visible =
-    trimmedQuery === ""
-      ? plugins
-      : plugins.filter(
-          (p) => p.plugin.toLowerCase().includes(trimmedQuery) || p.marketplace.toLowerCase().includes(trimmedQuery),
-        );
+  const visible = trimmedQuery === "" ? plugins : plugins.filter((p) => pluginMatchesQuery(p, trimmedQuery));
 
   return (
     <section className={CLASS.section}>

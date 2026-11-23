@@ -51,26 +51,6 @@ func prependSystemPromptToUserMessage(systemPrompt string, user llm.Message) llm
 
 const restoredSystemPromptLabel = "transcript:system_prompt" // PROMPT_LOADED source of a restored prompt
 
-// The render-failure diagnostic is prose, not a prompt. It is assembled from
-// these halves so its readers can match the whole shape rather than its opening
-// words: a custom prompt may legitimately start with "Template rendering
-// failed:".
-const (
-	renderFailurePromptPrefix = "Template rendering failed: "
-	renderFailurePromptSuffix = ". Please report this bug."
-)
-
-// validSavedSystemPrompt reports the prompt a saved field holds, or "" when what
-// it holds is render-failure prose rather than a prompt. Such a field is no
-// answer to "what did this session launch with", so every reader treats it as
-// empty and renders a fresh one.
-func validSavedSystemPrompt(p string) string {
-	if strings.HasPrefix(p, renderFailurePromptPrefix) && strings.HasSuffix(p, renderFailurePromptSuffix) {
-		return ""
-	}
-	return p
-}
-
 // rebuildPromptCache caches system prompt components that don't change between
 // renders. env is the execution environment to render against: callers that
 // already hold s.mu (e.g. SetModel) must pass s.env directly; callers that
@@ -221,6 +201,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 		ResultToolName:           s.resultToolName(),
 		UserInstructionOverride:  strings.TrimSpace(s.cfg.UserInstructionOverride),
 		ProjectDocs:              s.projectDocs,
+		IncludeProjectDocs:       s.includeProjectDocs(),
 		ActivatedSkillBodies:     append([]string(nil), s.cfg.spawn.activatedSkillBodies...),
 	}
 	var sources []promptSource
@@ -261,17 +242,32 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	data.ManagerDiscovery = s.hubEnabled && s.reg.Get("job_list") != nil
 	data.ManagerStatus = s.hubEnabled && s.reg.Get("job_status") != nil
 
-	// The section-facing tool-availability set, canonical names straight from
-	// the registry (see promptData.HasTool).
-	data.CallableTools = s.reg.RegisteredNames()
+	// The section-facing tool-availability set: canonical names that are both
+	// registered and advertised on this session's wire tool list (e.g. OpenAI
+	// advertises apply_patch rather than edit_file while both remain registered
+	// for mid-session model switching).
+	callable := s.reg.RegisteredNames()
+	if len(actualDefs) > 0 {
+		var nameMap map[string]string
+		if s.profile != nil {
+			nameMap = s.profile.ToolNameMap()
+		}
+		advertised := make(map[string]bool, len(actualDefs))
+		for _, def := range actualDefs {
+			advertised[canonicalToolName(def.Name, nameMap)] = true
+		}
+		for name := range callable {
+			if !advertised[name] {
+				delete(callable, name)
+			}
+		}
+	}
+	data.CallableTools = callable
 
 	// ask_user's registration IS the interactive-root gate itself (spec §7
 	// point 1); reading it back from the registry avoids a second predicate
 	// that could drift from the real gate.
 	data.HasAskUser = s.reg.Get("ask_user") != nil
-	// end_reason shares that gate: the registered communicate schema takes
-	// it by this same predicate (toolDeps.offersEndReason).
-	data.HasEndReason = s.hasHumanPartnerToAsk()
 
 	// Available subagent types
 	data.AvailableAgents = s.availableAgentEntries()
@@ -292,6 +288,14 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	}
 
 	return data, sources
+}
+
+// includeProjectDocs reports whether the system prompt renders the personal and
+// repo instruction files. The docs load for every session, but the read-only
+// explorer role omits them so its context stays small (#2579); every other
+// session, working delegates included, obeys the same files its root does.
+func (s *Session) includeProjectDocs() bool {
+	return s.cfg.AgentName != "explorer"
 }
 
 func (s *Session) canPromptDelegation() bool {
@@ -371,7 +375,7 @@ func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) (string, 
 	if err != nil {
 		// The template parsed at package initialization, so an execution error
 		// is a bug. Report it and hand the model a minimal prompt that says so.
-		return renderFailurePromptPrefix + err.Error() + renderFailurePromptSuffix,
+		return schema.RenderFailureSystemPrompt(err),
 			fmt.Sprintf("template render failed: %v", err), true
 	}
 	sources := make([]promptSource, 0, len(inputSources)+2)

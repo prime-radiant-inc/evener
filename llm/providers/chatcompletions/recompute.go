@@ -25,6 +25,11 @@ import (
 // diverge from what the live path recorded (reasoning_content and the other
 // fields fromChatCompletionResponse already covers). requestedModel is used
 // as a fallback when the recorded payload omits its own model field.
+//
+// The recorded body carries no request tool definitions, so the argument
+// rescue cannot inline a JSON-string-encoded array or object field: such a
+// field may appear here as its wire string while the live decode, which had
+// the request's tools, inlined it.
 func ExtractRecordedResponse(body []byte, requestedModel string) (llm.Response, error) {
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 {

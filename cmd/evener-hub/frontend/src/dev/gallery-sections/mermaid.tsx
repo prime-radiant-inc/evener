@@ -1,6 +1,6 @@
 import { MermaidDiagram } from "../../widgets/mermaid";
+import { GallerySection } from "../GallerySection";
 import styles from "../gallery-section.module.css";
-import { ThemeFlip } from "../ThemeFlip";
 
 // The inline diagram's own gallery section (every src/widgets/* directory needs
 // one). The Markdown section shows the fence-in-prose cases; this section shows
@@ -11,18 +11,15 @@ const INVALID = "graph TD; A[unclosed";
 
 export default function MermaidGallerySection() {
   return (
-    <section>
-      <h2>Mermaid</h2>
-      <ThemeFlip>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>flowchart</p>
-          <MermaidDiagram source={BENIGN} />
-        </div>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>invalid (error fallback)</p>
-          <MermaidDiagram source={INVALID} />
-        </div>
-      </ThemeFlip>
-    </section>
+    <GallerySection title="Mermaid">
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>flowchart</p>
+        <MermaidDiagram source={BENIGN} />
+      </div>
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>invalid (error fallback)</p>
+        <MermaidDiagram source={INVALID} />
+      </div>
+    </GallerySection>
   );
 }

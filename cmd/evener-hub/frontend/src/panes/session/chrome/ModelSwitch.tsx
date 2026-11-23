@@ -24,14 +24,17 @@ import { threadsStore } from "../../../stores/threads";
 import { type ModelCatalog, type ModelCatalogEntry, useToasts } from "../../../widgets";
 import { modelListToCatalog } from "../../../widgets/modelCatalog/catalogClient";
 import { ModelSwitchTrigger } from "./ModelSwitchTrigger";
-import { modelLabel } from "./statusFormat";
+import { modelIdentity, modelLabel } from "./statusFormat";
 
 export interface ModelSwitchProps {
   sessionRef: string;
   model: ThreadModel;
+  /** Whether the status row's compact slot may squeeze the trigger: forwarded
+   * to ModelSwitchTrigger's shrink contract. */
+  shrink?: boolean;
 }
 
-export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
+export function ModelSwitch({ sessionRef, model, shrink = false }: ModelSwitchProps) {
   const toasts = useToasts();
 
   // changeModel is the ONLY gate, and it is the wire's own answer: the hub
@@ -41,14 +44,19 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
   // so a user never has to know whether their session is "running" to pick its
   // next model. A pick made while a turn runs is accepted and queued by the
   // session for the turn boundary (agent/session.go's SetModel queue path), so
-  // the next turn - typically the message being typed - runs on it; the label
-  // keeps showing the running turn's model until thread/model/changed lands
-  // from the boundary. A genuinely refused pick (unknown model, unresolvable
-  // ref) still surfaces as a toast from handlePick. Gating on a client-side
-  // turn predicate here made the client guess at an answer only the daemon has,
-  // and it took the switch away from every cold session too.
+  // the next turn - typically the message being typed - runs on it, and the
+  // acceptance is published at once: thread/model/changed carries the queued
+  // pick and thread/read names it, so this label reflects the pick immediately
+  // the way an effort change does, while the running turn finishes on the
+  // model it started with. A genuinely refused pick (unknown model,
+  // unresolvable ref) still surfaces as a toast from handlePick. Gating on a
+  // client-side turn predicate here made the client guess at an answer only
+  // the daemon has, and it took the switch away from every cold session too.
   const disabled = !model.capabilities.changeModel;
   const currentModelLabel = modelLabel(model.modelProvider, model.model);
+  // The picker marks its running row by the catalog's qualified id, so its
+  // value must not collapse an equal pair the way the visible label does.
+  const currentModelIdentity = modelIdentity(model);
 
   const loadCatalog = useCallback(async (refresh?: boolean): Promise<ModelCatalog> => {
     return modelListToCatalog(await threadsStore.getState().listModels(refresh));
@@ -78,11 +86,12 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
   return (
     <ModelSwitchTrigger
       label={currentModelLabel}
-      value={currentModelLabel}
+      value={currentModelIdentity}
       disabled={disabled}
       loadCatalog={loadCatalog}
       refreshKey={modelsRevision}
       onPick={(entry) => void handlePick(entry)}
+      shrink={shrink}
       data-testid="model-switch-trigger"
       valueTestId="model-switch-value"
     />

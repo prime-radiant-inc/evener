@@ -1401,6 +1401,11 @@ func (jm *jobManager) reconcileLostJobsWithLoad(loadJobs func() (map[string]*job
 
 	for _, finished := range jobstore.Reconcile(localRecs, live, jm.now()) {
 		rec := localRecs[finished.JobID]
+		// The runtime that owned this job is gone. A background shell job's
+		// process group survived it, adopted by init: reap it before recording
+		// the loss, so the job does not outlive its session (#4843). The reap
+		// re-verifies the group's start time, so a recycled pgid stays safe.
+		reapBackgroundProcessGroup(rec)
 		// A retired delegate's output belongs to the runtime that wrote it and is
 		// never read, so its unreadable artifacts cannot stop the restore.
 		if string(rec.Type) != delegateResourceType {

@@ -498,7 +498,7 @@ func TestToolCallWireFixtures(t *testing.T) {
 		{
 			id: "call_edit_file", tool: "edit_file",
 			note: "One replacement in one file.",
-			args: map[string]any{"file_path": "agent/tree.go", "old_string": "func settle() {}\n", "new_string": "func settle() {\n\tdrain()\n}\n"},
+			args: map[string]any{"file_path": "agent/tree.go", "edits": []any{map[string]any{"old_string": "func settle() {}\n", "new_string": "func settle() {\n\tdrain()\n}\n"}}},
 		},
 		{
 			id: "call_write_file", tool: "write_file",
@@ -783,11 +783,11 @@ func TestToolCallWireFixtures(t *testing.T) {
 		},
 		{
 			id: "call_communicate", tool: "communicate",
-			note: "A final report to the parent: end_turn ends the turn, and the step's words read it as done. The output envelope is required by the tool's schema.",
+			note: "A final report to the parent: next=\"send_and_end_turn\" (default) ends the turn, and the step's words read it as done. The output envelope is optional unless a schema requires it.",
 			args: map[string]any{
-				"message":  "The settle race is fixed.",
-				"end_turn": true,
-				"output":   map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}},
+				"message": "The settle race is fixed.",
+				"next":    "send_and_end_turn",
+				"output":  map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}},
 			},
 		},
 	}

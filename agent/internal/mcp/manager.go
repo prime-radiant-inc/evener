@@ -213,7 +213,7 @@ func connectOne(ctx context.Context, client *mcpsdk.Client, cfg mcpconfig.Server
 		return failedConn(cfg, dial, err)
 	}
 
-	session, err := client.Connect(perServerCtx, transport, nil)
+	session, err := connectAndRelease(perServerCtx, client, transport)
 	if err != nil {
 		return failedConn(cfg, dial, err)
 	}
@@ -248,6 +248,33 @@ func connectOne(ctx context.Context, client *mcpsdk.Client, cfg mcpconfig.Server
 		origNames: origNames,
 		status:    "connected",
 	}
+}
+
+// releaseChildEnvChannel closes the private child-env fd the sandbox attached
+// to a stdio transport's command. It is a no-op for a remote transport and for
+// a spawn that needed no child env (the command carries no extra files then).
+func releaseChildEnvChannel(t mcpsdk.Transport) {
+	ct, ok := t.(*mcpsdk.CommandTransport)
+	if !ok || ct.Command == nil {
+		return
+	}
+	for _, f := range ct.Command.ExtraFiles {
+		_ = f.Close()
+	}
+	ct.Command.ExtraFiles = nil
+}
+
+// connectAndRelease starts transport and connects to it, then closes this
+// process's copy of the private child-env fd the sandbox attached to the
+// transport's command. Connect has started the launcher by then, and the
+// launcher owns its own copy of the fd from the exec on, so the parent's copy
+// is dead weight — one leaked fd per stdio server for the session's lifetime if
+// it were left open. Every connect site goes through here, on success and on
+// error alike: a launcher that started and then failed still inherited the fd.
+func connectAndRelease(ctx context.Context, client *mcpsdk.Client, transport mcpsdk.Transport) (*mcpsdk.ClientSession, error) {
+	session, err := client.Connect(ctx, transport, nil)
+	releaseChildEnvChannel(transport)
+	return session, err
 }
 
 // Option configures NewManager. It is the non-breaking seam for threading a
@@ -303,7 +330,9 @@ func productionDialWithEnv(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper,
 				if err := confirmSandboxForServer(ctx, wrapper); err != nil {
 					return nil, err
 				}
-				confineCommandUnderSandbox(ct.Command, cfg, wrapper, environ)
+				if err := confineCommandUnderSandbox(ct.Command, cfg, wrapper, environ); err != nil {
+					return nil, err
+				}
 			}
 		}
 		return t, nil
@@ -344,9 +373,9 @@ const serverSandboxRecheckPause = time.Second
 // DYLD_INSERT_LIBRARIES and the rest from their own environment before any
 // namespace, mount, or Seatbelt policy exists — and an MCP server's cfg.Env can
 // come from a config layer a repository writes. It therefore never joins
-// cmd.Env: the Confine*WithChildEnv methods apply it on the far side of the
-// confinement (bwrap --setenv, or /usr/bin/env after sandbox-exec's --), which
-// is the server's own loader environment and nothing else.
+// cmd.Env: the Confine*WithChildEnv methods hand it to the confined child over a
+// private fd (bwrap --args, or a reader process after sandbox-exec's --), so
+// neither the launcher's environment nor its argv carries the values.
 //
 // The parent environment is scrubbed of credential-named vars (evener's own
 // provider key et al.), so an ambient secret never reaches the confined server,
@@ -374,7 +403,7 @@ const serverSandboxRecheckPause = time.Second
 // identical either way. environ must return the parent environment to scrub.
 // productionDial passes os.Environ; deterministic construction tests pass a
 // fixed slice.
-func confineCommandUnderSandbox(cmd *exec.Cmd, cfg mcpconfig.ServerConfig, w *sandbox.Wrapper, environ func() []string) {
+func confineCommandUnderSandbox(cmd *exec.Cmd, cfg mcpconfig.ServerConfig, w *sandbox.Wrapper, environ func() []string) error {
 	// The floor must judge npm's project config from the directory the server
 	// is confined to, not the session's launch dir.
 	workingDir := w.Policy().Git.WorktreeRoot
@@ -396,15 +425,17 @@ func confineCommandUnderSandbox(cmd *exec.Cmd, cfg mcpconfig.ServerConfig, w *sa
 		childEnv = floorChildEnv(launcherEnv, sandbox.ApplyEnvFloorInDir(
 			mergeEnvInto(scrubbed, cfg.Env), w.Policy(), w.SessionTmp(), workingDir))
 	}
+	// fd hygiene first: a sandboxed MCP server inherits no evener fds beyond
+	// stdio. The only extra fd it gains is the private child-env channel below,
+	// which the launcher reads and this spawn site releases once it has started.
+	cmd.ExtraFiles = nil
 	// Confinement wraps the argv and, for Seatbelt, sets cmd.Dir to the worktree
 	// so a macOS MCP server starts in the same directory a Linux (bwrap, via
 	// --chdir) one does — sandbox-exec has no chdir flag.
 	if cfg.DenyNetworkException {
-		w.ConfineWithChildEnv(cmd, workingDir, childEnv)
-	} else {
-		w.ConfineTrustedInfraWithChildEnv(cmd, workingDir, childEnv)
+		return w.ConfineWithChildEnv(cmd, workingDir, childEnv)
 	}
-	cmd.ExtraFiles = nil
+	return w.ConfineTrustedInfraWithChildEnv(cmd, workingDir, childEnv)
 }
 
 // floorChildEnv is the delta that turns the launcher's environment into the
@@ -977,7 +1008,10 @@ func (c *conn) reconnect(_ context.Context) (*mcpsdk.ClientSession, bool) {
 	transport, err := dial(dialCtx)
 	if err == nil {
 		var newSess *mcpsdk.ClientSession
-		newSess, err = client.Connect(dialCtx, transport, nil)
+		// The lazy redial builds a fresh confined command with its own private
+		// child-env fd, so its parent copy is released exactly like the first
+		// connect's.
+		newSess, err = connectAndRelease(dialCtx, client, transport)
 		if err == nil {
 			old, committed := c.swap(newSess)
 			if !committed {

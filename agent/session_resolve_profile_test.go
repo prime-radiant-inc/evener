@@ -395,10 +395,10 @@ func TestSetModel_SameProvider_WithResolver_UsesWithModel(t *testing.T) {
 	}
 }
 
-// TestSetModel_CrossProvider_SwitchToGoogle_RegistersWebSearch verifies that
+// TestSetModel_CrossProvider_SwitchToGoogle_DoesNotRegisterWebSearch verifies that
 // switching from an openai profile to a google/gemini profile via SetModel
-// (with resolver) re-registers the real web_search function tool.
-func TestSetModel_CrossProvider_SwitchToGoogle_RegistersWebSearch(t *testing.T) {
+// (with resolver) never registers the legacy web_search function tool.
+func TestSetModel_CrossProvider_SwitchToGoogle_DoesNotRegisterWebSearch(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -414,22 +414,20 @@ func TestSetModel_CrossProvider_SwitchToGoogle_RegistersWebSearch(t *testing.T) 
 	}
 	defer sess.Close()
 
-	// Before switch: openai does not register web_search as a function tool.
-	if webSearchExecIsReal(t, sess.reg) {
-		t.Fatal("pre-condition: openai session must not have real web_search function tool")
+	if sess.reg.Get("web_search") != nil {
+		t.Fatal("pre-condition: openai session must not have web_search function tool")
 	}
 
 	sess.SetModel("google/gemini-2.5-pro")
 
-	if !webSearchExecIsReal(t, sess.reg) {
-		t.Fatal("after switching to google profile, web_search function tool must be real (not placeholder)")
+	if sess.reg.Get("web_search") != nil {
+		t.Fatal("after switching to google profile, legacy web_search function tool must not be registered")
 	}
 }
 
-// TestSetModel_CrossProvider_SwitchAwayFromGoogle_RemovesWebSearch verifies that
-// switching from a google profile to openai via SetModel removes the web_search
-// function tool (or at least it is no longer the real executor).
-func TestSetModel_CrossProvider_SwitchAwayFromGoogle_RemovesWebSearch(t *testing.T) {
+// TestSetModel_CrossProvider_SwitchAwayFromGoogle_KeepsWebSearchAbsent verifies that
+// switching between google and openai keeps web_search absent.
+func TestSetModel_CrossProvider_SwitchAwayFromGoogle_KeepsWebSearchAbsent(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -445,16 +443,10 @@ func TestSetModel_CrossProvider_SwitchAwayFromGoogle_RemovesWebSearch(t *testing
 	}
 	defer sess.Close()
 
-	// Pre-condition: google session has real web_search.
-	if !webSearchExecIsReal(t, sess.reg) {
-		t.Fatal("pre-condition: gemini session must have real web_search executor")
-	}
-
 	sess.SetModel("openai/gpt-5.4")
 
-	// After switching to openai, web_search function tool must be absent or placeholder.
-	if webSearchExecIsReal(t, sess.reg) {
-		t.Fatal("after switching to openai, web_search function tool must not be real (openai uses native web search)")
+	if sess.reg.Get("web_search") != nil {
+		t.Fatal("after switching to openai, web_search function tool must not be registered")
 	}
 }
 

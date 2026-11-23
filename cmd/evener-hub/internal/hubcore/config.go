@@ -47,6 +47,7 @@ type RelayLifecycleHooks struct {
 // WebConfig is everything the web server needs.
 type WebConfig struct {
 	HubAddr                   string
+	LocalHostName             string                   // this hub machine's hostname; empty falls back to "this host" in the picker
 	AuthToken                 string                   // capability token gating every non-exempt route
 	PublicURL                 string                   // optional external origin used for mobile pairing QR codes
 	HubStateRoot              string                   // root of hub-level machine state (auth-token, index.db, deletions/); defaults to cmdutil.DefaultStateRoot()
@@ -247,6 +248,13 @@ type WebConfig struct {
 	// Nil when not wired (e.g. in tests that construct a WebServer directly).
 	ScratchReconcile func()
 
+	// ReapSessionJobs ends the surviving background shell job process groups of
+	// a session whose owning daemon is gone and of the delegate sessions under
+	// it, skipping every session the predicate names as one a daemon has taken
+	// back, and reports how many groups it signaled (see
+	// agent.ReapSessionBackgroundJobs). Nil when not wired.
+	ReapSessionJobs func(stateDir, sessionID string, skip func(sessionID string) bool) int
+
 	RelayHooks RelayLifecycleHooks // test-only relay lifecycle seams; nil in production
 
 	// Log receives the hub's operational log lines. Nil writes them to
@@ -325,6 +333,16 @@ type ResumeRequest struct {
 	// child exit, or caller/Stop cancellation instead of guessing its duration.
 	CompletionOwned bool
 	ActiveResume    *ActiveResume // hub-owned launch lifetime; never serialized on AppWire
+	// PendingLaunch is the per-session in-flight claim this launch owns. The
+	// spawner settles it when the child registers, dies, or is reaped, unless it
+	// has handed the child to a detached supervisor first. Never serialized.
+	PendingLaunch *PendingLaunch
+	// Caller is the request context exactly as it arrived, before registration
+	// replaced it with the launch's cancellable context. A launch may keep its
+	// child alive only when THIS context ended; Force Stop cancels the launch
+	// context too, and a deliberate stop must still reap the child. Nil when the
+	// launcher has no caller context to offer.
+	Caller context.Context
 }
 
 // DaemonTarget is the daemon a rendezvous entry names, as the process verifier

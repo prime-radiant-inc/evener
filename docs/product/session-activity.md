@@ -31,8 +31,9 @@ Manager discovery joins `attentionLevel` and `attentionAsOf` through the same
 workspace-ref map as the roster broker. These fields describe the roster's
 published observation, which can lag the row's newer status; they are absent
 for subagents and disk-only rows outside that population. Archived and remote
-roster lanes retain their facts. `AskPending` remains the session's own question
-fact, and `needsResponse` means awaiting without a pending question.
+roster lanes retain their facts. `askPending` reports the session's own pending
+`ask_user` question. `needsResponse` can describe a legacy or remote `awaiting`
+frame without a pending question; it does not make the row actionable.
 
 Roster question notices carry the bounded excerpt, exact composite identities,
 the boot/revision pair, instance identity, composite total and call-less count.
@@ -110,10 +111,11 @@ The existing live compact navigation summary supplies running-subagent work.
 The web rail shows its Running spinner; the phone Board classifies the parent
 as Working, using its existing pulse meter in Live and static mark elsewhere.
 This applies to quiet parents and nonblocking warnings, including mixed running
-and failed children. Questions and approvals keep their attention presentation.
-An awaiting rest after a turn that ended on `needs_response` is a finished turn:
-it shows Idle, not Needs you, on the web rail and the phone Board alike, while
-running children still make the parent Working.
+and failed children. A pending `ask_user` question owns the daemon's `awaiting`
+state; a pending approval is a separate reason to show Needs you. Both the web
+rail and the phone Board treat legacy or remote `awaiting` without `askPending`
+or a pending approval as Idle, while running children still make the parent
+Working.
 Warnings carrying a question or approval remain attention states. Own failure,
 restart-required and existing unavailable-session presentations remain unchanged.
 Background attention paused by a permanent provider failure is not live work
@@ -155,9 +157,9 @@ The phone's [alert feed](../../mobile-native/src/alerts/alertEvents.ts) follows
 Board bands. A new nonblocking Warning waits while live children run. A warning
 that remains alerts when the last child settles; one that clears first never
 alerts. Warnings carrying a pending question or approval remain immediately
-eligible. A `needs_response` rest is Idle and does not alert, unlike a question
-or approval under the same In-app alerts switch. First-read and offline rules still apply. Combined banners, Needs you
-counts and Next navigation use the same Board attention membership.
+eligible. An `awaiting` frame normalized to Idle does not alert. First-read and
+offline rules still apply. Combined banners, Needs you counts and Next
+navigation use the same Board attention membership.
 
 The browser's [`effectiveSessionState`](../../cmd/evener-hub/frontend/src/shell/rail/RailRow.tsx)
 and the phone's [`boardState`](../../appwire-client/typescript/state/navigation/liveAttention.ts) own
@@ -634,12 +636,23 @@ removes absent rows. Explicit paging during recovery extends the displayed
 boundary; provisional refresh rows do not. Source issues remain pending across
 clean continuation pages until a fresh root walk reconciles them.
 
-When a binding replaces its client object, it can pass its already loaded
-`SessionActivitySnapshot` through the store's `retained` constructor option.
-Only matching requested refs and scopes retain evidence. Rows, context, issues
-and summary survive in memory while the new owner recovers; read flags reset to
-pending, and runtime metadata, cursors and in-flight requests never transfer.
-The existing fresh walk restores the displayed boundary with new cursors.
+When a binding replaces its client object, it passes the snapshot a fresh store
+should retain: `retainedSnapshot()` returns the loaded state with any row whose
+hold sample a page served before the latest boot transition stripped. The row
+keeps its durable fields and reports no wait, because the transition left the
+sample unattributable to either daemon, until a page of the adopted source
+settles it; a state with no such row is returned as it stands. Pass that
+snapshot through the store's `retained` constructor option. Only matching
+requested refs and scopes retain evidence. Rows, context, issues and summary
+survive in memory while the new owner recovers; read flags reset to pending,
+and runtime metadata, cursors and in-flight requests never transfer.
+The rows also wear the boot generation the outgoing store adopted, which relay
+recovery can learn without a follow read naming it: tell the fresh store
+`store.bootGeneration` with `adoptBootGeneration` before its first page. Omitting
+it walks the rows back to the older generation the binding last read, and the
+replacement's own naming would then retire the very waits the replacement
+published. The existing fresh walk restores the displayed boundary with new
+cursors, and a page that never re-publishes an omitted hold leaves it omitted.
 Resolved-session replacement still retires the former evidence together.
 
 Refresh continuations yield for 100 ms between pages and stop when their view
@@ -827,8 +840,11 @@ combines its terminal outcomes in its quiet Done segment and disappears when
 none of its rows is running.
 
 The native binding retains shared membership across disconnection and client
-replacement. Its shared store owns paging, retries and later-page replay; the
-screen owns filter, search, independent disclosures and visible page demand.
+replacement, passing the filtered snapshot and its adopted boot generation to
+the next store as [shared client responsibilities](#shared-client-responsibilities)
+describes; the disconnected Agents list renders that sanitized tree. Its shared
+store owns paging, retries and later-page replay; the screen owns filter,
+search, independent disclosures and visible page demand.
 A successful page that only changes a closed fold's count keeps the observed
 end demand, because the native list emits its end callback once per content
 length. Each resource's shared loading/error state gates that demand. New visible
@@ -1030,7 +1046,7 @@ acquires its holder; an abandoned render starts no read. Every visible ordinary
 session pane observes that pane's
 summary and its subtree summary (for the Agents count) by explicit ref on both
 viewports, through its flush status footer on desktop and through the
-activity line below the composer card on the phone, which renders no footer
+activity line above the composer card on the phone, which renders no footer
 strip. A folded resting composer hides that line but keeps observing through
 the session menu's hidden discovery owner, so a pane's counts are current the
 moment its card expands. Side-by-side panes retain independent counts while duplicate consumers of one

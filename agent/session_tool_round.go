@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/toolname"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -102,7 +103,7 @@ func decideNoToolCalls(noContent bool, t retryTracker, resultToolName string) no
 				Tracker:      t,
 				Retry:        true,
 				WarningMsg:   fmt.Sprintf("empty response from model (retry %d/%d)", t.consecutiveEmpty, maxEmptyRetries),
-				SteeringText: steering,
+				SteeringText: systemReminderBlock(steering),
 			}
 		}
 		return noToolCallsDecision{Tracker: t, TerminalKind: noToolTerminalEmptyExhausted}
@@ -110,16 +111,18 @@ func decideNoToolCalls(noContent bool, t retryTracker, resultToolName string) no
 
 	t.consecutiveEmpty = 0
 	t.consecutiveBareText++
-	if t.consecutiveBareText <= maxBareTextRetries {
+	t.totalBareText++
+	if t.consecutiveBareText <= maxBareTextRetries && t.totalBareText <= maxTotalBareTextResponses {
 		steering := "You responded with bare text instead of a tool call. " +
 			"All user-facing messages MUST use " + resultToolName + ". " +
-			"If that bare text was meant for the user, call " + resultToolName + " now with that text in message, set end_turn=true, and include the output envelope. " +
+			"If that bare text was meant for the user or caller, call " + resultToolName + " now with that text in message (and output when required by your schema). " +
+			"If you are waiting on running work or a notification/watch frame needs nothing from you, call " + resultToolName + ` with next="log_quietly_and_end_turn" and a brief wait note in message. ` +
 			"Otherwise call your next tool and keep working."
 		return noToolCallsDecision{
 			Tracker:      t,
 			Retry:        true,
 			WarningMsg:   fmt.Sprintf("bare text response without tool call (retry %d/%d)", t.consecutiveBareText, maxBareTextRetries),
-			SteeringText: steering,
+			SteeringText: systemReminderBlock(steering),
 		}
 	}
 	return noToolCallsDecision{Tracker: t, TerminalKind: noToolTerminalBareTextExhausted}
@@ -563,7 +566,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 			lastFailure = results[i].Output
 		}
 	}
-	if s.cfg.EnableLoopDetection != nil && *s.cfg.EnableLoopDetection {
+	if len(calls) > 0 && s.cfg.EnableLoopDetection != nil && *s.cfg.EnableLoopDetection {
 		if detectLoop(*toolSigs, s.cfg.LoopDetectionWindow) {
 			s.mu.Lock()
 			s.loopDetectionCount++
@@ -609,7 +612,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 		if s.envContextDue() {
 			_ = s.maybeAppendEnvironmentContext()
 		}
-		if !s.communicated() {
+		if !s.communicated() && !s.quietlyYielded() {
 			if s.hasPendingSteering() {
 				yieldToObserverCallback = false
 			}
@@ -671,41 +674,35 @@ func (s *Session) drainPostToolWatchSends(ctx context.Context) (watchSendDrainRe
 // stronger stop than a hook's veto, since a Blocked result would force the
 // model to answer its own questions and a persistent one would exhaust the
 // round cap and strand the session idle instead of awaiting. Stop hooks are
-// still consulted for a communicate-only boundary, exactly as before. It
+// still consulted for a visible communicate-only boundary, not a quiet yield. It
 // returns done=false when nothing was delivered and no ask was posted, or a
 // Stop hook blocked a communicate-only completion, meaning the turn should
 // continue to the next round.
 func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool) (done bool, text string, err error) {
 	s.mu.Lock()
-	delivered := s.comm.called
-	text = s.comm.reply
+	quiet := s.quietBoundaryLocked()
+	delivered := s.comm.hasAccepted() && !quiet
+	if delivered {
+		text = s.comm.reply
+	}
+	if quiet && s.comm.phase == commBoundaryStopBlocked {
+		// This round's only boundary is a quiet yield after an earlier Stop
+		// block: leave the blocked reply without terminal acceptance.
+		s.discardBlockedForQuietLocked()
+	}
 	s.mu.Unlock()
-	stopHookActive := s.stopHookActive.Load()
-	if !delivered && !askedThisRound {
+	if !delivered && !quiet && !askedThisRound {
 		return false, "", nil
 	}
 	boundaryState := SessionIdle
 	if askedThisRound {
 		boundaryState = SessionAwaiting
-	} else if s.hookRunner != nil {
+	} else if !quiet && s.hookRunner != nil {
 		// Stop hooks (communicate-only boundary; not consulted at an ask
 		// boundary — spec §5.1/§5.5).
-		hi := s.hookInput(plugin.HookStop)
-		hi.Reason = "communicate.end_turn"
-		// stop_hook_active tells a Stop hook whether this dispatch follows a
-		// block in the same turn, so a hook that blocks to ask for more work can
-		// tell the continuation apart and avoid blocking forever. The reply text
-		// is last_assistant_message: it is what the turn is about to deliver.
-		hi.StopHookActive = &stopHookActive
-		hi.LastAssistantMessage = text
-		stopResult := s.hookRunner.RunStop(s.apiLogContext(ctx), hi)
-		for _, m := range stopResult.ModelContext {
-			if err := s.deliverHookContext(m); err != nil {
-				return false, "", err
-			}
-		}
-		for _, m := range stopResult.UserMessages {
-			s.deliverHookUserMessage(m)
+		stopResult := s.runReplyStopHook(ctx, text)
+		if err := s.deliverReplyStopHookMessages(stopResult); err != nil {
+			return false, "", err
 		}
 		// continue:false on Stop ends the turn: the hook's stopReason becomes the
 		// text this boundary delivers, replacing a reply the hook is vetoing. A
@@ -725,25 +722,39 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 			s.mu.Lock()
 			s.stopHookReplacedReply = true
 			s.mu.Unlock()
-			// A stop ends the turn exactly as the ordinary boundary does, so it
-			// must perform the same terminal-communicate bookkeeping: in a
-			// TurnEndsProcess session the latch is what lets the drain discard
-			// watch frames the model declined to wait for and keeps the process
-			// from waiting on undeliverable watch-send residue (#329, #865).
-			if delivered && s.cfg.TurnEndsProcess {
-				s.acceptTerminalCommunicate()
-			}
-			s.finishProcessingAtBoundary(ctx, boundaryState)
-			if hook := s.cfg.testOnly.afterCommunicateBoundary; hook != nil {
-				hook(s)
-			}
-			return true, text, nil
+			return s.finishReplyBoundary(ctx, boundaryState, delivered, text, &text)
 		}
 		if stopResult.Blocked {
 			// Don't finish — keep looping. The next Stop dispatch in this turn
 			// is a continuation, which is what stop_hook_active reports.
+			s.blockStopBoundary()
 			s.stopHookActive.Store(true)
 			return false, "", nil
+		}
+	}
+	return s.finishReplyBoundary(ctx, boundaryState, delivered, text, nil)
+}
+
+func (s *Session) finishReplyBoundary(ctx context.Context, state SessionState, delivered bool, text string, replacement *string) (bool, string, error) {
+	var settlePending bool
+	var quiet bool
+	if delivered {
+		settlePending = s.settleCommunicateBoundary(replacement)
+	} else {
+		s.mu.Lock()
+		quiet = s.quietBoundaryLocked()
+		s.mu.Unlock()
+	}
+	if settlePending {
+		s.recordDelegateTerminalSeen(ctx)
+	}
+	if !delivered && quiet && s.delegateController != nil {
+		if kind, _ := ctx.Value(communicateEntryKindKey{}).(EntryKind); kind == EntryDelegateAttention {
+			if lease, leased := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); leased {
+				if _, err := s.delegateController.recordAttentionNoAction(lease); err != nil {
+					return false, "", err
+				}
+			}
 		}
 	}
 	if delivered && s.cfg.TurnEndsProcess {
@@ -754,11 +765,88 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 		// on a later notification turn (#865).
 		s.acceptTerminalCommunicate()
 	}
-	s.finishProcessingAtBoundary(ctx, boundaryState)
+	s.finishProcessingAtBoundary(ctx, state)
 	if hook := s.cfg.testOnly.afterCommunicateBoundary; hook != nil {
 		hook(s)
 	}
 	return true, text, nil
+}
+
+func (s *Session) usesDefaultCommunicateOutputEnvelope() bool {
+	name := s.resultToolName()
+	_, ok := communicateEnvelopeFor(s.reg.Get(name), name)
+	return ok
+}
+
+func (s *Session) hasReplyStopHook() bool {
+	return s.hookRunner != nil && s.hookRunner.Has(plugin.HookStop)
+}
+
+func (s *Session) runReplyStopHook(ctx context.Context, text string) hooks.StopResult {
+	if !s.hasReplyStopHook() {
+		return hooks.StopResult{}
+	}
+	active := s.stopHookActive.Load()
+	hi := s.hookInput(plugin.HookStop)
+	hi.Reason = "communicate.end_turn"
+	// A hook that blocked can distinguish a continuation from its first chance.
+	hi.StopHookActive = &active
+	hi.LastAssistantMessage = text
+	return s.hookRunner.RunStop(s.apiLogContext(ctx), hi)
+}
+
+func (s *Session) deliverReplyStopHookContext(contexts []string) error {
+	for _, m := range contexts {
+		if err := s.deliverHookContext(m); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Session) deliverReplyStopHookMessages(result hooks.StopResult) error {
+	if err := s.deliverReplyStopHookContext(result.ModelContext); err != nil {
+		return err
+	}
+	for _, m := range result.UserMessages {
+		s.deliverHookUserMessage(m)
+	}
+	return nil
+}
+
+// deliverBareReply settles a tool-free reply. Until the Stop decision
+// allows or replaces it, the draft is not a captured reply.
+func (s *Session) deliverBareReply(ctx context.Context, text string, result hooks.StopResult) (bool, string, error) {
+	if err := s.deliverReplyStopHookMessages(result); err != nil {
+		return false, "", err
+	}
+	if result.Stopped {
+		text = s.hookStopText(result.StopReason, "Stop hook stopped this turn")
+		s.deliverHookUserMessage(text)
+		if err := s.deliverCommunicateWithAcceptance(events.CommunicateData{EndTurn: true, Message: text}, true); err != nil {
+			return false, "", err
+		}
+		s.appendSteeringTurn(wrapHookContext("Stop hook replaced your previous reply with the following message delivered to the user:\n"+text), events.SteeringKindHookContext)
+		s.mu.Lock()
+		s.stopHookReplacedReply = true
+		s.mu.Unlock()
+	} else if result.Blocked {
+		s.stopHookActive.Store(true)
+		return false, "", nil
+	}
+	s.mu.Lock()
+	s.comm = communicateResult{
+		phase:        commBoundaryStopPending,
+		updated:      s.comm.updated,
+		text:         text,
+		reply:        text,
+		roundVisible: true,
+	}
+	s.mu.Unlock()
+	if !result.Stopped {
+		s.emitWithProvenance(events.CommunicateData{EndTurn: true, Message: text}, provenance.Clone(s.activeCausalProvenance()))
+	}
+	return s.finishReplyBoundary(ctx, SessionIdle, true, text, nil)
 }
 
 // replaceAcceptedReply makes the hook's text this turn's reply on every
@@ -766,11 +854,11 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 // already accepted and recorded.
 func (s *Session) replaceAcceptedReply(text string) {
 	s.mu.Lock()
-	if s.comm.called {
+	if s.comm.hasAccepted() {
 		s.comm.text = text
 		s.comm.reply = text
 	}
-	if s.latestReport.called {
+	if s.latestReport.hasAccepted() {
 		s.latestReport.text = text
 		s.latestReport.reply = text
 	}

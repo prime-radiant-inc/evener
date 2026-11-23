@@ -84,7 +84,7 @@ func studySteeringTurn(kind, text string) schema.Turn {
 }
 
 func studyCommunicateEndTurn(id string, endTurn bool) llm.ContentPart {
-	args, err := json.Marshal(map[string]any{"message": "done", "end_turn": endTurn})
+	args, err := json.Marshal(map[string]any{"message": "done", "next": map[bool]string{true: "send_and_end_turn", false: "send_and_continue"}[endTurn]})
 	if err != nil {
 		panic(err)
 	}

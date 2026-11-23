@@ -33,111 +33,6 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T) {
-	const (
-		sessionID = "child-dlg_target"
-		firstID   = "delegate:delivery-attention-1"
-		secondID  = "delegate:delivery-attention-2"
-	)
-	fs := newAttentionSyncBarrierFS()
-	c, runtime, path := newDelegateAttentionAcceptanceHarness(t, sessionID, fs, firstID, secondID)
-	beforeRevision := c.durable["dlg_target"].ProjectionRevision
-	reservation, err := c.ReserveAttention(runtime, firstID)
-	if err != nil {
-		t.Fatalf("ReserveAttention: %v", err)
-	}
-
-	// The trigger is latched by the time its consumed marker is being made
-	// durable, so a fold that sees the item resolved already knows to keep it.
-	// The hook runs inside the resolution's attentionMu section.
-	var latchedDuringResolution string
-	fs.atSync = func() { latchedDuringResolution = runtime.attentionAcceptedID }
-	fs.arm()
-	type startResult struct {
-		started delegateStartCommit
-		err     error
-	}
-	done := make(chan startResult, 1)
-	go func() {
-		startErr := runtime.acceptDelegateAttention(reservation)
-		var started delegateStartCommit
-		if startErr == nil {
-			started, startErr = c.CommitStart(reservation)
-		}
-		done <- startResult{started: started, err: startErr}
-	}()
-	select {
-	case <-fs.syncEntered:
-	case result := <-done:
-		t.Fatalf("attention acceptance returned before fsync: %#v", result)
-	}
-	c.mu.Lock()
-	blockedAggregate := c.durable["dlg_target"]
-	blockedGeneration := blockedAggregate.Generation
-	blockedNeedsAttention := blockedAggregate.NeedsAttention
-	_, firstStillUnresolved := attentionWakeIDsOf(c, "dlg_target")[firstID]
-	c.mu.Unlock()
-	if blockedGeneration != 0 || !blockedNeedsAttention || !firstStillUnresolved {
-		t.Fatalf("acceptance published before resolution fsync: generation=%d needs=%t unresolved=%#v", blockedGeneration, blockedNeedsAttention, attentionWakeIDsOf(c, "dlg_target"))
-	}
-	fs.release()
-	first := <-done
-	if first.err != nil {
-		t.Fatalf("accept first attention: %v", first.err)
-	}
-	if latchedDuringResolution != firstID {
-		t.Fatalf("trigger latched while its consumed marker was made durable = %q, want %q", latchedDuringResolution, firstID)
-	}
-	aggregate := c.durable["dlg_target"]
-	if aggregate.Generation != 1 || aggregate.Trigger != delegatestore.TriggerAttention || !aggregate.CurrentRunOpen || !aggregate.NeedsAttention || aggregate.ProjectionRevision != beforeRevision+1 {
-		t.Fatalf("nonfinal acceptance aggregate = %#v, want generation 1 open with unchanged true attention", aggregate)
-	}
-	if got := attentionWakeIDsOf(c, "dlg_target"); !reflect.DeepEqual(got, map[string]struct{}{secondID: {}}) {
-		t.Fatalf("unresolved IDs after nonfinal consumption = %#v", got)
-	}
-	fold, err := readDelegateAttentionFold(path, sessionID)
-	if err != nil {
-		t.Fatalf("read attention fold: %v", err)
-	}
-	if got := fold.resolutions[firstID]; got != delegateAttentionConsumed || fold.resumeGenerations[firstID] != 1 {
-		t.Fatalf("first resolution = %q generation %d, want consumed/1", got, fold.resumeGenerations[firstID])
-	}
-	if _, err := c.FinishGeneration(first.started.lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "first handled"}); err != nil {
-		t.Fatalf("FinishGeneration first: %v", err)
-	}
-	reportFinalizeTailDone(t, c, first.started.lease, runtime)
-	secondReservation, err := c.ReserveAttention(runtime, secondID)
-	if err != nil {
-		t.Fatalf("ReserveAttention second: %v", err)
-	}
-	if err := runtime.acceptDelegateAttention(secondReservation); err != nil {
-		t.Fatalf("accept final attention: %v", err)
-	}
-	second, err := c.CommitStart(secondReservation)
-	if err != nil {
-		t.Fatalf("commit final attention: %v", err)
-	}
-	aggregate = c.durable["dlg_target"]
-	if aggregate.Generation != 2 || aggregate.NeedsAttention || len(attentionWakeIDsOf(c, "dlg_target")) != 0 {
-		t.Fatalf("final acceptance aggregate=%#v unresolved=%#v", aggregate, attentionWakeIDsOf(c, "dlg_target"))
-	}
-	fold, err = readDelegateAttentionFold(path, sessionID)
-	if err != nil {
-		t.Fatalf("read final attention fold: %v", err)
-	}
-	if got := fold.resolutions[secondID]; got != delegateAttentionConsumed || fold.resumeGenerations[secondID] != 2 {
-		t.Fatalf("second resolution = %q generation %d, want consumed/2", got, fold.resumeGenerations[secondID])
-	}
-	events, err := c.store.Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	tail := events[len(events)-2:]
-	if tail[0].Kind != delegatestore.EventDelegateAttentionChanged || tail[0].AttentionChanged == nil || tail[0].AttentionChanged.NeedsAttention || tail[1].Kind != delegatestore.EventDelegateRunStarted || tail[1].RunStarted.Generation != second.lease.generation {
-		t.Fatalf("final-clear/run-start batch tail = %#v", tail)
-	}
-}
-
 // TestReadExistingDelegateAttentionFoldMemoizesAndInvalidatesOnAppend pins the
 // read-path fold memo: a stable transcript is folded once and then served
 // from the memo, the memo is keyed to the expected session id, and an append
@@ -471,52 +366,26 @@ func TestDelegateAttention_StopLeavesBoundAttentionForDiscard(t *testing.T) {
 			sessionID   = "child-dlg_target"
 			attentionID = "delegate:delivery-admitted"
 		)
-		fs := newAttentionSyncBarrierFS()
-		c, runtime, path := newDelegateAttentionAcceptanceHarness(t, sessionID, fs, attentionID)
+		c, runtime, _ := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, attentionID)
 		reservation, err := c.ReserveAttention(runtime, attentionID)
 		if err != nil {
 			t.Fatalf("ReserveAttention: %v", err)
 		}
-		fs.arm()
-		accepted := make(chan error, 1)
-		go func() {
-			acceptErr := runtime.acceptDelegateAttention(reservation)
-			if acceptErr == nil {
-				_, acceptErr = c.CommitStart(reservation)
-			}
-			accepted <- acceptErr
-		}()
-		<-fs.syncEntered
-		stopped := make(chan error, 1)
-		go func() {
-			_, _, _, stopErr := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
-			stopped <- stopErr
-		}()
-		select {
-		case err := <-stopped:
-			t.Fatalf("stop returned before admitted acceptance committed: %v", err)
-		default:
+		if _, err := c.CommitStart(reservation); err != nil {
+			t.Fatalf("CommitStart: %v", err)
 		}
-		fs.release()
-		if err := <-accepted; err != nil {
-			t.Fatalf("accept admitted attention: %v", err)
-		}
-		if err := <-stopped; err != nil {
+		if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target"); err != nil {
 			t.Fatalf("StopSubtree after acceptance: %v", err)
-		}
-		fold, err := readDelegateAttentionFold(path, sessionID)
-		if err != nil {
-			t.Fatalf("read admitted attention fold: %v", err)
-		}
-		if fold.resolutions[attentionID] != delegateAttentionConsumed || fold.resumeGenerations[attentionID] != 1 {
-			t.Fatalf("admitted resolution = %q generation %d", fold.resolutions[attentionID], fold.resumeGenerations[attentionID])
 		}
 		events, err := c.store.Load()
 		if err != nil {
 			t.Fatalf("Load: %v", err)
 		}
-		if events[len(events)-2].Kind != delegatestore.EventDelegateRunStarted || events[len(events)-1].Kind != delegatestore.EventDelegateSubtreeStopRequested {
-			t.Fatalf("acceptance/stop ordering = %#v", events[len(events)-2:])
+		tail := events[len(events)-3:]
+		if tail[0].Kind != delegatestore.EventDelegateAttentionQueued ||
+			tail[1].Kind != delegatestore.EventDelegateRunStarted ||
+			tail[2].Kind != delegatestore.EventDelegateSubtreeStopRequested {
+			t.Fatalf("acceptance/stop ordering = %#v", tail)
 		}
 	})
 }
@@ -559,7 +428,7 @@ func newDelegateAttentionAcceptanceHarness(t *testing.T, sessionID string, fs af
 	}
 	c.live["dlg_target"] = &delegateLiveState{runtime: runtime}
 	for _, attentionID := range attentionIDs {
-		c.noteDelegateAttentionLocked("dlg_target", attentionID)
+		c.noteDelegateAttentionLockedForTest("dlg_target", attentionID)
 	}
 	c.mu.Unlock()
 	return c, runtime, path
@@ -593,112 +462,42 @@ func attachDelegateAttentionTranscriptForTest(t *testing.T, c *delegateTreeContr
 	c.noteDelegateAttention(delegateID, attentionID)
 }
 
-func TestDelegateAttention_ResolutionFailureLeavesGenerationStoppable(t *testing.T) {
+// An arm that meets a start reservation must not deadlock against it: the
+// arm waits for the reservation to settle, then publishes its own committed
+// queue event and raises the delegate's projection. The start itself leaves
+// the row queued; only a settled request that presents it consumes it.
+func TestDelegateAttention_ArmWaitsForStartReservationWithoutDeadlock(t *testing.T) {
 	const (
 		sessionID   = "child-dlg_target"
-		attentionID = "attention-resolution-failure"
-	)
-	fs := newAttentionAmbiguousSyncFS()
-	c, runtime, path := newDelegateAttentionAcceptanceHarness(t, sessionID, fs, attentionID)
-	reservation, err := c.ReserveAttention(runtime, attentionID)
-	if err != nil {
-		t.Fatalf("ReserveAttention: %v", err)
-	}
-	fs.failNextResolutionDurability()
-	if err := runtime.acceptDelegateAttention(reservation); err == nil {
-		t.Fatal("consumed attention resolution unexpectedly survived injected sync failure")
-	}
-	// The marker may have landed, so the retry still needs the trigger's turn.
-	runtime.attentionMu.Lock()
-	latched := runtime.attentionAcceptedID
-	runtime.attentionMu.Unlock()
-	if latched != attentionID {
-		t.Fatalf("trigger latched after the ambiguous failure = %q, want %q", latched, attentionID)
-	}
-	fold, err := readDelegateAttentionFold(path, sessionID)
-	if err != nil {
-		t.Fatalf("read ambiguous attention resolution: %v", err)
-	}
-	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed || fold.resumeGenerations[attentionID] != 1 {
-		t.Fatalf("page-cache-visible attention resolution = %q generation %d, want consumed/1", got, fold.resumeGenerations[attentionID])
-	}
-	if aggregate := c.durable["dlg_target"]; aggregate.Generation != 0 || aggregate.CurrentRunOpen || !aggregate.NeedsAttention {
-		t.Fatalf("failed resolution admitted generation: %#v", aggregate)
-	}
-	if len(c.reservations) != 1 || c.live["dlg_target"].binding != nil {
-		t.Fatalf("failed resolution lost retry claim or installed binding: reservations=%#v live=%#v", c.reservations, c.live["dlg_target"])
-	}
-	if err := runtime.acceptDelegateAttention(reservation); err != nil {
-		t.Fatalf("retry ambiguous attention resolution: %v", err)
-	}
-	started, err := c.CommitStart(reservation)
-	if err != nil {
-		t.Fatalf("commit retried attention generation: %v", err)
-	}
-	if got := fs.successfulSyncsAfterFailure(); got == 0 {
-		t.Fatal("attention retry established no successful child-transcript durability barrier")
-	}
-	if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target"); err != nil {
-		t.Fatalf("StopSubtree after recovered acceptance: %v", err)
-	}
-	if aggregate := c.durable["dlg_target"]; aggregate.Phase != delegatestore.PhaseStopping || aggregate.Generation != started.lease.generation {
-		t.Fatalf("recovered attention generation is not stoppable: %#v", aggregate)
-	}
-}
-
-func TestDelegateAttention_ArmClaimSpansFoldAndOpen(t *testing.T) {
-	const (
-		sessionID   = "child-dlg_target"
+		delegateID  = "dlg_target"
 		attentionID = "interleaved-attention"
 	)
-	c, runtime, path := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, attentionID)
-	runtime.owningDelegateID = "dlg_target"
+	c, runtime, _ := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, attentionID)
+	runtime.owningDelegateID = delegateID
 	reservation, err := c.ReserveAttention(runtime, attentionID)
 	if err != nil {
 		t.Fatalf("ReserveAttention: %v", err)
-	}
-
-	foldEntered := make(chan struct{})
-	releaseFold := make(chan struct{})
-	var foldOnce sync.Once
-	t.Cleanup(func() {
-		select {
-		case <-releaseFold:
-		default:
-			close(releaseFold)
-		}
-	})
-	runtime.cfg.testOnly.delegateAttentionReadFold = func(path, sessionID string) (delegateAttentionFold, error) {
-		wait := false
-		foldOnce.Do(func() {
-			close(foldEntered)
-			wait = true
-		})
-		if wait {
-			<-releaseFold
-		}
-		return readDelegateAttentionFold(path, sessionID)
 	}
 
 	armDone := make(chan error, 1)
 	go func() { armDone <- runtime.armDelegateAttentionOnce(attentionID) }()
-	<-foldEntered
-
-	// The reservation is the controller-side blocker that used to deadlock
-	// armDelegateAttentionOnce while it held attentionMu. The acceptance path
-	// must resolve the exact ID before it can close that blocker.
 	consumeDone := make(chan error, 1)
 	go func() {
-		err := runtime.acceptDelegateAttention(reservation)
-		if err == nil {
-			_, err = c.CommitStart(reservation)
-		}
+		_, err := c.CommitStart(reservation)
 		consumeDone <- err
 	}()
-	close(releaseFold)
-	// TRIPWIRE: this one-second ceiling only detects a deadlock; normal arm and acceptance completion is awaited on channels, never paced by the timer.
-	timeout := time.NewTimer(time.Second)
+	// TRIPWIRE: this two-second ceiling only detects a deadlock; normal arm
+	// and commit completion is awaited on channels, never paced by the timer.
+	timeout := time.NewTimer(2 * time.Second)
 	defer timeout.Stop()
+	select {
+	case err := <-consumeDone:
+		if err != nil {
+			t.Fatalf("commit attention: %v", err)
+		}
+	case <-timeout.C:
+		t.Fatal("attention commit remained blocked behind its own arm")
+	}
 	select {
 	case err := <-armDone:
 		if err != nil {
@@ -707,32 +506,13 @@ func TestDelegateAttention_ArmClaimSpansFoldAndOpen(t *testing.T) {
 	case <-timeout.C:
 		t.Fatal("arm attention remained blocked on an accepted reservation")
 	}
-	select {
-	case err := <-consumeDone:
-		if err != nil {
-			t.Fatalf("consume attention: %v", err)
-		}
-	case <-timeout.C:
-		t.Fatal("attention acceptance remained blocked behind arm")
-	}
 
-	fold, err := readDelegateAttentionFold(path, sessionID)
-	if err != nil {
-		t.Fatalf("read attention fold: %v", err)
+	rows := pendingAttentionRowsForTest(t, c, delegateID)
+	if len(rows) != 1 || rows[0].AttentionID != attentionID || rows[0].HeldThrough != 0 {
+		t.Fatalf("pending rows after the arm = %#v, want the unheld committed row", rows)
 	}
-	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed {
-		t.Fatalf("attention resolution = %q, want consumed", got)
-	}
-	events, err := c.store.Load()
-	if err != nil {
-		t.Fatalf("load controller journal: %v", err)
-	}
-	state, err := delegatestore.Fold(events)
-	if err != nil {
-		t.Fatalf("fold controller journal: %v", err)
-	}
-	if state["dlg_target"].NeedsAttention || len(attentionWakeIDsOf(c, "dlg_target")) != 0 {
-		t.Fatalf("consumed attention reopened: state=%#v wakeIDs=%#v", state["dlg_target"], attentionWakeIDsOf(c, "dlg_target"))
+	if !needsAttentionForTest(t, c, delegateID) {
+		t.Fatal("the arm's committed queue event did not raise NeedsAttention")
 	}
 }
 
@@ -1003,40 +783,6 @@ func TestDelegateAttention_RecoveryRetainedRuntimePreservesFailedToolCount(t *te
 	}
 }
 
-func TestDelegateAttention_ColdResolutionValidatesBatchBeforeAppend(t *testing.T) {
-	t.Parallel()
-	stateDir := t.TempDir()
-	const (
-		sessionID   = "cold-resolution"
-		attentionID = "attention-present"
-	)
-	path := transcriptPath(stateDir, sessionID)
-	writer, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	attention := schema.NewTurn(schema.TurnSteering, llm.User("pending attention"))
-	attention.AttentionID = attentionID
-	if err := writer.AppendDurable(attention); err != nil {
-		t.Fatalf("append attention: %v", err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatalf("close transcript: %v", err)
-	}
-
-	err = appendColdAttentionResolution(path, sessionID, []string{attentionID, "attention-missing"}, delegateAttentionDiscarded)
-	if err == nil {
-		t.Fatal("cold resolution accepted a batch containing an unknown attention ID")
-	}
-	fold, err := readDelegateAttentionFold(path, sessionID)
-	if err != nil {
-		t.Fatalf("read attention after rejected batch: %v", err)
-	}
-	if pending := fold.pendingIDs(); !reflect.DeepEqual(pending, []string{attentionID}) {
-		t.Fatalf("rejected batch partially resolved attention: %#v", pending)
-	}
-}
-
 func TestDelegateAttention_ColdNotificationRetryReestablishesDurabilityBeforeSourceAck(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
@@ -1073,50 +819,6 @@ func TestDelegateAttention_ColdNotificationRetryReestablishesDurabilityBeforeSou
 	}
 	if got := fs.successfulSyncsAfterFailure(); got == 0 {
 		t.Fatal("existing cold notification was accepted without a renewed durability barrier")
-	}
-}
-
-func TestDelegateAttention_ColdResolutionRetryReestablishesDurabilityBeforeStopAck(t *testing.T) {
-	t.Parallel()
-	stateDir := t.TempDir()
-	const (
-		sessionID   = "cold-resolution-durability"
-		attentionID = "attention-durability"
-	)
-	path := transcriptPath(stateDir, sessionID)
-	fs := newAttentionAmbiguousSyncFS()
-	writer, err := transcript.NewWriterWithFS(fs, path, transcript.Header{SessionID: sessionID})
-	if err != nil {
-		t.Fatalf("create transcript: %v", err)
-	}
-	attention := schema.NewTurn(schema.TurnSteering, llm.User("pending attention"))
-	attention.AttentionID = attentionID
-	if err := writer.AppendDurable(attention); err != nil {
-		t.Fatalf("append attention: %v", err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatalf("close initial transcript: %v", err)
-	}
-	open := func(path, expectedSessionID string) (*transcript.Writer, []transcript.Entry, error) {
-		return transcript.OpenWriterForSessionWithFS(fs, path, expectedSessionID)
-	}
-
-	fs.failNextAmbiguousDurability(2)
-	if err := appendColdAttentionResolutionWithOpen(path, sessionID, []string{attentionID}, delegateAttentionDiscarded, open); err == nil {
-		t.Fatal("ambiguous cold resolution append unexpectedly succeeded")
-	}
-	fold, err := readDelegateAttentionFold(path, sessionID)
-	if err != nil {
-		t.Fatalf("read ambiguous resolution: %v", err)
-	}
-	if got := fold.resolutions[attentionID]; got != delegateAttentionDiscarded {
-		t.Fatalf("fault fixture resolution = %q, want readable discard", got)
-	}
-	if err := appendColdAttentionResolutionWithOpen(path, sessionID, []string{attentionID}, delegateAttentionDiscarded, open); err != nil {
-		t.Fatalf("retry existing cold resolution: %v", err)
-	}
-	if got := fs.successfulSyncsAfterFailure(); got == 0 {
-		t.Fatal("existing cold resolution was accepted without a renewed durability barrier")
 	}
 }
 
@@ -1900,12 +1602,14 @@ func TestDelegateAttention_BootstrapDrainsRestoredStopAttention(t *testing.T) {
 	if stop != nil || aggregate == nil || aggregate.PendingStopSeq != 0 || aggregate.CurrentRunOpen || aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeStopped {
 		t.Fatalf("bootstrap restored stop state = stop:%#v aggregate:%#v", stop, aggregate)
 	}
-	fold, err := readDelegateAttentionFold(transcriptPath(stateDir, childSessionID), childSessionID)
-	if err != nil {
-		t.Fatalf("read stopped child attention: %v", err)
-	}
-	if got := fold.resolutions[attentionID]; got != delegateAttentionDiscarded {
-		t.Fatalf("restored stop attention disposition = %q, want discarded", got)
+	// The stop's discard resolves the row in delegatestore. A child transcript
+	// marker is no longer written, so the journal resolution is the record.
+	fresh.delegateController.mu.Lock()
+	_, resolved := fresh.delegateController.durable[delegateID].ResolvedAttention[attentionID]
+	pendingRows := append([]delegatestore.PendingAttention(nil), fresh.delegateController.durable[delegateID].PendingAttention...)
+	fresh.delegateController.mu.Unlock()
+	if !resolved || len(pendingRows) != 0 {
+		t.Fatalf("restored stop attention resolved=%t pending=%#v, want the journal resolution only", resolved, pendingRows)
 	}
 	fresh.delegateDeliveryMu.Lock()
 	queued := append([]delegateDeliveryPlan(nil), fresh.pendingDelegateDeliveries...)
@@ -2426,12 +2130,14 @@ func TestDelegateAttention_SettledResidentChildStartsExactAttentionGeneration(t 
 	}
 	releaseOnce.Do(func() { close(releaseAttention) })
 	waitForStableSupervisionRun(t, root, fixture.childID)
-	fold, err := readDelegateAttentionFold(transcriptPath(fixture.stateDir, fixture.childID), fixture.childID)
+	// The store queue is the authority for a settled child turn: the
+	// presented row leaves it, with no transcript resolution marker.
+	pending, err := sub.sess.pendingDelegateAttentionIDs()
 	if err != nil {
 		t.Fatalf("read settled child attention: %v", err)
 	}
-	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed {
-		t.Fatalf("settled child attention resolution = %q, want consumed", got)
+	if slices.Contains(pending, attentionID) {
+		t.Fatalf("settled child attention %q is still queued, want consumed", attentionID)
 	}
 }
 
@@ -2527,12 +2233,26 @@ func TestDelegateAttention_StopDrainDoesNotResolveAttentionTwice(t *testing.T) {
 	if err := c.drainStop(context.Background(), c.stopForResult(result), root); err != nil {
 		t.Fatalf("drain stop with root mutation executor: %v", err)
 	}
-	pending, err := readPendingDelegateAttention(path, sessionID)
+	// The drain resolves the row in delegatestore once: the queue is empty and
+	// the journal holds exactly one resolution for the id. The transcript keeps
+	// the rendered message because a child resolution writes no marker.
+	events, err := c.store.Load()
 	if err != nil {
-		t.Fatalf("read attention after drain: %v", err)
+		t.Fatalf("load delegate journal: %v", err)
 	}
-	if len(pending) != 0 {
-		t.Fatalf("pending attention after drain = %#v", pending)
+	resolutions := 0
+	for _, event := range events {
+		if event.DelegateID == "dlg_target" && event.AttentionResolved != nil && event.AttentionResolved.AttentionID == attentionID {
+			resolutions++
+		}
+	}
+	c.mu.Lock()
+	aggregate := c.durable["dlg_target"]
+	pendingRows := len(aggregate.PendingAttention)
+	_, resolved := aggregate.ResolvedAttention[attentionID]
+	c.mu.Unlock()
+	if resolutions != 1 || pendingRows != 0 || !resolved {
+		t.Fatalf("stop drain resolutions=%d pending=%d resolved=%t, want one journal resolution", resolutions, pendingRows, resolved)
 	}
 }
 
@@ -4184,8 +3904,8 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 	if generation != 1 || trigger != delegatestore.TriggerAttention || !open || !needsAttention {
 		t.Fatalf("owed attention generation = generation:%d trigger:%q open:%t needs:%t, want 1/attention/open/true", generation, trigger, open, needsAttention)
 	}
-	if !reflect.DeepEqual(unresolved, map[string]struct{}{remainingID: {}}) {
-		t.Fatalf("restart unresolved IDs = %#v, want only %q", unresolved, remainingID)
+	if !reflect.DeepEqual(unresolved, map[string]struct{}{owedID: {}, remainingID: {}}) {
+		t.Fatalf("restart unresolved IDs = %#v, want %q and %q", unresolved, owedID, remainingID)
 	}
 	if !attentionSeen {
 		t.Fatal("owed generation provider request omitted the exact consumed attention")
@@ -4636,7 +4356,7 @@ func TestDelegateAttention_PrelaunchStopBatchesRetryAcknowledgments(t *testing.T
 	if len(wakes) != 1 {
 		t.Fatalf("wakes = %d, want one for the owner receiver", len(wakes))
 	}
-	if err := c.wakeDeliveryReceiverAt(wakes[0].receiver, wakes[0].attentionIDs, wakes[0].wakeGeneration); err != nil {
+	if err := c.wakeDeliveryReceiverAt(wakes[0].receiver, wakes[0].attentionIDs); err != nil {
 		t.Fatalf("wake grouped receiver: %v", err)
 	}
 	if got := atomic.LoadInt32(f.notifies); got != 1 {
@@ -4671,7 +4391,7 @@ func TestDelegateAttention_PrelaunchStopBatchesRootWakeIDs(t *testing.T) {
 	if len(wakes[0].attentionIDs) != receipts {
 		t.Fatalf("root wake carries %d attention IDs, want %d", len(wakes[0].attentionIDs), receipts)
 	}
-	if err := c.wakeDeliveryReceiverAt(wakes[0].receiver, wakes[0].attentionIDs, wakes[0].wakeGeneration); err != nil {
+	if err := c.wakeDeliveryReceiverAt(wakes[0].receiver, wakes[0].attentionIDs); err != nil {
 		t.Fatalf("root wake: %v", err)
 	}
 	if got := notifies.Load(); got != 1 {
@@ -4888,8 +4608,7 @@ func TestDelegateAttention_PrelaunchStopWakesRetriedDeliveryOwner(t *testing.T) 
 	}
 	attentionID := delegateAttentionID(f.deliveries[0].deliveryID)
 	f.controller.mu.Lock()
-	state := f.controller.attention["dlg_owner"]
-	_, noted := state.wakeIDs[attentionID]
+	_, noted := f.controller.delegateAttentionWakeIDsLocked("dlg_owner")[attentionID]
 	f.controller.mu.Unlock()
 	if !noted {
 		t.Fatalf("owner attention %q was not recorded for the retried acknowledgment", attentionID)
@@ -5154,17 +4873,17 @@ func TestDelegateAttention_WakeDeliveryReceiverBranches(t *testing.T) {
 	c.mu.Lock()
 	c.rootRuntime = root
 	c.mu.Unlock()
-	if err := c.wakeDeliveryReceiverAt(root, []string{"delegate:missing"}, 0); err != nil {
+	if err := c.wakeDeliveryReceiverAt(root, []string{"delegate:missing"}); err != nil {
 		t.Fatalf("root receiver wake: %v", err)
 	}
-	if err := c.wakeDeliveryReceiverAt(coldDelegateDeliveryReceiver{}, []string{"delegate:missing"}, 0); err != nil {
+	if err := c.wakeDeliveryReceiverAt(coldDelegateDeliveryReceiver{}, []string{"delegate:missing"}); err != nil {
 		t.Fatalf("cold receiver wake: %v", err)
 	}
 	if got := notified.Load(); got != 1 {
 		t.Fatalf("root wake count = %d, want 1 from the cold receiver", got)
 	}
 	var typedNil *Session
-	if err := c.wakeDeliveryReceiverAt(typedNil, []string{"delegate:missing"}, 0); err != nil {
+	if err := c.wakeDeliveryReceiverAt(typedNil, []string{"delegate:missing"}); err != nil {
 		t.Fatalf("typed-nil root wake: %v", err)
 	}
 }
@@ -5521,13 +5240,6 @@ func installResolutionSyncFailureWriter(t *testing.T, s *Session) {
 	installResolutionSyncFailuresWriter(t, s, 1)
 }
 
-// injectedFailures is how many syncs the writer has failed so far.
-func (fs *rootAttentionResolutionFailFS) injectedFailures() int {
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-	return fs.failed
-}
-
 // installResolutionSyncFailuresWriter fails the sync of the session's first
 // failures attention resolution writes.
 //
@@ -5849,8 +5561,14 @@ func TestDelegateAttention_UnreachableOwnerTransfersToNearestReachableAncestor(t
 	if err != nil {
 		t.Fatalf("read child attention: %v", err)
 	}
-	if got := childFold.resolutions[attentionID]; got != delegateAttentionDiscarded {
-		t.Fatalf("unreachable child resolution = %q, want discarded after transfer", got)
+	if _, resolved := childFold.resolutions[attentionID]; resolved {
+		t.Fatalf("unreachable child transcript resolution = %q, want the journal to own it", childFold.resolutions[attentionID])
+	}
+	fresh.delegateController.mu.Lock()
+	_, sourceResolved := fresh.delegateController.durable["dlg_child"].ResolvedAttention[attentionID]
+	fresh.delegateController.mu.Unlock()
+	if !sourceResolved {
+		t.Fatalf("unreachable child attention %q was not resolved in the journal after the transfer", attentionID)
 	}
 	rootFold, err := readDelegateAttentionFold(transcriptPath(c.stateDir, "root-session"), "root-session")
 	if err != nil {
@@ -5861,7 +5579,7 @@ func TestDelegateAttention_UnreachableOwnerTransfersToNearestReachableAncestor(t
 	}
 }
 
-func TestDelegateAttention_AncestorFsyncPrecedesChildDiscard(t *testing.T) {
+func TestDelegateAttention_TransferFsyncsAncestorWithoutWritingSource(t *testing.T) {
 	c, journalPath := newDelegateControllerTestHarness(t, 3, 1)
 	seedStableAttentionRepairDelegate(t, c, "dlg_parent", "", true)
 	seedStableAttentionRepairDelegate(t, c, "dlg_child", "dlg_parent", false)
@@ -5884,8 +5602,14 @@ func TestDelegateAttention_AncestorFsyncPrecedesChildDiscard(t *testing.T) {
 	t.Cleanup(func() { _ = fresh.closeOwnedDelegateStore() })
 	paths := fs.syncedPaths()
 	parentIndex, childIndex := pathIndex(paths, parentPath), pathIndex(paths, childPath)
-	if parentIndex < 0 || childIndex < 0 || parentIndex >= childIndex {
-		t.Fatalf("attention repair fsync order = %#v, want ancestor %q before child %q", paths, parentPath, childPath)
+	if parentIndex < 0 || childIndex >= 0 {
+		t.Fatalf("attention repair fsync paths = %#v, want only durable ancestor %q with the source left unwritten", paths, parentPath)
+	}
+	fresh.delegateController.mu.Lock()
+	_, sourceResolved := fresh.delegateController.durable["dlg_child"].ResolvedAttention[attentionID]
+	fresh.delegateController.mu.Unlock()
+	if !sourceResolved {
+		t.Fatalf("transferred attention %q was not resolved in the journal", attentionID)
 	}
 }
 
@@ -5898,9 +5622,7 @@ func TestDelegateAttention_ConsumedEntryIsNeverEscalated(t *testing.T) {
 	childPath := transcriptPath(c.stateDir, "child-dlg_child")
 	writeEmptyAttentionTranscript(t, parentPath, "child-dlg_parent")
 	writeDelegateAttentionTranscript(t, childPath, "child-dlg_child", attentionID)
-	if err := appendColdAttentionResolution(childPath, "child-dlg_child", []string{attentionID}, delegateAttentionConsumed); err != nil {
-		t.Fatalf("append consumed resolution: %v", err)
-	}
+	appendColdAttentionResolutionMarker(t, childPath, "child-dlg_child", attentionID, delegateAttentionConsumed, 0)
 	writeEmptyAttentionTranscript(t, transcriptPath(c.stateDir, "root-session"), "root-session")
 	copyDelegateJournalForBootstrap(t, c, journalPath)
 
@@ -5956,8 +5678,14 @@ func TestDelegateAttention_StartupRepairUsesNoProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read child attention: %v", err)
 	}
-	if got := childFold.resolutions[attentionID]; got != delegateAttentionDiscarded {
-		t.Fatalf("provider-free child discard = %q", got)
+	if _, resolved := childFold.resolutions[attentionID]; resolved {
+		t.Fatalf("provider-free child transcript resolution = %q, want the journal to own it", childFold.resolutions[attentionID])
+	}
+	fresh.delegateController.mu.Lock()
+	_, sourceResolved := fresh.delegateController.durable["dlg_child"].ResolvedAttention[attentionID]
+	fresh.delegateController.mu.Unlock()
+	if !sourceResolved {
+		t.Fatalf("provider-free child attention %q was not resolved in the journal", attentionID)
 	}
 }
 

@@ -28,88 +28,89 @@ func TestPrepareToolCall_HealsDefaultCommunicateEnvelopeIssue831(t *testing.T) {
 	observedDoubleEncoded := `{"data":{"baseline_tests":"go test ./agent/ -run 'SessionName|SessionNamer|Rename' -count=1 — ok","files":["agent/session_namer.go","agent/internal/contextmgr/context_manager.go (read-only, root-cause evidence)","cmd/evener-tui/ (terminal title feature)"],"worktree":"session-auto-namer"}}`
 
 	for _, tc := range []struct {
-		name          string
-		arguments     string
-		wantMessage   string
-		wantOutputMsg string
-		wantChanges   bool
+		name              string
+		arguments         string
+		wantMessage       string
+		wantOutputPresent bool
+		wantOutputMsg     string
+		wantChanges       bool
 	}{
 		{
-			name:          "complete object",
-			arguments:     `{"end_turn":true,"message":"top-level","output":{"message":"nested","data":{},"artifacts":[]}}`,
-			wantMessage:   "top-level",
-			wantOutputMsg: "nested",
+			name:              "complete object",
+			arguments:         `{"next":"send_and_end_turn","message":"top-level","output":{"message":"nested","data":{},"artifacts":[]}}`,
+			wantMessage:       "top-level",
+			wantOutputPresent: true,
+			wantOutputMsg:     "nested",
 		},
 		{
-			name:          "object fills documented defaults",
-			arguments:     `{"end_turn":true,"message":"top-level","output":{}}`,
-			wantMessage:   "top-level",
-			wantOutputMsg: "",
-			wantChanges:   true,
+			name:              "object omits optional defaults without repair",
+			arguments:         `{"next":"send_and_end_turn","message":"top-level","output":{}}`,
+			wantMessage:       "top-level",
+			wantOutputPresent: true,
 		},
 		{
-			name:          "absent output",
-			arguments:     `{"end_turn":true,"message":"top-level"}`,
-			wantMessage:   "top-level",
-			wantOutputMsg: "",
-			wantChanges:   true,
+			name:        "absent output valid without repair",
+			arguments:   `{"next":"send_and_end_turn","message":"top-level"}`,
+			wantMessage: "top-level",
 		},
 		{
-			name:          "null output",
-			arguments:     `{"end_turn":true,"message":"top-level","output":null}`,
-			wantMessage:   "top-level",
-			wantOutputMsg: "",
-			wantChanges:   true,
+			name:              "null output",
+			arguments:         `{"next":"send_and_end_turn","message":"top-level","output":null}`,
+			wantMessage:       "top-level",
+			wantOutputPresent: true,
+			wantChanges:       true,
 		},
 		{
-			name:          "output-only object text",
-			arguments:     `{"end_turn":true,"output":{"message":"output-only text","data":{},"artifacts":[]}}`,
-			wantMessage:   "output-only text",
-			wantOutputMsg: "output-only text",
-			wantChanges:   true,
+			name:              "output-only object text",
+			arguments:         `{"next":"send_and_end_turn","output":{"message":"output-only text","data":{},"artifacts":[]}}`,
+			wantMessage:       "output-only text",
+			wantOutputPresent: true,
+			wantOutputMsg:     "output-only text",
+			wantChanges:       true,
 		},
 		{
-			name:          "clean JSON object string",
-			arguments:     `{"end_turn":true,"output":` + jsonQuote(outputString) + `}`,
-			wantMessage:   "output-only text",
-			wantOutputMsg: "output-only text",
-			wantChanges:   true,
+			name:              "clean JSON object string",
+			arguments:         `{"next":"send_and_end_turn","output":` + jsonQuote(outputString) + `}`,
+			wantMessage:       "output-only text",
+			wantOutputPresent: true,
+			wantOutputMsg:     "output-only text",
+			wantChanges:       true,
 		},
 		{
-			name:          "observed double encoded shape",
-			arguments:     `{"end_turn":true,"message":"top-level","output":` + jsonQuote(observedDoubleEncoded) + `}`,
-			wantMessage:   "top-level",
-			wantOutputMsg: "",
-			wantChanges:   true,
+			name:              "observed double encoded shape",
+			arguments:         `{"next":"send_and_end_turn","message":"top-level","output":` + jsonQuote(observedDoubleEncoded) + `}`,
+			wantMessage:       "top-level",
+			wantOutputPresent: true,
+			wantChanges:       true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			res := prepareToolCall(llm.ToolCallData{ID: "issue831", Name: "communicate", Arguments: json.RawMessage(tc.arguments)}, rt, []string{"communicate"}, "communicate", "communicate", "")
 			if res.PrevalErr != "" {
-				t.Fatalf("prepareToolCall rejected healed default envelope: %s", res.PrevalErr)
+				t.Fatalf("prepareToolCall rejected default envelope: %s", res.PrevalErr)
 			}
 			if got := len(res.Changes) > 0; got != tc.wantChanges {
 				t.Fatalf("has changes = %t, want %t: %+v", got, tc.wantChanges, res.Changes)
 			}
 			var got map[string]any
 			if err := json.Unmarshal(res.Call.Arguments, &got); err != nil {
-				t.Fatalf("unmarshal repaired call: %v", err)
+				t.Fatalf("unmarshal call: %v", err)
 			}
 			if got["message"] != tc.wantMessage {
 				t.Fatalf("message = %#v, want %q", got["message"], tc.wantMessage)
 			}
-			output, ok := got["output"].(map[string]any)
-			if !ok {
-				t.Fatalf("output = %#v, want object", got["output"])
+			rawOut, present := got["output"]
+			if present != tc.wantOutputPresent {
+				t.Fatalf("output present = %t, want %t (%#v)", present, tc.wantOutputPresent, rawOut)
 			}
-			if output["message"] != tc.wantOutputMsg {
-				t.Fatalf("output.message = %#v, want %q", output["message"], tc.wantOutputMsg)
-			}
-			if _, ok := output["data"].(map[string]any); !ok {
-				t.Fatalf("output.data = %#v, want object", output["data"])
-			}
-			if _, ok := output["artifacts"].([]any); !ok {
-				t.Fatalf("output.artifacts = %#v, want array", output["artifacts"])
+			if tc.wantOutputPresent {
+				output, ok := rawOut.(map[string]any)
+				if !ok {
+					t.Fatalf("output = %#v, want object", rawOut)
+				}
+				if msg, _ := output["message"].(string); msg != tc.wantOutputMsg {
+					t.Fatalf("output.message = %#v, want %q", output["message"], tc.wantOutputMsg)
+				}
 			}
 		})
 	}
@@ -135,12 +136,12 @@ func TestPrepareToolCall_RejectsInvalidDefaultCommunicateOutputStringsIssue831(t
 		{name: "wrong nested type", output: `{"message":"x","data":[],"artifacts":[]}`, wantSubstring: "passed as an object"},
 		{name: "oversized", output: strings.Repeat(" ", 2*1024*1024+1), wantSubstring: "tool arguments too large"},
 		{name: "over depth", output: tooDeep, wantSubstring: "passed as an object"},
-		{name: "invalid UTF-8", arguments: []byte("{\"end_turn\":true,\"message\":\"top-level\",\"output\":\"{\xff}\"}"), wantSubstring: "not valid UTF-8"},
+		{name: "invalid UTF-8", arguments: []byte("{\"next\":\"send_and_end_turn\",\"message\":\"top-level\",\"output\":\"{\xff}\"}"), wantSubstring: "not valid UTF-8"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			arguments := tc.arguments
 			if arguments == nil {
-				arguments = []byte(`{"end_turn":true,"message":"top-level","output":` + jsonQuote(tc.output) + `}`)
+				arguments = []byte(`{"next":"send_and_end_turn","message":"top-level","output":` + jsonQuote(tc.output) + `}`)
 			}
 			res := prepareToolCall(llm.ToolCallData{ID: "issue831-invalid", Name: "communicate", Arguments: arguments}, rt, []string{"communicate"}, "communicate", "communicate", "")
 			if res.PrevalErr == "" {
@@ -168,12 +169,12 @@ func TestPrepareToolCall_PromotedCommunicateOutputGuidanceOnlyNamesOutputFailure
 	}{
 		{
 			name:         "unrelated top-level schema failure",
-			arguments:    `{"end_turn":"not-a-bool","message":"top-level","output":"{\"message\":\"valid nested\",\"data\":{},\"artifacts\":[]}"}`,
+			arguments:    `{"next":"not-a-valid-next","message":"top-level","output":"{\"message\":\"valid nested\",\"data\":{},\"artifacts\":[]}"}`,
 			wantGuidance: false,
 		},
 		{
 			name:         "output descendant schema failure",
-			arguments:    `{"end_turn":true,"message":"top-level","output":"{\"message\":\"nested\",\"data\":[],\"artifacts\":[]}"}`,
+			arguments:    `{"next":"send_and_end_turn","message":"top-level","output":"{\"message\":\"nested\",\"data\":[],\"artifacts\":[]}"}`,
 			wantGuidance: true,
 		},
 	} {
@@ -193,8 +194,8 @@ func TestPrepareToolCall_DefaultCommunicateObjectStillRejectsInvalidNestedFields
 	t.Parallel()
 	_, rt := registerCommunicateForIssue627(t)
 	for _, arguments := range []string{
-		`{"end_turn":true,"message":"top-level","output":{"message":"nested","data":{},"artifacts":[],"unexpected":true}}`,
-		`{"end_turn":true,"message":"top-level","output":{"message":"nested","data":[],"artifacts":[]}}`,
+		`{"next":"send_and_end_turn","message":"top-level","output":{"message":"nested","data":{},"artifacts":[],"unexpected":true}}`,
+		`{"next":"send_and_end_turn","message":"top-level","output":{"message":"nested","data":[],"artifacts":[]}}`,
 	} {
 		res := prepareToolCall(llm.ToolCallData{ID: "issue831-invalid-object", Name: "communicate", Arguments: json.RawMessage(arguments)}, rt, []string{"communicate"}, "communicate", "communicate", "")
 		if res.PrevalErr == "" {
@@ -209,6 +210,7 @@ func TestPrepareToolCall_SameKeysStricterCommunicateOutputSchemaIsNotHealedIssue
 	params := tool.CloneSchemaMap(def.Parameters)
 	output := params["properties"].(map[string]any)["output"].(map[string]any)
 	output["properties"].(map[string]any)["message"] = map[string]any{"type": "string", "enum": []string{"allowed"}}
+	output["required"] = []string{"message"}
 
 	reg := tool.NewRegistry()
 	if err := reg.Register(regTool(llm.ToolDefinition{Name: "communicate", Description: def.Description, Parameters: params})); err != nil {
@@ -216,9 +218,9 @@ func TestPrepareToolCall_SameKeysStricterCommunicateOutputSchemaIsNotHealedIssue
 	}
 	rt := reg.Get("communicate")
 	for _, arguments := range []string{
-		`{"end_turn":true,"message":"top-level","output":null}`,
-		`{"end_turn":true,"output":{"message":"allowed","data":{},"artifacts":[]}}`,
-		`{"end_turn":true,"output":"{\"message\":\"allowed\",\"data\":{},\"artifacts\":[]}"}`,
+		`{"next":"send_and_end_turn","message":"top-level","output":null}`,
+		`{"next":"send_and_end_turn","output":{"data":{},"artifacts":[]}}`,
+		`{"next":"send_and_end_turn","output":"{\"message\":\"allowed\",\"data\":{},\"artifacts\":[]}"}`,
 	} {
 		res := prepareToolCall(llm.ToolCallData{ID: "issue831-strict", Name: "communicate", Arguments: json.RawMessage(arguments)}, rt, []string{"communicate"}, "communicate", "communicate", "")
 		if res.PrevalErr == "" {
@@ -239,7 +241,7 @@ func TestSession_DefaultCommunicateEnvelopeRepairsEmitBoundedTelemetryIssue831(t
 	res := sess.execTool(context.Background(), llm.ToolCallData{
 		ID:        "issue831-telemetry",
 		Name:      "communicate",
-		Arguments: json.RawMessage(`{"end_turn":false,"output":"{\"message\":\"sensitive message\",\"data\":{},\"artifacts\":[]}"}`),
+		Arguments: json.RawMessage(`{"next":"send_and_continue","output":"{\"message\":\"sensitive message\",\"data\":{},\"artifacts\":[]}"}`),
 	}, "")
 	if res.IsError {
 		t.Fatalf("communicate: %s", res.FullOutput)
@@ -290,7 +292,7 @@ func TestSession_FailedCommunicateOutputPromotionDoesNotEmitUnappliedJSONRepairI
 
 	// The broken outer escape is repairable, but the promoted nested output has
 	// trailing text and must be rejected. No repaired bytes reach dispatch.
-	arguments := json.RawMessage(`{"end_turn":true,"message":"\uX","output":"{\"message\":\"nested\",\"data\":{},\"artifacts\":[]} trailing"}`)
+	arguments := json.RawMessage(`{"next":"send_and_end_turn","message":"\uX","output":"{\"message\":\"nested\",\"data\":{},\"artifacts\":[]} trailing"}`)
 	res := sess.execTool(context.Background(), llm.ToolCallData{ID: "issue831-unapplied", Name: "communicate", Arguments: arguments}, "")
 	if !res.IsError || !strings.Contains(res.FullOutput, "passed as an object") {
 		t.Fatalf("result = %+v, want nested output promotion failure", res)
@@ -391,7 +393,7 @@ func TestPrepareToolCall_RejectsInvalidRawCommunicateArgumentsBeforeHealingIssue
 			{
 				name: "over limit",
 				args: func(tail string) []byte {
-					base := `{"end_turn":true,"message":"top-level"` + tail
+					base := `{"next":"send_and_end_turn","message":"top-level"` + tail
 					return []byte(base + strings.Repeat(" ", tool.MaxToolArgumentBytes+1-len(base)))
 				},
 				want: func(args []byte) string {
@@ -401,7 +403,7 @@ func TestPrepareToolCall_RejectsInvalidRawCommunicateArgumentsBeforeHealingIssue
 			{
 				name: "invalid UTF-8",
 				args: func(tail string) []byte {
-					args := append([]byte(`{"end_turn":true,"message":"`), 0xff)
+					args := append([]byte(`{"next":"send_and_end_turn","message":"`), 0xff)
 					return append(args, []byte(`"`+tail)...)
 				},
 				want: func([]byte) string { return "invalid tool arguments JSON: input is not valid UTF-8" },
@@ -427,18 +429,29 @@ func TestPrepareToolCall_RejectsInvalidRawCommunicateArgumentsBeforeHealingIssue
 func TestPrepareToolCall_ValidRawCommunicateArgumentsAtLimitAndUTF8StillHealIssue831(t *testing.T) {
 	t.Parallel()
 	_, rt := registerCommunicateForIssue627(t)
-	base := `{"end_turn":true,"message":"top-level"}`
-	for _, args := range [][]byte{
-		[]byte(base + strings.Repeat(" ", tool.MaxToolArgumentBytes-len(base))),
-		[]byte(`{"end_turn":true,"message":"✓"}`),
+	for _, output := range []struct {
+		name        string
+		tail        string
+		wantChanges bool
+	}{
+		{name: "absent output", tail: `}`, wantChanges: false},
+		{name: "null output", tail: `,"output":null}`, wantChanges: true},
 	} {
-		res := prepareToolCall(llm.ToolCallData{ID: "issue831-raw-valid", Name: "communicate", Arguments: args}, rt, []string{"communicate"}, "communicate", "communicate", "")
-		if res.PrevalErr != "" {
-			t.Fatalf("valid arguments rejected: %q", res.PrevalErr)
-		}
-		if len(res.Changes) == 0 {
-			t.Fatalf("valid default envelope was not healed: %q", args)
-		}
+		t.Run(output.name, func(t *testing.T) {
+			base := `{"next":"send_and_end_turn","message":"top-level"` + output.tail
+			for _, args := range [][]byte{
+				[]byte(base + strings.Repeat(" ", tool.MaxToolArgumentBytes-len(base))),
+				[]byte(`{"next":"send_and_end_turn","message":"✓"` + output.tail),
+			} {
+				res := prepareToolCall(llm.ToolCallData{ID: "issue831-raw-valid", Name: "communicate", Arguments: args}, rt, []string{"communicate"}, "communicate", "communicate", "")
+				if res.PrevalErr != "" {
+					t.Fatalf("valid arguments (%d bytes) rejected: %q", len(args), res.PrevalErr)
+				}
+				if got := len(res.Changes) > 0; got != output.wantChanges {
+					t.Fatalf("has changes = %t, want %t (%d bytes): %+v", got, output.wantChanges, len(args), res.Changes)
+				}
+			}
+		})
 	}
 }
 
@@ -459,7 +472,7 @@ func TestSession_InvalidRawCommunicateArgumentsDoNotHealOrEmitTelemetryIssue831(
 			{
 				name: "over limit",
 				args: func(tail string) []byte {
-					base := `{"end_turn":true,"message":"top-level"` + tail
+					base := `{"next":"send_and_end_turn","message":"top-level"` + tail
 					return []byte(base + strings.Repeat(" ", tool.MaxToolArgumentBytes+1-len(base)))
 				},
 				want: func(args []byte) string {
@@ -469,7 +482,7 @@ func TestSession_InvalidRawCommunicateArgumentsDoNotHealOrEmitTelemetryIssue831(
 			{
 				name: "invalid UTF-8",
 				args: func(tail string) []byte {
-					args := append([]byte(`{"end_turn":true,"message":"`), 0xff)
+					args := append([]byte(`{"next":"send_and_end_turn","message":"`), 0xff)
 					return append(args, []byte(`"`+tail)...)
 				},
 				want: func([]byte) string { return "invalid tool arguments JSON: input is not valid UTF-8" },
@@ -507,7 +520,7 @@ func TestSession_PreToolUseHookDoesNotDecodeOrMergeInvalidRawArgumentsIssue831(t
 		{
 			name: "over limit",
 			args: func() []byte {
-				base := `{"end_turn":true,"intent":"must not become a start description","message":"top-level"}`
+				base := `{"next":"send_and_end_turn","intent":"must not become a start description","message":"top-level"}`
 				return []byte(base + strings.Repeat(" ", tool.MaxToolArgumentBytes+1-len(base)))
 			},
 			want: func(args []byte) string {
@@ -517,7 +530,7 @@ func TestSession_PreToolUseHookDoesNotDecodeOrMergeInvalidRawArgumentsIssue831(t
 		{
 			name: "invalid UTF-8",
 			args: func() []byte {
-				args := append([]byte(`{"end_turn":true,"intent":"must not become a start description","message":"`), 0xff)
+				args := append([]byte(`{"next":"send_and_end_turn","intent":"must not become a start description","message":"`), 0xff)
 				return append(args, []byte(`"}`)...)
 			},
 			want: func([]byte) string { return "invalid tool arguments JSON: input is not valid UTF-8" },
@@ -533,7 +546,7 @@ func TestSession_PreToolUseHookDoesNotDecodeOrMergeInvalidRawArgumentsIssue831(t
 				mu.Lock()
 				prompts = append(prompts, req.Messages[0].Text())
 				mu.Unlock()
-				return llm.Response{Message: llm.Assistant(`{"hookSpecificOutput":{"updatedInput":{"end_turn":true,"message":"hook replacement","output":{"message":"","data":{},"artifacts":[]}}}}`)}
+				return llm.Response{Message: llm.Assistant(`{"hookSpecificOutput":{"updatedInput":{"next":"send_and_end_turn","message":"hook replacement","output":{"message":"","data":{},"artifacts":[]}}}}`)}
 			}})
 			runner := hooks.NewRunner(hookClient, "gpt-5.2")
 			runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{Matcher: "*", Type: "prompt", Prompt: "input=$TOOL_INPUT"})
@@ -623,7 +636,7 @@ func TestSession_PreToolUseHookDenialCannotOverrideInvalidRawArgumentsIssue831(t
 	runner := hooks.NewRunner(hookClient, "gpt-5.2")
 	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{Matcher: "*", Type: "prompt", Prompt: "input=$TOOL_INPUT"})
 	sess.hookRunner = runner
-	args := []byte(`{"end_turn":true,"message":"top-level"}` + strings.Repeat(" ", tool.MaxToolArgumentBytes+1-len(`{"end_turn":true,"message":"top-level"}`)))
+	args := []byte(`{"next":"send_and_end_turn","message":"top-level"}` + strings.Repeat(" ", tool.MaxToolArgumentBytes+1-len(`{"next":"send_and_end_turn","message":"top-level"}`)))
 
 	res := sess.execTool(context.Background(), llm.ToolCallData{ID: "issue831-hook-deny-raw", Name: "communicate", Arguments: args}, "")
 	if !res.IsError || !res.PrevalOnly || res.FullOutput != fmt.Sprintf("tool arguments too large: %d bytes exceeds the %d byte limit", len(args), tool.MaxToolArgumentBytes) {
@@ -655,7 +668,7 @@ func TestSession_PreToolUseHookCanDenyOrUpdateValidSchemaInvalidArgumentsIssue83
 		},
 		{
 			name:         "update",
-			hookResponse: `{"hookSpecificOutput":{"permissionDecision":"allow","updatedInput":{"end_turn":true}}}`,
+			hookResponse: `{"hookSpecificOutput":{"permissionDecision":"allow","updatedInput":{"next":"send_and_end_turn"}}}`,
 			wantError:    true,
 			wantPreval:   true,
 			wantUpdated:  true,
@@ -689,7 +702,7 @@ func TestSession_PreToolUseHookCanDenyOrUpdateValidSchemaInvalidArgumentsIssue83
 				observed <- end
 			}()
 
-			res := sess.execTool(context.Background(), llm.ToolCallData{ID: callID, Name: "communicate", Arguments: json.RawMessage(`{"end_turn":"not-a-bool","message":"top-level","output":{"message":"","data":{},"artifacts":[]}}`)}, "")
+			res := sess.execTool(context.Background(), llm.ToolCallData{ID: callID, Name: "communicate", Arguments: json.RawMessage(`{"next":"not-a-valid-next","message":"top-level","output":{"message":"","data":{},"artifacts":[]}}`)}, "")
 			if res.IsError != tc.wantError || res.PrevalOnly != tc.wantPreval || (tc.wantOutput != "" && res.FullOutput != tc.wantOutput) {
 				t.Fatalf("result = %+v, want error=%t preval=%t output=%q", res, tc.wantError, tc.wantPreval, tc.wantOutput)
 			}
@@ -697,7 +710,7 @@ func TestSession_PreToolUseHookCanDenyOrUpdateValidSchemaInvalidArgumentsIssue83
 			end := <-observed
 			mu.Lock()
 			defer mu.Unlock()
-			if len(prompts) != 1 || prompts[0] == "input=null" || !strings.Contains(prompts[0], `"end_turn":"not-a-bool"`) {
+			if len(prompts) != 1 || prompts[0] == "input=null" || !strings.Contains(prompts[0], `"next":"not-a-valid-next"`) {
 				t.Fatalf("valid schema-invalid input did not reach hook: %q", boundedStringForIssue831(prompts))
 			}
 			// The end event carries the model's original argument bytes (before
@@ -705,7 +718,7 @@ func TestSession_PreToolUseHookCanDenyOrUpdateValidSchemaInvalidArgumentsIssue83
 			// SentArguments() = the original valid-JSON bytes. The hook update
 			// is applied to the call for dispatch but does not override the
 			// event's ArgumentsJSON.
-			if tc.wantUpdated && (end == nil || !strings.Contains(end.ArgumentsJSON, `"end_turn":"not-a-bool"`)) {
+			if tc.wantUpdated && (end == nil || !strings.Contains(end.ArgumentsJSON, `"next":"not-a-valid-next"`)) {
 				t.Fatalf("updated raw-valid call end = %+v, want original model args (not hook-updated form)", end)
 			}
 		})
@@ -729,14 +742,14 @@ func TestSession_PreToolUseHookStillReceivesValidSchemaInvalidArgumentsIssue831(
 	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{Matcher: "*", Type: "prompt", Prompt: "input=$TOOL_INPUT"})
 	sess.hookRunner = runner
 
-	res := sess.execTool(context.Background(), llm.ToolCallData{ID: "issue831-hook-schema", Name: "communicate", Arguments: json.RawMessage(`{"end_turn":"not-a-bool","message":"top-level","output":{"message":"","data":{},"artifacts":[]}}`)}, "")
+	res := sess.execTool(context.Background(), llm.ToolCallData{ID: "issue831-hook-schema", Name: "communicate", Arguments: json.RawMessage(`{"next":"not-a-valid-next","message":"top-level","output":{"message":"","data":{},"artifacts":[]}}`)}, "")
 	if !res.IsError || !res.PrevalOnly {
 		t.Fatalf("result = %+v, want schema prevalidation failure", res)
 	}
 	sess.Close()
 	mu.Lock()
 	defer mu.Unlock()
-	if len(prompts) != 1 || prompts[0] == "input=null" || !strings.Contains(prompts[0], `"end_turn":"not-a-bool"`) {
+	if len(prompts) != 1 || prompts[0] == "input=null" || !strings.Contains(prompts[0], `"next":"not-a-valid-next"`) {
 		t.Fatalf("valid schema-invalid input did not reach hook: %q", boundedStringForIssue831(prompts))
 	}
 }
@@ -755,25 +768,25 @@ func boundedStringForIssue831(values []string) string {
 func TestPrepareToolCall_WhitespaceOutputMessageDoesNotBecomeTopLevelMessageIssue831(t *testing.T) {
 	t.Parallel()
 	_, rt := registerCommunicateForIssue627(t)
-	raw := json.RawMessage(`{"end_turn":true,"output":"{\"message\":\"   \",\"data\":{},\"artifacts\":[]}"}`)
+	raw := json.RawMessage(`{"next":"send_and_end_turn","output":"{\"message\":\"   \",\"data\":{},\"artifacts\":[]}"}`)
 	res := prepareToolCall(llm.ToolCallData{ID: "issue831-whitespace", Name: "communicate", Arguments: raw}, rt, []string{"communicate"}, "communicate", "communicate", "")
 	if res.PrevalErr == "" || !strings.Contains(res.PrevalErr, `"message"`) {
-		t.Fatalf("result = %+v, want missing top-level message prevalidation error", res)
+		t.Fatalf("expected missing required message error without copying whitespace output.message: %+v", res)
 	}
-	if len(res.Changes) != 0 || string(res.Call.Arguments) != string(raw) {
-		t.Fatalf("uncommitted whitespace repair = %+v, arguments = %q", res.Changes, res.Call.Arguments)
+	if len(res.Changes) != 0 {
+		t.Fatalf("rejected whitespace promotion emitted repair telemetry: %+v", res.Changes)
 	}
 }
 
-func TestSession_WhitespaceOutputMessageDoesNotEmitRepairIssue831(t *testing.T) {
+func TestSession_InvalidWhitespaceOutputCallDoesNotEmitRepairIssue831(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t)
 	sess.stateDir = t.TempDir()
 	repairedCh := drainRepairedEvents(sess)
-	raw := json.RawMessage(`{"end_turn":true,"output":"{\"message\":\"   \",\"data\":{},\"artifacts\":[]}"}`)
+	raw := json.RawMessage(`{"next":{"invalid":true},"output":"{\"message\":\"   \",\"data\":{},\"artifacts\":[]}"}`)
 	res := sess.execTool(context.Background(), llm.ToolCallData{ID: "issue831-whitespace-session", Name: "communicate", Arguments: raw}, "")
-	if !res.IsError || !res.PrevalOnly || !strings.Contains(res.FullOutput, `"message"`) {
-		t.Fatalf("result = %+v, want missing top-level message prevalidation error", res)
+	if !res.IsError || !res.PrevalOnly {
+		t.Fatalf("result = %+v, want prevalidation failure", res)
 	}
 	sess.Close()
 	if repaired := <-repairedCh; len(repaired) != 0 {

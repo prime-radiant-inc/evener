@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -37,6 +38,7 @@ type ModelAttemptMetadata struct {
 	RequestFingerprint      string
 	StorageScopeFingerprint string
 	ContextMarker           string
+	ContextBoundary         string
 	AttemptGroupID          string
 	PreviousResponseIDHash  string
 	ConversationIDHash      string
@@ -58,6 +60,7 @@ func singleAttemptRequestMetadata(req llm.Request) (llm.Request, ModelAttemptMet
 		meta.RequestFingerprint = req.Continuation.RequestFingerprint
 		meta.StorageScopeFingerprint = req.Continuation.StorageScopeFingerprint
 		meta.ContextMarker = req.Continuation.ContextMarker
+		meta.ContextBoundary = req.Continuation.ContextBoundary
 		meta.PreviousResponseIDHash = req.Continuation.PreviousResponseIDHash
 		meta.ConversationIDHash = req.Continuation.ConversationIDHash
 		meta.StoragePolicyLabel = req.Continuation.StoragePolicyLabel
@@ -83,18 +86,13 @@ func completeAttemptMetadata(meta ModelAttemptMetadata, resp llm.Response) Model
 
 // effectiveReasoningEffort decides the reasoning effort for one round without
 // touching the session's configured value: the current in-progress task's
-// override wins when set (even when lower — deliberately cheap tasks are a
-// feature), except while a loop-detect escalation is active, where the
-// higher-ranked of the configured and override efforts wins so the "your
-// reasoning effort has been increased" steering never lies.
-func effectiveReasoningEffort(cfg, override string, escalated bool) string {
-	if override == "" {
-		return cfg
+// override wins when set, even when lower. Deliberately cheap tasks are a
+// feature.
+func effectiveReasoningEffort(cfg, override string) string {
+	if override != "" {
+		return override
 	}
-	if escalated && llm.ReasoningEffortRank(cfg) > llm.ReasoningEffortRank(override) {
-		return cfg
-	}
-	return override
+	return cfg
 }
 
 // prepareModelRequestWithError runs the per-round input phases and assembles the
@@ -192,10 +190,13 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	tToolDefsStart := s.sclock().Now()
 	toolDefs := s.cachedToolDefs
 	toolDefsJSONBytes := s.cachedToolDefsJSONBytes
+	// Read beside the list itself: the request sends this list, so its generation
+	// is the one the provider's input count covers.
+	toolDefsGen := s.toolDefsGen
 	t.ToolDefs = time.Since(tToolDefsStart)
 	// The task override applies to this round only; s.cfg.ReasoningEffort keeps
 	// the session's configured effort so it is restored when the task ends.
-	reasoningEffort = effectiveReasoningEffort(strings.TrimSpace(s.cfg.ReasoningEffort), effortOverride, s.loopEffortEscalated)
+	reasoningEffort = effectiveReasoningEffort(strings.TrimSpace(s.cfg.ReasoningEffort), effortOverride)
 	s.mu.Unlock()
 	if s.contextMgr != nil {
 		s.contextMgr.SetProfile(profile)
@@ -240,10 +241,13 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// A fold that took the environment block out of history owes the model a
 	// restatement of it. Only such a fold sets the flag, so a fold that kept the
 	// block still deduplicates, and every other entry kind owns its own append
-	// site — the turn's last message stays what that path left it.
+	// site — the turn's last message stays what that path left it. Round 0
+	// also picks up an unemitted communicate-contract diff for restored legacy
+	// prompts woken by non-user-input turns without injecting unrelated runtime
+	// diffs (such as an idle SetModel before an attention wake).
 	foldRemoved := s.envContextFoldRemoved.Swap(false)
 	mcpRecovered := s.envContextMCPConnected.Swap(false)
-	if foldRemoved || (mcpRecovered && s.envContextDue()) {
+	if foldRemoved || (round == 0 && s.communicateContractDrifted()) || (mcpRecovered && s.envContextDue()) {
 		if err := s.maybeAppendEnvironmentContextBeforeTrailingSteering(); err != nil {
 			return nil, "", nil, llm.Request{}, nil, "", err
 		}
@@ -279,6 +283,19 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	s.attentionMu.Lock()
 	s.mu.Lock()
 	historyTurns := append([]schema.Turn{}, s.history...)
+	// The provider's input count describes this history snapshot and the prompt
+	// and tool list the builder is about to send, not whatever history holds
+	// when the reply settles: a fold or repair that publishes while the reply
+	// streams rewrites history, and a turn accepted after this point was never
+	// sent. recordResponseUsage validates and records against this capture.
+	s.requestMeasurement = requestMeasurement{
+		ok:           true,
+		length:       len(historyTurns),
+		anchor:       contextmgr.PrefixAnchor(historyTurns, len(historyTurns)),
+		revision:     s.historyRevision,
+		systemPrompt: sys,
+		toolDefsGen:  toolDefsGen,
+	}
 	// A request's coverage belongs to its history snapshot. A later fold may
 	// replace a retracted frontier before this request stages its inputs.
 	historyCoverage := s.snapshotConversationCoverageLocked(historyTurns)
@@ -303,10 +320,12 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// work — it is what keeps the boundary paired with the history this round
 	// actually expands (see the G4 note there).
 	scope := replayScope{
-		Instance:     profile.ID(),
-		Model:        profile.Model(),
-		Protocol:     profile.Protocol(),
-		InFlightFrom: inFlightFrom,
+		Instance:       profile.ID(),
+		Model:          profile.Model(),
+		WireID:         profile.Resolved().WireID,
+		Protocol:       profile.Protocol(),
+		InFlightFrom:   inFlightFrom,
+		ResultToolName: s.resultToolName(),
 		dropsToolResult: func(tr *llm.ToolResultData) bool {
 			_, rejected := suppressedDocuments[tr.ToolCallID]
 			return rejected
@@ -376,6 +395,14 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			_ = s.delegateController.AbortModelRequest(claim)
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
 		}
+		// This snapshot can hold a turn appended after the capture above (a
+		// parent steer, say), and the request presents it, so the count the
+		// provider returns covers it. Move the measurement onto the presented
+		// prefix; a rewrite in between refuses the move, and settlement then
+		// drops the pre-rewrite count.
+		s.mu.Lock()
+		s.advanceRequestMeasurementLocked(presentedBoundary)
+		s.mu.Unlock()
 		// A test can land a steer between the completed claim and the rebuild (#7205).
 		s.mu.Lock()
 		afterDelegateSnapshot := s.cfg.testOnly.afterDelegateModelSnapshot
@@ -478,6 +505,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	rebuildForAppendedSkillTurns := func() (bool, error) {
 		s.mu.Lock()
 		var appended []schema.Turn
+		priorMeasurement := s.requestMeasurement
 		// Measure against the snapshot this request projected (presentedTurns),
 		// not the round snapshot (historyTurns): a leased delegate round
 		// projects the controller's later snapshot, which can already hold the
@@ -489,6 +517,12 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// history, and moving it down with the drop below would make every
 			// withheld row look like a fresh append on the next rebuild.
 			presentedBoundary = len(s.history)
+			// The rebuilt request presents these appended turns, so the count
+			// the provider returns covers them. Move the measurement up with the
+			// request: left on the pre-rebuild prefix, the reader prices them a
+			// second time as a delta. A rewrite since the capture refuses the
+			// move, and settlement drops the count instead.
+			s.advanceRequestMeasurementLocked(presentedBoundary)
 		}
 		historyTurns = append([]schema.Turn{}, s.history...)
 		s.mu.Unlock()
@@ -521,6 +555,12 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// The boundary already advanced past the withheld steer, so it stays
 			// outside every later rebuild window this round; the next claim binds it.
 			if len(appended) == 0 {
+				// Nothing was rebuilt, so this request still presents the
+				// pre-rebuild prefix: the advance above would claim coverage of
+				// turns the provider never sees.
+				s.mu.Lock()
+				s.requestMeasurement = priorMeasurement
+				s.mu.Unlock()
 				return false, nil
 			}
 		}
@@ -966,8 +1006,12 @@ func (s *Session) planResponsesContinuation(ctx context.Context, profile *provid
 		req.HistoryMode = llm.HistoryModeFullHistory
 		return route.withInputEstimate(req), nil, nil
 	}
+	// Sample the boundary identity before the provider call, so a response that
+	// lands after a fold publishes a new boundary records the boundary it was
+	// actually planned against.
+	boundary := responsesContinuationBoundaryIdentity(historyTurns)
 	if s.responsesContinuationDisabledForPlan(req, plan, stream) {
-		return responsesContinuationFullHistoryRequestForPlan(route, req, plan), nil, nil
+		return responsesContinuationFullHistoryRequestForPlan(route, req, plan, boundary), nil, nil
 	}
 
 	reservation := reserveResponsesContinuationHistoryBase(historyTurns)
@@ -998,22 +1042,24 @@ func (s *Session) planResponsesContinuation(ctx context.Context, profile *provid
 			EndpointFamily:          string(plan.EndpointFamily),
 			RequestFingerprint:      plan.RequestFingerprint,
 			ContextMarker:           responseContextMarkerV2,
+			ContextBoundary:         boundary,
 			StoragePolicyLabel:      plan.StoragePolicyLabel,
 			StorageScopeFingerprint: plan.StorageScopeFingerprint,
 		}
 		return route.withInputEstimate(req), fullHistory, candidate.Delta
 	}
 
-	return responsesContinuationFullHistoryRequestForPlan(route, req, plan), nil, nil
+	return responsesContinuationFullHistoryRequestForPlan(route, req, plan, boundary), nil, nil
 }
 
-func responsesContinuationFullHistoryRequestForPlan(route roundRoute, req llm.Request, plan llm.ResponsesContinuationPlan) llm.Request {
+func responsesContinuationFullHistoryRequestForPlan(route roundRoute, req llm.Request, plan llm.ResponsesContinuationPlan, boundary string) llm.Request {
 	req, _ = llm.ApplyResponsesContinuationStoreOverride(req, plan.StoragePolicyLabel)
 	req.HistoryMode = llm.HistoryModeFullHistory
 	req.Continuation = &llm.ContinuationMetadata{
 		EndpointFamily:          string(plan.EndpointFamily),
 		RequestFingerprint:      plan.RequestFingerprint,
 		ContextMarker:           responseContextMarkerV2,
+		ContextBoundary:         boundary,
 		StoragePolicyLabel:      plan.StoragePolicyLabel,
 		StorageScopeFingerprint: plan.StorageScopeFingerprint,
 	}
@@ -1576,14 +1622,87 @@ func (s *Session) recordResponseUsage(resp llm.Response, req llm.Request, answer
 		responseHasServerWebSearch(resp.Message.Content),
 	)
 	if record {
+		// The check and the recording are one critical section: a publication
+		// rewrites history and clears the count under s.mu, so a reply that
+		// validated just before it could otherwise reinstall its count after the
+		// clear.
 		s.mu.Lock()
-		hLen := len(s.history)
-		s.mu.Unlock()
+		defer s.mu.Unlock()
+		hLen, anchor, ok := s.settleRequestMeasurementLocked()
+		if !ok {
+			return
+		}
 		// Only the profile that answered may own this measurement: a SetModel
 		// during the request cleared the measurement it belonged to (roborev's
 		// fifteenth round).
-		s.contextMgr.RecordInputTokensFor(answeringProfile, tokens, hLen)
+		s.contextMgr.RecordInputTokensFor(answeringProfile, tokens, hLen, anchor)
 	}
+}
+
+// requestMeasurement is the history and request shape a model request was built
+// from. length and anchor name the resident prefix the provider's input count
+// covers, revision is the historyRevision at that snapshot (an ordinary append
+// never bumps it), and systemPrompt/toolDefsGen name the non-history overhead
+// the builder sent.
+type requestMeasurement struct {
+	ok           bool
+	length       int
+	anchor       string
+	revision     int
+	systemPrompt string
+	toolDefsGen  int
+}
+
+// advanceRequestMeasurementLocked moves the pending capture forward to a later
+// resident prefix the request now presents, whose turns the provider's count
+// will cover. It refuses unless the captured history is still the one it
+// captured — the revision is unchanged and the captured prefix still holds at
+// its length — leaving the stale capture for settlement to drop. Callers hold
+// s.mu.
+func (s *Session) advanceRequestMeasurementLocked(to int) {
+	m := s.requestMeasurement
+	if !m.ok || to < m.length || to > len(s.history) || !s.measurementHoldsLocked(m) {
+		return
+	}
+	m.length = to
+	m.anchor = contextmgr.PrefixAnchor(s.history, to)
+	s.requestMeasurement = m
+}
+
+// measurementHoldsLocked reports whether the captured history is still the one
+// the capture describes: no rewrite since it was taken (same revision) and the
+// captured prefix still holds at its length. Callers hold s.mu.
+func (s *Session) measurementHoldsLocked(m requestMeasurement) bool {
+	if m.revision != s.historyRevision || len(s.history) < m.length {
+		return false
+	}
+	return m.length == 0 || contextmgr.PrefixAnchor(s.history, m.length) == m.anchor
+}
+
+// settleRequestMeasurementLocked returns the prefix a response's input count may
+// be recorded against. A rewrite while the reply streamed (the revision changed,
+// history shrank below the captured prefix, or the prefix itself was rewritten)
+// or a request shape that changed under it (system prompt, tool list) means the
+// count describes a request this session no longer sends, so it is dropped
+// instead of being paired with the new shape. History that only grew keeps the
+// captured prefix, and the reader prices the appended turns as a delta. A
+// session with no capture — a caller outside the round loop — measures what is
+// resident now. The caller holds s.mu across this check and the recording, so a
+// publication cannot interleave between them.
+func (s *Session) settleRequestMeasurementLocked() (length int, anchor string, ok bool) {
+	m := s.requestMeasurement
+	s.requestMeasurement = requestMeasurement{}
+	if !m.ok {
+		length = len(s.history)
+		return length, contextmgr.PrefixAnchor(s.history, length), true
+	}
+	if !s.measurementHoldsLocked(m) {
+		return 0, "", false
+	}
+	if s.cachedSystemPrompt != m.systemPrompt || s.toolDefsGen != m.toolDefsGen {
+		return 0, "", false
+	}
+	return m.length, m.anchor, true
 }
 
 // responseHasServerWebSearch reports whether a response's content includes a
@@ -1625,7 +1744,7 @@ func effectiveRecordedInputTokens(usage llm.Usage, fullHistoryEstimate int, hasS
 // /delta/end, skipping start/delta when the assistant already streamed) and appends
 // the assistant turn to history unless the response was empty without phase metadata.
 // It runs under withResponseSideEffects and returns its abort error.
-func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, modelResp sessionModelResponse, txt string, skipHistory bool, finalAttempt ModelAttemptMetadata) error {
+func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, modelResp sessionModelResponse, txt string, skipHistory bool, finalAttempt ModelAttemptMetadata, acceptedReply, quietYield bool) error {
 	var persistErr error
 	if err := s.withResponseSideEffects(ctx, func() {
 		if !modelResp.StreamedAssistant {
@@ -1634,7 +1753,7 @@ func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, 
 			})
 		}
 		if !skipHistory {
-			persistErr = s.appendAssistantTurn(resp, finalAttempt)
+			persistErr = s.appendAssistantTurnWithAcceptance(resp, finalAttempt, acceptedReply, quietYield)
 			if persistErr != nil {
 				return
 			}
@@ -1713,7 +1832,7 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 		// decideNoToolCalls steers bare text back, and a delegate that ends
 		// without communicating gets communicateNudge.
 		ToolChoice: &llm.ToolChoice{Mode: "auto"},
-		WebSearch:  s.providerWebSearchEnabled(profile),
+		WebSearch:  s.providerWebSearchEnabled(profile) && protocolInjectsNativeWebSearch(profile.Protocol()),
 		AdapterTimeout: &llm.AdapterTimeout{
 			Connect:    10 * time.Second,
 			StreamRead: idleTimeout,
@@ -2010,7 +2129,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			// test that seeds no turns keeps the round's history.
 			if len(fallbackSource.turns) > 0 {
 				scope := fallbackSource.scope
-				scope.Instance, scope.Model, scope.Protocol = fbProfile.ID(), fbProfile.Model(), fbProfile.Protocol()
+				scope.Instance, scope.Model, scope.WireID, scope.Protocol = fbProfile.ID(), fbProfile.Model(), fbProfile.Resolved().WireID, fbProfile.Protocol()
 				scope.canonicalModel = func(model string) string { return s.canonicalModelID(fbProfile.ID(), model) }
 				fallbackHistory = s.requestMessages(fallbackSource.system, expandHistory(fallbackSource.turns, scope))
 			}
@@ -2200,7 +2319,7 @@ func (s *Session) responsesContinuationFallbackRequest(profile *provider.Profile
 	// facts: profile was resolved from the fallback reference, so its ladder and
 	// stated default are the fallback model's, not the primary's.
 	fbReq.ReasoningEffort = resolveRequestEffort(requestedEffort, profile.SupportsReasoning(), profile.ReasoningEffortLevels(), profile.DefaultReasoningEffort())
-	fbReq.WebSearch = s.providerWebSearchEnabled(profile)
+	fbReq.WebSearch = s.providerWebSearchEnabled(profile) && protocolInjectsNativeWebSearch(profile.Protocol())
 	fbReq.ProviderOptions = profile.ProviderOptions()
 	s.applyModelRequestMetadata(&fbReq)
 	route := s.priceRoundRoute(profile, fbReq)
@@ -2291,9 +2410,11 @@ func (s *Session) forceCompactForModelRecovery(ctx context.Context) {
 // guards (openai Responses, openai-chat) or for the Responses-continuation
 // delta path is byte-identical to before this rule existed.
 type replayScope struct {
-	Instance string // outgoing instance (req.Provider)
-	Model    string // outgoing requested model (req.Model)
-	Protocol string // outgoing wire protocol; empty ⇒ no filtering
+	Instance       string // outgoing instance (req.Provider)
+	Model          string // outgoing requested model (req.Model)
+	WireID         string // outgoing resolved wire model id (res.WireID)
+	Protocol       string // outgoing wire protocol; empty ⇒ no filtering
+	ResultToolName string // session's configured result tool name (empty defaults != "web_search")
 
 	// InFlightFrom is the history index of the first turn belonging to the
 	// in-flight turn. Turns at or after it are exempt from filtering: a
@@ -2434,24 +2555,29 @@ func projectThinkingForTarget(profile *provider.Profile, messages []llm.Message)
 // thinkingReplayEligible reports whether a completed prior turn's
 // thinking/redacted_thinking blocks may replay into the outgoing request.
 // Empty provenance (legacy transcripts) is always eligible. An anthropic
-// target requires an exact (instance, requested model) match — the requested
-// model taken from ResponseRequestModel, or canonicalized ResponseModel when
-// the request-model field is empty (closes G12). google and openai-responses
-// targets require the same instance: google's builder must replay prior
-// tool-call thought signatures regardless of model, and openai Responses
-// carries an opaque encrypted_content blob that only its issuing deployment
-// can decrypt (a cross-deployment replay yields "Encrypted content is not
-// supported"). An openai-chat target takes the default branch and replays
-// verbatim; unknown protocols keep their builder guard.
+// target requires an exact (instance, requested model) match (closes G12). A
+// Google-produced turn is only eligible for a ProtocolGoogle target matching
+// the same instance (and individual GoogleInteraction thought parts are gated
+// on ReplayableGoogleThoughtFor(Instance, WireID) in projectThinkingPart).
+// openai-responses targets require the same instance. An openai-chat target
+// takes the default branch and replays verbatim; unknown protocols keep their
+// builder guard.
 func (rs replayScope) thinkingReplayEligible(t schema.Turn) bool {
 	if strings.TrimSpace(t.ResponseProvider) == "" {
 		return true
 	}
 	producer := rs.producerProtocol(t)
+	if producer == registry.ProtocolGoogle {
+		return rs.Protocol == registry.ProtocolGoogle &&
+			rs.Instance != "" && rs.WireID != "" &&
+			rs.Instance == t.ResponseProvider
+	}
 	switch rs.Protocol {
 	case registry.ProtocolAnthropic:
 		return producer == rs.Protocol && rs.Instance == t.ResponseProvider && rs.requestedModelMatches(t)
-	case registry.ProtocolGoogle, registry.ProtocolOpenAIResponses:
+	case registry.ProtocolGoogle:
+		return false
+	case registry.ProtocolOpenAIResponses:
 		return producer == rs.Protocol && rs.Instance == t.ResponseProvider
 	default:
 		return true
@@ -2478,12 +2604,35 @@ func (rs replayScope) canonicalize(model string) string {
 // webSearchReplayEligible reports whether a completed prior turn's web_search
 // raw blocks may replay verbatim. Empty provenance is eligible; otherwise the
 // producing protocol must match the target's — across protocols the raw
-// payload is foreign JSON and is dropped (G13).
+// payload is foreign JSON and is dropped (G13). ProtocolGoogle Grounding
+// results are never replayed to any target, including ProtocolGoogle itself.
 func (rs replayScope) webSearchReplayEligible(t schema.Turn) bool {
+	if rs.producerProtocol(t) == registry.ProtocolGoogle {
+		return false
+	}
 	if strings.TrimSpace(t.ResponseProvider) == "" {
 		return true
 	}
 	return rs.producerProtocol(t) == rs.Protocol
+}
+
+const (
+	omittedGoogleGroundedOutputText = "[historical grounded output omitted from model replay]"
+	omittedGoogleToolInputJSON      = `{"_omitted":"[historical grounded tool input omitted from model replay]"}`
+	omittedWebSearchToolOutputText  = "[historical web_search output omitted from model replay]"
+)
+
+func (rs replayScope) omitsLegacyWebSearchTool(inFlight bool) bool {
+	return rs.active() && !inFlight && rs.ResultToolName != "web_search"
+}
+
+func omitLegacyWebSearchToolCall(tc *llm.ToolCallData) *llm.ToolCallData {
+	cloned := *tc
+	cloned.Arguments = json.RawMessage(omittedGoogleToolInputJSON)
+	cloned.ParsedArguments = nil
+	cloned.ArgumentsSpelling = ""
+	cloned.RawArguments = ""
+	return &cloned
 }
 
 // projectThinkingPart applies the N4 provenance rule and the target's thinking
@@ -2498,6 +2647,15 @@ func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps boo
 	if p.Kind != llm.ContentThinking && p.Kind != llm.ContentRedThinking {
 		return p, false
 	}
+	if rs.active() && p.Thinking != nil && p.Thinking.GoogleInteraction {
+		if rs.Protocol != registry.ProtocolGoogle || p.Kind != llm.ContentThinking || !p.Thinking.ReplayableGoogleThoughtFor(rs.Instance, rs.WireID) {
+			return p, true
+		}
+		return llm.TrimThinkingForReplay(p, rs.DropThinking)
+	}
+	if rs.active() && rs.Protocol == registry.ProtocolGoogle {
+		return p, true
+	}
 	if !provenanceKeeps {
 		if rs.Protocol != registry.ProtocolOpenAIResponses {
 			return p, true
@@ -2511,13 +2669,18 @@ func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps boo
 // filtered per the N4 rules for the scope, plus the target's own thinking
 // policy. An inactive scope passes through unchanged (identical to legacy
 // expansion) unless the target policy drops thinking. In-flight turns keep the
-// N4 exemption but still lose thinking the target does not want.
+// N4 exemption for non-Google producers but still lose thinking the target does
+// not want, and Google Interactions thoughts always require matching
+// (Instance, WireID) provenance. Completed ProtocolGoogle Grounding outputs,
+// web_search parts, and legacy unprefixed web_search tool pairs are omitted
+// when projecting prior turns.
 //
-// Tool-call, tool-result and image content is never touched. Text content is
-// copied as stored except on the turns whose author is the model or another
-// agent: that prose has the frames it could forge escaped in the request copy
-// only (escapeTurnFrames), so a stored turn keeps the bytes its author wrote.
-// A reply the person typed, including one no record stamped and a fork's
+// Image and non-web_search tool content is never touched. Text content is
+// copied as stored (apart from prior ProtocolGoogle grounded output omission)
+// except on the turns whose author is the model or another agent: that prose
+// has the frames it could forge escaped in the request copy only
+// (escapeTurnFrames), so a stored turn keeps the bytes its author wrote. A
+// reply the person typed, including one no record stamped and a fork's
 // inherited unknown-authorship copy, is never rewritten.
 func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Message {
 	t.Message = escapeTurnFrames(t, projectVoicePresentation(t))
@@ -2529,10 +2692,16 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 	// not want thinking still gets the drop.
 	provenanceKeepsThinking := true
 	keepWebSearch := true
+	omitGoogleGroundedText := false
+	omitLegacyWebSearchTool := false
 	if rs.active() && !inFlight {
 		provenanceKeepsThinking = rs.thinkingReplayEligible(t)
 		keepWebSearch = rs.webSearchReplayEligible(t)
+		omitGoogleGroundedText = !keepWebSearch && t.Kind == schema.TurnAssistant &&
+			rs.producerProtocol(t) == registry.ProtocolGoogle &&
+			responseHasServerWebSearch(t.Message.Content)
 	}
+	omitLegacyWebSearchTool = rs.omitsLegacyWebSearchTool(inFlight)
 	// Allocate only when a part actually has to go: the chat drop visits every
 	// replayed message, and most carry no thinking part at all.
 	needsFilter := false
@@ -2544,6 +2713,18 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 			}
 		case llm.ContentWebSearch:
 			if !keepWebSearch {
+				needsFilter = true
+			}
+		case llm.ContentText:
+			if omitGoogleGroundedText && p.Text != "" {
+				needsFilter = true
+			}
+		case llm.ContentToolCall:
+			if omitLegacyWebSearchTool && p.ToolCall != nil && p.ToolCall.Name == "web_search" {
+				needsFilter = true
+			}
+		case llm.ContentToolResult:
+			if omitLegacyWebSearchTool && p.ToolResult != nil && p.ToolResult.Name == "web_search" {
 				needsFilter = true
 			}
 		}
@@ -2566,6 +2747,20 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 		case llm.ContentWebSearch:
 			if !keepWebSearch {
 				continue
+			}
+		case llm.ContentText:
+			if omitGoogleGroundedText && p.Text != "" {
+				p.Text = omittedGoogleGroundedOutputText
+			}
+		case llm.ContentToolCall:
+			if omitLegacyWebSearchTool && p.ToolCall != nil && p.ToolCall.Name == "web_search" {
+				p.ToolCall = omitLegacyWebSearchToolCall(p.ToolCall)
+			}
+		case llm.ContentToolResult:
+			if omitLegacyWebSearchTool && p.ToolResult != nil && p.ToolResult.Name == "web_search" {
+				tr := *p.ToolResult
+				tr.Content = omittedWebSearchToolOutputText
+				p.ToolResult = &tr
 			}
 		}
 		filtered = append(filtered, p)
@@ -2676,6 +2871,7 @@ func annotateSuppressedToolResult(tr *llm.ToolResultData) {
 func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message {
 	history := make([]llm.Message, 0, len(historyTurns))
 	pendingToolCalls := map[string]struct{}{}
+	var omittedWebSearchCallIDs map[string]struct{}
 	var deferredSteering []llm.Message
 
 	flushDeferredSteering := func() {
@@ -2730,6 +2926,10 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
 					tr := *p.ToolResult
+					_, pairedWebSearch := omittedWebSearchCallIDs[tr.ToolCallID]
+					if scope.omitsLegacyWebSearchTool(inFlight) && (tr.Name == "web_search" || pairedWebSearch) {
+						tr.Content = omittedWebSearchToolOutputText
+					}
 					droppedDocument := len(tr.ImageData) > 0 && scope.dropsToolResult != nil && scope.dropsToolResult(p.ToolResult)
 					if len(tr.ImageData) > 0 && (droppedDocument || scope.dropsMedia(tr.ImageMediaType)) {
 						// The target cannot see this payload (or the provider
@@ -2751,10 +2951,37 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			}
 			resolveToolResults(t.Message)
 		case schema.TurnTool:
-			history = append(history, scope.stripToolResultMedia(scope.projectToolResultMedia(scope.projectTurnMessage(t, inFlight))))
+			msg := scope.stripToolResultMedia(scope.projectToolResultMedia(scope.projectTurnMessage(t, inFlight)))
+			if scope.omitsLegacyWebSearchTool(inFlight) && len(omittedWebSearchCallIDs) > 0 {
+				var cloned []llm.ContentPart
+				for idx, p := range msg.Content {
+					if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
+						if _, paired := omittedWebSearchCallIDs[p.ToolResult.ToolCallID]; paired {
+							if cloned == nil {
+								cloned = slices.Clone(msg.Content)
+								msg.Content = cloned
+							}
+							tr := *p.ToolResult
+							tr.Content = omittedWebSearchToolOutputText
+							cloned[idx].ToolResult = &tr
+						}
+					}
+				}
+			}
+			history = append(history, msg)
 			resolveToolResults(t.Message)
 		case schema.TurnAssistant:
 			endToolRound()
+			if scope.omitsLegacyWebSearchTool(inFlight) {
+				for _, p := range t.Message.Content {
+					if p.Kind == llm.ContentToolCall && p.ToolCall != nil && p.ToolCall.Name == "web_search" && p.ToolCall.ID != "" {
+						if omittedWebSearchCallIDs == nil {
+							omittedWebSearchCallIDs = map[string]struct{}{}
+						}
+						omittedWebSearchCallIDs[p.ToolCall.ID] = struct{}{}
+					}
+				}
+			}
 			message := scope.projectTurnMessage(t, inFlight)
 			history = append(history, message)
 			startToolRound(message)

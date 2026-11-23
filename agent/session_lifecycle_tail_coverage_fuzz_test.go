@@ -29,8 +29,8 @@ func FuzzSessionLifecycleTailCoverage(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, seed byte) {
 		mode := seed % 6
-		bare := mode == 4
-		s := sltcNewSession(t, bare, mode == 2)
+		quiet := mode == 4
+		s := sltcNewSession(t, quiet, mode == 2)
 
 		var ctx context.Context = context.Background()
 		kind := EntryUserInput
@@ -51,18 +51,10 @@ func FuzzSessionLifecycleTailCoverage(f *testing.F) {
 			s.steeringQueue = append(s.steeringQueue, steeringMessage{Text: "queued steering"})
 			s.mu.Unlock()
 		case 4:
-			// The finishIdle lane, and the only one: routeNoToolCalls sends a
-			// NON-EMPTY no-tool-calls round to finishIdle for EntryNotification
-			// alone, so this mode has to be a notification wake that actually
-			// reaches the model and answers with bare text. Steering is what
-			// gives the wake something to deliver -- acceptNotificationInput
-			// returns false on an empty queue and never calls the model, which
-			// would leave this mode green and hollow. Mode 5 is the same kind
-			// with the same steering but NOT bare: agenttest.FinalResponse is a
-			// communicate tool call, so it never reaches routeNoToolCalls at all.
+			// The quiet lane must reach the model with deliverable steering.
 			kind = EntryNotification
 			s.mu.Lock()
-			s.steeringQueue = append(s.steeringQueue, steeringMessage{Text: "bare-text steering"})
+			s.steeringQueue = append(s.steeringQueue, steeringMessage{Text: "quiet steering"})
 			s.mu.Unlock()
 		case 5:
 			kind = EntryNotification
@@ -94,16 +86,13 @@ func FuzzSessionLifecycleTailCoverage(f *testing.F) {
 			if err != nil {
 				t.Fatalf("mode 4 input error = %v", err)
 			}
-			// err == nil alone does NOT prove this lane still reaches finishIdle:
-			// a notification wake with nothing to deliver settles clean without
-			// ever calling the model, and a bare round routed to runNoToolCalls
-			// instead would burn the retry budget first. One model response is
-			// what separates them -- the retry path makes four.
+			// Verify that the wake reached the model and the quiet yield ended
+			// it without a retry.
 			s.mu.Lock()
 			responses := s.modelResponses
 			s.mu.Unlock()
 			if responses != 1 {
-				t.Fatalf("mode 4 model responses = %d, want 1: bare text on a notification turn must end idle without spending the retry budget (routeNoToolCalls -> finishIdle)", responses)
+				t.Fatalf("mode 4 model responses = %d, want 1: quiet yield should end the notification turn on its first round", responses)
 			}
 		default:
 			if err != nil {
@@ -298,15 +287,15 @@ func sltcNewToolSession(t *testing.T) *Session {
 	return s
 }
 
-func sltcNewSession(t *testing.T, bare, maxTurns bool) *Session {
+func sltcNewSession(t *testing.T, quiet, maxTurns bool) *Session {
 	t.Helper()
 	root := t.TempDir()
 	client := llm.NewClient()
 	client.Register(&agenttest.ScriptedAdapter{
 		Provider: "openai",
 		Responder: func(llm.Request) llm.Response {
-			if bare {
-				return llm.Response{Message: llm.Assistant("acknowledged")}
+			if quiet {
+				return quietYieldResponse("quiet-ack", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 			}
 			return agenttest.FinalResponse("done")
 		},

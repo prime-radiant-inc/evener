@@ -735,4 +735,48 @@ describe("where a session opens (spec 7.3, ruling 31, Jesse 2026-10-18)", () => 
 		new ReaderPositionRepository(disk).save(anchor({ sessionRef: "ref-old" }));
 		expect(new ReaderPositionRepository(disk).read("hub-1", "ref-old")?.itemKey).toBe("none");
 	});
+
+	it("resolves a standalone quiet-wake anchor onto its containing details group when folded or extended", () => {
+		const q1: Extract<TimelineRow, { kind: "notice" }> = {
+			kind: "notice",
+			id: "qy_1",
+			turnId: "t1",
+			origin: "system",
+			family: "lifecycle",
+			tone: "system",
+			eventKind: "quiet_yield",
+			text: "Ended turn quietly",
+			transcriptKey: "apptranscript-item-v2:t1:3:0",
+			position: { entry: 3, item: 0 },
+		};
+		const q2: Extract<TimelineRow, { kind: "notice" }> = {
+			...q1,
+			id: "qy_2",
+			turnId: "t2",
+			transcriptKey: "apptranscript-item-v2:t2:4:0",
+			position: { entry: 4, item: 0 },
+		};
+		const q0: Extract<TimelineRow, { kind: "notice" }> = {
+			...q1,
+			id: "qy_0",
+			turnId: "t0",
+			transcriptKey: "apptranscript-item-v2:t0:1:0",
+			position: { entry: 1, item: 0 },
+		};
+		const savedByKey = anchor({ itemKey: "apptranscript-item-v2:t1:3:0" });
+		const savedByPos = anchor({ itemKey: "legacy-key", itemPosition: { entry: 3, item: 0 } });
+		const folded: TimelineRow[] = [
+			{ kind: "details", id: "quiet-yields:qy_1", entries: [q1, q2], summary: "2 quiet yields" },
+		];
+		expect(resolveReaderAnchor(savedByKey, folded)).toBe(0);
+		expect(resolveReaderAnchor(savedByPos, folded)).toBe(0);
+
+		const extendedWithOlder: TimelineRow[] = [
+			row("u0", { entry: 0, item: 0 }),
+			{ kind: "details", id: "quiet-yields:qy_0", entries: [q0, q1, q2], summary: "3 quiet yields" },
+		];
+		expect(resolveReaderAnchor(savedByKey, extendedWithOlder)).toBe(1);
+		expect(resolveReaderAnchor(savedByPos, extendedWithOlder)).toBe(1);
+		expect(isReaderAnchorLoaded(anchor({ itemKey: "quiet-yields:qy_1" }), [q1, q2])).toBe(true);
+	});
 });

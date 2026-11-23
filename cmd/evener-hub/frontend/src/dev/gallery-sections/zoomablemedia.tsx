@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Dialog, ZoomableMedia } from "../../widgets";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./zoomablemedia.module.css";
 
 // An inline svg stands in for the image so the gallery needs no asset.
@@ -13,9 +13,10 @@ function Picture() {
   );
 }
 
-// The three shapes the app uses: a full-width image (the doc pane), a
-// fixed thumbnail tile it fills (the composer's attachment), and a
-// thumbnail named by its own alt text and caption (the transcript gallery).
+// The shapes the app uses: a full-width image (the doc pane), a fixed
+// thumbnail tile it fills (the composer's attachment), the same tile with the
+// container's clip lifted (touch), and a thumbnail named by its own alt text
+// and caption (the transcript gallery).
 function ZoomableMediaDemo() {
   const [open, setOpen] = useState(false);
   return (
@@ -25,6 +26,14 @@ function ZoomableMediaDemo() {
       </ZoomableMedia>
       <div className={styles.tile}>
         <ZoomableMedia label="View chart.png" onOpen={() => setOpen(true)}>
+          <Picture />
+        </ZoomableMedia>
+      </div>
+      {/* The touch tile stops clipping so its remove control can straddle the
+          corner, so the media rounds and clips itself through the widget's
+          radius prop instead of a selector in the tile stylesheet. */}
+      <div className={styles.tile} style={{ overflow: "visible" }}>
+        <ZoomableMedia label="View chart.png" onOpen={() => setOpen(true)} radius="inherit">
           <Picture />
         </ZoomableMedia>
       </div>
@@ -45,11 +54,8 @@ function ZoomableMediaDemo() {
 
 export default function ZoomableMediaGallerySection() {
   return (
-    <section>
-      <h2>ZoomableMedia</h2>
-      <ThemeFlip>
-        <ZoomableMediaDemo />
-      </ThemeFlip>
-    </section>
+    <GallerySection title="ZoomableMedia">
+      <ZoomableMediaDemo />
+    </GallerySection>
   );
 }

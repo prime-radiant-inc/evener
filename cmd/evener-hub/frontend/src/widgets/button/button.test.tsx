@@ -176,6 +176,36 @@ test("wrap adds a modifier on top of the variant and size, and leaves a link alo
   expect(screen.getByRole("button").className).toBe(link);
 });
 
+// block is for a button that is its row's whole control: it adds one class
+// on top of the variant and size, and the CSS makes that class full width.
+test("block adds one full-width modifier on top of the variant and size, and leaves a link alone", () => {
+  const { rerender } = render(<Button size="sm">Test credentials</Button>);
+  const plain = screen.getByRole("button").className.split(" ");
+  rerender(
+    <Button size="sm" block>
+      Test credentials
+    </Button>,
+  );
+  const blocked = screen.getByRole("button").className.split(" ");
+  expect(blocked).toEqual(expect.arrayContaining(plain));
+  expect(blocked.length).toBe(plain.length + 1);
+
+  rerender(<Button variant="link">Retry</Button>);
+  const link = screen.getByRole("button").className;
+  rerender(
+    <Button variant="link" block>
+      Retry
+    </Button>,
+  );
+  expect(screen.getByRole("button").className).toBe(link);
+
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "button.module.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+  expect(/\n\.block\s*\{([^}]*)\}/.exec(css)?.[1] ?? "").toContain("width: 100%");
+});
+
 // jsdom has no layout, so the declarations are the checkable truth: a wrapped
 // label lets the box grow past the size's fixed height, keeps that height as
 // its floor, and keeps the 44px tap floor on the phone.

@@ -1,13 +1,22 @@
-import type { ActivityTree, EvenerDelegateInfo, ItemModel } from "@evener/appwire-client";
+import type { ActivityTree, EvenerDelegateInfo, ItemModel, TurnModel } from "@evener/appwire-client";
 import { buildEntityView } from "@evener/appwire-client";
 import { subagentWireStep } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act, render, screen, within } from "@testing-library/react";
-import { expect, test, vi } from "vitest";
+import { beforeEach, expect, test, vi } from "vitest";
+import { resetThreadsStoreForTests } from "../../../../stores/threads";
+import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
+import { ToolCallItem } from "../ToolCallItem";
 import { toolRendererFor } from "../toolRenderers";
 import "./jobTools";
 import "./jobWatch";
 import "./subagentModule";
-import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
+import { seedCurrentDelegate } from "./currentDelegate.testFixture";
+import { resetSubagentModuleStoreForTests } from "./subagentModuleStore";
+
+beforeEach(() => {
+  resetThreadsStoreForTests();
+  resetSubagentModuleStoreForTests();
+});
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
@@ -221,10 +230,9 @@ test("job_status: body shows a running status pill", () => {
   const { container } = render(
     <Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />,
   );
-  // Chip renders "running" as its label text. The lifecycle meta line also
-  // contains "running" as a key, so query the Chip widget's span directly.
-  const chip = container.querySelector("[class*='chip']");
-  expect(chip?.textContent).toContain("running");
+  const chip = container.querySelector('[data-kind="running"]');
+  expect(chip).toBeTruthy();
+  expect(chip?.className).toContain("alive");
 });
 
 test("job_status: needs_attention stays plumbing - the lifecycle status leads the pill", () => {
@@ -236,8 +244,7 @@ test("job_status: needs_attention stays plumbing - the lifecycle status leads th
   );
   // The chip reports the lifecycle ("running"), never the pending-wake flag
   // (rationale at delegateLifecycleLabel).
-  const chip = container.querySelector("[class*='chip']");
-  expect(chip?.textContent).toContain("running");
+  expect(container.querySelector('[data-kind="running"]')).toBeTruthy();
   expect(screen.queryByText("Needs attention")).toBeNull();
 });
 
@@ -248,9 +255,9 @@ test("job_status: idle status does not receive the alive/running tone", () => {
   const { container } = render(
     <Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />,
   );
-  // The Chip should render "idle" text in the neutral tone, not alive/running.
-  const chip = container.querySelector("[class*='chip']");
-  expect(chip?.textContent).toContain("idle");
+  // The idle lifecycle classifies as done: neutral tone, never alive/running.
+  const chip = container.querySelector('[data-kind="done"]');
+  expect(chip).toBeTruthy();
   expect(chip?.className).not.toContain("alive");
 });
 
@@ -266,9 +273,135 @@ test("job_status: idle delegate with failed last outcome shows danger tone", () 
   const { container } = render(
     <Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />,
   );
-  const chip = container.querySelector("[class*='chip']");
-  expect(chip?.textContent).toContain("idle");
+  const chip = container.querySelector('[data-kind="failed"]');
+  expect(chip).toBeTruthy();
   expect(chip?.className).toContain("danger");
+});
+
+test("job_status: meta line separators are decoration", () => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw();
+  const { container } = render(
+    <Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />,
+  );
+  const separators = [...container.querySelectorAll("[data-separator]")];
+  expect(separators.length).toBeGreaterThan(0);
+  for (const separator of separators) {
+    expect(separator.getAttribute("aria-hidden")).toBe("true");
+  }
+});
+
+// One delegate status vocabulary: the card's word and kind, the row's
+// StatusDot cadence, and this card's Chip all come from the same row. A
+// finished delegate is idle with a settled last_outcome, and the settled word
+// is asserted directly so a chip stuck on the lifecycle word fails.
+test.each([
+  {
+    label: "running",
+    lifecycle: "running",
+    outcome: undefined,
+    kind: "running",
+    cadence: "working",
+    tone: "alive",
+    word: "Running",
+  },
+  {
+    label: "completed",
+    lifecycle: "idle",
+    outcome: "completed",
+    kind: "done",
+    cadence: "ended",
+    tone: "neutral",
+    word: "Idle · reported",
+  },
+  {
+    label: "idle",
+    lifecycle: "idle",
+    outcome: undefined,
+    kind: "done",
+    cadence: "ended",
+    tone: "neutral",
+    word: "Idle",
+  },
+  {
+    label: "stopped",
+    lifecycle: "idle",
+    outcome: "stopped",
+    kind: "stopped",
+    cadence: "ended",
+    tone: "neutral",
+    word: "Stopped",
+  },
+  {
+    label: "failed",
+    lifecycle: "idle",
+    outcome: "failed",
+    kind: "failed",
+    cadence: "failed",
+    tone: "danger",
+    word: "Failed",
+  },
+  {
+    label: "exhausted",
+    lifecycle: "idle",
+    outcome: "exhausted",
+    kind: "failed",
+    cadence: "failed",
+    tone: "attention",
+    word: "Exhausted",
+  },
+  {
+    label: "unknown",
+    lifecycle: "unknown",
+    outcome: undefined,
+    kind: "unknown",
+    cadence: undefined,
+    tone: "neutral",
+    word: "Status unavailable",
+  },
+] as const)("the delegate card and job_status share one status vocabulary ($label)", (expected) => {
+  const ref = "local:vocabulary";
+  const delegateId = "dlg_vocabulary";
+  seedCurrentDelegate(ref, delegateId, expected.lifecycle, undefined, { outcome: expected.outcome });
+  const turn: TurnModel = { id: "turn_vocabulary", status: "completed", items: [] };
+  const card = render(
+    <ToolCallItem
+      item={item({
+        id: "delegate_vocabulary",
+        turnId: turn.id,
+        toolName: "delegate",
+        status: "completed",
+        output: JSON.stringify({ delegate_id: delegateId, status: expected.lifecycle }),
+      })}
+      turn={turn}
+      live={false}
+      sessionRef={ref}
+    />,
+  );
+  const row = within(card.container).getByTestId("subagent-row");
+  const word = within(row).getByTestId("delegate-status-word");
+  expect(row.dataset.kind).toBe(expected.kind);
+  expect(word.textContent).toBe(expected.word);
+  const dot = card.container.querySelector("[data-state]");
+  expect(dot?.getAttribute("data-state")).toBe(expected.cadence);
+
+  const Body = toolRendererFor("job_status").body!;
+  const raw = delegateStatusRaw({
+    id: delegateId,
+    status: expected.lifecycle,
+    running_for_ms: undefined,
+    quiet_for_ms: undefined,
+    last_outcome: expected.outcome === undefined ? undefined : { status: expected.outcome },
+  });
+  const statusCard = render(
+    <Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />,
+  );
+  const chip = statusCard.container.querySelector(`[data-kind="${expected.kind}"]`);
+  expect(chip).toBeTruthy();
+  expect(chip?.textContent).toBe(expected.word);
+  expect(chip?.textContent).toBe(word.textContent);
+  expect(chip?.className).toContain(expected.tone);
 });
 
 test("job_status: body renders the mandate (first paragraph of task)", () => {
@@ -290,14 +423,21 @@ test("job_status: body shows a disclosure for a multi-paragraph mandate", () => 
   expect(screen.getByTestId("delegate-mandate-rest")).toBeTruthy();
 });
 
-test("job_status: body renders available tools with a count", () => {
+test("job_status: body renders available tools as mono chips with a count", () => {
   const d = toolRendererFor("job_status");
   const Body = d.body!;
   const raw = delegateStatusRaw();
-  render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
+  const { container } = render(
+    <Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />,
+  );
   expect(screen.getByText("Available tools (5)")).toBeTruthy();
   expect(screen.getByText("apply_patch")).toBeTruthy();
   expect(screen.getByText("write_file")).toBeTruthy();
+  const chips = container.querySelectorAll('[data-kind="tool"]');
+  expect(chips).toHaveLength(5);
+  for (const chip of chips) {
+    expect(chip.className).toContain("mono");
+  }
 });
 
 test("job_status: body renders environment fields (cwd, isolation, sandbox, network)", () => {

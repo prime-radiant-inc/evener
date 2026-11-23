@@ -27,11 +27,10 @@ const ROW_ICON_SIZE = 14;
 //   summaryWhenExpanded as the summary text), so the call never appears
 //   twice and the chevron keeps its line.
 //
-//   - the kind icon sits in a SEAT beside the rationale line: a rounded
-//     --field square in the column the row reserves in its own left padding
-//     (toolcallitem.module.css's .call), at every width. The kind is ambient
-//     context, not content, so it stays out of the text and the row's two
-//     lines share one left edge beside it;
+//   - the kind icon sits bare beside the rationale line, in the column the
+//     row reserves in its own left padding (toolcallitem.module.css's .call),
+//     at every width. The kind is ambient context, not content, so it stays
+//     out of the text and the row's two lines share one left edge beside it;
 //   - a COLLAPSED row with both an intent and a summary STACKS them: the
 //     intent (the agent's stated rationale, italic) on the first line, the
 //     verb/target summary demoted to a quiet second line (truncation
@@ -75,7 +74,8 @@ const ROW_ICON_SIZE = 14;
 //
 // A row with no intent is a single line: summary, then affordances, then
 // the chevron if there is something to expand.
-import { Fragment, type ReactNode, useId, useMemo } from "react";
+import { type ComponentProps, Fragment, type ReactNode, useId, useMemo } from "react";
+import { MIDDLE_TRUNCATION_HEAD_SHARE, walkTruncationCut } from "../../../transcriptDisplay/middleTruncate";
 import { Chevron, FailureGlyph, ToolIcon, type ToolIconKind } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { EntityRef } from "./EntityRef";
@@ -357,7 +357,7 @@ function spanContaining(spans: EntitySpan[], cut: number): EntitySpan | undefine
  * middle truncation. */
 function middleTruncationCut(measure: SummaryMeasure): number {
   const { total, spans } = measure;
-  let cut = Math.ceil(total * 0.6);
+  let cut = Math.ceil(total * MIDDLE_TRUNCATION_HEAD_SHARE);
   const straddled = spanContaining(spans, cut);
   if (straddled) {
     const preferStart = cut - straddled.start <= straddled.end - cut && straddled.start > 0;
@@ -372,28 +372,7 @@ function middleTruncationCut(measure: SummaryMeasure): number {
  * walk enters an id, back to that id's start - so no character the browser
  * would collapse sits at a span edge and no id is ever split. */
 function walkOffWhitespace(measure: SummaryMeasure, cut: number): number {
-  const { chars, total, spans } = measure;
-  const isSpace = (index: number) => /\s/.test(chars[index] ?? "");
-  let position = cut;
-  while (position > 0 && position < total) {
-    const inside = spanContaining(spans, position);
-    if (inside) {
-      position = inside.start;
-      continue;
-    }
-    if (isSpace(position - 1) || isSpace(position)) {
-      position -= 1;
-      continue;
-    }
-    break;
-  }
-  return position;
-}
-
-/** The collapsed line's middle-truncation cut over atomic segments: ~60% of the
- * code points, never inside an id and never adjacent to whitespace. */
-function middleSplit(measure: SummaryMeasure): number {
-  return walkOffWhitespace(measure, middleTruncationCut(measure));
+  return walkTruncationCut(measure.chars, cut, (position) => spanContaining(measure.spans, position)?.start);
 }
 
 /** Splits the segment list at a code-point boundary, preserving order. The cut
@@ -516,6 +495,34 @@ function seatAnchor(segments: SummarySegment[], measure: SummaryMeasure, cut: nu
   return { cut: safeCut, before, after };
 }
 
+/** The row's leading seat, shared by every line that draws it: the kind icon
+ * slot (or the bare failure cross), the exit mark, and the status rail. */
+function RowLead({ leading, exit, status }: { leading: ReactNode; exit: ReactNode; status: ReactNode }) {
+  return (
+    <>
+      {leading}
+      {exit}
+      {status}
+    </>
+  );
+}
+
+/** The row's disclosure button. `type` and the test id are the contract; every
+ * aria attribute and the handler ride through as ordinary button props. */
+function RowTrigger({ testId = "tool-row-trigger", ...props }: ComponentProps<"button"> & { testId?: string }) {
+  return <button type="button" data-testid={testId} {...props} />;
+}
+
+/** The one summary span, shared by the intent-less `content` and the
+ * `summaryContent` branches: only its children differ. */
+function SummaryText({ className, children }: { className: string; children: ReactNode }) {
+  return (
+    <span className={className} data-testid="tool-row-summary">
+      {children}
+    </span>
+  );
+}
+
 export function ToolRow({
   summary,
   summaryLink,
@@ -545,6 +552,9 @@ export function ToolRow({
   // blanked by the caller; callers that blank it pass hasSummaryText so the
   // layout can tell "collapsed" from "nothing to show" (#1253).
   const summaryTextPresent = hasSummaryText ?? hasSummary;
+  const summaryClassName = `${CLASS.summary}${monoSummary ? ` ${CLASS.mono}` : ""}${
+    hasIntent ? ` ${CLASS.demoted}${expanded ? "" : ` ${CLASS.clamped}`}` : ""
+  }`;
   // Two-level disclosure is opt-in via onToggleSummary, and only applies to
   // intent-bearing rows. Intent-less rows keep the legacy overlay pattern
   // (one trigger controls the body) regardless of which props are passed.
@@ -603,7 +613,7 @@ export function ToolRow({
     if (!needsClampedSummary && anchorCut === undefined) return undefined;
     const measure = measureSummary(summary, segments);
     return {
-      clampCut: needsClampedSummary ? middleSplit(measure) : undefined,
+      clampCut: needsClampedSummary ? walkOffWhitespace(measure, middleTruncationCut(measure)) : undefined,
       anchor: anchorCut === undefined ? undefined : seatAnchor(segments, measure, anchorCut),
     };
   }, [anchorCut, needsClampedSummary, segments, summary]);
@@ -620,7 +630,7 @@ export function ToolRow({
       data-open={(summaryToggle ? summaryOpen : expanded) ? "true" : "false"}
       data-testid="tool-row-chevron"
     >
-      <Chevron />
+      <Chevron open={summaryToggle ? summaryOpen : expanded} />
     </span>
   ) : null;
   // The failure mark: a cross on the kind icon's bottom-right corner, never a
@@ -653,8 +663,8 @@ export function ToolRow({
   // The kind icon sits in the row's seat column, beside the rationale line
   // and out of the text. It is the row's first flex item: the .rowIconSlot
   // rule pulls it one --speaker-gutter to the left, into the padding the tool
-  // row (.call) reserves for it, paints the seat's ground behind it, and
-  // pins it to the first line (the rationale) at all times.
+  // row (.call) reserves for it, and pins it to the first line (the rationale)
+  // at all times.
   //
   // The slot is the badge's POSITIONING CONTEXT and the row's flex item. A
   // clean row renders it with only the seat inside, so success costs no extra
@@ -753,9 +763,7 @@ export function ToolRow({
           left edge down a long list of sibling rows, whereas a tool row sits
           inside flowing prose, where a blank reserved column reads as a stray
           indent. Different context, different answer. */}
-      {leadingIconNode}
-      {exitNode}
-      {statusNode}
+      <RowLead leading={leadingIconNode} exit={exitNode} status={statusNode} />
       {hasIntent && (
         <span className={CLASS.intent} data-testid="tool-row-intent">
           {statedIntent}
@@ -763,12 +771,7 @@ export function ToolRow({
         </span>
       )}
       {hasSummary && (
-        <span
-          className={`${CLASS.summary}${monoSummary ? ` ${CLASS.mono}` : ""}${
-            hasIntent ? ` ${CLASS.demoted}${expanded ? "" : ` ${CLASS.clamped}`}` : ""
-          }`}
-          data-testid="tool-row-summary"
-        >
+        <SummaryText className={summaryClassName}>
           {hasIntent && !expanded ? (
             clampedSummary
           ) : anchor !== undefined ? (
@@ -790,7 +793,7 @@ export function ToolRow({
           {hasIntent && trailing && anchor === undefined ? (
             <span className={CLASS.summaryTrailing}>{trailing}</span>
           ) : null}
-        </span>
+        </SummaryText>
       )}
       {!hasIntent && !hasSummary && chevron}
       {(!hasIntent || !hasSummary) && anchor === undefined ? trailing : null}
@@ -828,19 +831,14 @@ export function ToolRow({
       data-open={expanded ? "true" : "false"}
       data-testid="tool-row-body-chevron"
     >
-      <Chevron />
+      <Chevron open={expanded} />
     </span>
   );
 
   const summaryContent = (
     <>
       {hasSummary && (
-        <span
-          className={`${CLASS.summary}${monoSummary ? ` ${CLASS.mono}` : ""}${
-            hasIntent ? ` ${CLASS.demoted}${expanded ? "" : ` ${CLASS.clamped}`}` : ""
-          }`}
-          data-testid="tool-row-summary"
-        >
+        <SummaryText className={summaryClassName}>
           {hasIntent && !expanded ? (
             // Collapsed: the middle-truncating clamp is a nowrap flex line
             // and the trailing control / body chevron ride it as flex items,
@@ -896,7 +894,7 @@ export function ToolRow({
           ) : (
             summarySegmentNodes(segments, summaryLink)
           )}
-        </span>
+        </SummaryText>
       )}
       {/* Rows with no intent trail the control at the summary line's end. An
           intent-only row never reaches this fallback: its control rides the
@@ -940,10 +938,9 @@ export function ToolRow({
   // row), and it names the status as its description the way the suppressed
   // intent trigger used to (#1253 review).
   const bodyTriggerButton = twoLevel ? (
-    <button
-      type="button"
+    <RowTrigger
+      testId="tool-row-body-trigger"
       className={CLASS.bodyTrigger}
-      data-testid="tool-row-body-trigger"
       aria-expanded={expanded}
       aria-controls={disclosureBodyId}
       aria-label={summaryLabel}
@@ -951,7 +948,7 @@ export function ToolRow({
       onClick={() => onToggle?.()}
     >
       {bodyChevronInline ? null : bodyChevron}
-    </button>
+    </RowTrigger>
   ) : null;
 
   // Intent button attributes differ between two-level and legacy modes.
@@ -977,10 +974,8 @@ export function ToolRow({
           {/* A summary-less row keeps only its .bodyTrigger control (rendered
               below) - no second intent disclosure, no second chevron. */}
           {!intentControlSuppressed && (
-            <button
-              type="button"
+            <RowTrigger
               className={`${CLASS.trigger} ${CLASS.intentOverlayTrigger}`}
-              data-testid="tool-row-trigger"
               aria-expanded={triggerExpanded}
               aria-controls={triggerControls}
               aria-label={`${failed ? "Failed " : ""}${statedIntent}`}
@@ -989,9 +984,7 @@ export function ToolRow({
             />
           )}
           <span className={CLASS.intentTriggerContent} data-testid="tool-row-intent-trigger-content">
-            {leadingIconNode}
-            {exitNode}
-            {statusNode}
+            <RowLead leading={leadingIconNode} exit={exitNode} status={statusNode} />
             <span className={CLASS.intent} data-testid="tool-row-intent">
               {statedIntent}
             </span>
@@ -1007,53 +1000,41 @@ export function ToolRow({
         // ~34px unbounded below the 700px breakpoint and wrapping the trigger
         // on a phone column (#1253 review).
         <span className={CLASS.intentLine} data-testid="tool-row-intent-line">
-          {leadingIconNode}
-          {exitNode}
-          {statusNode}
+          <RowLead leading={leadingIconNode} exit={exitNode} status={statusNode} />
           <span className={CLASS.intent} data-testid="tool-row-intent">
             {statedIntent}
           </span>
         </span>
       ) : hasIntent ? (
-        <button
-          type="button"
+        <RowTrigger
           className={CLASS.trigger}
-          data-testid="tool-row-trigger"
           aria-expanded={triggerExpanded}
           aria-controls={triggerControls}
           onClick={triggerOnClick}
         >
-          {leadingIconNode}
-          {exitNode}
-          {statusNode}
+          <RowLead leading={leadingIconNode} exit={exitNode} status={statusNode} />
           <span className={CLASS.intent} data-testid="tool-row-intent">
             <TailUnit line="intent" segments={[{ kind: "text", text: statedIntent ?? "" }]}>
               {chevron}
             </TailUnit>
           </span>
-        </button>
+        </RowTrigger>
       ) : (
-        <>
-          {leadingIconNode}
-          {exitNode}
-          {statusNode}
-        </>
+        <RowLead leading={leadingIconNode} exit={exitNode} status={statusNode} />
       )}
       {!showIntentTrailing && intentLineTrailing}
       {bodyTriggerOnIntentLine && bodyTriggerButton}
       {!hasIntent && <div className={CLASS.summaryLine}>{summaryContent}</div>}
       {!hasIntent && (
-        <button
-          type="button"
+        <RowTrigger
           className={CLASS.trigger}
-          data-testid="tool-row-trigger"
           aria-expanded={expanded}
           aria-controls={disclosureBodyId}
           aria-label={summaryLabel}
           onClick={() => onToggle?.()}
         >
           {chevron}
-        </button>
+        </RowTrigger>
       )}
       {hasIntent && twoLevel && bodyTriggerOnSummaryLine && (
         <div id={summaryRegionId} className={CLASS.summaryLine} data-body-trigger="true">

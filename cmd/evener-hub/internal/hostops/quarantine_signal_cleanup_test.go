@@ -57,7 +57,7 @@ func TestQuarantineSignalNamesASurvivingCustodyAfterCleanup(t *testing.T) {
 	if _, err := os.Stat(signal.CustodyFile); err != nil {
 		t.Fatalf("the signal names a custody file that does not exist: %v", err)
 	}
-	if got := reopened.CursorEpoch().QuarantineEpoch; got != 2 {
+	if got := reopened.quarantineEpoch(); got != 2 {
 		t.Fatalf("the durable epoch = %d, want the stale intent's 2 (it never regresses)", got)
 	}
 }

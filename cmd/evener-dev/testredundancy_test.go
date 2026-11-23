@@ -21,6 +21,19 @@ func redundancyFixture(t *testing.T) string {
 	return dir
 }
 
+// TestTestRedundancyUsageNamesTheRunnableBinary pins that the usage text names
+// `evener-dev dev`, the executable and subcommand that dispatch
+// test-redundancy. Plain `evener` does not.
+func TestTestRedundancyUsageNamesTheRunnableBinary(t *testing.T) {
+	var stdout, stderr strings.Builder
+	if code := testRedundancyRun(t.Context(), nil, &stdout, &stderr); code != 2 {
+		t.Fatalf("testRedundancyRun with no command = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "usage: evener-dev dev test-redundancy") {
+		t.Fatalf("usage does not name the evener-dev dev dispatch: %q", stderr.String())
+	}
+}
+
 // The command line's contract for a deletion batch: cover before and after,
 // then proof exits nonzero exactly when the batch lost more statements than
 // the noise band allows. A command line it cannot act on is a usage error.

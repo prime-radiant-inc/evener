@@ -65,7 +65,7 @@ func TestExecFileEditThreadsItsContext(t *testing.T) {
 	t.Parallel()
 	ctx := context.WithValue(context.Background(), fileCtxKey{}, "sentinel")
 	env := ctxRecordingFileEnv{editCtx: make(chan context.Context, 1)}
-	args := map[string]any{"file_path": "x", "old_string": "a", "new_string": "b"}
+	args := map[string]any{"file_path": "x", "edits": []any{map[string]any{"old_string": "a", "new_string": "b"}}}
 	if _, err := execFileEdit(ctx, env, args, nopReadGuard()); err != nil {
 		t.Fatalf("execFileEdit: %v", err)
 	}

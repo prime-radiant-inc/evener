@@ -1,4 +1,5 @@
 import type {
+  ItemModel,
   ProjectedEntry,
   ProjectedTurn,
   ThreadModel,
@@ -6,9 +7,18 @@ import type {
   TurnModel,
 } from "@evener/appwire-client";
 import {
+  APPROVAL_DECISION_EVENT_KIND,
+  attentionWarningNotice,
   configFingerprint,
   entryDisplayKey,
+  hasFailedNotification,
+  hasItemFailure,
+  isActiveItem,
+  isErrorEvent,
+  isParentSteer,
+  isQuietYield,
   projectThread,
+  steeringNotificationFragments,
   type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import type { ReactNode, RefObject } from "react";
@@ -25,8 +35,8 @@ import { FlowOverlay } from "./flow/FlowOverlay";
 import type { CapturedTranscriptView } from "./flow/transcriptViewRegistry";
 import { useTranscriptViewRegistration } from "./flow/useTranscriptViewRegistration";
 import { readingEntryPoint } from "./flow/viewAnchor";
-import { ProjectedIntentGroup, TurnBlock } from "./TurnBlock";
-import { foldTurnEntries } from "./toolRuns";
+import { ProjectedIntentGroup, ProjectedQuietYieldGroup, TurnBlock } from "./TurnBlock";
+import { foldTurnEntries, intentGroupId } from "./toolRuns";
 import type { TranscriptReadView } from "./transcriptReadView";
 import { asTurnError } from "./turnFailure";
 import { useEntityView } from "./useEntityView";
@@ -36,6 +46,7 @@ import styles from "../session.module.css";
 
 const ESTIMATED_TURN_HEIGHT = 96;
 type IntentEntry = Extract<ProjectedEntry, { kind: "intent" }>;
+type QuietWakeEntry = Extract<ProjectedEntry, { kind: "item" | "critical" | "thinking" }>;
 
 export const TranscriptSourcePaneContext = createContext<string | undefined>(undefined);
 
@@ -56,7 +67,89 @@ export interface TranscriptIntentGroupRow {
   readonly separatorTurn?: TurnModel;
 }
 
-export type TranscriptBodyRow = TranscriptTurnRow | TranscriptIntentGroupRow;
+export interface TranscriptQuietYieldGroupRow {
+  readonly kind: "quietYieldGroup";
+  readonly id: string;
+  readonly entries: readonly QuietWakeEntry[];
+  readonly turns: readonly ProjectedTurn[];
+  readonly quietCount: number;
+  readonly sourceTurnIds: readonly string[];
+  readonly separatorTurn?: TurnModel;
+}
+
+export type TranscriptBodyRow = TranscriptTurnRow | TranscriptIntentGroupRow | TranscriptQuietYieldGroupRow;
+
+function quietYieldGroupId(firstEntryKey: string): string {
+  return `quiet-yield-group:${firstEntryKey}`;
+}
+
+const QUIET_WAKE_BOUNDARY_EVENT_KINDS: ReadonlySet<string> = new Set([
+  "warning",
+  "interrupted",
+  "loop_detection",
+  "turn_limit",
+  "tool_repair",
+]);
+
+function isRoutineDaemonNotificationSteer(item: ItemModel): boolean {
+  if (
+    item.type !== "steering" ||
+    item.source === "user" ||
+    item.steeringKind === "human-note" ||
+    isParentSteer(item.source)
+  ) {
+    return false;
+  }
+  const fragments = steeringNotificationFragments(item.text ?? "");
+  if (hasFailedNotification(fragments)) return false;
+  return item.steeringKind === "notification" || fragments !== null;
+}
+
+function isQuietWakeSystemBoundary(item: ItemModel, turnStatus: string | undefined): boolean {
+  if (isErrorEvent(item) || attentionWarningNotice(item) !== null) return true;
+  if (item.eventKind === APPROVAL_DECISION_EVENT_KIND) return true;
+  if (item.eventKind !== undefined && QUIET_WAKE_BOUNDARY_EVENT_KINDS.has(item.eventKind)) return true;
+  if (item.eventKind === "hook_completed" && typeof item.exitCode === "number" && item.exitCode !== 0) return true;
+  return hasItemFailure(item) || isActiveItem(item, turnStatus);
+}
+
+function isQuietWakeBoundary(entry: ProjectedEntry, turnStatus: string | undefined): boolean {
+  if (entry.kind === "intent") return true;
+  if (entry.kind === "critical") return !isRoutineDaemonNotificationSteer(entry.item);
+  if (entry.kind === "thinking") return entry.live || hasItemFailure(entry.item);
+  const item = entry.item;
+  switch (item.type) {
+    case "reasoning":
+      return isActiveItem(item, turnStatus) || hasItemFailure(item);
+    case "steering":
+      return !isRoutineDaemonNotificationSteer(item);
+    case "systemMessage":
+      return isQuietWakeSystemBoundary(item, turnStatus);
+    default:
+      return true;
+  }
+}
+
+function isEmptyHiddenTurn(turn: ProjectedTurn): boolean {
+  return turn.entries.length === 0 && !asTurnError(turn.source.error);
+}
+
+function quietWakeEntries(turn: ProjectedTurn): { entries: readonly QuietWakeEntry[]; quietCount: number } | undefined {
+  if (turn.entries.length === 0) return undefined;
+  if (asTurnError(turn.source.error) || turn.source.status === "failed" || turn.source.status === "interrupted") {
+    return undefined;
+  }
+  const entries: QuietWakeEntry[] = [];
+  let quietCount = 0;
+  for (const entry of turn.entries) {
+    if (isQuietWakeBoundary(entry, turn.source.status)) return undefined;
+    if (entry.kind === "item" && entry.item.type === "systemMessage" && isQuietYield(entry.item)) {
+      quietCount += 1;
+    }
+    entries.push(entry as QuietWakeEntry);
+  }
+  return quietCount > 0 ? { entries, quietCount } : undefined;
+}
 
 export interface TranscriptAnchorEntry {
   readonly id: string;
@@ -133,10 +226,18 @@ export function transcriptRowsForProjection(projection: TranscriptProjection): r
     for (let index = 1; index < sourceTurnIndexes.length; index += 1) {
       const previous = sourceTurnIndexes[index - 1];
       const current = sourceTurnIndexes[index];
-      if (previous === undefined || current === undefined || current !== previous + 1) {
+      if (previous === undefined || current === undefined) {
         adjacentTurns = false;
         break;
       }
+      for (let mid = previous + 1; mid < current; mid += 1) {
+        const midTurn = projection.turns[mid];
+        if (midTurn === undefined || !isEmptyHiddenTurn(midTurn)) {
+          adjacentTurns = false;
+          break;
+        }
+      }
+      if (!adjacentTurns) break;
     }
     const terminalSingleTurn = sourceTurnIndexes.length === 1 && end === flat.length;
     if (!adjacentTurns && !terminalSingleTurn) return;
@@ -144,7 +245,7 @@ export function transcriptRowsForProjection(projection: TranscriptProjection): r
     const sourceTurnIds = sourceTurnIndexes.map((turnIndex) => projection.turns[turnIndex]?.id ?? "");
     const finalSourceTurnIndex = sourceTurnIndexes.at(-1);
     const group: CrossTurnIntentRun = {
-      id: `intent-group:${entries[0]?.id}`,
+      id: intentGroupId(entries[0]?.id),
       entries,
       sourceTurnIndexes,
       sourceTurnIds,
@@ -221,7 +322,62 @@ export function transcriptRowsForProjection(projection: TranscriptProjection): r
       rows.push(turnRow(projectedTurn, sourceTurnIndex, entries, segment++, true));
     }
   }
-  return rows;
+  const grouped: TranscriptBodyRow[] = [];
+  let rowIndex = 0;
+  while (rowIndex < rows.length) {
+    const firstRow = rows[rowIndex];
+    const firstWake =
+      firstRow?.kind === "turn" && firstRow.showTurnSeparator ? quietWakeEntries(firstRow.turn) : undefined;
+    if (firstRow?.kind !== "turn" || firstWake === undefined) {
+      if (firstRow) grouped.push(firstRow);
+      rowIndex += 1;
+      continue;
+    }
+    const run: { row: TranscriptTurnRow; entries: readonly QuietWakeEntry[]; quietCount: number }[] = [
+      { row: firstRow, entries: firstWake.entries, quietCount: firstWake.quietCount },
+    ];
+    const skippedEmptyIds: string[] = [];
+    let pendingEmpty: TranscriptTurnRow[] = [];
+    let end = rowIndex + 1;
+    let lastQuietEnd = rowIndex + 1;
+    while (end < rows.length) {
+      const candidate = rows[end];
+      if (candidate?.kind !== "turn" || !candidate.showTurnSeparator) break;
+      if (isEmptyHiddenTurn(candidate.turn)) {
+        pendingEmpty.push(candidate);
+        end += 1;
+        continue;
+      }
+      const wake = quietWakeEntries(candidate.turn);
+      if (wake === undefined) break;
+      for (const empty of pendingEmpty) skippedEmptyIds.push(empty.turn.id);
+      pendingEmpty = [];
+      run.push({ row: candidate, entries: wake.entries, quietCount: wake.quietCount });
+      end += 1;
+      lastQuietEnd = end;
+    }
+    const firstEntry = run[0]?.entries[0];
+    if (run.length < 2 || firstEntry === undefined) {
+      grouped.push(firstRow);
+      rowIndex += 1;
+    } else {
+      const entries = run.flatMap((member) => member.entries);
+      const turns = run.flatMap((member) => member.entries.map(() => member.row.turn));
+      const quietCount = run.reduce((total, member) => total + member.quietCount, 0);
+      const lastRunTurn = run.at(-1)?.row.turn.source;
+      grouped.push({
+        kind: "quietYieldGroup",
+        id: quietYieldGroupId(entryDisplayKey(firstEntry)),
+        entries,
+        turns,
+        quietCount,
+        sourceTurnIds: [...run.map((member) => member.row.turn.id), ...skippedEmptyIds],
+        separatorTurn: lastQuietEnd === rows.length ? lastRunTurn : undefined,
+      });
+      rowIndex = lastQuietEnd;
+    }
+  }
+  return grouped;
 }
 
 // Anchors are registered from the SAME fold TurnBlock renders (toolRuns.ts's
@@ -231,7 +387,7 @@ export function transcriptRowsForProjection(projection: TranscriptProjection): r
 // find nothing (roborev on PR #947).
 export function transcriptAnchorEntriesForRows(rows: readonly TranscriptBodyRow[]): readonly TranscriptAnchorEntry[] {
   return rows.flatMap((row, index) => {
-    if (row.kind === "intentGroup") {
+    if (row.kind === "intentGroup" || row.kind === "quietYieldGroup") {
       return row.entries.map((entry) => ({
         id: entryDisplayKey(entry),
         sourceIndex: entry.sourceIndex,
@@ -278,14 +434,14 @@ export function transcriptRunDisclosureIdsForRows(rows: readonly TranscriptBodyR
   );
 }
 
+function rowSourceTurnIds(row: TranscriptBodyRow): readonly string[] {
+  return row.kind === "turn" ? [row.turn.source.id] : row.sourceTurnIds;
+}
+
 export function transcriptSourceTurnRowIndexesForRows(rows: readonly TranscriptBodyRow[]): ReadonlyMap<string, number> {
   const indexes = new Map<string, number>();
   for (const [index, row] of rows.entries()) {
-    if (row.kind === "intentGroup") {
-      for (const turnId of row.sourceTurnIds) indexes.set(turnId, index);
-    } else {
-      indexes.set(row.turn.source.id, index);
-    }
+    for (const turnId of rowSourceTurnIds(row)) indexes.set(turnId, index);
   }
   return indexes;
 }
@@ -293,9 +449,7 @@ export function transcriptSourceTurnRowIndexesForRows(rows: readonly TranscriptB
 /** The first row that renders any of a source turn: where the seen divider
  * for that turn goes, and the row a session opening at it scrolls to. */
 export function transcriptFirstRowIndexForTurn(rows: readonly TranscriptBodyRow[], turnId: string): number {
-  return rows.findIndex((row) =>
-    row.kind === "intentGroup" ? row.sourceTurnIds.includes(turnId) : row.turn.source.id === turnId,
-  );
+  return rows.findIndex((row) => rowSourceTurnIds(row).includes(turnId));
 }
 
 export interface TranscriptBodyProps {
@@ -455,6 +609,25 @@ export function TranscriptBody({
         <div data-testid="transcript-row" data-row-id={row.id}>
           <ProjectedIntentGroup
             entries={row.entries}
+            rowId={row.id}
+            sourceTurnIds={row.sourceTurnIds}
+            separatorTurn={row.separatorTurn}
+            viewAnchorIndex={index}
+            showSeenDivider={showSeenDivider}
+            sessionRef={sessionRef}
+            renderContext={itemRenderContext}
+            thread={model}
+          />
+        </div>
+      );
+    }
+    if (row.kind === "quietYieldGroup") {
+      return (
+        <div data-testid="transcript-row" data-row-id={row.id}>
+          <ProjectedQuietYieldGroup
+            entries={row.entries}
+            turns={row.turns}
+            quietCount={row.quietCount}
             rowId={row.id}
             sourceTurnIds={row.sourceTurnIds}
             separatorTurn={row.separatorTurn}

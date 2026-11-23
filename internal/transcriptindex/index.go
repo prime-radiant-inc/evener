@@ -19,19 +19,20 @@ import (
 	"sync"
 	"time"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/execsupport/fsatomic"
 	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/llm"
 )
 
 const (
 	// formatVersion is the sidecar's layout. projectionID names the projection
 	// its records reproduce; either changing rebuilds every index.
 	formatVersion = 8
-	// Dedicated COMMUNICATE records consume inherited call reconstruction.
-	// Older sidecars can contain duplicate messages from ordinary forks.
-	projectionID = "transcript-read-model-v11"
+	// Accepted bare replies and quiet communicate yields change the items.
+	projectionID = "transcript-read-model-v14"
 
 	// tailBytes is how much of the covered prefix's end validation compares,
 	// the check the attention fold cursor uses (agent/session_attention.go).
@@ -217,6 +218,10 @@ type meta struct {
 	// this, since a deferred communicate call projects no item of its own
 	// until it is paired or flushed.
 	CommCalls []persistedCommCall `json:"comm_calls,omitempty"`
+	// ProvisionalQuiet persists open TurnAssistant entries holding provisional
+	// companion prose or authorship until their possibly-quiet communicate call(s)
+	// resolve or the turn closes.
+	ProvisionalQuiet []persistedProvisionalQuiet `json:"provisional_quiet,omitempty"`
 	// LastAssistant* persists the builder's sticky last-assistant-text state
 	// (builder.lastAssistantText/TurnID/Pos/Known), for the same reason: the
 	// healed-communicate echo check needs it, and only a full build or a
@@ -267,6 +272,23 @@ type persistedCommCall struct {
 	RawArgs      string `json:"raw_args"`
 	persistedPos        // flattened: offset, ordinal, length
 	TurnID       string `json:"turn_id"`
+}
+
+type persistedDelivered struct {
+	persistedPos
+	TurnID string `json:"turn_id"`
+}
+
+type persistedProvisionalQuiet struct {
+	PendingQuiet  []string             `json:"pending_quiet,omitempty"`
+	AllCallIDs    []string             `json:"all_call_ids"`
+	Delivered     []persistedDelivered `json:"delivered,omitempty"`
+	HasText       bool                 `json:"has_text,omitempty"`
+	HasAuthorship bool                 `json:"has_authorship,omitempty"`
+	Flushed       bool                 `json:"flushed,omitempty"`
+	SettledQuiet  bool                 `json:"settled_quiet,omitempty"`
+	persistedPos
+	TurnID string `json:"turn_id"`
 }
 
 // EntryError reports the entry the index could not apply: a decode failure or
@@ -803,6 +825,16 @@ func (x *Index) adopt(m meta) error {
 			return err
 		}
 	}
+	for _, c := range m.ProvisionalQuiet {
+		if err := validatePersistedPos(m, c.persistedPos); err != nil {
+			return err
+		}
+		for _, d := range c.Delivered {
+			if err := validatePersistedPos(m, d.persistedPos); err != nil {
+				return err
+			}
+		}
+	}
 	if err := validatePersistedPos(m, m.LastAssistantPos); err != nil {
 		return err
 	}
@@ -947,6 +979,9 @@ func (x *Index) extend(length int64) error {
 		// The records may hold part of this scan; only a full build is
 		// known to be consistent. The transcript still extends the covered
 		// prefix when the index only needed the whole file's tool names.
+		if _, ok := errors.AsType[unexpectedQuietRebuildError](err); ok {
+			return x.rebuild(length, "")
+		}
 		incarnation := ""
 		if errors.Is(err, errRebuild) {
 			incarnation = x.meta.Incarnation
@@ -1146,6 +1181,33 @@ func restoreDeferredState(b *builder, m meta, below uint64) {
 			b.commCalls[c.ID] = commState{rawArgs: c.RawArgs, pos: c.contributor(), turnID: c.TurnID}
 		}
 	}
+	for _, c := range m.ProvisionalQuiet {
+		if c.Ordinal < below {
+			pending := make(map[string]bool, len(c.PendingQuiet))
+			for _, id := range c.PendingQuiet {
+				pending[id] = true
+			}
+			var delivered []deliveredComm
+			for _, d := range c.Delivered {
+				delivered = append(delivered, deliveredComm{pos: d.contributor(), turnID: d.TurnID})
+			}
+			q := &provisionalQuietState{
+				pendingQuiet:  pending,
+				allCallIDs:    append([]string(nil), c.AllCallIDs...),
+				delivered:     delivered,
+				hasText:       c.HasText,
+				hasAuthorship: c.HasAuthorship,
+				flushed:       c.Flushed,
+				settledQuiet:  c.SettledQuiet,
+				pos:           c.contributor(),
+				turnID:        c.TurnID,
+			}
+			b.provisional = append(b.provisional, q)
+			for _, id := range q.allCallIDs {
+				b.provisionalByCall[id] = q
+			}
+		}
+	}
 	b.lastAssistantText, b.lastAssistantTurnID, b.lastAssistantKnown = m.LastAssistantText, m.LastAssistantTurnID, m.LastAssistantKnown
 	b.lastAssistantPos = m.LastAssistantPos.contributor()
 }
@@ -1214,7 +1276,14 @@ func (x *Index) readHeader() error {
 		// ordinary error no rebuild trigger ever answers.
 		return fmt.Errorf("%w: decode stored header: %w", errCorrupt, err)
 	}
-	x.prelude = apptranscript.PreludeTurn(header)
+	// A fork that starts with an empty header saved the prompt it rendered to
+	// the meta beside the transcript; the prelude is computed once here, at
+	// open, from both.
+	launchPrompt := ""
+	if strings.TrimSpace(header.SystemPrompt) == "" {
+		launchPrompt = schema.LaunchSystemPromptBesideTranscript(x.path)
+	}
+	x.prelude = apptranscript.PreludeTurn(header, launchPrompt)
 	return nil
 }
 
@@ -1281,6 +1350,10 @@ func liveBuildName(dir string) (string, error) {
 }
 
 func (x *Index) buildNew(length int64, incarnation string) error {
+	return x.buildNewWithForce(length, incarnation, nil, nil)
+}
+
+func (x *Index) buildNewWithForce(length int64, incarnation string, force map[uint64]bool, ignored map[string]bool) error {
 	if err := x.closeBuild(); err != nil {
 		return err
 	}
@@ -1310,10 +1383,24 @@ func (x *Index) buildNew(length int64, incarnation string) error {
 	x.stale, x.builderStale = false, false
 	x.builder = newBuilder(x)
 	x.builder.global = map[string]string{}
+	x.builder.forceProvisional = force
+	x.builder.ignoredUnexpectedQuiet = ignored
 	x.rebuilds++
 	if err := x.scan(length); err != nil {
+		if _, ok := errors.AsType[unexpectedQuietRebuildError](err); ok && force == nil && ignored == nil {
+			foundForce, foundIgnored, dErr := x.discoverForceProvisionalOrdinals(length)
+			_ = x.closeBuild()
+			_ = os.RemoveAll(filepath.Join(x.dir, name))
+			x.build = ""
+			if dErr != nil {
+				return dErr
+			}
+			return x.buildNewWithForce(length, incarnation, foundForce, foundIgnored)
+		}
 		return err
 	}
+	x.builder.forceProvisional = nil
+	x.builder.ignoredUnexpectedQuiet = nil
 	if err := x.buildTurnSlots(); err != nil {
 		return err
 	}
@@ -1348,6 +1435,62 @@ func (x *Index) buildNew(length int64, incarnation string) error {
 	x.removeOtherBuilds()
 	x.pruneSupersededSidecars(pruneCandidates)
 	return nil
+}
+
+func (x *Index) discoverForceProvisionalOrdinals(length int64) (force map[uint64]bool, ignored map[string]bool, err error) {
+	reader := bufio.NewReaderSize(io.NewSectionReader(x.transcript, 0, length), 64<<10)
+	var lines transcript.LineBuffer
+	var ordinal uint64
+	headerRead := false
+	announcer := map[string]uint64{}
+	quietCalls := map[string]bool{}
+	for {
+		line, complete, _, readErr := lines.ReadLine(reader, maxLineBytes)
+		if readErr != nil {
+			return nil, nil, readErr
+		}
+		if !complete {
+			break
+		}
+		trimmed := bytes.TrimSpace(line)
+		if len(trimmed) == 0 {
+			continue
+		}
+		if !headerRead {
+			headerRead = true
+			continue
+		}
+		cur := ordinal
+		ordinal++
+		entry, decErr := transcript.DecodeEntry(trimmed)
+		if decErr != nil || entry.Turn.OriginalOrdinal != nil {
+			continue
+		}
+		switch entry.Turn.Kind {
+		case schema.TurnAssistant:
+			for _, part := range entry.Turn.Message.Content {
+				if part.Kind == llm.ContentToolCall && part.ToolCall != nil && apptranscript.IsCommunicateTool(part.ToolCall.Name, entry.Turn.ResultToolName) {
+					announcer[part.ToolCall.ID] = cur
+				}
+			}
+		case schema.TurnTool, schema.TurnToolResults:
+			for _, part := range entry.Turn.Message.Content {
+				if part.Kind == llm.ContentToolResult && part.ToolResult != nil && apptranscript.IsQuietCommunicate(part.ToolResult) {
+					quietCalls[part.ToolResult.ToolCallID] = true
+				}
+			}
+		}
+	}
+	force = map[uint64]bool{}
+	ignored = map[string]bool{}
+	for id := range quietCalls {
+		if ord, ok := announcer[id]; ok {
+			force[ord] = true
+		} else {
+			ignored[id] = true
+		}
+	}
+	return force, ignored, nil
 }
 
 // removeOtherBuilds deletes every build but the live one. A reader in another
@@ -1583,6 +1726,7 @@ func (x *Index) publishMeta() error {
 	x.meta.Open, x.meta.OpenTurnID = b.grouper.Open, b.grouper.TurnID
 	x.meta.TurnSlot = b.turnSlot
 	x.meta.CommCalls = persistCommCalls(b.commCalls)
+	x.meta.ProvisionalQuiet = persistProvisionalQuiet(b.provisional)
 	x.meta.LastAssistantText, x.meta.LastAssistantTurnID, x.meta.LastAssistantKnown = b.lastAssistantText, b.lastAssistantTurnID, b.lastAssistantKnown
 	x.meta.LastAssistantPos = posOf(b.lastAssistantPos)
 	data, err := json.Marshal(x.meta)
@@ -1608,6 +1752,36 @@ func persistCommCalls(m map[string]commState) []persistedCommCall {
 		list = append(list, persistedCommCall{ID: id, RawArgs: state.rawArgs, persistedPos: posOf(state.pos), TurnID: state.turnID})
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].ID < list[j].ID })
+	return list
+}
+
+func persistProvisionalQuiet(items []*provisionalQuietState) []persistedProvisionalQuiet {
+	if len(items) == 0 {
+		return nil
+	}
+	list := make([]persistedProvisionalQuiet, 0, len(items))
+	for _, q := range items {
+		var pending []string
+		for id := range q.pendingQuiet {
+			pending = append(pending, id)
+		}
+		sort.Strings(pending)
+		var delivered []persistedDelivered
+		for _, d := range q.delivered {
+			delivered = append(delivered, persistedDelivered{persistedPos: posOf(d.pos), TurnID: d.turnID})
+		}
+		list = append(list, persistedProvisionalQuiet{
+			PendingQuiet:  pending,
+			AllCallIDs:    append([]string(nil), q.allCallIDs...),
+			Delivered:     delivered,
+			HasText:       q.hasText,
+			HasAuthorship: q.hasAuthorship,
+			Flushed:       q.flushed,
+			SettledQuiet:  q.settledQuiet,
+			persistedPos:  posOf(q.pos),
+			TurnID:        q.turnID,
+		})
+	}
 	return list
 }
 

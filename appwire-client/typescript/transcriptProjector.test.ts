@@ -822,7 +822,8 @@ describe("transcript projector", () => {
       ],
     } as ThreadModel;
 
-    expect(entriesFor(model, preset("chat"))).toEqual([
+    expect(entriesFor(model, preset("chat"))).toEqual([expect.objectContaining({ kind: "item", id: "failed" })]);
+    expect(entriesFor(model, preset("intent"))).toEqual([
       expect.objectContaining({ kind: "critical", id: "active" }),
       expect.objectContaining({ kind: "item", id: "failed" }),
     ]);
@@ -836,20 +837,21 @@ describe("transcript projector", () => {
     ]);
   });
 
-  test("replaces a live current thought with a content-free placeholder when reasoning is off", () => {
+  test("projects a live current thought as a compact disclosure from Intent up, never at Chat", () => {
     const liveTurn = turn([item("think", "reasoning", { status: "inProgress", text: "in-flight thought" })], {
       status: "inProgress",
     });
     const model = { ...threadWith(), turns: [liveTurn] } as ThreadModel;
 
     const placeholder = [expect.objectContaining({ kind: "thinking", id: "think", live: true })];
-    expect(entriesFor(model, preset("chat"))).toEqual(placeholder);
+    expect(entriesFor(model, preset("chat"))).toEqual([]);
+    expect(entriesFor(model, preset("intent"))).toEqual(placeholder);
     expect(entriesFor(model, preset("tools"))).toEqual(placeholder);
     expect(
       entriesFor(model, custom({ toolIntent: true, toolCalls: true, reasoning: false, expandByDefault: false })),
     ).toEqual(placeholder);
-    // A content-free placeholder is not openable, so it contributes no
-    // disclosure id the Full-view baseline would have to reach.
+    // A compact trace follows its own thinking-open default, not the
+    // Full-view expansion baseline.
     expect(projectThread(model, preset("tools")).eligibleDisclosureIds).toEqual([]);
 
     // With reasoning on, the same live item is ordinary (streaming) content.
@@ -967,7 +969,7 @@ describe("transcript projector", () => {
     ]);
   });
 
-  test("projects failed reasoning and routine work from terminal turns at low detail", () => {
+  test("hides failed reasoning at Chat while keeping routine work and the turn error", () => {
     const terminalTurn = turn(
       [
         item("failed-command", "commandExecution", { description: "Routine command", status: "completed" }),
@@ -977,12 +979,18 @@ describe("transcript projector", () => {
     );
     const model = { ...threadWith(), turns: [terminalTurn] } as ThreadModel;
 
+    const reasoningOnly = turn([item("failed-reasoning", "reasoning", { status: "interrupted" })], {
+      status: "failed",
+      error: { message: "structured turn failure" },
+    });
+    const reasoningOnlyModel = { ...threadWith(), turns: [reasoningOnly] } as ThreadModel;
+    const reasoningOnlyProjection = projectThread(reasoningOnlyModel, preset("chat"));
+    expect(reasoningOnlyProjection.turns[0]?.entries).toEqual([]);
+    expect(reasoningOnlyProjection.turns[0]?.source.error).toEqual({ message: "structured turn failure" });
+
     const projection = projectThread(model, preset("chat"));
-    expect(projection.turns[0]?.entries.map((entry) => entry.id)).toEqual([
-      "intent:failed-command",
-      "failed-reasoning",
-    ]);
-    expect(projection.turns[0]?.entries.map((entry) => entry.kind)).toEqual(["intent", "critical"]);
+    expect(projection.turns[0]?.entries.map((entry) => entry.id)).toEqual(["intent:failed-command"]);
+    expect(projection.turns[0]?.entries.map((entry) => entry.kind)).toEqual(["intent"]);
     expect(projection.turns[0]?.source).toBe(terminalTurn);
     expect(projection.turns[0]?.source.status).toBe("failed");
     expect(projection.turns[0]?.source.error).toEqual({ message: "structured turn failure" });
@@ -1286,4 +1294,19 @@ describe("memory refresh projection", () => {
     const projection = projectThread(threadWith(memoryItem()), preset("full"));
     expect(projection.eligibleDisclosureIds).not.toContain("item_memory_context_0");
   });
+});
+
+describe("quiet yield projection", () => {
+  test.each(["chat", "intent", "tools", "activity", "full"] as const)(
+    "keeps quiet_yield visible as an item entry at %s even with system events off",
+    (level) => {
+      const quiet = item("item_quiet_yield_1", "systemMessage", {
+        eventKind: "quiet_yield",
+        description: "Quiet yield",
+        text: "Ended turn quietly",
+      });
+      const entries = entriesFor(threadWith(quiet), preset(level, { systemEvents: false }));
+      expect(entries).toEqual([expect.objectContaining({ kind: "item", id: "item_quiet_yield_1", isMessage: false })]);
+    },
+  );
 });

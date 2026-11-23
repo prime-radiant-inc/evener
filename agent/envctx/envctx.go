@@ -33,13 +33,14 @@ type Snapshot struct {
 	GitBranch     string   `json:"git_branch,omitempty"`      // "" outside a git repo
 	Pressure      Pressure `json:"pressure,omitzero"`
 
-	Model           string `json:"model,omitempty"`
-	KnowledgeCutoff string `json:"knowledge_cutoff,omitempty"`
-	CommitTrailer   string `json:"commit_trailer,omitempty"`
-	ScratchDir      string `json:"scratch_dir,omitempty"`
-	CallableTools   string `json:"callable_tools,omitempty"`
-	AvailableSkills string `json:"available_skills,omitempty"`
-	RunLifetime     string `json:"run_lifetime,omitempty"`
+	Model               string `json:"model,omitempty"`
+	KnowledgeCutoff     string `json:"knowledge_cutoff,omitempty"`
+	CommitTrailer       string `json:"commit_trailer,omitempty"`
+	ScratchDir          string `json:"scratch_dir,omitempty"`
+	CallableTools       string `json:"callable_tools,omitempty"`
+	AvailableSkills     string `json:"available_skills,omitempty"`
+	RunLifetime         string `json:"run_lifetime,omitempty"`
+	CommunicateContract string `json:"communicate_contract,omitempty"`
 }
 
 // State is the Tracker's persistable form, stored in session meta so resume
@@ -79,11 +80,17 @@ func (t *Tracker) SeedRuntime(rt Snapshot) {
 	b.CommitTrailer, b.ScratchDir = cmp.Or(b.CommitTrailer, rt.CommitTrailer), cmp.Or(b.ScratchDir, rt.ScratchDir)
 	b.CallableTools, b.AvailableSkills = cmp.Or(b.CallableTools, rt.CallableTools), cmp.Or(b.AvailableSkills, rt.AvailableSkills)
 	b.RunLifetime = cmp.Or(b.RunLifetime, rt.RunLifetime)
+	b.CommunicateContract = cmp.Or(b.CommunicateContract, rt.CommunicateContract)
 }
 
 // RuntimeDrifted reports whether cur holds a runtime fact base does not.
 func (t *Tracker) RuntimeDrifted(cur Snapshot) bool {
 	return (&Tracker{st: State{Last: cur, HasSent: true}, base: t.base, fullInventory: t.fullInventory}).RenderDiff(cur) != ""
+}
+
+// CommunicateContractDrifted reports whether cur differs from the contract base.
+func (t *Tracker) CommunicateContractDrifted(cur string) bool {
+	return t != nil && cur != "" && t.base.CommunicateContract != cur
 }
 
 // ReplayBlock folds one durable environment block into the tracker state.
@@ -140,7 +147,7 @@ func (t *Tracker) ReplayBlock(block string) bool {
 }
 
 func (t *Tracker) applyNameLine(line string) {
-	fields := map[string]*string{"model": &t.base.Model, "knowledge cutoff": &t.base.KnowledgeCutoff, "commit trailer": &t.base.CommitTrailer, "scratch dir": &t.base.ScratchDir, "tools": &t.base.CallableTools, "skills": &t.base.AvailableSkills, "run lifetime": &t.base.RunLifetime}
+	fields := map[string]*string{"model": &t.base.Model, "knowledge cutoff": &t.base.KnowledgeCutoff, "commit trailer": &t.base.CommitTrailer, "scratch dir": &t.base.ScratchDir, "tools": &t.base.CallableTools, "skills": &t.base.AvailableSkills, "run lifetime": &t.base.RunLifetime, "communicate contract": &t.base.CommunicateContract}
 	if label, value, ok := strings.Cut(line, ": "); ok && fields[label] != nil {
 		if (label == "tools" || label == "skills") && value == "(none)" {
 			value = ""
@@ -222,6 +229,7 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 	say("scratch dir: ", cur.ScratchDir, "(none)", &t.base.ScratchDir)
 	say("commit trailer: ", cur.CommitTrailer, "(disabled)", &t.base.CommitTrailer)
 	say("run lifetime: ", cur.RunLifetime, "(none)", &t.base.RunLifetime)
+	say("communicate contract: ", cur.CommunicateContract, "(none)", &t.base.CommunicateContract)
 	if full && cur.CommitTrailer == "" && t.base.CommitTrailer == "" {
 		lines = append(lines, "commit trailer: (disabled)")
 		t.base.CommitTrailer = "(disabled)"

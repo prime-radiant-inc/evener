@@ -128,7 +128,7 @@ measure rule of its own the ghosts start at the pane's raw left edge while
 every delivered message above sits clamped and centered - the same
 trailing-row rule `.intentGroup` and AskDock's `.dock` already carry. The
 horizontal-overflow scan cannot see this (nothing escapes a scroller), so
-this compares the `[data-testid="pending-message-stack"]` box against a
+this compares the `[data-testid="pending-row-stack"]` box against a
 `[data-testid="turn-block"]` box directly at 1024px. The fixture seeds its
 one ghost through the real durable outbox path (`enqueueIntent` + the shared
 projection refresh), never a direct store write.
@@ -350,3 +350,28 @@ composer safe-area=34 ... PASS - stacked controls and visible model, footer
 gap=12px, status clearance=34px`. The safe-area assertion reads the status bar's
 bottom edge and chip containment because smaller fine-pointer chips are centred
 in their 30px bar rather than filling its height.
+
+## Composer action tap floor on a coarse landscape phone (`assertDuoLandscapeComposer`)
+
+The 951x669 coarse Duo landscape fixture puts a 572px pane in a viewport past
+the 899px phone boundary. Its composer content box is below 559px, so the
+container query hides the Send/Stop words and only the icon remains. The guard
+measures whichever of Send or Stop fills the primary slot and requires the 44px
+tap floor in both axes.
+
+**Mutation performed:** reverted the Send/Stop width floor in
+`panes/session/composer/composer.module.css` to its pre-fix prelude
+(`@media (max-width: 899px)`, dropping `, (any-pointer: coarse)`).
+
+**Result before restore:** FAIL:
+`951x669 Duo landscape composer safe-area=34 focus=none ... FAIL - the icon-only landscape Send/Stop is 31.0x44.0px, below the 44px tap floor`,
+and the same measurement failed for `focus=editor`. Every other footer case
+stayed PASS in that run.
+
+**Result after restore:** PASS:
+`951x669 Duo landscape composer safe-area=34 focus=none ... PASS - one folded row, Send/Stop=44.0x44.0px, footer gap=12px, status clearance=34px`,
+and the editor-focus state likewise.
+
+**Command:** `node scripts/overflowguard/run.mjs --footer-only`.
+
+**Verified:** 2026-11-22. **Expect:** fail when the coarse-pointer arm is removed.

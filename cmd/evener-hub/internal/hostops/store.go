@@ -105,22 +105,22 @@ type snapshot struct {
 	AllocatorHighWaterMark uint64   `json:"allocatorHighWaterMark"`
 	Records                []Record `json:"records"`
 	// CompactSeq is §4's durable compaction sequence: advanced by every
-	// compacting write, pinned by every minted cursor (§8). Optional on read
-	// for the same reason as Boundaries: the key arrived after the store
-	// shipped, so a file without it is a store no write has compacted.
+	// compacting write. Optional on read for the same reason as Boundaries: the
+	// key arrived after the store shipped, so a file without it is a store no
+	// write has compacted.
 	CompactSeq uint64 `json:"compactSeq"`
 	// Tombstones is §4's bounded dedup-tombstone set: one per compacted
 	// terminal record, the replay source that answers a lost-response retry
 	// with `compacted: true`. Optional on read for the same reason.
 	Tombstones []Tombstone `json:"tombstones"`
-	// CompactionMarks is the bounded compaction ledger §8's refusal reads
-	// independently of the dedup tombstones' own bound (see
-	// MaxCompactionMarks). Optional on read for the same reason.
+	// CompactionMarks is the bounded compaction ledger the custody quarantine's
+	// removal-evidence accounting reads independently of the dedup tombstones'
+	// own bound (see MaxCompactionMarks). Optional on read for the same reason.
 	CompactionMarks []CompactionMark `json:"compactionMarks"`
 	// CompactionFloor is the highest compacting-write sequence whose ledger
-	// marks were evicted by the bound: evidence for a cursor pinned below it is
-	// incomplete, and §8's check refuses coarsely rather than skipping. Zero
-	// means no mark has ever been dropped.
+	// marks were evicted by the bound: removal evidence below it is incomplete,
+	// and the custody completeness check refuses rather than declaring the ids
+	// lost. Zero means no mark has ever been dropped.
 	CompactionFloor uint64 `json:"compactionFloor"`
 	// RemovedHosts records, per name, when the registry's removal tombstone
 	// was seen and the pair it tombstoned: §4 compacts a removed host's history
@@ -195,7 +195,8 @@ type storeCell struct {
 	// has since disappeared.
 	hasFile atomic.Bool
 	// quarantineEpoch is the durable §4 counter this path's store was opened at:
-	// or validates (§8 compares it before any boundary comparison).
+	// the number of custody quarantines the sidecar records, advanced by exactly
+	// one per quarantined store.
 	quarantineEpoch uint64
 	// quarantine is the operator-visible health signal §4 requires a quarantined
 	// store to boot with, nil when no custody file exists for this path.

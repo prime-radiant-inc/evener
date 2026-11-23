@@ -1,5 +1,6 @@
 import { type PointerEvent as ReactPointerEvent, useCallback, useRef, useState } from "react";
 import { Button } from "../button";
+import { CodeBlockPre } from "../codeblock";
 import { CopyButton } from "../copybutton";
 import dialogStyles from "../dialog/dialog.module.css";
 import { OverlayPanel } from "../dialog/OverlayPanel";
@@ -131,9 +132,9 @@ export function DiagramViewer({ open, svg, source, onClose }: DiagramViewerProps
       }
     >
       {showSource ? (
-        <pre className={CLASS.source}>
-          <code>{source}</code>
-        </pre>
+        <CodeBlockPre wrap={false} className={CLASS.source}>
+          {source}
+        </CodeBlockPre>
       ) : (
         <div
           ref={attachWheel}

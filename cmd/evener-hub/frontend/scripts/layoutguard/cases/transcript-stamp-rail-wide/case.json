@@ -5,6 +5,7 @@
     "styles/global.css",
     "styles/tokens.css",
     "styles/motion.module.css",
+    "styles/text.module.css",
     "panes/session/transcript/turnblock.module.css",
     "panes/session/transcript/messages/agentmessageitem.module.css",
     "widgets/timestamp/timestamp.module.css",
@@ -16,10 +17,7 @@
     "deviceScaleFactor": 1,
     "mobile": false
   },
-  "widthMatrix": [
-    { "width": 1300, "window": 1920 },
-    { "width": 1112, "window": 1920 }
-  ],
+  "widthMatrix": [{ "width": 1300, "window": 1920 }, { "width": 1112, "window": 1920 }],
   "mutation": {
     "declaration": "agentmessageitem.module.css: the 55-75rem wide-measure override rule's `position: static` removed, leaving the rail engaged in the band",
     "verified": "2026-09-09",

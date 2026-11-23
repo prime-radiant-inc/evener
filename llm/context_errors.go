@@ -15,6 +15,12 @@ func WrapContextError(provider string, err error) error {
 	if responseHeaderTimeout, ok := errors.AsType[*responseHeaderTimeoutError](err); ok {
 		return newResponseHeaderTimeoutError(provider, responseHeaderTimeout.message, err)
 	}
+	if le, ok := errors.AsType[Error](err); ok && !le.Retryable() && !errors.Is(err, context.Canceled) {
+		if le.Provider() != "" || provider == "" {
+			return err
+		}
+		return RewriteErrorProvider(err, provider)
+	}
 	if idle, ok := errors.AsType[*responseIdleTimeoutError](err); ok {
 		return NewRequestTimeoutError(provider, idle.Error(), err)
 	}

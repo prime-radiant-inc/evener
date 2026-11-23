@@ -1,6 +1,6 @@
 import { Cadence, type CadenceState } from "../../widgets/cadence";
+import { GallerySection } from "../GallerySection";
 import styles from "../gallery-section.module.css";
-import { ThemeFlip } from "../ThemeFlip";
 
 // A fixed anchor instant, not Date.now(): the gallery is a design review
 // tool, and Cadence itself is pure, so there's no reason for its sample
@@ -58,16 +58,13 @@ const SAMPLES: { state: CadenceState; frameTimes: number[] }[] = [
 
 export default function CadenceGallerySection() {
   return (
-    <section>
-      <h2>Cadence</h2>
-      <ThemeFlip>
-        {SAMPLES.map(({ state, frameTimes }) => (
-          <div className={styles.row} key={state}>
-            <p className={styles.rowLabel}>{state}</p>
-            <Cadence state={state} frameTimes={frameTimes} now={NOW} />
-          </div>
-        ))}
-      </ThemeFlip>
-    </section>
+    <GallerySection title="Cadence">
+      {SAMPLES.map(({ state, frameTimes }) => (
+        <div className={styles.row} key={state}>
+          <p className={styles.rowLabel}>{state}</p>
+          <Cadence state={state} frameTimes={frameTimes} now={NOW} />
+        </div>
+      ))}
+    </GallerySection>
   );
 }

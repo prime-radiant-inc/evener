@@ -2024,7 +2024,7 @@ func TestSession_StreamsCommunicateToolArgumentsAsAssistantDeltas(t *testing.T) 
 				Type: llm.StreamEventToolCallDelta,
 				ToolCall: &llm.ToolCallData{
 					ID:        "c1",
-					Arguments: json.RawMessage(`lo","end_turn":true,"output":{"message":"","data":{},"artifacts":[]}}`),
+					Arguments: json.RawMessage(`lo","next":"send_and_end_turn","output":{"message":"","data":{},"artifacts":[]}}`),
 				},
 			})
 			st.Send(llm.StreamEvent{

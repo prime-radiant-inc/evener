@@ -96,6 +96,10 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		res.PrevalErr = errText
 		return res
 	}
+	if errText := retiredResultToolShapeError(t.Definition.Name, resultToolName, args); errText != "" {
+		res.PrevalErr = errText
+		return res
+	}
 
 	if err := rejectUnavailableDelegateSandboxControls(t.Definition.Name, t.Definition.Parameters, args); err != nil {
 		res.PrevalErr = err.Error()
@@ -115,16 +119,11 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		args, retainedReadChanges = normalizeRetainedReadArgs(args)
 	}
 
-	// The default communicate envelope documents message/data/artifacts as
-	// always-present with empty defaults (issue #627), but the schema demands
-	// them as required — reconcile by filling the documented defaults before
-	// validation. communicateEnvelopeFor owns both gates (identity: the
-	// session's result tool only; exact shape: precisely the default
-	// envelope), and returns the envelope it validated so the fill cannot
-	// diverge from what was checked. The fill runs on a working copy and is
-	// committed (args + recorded changes) only if validation passes, so a
-	// call that still fails never emits a ToolCallRepaired event whose
-	// Arguments bytes were never applied.
+	// Bound only to the session's unbound result tool with the canonical
+	// default output schema: repairs malformed legacy shapes (output:null,
+	// JSON-stringified output objects, and output.message without top-level
+	// message) without synthesizing or filling optional fields the schema
+	// already permits to be omitted. Commit only if validation passes.
 	var fillChanges []repair.Change
 	promotedOutputString := false
 	if envelope, ok := communicateEnvelopeFor(t, resultToolName); ok {
@@ -169,7 +168,13 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 			res.PrevalErr = repair.ExplainTruncatedCall(requestedVisible)
 			return res
 		}
-		healed, c := repair.RepairArgs(t.Definition.Parameters, args, handlerJudgedArgs(t.Definition.Name, args)...)
+		keep := handlerJudgedArgs(t.Definition.Name, args)
+		if t.Definition.Name == resultToolName {
+			// A supplied output must pass its schema, not disappear as an
+			// optional placeholder and turn the call into a quiet yield.
+			keep = append(keep, "output")
+		}
+		healed, c := repair.RepairArgs(t.Definition.Parameters, args, keep...)
 		finalErrorArgs := args
 		// Scalar repair can turn provider-materialized strings such as
 		// expand_turn="0" into their neutral numeric forms. Normalize those
@@ -265,33 +270,41 @@ func repairDefaultCommunicateEnvelope(envelope, args map[string]any) ([]repair.C
 	}
 
 	var changes []repair.Change
-	if raw, present := args["output"]; !present || raw == nil {
-		args["output"] = map[string]any{}
-		changes = append(changes, repair.Change{Kind: repair.ChangeSynthesize, Field: "output", Detail: "synthesized default envelope"})
-	} else if encoded, ok := raw.(string); ok {
-		decoded, err := decodeDefaultCommunicateOutputString(encoded)
-		if err != nil {
-			return nil, false, err
+	promoted := false
+	quietNext, _ := args["next"].(string)
+	quietMode := strings.TrimSpace(quietNext) == tool.CommunicateNextLogQuietlyAndEndTurn
+	if raw, present := args["output"]; present {
+		switch encoded := raw.(type) {
+		case nil:
+			if quietMode {
+				delete(args, "output")
+				changes = append(changes, repair.Change{Kind: repair.ChangeNormalizeDefault, Field: "output", Detail: "removed neutral null output"})
+			} else {
+				args["output"] = map[string]any{}
+				changes = append(changes, repair.Change{Kind: repair.ChangeSynthesize, Field: "output", Detail: "synthesized default envelope"})
+			}
+		case string:
+			decoded, err := decodeDefaultCommunicateOutputString(encoded)
+			if err != nil {
+				return nil, false, err
+			}
+			args["output"] = decoded
+			promoted = true
+			changes = append(changes, repair.Change{Kind: repair.ChangePromoteJSONObject, Field: "output", Detail: "promoted JSON object string"})
 		}
-		args["output"] = decoded
-		changes = append(changes, repair.Change{Kind: repair.ChangePromoteJSONObject, Field: "output", Detail: "promoted JSON object string"})
 	}
 
-	changes = append(changes, fillCommunicateEnvelope(envelope, args)...)
-	if _, present := args["message"]; !present {
-		if output, ok := args["output"].(map[string]any); ok {
-			if message, ok := output["message"].(string); ok && strings.TrimSpace(message) != "" {
-				args["message"] = message
-				changes = append(changes, repair.Change{Kind: repair.ChangeCopy, Field: "message", Detail: "copied output.message"})
+	if !quietMode {
+		if _, present := args["message"]; !present {
+			if output, ok := args["output"].(map[string]any); ok {
+				if message, ok := output["message"].(string); ok && strings.TrimSpace(message) != "" {
+					args["message"] = message
+					changes = append(changes, repair.Change{Kind: repair.ChangeCopy, Field: "message", Detail: "copied output.message"})
+				}
 			}
 		}
 	}
-	for _, change := range changes {
-		if change.Kind == repair.ChangePromoteJSONObject {
-			return changes, true, nil
-		}
-	}
-	return changes, false, nil
+	return changes, promoted, nil
 }
 
 func decodeDefaultCommunicateOutputString(encoded string) (map[string]any, error) {
@@ -593,6 +606,19 @@ func retiredTaskListShapeError(toolName string, args map[string]any) string {
 	}
 	return fmt.Sprintf("invalid_request: task_list no longer takes %s; the call was not applied. Use {\"add\": [...]} to add tasks, {\"update\": [{\"id\": N, ...}]} to change them (omit status to leave it unchanged), or {} to view the list — all in one call.",
 		strings.Join(retired, ", "))
+}
+
+// retiredResultToolShapeError prevents argument repair from silently dropping
+// the retired end_turn field (which would turn end_turn=false into send_and_end_turn).
+func retiredResultToolShapeError(toolName, resultToolName string, args map[string]any) string {
+	if toolName != resultToolName {
+		return ""
+	}
+	if _, supplied := args["end_turn"]; !supplied {
+		return ""
+	}
+	return fmt.Sprintf("invalid_request: %s no longer takes end_turn; the call was not applied. Pass next=%q (default) to deliver and finish, next=%q for an update while keeping working, or next=%q with a brief wait/ack note to yield quietly.",
+		toolName, tool.CommunicateNextSendAndEndTurn, tool.CommunicateNextSendAndContinue, tool.CommunicateNextLogQuietlyAndEndTurn)
 }
 
 // changeStrings encodes changes as "kind:field:detail" for the telemetry event.

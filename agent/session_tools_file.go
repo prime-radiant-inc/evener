@@ -2,11 +2,20 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/pdfslice"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/llm"
 )
+
+// errPagesOnNonPDF is read_file's refusal for a pages selector on a text or
+// image file. It is returned before guard.TrackRead, so a refused read never
+// satisfies read-before-write.
+var errPagesOnNonPDF = errors.New("read_file: pages parameter is only supported for PDF files")
 
 func registerFileTools(reg *tool.Registry, deps *toolDeps) error {
 	register := reg.Register
@@ -47,35 +56,89 @@ func registerFileTools(reg *tool.Registry, deps *toolDeps) error {
 }
 
 func execFileRead(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any, guard readGuard) (any, error) {
-	read := env.ReadFile
-	if ce, ok := env.(execenv.ContextualFileReader); ok {
-		read = func(path string, offset, limit *int) (string, error) {
-			return ce.ReadFileCtx(ctx, path, offset, limit)
-		}
+	if rr, ok := env.(execenv.RichFileReader); ok {
+		return execFileReadWith(ctx, args, guard, func(path string, offset, limit *int) (string, execenv.ReadFileMeta, error) {
+			return rr.ReadFileRichCtx(ctx, path, offset, limit)
+		})
 	}
-	return execFileReadWith(args, guard, read)
+	if ce, ok := env.(execenv.ContextualFileReader); ok {
+		return execFileReadWith(ctx, args, guard, func(path string, offset, limit *int) (string, execenv.ReadFileMeta, error) {
+			text, err := ce.ReadFileCtx(ctx, path, offset, limit)
+			return text, execenv.ReadFileMeta{}, err
+		})
+	}
+	return execFileReadWith(ctx, args, guard, func(path string, offset, limit *int) (string, execenv.ReadFileMeta, error) {
+		text, err := env.ReadFile(path, offset, limit)
+		return text, execenv.ReadFileMeta{}, err
+	})
 }
 
 // execFileReadWith is read_file's semantics over read, so a caller can supply
-// a reader that also captures what it loaded.
-func execFileReadWith(args map[string]any, guard readGuard, read func(path string, offset, limit *int) (string, error)) (any, error) {
+// a reader that also captures what it loaded and reports the structural facts
+// of a text read. ctx is threaded for the media work (image downscaling, PDF
+// page slicing) that runs on the result here; the read itself already carries
+// the caller's context.
+func execFileReadWith(ctx context.Context, args map[string]any, guard readGuard, read func(path string, offset, limit *int) (string, execenv.ReadFileMeta, error)) (any, error) {
 	path := fmt.Sprint(args["file_path"])
 	offset := optionalIntArg(args, "offset")
 	limit := optionalIntArg(args, "limit")
 	visionAsk, _ := args["vision_prompt"].(string)
-	result, err := read(path, offset, limit)
+	pages, _ := args["pages"].(string)
+	hasPages := strings.TrimSpace(pages) != ""
+	result, meta, err := read(path, offset, limit)
 	if err == nil {
-		guard.TrackRead(path)
 		// If the file is an image or document (PDF), return an
 		// tool.ImageResult so the vision side-channel can process it.
 		if img := tool.ParseImageResult(path, result); img != nil {
+			if hasPages {
+				return "", errPagesOnNonPDF
+			}
+			guard.TrackRead(path)
+			prepared, err := llm.PrepareImageForModel(img.Data)
+			if err != nil {
+				// Keep the malformed-raster wording the registry's own
+				// post-decode check produces, so a truncated image fails
+				// here exactly as it did after dispatch.
+				return "", fmt.Errorf("invalid image data: %w", err)
+			}
+			img.Data = prepared.Data
+			img.MediaType = prepared.MediaType
+			if prepared.Scaled {
+				scale := max(float64(prepared.OriginalWidth)/float64(prepared.Width),
+					float64(prepared.OriginalHeight)/float64(prepared.Height))
+				img.Text += fmt.Sprintf("\n[Image: original %dx%d, displayed at %dx%d (multiply coordinates by %.2f to map to original)]",
+					prepared.OriginalWidth, prepared.OriginalHeight, prepared.Width, prepared.Height, scale)
+			}
 			img.Prompt = visionAsk
 			return *img, nil
 		}
 		if doc := tool.ParseDocumentResult(path, result); doc != nil {
+			sliced, from, to, totalPages, err := pdfslice.SlicePDF(ctx, doc.Data, pages)
+			if err != nil {
+				return "", err
+			}
+			guard.TrackRead(path)
+			doc.Data = sliced
+			doc.ReadPages = fmt.Sprintf("%d-%d", from, to)
+			doc.Text = fmt.Sprintf("[document: pdf, pages %d-%d of %d total, %d bytes, base64 data follows]",
+				from, to, totalPages, len(sliced))
 			doc.Prompt = visionAsk
 			return *doc, nil
 		}
+		if hasPages {
+			return "", errPagesOnNonPDF
+		}
+		guard.TrackRead(path)
+		text := tool.TextResult{
+			Output:             result,
+			FullOutput:         result,
+			ReadStartLine:      meta.StartLine,
+			ReadEndLine:        meta.EndLine,
+			ReadPastEOF:        meta.PastEOF,
+			ReadUnnumberedTail: meta.TailMode && meta.StartLine == 0 && meta.EndLine == 0,
+			ReadClamped:        meta.ClampedLines > 0,
+		}
+		return text, nil
 	}
 	return result, err
 }
@@ -95,27 +158,79 @@ func execFileWrite(ctx context.Context, env execenv.ExecutionEnvironment, args m
 }
 
 func execFileEdit(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any, guard readGuard) (any, error) {
-	edit := env.EditFile
-	if ce, ok := env.(execenv.ContextualFileReader); ok {
-		edit = func(path, oldString, newString string, replaceAll bool) (string, error) {
-			return ce.EditFileCtx(ctx, path, oldString, newString, replaceAll)
+	return execFileEditWith(args, guard, func(path string, edits []execenv.FileEdit) (string, error) {
+		if be, ok := env.(execenv.BatchFileEditor); ok {
+			return be.EditFileBatchCtx(ctx, path, edits)
 		}
-	}
-	return execFileEditWith(args, guard, edit)
+		if len(edits) > 1 {
+			return "", errors.New("edit_file: execution environment does not support multi-edit")
+		}
+		e := edits[0]
+		if ce, ok := env.(execenv.ContextualFileReader); ok {
+			return ce.EditFileCtx(ctx, path, e.OldString, e.NewString, e.ReplaceAll)
+		}
+		return env.EditFile(path, e.OldString, e.NewString, e.ReplaceAll)
+	})
 }
 
 // execFileEditWith is edit_file's semantics over edit, so a caller can supply
 // an editor that also changes the bytes it writes.
-func execFileEditWith(args map[string]any, guard readGuard, edit func(path, oldString, newString string, replaceAll bool) (string, error)) (any, error) {
-	path := fmt.Sprint(args["file_path"])
-	replaceAll := false
-	if v, ok := args["replace_all"].(bool); ok {
-		replaceAll = v
+func execFileEditWith(args map[string]any, guard readGuard, edit func(path string, edits []execenv.FileEdit) (string, error)) (any, error) {
+	path, ok := args["file_path"].(string)
+	if !ok {
+		return nil, errors.New("edit_file: file_path must be a string")
+	}
+	edits, err := parseFileEdits(args)
+	if err != nil {
+		return nil, err
 	}
 	warn := guard.ReadBeforeWriteWarning(path)
-	result, err := edit(path, fmt.Sprint(args["old_string"]), fmt.Sprint(args["new_string"]), replaceAll)
+	result, err := edit(path, edits)
 	if err == nil && warn != "" {
 		return warn + result, nil
 	}
 	return result, err
+}
+
+func parseFileEdits(args map[string]any) ([]execenv.FileEdit, error) {
+	rawEdits, exists := args["edits"]
+	if !exists || rawEdits == nil {
+		return nil, errors.New("edit_file: edits is required")
+	}
+	items, ok := rawEdits.([]any)
+	if !ok {
+		return nil, errors.New("edit_file: edits must be an array")
+	}
+	if len(items) == 0 {
+		return nil, errors.New("edit_file: edits must not be empty")
+	}
+	edits := make([]execenv.FileEdit, len(items))
+	for i, item := range items {
+		m, ok := item.(map[string]any)
+		if !ok || m == nil {
+			return nil, fmt.Errorf("edit_file: edits[%d] must be an object", i)
+		}
+		oldStr, ok := m["old_string"].(string)
+		if !ok {
+			return nil, fmt.Errorf("edit_file: edits[%d].old_string must be a string", i)
+		}
+		newStr, ok := m["new_string"].(string)
+		if !ok {
+			return nil, fmt.Errorf("edit_file: edits[%d].new_string must be a string", i)
+		}
+		var replaceAll bool
+		if rawAll, hasAll := m["replace_all"]; hasAll && rawAll != nil {
+			b, ok := rawAll.(bool)
+			if !ok {
+				return nil, fmt.Errorf("edit_file: edits[%d].replace_all must be a boolean", i)
+			}
+			replaceAll = b
+		}
+		edits[i] = execenv.FileEdit{
+			OldString:  oldStr,
+			NewString:  newStr,
+			ReplaceAll: replaceAll,
+		}
+	}
+	return edits, nil
 }

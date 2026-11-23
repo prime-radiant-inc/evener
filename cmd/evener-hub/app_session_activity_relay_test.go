@@ -112,7 +112,7 @@ func (a *activityRelayAdapter) Complete(ctx context.Context, req llm.Request) (l
 		case <-ctx.Done():
 			return llm.Response{}, ctx.Err()
 		}
-		return activityRelayTool("communicate", map[string]any{"message": "activity producer delivery", "end_turn": false}), nil
+		return activityRelayTool("communicate", map[string]any{"message": "activity producer delivery", "next": "send_and_continue"}), nil
 	}
 	<-ctx.Done()
 	return llm.Response{}, ctx.Err()

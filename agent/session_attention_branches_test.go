@@ -436,16 +436,6 @@ func TestHistoryIndexCountsSupersededAttentionRowsAsSkipped(t *testing.T) {
 		reopenMarker("t_attempt"),
 		{Turn: schema.NewTurn(schema.TurnUserInput, llm.User("after"))},
 	}
-	// The kept history before the marker: the user turn, the consumed
-	// marker's resolution turn and the reopened copy — the superseded source
-	// is gone, so the marker's attempt starts one position left of where an
-	// uncorrected count lands it.
-	starts := latestAttemptStarts(entries, nil, supersededDelegateAttentionIDs(entries))
-	if starts["t_attempt"] != 3 {
-		t.Fatalf("latest attempt start = %d, want 3 with the superseded source skipped", starts["t_attempt"])
-	}
-	// A fork boundary at the turn after the marker maps through the same
-	// skip rule.
 	if got := resumedDivergence(entries, 5, nil, supersededDelegateAttentionIDs(entries)); got != 3 {
 		t.Fatalf("resumed divergence = %d, want 3 with the superseded source skipped", got)
 	}
@@ -626,18 +616,6 @@ func TestAppendColdDelegateAttentionMessageDurablyWithOpen_InvalidInputs(t *test
 	}
 	// Nil opener.
 	if _, err := appendColdDelegateAttentionMessageDurablyWithOpen("path", "s1", "attn_1", llm.User("hi"), testTime, nil); err == nil {
-		t.Fatal("nil opener should error")
-	}
-}
-
-func TestAppendColdAttentionResolutionWithOpen_InvalidInputs(t *testing.T) {
-	t.Parallel()
-	// Empty sessionID.
-	if err := appendColdAttentionResolutionWithOpen("path", "", nil, delegateAttentionConsumed, nil); err == nil {
-		t.Fatal("empty sessionID should error")
-	}
-	// Nil opener.
-	if err := appendColdAttentionResolutionWithOpen("path", "s1", nil, delegateAttentionConsumed, nil); err == nil {
 		t.Fatal("nil opener should error")
 	}
 }

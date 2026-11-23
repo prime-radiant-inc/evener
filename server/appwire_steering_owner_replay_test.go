@@ -174,7 +174,7 @@ func (a *steeringOwnerReplayAdapter) Stream(context.Context, llm.Request) (llm.S
 }
 
 func steeringOwnerCommunicateResponse(endTurn bool, call int) llm.Response {
-	args, _ := json.Marshal(map[string]any{"message": "done", "end_turn": endTurn, "output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}}})
+	args, _ := json.Marshal(map[string]any{"message": "done", "next": map[bool]string{true: "send_and_end_turn", false: "send_and_continue"}[endTurn], "output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}}})
 	return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: fmt.Sprintf("steering-call-%d", call), Name: "communicate", Arguments: args, Type: "function"}}}}}
 }
 

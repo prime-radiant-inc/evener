@@ -12,7 +12,7 @@ package agent
 // every guard evaluation lives in exactly one place here or in the shared
 // predicates the reducers call (exactLeaseLocked, admitLeaseLocked,
 // supervisionSuppressedLocked, finalizationReadyLocked,
-// noActionBaseEligibleLocked, noActionEvidenceEligible).
+// noActionBaseEligibleLocked, noActionEvidenceEligible, attentionNoActionEligibleLocked).
 //
 // Contract for the reduce*Intent methods: the caller holds c.mu. The reducer
 // acquires no locks, performs no journal I/O, and calls no Session methods
@@ -655,6 +655,13 @@ func (c *delegateTreeController) reduceGenerationFinishIntent(intent finishInten
 		return finishDecision{err: errDelegateTargetBusy}
 	}
 	events = delegateFinishMetadataEvents(events, lease, finish, outcome, reason)
+	if finish.holdAttentionID != "" {
+		// The finish that quieted the run and the hold it implies are one batch:
+		// a stop's outcome, or a hook-stopped attention launch that completes
+		// without reaching the model. A journal that accepted the finish cannot
+		// leave the unpresented trigger runnable for the next drive.
+		events = append(events, attentionHeldEvent(lease.delegateID, finish.holdAttentionID, lease.generation))
+	}
 
 	closure := outcome == delegatestore.OutcomeExhausted && finish.exhaustionResumable != nil && !*finish.exhaustionResumable
 	return finishDecision{
@@ -707,8 +714,14 @@ func (c *delegateTreeController) reduceStoppedGenerationFinishIntent(intent fini
 		endedAt = c.now()
 	}
 	event, deliveryID := stoppedGenerationFinishEvent(lease, intent.finish.packet, endedAt)
+	events := []delegatestore.Event{event}
+	if intent.finish.holdAttentionID != "" {
+		// The recovery stops reduce through this site too; the hold travels with
+		// the stopped outcome so the row cannot be relaunched between them.
+		events = append(events, attentionHeldEvent(lease.delegateID, intent.finish.holdAttentionID, lease.generation))
+	}
 	return finishDecision{
-		events:            []delegatestore.Event{event},
+		events:            events,
 		latch:             intent.latch,
 		releaseGeneration: true,
 		lease:             lease,
@@ -835,14 +848,28 @@ func (c *delegateTreeController) reduceWorkAdmittedIntent(intent finishIntent) f
 	return finishDecision{}
 }
 
-// reduceAttentionNoActionIntent records the bare attention no-action outcome
+func attentionNoActionEligibleLocked(evidence *delegateGenerationEvidence) bool {
+	return evidence != nil && evidence.requirement == delegateCompletionAttentionOnly && !evidence.terminalSeen
+}
+
+// reduceCanAttentionNoActionIntent checks whether the generation can record an
+// attention no-action outcome without mutating evidence or evidenceVersion.
+func (c *delegateTreeController) reduceCanAttentionNoActionIntent(intent finishIntent) finishDecision {
+	evidence, err := c.completionEvidenceLocked(intent.lease)
+	if err != nil {
+		return finishDecision{err: err}
+	}
+	return finishDecision{recorded: attentionNoActionEligibleLocked(evidence)}
+}
+
+// reduceAttentionNoActionIntent records the quiet attention no-action outcome
 // when the requirement is still attention-only and no terminal was seen.
 func (c *delegateTreeController) reduceAttentionNoActionIntent(intent finishIntent) finishDecision {
 	evidence, err := c.completionEvidenceLocked(intent.lease)
 	if err != nil {
 		return finishDecision{err: err}
 	}
-	if evidence.requirement != delegateCompletionAttentionOnly || evidence.terminalSeen {
+	if !attentionNoActionEligibleLocked(evidence) {
 		return finishDecision{}
 	}
 	evidence.outcome = delegateCompletionOutcomeAttentionNoAction

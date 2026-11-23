@@ -874,7 +874,7 @@ func forcePressureAbove(t *testing.T, s *Session, frac float64) {
 	histLen := len(s.history)
 	s.mu.Unlock()
 	tokens := int(frac*float64(cw)) + 1
-	s.contextMgr.RecordInputTokens(tokens, histLen)
+	s.contextMgr.RecordInputTokens(tokens, histLen, "")
 	if got := s.contextMgr.Pressure(currentHistory(t, s), 0); got < frac {
 		t.Fatalf("forcePressureAbove: pressure %.3f < target %.3f", got, frac)
 	}
@@ -1047,7 +1047,7 @@ func TestMaybeElicitNoteBeforeCompaction_NoopWhenLowPressure(t *testing.T) {
 	seedSessionHistory(t, s, 10)
 
 	// low pressure (below CheckpointThreshold) — no compaction imminent
-	s.contextMgr.RecordInputTokens(1, len(currentHistory(t, s))) // ~0 pressure
+	s.contextMgr.RecordInputTokens(1, len(currentHistory(t, s)), "") // ~0 pressure
 	s.maybeElicitNoteBeforeCompaction(context.Background(), currentHistory(t, s), 0)
 	if s.pinnedNote() != "" {
 		t.Fatal("low pressure: no compaction imminent, should not elicit")
@@ -1071,7 +1071,7 @@ func TestMaybeElicitNoteBeforeCompaction_AttentionResolutionDoesNotCreateFoldabl
 		history = append(history, marker)
 	}
 	history = append(history, schema.NewTurn(schema.TurnUserInput, llm.User("latest")))
-	s.contextMgr.RecordInputTokens(s.contextMgr.EstimateUsage(nil, 0).Window, len(history))
+	s.contextMgr.RecordInputTokens(s.contextMgr.EstimateUsage(nil, 0).Window, len(history), "")
 	s.maybeElicitNoteBeforeCompaction(context.Background(), history, 0)
 	if called {
 		t.Fatal("private resolution markers created a lossy foldable prefix")

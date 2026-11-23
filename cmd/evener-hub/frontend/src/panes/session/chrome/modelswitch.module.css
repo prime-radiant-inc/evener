@@ -4,21 +4,41 @@
   composes: trigger from "../../../widgets/popover/popover.module.css";
 }
 
+/* fill: the wrapper spans the slot the caller gave it instead of hugging the
+ * label. Desktop's Popover supplies the same shape through its own
+ * stretchTrigger; this is the mobile span wrapper's equivalent. */
+.triggerWrapperFill {
+  display: flex;
+  width: 100%;
+}
+
 .trigger {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  /* No width: the trigger hugs its label (the status row's identity run
-   * sizes the wrapper to content), and max-width caps it inside the wrapper
-   * when the row runs narrow so the label ellipsizes instead of overflowing. */
+  composes: quietTrigger from "../../../widgets/internal/quietTrigger.module.css";
+}
+
+/* shrink: the caller's slot may be narrower than the model id, so the button
+ * yields its content width rather than reserving it and pushing the row's
+ * fixed facts out. The value's own quietValue ellipsis finishes the job; this
+ * is the button-level half of the contract. */
+.trigger.triggerShrink {
   min-width: 0;
   max-width: 100%;
-  padding: var(--space-1);
-  border: none;
-  border-radius: var(--radius-pill);
-  background: transparent;
-  cursor: pointer;
-  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+  overflow: hidden;
+}
+
+/* The status row's phone-width allocation: the fixed effort/context/queue
+ * facts consume the row exactly, so in shrink mode the trigger gives up its
+ * decorative inline padding and keeps a 1rem value floor. That reserves a
+ * visible model label without dropping a fact or making the row scroll.
+ * Keyed to shrink so a hugging trigger keeps its padding at every width. */
+@container (max-width: 399px) {
+  .trigger.triggerShrink {
+    padding-inline: 0;
+  }
+
+  .triggerShrink > .value {
+    min-width: 1rem;
+  }
 }
 
 /* The model id, in this row's caption size. Sans, not mono: an id is an
@@ -27,47 +47,13 @@
  * mono treatment in the Details sheet. Tabular figures hold the version
  * digits steady across switches. */
 .value {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--ink-mid);
+  composes: quietValue from "../../../widgets/internal/quietTrigger.module.css";
   font-family: var(--font-sans);
   font-variant-numeric: tabular-nums;
-  font-size: var(--font-size-caption);
-}
-
-.trigger:hover:not(:disabled) {
-  background: var(--hover-1);
-}
-
-.trigger:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: -2px;
-}
-
-.trigger:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
 }
 
 .chevron {
-  display: inline-flex;
-  align-items: center;
-  flex: none;
-  color: var(--ink-mid);
-}
-
-/* Touch target floor (2026-07-30-mobile-session-layout-design.md, decision
- * 4): the trigger is the only way to open the model picker, so a coarse
- * pointer needs the platform's 44px tap floor - min-height, not height, so
- * the row's own sizing above stays untouched and this only ever grows it.
- * (any-pointer: coarse), not a width breakpoint like button.module.css's own
- * phone block: this trigger isn't a widgets/button consumer. */
-@media (any-pointer: coarse) {
-  .trigger {
-    min-height: var(--tap-min);
-  }
+  composes: quietChevron from "../../../widgets/internal/quietTrigger.module.css";
 }
 
 /* The floating panel's own content padding/sizing - widgets/popover supplies
@@ -87,4 +73,15 @@
  * padding carries the sides. */
 .sheetBody {
   padding-bottom: var(--dock-clearance);
+}
+
+/* Touch target floor (2026-07-30-mobile-session-layout-design.md, decision
+ * 4): the trigger is the only way to open the model picker, so a coarse
+ * pointer needs the platform's 44px tap floor - min-height, not height, so
+ * the row's own sizing stays untouched. (any-pointer: coarse), not a width
+ * breakpoint: this is not a widgets/button consumer. */
+@media (any-pointer: coarse) {
+  .trigger {
+    min-height: var(--tap-min);
+  }
 }

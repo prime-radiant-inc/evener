@@ -38,6 +38,7 @@
 // sync effect below), the same as any other fresh navigation - there is no
 // separate "last mobile screen" memory to restore independently of that.
 import { type ReactNode, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { SessionInspectionActions } from "../../panes/session/chrome/SessionInspectionActions";
 import { returnFromAgentCascade } from "../../panes/zoom/actions";
 import { isCascadeReturnedOrigin } from "../../panes/zoom/inspectionOrigin";
 import { parseZoomParams } from "../../panes/zoom/intent";
@@ -54,7 +55,7 @@ import { ConversationHandoffBoundary } from "../ConversationHandoffBoundary";
 import { useChromeStore } from "../chromeStore";
 import { paneFor } from "../paneRegistry";
 import { PaneVisibilityContext } from "../paneVisibility";
-import { navigate, paneToURL, urlToPane } from "../routing";
+import { navigate, paneToURL, refParam, urlToPane } from "../routing";
 import { openSessionByRef } from "../sessionPlacement";
 import { isSinglePaneRoute } from "../singlePane";
 import {
@@ -149,7 +150,7 @@ function attentionEntryOwnsPane(pane: OpenPaneRecord | null | undefined): boolea
   if (!pane) return false;
   const readerRef =
     pane.type === "session"
-      ? (pane.params as { ref?: unknown }).ref
+      ? refParam(pane.params)
       : pane.type === "sessionZoom"
         ? parseZoomParams(pane.params)?.ref
         : null;
@@ -265,6 +266,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   // parent reference separately; handleBack uses that only when this local
   // history yields no valid target, without persisting generic history.
   const backStackRef = useRef<string[]>([]);
+  const [, setBackStackRevision] = useState(0);
   // The id last seen focused, INCLUDING at mount (initialized from the
   // current value, not null) - AppShell's routing glue may have already
   // focused a pane before StackHost ever mounts (see the module comment
@@ -333,8 +335,12 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       const realBrowserNav = lastPopstateWasTrusted;
       lastPopstateWasTrusted = false;
       const attentionRestore = attentionEntryOwnsPane(focusedPane);
-      if (!wentBackRef.current && !realBrowserNav && !attentionRestore && prev !== null)
+      if (!wentBackRef.current && !realBrowserNav && !attentionRestore && prev !== null) {
         backStackRef.current.push(prev);
+        // The stack is mutable navigation history; publishing its revision lets
+        // the top bar exchange Sessions for Back as soon as a destination exists.
+        setBackStackRevision((revision) => revision + 1);
+      }
       wentBackRef.current = false;
       prevFocusedIdRef.current = focusedPaneId;
     }
@@ -551,15 +557,11 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
           (origin && panes.includes(origin) ? origin : undefined) ??
           panes.find(
             (pane) =>
-              pane.id !== focusedPaneId &&
-              pane.type === "session" &&
-              (pane.params as { ref?: unknown }).ref === params.parentRef,
+              pane.id !== focusedPaneId && pane.type === "session" && refParam(pane.params) === params.parentRef,
           ) ??
           panes.find(
             (pane) =>
-              pane.id !== focusedPaneId &&
-              pane.type === "transcript" &&
-              (pane.params as { ref?: unknown }).ref === params.parentRef,
+              pane.id !== focusedPaneId && pane.type === "transcript" && refParam(pane.params) === params.parentRef,
           );
         target = ancestor?.id;
         // Reject cycles, not incomplete context: an absent farther ancestor
@@ -651,7 +653,23 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   // walk somewhere unrelated).
   const panelPaneTypes = new Set(["sessionTasks", "sessionDetails"]);
   const isPanelPane = focusedPane !== null && panelPaneTypes.has(focusedPane.type);
-  const showBack = focusedPane !== null && focusedPane.type !== "welcome";
+  const focusedSessionRef = focusedPane?.type === "session" ? (refParam(focusedPane.params) ?? undefined) : undefined;
+  const livePaneIds = useMemo(() => new Set(panes.map((pane) => pane.id)), [panes]);
+  const retainedParentRef = focusedPane?.type === "session" ? conversationOpenParentRef(focusedPane) : undefined;
+  const retainedParentAvailable =
+    retainedParentRef !== undefined &&
+    panes.some(
+      (pane) => (pane.type === "session" || pane.type === "transcript") && refParam(pane.params) === retainedParentRef,
+    );
+  const sessionBackAvailable =
+    focusedPane?.type === "session" &&
+    (paneBack !== null ||
+      retainedParentAvailable ||
+      attentionEntryOwnsPane(focusedPane) ||
+      backStackRef.current.some((id) => id !== focusedPane.id && livePaneIds.has(id)));
+  const showBack =
+    focusedPane !== null && focusedPane.type !== "welcome" && (focusedSessionRef === undefined || sessionBackAvailable);
+  const drawer = !singlePane ? <TreeDrawer onToggle={() => setPanelOpen((v) => !v)} /> : null;
 
   function handlePanelBack(): void {
     if (!focusedPane) return;
@@ -665,21 +683,26 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
 
   return (
     <div className={styles.host} onPointerDownCapture={clearPendingPop} onKeyDownCapture={clearPendingPop}>
-      <div className={styles.topBar}>
+      <div className={styles.topBar} data-session={focusedSessionRef === undefined ? undefined : "true"}>
         <div className={styles.leading}>
-          {showBack && (
+          {showBack ? (
             <IconButton
               label="Back"
               icon={<Chevron direction="left" size={16} />}
               variant="quiet"
               onClick={isPanelPane ? handlePanelBack : (paneBack ?? handleBack)}
             />
+          ) : (
+            focusedSessionRef !== undefined && drawer
           )}
         </div>
         <span className={styles.stackTitle} data-testid="topbar-title">
           {paneTitle}
         </span>
-        {!singlePane && <TreeDrawer onToggle={() => setPanelOpen((v) => !v)} />}
+        {focusedSessionRef !== undefined && (
+          <SessionInspectionActions sessionRef={focusedSessionRef} paneId={focusedPane?.id} />
+        )}
+        {focusedSessionRef === undefined && drawer}
       </div>
       <div ref={stackBodyRef} className={styles.stackBody} data-stacked-pane-type={focusedPane?.type}>
         {focusedPane && (

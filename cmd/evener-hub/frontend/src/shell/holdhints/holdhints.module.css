@@ -38,7 +38,3 @@
   transform: translate(-50%, calc(-100% - 6px));
 }
 
-.or {
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-}

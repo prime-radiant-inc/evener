@@ -46,6 +46,12 @@ export function isStep(row: TimelineRow): row is Extract<TimelineRow, { kind: "a
 	return row.kind === "activity" && row.family !== "reasoning" && !OWN_ROW_TOOLS.has(row.label);
 }
 
+// Reasoning activities and their redacted failure rows share one identity:
+// Chat filters both, and both follow the thinking-open default elsewhere.
+export function isThoughtRow(row: TimelineRow): boolean {
+	return (row.kind === "activity" && row.family === "reasoning") || (row.kind === "failure" && row.thought === true);
+}
+
 // The step in progress is the tray's one live line, and so is a live thought.
 function inTray(row: TimelineRow): boolean {
 	return row.kind === "activity" && row.state === "running" && !OWN_ROW_TOOLS.has(row.label);

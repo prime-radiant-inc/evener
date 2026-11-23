@@ -1,0 +1,21 @@
+/* One speaker header, shared by the agent and user message items (slack-lean
+ * spec, decisions 1-2). Owner spacing stays with the owner. */
+.header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+/* Body size, semibold and --ink-hi: identity, not a caption eyebrow. */
+.name {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-semibold);
+  color: var(--ink-hi);
+}
+
+/* "{label} · {time}" for the agent, the clock or a provisional caption for
+ * the user; an absent slot renders no element. */
+.meta {
+  composes: textSecondary from "../../../../styles/text.module.css";
+}

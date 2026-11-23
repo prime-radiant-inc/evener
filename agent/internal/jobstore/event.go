@@ -56,6 +56,10 @@ type Event struct {
 	// WorkingDir carries JobRecord.WorkingDir for shell jobs (see its doc
 	// comment).
 	WorkingDir string `json:"working_dir,omitempty"`
+	// ProcessGroupID and ProcessStartTime carry the same fields of JobRecord
+	// for job_started (see their doc comment).
+	ProcessGroupID   int        `json:"process_group_id,omitempty"`
+	ProcessStartTime *time.Time `json:"process_start_time,omitempty"`
 
 	// job_finished payload
 	Status                 Status     `json:"status,omitempty"`

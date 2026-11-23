@@ -503,17 +503,13 @@ var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancy
 	{filename: "delegate_tree_restore.go", function: "(*delegateTreeController).executeDelegateAttentionCleanup", kind: "lifecycle method", symbol: "ReportAttentionResolved"}:         1,
 	{filename: "delegate_tree_restore.go", function: "(*delegateTreeController).executeDelegateAttentionCleanup", kind: "lifecycle method", symbol: "ReportAttentionConsumed"}:         1,
 	{filename: "delegate_tree_restore.go", function: "(*delegateTreeController).executeDelegateAttentionCleanup", kind: "lifecycle method", symbol: "ReportAttentionStabilized"}:       1,
-	{filename: "delegate_tree_restore.go", function: "(*delegateTreeController).resolveDelegateAttentionDurably", kind: "session attention method", symbol: "resolveAttentionDurably"}: 1,
 	{filename: "job_shell.go", function: "(*jobManager).beginDelegateShellReceipt", kind: "lifecycle method", symbol: "BeginShellWork"}:                                                1,
 	{filename: "job_shell.go", function: "(*delegateShellReceipt).commit", kind: "lifecycle method", symbol: "CommitShellWork"}:                                                        1,
 	{filename: "job_shell.go", function: "(*delegateShellReceipt).abort", kind: "lifecycle method", symbol: "AbortShellWork"}:                                                          1,
 	{filename: "job_shell.go", function: "(*delegateShellReceipt).finish", kind: "lifecycle method", symbol: "AbortShellWork"}:                                                         1,
 	{filename: "job_shell.go", function: "(*delegateShellReceipt).finish", kind: "lifecycle method", symbol: "ReportShellFinished"}:                                                    1,
 	{filename: "jobs_activity.go", function: "loadLiveActivityBase", kind: "lifecycle method", symbol: "Snapshot"}:                                                                     1,
-	{filename: "session_attention.go", function: "(*Session).acceptDelegateAttention", kind: "session attention method", symbol: "resolveAttentionDurablyForGeneration"}:               1,
 	{filename: "session_attention.go", function: "(*Session).resolveAttentionDurably", kind: "session attention method", symbol: "resolveAttentionDurablyForGeneration"}:               1,
-	{filename: "session_attention.go", function: "(*Session).reopenConsumedDelegateAttention", kind: "session attention method", symbol: "resolveAttentionDurably"}:                    1,
-	{filename: "session_attention.go", function: "(*Session).finishAttentionTurn", kind: "session attention method", symbol: "resolveAttentionDurably"}:                                1,
 	{filename: "session_attention.go", function: "(*Session).finishRootDelegateAttentionTurn", kind: "session attention method", symbol: "resolveAttentionDurably"}:                    1,
 	{filename: "session_events.go", function: "(*Session).SetDescendantEventFunc", kind: "lifecycle method", symbol: "Snapshot"}:                                                       1,
 	{filename: "session_tools_job_list.go", function: "delegateRowsForSession", kind: "lifecycle method", symbol: "Snapshot"}:                                                          1,
@@ -865,6 +861,9 @@ func cloneDelegateControllerState(t *testing.T, state delegatestore.State) deleg
 	for id, aggregate := range state {
 		if aggregate != nil && aggregate.PendingDeliveries != nil && len(aggregate.PendingDeliveries) == 0 {
 			clone[id].PendingDeliveries = []delegatestore.PendingDelivery{}
+		}
+		if aggregate != nil && aggregate.PendingAttention != nil && len(aggregate.PendingAttention) == 0 {
+			clone[id].PendingAttention = []delegatestore.PendingAttention{}
 		}
 	}
 	return clone

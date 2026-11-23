@@ -8,7 +8,7 @@
 // get tool calls rendered correctly.
 
 import type { ItemModel, ProjectedEntry, ProjectedTurn, ThreadModel, TurnModel } from "@evener/appwire-client";
-import { displayTurnStatus, entryDisplayKey, scopedDisclosureId } from "@evener/appwire-client";
+import { displayTurnStatus, entryDisplayKey, isQuietYield, scopedDisclosureId } from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import {
   disclosureScopeForSession,
@@ -27,10 +27,9 @@ import { rowRoleFor } from "./layoutRoles";
 import { TurnSeparator } from "./messages";
 import { ToolCallItem } from "./ToolCallItem";
 import { ToolRunGroup } from "./ToolRunGroup";
-import { TurnDoneEndCap } from "./TurnDoneEndCap";
 import { TurnFailureEndCap } from "./TurnFailureEndCap";
 import { toolRendererFor } from "./toolRenderers";
-import { foldTurnEntries, type ToolRun } from "./toolRuns";
+import { foldTurnEntries, intentGroupId, intentRunAt, type ToolRun } from "./toolRuns";
 import styles from "./turnblock.module.css";
 import { asTurnError } from "./turnFailure";
 import { itemRendererFor, threadFingerprintForItem } from "./types";
@@ -70,6 +69,7 @@ export interface TurnBlockProps {
 const CLASS = {
   turn: requireClass(styles.turn, "turnblock.module.css", "turn"),
   runContent: requireClass(styles.runContent, "turnblock.module.css", "runContent"),
+  quietYieldGroupBody: requireClass(styles.quietYieldGroupBody, "turnblock.module.css", "quietYieldGroupBody"),
 };
 
 // A tool row's wrapper is also a segment of its tool card: the shared surface
@@ -160,7 +160,7 @@ export function ProjectedIntentGroup({
   const context = useTranscriptRenderContext();
   const { config } = context;
   const scope = disclosureScopeForSession(context, undefined);
-  const identity = rowId ?? `intent-group:${entries[0]?.id ?? "empty"}`;
+  const identity = rowId ?? intentGroupId(entries[0]?.id);
   const disclosureKey = scopedDisclosureId(scope, identity);
   const namedIntent = config.content.kind === "preset" && config.content.level === "intent";
   const fallback = namedIntent || expandDetailsByDefault(config) || disclosureDefault(scope, identity, false);
@@ -204,12 +204,101 @@ export function ProjectedIntentGroup({
             </div>
           </div>
         </Disclosure>
-        {separatorTurn && separatorTurn.status === "completed" && !asTurnError(separatorTurn.error) && (
-          <div className={transcriptStyles.intentGroupItems} data-testid="turn-done-row">
-            <TurnDoneEndCap turn={separatorTurn} />
-          </div>
-        )}
         {separatorTurn && <TurnSeparator turn={separatorTurn} />}
+      </div>
+    </>
+  );
+}
+
+export interface ProjectedQuietYieldGroupProps {
+  entries: readonly Extract<ProjectedEntry, { kind: "item" | "critical" | "thinking" }>[];
+  turns: readonly ProjectedTurn[];
+  quietCount?: number;
+  rowId: string;
+  sourceTurnIds?: readonly string[];
+  separatorTurn?: TurnModel;
+  viewAnchorIndex?: number;
+  showSeenDivider?: boolean;
+  sessionRef?: string;
+  renderContext?: TranscriptRenderContextValue;
+  thread?: ThreadModel;
+}
+
+export function ProjectedQuietYieldGroup({
+  entries,
+  turns,
+  quietCount,
+  rowId,
+  sourceTurnIds = [],
+  separatorTurn,
+  viewAnchorIndex,
+  showSeenDivider = false,
+  sessionRef,
+  renderContext,
+  thread,
+}: ProjectedQuietYieldGroupProps) {
+  const context = useTranscriptRenderContext();
+  const itemRenderContext = renderContext ?? context;
+  const scope = disclosureScopeForSession(context, sessionRef);
+  const disclosureKey = scopedDisclosureId(scope, rowId);
+  const open = isDisclosureOpen(disclosureKey, false, { ignoreBaseline: true });
+  const count =
+    quietCount ?? entries.filter((entry) => entry.item.type === "systemMessage" && isQuietYield(entry.item)).length;
+  const first = entries[0];
+  const closedAnchor =
+    first && viewAnchorIndex !== undefined
+      ? {
+          ...projectedEntryAnchor(first, viewAnchorIndex),
+          "data-view-anchor-members": entries.map((entry) => entry.id).join(","),
+        }
+      : undefined;
+  return (
+    <>
+      {showSeenDivider && <SeenDivider />}
+      <div
+        className={CLASS.turn}
+        data-transcript-row-id={rowId}
+        data-transcript-source-turn-ids={sourceTurnIds.join(",") || undefined}
+        {...(open ? undefined : closedAnchor)}
+      >
+        <div className={CLASS.runContent}>
+          <Disclosure
+            variant="quiet"
+            id={disclosureKey}
+            defaultOpen={false}
+            ignoreBaseline
+            data-testid="quiet-yield-group"
+            summary={<span data-count={count}>{count} quiet yields</span>}
+          >
+            <div className={CLASS.quietYieldGroupBody} data-testid="quiet-yield-group-body" data-message-body="">
+              {entries.map((entry, idx) => {
+                const ItemRenderer = itemRendererFor(entry.item.type);
+                const displayKey = entryDisplayKey(entry);
+                const turn = turns[idx]?.source;
+                const isTurnEnd = turn !== undefined && turns[idx + 1]?.id !== turns[idx]?.id;
+                return (
+                  <div key={displayKey} {...projectedEntryAnchor(entry, viewAnchorIndex)}>
+                    <ItemRenderer
+                      item={entry.item}
+                      turn={turn ?? { id: entry.turnId, status: "completed", items: [entry.item] }}
+                      live={false}
+                      sessionRef={sessionRef}
+                      displayKey={displayKey}
+                      projectedSummary={entry.kind === "critical" ? entry.summary : undefined}
+                      contentFree={entry.kind === "thinking"}
+                      contentFreeLive={entry.kind === "thinking" ? entry.live : undefined}
+                      redacted={entry.kind === "critical" && entry.redacted}
+                      renderContext={itemRenderContext}
+                      thread={thread}
+                    />
+                    {isTurnEnd && <TurnSeparator turn={turn} />}
+                  </div>
+                );
+              })}
+            </div>
+          </Disclosure>
+        </div>
+        {!open && separatorTurn && <TurnSeparator turn={separatorTurn} />}
       </div>
     </>
   );
@@ -350,16 +439,12 @@ export function TurnBlock({
       continue;
     }
     if (entry.kind === "intent") {
-      const group: Extract<ProjectedEntry, { kind: "intent" }>[] = [entry];
-      while (laidOut[index + 1]?.kind === "intent") {
-        index += 1;
-        const next = laidOut[index];
-        if (next?.kind === "intent") group.push(next);
-      }
+      const run = intentRunAt(laidOut, index);
+      index = run.end - 1;
       renderedEntries.push(
         <ProjectedIntentGroup
-          key={`intent-group:${group[0]?.id}`}
-          entries={group}
+          key={intentGroupId(run.entries[0]?.id)}
+          entries={run.entries}
           viewAnchorIndex={viewAnchorIndex}
           sessionRef={sessionRef}
           renderContext={itemRenderContext}
@@ -423,11 +508,6 @@ export function TurnBlock({
     <div className={CLASS.turn} data-testid="turn-block" data-turn-id={sourceTurn.id} data-turn-status={displayStatus}>
       {renderedEntries}
       {failure && <TurnFailureEndCap error={failure} turnId={sourceTurn.id} sessionRef={sessionRef} />}
-      {!failure && displayStatus === "completed" && showTurnSeparator && (
-        <div className={CLASS.runContent} data-testid="turn-done-row">
-          <TurnDoneEndCap turn={sourceTurn} />
-        </div>
-      )}
       {showTurnSeparator && <TurnSeparator turn={sourceTurn} />}
     </div>
   );

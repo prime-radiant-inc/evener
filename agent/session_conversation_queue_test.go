@@ -17,7 +17,7 @@ func TestConversationProvenance_PromotionPreservesOutOfOrderInputIdentity(t *tes
 	var sess *Session
 	var queueID string
 	response := func(id string, terminal bool) llm.Response {
-		call := communicateCallArgs(id, map[string]any{"message": "opaque-output-" + id, "end_turn": terminal})
+		call := communicateCallArgs(id, map[string]any{"message": "opaque-output-" + id, "next": map[bool]string{true: "send_and_end_turn", false: "send_and_continue"}[terminal]})
 		return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}
 	}
 	sess = newSession(t, withStateDir(stateDir), withConfig(minimalTestSessionConfig(t)), withSteps(

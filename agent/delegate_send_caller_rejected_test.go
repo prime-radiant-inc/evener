@@ -17,7 +17,7 @@ import (
 // nothing reaches the parent. A root session gets the same error.
 func TestDelegateSendRejectsTheCallerRoute(t *testing.T) {
 	t.Parallel()
-	const wantOutput = "invalid_request: delegate_send reaches only your own delegates; to message your parent, call communicate with end_turn=false"
+	const wantOutput = `invalid_request: delegate_send reaches only your own delegates; to message your parent, call communicate with next="send_and_continue"`
 
 	t.Run("delegate", func(t *testing.T) {
 		t.Parallel()

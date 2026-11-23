@@ -143,10 +143,11 @@ export interface AttentionChanged {
   approvalPending?: boolean;
   /**
    * NeedsResponse is true while the session rests awaiting with no pending
-   * question: its turn ended with end_reason needs_response. The rest is
-   * informative rather than actionable — a plain reply and a finished turn
-   * both rest idle, and neither makes the session needs_you (#2629).
-   * Additive: an older hub omits it, decoding as false.
+   * question: the shape an older daemon reported for a turn that ended
+   * asking for a reply. The rest is informative rather than actionable — a
+   * plain reply and a finished turn both rest idle, and neither makes the
+   * session needs_you (#2629). Additive: an older hub omits it, decoding as
+   * false.
    */
   needsResponse?: boolean;
   pendingQuestion?: PendingQuestion;
@@ -1562,15 +1563,12 @@ export interface HostOperationsParams {
   incarnationId?: string;
   id?: string;
   limit?: number;
-  cursor?: string;
 }
 
 export interface HostOperationsResponse {
   operations: OperationRecord[];
   generation?: number;
   incarnationId?: string;
-  hostBoundaries?: Record<string, unknown>;
-  nextCursor?: string;
 }
 
 export interface HostPlan {
@@ -3598,10 +3596,11 @@ export interface RosterEvent {
   approvalPending?: boolean;
   /**
    * NeedsResponse is true while the session rests awaiting with no pending
-   * question: its turn ended with end_reason needs_response. The rest is
-   * informative rather than actionable — a plain reply and a finished turn
-   * both rest idle, and neither makes the session needs_you (#2629).
-   * Additive: an older hub omits it, decoding as false.
+   * question: the shape an older daemon reported for a turn that ended
+   * asking for a reply. The rest is informative rather than actionable — a
+   * plain reply and a finished turn both rest idle, and neither makes the
+   * session needs_you (#2629). Additive: an older hub omits it, decoding as
+   * false.
    */
   needsResponse?: boolean;
   pendingQuestion?: PendingQuestion;
@@ -6483,6 +6482,7 @@ export const THREAD_ITEM_EVENT_KINDS = [
   "interrupted",
   "approval_decision",
   "memory-context",
+  "quiet_yield",
 ] as const;
 
 export type ThreadItemEventKind = (typeof THREAD_ITEM_EVENT_KINDS)[number];

@@ -142,9 +142,9 @@ func parityCall(id, name string, args any) llm.ContentPart {
 
 func parityCommunicateCall(id, message string, endTurn bool) llm.ContentPart {
 	return parityCall(id, "communicate", map[string]any{
-		"message":  message,
-		"end_turn": endTurn,
-		"output":   map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}},
+		"message": message,
+		"next":    map[bool]string{true: "send_and_end_turn", false: "send_and_continue"}[endTurn],
+		"output":  map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}},
 	})
 }
 

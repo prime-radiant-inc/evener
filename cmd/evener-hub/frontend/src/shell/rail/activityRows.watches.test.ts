@@ -14,7 +14,6 @@ import {
 } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
 import { watchCadenceLabel, watchDurationLabel } from "./RailRow";
-import { armedWatchCount } from "./railNodes";
 
 // Pinned clock: every duration assertion measures against this instant.
 const NOW = Date.parse("2026-08-05T15:00:12.000Z");
@@ -67,11 +66,6 @@ describe("buildWatchRows", () => {
   test("an absent list is exactly an empty list", () => {
     expect(buildWatchRows(undefined)).toEqual([]);
     expect(buildWatchRows([])).toEqual([]);
-  });
-
-  test("counts only active watches", () => {
-    expect(armedWatchCount([watch({ active: true }), watch({ active: false })])).toBe(1);
-    expect(armedWatchCount(undefined)).toBe(0);
   });
 });
 

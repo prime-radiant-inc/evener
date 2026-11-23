@@ -184,11 +184,8 @@
   --speaker-gutter: 34px;
 
   /* The field seat: the rounded --field square a glyph sits on
-   * (styles/surface.module.css). A tile's seat is a full step; a transcript
-   * row's seat is the avatar column plus a half step of overhang each side,
-   * so it stays inside a one-line row's padding. */
+   * (styles/surface.module.css), one full step. */
   --field-seat-size: var(--space-6);
-  --field-seat-size-row: calc(var(--speaker-avatar-size) + var(--space-half));
 
   /* The radius ladder: soft, not bubbly. Each step is the corner of one kind
    * of object, so a nested box takes the step below its container. The page

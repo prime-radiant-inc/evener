@@ -40,7 +40,7 @@ func TestSessionTokenBudgetPrimaryUsesFullHistoryEstimate(t *testing.T) {
 	sess.history = []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("task"))}
 	// The context manager's prior API measurement is the larger supplied estimate
 	// the agent must carry into the newly built full-history request.
-	sess.contextMgr.RecordInputTokens(500_000, len(sess.history))
+	sess.contextMgr.RecordInputTokens(500_000, len(sess.history), "")
 	ctx := context.Background()
 	_, _, _, req, _, _, err := sess.prepareModelRequestWithError(ctx, 0, new(events.RoundTimings))
 	if err != nil {
@@ -297,7 +297,7 @@ func TestSessionFallbackResponseUsageBelongsToFallbackTarget(t *testing.T) {
 	sess.strategy = nil
 	sess.cfg.ModelFallbacks = []string{"usage-fallback/fallback"}
 	sess.resolveProfile = func(string) (*provider.Profile, error) { return fallback, nil }
-	sess.contextMgr.RecordInputTokens(42, 0)
+	sess.contextMgr.RecordInputTokens(42, 0, "")
 
 	modelResp, usedReq, _, usedProfile, err := sess.callModelWithFallback(context.Background(), primary, llm.Request{
 		Provider: primary.ID(),
@@ -372,7 +372,7 @@ func TestSessionContextBudgetCompactRetry(t *testing.T) {
 	defer sess.Close()
 	drainSessionEvents(sess)
 	sess.strategy = nil
-	sess.contextMgr.RecordInputTokens(500_000, 0)
+	sess.contextMgr.RecordInputTokens(500_000, 0, "")
 	if _, err := sess.ProcessInput(context.Background(), "task", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

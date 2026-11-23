@@ -4,6 +4,7 @@
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
+    "styles/surface.module.css",
     "widgets/switch/switch.module.css",
     "widgets/button/button.module.css",
     "panes/settings/sections/credentials/InstanceSheet.module.css"

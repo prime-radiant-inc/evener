@@ -207,17 +207,6 @@ type testConfig struct {
 	// through armDelegateAttentionOnce, bypassing the fault — a refused arm
 	// whose paced retry later succeeds. Nil in production.
 	delegateAttentionArmFault func() error
-	// delegateAttentionHoldReleased, when set, observes each release of the
-	// automatic drives' holds: the site names the wake that ended them — a
-	// committed child delivery or a successful arm — with the ids that
-	// release dropped. A release that dropped nothing observes nothing.
-	// Nil in production.
-	delegateAttentionHoldReleased func(site delegateHoldReleaseSite, released []string)
-	// delegateAttentionBeforeReopenAppend observes the instant a reopen's
-	// durable append is about to land, after every teardown guard has run.
-	// Tests pause it there so a stop admitted into the guard-to-append window
-	// can be pinned. Nil in production.
-	delegateAttentionBeforeReopenAppend func()
 	// delegateAttentionBeforeGuardRelease observes an attention drive that
 	// launched no run, while it still holds the child's drive guard. Tests
 	// pause it there so another drive is refused on that guard. Nil in
@@ -396,21 +385,6 @@ type testConfig struct {
 	// reports reach the model without waiting for the owner's next pass.
 	// Inherited by child configs like every testOnly field.
 	disableRestoredDelegateNotifyDrive bool
-
-	// needsResponseQuietPeriod overrides needsResponseQuietPeriodDefault for
-	// tests; zero rests awaiting at the settle itself. Nil keeps the
-	// production default.
-	needsResponseQuietPeriod *time.Duration
-
-	// needsResponseRestBeforeAnnounce, when set, runs in the quiet-period
-	// timer after the session rests awaiting and before STATUS_SETTLED is
-	// emitted, with restMu held, so a test can start a turn in that gap.
-	needsResponseRestBeforeAnnounce func()
-
-	// turnStartBeforeRestMu, when set, runs in processOneInput right before
-	// the turn start takes restMu, so a test knows the lock is the next thing
-	// the turn waits on.
-	turnStartBeforeRestMu func()
 
 	// idleTeardownConcurrency overrides the idle-release member teardown's
 	// concurrency bound (delegateTeardownConcurrencyDefault) for tests. Nil

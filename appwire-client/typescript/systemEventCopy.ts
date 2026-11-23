@@ -7,6 +7,7 @@
 import { APPROVAL_DECISION_EVENT_KIND, approvalDecisionOf, approvalDecisionText } from "./approvalDecision";
 import { formatTokenCount } from "./displayFormat";
 import type { ItemModel } from "./model";
+import { QUIET_YIELD_EVENT_KIND, quietYieldCommentaryOf } from "./quietYield";
 
 /** The systemMessage event kind of an error: a turn's failure, or a session
  * error the live overlay shows. */
@@ -86,6 +87,12 @@ export function systemEventWords(item: Pick<ItemModel, "eventKind" | "text" | "r
     case APPROVAL_DECISION_EVENT_KIND: {
       const decision = approvalDecisionOf(item);
       return { text: decision ? approvalDecisionText(decision) : item.text };
+    }
+    case QUIET_YIELD_EVENT_KIND: {
+      const label = item.text.trim() || "Ended turn quietly";
+      const commentary = quietYieldCommentaryOf(item);
+      if (commentary !== undefined) return { text: commentary, label, rendersMarkdown: true };
+      return { text: label };
     }
     case "compaction":
       return { text: item.text, label: CONTEXT_SUMMARY_LABEL, rendersMarkdown: true };

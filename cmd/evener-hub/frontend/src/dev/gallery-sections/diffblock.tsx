@@ -1,5 +1,5 @@
 import { DiffBlock } from "../../widgets/diffblock";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./diffblock.module.css";
 
 // No blank lines in the hunk body: a real diff represents an unchanged
@@ -25,13 +25,10 @@ index 3b18e51..a1b2c3d 100644
 
 export default function DiffBlockGallerySection() {
   return (
-    <section>
-      <h2>DiffBlock</h2>
-      <ThemeFlip>
-        <div className={styles.frame}>
-          <DiffBlock unified={SAMPLE_DIFF} />
-        </div>
-      </ThemeFlip>
-    </section>
+    <GallerySection title="DiffBlock">
+      <div className={styles.frame}>
+        <DiffBlock unified={SAMPLE_DIFF} />
+      </div>
+    </GallerySection>
   );
 }

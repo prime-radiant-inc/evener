@@ -788,16 +788,39 @@ func loadHistoricalStableActivityWithAttention(ctx context.Context, stateDir, ro
 		aggregate := state[id]
 		row := captureDelegateSnapshot(aggregate)
 		row.needsAttention = false
-		if delegateAttentionProjectionEligible(state, id) {
-			transcriptPath, childSessionID, err := delegateTranscriptPathFromRef(stateDir, aggregate.Descriptor.TranscriptRef)
-			if err != nil {
-				return nil, nil, fmt.Errorf("delegate %s attention transcript: %w", id, err)
+		if delegatestore.AttentionProjectionEligible(state, id) {
+			// The journal is the authority for pending attention. A row it still
+			// queues raises the flag unless a stop quieted it, and a transcript id
+			// the journal already resolved stays quiet even though the child
+			// transcript keeps the rendered message. Only a transcript id the
+			// journal never carried — a pre-upgrade row — needs the transcript read.
+			queued := make(map[string]struct{}, len(aggregate.PendingAttention))
+			for _, pending := range aggregate.PendingAttention {
+				queued[pending.AttentionID] = struct{}{}
+				if pending.HeldThrough == 0 {
+					row.needsAttention = true
+				}
 			}
-			fold, err := readExistingDelegateAttentionFold(transcriptPath, childSessionID)
-			if err != nil {
-				return nil, nil, fmt.Errorf("delegate %s attention transcript: %w", id, err)
+			if !row.needsAttention {
+				transcriptPath, childSessionID, err := delegateTranscriptPathFromRef(stateDir, aggregate.Descriptor.TranscriptRef)
+				if err != nil {
+					return nil, nil, fmt.Errorf("delegate %s attention transcript: %w", id, err)
+				}
+				fold, err := readExistingDelegateAttentionFold(transcriptPath, childSessionID)
+				if err != nil {
+					return nil, nil, fmt.Errorf("delegate %s attention transcript: %w", id, err)
+				}
+				for _, attentionID := range fold.pendingIDs() {
+					if _, resolved := aggregate.ResolvedAttention[attentionID]; resolved {
+						continue
+					}
+					if _, still := queued[attentionID]; still {
+						continue
+					}
+					row.needsAttention = true
+					break
+				}
 			}
-			row.needsAttention = len(fold.pendingIDs()) != 0
 		}
 		rows[id] = row
 	}

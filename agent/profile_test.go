@@ -130,7 +130,6 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"delegate_send",
 			"task_list",
 			"web_fetch",
-			"web_search",
 			"communicate",
 			"use_skill",
 		})
@@ -248,7 +247,7 @@ func TestProviderProfile_CheapModel(t *testing.T) {
 	}{
 		{NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano"},
 		{newAnthropicProfile("claude-opus-4-6"), "claude-haiku-4-5"},
-		{newGeminiProfile("gemini-3-pro"), "gemini-2.5-flash-lite"},
+		{newGeminiProfile("gemini-3-pro"), "gemini-3.5-flash-lite"},
 	}
 	for _, tc := range cases {
 		got := tc.profile.CheapModel()
@@ -671,9 +670,9 @@ func assertMissingTool(t *testing.T, p *provider.Profile, name string) {
 	}
 }
 
-func TestGeminiProfile_IncludesWebSearch(t *testing.T) {
+func TestGeminiProfile_ExcludesWebSearch(t *testing.T) {
 	t.Parallel()
-	assertHasTool(t, newGeminiProfile("gemini-test"), "web_search")
+	assertMissingTool(t, newGeminiProfile("gemini-test"), "web_search")
 	assertMissingTool(t, NewOpenAIProfile("gpt-5.2"), "web_search")
 	assertMissingTool(t, newAnthropicProfile("claude-test"), "web_search")
 }
@@ -919,13 +918,13 @@ func TestGeminiProfile_ProviderOptions_HasSafetySettings(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected opts[%q] to be map[string]any", registry.ProtocolGoogle)
 	}
-	ss, ok := gemini["safetySettings"]
+	ss, ok := gemini["safety_settings"]
 	if !ok || ss == nil {
-		t.Fatal("expected safetySettings in gemini provider_options")
+		t.Fatal("expected safety_settings in gemini provider_options")
 	}
 	settings, ok := ss.([]map[string]any)
 	if !ok {
-		t.Fatalf("safetySettings type: got %T, want []map[string]any", ss)
+		t.Fatalf("safety_settings type: got %T, want []map[string]any", ss)
 	}
 	if len(settings) == 0 {
 		t.Fatal("expected at least one safety setting")
@@ -933,8 +932,8 @@ func TestGeminiProfile_ProviderOptions_HasSafetySettings(t *testing.T) {
 	// Verify all settings use a permissive threshold for coding agent use.
 	for _, s := range settings {
 		threshold, _ := s["threshold"].(string)
-		if threshold != "BLOCK_ONLY_HIGH" {
-			t.Errorf("safety threshold for %v: got %q, want BLOCK_ONLY_HIGH", s["category"], threshold)
+		if threshold != "block_only_high" {
+			t.Errorf("safety threshold for %v: got %q, want block_only_high", s["type"], threshold)
 		}
 	}
 }

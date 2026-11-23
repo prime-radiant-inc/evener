@@ -159,3 +159,16 @@ test("an informational warning joins the run around it", () => {
   ];
   expect(systemRunFor(items, "a")?.items.map((i) => i.id)).toEqual(["a", "budget", "b"]);
 });
+
+test("a quiet_yield notice stands alone and breaks generic system event runs around it", () => {
+  const items = [
+    item("a", "systemMessage"),
+    item("b", "systemMessage"),
+    systemEvent("qy", "quiet_yield"),
+    item("c", "systemMessage"),
+    item("d", "systemMessage"),
+  ];
+  expect(systemRunFor(items, "qy")?.items.map((i) => i.id)).toEqual(["qy"]);
+  expect(systemRunFor(items, "a")?.items.map((i) => i.id)).toEqual(["a", "b"]);
+  expect(systemRunFor(items, "c")?.items.map((i) => i.id)).toEqual(["c", "d"]);
+});

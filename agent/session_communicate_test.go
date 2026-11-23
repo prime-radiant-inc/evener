@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"reflect"
 	"strings"
 	"sync"
@@ -28,46 +27,7 @@ func communicateCall(id, message string) llm.ToolCallData {
 }
 
 func communicateCallArgs(id string, args map[string]any) llm.ToolCallData {
-	normalized := map[string]any{}
-
-	var message string
-	if v, ok := args["message"]; ok && v != nil {
-		message = strings.TrimSpace(fmt.Sprint(v))
-	}
-
-	endTurn := true
-	if v, ok := args["end_turn"].(bool); ok {
-		endTurn = v
-	}
-
-	output := map[string]any{
-		"message":   "",
-		"data":      map[string]any{},
-		"artifacts": []string{},
-	}
-	if rawOutput, ok := args["output"].(map[string]any); ok {
-		maps.Copy(output, rawOutput)
-	}
-	if message == "" {
-		if outMsg, ok := output["message"].(string); ok {
-			message = outMsg
-		}
-	}
-
-	normalized["message"] = message
-	normalized["end_turn"] = endTurn
-	normalized["output"] = output
-	if reason, ok := args["end_reason"]; ok {
-		normalized["end_reason"] = reason
-	}
-
-	raw, _ := json.Marshal(normalized)
-	return llm.ToolCallData{
-		ID:        id,
-		Name:      "communicate",
-		Arguments: raw,
-		Type:      "function",
-	}
+	return agenttest.CommunicateCallArgs(id, args)
 }
 
 // TestCommunicate_ToolChoiceNotForced_OnEveryRequest checks the whole request
@@ -149,8 +109,8 @@ func TestCommunicate_StatusMessageContinuesTurn(t *testing.T) {
 	c := llm.NewClient()
 
 	status := communicateCallArgs("c1", map[string]any{
-		"message":  "Starting the work.",
-		"end_turn": false,
+		"message": "Starting the work.",
+		"next":    tool.CommunicateNextSendAndContinue,
 	})
 	final := communicateCall("c2", "Finished the work.")
 	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
@@ -208,13 +168,39 @@ func TestCommunicateRejectsLegacyAwaitReply(t *testing.T) {
 	}
 }
 
+func TestCommunicateRejectsLegacyEndTurn(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		args string
+	}{
+		{name: "end_turn_false", args: `{"message":"progress","end_turn":false}`},
+		{name: "end_turn_true", args: `{"message":"done","end_turn":true}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := newSession(t, withStateDir(t.TempDir()))
+			call := llm.ToolCallData{ID: "legacy-" + tc.name, Name: "communicate", Arguments: json.RawMessage(tc.args), Type: "function"}
+			if regRes := s.reg.ExecuteCall(context.Background(), s.env, call); !regRes.IsError {
+				t.Fatalf("ExecuteCall accepted legacy %s: %s", tc.args, regRes.Output)
+			}
+			if execRes := s.execTool(context.Background(), call, ""); !execRes.IsError {
+				t.Fatalf("execTool accepted legacy %s: %s", tc.args, execRes.FullOutput)
+			}
+			if s.communicated() || s.communicateUpdate() {
+				t.Fatal("rejected legacy end_turn call mutated session communication state")
+			}
+		})
+	}
+}
+
 func TestCommunicate_StructuredOutputExitsLoop(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
 	comm := communicateCallArgs("c1", map[string]any{
-		"end_turn": true,
+		"next": tool.CommunicateNextSendAndEndTurn,
 		"output": map[string]any{
 			"message": "Structured final answer.",
 			"data": map[string]any{
@@ -258,7 +244,7 @@ func TestCommunicate_FirstTerminalResultWins(t *testing.T) {
 	c := llm.NewClient()
 
 	first := communicateCallArgs("c1", map[string]any{
-		"end_turn": true,
+		"next": tool.CommunicateNextSendAndEndTurn,
 		"output": map[string]any{
 			"message": "First final answer.",
 			"data": map[string]any{
@@ -267,7 +253,7 @@ func TestCommunicate_FirstTerminalResultWins(t *testing.T) {
 		},
 	})
 	second := communicateCallArgs("c2", map[string]any{
-		"end_turn": true,
+		"next": tool.CommunicateNextSendAndEndTurn,
 		"output": map[string]any{
 			"message": "Second final answer.",
 			"data": map[string]any{
@@ -373,8 +359,8 @@ func TestCommunicate_StatusBatchedWithDelegateDoesNotEndTurn(t *testing.T) {
 		Type:      "function",
 	}
 	status := communicateCallArgs("status_1", map[string]any{
-		"message":  "Starting observer delegate and watch flow.",
-		"end_turn": false,
+		"message": "Starting observer delegate and watch flow.",
+		"next":    tool.CommunicateNextSendAndContinue,
 	})
 	childDone := communicateCall("child_done", "CHILD_DONE")
 	parentDone := communicateCall("parent_done", "Parent saw the delegate complete.")
@@ -454,7 +440,7 @@ func TestCommunicateCapturesRawStructuredOutput(t *testing.T) {
 		resultToolName: func() string {
 			return "communicate"
 		},
-		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any, _ string) bool {
+		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any) bool {
 			captured = raw
 			return true
 		},
@@ -467,8 +453,8 @@ func TestCommunicateCapturesRawStructuredOutput(t *testing.T) {
 	}
 
 	args := map[string]any{
-		"message":  "report",
-		"end_turn": true,
+		"message": "report",
+		"next":    tool.CommunicateNextSendAndEndTurn,
 		"output": map[string]any{
 			"summary": "did the thing",
 			"files":   []any{"a.go", "b.go"},
@@ -499,7 +485,7 @@ func TestCommunicateRegistryDispatchPreservesExactStructuredIntegers(t *testing.
 		drainSteering:      func() []steeringMessage { return nil },
 		prependSteering:    func([]steeringMessage) {},
 		resultToolName:     func() string { return "communicate" },
-		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any, _ string) bool {
+		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any) bool {
 			captured = raw
 			return true
 		},
@@ -593,7 +579,7 @@ func TestCommunicateCapturesEmptyRawStructuredOutputForCustomSchema(t *testing.T
 		resultToolName: func() string {
 			return "communicate"
 		},
-		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any, _ string) bool {
+		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any) bool {
 			captured = raw
 			return true
 		},
@@ -624,9 +610,9 @@ func TestCommunicateCapturesEmptyRawStructuredOutputForCustomSchema(t *testing.T
 
 	output := map[string]any{}
 	args := map[string]any{
-		"message":  "report",
-		"end_turn": true,
-		"output":   output,
+		"message": "report",
+		"next":    tool.CommunicateNextSendAndEndTurn,
+		"output":  output,
 	}
 	if _, err := rt.Exec(context.Background(), execenv.ExecutionEnvironment(nil), args); err != nil {
 		t.Fatalf("exec: %v", err)
@@ -981,10 +967,10 @@ func TestCommunicate_SchemaRejectsMalformedOutput(t *testing.T) {
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
 	rawArgs, _ := json.Marshal(map[string]any{
-		"message":  "missing data field",
-		"end_turn": true,
+		"message": "output.message must be a string",
+		"next":    tool.CommunicateNextSendAndEndTurn,
 		"output": map[string]any{
-			"message": "missing data field",
+			"message": false,
 		},
 	})
 	res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
@@ -1010,8 +996,8 @@ func TestCommunicate_SchemaRejectsIntentInsideOutput(t *testing.T) {
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
 	rawArgs, _ := json.Marshal(map[string]any{
-		"message":  "RESULT_LIST_DIR visible-item.txt",
-		"end_turn": true,
+		"message": "RESULT_LIST_DIR visible-item.txt",
+		"next":    tool.CommunicateNextSendAndEndTurn,
 		"output": map[string]any{
 			"message":   "RESULT_LIST_DIR visible-item.txt",
 			"data":      map[string]any{},
@@ -1042,9 +1028,9 @@ func TestCommunicate_SchemaRejectsTopLevelIntent(t *testing.T) {
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
 	rawArgs, _ := json.Marshal(map[string]any{
-		"message":  "RESULT_LIST_DIR visible-item.txt",
-		"end_turn": true,
-		"intent":   "final_result",
+		"message": "RESULT_LIST_DIR visible-item.txt",
+		"next":    tool.CommunicateNextSendAndEndTurn,
+		"intent":  "final_result",
 		"output": map[string]any{
 			"message":   "",
 			"data":      map[string]any{},
@@ -1251,10 +1237,10 @@ func TestCommunicate_EndTurnWarnsAboutRunningJobs(t *testing.T) {
 		waitForShellDone(t, s.jobManager, shellOut.JobID)
 	})
 
-	t.Run("end_turn=false never warns while a job is running", func(t *testing.T) {
+	t.Run("send_and_continue never warns while a job is running", func(t *testing.T) {
 		res := s.reg.ExecuteCall(context.Background(), s.env, communicateCallArgs("no-warn-not-end-turn", map[string]any{
-			"message":  "still working",
-			"end_turn": false,
+			"message": "still working",
+			"next":    tool.CommunicateNextSendAndContinue,
 		}))
 		if res.IsError {
 			t.Fatalf("communicate error: %s", res.Output)
@@ -1268,10 +1254,10 @@ func TestCommunicate_EndTurnWarnsAboutRunningJobs(t *testing.T) {
 		}
 	})
 
-	t.Run("end_turn=true warns and names the running job id", func(t *testing.T) {
+	t.Run("send_and_end_turn warns and names the running job id", func(t *testing.T) {
 		res := s.reg.ExecuteCall(context.Background(), s.env, communicateCallArgs("warn-end-turn", map[string]any{
-			"message":  "done for now",
-			"end_turn": true,
+			"message": "done for now",
+			"next":    tool.CommunicateNextSendAndEndTurn,
 		}))
 		if res.IsError {
 			t.Fatalf("communicate error: %s", res.Output)
@@ -1299,8 +1285,8 @@ func TestCommunicate_EndTurnWarnsAboutRunningJobs(t *testing.T) {
 
 	t.Run("no warning once no jobs are running", func(t *testing.T) {
 		res := s.reg.ExecuteCall(context.Background(), s.env, communicateCallArgs("no-warn-no-jobs", map[string]any{
-			"message":  "all clear",
-			"end_turn": true,
+			"message": "all clear",
+			"next":    tool.CommunicateNextSendAndEndTurn,
 		}))
 		if res.IsError {
 			t.Fatalf("communicate error: %s", res.Output)

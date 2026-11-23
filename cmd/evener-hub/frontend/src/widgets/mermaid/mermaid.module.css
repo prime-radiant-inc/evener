@@ -79,16 +79,9 @@
   display: block;
 }
 
-/* The source toggle's <pre>: fills the body and scrolls on its own so a long
- * diagram source stays readable instead of clipping. */
+/* The source pane: the shared <pre> fills the body and scrolls its own
+ * overflow, keeping one source line per row. */
 .source {
   flex: 1 1 auto;
-  box-sizing: border-box;
-  margin: 0;
-  padding: var(--space-3);
   overflow: auto;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
-  white-space: pre;
-  color: var(--ink-hi);
 }

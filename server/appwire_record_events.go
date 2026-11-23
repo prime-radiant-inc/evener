@@ -63,21 +63,12 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		}
 		s.ensureAppProjectorLocked(event.SessionID)
 		supersededSessionEnd := event.Kind == events.EventSessionEnd && s.appPendingStableTurnID != "" && !sessionEventClosesSession(event)
-		supersededSettledStatus := event.Kind == events.EventStatusSettled && s.settledStatusSupersededLocked()
-		if event.Kind == events.EventStatusSettled {
-			s.settledStatusLocked(event, supersededSettledStatus)
-		}
 		if started, ok := event.Data.(events.ExecutionStartedData); ok && started.TurnID != "" && started.TurnID == s.appPendingStableTurnID {
 			// The execution SetProcessingTurn published has started, so a
 			// terminal status from the input before it must not be replayed
 			// after this boundary.
 			s.appPendingStableTurnID = ""
 			s.appDeferredTerminalNotifications = nil
-		}
-		if event.Kind == events.EventSessionEnd {
-			// Every SESSION_END ends the input that held a rest, including an
-			// interrupted one, whose status effect is nil and so can't drop it.
-			s.appHeldSettledEffect = nil
 		}
 		s.appActivity.noteIntent(event)
 		s.appActivity.observe(event.Kind)
@@ -115,7 +106,7 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			// synchronously with the session loop. The projector's execution
 			// statuses reach the bridge later, and one from an execution that
 			// ended would land over the next one's active status.
-			if item.Method == appwire.NotifyThreadStatusChanged && (isExecutionBoundary(event) || supersededSettledStatus) {
+			if item.Method == appwire.NotifyThreadStatusChanged && isExecutionBoundary(event) {
 				continue
 			}
 			// A queued terminal event can end the input before an execution
@@ -347,13 +338,6 @@ func (s *Server) finishProcessing() {
 			pending = append(pending, item)
 		}
 		s.appDeferredTerminalNotifications = nil
-		held := s.appHeldSettledEffect
-		s.appHeldSettledEffect = nil
-		// A deferred terminal status comes from a published turn, and
-		// publishing a turn drops the held rest, so the two never meet.
-		if held != nil {
-			held(s)
-		}
 		// A deferred end is an OLDER turn's terminal word, not this one's:
 		// the turn finishProcessing is clearing can end with no frame of its
 		// own (a notification wake that found no work emits no SESSION_END,
@@ -364,11 +348,11 @@ func (s *Server) finishProcessing() {
 		// the rest from before either turn.
 		if wasProcessing && threadID != "" {
 			// The stored state is what the session's own events stated: a
-			// pass that ran no turn left it as it was, and a held rest or an
-			// interrupted turn's end restated it. Nothing runs once processing
-			// ends, so a stored active (a forecast that work would follow)
-			// reads idle, stored and published alike; work that does follow
-			// publishes its own turn.
+			// pass that ran no turn left it as it was, and an interrupted
+			// turn's end restated it. Nothing runs once processing ends, so a
+			// stored active (a forecast that work would follow) reads idle,
+			// stored and published alike; work that does follow publishes its
+			// own turn.
 			status := appStatus(s.status.State, false)
 			// The deferred status stated the rest that still stands (the
 			// turn that cleared changed nothing), so the idle placeholder
@@ -396,25 +380,6 @@ func (s *Server) finishProcessing() {
 		s.mu.Unlock()
 		return s.recordAppNotifications(threadID, pending)
 	})
-}
-
-// settledStatusLocked applies a resting status that settled outside any turn
-// (EventStatusSettled) in the same lock hold that decides whether it is
-// published: applied when it can be published now; held for the end of
-// processing when an input is being taken and no turn is published
-// yet, since that input may end without a turn; dropped otherwise.
-// The caller holds s.mu.
-func (s *Server) settledStatusLocked(event events.SessionEvent, superseded bool) {
-	effect := sessionEventStatusEffect(event)
-	if effect == nil {
-		return
-	}
-	switch {
-	case !superseded:
-		effect(s)
-	case s.processing && s.appActiveTurnID == "" && s.status.State != string(agent.SessionClosed):
-		s.appHeldSettledEffect = effect
-	}
 }
 
 // pendingRootStatus reports whether pending already holds a status change for
@@ -496,6 +461,21 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 		history := s.ensureDescendantHistory(ownerThreadID, threadID)
 		// A descendant's motion is its root's too: the meter shows the whole tree.
 		s.appActivity.observe(event.Kind)
+		// An interrupted end can still be queued when the next execution has
+		// already published its start: its own execution end was discarded as
+		// superseded. The end carries no turn identity, but an interrupt
+		// always emits its execution's end first, so a running turn here is a
+		// newer execution. Dropping the end whole keeps that execution
+		// addressable: the projector would clear the running turn it no longer
+		// owns, and the newer turn's own end would then be discarded, leaving
+		// the thread active forever. A non-interrupted end is the normal way a
+		// completed input settles the execution the projector holds.
+		if event.Kind == events.EventSessionEnd && !sessionEventClosesSession(event) {
+			if end, ok := event.Data.(events.SessionEndData); ok && end.Interrupted && projection.projector.RunningTurnID() != "" {
+				s.mu.Unlock()
+				return nil
+			}
+		}
 		projected := projection.projector.Project(event)
 		start, _ := event.Data.(events.SessionStartData)
 		pending := make([]pendingAppNotification, 0, len(projected))

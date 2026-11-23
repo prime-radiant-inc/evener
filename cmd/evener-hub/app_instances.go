@@ -1817,20 +1817,60 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 		c.auth.forgetCredentialRejection(oldName)
 		c.auth.forgetCredentialRejection(newName)
 	}
+	problems = append(problems, c.moveOAuthRecord(oldName, newName)...)
+	if len(problems) > 0 {
+		// The rename reached the file, so it is as persisted as one that ended
+		// cleanly: renamePersistedError is what the RPC handler reads to hand
+		// the client the discriminator, and the config write the rename landed
+		// marked the applied state the commit port broadcasts on.
+		return renamePersistedError{fmt.Errorf("renamed %q to %q, but: %w", oldName, newName, joinedError{errs: problems, sep: "; "})}
+	}
+	return nil
+}
+
+// moveOAuthRecord carries the OAuth record from oldName to newName and clears
+// the old name, returning the problems it hit. The whole move is one locked
+// section: a runtime refresh in another process (a child daemon or the
+// credential probe) re-checks the record under the same cross-process lock
+// before it writes, so it can neither land between the copy and the delete nor
+// recreate the old name after the rename deleted it (#1045). The refusal marker
+// is keyed by name too, so it is read under the old name before the copy and
+// written under the new one.
+//
+// It takes no credMu: the caller holds it, and the store lock is the innermost
+// of the two everywhere in this process.
+func (c *hubInstancesController) moveOAuthRecord(oldName, newName string) []error {
+	// Nothing to move when no record is filed under the old name. This is also
+	// the answer when the auth directory has never been created, and it keeps a
+	// rename of an instance that never signed in to OAuth from taking the lock.
+	if _, err := c.auth.loadAuth(c.auth.stateDir, oldName); err != nil {
+		if errors.Is(err, authopenai.ErrAuthNotFound) {
+			return nil
+		}
+		return []error{fmt.Errorf("OAuth record not read: %w", err)}
+	}
+
+	// The record is filed, so the directory exists: take the store's
+	// cross-process lock, then re-read under it, because a refresh or a delete
+	// may have landed since the read above.
+	lock, err := c.auth.lockAuthStore(c.auth.stateDir)
+	if err != nil {
+		return []error{fmt.Errorf("OAuth record not moved: %w", err)}
+	}
+	defer lock.Release()
+
+	var problems []error
 	record, err := c.auth.loadAuth(c.auth.stateDir, oldName)
 	switch {
 	case errors.Is(err, authopenai.ErrAuthNotFound):
 	case err != nil:
 		problems = append(problems, fmt.Errorf("OAuth record not read: %w", err))
 	default:
-		// The refusal marker (#2479) is keyed by the old instance name, so it
-		// does not follow the rename on its own: read it before the copy,
-		// under the name it is actually filed under.
 		refused := authopenai.RefreshRejected(c.auth.stateDir, oldName, record)
 		// The record's provider field names the instance it belongs to (the
 		// OAuth completion paths set it), so it follows the rename.
 		record.Provider = newName
-		if err := c.auth.saveAuth(c.auth.stateDir, newName, record); err != nil {
+		if err := lock.Save(newName, record); err != nil {
 			problems = append(problems, fmt.Errorf("OAuth record not copied: %w", err))
 		} else {
 			if refused {
@@ -1848,19 +1888,12 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 					problems = append(problems, fmt.Errorf("%w: %w", errRefusalMarkerNotCopied, err))
 				}
 			}
-			if _, err := c.auth.deleteAuth(c.auth.stateDir, oldName); err != nil {
+			if _, err := lock.Delete(oldName); err != nil {
 				problems = append(problems, fmt.Errorf("OAuth record for %q left behind: %w", oldName, err))
 			}
 		}
 	}
-	if len(problems) > 0 {
-		// The rename reached the file, so it is as persisted as one that ended
-		// cleanly: renamePersistedError is what the RPC handler reads to hand
-		// the client the discriminator, and the config write the rename landed
-		// marked the applied state the commit port broadcasts on.
-		return renamePersistedError{fmt.Errorf("renamed %q to %q, but: %w", oldName, newName, joinedError{errs: problems, sep: "; "})}
-	}
-	return nil
+	return problems
 }
 
 // keylessScheme reports whether an auth scheme resolves without a credential, so

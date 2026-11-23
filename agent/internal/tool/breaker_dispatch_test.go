@@ -19,7 +19,7 @@ import (
 const wantFailureNudge = "You just ran the same tool twice with the same arguments and got the same failure. Consider an alternate approach"
 
 func wantRepetitionNudge(count int) string {
-	return fmt.Sprintf("You have now made this same call and received the identical result %d times in a row. Repeating it will not change the answer — use the result you already have, or change your approach. If you are repeating it to wait for something, end your turn with your result tool: the completion wakes you, and to wake on a condition you set a job_watch with output_match.", count)
+	return fmt.Sprintf("You have now made this same call and received the identical result %d times in a row. Repeating it will not change the answer — use the result you already have, or change your approach. If you are repeating it to wait for something, end your turn with communicate (next=\"log_quietly_and_end_turn\" and a brief wait note): the completion wakes you, and to wake on a condition you set a job_watch with output_match.", count)
 }
 
 // repetitionNudgeMarker is present in the repetition nudge at any count, for
@@ -256,11 +256,11 @@ func TestBreakerDispatch_IdenticalSuccessBodyNudgesEveryRepeat(t *testing.T) {
 func TestBreakerDispatch_IdenticalSuccessLoopIsNeverParked(t *testing.T) {
 	r := NewRegistry()
 	fake := registerBreakerFake(t, r, "communicate", func(int) (any, error) {
-		return `{"accepted":true,"end_turn":true}`, nil
+		return `{"accepted":true,"next":"send_and_end_turn"}`, nil
 	})
 	env := breakerEnv(t)
 	ctx := context.Background()
-	call := breakerCall("m1", "communicate", `{"message":"done","end_turn":true}`)
+	call := breakerCall("m1", "communicate", `{"message":"done","next":"send_and_end_turn"}`)
 
 	for i := range 6 {
 		res := r.ExecuteCall(ctx, env, call)
@@ -270,7 +270,7 @@ func TestBreakerDispatch_IdenticalSuccessLoopIsNeverParked(t *testing.T) {
 		if strings.Contains(res.Output, "evener did not execute this call:") {
 			t.Fatalf("call %d parked: %q", i+1, res.Output)
 		}
-		if !strings.HasPrefix(res.Output, `{"accepted":true,"end_turn":true}`) {
+		if !strings.HasPrefix(res.Output, `{"accepted":true,"next":"send_and_end_turn"}`) {
 			t.Fatalf("call %d lost its result body: %q", i+1, res.Output)
 		}
 	}
@@ -501,5 +501,73 @@ func TestBreakerDispatch_DifferentLargeErrorsUnderTruncationDoNotPark(t *testing
 		if strings.HasPrefix(res.Output, "evener did not execute this call:") {
 			t.Fatalf("call %d was parked on a truncation-banner class: %q", i, res.Output)
 		}
+	}
+}
+
+func TestBreakerDispatch_QuietYieldsNeverDrawRepetitionNudge(t *testing.T) {
+	r := NewRegistry()
+	fail := false
+	accepted := true
+	if err := r.Register(RegisteredTool{
+		Definition: DefCommunicate(),
+		OmitIntent: true,
+		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+			if fail {
+				return nil, errors.New("nothing can wake this turn")
+			}
+			return StateResult{
+				Output: `{"accepted":true,"next":"log_quietly_and_end_turn","inbox":[],"quiet":true}`,
+				State:  schema.CommunicateToolState{Accepted: &accepted, EndTurn: &accepted, Quiet: &accepted, QuietNote: "waiting on job"},
+			}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	env := breakerEnv(t)
+	ctx := context.Background()
+	call := breakerCall("q1", "communicate", `{"message":"waiting on job","next":"log_quietly_and_end_turn"}`)
+
+	for i := 1; i <= 4; i++ {
+		res := r.ExecuteCall(ctx, env, call)
+		if res.IsError {
+			t.Fatalf("quiet yield %d failed: %q", i, res.Output)
+		}
+		if strings.Contains(res.Output, repetitionNudgeMarker) {
+			t.Fatalf("quiet yield %d received repetition nudge: %q", i, res.Output)
+		}
+	}
+
+	fail = true
+	r.ExecuteCall(ctx, env, call)
+	secondFail := r.ExecuteCall(ctx, env, call)
+	if !strings.HasSuffix(secondFail.Output, wantFailureNudge) {
+		t.Fatalf("second dead-wait failure missing failure nudge: %q", secondFail.Output)
+	}
+	thirdFail := r.ExecuteCall(ctx, env, call)
+	if !thirdFail.Rejected || !strings.HasPrefix(thirdFail.Output, wantFailurePark("communicate")) {
+		t.Fatalf("third dead-wait failure was not parked: %+v", thirdFail)
+	}
+}
+
+func TestBreakerDispatch_RepetitionNudgeUsesConfiguredResultToolNameAndSurvivesClone(t *testing.T) {
+	const body = "identical body"
+	r := NewRegistry()
+	r.SetResultToolName("report_done")
+	registerBreakerFake(t, r, "probe", func(int) (any, error) { return body, nil })
+	env := breakerEnv(t)
+	ctx := context.Background()
+	call := breakerCall("p1", "probe", `{}`)
+
+	r.ExecuteCall(ctx, env, call)
+	second := r.ExecuteCall(ctx, env, call)
+	if !strings.Contains(second.Output, "end your turn with report_done (next=\"log_quietly_and_end_turn\"") || strings.Contains(second.Output, "your result tool") {
+		t.Fatalf("configured registry nudge = %q, want report_done", second.Output)
+	}
+
+	clone := r.Clone()
+	clone.ExecuteCall(ctx, env, call)
+	cloneSecond := clone.ExecuteCall(ctx, env, call)
+	if !strings.Contains(cloneSecond.Output, "end your turn with report_done (next=\"log_quietly_and_end_turn\"") {
+		t.Fatalf("cloned registry nudge = %q, want preserved report_done", cloneSecond.Output)
 	}
 }

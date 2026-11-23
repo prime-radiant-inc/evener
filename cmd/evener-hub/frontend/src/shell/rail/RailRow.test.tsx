@@ -1143,9 +1143,13 @@ describe("row alignment", () => {
   });
 
   test("the title button reset preserves the rail label's explicit UI font size", () => {
-    const buttonReset = topRuleBlock(RAIL_CSS, ".sessionTitle .label");
+    const buttonReset = topRuleBlock(RAIL_CSS, ".sessionTitleButton");
     expect(buttonReset).toContain("font-family: inherit");
     expect(buttonReset).not.toMatch(/(?:^|\s)font:\s*inherit/);
+  });
+
+  test("the title's block presentation comes from HoverCard, not a rail-side reach-in", () => {
+    expect(RAIL_CSS).not.toMatch(/\.sessionTitle(?![A-Za-z])/);
   });
 });
 
@@ -1155,7 +1159,7 @@ describe("touch tap floor (RailRow.module.css, any-pointer: coarse)", () => {
   const coarseBlock = mediaBlock(RAIL_CSS, "any-pointer: coarse");
 
   test("long-press-enabled session titles meet the 44px floor in both dimensions", () => {
-    const rule = nestedRuleBlock(coarseBlock, ".sessionTitle button.label");
+    const rule = nestedRuleBlock(coarseBlock, ".label.sessionTitleButton");
     expect(rule).toContain("min-width: var(--tap-min)");
     expect(rule).toContain("min-height: var(--tap-min)");
   });
@@ -2468,7 +2472,7 @@ describe("shared right slot (RailRow.module.css)", () => {
     expect(revealTargets).toEqual(
       expect.arrayContaining([
         '.railRow[data-row-focused="true"] .actions',
-        '.actions:has(button[aria-expanded="true"])',
+        '.actions:has([data-open="true"])',
         ".railRow:hover .actions",
       ]),
     );
@@ -2484,7 +2488,7 @@ describe("shared right slot (RailRow.module.css)", () => {
     const flipBlock = nestedRuleBlock(flipMedia, '.railRow[data-row-focused="true"] .rightSlot > :not(.actions)');
     for (const selector of [
       '.railRow[data-row-focused="true"] .rightSlot > :not(.actions)',
-      '.rightSlot:has(button[aria-expanded="true"]) > :not(.actions)',
+      '.rightSlot:has([data-open="true"]) > :not(.actions)',
       ".railRow:hover .rightSlot > :not(.actions)",
     ]) {
       expect(flipMedia).toContain(selector);
@@ -2665,5 +2669,43 @@ describe("host group row", () => {
     expect(screen.queryByTestId("rail-row-signal")).toBeNull();
     expect(screen.queryByRole("button")).toBeNull();
     expect(screen.getByTestId("rail-row-host-group").textContent).toBe("devbox");
+  });
+});
+
+// The unread marker is a read signal, not a status: a session can need you with
+// nothing new to read, or carry new replies that need nothing from you.
+describe("unread marker", () => {
+  test("an unread session shows the marker beside its age", () => {
+    render(<RailRow node={sessionRailNode(apiNode(), { unseen: true })} info={info()} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-unread")).toBeTruthy();
+  });
+
+  test("a session with nothing new to read shows no marker", () => {
+    render(<RailRow node={sessionRailNode(apiNode())} info={info()} actions={actions()} />);
+    expect(screen.queryByTestId("rail-row-unread")).toBeNull();
+  });
+
+  test("a row that needs you but has been read shows the needs-you dot and no unread marker", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "awaiting", ask_pending: true }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.queryByTestId("rail-row-unread")).toBeNull();
+    expect(within(screen.getByTestId("rail-row-signal")).getByRole("img", { name: "Needs you" })).toBeTruthy();
+  });
+
+  test("a finished row with new replies shows the unread marker and no status dot", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "idle" }), { unseen: true })}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByTestId("rail-row-unread")).toBeTruthy();
+    expect(screen.queryByTestId("rail-row-signal")).toBeNull();
   });
 });

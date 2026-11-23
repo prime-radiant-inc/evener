@@ -1,5 +1,7 @@
-import { type KeyboardEvent, type ReactNode, useId, useRef } from "react";
+import { type ReactNode, useId, useRef } from "react";
 import { requireClass } from "../internal/requireClass";
+import { firstEnabledIndex, useRovingRadio } from "../internal/rovingRadio";
+import { ListRow } from "../listrow";
 import styles from "./radiogroup.module.css";
 
 export interface RadioGroupOption {
@@ -15,13 +17,25 @@ export interface RadioGroupProps {
    * accessible-name props (a group can't ship unlabeled). */
   label: string;
   value: string;
+  /** Called when an option is activated (click, Enter or Space); without
+   * onPreview, also called when Arrow/Home/End navigation moves the checked
+   * option. */
   onChange: (value: string) => void;
+  /** When supplied, Arrow/Home/End navigation reports the newly focused
+   * option here instead of calling onChange, so a sheet can preview a choice
+   * without committing it. The caller must put the previewed value in
+   * `value` for the checked option to move. */
+  onPreview?: (value: string) => void;
   options: RadioGroupOption[];
   /** Disables every option regardless of its own `disabled` field. */
   disabled?: boolean;
   /** Help text set under the options, wired to the group via
    * aria-describedby. */
   description?: ReactNode;
+  /** stack is the vertical dot-and-label list. list puts each option in a
+   * full-width 48px ListRow with no dot and a trailing selected mark, for a
+   * bottom Sheet's single-choice list. */
+  variant?: "stack" | "list";
 }
 
 const CLASS = {
@@ -33,38 +47,12 @@ const CLASS = {
   dotInner: requireClass(styles.dotInner, "radiogroup.module.css", "dotInner"),
   optionLabel: requireClass(styles.optionLabel, "radiogroup.module.css", "optionLabel"),
   description: requireClass(styles.description, "radiogroup.module.css", "description"),
+  listOptions: requireClass(styles.listOptions, "radiogroup.module.css", "listOptions"),
+  selectedMark: requireClass(styles.selectedMark, "radiogroup.module.css", "selectedMark"),
 };
 
 function indexOfValue(options: RadioGroupOption[], value: string): number {
   return options.findIndex((option) => option.value === value);
-}
-
-function firstEnabledIndex(options: RadioGroupOption[]): number {
-  return options.findIndex((option) => !option.disabled);
-}
-
-function lastEnabledIndex(options: RadioGroupOption[]): number {
-  for (let i = options.length - 1; i >= 0; i--) {
-    const option = options[i];
-    if (option && !option.disabled) return i;
-  }
-  return -1;
-}
-
-// Next enabled index stepping by `delta` (+1/-1) from `from`, wrapping
-// around the ends - mirrors Menu's own stepEnabledIndex (see
-// widgets/menu/index.tsx). Returns `from` unchanged if every option is
-// disabled.
-function stepEnabledIndex(options: RadioGroupOption[], from: number, delta: 1 | -1): number {
-  const n = options.length;
-  if (n === 0) return -1;
-  let i = from;
-  for (let step = 0; step < n; step++) {
-    i = (i + delta + n) % n;
-    const option = options[i];
-    if (option && !option.disabled) return i;
-  }
-  return from;
 }
 
 /**
@@ -83,7 +71,16 @@ function stepEnabledIndex(options: RadioGroupOption[], from: number, delta: 1 | 
  * browser's native activation already fires onClick for both keys, exactly
  * like Switch's own track button.
  */
-export function RadioGroup({ label, value, onChange, options, disabled = false, description }: RadioGroupProps) {
+export function RadioGroup({
+  label,
+  value,
+  onChange,
+  onPreview,
+  options,
+  disabled = false,
+  description,
+  variant = "stack",
+}: RadioGroupProps) {
   const legendId = useId();
   const descriptionId = useId();
   const optionRefs = useRef<(HTMLButtonElement | null)[]>([]);
@@ -98,36 +95,20 @@ export function RadioGroup({ label, value, onChange, options, disabled = false, 
     onChange(option.value);
   }
 
+  function preview(index: number) {
+    const option = options[index];
+    if (!option || option.disabled || disabled) return;
+    onPreview?.(option.value);
+  }
+
   function focusAndChoose(index: number) {
     if (index === -1) return;
-    choose(index);
+    if (onPreview) preview(index);
+    else choose(index);
     optionRefs.current[index]?.focus();
   }
 
-  function handleKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
-    switch (event.key) {
-      case "ArrowRight":
-      case "ArrowDown":
-        event.preventDefault();
-        focusAndChoose(stepEnabledIndex(options, index, 1));
-        break;
-      case "ArrowLeft":
-      case "ArrowUp":
-        event.preventDefault();
-        focusAndChoose(stepEnabledIndex(options, index, -1));
-        break;
-      case "Home":
-        event.preventDefault();
-        focusAndChoose(firstEnabledIndex(options));
-        break;
-      case "End":
-        event.preventDefault();
-        focusAndChoose(lastEnabledIndex(options));
-        break;
-      default:
-        break;
-    }
-  }
+  const handleKeyDown = useRovingRadio({ items: options, onMove: focusAndChoose });
 
   return (
     <div className={CLASS.root}>
@@ -138,31 +119,57 @@ export function RadioGroup({ label, value, onChange, options, disabled = false, 
         role="radiogroup"
         aria-labelledby={legendId}
         aria-describedby={description !== undefined ? descriptionId : undefined}
-        className={CLASS.options}
+        className={variant === "list" ? CLASS.listOptions : CLASS.options}
       >
-        {options.map((option, index) => (
-          // biome-ignore lint/a11y/useSemanticElements: custom button-based radio, not native <input type="radio"> - see this widget's own top comment for why (matches Switch's precedent)
-          <button
-            key={option.value}
-            type="button"
-            role="radio"
-            aria-checked={option.value === value}
-            disabled={disabled || option.disabled === true}
-            tabIndex={index === tabbableIndex ? 0 : -1}
-            className={CLASS.option}
-            ref={(node) => {
-              optionRefs.current[index] = node;
-            }}
-            onClick={() => choose(index)}
-            onKeyDown={(event) => handleKeyDown(event, index)}
-            aria-label={option.accessibleLabel}
-          >
-            <span className={CLASS.dot} aria-hidden="true">
-              <span className={CLASS.dotInner} />
-            </span>
-            <span className={CLASS.optionLabel}>{option.label}</span>
-          </button>
-        ))}
+        {variant === "list"
+          ? options.map((option, index) => (
+              <ListRow
+                key={option.value}
+                ref={(node) => {
+                  optionRefs.current[index] = node as HTMLButtonElement | null;
+                }}
+                variant="plain"
+                label={option.label}
+                value={
+                  option.value === value ? (
+                    <span className={CLASS.selectedMark} data-selected-mark="">
+                      Selected
+                    </span>
+                  ) : undefined
+                }
+                onSelect={() => choose(index)}
+                disabled={disabled || option.disabled === true}
+                role="radio"
+                aria-checked={option.value === value}
+                aria-label={option.accessibleLabel ?? option.label}
+                tabIndex={index === tabbableIndex ? 0 : -1}
+                style={{ minHeight: "48px" }}
+                onKeyDown={(event) => handleKeyDown(event, index)}
+              />
+            ))
+          : options.map((option, index) => (
+              // biome-ignore lint/a11y/useSemanticElements: custom button-based radio, not native <input type="radio"> - see this widget's own top comment for why (matches Switch's precedent)
+              <button
+                key={option.value}
+                type="button"
+                role="radio"
+                aria-checked={option.value === value}
+                disabled={disabled || option.disabled === true}
+                tabIndex={index === tabbableIndex ? 0 : -1}
+                className={CLASS.option}
+                ref={(node) => {
+                  optionRefs.current[index] = node;
+                }}
+                onClick={() => choose(index)}
+                onKeyDown={(event) => handleKeyDown(event, index)}
+                aria-label={option.accessibleLabel}
+              >
+                <span className={CLASS.dot} aria-hidden="true">
+                  <span className={CLASS.dotInner} />
+                </span>
+                <span className={CLASS.optionLabel}>{option.label}</span>
+              </button>
+            ))}
       </div>
       {description !== undefined && (
         <p id={descriptionId} className={CLASS.description}>

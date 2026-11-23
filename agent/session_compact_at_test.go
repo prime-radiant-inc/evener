@@ -361,7 +361,7 @@ func TestCompactAt_FallbackProfileGovernsNudgeAndNoteElicitation(t *testing.T) {
 	)
 	seedNumberedSessionHistory(t, s1, 12)
 	s1.contextMgr.SetProfile(thresholded)
-	s1.contextMgr.RecordInputTokensFor(thresholded, 200_000, len(currentHistory(t, s1)))
+	s1.contextMgr.RecordInputTokensFor(thresholded, 200_000, len(currentHistory(t, s1)), "")
 	if !s1.maybeNudgeSelfCompact(0) {
 		t.Fatal("expected nudge at 200,000 tokens when contextMgr holds thresholded fallback profile")
 	}
@@ -371,7 +371,7 @@ func TestCompactAt_FallbackProfileGovernsNudgeAndNoteElicitation(t *testing.T) {
 		elicited1++
 		return "fallback note", nil
 	}
-	s1.contextMgr.RecordInputTokensFor(thresholded, 250_000, len(currentHistory(t, s1)))
+	s1.contextMgr.RecordInputTokensFor(thresholded, 250_000, len(currentHistory(t, s1)), "")
 	s1.maybeElicitNoteBeforeCompaction(context.Background(), currentHistory(t, s1), 0)
 	if elicited1 != 1 {
 		t.Fatalf("elicited %d times at 250,000 tokens under thresholded fallback, want 1", elicited1)
@@ -384,7 +384,7 @@ func TestCompactAt_FallbackProfileGovernsNudgeAndNoteElicitation(t *testing.T) {
 	)
 	seedNumberedSessionHistory(t, s2, 12)
 	s2.contextMgr.SetProfile(unthresholded)
-	s2.contextMgr.RecordInputTokensFor(unthresholded, 260_000, len(currentHistory(t, s2)))
+	s2.contextMgr.RecordInputTokensFor(unthresholded, 260_000, len(currentHistory(t, s2)), "")
 	if s2.maybeNudgeSelfCompact(0) {
 		t.Fatal("unexpected premature nudge at 260,000 tokens when contextMgr holds unthresholded fallback profile")
 	}

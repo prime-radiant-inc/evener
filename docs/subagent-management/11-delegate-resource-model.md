@@ -752,13 +752,14 @@ model produced a reply. Stop may linearize immediately afterward and cancel
 the generation. A failed transcript append returns a delivery error and leaves
 no accepted steer.
 
-At each model boundary, BeginModelRequest validates the exact lease and claims
-the current pending steering admissions under the controller mutex. The child
-then snapshots its transcript after unlock. CompleteModelRequest re-enters the
-controller with that exact process claim, revalidates stop/lease, consumes only
-the claimed entries present in the snapshot, and returns the immutable provider
-history. No transcript/history lock is acquired under the controller. The
-provider call starts only after claim completion and runs outside the mutex.
+At each model boundary of a leased generation, BeginModelRequest validates the
+exact lease and claims the current pending steering admissions under the
+controller mutex. The child then snapshots its transcript after unlock.
+CompleteModelRequest re-enters the controller with that exact process claim,
+revalidates stop/lease, consumes only the claimed entries present in the
+snapshot, and returns the immutable provider history. No transcript/history
+lock is acquired under the controller. The provider call starts only after
+claim completion and runs outside the mutex.
 
 Normal settlement cannot strand an accepted steer. Before ordinary completion
 or communicate(end_turn=true) changes running to settling, BeginSettlement
@@ -790,10 +791,11 @@ outcome; it does not delete either process claim to manufacture progress.
 
 ### Model and tool admission
 
-Before each provider call and before each new tool execution, the child Session
-asks the controller to validate its exact lease. BeginModelRequest also binds
-all pending steering admissions to the request. The validation checks in one
-locked operation that:
+A turn that runs inside a delegate generation carries that generation's lease.
+Before each provider call and before each new tool execution of such a turn,
+the child Session asks the controller to validate its exact lease.
+BeginModelRequest also binds all pending steering admissions to the request.
+The validation checks in one locked operation that:
 
 - the delegate and every ancestor remain open;
 - the generation is current;
@@ -805,12 +807,26 @@ Stop owns the current generation's cancellation context, so work that was
 admitted immediately before stop is cancelled/drained through the existing
 context rather than requiring the lock to cover external execution.
 
+A model-bearing turn with no lease in context is not admitted against a
+generation, because it has none: the notification drive of a resident stable
+child runs this way (see "Notification drives are input turns" below). Only a
+stable child holds durable delegate attention, so on that child the request
+instead passes the unleased projection filter, which omits every watch row the
+attention fold still resolves as pending. The filter keys on the watch
+identities only; it withholds no other durable attention row. The turn also
+writes no consumption marker, because only a leased generation credits a
+presentation, and ordinary queued completions are not attention and ride the
+turn unchanged.
+
 The controller is also the tree-wide delegate-turn capacity authority. A
 starting reservation holds capacity immediately so concurrent constructors
 cannot overbook the tree. delegate_run_started converts that reservation into
 the running generation; abort releases it, and delegate_run_finished releases
-the running slot. Notification/attention drives are normal generations and use
-the existing separately bounded drive capacity.
+the running slot. Attention drives are normal generations and use the existing
+separately bounded drive capacity. The notification drive of a resident stable
+child is the one drive that takes no controller capacity: it is admitted as an
+input on that runtime, not as a generation (see "Notification drives are input
+turns").
 
 ### Delegate reservations and shell admission receipts
 
@@ -909,21 +925,23 @@ work/watch/delivery receipt in the operation's subtree has settled, the controll
 delegate_subtree_stop_completed and changes stopped delegates to idle. New
 delegate_send calls may then start a later generation.
 
-Stop completion also waits until the read-only receiver-transcript fold finds
-no pending attention entry owned inside the stopped subtree. These entries are
-distinct from aggregate owner-delivery packets. While a sender remains in the
-pending stop, no new owner delivery is admitted. Stop completion discards
-packets whose receiver delegate is covered by that same stop, because
-re-notifying a stopped ancestor would reopen the subtree; packets owed to the
-root or an owner outside the subtree remain queued and become eligible only
-after completion. The controller keeps new admissions closed and captures
-exact transcript references plus evidence versions under its mutex. After
-unlock, cleanup appends and fsyncs an idempotent discarded resolution marker
-for each exact attention ID without constructing or consulting a runtime, then
-re-reads the transcript fold and reports the evidence. Cancellation can commit
-a new attention entry, so cleanup repeats until one final locked validation of
-an immediately preceding empty transcript fold observes no active work or
-receipts and can append stop completed in that same critical section.
+Stop completion also waits until the stopped subtree owes no attention in
+delegatestore. These rows are distinct from aggregate owner-delivery packets.
+While a sender remains in the pending stop, no new owner delivery is admitted.
+Stop completion discards packets whose receiver delegate is covered by that
+same stop, because re-notifying a stopped ancestor would reopen the subtree;
+packets owed to the root or an owner outside the subtree remain queued and
+become eligible only after completion. The controller keeps new admissions
+closed and captures exact attention plans plus evidence versions under its
+mutex. After unlock, cleanup resolves each row through one delegatestore
+Apply — removing it from PendingAttention, recording it in
+ResolvedAttention, and recomputing NeedsAttention and the published
+projection — without constructing or consulting a runtime. No child transcript
+marker is written, so a cold stop needs no transcript writer, and a transcript
+row the journal already resolved is history rather than work. Cancellation can
+commit a new attention entry, so cleanup repeats until one final locked
+validation observes no active work, receipts, or unheld attention row and can
+append stop completed in that same critical section.
 
 Delivery admission serializes with stop by creating one process-local receipt
 under the controller mutex after revalidating the exact head and receiver.
@@ -936,27 +954,28 @@ post-unlock plan never appends attention to a receiver transcript without an
 accounted receipt.
 
 After restart there is no resident runtime or shell process to query. Root
-initialization snapshots covered transcript references, shell-store paths, and
-a process-only evidence version under the controller lock, then uses a
-missing-file-tolerant read-only transcript fold to collect exact pending
-attention IDs plus folded running-shell/pending-notification identities outside
-the lock. It reads each durable shell source before its receiver transcript:
-because source acknowledgement is receiver-fsync-first, that order cannot
-observe both sides absent during the handoff. Shell finalization reports its
-controller evidence-version change only after the terminal generation and
-pending source state are durable. Reconciliation returns exact
-transcript-discard and shell-store
-repair plans. After unlock, the caller revalidates the exact shell records,
-appends shell stopped/runtime_lost plus consumed source-notification state for
-the covered stop, clears shell-only terminal watches, and appends the attention
-resolution markers—all without constructing a child Session or provider.
-Runtime-loss repair outside a pending stop preserves the ordinary shell
-pending-notification contract. It then collects read-only evidence again and
-repeats until the controller accepts the unchanged evidence version and the
+initialization snapshots transcript references, shell-store paths, and a
+process-only evidence version under the controller lock, then uses a
+missing-file-tolerant read-only shell store to collect exact
+running-shell/pending-notification identities outside the lock. Attention needs
+no transcript read: the folded queue is the authority for what a delegate owes,
+and bootstrap reads a transcript only to backfill a row a pre-queue journal
+never carried. The restart reads each durable shell source before the
+receiver-side state it feeds: because source acknowledgement is
+receiver-fsync-first, that order cannot observe both sides absent during the
+handoff. Shell finalization reports
+its controller evidence-version change only after the terminal generation and
+pending source state are durable. Reconciliation returns shell-store repair and
+attention-resolution plans. After unlock, the caller revalidates the exact shell
+records, appends shell stopped/runtime_lost plus consumed source-notification
+state for the covered stop, clears shell-only terminal watches, and resolves
+each attention row in delegatestore—all without constructing a child Session or
+provider. Runtime-loss repair outside a pending stop preserves the ordinary
+shell pending-notification contract. It then collects read-only evidence again
+and repeats until the controller accepts the unchanged evidence version and the
 final locked empty-evidence check can complete the stop. Shell-store or
-transcript-resolution append failure keeps the stop pending. Transcript reads,
-transcript appends, and shell-store writes never occur while the controller
-mutex is held.
+resolution append failure keeps the stop pending. Transcript reads, transcript
+appends, and shell-store writes never occur while the controller mutex is held.
 
 max_wait_ms=0 returns after the durable request and cancellation dispatch.
 Positive max_wait_ms waits only up to the existing bounded limit and reports
@@ -1532,18 +1551,25 @@ create or cold restore when the admission would exceed the bound:
    minting or committing a stable ID or constructing a runtime;
 2. under the controller, choose exact quiescent idle terminal subtree roots,
    preferring permanently closed, then acknowledged terminal, then oldest
-   outcome, then stable ID;
+   outcome, then stable ID, and skipping any subtree that owns a shared task
+   store, because its owner must stay resident for a resolver's next restore;
 3. claim those exact resident subtrees so no start, attention, shell admission,
    stop, or competing reclamation can enter them;
-4. close each claimed subtree post-order after controller unlock; and
+4. persist each claimed runtime's staged durable meta, then release those
+   resident runtimes post-order after controller unlock under the
+   residency-only policy: settle process-local resources only, with no
+   SessionEnd hook, no session_closed boundary, no watch cancellation, no lane
+   disposal and no worktree unlock; and
 5. under the controller, clear only the exact resident runtime pointer if the
    claim still matches.
 
 If too few reclaimable subtrees exist, admission fails before stable ID mint or
 commit and before runtime construction. Reclamation never deletes or rewrites
 the stable aggregate, descriptor, transcript, outcome, lineage, watch/delivery
-state, or resumability. It appends no unload lifecycle event. There is no timer,
-background scan, idle deadline, or autonomous unload protocol.
+state, isolation lane, worktree, or resumability, and every released member
+stays resumable through delegate_send. It appends no unload lifecycle event.
+There is no timer, background scan, idle deadline, or autonomous unload
+protocol.
 
 ### Supervision and continuation behavior
 
@@ -1646,8 +1672,62 @@ is ignored even on a resumable delegate, and anything still pending blocks
 through the fold. The non-blocking retirement snapshot, which deliberately
 skips transcript reads, keeps the wakes as its conservative proxy.
 
-There are no recordless model-bearing drive turns. A drive is not a JobRecord,
-but it is an exact delegate generation governed by the same lease.
+An attention drive is not a JobRecord, but it is an exact delegate generation
+governed by the same lease.
+
+#### Notification drives are input turns
+
+The notification drive is the one model-bearing drive that is not a generation.
+It exists to run a resident stable child's own `EntryNotification` queue -- the
+ordinary completions, with every watch notice beside them deferred to leased
+attention by the unleased split -- on a child with no generation running or
+finalizing, and the controller has nothing of its own to admit it into:
+
+- `ReserveAttention` needs a pending attention ID and a `PhaseIdle`, resumable
+  delegate, and reserves drive capacity for a generation keyed to that row;
+- `ReserveStart` refuses a delegate whose previous generation is still
+  finalizing, and reserves a delegate-turn slot for a public send; and
+- `idleDelegateRestoreCommit` commits a lease for an idle, resumable delegate's
+  existing generation and builds a cold runtime, taking no trigger of its own.
+
+Issue #6797 records why none of the existing lease paths fits this drive. Until
+the resource model gains a notification generation, the drive is admitted as
+an input and its bounds are these:
+
+- **Admission is the runtime input claim.** `admitIdleRuntimeInput` delegates to
+  the controller's `admitRuntimeInput`, which takes the controller mutex,
+  refuses while a reclamation claim covers the delegate, and counts the drive in
+  `inputsInFlight`. A claim and an admission are therefore ordered: neither can
+  tear down a runtime the other holds.
+- **Spawning draws one tree-wide drive budget.** The root mints a single
+  notification-drive counter and every descendant inherits it, so a drive at
+  any level reserves a slot on the same tree-wide counter, separate from
+  delegate fan-out. The turn is bounded by the drive's hung-turn bound, which
+  pauses while a model call waits out a usage limit and gives the slot back for
+  the wait.
+- **A Stop reaches it through the drive's own cancellation context**, not a
+  generation fence: a stop-cancelled turn is the ordinary nonfatal end of a
+  stopped run, and the work the delegate owns survives.
+- **It presents no watch attention that needs a lease, and credits nothing.**
+  An unleased stable-child turn withholds every watch row the attention fold
+  still resolves as pending -- the unleased projection filter keys on the watch
+  identities only, not on attention in general -- and the split defers each
+  withheld notice to leased attention. The turn commits no consumption marker,
+  because only a leased generation credits a presentation. Ordinary queued
+  completions are not attention and ride the turn unchanged.
+
+A drive mints no JobRecord and settles no delegate result. A notification turn
+carries no report requirement either: settlement and terminal capture take a
+lease, which this turn does not hold, so the delegate's own generations remain
+the only thing that finishes or reports it. A drive turn that fails for any
+reason other than a stop sets the child's fatal-run gate and stops the work it
+owns. The gate is read before an automatic drive reserves or launches anything
+(`driveDelegateAttention`), so the drive's own retries stay refused while it is
+set. Only a run that actually launches for the child clears it: an explicit
+send or an accepted attention start (`launchAcceptedDelegateAttention`), which
+the post-restart owed-attention bootstrap also reaches without the drive gate
+(`admitOwedDelegateAttentionStarts`). A failed drive is therefore visible on
+the delegate without being settled as its result.
 
 Attention does not use a public delegate actor, because an idle resource has no
 active generation lease to authenticate. The controller instead verifies that
@@ -2230,8 +2310,10 @@ The project is complete only when all of the following are true:
 23. Nested delegation and mandatory delegate subtree stop work at depth three.
 24. Idle runtimes remain resident until root close, explicit disposal, or an
     admission-triggered max_retained_terminal reclamation. Reclamation claims
-    exact quiescent subtrees, closes post-order, and deletes no durable state;
-    no automatic/background unload protocol exists.
+    exact quiescent subtrees, releases their resident runtimes post-order under
+    the residency-only policy — durable state, watches, lanes and worktrees
+    stay intact — and deletes no durable state; no automatic/background unload
+    protocol exists.
 25. Stable delegate sources/receivers, watch_parent, self/parent/shell sources,
     filters/every/coalescing/budget/list/inspect/clear, terminal ordering,
     observer callbacks, restart notices, and ObservedBy metadata remain. The

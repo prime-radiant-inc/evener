@@ -231,8 +231,8 @@ func (a *mutationProjectionAdapter) Complete(ctx context.Context, req llm.Reques
 	a.mu.Unlock()
 	if call < a.blockAt {
 		args, _ := json.Marshal(map[string]any{
-			"message":  "done",
-			"end_turn": true,
+			"message": "done",
+			"next":    "send_and_end_turn",
 			"output": map[string]any{
 				"message":   "",
 				"data":      map[string]any{},

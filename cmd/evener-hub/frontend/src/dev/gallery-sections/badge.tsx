@@ -1,6 +1,6 @@
 import { Badge, type BadgeTone } from "../../widgets/badge";
+import { GallerySection } from "../GallerySection";
 import styles from "../gallery-section.module.css";
-import { ThemeFlip } from "../ThemeFlip";
 
 const TONES: BadgeTone[] = ["neutral", "attention", "alive", "danger"];
 
@@ -18,13 +18,10 @@ function ToneRow({ tone }: { tone: BadgeTone }) {
 
 export default function BadgeGallerySection() {
   return (
-    <section>
-      <h2>Badge</h2>
-      <ThemeFlip>
-        {TONES.map((tone) => (
-          <ToneRow key={tone} tone={tone} />
-        ))}
-      </ThemeFlip>
-    </section>
+    <GallerySection title="Badge">
+      {TONES.map((tone) => (
+        <ToneRow key={tone} tone={tone} />
+      ))}
+    </GallerySection>
   );
 }

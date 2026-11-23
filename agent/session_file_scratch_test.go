@@ -72,10 +72,9 @@ func TestFileToolsAllowOwnAllocatedScratch(t *testing.T) {
 		t.Fatalf("write_file must create a file in this session's allocated scratch: %s", write.output)
 	}
 
-	edit := fileToolCall(t, s, "edit_file", map[string]string{
-		"file_path":  target,
-		"old_string": "before",
-		"new_string": "after",
+	edit := fileToolCall(t, s, "edit_file", map[string]any{
+		"file_path": target,
+		"edits":     []any{map[string]any{"old_string": "before", "new_string": "after"}},
 	})
 	if edit.isError {
 		t.Fatalf("edit_file must edit a file in this session's allocated scratch: %s", edit.output)
@@ -146,10 +145,9 @@ func TestFileToolsWriteBlockedOffDenyUnallocatedAbsolutePaths(t *testing.T) {
 			if err := os.WriteFile(target, []byte("original\n"), 0o644); err != nil {
 				t.Fatalf("seed unallocated edit target: %v", err)
 			}
-			edit := fileToolCall(t, s, "edit_file", map[string]string{
-				"file_path":  target,
-				"old_string": "original",
-				"new_string": "must stay unchanged",
+			edit := fileToolCall(t, s, "edit_file", map[string]any{
+				"file_path": target,
+				"edits":     []any{map[string]any{"old_string": "original", "new_string": "must stay unchanged"}},
 			})
 			if !edit.isError {
 				t.Fatalf("edit_file unexpectedly allowed unallocated absolute path %q", target)
@@ -191,10 +189,9 @@ func TestFileToolsDenySymlinkEscapeFromAllocatedScratch(t *testing.T) {
 	if err := os.WriteFile(editTarget, []byte("original\n"), 0o644); err != nil {
 		t.Fatalf("seed outside edit target: %v", err)
 	}
-	edit := fileToolCall(t, s, "edit_file", map[string]string{
-		"file_path":  filepath.Join(link, "edit.txt"),
-		"old_string": "original",
-		"new_string": "changed",
+	edit := fileToolCall(t, s, "edit_file", map[string]any{
+		"file_path": filepath.Join(link, "edit.txt"),
+		"edits":     []any{map[string]any{"old_string": "original", "new_string": "changed"}},
 	})
 	if !edit.isError {
 		t.Fatalf("edit_file followed scratch symlink to %q", outside)
@@ -270,7 +267,7 @@ func TestFileToolsSandboxOffAllowExternalPaths(t *testing.T) {
 			if write.isError {
 				t.Fatalf("off write %q: %s", path, write.output)
 			}
-			edit := fileToolCall(t, s, "edit_file", map[string]string{"file_path": path, "old_string": "before", "new_string": "after"})
+			edit := fileToolCall(t, s, "edit_file", map[string]any{"file_path": path, "edits": []any{map[string]any{"old_string": "before", "new_string": "after"}}})
 			if edit.isError {
 				t.Fatalf("off edit %q: %s", path, edit.output)
 			}

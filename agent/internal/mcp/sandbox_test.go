@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"context"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -14,21 +16,107 @@ import (
 	"primeradiant.com/evener/agent/sandbox"
 )
 
-// bwrapUnsetenvNames returns the names the wrapped argv REMOVES inside the
-// sandbox, via bwrap's own --unsetenv NAME. Like bwrapSetenvValue it searches
-// only the flags before the "--" separator.
-func bwrapUnsetenvNames(args []string) []string {
-	sep := slices.Index(args, "--")
-	if sep < 0 {
-		return nil
+// childEnvChannel decodes the private child-env fd the sandbox attaches to a
+// confined launcher: the file is the launcher's only extra fd, and its payload
+// is bwrap's NUL-separated --args records. It parses the records itself rather
+// than reusing the production encoder, so the test proves the wire format.
+func childEnvChannel(t *testing.T, cmd *exec.Cmd) (map[string]string, []string) {
+	t.Helper()
+	if len(cmd.ExtraFiles) != 1 {
+		t.Fatalf("confined launcher must gain exactly one private env fd, got %d", len(cmd.ExtraFiles))
 	}
-	var out []string
-	for i := 0; i+1 < len(args[:sep]); i++ {
-		if args[i] == "--unsetenv" {
-			out = append(out, args[i+1])
+	f := cmd.ExtraFiles[0]
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		t.Fatalf("seek private env fd: %v", err)
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		t.Fatalf("read private env fd: %v", err)
+	}
+	fields := strings.Split(string(data), "\x00")
+	if n := len(fields); n > 0 && fields[n-1] == "" {
+		fields = fields[:n-1]
+	}
+	set := map[string]string{}
+	var unset []string
+	for i := 0; i < len(fields); {
+		switch fields[i] {
+		case "--setenv":
+			if i+2 >= len(fields) {
+				t.Fatalf("truncated --setenv record in child-env payload: %q", fields)
+			}
+			set[fields[i+1]] = fields[i+2]
+			i += 3
+		case "--unsetenv":
+			if i+1 >= len(fields) {
+				t.Fatalf("truncated --unsetenv record in child-env payload: %q", fields)
+			}
+			unset = append(unset, fields[i+1])
+			i += 2
+		default:
+			t.Fatalf("unexpected child-env payload record %q", fields[i])
 		}
 	}
-	return out
+	return set, unset
+}
+
+// TestMCPStdioServerSecretEnvNeverRidesLauncherArgv is issue #7009's proof.
+//
+// A configured secret in cfg.Env must reach the confined MCP server without
+// appearing in the launcher's argv: host process-list diagnostics sample
+// /proc/<pid>/cmdline while bwrap is alive, and bwrap --setenv VALUE (or an
+// /usr/bin/env NAME=VALUE prefix) put the plaintext there. The assignments
+// therefore ride a private fd the launcher reads and closes, while cmd.Env
+// stays the scrubbed launcher environment.
+func TestMCPStdioServerSecretEnvNeverRidesLauncherArgv(t *testing.T) {
+	const secret = "mcp-fixture-token-9c1d"
+	cfg := stdioCfg()
+	cfg.Env = map[string]string{"MCP_SERVER_TOKEN": secret}
+
+	dial := productionDial(cfg, testWrapper(t))
+	tr, err := dial(context.Background())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	ct, ok := tr.(*mcpsdk.CommandTransport)
+	if !ok || ct.Command == nil {
+		t.Fatalf("expected a *CommandTransport with a command, got %T", tr)
+	}
+	t.Cleanup(func() {
+		for _, f := range ct.Command.ExtraFiles {
+			_ = f.Close()
+		}
+	})
+
+	// 1. No plaintext on the launcher's command line.
+	if joined := strings.Join(ct.Command.Args, "\x00"); strings.Contains(joined, secret) {
+		t.Fatalf("configured secret is visible in the launcher argv: %v", ct.Command.Args)
+	}
+	// ...and none in the launcher environment, whose loader bwrap honours first.
+	for _, kv := range ct.Command.Env {
+		if strings.Contains(kv, secret) {
+			t.Fatalf("configured secret is in the launcher environment: %q", kv)
+		}
+	}
+	// 2. It still reaches the confined server over the private fd, which is the
+	// only fd the launcher gains.
+	set, unset := childEnvChannel(t, ct.Command)
+	if got, ok := set["MCP_SERVER_TOKEN"]; !ok || got != secret {
+		t.Fatalf("private child-env channel did not carry MCP_SERVER_TOKEN: set=%v unset=%v", set, unset)
+	}
+	// 3. The original command still follows the backend separator untouched.
+	sep := slices.Index(ct.Command.Args, "--")
+	if sep < 0 || !slices.Equal(ct.Command.Args[sep+1:], []string{"my-mcp-server", "--flag"}) {
+		t.Fatalf("original MCP command must follow --: %v", ct.Command.Args)
+	}
+}
+
+// bwrapUnsetenvNames returns the names the private child-env fd REMOVES inside
+// the sandbox, via bwrap's own --unsetenv records.
+func bwrapUnsetenvNames(t *testing.T, cmd *exec.Cmd) []string {
+	t.Helper()
+	_, unset := childEnvChannel(t, cmd)
+	return unset
 }
 
 // confinedNpmFixture is a writable directory OUTSIDE /tmp, because bwrap gives
@@ -122,18 +210,18 @@ func TestMCPStdioServerDeliversTheFlooredConfigDelta(t *testing.T) {
 	// The defect: the derived redirect must reach the CONFINED server, because
 	// the launcher's own value points elsewhere and the child inherits it unless
 	// the argv says otherwise.
-	if got, ok := bwrapSetenvValue(ct.Command.Args, "npm_config_cache"); !ok || got != filepath.Join(sessionTmp, "npm") {
-		t.Errorf("npm_config_cache reached the confined server as %q (present=%v), want the derived session-scratch redirect %q: %v", got, ok, filepath.Join(sessionTmp, "npm"), ct.Command.Args)
+	if got, ok := bwrapSetenvValue(t, ct.Command, "npm_config_cache"); !ok || got != filepath.Join(sessionTmp, "npm") {
+		t.Errorf("npm_config_cache reached the confined server as %q (present=%v), want the derived session-scratch redirect %q", got, ok, filepath.Join(sessionTmp, "npm"))
 	}
 	// A surviving cfg.Env entry still rides the same channel.
-	if got, ok := bwrapSetenvValue(ct.Command.Args, "npm_config_userconfig"); !ok || got != userConfig {
-		t.Errorf("--setenv npm_config_userconfig = %q (present=%v), want the configured path %q: %v", got, ok, userConfig, ct.Command.Args)
+	if got, ok := bwrapSetenvValue(t, ct.Command, "npm_config_userconfig"); !ok || got != userConfig {
+		t.Errorf("child-env npm_config_userconfig = %q (present=%v), want the configured path %q", got, ok, userConfig)
 	}
 	// The floor refuses the external KUBECONFIG the config asked for, so the
 	// child must not inherit the launcher's in-worktree one either: the floored
 	// configured environment has none.
-	if got := bwrapUnsetenvNames(ct.Command.Args); !slices.Contains(got, "KUBECONFIG") {
-		t.Errorf("--unsetenv names = %v, want KUBECONFIG: the floor removed it from the configured environment, so the child must not inherit the launcher's value: %v", got, ct.Command.Args)
+	if got := bwrapUnsetenvNames(t, ct.Command); !slices.Contains(got, "KUBECONFIG") {
+		t.Errorf("child-env unsets = %v, want KUBECONFIG: the floor removed it from the configured environment, so the child must not inherit the launcher's value", got)
 	}
 	// The whole point of the child-env channel: cfg.Env never rides cmd.Env. The
 	// launcher keeps the PARENT's KUBECONFIG (the parent environment is its own),
@@ -209,38 +297,27 @@ func TestMCPStdioServerConfined(t *testing.T) {
 	}
 	// Env floor: the ssh-agent handle is dropped from BOTH the launcher and the
 	// confined child, and ordinary config env still reaches the child — through
-	// --setenv, never through the launcher's own environment.
+	// the private child-env fd, never through the launcher's own environment.
 	for _, kv := range ct.Command.Env {
 		if strings.HasPrefix(kv, "SSH_AUTH_SOCK=") {
 			t.Errorf("env floor must drop SSH_AUTH_SOCK from a sandboxed MCP server: %v", ct.Command.Env)
 		}
 	}
-	if _, ok := bwrapSetenvValue(ct.Command.Args, "SSH_AUTH_SOCK"); ok {
-		t.Errorf("env floor must drop SSH_AUTH_SOCK from the confined server too: %v", ct.Command.Args)
+	if _, ok := bwrapSetenvValue(t, ct.Command, "SSH_AUTH_SOCK"); ok {
+		t.Errorf("env floor must drop SSH_AUTH_SOCK from the confined server too")
 	}
-	if got, ok := bwrapSetenvValue(ct.Command.Args, "EXTRA"); !ok || got != "1" {
-		t.Errorf("configured MCP env must survive the floor and reach the confined server: %v", ct.Command.Args)
-	}
-	if ct.Command.ExtraFiles != nil {
-		t.Errorf("fd hygiene: a sandboxed MCP server must inherit no extra fds")
+	if got, ok := bwrapSetenvValue(t, ct.Command, "EXTRA"); !ok || got != "1" {
+		t.Errorf("configured MCP env must survive the floor and reach the confined server")
 	}
 }
 
-// bwrapSetenvValue returns the value the wrapped argv sets name to INSIDE the
-// sandbox, via bwrap's own --setenv NAME VALUE. It searches only the flags
-// before the "--" separator, because everything after it is the confined
-// command's own argv.
-func bwrapSetenvValue(args []string, name string) (string, bool) {
-	sep := slices.Index(args, "--")
-	if sep < 0 {
-		return "", false
-	}
-	for i := 0; i+2 < len(args[:sep]); i++ {
-		if args[i] == "--setenv" && args[i+1] == name {
-			return args[i+2], true
-		}
-	}
-	return "", false
+// bwrapSetenvValue returns the value the private child-env fd sets name to
+// INSIDE the sandbox, via bwrap's own --setenv records.
+func bwrapSetenvValue(t *testing.T, cmd *exec.Cmd, name string) (string, bool) {
+	t.Helper()
+	set, _ := childEnvChannel(t, cmd)
+	value, ok := set[name]
+	return value, ok
 }
 
 // TestMCPStdioServerAppliesConfigEnvInsideTheSandbox is High finding #1's proof.
@@ -288,16 +365,16 @@ func TestMCPStdioServerAppliesConfigEnvInsideTheSandbox(t *testing.T) {
 					t.Errorf("cfg.Env entry %q is in the sandbox LAUNCHER's environment, where the loader honours it before confinement: %v", kv, ct.Command.Env)
 				}
 			}
-			// 2. The confined server still receives it: bwrap --setenv applies to
-			// the child, after the namespaces and mounts are in place.
+			// 2. The confined server still receives it: the private child-env fd
+			// applies to the child, after the namespaces and mounts are in place.
 			for name, want := range cfg.Env {
-				got, ok := bwrapSetenvValue(ct.Command.Args, name)
+				got, ok := bwrapSetenvValue(t, ct.Command, name)
 				if !ok {
-					t.Errorf("cfg.Env entry %s=%s is not delivered to the confined server (no --setenv before --): %v", name, want, ct.Command.Args)
+					t.Errorf("cfg.Env entry %s=%s is not delivered to the confined server over the private fd", name, want)
 					continue
 				}
 				if got != want {
-					t.Errorf("--setenv %s = %q, want %q", name, got, want)
+					t.Errorf("child-env %s = %q, want %q", name, got, want)
 				}
 			}
 		})
@@ -308,7 +385,7 @@ func TestMCPStdioServerAppliesConfigEnvInsideTheSandbox(t *testing.T) {
 // (its provider API key et al.) from the parent environment, but a secret the
 // server config sets explicitly is deliberate configuration and must survive.
 func TestMCPStdioServerScrubsAmbientSecrets(t *testing.T) {
-	t.Setenv("EVENER_AMBIENT_API_KEY", "sk-ambient-leak")
+	t.Setenv("EVENER_AMBIENT_API_KEY", "ambient-fixture-key-leak")
 	cfg := mcpconfig.ServerConfig{
 		Name:    "s",
 		Type:    "stdio",
@@ -329,11 +406,11 @@ func TestMCPStdioServerScrubsAmbientSecrets(t *testing.T) {
 	// A cfg.Env var whose NAME looks secret is explicit configuration, not an
 	// ambient leak, so it must survive the scrub and reach the confined server —
 	// through the child-env channel, which is the only place cfg.Env may appear.
-	if got, ok := bwrapSetenvValue(ct.Command.Args, "MCP_SERVER_TOKEN"); !ok || got != "configured-keep" {
-		t.Errorf("a configured cfg.Env secret must reach the confined server: %v", ct.Command.Args)
+	if got, ok := bwrapSetenvValue(t, ct.Command, "MCP_SERVER_TOKEN"); !ok || got != "configured-keep" {
+		t.Errorf("a configured cfg.Env secret must reach the confined server")
 	}
-	if got, ok := bwrapSetenvValue(ct.Command.Args, "EXTRA"); !ok || got != "1" {
-		t.Errorf("ordinary configured MCP env must reach the confined server: %v", ct.Command.Args)
+	if got, ok := bwrapSetenvValue(t, ct.Command, "EXTRA"); !ok || got != "1" {
+		t.Errorf("ordinary configured MCP env must reach the confined server")
 	}
 }
 
@@ -436,8 +513,10 @@ func TestMCPStdioServerDeniesNetworkExceptionUnderNetOff(t *testing.T) {
 	if !slices.Contains(ct.Command.Args, "--unshare-pid") {
 		t.Errorf("a denied stdio server must still be kernel-confined: %v", ct.Command.Args)
 	}
-	if ct.Command.ExtraFiles != nil {
-		t.Errorf("fd hygiene: a sandboxed MCP server must inherit no extra fds")
+	// fd hygiene: the only extra fd is the private child-env channel, which the
+	// launcher consumes at startup.
+	if _, ok := bwrapSetenvValue(t, ct.Command, "EXTRA"); !ok {
+		t.Errorf("the confined server must still receive its configured env over the private fd")
 	}
 
 	// The same config under a network-ENABLED sandbox is unaffected: the field
@@ -522,4 +601,77 @@ func TestMCPStdioServerFloorUsesTheConfinedWorktreeDir(t *testing.T) {
 	if want := filepath.Join(sessionTmp, "npm"); got != want {
 		t.Fatalf("npm_config_cache = %q, want the session scratch %q", got, want)
 	}
+}
+
+// childEnvCommand builds a stdio transport whose command carries a private
+// child-env fd, the way confinement leaves it. The command never speaks MCP, so
+// Connect fails — the fd must be released either way, and a failure is the
+// cheapest deterministic path to a started-then-failed launcher.
+func childEnvCommand(t *testing.T) (*mcpsdk.CommandTransport, *os.File) {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "child-env-*")
+	if err != nil {
+		t.Fatalf("create private child-env fd: %v", err)
+	}
+	if _, err := f.WriteString("+MCP_TOKEN=fixture-token\n"); err != nil {
+		t.Fatalf("write private child-env fd: %v", err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		t.Fatalf("rewind private child-env fd: %v", err)
+	}
+	cmd := exec.Command("/bin/sh", "-c", "exit 0") //nolint:noctx // test-only cmd, starts and exits without speaking MCP
+	cmd.ExtraFiles = []*os.File{f}
+	return &mcpsdk.CommandTransport{Command: cmd}, f
+}
+
+// assertChildEnvFdReleased fails when the parent still holds the private
+// child-env fd after a connect. Close on an already-closed *os.File returns an
+// error, which is how "released" is observed without reaching into fd tables.
+func assertChildEnvFdReleased(t *testing.T, ct *mcpsdk.CommandTransport, f *os.File) {
+	t.Helper()
+	if ct.Command.ExtraFiles != nil {
+		t.Errorf("connect left ExtraFiles populated: %v", ct.Command.ExtraFiles)
+	}
+	if err := f.Close(); err == nil {
+		t.Error("connect left the parent's copy of the private child-env fd open")
+	}
+}
+
+// TestInitialConnectReleasesParentChildEnvFd covers the first connect: the
+// launcher owns its own copy of the fd from the exec on, so the parent's copy
+// must not stay open for the session's lifetime.
+func TestInitialConnectReleasesParentChildEnvFd(t *testing.T) {
+	ctx := context.Background()
+	ct, f := childEnvCommand(t)
+	mgr, outcomes := NewManager(ctx, []mcpconfig.ServerConfig{{Name: "s", Type: "stdio"}},
+		[]func(context.Context) (mcpsdk.Transport, error){staticDial(ct)})
+	defer mgr.Close()
+	if len(outcomes) != 1 || outcomes[0].Stage != "connect" {
+		t.Fatalf("NewManager: %+v", outcomes)
+	}
+	assertChildEnvFdReleased(t, ct, f)
+}
+
+// TestReconnectReleasesParentChildEnvFd covers the lazy redial: reconnect
+// builds a fresh confined command with its own private child-env fd, and its
+// parent copy was previously never closed — one leaked fd per redial.
+func TestReconnectReleasesParentChildEnvFd(t *testing.T) {
+	ctx := context.Background()
+	_, live := newReconnectTestServer(t, "s", "probe", "reply")
+	mgr, outcomes := NewManager(ctx, []mcpconfig.ServerConfig{{Name: "s", Type: "stdio"}},
+		[]func(context.Context) (mcpsdk.Transport, error){staticDial(live)})
+	defer mgr.Close()
+	if len(outcomes) != 0 {
+		t.Fatalf("NewManager: %+v", outcomes)
+	}
+
+	ct, f := childEnvCommand(t)
+	c := &mgr.conns[0]
+	c.mu.Lock()
+	c.dial = staticDial(ct)
+	c.mu.Unlock()
+	if _, ok := c.reconnect(ctx); ok {
+		t.Fatal("a command that never speaks MCP must not connect")
+	}
+	assertChildEnvFdReleased(t, ct, f)
 }

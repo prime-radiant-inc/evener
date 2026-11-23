@@ -48,8 +48,8 @@ func TestSession_TranscriptAPILogSeparationAndAttemptGroupJoin(t *testing.T) {
 			w.Header().Set("Content-Type", "text/event-stream")
 			flusher, _ := w.(http.Flusher)
 			args := mustJSON(t, map[string]any{
-				"message":  "full-history retry answered",
-				"end_turn": true,
+				"message": "full-history retry answered",
+				"next":    "send_and_end_turn",
 				"output": map[string]any{
 					"message":   "",
 					"data":      map[string]any{},

@@ -316,6 +316,11 @@ func executeDelegateShellRepair(plan delegateShellRepairPlan, now time.Time) (er
 		if record == nil || record.Type != jobstore.JobShell || record.Status != jobstore.StatusRunning {
 			continue
 		}
+		// The delegate runtime that owned this job is gone, so a background shell
+		// job's process group survived it, adopted by init: reap the group before
+		// recording the job stopped, or it outlives its session (#4843). The reap
+		// re-verifies the group's start time, so a recycled pgid stays safe.
+		reapBackgroundProcessGroup(record)
 		finished := jobstore.Reconcile(map[string]*jobstore.JobRecord{jobID: record}, nil, now)
 		if len(finished) != 1 {
 			continue

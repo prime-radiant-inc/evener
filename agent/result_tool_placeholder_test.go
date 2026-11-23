@@ -74,7 +74,7 @@ func TestResultToolAdvertisementHasNoUnwiredPlaceholder(t *testing.T) {
 					continue
 				}
 				props, _ := def.Parameters["properties"].(map[string]any)
-				for _, want := range []string{"message", "end_turn"} {
+				for _, want := range []string{"message", "next"} {
 					if _, ok := props[want]; !ok {
 						t.Errorf("advertised result tool %q lacks communicate's %q parameter: %v", tc.wantResult, want, props)
 					}
@@ -85,7 +85,7 @@ func TestResultToolAdvertisementHasNoUnwiredPlaceholder(t *testing.T) {
 			res := sess.reg.ExecuteCall(context.Background(), sess.currentEnv(), llm.ToolCallData{
 				ID:        "result-tool-call",
 				Name:      tc.wantResult,
-				Arguments: json.RawMessage(`{"message":"advertised result tool","end_turn":true,"output":{"message":"","data":{},"artifacts":[]}}`),
+				Arguments: json.RawMessage(`{"message":"advertised result tool","next":"send_and_end_turn","output":{"message":"","data":{},"artifacts":[]}}`),
 			})
 			if res.IsError {
 				t.Fatalf("dispatching the configured result tool %q failed: %s", tc.wantResult, res.Output)

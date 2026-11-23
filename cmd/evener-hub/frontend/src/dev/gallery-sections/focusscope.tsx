@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { FocusScope } from "../../widgets/focusscope";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./focusscope.module.css";
 
 // FocusScope has no visual chrome of its own (Dialog/Sheet/Menu own all the
@@ -46,11 +46,8 @@ function FocusScopeDemo() {
 
 export default function FocusScopeGallerySection() {
   return (
-    <section>
-      <h2>FocusScope</h2>
-      <ThemeFlip>
-        <FocusScopeDemo />
-      </ThemeFlip>
-    </section>
+    <GallerySection title="FocusScope">
+      <FocusScopeDemo />
+    </GallerySection>
   );
 }

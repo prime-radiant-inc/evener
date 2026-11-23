@@ -11,10 +11,21 @@
 import type { AppwireClientLike, PluginPreviewLoadState } from "@evener/appwire-client";
 import { type PluginSelectionState, selectedPluginNames } from "@evener/appwire-client";
 import { useEffect, useRef, useState } from "react";
-import { Button, Chevron, DirectoryPicker, type DirectoryPickerProps, InlineNotice, Sheet } from "../../widgets";
+import {
+  Button,
+  Chevron,
+  DirectoryPicker,
+  type DirectoryPickerProps,
+  InlineNotice,
+  ListRow,
+  RadioGroup,
+  Sheet,
+  useFocusRehome,
+} from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./MobileSettingRows.module.css";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
+import { type SpawnHostOption, SpawnHostSelection } from "./SpawnHostSelection";
 
 export interface MobilePickerOption {
   value: string;
@@ -34,6 +45,14 @@ export interface MobileSettingRowsProps {
   createDirectory: DirectoryPickerProps["createDirectory"];
   onCwdPanelClose: (value: string) => void;
   branch: string;
+  /** The host list to offer, empty when the manifest has no non-local source. */
+  hostOptions: readonly SpawnHostOption[];
+  hostValue: string;
+  hostLabel: string;
+  connectingHosts: ReadonlySet<string>;
+  onHostSelect: (id: string) => void;
+  onHostConnect: (id: string) => void;
+  onConnectHost: () => void;
   accessMode: string;
   accessOptions: MobilePickerOption[];
   onAccessChange: (value: string) => void;
@@ -48,21 +67,14 @@ export interface MobileSettingRowsProps {
   onPluginRetry: () => void;
 }
 
-type PickerName = "Harness" | "Working directory" | "Access mode" | "Plugins";
+type PickerName = "Host" | "Harness" | "Working directory" | "Access mode" | "Plugins";
 
 const CLASS = {
   config: requireClass(styles.config, "MobileSettingRows.module.css", "config"),
-  row: requireClass(styles.row, "MobileSettingRows.module.css", "row"),
-  rowButton: requireClass(styles.rowButton, "MobileSettingRows.module.css", "rowButton"),
-  rowLabel: requireClass(styles.rowLabel, "MobileSettingRows.module.css", "rowLabel"),
+  rowValueGroup: requireClass(styles.rowValueGroup, "MobileSettingRows.module.css", "rowValueGroup"),
   rowValue: requireClass(styles.rowValue, "MobileSettingRows.module.css", "rowValue"),
   caret: requireClass(styles.caret, "MobileSettingRows.module.css", "caret"),
-  readOnly: requireClass(styles.readOnly, "MobileSettingRows.module.css", "readOnly"),
   sheetBody: requireClass(styles.sheetBody, "MobileSettingRows.module.css", "sheetBody"),
-  optionList: requireClass(styles.optionList, "MobileSettingRows.module.css", "optionList"),
-  option: requireClass(styles.option, "MobileSettingRows.module.css", "option"),
-  optionSelected: requireClass(styles.optionSelected, "MobileSettingRows.module.css", "optionSelected"),
-  selection: requireClass(styles.selection, "MobileSettingRows.module.css", "selection"),
 };
 
 interface MobileSettingRowProps {
@@ -74,14 +86,30 @@ interface MobileSettingRowProps {
   /** The state behind `value`, for a row whose value reads differently while
    * loading or failed (the plugin preview's status). */
   state?: string;
+  /** The value is the working directory: wrap it in full instead of
+   * truncating, so the final path component stays readable. */
+  wrap?: boolean;
 }
 
-function MobileSettingRow({ label, value, onClick, expanded = false, disabled = false, state }: MobileSettingRowProps) {
+function MobileSettingRow({
+  label,
+  value,
+  onClick,
+  expanded = false,
+  disabled = false,
+  state,
+  wrap = false,
+}: MobileSettingRowProps) {
   const interactive = onClick !== undefined && !disabled;
-  const content = (
-    <>
-      <span className={CLASS.rowLabel}>{label}</span>
-      <span className={CLASS.rowValue} title={value}>
+  const trailing = (
+    <span className={CLASS.rowValueGroup}>
+      <span
+        className={CLASS.rowValue}
+        title={value}
+        style={
+          wrap ? { overflow: "visible", overflowWrap: "anywhere", textAlign: "start", whiteSpace: "normal" } : undefined
+        }
+      >
         {value}
       </span>
       {interactive && (
@@ -89,31 +117,35 @@ function MobileSettingRow({ label, value, onClick, expanded = false, disabled = 
           <Chevron direction="right" />
         </span>
       )}
-    </>
+    </span>
   );
 
+  if (onClick === undefined || disabled) {
+    return (
+      <ListRow
+        data-testid="mobile-spawn-row"
+        data-label={label}
+        data-state={state}
+        label={label}
+        value={trailing}
+        style={{ minHeight: "48px" }}
+      />
+    );
+  }
+
   return (
-    <div
-      className={`${CLASS.row} ${interactive ? "" : CLASS.readOnly}`}
+    <ListRow
       data-testid="mobile-spawn-row"
       data-label={label}
       data-state={state}
-    >
-      {!interactive ? (
-        content
-      ) : (
-        <button
-          type="button"
-          className={CLASS.rowButton}
-          aria-haspopup="dialog"
-          aria-expanded={expanded}
-          aria-label={`${label}: ${value}`}
-          onClick={onClick}
-        >
-          {content}
-        </button>
-      )}
-    </div>
+      label={label}
+      value={trailing}
+      style={{ minHeight: "48px" }}
+      onSelect={onClick}
+      aria-haspopup="dialog"
+      aria-expanded={expanded}
+      aria-label={`${label}: ${value}`}
+    />
   );
 }
 
@@ -132,29 +164,27 @@ function OptionSheet({
   onClose: () => void;
   onChange: (value: string) => void;
 }) {
+  const [draft, setDraft] = useState(value);
+
+  useEffect(() => {
+    if (open) setDraft(value);
+  }, [open, value]);
+
   return (
     <Sheet open={open} side="bottom" onClose={onClose} title={`Choose ${name.toLowerCase()}`}>
       <div className={CLASS.sheetBody}>
-        <div className={CLASS.optionList}>
-          {options.map((option) => {
-            const selected = option.value === value;
-            return (
-              <button
-                key={option.value}
-                type="button"
-                className={`${CLASS.option} ${selected ? CLASS.optionSelected : ""}`}
-                aria-pressed={selected}
-                onClick={() => {
-                  onChange(option.value);
-                  onClose();
-                }}
-              >
-                <span>{option.label}</span>
-                {selected && <span className={CLASS.selection}>Selected</span>}
-              </button>
-            );
-          })}
-        </div>
+        <RadioGroup
+          variant="list"
+          label={name}
+          value={draft}
+          options={options}
+          // Arrows only preview; click, Enter and Space commit and close.
+          onPreview={setDraft}
+          onChange={(next) => {
+            onChange(next);
+            onClose();
+          }}
+        />
       </div>
     </Sheet>
   );
@@ -173,6 +203,13 @@ export function MobileSettingRows({
   createDirectory,
   onCwdPanelClose,
   branch,
+  hostOptions,
+  hostValue,
+  hostLabel,
+  connectingHosts,
+  onHostSelect,
+  onHostConnect,
+  onConnectHost,
   accessMode,
   accessOptions,
   onAccessChange,
@@ -187,6 +224,11 @@ export function MobileSettingRows({
   const [openPicker, setOpenPicker] = useState<PickerName | null>(null);
   const [pluginDraft, setPluginDraft] = useState<PluginSelectionState>(pluginSelection);
   const lastTriggerRef = useRef<HTMLButtonElement | null>(null);
+  // A Connect that turns pending disables the button that held the keyboard,
+  // and the browser then drops focus to <body> while the sheet stays open.
+  // Keep the keyboard inside the sheet's host list.
+  const hostSheetBodyRef = useRef<HTMLDivElement | null>(null);
+  useFocusRehome(hostSheetBodyRef);
 
   useEffect(() => {
     if (openPicker !== null || lastTriggerRef.current === null) return;
@@ -222,10 +264,19 @@ export function MobileSettingRows({
         : `${selectedPluginNames(pluginSelection, pluginPreview.response).length} of ${
             pluginPreview.response.plugins.length
           }`;
+  const hasHostPicker = hostOptions.length > 0;
 
   return (
     <>
       <div className={CLASS.config} data-testid="mobile-spawn-config">
+        {hasHostPicker && (
+          <MobileSettingRow
+            label="Host"
+            value={hostLabel}
+            onClick={() => open("Host")}
+            expanded={openPicker === "Host"}
+          />
+        )}
         <MobileSettingRow
           label="Harness"
           value={harnessLabel}
@@ -237,6 +288,7 @@ export function MobileSettingRows({
           value={cwd === "" ? "(default)" : cwd}
           onClick={() => open("Working directory")}
           expanded={openPicker === "Working directory"}
+          wrap
         />
         <MobileSettingRow label="Branch" value={branch === "" ? "No branch detected" : branch} />
         <MobileSettingRow
@@ -271,6 +323,27 @@ export function MobileSettingRows({
         >
           Couldn't inspect plugins
         </InlineNotice>
+      )}
+
+      {hasHostPicker && (
+        <Sheet open={openPicker === "Host"} side="bottom" onClose={closePicker} title="Host">
+          <div className={CLASS.sheetBody} ref={hostSheetBodyRef}>
+            <SpawnHostSelection
+              options={hostOptions}
+              value={hostValue}
+              connecting={connectingHosts}
+              onSelect={(id) => {
+                onHostSelect(id);
+                closePicker();
+              }}
+              onConnect={onHostConnect}
+              onConnectHost={() => {
+                onConnectHost();
+                closePicker();
+              }}
+            />
+          </div>
+        </Sheet>
       )}
 
       <OptionSheet

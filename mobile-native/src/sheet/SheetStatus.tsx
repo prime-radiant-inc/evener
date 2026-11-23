@@ -32,11 +32,11 @@ export function SheetStatus() {
 
 /** What a page that has never loaded shows until its first read lands: spec
  * 15's "Connecting to magic-kingdom…" only while the app is connecting,
- * spec 14's sentence when no retry can help, and otherwise nothing about the
- * connection (spec 14): the quiet spinner, named by `label`, with the
- * sheet's status line above saying anything more. */
+ * the close's own sentence when no retry can help (spec 14), and otherwise
+ * nothing about the connection (spec 14): the quiet spinner, named by
+ * `label`, with the sheet's status line above saying anything more. */
 export function FirstLoad({ hubName, label }: { hubName: string; label: string }) {
-	const { state, fatal } = useConnection();
+	const { state, fatal, error } = useConnection();
 	const { palette } = useColors();
 	const scale = useTextScale();
 	if (!fatal && state !== "connecting" && state !== "reconnecting") return <Spinner label={label} />;
@@ -46,7 +46,7 @@ export function FirstLoad({ hubName, label }: { hubName: string; label: string }
 			testID={fatal ? "first-load-fatal" : "first-load-connecting"}
 			style={{ color: palette.inkMid, ...scaledType(uiType.subheadline, scale), textAlign: "center", padding: 32 }}
 		>
-			{fatal ? INCOMPATIBLE_VERSIONS : `Connecting to ${hubName}…`}
+			{fatal ? (error ?? INCOMPATIBLE_VERSIONS) : `Connecting to ${hubName}…`}
 		</Text>
 	);
 }

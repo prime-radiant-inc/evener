@@ -2,15 +2,9 @@
 // row (see case.json's description):
 //
 //   A. An option's label never overlaps its own detail text, compared
-//      LINE BOX by line box: label and detail are inline siblings in one
-//      prose flow (ask-dialog UX rework), so their element bounding boxes
-//      are unions over wrapped lines and intersect by construction - only
-//      same-line glyph boxes are a meaningful overlap signal.
-//   B. No option row escapes the card horizontally: option labels are
-//      inline bold text (the fixed-height chip this case was originally
-//      authored against is gone), so a long or UNBROKEN label WRAPS onto
-//      as many lines as it needs instead of painting outside its box or
-//      pushing the row past the card's edge.
+//      line box by line box within the separate label and detail lines.
+//   B. No option row escapes the card horizontally: a long or unbroken
+//      label wraps onto as many lines as it needs inside the copy stack.
 //   C. The dock sizes to its content: no internal scroll boundary
 //      (scrollHeight ~= clientHeight, overflow-y visible). Clipping here
 //      would strand the note row and Send answers behind a scrollbar the
@@ -26,11 +20,9 @@
 //      at all.)
 //   F. The transcript box stays inside the host pane and the footer below
 //      it, and the outer document never scrolls.
-//   G. Harness fidelity: the batch's Card tone="attention" envelope keeps
-//      its edge on all four sides, as in production. The module CSS loads
-//      de-scoped here, so a class name shared with another loaded module
-//      would restyle the envelope and the case would measure geometry
-//      production never renders.
+//   G. Harness fidelity: the batch's neutral outlined Card keeps its edge
+//      on all four sides. StatusDot's module is prefixed in this de-scoped
+//      harness so it cannot inherit Card's geometry.
 export default function assert(m) {
   const failures = [];
 
@@ -40,7 +32,7 @@ export default function assert(m) {
 
   if (m.envelopeEdges.some((width) => width < 1)) {
     failures.push(
-      `the attention envelope lost its edge (border widths ${m.envelopeEdges.join("/")}px) - another module's class is restyling it`,
+      `the neutral frame lost its edge (border widths ${m.envelopeEdges.join("/")}px) - another module's class is restyling it`,
     );
   }
 

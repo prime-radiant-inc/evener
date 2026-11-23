@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { FormRow } from "../../widgets/formrow";
 import { Input } from "../../widgets/input";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./formrow.module.css";
 
 function LiveFormRow() {
@@ -26,28 +26,25 @@ function LiveFormRow() {
 
 export default function FormRowGallerySection() {
   return (
-    <section>
-      <h2>FormRow</h2>
-      <ThemeFlip>
-        <div className={styles.stack}>
-          <LiveFormRow />
-          <FormRow label="Hub address" htmlFor="gallery-formrow-plain">
-            <Input id="gallery-formrow-plain" value="127.0.0.1:9180" onChange={() => {}} disabled />
-          </FormRow>
-          <FormRow label="Proxy (group: no single control)" help="Host and port of the outbound proxy.">
-            <div className={styles.pair}>
-              <Input aria-label="Proxy host" value="proxy.internal" onChange={() => {}} />
-              <Input aria-label="Proxy port" value="3128" onChange={() => {}} />
-            </div>
-          </FormRow>
-          <FormRow label="Proxy (group with error)" error="Port must be a number.">
-            <div className={styles.pair}>
-              <Input aria-label="Proxy host, invalid example" value="proxy.internal" onChange={() => {}} />
-              <Input aria-label="Proxy port, invalid example" value="squid" onChange={() => {}} />
-            </div>
-          </FormRow>
-        </div>
-      </ThemeFlip>
-    </section>
+    <GallerySection title="FormRow">
+      <div className={styles.stack}>
+        <LiveFormRow />
+        <FormRow label="Hub address" htmlFor="gallery-formrow-plain">
+          <Input id="gallery-formrow-plain" value="127.0.0.1:9180" onChange={() => {}} disabled />
+        </FormRow>
+        <FormRow label="Proxy (group: no single control)" help="Host and port of the outbound proxy.">
+          <div className={styles.pair}>
+            <Input aria-label="Proxy host" value="proxy.internal" onChange={() => {}} />
+            <Input aria-label="Proxy port" value="3128" onChange={() => {}} />
+          </div>
+        </FormRow>
+        <FormRow label="Proxy (group with error)" error="Port must be a number.">
+          <div className={styles.pair}>
+            <Input aria-label="Proxy host, invalid example" value="proxy.internal" onChange={() => {}} />
+            <Input aria-label="Proxy port, invalid example" value="squid" onChange={() => {}} />
+          </div>
+        </FormRow>
+      </div>
+    </GallerySection>
   );
 }

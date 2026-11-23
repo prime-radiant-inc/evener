@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -69,47 +70,56 @@ func DefMemoryWrite() llm.ToolDefinition {
 	}, "memory_write")
 }
 
-func DefReadFile() llm.ToolDefinition {
+// readFileCoreDescription is the description every read_file vision regime
+// shares. A regime appends its own vision_prompt sentence, or none when the
+// model sees images and PDFs inline.
+const readFileCoreDescription = "Read a file from the filesystem. Returns line-numbered content for text files (up to 2000 lines or ~48 KB per call; lines over 2000 chars are truncated, and passing limit=1 on a line returns it uncut up to ~48 KB). Prefer reading whole files or 300-500+ line windows over small 50-100 line slices, batch independent read_file calls in parallel, and use read_file instead of shell cat/head/tail/sed. Pass a negative offset (e.g. offset=-100) to read from the end of a file. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image (downscaled if oversized). For PDF files, returns the document (pass pages for PDFs over 10 pages or 20 MiB)."
+
+// defReadFile builds read_file's shared schema so the three vision regimes and
+// memory_read cannot drift on the core description, offset, limit, or pages.
+// visionSuffix is appended to the description, and visionParamDesc becomes the
+// vision_prompt property; both are empty in Regime 1, which omits vision_prompt
+// entirely (#6190).
+func defReadFile(visionSuffix, visionParamDesc string) llm.ToolDefinition {
+	props := map[string]any{
+		"file_path": map[string]any{"type": "string", "description": "Path of the file to read."},
+		"offset":    map[string]any{"type": "integer", "description": "1-based start line (default 1), or a negative integer to read from the end of the file (e.g. -100 reads the last 100 lines)."},
+		"limit":     map[string]any{"type": "integer", "description": "Maximum lines to return (default 2000; output is also bounded at ~48 KB). Pass 1 to read a single long line uncut."},
+		"pages":     map[string]any{"type": "string", "description": "PDF reads only: 1-based page or inclusive page range (e.g. \"1-5\" or \"3\"; max 20 pages per call). Required for PDFs over 10 pages or 20 MiB."},
+	}
+	if visionParamDesc != "" {
+		props["vision_prompt"] = map[string]any{"type": "string", "description": visionParamDesc}
+	}
 	return llm.ToolDefinition{
 		Name:        "read_file",
-		Description: "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis. When reading an image or PDF, put what you hope to learn in the `vision_prompt` argument — the system will provide a detailed description alongside the file.",
+		Description: readFileCoreDescription + visionSuffix,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
-			"properties": map[string]any{
-				"file_path":     map[string]any{"type": "string", "description": "Path of the file to read."},
-				"offset":        map[string]any{"type": "integer", "description": "For large files read in slices: 1-based start line (default 1)."},
-				"limit":         map[string]any{"type": "integer", "description": "For large files read in slices: line count to return, default 2000."},
-				"vision_prompt": map[string]any{"type": "string", "description": "Image/PDF reads only: describe what factual data you need extracted and why. Vision is an OCR + description service, not an analyst. It will extract and describe what you ask for; interpretation and classification are your job. Concrete asks work best: transcribe, list, extract, locate."},
-			},
-			"required": []string{"file_path"},
+			"properties":           props,
+			"required":             []string{"file_path"},
 		},
 	}
+}
+
+// DefReadFile returns read_file for Regime 3, where images and PDFs both use
+// the vision side-channel.
+func DefReadFile() llm.ToolDefinition {
+	return defReadFile(" When reading an image or PDF, put what you hope to learn in the `vision_prompt` argument — the system will provide a detailed description alongside the file.", "Image/PDF reads only: describe what factual data you need extracted and why. Vision is an OCR + description service, not an analyst. It will extract and describe what you ask for; interpretation and classification are your job. Concrete asks work best: transcribe, list, extract, locate.")
 }
 
 // DefReadFileNativeVision returns read_file tailored for Regime 1: neither images
 // nor PDFs run the side-channel. vision_prompt is omitted from advertised
 // properties and the description omits the vision_prompt sentence (#6190).
 func DefReadFileNativeVision() llm.ToolDefinition {
-	def := DefReadFile()
-	def.Description = "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis."
-	props := def.Parameters["properties"].(map[string]any)
-	delete(props, "vision_prompt")
-	return def
+	return defReadFile("", "")
 }
 
 // DefReadFilePDFVisionOnly returns read_file tailored for Regime 2: images are
 // native inline, while PDFs use the side-channel. vision_prompt is kept and
 // scoped to PDF files in both the tool description and parameter description (#6190).
 func DefReadFilePDFVisionOnly() llm.ToolDefinition {
-	def := DefReadFile()
-	def.Description = "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis. When reading a PDF, put what you hope to learn in the `vision_prompt` argument — the system will provide a detailed description alongside the file."
-	props := def.Parameters["properties"].(map[string]any)
-	props["vision_prompt"] = map[string]any{
-		"type":        "string",
-		"description": "PDF reads only: describe what factual data you need extracted and why. Vision is an OCR + description service, not an analyst. It will extract and describe what you ask for; interpretation and classification are your job. Concrete asks work best: transcribe, list, extract, locate.",
-	}
-	return def
+	return defReadFile(" When reading a PDF, put what you hope to learn in the `vision_prompt` argument — the system will provide a detailed description alongside the file.", "PDF reads only: describe what factual data you need extracted and why. Vision is an OCR + description service, not an analyst. It will extract and describe what you ask for; interpretation and classification are your job. Concrete asks work best: transcribe, list, extract, locate.")
 }
 
 func DefWriteFile() llm.ToolDefinition {
@@ -145,22 +155,62 @@ func DefListDir() llm.ToolDefinition {
 	}
 }
 
-func DefEditFile() llm.ToolDefinition {
+func defEditFile(readTool, writeTool string) llm.ToolDefinition {
 	return llm.ToolDefinition{
-		Name:        "edit_file",
-		Description: "Replace an exact string occurrence in an existing file. Always read the file first so you know the exact text to match. old_string must identify a unique location in the file, so include enough surrounding context to make it unambiguous. Keep each call small and focused. Set replace_all only for deliberate whole-file replacements such as a symbol rename.",
+		Name: "edit_file",
+		Description: fmt.Sprintf(
+			"Apply one or more exact replacements to an existing file atomically. "+
+				"Read the file first with %s and never copy line-number prefixes (like '12\\t' or '12:') into old_string or new_string. "+
+				"Batch disjoint changes in the same file into one call via edits rather than separate calls. "+
+				"Every edits[].old_string matches the original file (not after earlier edits) and must not overlap any other edit; merge nearby changes into one entry. "+
+				"Keep each old_string as small as possible while unique, and use %s when replacing most or all of a file. "+
+				"If any edit fails to match, is ambiguous, or overlaps another edit, nothing is written.",
+			readTool, writeTool,
+		),
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"file_path":   map[string]any{"type": "string", "description": "Path of the existing file to edit."},
-				"old_string":  map[string]any{"type": "string", "description": "Exact text to replace; must be unique unless replace_all is true."},
-				"new_string":  map[string]any{"type": "string", "description": "The replacement text."},
-				"replace_all": map[string]any{"type": "boolean", "description": "Replace every occurrence instead of requiring a unique match."},
+				"file_path": map[string]any{
+					"type":        "string",
+					"description": "Path of the existing file to edit.",
+				},
+				"edits": map[string]any{
+					"type":        "array",
+					"minItems":    1,
+					"description": "Disjoint replacements matched against the original file and applied atomically.",
+					"items": map[string]any{
+						"type":                 "object",
+						"additionalProperties": false,
+						"properties": map[string]any{
+							"old_string": map[string]any{
+								"type":        "string",
+								"description": "Non-empty exact text from the original file to replace (unique unless replace_all is true).",
+							},
+							"new_string": map[string]any{
+								"type":        "string",
+								"description": "Replacement text.",
+							},
+							"replace_all": map[string]any{
+								"type":        "boolean",
+								"description": "Replace every occurrence in the original file instead of requiring a unique match (default false).",
+							},
+						},
+						"required": []string{"old_string", "new_string"},
+					},
+				},
 			},
-			"required": []string{"file_path", "old_string", "new_string"},
+			"required": []string{"file_path", "edits"},
 		},
 	}
+}
+
+func DefEditFile() llm.ToolDefinition {
+	return defEditFile("read_file", "write_file")
+}
+
+func DefMemoryEdit() llm.ToolDefinition {
+	return MemoryDefinition(defEditFile("memory_read", "memory_write"), "memory_edit")
 }
 
 // DefShell is the fully capable seed form, equivalent to
@@ -445,7 +495,9 @@ func DefDelegateSendNamed(resultTool string) llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "delegate_send",
 		Description: "Sends a message to one of your own delegates, by the durable delegate_id you got when you created it. " +
-			"To reach your own parent, use `" + resultTool + "` instead: end_turn=false for an update, end_turn=true for your report, the one line naming the work you are waiting on, or a readiness line before a watch frame. " +
+			"To reach your own parent, use `" + resultTool + "` instead: `next=\"send_and_continue\"` for an update, " +
+			"`next=\"send_and_end_turn\"` (the default) for a report or readiness line, or " +
+			"`next=\"log_quietly_and_end_turn\"` with a brief one-line `message` to end a turn quietly while waiting. " +
 			"`to` accepts only a `dlg_...` delegate_id this session owns; it rejects `caller`, job/turn handles, and runtime aliases. " +
 			"If the delegate is running, a send with max_wait_ms unset or 0 steers it and returns on delivery; a positive max_wait_ms is refused as target_busy, while a delegate that finishes before admission is started and the wait is honored. A delegate already being driven or otherwise busy is refused as target_busy. " +
 			"Idle delegates are started/resumed automatically through the existing restore path, so follow-up messages resume them without an explicit idle-mode flag.",
@@ -558,30 +610,24 @@ func DefJobWatchNamed(eventKinds []string, resultTool string) llm.ToolDefinition
 }
 
 func DefJobStatus() llm.ToolDefinition {
-	return DefJobStatusNamed(DefaultResultToolName, false)
+	return DefJobStatusNamed(DefaultResultToolName)
 }
 
 // EndTurnToWait is the guidance for an agent that has nothing else to do until
-// its background work finishes: end the turn and let the completion wake it.
+// its background work finishes: yield quietly and let the completion wake it.
 // It is the one wording shared by the job tool descriptions and the refusals of
-// wait-shaped calls. hasEndReason is whether the session's result tool takes
-// end_reason (only a root with a human partner does); advice to pass it
-// elsewhere would fail the tool's schema.
-func EndTurnToWait(resultTool string, hasEndReason bool) string {
-	call := "call `" + resultTool + "` with `end_turn=true`"
-	if hasEndReason {
-		call += " and `end_reason=\"waiting_on_work\"`"
-	}
-	return "When you have nothing else to do until your background work finishes, end your turn: " + call + ". Its completion wakes you. To wake on a condition instead, set `job_watch` with `output_match`."
+// wait-shaped calls.
+func EndTurnToWait(resultTool string) string {
+	return "When you have nothing else to do until your background work finishes, end your turn quietly with `" + resultTool + "` (`next=\"log_quietly_and_end_turn\"`) and a brief one-line `message` naming what you are waiting on; its completion wakes you. To post a status note before waiting, send an update with `" + resultTool + "` (`next=\"send_and_continue\"`). To wake on a condition instead, set `job_watch` with `output_match`."
 }
 
 // DefJobStatusNamed is DefJobStatus for a session whose result tool is named
-// resultTool and does (hasEndReason) or does not take end_reason.
-func DefJobStatusNamed(resultTool string, hasEndReason bool) llm.ToolDefinition {
+// resultTool.
+func DefJobStatusNamed(resultTool string) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "job_status",
-		Description: "Inspect one durable shell job or stable delegate by target. Use this for metadata-only orientation: type, lifecycle status, observable phase, running/quiet time, and transcript_ref. Delegate status never returns terminal packet contents or acknowledges delivery. Completion is notification-driven, and a repeat call on a running target whose status and phase have not changed is refused. " + EndTurnToWait(resultTool, hasEndReason) + " Read raw evidence with read_transcript(transcript_ref).",
+		Description: "Inspect one durable shell job or stable delegate by target. Use this for metadata-only orientation: type, lifecycle status, observable phase, running/quiet time, and transcript_ref. Delegate status never returns terminal packet contents or acknowledges delivery. Completion is notification-driven, and a repeat call on a running target whose status and phase have not changed is refused. " + EndTurnToWait(resultTool) + " Read raw evidence with read_transcript(transcript_ref).",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -595,7 +641,7 @@ func DefJobStatusNamed(resultTool string, hasEndReason bool) llm.ToolDefinition 
 }
 
 func DefJobList() llm.ToolDefinition {
-	return DefJobListNamed(DefaultResultToolName, false)
+	return DefJobListNamed(DefaultResultToolName)
 }
 
 var jobListStatusEnum = func() []any {
@@ -609,13 +655,13 @@ var jobListStatusEnum = func() []any {
 
 // DefJobListNamed is DefJobList for a session whose result tool is named
 // resultTool.
-func DefJobListNamed(resultTool string, hasEndReason bool) llm.ToolDefinition {
+func DefJobListNamed(resultTool string) llm.ToolDefinition {
 	strictFalse := false
 	statusEnum := append([]any(nil), jobListStatusEnum...)
 	typeEnum := []any{"shell", "delegate"}
 	return llm.ToolDefinition{
 		Name:        "job_list",
-		Description: "List this session's durable shell jobs and stable delegates, newest first; filter by `status` or `type`. Rows include typed identity, status, phase, running_for_ms, quiet_for_ms, and transcript_ref, so this is usually enough to re-orient without a follow-up status call. Completion is notification-driven. " + EndTurnToWait(resultTool, hasEndReason) + " " + ObserverReporting(resultTool) + " Use transcript evidence after an observer's report when you need audit or diagnosis context. The result also includes your active watches. Terminal outcome statuses: completed, failed, command_exited_nonzero, command_killed, exhausted, cancelled, stopped. A short shell can finish before a running-only filter sees it, and an ended delegate becomes idle; when recency matters, list unfiltered or inspect the typed resource by id.",
+		Description: "List this session's durable shell jobs and stable delegates, newest first; filter by `status` or `type`. Rows include typed identity, status, phase, running_for_ms, quiet_for_ms, and transcript_ref, so this is usually enough to re-orient without a follow-up status call. Completion is notification-driven. " + EndTurnToWait(resultTool) + " " + ObserverReporting(resultTool) + " Use transcript evidence after an observer's report when you need audit or diagnosis context. The result also includes your active watches. Terminal outcome statuses: completed, failed, command_exited_nonzero, command_killed, exhausted, cancelled, stopped. A short shell can finish before a running-only filter sees it, and an ended delegate becomes idle; when recency matters, list unfiltered or inspect the typed resource by id.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -787,28 +833,17 @@ func DefWebFetch() llm.ToolDefinition {
 	}
 }
 
-func DefWebSearch() llm.ToolDefinition {
-	return llm.ToolDefinition{
-		Name:        "web_search",
-		Description: "Search the web for current information. Returns grounded results from Google Search. Use when you need up-to-date facts, documentation, error messages, or API references.",
-		Parameters: map[string]any{
-			"type":                 "object",
-			"additionalProperties": false,
-			"properties": map[string]any{
-				"query": map[string]any{
-					"type":        "string",
-					"description": "The search query.",
-				},
-			},
-			"required": []string{"query"},
-		},
-	}
-}
-
 // DefaultResultToolName is the result tool's name unless a session renames it
 // (SessionConfig.ResultToolName). Tool descriptions that teach the result tool
 // are built from the configured name by the Def...Named constructors.
 const DefaultResultToolName = "communicate"
+
+// CommunicateNext values select what happens after a communicate call.
+const (
+	CommunicateNextSendAndEndTurn       = schema.CommunicateNextSendAndEndTurn
+	CommunicateNextSendAndContinue      = schema.CommunicateNextSendAndContinue
+	CommunicateNextLogQuietlyAndEndTurn = schema.CommunicateNextLogQuietlyAndEndTurn
+)
 
 func DefCommunicate() llm.ToolDefinition {
 	return DefCommunicateNamed(DefaultResultToolName)
@@ -817,24 +852,32 @@ func DefCommunicate() llm.ToolDefinition {
 func DefCommunicateNamed(name string) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
-		Name:        name,
-		Description: "Send a user-facing message. Use this tool for every message, readiness line, requested status marker, request for input, and final answer the user or caller should see. A valid call has visible text in `message` or `output.message`. If you will immediately keep working after this message, set `end_turn=false` and continue by calling the next work tool in the following round. Use `end_turn=false` only for visible narration or status before immediate continued work. Use `end_turn=true` when this message should stop the current activation: final answers, completed results, blocking requests for input, readiness lines that wait for future user/caller/watch-frame input, and a line naming the work you are waiting on. Set `message` to the exact visible text. Always include `output` as an object with exactly these top-level fields: `message`, `data`, and `artifacts`. For ordinary status or conversational messages, use `output.message=\"\"`, `output.data={}`, and `output.artifacts=[]`. When handing back completed work or machine-readable results, populate `output` with the evidence and structured data the caller needs.",
-		Strict:      &strictFalse,
+		Name: name,
+		Description: "Send a message to your human partner or caller, or log a quiet wait note when ending a turn without replying. " +
+			"Use this tool for every message, readiness line, requested status marker, and final answer they should see. " +
+			"`message` is always required. Choose `next`: `send_and_end_turn` (default) delivers `message` as your final reply and ends this turn; " +
+			"`send_and_continue` delivers `message` as a progress update and continues in the next round, so send one only when your partner needs to know something or act on it; " +
+			"`log_quietly_and_end_turn` records `message` as a muted one-line note of what you are waiting on or why no reply is needed and ends this turn without waking anyone or sending a chat bubble. " +
+			"Use `log_quietly_and_end_turn` only while waiting on live background work or to acknowledge a notification or watch frame that needs nothing from you, never to skip replying to a human partner's message; emit no accompanying assistant prose alongside it. " +
+			"Include `output` only on `send_and_end_turn` when you hand back completed work or machine-readable results; a `result_schema` requires `output` on `send_and_end_turn`, and `output` must be omitted on `send_and_continue` and `log_quietly_and_end_turn`.",
+		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"message": map[string]any{
 					"type":        "string",
-					"description": "Exact user-facing message text. Fill this with the text the user or caller should see. When the task asks for concrete findings, put the concrete findings here.",
+					"description": "Text to send to your human partner or caller, or a brief one-line note of what you are waiting on or why no reply is needed when `next` is `log_quietly_and_end_turn`.",
 				},
-				"end_turn": map[string]any{
-					"type":        "boolean",
-					"description": "Set to false only for visible narration/status before immediate continued work. Set to true when this message ends the current activation: final answer, completed result, blocking input request, readiness line that waits for future user/caller/watch-frame input, or a line naming the work you are waiting on.",
+				"next": map[string]any{
+					"type":        "string",
+					"enum":        slices.Clone(schema.CommunicateNextValues),
+					"default":     CommunicateNextSendAndEndTurn,
+					"description": "What happens after this message: `send_and_end_turn` (default) delivers `message` as your final reply and ends this turn; `send_and_continue` delivers `message` as a progress update and continues working in the next round; `log_quietly_and_end_turn` records `message` as a muted one-line transcript note without waking anyone and ends this turn while waiting on live work or after a notification or watch frame that needs no reply.",
 				},
 				"output": map[string]any{
 					"type":                 "object",
-					"description":          "Structured output envelope. Keep this present on every call with exactly these top-level fields: message, data, artifacts. For ordinary text replies, keep user-visible text in the top-level message and leave data/artifacts empty.",
+					"description":          "Optional structured payload for a final reply (`send_and_end_turn`). Include it only when you hand back completed work or machine-readable results; a `result_schema` requires it on `send_and_end_turn` and it must be omitted on `send_and_continue` and `log_quietly_and_end_turn`.",
 					"additionalProperties": false,
 					"properties": map[string]any{
 						"message": map[string]any{"type": "string", "description": "Human-readable structured summary for automation and orchestration. Leave empty for ordinary conversational replies."},
@@ -850,78 +893,49 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 							"items":       map[string]any{"type": "string"},
 						},
 					},
-					"required": []string{"message", "data", "artifacts"},
 				},
 			},
-			"required": []string{"message", "end_turn", "output"},
+			"required": []string{"message"},
 		},
 	}
-}
-
-// Why a root session's communicate call ends its turn: done (nothing waits
-// on the human partner), needs_response (the agent cannot go on until its
-// human partner answers or acts), or waiting_on_work (work the agent started
-// will wake it). Offered only where someone can answer the session; only
-// needs_response rests the session awaiting.
-const (
-	CommunicateEndReasonDone          = "done"
-	CommunicateEndReasonNeedsResponse = "needs_response"
-	CommunicateEndReasonWaitingOnWork = "waiting_on_work"
-)
-
-// CommunicateEndReasons lists the end_reason values in the order the
-// parameter advertises them.
-var CommunicateEndReasons = []string{CommunicateEndReasonDone, CommunicateEndReasonNeedsResponse, CommunicateEndReasonWaitingOnWork}
-
-// WithCommunicateEndReason returns a copy of a communicate definition that
-// also offers end_reason. Only a root someone can answer gets it: nobody
-// responds to a delegate's or a headless root's resting state.
-func WithCommunicateEndReason(def llm.ToolDefinition) llm.ToolDefinition {
-	params := CloneSchemaMap(def.Parameters)
-	props, _ := params["properties"].(map[string]any)
-	if props == nil {
-		return def
-	}
-	props["end_reason"] = map[string]any{
-		"type":        "string",
-		"enum":        slices.Clone(CommunicateEndReasons),
-		"description": "Why this message ends your turn; read only when end_turn=true, and done when omitted. `done`: you finished or answered, and nothing waits on your human partner; the session rests idle. `needs_response`: you cannot go on until your human partner answers or acts, such as a decision, a review, or something only they can do; the session shows it is waiting on them. `waiting_on_work`: you are waiting on delegates or background jobs that will wake you; the session rests idle and asks nobody for attention. The call is refused when nothing can wake the session: use `done` if finished, `needs_response` if your partner must act, or start the work or arm a watch before ending the turn.",
-	}
-	def.Parameters = params
-	return def
 }
 
 // ObserverReporting is how an observer sidecar talks to the session it
 // watches through resultTool, shared by every tool description and error that
 // teaches it.
 func ObserverReporting(resultTool string) string {
-	return "Observers send updates with `" + resultTool + "(end_turn=false)`, and a readiness line or their findings with `" + resultTool + "(end_turn=true)`."
+	return "Observers send updates with `" + resultTool + "` (`next=\"send_and_continue\"`), a readiness line or their findings with `" + resultTool + "` (`next=\"send_and_end_turn\"`), and quiet no-action notes with `" + resultTool + "` (`next=\"log_quietly_and_end_turn\"`)."
 }
 
 // communicateDelegateDescription is communicate worded for a delegate, whose
 // messages go to its parent agent. It names no output fields: a delegate
 // started with result_schema gets that schema as its output parameter
 // (provider.WithCommunicateOutputSchema), so only the schema can say the shape.
-const communicateDelegateDescription = "Send a message to your parent agent; it is the only way your parent hears from you. Put the text your parent should read in `message`. " +
-	"With `end_turn=false` the message is an update: your parent receives it, and it wakes a parent that is waiting on you, so send one only when your parent needs to know something or act on it, never to narrate progress, and keep working in the following round. " +
-	"The result's `delivery` says whether your parent has the update (`delivered`), will get it at its next step (`queued`), or cannot get it (`not_delivered`, with a `reason`); the call succeeds either way. " +
-	"With `end_turn=true` the message ends your turn with your report, your one line naming the work you are waiting on, or a readiness line before you wait for watch frames: put the complete result in a report. A `result_schema` still requires its output on every call, so when the schema has no truthful pending value, keep the turn open rather than invent one. " +
-	"Always include `output` in the shape its schema gives; when you hand back completed work or machine-readable results, fill it with the evidence and structured data your parent needs."
+func communicateDelegateDescription(resultTool string) string {
+	return "Send a message to your parent agent, or log a quiet wait note when ending a turn without waking your parent; it is the only way your parent hears from you. " +
+		"Put the text your parent should read (or your one-line wait note for `log_quietly_and_end_turn`) in `message`. " +
+		"With `next=\"send_and_continue\"` the message is an update: your parent receives it, and it wakes a parent that is waiting on you, so send one only when your parent needs to know something or act on it, never to narrate progress, and keep working in the following round. " +
+		"The result's `delivery` says whether your parent has the update (`delivered`), will get it at its next step (`queued`), or cannot get it (`not_delivered`, with a `reason`); the call succeeds either way. " +
+		"With `next=\"send_and_end_turn\"` (the default) the message ends your turn with your report or a readiness line before you wait for watch frames: put the complete result in a report. " +
+		"When you have nothing to report while work you started keeps running, or when a notification or watch frame needs nothing from you, call `" + resultTool + "` with `next=\"log_quietly_and_end_turn\"` and a brief one-line `message` saying what you are waiting on or why no action is needed; this ends your turn quietly without waking your parent and keeps your report for when the work finishes. " +
+		"A `result_schema` requires its `output` on `send_and_end_turn`, not on `send_and_continue` or `log_quietly_and_end_turn`; omit `output` on `send_and_continue` and `log_quietly_and_end_turn`, and when you hand back completed work or machine-readable results on `send_and_end_turn`, fill `output` with the evidence and structured data your parent needs."
+}
 
 // WithCommunicateDelegateUpdates returns a copy of a communicate definition
-// worded for a delegate: end_turn=false sends an update its parent receives,
-// end_turn=true its report, its wait line, or an observer readiness line. The
-// output schema stays as the caller built it.
+// worded for a delegate: next="send_and_continue" sends an update its parent
+// receives, next="send_and_end_turn" (or omitted) its report or an observer
+// readiness line, and next="log_quietly_and_end_turn" a quiet yield with a
+// bounded note. The output schema stays as the caller built it.
 func WithCommunicateDelegateUpdates(def llm.ToolDefinition) llm.ToolDefinition {
 	params := CloneSchemaMap(def.Parameters)
 	props, _ := params["properties"].(map[string]any)
 	if message, ok := props["message"].(map[string]any); ok {
-		message["description"] = "The text your parent agent receives. When the task asks for concrete findings, put them here."
+		message["description"] = "The text your parent agent receives, or a brief one-line note of what you are waiting on or why no action is needed when `next` is `log_quietly_and_end_turn`."
 	}
-	if endTurn, ok := props["end_turn"].(map[string]any); ok {
-		endTurn["description"] = "false: send an update and keep working; your parent receives it, and it wakes a parent that is waiting on you. true: send your report, the one line naming the work you are waiting on, or a readiness line before you wait for watch frames, and end your turn."
+	if nextProp, ok := props["next"].(map[string]any); ok {
+		nextProp["description"] = "What happens after this message: `send_and_end_turn` (default) delivers `message` as your report or readiness line and ends this turn; `send_and_continue` delivers `message` as an update your parent receives (waking a waiting parent) and continues in the next round; `log_quietly_and_end_turn` records `message` as a muted one-line note without waking your parent and ends this turn while waiting on live work or after a notification or watch frame that needs no action."
 	}
-	def.Description = communicateDelegateDescription
+	def.Description = communicateDelegateDescription(def.Name)
 	def.Parameters = params
 	return def
 }

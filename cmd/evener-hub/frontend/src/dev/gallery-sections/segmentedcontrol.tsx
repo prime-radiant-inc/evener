@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { SegmentedControl, type SegmentedControlOption } from "../../widgets/segmentedcontrol";
 import { ThemeFlip } from "../ThemeFlip";
 import styles from "./segmentedcontrol.module.css";
@@ -44,6 +44,14 @@ const STACKED_OPTIONS: readonly SegmentedControlOption[] = [
   { value: "about", label: "About" },
 ];
 
+const WRAP_OPTIONS: readonly SegmentedControlOption[] = [
+  { value: "agents", label: "Agents", detail: "18/1069", accessibleLabel: "Agents, 18 of 1069 active" },
+  { value: "jobs", label: "Running jobs", detail: "2/201", accessibleLabel: "Jobs, 2 of 201 running" },
+  { value: "watches", label: "Watches", detail: "0/3", accessibleLabel: "Watches, 0 of 3 armed" },
+  { value: "tasks", label: "Tasks", detail: "4/9", accessibleLabel: "Tasks, 4 of 9 settled" },
+  { value: "about", label: "About" },
+];
+
 function StackedControl() {
   const [value, setValue] = useState("jobs");
   return (
@@ -61,15 +69,27 @@ function StackedControl() {
   );
 }
 
-function FocusControl() {
-  const host = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    host.current?.querySelector<HTMLButtonElement>('[role="radio"][aria-checked="true"]')?.focus();
-  }, []);
+function WrapControl() {
+  const [value, setValue] = useState("jobs");
   return (
-    <div ref={host}>
-      <SegmentedControl label="Keyboard focus" value="intent" options={SHORT_OPTIONS} onChange={() => {}} />
+    <div className={styles.frame320} data-testid="segmentedcontrol-wrap-demo">
+      <SegmentedControl
+        label="Wrapping detail"
+        hideLabel
+        size="sm"
+        fullWidth
+        wrap
+        value={value}
+        options={WRAP_OPTIONS}
+        onChange={setValue}
+      />
     </div>
+  );
+}
+
+function FocusControl() {
+  return (
+    <SegmentedControl label="Keyboard focus" value="intent" options={SHORT_OPTIONS} onChange={() => {}} autoFocus />
   );
 }
 
@@ -155,6 +175,7 @@ export default function SegmentedControlGallerySection() {
           </div>
           <StackedControl />
           <div className={styles.frames}>
+            <WrapControl />
             <NarrowFrame width={320} />
             <NarrowFrame width={390} />
           </div>

@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
@@ -100,11 +101,16 @@ func publishEndpoint(web *WebServer, endpoint EndpointConfig, configIdentity, hu
 }
 
 // announceHub tells the operator where the hub is listening and how to sign in.
-func announceHub(stderr io.Writer, record hubendpoint.Record, runDir, hubStateRoot, authToken string) {
+func announceHub(
+	stderr io.Writer,
+	record hubendpoint.Record,
+	runDir, hubStateRoot, authToken string,
+	hostname func() (string, error),
+) {
 	log := componentlog.NewWriter("hub", stderr)
 	log.Info(fmt.Sprintf("evener-hub %s listening on %s (run_dir=%s)", Version, record.BoundAddr, runDir))
 	log.Info(fmt.Sprintf("configured listener: %s (%s)", record.RequestedListenAddr, record.ListenSource))
-	if origin, originErr := browserLoginOrigin(record, hubHostname); originErr == nil {
+	if origin, originErr := browserLoginOrigin(record, hostname); originErr == nil {
 		log.Info(fmt.Sprintf("Browser address: %s (local: %s)", origin, record.LocalURL))
 		if isTerminalWriter(stderr) {
 			link := hubedge.AuthURLFor(origin, authToken)
@@ -620,12 +626,13 @@ func (r *hubRuntime) onSSHEvent(ev sshconn.Event) {
 // that were waiting for it. The returned cleanup drains the AppWire RPC server
 // and then shuts the host operations down; it must run before connectHosts's
 // cleanup closes the SSH channels.
-func (r *hubRuntime) buildWeb(appwireTrace *appserver.WebSocketTrace) (*WebServer, func()) {
+func (r *hubRuntime) buildWeb(appwireTrace *appserver.WebSocketTrace, localHostName string) (*WebServer, func()) {
 	cfg := r.cfg
 	sshManager := r.sshManager
 	r.scratchReconcile = newScratchReconciler(r.past, r.archive, r.roster)
 	web := newWebServer(hubcore.WebConfig{
 		HubAddr:                   r.boundAddr,
+		LocalHostName:             localHostName,
 		AuthToken:                 r.authToken,
 		PublicURL:                 cfg.PublicURL,
 		HubStateRoot:              cfg.HubStateRoot,
@@ -661,6 +668,7 @@ func (r *hubRuntime) buildWeb(appwireTrace *appserver.WebSocketTrace) (*WebServe
 		NoUserLayer:               r.noUserLayer,
 		PokeAttention:             r.pokeAttention,
 		ScratchReconcile:          r.scratchReconcile.Kick,
+		ReapSessionJobs:           agent.ReapSessionBackgroundJobs,
 		Inputs:                    r.inputs,
 		RemoteThreadCache:         r.remoteCache,
 		RemoteHosts:               r.hostEntries,
@@ -803,7 +811,7 @@ func (r *hubRuntime) wireNavigationInvalidation(web *WebServer) {
 	// list already failed changes nothing there. Without this the fleet view can
 	// keep reporting a host online after it dropped, or keep its rows metas-only
 	// after it reconnected.
-	r.sshStateInvalidatedNavigation = func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) }
+	r.sshStateInvalidatedNavigation = func() { bump(); web.navigation.Invalidate(navigationChangeHint{Sources: true}) }
 	r.pinSections.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
 	// A seen mark changes live rows' unseen flag; a mark committed by any
 	// writer, the RPC or a session deletion's scrub, invalidates navigation.
@@ -850,6 +858,11 @@ func (r *hubRuntime) startBackground(web *WebServer) (context.Context, func()) {
 	// aged into the archive and ones whose daemon exited while the hub was down.
 	goBackground(func() { r.scratchReconcile.Run(ctx) })
 	r.scratchReconcile.Kick()
+	// A daemon that died while the hub was down gets no session-gone
+	// announcement: the first publication after a hub start has no earlier
+	// listing to leave. Sweep the roster's crashed entries once for background
+	// job process groups that outlived their daemon (#4843).
+	goBackground(func() { reapCrashedSessionJobs(roster.List(), sessionStillLive(roster), web.cfg.ReapSessionJobs) })
 	// Start the resettable navigation scheduler only after the initial roster
 	// seed, so its first capture cannot publish a transient empty generation.
 	goBackground(func() { web.navigation.Start(ctx) })

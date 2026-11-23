@@ -130,7 +130,6 @@ func toolProgramDefinitions(agentTypes, eventKinds, effortLevels []string, custo
 		DefGlob(),
 		DefApplyPatch(),
 		DefWebFetch(),
-		DefWebSearch(),
 		DefCommunicate(),
 		DefCommunicateNamed(customName),
 		DefTaskList(effortLevels),

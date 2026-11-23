@@ -431,7 +431,7 @@ func TestTranscriptAuthorshipForkCopiesKnown(t *testing.T) {
 	answer.Authorship = &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: root.id}}
 	root.recordTurn(answer, answer)
 	call := schema.NewTurn(schema.TurnAssistant, forkContextToolCall("comm-copy", "communicate"))
-	call.Message.Content[0].ToolCall.Arguments = []byte(`{"message":"original-communicate","end_turn":false}`)
+	call.Message.Content[0].ToolCall.Arguments = []byte(`{"message":"original-communicate","next":"send_and_continue"}`)
 	call.Authorship = answer.Authorship.Clone()
 	root.recordTurn(call, call)
 	root.appendTurn(schema.TurnToolResults, llm.ToolResult("comm-copy", `{"delivery":"delivered"}`, false))

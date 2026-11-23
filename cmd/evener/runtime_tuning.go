@@ -1,11 +1,6 @@
 package main
 
 import (
-	"errors"
-	"fmt"
-	"io"
-	"strconv"
-
 	"primeradiant.com/evener/envvars"
 )
 
@@ -38,56 +33,22 @@ const (
 	gcTargetPercent = 200
 )
 
-// errInvalidGOGC reports a GOGC value the collector would not honor. It is a
-// sentinel so a test matches the class with errors.Is rather than the wording.
-var errInvalidGOGC = errors.New("invalid " + envvars.GoGC.Name)
-
 // tuneGCTarget raises the collector's target for this process unless the
-// operator named one. Presence is the test, not the value: GOGC=100 is how an
-// operator asks for Go's own default back on a memory-tight host, and it is
-// indistinguishable from an unset GOGC by the collector's reported target.
-// Overriding a named target would grow the RSS of exactly the host that set it.
+// operator named one. A non-empty value is the test, not the value itself:
+// GOGC=100 is how an operator asks for Go's own default back on a memory-tight
+// host, and it is indistinguishable from an unset GOGC by the collector's
+// reported target. Overriding a named target would grow the RSS of exactly the
+// host that set it.
 //
-// The value is validated here, at the one place evener starts, because the
-// alternative is silent: the runtime's own read of GOGC replaces anything it
-// cannot parse with 100, so a typo would leave the process at a target nobody
-// asked for — neither the operator's value nor evener's 200. parseGCPercent is
-// the runtime's rule, so a value it accepts is the value the collector runs.
+// An empty GOGC is treated as unset, which is how the Go runtime reads it too.
+// The value itself is never parsed here: the runtime reads GOGC at startup and
+// silently falls back to 100 for a value it cannot parse, so evener delegates
+// that parse exactly as it did before the knob was registered.
 //
 // set is debug.SetGCPercent in production and a recorder in tests.
-func tuneGCTarget(set func(percent int) int) error {
-	value, operatorSet := envvars.GoGC.LookupEnv()
-	if operatorSet {
-		if _, err := parseGCPercent(value); err != nil {
-			return err
-		}
-		return nil
+func tuneGCTarget(set func(percent int) int) {
+	if envvars.GoGC.Getenv() != "" {
+		return
 	}
 	set(gcTargetPercent)
-	return nil
-}
-
-// parseGCPercent validates a GOGC value the way the collector does at startup:
-// the word "off", or a base-10 integer the runtime's 32-bit parse accepts. A
-// negative number is allowed and disables collection, exactly as Go documents.
-func parseGCPercent(value string) (int, error) {
-	if value == "off" {
-		return -1, nil
-	}
-	percent, err := strconv.ParseInt(value, 10, 32)
-	if err != nil {
-		return 0, fmt.Errorf("%w: %q must be \"off\" or an integer percentage (for example 100 or 200)", errInvalidGOGC, value)
-	}
-	return int(percent), nil
-}
-
-// applyGCTuning is what main runs before any work: tuneGCTarget's policy, and
-// a refusal through the process's own exit so a configuration mistake stops
-// evener at startup instead of leaving it at a target nobody asked for. set,
-// stderr and exit are seams for tests, mirroring mainDeps.
-func applyGCTuning(set func(percent int) int, stderr io.Writer, exit func(int)) {
-	if err := tuneGCTarget(set); err != nil {
-		_, _ = fmt.Fprintf(stderr, "evener: %v\n", err)
-		exit(1)
-	}
 }

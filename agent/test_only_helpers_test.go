@@ -15,7 +15,6 @@ import (
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/agent/transcript"
 )
 
 // recordWatchSendPending retains the pure runtime-state transition used by the
@@ -383,10 +382,6 @@ func (s *Session) launchCompactionNamer(ctx context.Context, turn schema.Turn) {
 
 func (s *Session) nameSessionFromCompactionTurn(ctx context.Context, turn schema.Turn) error {
 	return s.nameSessionFromCompactionTurnGated(ctx, turn, ungatedFoldRevision)
-}
-
-func appendColdAttentionResolution(path, expectedSessionID string, ids []string, disposition delegateAttentionResolution) (err error) {
-	return appendColdAttentionResolutionWithOpen(path, expectedSessionID, ids, disposition, transcript.OpenWriterForSession)
 }
 
 func (s *Session) readMemoryIndex(scope string) memoryProjection {

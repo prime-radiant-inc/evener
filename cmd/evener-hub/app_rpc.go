@@ -89,11 +89,18 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 		// no session of its own, and its relay session is keyed by the resolved one.
 		// An archived session's scratch outlives a daemon still running at
 		// archive time, so a daemon's exit kicks the reconcile that removes it.
+		// A daemon that exited without teardown also leaves its background job
+		// process groups running, so the same announcement reaps them (#4843).
+		// The reap runs off this path because it reads journals and signals process
+		// groups, and the announcement owes it no ordering; it is idempotent, so
+		// one cut short by a hub exit is finished by the next start's sweep.
+		stillLive := sessionStillLive(roster)
 		roster.SetOnSessionGone(func(gone hubcore.LiveEntry) {
 			local.AnnounceDaemonGone(gone.Entry, gone.SessionID)
 			if cfg.ScratchReconcile != nil {
 				cfg.ScratchReconcile()
 			}
+			go reapDepartedSession(stillLive, cfg.ReapSessionJobs, gone)
 		})
 		registry.Add(local)
 	}
@@ -1287,7 +1294,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// Component 06's Connect action: the browser-reachable explicit attach
 	// trigger. It wraps the Ensure-backed dialing seam and is the only method
 	// that may dial a remote host on the user's behalf.
-	registerHostAttachHandler(server, cfg, sources, cfg.RemoteHostRegistry)
+	registerHostAttachHandler(server, cfg, sources, cfg.RemoteHostRegistry, navigation)
 	registerPluginAutoUpgradeHandlers(server, pluginsController.mgr)
 	registerTranscriptDisplayHandlers(server, cfg.TranscriptDisplayStore)
 	registerKeybindingsHandlers(server, cfg.KeybindingsStore)

@@ -7,11 +7,43 @@ import { expect, test, vi } from "vitest";
 import { MOBILE_QUERY } from "../../shell/useIsMobile";
 import { escapeRegExp } from "../../styles/cssBlock";
 import { CloseIcon as FromBarrel } from "..";
+import { requireClass } from "../internal/requireClass";
 import { CloseIcon } from "./CloseIcon";
+import rawStyles from "./dialog.module.css";
 import { Dialog } from "./index";
+
+const dialogClass = {
+  panel: requireClass(rawStyles.panel, "dialog.module.css", "panel"),
+  body: requireClass(rawStyles.body, "dialog.module.css", "body"),
+  dialogVariant: requireClass(rawStyles.dialogVariant, "dialog.module.css", "dialogVariant"),
+};
 
 test("its close glyph is exported from the widget barrel", () => {
   expect(FromBarrel).toBe(CloseIcon);
+});
+
+// The 10px remove controls (Chip, CollectionEditor, AttachmentTile) share
+// this glyph, so size must keep the stroke at 1.5 RENDERED px. The 16-grid
+// viewBox scales the attribute by size/16; leaving the close buttons' 1.5
+// attribute unadjusted at 10px would paint 0.94px.
+test("the close glyph defaults to the close buttons' 14px box on the 16 grid", () => {
+  const { container } = render(<CloseIcon />);
+  const svg = container.querySelector("svg");
+  const path = container.querySelector("path");
+  expect(svg?.getAttribute("width")).toBe("14");
+  expect(svg?.getAttribute("height")).toBe("14");
+  expect(svg?.getAttribute("viewBox")).toBe("0 0 16 16");
+  expect(svg?.getAttribute("aria-hidden")).toBe("true");
+  expect(Number(path?.getAttribute("stroke-width")) * (14 / 16)).toBeCloseTo(1.5, 1);
+});
+
+test("size keeps the rendered stroke at 1.5px, so the 10px remove glyphs are not thinned", () => {
+  const { container } = render(<CloseIcon size={10} />);
+  const svg = container.querySelector("svg");
+  const path = container.querySelector("path");
+  expect(svg?.getAttribute("width")).toBe("10");
+  expect(svg?.getAttribute("height")).toBe("10");
+  expect(Number(path?.getAttribute("stroke-width")) * (10 / 16)).toBeCloseTo(1.5, 1);
 });
 
 test("renders nothing when closed", () => {
@@ -403,6 +435,32 @@ test("the large size variant's CSS fills most of the viewport instead of the com
   expect(body).toMatch(/max-width:\s*calc\(100vw/);
   expect(body).toMatch(/max-height:\s*calc\(100vh/);
   expect(body).not.toContain("560px");
+});
+
+// --- caller classes and the no-motion variant (DirectoryPicker supplies its
+// own panel geometry and scrollport through Dialog) -------------------------
+test("panelClassName and bodyClassName append to the shared panel and body classes", () => {
+  const { rerender } = render(
+    <Dialog open onClose={vi.fn()} title="t" panelClassName="demoPanel" bodyClassName="demoBody">
+      Body
+    </Dialog>,
+  );
+  const panel = screen.getByRole("dialog");
+  expect(panel.classList.contains("demoPanel")).toBe(true);
+  expect(panel.classList.contains(dialogClass.dialogVariant)).toBe(true);
+  const body = screen.getByText("Body");
+  expect(body.classList.contains("demoBody")).toBe(true);
+  expect(body.classList.contains(dialogClass.body)).toBe(true);
+
+  rerender(
+    <Dialog open onClose={vi.fn()} title="t" panelClassName="demoPanel" motion="none">
+      Body
+    </Dialog>,
+  );
+  const nonePanel = screen.getByRole("dialog");
+  expect(nonePanel.classList.contains("demoPanel")).toBe(true);
+  expect(nonePanel.classList.contains(dialogClass.panel)).toBe(true);
+  expect(nonePanel.classList.contains(dialogClass.dialogVariant)).toBe(false);
 });
 
 // Beautiful UI chrome bands (design doc §6): the header and footer sit on an

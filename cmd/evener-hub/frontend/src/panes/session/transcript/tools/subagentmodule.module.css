@@ -78,10 +78,6 @@
 .statsSep {
   color: var(--edge-strong);
 }
-.statsSpring {
-  flex: 1 1 auto;
-  margin-left: auto;
-}
 .clock {
   flex: none;
   color: var(--ink-mid);
@@ -147,10 +143,6 @@
   flex-direction: column;
   gap: var(--space-1);
   padding-top: var(--space-1);
-}
-.sectionLabel {
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
 }
 .mandate {
   font-family: var(--font-sans);

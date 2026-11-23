@@ -1,6 +1,7 @@
 import type { ConnectionState } from "@evener/appwire-client";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { HUB_BELOW_FLOOR, INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { renderHook, unmountMountedTrees } from "../renderNative.testkit";
 
 const connection = vi.hoisted(() => ({
@@ -14,7 +15,13 @@ const connection = vi.hoisted(() => ({
 }));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => connection.value }));
 
-import { connectionStatus, nextStatusChange, offlineAge, useConnectionStatusText } from "./connectionStatus";
+import {
+	connectionStatus,
+	nextStatusChange,
+	offlineAge,
+	UPDATE_NEEDED,
+	useConnectionStatusText,
+} from "./connectionStatus";
 
 const NOW = Date.UTC(2026, 8, 26, 12, 0);
 const secondsAgo = (seconds: number) => NOW - seconds * 1000;
@@ -113,6 +120,15 @@ const cases: Array<{
 		lastLiveAt: NOW,
 		expected: "Update needed",
 	},
+	{
+		name: "fatal, hub below the floor",
+		state: "closed",
+		fatal: true,
+		error: HUB_BELOW_FLOOR,
+		downSince: NOW,
+		lastLiveAt: NOW,
+		expected: HUB_BELOW_FLOOR,
+	},
 ];
 
 it.each(cases)("$name → $expected", ({ state, fatal = false, error = null, downSince, lastLiveAt, expected }) => {
@@ -138,6 +154,13 @@ it("prefers the fatal state over the close's reason, whatever the error says", (
 	const retryable = connectionStatus("closed", false, CLOSED_ERROR, NOW, NOW, NOW);
 	expect(fatal).not.toBe(retryable);
 	expect(fatal).not.toBe(CLOSED_ERROR);
+});
+
+it("keeps Update needed for the app's own protocol close and names the hub's upgrade below the floor", () => {
+	// "Update needed" fits the bar when updating the app is the fix; a hub
+	// older than the floor needs its host updated, so the bar says that.
+	expect(connectionStatus("closed", true, INCOMPATIBLE_VERSIONS, NOW, NOW, NOW)).toBe(UPDATE_NEEDED);
+	expect(connectionStatus("closed", true, HUB_BELOW_FLOOR, NOW, NOW, NOW)).toBe(HUB_BELOW_FLOOR);
 });
 
 it("says nothing about an error while the connection is live", () => {

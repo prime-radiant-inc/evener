@@ -1031,8 +1031,7 @@ func TestGHGatewayBodyIsNotAnAnswerToTheMutation(t *testing.T) {
 	dir := fixtureExecDir(t)
 	// A token this test chose, so the detail check below pins that gh's stderr
 	// survives the classification rather than that production wording does. The
-	// literal cannot appear in production copy, which keeps it outside the
-	// error-text rule's subject entirely.
+	// literal cannot appear in production copy, so it cannot stand in for one.
 	const detail = "fixture-gateway-detail-8c41"
 	// One gh, three different calls: the two status reads around the mutation
 	// answer properly, and the enqueue answers with a gateway body and exits 1.

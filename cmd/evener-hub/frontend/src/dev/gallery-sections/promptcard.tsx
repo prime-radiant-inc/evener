@@ -3,7 +3,7 @@ import { Button } from "../../widgets/button";
 import { IconButton } from "../../widgets/iconbutton";
 import { PromptCard } from "../../widgets/promptcard";
 import { Textarea } from "../../widgets/textarea";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./promptcard.module.css";
 
 function ClipIcon() {
@@ -45,50 +45,47 @@ function LiveCard({ label, actions }: { label: string; actions: React.ReactNode 
 
 export default function PromptCardGallerySection() {
   return (
-    <section>
-      <h2>PromptCard</h2>
-      <ThemeFlip>
-        <LiveCard
-          label="one verb"
-          actions={
-            <Button variant="primary" size="xs">
+    <GallerySection title="PromptCard">
+      <LiveCard
+        label="one verb"
+        actions={
+          <Button variant="primary" size="xs">
+            Send
+          </Button>
+        }
+      />
+      <LiveCard
+        label="three verbs, Stop pinned leftmost"
+        actions={
+          <>
+            <Button variant="dangerQuiet" size="xs">
+              Stop
+            </Button>
+            <Button variant="quiet" size="xs">
               Send
             </Button>
+            <Button variant="primary" size="xs">
+              Steer
+            </Button>
+          </>
+        }
+      />
+      <div className={styles.case}>
+        <p className={styles.caseLabel}>taller floor (spawn's prompt), no control row</p>
+        <PromptCard
+          field={
+            <Textarea
+              value=""
+              onChange={() => {}}
+              autoGrow
+              seamless
+              minLines={6}
+              placeholder="What should the agent work on?"
+              aria-label="Prompt (gallery)"
+            />
           }
         />
-        <LiveCard
-          label="three verbs, Stop pinned leftmost"
-          actions={
-            <>
-              <Button variant="dangerQuiet" size="xs">
-                Stop
-              </Button>
-              <Button variant="quiet" size="xs">
-                Send
-              </Button>
-              <Button variant="primary" size="xs">
-                Steer
-              </Button>
-            </>
-          }
-        />
-        <div className={styles.case}>
-          <p className={styles.caseLabel}>taller floor (spawn's prompt), no control row</p>
-          <PromptCard
-            field={
-              <Textarea
-                value=""
-                onChange={() => {}}
-                autoGrow
-                seamless
-                minLines={6}
-                placeholder="What should the agent work on?"
-                aria-label="Prompt (gallery)"
-              />
-            }
-          />
-        </div>
-      </ThemeFlip>
-    </section>
+      </div>
+    </GallerySection>
   );
 }

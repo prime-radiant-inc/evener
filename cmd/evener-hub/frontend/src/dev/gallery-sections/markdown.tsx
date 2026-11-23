@@ -1,5 +1,5 @@
 import { Markdown } from "../../widgets/markdown";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./markdown.module.css";
 
 const SAMPLE = `# Session summary
@@ -75,37 +75,34 @@ const MERMAID_WIDE = [
 
 export default function MarkdownGallerySection() {
   return (
-    <section>
-      <h2>Markdown</h2>
-      <ThemeFlip>
+    <GallerySection title="Markdown">
+      <div className={styles.frame}>
+        <Markdown source={SAMPLE} />
+      </div>
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>Mermaid: prose, flowchart, prose</p>
         <div className={styles.frame}>
-          <Markdown source={SAMPLE} />
+          <Markdown source={MERMAID_BETWEEN_PROSE} />
         </div>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>Mermaid: prose, flowchart, prose</p>
-          <div className={styles.frame}>
-            <Markdown source={MERMAID_BETWEEN_PROSE} />
-          </div>
+      </div>
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>Mermaid: diagram then a heading</p>
+        <div className={styles.frame}>
+          <Markdown source={MERMAID_BEFORE_HEADING} />
         </div>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>Mermaid: diagram then a heading</p>
-          <div className={styles.frame}>
-            <Markdown source={MERMAID_BEFORE_HEADING} />
-          </div>
+      </div>
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>Mermaid: invalid source (error fallback)</p>
+        <div className={styles.frame}>
+          <Markdown source={MERMAID_INVALID} />
         </div>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>Mermaid: invalid source (error fallback)</p>
-          <div className={styles.frame}>
-            <Markdown source={MERMAID_INVALID} />
-          </div>
+      </div>
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>Mermaid: wide diagram</p>
+        <div className={styles.wide}>
+          <Markdown source={MERMAID_WIDE} />
         </div>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>Mermaid: wide diagram</p>
-          <div className={styles.wide}>
-            <Markdown source={MERMAID_WIDE} />
-          </div>
-        </div>
-      </ThemeFlip>
-    </section>
+      </div>
+    </GallerySection>
   );
 }

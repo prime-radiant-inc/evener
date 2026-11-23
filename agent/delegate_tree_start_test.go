@@ -716,7 +716,7 @@ func TestDelegateControllerRuntimeAttachmentIsOneToOne(t *testing.T) {
 	})
 }
 
-func TestDelegateControllerReserveAttentionRequiresResidentRuntimeAndPendingID(t *testing.T) {
+func TestDelegateControllerReserveAttentionRequiresResidentRuntime(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	started, runtime := commitAttachedDelegateControllerStart(t, c, "dlg_target")
@@ -734,6 +734,13 @@ func TestDelegateControllerReserveAttentionRequiresResidentRuntimeAndPendingID(t
 	if _, err := c.ReserveAttention(runtime, ""); !errors.Is(err, errDelegateTargetBusy) {
 		t.Fatalf("ReserveAttention empty ID error = %v, want busy", err)
 	}
+	// ReserveAttention admits only a row the durable queue holds unheld.
+	c.mu.Lock()
+	_, err := c.appendLocked(attentionQueuedEvent("dlg_target", "attention-1", true))
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("queue attention-1: %v", err)
+	}
 	reservation, err := c.ReserveAttention(runtime, "attention-1")
 	if err != nil {
 		t.Fatalf("ReserveAttention exact runtime: %v", err)
@@ -741,23 +748,11 @@ func TestDelegateControllerReserveAttentionRequiresResidentRuntimeAndPendingID(t
 	if turns, drives := c.capacityInUse(); turns != 0 || drives != 1 {
 		t.Fatalf("attention capacity = (%d, %d), want (0, 1)", turns, drives)
 	}
-	if _, err := c.CommitStart(reservation); !errors.Is(err, errDelegateTargetBusy) {
-		t.Fatalf("unprepared CommitStart attention = %v, want busy", err)
-	}
-	if turns, drives := c.capacityInUse(); turns != 0 || drives != 0 || len(c.reservations) != 0 {
-		t.Fatalf("unprepared attention start retained state = capacity:(%d,%d) reservations:%d", turns, drives, len(c.reservations))
-	}
-	attachDelegateAttentionTranscriptForTest(t, c, runtime, "dlg_target", "attention-1")
-	reservation, err = c.ReserveAttention(runtime, "attention-1")
-	if err != nil {
-		t.Fatalf("ReserveAttention prepared retry: %v", err)
-	}
-	if err := runtime.acceptDelegateAttention(reservation); err != nil {
-		t.Fatalf("accept attention: %v", err)
-	}
+	// Option 2 commits straight from the durable queue row: a start no longer
+	// has to prepare or consume the trigger in the transcript first.
 	attention, err := c.CommitStart(reservation)
 	if err != nil {
-		t.Fatalf("CommitStart prepared attention: %v", err)
+		t.Fatalf("CommitStart attention: %v", err)
 	}
 	if aggregate := c.durable["dlg_target"]; aggregate.Trigger != delegatestore.TriggerAttention || aggregate.Generation != 2 {
 		t.Fatalf("attention aggregate = %#v, want generation 2 attention", aggregate)
@@ -768,74 +763,6 @@ func TestDelegateControllerReserveAttentionRequiresResidentRuntimeAndPendingID(t
 	}
 	if _, err := completeDelegateModelRequest(c, attention.lease); err != nil {
 		t.Fatalf("BeginModelRequest attention: %v", err)
-	}
-}
-
-func TestDelegateControllerAttentionCommitBindsSelectedPendingTranscriptEntry(t *testing.T) {
-	const (
-		sessionID   = "child-dlg_target"
-		attentionID = "attention-exact"
-	)
-	c, runtime, transcriptPath := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, attentionID)
-	reservation, err := c.ReserveAttention(runtime, attentionID)
-	if err != nil {
-		t.Fatalf("ReserveAttention: %v", err)
-	}
-	storePath := filepath.Join(c.stateDir, "delegate-events.jsonl")
-	beforeJournal := readDelegateControllerFile(t, storePath)
-	if err := c.store.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	if err := runtime.acceptDelegateAttention(reservation); err != nil {
-		t.Fatalf("persist accepted attention before injected journal failure: %v", err)
-	}
-	if _, err := c.CommitStart(reservation); err == nil {
-		t.Fatal("attention generation commit succeeded after delegate store close")
-	}
-	fold, err := readDelegateAttentionFold(transcriptPath, sessionID)
-	if err != nil {
-		t.Fatalf("read consumed attention: %v", err)
-	}
-	if fold.resolutions[attentionID] != delegateAttentionConsumed || fold.resumeGenerations[attentionID] != 1 {
-		t.Fatalf("consumed marker = %q generation %d, want exact selected ID/generation 1", fold.resolutions[attentionID], fold.resumeGenerations[attentionID])
-	}
-	if got := readDelegateControllerFile(t, storePath); !bytes.Equal(got, beforeJournal) {
-		t.Fatal("failed post-consumption append changed delegate journal")
-	}
-	if aggregate := c.durable["dlg_target"]; aggregate.Generation != 0 || !aggregate.NeedsAttention || aggregate.CurrentRunOpen {
-		t.Fatalf("failed post-consumption append published aggregate: %#v", aggregate)
-	}
-	if len(c.reservations) != 1 || len(attentionWakeIDsOf(c, "dlg_target")) != 1 || c.live["dlg_target"].binding != nil {
-		t.Fatalf("failed acceptance did not retain narrow retry state: reservations=%#v unresolved=%#v live=%#v", c.reservations, attentionWakeIDsOf(c, "dlg_target"), c.live["dlg_target"])
-	}
-	reopened, err := delegatestore.Open(storePath)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = reopened.Close() })
-	c.mu.Lock()
-	c.store = reopened
-	c.mu.Unlock()
-	if err := runtime.acceptDelegateAttention(reservation); err != nil {
-		t.Fatalf("retry accepted attention: %v", err)
-	}
-	started, err := c.CommitStart(reservation)
-	if err != nil {
-		t.Fatalf("retry committed attention: %v", err)
-	}
-	live := c.live["dlg_target"]
-	if started.lease.generation != 1 || live == nil || live.binding == nil || live.binding.lease != started.lease || live.binding.runtime != runtime || !live.binding.ready || len(live.attentionIDs) != 0 {
-		t.Fatalf("retried attention binding = started:%#v live:%#v", started, live)
-	}
-	entries := readAttentionTranscriptEntries(t, transcriptPath)
-	resolutionCount := 0
-	for _, entry := range entries {
-		if entry.Turn.AttentionResolution != nil && entry.Turn.AttentionResolution.AttentionID == attentionID {
-			resolutionCount++
-		}
-	}
-	if resolutionCount != 1 {
-		t.Fatalf("attention retry appended %d exact resolution markers, want 1", resolutionCount)
 	}
 }
 
@@ -1003,5 +930,90 @@ func TestDelegateControllerCommittedStartFailureAppendFailureIsNotAStopWin(t *te
 	}
 	if live := c.live["dlg_target"]; live == nil || !live.recoveryRequired {
 		t.Fatalf("live state = %#v, want recoveryRequired after a failed append", live)
+	}
+}
+
+// A recovered legacy owed generation whose identity a pre-queue journal never
+// carried is queued in the same batch that commits its start. The journal then
+// governs its later resolution, hold, or transient-failure retry even though
+// the transcript still holds the old consumed marker.
+func TestOwedLegacyCommitQueuesItsAttentionRowInTheStartBatch(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_owed", "")
+	path := transcriptPath(c.stateDir, "child-dlg_owed")
+	writeDelegateAttentionTranscript(t, path, "child-dlg_owed", "att_legacy")
+	appendColdConsumedClaim(t, path, "child-dlg_owed", "att_legacy", 1)
+	owed, err := c.owedAttentionStartsFromTranscripts()
+	if err != nil || len(owed) != 1 || owed[0].attentionID != "att_legacy" {
+		t.Fatalf("owed starts = %#v (err %v), want the legacy claim", owed, err)
+	}
+	reservation, err := c.reserveOwedAttentionStart("dlg_owed", "att_legacy", 1)
+	if err != nil {
+		t.Fatalf("reserveOwedAttentionStart: %v", err)
+	}
+	c.mu.Lock()
+	record, recordErr := c.reservationRecordLocked(reservation)
+	queuesOnCommit := record != nil && record.queueAttentionOnCommit
+	c.mu.Unlock()
+	if recordErr != nil || !queuesOnCommit {
+		t.Fatalf("owed reservation queues on commit = %t (%v), want the missing legacy row queued in the start batch", queuesOnCommit, recordErr)
+	}
+	if _, err := c.CommitStart(reservation); err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	// Bootstrap's next step reconciles the queue with the transcripts. The
+	// legacy consumed marker keeps the recovered row out of the transcript's
+	// pending set, so the reconcile must preserve what the owed start queued.
+	if err := c.reconcileDelegateAttentionFromTranscriptsPreserving(owedAttentionPreserveSet(owed)); err != nil {
+		t.Fatalf("reconcile after the owed commit: %v", err)
+	}
+	rows := pendingAttentionRowsForTest(t, c, "dlg_owed")
+	if len(rows) != 1 || rows[0].AttentionID != "att_legacy" || rows[0].HeldThrough != 0 {
+		t.Fatalf("pending rows after the owed commit = %#v, want the legacy row queued unheld", rows)
+	}
+	if !needsAttentionForTest(t, c, "dlg_owed") {
+		t.Fatal("NeedsAttention = false, want the committed legacy row to be runnable")
+	}
+
+	// A first request that fails before settling keeps the row pending and
+	// unheld, so the ordinary drive retries it.
+	sess := &Session{delegateController: c, owningDelegateID: "dlg_owed"}
+	sess.holdAcceptedTrigger("att_legacy")
+	sess.settleUnpresentedDelegateTrigger(0, "", true)
+	rows = pendingAttentionRowsForTest(t, c, "dlg_owed")
+	if len(rows) != 1 || rows[0].AttentionID != "att_legacy" || rows[0].HeldThrough != 0 {
+		t.Fatalf("pending rows after a pre-settlement failure = %#v, want the legacy row unheld for retry", rows)
+	}
+}
+
+// An owed identity the journal already carries is not queued a second time:
+// the commit batch leaves the existing row as it was.
+func TestOwedLegacyCommitDoesNotRequeueAPendingRow(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_owed", "")
+	c.mu.Lock()
+	if _, err := c.appendLocked(attentionQueuedEvent("dlg_owed", "att_legacy", true)); err != nil {
+		c.mu.Unlock()
+		t.Fatalf("queue the existing legacy row: %v", err)
+	}
+	c.mu.Unlock()
+	reservation, err := c.reserveOwedAttentionStart("dlg_owed", "att_legacy", 1)
+	if err != nil {
+		t.Fatalf("reserveOwedAttentionStart: %v", err)
+	}
+	c.mu.Lock()
+	record, recordErr := c.reservationRecordLocked(reservation)
+	queuesOnCommit := record != nil && record.queueAttentionOnCommit
+	c.mu.Unlock()
+	if recordErr != nil || queuesOnCommit {
+		t.Fatalf("owed reservation queues on commit = %t (%v), want no duplicate event for a row the journal holds", queuesOnCommit, recordErr)
+	}
+	if _, err := c.CommitStart(reservation); err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	if rows := pendingAttentionRowsForTest(t, c, "dlg_owed"); len(rows) != 1 || rows[0].AttentionID != "att_legacy" {
+		t.Fatalf("pending rows after the owed commit = %#v, want the single existing row", rows)
 	}
 }

@@ -1755,6 +1755,7 @@ async function measure() {
   const model = pane.querySelector<HTMLElement>('[data-testid="model-switch-value"]');
   const currentWork = pane.querySelector<HTMLElement>('[data-testid="current-work"]');
   const composerCard = pane.querySelector<HTMLElement>('[data-testid="composer-input-card"]');
+  const composerFieldBox = composerCard?.querySelector<HTMLElement>('[role="textbox"]')?.getBoundingClientRect();
   const composerContainerWidth = measureComposerContentWidth();
   const controlTestIds = ["composer-attach", "composer-stop", "composer-submit", "composer-steer"];
   const composeControls = controlTestIds.map((testId) => ({
@@ -1792,6 +1793,7 @@ async function measure() {
     const box = element?.getBoundingClientRect();
     return {
       testId,
+      element,
       present: visible(element),
       containedInCard: containedInCard(box),
       containedInPane: containedInPane(box),
@@ -1876,7 +1878,13 @@ async function measure() {
         (control) => !control.present || (control.containedInCard && control.containedInPane),
       ),
       controlsDoNotOverlap,
-      controls: controls.map(({ box: _box, ...control }) => control),
+      controls: controls.map(({ box: _box, element: _element, ...control }) => control),
+      controlGeometry: Object.fromEntries(
+        controls.flatMap((control) => {
+          if (!control.present || !control.element) return [];
+          return [[control.testId, geometryOf(control.element)]];
+        }),
+      ),
       // Observed primary and secondary controls beside the status row.
       verbCluster: (() => {
         const verbs = controls.filter(
@@ -1885,6 +1893,8 @@ async function measure() {
         return {
           controls: verbs.length,
           top: verbs.length > 0 ? Math.min(...verbs.map((control) => (control.box as DOMRect).top)) : null,
+          fieldRight: composerFieldBox?.right ?? null,
+          fieldBottom: composerFieldBox?.bottom ?? null,
           statusRowBottom: statusBox?.bottom ?? null,
           containerWidth: composerContainerWidth,
         };
@@ -2079,8 +2089,15 @@ async function measureMenuVerbs(): Promise<{ open: boolean; stop: boolean; steer
 
 function duoBox(element: Element | null | undefined) {
   if (!element) return null;
-  const { width, height } = geometryOf(element);
-  return { width, height };
+  return geometryOf(element);
+}
+
+function duoControlPositions(pane: HTMLElement) {
+  return {
+    attach: duoBox(pane.querySelector('[data-testid="composer-attach"]')),
+    menu: duoBox(findSessionMenuTrigger()),
+    primary: duoBox(pane.querySelector('[data-testid="composer-stop"], [data-testid="composer-submit"]')),
+  };
 }
 
 function measureDuoDraftState() {
@@ -2094,6 +2111,7 @@ function measureDuoDraftState() {
     totalFooterHeight: (footerBox?.height ?? 0) + (edgeBox?.height ?? 0),
     editorMinLines: pane?.querySelector<HTMLElement>('[data-composer] [role="textbox"]')?.style.minHeight ?? null,
     editing: pane?.querySelector("[data-composer]")?.hasAttribute("data-composer-editing") ?? false,
+    controlPositions: pane ? duoControlPositions(pane) : null,
     attachment: null,
     counters: Array.from(pane?.querySelectorAll<HTMLElement>("[data-activity-tab]") ?? []).map((counter) => ({
       ...duoBox(counter),
@@ -2126,6 +2144,7 @@ async function measureDuoCompactStates(phase: "focus" | "rest") {
       footerPaddingBottom: footer ? getComputedStyle(footer).paddingBottom : null,
       editorMinLines: editor.style.minHeight,
       editing: editor.closest("[data-composer]")?.hasAttribute("data-composer-editing") ?? false,
+      controlPositions: duoControlPositions(pane),
       cardHidden: card instanceof HTMLElement && card.hidden,
       question: duoBox(question),
       questionInTranscript: question?.closest('[data-testid="transcript-virtual-list"]') !== null,
@@ -2153,6 +2172,7 @@ async function measureDuoCompactStates(phase: "focus" | "rest") {
           control instanceof HTMLInputElement &&
           (control.type === "text" || control.getAttribute("aria-label") === "Something else…")
         ),
+        testId: control.getAttribute("data-testid"),
         name: control.getAttribute("aria-label") ?? control.getAttribute("data-testid") ?? control.getAttribute("type"),
       })),
       horizontalOverflow: pane.scrollWidth - pane.clientWidth,

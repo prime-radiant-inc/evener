@@ -17,6 +17,7 @@ import { readModuleCss } from "../../styles/cssBlock";
 import { Toast } from "../../widgets";
 import Spawn from "./Spawn";
 import {
+  chooseHost,
   effortControl,
   effortOptionValues,
   effortSelect,
@@ -499,12 +500,10 @@ test.each(["desktop", "mobile"])("%s access inheritance survives an explicit mod
   const sandboxDefault = () => Array.from(sandboxSelect.options).find((entry) => entry.value === "")?.textContent;
   const unqualifiedSandboxDefault = sandboxDefault();
   const mobileOptions = async () => {
-    const row = screen.getByTestId("spawn-mobile-config").querySelector('[data-label="Access mode"] button');
+    const row = screen.getByTestId("spawn-mobile-config").querySelector('[data-label="Access mode"]');
     if (!(row instanceof HTMLElement)) throw new Error("missing access row");
     await user.click(row);
-    return within(screen.getByRole("dialog"))
-      .getAllByRole("button")
-      .filter((button) => button.hasAttribute("aria-pressed"));
+    return within(screen.getByRole("dialog")).getAllByRole("radio");
   };
   await setWorkingDir(user, "/tmp/inherited-access");
   const summary = screen.getByTestId("spawn-effective-access");
@@ -527,7 +526,9 @@ test.each(["desktop", "mobile"])("%s access inheritance survives an explicit mod
     const options = await mobileOptions();
     const inherit = options[0];
     if (!inherit) throw new Error("missing inherited access option");
-    expect(inherit.textContent).toBe(unqualifiedDefault);
+    // The checked row also carries the widget's "Selected" readout, so
+    // compare the radio's own label, not its whole text content.
+    expect(inherit.getAttribute("aria-label")).toBe(unqualifiedDefault);
     await user.click(inherit);
   }
   await waitFor(() => expect(summary.getAttribute("data-sandbox")).toBe(inheritedSandbox));
@@ -1495,15 +1496,15 @@ test("a disabled effort control renders its disabled state on the visible wrappe
   expect(trigger.getAttribute("data-disabled")).toBe("true");
 });
 
-// The transparent overlay select is the topmost hittable layer, so it must
-// inherit the wrapper's cursor - its own `pointer` would otherwise win over
-// the wrapper's `not-allowed` on a disabled control. CSS gate: jsdom
+// The quiet Select's transparent overlay is the topmost hittable layer, so it
+// must inherit the trigger's cursor - its own `pointer` would otherwise win
+// over the trigger's `not-allowed` on a disabled control. CSS gate: jsdom
 // evaluates no cascade, so the computed cursor is asserted on the source.
-test("the effort overlay select inherits the wrapper cursor", () => {
-  const spawnCss = readModuleCss(import.meta.url, "spawn.module.css");
+test("the quiet effort overlay select inherits the trigger cursor", () => {
+  const selectCss = readModuleCss(import.meta.url, "../../widgets/select/select.module.css");
 
-  expect(spawnCss).toMatch(/\.effortSelect\s*\{[^}]*cursor:\s*inherit/);
-  expect(spawnCss).toContain(".effortTrigger:not([data-disabled");
+  expect(selectCss).toMatch(/\.quietSelect\s*\{[^}]*cursor:\s*inherit/);
+  expect(selectCss).toContain('.quietVariant:not([data-disabled="true"]) .quietSelect');
 });
 
 test("with Model left at '(default)', the Effort select follows the hub's resolved default model", async () => {
@@ -1706,7 +1707,7 @@ test("switching host under an open model picker reloads it from scratch", async 
   await user.click(modelTrigger());
   await screen.findByRole("listbox", { name: "Model" });
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await act(async () => {});
   expect(screen.queryByRole("listbox", { name: "Model" })).toBeNull();
   await act(async () => release());

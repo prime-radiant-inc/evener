@@ -74,8 +74,6 @@ set them by hand.
 | `GOOGLE_VERTEX_PROJECT` | GCP project for the `google-vertex`/`google-vertex-anthropic` instances; required for either to exist. |
 | `GOOGLE_VERTEX_LOCATION` | GCP location for the `google-vertex`/`google-vertex-anthropic` instances; required for either to exist. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Path to a GCP service-account file for Application Default Credentials; the well-known ADC file also works without it. |
-| `GOOGLE_VERTEX_API_KEY` | Google Cloud API key for Vertex AI express mode; its presence is what makes the `google-vertex-express` instance exist. |
-| `GOOGLE_VERTEX_EXPRESS_BASE_URL` | Base URL override for `google-vertex-express` (default `https://aiplatform.googleapis.com/v1`). |
 | `ZHIPU_API_KEY` | z.ai/Zhipu API key, used by both the `zai` and `zai-coding-plan` instances. Replaces `GLM_API_KEY`. |
 | `ZAI_BASE_URL` | z.ai base URL override (default `https://api.z.ai/api/paas/v4`). Replaces `GLM_BASE_URL`. |
 | `ZAI_CODING_PLAN_BASE_URL` | z.ai coding-plan base URL override (default `https://api.z.ai/api/coding/paas/v4`), for the `zai-coding-plan` instance. |
@@ -121,7 +119,7 @@ process environments.
 | `CARGO_HOME` | Inherited by core-only command environments. |
 | `DISPLAY` | Used to auto-detect graphical sessions for OpenAI login. |
 | `GOCACHE` | Inherited by core-only command environments; the sandbox overlays a configured value or, under the session-private cache strategy, redirects it into the session scratch directory (see [docs/sandboxing.md](../sandboxing.md#cache-isolation-and-writable-root-exceptions)). |
-| `GOGC` | The Go collector's target for evener's own processes, read at startup before any subcommand runs. Unset means evener's own target of 200; an exported value is honored exactly as it stands, including `off`, which disables collection, and `100`, which restores Go's default. A value the collector would not honor refuses startup, naming the variable, rather than letting the runtime's silent fallback to 100 leave the process at a target nobody chose. |
+| `GOGC` | The Go collector's target for evener's own processes, read at startup before any subcommand runs. Unset or empty means evener's own target of 200; an exported value is honored exactly as it stands and parsed by the Go runtime, including `off`, which disables collection, and `100`, which restores Go's default. |
 | `GOENV` | Inherited by core-only command environments; a sandboxed session reads the go env file it names (`off` disables it) at start to find Go settings made with `go env -w` (see [docs/sandboxing.md](../sandboxing.md#cache-isolation-and-writable-root-exceptions)). |
 | `GOMODCACHE` | Inherited by core-only command environments; under the session-private cache strategy the sandbox environment floor redirects it into the session scratch directory, and under the overlay strategy it overlays a served value and redirects one the overlay does not serve (or every Go setting, when the go env file was unreadable) (see [docs/sandboxing.md](../sandboxing.md#cache-isolation-and-writable-root-exceptions)). |
 | `GOPATH` | Inherited by core-only command environments; under the session-private cache strategy the sandbox environment floor puts the session scratch directory first, keeping the ambient value after it where the spawned layer can read it (see [docs/sandboxing.md](../sandboxing.md#cache-isolation-and-writable-root-exceptions)). |

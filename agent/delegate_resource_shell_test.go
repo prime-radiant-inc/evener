@@ -78,14 +78,14 @@ func TestDelegateShell_CompletionAttentionReachesDirectOwner(t *testing.T) {
 
 	retryTree := newDelegateShellTree(t)
 	retryRec := createDelegateShell(t, retryTree.childJM, "retry direct owner arm")
-	readCalls := 0
 	injected := errors.New("injected stable shell arm failure")
-	retryTree.child.cfg.testOnly.delegateAttentionReadFold = func(path, sessionID string) (delegateAttentionFold, error) {
-		readCalls++
-		if readCalls == 3 {
-			return delegateAttentionFold{}, injected
+	faulted := false
+	retryTree.child.cfg.testOnly.delegateAttentionArmFault = func() error {
+		if faulted {
+			return nil
 		}
-		return readDelegateAttentionFold(path, sessionID)
+		faulted = true
+		return injected
 	}
 	code := 0
 	if err := retryTree.childJM.finalize(retryRec.JobID, jobstore.StatusCompleted, "exit_zero", &code); !errors.Is(err, injected) {
@@ -377,12 +377,24 @@ func TestDelegateShell_ColdRestartRearmsExactCompletionAttention(t *testing.T) {
 	t.Cleanup(func() { _ = restoredJM.closeStoreOnly() })
 	stored := loadStableShellRecord(t, restoredJM, rec.JobID)
 	attentionID := stableShellAttentionID(rec.JobID, stored.TerminalGen)
-	fold, err := readDelegateAttentionFold(transcriptPath(fixture.stateDir, fixture.childID), fixture.childID)
-	if err != nil {
-		t.Fatalf("read cold shell attention: %v", err)
+	sub := root.subagents.get(fixture.childID)
+	if sub == nil {
+		t.Fatalf("cold shell child %q was not tracked", fixture.childID)
 	}
-	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed {
-		t.Fatalf("cold shell attention resolution = %q, want consumed", got)
+	controller := sub.sess.delegateController
+	controller.mu.Lock()
+	aggregate := controller.durable[sub.sess.owningDelegateID]
+	var stillQueued bool
+	if aggregate != nil {
+		for _, row := range aggregate.PendingAttention {
+			if row.AttentionID == attentionID {
+				stillQueued = true
+			}
+		}
+	}
+	controller.mu.Unlock()
+	if stillQueued {
+		t.Fatalf("cold shell attention %q is still queued, want consumed", attentionID)
 	}
 	if stored.NotifyState != jobstore.NotifyDelivered {
 		t.Fatalf("cold shell notification state = %q, want delivered", stored.NotifyState)

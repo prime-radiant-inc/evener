@@ -26,8 +26,9 @@ import {
   askUserSummary,
   parseAskUserQuestions,
 } from "@evener/appwire-client";
-import { Card, Eyebrow, Markdown } from "../../../../widgets";
+import { Card, Markdown } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { AskOptionCopy } from "../../AskOptionCopy";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import styles from "./askuser.module.css";
@@ -38,8 +39,7 @@ const CLASS = {
   question: requireClass(styles.question, "askuser.module.css", "question"),
   options: requireClass(styles.options, "askuser.module.css", "options"),
   option: requireClass(styles.option, "askuser.module.css", "option"),
-  label: requireClass(styles.label, "askuser.module.css", "label"),
-  detail: requireClass(styles.detail, "askuser.module.css", "detail"),
+
   note: requireClass(styles.note, "askuser.module.css", "note"),
   footer: requireClass(styles.footer, "askuser.module.css", "footer"),
   fallback: requireClass(styles.fallback, "askuser.module.css", "fallback"),
@@ -69,20 +69,18 @@ function QuestionCard({ q }: { q: AskUserQuestion }) {
       <div className={CLASS.content}>
         {/* Model-authored prose (question, why, if_unanswered) renders
             through the shared Markdown widget, the same treatment as the
-            composer's interactive card (askDock/AskQuestionCard). Option
-            label and detail stay plain: the label is the answer value the
-            reply echoes back verbatim, and the label/detail spans host
-            phrasing content only, which cannot take the widget's block
-            root. */}
+            composer's interactive card (askDock/AskQuestionCard). The
+            option label stays plain - it is the answer value the reply
+            echoes back verbatim - and the shared AskOptionCopy renders
+            label and detail inside spans, whose phrasing-only content
+            model cannot host the widget's block root. */}
         <div className={CLASS.question} data-slot="question">
           <Markdown source={q.question} />
         </div>
         <ul className={CLASS.options}>
           {q.options.map((opt) => (
             <li key={opt.label} className={CLASS.option} data-recommended={opt.recommended ? "true" : undefined}>
-              <span className={CLASS.label}>{opt.label}</span>
-              <span className={CLASS.detail}>{opt.detail}</span>
-              {opt.recommended && <Eyebrow as="span">Recommended</Eyebrow>}
+              <AskOptionCopy label={opt.label} detail={opt.detail} recommended={opt.recommended} />
             </li>
           ))}
         </ul>

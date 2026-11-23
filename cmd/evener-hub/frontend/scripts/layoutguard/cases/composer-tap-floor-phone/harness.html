@@ -7,51 +7,62 @@
 <link rel="stylesheet" href="tokens.css">
 <link rel="stylesheet" href="resolved.css">
 <style>
+  /* biome-ignore lint/complexity/noImportantStyles: layoutguard measures settled geometry, so transitions must not run */
   *, *::before, *::after { transition: none !important; animation: none !important; }
   body { margin: 0; background: var(--surface-1); font-family: var(--font-sans); color: var(--ink-hi); }
   .fixtures { display: flex; flex-direction: column; gap: 8px; padding: 8px; }
+  .fixture { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
   .fixtureLabel { color: var(--ink-low); font: var(--font-size-caption) var(--font-mono); }
   .composerBox { width: 100%; box-sizing: border-box; }
 </style>
 </head>
 <body data-font-size="m">
 <!-- Composer.tsx renders the status row through SessionChrome's `.body`/`.row`
-     hierarchy. The effort trigger is a transparent native <select> laid over
-     its own readout, so its painted target is the .effortTrigger span. -->
-<main class="fixtures">
+     hierarchy. The effort trigger is Select's quiet variant: a transparent
+     native <select> laid over its own readout, so its painted target is the
+     .quietVariant trigger span inside the shared ReasoningEffortControl
+     wrapper (`.control` plus its data-effort-control hook). -->
+<main class="fixtures"></main>
+<template id="fixture-template">
   <section class="fixture">
-    <div class="fixtureLabel">390px phone, status row with a reasoning-effort control</div>
+    <div class="fixtureLabel"></div>
     <div class="composerBox" data-composer>
       <div class="card">
         <div class="controls">
           <div class="leading">
-            <button class="button quiet xs squareXs attachmentControl" type="button" aria-label="Attach image">+</button>
+            <div class="attachSlot"><button class="button quiet xs squareXs attachmentControl" type="button" aria-label="Attach image">+</button></div>
             <div class="inline">
         <div class="body" data-status-body>
           <div class="row" data-status>
-          <span class="identity">
+          <span class="identity" data-identity>
             <span class="model">
-              <button class="trigger" type="button" data-model>
+              <button class="trigger quietTrigger triggerShrink" type="button" data-model>
                 <span class="value" data-model-value>deepseek-4.1-flash-abliterated</span>
                 <span class="chevron">⌄</span>
               </button>
             </span>
+              <!-- The wide-row companion is not a production trigger: the
+                   status row renders one ModelSwitch. Only the real trigger
+                   carries the shrink contract; the compact rules never applied
+                   to this stand-in before the migration either. -->
               <span class="model">
-                <button class="trigger" type="button" data-model="vision">
+                <button class="trigger quietTrigger" type="button" data-model="vision">
                   <span class="value" data-model-value>vision</span>
                   <span class="chevron">⌄</span>
                 </button>
               </span>
-            <span class="effortTrigger" data-effort>
+            <span class="control" data-effort-control>
               <span class="separator" aria-hidden="true">·</span>
-              <span class="effortValue" aria-hidden="true">high</span>
-              <span class="effortChevron" aria-hidden="true">⌄</span>
-              <select class="effortSelect" aria-label="Reasoning effort"><option>high</option></select>
+              <span class="quietVariant quietTrigger" data-effort>
+                <span class="quietReadout" aria-hidden="true">high</span>
+                <span class="quietCaret" aria-hidden="true">⌄</span>
+                <select class="quietSelect" aria-label="Reasoning effort"><option>high</option></select>
+              </span>
             </span>
           </span>
-          <span class="visuallyHidden"><meter aria-label="Context: 67k of 100k tokens used, 67 percent" min="0" value="67000" max="100000"></meter></span>
-          <span class="context" aria-hidden="true">
-            <span class="contextPercent">67%</span>
+          <span class="context">
+            <span class="contextMeter" data-context-meter><!-- biome-ignore lint/a11y/useSemanticElements: the themed gauge is the div Meter.tsx renders, not a native meter --><div class="track" role="meter" aria-label="Context: 67000 of 100000 tokens used, 67 percent" aria-valuenow="67000" aria-valuemin="0" aria-valuemax="100000"><div class="fill fillNeutral" style="--fill: 67%"></div></div></span>
+            <span class="contextPercent figure" data-context-percent aria-hidden="true">67%</span>
           </span>
           <span class="item mono queue"><span class="queueCompact">Q12</span></span>
           </div>
@@ -64,26 +75,77 @@
       </div>
     </div>
   </section>
-</main>
+</template>
 <script>
+// One fixture at the existing phone width, plus the narrow composer cards the
+// status row has to compress into. The 320px fixtures keep the long model
+// label so the model must ellipsize and the effort control must keep its
+// separator plus tap-floor width instead of being clipped by .identity. The
+// provider-default fixture exercises the widest readout the control carries.
+const fixtures = [
+  { label: "390px phone, status row with a reasoning-effort control" },
+  {
+    width: 320,
+    oneModel: true,
+    label: "320px composer card, long model label, effort target not clipped",
+  },
+  {
+    width: 320,
+    oneModel: true,
+    effort: "none (provider default)",
+    label: "320px composer card, provider-default effort readout, effort target not clipped",
+  },
+];
+const template = document.querySelector("#fixture-template");
+const fixtureRoot = document.querySelector(".fixtures");
+for (const spec of fixtures) {
+  const fragment = template.content.cloneNode(true);
+  const fixture = fragment.querySelector(".fixture");
+  fixture.querySelector(".fixtureLabel").textContent = spec.label;
+  if (spec.width !== undefined) fixture.querySelector(".card").style.width = `${spec.width}px`;
+  // StatusRow renders one ModelSwitch; the second label is the harness's
+  // wide-row companion. The narrow fixture mirrors the real single trigger so
+  // the model-scroll assertion measures the component that ships.
+  if (spec.oneModel) fixture.querySelector('[data-model="vision"]').closest(".model").remove();
+  if (spec.effort !== undefined) {
+    fixture.querySelector(".quietReadout").textContent = spec.effort;
+    fixture.querySelector(".quietSelect option").textContent = spec.effort;
+  }
+  fixtureRoot.append(fragment);
+}
+
 function box(el) {
   const r = el.getBoundingClientRect();
   return { width: r.width, height: r.height, left: r.left, right: r.right };
 }
-const row = document.querySelector("[data-status]");
-const effort = document.querySelector("[data-effort]");
-const body = document.querySelector("[data-status-body]");
 window.measure = () => ({
   viewport: { width: window.innerWidth, height: window.innerHeight },
   coarse: window.matchMedia("(any-pointer: coarse)").matches,
-  effort: box(effort),
-  models: [...document.querySelectorAll("[data-model]")].map((model) => ({
-    ...box(model),
-    clientWidth: model.clientWidth,
-    scrollWidth: model.scrollWidth,
-  })),
-  row: { ...box(row), clientWidth: row.clientWidth, scrollWidth: row.scrollWidth },
-  body: box(body),
+  fixtures: [...document.querySelectorAll(".fixture")].map((fixture) => {
+    const row = fixture.querySelector("[data-status]");
+    const body = fixture.querySelector("[data-status-body]");
+    const identity = fixture.querySelector("[data-identity]");
+    const effort = fixture.querySelector("[data-effort]");
+    const effortBox = box(effort);
+    const identityBox = box(identity);
+    const clipped = {
+      left: Math.max(effortBox.left, identityBox.left),
+      right: Math.min(effortBox.right, identityBox.right),
+    };
+    return {
+      label: fixture.querySelector(".fixtureLabel").textContent,
+      effort: effortBox,
+      clippedEffort: { ...clipped, width: Math.max(0, clipped.right - clipped.left) },
+      identity: identityBox,
+      models: [...fixture.querySelectorAll("[data-model]")].map((model) => ({
+        ...box(model),
+        clientWidth: model.clientWidth,
+        scrollWidth: model.scrollWidth,
+      })),
+      row: { ...box(row), clientWidth: row.clientWidth, scrollWidth: row.scrollWidth },
+      body: box(body),
+    };
+  }),
 });
 </script>
 </body>

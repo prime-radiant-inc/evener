@@ -141,7 +141,7 @@ func (a *summaryFailureAdapter) Complete(_ context.Context, req llm.Request) (ll
 		return llm.Response{Message: llm.Assistant("## Progress\ndaemon-summary-26e7")}, nil
 	}
 	return activityRelayTool("communicate", map[string]any{
-		"message": "turn-completed-46d1", "end_turn": true,
+		"message": "turn-completed-46d1", "next": "send_and_end_turn",
 		"output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}},
 	}), nil
 }

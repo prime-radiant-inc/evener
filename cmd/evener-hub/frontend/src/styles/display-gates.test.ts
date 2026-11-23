@@ -250,26 +250,46 @@ test("the folded-run summary meets the phone tap floor", () => {
 });
 
 // A phone mounts no status bar: the session's activity counts sit on their
-// own line below the composer card, where the desktop strip puts them, and
+// own line above the composer card, and
 // the writing row carries only its controls. The line stays a flex strip at
 // the phone tap floor and drops the category names rather than scrolling
 // sideways: four named chips do not fit a card line, so each chip keeps its
-// glyph and count and its accessible name carries the label.
+// glyph and count and its accessible name carries the label. CountButton
+// owns the collapse and the floor now; this pins where they live so a
+// statusbar rule cannot shadow the widget's.
 test("the phone's activity line keeps every chip a tappable glyph", () => {
   const srcRoot = dirname(dirname(fileURLToPath(import.meta.url)));
   const css = readFileSync(join(srcRoot, "shell/statusbar/statusbar.module.css"), "utf8");
   const blocks = mediaBlocks(css);
-  const tapFloor = blocks.find((block) => block.prelude === TAP_FLOOR_QUERY);
-  expect(tapFloor, `statusbar.module.css must have a ${TAP_FLOOR_QUERY} block`).toBeDefined();
-  expect(tapFloor!.body).toMatch(/\.chip\s*\{[^}]*min-height:\s*var\(--tap-min\)[^}]*min-width:\s*var\(--tap-min\)/);
   const phone = blocks.find((block) => block.prelude === MOBILE_QUERY);
   expect(phone, "statusbar.module.css must have a mobile block").toBeDefined();
   // The narrow-pane grid below (two max-content columns) belongs to the
   // desktop strip; the phone's own line stays a flex row. mediaBlocks strips
   // comments, so this reads rules only.
   expect(phone!.body).toMatch(/\.chips\s*\{[^}]*display:\s*flex/);
-  expect(phone!.body).toMatch(/\.chipName\s*\{[^}]*display:\s*none/);
-  expect(phone!.body).toMatch(/\.chipGlyph\s*\{[^}]*display:\s*inline-flex/);
+  const widgetCss = readFileSync(join(srcRoot, "widgets/countbutton/countbutton.module.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    " ",
+  );
+  const widgetBlocks = mediaBlocks(widgetCss);
+  const widgetFloor = widgetBlocks.find((block) => block.prelude === TAP_FLOOR_QUERY);
+  expect(widgetFloor, `countbutton.module.css must have a ${TAP_FLOOR_QUERY} block`).toBeDefined();
+  expect(widgetFloor!.body).toMatch(/\.root\s*\{[^}]*min-height:\s*var\(--tap-min\)[^}]*min-width:\s*var\(--tap-min\)/);
+  // compact drops the visible name; the accessible name keeps it.
+  expect(widgetCss).toMatch(/\.root\[data-compact="true"\]\s+\.label\s*\{[^}]*display:\s*none/);
+  // Only the statusbar's narrow container drops the glyph; the phone keeps
+  // it. The name matters: a phone composer is an inline-size container too,
+  // so an unnamed query would resolve there and hide the phone's glyphs.
+  const narrow = /@container\s+statusbar\s*\(max-width:\s*320px\)\s*\{([\s\S]*?)\n\}/.exec(widgetCss);
+  expect(narrow, "countbutton.module.css must have its named 320px statusbar container rule").not.toBeNull();
+  expect(widgetCss).toMatch(/@container\s+statusbar\s*\(max-width:\s*600px\)/);
+  expect(narrow![1]).toMatch(/\.glyph\s*\{[^}]*display:\s*none/);
+  expect(
+    widgetBlocks
+      .filter((block) => block.prelude === MOBILE_QUERY)
+      .every((block) => !/\.glyph\s*\{[^}]*display:\s*none/.test(block.body)),
+    "the phone block must not hide the glyph",
+  ).toBe(true);
   const composerCss = readFileSync(join(srcRoot, "panes/session/composer/composer.module.css"), "utf8").replace(
     /\/\*[\s\S]*?\*\//g,
     " ",

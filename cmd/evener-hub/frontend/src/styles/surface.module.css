@@ -26,6 +26,54 @@
   border-top: 1px solid var(--edge);
 }
 
+/* A plain vertical stack with one group step between its children: the
+ * layout a form, a settings section and a dialog body all open with. It is
+ * not a surface - consumers compose it for the arrangement alone. */
+.stack3 {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* --- the summary tiles -----------------------------------------------
+ * The two tiles under a page's primary task - a directory that is itself a
+ * button and a status card that is not - share one inner layout: a row with
+ * a field seat, a text column that takes the slack, a medium headline, and a
+ * caption. Consumers compose these and add only their own surface, padding,
+ * and interaction, so the pair cannot drift apart. */
+.summaryTile {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-ui);
+  text-align: left;
+}
+
+.summaryText {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  gap: var(--space-1);
+}
+
+.summaryHeadline {
+  font-weight: var(--font-weight-medium);
+  overflow-wrap: anywhere;
+}
+
+.summaryCaption {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  overflow-wrap: anywhere;
+}
+
 /* --- the tool card --------------------------------------------------
  * A run of tool rows reads as ONE grouped surface with hairline dividers.
  * Where one element holds the rows it composes .grouped and .groupedRows.
@@ -90,13 +138,8 @@
 }
 
 /* --- the field seat --------------------------------------------------
- * The rounded --field square a glyph sits on. .fieldSeat is the seat as an
- * element: a tile's leading box, --field-seat-size square, centring its
- * glyph. .fieldSeatBehind paints the same square BEHIND a glyph slot that
- * must keep its own one-line layout box: the slot is the positioning
- * context, and the ground is centred on its avatar column at the row size,
- * placed with insets rather than a transform so the slot creates no stacking
- * context. Painted, not laid out, and transparent to the pointer. */
+ * The rounded --field square a glyph sits on: a tile's leading box,
+ * --field-seat-size square, centring its glyph. */
 .fieldSeat {
   display: inline-flex;
   flex: none;
@@ -104,24 +147,6 @@
   justify-content: center;
   width: var(--field-seat-size);
   height: var(--field-seat-size);
-}
-
-.fieldSeatBehind {
-  position: relative;
-}
-
-.fieldSeatBehind::before {
-  content: "";
-  position: absolute;
-  top: calc(50% - var(--field-seat-size-row) / 2);
-  left: calc((var(--speaker-avatar-size) - var(--field-seat-size-row)) / 2);
-  width: var(--field-seat-size-row);
-  height: var(--field-seat-size-row);
-  pointer-events: none;
-}
-
-.fieldSeat,
-.fieldSeatBehind::before {
   border-radius: var(--radius-control);
   background: var(--field);
 }

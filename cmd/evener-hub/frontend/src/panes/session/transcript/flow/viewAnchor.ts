@@ -219,7 +219,7 @@ function descendantAtPath(root: HTMLElement, path: readonly number[]): HTMLEleme
 }
 
 function isFocusableDescendant(element: HTMLElement): boolean {
-  return element.matches("button, a[href], input, select, textarea, [tabindex]");
+  return element.matches("button, summary, a[href], input, select, textarea, [tabindex]");
 }
 
 function sourceIndexFromDataset(element: HTMLElement): number | undefined {

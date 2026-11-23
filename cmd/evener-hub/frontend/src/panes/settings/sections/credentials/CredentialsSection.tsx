@@ -482,9 +482,8 @@ export function CredentialsSection({
   }
 
   // clearStoredKey's dialog/toast name what it clears: a gcp-adc instance's
-  // stored credential is a JSON document (spec 2026-09-04
-  // google-vertex-express §4), not an API key, so "stored key" reads wrong
-  // for it - same scheme test InstanceSheet's own button uses.
+  // stored credential is a JSON document, not an API key, so "stored key"
+  // reads wrong for it - same scheme test InstanceSheet's own button uses.
   function clearsCredentialJson(name: string): boolean {
     return findInstance(name)?.authModes?.includes("credentialJson") ?? false;
   }

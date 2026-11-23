@@ -8,11 +8,10 @@
 // (mirrors Session.tsx's own model lookup).
 //
 // The menu is the shared SessionMenu (2026-08-05-unified-session-context-
-// menu-design): Overview and pane-only Verbosity lead it at every
-// width (there are no inline triggers and no narrow-collapse - the status
-// row's container-query variants own compression inside .body instead),
-// followed by Rename, the tree-gated Pin/Archive/Delete organization group,
-// and Shut down. The composer's row mounts can also lead with the
+// menu-design): rail and non-header placements retain Overview and Find;
+// an ordinary session's composer leaves those to its header. Pane-only
+// Verbosity stays in the menu, followed by Rename, the tree-gated
+// Pin/Archive/Delete organization group, and Shut down. The composer's row mounts can also lead with the
 // narrow-layout turn verbs (Stop/Steer - SessionMenuProps.turnVerbs): the
 // engaged inline chrome and the phone's collapsed-row menu. The
 // Overview count adds the subagents running at every depth
@@ -36,20 +35,16 @@ import type { NavigationSessionLocation } from "@evener/appwire-client";
 import { SHUT_DOWN_STATUSES, sessionActionError } from "@evener/appwire-client";
 import { isNavigationUnavailable } from "@evener/appwire-client/state/navigation";
 import { useState } from "react";
-import {
-  activitySidebarOpenFor,
-  activitySidebarStore,
-  useActivitySidebarOpenFor,
-} from "../../../shell/activitybar/activitySidebarStore";
+import { useActivitySidebarOpenFor } from "../../../shell/activitybar/activitySidebarStore";
 import { useClient } from "../../../shell/clientContext";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
 import { assignSessionPin, deleteSession, setArchived, unpinSession } from "../../../shell/rail/actions";
-import { isConfirmedCrashedSession } from "../../../shell/rail/sessionKind";
+import { isConfirmedCrashedSession, isTopLevelSession } from "../../../shell/rail/sessionKind";
 import { navigate, paneToURL, refParam } from "../../../shell/routing";
 import { SessionMenu, type SessionMenuProps, type SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
 import { cadenceStateFor } from "../../../shell/sessionStatus";
 import { useIsMobile } from "../../../shell/useIsMobile";
-import { useWorkspaceStore, workspaceStore } from "../../../shell/workspace";
+import { useWorkspaceStore } from "../../../shell/workspace";
 import { selectLocation } from "../../../stores/navigation/selectors";
 import { buildShutdownConvergence } from "../../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../../stores/navigation/store";
@@ -63,6 +58,7 @@ import { NOW_TICK_MS, useNowTick, WORK_TICK_MS } from "../liveness";
 import { navigationSummaryFor } from "../threadTitle";
 import { TranscriptDetailControl } from "../transcript/TranscriptDetailControl";
 import { activityActionLabel } from "./activityFormat";
+import { openSessionOverview } from "./SessionInspectionActions";
 import { StatusRow } from "./StatusRow";
 import styles from "./sessionchrome.module.css";
 import "../../sessionPanels";
@@ -125,6 +121,9 @@ export function SessionChrome({
     (state) =>
       owningPaneId ?? state.panes.find((pane) => pane.type === "session" && refParam(pane.params) === sessionRef)?.id,
   );
+  const owningPaneType = useWorkspaceStore((state) => state.panes.find((pane) => pane.id === paneId)?.type);
+  // The collapsed composer menu carries turnVerbs; ConversationBody's recovery fallback does not.
+  const headerOwnsInspection = (placement === "composer" || turnVerbs !== undefined) && owningPaneType === "session";
   const isMobile = useIsMobile();
   const [verbosityOpen, setVerbosityOpen] = useState(false);
   const toasts = useToasts();
@@ -145,7 +144,7 @@ export function SessionChrome({
     : (locationResource?.data as NavigationSessionLocation | undefined);
   const navigationSession = location?.session;
   const fallbackSession = navigationSession ?? navigationSummaryFor(sessionRef, navigation);
-  const eligibleFallback = fallbackSession && !["subagent", "fork"].includes(fallbackSession.kind);
+  const eligibleFallback = fallbackSession && isTopLevelSession(fallbackSession);
   const validIdentity =
     typeof fallbackSession?.host_id === "string" &&
     fallbackSession.host_id.trim() !== "" &&
@@ -195,19 +194,7 @@ export function SessionChrome({
   // instead (same predicate as Session.tsx's recoveryOwnerRef).
   const recoveryOwnerRef = ownerRetainedRef(model, mutationStateAuthoritative);
 
-  const openOverview = () => {
-    // Mobile and desktop share the activity sidebar. Desktop toggles only when
-    // the sidebar already shows THIS session; opening on another session
-    // re-scopes it here instead of closing it under the user.
-    if (!isMobile && activitySidebarOpenFor(sessionRef)) activitySidebarStore.getState().close();
-    else {
-      if (paneId) workspaceStore.getState().focusPane(paneId);
-      // The owning pane rides along: an embedded cascade column keeps its
-      // inspector focused even when an ordinary pane for the same
-      // conversation exists.
-      activitySidebarStore.getState().openFor(sessionRef, undefined, undefined, paneId);
-    }
-  };
+  const openOverview = () => openSessionOverview(sessionRef, paneId, isMobile);
   const overviewLabel = activityActionLabel(activitySummary, subagents);
 
   // The menu's action adapters, shared by the composer and menu-only
@@ -349,6 +336,7 @@ export function SessionChrome({
             canShutdown={model.capabilities.shutdown}
             stopped={SHUT_DOWN_STATUSES.has(model.status.type) || isConfirmedCrashedSession(fallbackSession)}
             session={menuSession}
+            showOverview={!headerOwnsInspection}
             overviewOpen={sidebarOpenHere}
             overviewLabel={overviewLabel}
             onOpenVerbosity={() => setVerbosityOpen(true)}
@@ -356,7 +344,7 @@ export function SessionChrome({
             // phone, and it has no row to spare there; Find stays reachable
             // through the palette. Read when the menu's items are built.
             onFind={
-              window.innerHeight < FIND_MENU_MIN_VIEWPORT_HEIGHT
+              headerOwnsInspection || window.innerHeight < FIND_MENU_MIN_VIEWPORT_HEIGHT
                 ? undefined
                 : () => requestFindInSession(sessionRef, { target: paneId })
             }

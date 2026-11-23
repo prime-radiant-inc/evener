@@ -41,7 +41,7 @@
     min-height: var(--tap-min);
   }
 
-  .sessionTitle button.label {
+  .label.sessionTitleButton {
     min-width: var(--tap-min);
     min-height: var(--tap-min);
   }
@@ -82,6 +82,29 @@
   grid-area: 1 / 1;
 }
 
+/* The slot's occupant at rest: the age (or "Not started") and, when there are
+ * replies the person has not read, the unread marker beside it. Wrapping them
+ * keeps the marker in the same shared grid cell as the hover actions instead
+ * of claiming a slot of its own that would narrow the title column. */
+.meta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* The unread marker: the phone Board's blue dot for replies this browser has
+ * not read. Not a status glyph - needs-you owns the attention hues and their
+ * motion - so it stays a still accent dot with no accessible text of its own
+ * beyond the name the span carries. */
+.unreadDot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--accent);
+}
+
 /* Row actions (RailRow's "+"/"..." trigger buttons; both a session row's
  * single "..." and a project row's "+" pair): quiet by default -
  * transparent, borderless, invisible - revealed on row hover/focus so the
@@ -91,9 +114,10 @@
  * actually receives roving-tabindex focus - so the row carries that focus as
  * data-row-focused (from Tree's row info) and the reveal keys on it, rather
  * than on :focus-within (a descendant-focus check would never match the
- * ANCESTOR treeitem being focused). `:has(button[aria-expanded="true"])` keeps a row
+ * ANCESTOR treeitem being focused). `:has([data-open="true"])` keys on the
+ * Menu trigger's public open-state hook (widgets/menu), keeping a row
  * revealed while ITS OWN menu is open (closing on blur/Escape already
- * reverts it via Menu's own isOpen state); an ancestor selector is scoped
+ * reverts it via Menu's own isOpen state); the ancestor selector is scoped
  * to `.actions` so an open menu on one row never reveals another's.
  *
  * The visibility timing: revealed flips visibility IMMEDIATELY (delay 0s)
@@ -112,7 +136,7 @@
 }
 
 .railRow[data-row-focused="true"] .actions,
-.actions:has(button[aria-expanded="true"]),
+.actions:has([data-open="true"]),
 .railRow:hover .actions {
   opacity: 1;
   visibility: visible;
@@ -133,7 +157,7 @@
   }
 
   .railRow[data-row-focused="true"] .rightSlot > :not(.actions),
-  .rightSlot:has(button[aria-expanded="true"]) > :not(.actions),
+  .rightSlot:has([data-open="true"]) > :not(.actions),
   .railRow:hover .rightSlot > :not(.actions) {
     opacity: 0;
     visibility: hidden;
@@ -235,16 +259,10 @@
   font-size: var(--font-size-ui);
 }
 
-/* The HoverCard wrapper is an inline block, so this outer flex item owns
- * shrinking and forwards the available width to it. The title keeps the same
- * ellipsis contract it had before the rich hover surface replaced `title`. */
-.sessionTitle {
-  min-width: 0;
-  overflow: hidden;
-}
-
-.sessionTitle > span,
-.sessionTitle .label {
+/* The session title's trigger button: reset the browser's button chrome so it
+ * reads as the row's title, and own the width HoverCard's block wrapper gives
+ * it. The .label rule above supplies the ellipsis contract. */
+.sessionTitleButton {
   display: block;
   width: 100%;
   min-width: 0;

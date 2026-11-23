@@ -22,9 +22,9 @@ const cloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
 // GCPADC sends a bearer token minted from Google credentials (spec §8.1):
 // application-default credentials found on the host, or — when the
 // registry resolved a credentials-store entry for the instance — the
-// service-account / authorized_user JSON stored there (spec 2026-09-04
-// google-vertex-express §4.3). Credentials are looked up at request time,
-// never at load: the library's answer names the cached token source, so a
+// service-account / authorized_user JSON stored there. Credentials are looked
+// up at request time, never at load: the library's answer names the cached
+// token source, so a
 // re-login reaches the next request, and the source refreshes itself.
 type GCPADC struct {
 	// FindCredentials is the ADC lookup seam; nil means google.FindDefaultCredentials.

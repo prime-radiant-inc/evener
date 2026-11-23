@@ -4,6 +4,7 @@ import { useState } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import { useTestDrivenFakeTimers } from "../../testing/fakeTimers";
 import { PathField, type PathFieldProps } from "./index";
+import styles from "./pathfield.module.css";
 
 afterEach(() => {
   cleanup();
@@ -71,20 +72,66 @@ test("directory trigger exposes its label, path and disabled state", () => {
   ).toBe(true);
 });
 
-test("directory navigation stays draft until confirmation and restores trigger focus", async () => {
-  const { user, onChange, onPanelClose } = setup({ complete: async () => ["/work/child"] });
+test.each(["default", "prominent"] as const)(
+  "directory navigation stays draft until confirmation and restores trigger focus (%s variant)",
+  async (variant) => {
+    const { user, onChange, onPanelClose } = setup({
+      variant,
+      ariaLabel: "Working directory",
+      complete: async () => ["/work/child"],
+    });
+    const fieldTrigger = trigger();
+    expect(fieldTrigger.getAttribute("aria-haspopup")).toBe("dialog");
+    expect(fieldTrigger.getAttribute("aria-expanded")).toBe("false");
+    await open(user);
+    expect(fieldTrigger.getAttribute("aria-expanded")).toBe("true");
+    await user.click(await screen.findByRole("button", { name: "Open /work/child" }));
+    expect(onChange).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Use this folder" }));
+    expect(onChange).toHaveBeenCalledExactlyOnceWith("/work/child");
+    expect(onPanelClose).toHaveBeenCalledExactlyOnceWith("/work/child");
+    await waitFor(() => expect(document.activeElement).toBe(trigger()));
+    expect(fieldTrigger.getAttribute("aria-expanded")).toBe("false");
+  },
+);
+
+test.each([
+  { value: "/work/project", headline: "project", caption: "/work/project", state: "chosen" },
+  { value: "", headline: "Working directory", caption: "Choose a folder", state: "unset" },
+])("the prominent variant renders the directory tile for '$value'", ({ value, headline, caption, state }) => {
+  setup({
+    variant: "prominent",
+    id: "spawn-cwd",
+    ariaLabel: "Working directory",
+    placeholder: "Choose a folder",
+    value,
+  });
+  const fieldTrigger = screen.getByRole("button", { name: /^Working directory:/ });
+  expect(fieldTrigger.id).toBe("spawn-cwd");
+  expect(fieldTrigger.getAttribute("data-state")).toBe(state);
+  expect(fieldTrigger.querySelector(`.${styles.prominentHeadline}`)?.textContent).toBe(headline);
+  expect(fieldTrigger.querySelector(`.${styles.prominentCaption}`)?.textContent).toBe(caption);
+  expect(fieldTrigger.querySelector(`.${styles.prominentAction}`)?.textContent).toBe("Change…");
+});
+
+test("the default variant keeps the control-shaped trigger", () => {
+  setup({ id: "spawn-cwd", ariaLabel: "Working directory" });
   const fieldTrigger = trigger();
-  expect(fieldTrigger.getAttribute("aria-haspopup")).toBe("dialog");
+  expect(fieldTrigger.id).toBe("spawn-cwd");
+  expect(fieldTrigger.getAttribute("data-state")).toBeNull();
+  expect(fieldTrigger.querySelector(`.${styles.pathChevron}`)).not.toBeNull();
+});
+
+// A file field opens the completion listbox, not the directory dialog, so the
+// trigger's aria-haspopup follows the kind it opens. The directory case is
+// pinned in the navigation test above.
+test("a file field's trigger announces the listbox it opens", async () => {
+  const { user } = setup({ kind: "file", value: "/etc/hosts" });
+  const fieldTrigger = trigger();
+  expect(fieldTrigger.getAttribute("aria-haspopup")).toBe("listbox");
   expect(fieldTrigger.getAttribute("aria-expanded")).toBe("false");
   await open(user);
   expect(fieldTrigger.getAttribute("aria-expanded")).toBe("true");
-  await user.click(await screen.findByRole("button", { name: "Open /work/child" }));
-  expect(onChange).not.toHaveBeenCalled();
-  await user.click(screen.getByRole("button", { name: "Use this folder" }));
-  expect(onChange).toHaveBeenCalledExactlyOnceWith("/work/child");
-  expect(onPanelClose).toHaveBeenCalledExactlyOnceWith("/work/child");
-  await waitFor(() => expect(document.activeElement).toBe(trigger()));
-  expect(fieldTrigger.getAttribute("aria-expanded")).toBe("false");
 });
 
 test.each(["Cancel", "Escape"])("%s preserves a directory field's committed value", async (action) => {

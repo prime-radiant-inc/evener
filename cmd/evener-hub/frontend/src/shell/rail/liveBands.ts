@@ -44,6 +44,10 @@ export interface RailLiveRow<Row extends NavigationSessionSummary = RailSession>
   session: Row;
   /** The attention class the row's band and why line are read from. */
   state: BoardState;
+  /** Replies this browser has not read since it last opened the session. A
+   * read signal, not a status: a row can need you with nothing new to read,
+   * and can carry new replies that need nothing from you. */
+  unseen?: boolean;
 }
 
 export type RailLiveBands<Row extends NavigationSessionSummary = RailSession> = Record<Band, RailLiveRow<Row>[]>;
@@ -62,6 +66,7 @@ function presentsWorking(session: NavigationSessionSummary): boolean {
 export function railLiveBands<Row extends NavigationSessionSummary>(
   live: readonly Row[],
   needsYou: readonly Row[],
+  isSeen: (row: NavigationSessionSummary) => boolean = () => true,
 ): RailLiveBands<Row> {
   // The two sections are read separately, so their copies of one session can
   // disagree. The needs-you section is the hub's attention read: while it
@@ -70,7 +75,7 @@ export function railLiveBands<Row extends NavigationSessionSummary>(
   // copy never hides a session that needs a person.
   const queued = new Map(needsYou.map((row) => [row.ref, row]));
   const current = live.map((row) => queued.get(row.ref) ?? row);
-  const shared = liveBands<Row>(current, needsYou, () => true);
+  const shared = liveBands<Row>(current, needsYou, isSeen);
   const bands: RailLiveBands<Row> = { needsYou: [], working: [], idle: [] };
   const placed = new Set<string>();
   const presentedWorking: RailLiveRow<Row>[] = [];
@@ -81,8 +86,8 @@ export function railLiveBands<Row extends NavigationSessionSummary>(
       // failure, question, approval or restart keeps its class, however the
       // model arrived at it.
       if ((item.state === "idle" || item.state === "warning") && presentsWorking(item.row))
-        presentedWorking.push({ session: item.row, state: "working" });
-      else bands[band].push({ session: item.row, state: item.state });
+        presentedWorking.push({ session: item.row, state: "working", unseen: item.unseen });
+      else bands[band].push({ session: item.row, state: item.state, unseen: item.unseen });
     }
   }
   bands.working.push(...presentedWorking);
@@ -181,12 +186,13 @@ export function liveBandNodes(
     const rows = bands[band];
     if (rows.length === 0) return [];
     const id = liveBandId(band);
-    const children: BandRailNode["children"] = rows.map(({ session, state }) => {
+    const children: BandRailNode["children"] = rows.map(({ session, state, unseen }) => {
       const hostOffline = offline.has(session.host_id);
       const namesHost = hostOffline || (assumed !== undefined && session.host_id !== assumed);
       return liveSessionNode(
         session,
         state,
+        unseen,
         namesHost ? { label: label(session.host_id), online: !hostOffline } : undefined,
       );
     });

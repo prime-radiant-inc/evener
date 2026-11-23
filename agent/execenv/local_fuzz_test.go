@@ -2,11 +2,15 @@ package execenv
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"fmt"
+	"math"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/fuzz/oracle"
@@ -51,9 +55,10 @@ func newFuzzEnv(t *testing.T, fs afero.Fs, content []byte) (*LocalExecutionEnvir
 //   - CORE-REPLACE TEETH: when the edit succeeds AND the original contained
 //     oldString verbatim (so the exact, non-fuzzy branch ran) AND newString does
 //     not itself contain oldString (so a replacement cannot reintroduce it), the
-//     resulting bytes equal the independently computed strings.Replace /
-//     ReplaceAll result. The guard skips the fuzzy branch (whose match we do not
-//     try to predict) and the newString⊇oldString trap that would make
+//     resulting bytes equal the independently computed LF strings.Replace /
+//     ReplaceAll result on LF inputs, or preserve BOM + CRLF line endings on
+//     CRLF/BOM inputs. The guard skips the fuzzy branch (whose match we do not
+//     try to predict), lone-CR collisions, and the newString⊇oldString trap that would make
 //     "oldString gone" a false expectation.
 //
 // SAFETY: MemMapFs only; no real disk, no subprocess.
@@ -67,6 +72,8 @@ func FuzzEditFile(f *testing.F) {
 	f.Add("x", "x", "xx", true)
 	f.Add("", "", "", false)
 	f.Add("abc", "", "z", true)
+	f.Add("\xEF\xBB\xBFhello\r\nworld\r\n", "hello", "HI\nTHERE", false)
+	f.Add("a\r\nb\nc\r\n", "a\r\n", "A1\r\nA2\r\n", false)
 
 	f.Fuzz(func(t *testing.T, content, oldString, newString string, replaceAll bool) {
 		fs := afero.NewMemMapFs()
@@ -90,17 +97,53 @@ func FuzzEditFile(f *testing.F) {
 
 		// Core-replace teeth: only when the exact (non-fuzzy) branch ran and a
 		// replacement cannot reintroduce oldString.
-		if oldString != "" && strings.Contains(string(before), oldString) && !strings.Contains(newString, oldString) {
-			var expected string
-			if replaceAll {
-				expected = strings.ReplaceAll(string(before), oldString, newString)
-			} else {
-				// Non-replaceAll success implies the exact-match count was 1.
-				expected = strings.Replace(string(before), oldString, newString, 1)
+		bom := []byte(nil)
+		body := before
+		if bytes.HasPrefix(before, []byte{0xEF, 0xBB, 0xBF}) {
+			bom = before[:3]
+			body = before[3:]
+		}
+		lfBody := strings.ReplaceAll(string(body), "\r\n", "\n")
+		oldLF := strings.ReplaceAll(oldString, "\r\n", "\n")
+		newLF := strings.ReplaceAll(newString, "\r\n", "\n")
+		if oldLF != "" && strings.Contains(lfBody, oldLF) && !strings.Contains(newLF, oldLF) {
+			pureLF := len(bom) == 0 && !bytes.Contains(body, []byte("\r\n")) && !strings.Contains(oldString, "\r\n") && !strings.Contains(newString, "\r\n")
+			if pureLF {
+				var expected string
+				if replaceAll {
+					expected = strings.ReplaceAll(string(before), oldString, newString)
+				} else {
+					// Non-replaceAll success implies the exact-match count was 1.
+					expected = strings.Replace(string(before), oldString, newString, 1)
+				}
+				if string(after) != expected {
+					t.Fatalf("EditFile exact-replace mismatch\n old=%q new=%q replaceAll=%v\n before=%q\n after=%q\n want=%q",
+						oldString, newString, replaceAll, before, after, expected)
+				}
+				return
 			}
-			if string(after) != expected {
-				t.Fatalf("EditFile exact-replace mismatch\n old=%q new=%q replaceAll=%v\n before=%q\n after=%q\n want=%q",
-					oldString, newString, replaceAll, before, after, expected)
+			if !bytes.HasPrefix(after, bom) {
+				t.Fatalf("EditFile dropped leading BOM\n before=%q\n after=%q", before, after)
+			}
+			if !strings.Contains(newLF, "\r") {
+				var expectedLF string
+				if replaceAll {
+					expectedLF = strings.ReplaceAll(lfBody, oldLF, newLF)
+				} else {
+					expectedLF = strings.Replace(lfBody, oldLF, newLF, 1)
+				}
+				if gotLF := strings.ReplaceAll(string(after[len(bom):]), "\r\n", "\n"); gotLF != expectedLF {
+					t.Fatalf("EditFile CRLF/BOM LF-normalized mismatch\n old=%q new=%q replaceAll=%v\n before=%q\n after=%q\n wantLF=%q",
+						oldString, newString, replaceAll, before, after, expectedLF)
+				}
+				pureCRLF := bytes.Contains(body, []byte("\r\n")) && !bytes.Contains(bytes.ReplaceAll(body, []byte("\r\n"), nil), []byte("\n"))
+				if pureCRLF {
+					wantCRLF := string(bom) + strings.ReplaceAll(expectedLF, "\n", "\r\n")
+					if string(after) != wantCRLF {
+						t.Fatalf("EditFile CRLF-preserving mismatch\n old=%q new=%q replaceAll=%v\n before=%q\n after=%q\n want=%q",
+							oldString, newString, replaceAll, before, after, wantCRLF)
+					}
+				}
 			}
 		}
 	})
@@ -123,6 +166,7 @@ func FuzzEditFileDifferential(f *testing.F) {
 	f.Add("one\ntwo\nthree\n", "two\nthree", "TWO\nTHREE", false)
 	f.Add("nomatch here", "totally absent string", "y", false)
 	f.Add("", "", "", true)
+	f.Add("\xEF\xBB\xBFone\r\ntwo\r\n", "two", "TWO\nLINE", false)
 
 	f.Fuzz(func(t *testing.T, content, oldString, newString string, replaceAll bool) {
 		osFs := afero.NewBasePathFs(afero.NewOsFs(), t.TempDir())
@@ -144,6 +188,14 @@ func FuzzEditFileDifferential(f *testing.F) {
 		memBytes := readOrEmpty(t, memFs, memAbs)
 		if !bytes.Equal(osBytes, memBytes) {
 			t.Fatalf("resulting bytes diverged across filesystems\n os =%q\n mem=%q", osBytes, memBytes)
+		}
+		if osErr == nil {
+			if !strings.HasPrefix(osMsg, "edited ") {
+				t.Fatalf("successful EditFile returned unexpected message %q", osMsg)
+			}
+			if bytes.Equal(osBytes, []byte(content)) {
+				t.Fatalf("successful EditFile left bytes unchanged: %q", osBytes)
+			}
 		}
 	})
 }
@@ -232,43 +284,158 @@ func FuzzReadFileWindow(f *testing.F) {
 			return
 		}
 
-		// Text window: reconstruct the reference window and compare exactly.
-		want := referenceWindow(content, op, lp)
-		if out != want {
-			t.Fatalf("ReadFile window mismatch\n content=%q offset=%v limit=%v\n got =%q\n want=%q",
-				content, op, lp, out, want)
+		// Text window: ReadFileRichCtx and ReadFileRichAndBytesCtx must match,
+		// and rows/metadata must match independent reference reconstruction.
+		richOut, meta, rerr := env.ReadFileRichCtx(context.Background(), fuzzTarget, op, lp)
+		if rerr != nil || richOut != out {
+			t.Fatalf("ReadFileRichCtx diverged: rich=%q err=%v out=%q", richOut, rerr, out)
 		}
+		wholeOut, _, wholeMeta, werr := env.ReadFileRichAndBytesCtx(context.Background(), fuzzTarget, op, lp)
+		if werr != nil || wholeOut != richOut || wholeMeta != meta {
+			t.Fatalf("ReadFileRichAndBytesCtx diverged: wholeErr=%v meta=%+v wholeMeta=%+v", werr, meta, wholeMeta)
+		}
+		verifyFuzzedReferenceWindow(t, content, op, lp, out, meta)
 	})
 }
 
-// referenceWindow re-derives ReadFile's text-window output from first
-// principles: CRLF→LF normalize, drop the terminator-only final segment a
-// trailing newline leaves behind (a file ending in "\n" has exactly as many
-// rows as newline characters, #6202), split on '\n', clamp start/limit
-// exactly as the production code does, and emit "%4d\t<line>\n" per row. It
-// is the reference implementation the window oracle compares against.
-func referenceWindow(content string, offsetLine, limitLines *int) string {
-	s := strings.ReplaceAll(content, "\r\n", "\n")
-	s = strings.TrimSuffix(s, "\n")
-	lines := strings.Split(s, "\n")
+// verifyFuzzedReferenceWindow re-derives ReadFile v2's text-window rows and
+// metadata from first principles and compares them against the engine's output.
+func verifyFuzzedReferenceWindow(t *testing.T, content string, offsetLine, limitLines *int, got string, meta ReadFileMeta) {
+	t.Helper()
+	if content == "" {
+		if got == "" || meta.StartLine != 0 || meta.EndLine != 0 || meta.TotalLines != 0 || meta.PastEOF {
+			t.Fatalf("empty file mismatch: got=%q meta=%+v", got, meta)
+		}
+		return
+	}
 
-	start := 1
-	if offsetLine != nil && *offsetLine > 0 {
-		start = *offsetLine
+	var s string
+	if strings.HasSuffix(content, "\r\n") {
+		s = content[:len(content)-2]
+	} else {
+		s = strings.TrimSuffix(content, "\n")
 	}
-	limit := 2000
-	if limitLines != nil && *limitLines > 0 {
-		limit = *limitLines
+	lines := strings.Split(s, "\n")
+	for i := range lines {
+		if i < len(lines)-1 {
+			lines[i] = strings.TrimSuffix(lines[i], "\r")
+		}
 	}
-	if start > len(lines) {
-		return ""
+	total := len(lines)
+
+	tailMode := offsetLine != nil && *offsetLine < 0
+	singleLineEscape := limitLines != nil && *limitLines == 1
+	explicitLimit := limitLines != nil && *limitLines > 0
+	effLimit := DefaultReadLines
+	if explicitLimit {
+		effLimit = *limitLines
 	}
-	end := min(start-1+limit, len(lines))
-	var b strings.Builder
+
+	var start int
+	if tailMode {
+		var tailN int64
+		if *offsetLine == math.MinInt {
+			tailN = math.MaxInt64
+		} else {
+			tailN = -int64(*offsetLine)
+		}
+		if !explicitLimit && tailN > int64(DefaultReadLines) {
+			tailN = int64(DefaultReadLines)
+		}
+		if int64(total) <= tailN {
+			start = 1
+		} else {
+			start = total - int(tailN) + 1
+		}
+	} else {
+		start = 1
+		if offsetLine != nil && *offsetLine > 0 {
+			start = *offsetLine
+		}
+		if start > total {
+			if got == "" || !meta.PastEOF || meta.TotalLines != total || meta.StartLine != 0 {
+				t.Fatalf("past EOF mismatch (start=%d total=%d): got=%q meta=%+v", start, total, got, meta)
+			}
+			return
+		}
+	}
+
+	end := min(start-1+effLimit, total)
+	type refRow struct {
+		num     int
+		content string
+	}
+	var cand []refRow
 	for i := start; i <= end; i++ {
-		fmt.Fprintf(&b, "%4d\t%s\n", i, lines[i-1])
+		line := lines[i-1]
+		if !singleLineEscape && len(line) > DefaultReadMaxLineChars {
+			pos, cut, runes := 0, -1, 0
+			for pos < len(line) {
+				_, sz := utf8.DecodeRuneInString(line[pos:])
+				pos += sz
+				runes++
+				if runes == DefaultReadMaxLineChars {
+					cut = pos
+				}
+			}
+			if runes > DefaultReadMaxLineChars {
+				line = fmt.Sprintf("%s... [line truncated: %d chars total; read with offset=%d limit=1 for full line]", line[:cut], runes, i)
+			}
+		}
+		cand = append(cand, refRow{num: i, content: line})
 	}
-	return b.String()
+	var kept []refRow
+	if tailMode && !explicitLimit {
+		sum := 0
+		idx := len(cand)
+		for i, row := range slices.Backward(cand) {
+			rl := len(fmt.Sprintf("%d\t%s\n", row.num, row.content))
+			if i < len(cand)-1 && sum+rl > DefaultReadMaxBytes {
+				break
+			}
+			sum += rl
+			idx = i
+			if i == len(cand)-1 && sum > DefaultReadMaxBytes {
+				break
+			}
+		}
+		kept = cand[idx:]
+	} else {
+		sum := 0
+		for _, r := range cand {
+			rl := len(fmt.Sprintf("%d\t%s\n", r.num, r.content))
+			if len(kept) > 0 && sum+rl > DefaultReadMaxBytes {
+				break
+			}
+			kept = append(kept, r)
+			sum += rl
+		}
+	}
+	if len(kept) == 1 && len(fmt.Sprintf("%d\t%s\n", kept[0].num, kept[0].content)) > DefaultReadMaxBytes {
+		if !meta.Truncated || meta.TruncatedBy != "chars" || meta.StartLine != kept[0].num || meta.EndLine != kept[0].num {
+			t.Fatalf("single-line overflow meta = %+v", meta)
+		}
+		return
+	}
+	sep := "\t"
+	for _, r := range kept {
+		if strings.HasPrefix(r.content, "\t") {
+			sep = ":"
+			break
+		}
+	}
+	var want strings.Builder
+	for _, r := range kept {
+		fmt.Fprintf(&want, "%d%s%s\n", r.num, sep, r.content)
+	}
+	if !strings.HasPrefix(got, want.String()) {
+		t.Fatalf("ReadFile window mismatch\n content=%q offset=%v limit=%v\n got =%q\n wantPrefix=%q",
+			content, offsetLine, limitLines, got, want.String())
+	}
+	if meta.StartLine != kept[0].num || meta.EndLine != kept[len(kept)-1].num || meta.TotalLines != total || meta.TailMode != tailMode {
+		t.Fatalf("ReadFile meta mismatch (total=%d tail=%v): got=%+v wantStart=%d wantEnd=%d",
+			total, tailMode, meta, kept[0].num, kept[len(kept)-1].num)
+	}
 }
 
 // FuzzDetectImageFormat exercises the pure byte-sniffing classifier over a

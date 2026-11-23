@@ -108,6 +108,12 @@ export interface PrefsStoreState {
   // Composer prefs (Display section, parity-m7-settings.md §5). Field names
   // match the PINNED evener.prefs.enterToSend / evener.prefs.showCost keys.
   enterToSend: boolean;
+  // Where a session opens (#4845): with this on, a pane whose first unseen
+  // turn has finished lands at that turn's start instead of the live end.
+  // Browser-local, like the phone's Display choice of the same name, but
+  // default OFF here, where the phone defaults it on: the web opens at the
+  // live end unless the reader asks for the unread landing.
+  openAtUnreadReplies: boolean;
   // Keybindings (Settings -> Keybindings): whether character-key triggers -
   // today exactly the "?" cheatsheet-overlay trigger - are live. WCAG 2.1.4
   // requires a way to turn single-character shortcuts off; default ON (the
@@ -133,6 +139,7 @@ export interface PrefsStoreState {
   setFontSize(value: FontSizePref): void;
   setTranscriptMeasure(value: TranscriptMeasurePref): void;
   setEnterToSend(value: boolean): void;
+  setOpenAtUnreadReplies(value: boolean): void;
   setCharacterKeyTriggers(value: boolean): void;
   setLastSettingsSection(value: string | null): void;
   setNotification(key: NotificationKey, value: boolean): void;
@@ -482,6 +489,7 @@ function loadInitialState(): Omit<
   | "setFontSize"
   | "setTranscriptMeasure"
   | "setEnterToSend"
+  | "setOpenAtUnreadReplies"
   | "setCharacterKeyTriggers"
   | "setLastSettingsSection"
   | "setNotification"
@@ -504,6 +512,7 @@ function loadInitialState(): Omit<
     fontSize,
     transcriptMeasure,
     enterToSend: readBool("enterToSend", false),
+    openAtUnreadReplies: readBool("openAtUnreadReplies", false),
     characterKeyTriggers: readBool("characterKeyTriggers", true),
     lastSettingsSection: readRaw("lastSettingsSection"),
     notifications: loadNotifications(),
@@ -565,6 +574,11 @@ export const prefsStore = createStore<PrefsStoreState>((set) => ({
   setEnterToSend(value) {
     writeBool("enterToSend", value);
     set({ enterToSend: value });
+  },
+
+  setOpenAtUnreadReplies(value) {
+    writeBool("openAtUnreadReplies", value);
+    set({ openAtUnreadReplies: value });
   },
 
   setCharacterKeyTriggers(value) {

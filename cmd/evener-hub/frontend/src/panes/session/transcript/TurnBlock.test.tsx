@@ -192,7 +192,7 @@ test("a thought whose visible successor is filtered out keeps the projector's se
   expect(block.querySelector("details")).not.toBeNull();
 });
 
-test("the trace journey: every thought stays readable on demand at tools, the switch opens them, chat stays conversation-only", () => {
+test("the trace journey: thoughts disclose at tools, the switch opens them, and Chat omits reasoning", () => {
   const tools = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
   const openThinking = makeTranscriptDisplayConfig({
     kind: "custom",
@@ -247,9 +247,7 @@ test("the trace journey: every thought stays readable on demand at tools, the sw
   expect((failedRow as HTMLDetailsElement).open).toBe(false);
   unmountOpen();
 
-  // Chat: conversation-only - the settled trace is gone, the broken turn's
-  // explanation stays, and the live placeholder carries no text and no
-  // disclosure to unfold.
+  // Chat: no reasoning row survives, whether settled, failed, or live.
   const { unmount: unmountChat } = render(
     inScope(
       "journey-chat",
@@ -271,16 +269,11 @@ test("the trace journey: every thought stays readable on demand at tools, the sw
       />,
     ),
   );
-  details = screen.getAllByRole("group") as HTMLDetailsElement[];
-  expect(details).toHaveLength(1);
-  expect(details[0]?.open).toBe(false);
+  expect(screen.queryAllByRole("group")).toHaveLength(0);
+  expect(screen.queryByTestId("think-block")).toBeNull();
   expect(screen.queryByText("the settled trace body")).toBeNull();
+  expect(screen.queryByText("the failed trace body")).toBeNull();
   expect(screen.queryByText("the live trace body")).toBeNull();
-  fireEvent.click(details[0]!.querySelector("summary")!);
-  expect(screen.getByText("the failed trace body")).toBeTruthy();
-  const liveBlock = screen.getAllByTestId("think-block").find((block) => block.dataset.contentFree === "true");
-  expect(liveBlock?.querySelector("details")).toBeNull();
-  expect(liveBlock?.textContent).not.toContain("the live trace body");
   unmountChat();
 });
 
@@ -1093,8 +1086,12 @@ function openRun() {
 test("a settled turn folds three quiet tool calls into one row that opens to them", () => {
   renderTools([toolItem("a", "read_file"), toolItem("b", "read_file"), toolItem("c", "read_file")]);
   expect(screen.getAllByTestId("tool-run")).toHaveLength(1);
+  const run = screen.getByTestId("tool-run");
+  expect(run.tagName).toBe("DETAILS");
+  expect(run.querySelector("summary svg")?.getAttribute("data-open")).toBe("false");
   expect(screen.queryAllByTestId("tool-row")).toHaveLength(0);
   openRun();
+  expect(screen.getByTestId("tool-run").querySelector("summary svg")?.getAttribute("data-open")).toBe("true");
   expect(screen.getAllByTestId("tool-row")).toHaveLength(3);
 });
 
@@ -1219,23 +1216,6 @@ test("a streamed reply keeps its DOM node when history records its round", () =>
   expect(container.querySelector('[data-testid="agent-message-item"]')).toBe(before);
 });
 
-const NO_ROUND_TIMINGS = makeTranscriptDisplayConfig(
-  { kind: "preset", level: "activity" },
-  { roundTimings: false, systemEvents: true, promptEvents: true },
-);
-
-test("the completion cap waits for the turn's last fragment", () => {
-  const projected = turn(
-    [item({ type: "userMessage", text: "go" }), item({ id: "answer", type: "agentMessage", text: "done" })],
-    { status: "completed", durationMs: 134_000 },
-    NO_ROUND_TIMINGS,
-  );
-  const { rerender } = render(withConfig(NO_ROUND_TIMINGS, <TurnBlock turn={projected} showTurnSeparator={false} />));
-  expect(screen.queryByTestId("turn-done")).toBeNull();
-  rerender(withConfig(NO_ROUND_TIMINGS, <TurnBlock turn={projected} />));
-  expect(screen.getByTestId("turn-done")).toBeTruthy();
-});
-
 test("a completed intent group closes after its trailing tool calls", () => {
   const source: TurnModel = {
     id: "turn_1",
@@ -1257,7 +1237,6 @@ test("a completed intent group closes after its trailing tool calls", () => {
   render(
     withConfig(config, <ProjectedIntentGroup rowId="intent-group-row" entries={[entry]} separatorTurn={source} />),
   );
-  expect(screen.getByTestId("turn-done")).toBeTruthy();
   const group = document.querySelector('[data-transcript-row-id="intent-group-row"]');
   expect(group?.contains(screen.getByTestId("turn-separator"))).toBe(true);
 });

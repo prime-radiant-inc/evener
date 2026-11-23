@@ -7,11 +7,12 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
-func TestToGeminiContents_UserDocuments(t *testing.T) {
+func TestToInteractionSteps_UserDocuments(t *testing.T) {
 	t.Parallel()
-	inline := map[string]any{"inlineData": map[string]any{"mimeType": "application/pdf", "data": "JVBERi0xLjQ="}}
+	inline := map[string]any{"type": "document", "mime_type": "application/pdf", "data": "JVBERi0xLjQ="}
 	for _, tc := range []struct {
 		name string
 		doc  *llm.DocumentData
@@ -22,68 +23,85 @@ func TestToGeminiContents_UserDocuments(t *testing.T) {
 		{"blank media", &llm.DocumentData{Data: []byte("%PDF-1.4"), MediaType: " \t"}, inline},
 		{"trim media", &llm.DocumentData{Data: []byte("%PDF-1.4"), MediaType: " application/pdf "}, inline},
 		{"bytes before uri", &llm.DocumentData{Data: []byte("%PDF-1.4"), URL: "https://example.invalid/a.pdf"}, inline},
-		{"declared media", &llm.DocumentData{Data: []byte("%PDF-1.4"), MediaType: "text/plain"}, map[string]any{"inlineData": map[string]any{"mimeType": "text/plain", "data": "JVBERi0xLjQ="}}},
-		{"file uri", &llm.DocumentData{URL: " https://generativelanguage.googleapis.com/v1beta/files/pdf-4463 "}, map[string]any{"fileData": map[string]any{"mimeType": "application/pdf", "fileUri": "https://generativelanguage.googleapis.com/v1beta/files/pdf-4463"}}},
+		{"declared media", &llm.DocumentData{Data: []byte("%PDF-1.4"), MediaType: "text/plain"}, map[string]any{"type": "document", "mime_type": "text/plain", "data": "JVBERi0xLjQ="}},
+		{"file uri", &llm.DocumentData{URL: " https://generativelanguage.googleapis.com/v1beta/files/pdf-4463 "}, map[string]any{"type": "document", "mime_type": "application/pdf", "uri": "https://generativelanguage.googleapis.com/v1beta/files/pdf-4463"}},
 		{"nil", nil, nil},
 		{"empty", &llm.DocumentData{}, nil},
 		{"blank uri", &llm.DocumentData{URL: " \t"}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, contents, err := toGeminiContents("gemini", []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
-				{Kind: llm.ContentText, Text: "sentinel-before"},
-				{Kind: llm.ContentDocument, Document: tc.doc},
-				{Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte{1}, MediaType: "image/png"}},
-				{Kind: llm.ContentText, Text: "sentinel-after"},
-			}}}, false)
+			req := llm.Request{
+				Model: "gemini-3.8-flash",
+				Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
+					{Kind: llm.ContentText, Text: "sentinel-before"},
+					{Kind: llm.ContentDocument, Document: tc.doc},
+					{Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte{1}, MediaType: "image/png"}},
+					{Kind: llm.ContentText, Text: "sentinel-after"},
+				}}},
+			}
+			body, err := (&Protocol{}).BuildBody(req, protoRes(nil))
 			if err != nil {
 				t.Fatal(err)
 			}
-			parts := []map[string]any{{"text": "sentinel-before"}}
+			items := []any{map[string]any{"type": "text", "text": "sentinel-before"}}
 			if tc.want != nil {
-				parts = append(parts, tc.want)
+				items = append(items, tc.want)
 			}
-			parts = append(parts, map[string]any{"inlineData": map[string]any{"mimeType": "image/png", "data": "AQ=="}}, map[string]any{"text": "sentinel-after"})
-			want := []map[string]any{{"role": "user", "parts": parts}}
-			if !reflect.DeepEqual(contents, want) {
-				t.Fatalf("contents = %#v, want %#v", contents, want)
+			items = append(items,
+				map[string]any{"type": "image", "mime_type": "image/png", "data": "AQ=="},
+				map[string]any{"type": "text", "text": "sentinel-after"},
+			)
+			want := []any{map[string]any{"type": "user_input", "content": items}}
+			if !reflect.DeepEqual(body["input"], want) {
+				t.Fatalf("input = %#v, want %#v", body["input"], want)
 			}
 		})
 	}
 }
 
-func TestToGeminiContents_AssistantDocumentsRemainUnsupported(t *testing.T) {
+func TestToInteractionSteps_AssistantDocumentsRemainUnsupported(t *testing.T) {
 	t.Parallel()
-	_, contents, err := toGeminiContents("gemini", []llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-		{Kind: llm.ContentDocument, Document: &llm.DocumentData{Data: []byte("%PDF-1.4")}},
-	}}}, false)
-	if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok || contents != nil {
-		t.Fatalf("assistant document: contents=%v err=%v, want configuration refusal", contents, err)
+	_, err := (&Protocol{}).BuildBody(llm.Request{
+		Model: "gemini-3.8-flash",
+		Messages: []llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentDocument, Document: &llm.DocumentData{Data: []byte("%PDF-1.4")}},
+		}}},
+	}, protoRes(nil))
+	if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok {
+		t.Fatalf("assistant document: err=%v, want configuration refusal", err)
 	}
 }
 
-func TestToGeminiContents_AudioRemainsUnsupported(t *testing.T) {
+func TestToInteractionSteps_AudioRemainsUnsupported(t *testing.T) {
 	t.Parallel()
 	for _, role := range []llm.Role{llm.RoleUser, llm.RoleAssistant} {
-		_, _, err := toGeminiContents("gemini", []llm.Message{{Role: role, Content: []llm.ContentPart{{Kind: llm.ContentAudio, Audio: &llm.AudioData{Data: []byte{1}}}}}}, false)
+		_, err := (&Protocol{}).BuildBody(llm.Request{
+			Model:    "gemini-3.8-flash",
+			Messages: []llm.Message{{Role: role, Content: []llm.ContentPart{{Kind: llm.ContentAudio, Audio: &llm.AudioData{Data: []byte{1}}}}}},
+		}, protoRes(nil))
 		if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok {
 			t.Fatalf("%s audio: %v, want configuration refusal", role, err)
 		}
 	}
 }
 
-func TestToGeminiContents_ToolDocumentsStayOffTheWire(t *testing.T) {
+func TestToInteractionSteps_ToolDocumentsStayOffTheWire(t *testing.T) {
 	t.Parallel()
 	for _, capable := range []bool{false, true} {
 		for _, mediaType := range []string{"application/pdf", " APPLICATION/PDF ", "text/plain"} {
 			result := &llm.ToolResultData{ToolCallID: "call-4463", Name: "read_file", Content: "result-4463", ImageData: []byte("%PDF-1.4"), ImageMediaType: mediaType}
-			_, contents, err := toGeminiContents("gemini", []llm.Message{{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: result}}}}, capable)
+			res := protoRes(func(c *registry.Caps) { c.MultimodalToolResults = new(capable) })
+			body, err := (&Protocol{}).BuildBody(llm.Request{
+				Model:    "gemini-3.8-flash",
+				Messages: []llm.Message{{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: result}}}},
+			}, res)
 			if err != nil {
 				t.Errorf("cap=%v media=%q: %v", capable, mediaType, err)
 				continue
 			}
-			want := []map[string]any{{"role": "user", "parts": []map[string]any{{"functionResponse": map[string]any{"name": "read_file", "response": map[string]any{"result": "result-4463"}}}}}}
-			if !reflect.DeepEqual(contents, want) {
-				t.Errorf("cap=%v media=%q: contents=%#v, want text-only function response", capable, mediaType, contents)
+			want := []any{map[string]any{"type": "function_result", "call_id": "call-4463", "name": "read_file", "result": "result-4463"}}
+			if !reflect.DeepEqual(body["input"], want) {
+				t.Errorf("cap=%v media=%q: input=%#v, want text-only function_result", capable, mediaType, body["input"])
 			}
 			if string(result.ImageData) != "%PDF-1.4" || result.ImageMediaType != mediaType {
 				t.Fatal("serializing the result changed its retained document")
@@ -92,23 +110,32 @@ func TestToGeminiContents_ToolDocumentsStayOffTheWire(t *testing.T) {
 	}
 }
 
-func TestToGeminiContents_ToolImagesKeepTheirDelivery(t *testing.T) {
+func TestToInteractionSteps_ToolImagesKeepTheirDelivery(t *testing.T) {
 	t.Parallel()
 	png := testPNG(t)
 	encoded := base64.StdEncoding.EncodeToString(png)
 	for _, mediaType := range []string{"", " \t", "image/png"} {
-		_, contents, err := toGeminiContents("gemini", []llm.Message{{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
-			ToolCallID: "call-4463", Name: "read_file", Content: "result-4463", ImageData: png, ImageMediaType: mediaType,
-		}}}}}, true)
+		res := protoRes(func(c *registry.Caps) { c.MultimodalToolResults = new(true) })
+		body, err := (&Protocol{}).BuildBody(llm.Request{
+			Model: "gemini-3.8-flash",
+			Messages: []llm.Message{{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
+				ToolCallID: "call-4463", Name: "read_file", Content: "result-4463", ImageData: png, ImageMediaType: mediaType,
+			}}}}},
+		}, res)
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := []map[string]any{{"role": "user", "parts": []map[string]any{{"functionResponse": map[string]any{
-			"name": "read_file", "response": map[string]any{"result": "result-4463"},
-			"parts": []map[string]any{{"inlineData": map[string]any{"mimeType": "image/png", "data": encoded}}},
-		}}}}}
-		if !reflect.DeepEqual(contents, want) {
-			t.Errorf("media=%q: contents=%#v, want image delivery", mediaType, contents)
+		want := []any{map[string]any{
+			"type":    "function_result",
+			"call_id": "call-4463",
+			"name":    "read_file",
+			"result": []map[string]any{
+				{"type": "text", "text": "result-4463"},
+				{"type": "image", "mime_type": "image/png", "data": encoded},
+			},
+		}}
+		if !reflect.DeepEqual(body["input"], want) {
+			t.Errorf("media=%q: input=%#v, want image delivery", mediaType, body["input"])
 		}
 	}
 }

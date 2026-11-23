@@ -28,8 +28,9 @@ export interface AttentionEntry {
   level: "needs_you" | "error";
   askPending: boolean;
   approvalPending: boolean;
-  // The session rests awaiting with no question: its turn ended asking for a
-  // reply (end_reason needs_response). A plain reply rests idle instead.
+  // The session rests awaiting with no question: an older daemon reported
+  // that shape for a turn that ended asking for a reply. A plain reply rests
+  // idle instead.
   needsResponse: boolean;
 }
 

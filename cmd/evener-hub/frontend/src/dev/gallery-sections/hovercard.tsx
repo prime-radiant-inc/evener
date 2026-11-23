@@ -6,7 +6,7 @@ import {
   summaryEntityView,
 } from "../../panes/session/transcript/entityView.testFixture";
 import { HoverCard } from "../../widgets/hovercard";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./tooltip.module.css";
 
 // The entity-card demo renders EntityRef itself with the shared test fixtures,
@@ -32,17 +32,45 @@ function HoverCardDemo() {
         · <EntityRef view={jobDemo} id={SUMMARY_ENTITY_JOB} triggerOnly /> ·{" "}
         <EntityRef view={delegateDemo} id="dlg_gallery_demo" triggerOnly />
       </p>
+      <p className={styles.hint}>
+        A block wrapper fills its container. Both dashed rows are 240px wide; only the block trigger stretches to the
+        row's edge.
+      </p>
+      <div
+        style={{
+          maxWidth: 240,
+          padding: "var(--space-1)",
+          border: "1px dashed var(--edge)",
+        }}
+      >
+        <HoverCard label={<div>Shrink-wrapped trigger</div>}>
+          <button type="button" style={{ width: "100%" }}>
+            Shrink-wrapped
+          </button>
+        </HoverCard>
+      </div>
+      <div
+        style={{
+          maxWidth: 240,
+          marginTop: "var(--space-2)",
+          padding: "var(--space-1)",
+          border: "1px dashed var(--edge)",
+        }}
+      >
+        <HoverCard label={<div>Block trigger</div>} block>
+          <button type="button" style={{ width: "100%" }}>
+            Block fills the row
+          </button>
+        </HoverCard>
+      </div>
     </div>
   );
 }
 
 export default function HoverCardGallerySection() {
   return (
-    <section>
-      <h2>HoverCard</h2>
-      <ThemeFlip>
-        <HoverCardDemo />
-      </ThemeFlip>
-    </section>
+    <GallerySection title="HoverCard">
+      <HoverCardDemo />
+    </GallerySection>
   );
 }

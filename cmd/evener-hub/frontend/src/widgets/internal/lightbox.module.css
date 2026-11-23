@@ -1,0 +1,11 @@
+/* The tile frame's edge and corner (each caller keeps its own overflow clip) and the Dialog size="large" lightbox image shared by AttachmentTile and ImageGallery (P5-F01's CSS half); 85vh is the height two of the three lightboxes already used (M1-F04). */
+.frame {
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+}
+.image {
+  display: block;
+  max-width: 100%;
+  max-height: 85vh;
+  margin: 0 auto;
+}

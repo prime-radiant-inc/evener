@@ -229,7 +229,7 @@ func (p *readinessWorkerProvider) Complete(_ context.Context, request llm.Reques
 	if p.step == 1 {
 		return activityRelayTool("ask_user", map[string]any{"questions": []any{map[string]any{"question": "READINESS-QUESTION", "options": []any{map[string]any{"label": "Yes", "detail": "continue"}, map[string]any{"label": "No", "detail": "stop"}}}}}), nil
 	}
-	return activityRelayTool("communicate", map[string]any{"message": "READINESS-DONE", "end_turn": true}), nil
+	return activityRelayTool("communicate", map[string]any{"message": "READINESS-DONE", "next": "send_and_end_turn"}), nil
 }
 
 type readinessManagerProvider struct {
@@ -258,7 +258,7 @@ func (p *readinessManagerProvider) Complete(_ context.Context, request llm.Reque
 		p.clearConsumed = true
 		return activityRelayTool("job_watch", map[string]any{"operation": "clear", "watch_id": p.clearID}), nil
 	}
-	return activityRelayTool("communicate", map[string]any{"message": "READINESS-MANAGER-REST", "end_turn": true}), nil
+	return activityRelayTool("communicate", map[string]any{"message": "READINESS-MANAGER-REST", "next": "send_and_end_turn"}), nil
 }
 
 // Both daemons, sessions, mutation admission, watch journal and history belong

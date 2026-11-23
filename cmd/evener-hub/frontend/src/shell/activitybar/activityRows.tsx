@@ -19,7 +19,7 @@ import {
   watchName,
 } from "@evener/appwire-client";
 import type { ReactNode } from "react";
-import { ActivityWatchDetail } from "../../panes/session/chrome/ActivityWatchDetail";
+import { ActivityWatchDetail, type ViewingSession } from "../../panes/session/chrome/ActivityWatchDetail";
 import { jobStatusDotState } from "../../panes/session/chrome/activityFormat";
 import { ActivityTime } from "../../panes/session/chrome/activityTime";
 import { Disclosure, ListRow, SubagentDot, ToolIcon, type ToolIconTone } from "../../widgets";
@@ -162,7 +162,7 @@ export function JobRow({ job, onOpen, now }: { job: JobActivityJob; onOpen?: () 
   );
 }
 
-export function WatchRow({ row, now }: { row: ActivityWatchRow; now: number }) {
+export function WatchRow({ row, now, viewing }: { row: ActivityWatchRow; now: number; viewing?: ViewingSession }) {
   const { watch } = row;
   return (
     <div data-activity-anchor={row.id}>
@@ -185,7 +185,7 @@ export function WatchRow({ row, now }: { row: ActivityWatchRow; now: number }) {
           </span>
         }
       >
-        <ActivityWatchDetail row={row} now={now} />
+        <ActivityWatchDetail row={row} now={now} viewing={viewing} />
       </Disclosure>
     </div>
   );

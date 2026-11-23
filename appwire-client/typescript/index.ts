@@ -253,7 +253,15 @@ export type { DocFileContent, DocFileErrorKind } from "./docContent";
 export { DOC_FILE_MAX_BYTES, DocFileError, docDownloadURL, docFileRawURL, docImageURL } from "./docContent";
 export type { DiscardStoredDraftResult } from "./draftCheckpointPort";
 export { canonicalJson } from "./draftCheckpointPort";
-export { diffStats, editDiffText } from "./editDiff";
+export type { DiffLineKind, EditOperation } from "./editDiff";
+export {
+  classifyDiffLineKinds,
+  diffStats,
+  editBatchDiffText,
+  editDiffText,
+  editOperationsOf,
+  splitDiffLines,
+} from "./editDiff";
 export type { EntityIdMatch, EntityKind } from "./entityIds";
 export { entityKindOf, findEntityIds, jobOwnerSessionId } from "./entityIds";
 export type { DelegateEntityView, EntityView, JobEntityView, OpenTarget, WatchEntityView } from "./entityView";
@@ -552,6 +560,7 @@ export type { PathPickableRow, PathRow } from "./pathRows";
 export { basename, buildPathRows, childrenPrefix, isDirEntry, parentOf, pickablePathRows } from "./pathRows";
 export { isPlainObject, sameJsonValue } from "./plainObject";
 export { RUNNING_QUIET_AFTER_MS } from "./quiet";
+export { isQuietYield, QUIET_YIELD_EVENT_KIND, quietYieldCommentaryOf } from "./quietYield";
 export { humanizeState, needsResponseRest } from "./railSessionState";
 export type { ReadyGenerationFence } from "./readyGenerationFence";
 export { createReadyGenerationFence } from "./readyGenerationFence";
@@ -681,6 +690,7 @@ export {
 export {
   decodeNotificationEntities,
   escapeNotificationEntities,
+  hasFailedNotification,
   isNotificationRemnant,
   isValidTranscriptRef,
   type NotificationOutcome,

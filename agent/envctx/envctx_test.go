@@ -248,3 +248,38 @@ func TestRenderDiffFirstAfterGitLaunchOutsideGitEmitsNotInRepo(t *testing.T) {
 		t.Fatal("replayed block did not keep subsequent non-git turn quiet")
 	}
 }
+
+func TestRenderDiffCommunicateContractAndReplay(t *testing.T) {
+	t.Parallel()
+	launch := fullSnap()
+	launch.CommunicateContract = `communicate uses required "message" and optional "next"`
+	tr := NewTracker(State{})
+	tr.SeedRuntime(launch)
+	if first := tr.RenderDiff(launch); strings.Contains(first, "communicate contract:") {
+		t.Fatalf("first block restated launch communicate contract:\n%s", first)
+	}
+	modelChanged := launch
+	modelChanged.Model = "gpt-5.4"
+	if !tr.RuntimeDrifted(modelChanged) || tr.CommunicateContractDrifted(modelChanged.CommunicateContract) {
+		t.Fatalf("model drift alone must trigger RuntimeDrifted (got %v) without triggering CommunicateContractDrifted (got %v)",
+			tr.RuntimeDrifted(modelChanged), tr.CommunicateContractDrifted(modelChanged.CommunicateContract))
+	}
+
+	legacy := NewTracker(State{Last: fullSnap(), HasSent: true})
+	if !legacy.RuntimeDrifted(launch) || !legacy.CommunicateContractDrifted(launch.CommunicateContract) {
+		t.Fatal("drifted flag = false when launch communicate contract is absent from base")
+	}
+	diff := legacy.RenderDiff(launch)
+	if !strings.Contains(diff, "communicate contract: "+launch.CommunicateContract) {
+		t.Fatalf("expected communicate contract diff, got:\n%s", diff)
+	}
+	if legacy.CommunicateContractDrifted(launch.CommunicateContract) {
+		t.Fatal("CommunicateContractDrifted remained true after RenderDiff")
+	}
+
+	replayed := NewTracker(State{Last: fullSnap(), HasSent: true})
+	if !replayed.ReplayBlock(diff) || replayed.RuntimeDrifted(launch) ||
+		replayed.CommunicateContractDrifted(launch.CommunicateContract) || replayed.RenderDiff(launch) != "" {
+		t.Fatal("replayed communicate contract diff did not quiet subsequent turns")
+	}
+}

@@ -98,7 +98,7 @@ func ProjectToolSchemas(baseline []ToolDefinition, project func(t ToolDefinition
 func samplingPaths(protocol string) (temperature, topP, stop string) {
 	switch protocol {
 	case registry.ProtocolGoogle:
-		return "generationConfig.temperature", "generationConfig.topP", "generationConfig.stopSequences"
+		return "generation_config.temperature", "generation_config.top_p", "generation_config.stop_sequences"
 	case registry.ProtocolAnthropic:
 		return "temperature", "top_p", "stop_sequences"
 	case registry.ProtocolOpenAIResponses:

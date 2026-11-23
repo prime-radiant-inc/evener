@@ -2,7 +2,7 @@ import { basename, childrenPrefix, friendlyErrorMessage, parentOf } from "@evene
 import { type FormEvent, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Button } from "../button";
-import { OverlayPanel } from "../dialog/OverlayPanel";
+import { Dialog } from "../dialog";
 import { ownerDocumentOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
 import { usePortalDocument } from "../internal/usePortalDocument";
@@ -203,7 +203,7 @@ export function DirectoryPicker({
   // Built only when the portal renders: the first render exists to attach the
   // host marker, and constructing this tree there would throw it away.
   const renderPanel = () => (
-    <OverlayPanel
+    <Dialog
       open
       onClose={onClose}
       title="Choose directory"
@@ -414,7 +414,7 @@ export function DirectoryPicker({
           </section>
         </div>
       </div>
-    </OverlayPanel>
+    </Dialog>
   );
 
   return (

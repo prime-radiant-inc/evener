@@ -9,13 +9,16 @@ import (
 	"sync/atomic"
 	"time"
 
+	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 var errBareTextWithoutResultTool = errors.New("model returned bare text without calling result tool")
@@ -41,6 +44,54 @@ func (e *emptyResponseExhaustedError) Is(target error) bool {
 	return target == errEmptyResponseExhausted
 }
 
+type googleInteractionSettlementError struct {
+	InteractionID string
+	Status        string
+}
+
+func (e *googleInteractionSettlementError) Error() string {
+	if e.InteractionID != "" {
+		return fmt.Sprintf("google interaction %q ended with status %q", e.InteractionID, e.Status)
+	}
+	return fmt.Sprintf("google interaction ended with status %q", e.Status)
+}
+
+func isGoogleNonAuthorizingTerminalSettlement(protocol string, finish llm.FinishReason) bool {
+	if protocol != registry.ProtocolGoogle {
+		return false
+	}
+	switch finish.Reason {
+	case llm.FinishReasonLength:
+		return finish.Raw == "incomplete" || finish.Raw == "budget_exceeded" || finish.Raw == "requires_continuation"
+	case llm.FinishReasonOther:
+		return finish.Raw == "cancelled"
+	default:
+		return false
+	}
+}
+
+func isGoogleNonAuthorizingStatus(protocol string, finish llm.FinishReason) bool {
+	if protocol != registry.ProtocolGoogle {
+		return false
+	}
+	return isGoogleNonAuthorizingTerminalSettlement(protocol, finish) || finish.Reason == llm.FinishReasonContentFilter
+}
+
+func stripToolCallsFromMessage(msg llm.Message) llm.Message {
+	if !slices.ContainsFunc(msg.Content, func(p llm.ContentPart) bool { return p.Kind == llm.ContentToolCall }) {
+		return msg
+	}
+	filtered := make([]llm.ContentPart, 0, len(msg.Content))
+	for _, p := range msg.Content {
+		if p.Kind == llm.ContentToolCall {
+			continue
+		}
+		filtered = append(filtered, p)
+	}
+	msg.Content = filtered
+	return msg
+}
+
 type bareTextWithoutResultToolError struct {
 	toolName string
 	retries  int
@@ -56,9 +107,10 @@ func (e *bareTextWithoutResultToolError) Is(target error) bool {
 
 // Retry budgets for degenerate model responses within a single input turn.
 const (
-	maxEmptyRetries        = 3
-	maxTotalEmptyResponses = 8 // prevent repeated burst-and-recover spirals
-	maxBareTextRetries     = 3
+	maxEmptyRetries           = 3
+	maxTotalEmptyResponses    = 8 // prevent repeated burst-and-recover spirals
+	maxBareTextRetries        = 3
+	maxTotalBareTextResponses = 8 // prevent repeated burst-and-recover spirals
 	// maxServerContinuations bounds one input turn's run of consecutive
 	// pause_turn responses. A pause is a legitimate protocol continuation, so it
 	// still refunds its tool round (see TestSession_PauseTurn_*), but a provider
@@ -77,12 +129,13 @@ const maxHookStopReasonRunes = 160
 
 // retryTracker counts the degenerate (empty / bare-text) model responses seen so
 // far in one input turn. consecutiveEmpty and consecutiveBareText reset once the
-// model produces tool calls; totalEmpty bounds burst-and-recover spirals across
-// the whole turn.
+// model produces tool calls; totalEmpty and totalBareText bound burst-and-recover
+// spirals across the whole turn.
 type retryTracker struct {
 	consecutiveEmpty    int
 	totalEmpty          int
 	consecutiveBareText int
+	totalBareText       int
 }
 
 // recordAbandonedEnvironmentLocked remembers an environment the swap has just
@@ -291,19 +344,15 @@ func classifyRoundContent(txt string, callCount int, content []llm.ContentPart) 
 type noCallsRoute int
 
 const (
-	// finishIdle ends the turn idle without a retry: a bare-text (non-empty)
-	// response to a notification turn is an acknowledgement, not a glitch, and no
-	// user awaits a reply.
+	// finishIdle ends a notification turn without resurrecting a completed run.
 	finishIdle noCallsRoute = iota
 	// runNoToolCalls routes through the empty/bare-text retry budget.
 	runNoToolCalls
 )
 
-// routeNoToolCalls lets single-turn notification acknowledgements finish idle
-// before any tool batch has executed in the wake. After a terminal communicate,
-// notification silence must not resurrect the run (#329).
-func routeNoToolCalls(kind EntryKind, priorToolActivity bool, noContent bool, afterTerminalCommunicate bool) noCallsRoute {
-	if kind == EntryNotification && (afterTerminalCommunicate || (!noContent && !priorToolActivity)) {
+// After a terminal communicate, notification silence must not resurrect the run (#329).
+func routeNoToolCalls(kind EntryKind, afterTerminalCommunicate bool) noCallsRoute {
+	if kind == EntryNotification && afterTerminalCommunicate {
 		return finishIdle
 	}
 	return runNoToolCalls
@@ -511,12 +560,6 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	// must reach the model rather than wait behind a question the user has
 	// already moved past.
 	//
-	// Gated on the pending set, not raw state: armAwaitingAtSettle also rests
-	// a session awaiting after a turn that ended on needs_response, no ask
-	// involved, and an async wake may move that session on. Only a genuine
-	// pending question is a stronger stop than the wake (a delegate finishing
-	// while the user reads a QUESTION must not silently resolve it out from
-	// under them); a needs_response rest has nothing pending to protect.
 	if len(s.askPending) > 0 && kind != EntryUserInput {
 		s.mu.Unlock()
 		return "", nil
@@ -1016,14 +1059,13 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// A hook-stopped input arms no goal: the idle kick would queue the very
 		// continuation that runs without the stopping hook and sends the stopped
 		// prompt to the model. Settling still clears the in-turn flag below.
-		goalKicked := false
 		if !hookStoppedInput {
-			goalKicked = s.settleGoalOnIdle()
+			s.settleGoalOnIdle()
 		}
 		// A steer this input recorded whose store mark the store refused gets
 		// its mark now, through the steering table; nothing when none waits.
 		s.reconcileRecordedSteering()
-		s.armAwaitingAtSettle(strings.TrimSpace(strings.Join(outputs, "\n")) != "", goalKicked)
+		s.armAwaitingAtSettle()
 		s.mu.Lock()
 		turns := s.modelResponses
 		emitEnd := s.claimSessionEndLocked(false)
@@ -1232,34 +1274,15 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	carrierAnswersAsk := s.steeringCarrierClaimAnswersAsk(queuedIdentity)
 	carrierAskResolution := s.clientMutationAskResolution(queuedIdentity.ClientMutationID)
 
-	// restMu: a needs_response rest arming right now announces first.
-	if hook := s.cfg.testOnly.turnStartBeforeRestMu; hook != nil {
-		hook()
-	}
-	s.restMu.Lock()
 	s.delegateDeliveryMu.Lock()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		s.delegateDeliveryMu.Unlock()
-		s.restMu.Unlock()
 		return "", false, errors.New("session is closed")
 	}
 	s.restBeforeInput = s.state
-	// The generation match is what keeps a rest owed only until the next turn
-	// or settle: a turn that accepted needs_response and then failed or was
-	// interrupted before its settle leaves the end reason set but owes nothing.
-	s.quietRestBeforeInput = s.restOwedGeneration != 0 && s.restStillPendingLocked(s.restOwedGeneration)
-	s.endReasonBeforeInput = s.comm.endReason
-	// A resume the last settle never consumed (it returned early for a
-	// pending question, or the drain loop returned before settling) must not
-	// carry into this input's settle.
-	s.resumeQuietRest = false
 	s.setStateIfOpenLocked(SessionProcessing)
-	// A turn starting ends any needs_response quiet period still running:
-	// whichever boundary this turn rests on, the older rest no longer applies.
-	s.restGeneration++
-	s.restMu.Unlock()
 	s.turnStartedAt = s.sclock().Now()
 	// A housekeeping input — a job notification, a goal continuation, or the
 	// runtime recovery — runs inside the same delegate generation as the
@@ -1530,7 +1553,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	admittedToRounds = true
 	s.beginAttentionCoverageRounds()
 	defer s.endAttentionCoverageRounds()
-	priorToolActivity := false
 	for round := 0; roundCap < 0 || round < roundCap; round++ {
 		// The same admission rule the drain loop applies before a turn, applied
 		// before every round after the first: an input does not stop being
@@ -1764,9 +1786,34 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			return "", progressed, abortErr
 		}
 
+		if strip, stripped := stripLiveRollover(&resp); stripped {
+			// A stored response ID is the continuation anchor a later request
+			// chains to (Google's interaction, the Responses API's
+			// previous_response_id), and the provider's copy of it still holds
+			// the forged suffix this strip removed. Drop the anchor so the next
+			// request replays full history instead of continuing from that copy.
+			anchor := ""
+			if resp.ID != "" {
+				anchor = fmt.Sprintf(", and cleared continuation anchor %q", resp.ID)
+				resp.ID = ""
+			}
+			s.emitDiagnosticWarning(events.WarningData{
+				Code:   "live_rollover_stripped",
+				Source: string(diagnostic.SourceEvener),
+				Message: fmt.Sprintf(
+					"Intercepted a forged turn boundary (%s) in a live model response: stripped %d bytes from %d content parts and dropped %d tool calls%s",
+					strip.Marker, strip.Bytes, strip.Parts, strip.ToolCalls, anchor),
+			})
+		}
 		txt := resp.Text()
 		lastText = txt
 		calls := resp.ToolCalls()
+		googleTerminalSettlement := isGoogleNonAuthorizingTerminalSettlement(usedProfile.Protocol(), resp.Finish)
+		if isGoogleNonAuthorizingStatus(usedProfile.Protocol(), resp.Finish) {
+			resp.Message = stripToolCallsFromMessage(resp.Message)
+			calls = nil
+			s.resetCommunicatePreviews(communicatePreviewCalls)
+		}
 
 		// Two concepts of "empty":
 		// 1. noContent: no text and no tool calls — triggers retry logic
@@ -1784,9 +1831,61 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if resp.Finish.Reason == llm.FinishReasonPauseTurn && len(resp.Message.Content) > 0 {
 			skipHistory = false
 		}
+		if googleTerminalSettlement && len(resp.Message.Content) > 0 {
+			skipHistory = false
+		}
 
-		if abortErr := errors.Join(s.emitAssistantResponse(ctx, resp, modelResp, txt, skipHistory, attempt), sessionLifecycleFault(ctx, "emit_assistant")); abortErr != nil {
+		roundCtx := context.WithValue(ctx, communicateEntryKindKey{}, kind)
+		bareTextStop := len(calls) == 0 && resp.Finish.Reason == llm.FinishReasonStop &&
+			!noContent && strings.TrimSpace(lastText) != "" && !s.communicated()
+		var bareReply, bareQuiet bool
+		if bareTextStop {
+			if s.reportsToParent() {
+				drainable, workErr := s.subagentHasDrainableWork()
+				bareReply = s.usesDefaultCommunicateOutputEnvelope() && kind == EntryUserInput &&
+					workErr == nil && !drainable
+				bareQuiet = !bareReply && ((workErr == nil && drainable) ||
+					(kind == EntryDelegateAttention && s.canQuietlyYield(roundCtx) == nil))
+			} else {
+				bareReply = s.usesDefaultCommunicateOutputEnvelope() && kind == EntryUserInput
+				bareQuiet = kind == EntryNotification && s.hasAcceptedTerminalCommunicate()
+			}
+		}
+		var bareStop hooks.StopResult
+		if bareReply {
+			bareStop = s.runReplyStopHook(ctx, lastText)
+			if bareStop.Stopped {
+				// The provider's stored response holds only the vetoed draft; clear
+				// its continuation anchor so the next request replays full history.
+				resp.ID = ""
+			}
+		}
+		acceptedBareReply := bareReply && !bareStop.Blocked && !bareStop.Stopped
+		var stopErr error
+		if acceptedBareReply {
+			// Finish fallible hook delivery before publishing terminal evidence.
+			// Model context is queued here and joins history on the next request,
+			// after the assistant response. Blocked drafts are recorded first.
+			stopErr = s.deliverReplyStopHookContext(bareStop.ModelContext)
+			bareStop.ModelContext = nil
+		}
+		if abortErr := errors.Join(s.emitAssistantResponse(ctx, resp, modelResp, txt, skipHistory, attempt, acceptedBareReply && stopErr == nil, bareQuiet), sessionLifecycleFault(ctx, "emit_assistant"), stopErr); abortErr != nil {
 			return "", progressed, abortErr
+		}
+		if googleTerminalSettlement {
+			settlementErr := &googleInteractionSettlementError{
+				InteractionID: resp.ID,
+				Status:        resp.Finish.Raw,
+			}
+			errData := errorDataFromError(settlementErr)
+			errData.Cause = &events.ErrorCause{
+				Kind:     "provider",
+				Provider: usedProfile.ID(),
+				Model:    usedProfile.Model(),
+			}
+			s.emitTurnFailure(errData)
+			s.finishProcessingAtFailureBoundary(ctx)
+			return "", progressed, settlementErr
 		}
 		// pause_turn: model needs another turn (e.g. server-side web search still running).
 		if resp.Finish.Reason == llm.FinishReasonPauseTurn {
@@ -1815,29 +1914,42 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			calls[i].Name = s.canonicalToolName(calls[i].Name)
 		}
 
-		if len(calls) == 0 {
-			// A bare-text (non-empty) response to a notification turn before any tool batch runs
-			// is the agent acknowledging a frame it has nothing to act on (it often
-			// already read the job's output itself). Finish idle instead of scolding it
-			// toward a no-op communicate — the text is already in the transcript, and a
-			// system-initiated turn carries no user awaiting a reply. A truly empty
-			// (no-content) response is a model glitch and still routes through the
-			// empty-retry path below — EXCEPT after a terminal communicate, where
-			// silence means "nothing to add to a finished run" and retrying would
-			// resurrect it (issue #329).
-			if kind == EntryDelegateAttention && !noContent && s.delegateController != nil {
-				if lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok {
-					allowDelegateNoAction, recordErr := s.delegateController.recordAttentionNoAction(lease)
-					if recordErr != nil {
-						return "", progressed, recordErr
-					}
-					if allowDelegateNoAction {
-						s.finishProcessingAtBoundary(ctx, SessionIdle)
-						return "", progressed, nil
-					}
-				}
+		if bareReply {
+			done, reply, err := s.deliverBareReply(ctx, lastText, bareStop)
+			if done || err != nil {
+				return reply, progressed, err
 			}
-			route := routeNoToolCalls(kind, priorToolActivity, noContent, s.hasAcceptedTerminalCommunicate())
+			yieldToObserverCallback, steerErr := s.injectPostToolSteering(ctx, nil, nil, &toolSigs, &toolSigFailed)
+			steerErr = errors.Join(steerErr, sessionLifecycleFault(ctx, "post_tool_steer"))
+			if steerErr != nil {
+				return "", progressed, steerErr
+			}
+			timings.TotalRound = time.Since(roundStart)
+			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.RequestBuild - timings.LLMCall
+			s.emit(timings)
+			if yieldToObserverCallback || sessionLifecycleFault(ctx, "yield_observer") != nil {
+				s.finishProcessingAtFailureBoundary(ctx)
+				return "", progressed, nil
+			}
+			if kind != EntryNotification && s.peekNotifications() > 0 {
+				s.finishProcessingAtFailureBoundary(ctx)
+				return "", progressed, nil
+			}
+			continue
+		}
+		if bareQuiet {
+			s.beginCommunicateRound()
+			s.recordQuietYield()
+			done, reply, err := s.deliverIfCommunicated(roundCtx, false)
+			if err != nil {
+				return "", progressed, err
+			}
+			if done {
+				return reply, progressed, nil
+			}
+		}
+		if len(calls) == 0 {
+			route := routeNoToolCalls(kind, s.hasAcceptedTerminalCommunicate())
 			if route == finishIdle {
 				s.finishProcessingAtBoundary(ctx, SessionIdle)
 				return "", progressed, nil
@@ -1866,15 +1978,15 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			}
 			return "", progressed, abortErr
 		}
+		s.beginCommunicateRound()
 
 		// --- Phase: ToolExec ---
 		tPhaseStart = s.sclock().Now()
-		priorToolActivity = true
 
 		// Execute tool calls (possibly in parallel) and send results back.
 		s.noteParentJobActivity(jobPhaseToolRunning)
 		s.beginToolRound()
-		results, execErr := s.execToolBatch(ctx, calls, profile, resp.Finish.Reason)
+		results, execErr := s.execToolBatch(roundCtx, calls, profile, resp.Finish.Reason)
 		execErr = errors.Join(execErr, sessionLifecycleFault(ctx, "exec_tools"))
 		if execErr != nil {
 			return "", progressed, execErr
@@ -1974,7 +2086,13 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// §5.1) — either ends the turn; deliverIfCommunicated decides the
 		// boundary state and composes them.
 		askedThisRound := s.askPendingCount() > askBefore
-		done, text, deliverErr := s.deliverIfCommunicated(ctx, askedThisRound)
+		if batchBlocked && !askedThisRound {
+			// A tool post-hook stop yields to a visible reply or a pending ask,
+			// never to a silent quiet yield: let batchBlocked publish and record
+			// its reason instead of settling silently.
+			s.clearQuietBoundaryForBatchStop()
+		}
+		done, text, deliverErr := s.deliverIfCommunicated(roundCtx, askedThisRound)
 		if deliverErr != nil {
 			return "", progressed, deliverErr
 		}
@@ -2001,6 +2119,20 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			s.appendSteeringTurn(batchStop, events.SteeringKindHookContext)
 			s.finishProcessingAtFailureBoundary(ctx)
 			return "", progressed, nil
+		}
+		if s.communicated() {
+			// A captured reply held steering queued until Stop decided. Stop
+			// blocked completion and no tool hook stopped the round, so fold
+			// any pending steer before the next model request (or before
+			// checking whether an observer callback may yield).
+			if abortErr := s.withResponseSideEffects(ctx, func() {
+				if s.hasPendingSteering() {
+					yieldToObserverCallback = false
+				}
+				s.injectDrainedSteering()
+			}); abortErr != nil {
+				return "", progressed, abortErr
+			}
 		}
 		if yieldToObserverCallback || sessionLifecycleFault(ctx, "yield_observer") != nil {
 			s.finishProcessingAtFailureBoundary(ctx)

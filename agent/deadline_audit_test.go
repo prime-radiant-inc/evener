@@ -22,25 +22,20 @@ import (
 //
 // A BARE bound -- an inline numeric literal times a time.Duration unit
 // (5*time.Second), or a lone time.<Unit> constant, written straight into one
-// of those calls -- fails the audit unless:
-//
-//   - the file is on deadlineAuditAllowlist (a currently-offending file,
-//     grandfathered in by kata ww3g's wave 1; the list only shrinks, a
-//     conversion removes its file, it never gains a new one), or
-//   - the literal carries a "// TRIPWIRE:" comment on its own line or the
-//     line directly above it, explaining why the bound is raised generously
-//     above the expected completion time rather than tuned tight to it (see
-//     docs/developing-evener/testing.md's Flakes and Timeouts ranking: a ceiling is only
-//     legitimate as a tripwire, never the mechanism).
+// of those calls -- fails the audit unless the literal carries a
+// "// TRIPWIRE:" comment on its own line or the line directly above it,
+// explaining why the bound is raised generously above the expected completion
+// time rather than tuned tight to it (see docs/developing-evener/testing.md's
+// Flakes and Timeouts ranking: a ceiling is only legitimate as a tripwire,
+// never the mechanism).
 //
 // This is the ONE sanctioned way to carry a wall-clock bound in an agent
 // test, and it is deliberately mechanical: a converter facing a finding
-// either (a) deletes the bound and awaits the real completion signal instead
-// -- a channel receive, a WaitGroup, a condition -- optionally keeping a
-// generous "// TRIPWIRE:"-marked ceiling purely as a hang guard the way
-// awaitWithin already does, or (b) where no completion signal exists yet in
-// production code, leaves the file on the allowlist and files that gap as the
-// real defect (kata ww3g bucket 3) instead of hacking around it here.
+// either deletes the bound and awaits the real completion signal instead -- a
+// channel receive, a WaitGroup, a condition -- optionally keeping a generous
+// "// TRIPWIRE:"-marked ceiling purely as a hang guard the way awaitWithin
+// already does, or fixes the production gap that leaves no completion signal
+// to await (kata ww3g bucket 3) instead of hacking around it here.
 //
 // Naming the bound -- a package- or file-level constant/variable with its own
 // doc comment -- also clears the audit: there is no bare literal left at the
@@ -49,7 +44,7 @@ import (
 // never inspects the identifier's own declaration.
 func TestNoBareWallClockDeadlineInAgentTests(t *testing.T) {
 	t.Parallel()
-	findings, err := deadlineAuditFindings(".", deadlineAuditAllowlist)
+	findings, err := deadlineAuditFindings(".")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,9 +52,7 @@ func TestNoBareWallClockDeadlineInAgentTests(t *testing.T) {
 		t.Fatalf("bare wall-clock deadline(s) in agent test sources:\n%s\n\n"+
 			"Fix: await the real completion signal instead of a bound, or add a "+
 			"\"// TRIPWIRE: <why this sits far above the expected time>\" comment "+
-			"on or directly above the literal. Only add a file to "+
-			"deadlineAuditAllowlist if it is already grandfathered and this is not "+
-			"a new offense.", strings.Join(findings, "\n"))
+			"on or directly above the literal.", strings.Join(findings, "\n"))
 	}
 }
 
@@ -79,7 +72,7 @@ func TestSomething(t *testing.T) {
 	_ = ctx
 }
 `)
-	findings, err := deadlineAuditFindings(dir, nil)
+	findings, err := deadlineAuditFindings(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +95,7 @@ func TestSomething(t *testing.T) {
 	_ = ctx
 }
 `)
-	assertDeadlineFindingsEmpty(t, dir, nil)
+	assertDeadlineFindingsEmpty(t, dir)
 }
 
 func TestDeadlineAuditAllowsPrecedingLineTripwireMarker(t *testing.T) {
@@ -122,7 +115,7 @@ func TestSomething(t *testing.T) {
 	_ = ctx
 }
 `)
-	assertDeadlineFindingsEmpty(t, dir, nil)
+	assertDeadlineFindingsEmpty(t, dir)
 }
 
 func TestDeadlineAuditAllowsMultiLineTripwireMarkerBlock(t *testing.T) {
@@ -144,7 +137,7 @@ func TestSomething(t *testing.T) {
 	_ = ctx
 }
 `)
-	assertDeadlineFindingsEmpty(t, dir, nil)
+	assertDeadlineFindingsEmpty(t, dir)
 }
 
 func TestDeadlineAuditRejectsMarkerTwoLinesAbove(t *testing.T) {
@@ -165,7 +158,7 @@ func TestSomething(t *testing.T) {
 	_ = ctx
 }
 `)
-	findings, err := deadlineAuditFindings(dir, nil)
+	findings, err := deadlineAuditFindings(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,11 +178,33 @@ func TestSomething(t *testing.T) {
 	awaitWithin(t, 5*time.Second, "thing finished", func() {})
 }
 `)
-	findings, err := deadlineAuditFindings(dir, nil)
+	findings, err := deadlineAuditFindings(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertDeadlineFindingContains(t, findings, "sample_test.go", "awaitWithin")
+}
+
+func TestDeadlineAuditCatchesTimeAfter(t *testing.T) {
+	t.Parallel()
+	dir := writeDeadlineAuditFixture(t, "sample_test.go", `package agent
+
+import (
+	"testing"
+	"time"
+)
+
+func TestSomething(t *testing.T) {
+	select {
+	case <-time.After(5 * time.Second):
+	}
+}
+`)
+	findings, err := deadlineAuditFindings(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDeadlineFindingContains(t, findings, "sample_test.go", "time.After")
 }
 
 func TestDeadlineAuditIgnoresNamedDurationIdentifier(t *testing.T) {
@@ -211,7 +226,7 @@ func TestSomething(t *testing.T) {
 	_ = ctx
 }
 `)
-	assertDeadlineFindingsEmpty(t, dir, nil)
+	assertDeadlineFindingsEmpty(t, dir)
 }
 
 func TestDeadlineAuditIgnoresUnrelatedTimeDotSecondUsage(t *testing.T) {
@@ -232,7 +247,7 @@ func TestSomething(t *testing.T) {
 	_ = cfg
 }
 `)
-	assertDeadlineFindingsEmpty(t, dir, nil)
+	assertDeadlineFindingsEmpty(t, dir)
 }
 
 func TestDeadlineAuditIgnoresSleep(t *testing.T) {
@@ -248,26 +263,7 @@ func TestSomething(t *testing.T) {
 	time.Sleep(5 * time.Second)
 }
 `)
-	assertDeadlineFindingsEmpty(t, dir, nil)
-}
-
-func TestDeadlineAuditSkipsAllowlistedFile(t *testing.T) {
-	t.Parallel()
-	dir := writeDeadlineAuditFixture(t, "sample_test.go", `package agent
-
-import (
-	"context"
-	"testing"
-	"time"
-)
-
-func TestSomething(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = ctx
-}
-`)
-	assertDeadlineFindingsEmpty(t, dir, map[string]bool{"sample_test.go": true})
+	assertDeadlineFindingsEmpty(t, dir)
 }
 
 func TestDeadlineAuditIgnoresNonTestGoFiles(t *testing.T) {
@@ -285,7 +281,7 @@ func something() {
 	_ = ctx
 }
 `)
-	assertDeadlineFindingsEmpty(t, dir, nil)
+	assertDeadlineFindingsEmpty(t, dir)
 }
 
 func writeDeadlineAuditFixture(t *testing.T, name, content string) string {
@@ -297,9 +293,9 @@ func writeDeadlineAuditFixture(t *testing.T, name, content string) string {
 	return dir
 }
 
-func assertDeadlineFindingsEmpty(t *testing.T, dir string, allowlist map[string]bool) {
+func assertDeadlineFindingsEmpty(t *testing.T, dir string) {
 	t.Helper()
-	findings, err := deadlineAuditFindings(dir, allowlist)
+	findings, err := deadlineAuditFindings(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,22 +339,9 @@ var deadlineAuditTimeUnits = map[string]bool{
 	"Second": true, "Minute": true, "Hour": true,
 }
 
-// deadlineAuditAllowlist is the ratchet: every agent/*_test.go file that
-// carried a bare wall-clock bound when kata ww3g wrote this audit (measured
-// 2026-08-17, go test -run TestNoBareWallClockDeadlineInAgentTests before
-// this list existed: 88 files, 448 sites). It only shrinks -- a conversion
-// wave removes a file's entry once every bound in it is either replaced by
-// its real completion signal or carries a "// TRIPWIRE:" marker; it must
-// never gain a new entry, because that is exactly the regression this audit
-// exists to catch. The list is now empty: every file's bare bounds have been
-// converted (TRIPWIRE comment or named constant), and the audit catches any
-// new bare wall-clock bound in any agent test file.
-var deadlineAuditAllowlist = map[string]bool{}
-
 // deadlineAuditFindings scans the non-recursive *_test.go files directly in
-// dir and returns one finding per bare wall-clock bound, skipping any file
-// named in allowlist. allowlist may be nil.
-func deadlineAuditFindings(dir string, allowlist map[string]bool) ([]string, error) {
+// dir and returns one finding per bare wall-clock bound.
+func deadlineAuditFindings(dir string) ([]string, error) {
 	fset, files, err := parseAgentTestFiles(dir)
 	if err != nil {
 		return nil, err
@@ -366,9 +349,6 @@ func deadlineAuditFindings(dir string, allowlist map[string]bool) ([]string, err
 	var findings []string
 	for _, file := range files {
 		name := filepath.Base(fset.Position(file.Pos()).Filename)
-		if allowlist[name] {
-			continue
-		}
 		findings = append(findings, deadlineAuditFileFindings(name, file, fset)...)
 	}
 	sort.Strings(findings)
