@@ -1852,6 +1852,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			}
 		}
 		var bareStop hooks.StopResult
+		quietCompanion := !bareQuiet && strings.TrimSpace(txt) != "" && s.hasQuietCommunicateCall(calls)
+		if quietCompanion {
+			roundCtx = context.WithValue(roundCtx, communicateCompanionKey{}, &communicateCompanion{text: strings.TrimSpace(txt)})
+		}
 		if bareReply {
 			bareStop = s.runReplyStopHook(ctx, lastText)
 			if bareStop.Stopped {
@@ -1869,7 +1873,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			stopErr = s.deliverReplyStopHookContext(bareStop.ModelContext)
 			bareStop.ModelContext = nil
 		}
-		if abortErr := errors.Join(s.emitAssistantResponse(ctx, resp, modelResp, txt, skipHistory, attempt, acceptedBareReply && stopErr == nil, bareQuiet), sessionLifecycleFault(ctx, "emit_assistant"), stopErr); abortErr != nil {
+		if abortErr := errors.Join(s.emitAssistantResponse(ctx, resp, modelResp, txt, skipHistory, attempt, acceptedBareReply && stopErr == nil, bareQuiet, quietCompanion), sessionLifecycleFault(ctx, "emit_assistant"), stopErr); abortErr != nil {
 			return "", progressed, abortErr
 		}
 		if googleTerminalSettlement {

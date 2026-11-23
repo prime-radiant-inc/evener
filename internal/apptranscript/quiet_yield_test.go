@@ -14,6 +14,22 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+// quietYieldArgs is the call the producer records for a quiet yield.
+var quietYieldArgs = json.RawMessage(`{"message":"waiting on CI","next":"log_quietly_and_end_turn"}`)
+
+func quietToolState(t *testing.T, note, commentary string) json.RawMessage {
+	t.Helper()
+	yes := true
+	raw, err := json.Marshal(schema.CommunicateToolState{
+		Accepted: &yes, EndTurn: &yes, Quiet: &yes,
+		QuietNote: note, QuietCommentary: commentary,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
 func quietYieldCommentary(t *testing.T, raw json.RawMessage) string {
 	t.Helper()
 	var payload struct {
@@ -52,11 +68,30 @@ func writeTranscriptEntries(t *testing.T, entries ...schema.Turn) string {
 	return path
 }
 
+// projectQuietFixture projects entries through one registry, as a sequential
+// transcript read does.
+func projectQuietFixture(t *testing.T, entries []schema.Turn) []appwire.ThreadItem {
+	t.Helper()
+	path := writeTranscriptEntries(t, entries...)
+	reg := NewToolCallRegistry()
+	turns, err := ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, id string, idx int) []appwire.ThreadItem {
+		items, _ := ProjectEntryParts(id, idx, turn, reg, nil, nil)
+		return items
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) != 1 {
+		t.Fatalf("turns=%d, want 1", len(turns))
+	}
+	return turns[0].Items
+}
+
 func TestQuietYieldProjectionAndCompanionDemotion(t *testing.T) {
 	t.Parallel()
 	ts := time.Unix(1_790_000_000, 0).UTC()
-	quietState := json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true,"communicate_quiet":true}`)
 	author := &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "root-session"}}
+	quietState := quietToolState(t, "", "")
 
 	for _, format := range []int{0, schema.TurnFormatIdentity} {
 		name := "legacy"
@@ -66,11 +101,17 @@ func TestQuietYieldProjectionAndCompanionDemotion(t *testing.T) {
 		t.Run(name+"/clean_yield", func(t *testing.T) {
 			t.Parallel()
 			turnID := "turn_1"
+			// Legacy `{}` exercises the empty-object fallback. Identity entries
+			// carry the enum the producer writes.
+			args := json.RawMessage(`{}`)
+			if format == schema.TurnFormatIdentity {
+				args = quietYieldArgs
+			}
 			entries := []schema.Turn{
 				{Format: format, TurnID: turnID, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("wait"), Timestamp: ts},
 				{Format: format, TurnID: turnID, RoundID: "r1", Authorship: author.Clone(), Kind: schema.TurnAssistant, Timestamp: ts.Add(time.Second), Message: llm.Message{
 					Role:    llm.RoleAssistant,
-					Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_q1", Name: "communicate", Arguments: json.RawMessage(`{}`)}}},
+					Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_q1", Name: "communicate", Arguments: args}}},
 				}},
 				{Format: format, TurnID: turnID, RoundID: "r1", Kind: schema.TurnToolResults, Timestamp: ts.Add(2 * time.Second), Message: llm.Message{
 					Role:    llm.RoleTool,
@@ -80,19 +121,11 @@ func TestQuietYieldProjectionAndCompanionDemotion(t *testing.T) {
 			if format == schema.TurnFormatIdentity {
 				entries = append(entries, schema.Turn{Format: format, TurnID: turnID, Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}})
 			}
-			path := writeTranscriptEntries(t, entries...)
-			reg := NewToolCallRegistry()
-			turns, err := ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, id string, idx int) []appwire.ThreadItem {
-				items, _ := ProjectEntryParts(id, idx, turn, reg, nil, nil)
-				return items
-			})
-			if err != nil {
-				t.Fatal(err)
+			items := projectQuietFixture(t, entries)
+			if len(items) != 2 {
+				t.Fatalf("items=%+v, want userMessage + quiet_yield", items)
 			}
-			if len(turns) != 1 || len(turns[0].Items) != 2 {
-				t.Fatalf("turns=%+v, want 1 turn with userMessage + quiet_yield", turns)
-			}
-			q := turns[0].Items[1]
+			q := items[1]
 			if q.Type != "systemMessage" || q.EventKind != appwire.ThreadItemEventKindQuietYield || q.Status != appwire.TurnStatusCompleted {
 				t.Fatalf("quiet item=%+v, want completed systemMessage with EventKind=%q", q, appwire.ThreadItemEventKindQuietYield)
 			}
@@ -113,6 +146,11 @@ func TestQuietYieldProjectionAndCompanionDemotion(t *testing.T) {
 		t.Run(name+"/companion_prose_demoted_keeps_earlier_round_and_siblings", func(t *testing.T) {
 			t.Parallel()
 			turnID := "turn_1"
+			args := json.RawMessage(`{}`)
+			if format == schema.TurnFormatIdentity {
+				args = quietYieldArgs
+			}
+			const companion = "companion-prose-1\n\ncompanion-prose-2"
 			entries := []schema.Turn{
 				{Format: format, TurnID: turnID, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("watch"), Timestamp: ts},
 				// Earlier round in the same logical turn: its assistant prose must remain visible.
@@ -127,45 +165,35 @@ func TestQuietYieldProjectionAndCompanionDemotion(t *testing.T) {
 					Role:    llm.RoleTool,
 					Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_watch", Name: "job_watch", Content: "armed"}}},
 				}},
-				// Quiet round in the same logical turn: thinking & sibling tool survive, companion text is demoted.
-				{Format: format, TurnID: turnID, RoundID: "r_quiet", Authorship: author.Clone(), Kind: schema.TurnAssistant, Timestamp: ts.Add(3 * time.Second), Message: llm.Message{
+				// Quiet round in the same logical turn: thinking & sibling tool
+				// survive; the producer stamped the prose as the quiet companion.
+				{Format: format, TurnID: turnID, RoundID: "r_quiet", Authorship: author.Clone(), Kind: schema.TurnAssistant, QuietCompanion: true, Timestamp: ts.Add(3 * time.Second), Message: llm.Message{
 					Role: llm.RoleAssistant,
 					Content: []llm.ContentPart{
 						{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "quiet-thought-sentinel"}},
 						{Kind: llm.ContentText, Text: "  companion-prose-1  "},
 						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_sibling", Name: "job_list", Arguments: json.RawMessage(`{}`)}},
 						{Kind: llm.ContentText, Text: "companion-prose-2"},
-						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_q2", Name: "communicate", Arguments: json.RawMessage(`{}`)}},
+						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_q2", Name: "communicate", Arguments: args}},
 					},
 				}},
 				{Format: format, TurnID: turnID, RoundID: "r_quiet", Kind: schema.TurnToolResults, Timestamp: ts.Add(4 * time.Second), Message: llm.Message{
 					Role: llm.RoleTool,
 					Content: []llm.ContentPart{
 						{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_sibling", Name: "job_list", Content: "none"}},
-						{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_q2", Name: "communicate", ToolState: quietState}},
+						{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_q2", Name: "communicate", ToolState: quietToolState(t, "waiting on CI", companion)}},
 					},
 				}},
 			}
 			if format == schema.TurnFormatIdentity {
 				entries = append(entries, schema.Turn{Format: format, TurnID: turnID, Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}})
 			}
-			path := writeTranscriptEntries(t, entries...)
-			reg := NewToolCallRegistry()
-			turns, err := ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, id string, idx int) []appwire.ThreadItem {
-				items, _ := ProjectEntryParts(id, idx, turn, reg, nil, nil)
-				return items
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(turns) != 1 {
-				t.Fatalf("turns=%d, want 1", len(turns))
-			}
+			items := projectQuietFixture(t, entries)
 			var agents []string
 			var reasonings []string
 			var tools []string
 			var quiets []appwire.ThreadItem
-			for _, it := range turns[0].Items {
+			for _, it := range items {
 				switch {
 				case it.Type == "agentMessage":
 					agents = append(agents, it.Text)
@@ -178,7 +206,7 @@ func TestQuietYieldProjectionAndCompanionDemotion(t *testing.T) {
 				}
 			}
 			if len(agents) != 1 || agents[0] != "earlier-round-sentinel" {
-				t.Fatalf("agentMessages=%q, want only earlier-round-sentinel (companion prose demoted)", agents)
+				t.Fatalf("agentMessages=%q, want only earlier-round-sentinel (companion prose suppressed)", agents)
 			}
 			if len(reasonings) != 1 || reasonings[0] != "quiet-thought-sentinel" {
 				t.Fatalf("reasonings=%q, want quiet-thought-sentinel preserved", reasonings)
@@ -189,25 +217,24 @@ func TestQuietYieldProjectionAndCompanionDemotion(t *testing.T) {
 			if len(quiets) != 1 {
 				t.Fatalf("quiets=%d, want 1", len(quiets))
 			}
-			if got := quietYieldCommentary(t, quiets[0].Raw); got != "companion-prose-1\n\ncompanion-prose-2" {
-				t.Fatalf("commentary=%q, want demoted joined companion prose", got)
+			if got := quietYieldCommentary(t, quiets[0].Raw); got != companion {
+				t.Fatalf("commentary=%q, want stamped companion prose", got)
 			}
 		})
 	}
 
-	t.Run("explicit_communicate_update_survives_when_companion_prose_is_demoted", func(t *testing.T) {
+	t.Run("explicit_communicate_update_survives_alongside_quiet_companion", func(t *testing.T) {
 		t.Parallel()
 		turnID := "turn_update_and_quiet"
 		updateState := json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":false}`)
-		quietState := json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true,"communicate_quiet":true}`)
-		entries := []schema.Turn{
+		items := projectQuietFixture(t, []schema.Turn{
 			{Format: schema.TurnFormatIdentity, TurnID: turnID, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("start"), Timestamp: ts},
-			{Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: "r1", Kind: schema.TurnAssistant, Timestamp: ts.Add(time.Second), Message: llm.Message{
+			{Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: "r1", Kind: schema.TurnAssistant, QuietCompanion: true, Timestamp: ts.Add(time.Second), Message: llm.Message{
 				Role: llm.RoleAssistant,
 				Content: []llm.ContentPart{
 					{Kind: llm.ContentText, Text: "Working on X"},
-					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_msg", Name: "communicate", Arguments: json.RawMessage(`{"message":"Working on X","end_turn":false}`)}},
-					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_quiet", Name: "communicate", Arguments: json.RawMessage(`{}`)}},
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_msg", Name: "communicate", Arguments: json.RawMessage(`{"message":"Working on X","next":"send_and_continue"}`)}},
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_quiet", Name: "communicate", Arguments: quietYieldArgs}},
 				},
 			}},
 			{Format: schema.TurnFormatIdentity, TurnID: turnID, Kind: schema.TurnCommunicate, Timestamp: ts.Add(2 * time.Second), Communicate: &schema.CommunicateInfo{
@@ -217,25 +244,13 @@ func TestQuietYieldProjectionAndCompanionDemotion(t *testing.T) {
 				Role: llm.RoleTool,
 				Content: []llm.ContentPart{
 					{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_msg", Name: "communicate", Content: `{"accepted":true,"end_turn":false}`, ToolState: updateState}},
-					{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_quiet", Name: "communicate", Content: `{"accepted":true,"end_turn":true}`, ToolState: quietState}},
+					{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_quiet", Name: "communicate", Content: `{"accepted":true,"end_turn":true}`, ToolState: quietToolState(t, "waiting on CI", "Working on X")}},
 				},
 			}},
 			{Format: schema.TurnFormatIdentity, TurnID: turnID, Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}},
-		}
-		path := writeTranscriptEntries(t, entries...)
-		reg := NewToolCallRegistry()
-		turns, err := ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, id string, idx int) []appwire.ThreadItem {
-			items, _ := ProjectEntryParts(id, idx, turn, reg, nil, nil)
-			return items
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(turns) != 1 {
-			t.Fatalf("turns=%d, want 1", len(turns))
-		}
 		var msgs, quiets []appwire.ThreadItem
-		for _, it := range turns[0].Items {
+		for _, it := range items {
 			if it.Type == "agentMessage" {
 				msgs = append(msgs, it)
 			}
@@ -251,7 +266,7 @@ func TestQuietYieldProjectionAndCompanionDemotion(t *testing.T) {
 		}
 	})
 
-	t.Run("healed_communicate_update_survives_when_companion_prose_is_demoted", func(t *testing.T) {
+	t.Run("healed_communicate_update_survives_alongside_quiet_companion", func(t *testing.T) {
 		t.Parallel()
 		for _, tc := range []struct {
 			name       string
@@ -265,39 +280,33 @@ func TestQuietYieldProjectionAndCompanionDemotion(t *testing.T) {
 				t.Parallel()
 				turnID := "turn_healed_and_quiet"
 				updateState := json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":false}`)
-				quietState := json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true,"communicate_quiet":true}`)
+				args := json.RawMessage(`{}`)
+				if tc.format == schema.TurnFormatIdentity {
+					args = quietYieldArgs
+				}
 				entries := []schema.Turn{
 					{Format: tc.format, TurnID: turnID, TurnKind: schema.TurnSpanExecution, Authorship: tc.authorship, Kind: schema.TurnUserInput, Message: llm.User("start"), Timestamp: ts},
-					{Format: tc.format, TurnID: turnID, RoundID: "r1", Authorship: tc.authorship, Kind: schema.TurnAssistant, Timestamp: ts.Add(time.Second), Message: llm.Message{
+					{Format: tc.format, TurnID: turnID, RoundID: "r1", Authorship: tc.authorship, Kind: schema.TurnAssistant, QuietCompanion: true, Timestamp: ts.Add(time.Second), Message: llm.Message{
 						Role: llm.RoleAssistant,
 						Content: []llm.ContentPart{
 							{Kind: llm.ContentText, Text: "Working on X"},
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_healed", Name: "communicate", Arguments: json.RawMessage(`{}`), RawArguments: `{"message":"Working on X","end_turn":false}`}},
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_quiet", Name: "communicate", Arguments: json.RawMessage(`{}`)}},
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_healed", Name: "communicate", Arguments: json.RawMessage(`{}`), RawArguments: `{"message":"Working on X","next":"send_and_continue"}`}},
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_quiet", Name: "communicate", Arguments: args}},
 						},
 					}},
 					{Format: tc.format, TurnID: turnID, RoundID: "r1", Authorship: tc.authorship, Kind: schema.TurnToolResults, Timestamp: ts.Add(2 * time.Second), Message: llm.Message{
 						Role: llm.RoleTool,
 						Content: []llm.ContentPart{
 							{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_healed", Name: "communicate", Content: `{"accepted":true,"end_turn":false}`, ToolState: updateState}},
-							{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_quiet", Name: "communicate", Content: `{"accepted":true,"end_turn":true}`, ToolState: quietState}},
+							{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_quiet", Name: "communicate", Content: `{"accepted":true,"end_turn":true}`, ToolState: quietToolState(t, "waiting on CI", "Working on X")}},
 						},
 					}},
 				}
 				if tc.format == schema.TurnFormatIdentity {
 					entries = append(entries, schema.Turn{Format: tc.format, TurnID: turnID, Authorship: tc.authorship, Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}})
 				}
-				path := writeTranscriptEntries(t, entries...)
-				reg := NewToolCallRegistry()
-				turns, err := ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, id string, idx int) []appwire.ThreadItem {
-					items, _ := ProjectEntryParts(id, idx, turn, reg, nil, nil)
-					return items
-				})
-				if err != nil {
-					t.Fatal(err)
-				}
 				var msgs []appwire.ThreadItem
-				for _, it := range turns[0].Items {
+				for _, it := range projectQuietFixture(t, entries) {
 					if it.Type == "agentMessage" {
 						msgs = append(msgs, it)
 					}
@@ -309,19 +318,19 @@ func TestQuietYieldProjectionAndCompanionDemotion(t *testing.T) {
 		}
 	})
 
-	t.Run("provisional_prose_flushes_on_error_result_and_turn_completion", func(t *testing.T) {
+	t.Run("companion_prose_stays_suppressed_when_quiet_call_never_settles", func(t *testing.T) {
 		t.Parallel()
 		t.Run("error_result", func(t *testing.T) {
 			t.Parallel()
-			turnID := "turn_err_flush"
+			turnID := "turn_err_quiet"
 			inheritedAuthor := &schema.TranscriptAuthorship{Inherited: true, Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "root-session"}}
-			entries := []schema.Turn{
+			items := projectQuietFixture(t, []schema.Turn{
 				{Format: schema.TurnFormatIdentity, TurnID: turnID, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("start"), Timestamp: ts},
-				{Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: "r1", Authorship: inheritedAuthor.Clone(), Kind: schema.TurnAssistant, Timestamp: ts.Add(time.Second), Message: llm.Message{
+				{Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: "r1", Authorship: inheritedAuthor.Clone(), Kind: schema.TurnAssistant, QuietCompanion: true, Timestamp: ts.Add(time.Second), Message: llm.Message{
 					Role: llm.RoleAssistant,
 					Content: []llm.ContentPart{
 						{Kind: llm.ContentText, Text: "Companion before error"},
-						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_q_err", Name: "communicate", Arguments: json.RawMessage(`{}`)}},
+						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_q_err", Name: "communicate", Arguments: quietYieldArgs}},
 					},
 				}},
 				{Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: "r1", Kind: schema.TurnToolResults, Timestamp: ts.Add(2 * time.Second), Message: llm.Message{
@@ -331,18 +340,9 @@ func TestQuietYieldProjectionAndCompanionDemotion(t *testing.T) {
 					}}},
 				}},
 				{Format: schema.TurnFormatIdentity, TurnID: turnID, Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}},
-			}
-			path := writeTranscriptEntries(t, entries...)
-			reg := NewToolCallRegistry()
-			turns, err := ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, id string, idx int) []appwire.ThreadItem {
-				items, _ := ProjectEntryParts(id, idx, turn, reg, nil, nil)
-				return items
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
 			var msgs, errs []appwire.ThreadItem
-			for _, it := range turns[0].Items {
+			for _, it := range items {
 				if it.Type == "agentMessage" {
 					msgs = append(msgs, it)
 				}
@@ -350,11 +350,8 @@ func TestQuietYieldProjectionAndCompanionDemotion(t *testing.T) {
 					errs = append(errs, it)
 				}
 			}
-			if len(msgs) != 1 || msgs[0].Text != "Companion before error" {
-				t.Fatalf("agentMessages=%+v, want Companion before error flushed", msgs)
-			}
-			if msgs[0].Authorship == nil || msgs[0].Authorship.Author.SessionRef != "local:root-session" {
-				t.Fatalf("Authorship=%+v, want local:root-session", msgs[0].Authorship)
+			if len(msgs) != 0 {
+				t.Fatalf("agentMessages=%+v, want companion prose suppressed after the rejected quiet call", msgs)
 			}
 			if len(errs) != 1 || errs[0].CallID != "call_q_err" {
 				t.Fatalf("errs=%+v, want preval error item", errs)
@@ -363,160 +360,75 @@ func TestQuietYieldProjectionAndCompanionDemotion(t *testing.T) {
 
 		t.Run("interrupted_completion_without_result", func(t *testing.T) {
 			t.Parallel()
-			turnID := "turn_interrupted_flush"
-			entries := []schema.Turn{
+			turnID := "turn_interrupted_quiet"
+			items := projectQuietFixture(t, []schema.Turn{
 				{Format: schema.TurnFormatIdentity, TurnID: turnID, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("start"), Timestamp: ts},
-				{Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: "r1", Authorship: author.Clone(), Kind: schema.TurnAssistant, Timestamp: ts.Add(time.Second), Message: llm.Message{
+				{Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: "r1", Authorship: author.Clone(), Kind: schema.TurnAssistant, QuietCompanion: true, Timestamp: ts.Add(time.Second), Message: llm.Message{
 					Role: llm.RoleAssistant,
 					Content: []llm.ContentPart{
 						{Kind: llm.ContentText, Text: "Companion before crash"},
-						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_q_crash", Name: "communicate", Arguments: json.RawMessage(`{}`)}},
+						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_q_crash", Name: "communicate", Arguments: quietYieldArgs}},
 					},
 				}},
 				{Format: schema.TurnFormatIdentity, TurnID: turnID, Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnInterrupted}},
-			}
-			path := writeTranscriptEntries(t, entries...)
-			reg := NewToolCallRegistry()
-			turns, err := ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, id string, idx int) []appwire.ThreadItem {
-				items, _ := ProjectEntryParts(id, idx, turn, reg, nil, nil)
-				return items
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			var msgs []appwire.ThreadItem
-			for _, it := range turns[0].Items {
+			for _, it := range items {
 				if it.Type == "agentMessage" {
-					msgs = append(msgs, it)
+					t.Fatalf("agentMessage=%+v, want companion prose suppressed on an interrupted quiet turn", it)
 				}
 			}
-			if len(msgs) != 1 || msgs[0].Text != "Companion before crash" {
-				t.Fatalf("agentMessages=%+v, want Companion before crash flushed on TurnCompletion", msgs)
-			}
-			if msgs[0].Authorship == nil || msgs[0].Authorship.Author.SessionRef != "local:root-session" {
-				t.Fatalf("Authorship=%+v, want local:root-session", msgs[0].Authorship)
-			}
 		})
+	})
 
-		t.Run("preToolUse_blanked_message_demotes_companion_prose", func(t *testing.T) {
-			t.Parallel()
-			for _, withSiblingUpdate := range []bool{false, true} {
-				name := "standalone"
-				if withSiblingUpdate {
-					name = "with_sibling_update"
+	t.Run("hook_supplied_message_and_companion_prose_stay_visible", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct {
+			name      string
+			prose     string
+			hookReply string
+			wantTexts []string
+		}{
+			{name: "distinct", prose: "Distinct companion prose", hookReply: "Hook supplied reply", wantTexts: []string{"Distinct companion prose", "Hook supplied reply"}},
+			// The hook's reply repeats the assistant prose, so the echo rule
+			// renders the text once.
+			{name: "matching", prose: "Same hook reply", hookReply: "Same hook reply", wantTexts: []string{"Same hook reply"}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				turnID := "turn_hook_supplied"
+				deliveredState := json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true}`)
+				items := projectQuietFixture(t, []schema.Turn{
+					{Format: schema.TurnFormatIdentity, TurnID: turnID, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("go"), Timestamp: ts},
+					{Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: "r1", Authorship: author.Clone(), Kind: schema.TurnAssistant, Timestamp: ts.Add(time.Second), Message: llm.Message{
+						Role: llm.RoleAssistant,
+						Content: []llm.ContentPart{
+							{Kind: llm.ContentText, Text: tc.prose},
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_q", Name: "communicate", Arguments: json.RawMessage(`{"message":"original","next":"send_and_end_turn"}`)}},
+						},
+					}},
+					{Format: schema.TurnFormatIdentity, TurnID: turnID, Kind: schema.TurnCommunicate, Timestamp: ts.Add(1500 * time.Millisecond), Communicate: &schema.CommunicateInfo{CallID: "call_q", EndTurn: true, Message: tc.hookReply}},
+					{Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: "r1", Kind: schema.TurnToolResults, Timestamp: ts.Add(2 * time.Second), Message: llm.Message{
+						Role:    llm.RoleTool,
+						Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_q", Name: "communicate", Content: `{"accepted":true,"end_turn":true}`, ToolState: deliveredState}}},
+					}},
+					{Format: schema.TurnFormatIdentity, TurnID: turnID, Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}},
+				})
+				var got []string
+				for _, it := range items {
+					if it.Type == "agentMessage" {
+						got = append(got, it.Text)
+					}
 				}
-				t.Run(name, func(t *testing.T) {
-					t.Parallel()
-					turnID := "turn_hook_blanked"
-					quietState := json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true,"communicate_quiet":true}`)
-					content := []llm.ContentPart{{Kind: llm.ContentText, Text: "Companion before hook"}}
-					if withSiblingUpdate {
-						content = append(content, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_msg", Name: "communicate", Arguments: json.RawMessage(`{"message":"Companion before hook","end_turn":false}`)}})
+				if len(got) != len(tc.wantTexts) {
+					t.Fatalf("agentMessages=%q, want %q", got, tc.wantTexts)
+				}
+				for i := range got {
+					if got[i] != tc.wantTexts[i] {
+						t.Fatalf("agentMessages[%d]=%q, want %q (all=%q)", i, got[i], tc.wantTexts[i], got)
 					}
-					content = append(content, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_hook_blanked", Name: "communicate", Arguments: json.RawMessage(`{"message":"original"}`)}})
-					entries := []schema.Turn{
-						{Format: schema.TurnFormatIdentity, TurnID: turnID, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("start"), Timestamp: ts},
-						{Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: "r1", Authorship: author.Clone(), Kind: schema.TurnAssistant, Timestamp: ts.Add(time.Second), Message: llm.Message{Role: llm.RoleAssistant, Content: content}},
-					}
-					var resultParts []llm.ContentPart
-					if withSiblingUpdate {
-						entries = append(entries, schema.Turn{Format: schema.TurnFormatIdentity, TurnID: turnID, Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: "call_msg", EndTurn: false, Message: "Companion before hook"}, Timestamp: ts.Add(1500 * time.Millisecond)})
-						resultParts = append(resultParts, llm.ContentPart{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_msg", Name: "communicate", Content: `{"accepted":true,"end_turn":false}`}})
-					}
-					resultParts = append(resultParts, llm.ContentPart{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_hook_blanked", Name: "communicate", Content: `{"accepted":true,"end_turn":true}`, ToolState: quietState}})
-					entries = append(entries,
-						schema.Turn{Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: "r1", Kind: schema.TurnToolResults, Timestamp: ts.Add(2 * time.Second), Message: llm.Message{Role: llm.RoleTool, Content: resultParts}},
-						schema.Turn{Format: schema.TurnFormatIdentity, TurnID: turnID, Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}},
-					)
-					path := writeTranscriptEntries(t, entries...)
-					reg := NewToolCallRegistry()
-					turns, err := ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, id string, idx int) []appwire.ThreadItem {
-						items, _ := ProjectEntryParts(id, idx, turn, reg, nil, nil)
-						return items
-					})
-					if err != nil {
-						t.Fatal(err)
-					}
-					var msgs, quiets []appwire.ThreadItem
-					for _, it := range turns[0].Items {
-						if it.Type == "agentMessage" {
-							msgs = append(msgs, it)
-						}
-						if it.EventKind == appwire.ThreadItemEventKindQuietYield {
-							quiets = append(quiets, it)
-						}
-					}
-					if withSiblingUpdate {
-						if len(msgs) != 1 || msgs[0].CallID != "call_msg" || msgs[0].Text != "Companion before hook" {
-							t.Fatalf("withSiblingUpdate agentMessages=%+v, want single call_msg update", msgs)
-						}
-					} else if len(msgs) != 0 {
-						t.Fatalf("standalone hook-blanked agentMessages=%+v, want none", msgs)
-					}
-					if len(quiets) != 1 || quietYieldCommentary(t, quiets[0].Raw) != "Companion before hook" {
-						t.Fatalf("quiets=%+v, want quiet_yield with Companion before hook commentary", quiets)
-					}
-				})
-			}
-		})
-
-		t.Run("preToolUse_supplied_message_on_blank_communicate_preserves_distinct_and_dedupes_matching_prose", func(t *testing.T) {
-			t.Parallel()
-			for _, tc := range []struct {
-				name      string
-				prose     string
-				hookReply string
-				wantTexts []string
-			}{
-				{name: "distinct", prose: "Distinct companion prose", hookReply: "Hook supplied reply", wantTexts: []string{"Hook supplied reply", "Distinct companion prose"}},
-				{name: "matching", prose: "Same hook reply", hookReply: "Same hook reply", wantTexts: []string{"Same hook reply"}},
-			} {
-				t.Run(tc.name, func(t *testing.T) {
-					t.Parallel()
-					turnID := "turn_hook_supplied"
-					deliveredState := json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true}`)
-					entries := []schema.Turn{
-						{Format: schema.TurnFormatIdentity, TurnID: turnID, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("go"), Timestamp: ts},
-						{Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: "r1", Authorship: author.Clone(), Kind: schema.TurnAssistant, Timestamp: ts.Add(time.Second), Message: llm.Message{
-							Role: llm.RoleAssistant,
-							Content: []llm.ContentPart{
-								{Kind: llm.ContentText, Text: tc.prose},
-								{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_q", Name: "communicate", Arguments: json.RawMessage(`{}`)}},
-							},
-						}},
-						{Format: schema.TurnFormatIdentity, TurnID: turnID, Kind: schema.TurnCommunicate, Timestamp: ts.Add(1500 * time.Millisecond), Communicate: &schema.CommunicateInfo{CallID: "call_q", EndTurn: true, Message: tc.hookReply}},
-						{Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: "r1", Kind: schema.TurnToolResults, Timestamp: ts.Add(2 * time.Second), Message: llm.Message{
-							Role:    llm.RoleTool,
-							Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_q", Name: "communicate", Content: `{"accepted":true,"end_turn":true}`, ToolState: deliveredState}}},
-						}},
-						{Format: schema.TurnFormatIdentity, TurnID: turnID, Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}},
-					}
-					path := writeTranscriptEntries(t, entries...)
-					reg := NewToolCallRegistry()
-					turns, err := ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, id string, idx int) []appwire.ThreadItem {
-						items, _ := ProjectEntryParts(id, idx, turn, reg, nil, nil)
-						return items
-					})
-					if err != nil {
-						t.Fatal(err)
-					}
-					var got []string
-					for _, it := range turns[0].Items {
-						if it.Type == "agentMessage" {
-							got = append(got, it.Text)
-						}
-					}
-					if len(got) != len(tc.wantTexts) {
-						t.Fatalf("agentMessages=%q, want %q", got, tc.wantTexts)
-					}
-					for i := range got {
-						if got[i] != tc.wantTexts[i] {
-							t.Fatalf("agentMessages[%d]=%q, want %q (all=%q)", i, got[i], tc.wantTexts[i], got)
-						}
-					}
-				})
-			}
-		})
+				}
+			})
+		}
 	})
 }
 
@@ -524,31 +436,6 @@ func TestQuietYieldNoteAndNextEnum(t *testing.T) {
 	t.Parallel()
 	ts := time.Unix(1_790_000_000, 0).UTC()
 	author := &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "root-session"}}
-
-	t.Run("possibly_quiet_call_recognizes_next_enum", func(t *testing.T) {
-		t.Parallel()
-		for _, tc := range []struct {
-			name string
-			args string
-			want bool
-		}{
-			{name: "next_after_message_quiet", args: `{"message":"Waiting on CI","next":"log_quietly_and_end_turn"}`, want: true},
-			{name: "next_before_message_quiet", args: `{"next":"log_quietly_and_end_turn","message":"Waiting on CI"}`, want: true},
-			{name: "escaped_message_and_quiet_next", args: `{"message":"Waiting on \"CI\"","next":"log_quietly_and_end_turn"}`, want: true},
-			{name: "output_message_with_quiet_next", args: `{"output":{"message":"Nested"},"next":"log_quietly_and_end_turn"}`, want: true},
-			{name: "send_and_end_turn", args: `{"message":"Done","next":"send_and_end_turn"}`, want: false},
-			{name: "send_and_continue", args: `{"message":"Working","next":"send_and_continue"}`, want: false},
-			{name: "escaped_message_send_and_end_turn", args: `{"message":"Said \"hi\"","next":"send_and_end_turn"}`, want: false},
-			{name: "empty_object", args: `{}`, want: true},
-			{name: "whitespace_message", args: `{"message":"   "}`, want: true},
-			{name: "malformed_truncated", args: `{"message":"hi",`, want: true},
-		} {
-			call := &llm.ToolCallData{ID: "c1", Name: "communicate", Arguments: json.RawMessage(tc.args)}
-			if got := PossiblyQuietCommunicateCall(call, "communicate"); got != tc.want {
-				t.Errorf("%s (%s): PossiblyQuietCommunicateCall = %v, want %v", tc.name, tc.args, got, tc.want)
-			}
-		}
-	})
 
 	for _, format := range []int{0, schema.TurnFormatIdentity} {
 		name := "legacy"
@@ -569,14 +456,18 @@ func TestQuietYieldNoteAndNextEnum(t *testing.T) {
 				t.Run(tc.sub, func(t *testing.T) {
 					t.Parallel()
 					turnID := "turn_note"
-					state := json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true,"communicate_quiet":true` + tc.noteJSON + `}`)
+					state := json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true,"communicate_quiet":true,"communicate_quiet_commentary":"companion-prose"` + tc.noteJSON + `}`)
+					args := json.RawMessage(`{}`)
+					if format == schema.TurnFormatIdentity {
+						args = quietYieldArgs
+					}
 					entries := []schema.Turn{
 						{Format: format, TurnID: turnID, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("wait"), Timestamp: ts},
-						{Format: format, TurnID: turnID, RoundID: "r1", Authorship: author.Clone(), Kind: schema.TurnAssistant, Timestamp: ts.Add(time.Second), Message: llm.Message{
+						{Format: format, TurnID: turnID, RoundID: "r1", Authorship: author.Clone(), Kind: schema.TurnAssistant, QuietCompanion: true, Timestamp: ts.Add(time.Second), Message: llm.Message{
 							Role: llm.RoleAssistant,
 							Content: []llm.ContentPart{
 								{Kind: llm.ContentText, Text: "companion-prose"},
-								{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_q", Name: "communicate", Arguments: json.RawMessage(`{"message":"Waiting on CI job_123","next":"log_quietly_and_end_turn"}`)}},
+								{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_q", Name: "communicate", Arguments: args}},
 							},
 						}},
 						{Format: format, TurnID: turnID, RoundID: "r1", Kind: schema.TurnToolResults, Timestamp: ts.Add(2 * time.Second), Message: llm.Message{
@@ -587,17 +478,8 @@ func TestQuietYieldNoteAndNextEnum(t *testing.T) {
 					if format == schema.TurnFormatIdentity {
 						entries = append(entries, schema.Turn{Format: format, TurnID: turnID, Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}})
 					}
-					path := writeTranscriptEntries(t, entries...)
-					reg := NewToolCallRegistry()
-					turns, err := ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, id string, idx int) []appwire.ThreadItem {
-						items, _ := ProjectEntryParts(id, idx, turn, reg, nil, nil)
-						return items
-					})
-					if err != nil {
-						t.Fatal(err)
-					}
 					var quiets []appwire.ThreadItem
-					for _, it := range turns[0].Items {
+					for _, it := range projectQuietFixture(t, entries) {
 						if it.Type == "agentMessage" {
 							t.Fatalf("unexpected agentMessage alongside quiet yield: %+v", it)
 						}
@@ -636,26 +518,15 @@ func TestQuietYieldNoteAndNextEnum(t *testing.T) {
 					},
 				}},
 				{Format: format, TurnID: turnID, RoundID: "r_multi", Authorship: author.Clone(), Kind: schema.TurnAssistant, QuietYield: true, Timestamp: ts.Add(2 * time.Second), Message: llm.Message{
-					Role: llm.RoleAssistant,
-					Content: []llm.ContentPart{
-						{Kind: llm.ContentText, Text: longMultiline},
-					},
+					Role:    llm.RoleAssistant,
+					Content: []llm.ContentPart{{Kind: llm.ContentText, Text: longMultiline}},
 				}},
 			}
 			if format == schema.TurnFormatIdentity {
 				entries = append(entries, schema.Turn{Format: format, TurnID: turnID, Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}})
 			}
-			path := writeTranscriptEntries(t, entries...)
-			reg := NewToolCallRegistry()
-			turns, err := ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, id string, idx int) []appwire.ThreadItem {
-				items, _ := ProjectEntryParts(id, idx, turn, reg, nil, nil)
-				return items
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
 			var reasonings, quiets []appwire.ThreadItem
-			for _, it := range turns[0].Items {
+			for _, it := range projectQuietFixture(t, entries) {
 				switch {
 				case it.Type == "agentMessage":
 					t.Fatalf("QuietYield TurnAssistant emitted agentMessage: %+v", it)
@@ -683,6 +554,113 @@ func TestQuietYieldNoteAndNextEnum(t *testing.T) {
 			}
 			if got := quietYieldCommentary(t, quiets[1].Raw); got != longMultiline {
 				t.Fatalf("long multiline commentary=%q, want full original text", got)
+			}
+		})
+	}
+}
+
+// A quiet yield whose call was recorded with empty JSON arguments (a legacy
+// communicate({}) or a PreToolUse-rewritten call) still shows the assistant
+// authorship: the quiet notice carries no message of its own, so authorship
+// comes from the announcing assistant entry, not from the arguments.
+func TestQuietYieldKeepsAuthorshipForEmptyCallArguments(t *testing.T) {
+	t.Parallel()
+	ts := time.Unix(1_790_000_000, 0).UTC()
+	author := &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "root-session"}}
+	for _, format := range []int{0, schema.TurnFormatIdentity} {
+		name := "legacy"
+		if format == schema.TurnFormatIdentity {
+			name = "identity"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			entries := []schema.Turn{
+				{Format: format, TurnID: "turn_q", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("wait"), Timestamp: ts},
+				{Format: format, TurnID: "turn_q", RoundID: "r1", Authorship: author.Clone(), Kind: schema.TurnAssistant, Timestamp: ts.Add(time.Second), Message: llm.Message{
+					Role: llm.RoleAssistant,
+					Content: []llm.ContentPart{
+						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_q", Name: "communicate", Arguments: json.RawMessage(`{}`)}},
+					},
+				}},
+				{Format: format, TurnID: "turn_q", RoundID: "r1", Kind: schema.TurnToolResults, Timestamp: ts.Add(2 * time.Second), Message: llm.Message{
+					Role:    llm.RoleTool,
+					Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_q", Name: "communicate", ToolState: quietToolState(t, "waiting", "")}}},
+				}},
+			}
+			if format == schema.TurnFormatIdentity {
+				entries = append(entries, schema.Turn{Format: format, TurnID: "turn_q", Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}})
+			}
+			var quiets []appwire.ThreadItem
+			for _, it := range projectQuietFixture(t, entries) {
+				if it.EventKind == appwire.ThreadItemEventKindQuietYield {
+					quiets = append(quiets, it)
+				}
+			}
+			if len(quiets) != 1 {
+				t.Fatalf("quiets=%+v, want 1", quiets)
+			}
+			if quiets[0].Authorship == nil || quiets[0].Authorship.Author.SessionRef != "local:root-session" {
+				t.Fatalf("quiet yield Authorship=%+v, want local:root-session", quiets[0].Authorship)
+			}
+		})
+	}
+}
+
+// A communicate delivery that repeats the announcing entry's prose is an
+// echo even when that prose carries surrounding whitespace or is followed by
+// a whitespace-only text part after the call.
+func TestAssistantEchoIgnoresTrailingWhitespace(t *testing.T) {
+	t.Parallel()
+	ts := time.Unix(1_790_000_000, 0).UTC()
+	call := llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+		ID: "call_msg", Name: "communicate", Arguments: json.RawMessage(`{"message":"All done.","next":"send_and_end_turn"}`),
+	}}
+	for _, tc := range []struct {
+		name    string
+		content []llm.ContentPart
+	}{
+		{
+			name: "trailing_newline",
+			content: []llm.ContentPart{
+				{Kind: llm.ContentText, Text: "All done.\n"},
+				call,
+			},
+		},
+		{
+			name: "trailing_whitespace_part",
+			content: []llm.ContentPart{
+				{Kind: llm.ContentText, Text: "All done."},
+				call,
+				{Kind: llm.ContentText, Text: " \n "},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			items := projectQuietFixture(t, []schema.Turn{
+				{Format: schema.TurnFormatIdentity, TurnID: "turn_1", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("go"), Timestamp: ts},
+				{Format: schema.TurnFormatIdentity, TurnID: "turn_1", RoundID: "r1", Kind: schema.TurnAssistant, Timestamp: ts.Add(time.Second), Message: llm.Message{
+					Role:    llm.RoleAssistant,
+					Content: tc.content,
+				}},
+				{Format: schema.TurnFormatIdentity, TurnID: "turn_1", Kind: schema.TurnCommunicate, Timestamp: ts.Add(1500 * time.Millisecond), Communicate: &schema.CommunicateInfo{
+					CallID: "call_msg", EndTurn: true, Message: "All done.",
+				}},
+			})
+			shown := 0
+			for _, it := range items {
+				if it.Type != "agentMessage" {
+					continue
+				}
+				if it.CallID == "call_msg" {
+					t.Fatalf("agentMessage=%+v, want the delivery suppressed as an echo", it)
+				}
+				if strings.TrimSpace(it.Text) == "All done." {
+					shown++
+				}
+			}
+			if shown != 1 {
+				t.Fatalf("items=%+v, want the prose shown once", items)
 			}
 		})
 	}

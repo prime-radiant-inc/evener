@@ -1469,3 +1469,96 @@ func TestStopHookContinuationPreservesOrInjectsInFlightSteer(t *testing.T) {
 		}
 	})
 }
+
+func companionQuietResponse(id, text, args string) llm.Response {
+	call := rawCommunicateCall(id, args)
+	return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: llm.ContentText, Text: text},
+		{Kind: llm.ContentToolCall, ToolCall: &call},
+	}}}
+}
+
+func assistantTurnWithText(t *testing.T, turns []schema.Turn, want string) schema.Turn {
+	t.Helper()
+	for _, turn := range entriesOfKind(turns, schema.TurnAssistant) {
+		for _, part := range turn.Message.Content {
+			if part.Kind == llm.ContentText && part.Text == want {
+				return turn
+			}
+		}
+	}
+	t.Fatalf("no assistant turn carried text %q", want)
+	return schema.Turn{}
+}
+
+func TestQuietCompanionStampedAtProducer(t *testing.T) {
+	t.Parallel()
+	run := func(t *testing.T, args string) []schema.Turn {
+		t.Helper()
+		env := newHeldJobEnvironment(t.TempDir())
+		adapter := newFakeAdapter("openai",
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "shell", Name: "shell", Arguments: json.RawMessage(`{"command":"go test","mode":"background"}`)})
+			},
+			func(llm.Request) llm.Response { return companionQuietResponse("probe", "Running the suite.", args) },
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered") },
+		)
+		s := newSession(t, withEnv(env), withAdapter(adapter), withStateDir(t.TempDir()))
+		t.Cleanup(env.releaseJob)
+		installCommunicateStopHook(s, func() string { return `{}` })
+		if _, err := s.ProcessInputKind(tripwireCtx(t), "start", nil, EntryUserInput); err != nil {
+			t.Fatal(err)
+		}
+		env.releaseJob()
+		return transcriptTurnsOf(t, s)
+	}
+
+	t.Run("quiet call stamps companion", func(t *testing.T) {
+		t.Parallel()
+		env := newHeldJobEnvironment(t.TempDir())
+		adapter := newFakeAdapter("openai",
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "shell", Name: "shell", Arguments: json.RawMessage(`{"command":"go test","mode":"background"}`)})
+			},
+			func(llm.Request) llm.Response {
+				return companionQuietResponse("probe", "  Running the suite.  ", `{"message":"waiting on go test","next":"log_quietly_and_end_turn"}`)
+			},
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered") },
+		)
+		s := newSession(t, withEnv(env), withAdapter(adapter), withStateDir(t.TempDir()))
+		t.Cleanup(env.releaseJob)
+		installCommunicateStopHook(s, func() string { return `{}` })
+		if _, err := s.ProcessInputKind(tripwireCtx(t), "start", nil, EntryUserInput); err != nil {
+			t.Fatal(err)
+		}
+		res := communicateToolResult(t, s, "probe")
+		state, ok := schema.DecodeCommunicateToolState(res.ToolState)
+		if !ok || !state.IsQuiet() {
+			t.Fatalf("probe tool state = %+v, decode ok=%v", state, ok)
+		}
+		if state.QuietCommentary != "Running the suite." {
+			t.Fatalf("QuietCommentary = %q, want trimmed companion prose", state.QuietCommentary)
+		}
+		if state.QuietNote == "" {
+			t.Fatal("QuietNote is empty, want the quiet message summary")
+		}
+		env.releaseJob()
+		turns := transcriptTurnsOf(t, s)
+		turn := assistantTurnWithText(t, turns, "  Running the suite.  ")
+		if !turn.QuietCompanion {
+			t.Fatalf("assistant turn QuietCompanion = false, want true")
+		}
+		if turn.QuietYield {
+			t.Fatalf("assistant turn QuietYield = true, want false")
+		}
+	})
+
+	t.Run("loud call keeps companion visible", func(t *testing.T) {
+		t.Parallel()
+		turns := run(t, `{"message":"done","next":"send_and_end_turn"}`)
+		turn := assistantTurnWithText(t, turns, "Running the suite.")
+		if turn.QuietCompanion {
+			t.Fatalf("assistant turn QuietCompanion = true, want false for a loud call")
+		}
+	})
+}
