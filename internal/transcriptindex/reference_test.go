@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"reflect"
 	"slices"
@@ -98,6 +99,10 @@ func referenceProjection(t testing.TB, path string) []referenceTurn {
 // ToolCallRegistry state the scan ended on, which flushProjection needs to
 // reproduce a trailing unpaired communicate call.
 func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn, *apptranscript.ToolCallRegistry) {
+	return referenceProjectionWithForce(t, path, nil)
+}
+
+func referenceProjectionWithForce(t testing.TB, path string, forceProvisional map[int]bool) ([]referenceTurn, *apptranscript.ToolCallRegistry) {
 	t.Helper()
 	header, entries, unreadable := readFixtureFile(t, path)
 	type turnState struct {
@@ -128,8 +133,8 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 	var turns []*turnState
 	byID := map[string]*turnState{}
 	var grouper apptranscript.TurnGrouper
-	reg := apptranscript.NewToolCallRegistry()
-	identityReg := apptranscript.NewToolCallRegistry()
+	reg := &apptranscript.ToolCallRegistry{Names: map[string]string{}, CommRawArgs: map[string]string{}, CommAuthorship: map[string]*schema.TranscriptAuthorship{}, ForceProvisional: forceProvisional}
+	identityReg := &apptranscript.ToolCallRegistry{Names: map[string]string{}, CommRawArgs: map[string]string{}, CommAuthorship: map[string]*schema.TranscriptAuthorship{}, ForceProvisional: forceProvisional}
 	add := func(s *turnState, item appwire.ThreadItem, entryIndex, part int) int {
 		item.Version = uint64(entryIndex)
 		s.items = append(s.items, item)
@@ -300,6 +305,12 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 				s.awaiting, s.awaitingItem, s.awaitingNames, s.awaitingEntry = &awaiting, calls, names, entryIndex
 			}
 		}
+	}
+	if (reg.UnexpectedQuiet || identityReg.UnexpectedQuiet) && forceProvisional == nil {
+		merged := map[int]bool{}
+		maps.Copy(merged, reg.ForceProvisional)
+		maps.Copy(merged, identityReg.ForceProvisional)
+		return referenceProjectionWithForce(t, path, merged)
 	}
 	var out []referenceTurn
 	launchPrompt := ""

@@ -280,4 +280,87 @@ describe("useFindInSession disclosure opening for quiet yields", () => {
 		expect(isRowOpen(groupRow)).toBe(true);
 		expect(hasRenderedProse(tree, "quokka-timing-120ms")).toBe(true);
 	});
+
+	it("opens both the quiet-yield group and grouped thought disclosure when Find matches detail.output", () => {
+		const thought: Extract<TimelineRow, { kind: "activity" }> = {
+			kind: "activity",
+			id: "r_1",
+			turnId: "t1",
+			label: "Thought",
+			family: "reasoning",
+			state: "completed",
+			detail: { output: "quokka-grouped-thought-body" },
+		};
+		const q1: Extract<TimelineRow, { kind: "notice" }> = {
+			kind: "notice",
+			id: "qy_1",
+			turnId: "t1",
+			origin: "system",
+			family: "lifecycle",
+			tone: "system",
+			eventKind: "quiet_yield",
+			text: "Ended turn quietly",
+		};
+		const q2: Extract<TimelineRow, { kind: "notice" }> = { ...q1, id: "qy_2", turnId: "t2" };
+		const groupRow: TimelineRow = {
+			kind: "details",
+			id: "quiet-yields:r_1",
+			entries: [thought, q1, q2],
+			summary: "2 quiet yields",
+		};
+		let tree!: ReactTestRenderer;
+		act(() => {
+			tree = render(
+				<Harness
+					rows={[groupRow]}
+					initialFind={{
+						query: "quokka-grouped-thought-body",
+						key: "quiet-yields:r_1",
+						seeking: false,
+						exhausted: false,
+					}}
+				/>,
+			);
+		});
+		expect(isRowOpen(groupRow)).toBe(true);
+		expect(isRowOpen(thought)).toBe(true);
+		expect(hasRenderedProse(tree, "quokka-grouped-thought-body")).toBe(true);
+	});
+
+	it("keeps selection and opens disclosures when a standalone quiet wake folds into a group", () => {
+		const q1: Extract<TimelineRow, { kind: "notice" }> = {
+			kind: "notice",
+			id: "qy_fold_1",
+			turnId: "t1",
+			origin: "system",
+			family: "lifecycle",
+			tone: "system",
+			eventKind: "quiet_yield",
+			label: "Ended turn quietly",
+			text: "quokka-standalone-to-group",
+			rendersMarkdown: true,
+		};
+		const q2: Extract<TimelineRow, { kind: "notice" }> = { ...q1, id: "qy_fold_2", turnId: "t2", text: "other" };
+		const find: FindState = { query: "quokka-standalone-to-group", key: "qy_fold_1", seeking: false, exhausted: false };
+		let tree!: ReactTestRenderer;
+		act(() => {
+			tree = render(<Harness rows={[q1]} initialFind={find} />);
+		});
+		expect(isRowOpen(q1)).toBe(true);
+		expect(hasRenderedProse(tree, "quokka-standalone-to-group")).toBe(true);
+
+		const groupRow: TimelineRow = {
+			kind: "details",
+			id: "quiet-yields:qy_fold_1",
+			entries: [q1, q2],
+			summary: "2 quiet yields",
+		};
+		act(() => {
+			nativeDisclosureStore.setState(nativeDisclosureStore.getInitialState());
+			tree.update(<Harness rows={[groupRow]} initialFind={find} />);
+		});
+		expect(isRowOpen(groupRow)).toBe(true);
+		expect(isRowOpen(q1)).toBe(true);
+		expect(hasRenderedProse(tree, "quokka-standalone-to-group")).toBe(true);
+	});
 });

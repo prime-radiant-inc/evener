@@ -25,6 +25,17 @@ import (
 // awaiting ASSISTANT entry an in-place rewrite already moved past it.
 var errRebuild = errors.New("transcript index needs a full rebuild")
 
+// unexpectedQuietRebuildError triggers a rebuild with forceProvisional when a
+// PreToolUse hook blanked a non-empty communicate call so TurnToolResults
+// settled quietly after its assistant prose had already been committed.
+type unexpectedQuietRebuildError struct {
+	callID string
+}
+
+func (e unexpectedQuietRebuildError) Error() string {
+	return fmt.Sprintf("transcript index needs rebuild for hook-blanked quiet call %q", e.callID)
+}
+
 // toolName is the projection's tool-name state for one call id: the name its
 // latest tool call registered, or deleted after a communicate result.
 type toolName struct {
@@ -143,12 +154,14 @@ type builder struct {
 	// (existence/parts). meta.CommCalls/LastAssistant* separately persist
 	// this whole struct's values, for restoreBuilder to reconstruct it
 	// without a rebuild.
-	commCalls           map[string]commState // call id -> its deferred communicate state
-	provisionalByCall   map[string]*provisionalQuietState
-	provisional         []*provisionalQuietState
-	lastAssistantText   string
-	lastAssistantTurnID string
-	lastAssistantPos    contributor
+	commCalls              map[string]commState // call id -> its deferred communicate state
+	provisionalByCall      map[string]*provisionalQuietState
+	provisional            []*provisionalQuietState
+	forceProvisional       map[uint64]bool
+	ignoredUnexpectedQuiet map[string]bool
+	lastAssistantText      string
+	lastAssistantTurnID    string
+	lastAssistantPos       contributor
 	// lastAssistantKnown is true once the sticky value above is
 	// authoritative: always, for a full build (correct from its first
 	// entry — "no text yet" is the ground truth, not an unknown), and for
@@ -168,6 +181,7 @@ type builder struct {
 	seedBuf     map[string]string
 	regNames    map[string]string
 	regCommArgs map[string]string
+	regForce    map[int]bool
 	// itemBuf, turnBuf and updateBuf are the fixed-size encode scratch of the
 	// hot loop: the encode*Into functions fill them, and the table layer
 	// copies their bytes out synchronously, so reuse is safe.
@@ -246,6 +260,9 @@ func (b *builder) applyLegacy(ordinal uint64, offset int64, length uint32, entry
 		b.calls = map[string]uint64{}
 		b.names = map[string]toolName{}
 	}
+	if err := b.checkUnexpectedQuiet(entry); err != nil {
+		return err
+	}
 	seed, err := b.seed(entry)
 	if err != nil {
 		return err
@@ -253,6 +270,7 @@ func (b *builder) applyLegacy(ordinal uint64, offset int64, length uint32, entry
 	reg := &apptranscript.ToolCallRegistry{
 		Names:               b.registryNames(seed),
 		CommRawArgs:         b.registryCommArgs(),
+		ForceProvisional:    b.registryForceProvisional(),
 		LastAssistantText:   b.lastAssistantText,
 		LastAssistantTurnID: b.lastAssistantTurnID,
 	}
@@ -323,6 +341,36 @@ func (b *builder) registryCommArgs() map[string]string {
 		b.regCommArgs[id] = state.rawArgs
 	}
 	return b.regCommArgs
+}
+
+func (b *builder) registryForceProvisional() map[int]bool {
+	if len(b.forceProvisional) == 0 {
+		return nil
+	}
+	if b.regForce == nil {
+		b.regForce = make(map[int]bool, len(b.forceProvisional))
+	} else {
+		clear(b.regForce)
+	}
+	for ord := range b.forceProvisional {
+		b.regForce[int(ord)+1] = true
+	}
+	return b.regForce
+}
+
+func (b *builder) checkUnexpectedQuiet(entry *schema.Turn) error {
+	if entry.Kind != schema.TurnTool && entry.Kind != schema.TurnToolResults {
+		return nil
+	}
+	for _, part := range entry.Message.Content {
+		if part.Kind == llm.ContentToolResult && part.ToolResult != nil && apptranscript.IsQuietCommunicate(part.ToolResult) {
+			id := part.ToolResult.ToolCallID
+			if b.provisionalByCall[id] == nil && !b.ignoredUnexpectedQuiet[id] {
+				return unexpectedQuietRebuildError{callID: id}
+			}
+		}
+	}
+	return nil
 }
 
 // resultContextTarget reports whether item produced by entry needs a
@@ -519,7 +567,7 @@ func (b *builder) seedRegistryProvisional(reg *apptranscript.ToolCallRegistry, e
 		if err != nil {
 			return nil, err
 		}
-		tmpReg := &apptranscript.ToolCallRegistry{}
+		tmpReg := &apptranscript.ToolCallRegistry{ForceProvisional: map[int]bool{int(q.pos.Ordinal) + 1: true}}
 		apptranscript.ProjectEntryParts(q.turnID, int(q.pos.Ordinal)+1, *assistantEntry, tmpReg, nil, apptranscript.ToolResultOutputImages)
 		for _, id := range q.allCallIDs {
 			if auth, ok := tmpReg.CommAuthorship[id]; ok {
@@ -578,19 +626,21 @@ func (b *builder) pruneProvisional() {
 func (b *builder) recordCommState(entry *schema.Turn, turnID string, seed map[string]string, c contributor, items []appwire.ThreadItem) {
 	switch entry.Kind {
 	case schema.TurnAssistant:
-		quietIDs := apptranscript.PossiblyQuietCommunicateCallIDs(*entry)
-		hasText := len(quietIDs) > 0 && assistantEntryHasText(entry)
-		hasAuthorship := entry.Authorship != nil
-		var allCallIDs []string
+		hasCommunicate, quietIDs := apptranscript.AssistantCommunicateCallIDs(*entry, b.forceProvisional[c.Ordinal])
 		for _, part := range entry.Message.Content {
-			if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
-				allCallIDs = append(allCallIDs, part.ToolCall.ID)
-			}
 			if deferredCommCall(entry, part) {
 				b.commCalls[part.ToolCall.ID] = commState{rawArgs: part.ToolCall.SentArguments(), pos: c, turnID: turnID}
 			}
 		}
-		if len(allCallIDs) > 0 && (len(quietIDs) > 0 || hasAuthorship) {
+		if hasCommunicate && len(quietIDs) > 0 {
+			hasText := assistantEntryHasText(entry)
+			hasAuthorship := entry.Authorship != nil
+			var allCallIDs []string
+			for _, part := range entry.Message.Content {
+				if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
+					allCallIDs = append(allCallIDs, part.ToolCall.ID)
+				}
+			}
 			pending := make(map[string]bool, len(quietIDs))
 			for _, id := range quietIDs {
 				pending[id] = true
@@ -962,8 +1012,12 @@ func (b *builder) interruptAwaitedCalls(summary turnRecord, completion contribut
 // item absorb (when set) does not take. seed names the entry's nameless tool
 // results.
 func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, seed map[string]string, absorb func(appwire.ThreadItem) (bool, error)) error {
+	if err := b.checkUnexpectedQuiet(entry); err != nil {
+		return err
+	}
 	reg := &apptranscript.ToolCallRegistry{
 		Names: b.registryNames(seed), CommRawArgs: b.registryCommArgs(),
+		ForceProvisional:  b.registryForceProvisional(),
 		LastAssistantText: b.lastAssistantText, LastAssistantTurnID: b.lastAssistantTurnID,
 	}
 	provList, err := b.seedRegistryProvisional(reg, entry)

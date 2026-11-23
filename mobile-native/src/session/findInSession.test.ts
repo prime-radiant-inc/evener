@@ -245,4 +245,62 @@ describe("finding words in a delegate or job notification", () => {
 		expect(findMatches([row], "waits for the drain")).toEqual([0]);
 		expect(findMatches([row], "delegate_id")).toEqual([]);
 	});
+
+	it("matches text inside a grouped thought body (detail.output)", () => {
+		const thought: Extract<TimelineRow, { kind: "activity" }> = {
+			kind: "activity",
+			id: "r_1",
+			turnId: "t1",
+			label: "Thought",
+			family: "reasoning",
+			state: "completed",
+			detail: { output: "hidden-quokka-reasoning-body" },
+		};
+		const quiet: Extract<TimelineRow, { kind: "notice" }> = {
+			kind: "notice",
+			id: "qy_1",
+			turnId: "t1",
+			origin: "system",
+			family: "lifecycle",
+			tone: "system",
+			eventKind: "quiet_yield",
+			text: "Ended turn quietly",
+		};
+		const group: TimelineRow = {
+			kind: "details",
+			id: "quiet-yields:r_1",
+			entries: [thought, quiet],
+			summary: "2 quiet yields",
+		};
+		expect(findMatches([group], "quokka-reasoning-body")).toEqual([0]);
+	});
+
+	it("resolves selectedKey onto the containing details group when a standalone wake folds", () => {
+		const q1: Extract<TimelineRow, { kind: "notice" }> = {
+			kind: "notice",
+			id: "qy_1",
+			turnId: "t1",
+			origin: "system",
+			family: "lifecycle",
+			tone: "system",
+			eventKind: "quiet_yield",
+			label: "Ended turn quietly",
+			text: "quokka-folded-prose",
+			rendersMarkdown: true,
+		};
+		const q2: Extract<TimelineRow, { kind: "notice" }> = {
+			...q1,
+			id: "qy_2",
+			turnId: "t2",
+			text: "other",
+		};
+		const foldedRows: TimelineRow[] = [
+			{ kind: "details", id: "quiet-yields:qy_1", entries: [q1, q2], summary: "2 quiet yields" },
+		];
+		const hits = findMatches(foldedRows, "quokka-folded-prose");
+		expect(hits).toEqual([0]);
+		expect(selectedRowIndex(foldedRows, "qy_1", new Map())).toBe(0);
+		expect(selectedMatch(foldedRows, hits, "qy_1", new Map())).toBe(0);
+		expect(matchPosition(hits, selectedMatch(foldedRows, hits, "qy_1", new Map()))).toEqual({ position: 1, count: 1 });
+	});
 });

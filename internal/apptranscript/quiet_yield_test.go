@@ -396,5 +396,67 @@ func TestQuietYieldProjectionAndCompanionDemotion(t *testing.T) {
 				t.Fatalf("Authorship=%+v, want local:root-session", msgs[0].Authorship)
 			}
 		})
+
+		t.Run("preToolUse_blanked_message_demotes_companion_prose", func(t *testing.T) {
+			t.Parallel()
+			for _, withSiblingUpdate := range []bool{false, true} {
+				name := "standalone"
+				if withSiblingUpdate {
+					name = "with_sibling_update"
+				}
+				t.Run(name, func(t *testing.T) {
+					t.Parallel()
+					turnID := "turn_hook_blanked"
+					quietState := json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true,"communicate_quiet":true}`)
+					content := []llm.ContentPart{{Kind: llm.ContentText, Text: "Companion before hook"}}
+					if withSiblingUpdate {
+						content = append(content, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_msg", Name: "communicate", Arguments: json.RawMessage(`{"message":"Companion before hook","end_turn":false}`)}})
+					}
+					content = append(content, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_hook_blanked", Name: "communicate", Arguments: json.RawMessage(`{"message":"original"}`)}})
+					entries := []schema.Turn{
+						{Format: schema.TurnFormatIdentity, TurnID: turnID, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("start"), Timestamp: ts},
+						{Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: "r1", Authorship: author.Clone(), Kind: schema.TurnAssistant, Timestamp: ts.Add(time.Second), Message: llm.Message{Role: llm.RoleAssistant, Content: content}},
+					}
+					var resultParts []llm.ContentPart
+					if withSiblingUpdate {
+						entries = append(entries, schema.Turn{Format: schema.TurnFormatIdentity, TurnID: turnID, Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: "call_msg", EndTurn: false, Message: "Companion before hook"}, Timestamp: ts.Add(1500 * time.Millisecond)})
+						resultParts = append(resultParts, llm.ContentPart{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_msg", Name: "communicate", Content: `{"accepted":true,"end_turn":false}`}})
+					}
+					resultParts = append(resultParts, llm.ContentPart{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_hook_blanked", Name: "communicate", Content: `{"accepted":true,"end_turn":true}`, ToolState: quietState}})
+					entries = append(entries,
+						schema.Turn{Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: "r1", Kind: schema.TurnToolResults, Timestamp: ts.Add(2 * time.Second), Message: llm.Message{Role: llm.RoleTool, Content: resultParts}},
+						schema.Turn{Format: schema.TurnFormatIdentity, TurnID: turnID, Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}},
+					)
+					path := writeTranscriptEntries(t, entries...)
+					reg := NewToolCallRegistry()
+					turns, err := ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, id string, idx int) []appwire.ThreadItem {
+						items, _ := ProjectEntryParts(id, idx, turn, reg, nil, nil)
+						return items
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					var msgs, quiets []appwire.ThreadItem
+					for _, it := range turns[0].Items {
+						if it.Type == "agentMessage" {
+							msgs = append(msgs, it)
+						}
+						if it.EventKind == appwire.ThreadItemEventKindQuietYield {
+							quiets = append(quiets, it)
+						}
+					}
+					if withSiblingUpdate {
+						if len(msgs) != 1 || msgs[0].CallID != "call_msg" || msgs[0].Text != "Companion before hook" {
+							t.Fatalf("withSiblingUpdate agentMessages=%+v, want single call_msg update", msgs)
+						}
+					} else if len(msgs) != 0 {
+						t.Fatalf("standalone hook-blanked agentMessages=%+v, want none", msgs)
+					}
+					if len(quiets) != 1 || quietYieldCommentary(t, quiets[0].Raw) != "Companion before hook" {
+						t.Fatalf("quiets=%+v, want quiet_yield with Companion before hook commentary", quiets)
+					}
+				})
+			}
+		})
 	})
 }

@@ -37,9 +37,11 @@ export function newFind(query: string): FindState {
 // A step's intent and its words, which name what it acted on: a file, a
 // command, a fetched page's URL, a search's query. An intent row keeps its
 // words but not their composed summary, and its line shows their target.
-function stepText(step: RunStep): string {
-	const { description, words, summary } = step.detail;
-	return [step.label, description ?? "", words ? composeStepWords(words) : (summary ?? "")].join("\n");
+function stepText(step: Pick<RunStep, "label" | "family" | "detail">): string {
+	const { description, words, summary, output } = step.detail;
+	const parts = [step.label, description ?? "", words ? composeStepWords(words) : (summary ?? "")];
+	if (step.family === "reasoning" && output) parts.push(output);
+	return parts.join("\n");
 }
 
 // A notification reads as its card, not its markup.
@@ -118,6 +120,12 @@ function openRowDisclosures(
 		}
 		return;
 	}
+	if (row.kind === "activity") {
+		if (row.family === "reasoning" && row.detail.output && textMatchesFind(row.detail.output, needle)) {
+			setDisclosureOpenAll(rowDisclosureIds(hubId, sessionRef, row), true);
+		}
+		return;
+	}
 	if (row.kind !== "notice") return;
 	if (noticeLabel(row) !== undefined && textMatchesFind(row.text, needle)) {
 		setDisclosureOpenAll(rowDisclosureIds(hubId, sessionRef, row), true);
@@ -168,8 +176,16 @@ export function selectedRowIndex(
 ): number | null {
 	if (selectedKey === null) return null;
 	const key = standIns.get(selectedKey) ?? selectedKey;
-	const index = rows.findIndex((row) => readerKey(row) === key);
+	const index = rows.findIndex((row) => rowMatchesSelectedKey(row, key));
 	return index < 0 ? null : index;
+}
+
+function rowMatchesSelectedKey(row: TimelineRow, key: string): boolean {
+	if (readerKey(row) === key) return true;
+	if (row.kind === "details") {
+		return row.entries.some((entry) => readerKey(entry) === key || entry.id === key);
+	}
+	return false;
 }
 
 /** Where Find's selection sits among the matches: the selected row when it

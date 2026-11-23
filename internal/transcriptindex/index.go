@@ -24,6 +24,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/execsupport/fsatomic"
 	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/llm"
 )
 
 const (
@@ -967,6 +968,9 @@ func (x *Index) extend(length int64) error {
 		// The records may hold part of this scan; only a full build is
 		// known to be consistent. The transcript still extends the covered
 		// prefix when the index only needed the whole file's tool names.
+		if _, ok := errors.AsType[unexpectedQuietRebuildError](err); ok {
+			return x.rebuild(length, "")
+		}
 		incarnation := ""
 		if errors.Is(err, errRebuild) {
 			incarnation = x.meta.Incarnation
@@ -1330,6 +1334,10 @@ func liveBuildName(dir string) (string, error) {
 }
 
 func (x *Index) buildNew(length int64, incarnation string) error {
+	return x.buildNewWithForce(length, incarnation, nil, nil)
+}
+
+func (x *Index) buildNewWithForce(length int64, incarnation string, force map[uint64]bool, ignored map[string]bool) error {
 	if err := x.closeBuild(); err != nil {
 		return err
 	}
@@ -1359,10 +1367,24 @@ func (x *Index) buildNew(length int64, incarnation string) error {
 	x.stale, x.builderStale = false, false
 	x.builder = newBuilder(x)
 	x.builder.global = map[string]string{}
+	x.builder.forceProvisional = force
+	x.builder.ignoredUnexpectedQuiet = ignored
 	x.rebuilds++
 	if err := x.scan(length); err != nil {
+		if _, ok := errors.AsType[unexpectedQuietRebuildError](err); ok && force == nil && ignored == nil {
+			foundForce, foundIgnored, dErr := x.discoverForceProvisionalOrdinals(length)
+			_ = x.closeBuild()
+			_ = os.RemoveAll(filepath.Join(x.dir, name))
+			x.build = ""
+			if dErr != nil {
+				return dErr
+			}
+			return x.buildNewWithForce(length, incarnation, foundForce, foundIgnored)
+		}
 		return err
 	}
+	x.builder.forceProvisional = nil
+	x.builder.ignoredUnexpectedQuiet = nil
 	if err := x.buildTurnSlots(); err != nil {
 		return err
 	}
@@ -1397,6 +1419,62 @@ func (x *Index) buildNew(length int64, incarnation string) error {
 	x.removeOtherBuilds()
 	x.pruneSupersededSidecars(pruneCandidates)
 	return nil
+}
+
+func (x *Index) discoverForceProvisionalOrdinals(length int64) (force map[uint64]bool, ignored map[string]bool, err error) {
+	reader := bufio.NewReaderSize(io.NewSectionReader(x.transcript, 0, length), 64<<10)
+	var lines transcript.LineBuffer
+	var ordinal uint64
+	headerRead := false
+	announcer := map[string]uint64{}
+	quietCalls := map[string]bool{}
+	for {
+		line, complete, _, readErr := lines.ReadLine(reader, maxLineBytes)
+		if readErr != nil {
+			return nil, nil, readErr
+		}
+		if !complete {
+			break
+		}
+		trimmed := bytes.TrimSpace(line)
+		if len(trimmed) == 0 {
+			continue
+		}
+		if !headerRead {
+			headerRead = true
+			continue
+		}
+		cur := ordinal
+		ordinal++
+		entry, decErr := transcript.DecodeEntry(trimmed)
+		if decErr != nil || entry.Turn.OriginalOrdinal != nil {
+			continue
+		}
+		switch entry.Turn.Kind {
+		case schema.TurnAssistant:
+			for _, part := range entry.Turn.Message.Content {
+				if part.Kind == llm.ContentToolCall && part.ToolCall != nil && apptranscript.IsCommunicateTool(part.ToolCall.Name, entry.Turn.ResultToolName) {
+					announcer[part.ToolCall.ID] = cur
+				}
+			}
+		case schema.TurnTool, schema.TurnToolResults:
+			for _, part := range entry.Turn.Message.Content {
+				if part.Kind == llm.ContentToolResult && part.ToolResult != nil && apptranscript.IsQuietCommunicate(part.ToolResult) {
+					quietCalls[part.ToolResult.ToolCallID] = true
+				}
+			}
+		}
+	}
+	force = map[uint64]bool{}
+	ignored = map[string]bool{}
+	for id := range quietCalls {
+		if ord, ok := announcer[id]; ok {
+			force[ord] = true
+		} else {
+			ignored[id] = true
+		}
+	}
+	return force, ignored, nil
 }
 
 // removeOtherBuilds deletes every build but the live one. A reader in another

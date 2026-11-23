@@ -441,3 +441,97 @@ func TestQuietYieldIndexParityColdAndIncremental(t *testing.T) {
 		}
 	})
 }
+
+func TestQuietYieldPreToolUseBlankedMessageDemotesProse(t *testing.T) {
+	t.Parallel()
+	for _, sibling := range []bool{false, true} {
+		for _, split := range []bool{false, true} {
+			name := "standalone"
+			if sibling {
+				name = "with_sibling_update"
+			}
+			if split {
+				name += "/split_catchup"
+			} else {
+				name += "/cold"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				fx := quietYieldFixture(true)
+				// Non-empty communicate({message: "original"}) rewritten to quiet by a PreToolUse hook.
+				fx.lines[3].turn.Message.Content[3] = llm.ContentPart{
+					Kind:     llm.ContentToolCall,
+					ToolCall: &llm.ToolCallData{ID: "call_quiet", Name: "communicate", Arguments: json.RawMessage(`{"message":"original"}`)},
+				}
+				if sibling {
+					fx.lines[3].turn.Message.Content = append(fx.lines[3].turn.Message.Content, llm.ContentPart{
+						Kind:     llm.ContentToolCall,
+						ToolCall: &llm.ToolCallData{ID: "call_msg", Name: "communicate", Arguments: json.RawMessage(`{"message":"companion-sentinel","end_turn":false}`)},
+					})
+					comm := entryLine(at(schema.Turn{
+						Format: schema.TurnFormatIdentity, TurnID: "turn_1", Kind: schema.TurnCommunicate,
+						Communicate: &schema.CommunicateInfo{CallID: "call_msg", EndTurn: false, Message: "companion-sentinel"},
+					}, 5))
+					fx.lines[4].turn.Message.Content = append(fx.lines[4].turn.Message.Content, llm.ContentPart{
+						Kind: llm.ContentToolResult,
+						ToolResult: &llm.ToolResultData{
+							ToolCallID: "call_msg", Name: "communicate", Content: `{"accepted":true,"end_turn":false}`,
+							ToolState: json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":false}`),
+						},
+					})
+					fx.lines = append(fx.lines[:4], append([]fixtureLine{comm}, fx.lines[4:]...)...)
+				}
+				path, lines := writeHeaderOnly(t, fx)
+				var x *Index
+				if split {
+					splitAt := 4
+					if sibling {
+						splitAt = 5
+					}
+					for _, line := range lines[:splitAt] {
+						appendBytes(t, path, line)
+					}
+					x = openIndex(t, path, t.TempDir())
+					for _, line := range lines[splitAt:] {
+						appendBytes(t, path, line)
+					}
+					catchUp(t, x)
+				} else {
+					for _, line := range lines {
+						appendBytes(t, path, line)
+					}
+					x = openIndex(t, path, t.TempDir())
+				}
+				w, err := x.Latest(40)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ref := referenceCandidates(t, path)
+				if !reflect.DeepEqual(w.Candidates, ref) {
+					t.Fatalf("candidates diverge from reference:\nindex: %s\nref:   %s", dump(w.Candidates), dump(ref))
+				}
+				var msgs, quiets int
+				for _, c := range w.Candidates {
+					if c.Item.Type == "agentMessage" && c.Item.Text == "companion-sentinel" {
+						if !sibling || c.Item.CallID != "call_msg" {
+							t.Fatalf("unexpected non-demoted companion bubble: %+v", c.Item)
+						}
+						msgs++
+					}
+					if c.Item.EventKind == appwire.ThreadItemEventKindQuietYield {
+						quiets++
+						if got := quietYieldRawCommentary(t, c.Item.Raw); got != "companion-sentinel" {
+							t.Fatalf("commentary=%q, want companion-sentinel", got)
+						}
+					}
+				}
+				if sibling && msgs != 1 {
+					t.Fatalf("sibling communicate msgs=%d, want 1", msgs)
+				}
+				if quiets != 1 {
+					t.Fatalf("quiets=%d, want 1", quiets)
+				}
+			})
+		}
+	}
+}
