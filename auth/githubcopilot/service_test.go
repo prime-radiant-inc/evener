@@ -281,6 +281,49 @@ func TestLoginWithDevicePersistsAccountAndTokens(t *testing.T) {
 	}
 }
 
+// TestCompleteLoginPersistsAnAuthorizedTokenSet covers the completion a caller
+// runs after it authorized a token set itself: the account and Copilot session
+// are resolved and the record is saved, without starting a device flow.
+func TestCompleteLoginPersistsAnAuthorizedTokenSet(t *testing.T) {
+	at := time.Date(2026, 11, 22, 2, 0, 0, 0, time.UTC)
+	swapNow(t, at)
+	gh, server := newScriptedGitHub(t)
+	svc := newServiceForTest(server)
+	stateDir := t.TempDir()
+
+	status, err := svc.CompleteLogin(context.Background(), stateDir, "work", TokenSet{
+		AccessToken: "login-access", TokenType: "bearer", Scope: "read:user",
+	})
+	if err != nil {
+		t.Fatalf("CompleteLogin() error = %v", err)
+	}
+	if !status.SignedIn || status.Source != AuthSourceOAuth || status.AccountID != "4242" || status.Email != "octocat@example.com" {
+		t.Fatalf("status = %+v, want a signed-in oauth account", status)
+	}
+	if gh.deviceStartCount() != 0 {
+		t.Fatalf("device starts = %d, want 0: completing an authorized token set must not start a flow", gh.deviceStartCount())
+	}
+	if gh.exchangeCount() != 1 {
+		t.Fatalf("session exchanges = %d, want 1", gh.exchangeCount())
+	}
+	record, err := LoadAuth(stateDir, "work")
+	if err != nil {
+		t.Fatalf("LoadAuth() error = %v", err)
+	}
+	if record.AccessToken != "login-access" {
+		t.Fatal("record did not carry the authorized token set's access token")
+	}
+	if record.CopilotToken != "copilot-1" {
+		t.Fatal("record did not carry the exchanged Copilot session")
+	}
+	if record.AccountID != "4242" || record.Email != "octocat@example.com" {
+		t.Fatal("record did not carry the token set's account")
+	}
+	if !record.CopilotExpiry.Equal(at.Add(30 * time.Minute)) {
+		t.Fatalf("copilot expiry = %v, want the exchanged session lifetime", record.CopilotExpiry)
+	}
+}
+
 func TestLoginWithDeviceStopsAtCodeExpiry(t *testing.T) {
 	at := time.Date(2026, 11, 22, 2, 0, 0, 0, time.UTC)
 	clock := swapNow(t, at)

@@ -73,7 +73,7 @@ func (s *Service) LoginWithDevice(ctx context.Context, stateDir, instance string
 		dc.Interval = interval
 		switch state {
 		case PollAuthorized:
-			return s.saveLogin(ctx, stateDir, instance, tokens)
+			return s.CompleteLogin(ctx, stateDir, instance, tokens)
 		case PollExpired:
 			return AuthStatus{}, ErrDeviceExpired
 		}
@@ -83,7 +83,12 @@ func (s *Service) LoginWithDevice(ctx context.Context, stateDir, instance string
 	}
 }
 
-func (s *Service) saveLogin(ctx context.Context, stateDir, instance string, tokens TokenSet) (AuthStatus, error) {
+// CompleteLogin saves the account-bound record for an already-authorized
+// GitHub token set: it fetches the account, exchanges the GitHub token for a
+// Copilot session, and persists the record under the record lock. LoginWithDevice
+// calls it when its poll is authorized; a caller that completed authorization
+// itself calls it with the same token set.
+func (s *Service) CompleteLogin(ctx context.Context, stateDir, instance string, tokens TokenSet) (AuthStatus, error) {
 	if err := validateTokenSet(tokens); err != nil {
 		return AuthStatus{}, err
 	}

@@ -1391,8 +1391,8 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 // pollCopilotDevice polls one Copilot device flow. The device code owns the
 // pace and the expiry; NextPollAt is the hub's only extra state, so a poll
 // before it is answered locally and a slow_down moves it out. The authorized
-// poll exchanges the GitHub token for a Copilot session and saves the record
-// under the same credential and endpoint fences as the Codex flow.
+// poll completes the login through the service's own save path, under the same
+// credential and endpoint fences as the Codex flow.
 func (c *hubAuthController) pollCopilotDevice(ctx context.Context, provider, flowID string, flow deviceFlow, params appwire.AuthDevicePollParams) (resp appwire.AuthDevicePollResponse, err error) {
 	now := c.now()
 	if !now.Before(flow.Copilot.Expiry) {
@@ -1414,15 +1414,6 @@ func (c *hubAuthController) pollCopilotDevice(ctx context.Context, provider, flo
 		c.setDeviceFlowNextPoll(flowID, flow.Copilot.DeviceCode, interval, now)
 		return appwire.AuthDevicePollResponse{State: "pending"}, nil
 	}
-	account, err := githubcopilot.FetchAccount(ctx, c.client, c.copilotCfg, tokens.AccessToken)
-	if err != nil {
-		return appwire.AuthDevicePollResponse{}, err
-	}
-	session, err := githubcopilot.ExchangeCopilotToken(ctx, c.client, c.copilotCfg, tokens.AccessToken)
-	if err != nil {
-		return appwire.AuthDevicePollResponse{}, err
-	}
-	record := c.copilotAuthRecord(provider, tokens, account, session)
 	key, _ := resolveEndpointFingerprintKey(c.stateDir)
 	applied, err := c.credentialWrite(provider, func() error {
 		if err := c.requiresCopilot(provider); err != nil {
@@ -1431,9 +1422,8 @@ func (c *hubAuthController) pollCopilotDevice(ctx context.Context, provider, flo
 		if err := c.verifyFlowEndpoint(provider, flow.EndpointFingerprint, key); err != nil {
 			return err
 		}
-		return githubcopilot.WithRecordLock(c.stateDir, provider, func() error {
-			return githubcopilot.SaveAuth(c.stateDir, provider, record)
-		})
+		_, err := c.copilotService.CompleteLogin(ctx, c.stateDir, provider, tokens)
+		return err
 	})
 	defer func() {
 		var status appwire.AuthStatusResponse
@@ -1452,20 +1442,6 @@ func (c *hubAuthController) pollCopilotDevice(ctx context.Context, provider, flo
 	c.dropDeviceFlow(flowID)
 	status, err := c.statusAfterWrite(provider, applied, c.copilotInstanceStatusByName)
 	return appwire.AuthDevicePollResponse{State: "authorized", Status: &status}, err
-}
-
-// copilotAuthRecord is the record the device flow saves: the GitHub tokens the
-// poll returned, the exchanged Copilot session, and the account they belong to.
-func (c *hubAuthController) copilotAuthRecord(provider string, tokens githubcopilot.TokenSet, account githubcopilot.Account, session githubcopilot.CopilotSession) githubcopilot.AuthRecord {
-	return githubcopilot.AuthRecord{
-		Instance: provider, Scheme: githubcopilot.AuthScheme, Version: 1,
-		AccessToken: tokens.AccessToken, RefreshToken: tokens.RefreshToken,
-		TokenType:  envvars.FirstNonEmpty(tokens.TokenType, "Bearer"),
-		Scope:      envvars.FirstNonEmpty(tokens.Scope, strings.Join(c.copilotCfg.Scopes, " ")),
-		ObtainedAt: c.now(), AccessExpiry: tokens.AccessExpiry, RefreshExpiry: tokens.RefreshExpiry,
-		CopilotToken: session.Token, CopilotExpiry: session.Expiry,
-		AccountID: account.ID, Email: account.Email,
-	}
 }
 
 // setDeviceFlowNextPoll records a pending poll's pace on the live flow.

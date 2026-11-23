@@ -116,6 +116,7 @@ func newCopilotDeviceTestController(t *testing.T, providers string) (*hubAuthCon
 	ctrl := newTestAuthController(t, dir, t.TempDir(), writeProvidersToml(t, dir, providers))
 	transport := newCopilotDeviceTransport()
 	ctrl.client = &http.Client{Transport: transport}
+	ctrl.copilotService = githubcopilot.NewService(ctrl.copilotCfg, ctrl.client)
 	now := time.Now()
 	ctrl.now = func() time.Time { return now }
 	return ctrl, transport, &now
@@ -156,9 +157,15 @@ func TestAuth_CopilotStatusReportsTheStoredRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{record.AccessToken, record.CopilotToken} {
-		if strings.Contains(string(encoded), secret) {
-			t.Fatalf("status response leaked a token: %s", encoded)
+	for _, token := range []struct {
+		field string
+		value string
+	}{
+		{field: "AccessToken", value: record.AccessToken},
+		{field: "CopilotToken", value: record.CopilotToken},
+	} {
+		if strings.Contains(string(encoded), token.value) {
+			t.Fatalf("status response leaked %s", token.field)
 		}
 	}
 }
@@ -347,10 +354,17 @@ func TestAuth_CopilotDevicePollPendingThenAuthorized(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadAuth(work): %v", err)
 	}
-	if record.Scheme != githubcopilot.AuthScheme || record.AccessToken != "github-access-token" ||
-		record.CopilotToken != "copilot-session-token" || record.AccountID != "42" ||
-		record.Email != "octocat@example.test" {
-		t.Fatalf("saved record = %+v, want the device flow's tokens and account", record)
+	if record.Scheme != githubcopilot.AuthScheme {
+		t.Fatalf("saved record scheme = %q, want %q", record.Scheme, githubcopilot.AuthScheme)
+	}
+	if record.AccessToken != "github-access-token" {
+		t.Fatal("saved record did not carry the device flow's GitHub access token")
+	}
+	if record.CopilotToken != "copilot-session-token" {
+		t.Fatal("saved record did not carry the exchanged Copilot session")
+	}
+	if record.AccountID != "42" || record.Email != "octocat@example.test" {
+		t.Fatal("saved record did not carry the device flow's account")
 	}
 	if len(commits) != 1 {
 		t.Fatalf("commit notifications = %d, want exactly one", len(commits))
