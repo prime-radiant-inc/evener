@@ -57,7 +57,7 @@ import {
   registerConversationHostVisibility,
   restrictConversationHandoff,
 } from "../../stores/conversationClaimHandoff";
-import { boardWidthMax, clampBoardWidth, prefsStore, usePrefsStore } from "../../stores/prefs";
+import { prefsStore, usePrefsStore } from "../../stores/prefs";
 import { useTopNotesExpanded } from "../../stores/topNotes";
 import { Chevron, IconButton } from "../../widgets";
 import { ActivitySidebar } from "../activitybar/ActivitySidebar";
@@ -105,8 +105,8 @@ const FLOAT_REVEAL_STEP = 8;
 const FLOAT_REVEAL_AT_TOP = 12;
 
 // The custom property StackHost.module.css's .boardColumn width reads: set
-// inline from the boardWidth pref (a dragged width), absent for the guide's
-// auto hinge clamp. Painted imperatively by the drag, same as the rail.
+// inline from the sidebarWidth pref - ONE width the desktop rail also reads
+// (§12) - and painted imperatively by the drag, same as the rail.
 const BOARD_WIDTH_PROPERTY = "--board-width";
 
 // Renders exactly one pane, full-screen: whichever OpenPaneRecord
@@ -287,11 +287,10 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const tabletSplit = tabletBand && !singlePane;
   const [boardCollapsed, setBoardCollapsed] = useState(false);
   const boardVisible = tabletSplit && !boardCollapsed;
-  // The user's dragged column width, or null for the auto clamp. A
-  // surface-scoped pref, not the desktop rail's sidebarWidth: dragging the
-  // tablet column must never move the desktop rail (stores/prefs.ts).
-  const boardWidth = usePrefsStore((s) => s.boardWidth);
-  const boardColumnRef = useRef<HTMLDivElement>(null);
+  // The sidebar's one width, shared with the desktop rail: whatever the
+  // window's layout, the same dragged value sizes the sidebar (§12).
+  const sidebarWidth = usePrefsStore((s) => s.sidebarWidth);
+  const boardSplitRef = useRef<HTMLDivElement>(null);
   // The floating top bar (docs/web-ui/design-system.md §12): true while a
   // session-family pane's body is scrolled down, trading the solid bar for
   // floating control capsules. The state is a paint-only class flip - the
@@ -907,30 +906,31 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         </div>
       </div>
       {tabletSplit ? (
-        <div className={styles.split} data-board={boardVisible ? "visible" : "collapsed"}>
+        <div
+          className={styles.split}
+          data-board={boardVisible ? "visible" : "collapsed"}
+          data-testid="board-split"
+          ref={boardSplitRef}
+          // The width rides the split CONTAINER, not the column: custom
+          // properties inherit down, so the column, the resize strip and
+          // the sliding toggle all read the same value - and the drag paints
+          // it here live, keeping every dependent in step through the drag.
+          style={{ [BOARD_WIDTH_PROPERTY]: `${sidebarWidth}px` } as CSSProperties}
+        >
           {boardVisible && (
-            <aside
-              ref={boardColumnRef}
-              className={styles.boardColumn}
-              data-testid="board-column"
-              style={boardWidth === null ? undefined : ({ [BOARD_WIDTH_PROPERTY]: `${boardWidth}px` } as CSSProperties)}
-            >
+            <aside className={styles.boardColumn} data-testid="board-column">
               {railSlot}
               {/* The divider drags like the desktop rail's edge (§12): the
                   same separator, live-painting the width with no per-frame
-                  store writes, committing on release; a double-click
-                  returns the column to the auto clamp. The ceiling is the
-                  viewport's, not the desktop's static max, so a drag can
-                  never leave the conversation phone-narrow. */}
+                  store writes, committing the shared width on release; a
+                  double-click restores the 280 default, the same reset the
+                  rail's edge gives. */}
               <RailResizeHandle
                 testId="board-resize-handle"
                 property={BOARD_WIDTH_PROPERTY}
-                width={boardWidth}
-                clamp={clampBoardWidth}
-                ariaMax={boardWidthMax()}
-                onReset={() => prefsStore.getState().setBoardWidth(null)}
-                onCommit={(width) => prefsStore.getState().setBoardWidth(width)}
-                railRef={boardColumnRef}
+                width={sidebarWidth}
+                onCommit={(width) => prefsStore.getState().setSidebarWidth(width)}
+                railRef={boardSplitRef}
               />
             </aside>
           )}

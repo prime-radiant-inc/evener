@@ -53,15 +53,13 @@
 // tri-state sidebarMode (auto/pane/rail overlay-drawer system, removed
 // 2026-07-24) — a stale evener.prefs.sidebarMode key is simply never read.
 // No document mirror: RailHost reads it directly.
-// sidebarWidth is the docked rail's dragged width in CSS pixels (desktop
-// only; the mobile drawer sizes itself). Always CLAMPED on read as well as
-// on write — a hand-edited, corrupted or stale-bounds localStorage value
-// must never be able to render a 4px-wide or workspace-eating rail, which
-// no drag could then recover from.
-// boardWidth is the tablet split's board column width (design-system.md
-// §12): null (absent key) means auto - the hinge-aware clamp - and it is
-// deliberately NOT sidebarWidth: the desktop rail's dragged width is that
-// surface's own choice, and dragging the tablet column must never move it.
+// sidebarWidth is the sidebar's dragged width in CSS pixels - ONE width both
+// layouts read: the desktop's docked rail and the tablet band's board column
+// (design-system.md §12), the same pref so a dragged width follows the window
+// whichever layout renders it (the mobile drawer below the band sizes
+// itself). Always CLAMPED on read as well as on write — a hand-edited,
+// corrupted or stale-bounds localStorage value must never be able to render
+// a 4px-wide or workspace-eating rail, which no drag could then recover from.
 //
 // No cross-tab `storage` event sync: deliberately omitted, matching the
 // legacy exactly - none of assets/{theme,settings-appearance,settings-
@@ -106,8 +104,6 @@ export interface PrefsStoreState {
   phoneDensity: PhoneDensityPref;
   sidebarHidden: boolean;
   sidebarWidth: number;
-  // The tablet split's board column width in CSS pixels; null = auto.
-  boardWidth: number | null;
   sidebarGrouping: SidebarGroupingPref;
   fontSize: FontSizePref;
   transcriptMeasure: TranscriptMeasurePref;
@@ -141,7 +137,6 @@ export interface PrefsStoreState {
   setPhoneDensity(value: PhoneDensityPref): void;
   setSidebarHidden(value: boolean): void;
   setSidebarWidth(value: number): void;
-  setBoardWidth(value: number | null): void;
   setSidebarGrouping(value: SidebarGroupingPref): void;
   setFontSize(value: FontSizePref): void;
   setTranscriptMeasure(value: TranscriptMeasurePref): void;
@@ -321,29 +316,6 @@ export function clampSidebarWidth(value: number): number {
   return Math.round(Math.min(SIDEBAR_WIDTH_MAX, Math.max(sidebarWidthMin(), value)));
 }
 
-// The tablet split's board column shares the rail's own content floor
-// (sidebarWidthMin: the same header renders inside the column), but its
-// ceiling is the viewport, not the desktop's static 560: a dragged column
-// must never leave the conversation beside it narrower than a phone-class
-// transcript (the band's floor is 768, so the ceiling there is 448).
-// Unset (null) means the split sizes itself - the guide's hinge-aware clamp
-// (design-system.md §12) - which is why null is absence rather than a
-// literal: an explicit width pins the column, and only a reset returns it
-// to the hinge math.
-const BOARD_CONVERSATION_FLOOR = 320;
-
-/** The widest the board column may be on the current window: the sidebar
- * max, minus whatever it takes to keep the conversation usable. */
-export function boardWidthMax(): number {
-  const available = typeof window === "undefined" ? SIDEBAR_WIDTH_MAX : window.innerWidth - BOARD_CONVERSATION_FLOOR;
-  return Math.round(Math.max(sidebarWidthMin(), Math.min(SIDEBAR_WIDTH_MAX, available)));
-}
-
-export function clampBoardWidth(value: number): number {
-  if (!Number.isFinite(value)) return SIDEBAR_WIDTH_DEFAULT;
-  return Math.round(Math.min(boardWidthMax(), Math.max(sidebarWidthMin(), value)));
-}
-
 // Numeric prefs persist as a plain base-10 string. Anything unparseable
 // (absent key, "", "abc", "NaN") falls back rather than coercing to 0 the way
 // Number("") would - the same "absent or corrupted, never silently coerce"
@@ -358,17 +330,6 @@ function readNumber(name: string, fallback: number, clamp: (value: number) => nu
 
 function writeNumber(name: string, value: number): void {
   writeRaw(name, String(value));
-}
-
-// boardWidth's unset state is meaningful (auto, the split's hinge clamp), so
-// it reads null rather than a fallback number: absent, empty, or unparseable
-// all mean auto - the same "never silently coerce" rule readNumber follows,
-// with absence kept intact instead of collapsed into a default.
-function readBoardWidth(): number | null {
-  const raw = readRaw("boardWidth");
-  if (raw === null || raw.trim() === "") return null;
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) ? clampBoardWidth(parsed) : null;
 }
 
 function readEnum<T extends string>(name: string, allowed: readonly T[], fallback: T): T {
@@ -526,7 +487,6 @@ function loadInitialState(): Omit<
   | "setPhoneDensity"
   | "setSidebarHidden"
   | "setSidebarWidth"
-  | "setBoardWidth"
   | "setSidebarGrouping"
   | "setFontSize"
   | "setTranscriptMeasure"
@@ -550,7 +510,6 @@ function loadInitialState(): Omit<
     phoneDensity,
     sidebarHidden: readBool("sidebarHidden", false),
     sidebarWidth: readNumber("sidebarWidth", SIDEBAR_WIDTH_DEFAULT, clampSidebarWidth),
-    boardWidth: readBoardWidth(),
     sidebarGrouping: readEnum("sidebarGrouping", SIDEBAR_GROUPING_VALUES, "project-host"),
     fontSize,
     transcriptMeasure,
@@ -595,20 +554,6 @@ export const prefsStore = createStore<PrefsStoreState>((set) => ({
     const width = clampSidebarWidth(value);
     writeNumber("sidebarWidth", width);
     set({ sidebarWidth: width });
-  },
-
-  // Null is absence (never written as a literal), the same contract theme's
-  // "system" keeps: null returns the split to its auto hinge clamp. A number
-  // clamps on the way in, exactly like setSidebarWidth.
-  setBoardWidth(value) {
-    if (value === null) {
-      removeRaw("boardWidth");
-      set({ boardWidth: null });
-    } else {
-      const width = clampBoardWidth(value);
-      writeNumber("boardWidth", width);
-      set({ boardWidth: width });
-    }
   },
 
   setSidebarGrouping(value) {

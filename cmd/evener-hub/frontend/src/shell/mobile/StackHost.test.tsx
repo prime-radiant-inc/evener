@@ -17,7 +17,7 @@ import { recordCascadeOrigin } from "../../panes/zoom/inspectionOrigin";
 import type { SessionZoomParams } from "../../panes/zoom/intent";
 import "../../panes/zoom";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
-import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
+import { prefsStore, resetPrefsStoreForTests, SIDEBAR_WIDTH_DEFAULT } from "../../stores/prefs";
 import {
   activityClient,
   activityContext,
@@ -379,7 +379,7 @@ beforeEach(() => {
   resetActivitySidebarStoreForTests();
   resetConnectionStoreForTests();
   resetChromeStoreForTests();
-  localStorage.removeItem("evener.prefs.boardWidth");
+  localStorage.removeItem("evener.prefs.sidebarWidth");
   resetPrefsStoreForTests();
   topNotesStore.getState().resetForTests();
   setLastPopstateWasTrustedForTests(false);
@@ -2276,13 +2276,13 @@ test("below the tablet band the phone anatomy is unchanged: drawer sheet, no boa
   }
 });
 
-test("the split carries the §12 geometry: clamp width, hairline divider, sliding rotating toggle", () => {
+test("the split carries the §12 geometry: shared sidebar width, hairline divider, sliding rotating toggle", () => {
   const css = readModuleCss(import.meta.url, "StackHost.module.css");
-  // The board column pins the hinge-aware width (min 280, ~36% of the
-  // viewport, max 380 - the Duo interior's 840px resolves to ~302px) and the
-  // 1px divider the guide names.
+  // The board column is as wide as the sidebar's one width - the sidebarWidth
+  // pref the desktop rail also reads, default 280 - carried by the inherited
+  // --board-width property, plus the 1px divider the guide names.
   const boardRule = css.match(/\.boardColumn \{([^}]*)\}/)?.[1] ?? "";
-  expect(boardRule).toContain("clamp(280px, 36vw, 380px)");
+  expect(boardRule).toContain("width: var(--board-width, 280px)");
   expect(boardRule).toContain("border-right: 1px solid var(--edge)");
   // The conversation column stays shrinkable so the split can never push it
   // off-screen: flex children default to min-width auto, which would floor
@@ -2292,7 +2292,9 @@ test("the split carries the §12 geometry: clamp width, hairline divider, slidin
   // The toggle rides the interior seam: 8px off the divider while the board
   // is visible, 8px off the screen's leading edge while collapsed.
   const visibleRule = css.match(/\.split\[data-board="visible"\] \.boardHandle \{([^}]*)\}/)?.[1] ?? "";
-  expect(visibleRule).toContain("clamp(280px, 36vw, 380px)");
+  // The seam position reads the same shared property, so a dragged width
+  // moves the toggle with the divider instead of stranding it at a constant.
+  expect(visibleRule).toContain("calc(var(--board-width, 280px)");
   // The same glyph rotates 180° to announce the expand - the control never
   // duplicates and the direction never changes icon.
   const collapsedGlyph = css.match(/\.split\[data-board="collapsed"\] \.boardGlyph \{([^}]*)\}/)?.[1] ?? "";
@@ -2303,30 +2305,28 @@ test("the split carries the §12 geometry: clamp width, hairline divider, slidin
   expect((css.match(/(?:^|\n)\.boardGlyph \{/g) ?? []).length).toBe(1);
 });
 
-// The split's width is the user's, not the layout's: the divider drags like
-// the desktop rail's edge, and the dragged width persists as the boardWidth
-// pref. Absent (null), the column keeps the guide's auto hinge clamp - the
-// desktop rail's own sidebarWidth never moves when the tablet column drags.
-test("the board column's width follows the boardWidth pref and falls back to the auto clamp", async () => {
+// The split's width is the sidebar's own, not a second preference: the same
+// sidebarWidth the desktop rail reads sizes the band's board column, so one
+// dragged value follows the window whichever layout renders it (§12).
+test("the board column shares the desktop rail's one sidebarWidth pref", async () => {
   const restoreViewport = installMobileViewport([MOBILE_QUERY, TABLET_QUERY]);
   try {
     render(<StackHost />);
-    const board = await screen.findByTestId("board-column");
-    expect(board.style.getPropertyValue("--board-width")).toBe("");
+    const split = await screen.findByTestId("board-split");
+    // The property rides the split CONTAINER: custom properties inherit
+    // down, so the column, the resize strip and the toggle all read it.
+    // The default is the same 280 the desktop rail starts at.
+    expect(split.style.getPropertyValue("--board-width")).toBe("280px");
     await act(async () => {
-      prefsStore.getState().setBoardWidth(320);
+      prefsStore.getState().setSidebarWidth(320);
     });
-    expect(board.style.getPropertyValue("--board-width")).toBe("320px");
-    await act(async () => {
-      prefsStore.getState().setBoardWidth(null);
-    });
-    expect(board.style.getPropertyValue("--board-width")).toBe("");
+    expect(split.style.getPropertyValue("--board-width")).toBe("320px");
   } finally {
     restoreViewport();
   }
 });
 
-test("dragging the divider commits a clamped width to the boardWidth pref", async () => {
+test("dragging the divider commits to the one sidebarWidth pref the desktop rail also reads", async () => {
   const restoreViewport = installMobileViewport([MOBILE_QUERY, TABLET_QUERY]);
   // jsdom implements neither pointer capture nor layout: capture is recorded
   // (same stub as RailResizeHandle.test.tsx), and the all-zero rect means
@@ -2347,7 +2347,7 @@ test("dragging the divider commits a clamped width to the boardWidth pref", asyn
     fireEvent.pointerDown(handle, { button: 0, pointerId: 9, clientX: 0 });
     fireEvent.pointerMove(handle, { pointerId: 9, clientX: 340 });
     fireEvent.pointerUp(handle, { pointerId: 9, clientX: 340 });
-    expect(prefsStore.getState().boardWidth).toBe(340);
+    expect(prefsStore.getState().sidebarWidth).toBe(340);
     expect(captured).toEqual([9]);
   } finally {
     delete proto.setPointerCapture;
@@ -2356,21 +2356,21 @@ test("dragging the divider commits a clamped width to the boardWidth pref", asyn
   }
 });
 
-test("double-clicking the divider returns the column to the auto clamp", async () => {
+test("double-clicking the divider restores the default width both surfaces share", async () => {
   const restoreViewport = installMobileViewport([MOBILE_QUERY, TABLET_QUERY]);
   try {
     await act(async () => {
-      prefsStore.getState().setBoardWidth(340);
+      prefsStore.getState().setSidebarWidth(340);
     });
     render(<StackHost />);
     const handle = await screen.findByTestId("board-resize-handle");
-    const board = screen.getByTestId("board-column");
-    expect(board.style.getPropertyValue("--board-width")).toBe("340px");
+    const split = screen.getByTestId("board-split");
+    expect(split.style.getPropertyValue("--board-width")).toBe("340px");
     await act(async () => {
       fireEvent.doubleClick(handle);
     });
-    expect(prefsStore.getState().boardWidth).toBe(null);
-    expect(board.style.getPropertyValue("--board-width")).toBe("");
+    expect(prefsStore.getState().sidebarWidth).toBe(SIDEBAR_WIDTH_DEFAULT);
+    expect(split.style.getPropertyValue("--board-width")).toBe("280px");
   } finally {
     restoreViewport();
   }

@@ -180,10 +180,11 @@
 /* --- Tablet band: the board split (§12) ------------------------------------
  * In the 768–899px band the rail renders beside the conversation instead
  * of inside the drawer sheet: a persistent board column, the hairline
- * divider, and the conversation filling the rest. The column width is the
- * guide's hinge-aware clamp - 280px at the band's floor, ~36% of the
- * viewport, 380px at the widest - so the Duo interior's 840px resolves to
- * ~302px and a 768px tablet keeps ~487px of conversation. */
+ * divider, and the conversation filling the rest. The column is as wide as
+ * the sidebar's ONE width - the sidebarWidth pref the desktop rail also
+ * reads, default 280px - carried by the --board-width property StackHost
+ * paints on the split container, so the same dragged value follows the
+ * window whichever layout renders it. */
 
 .split {
   flex: 1 1 auto;
@@ -194,10 +195,10 @@
 
 .boardColumn {
   flex: none;
-  /* --board-width carries the user's dragged width (the boardWidth pref,
-   * painted by the resize handle); absent, the guide's auto hinge clamp
-   * sizes the column. */
-  width: var(--board-width, clamp(280px, 36vw, 380px));
+  /* The shared sidebar width, inherited from the split container: the same
+   * value the desktop rail renders, default 280px (the fallback mirrors the
+   * rail's own --rail-width fallback). */
+  width: var(--board-width, 280px);
   border-right: 1px solid var(--edge);
   min-height: 0;
   display: flex;
@@ -241,7 +242,9 @@
 }
 
 .split[data-board="visible"] .boardHandle {
-  transform: translateX(calc(clamp(280px, 36vw, 380px) + var(--space-2)));
+  /* The seam position reads the same shared property the column sizes off,
+   * so a dragged width carries the toggle with the divider. */
+  transform: translateX(calc(var(--board-width, 280px) + var(--space-2)));
 }
 
 /* The glyph rotates - never swaps icons - to announce the expand. */

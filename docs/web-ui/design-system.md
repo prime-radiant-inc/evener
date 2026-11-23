@@ -1509,18 +1509,16 @@ it. One search field; no ⌘K hint text anywhere in the UI.
 
 **Tablet splits board and conversation side-by-side.** The 768–899px band is
 the tablet: StackHost keeps its phone anatomy, but the rail leaves the drawer
-and becomes a persistent board column `clamp(280px, 36vw, 380px)` wide (the
-Duo interior's 840px resolves to 302px) with a 1px divider and the
-conversation flexing beside it. The column scrolls as one region, the same
-parent-owns-scroll contract as the drawer sheet. That clamp is the default,
-not a law: the divider drags like the desktop rail's edge — the same
-separator, live-painting the width through the drag and committing once on
-release, with arrow-key steps and the same reset gesture — and the dragged
-width persists per-surface as the `boardWidth` pref, never moving the
-desktop rail's own `sidebarWidth`. A double-click returns the column to the
-auto clamp; the drag's ceiling is the viewport's own, so the conversation
-beside it never goes phone-narrow, and its floor is the rail's measured
-content floor. The collapse control is one
+and becomes a persistent board column with a 1px divider and the conversation
+flexing beside it. The column scrolls as one region, the same
+parent-owns-scroll contract as the drawer sheet. Its width is the sidebar's
+ONE width — the `sidebarWidth` pref the desktop rail also reads, default
+280px — so a dragged width follows the window whichever layout renders it,
+with no second preference to keep in step. The divider drags like the
+desktop rail's edge: the same separator, live-painting the width through the
+drag and committing once on release, with the same arrow-key steps, the same
+bounds (the rail's measured content floor, the 560px sidebar max) and the
+same double-click reset to the 280 default. The collapse control is one
 glyph riding the interior seam of the divider — hugging the divider's
 conversation lip while the board is visible, the conversation's leading edge
 while hidden — rotating 180° to indicate direction; never two collapse
@@ -1535,8 +1533,8 @@ rest within the budget stated above (bar 61px + pill 60px = 121px at phone
 width); transcript content scrolling under the composer
 pill; header collapse only on session-family scroll; `node scripts/ds-audit.mjs`
 counts no higher than before; the tablet divider's drag commits its width,
-the width survives a reload, and a double-click returns it to the auto
-clamp.
+the width survives a reload, and a double-click returns it to the 280
+default — the same value a desktop-width window's rail then shows.
 
 
 ## Source Serif 4 license notice
