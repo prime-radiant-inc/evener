@@ -1,6 +1,5 @@
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createRef } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, test, vi } from "vitest";
 import { FocusScope, LayerFocusScope } from "./index";
@@ -21,31 +20,6 @@ test("applies a caller className to the scope root", () => {
     </FocusScope>,
   );
   expect(container.firstElementChild?.className).toBe("focus-body");
-});
-
-test("asChild renders its single child as the scope root, merging className and the child's ref", () => {
-  const childRef = createRef<HTMLDivElement>();
-  const { container } = render(
-    <FocusScope asChild className="focus-body">
-      <div ref={childRef} className="panel" data-testid="panel">
-        <button type="button">Inside</button>
-      </div>
-    </FocusScope>,
-  );
-  const panel = screen.getByTestId("panel");
-  expect(container.firstElementChild).toBe(panel);
-  expect(panel.className).toBe("panel focus-body");
-  expect(panel.getAttribute("tabindex")).toBe("-1");
-  expect(childRef.current).toBe(panel);
-});
-
-test("asChild with no tabbable descendants focuses the child itself as the fallback", () => {
-  const { container } = render(
-    <FocusScope asChild>
-      <div>Nothing focusable here.</div>
-    </FocusScope>,
-  );
-  expect(document.activeElement).toBe(container.firstElementChild);
 });
 
 test("on mount, focuses the first tabbable descendant", () => {

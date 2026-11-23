@@ -29,8 +29,8 @@
   color: var(--ink-hi);
 }
 
-/* The FocusScope root (asChild): it fills the aside and stacks the head,
- * tabs and scrolling body. */
+/* The FocusScope root: it fills the aside and stacks the head, tabs and
+ * scrolling body. */
 .focusBody {
   display: flex;
   flex-direction: column;
