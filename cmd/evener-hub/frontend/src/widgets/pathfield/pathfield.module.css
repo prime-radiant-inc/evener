@@ -32,8 +32,7 @@
  * Composes the shared grouped surface so the tile is the control; the
  * basename headlines, the whole path captions, and the action trails. */
 .prominentTrigger {
-  composes: grouped from "../../styles/surface.module.css";
-  composes: summaryTile from "../../styles/surface.module.css";
+  composes: grouped summaryTile from "../../styles/surface.module.css";
   padding: var(--space-3) var(--space-4);
   cursor: pointer;
   transition:
