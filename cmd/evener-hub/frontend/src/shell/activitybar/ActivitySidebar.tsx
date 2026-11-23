@@ -171,7 +171,7 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
           data-testid="activity-sidebar"
           aria-label="Overview"
         >
-          <FocusScope trap={mobile} autoFocus={false}>
+          <FocusScope asChild trap={mobile} autoFocus={false}>
             <div className={CLASS.focusBody}>
               <div className={CLASS.head}>
                 <div className={CLASS.scope}>

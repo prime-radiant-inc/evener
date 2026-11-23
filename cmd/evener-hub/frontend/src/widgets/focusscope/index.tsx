@@ -1,4 +1,14 @@
-import { type ReactNode, useEffect, useRef } from "react";
+import {
+  Children,
+  cloneElement,
+  isValidElement,
+  type ReactElement,
+  type ReactNode,
+  type Ref,
+  useCallback,
+  useEffect,
+  useRef,
+} from "react";
 import { tabbable } from "./tabbable";
 
 export interface FocusScopeProps {
@@ -12,6 +22,15 @@ export interface FocusScopeProps {
    * anchoring input while the panel is open (Popover autoFocus={false}).
    * Default true (Dialog/Sheet/Menu behavior). */
   autoFocus?: boolean;
+  /** Extra class for the scope root. With asChild, it is appended to the
+   * child's own className. Defaults to none, so existing callers render
+   * exactly as before. */
+  className?: string;
+  /** Render the single child as the scope root instead of adding a wrapper
+   * <div>. The child receives the scope's ref, tabIndex={-1} (unless it
+   * already sets one), and className, so it must be a container element or a
+   * component that forwards its ref and props to one. Defaults to false. */
+  asChild?: boolean;
   children: ReactNode;
 }
 
@@ -27,9 +46,23 @@ export interface FocusScopeProps {
  * Renders a plain wrapping <div tabIndex={-1}> (no styling of its own -
  * Dialog/Sheet/Menu own all visible chrome) so there is always a valid
  * fallback focus target even when the scope's content has nothing tabbable.
+ * A caller that owns the root's layout passes className, or asChild to make
+ * its own element the scope root (ActivitySidebar's flex body).
  */
 export function FocusScope(props: FocusScopeProps) {
   return <LayerFocusScope {...props} released={false} />;
+}
+
+/** The props the scope owns on whichever element is its root. */
+type ScopeRootProps = {
+  className?: string;
+  tabIndex?: number;
+  ref?: Ref<HTMLElement>;
+};
+
+function joinedClassNames(...names: (string | undefined)[]): string | undefined {
+  const present = names.filter((name): name is string => name !== undefined && name !== "");
+  return present.length === 0 ? undefined : present.join(" ");
 }
 
 /**
@@ -46,6 +79,8 @@ export function LayerFocusScope({
   autoFocus = true,
   released,
   restoreWithoutScroll,
+  className,
+  asChild = false,
   children,
 }: FocusScopeProps & {
   released: boolean;
@@ -60,9 +95,29 @@ export function LayerFocusScope({
    * into view - is what they asked for. */
   restoreWithoutScroll?: { current: boolean };
 }) {
-  const ref = useRef<HTMLDivElement>(null);
+  const ref = useRef<HTMLElement>(null);
   const restoreTargetRef = useRef<Element | null>(null);
   const ownerDocumentRef = useRef<Document | null>(null);
+
+  // asChild makes the caller's element the scope root. Its own ref is chained
+  // to the scope's, so focus-in, trapping, and restore read the same node.
+  let childElement: ReactElement<ScopeRootProps> | null = null;
+  if (asChild) {
+    const only = Children.only(children);
+    if (!isValidElement<ScopeRootProps>(only)) {
+      throw new Error("FocusScope asChild expects a single element child");
+    }
+    childElement = only;
+  }
+  const childRef = childElement?.props.ref;
+  const rootRef = useCallback(
+    (node: HTMLElement | null) => {
+      ref.current = node;
+      if (typeof childRef === "function") childRef(node);
+      else if (childRef) childRef.current = node;
+    },
+    [childRef],
+  );
 
   // Mount (or un-release): capture the restore target, then move focus in.
   // Unmount (or release): restore, if the target is still focusable and still
@@ -141,8 +196,16 @@ export function LayerFocusScope({
     return () => scope.removeEventListener("keydown", onKeyDown);
   }, [trap, released]);
 
+  if (childElement !== null) {
+    return cloneElement(childElement, {
+      ref: rootRef,
+      tabIndex: childElement.props.tabIndex ?? -1,
+      className: joinedClassNames(childElement.props.className, className),
+    });
+  }
+
   return (
-    <div ref={ref} tabIndex={-1}>
+    <div ref={rootRef} tabIndex={-1} className={className}>
       {children}
     </div>
   );

@@ -29,17 +29,11 @@
   color: var(--ink-hi);
 }
 
+/* The FocusScope root (asChild): it fills the aside and stacks the head,
+ * tabs and scrolling body. */
 .focusBody {
   display: flex;
   flex-direction: column;
-  flex: 1 1 auto;
-  min-block-size: 0;
-  min-inline-size: 0;
-}
-
-.sidebar > div,
-.sidebarMobile > div {
-  display: flex;
   flex: 1 1 auto;
   min-block-size: 0;
   min-inline-size: 0;
