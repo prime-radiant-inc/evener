@@ -2,7 +2,7 @@ import { buildComposerInput, type InputItem } from "@evener/appwire-client";
 import { expect, test } from "vitest";
 import type { MutationAttachment, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { PendingAttachment } from "../attachments/useAttachments";
-import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recoveryDraft";
+import { compositionIsEmpty, mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recoveryDraft";
 
 function recoveryRecord(input: InputItem[], extra: Partial<MutationRecoveryRecord> = {}): MutationRecoveryRecord {
   return {
@@ -41,6 +41,12 @@ function settledAttachment(marker: number, name: string, data: string): PendingA
     pending: false,
   };
 }
+
+test("compositionIsEmpty counts a mention as content", () => {
+  const empty = { text: " ", attachments: [], skillNames: [], commandNames: [], mentions: [] };
+  expect(compositionIsEmpty(empty)).toBe(true);
+  expect(compositionIsEmpty({ ...empty, mentions: [{ kind: "command", name: "review", offset: 0 }] })).toBe(false);
+});
 
 test("accepted input restores exact locations without a local composer snapshot", () => {
   const mentions = [

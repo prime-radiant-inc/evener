@@ -37,6 +37,7 @@ import {
   updateRecoveryPendingTurn,
 } from "./queue/pendingTurnsStore";
 import { compositionIsEmpty, mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
+import { sameImageRanges, sameStrings } from "./selection";
 import {
   materializeSelectionReferences,
   parseSkillDocument,
@@ -192,21 +193,6 @@ export interface ComposerSourceState {
   ): boolean;
   clearSubmittedAttachments(items: PendingAttachment[]): void;
   dispose(): void;
-}
-
-export function sameSkillSelections(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((name, index) => name === right[index]);
-}
-
-/** Same occurrences in the same order: a range's identity IS its position. */
-function sameRanges(left: readonly ImageMarkerRange[], right: readonly ImageMarkerRange[]): boolean {
-  return (
-    left.length === right.length &&
-    left.every(
-      (range, index) =>
-        range.marker === right[index]?.marker && range.start === right[index]?.start && range.end === right[index]?.end,
-    )
-  );
 }
 
 export function restoredSkillNames(value: SkillEditorValue): string[] {
@@ -374,13 +360,13 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   }
 
   function hasEmptyComposition(): boolean {
-    return (
-      textRef.current.trim() === "" &&
-      operations.items.length === 0 &&
-      skillNamesRef.current.length === 0 &&
-      selectionMetaRef.current.commandNames.length === 0 &&
-      (selectionMetaRef.current.mentions?.length ?? 0) === 0
-    );
+    return compositionIsEmpty({
+      text: textRef.current,
+      attachments: operations.items,
+      skillNames: skillNamesRef.current,
+      commandNames: selectionMetaRef.current.commandNames,
+      mentions: selectionMetaRef.current.mentions,
+    });
   }
 
   function scheduleCleanupRetry(clientMutationId: string, replacementEpoch: number): void {
@@ -567,7 +553,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     const currentRanges = state.getState().adoptedImageRanges;
     const sameMarkers =
       next.length === currentMarkers.length && next.every((marker, index) => marker === currentMarkers[index]);
-    if (sameMarkers && sameRanges(exact, currentRanges)) return;
+    if (sameMarkers && sameImageRanges(exact, currentRanges)) return;
     state.setState({ adoptedImageMarkers: next, adoptedImageRanges: exact });
     publishReservedMarkers([...new Set([...attachments.getState().reservedMarkersRef.current, ...next])]);
   }
@@ -580,7 +566,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     if (disposed) return;
     const exact = ranges.map((range) => ({ ...range })).sort((left, right) => left.start - right.start);
     for (const range of exact) positionedStagedMarkers.add(range.marker);
-    if (sameRanges(exact, state.getState().stagedImageRanges)) return;
+    if (sameImageRanges(exact, state.getState().stagedImageRanges)) return;
     state.setState({ stagedImageRanges: exact });
   }
   /** The composition this source held has been submitted or replaced, so every
@@ -1069,8 +1055,8 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     if (
       draftUnchanged &&
       textRef.current === submittedText &&
-      sameSkillSelections(skillNamesRef.current, submittedSkillNames) &&
-      sameSkillSelections(selectionMetaRef.current.commandNames, submittedCommandNames)
+      sameStrings(skillNamesRef.current, submittedSkillNames) &&
+      sameStrings(selectionMetaRef.current.commandNames, submittedCommandNames)
     ) {
       clearComposition();
     }
@@ -1107,8 +1093,8 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
         !recovery &&
         currentRecoveryId() === null &&
         textRef.current === submittedText &&
-        sameSkillSelections(skillNamesRef.current, submittedSkillNames) &&
-        sameSkillSelections(selectionMetaRef.current.commandNames, submittedCommandNames ?? [])
+        sameStrings(skillNamesRef.current, submittedSkillNames) &&
+        sameStrings(selectionMetaRef.current.commandNames, submittedCommandNames ?? [])
       ) {
         claimDraftRevision();
         clearComposition();
@@ -1221,8 +1207,8 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       if (disposed || draftEditRevisionRef.current !== revision) return false;
       if (
         textRef.current === text &&
-        sameSkillSelections(skillNamesRef.current, names) &&
-        sameSkillSelections(selectionMetaRef.current.commandNames, commands)
+        sameStrings(skillNamesRef.current, names) &&
+        sameStrings(selectionMetaRef.current.commandNames, commands)
       ) {
         clearComposition();
         // Only a draft this source still owns may be cleared: another tab's

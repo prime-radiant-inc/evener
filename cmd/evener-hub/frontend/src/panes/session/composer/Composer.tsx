@@ -103,6 +103,7 @@ import {
   useQueueRowRestoreRequest,
 } from "./queueRowInsert";
 import { consumeQuoteInsert, useQuoteInsertRequest } from "./quoteInsert";
+import { compositionIsEmpty } from "./recovery/recoveryDraft";
 import { SkillEditor, type SkillEditorHandle } from "./SkillEditor";
 import { SlashCompletionMenu } from "./SlashCompletionMenu";
 import { StopIcon } from "./StopIcon";
@@ -820,8 +821,9 @@ function ComposerWithSubmission({
         consumeQueueRowRestore(ref);
         return;
       }
-      if (attachments.hasPending) {
-        toasts.push("error", "Image attachment is still processing");
+      const refusal = attachments.refusalReason();
+      if (refusal) {
+        toasts.push("error", refusal);
         releaseRecoveryOperation();
         consumeQueueRowRestore(ref);
         return;
@@ -860,7 +862,7 @@ function ComposerWithSubmission({
       editorRef.current?.focus();
       consumeQueueRowRestore(ref);
     }
-  }, [queueRowRestoreRequest, ref, actions.queueRowActions, source, toasts, attachments.hasPending]);
+  }, [queueRowRestoreRequest, ref, actions.queueRowActions, source, toasts, attachments.refusalReason]);
 
   // composerFocus.ts's own seam: a global chord (owned elsewhere) asks this
   // ref's Composer to move keyboard focus into its textarea. Exactly the
@@ -886,7 +888,12 @@ function ComposerWithSubmission({
 
   const hasText = text.trim() !== "";
   const hasAttachments = attachments.items.length > 0;
-  const hasContent = hasText || hasAttachments || skillNames.length > 0 || selectionMeta.commandNames.length > 0;
+  // Mentions count as content: they name a selected skill or command, and the
+  // fold and Send must agree with recovery on what the composer holds.
+  const hasContent = useMemo(
+    () => !compositionIsEmpty({ text, attachments: attachments.items, skillNames, commandNames, mentions }),
+    [text, attachments.items, skillNames, commandNames, mentions],
+  );
   hasContentRef.current = hasContent;
   useEffect(() => {
     if (hasContent) {
@@ -1101,8 +1108,9 @@ function ComposerWithSubmission({
     event.preventDefault();
     if (actionPending) return;
     if (!hasContent) return; // empty composer: no-op, no request, no message
-    if (attachments.hasPending) {
-      toasts.push("error", "Image attachment is still processing");
+    const refusal = attachments.refusalReason();
+    if (refusal) {
+      toasts.push("error", refusal);
       return;
     }
     // A marker whose bytes this composer does not hold is not sendable: the
@@ -1136,8 +1144,9 @@ function ComposerWithSubmission({
       toasts.push("error", STEER_RECOVERY_FENCED_REASON);
       return;
     }
-    if (attachments.hasPending) {
-      toasts.push("error", "Image attachment is still processing");
+    const refusal = attachments.refusalReason();
+    if (refusal) {
+      toasts.push("error", refusal);
       return;
     }
     // Steer and drain carry the same composition Send does, so the same
