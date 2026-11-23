@@ -63,12 +63,13 @@ func TestUnrestorableDelegateAttentionIsHandedToTheRoot(t *testing.T) {
 	if got := rootFold.content[fenced.attentionID].Text(); got != "undelivered grandchild message" {
 		t.Fatalf("root attention content = %q, want the grandchild's original message handed over", got)
 	}
-	grandchildFold, err := readDelegateAttentionFold(transcriptPath(fixture.stateDir, fenced.grandchildSessionID), fenced.grandchildSessionID)
-	if err != nil {
-		t.Fatalf("read grandchild attention fold: %v", err)
-	}
-	if got := grandchildFold.resolutions[fenced.attentionID]; got != delegateAttentionDiscarded {
-		t.Fatalf("grandchild attention resolution = %q, want discarded", got)
+	// The hand-over resolves the source row in delegatestore alone; the
+	// grandchild transcript keeps the rendered message and no marker.
+	root.delegateController.mu.Lock()
+	_, sourceResolved := root.delegateController.durable[fenced.grandchildDelegateID].ResolvedAttention[fenced.attentionID]
+	root.delegateController.mu.Unlock()
+	if !sourceResolved {
+		t.Fatalf("grandchild attention %q was not resolved in the journal", fenced.attentionID)
 	}
 }
 

@@ -205,7 +205,15 @@ type Aggregate struct {
 	// NeedsAttention is a projection of this queue, recomputed by the same
 	// Apply that changes it, so the flag and the queue cannot drift apart.
 	PendingAttention []PendingAttention `json:"pending_attention,omitempty"`
-	PendingStopSeq   uint64             `json:"pending_stop_seq,omitempty"`
+	// ResolvedAttention is the folded set of attention identities this delegate
+	// has already presented and resolved. It is disjoint from PendingAttention by
+	// construction: a resolve adds the id, a queue removes it. The journal
+	// replays both, so a cold restore knows which transcript rows were consumed
+	// even though no transcript resolution marker was written. It is in-memory
+	// only — the journal events are the durable record, and no snapshot or public
+	// projection needs the set.
+	ResolvedAttention map[string]struct{} `json:"-"`
+	PendingStopSeq    uint64              `json:"pending_stop_seq,omitempty"`
 	// PendingStopAt is when the pending subtree stop was REQUESTED, taken from
 	// the request event's own timestamp, and zero whenever PendingStopSeq is.
 	// PendingStopSeq answers "was a stop asked for"; only this answers "how long

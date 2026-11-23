@@ -3,6 +3,8 @@ package agent
 import (
 	"errors"
 	"path/filepath"
+	"slices"
+	"sort"
 	"testing"
 	"time"
 
@@ -385,6 +387,107 @@ func TestDelegateAttentionHeldRowSurvivesColdRestoreAndReleases(t *testing.T) {
 	}
 }
 
+// A presented row whose journal resolution append failed must not trigger a
+// second model request: the drive and the finalization drain withhold it while
+// the retry is outstanding, and one successful retry removes it from the store.
+// Rows the model never saw stay selectable throughout.
+func TestDelegateAttentionAwaitingResolutionRetryRemovesOnlyThePresentedRow(t *testing.T) {
+	t.Parallel()
+	const (
+		sessionID  = "child-dlg_awaiting_resolution"
+		delegateID = "dlg_target"
+	)
+	presented := delegateAttentionID(delegatestore.UpdateDeliveryID(delegateID, 1))
+	unpresented := "attention-never-presented"
+	c, runtime, _ := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, presented, unpresented)
+	runtime.owningDelegateID = delegateID
+	acceptAttentionForTest(t, runtime, mustReserveAttentionForTest(t, c, runtime, presented))
+	presentAttentionForTest(t, runtime, presented)
+
+	c.mu.Lock()
+	c.appendFault = func(events []delegatestore.Event) error {
+		for _, event := range events {
+			if event.Kind == delegatestore.EventDelegateAttentionResolved {
+				return errors.New("test: journal resolution failure")
+			}
+		}
+		return nil
+	}
+	c.mu.Unlock()
+	if err := runtime.finishAttentionTurn(nil, nil); err != nil {
+		t.Fatalf("finishAttentionTurn with a failing resolution append: %v", err)
+	}
+	if rows := pendingAttentionRowsForTest(t, c, delegateID); len(rows) != 2 {
+		t.Fatalf("pending rows after the failed resolution = %#v, want both rows retained", rows)
+	}
+	if !needsAttentionForTest(t, c, delegateID) {
+		t.Fatal("NeedsAttention dropped although the presented row could not be resolved")
+	}
+	// The model already read the presented update, so neither the attention
+	// drive nor the finalization drain may make a request for it.
+	if ids, err := runtime.automaticDelegateAttentionIDs(); err != nil || !slices.Equal(ids, []string{unpresented}) {
+		t.Fatalf("drive candidates while awaiting the retry = %v (%v), want only %q", ids, err, unpresented)
+	}
+	// A coordinator parked at a quiet yield drains every pending row, so the
+	// unpresented one stays owed while the presented one is withheld.
+	if ids := runtime.pendingDelegateUpdateAttentionIDs(); !slices.Equal(ids, []string{unpresented}) {
+		t.Fatalf("drain ids while awaiting the retry = %v, want only %q", ids, unpresented)
+	}
+
+	// The journal recovers: the retry removes the presented row and leaves the
+	// unpresented one selectable.
+	c.mu.Lock()
+	c.appendFault = nil
+	c.mu.Unlock()
+	if err := runtime.flushAwaitingDelegateAttentionResolutions(); err != nil {
+		t.Fatalf("flushAwaitingDelegateAttentionResolutions: %v", err)
+	}
+	rows := pendingAttentionRowsForTest(t, c, delegateID)
+	if len(rows) != 1 || rows[0].AttentionID != unpresented {
+		t.Fatalf("pending rows after the retry = %#v, want only %q", rows, unpresented)
+	}
+	if ids, err := runtime.automaticDelegateAttentionIDs(); err != nil || !slices.Equal(ids, []string{unpresented}) {
+		t.Fatalf("drive candidates after the retry = %v (%v), want only %q", ids, err, unpresented)
+	}
+	if err := runtime.flushAwaitingDelegateAttentionResolutions(); err != nil {
+		t.Fatalf("second flush after the retry: %v", err)
+	}
+	if rows := pendingAttentionRowsForTest(t, c, delegateID); len(rows) != 1 || rows[0].AttentionID != unpresented {
+		t.Fatalf("pending rows after a second flush = %#v, want the retry to be a no-op", rows)
+	}
+}
+
+// Pending attention turns reach a request in transcript arrival order, so an
+// update that arrived before a later report is presented first even though the
+// report's id sorts before the update's.
+func TestPendingAttentionTurnsKeepTranscriptArrivalOrder(t *testing.T) {
+	t.Parallel()
+	const (
+		sessionID  = "child-dlg_arrival_order"
+		delegateID = "dlg_target"
+	)
+	updateID := delegateAttentionID(delegatestore.UpdateDeliveryID(delegateID, 1))
+	reportID := delegateAttentionID(delegateDeliveryID(delegateID, 1))
+	if !sort.StringsAreSorted([]string{reportID, updateID}) {
+		t.Fatalf("test setup: %q should sort before %q, so sorted selection cannot prove arrival order", reportID, updateID)
+	}
+	_, runtime, _ := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, updateID, reportID)
+	runtime.owningDelegateID = delegateID
+	runtime.attentionMu.Lock()
+	turns, err := runtime.pendingAttentionTurnsLocked()
+	runtime.attentionMu.Unlock()
+	if err != nil {
+		t.Fatalf("pendingAttentionTurnsLocked: %v", err)
+	}
+	got := make([]string, 0, len(turns))
+	for _, turn := range turns {
+		got = append(got, turn.AttentionID)
+	}
+	if !slices.Equal(got, []string{updateID, reportID}) {
+		t.Fatalf("pending attention turns = %v, want the update %q before the report %q", got, updateID, reportID)
+	}
+}
+
 func mustReserveAttentionForTest(t *testing.T, c *delegateTreeController, sess *Session, attentionID string) *delegateStartReservation {
 	t.Helper()
 	reservation, err := c.ReserveAttention(sess, attentionID)
@@ -524,4 +627,71 @@ func TestLegacyDelegateAttentionJournalAndTranscriptStillRead(t *testing.T) {
 			t.Fatalf("legacy resume generation = %d, want 1", fold.resumeGenerations["legacy-attention"])
 		}
 	})
+}
+
+// A delivery that writes its transcript message and then fails to journal the
+// queue row must not ack. Its retry has to repair the row, because the message
+// being present says nothing about what the delegate still owes; the repair
+// still refuses to resurrect a row the journal already resolved.
+func TestDelegateAttentionRetryRepairsAMissingQueueRow(t *testing.T) {
+	t.Parallel()
+	const (
+		sessionID   = "child-dlg_repair"
+		delegateID  = "dlg_target"
+		attentionID = "delegate:repair"
+	)
+	c, runtime, _ := newDelegateAttentionAcceptanceHarness(t, sessionID, nil)
+	runtime.owningDelegateID = delegateID
+	c.mu.Lock()
+	c.appendFault = func(events []delegatestore.Event) error {
+		for _, event := range events {
+			if event.Kind == delegatestore.EventDelegateAttentionQueued {
+				return errors.New("test: transient queue append failure")
+			}
+		}
+		return nil
+	}
+	c.mu.Unlock()
+	if _, err := runtime.appendDelegateNotificationDurably(attentionID, "repair sentinel"); err == nil {
+		t.Fatal("the delivery acknowledged a message whose queue row never landed")
+	}
+	if rows := pendingAttentionRowsForTest(t, c, delegateID); len(rows) != 0 {
+		t.Fatalf("queue rows after the failed journal append = %#v, want none", rows)
+	}
+
+	c.mu.Lock()
+	c.appendFault = nil
+	c.mu.Unlock()
+	appended, err := runtime.appendDelegateNotificationDurably(attentionID, "repair sentinel")
+	if err != nil {
+		t.Fatalf("retry after journal recovery: %v", err)
+	}
+	if appended {
+		t.Fatal("the retry re-appended a message the transcript already held")
+	}
+	rows := pendingAttentionRowsForTest(t, c, delegateID)
+	if len(rows) != 1 || rows[0].AttentionID != attentionID {
+		t.Fatalf("queue rows after the repair = %#v, want the repaired row", rows)
+	}
+	if !needsAttentionForTest(t, c, delegateID) {
+		t.Fatal("the repaired row raised no NeedsAttention")
+	}
+	c.mu.Lock()
+	selected, selectedID, pending := c.nextIdleDelegateAttentionLocked()
+	c.mu.Unlock()
+	if !pending || selected != delegateID || selectedID != attentionID {
+		t.Fatalf("drive selection after the repair = (%q, %q, %t), want the repaired row", selected, selectedID, pending)
+	}
+
+	// The same route after a resolution must stay a no-op: a presented and
+	// answered report is never re-queued by a repeated delivery.
+	if err := c.forgetDelegateAttention(delegateID, attentionID); err != nil {
+		t.Fatalf("resolve the repaired row: %v", err)
+	}
+	if _, err := runtime.appendDelegateNotificationDurably(attentionID, "repair sentinel"); err != nil {
+		t.Fatalf("repeat route after resolution: %v", err)
+	}
+	if rows := pendingAttentionRowsForTest(t, c, delegateID); len(rows) != 0 {
+		t.Fatalf("queue rows after a repeat route of a resolved message = %#v, want none", rows)
+	}
 }

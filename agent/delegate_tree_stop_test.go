@@ -1236,12 +1236,14 @@ func TestDelegateControllerRootCloseReconcilesClosedRootDescendantWork(t *testin
 	if len(c.work) != 0 || len(c.deliveries) != 0 {
 		t.Fatalf("process receipts after Close: work=%#v deliveries=%#v", c.work, c.deliveries)
 	}
-	pending, err := readPendingDelegateAttention(attentionPath, "child-dlg_attention")
-	if err != nil {
-		t.Fatalf("read attention after Close: %v", err)
-	}
-	if len(pending) != 0 {
-		t.Fatalf("pending attention after Close = %#v", pending)
+	// Close resolves the closed root's descendant attention in delegatestore.
+	// The descendant transcript keeps the rendered message and gets no marker.
+	c.mu.Lock()
+	_, attentionResolved := c.durable["dlg_attention"].ResolvedAttention["attention-close-closed-root"]
+	pendingRows := append([]delegatestore.PendingAttention(nil), c.durable["dlg_attention"].PendingAttention...)
+	c.mu.Unlock()
+	if !attentionResolved || len(pendingRows) != 0 {
+		t.Fatalf("attention after Close resolved=%t pending=%#v, want the journal resolution", attentionResolved, pendingRows)
 	}
 	raw := readDelegateControllerFile(t, filepath.Join(c.stateDir, "delegate-events.jsonl"))
 	if got := bytes.Count(raw, []byte(`"delegate_subtree_stop_requested"`)); got != 1 {

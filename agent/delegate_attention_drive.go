@@ -46,6 +46,14 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 	if s == nil || sub == nil || sub.sess == nil || sub.sess.owningDelegateID == "" || s.delegateController == nil || sub.sess.delegateController != s.delegateController {
 		return false
 	}
+	// A row a settled request already presented whose resolution append failed
+	// must leave the queue before any drive may select this delegate again: the
+	// model read it, so the only work left is the retried resolution.
+	if err := sub.sess.flushAwaitingDelegateAttentionResolutions(); err != nil {
+		sub.sess.warnDelegateAttentionFailed(delegateAttentionResolveLabel, sub.sess.owningDelegateID, err)
+		s.delegateController.retryDelegateAttentionLater()
+		return true
+	}
 	ids, err := sub.sess.automaticDelegateAttentionIDs()
 	if err != nil {
 		s.emit(warningDataFromError("inspect delegate attention", err))

@@ -1425,6 +1425,12 @@ type Session struct {
 	// this latch only keeps the exit rule from replaying a report the model
 	// already read. Guarded by attentionMu.
 	attentionPresentedTrigger string
+	// attentionAwaitingResolution names the rows a settled request of an
+	// earlier turn presented whose journal resolution append failed. The model
+	// already read them, so they must not trigger another model request; a
+	// paced retry resolves them in delegatestore, and only then may the row
+	// leave PendingAttention. Guarded by attentionMu.
+	attentionAwaitingResolution map[string]struct{}
 
 	// turnNameRetryMu guards turnNameRetry alone. The paced wake it schedules
 	// runs while the session goroutine is mid-stand-down, so it must not queue

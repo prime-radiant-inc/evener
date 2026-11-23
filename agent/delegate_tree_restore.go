@@ -387,6 +387,18 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 		// check and the completion append below, so a wake cannot slip into
 		// that window twice and leak past the completed stop.
 		if aggregate := c.durable[id]; aggregate != nil {
+			// The queue is the single authority for owed attention. A transcript
+			// row the queue already resolved is history, not work: child
+			// resolutions are store-only now, so no marker retires it and the
+			// stop must not plan its discard forever.
+			owed := attention[:0]
+			for _, attentionID := range attention {
+				if _, resolved := aggregate.ResolvedAttention[attentionID]; resolved {
+					continue
+				}
+				owed = append(owed, attentionID)
+			}
+			attention = owed
 			for _, row := range aggregate.PendingAttention {
 				attentionID := row.AttentionID
 				if !slices.Contains(attention, attentionID) {
@@ -881,6 +893,19 @@ func repairPermanentlyUnreachableDelegateAttention(c *delegateTreeController) er
 			sourceRef:        c.durable[id].Descriptor.TranscriptRef,
 		})
 	}
+	// A source transcript keeps the rendered message after a journal resolution,
+	// because a child delegate's resolution is store-only. Transfer only what the
+	// journal still owes, or a discarded row would be delivered again.
+	resolved := make(map[string]map[string]struct{}, len(plans))
+	for _, plan := range plans {
+		if aggregate := c.durable[plan.sourceDelegateID]; aggregate != nil && len(aggregate.ResolvedAttention) != 0 {
+			set := make(map[string]struct{}, len(aggregate.ResolvedAttention))
+			for attentionID := range aggregate.ResolvedAttention {
+				set[attentionID] = struct{}{}
+			}
+			resolved[plan.sourceDelegateID] = set
+		}
+	}
 	c.mu.Unlock()
 	if open == nil {
 		open = transcript.OpenWriterForSession
@@ -903,6 +928,9 @@ func repairPermanentlyUnreachableDelegateAttention(c *delegateTreeController) er
 			return fmt.Errorf("delegate %s attention fold: %w", plan.sourceDelegateID, err)
 		}
 		for _, attentionID := range fold.pendingIDs() {
+			if _, done := resolved[plan.sourceDelegateID][attentionID]; done {
+				continue
+			}
 			message := fold.content[attentionID]
 			if _, err := appendColdDelegateAttentionMessageDurablyWithOpen(targetPath, targetSessionID, attentionID, message, now(), open); err != nil {
 				return fmt.Errorf("delegate %s transfer attention %s: %w", plan.sourceDelegateID, attentionID, err)
@@ -1094,43 +1122,17 @@ func (c *delegateTreeController) executeDelegateAttentionCleanup(plan delegateAt
 		}
 		return c.ReportAttentionStabilized(plan.lease, plan.attentionID, plan.runtime)
 	}
-	// A stop discards only attention the queue still owes. A consumed item can
-	// outlive the plan that named it: a delegate generation consumes what its
-	// settled requests presented and removes the row in one atomic Apply, while
-	// the stop's plan still carries the ID. Discarding that item again would be
-	// a conflicting resolution, so the resolver keeps a recorded resolution
-	// instead and renews its durability barrier before the row is forgotten.
-	disposition := plan.disposition
-	if disposition == delegateAttentionDiscarded {
-		disposition = delegateAttentionDiscardUnlessResolved
-	}
-	if err := c.resolveDelegateAttentionDurably(plan.runtime, plan.transcriptRef, []string{plan.attentionID}, disposition); err != nil {
-		return err
-	}
+	// The queue is the only authority: ReportAttentionConsumed and
+	// ReportAttentionResolved each resolve the row in delegatestore, and a
+	// repeat forget of an already-resolved row appends nothing. No
+	// child transcript marker is written, so a stop resolves cleanly with no
+	// attached transcript writer.
 	if plan.disposition == delegateAttentionConsumed {
 		_, err := c.ReportAttentionConsumed(plan.lease, plan.attentionID, plan.runtime)
 		return err
 	}
 	_, err := c.ReportAttentionResolved(plan.requestSeq, plan.evidenceVersion, plan.delegateID, plan.attentionID, plan.disposition, plan.runtime)
 	return err
-}
-
-// resolveDelegateAttentionDurably appends attention resolution markers through
-// the resident runtime's one writer when it exists, and through a cold writer
-// on the receiver transcript otherwise.
-func (c *delegateTreeController) resolveDelegateAttentionDurably(runtime *Session, transcriptRef string, ids []string, disposition delegateAttentionResolution) error {
-	if runtime != nil {
-		return runtime.resolveAttentionDurably(ids, disposition)
-	}
-	path, expectedSessionID, err := delegateTranscriptPathFromRef(c.stateDir, transcriptRef)
-	if err != nil {
-		return err
-	}
-	open := c.attentionOpen
-	if open == nil {
-		open = transcript.OpenWriterForSession
-	}
-	return appendColdAttentionResolutionWithOpen(path, expectedSessionID, ids, disposition, open)
 }
 
 func (c *delegateTreeController) reconcileRuntimeLostFromEvidenceLocked() (delegateMutationPlans, error) {

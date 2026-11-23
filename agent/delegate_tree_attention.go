@@ -160,12 +160,19 @@ func (c *delegateTreeController) reconcileDelegateAttentionFromTranscripts() err
 		// Backfill the transcript's pending rows a pre-queue journal never
 		// carried. The bootstrap publishes the set it reconciles, so every row
 		// it adds counts as a committed wake: this is where a restart's owed
-		// rows enter the drive.
+		// rows enter the drive. A row the journal already resolved stays out:
+		// a child delegate's transcript keeps the rendered message after its
+		// presentation because the resolution lives in the journal, so only a
+		// genuinely unjournaled row is a pre-upgrade entry.
 		added := make([]string, 0, len(want))
 		for attentionID := range want {
-			if _, exists := have[attentionID]; !exists {
-				added = append(added, attentionID)
+			if _, exists := have[attentionID]; exists {
+				continue
 			}
+			if _, resolved := aggregate.ResolvedAttention[attentionID]; resolved {
+				continue
+			}
+			added = append(added, attentionID)
 		}
 		sort.Strings(added)
 		for _, attentionID := range added {
@@ -312,35 +319,41 @@ func attentionQueuedEvent(delegateID, attentionID string, committed bool) delega
 	}
 }
 
-// queueDelegateAttentionRider puts a durably appended child attention message
-// into the delegate's queue without publishing its wake. The store queue is the
-// only authority for a child's pending attention, so the message must enter it
-// when it becomes durable; the arm that publishes the wake commits this rider
-// (Committed true and the hold release) later. A raise schedules the root's
-// drive, because an arm landing while its delegate runs wakes no one by itself.
-func (c *delegateTreeController) queueDelegateAttentionRider(delegateID, attentionID string) error {
+// ensureDelegateAttentionQueuedIfUnresolved puts a durably appended child
+// attention message into the delegate's queue without publishing its wake; the
+// arm that publishes the wake commits the row (Committed true and the hold
+// release) later. The store queue is the only authority for a child's pending
+// attention. The call repairs the one window a durable transcript append can
+// leave open: the message reached the transcript but the journal never took its
+// queue event, because the append between the two failed. A resolved id is
+// never repaired — the delegate already presented and answered that report —
+// and a still-queued id needs nothing. A raise schedules the root's drive,
+// because an arm landing while its delegate runs wakes no one by itself.
+func (c *delegateTreeController) ensureDelegateAttentionQueuedIfUnresolved(delegateID, attentionID string) error {
 	if c == nil || delegateID == "" || attentionID == "" {
 		return nil
 	}
 	defer c.retirementChanged()
 	c.mu.Lock()
 	aggregate := c.durable[delegateID]
-	queued := false
-	if aggregate != nil {
-		for _, row := range aggregate.PendingAttention {
-			if row.AttentionID == attentionID {
-				queued = true
-				break
-			}
+	if aggregate == nil {
+		c.mu.Unlock()
+		return fmt.Errorf("delegate %q has no journal aggregate", delegateID)
+	}
+	if _, resolved := aggregate.ResolvedAttention[attentionID]; resolved {
+		c.mu.Unlock()
+		return nil
+	}
+	for _, row := range aggregate.PendingAttention {
+		if row.AttentionID == attentionID {
+			c.mu.Unlock()
+			return nil
 		}
 	}
 	raised := c.delegateAttentionWillRaiseLocked(delegateID)
-	var err error
-	if !queued {
-		_, err = c.appendLocked(attentionQueuedEvent(delegateID, attentionID, false))
-	}
+	_, err := c.appendLocked(attentionQueuedEvent(delegateID, attentionID, false))
 	c.mu.Unlock()
-	if err == nil && !queued && raised {
+	if err == nil && raised {
 		c.retryDelegateAttentionLater()
 	}
 	return err
@@ -390,11 +403,19 @@ func (c *delegateTreeController) appendAttentionResolvedLocked(delegateID string
 		return nil
 	}
 	events := make([]delegatestore.Event, 0, len(ids))
-	for _, row := range aggregate.PendingAttention {
-		if _, resolve := ids[row.AttentionID]; !resolve {
+	ordered := make([]string, 0, len(ids))
+	for attentionID := range ids {
+		if attentionID == "" {
 			continue
 		}
-		events = append(events, attentionResolvedEvent(delegateID, row.AttentionID))
+		if _, resolved := aggregate.ResolvedAttention[attentionID]; resolved {
+			continue
+		}
+		ordered = append(ordered, attentionID)
+	}
+	sort.Strings(ordered)
+	for _, attentionID := range ordered {
+		events = append(events, attentionResolvedEvent(delegateID, attentionID))
 	}
 	if len(events) == 0 {
 		return nil
@@ -417,8 +438,11 @@ func (c *delegateTreeController) clearTransientAttentionIfResolvedLocked(delegat
 	}
 }
 
-// forgetDelegateAttentionLocked resolves one queue row. A row the queue no
-// longer holds appends nothing, so a repeat forget is a no-op.
+// forgetDelegateAttentionLocked resolves one queue row. An id the journal
+// already resolved appends nothing, so a repeat forget is a no-op. An id the
+// queue never held still records its resolution: a pre-upgrade transcript row
+// is pending without a queue row, and the recorded resolution is what retires
+// it.
 func (c *delegateTreeController) forgetDelegateAttentionLocked(delegateID, attentionID string) error {
 	if c == nil || delegateID == "" || attentionID == "" {
 		return nil

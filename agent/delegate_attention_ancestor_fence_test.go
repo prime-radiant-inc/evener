@@ -341,7 +341,7 @@ func (f fencedGrandchildAttention) owedAndParked() (owed, parked bool) {
 func TestDelegateAttentionWake_PermanentClosedAncestorEscalatesToRootOnce(t *testing.T) {
 	fenced := newFencedGrandchildAttention(t)
 	fixture, root := fenced.fixture, fenced.root
-	grandchildDelegateID, grandchildSessionID, attentionID := fenced.grandchildDelegateID, fenced.grandchildSessionID, fenced.attentionID
+	grandchildDelegateID, attentionID := fenced.grandchildDelegateID, fenced.attentionID
 	root.delegateController.mu.Lock()
 	childRevision := root.delegateController.durable[grandchildDelegateID].ProjectionRevision
 	var published []delegateUpdatePlan
@@ -368,12 +368,13 @@ func TestDelegateAttentionWake_PermanentClosedAncestorEscalatesToRootOnce(t *tes
 
 	root.drivePendingDelegateAttention()
 
-	grandchildFold, err := readDelegateAttentionFold(transcriptPath(fixture.stateDir, grandchildSessionID), grandchildSessionID)
-	if err != nil {
-		t.Fatalf("read grandchild attention fold: %v", err)
-	}
-	if got := grandchildFold.resolutions[attentionID]; got != delegateAttentionDiscarded {
-		t.Fatalf("fenced grandchild attention resolution = %q, want discarded", got)
+	// The hand-over resolves the source row in delegatestore alone: the source
+	// transcript keeps the rendered message and carries no resolution marker.
+	root.delegateController.mu.Lock()
+	_, sourceResolved := root.delegateController.durable[grandchildDelegateID].ResolvedAttention[attentionID]
+	root.delegateController.mu.Unlock()
+	if !sourceResolved {
+		t.Fatalf("fenced grandchild attention %q was not resolved in the journal", attentionID)
 	}
 	rootFold, err := readDelegateAttentionFold(transcriptPath(fixture.stateDir, fixture.meta.ID), fixture.meta.ID)
 	if err != nil {

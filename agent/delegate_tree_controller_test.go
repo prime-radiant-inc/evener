@@ -503,7 +503,6 @@ var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancy
 	{filename: "delegate_tree_restore.go", function: "(*delegateTreeController).executeDelegateAttentionCleanup", kind: "lifecycle method", symbol: "ReportAttentionResolved"}:         1,
 	{filename: "delegate_tree_restore.go", function: "(*delegateTreeController).executeDelegateAttentionCleanup", kind: "lifecycle method", symbol: "ReportAttentionConsumed"}:         1,
 	{filename: "delegate_tree_restore.go", function: "(*delegateTreeController).executeDelegateAttentionCleanup", kind: "lifecycle method", symbol: "ReportAttentionStabilized"}:       1,
-	{filename: "delegate_tree_restore.go", function: "(*delegateTreeController).resolveDelegateAttentionDurably", kind: "session attention method", symbol: "resolveAttentionDurably"}: 1,
 	{filename: "job_shell.go", function: "(*jobManager).beginDelegateShellReceipt", kind: "lifecycle method", symbol: "BeginShellWork"}:                                                1,
 	{filename: "job_shell.go", function: "(*delegateShellReceipt).commit", kind: "lifecycle method", symbol: "CommitShellWork"}:                                                        1,
 	{filename: "job_shell.go", function: "(*delegateShellReceipt).abort", kind: "lifecycle method", symbol: "AbortShellWork"}:                                                          1,

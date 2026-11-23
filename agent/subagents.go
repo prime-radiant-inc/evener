@@ -2974,6 +2974,16 @@ func (a *subagent) finalizeRun(f subagentFinalize) {
 		}
 		a.sess.settleUnpresentedDelegateTrigger(quietAt)
 	}
+	// Attention a settled request presented whose resolution append failed is
+	// retried before the generation is announced: the announce wakes the
+	// parent's drive, and a drive that wins must not start a successor for a
+	// message the model already read. Only a successful append ends the
+	// awaiting episode; a failing journal keeps the row withheld.
+	if f.stableRun {
+		if flushErr := a.sess.flushAwaitingDelegateAttentionResolutions(); flushErr != nil {
+			a.sess.warnDelegateAttentionFailed(delegateAttentionResolveLabel, a.sess.owningDelegateID, flushErr)
+		}
+	}
 	if f.stableRun && a.sess.delegateController != nil {
 		if hook := a.sess.cfg.testOnly.subagentBeforeGenerationAnnounced; hook != nil {
 			hook(a)

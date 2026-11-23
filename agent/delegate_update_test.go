@@ -633,9 +633,7 @@ func TestDelegateUpdateWakesAnIdleParentDelegate(t *testing.T) {
 		case <-time.After(30 * time.Second):
 			t.Fatal("the idle coordinator was never woken by its worker's update")
 		}
-		if generation := settledUpdateAttentionConsumedFor(t, coordinator); generation != 0 {
-			t.Fatalf("the update was consumed by attention generation %d, want the drain turn that presented it (0)", generation)
-		}
+		settledUpdateAttentionResolvedFor(t, coordinator)
 		// The scripted adapter answers a request past its script with a plain
 		// final report, so only the count shows a drain pass that ran extra
 		// turns. The script's three steps are the delegate call, the end of the
@@ -815,8 +813,8 @@ func drainingCoordinatorWaitsForAnUpdate(t *testing.T, failedMarkerWrites int) {
 	// Worker B stays held until the update is released, so once the bubble is
 	// quiet the sibling's report has landed and nothing else has.
 	synctest.Wait()
-	if pending := rootAttentionFold(t, coordinator).pendingIDs(); len(pending) != 1 {
-		t.Fatalf("the coordinator holds pending attention %v once quiet, want the sibling's report alone", pending)
+	if rows := pendingAttentionRowsForTest(t, coordinator.delegateController, coordinator.owningDelegateID); len(rows) != 1 || isDelegateUpdateAttentionID(rows[0].AttentionID) {
+		t.Fatalf("the coordinator holds pending attention %#v once quiet, want the sibling's report alone", rows)
 	}
 	if coordinator.hasPendingDelegateUpdateAttention() {
 		t.Fatal("the coordinator's drain counts the sibling's report as an update")
@@ -828,9 +826,9 @@ func drainingCoordinatorWaitsForAnUpdate(t *testing.T, failedMarkerWrites int) {
 	if got := len(adapter.requestsFor("COORD-BRIEF")); got != 3 {
 		t.Fatalf("the sibling's report ran a turn: the coordinator made %d model requests, want 3", got)
 	}
-	var failingWrites *rootAttentionResolutionFailFS
+	var failingWrites *delegateResolutionAppendFailures
 	if failedMarkerWrites > 0 {
-		failingWrites = installResolutionSyncFailuresWriter(t, coordinator, failedMarkerWrites)
+		failingWrites = installAttentionResolutionAppendFailures(t, coordinator, failedMarkerWrites)
 	}
 	releaseUpdate()
 	select {
@@ -843,9 +841,9 @@ func drainingCoordinatorWaitsForAnUpdate(t *testing.T, failedMarkerWrites int) {
 				t.Fatalf("%d marker writes failed once quiet, want %d", got, failedMarkerWrites)
 			}
 			if failedMarkerWrites == 1 {
-				// The retry succeeded.
-				if pending := rootAttentionFold(t, coordinator).pendingIDs(); len(pending) != 0 {
-					t.Fatalf("the coordinator holds pending attention %v after the marker retry succeeded, want the update consumed", pending)
+				// The retry succeeded and consumed every row the turn presented.
+				if rows := pendingAttentionRowsForTest(t, coordinator.delegateController, coordinator.owningDelegateID); len(rows) != 0 {
+					t.Fatalf("the coordinator holds pending attention %#v after the resolution retry succeeded, want every presented row consumed", rows)
 				}
 			}
 			if got := len(adapter.requestsFor("COORD-BRIEF")); got != 4 {
@@ -942,7 +940,7 @@ func TestDelegateUpdateArrivingMidTurnIsNotRerunWhenTheMarkerCannotBeWritten(t *
 		}
 		adapter.waitForRequests(t, "COORD-BRIEF", 3)
 		coordinator.Store(requireSoleChildIdle(t, root))
-		failingWrites := installResolutionSyncFailuresWriter(t, coordinator.Load(), 2)
+		failingWrites := installAttentionResolutionAppendFailures(t, coordinator.Load(), 2)
 		close(coordinatorIdle)
 		// The workers are still held, so only a rerun for an update could add a
 		// request beyond the five scripted steps. A rerun follows the failed retry
@@ -1036,55 +1034,108 @@ func TestDelegateUpdateReachesARunningParentDelegate(t *testing.T) {
 	if coordinator == nil {
 		t.Fatal("the coordinator never deferred the worker's update")
 	}
-	if generation := updateAttentionConsumedFor(t, coordinator); generation != 0 {
-		t.Fatalf("the update the coordinator already saw was consumed by attention generation %d, want its presenting generation (0)", generation)
-	}
+	updateAttentionResolvedFor(t, coordinator)
 }
 
-// consumedUpdateGeneration reports whether sess's transcript resolves the
-// update attention it received as consumed, and the generation that consumed
-// it: zero when the generation that presented it consumed it at its turn's
-// end, an attention generation's number when one was started for it.
-func consumedUpdateGeneration(sess *Session) (generation uint64, consumed bool) {
-	sess.mu.Lock()
-	path, sessionID := transcriptPath(sess.stateDir, sess.id), sess.id
-	sess.mu.Unlock()
-	fold, err := readDelegateAttentionFold(path, sessionID)
-	if err != nil {
-		return 0, false
+// updateAttentionResolved reports whether delegatestore holds the update
+// attention sess received as consumed: one Apply removed it from
+// PendingAttention and recorded it in ResolvedAttention. The store carries no
+// generation for a consumed row; the suite's model-request counts are what
+// pin that no successor attention generation was started for it.
+func updateAttentionResolved(sess *Session) bool {
+	if sess == nil || sess.delegateController == nil || sess.owningDelegateID == "" {
+		return false
 	}
-	for attentionID, resolution := range fold.resolutions {
-		if isDelegateUpdateAttentionID(attentionID) && resolution == delegateAttentionConsumed {
-			return fold.resumeGenerations[attentionID], true
+	c := sess.delegateController
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	aggregate := c.durable[sess.owningDelegateID]
+	if aggregate == nil {
+		return false
+	}
+	for _, row := range aggregate.PendingAttention {
+		if isDelegateUpdateAttentionID(row.AttentionID) {
+			return false
 		}
 	}
-	return 0, false
+	for attentionID := range aggregate.ResolvedAttention {
+		if isDelegateUpdateAttentionID(attentionID) {
+			return true
+		}
+	}
+	return false
 }
 
-// updateAttentionConsumedFor waits until consumedUpdateGeneration holds and
-// returns the consuming generation, for a test outside a synctest bubble.
-func updateAttentionConsumedFor(t *testing.T, sess *Session) uint64 {
+// updateAttentionResolvedFor waits until updateAttentionResolved holds, for a
+// test outside a synctest bubble.
+func updateAttentionResolvedFor(t *testing.T, sess *Session) {
 	t.Helper()
-	var generation uint64
-	testwait.Until(t, "the update's attention to be consumed", func() bool {
-		var consumed bool
-		generation, consumed = consumedUpdateGeneration(sess)
-		return consumed
+	testwait.Until(t, "the update's attention to be resolved", func() bool {
+		return updateAttentionResolved(sess)
 	})
-	return generation
 }
 
-// settledUpdateAttentionConsumedFor returns the consuming generation once
-// every goroutine in the caller's synctest bubble has blocked, and fails when
-// the update's attention is not consumed by then.
-func settledUpdateAttentionConsumedFor(t *testing.T, sess *Session) uint64 {
+// settledUpdateAttentionResolvedFor waits for every goroutine in the caller's
+// synctest bubble to block, then fails when the update's attention is not
+// resolved in delegatestore by then.
+func settledUpdateAttentionResolvedFor(t *testing.T, sess *Session) {
 	t.Helper()
 	synctest.Wait()
-	generation, consumed := consumedUpdateGeneration(sess)
-	if !consumed {
-		t.Fatal("the update's attention was never consumed")
+	if !updateAttentionResolved(sess) {
+		t.Fatal("the update's attention was never resolved in delegatestore")
 	}
-	return generation
+}
+
+// delegateResolutionAppendFailures fails the delegate journal's next failures
+// attention resolution appends, the seam a resolution retry recovers from.
+type delegateResolutionAppendFailures struct {
+	mu       sync.Mutex
+	failures int
+	failed   int
+}
+
+// injectedFailures is how many resolution appends the fault has failed.
+func (f *delegateResolutionAppendFailures) injectedFailures() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.failed
+}
+
+// installAttentionResolutionAppendFailures makes sess's delegate journal fail
+// the next failures attention resolution appends, then pass them through.
+func installAttentionResolutionAppendFailures(t *testing.T, sess *Session, failures int) *delegateResolutionAppendFailures {
+	t.Helper()
+	c := sess.delegateController
+	if c == nil {
+		t.Fatal("session has no delegate controller to fault")
+	}
+	f := &delegateResolutionAppendFailures{failures: failures}
+	c.mu.Lock()
+	c.appendFault = func(events []delegatestore.Event) error {
+		for _, event := range events {
+			if event.Kind != delegatestore.EventDelegateAttentionResolved || event.DelegateID != sess.owningDelegateID {
+				continue
+			}
+			f.mu.Lock()
+			fail := f.failed < f.failures
+			if fail {
+				f.failed++
+			}
+			f.mu.Unlock()
+			if fail {
+				return errors.New("test: injected attention resolution append failure")
+			}
+			return nil
+		}
+		return nil
+	}
+	c.mu.Unlock()
+	t.Cleanup(func() {
+		c.mu.Lock()
+		c.appendFault = nil
+		c.mu.Unlock()
+	})
+	return f
 }
 
 // appendColdFixtureEvents appends events to the fixture's delegate journal
@@ -1212,6 +1263,12 @@ func TestDelegateUpdateAdmitsOnlyATurnThatConsumesIt(t *testing.T) {
 	updateID := delegateAttentionID(delegatestore.UpdateDeliveryID(fixture.delegateID, 1))
 	if appended, err := sub.sess.appendDelegateNotificationDurably(updateID, "ADMISSION_UPDATE: which table?"); err != nil || !appended {
 		t.Fatalf("append update attention = appended:%t err:%v", appended, err)
+	}
+	// In production the delivery's acknowledgment publishes the queue row in the
+	// same store Apply; this setup writes the transcript directly, so seed the
+	// row the acknowledgment would have queued.
+	if !sub.sess.delegateController.noteDelegateAttentionForTest(fixture.delegateID, updateID) {
+		t.Fatal("seed the update in the delegate queue")
 	}
 	if !sub.sess.hasPendingDelegateUpdateAttention() {
 		t.Fatal("the delegate does not hold the pending update")

@@ -1680,12 +1680,14 @@ func TestDelegateAttention_BootstrapDrainsRestoredStopAttention(t *testing.T) {
 	if stop != nil || aggregate == nil || aggregate.PendingStopSeq != 0 || aggregate.CurrentRunOpen || aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeStopped {
 		t.Fatalf("bootstrap restored stop state = stop:%#v aggregate:%#v", stop, aggregate)
 	}
-	fold, err := readDelegateAttentionFold(transcriptPath(stateDir, childSessionID), childSessionID)
-	if err != nil {
-		t.Fatalf("read stopped child attention: %v", err)
-	}
-	if got := fold.resolutions[attentionID]; got != delegateAttentionDiscarded {
-		t.Fatalf("restored stop attention disposition = %q, want discarded", got)
+	// The stop's discard resolves the row in delegatestore. A child transcript
+	// marker is no longer written, so the journal resolution is the record.
+	fresh.delegateController.mu.Lock()
+	_, resolved := fresh.delegateController.durable[delegateID].ResolvedAttention[attentionID]
+	pendingRows := append([]delegatestore.PendingAttention(nil), fresh.delegateController.durable[delegateID].PendingAttention...)
+	fresh.delegateController.mu.Unlock()
+	if !resolved || len(pendingRows) != 0 {
+		t.Fatalf("restored stop attention resolved=%t pending=%#v, want the journal resolution only", resolved, pendingRows)
 	}
 	fresh.delegateDeliveryMu.Lock()
 	queued := append([]delegateDeliveryPlan(nil), fresh.pendingDelegateDeliveries...)
@@ -2309,12 +2311,26 @@ func TestDelegateAttention_StopDrainDoesNotResolveAttentionTwice(t *testing.T) {
 	if err := c.drainStop(context.Background(), c.stopForResult(result), root); err != nil {
 		t.Fatalf("drain stop with root mutation executor: %v", err)
 	}
-	pending, err := readPendingDelegateAttention(path, sessionID)
+	// The drain resolves the row in delegatestore once: the queue is empty and
+	// the journal holds exactly one resolution for the id. The transcript keeps
+	// the rendered message because a child resolution writes no marker.
+	events, err := c.store.Load()
 	if err != nil {
-		t.Fatalf("read attention after drain: %v", err)
+		t.Fatalf("load delegate journal: %v", err)
 	}
-	if len(pending) != 0 {
-		t.Fatalf("pending attention after drain = %#v", pending)
+	resolutions := 0
+	for _, event := range events {
+		if event.DelegateID == "dlg_target" && event.AttentionResolved != nil && event.AttentionResolved.AttentionID == attentionID {
+			resolutions++
+		}
+	}
+	c.mu.Lock()
+	aggregate := c.durable["dlg_target"]
+	pendingRows := len(aggregate.PendingAttention)
+	_, resolved := aggregate.ResolvedAttention[attentionID]
+	c.mu.Unlock()
+	if resolutions != 1 || pendingRows != 0 || !resolved {
+		t.Fatalf("stop drain resolutions=%d pending=%d resolved=%t, want one journal resolution", resolutions, pendingRows, resolved)
 	}
 }
 
@@ -5300,13 +5316,6 @@ type attentionFailNextSyncFS struct {
 func installResolutionSyncFailureWriter(t *testing.T, s *Session) {
 	t.Helper()
 	installResolutionSyncFailuresWriter(t, s, 1)
-}
-
-// injectedFailures is how many syncs the writer has failed so far.
-func (fs *rootAttentionResolutionFailFS) injectedFailures() int {
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-	return fs.failed
 }
 
 // installResolutionSyncFailuresWriter fails the sync of the session's first

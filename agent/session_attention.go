@@ -392,12 +392,23 @@ func (f delegateAttentionFold) pendingTurns(keep string) []schema.Turn {
 	return turns
 }
 
-// turnsFor returns the durable model-visible turn behind each of ids, in the
-// order the caller supplies. An identity the transcript never carried is
-// skipped.
-func (f delegateAttentionFold) turnsFor(ids []string) []schema.Turn {
-	turns := make([]schema.Turn, 0, len(ids))
+// turnsForArriving returns the durable model-visible turn behind each of ids in
+// transcript arrival order, so an earlier update precedes a later delivery even
+// though the delivery's id sorts first. An identity the transcript never
+// carried is skipped.
+func (f delegateAttentionFold) turnsForArriving(ids []string) []schema.Turn {
+	if len(ids) == 0 {
+		return nil
+	}
+	allowed := make(map[string]struct{}, len(ids))
 	for _, attentionID := range ids {
+		allowed[attentionID] = struct{}{}
+	}
+	turns := make([]schema.Turn, 0, len(ids))
+	for _, attentionID := range f.order {
+		if _, ok := allowed[attentionID]; !ok {
+			continue
+		}
 		if turn, ok := f.turns[attentionID]; ok {
 			turns = append(turns, turn)
 		}
@@ -617,7 +628,7 @@ func (s *Session) appendDelegateAttentionMessageDurably(attentionID string, mess
 		if s.delegateController == nil || s.owningDelegateID == "" || delegateAttentionDeliveryBacked(attentionID) {
 			return nil
 		}
-		return s.delegateController.queueDelegateAttentionRider(s.owningDelegateID, attentionID)
+		return s.delegateController.ensureDelegateAttentionQueuedIfUnresolved(s.owningDelegateID, attentionID)
 	}
 
 	s.mu.Lock()
@@ -659,12 +670,13 @@ func (s *Session) appendDelegateAttentionMessageDurably(attentionID string, mess
 		if err := s.retainDelegateAttentionTurn(durableFold.turns[attentionID]); err != nil {
 			return false, err
 		}
-		// The journal row was queued by the call that appended this message, and
-		// only that call may queue it. A repeat route of the same message finds
-		// the content already present, which says nothing about the row: it may
-		// have been presented and consumed since, and re-queueing it here would
-		// deliver the same report twice. The bootstrap migration that rebuilds a
-		// pre-queue journal seeds the row from the transcript itself.
+		// The message is durable but the journal row may not be: the append that
+		// wrote the transcript can fail before its queue event lands. The repair
+		// leaves a resolved row alone, so a repeat route of an already-presented
+		// report is still a no-op.
+		if err := queueChildRow(); err != nil {
+			return false, fmt.Errorf("attention %q was not queued: %w", attentionID, err)
+		}
 		return false, nil
 	}
 	turn := delegateAttentionTurn(attentionID, message, s.sclock().Now())
@@ -940,7 +952,7 @@ func (s *Session) pendingDelegateAttentionIDsLocked() ([]string, error) {
 		return nil, nil
 	}
 	if s.owningDelegateID != "" && s.delegateController != nil {
-		return s.delegateController.unheldDelegateAttentionIDs(s.owningDelegateID), nil
+		return s.dropAwaitingAttentionResolutionLocked(s.delegateController.unheldDelegateAttentionIDs(s.owningDelegateID)), nil
 	}
 	fold, err := s.delegateAttentionFoldLocked()
 	if err != nil {
@@ -975,7 +987,7 @@ func (s *Session) automaticDelegateAttentionIDs() ([]string, error) {
 	}
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
-	ids := s.delegateController.unheldDelegateAttentionIDs(s.owningDelegateID)
+	ids := s.dropAwaitingAttentionResolutionLocked(s.delegateController.unheldDelegateAttentionIDs(s.owningDelegateID))
 	if len(ids) == 0 {
 		return nil, nil
 	}
@@ -1097,11 +1109,14 @@ func (s *Session) pendingAttentionTurnsLocked() ([]schema.Turn, error) {
 	if s.owningDelegateID == "" || s.delegateController == nil {
 		return fold.pendingTurns(s.attentionAcceptedID), nil
 	}
-	ids := s.delegateController.unheldDelegateAttentionIDs(s.owningDelegateID)
+	// A presented row whose resolution is still awaiting retry stays out: the
+	// model already read it, and re-injecting it would replay a message the
+	// next request must not present again.
+	ids := s.dropAwaitingAttentionResolutionLocked(s.delegateController.unheldDelegateAttentionIDs(s.owningDelegateID))
 	if s.attentionAcceptedID != "" {
 		ids = appendUniqueStrings(ids, s.attentionAcceptedID)
 	}
-	return fold.turnsFor(ids), nil
+	return fold.turnsForArriving(ids), nil
 }
 
 // attentionTurns returns the turns of history that carry an attention identity.
@@ -1325,12 +1340,94 @@ func (s *Session) finishAttentionTurn(ids []string, turnErr error) error {
 	// The queue is the durable authority for this turn, and the row must leave
 	// while the generation still runs or the root keeps counting it as owed
 	// work. A failed append is a warning, not a turn failure: the row stays
-	// pending and the next drive presents it again.
+	// pending, and the ids join attentionAwaitingResolution so no later drive
+	// presents attention the model already read. A paced retry
+	// (flushAwaitingDelegateAttentionResolutions) resolves them once the
+	// journal recovers.
 	if err := s.delegateController.forgetDelegateAttention(s.owningDelegateID, covered...); err != nil {
+		s.noteAttentionAwaitingResolution(covered)
 		s.warnDelegateAttentionFailed(delegateAttentionResolveLabel, s.owningDelegateID, err)
+		s.delegateController.retryDelegateAttentionLater()
 		return nil
 	}
+	s.clearAttentionAwaitingResolution(covered)
+	s.delegateAttentionWarningResolved(delegateAttentionResolveLabel, s.owningDelegateID)
 	resolvedIDs = covered
+	return nil
+}
+
+// noteAttentionAwaitingResolution records the presented rows whose journal
+// resolution append failed, so no drive presents them again before the retry
+// resolves them.
+func (s *Session) noteAttentionAwaitingResolution(ids []string) {
+	if s == nil || len(ids) == 0 {
+		return
+	}
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	if s.attentionAwaitingResolution == nil {
+		s.attentionAwaitingResolution = make(map[string]struct{}, len(ids))
+	}
+	for _, id := range ids {
+		s.attentionAwaitingResolution[id] = struct{}{}
+	}
+}
+
+// clearAttentionAwaitingResolution ends the retry episode for ids whose
+// resolution append finally landed.
+func (s *Session) clearAttentionAwaitingResolution(ids []string) {
+	if s == nil || len(ids) == 0 {
+		return
+	}
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	for _, id := range ids {
+		delete(s.attentionAwaitingResolution, id)
+	}
+}
+
+// dropAwaitingAttentionResolutionLocked removes the presented-but-unresolved
+// ids from a selectable list. Callers hold attentionMu; unheld rows that were
+// never presented stay in the list, so a plain retry still presents them.
+func (s *Session) dropAwaitingAttentionResolutionLocked(ids []string) []string {
+	if len(s.attentionAwaitingResolution) == 0 {
+		return ids
+	}
+	kept := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if _, awaiting := s.attentionAwaitingResolution[id]; !awaiting {
+			kept = append(kept, id)
+		}
+	}
+	return kept
+}
+
+// flushAwaitingDelegateAttentionResolutions retries the journal resolution of
+// every row a settled request presented whose first append failed. The model
+// already read those rows, so the drive and the drain both withhold them from
+// triggering another request until this retry lands and removes them from
+// delegatestore. Ids leave the awaiting set only on a successful append, so a
+// failing journal keeps them withheld instead of replaying them.
+func (s *Session) flushAwaitingDelegateAttentionResolutions() error {
+	if s == nil || s.delegateController == nil || s.owningDelegateID == "" {
+		return nil
+	}
+	s.attentionMu.Lock()
+	if len(s.attentionAwaitingResolution) == 0 {
+		s.attentionMu.Unlock()
+		return nil
+	}
+	awaiting := make([]string, 0, len(s.attentionAwaitingResolution))
+	for id := range s.attentionAwaitingResolution {
+		awaiting = append(awaiting, id)
+	}
+	s.attentionMu.Unlock()
+	sort.Strings(awaiting)
+	if err := s.delegateController.forgetDelegateAttention(s.owningDelegateID, awaiting...); err != nil {
+		return err
+	}
+	s.clearAttentionAwaitingResolution(awaiting)
+	s.delegateAttentionWarningResolved(delegateAttentionResolveLabel, s.owningDelegateID)
 	return nil
 }
 

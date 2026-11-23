@@ -72,34 +72,6 @@ func TestAttentionHeldReleasesOnFreshWake(t *testing.T) {
 	}
 }
 
-// TestAttentionHeldReleasesThroughGeneration pins the release form: it ends
-// every hold at or below the named generation and leaves a newer hold standing,
-// while advancing the legacy release floor.
-func TestAttentionHeldReleasesThroughGeneration(t *testing.T) {
-	t.Parallel()
-	state := attentionTestState(t,
-		createdEvent("dlg_hold", ""),
-		attentionQueuedEvent("dlg_hold", "att_old", true),
-		attentionQueuedEvent("dlg_hold", "att_new", true),
-		attentionHeldEvent("dlg_hold", "att_old", 1),
-		attentionHeldEvent("dlg_hold", "att_new", 4),
-		attentionHeldEvent("dlg_hold", "", 2),
-	)
-	aggregate := state["dlg_hold"]
-	if got := aggregate.PendingAttention[0].HeldThrough; got != 0 {
-		t.Fatalf("att_old HeldThrough = %d, want released", got)
-	}
-	if got := aggregate.PendingAttention[1].HeldThrough; got != 4 {
-		t.Fatalf("att_new HeldThrough = %d, want 4 (newer than the release)", got)
-	}
-	if aggregate.AttentionHoldReleasedGeneration != 2 {
-		t.Fatalf("release floor = %d, want 2", aggregate.AttentionHoldReleasedGeneration)
-	}
-	if !aggregate.NeedsAttention {
-		t.Fatal("released row did not raise NeedsAttention in the same Apply")
-	}
-}
-
 // TestAttentionHeldDoesNotResurrectResolvedRow pins that a hold racing a
 // resolution is a no-op: it never re-adds a row the queue no longer holds.
 func TestAttentionHeldDoesNotResurrectResolvedRow(t *testing.T) {
@@ -129,5 +101,39 @@ func TestAttentionHeldRejectsZeroGeneration(t *testing.T) {
 	}
 	if _, err := Fold(events); err == nil {
 		t.Fatal("Fold accepted a hold with generation zero")
+	}
+}
+
+// TestAttentionResolvedSetStaysDisjointFromTheQueue pins the folded memory a
+// cold restore needs: a resolution records its id even after the row is gone,
+// and a later queue of the same id takes it back out, so the two sets can never
+// both name one attention row.
+func TestAttentionResolvedSetStaysDisjointFromTheQueue(t *testing.T) {
+	t.Parallel()
+	state := attentionTestState(t,
+		createdEvent("dlg_hold", ""),
+		attentionQueuedEvent("dlg_hold", "att_one", true),
+		attentionResolvedEvent("dlg_hold", "att_one"),
+	)
+	aggregate := state["dlg_hold"]
+	if _, ok := aggregate.ResolvedAttention["att_one"]; !ok {
+		t.Fatalf("resolved set = %v, want att_one recorded", aggregate.ResolvedAttention)
+	}
+	if len(aggregate.PendingAttention) != 0 {
+		t.Fatalf("resolved row stayed queued: %v", attentionRows(aggregate))
+	}
+	// A requeue of the same id (a redelivery) leaves the resolved set.
+	state = attentionTestState(t,
+		createdEvent("dlg_hold", ""),
+		attentionQueuedEvent("dlg_hold", "att_one", true),
+		attentionResolvedEvent("dlg_hold", "att_one"),
+		attentionQueuedEvent("dlg_hold", "att_one", true),
+	)
+	aggregate = state["dlg_hold"]
+	if _, ok := aggregate.ResolvedAttention["att_one"]; ok {
+		t.Fatalf("requeued id stayed resolved: %v", aggregate.ResolvedAttention)
+	}
+	if got := attentionRows(aggregate); !reflect.DeepEqual(got, []string{"att_one"}) {
+		t.Fatalf("requeued row = %v, want att_one pending", got)
 	}
 }

@@ -919,6 +919,9 @@ func (h *delegateLifecycleHarness) drainPendingStop() (int, error) {
 		if err != nil {
 			return 0, err
 		}
+		progress := len(reconcilePlans.updates) != 0 || len(reconcilePlans.deliveries) != 0 ||
+			len(reconcilePlans.attention) != 0 || len(reconcilePlans.shellRepairs) != 0 ||
+			reconcilePlans.attentionFinalization != nil
 		acknowledged, err := h.executeLifecyclePlans(reconcilePlans)
 		if err != nil {
 			return acknowledged, err
@@ -927,7 +930,7 @@ func (h *delegateLifecycleHarness) drainPendingStop() (int, error) {
 		h.c.mu.Lock()
 		stillPending := h.c.stop
 		h.c.mu.Unlock()
-		if stillPending == pending {
+		if stillPending == pending && !progress {
 			// No progress: the stop is waiting on something this harness
 			// never launches. Leave it pending (the model keeps stopPending).
 			return totalAcknowledged, nil

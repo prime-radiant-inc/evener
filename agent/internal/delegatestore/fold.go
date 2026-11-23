@@ -390,7 +390,7 @@ func applyRunStarted(state State, event Event) error {
 		// An explicit send is a newer event than any stop that quieted a row:
 		// its generation presents the delegate's pending attention, so every
 		// hold this delegate carried ends with the send.
-		releaseAttentionHolds(aggregate, 0)
+		releaseAttentionHolds(aggregate)
 	}
 	// The start itself settles the projection the queue derives: a generation
 	// that carries no rows presents what the transcript already resolved, so a
@@ -679,8 +679,12 @@ func applyAttentionQueued(state State, event Event) error {
 			Committed:   payload.Committed,
 		})
 	}
+	// A queued id is pending again, so the two sets stay disjoint even under an
+	// arbitrary replay (a resolve before its queue event, or a requeue after a
+	// resolution).
+	delete(aggregate.ResolvedAttention, payload.AttentionID)
 	if payload.Committed {
-		releaseAttentionHolds(aggregate, 0)
+		releaseAttentionHolds(aggregate)
 	}
 	recomputeNeedsAttention(state, event.DelegateID)
 	return nil
@@ -695,32 +699,24 @@ func applyAttentionHeld(state State, event Event) error {
 	if err != nil {
 		return err
 	}
+	if payload.AttentionID == "" {
+		return fmt.Errorf("delegate %q attention hold id is empty", event.DelegateID)
+	}
 	if payload.Generation == 0 {
 		return fmt.Errorf("delegate %q attention hold names no generation", event.DelegateID)
 	}
-	if payload.AttentionID != "" {
-		if row := pendingAttentionRow(aggregate, payload.AttentionID); row != nil && row.HeldThrough < payload.Generation {
-			row.HeldThrough = payload.Generation
-		}
-	} else if payload.Generation > aggregate.AttentionHoldReleasedGeneration {
-		aggregate.AttentionHoldReleasedGeneration = payload.Generation
-		releaseAttentionHolds(aggregate, payload.Generation)
+	if row := pendingAttentionRow(aggregate, payload.AttentionID); row != nil && row.HeldThrough < payload.Generation {
+		row.HeldThrough = payload.Generation
 	}
 	recomputeNeedsAttention(state, event.DelegateID)
 	return nil
 }
 
-// releaseAttentionHolds clears every hold at or below through; through zero
-// clears them all.
-func releaseAttentionHolds(aggregate *Aggregate, through uint64) {
+// releaseAttentionHolds clears every hold on the delegate's queue.
+func releaseAttentionHolds(aggregate *Aggregate) {
 	for i := range aggregate.PendingAttention {
 		row := &aggregate.PendingAttention[i]
-		if row.HeldThrough == 0 {
-			continue
-		}
-		if through == 0 || row.HeldThrough <= through {
-			row.HeldThrough = 0
-		}
+		row.HeldThrough = 0
 	}
 }
 
@@ -736,7 +732,12 @@ func applyAttentionResolved(state State, event Event) error {
 	if _, err := requireAggregate(state, event.DelegateID); err != nil {
 		return err
 	}
-	removePendingAttention(state[event.DelegateID], payload.AttentionID)
+	aggregate := state[event.DelegateID]
+	removePendingAttention(aggregate, payload.AttentionID)
+	if aggregate.ResolvedAttention == nil {
+		aggregate.ResolvedAttention = make(map[string]struct{})
+	}
+	aggregate.ResolvedAttention[payload.AttentionID] = struct{}{}
 	recomputeNeedsAttention(state, event.DelegateID)
 	return nil
 }
@@ -1209,6 +1210,12 @@ func cloneAggregate(aggregate *Aggregate) *Aggregate {
 	}
 	clone.PendingAttention = make([]PendingAttention, len(aggregate.PendingAttention))
 	copy(clone.PendingAttention, aggregate.PendingAttention)
+	if aggregate.ResolvedAttention != nil {
+		clone.ResolvedAttention = make(map[string]struct{}, len(aggregate.ResolvedAttention))
+		for id := range aggregate.ResolvedAttention {
+			clone.ResolvedAttention[id] = struct{}{}
+		}
+	}
 	return &clone
 }
 

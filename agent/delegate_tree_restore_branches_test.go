@@ -402,18 +402,5 @@ func TestExecuteDelegateAttentionCleanupStabilizeNilRuntime(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// resolveDelegateAttentionDurably with nil runtime and nil controller open
-// ---------------------------------------------------------------------------
-
-func TestResolveDelegateAttentionDurablyNilRuntimeInvalidRef(t *testing.T) {
-	t.Parallel()
-	c := &delegateTreeController{stateDir: "/nonexistent"}
-	err := c.resolveDelegateAttentionDurably(nil, "invalid-ref", []string{"att_1"}, delegateAttentionDiscarded)
-	if err == nil {
-		t.Fatalf("expected error for invalid ref with nil runtime")
-	}
-}
-
 var _ = fmt.Sprintf
 var _ = json.Marshal

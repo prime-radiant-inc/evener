@@ -66,6 +66,12 @@ func TestDelegateUpdatePendingAcrossCompactionIsPresentedAndConsumedOnce(t *test
 	if _, err := sess.appendDelegateNotificationDurably(updateID, compactedAttentionText); err != nil {
 		t.Fatalf("append update attention: %v", err)
 	}
+	// The delivery's acknowledgment publishes the queue row in production; this
+	// setup writes the transcript directly, so seed the row the acknowledgment
+	// would have queued.
+	if !controller.noteDelegateAttentionForTest("dlg_coordinator", updateID) {
+		t.Fatal("seed the update in the delegate queue")
+	}
 	compactAfterAttention(t, sess)
 
 	turns := 0
@@ -280,59 +286,6 @@ func TestRootDelegateAttentionKeepsDeliveryOrderAcrossCompactionRestart(t *testi
 	if first < 0 || second < 0 || first > second {
 		t.Fatalf("resumed history holds the items at %d and %d, want both with the first ahead", first, second)
 	}
-}
-
-const acceptedTriggerText = `<delegate-notification delegate_id="dlg_worker" kind="update">TRIGGER_ITEM</delegate-notification>`
-
-// acceptedTriggerSession is a delegate runtime that has accepted an attention
-// generation whose trigger is old enough for a fold to summarize away, with a
-// later item still pending.
-func acceptedTriggerSession(t *testing.T) *Session {
-	t.Helper()
-	sess, _ := newCompactableSession(t)
-	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerIdle(t, controller, "dlg_target", "")
-	controller.mu.Lock()
-	controller.live["dlg_target"] = &delegateLiveState{runtime: sess}
-	controller.mu.Unlock()
-	sess.delegateController = controller
-	sess.owningDelegateID = "dlg_target"
-
-	const triggerID, laterID = "delegate:dlg_worker/delivery/1", "delegate:dlg_worker/delivery/2"
-	const laterText = `<delegate-notification delegate_id="dlg_worker" kind="update">LATER_ITEM</delegate-notification>`
-	if _, err := sess.appendDelegateNotificationDurably(triggerID, acceptedTriggerText); err != nil {
-		t.Fatalf("append trigger: %v", err)
-	}
-	controller.noteDelegateAttention("dlg_target", triggerID)
-	seedNumberedSessionHistory(t, sess, 12)
-	if _, err := sess.appendDelegateNotificationDurably(laterID, laterText); err != nil {
-		t.Fatalf("append later item: %v", err)
-	}
-	controller.noteDelegateAttention("dlg_target", laterID)
-
-	reservation, err := controller.ReserveAttention(sess, triggerID)
-	if err != nil {
-		t.Fatalf("ReserveAttention: %v", err)
-	}
-	sess.holdAcceptedTrigger(triggerID)
-	// No drive owns this accepted reservation, so nothing commits it; release
-	// it the way a drive that cannot commit does, before the session and the
-	// controller close (cleanups are LIFO), so Close finds no start to wait on.
-	t.Cleanup(func() {
-		if err := controller.AbortStart(reservation); err != nil {
-			t.Errorf("AbortStart: %v", err)
-		}
-	})
-	return sess
-}
-
-// indexOfAttentionTurn returns the position of attentionID's steering turn in
-// history, or -1 when history holds none. Rows can carry identical content, so
-// a position assertion asks for the row's identity rather than its text.
-func indexOfAttentionTurn(history []schema.Turn, attentionID string) int {
-	return slices.IndexFunc(history, func(turn schema.Turn) bool {
-		return turn.AttentionID == attentionID && turn.Kind == schema.TurnSteering
-	})
 }
 
 // Once a settled round of the active turn has presented a delegate attention

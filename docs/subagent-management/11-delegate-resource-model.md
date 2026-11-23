@@ -925,21 +925,23 @@ work/watch/delivery receipt in the operation's subtree has settled, the controll
 delegate_subtree_stop_completed and changes stopped delegates to idle. New
 delegate_send calls may then start a later generation.
 
-Stop completion also waits until the read-only receiver-transcript fold finds
-no pending attention entry owned inside the stopped subtree. These entries are
-distinct from aggregate owner-delivery packets. While a sender remains in the
-pending stop, no new owner delivery is admitted. Stop completion discards
-packets whose receiver delegate is covered by that same stop, because
-re-notifying a stopped ancestor would reopen the subtree; packets owed to the
-root or an owner outside the subtree remain queued and become eligible only
-after completion. The controller keeps new admissions closed and captures
-exact transcript references plus evidence versions under its mutex. After
-unlock, cleanup appends and fsyncs an idempotent discarded resolution marker
-for each exact attention ID without constructing or consulting a runtime, then
-re-reads the transcript fold and reports the evidence. Cancellation can commit
-a new attention entry, so cleanup repeats until one final locked validation of
-an immediately preceding empty transcript fold observes no active work or
-receipts and can append stop completed in that same critical section.
+Stop completion also waits until the stopped subtree owes no attention in
+delegatestore. These rows are distinct from aggregate owner-delivery packets.
+While a sender remains in the pending stop, no new owner delivery is admitted.
+Stop completion discards packets whose receiver delegate is covered by that
+same stop, because re-notifying a stopped ancestor would reopen the subtree;
+packets owed to the root or an owner outside the subtree remain queued and
+become eligible only after completion. The controller keeps new admissions
+closed and captures exact attention plans plus evidence versions under its
+mutex. After unlock, cleanup resolves each row through one delegatestore
+Apply — removing it from PendingAttention, recording it in
+ResolvedAttention, and recomputing NeedsAttention and the published
+projection — without constructing or consulting a runtime. No child transcript
+marker is written, so a cold stop needs no transcript writer, and a transcript
+row the journal already resolved is history rather than work. Cancellation can
+commit a new attention entry, so cleanup repeats until one final locked
+validation observes no active work, receipts, or unheld attention row and can
+append stop completed in that same critical section.
 
 Delivery admission serializes with stop by creating one process-local receipt
 under the controller mutex after revalidating the exact head and receiver.
@@ -952,27 +954,28 @@ post-unlock plan never appends attention to a receiver transcript without an
 accounted receipt.
 
 After restart there is no resident runtime or shell process to query. Root
-initialization snapshots covered transcript references, shell-store paths, and
-a process-only evidence version under the controller lock, then uses a
-missing-file-tolerant read-only transcript fold to collect exact pending
-attention IDs plus folded running-shell/pending-notification identities outside
-the lock. It reads each durable shell source before its receiver transcript:
-because source acknowledgement is receiver-fsync-first, that order cannot
-observe both sides absent during the handoff. Shell finalization reports its
-controller evidence-version change only after the terminal generation and
-pending source state are durable. Reconciliation returns exact
-transcript-discard and shell-store
-repair plans. After unlock, the caller revalidates the exact shell records,
-appends shell stopped/runtime_lost plus consumed source-notification state for
-the covered stop, clears shell-only terminal watches, and appends the attention
-resolution markers—all without constructing a child Session or provider.
-Runtime-loss repair outside a pending stop preserves the ordinary shell
-pending-notification contract. It then collects read-only evidence again and
-repeats until the controller accepts the unchanged evidence version and the
+initialization snapshots transcript references, shell-store paths, and a
+process-only evidence version under the controller lock, then uses a
+missing-file-tolerant read-only shell store to collect exact
+running-shell/pending-notification identities outside the lock. Attention needs
+no transcript read: the folded queue is the authority for what a delegate owes,
+and bootstrap reads a transcript only to backfill a row a pre-queue journal
+never carried. The restart reads each durable shell source before the
+receiver-side state it feeds: because source acknowledgement is
+receiver-fsync-first, that order cannot observe both sides absent during the
+handoff. Shell finalization reports
+its controller evidence-version change only after the terminal generation and
+pending source state are durable. Reconciliation returns shell-store repair and
+attention-resolution plans. After unlock, the caller revalidates the exact shell
+records, appends shell stopped/runtime_lost plus consumed source-notification
+state for the covered stop, clears shell-only terminal watches, and resolves
+each attention row in delegatestore—all without constructing a child Session or
+provider. Runtime-loss repair outside a pending stop preserves the ordinary
+shell pending-notification contract. It then collects read-only evidence again
+and repeats until the controller accepts the unchanged evidence version and the
 final locked empty-evidence check can complete the stop. Shell-store or
-transcript-resolution append failure keeps the stop pending. Transcript reads,
-transcript appends, and shell-store writes never occur while the controller
-mutex is held.
+resolution append failure keeps the stop pending. Transcript reads, transcript
+appends, and shell-store writes never occur while the controller mutex is held.
 
 max_wait_ms=0 returns after the durable request and cancellation dispatch.
 Positive max_wait_ms waits only up to the existing bounded limit and reports

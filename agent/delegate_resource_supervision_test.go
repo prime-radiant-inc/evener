@@ -4580,33 +4580,6 @@ func TestDelegateResourceSupervision_AttentionRefusedOnANotificationTurnIsRedriv
 	}
 }
 
-// resolvedDelegateAttention warms the stable supervision delegate, then
-// appends and opens one attention item on it and resolves that item with
-// disposition, leaving its wake noted. It returns the root's controller and
-// the delegate's ID.
-func resolvedDelegateAttention(t *testing.T, attentionID string, disposition delegateAttentionResolution) (*delegateTreeController, string) {
-	t.Helper()
-	fixture := newColdDelegateFixture(t, "")
-	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
-	})
-	root := restoreSupervisionRoot(t, fixture, nil)
-	sub := warmStableSupervisionDelegate(t, root, fixture)
-	waitForStableSupervisionRun(t, root, fixture.childID)
-
-	controller := root.delegateController
-	if appended, err := sub.sess.appendDelegateNotificationDurably(attentionID, "already handled"); err != nil || !appended {
-		t.Fatalf("append stable attention = appended:%t err:%v", appended, err)
-	}
-	if _, err := controller.openDelegateAttention(fixture.delegateID, attentionID); err != nil {
-		t.Fatalf("open stable attention: %v", err)
-	}
-	if err := sub.sess.resolveAttentionDurably([]string{attentionID}, disposition); err != nil {
-		t.Fatalf("resolve stable attention: %v", err)
-	}
-	return controller, fixture.delegateID
-}
-
 // warmStableSupervisionDelegate starts the warm run and acknowledges its result.
 // It does NOT wait for that run to quiesce: the run's finalizer outlives the
 // acknowledged result, because `running` goes false at the top of the finalize

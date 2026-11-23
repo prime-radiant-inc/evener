@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -50,12 +49,14 @@ func TestDelegateControllerCloseExecutesColdAttentionCleanup(t *testing.T) {
 	if err := c.Close(ctx); err != nil {
 		t.Fatalf("Close with synchronously repairable attention: %v", err)
 	}
-	pending, err := readPendingDelegateAttention(path, "child-dlg_target")
-	if err != nil {
-		t.Fatalf("read attention after close: %v", err)
-	}
-	if len(pending) != 0 {
-		t.Fatalf("attention after close = %#v, want durable resolution", pending)
+	// Close resolves the cold row in delegatestore; no transcript marker is
+	// written, so the journal is the record of the repair.
+	c.mu.Lock()
+	_, resolved := c.durable["dlg_target"].ResolvedAttention["attention-close"]
+	pendingRows := append([]delegatestore.PendingAttention(nil), c.durable["dlg_target"].PendingAttention...)
+	c.mu.Unlock()
+	if !resolved || len(pendingRows) != 0 {
+		t.Fatalf("attention after close resolved=%t pending=%#v, want the journal resolution", resolved, pendingRows)
 	}
 }
 
@@ -173,238 +174,6 @@ func TestDelegateColdAttentionResolutionIsDurableAndIdempotent(t *testing.T) {
 	}
 }
 
-func countAttentionResolutionTurns(t *testing.T, path, attentionID string) int {
-	t.Helper()
-	count := 0
-	for _, entry := range readAttentionTranscriptEntries(t, path) {
-		if resolution := entry.Turn.AttentionResolution; resolution != nil && resolution.AttentionID == attentionID {
-			count++
-		}
-	}
-	return count
-}
-
-func delegateTranscriptRef(t *testing.T, c *delegateTreeController, delegateID string) string {
-	t.Helper()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.durable[delegateID].Descriptor.TranscriptRef
-}
-
-// newAttentionResolutionFixture seeds one idle delegate whose only attention
-// item is pending in a closed transcript.
-func newAttentionResolutionFixture(t *testing.T, attentionID string) (c *delegateTreeController, path, sessionID, ref string) {
-	t.Helper()
-	const delegateID = "dlg_target"
-	sessionID = "child-dlg_target"
-	c, _ = newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerIdle(t, c, delegateID, "")
-	path = transcriptPath(c.stateDir, sessionID)
-	writeDelegateAttentionTranscript(t, path, sessionID, attentionID)
-	return c, path, sessionID, delegateTranscriptRef(t, c, delegateID)
-}
-
-// assertAttentionResolution requires one recorded resolution for attentionID
-// with the given disposition and resume generation, and exactly one marker.
-func assertAttentionResolution(t *testing.T, path, sessionID, attentionID string, want delegateAttentionResolution, wantGeneration uint64) {
-	t.Helper()
-	fold, err := readDelegateAttentionFold(path, sessionID)
-	if err != nil {
-		t.Fatalf("read attention after cleanup: %v", err)
-	}
-	if got := fold.resolutions[attentionID]; got != want || fold.resumeGenerations[attentionID] != wantGeneration {
-		t.Fatalf("recorded resolution = %q generation %d, want %q/%d", got, fold.resumeGenerations[attentionID], want, wantGeneration)
-	}
-	if got := countAttentionResolutionTurns(t, path, attentionID); got != 1 {
-		t.Fatalf("resolution turns = %d, want exactly 1", got)
-	}
-}
-
-// A stop keeps attention the transcript already resolved as recorded. The
-// resolver mode must keep the recorded disposition and resume generation and
-// append nothing, or the transcript would hold a conflicting second marker and
-// the stop could never complete.
-func TestDelegateAttentionDiscardUnlessResolvedKeepsARecordedResolution(t *testing.T) {
-	t.Parallel()
-	const attentionID = "attention-recorded"
-	c, path, sessionID, ref := newAttentionResolutionFixture(t, attentionID)
-	if err := appendColdAttentionResolutionForGenerationWithOpen(path, sessionID, []string{attentionID}, delegateAttentionConsumed, 2, transcript.OpenWriterForSession); err != nil {
-		t.Fatalf("record consumed attention: %v", err)
-	}
-	if err := c.resolveDelegateAttentionDurably(nil, ref, []string{attentionID}, delegateAttentionDiscardUnlessResolved); err != nil {
-		t.Fatalf("discard-unless-resolved cleanup: %v", err)
-	}
-	assertAttentionResolution(t, path, sessionID, attentionID, delegateAttentionConsumed, 2)
-}
-
-func TestDelegateAttentionDiscardUnlessResolvedRecordsOneDiscard(t *testing.T) {
-	t.Parallel()
-	const attentionID = "attention-pending"
-	c, path, sessionID, ref := newAttentionResolutionFixture(t, attentionID)
-	for range 2 {
-		if err := c.resolveDelegateAttentionDurably(nil, ref, []string{attentionID}, delegateAttentionDiscardUnlessResolved); err != nil {
-			t.Fatalf("discard-unless-resolved cleanup: %v", err)
-		}
-	}
-	assertAttentionResolution(t, path, sessionID, attentionID, delegateAttentionDiscarded, 0)
-}
-
-// A resolution can land between the stop's earlier read of the transcript and
-// the resolver's writer fold. The mode must decide from the writer's own fold,
-// not an earlier read, or the stop would request a different disposition and
-// fail with a conflicting resolution.
-func TestDelegateAttentionDiscardUnlessResolvedDecidesAtTheWriter(t *testing.T) {
-	t.Parallel()
-	const attentionID = "attention-resolved-during-cleanup"
-	c, path, sessionID, ref := newAttentionResolutionFixture(t, attentionID)
-	opened := false
-	c.attentionOpen = func(path, sessionID string) (*transcript.Writer, []transcript.Entry, error) {
-		if !opened {
-			opened = true
-			if err := appendColdAttentionResolutionForGenerationWithOpen(path, sessionID, []string{attentionID}, delegateAttentionConsumed, 2, transcript.OpenWriterForSession); err != nil {
-				return nil, nil, err
-			}
-		}
-		return transcript.OpenWriterForSession(path, sessionID)
-	}
-	if err := c.resolveDelegateAttentionDurably(nil, ref, []string{attentionID}, delegateAttentionDiscardUnlessResolved); err != nil {
-		t.Fatalf("discard-unless-resolved cleanup: %v", err)
-	}
-	assertAttentionResolution(t, path, sessionID, attentionID, delegateAttentionConsumed, 2)
-}
-
-func TestDelegateAttentionDiscardUnlessResolvedUsesTheResidentWriter(t *testing.T) {
-	t.Parallel()
-	const (
-		delegateID  = "dlg_target"
-		sessionID   = "child-dlg_target"
-		attentionID = "attention-resident-recorded"
-	)
-	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerIdle(t, c, delegateID, "")
-	ref := delegateTranscriptRef(t, c, delegateID)
-	path := transcriptPath(c.stateDir, sessionID)
-	writer, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	// The resident path must use the runtime's writer. The cold branch is the
-	// only caller of attentionOpen, so failing here proves it was not taken.
-	c.attentionOpen = func(string, string) (*transcript.Writer, []transcript.Entry, error) {
-		t.Fatal("cold writer used for a resident cleanup")
-		return nil, nil, nil
-	}
-	runtime := &Session{id: sessionID, stateDir: c.stateDir, transcript: writer, transcriptReady: true}
-	t.Cleanup(func() {
-		runtime.mu.Lock()
-		attached := runtime.transcript
-		runtime.mu.Unlock()
-		if attached != nil {
-			_ = attached.Close()
-		}
-	})
-	attention := schema.NewTurn(schema.TurnSteering, llm.User("attention"))
-	attention.AttentionID = attentionID
-	if err := runtime.writeTranscriptDurable(attention); err != nil {
-		t.Fatalf("write attention: %v", err)
-	}
-	if err := runtime.resolveAttentionDurablyForGeneration([]string{attentionID}, delegateAttentionConsumed, 2); err != nil {
-		t.Fatalf("record consumed attention: %v", err)
-	}
-	if err := c.resolveDelegateAttentionDurably(runtime, ref, []string{attentionID}, delegateAttentionDiscardUnlessResolved); err != nil {
-		t.Fatalf("discard-unless-resolved cleanup: %v", err)
-	}
-	assertAttentionResolution(t, path, sessionID, attentionID, delegateAttentionConsumed, 2)
-
-	const pendingAttentionID = "attention-resident-pending"
-	pending := schema.NewTurn(schema.TurnSteering, llm.User("pending attention"))
-	pending.AttentionID = pendingAttentionID
-	if err := runtime.writeTranscriptDurable(pending); err != nil {
-		t.Fatalf("write pending attention: %v", err)
-	}
-	if err := c.resolveDelegateAttentionDurably(runtime, ref, []string{pendingAttentionID}, delegateAttentionDiscardUnlessResolved); err != nil {
-		t.Fatalf("discard-unless-resolved cleanup of a pending item: %v", err)
-	}
-	assertAttentionResolution(t, path, sessionID, pendingAttentionID, delegateAttentionDiscarded, 0)
-}
-
-func TestDelegateAttentionDiscardUnlessResolvedRequiresTheTranscript(t *testing.T) {
-	t.Parallel()
-	const delegateID = "dlg_target"
-	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerIdle(t, c, delegateID, "")
-	ref := delegateTranscriptRef(t, c, delegateID)
-	err := c.resolveDelegateAttentionDurably(nil, ref, []string{"attention-missing"}, delegateAttentionDiscardUnlessResolved)
-	if !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("discard-unless-resolved against a missing transcript = %v, want not-exist", err)
-	}
-}
-
-// The resident cursor treats a missing transcript as an empty fold, so the
-// resident cleanup reports the item as not pending rather than a file error.
-// The stop still fails and retries; this pins the documented error class.
-func TestDelegateAttentionDiscardUnlessResolvedResidentMissingTranscript(t *testing.T) {
-	t.Parallel()
-	const (
-		delegateID  = "dlg_target"
-		sessionID   = "child-dlg_target"
-		attentionID = "attention-resident-missing"
-	)
-	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerIdle(t, c, delegateID, "")
-	path := transcriptPath(c.stateDir, sessionID)
-	writer, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	runtime := &Session{id: sessionID, stateDir: c.stateDir, transcript: writer, transcriptReady: true}
-	t.Cleanup(func() { _ = writer.Close() })
-	attention := schema.NewTurn(schema.TurnSteering, llm.User("attention"))
-	attention.AttentionID = attentionID
-	if err := runtime.writeTranscriptDurable(attention); err != nil {
-		t.Fatalf("write attention: %v", err)
-	}
-	if err := os.Remove(path); err != nil {
-		t.Fatalf("remove transcript: %v", err)
-	}
-	ref := delegateTranscriptRef(t, c, delegateID)
-	err = c.resolveDelegateAttentionDurably(runtime, ref, []string{attentionID}, delegateAttentionDiscardUnlessResolved)
-	if err == nil {
-		t.Fatal("resident cleanup against a missing transcript succeeded")
-	}
-	if errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("resident cleanup reported a file-not-exist error, want the fold's not-pending refusal: %v", err)
-	}
-}
-
-// A stop that finds a recorded consumed marker whose line landed but whose
-// fsync failed must renew that marker's durability barrier without appending a
-// second resolution.
-func TestDelegateAttentionDiscardUnlessResolvedRenewsARecordedConsumption(t *testing.T) {
-	t.Parallel()
-	const (
-		attentionID  = "attention-consumed-unsynced"
-		syncFailures = 2
-	)
-	c, path, sessionID, ref := newAttentionResolutionFixture(t, attentionID)
-	fs := newAttentionAmbiguousSyncFS()
-	open := func(path, expectedSessionID string) (*transcript.Writer, []transcript.Entry, error) {
-		return transcript.OpenWriterForSessionWithFS(fs, path, expectedSessionID)
-	}
-	fs.failNextAmbiguousDurability(syncFailures)
-	if err := appendColdAttentionResolutionForGenerationWithOpen(path, sessionID, []string{attentionID}, delegateAttentionConsumed, 2, open); err == nil {
-		t.Fatal("consumed marker with a failed fsync unexpectedly succeeded")
-	}
-	c.attentionOpen = open
-	if err := c.resolveDelegateAttentionDurably(nil, ref, []string{attentionID}, delegateAttentionDiscardUnlessResolved); err != nil {
-		t.Fatalf("discard-unless-resolved cleanup: %v", err)
-	}
-	if got := fs.successfulSyncsAfterFailure(); got == 0 {
-		t.Fatal("the cleanup completed without renewing durability for the unsynced consumption")
-	}
-	assertAttentionResolution(t, path, sessionID, attentionID, delegateAttentionConsumed, 2)
-}
-
 func TestDelegateAttentionAppendFailureLeavesStopPending(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
@@ -421,14 +190,20 @@ func TestDelegateAttentionAppendFailureLeavesStopPending(t *testing.T) {
 	if err != nil || len(plans.attention) != 1 {
 		t.Fatalf("Reconcile attention plans = %#v, err=%v", plans.attention, err)
 	}
-	if err := os.Remove(path); err != nil {
-		t.Fatalf("remove transcript fixture: %v", err)
+	// The discard appends its resolution to delegatestore; a failed journal
+	// append must leave the stop pending rather than complete it.
+	journalDown := errors.New("delegate journal unavailable")
+	c.appendFault = func(events []delegatestore.Event) error {
+		for _, event := range events {
+			if event.AttentionResolved != nil && event.AttentionResolved.AttentionID == "attention-failure" {
+				return journalDown
+			}
+		}
+		return nil
 	}
-	if err := os.Mkdir(path, 0o700); err != nil {
-		t.Fatalf("replace transcript fixture: %v", err)
-	}
-	if err := c.executeDelegateAttentionCleanup(plans.attention[0]); err == nil {
-		t.Fatal("attention cleanup succeeded against a directory")
+	t.Cleanup(func() { c.appendFault = nil })
+	if err := c.executeDelegateAttentionCleanup(plans.attention[0]); !errors.Is(err, journalDown) {
+		t.Fatalf("attention cleanup with a failing journal = %v, want %v", err, journalDown)
 	}
 	if c.stop == nil {
 		t.Fatal("attention append failure completed stop")
@@ -511,12 +286,14 @@ func TestDelegateAttentionCleanupRejectsNilRuntimeReplacementAndStaleEvidence(t 
 			if err := c.executeDelegateAttentionCleanup(plans.attention[0]); !errors.Is(err, errDelegateStaleLease) {
 				t.Fatalf("stale cleanup error = %v, want stale lease", err)
 			}
-			pending, err := readPendingDelegateAttention(path, "child-dlg_target")
-			if err != nil {
-				t.Fatalf("read resolved attention: %v", err)
-			}
-			if len(pending) != 0 || c.stop == nil {
-				t.Fatalf("stale report state pending=%#v stop=%#v", pending, c.stop)
+			// A rejected cleanup resolves nothing: the journal never records the
+			// stale report and the stop stays pending.
+			c.mu.Lock()
+			_, resolved := c.durable["dlg_target"].ResolvedAttention["attention-stale"]
+			stopPending := c.stop != nil
+			c.mu.Unlock()
+			if resolved || !stopPending {
+				t.Fatalf("stale report state resolved=%t stopPending=%t, want unresolved and pending", resolved, stopPending)
 			}
 		})
 	}
@@ -552,11 +329,11 @@ func TestDelegateControllerLiveAttentionCleanupKeepsOneWriterSequence(t *testing
 	if err := c.executeDelegateAttentionCleanup(plans.attention[0]); err != nil {
 		t.Fatalf("execute live cleanup: %v", err)
 	}
-	if err := runtime.resolveAttentionDurably([]string{"attention-live"}, delegateAttentionDiscarded); err != nil {
-		t.Fatalf("repeat live cleanup: %v", err)
-	}
-	if err := runtime.resolveAttentionDurably([]string{"attention-live"}, delegateAttentionConsumed); err == nil {
-		t.Fatal("conflicting live cleanup disposition succeeded")
+	c.mu.Lock()
+	_, resolved := c.durable["dlg_target"].ResolvedAttention["attention-live"]
+	c.mu.Unlock()
+	if !resolved {
+		t.Fatal("live cleanup did not resolve the row in the journal")
 	}
 	evidence, err = collectDelegateReconcileEvidence(c.stateDir, c.ReconcileRequirements())
 	if err != nil {
@@ -582,83 +359,16 @@ func TestDelegateControllerLiveAttentionCleanupKeepsOneWriterSequence(t *testing
 	if err := reopened.Close(); err != nil {
 		t.Fatalf("Close reopened writer: %v", err)
 	}
-	if len(entries) != 3 {
-		t.Fatalf("entry count = %d, want attention, resolution, resident write", len(entries))
+	if len(entries) != 2 {
+		t.Fatalf("entry count = %d, want attention and the resident write", len(entries))
 	}
 	for i, entry := range entries {
 		if entry.Seq != i {
 			t.Fatalf("entry %d sequence = %d, want %d", i, entry.Seq, i)
 		}
 	}
-	if entries[1].Turn.AttentionResolution == nil || entries[2].Turn.Message.Text() != "resident write after cleanup" {
+	if entries[1].Turn.Message.Text() != "resident write after cleanup" {
 		t.Fatalf("one-writer entry order = %#v", entries)
-	}
-}
-
-func TestDelegateControllerLiveAttentionCleanupRequiresUsableAttachedWriter(t *testing.T) {
-	for _, test := range []struct {
-		name   string
-		attach func(*testing.T, *Session, *transcript.Writer)
-	}{
-		{
-			name: "closed writer",
-			attach: func(t *testing.T, runtime *Session, writer *transcript.Writer) {
-				runtime.transcript = writer
-				runtime.transcriptReady = true
-				if err := writer.Close(); err != nil {
-					t.Fatalf("Close writer: %v", err)
-				}
-			},
-		},
-		{
-			name: "unattached writer",
-			attach: func(t *testing.T, _ *Session, writer *transcript.Writer) {
-				if err := writer.Close(); err != nil {
-					t.Fatalf("Close writer: %v", err)
-				}
-			},
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			c, _ := newDelegateControllerTestHarness(t, 1, 1)
-			seedDelegateControllerIdle(t, c, "dlg_target", "")
-			sessionID := "child-dlg_target"
-			path := schema.SessionTranscriptPath(c.stateDir, sessionID)
-			writer, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID})
-			if err != nil {
-				t.Fatalf("NewWriter: %v", err)
-			}
-			attention := schema.NewTurn(schema.TurnSteering, llm.User("attention"))
-			attention.AttentionID = "attention-live-unusable"
-			if err := writer.AppendDurable(attention); err != nil {
-				_ = writer.Close()
-				t.Fatalf("AppendDurable attention: %v", err)
-			}
-			runtime := &Session{id: sessionID, stateDir: c.stateDir}
-			test.attach(t, runtime, writer)
-			c.live["dlg_target"] = &delegateLiveState{runtime: runtime}
-			if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target"); err != nil {
-				t.Fatalf("StopSubtree: %v", err)
-			}
-			evidence, err := collectDelegateReconcileEvidence(c.stateDir, c.ReconcileRequirements())
-			if err != nil {
-				t.Fatalf("collect evidence: %v", err)
-			}
-			plans, err := c.Reconcile(evidence)
-			if err != nil || len(plans.attention) != 1 {
-				t.Fatalf("attention plans = %#v err=%v", plans.attention, err)
-			}
-			if err := c.executeDelegateAttentionCleanup(plans.attention[0]); err == nil {
-				t.Fatal("live cleanup succeeded without a usable attached writer")
-			}
-			pending, err := readPendingDelegateAttention(path, sessionID)
-			if err != nil {
-				t.Fatalf("read pending attention: %v", err)
-			}
-			if len(pending) != 1 || c.stop == nil {
-				t.Fatalf("failed live cleanup pending=%#v stop=%#v", pending, c.stop)
-			}
-		})
 	}
 }
 
@@ -684,12 +394,21 @@ func TestDelegateControllerStopRescansAttentionCreatedByCancellation(t *testing.
 	if err := c.drainStopForClose(ctx, c.stopForResult(result)); err != nil {
 		t.Fatalf("drain cancellation attention: %v", err)
 	}
-	pending, err := readPendingDelegateAttention(path, "child-dlg_target")
-	if err != nil {
-		t.Fatalf("read final attention: %v", err)
+	// The drain resolves both rows in delegatestore -- the one the evidence
+	// snapshot carried and the one cancellation created after it -- and the
+	// transcript keeps both messages because a child resolution writes no marker.
+	c.mu.Lock()
+	aggregate := c.durable["dlg_target"]
+	stopPending := c.stop != nil
+	resolved := make([]bool, 0, 2)
+	for _, attentionID := range []string{"attention-before-cancel", "attention-from-cancel"} {
+		_, done := aggregate.ResolvedAttention[attentionID]
+		resolved = append(resolved, done)
 	}
-	if len(pending) != 0 {
-		t.Fatalf("pending attention after repeated fold = %#v", pending)
+	pendingRows := append([]delegatestore.PendingAttention(nil), aggregate.PendingAttention...)
+	c.mu.Unlock()
+	if !resolved[0] || !resolved[1] || len(pendingRows) != 0 || stopPending {
+		t.Fatalf("attention after the drain resolved=%v pending=%#v stopPending=%t, want both resolved and the stop complete", resolved, pendingRows, stopPending)
 	}
 }
 
