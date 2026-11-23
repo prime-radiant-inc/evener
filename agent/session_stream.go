@@ -455,13 +455,14 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 		// Decode incrementally: this runs once per streamed argument delta, and
 		// re-deriving the whole message each time is quadratic in its length.
 		decoder := communicatePreviewDecoders[callID]
+		wasFound := decoder != nil && decoder.found
 		wasClosed := decoder != nil && decoder.closed
 		if decoder == nil {
 			decoder = &communicatePreviewDecoder{field: "message"}
 			communicatePreviewDecoders[callID] = decoder
 		}
 		message, ok := decoder.message(args)
-		if (!decoder.found || (decoder.closed && !wasClosed) || final) && isQuietCommunicatePreviewArgs(args) {
+		if (!wasFound || (decoder.closed && !wasClosed) || final) && isQuietCommunicatePreviewArgs(args) {
 			communicatePreviewSuppressed[callID] = true
 			if communicatePreviewStarted[callID] {
 				s.emit(events.CommunicatePreviewResetData{CallID: callID})

@@ -170,7 +170,7 @@ func (p *provider) toolRound(i int) (name, args string) {
 	return "shell", fmt.Sprintf(`{"command":"cat %s","description":"show %s"}`, file, file)
 }
 
-const endTurnArgs = `{"message":"done","end_turn":true,"output":{"message":"","data":{},"artifacts":[]}}`
+const endTurnArgs = `{"message":"done","next":"send_and_end_turn","output":{"message":"","data":{},"artifacts":[]}}`
 
 const files = 16
 

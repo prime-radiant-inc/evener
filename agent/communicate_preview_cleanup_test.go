@@ -335,6 +335,14 @@ func TestCommunicatePreviewSuppressesAndResetsQuietYield(t *testing.T) {
 			wantComms:  0,
 		},
 		{
+			name:       "next_and_message_opening_in_same_delta_emits_no_preview",
+			kind:       EntryNotification,
+			chunks:     []string{`{"next":"log_quietly_and_end_turn","message":"waiting `, `on job"}`},
+			wantStarts: 0,
+			wantResets: 0,
+			wantComms:  0,
+		},
+		{
 			name:            "message_before_next_quiet_yield_resets_preview_once",
 			kind:            EntryNotification,
 			chunks:          []string{`{"message":"waiting `, `on job",`, `"next":"log_quietly_and_end_turn"}`},

@@ -946,6 +946,102 @@ func TestRootBareTextFallbackArmedWatchSteers(t *testing.T) {
 	}
 }
 
+func TestRootBareTextFallbackPostReplyDrainNotificationParksQuietly(t *testing.T) {
+	t.Parallel()
+	for _, viaTool := range []bool{true, false} {
+		name := "after_bare_reply"
+		if viaTool {
+			name = "after_communicate_reply"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			adapter := newMessagingAdapter("DRAIN_CHILD")
+			childEntered, releaseChild := make(chan struct{}), make(chan struct{})
+			var closeRelease atomic.Bool
+			release := func() {
+				if closeRelease.CompareAndSwap(false, true) {
+					close(releaseChild)
+				}
+			}
+			t.Cleanup(release)
+			if viaTool {
+				adapter.script("root",
+					func(llm.Request) llm.Response {
+						return delegateToolResponse("spawn-1", "DRAIN_CHILD: background work")
+					},
+					func(llm.Request) llm.Response {
+						return agenttest.FinalResponse("REPORT_A")
+					},
+					func(llm.Request) llm.Response {
+						return bareTextResponse("housekeeping", llm.FinishReasonStop)
+					},
+				)
+			} else {
+				adapter.script("root",
+					func(llm.Request) llm.Response {
+						return bareTextResponse("REPORT_A", llm.FinishReasonStop)
+					},
+					func(llm.Request) llm.Response {
+						return bareTextResponse("housekeeping", llm.FinishReasonStop)
+					},
+				)
+			}
+			adapter.script("DRAIN_CHILD", func(llm.Request) llm.Response {
+				close(childEntered)
+				<-releaseChild
+				return agenttest.FinalResponse("child finished")
+			})
+			s := newMessagingRoot(t, adapter, func(c *SessionConfig) {
+				*c = minimalTestSessionConfig(t)
+				c.StateDir = t.TempDir()
+				c.MaxSubagentDepth = 1
+			})
+			evs, evMu, evDone := collectEvents(s)
+			defer func() {
+				release()
+				s.Close()
+				<-evDone
+			}()
+
+			ctx := tripwireCtx(t)
+			if out, err := s.ProcessInput(ctx, "Start work and reply", nil); err != nil || out != "REPORT_A" {
+				t.Fatalf("initial turn = (%q, %v), want REPORT_A", out, err)
+			}
+			if viaTool {
+				select {
+				case <-childEntered:
+				case <-ctx.Done():
+					t.Fatal("subagent never started")
+				}
+				release()
+				testwait.Until(t, "subagent completion attention ready for root notification turn", func() bool {
+					return !s.hasWorkingSubagent() && s.pendingRootDelegateAttention()
+				})
+			} else {
+				enqueueCompletedJobNotification(t, s, "trailing-job")
+			}
+
+			got, err := s.ProcessInputKind(ctx, "", nil, EntryNotification)
+			if err != nil {
+				t.Fatalf("notification ProcessInputKind: %v", err)
+			}
+			if got != "" || !s.quietlyYielded() || s.communicated() {
+				t.Fatalf("post-reply notification got=%q quiet=%t communicated=%t, want \"\" / true / false",
+					got, s.quietlyYielded(), s.communicated())
+			}
+
+			s.Close()
+			<-evDone
+			evMu.Lock()
+			commEvs := communicateEventsIn(*evs)
+			evMu.Unlock()
+			if len(commEvs) != 1 || commEvs[0].Message != "REPORT_A" {
+				t.Fatalf("EventCommunicate = %+v, want only REPORT_A", commEvs)
+			}
+		})
+	}
+}
+
 func TestQuietYieldRenamedResultToolHasNoProjectedToolCard(t *testing.T) {
 	const name = "respond"
 	s := newSession(t, withConfig(SessionConfig{ResultToolName: name}), withSteps(func(llm.Request) llm.Response {
