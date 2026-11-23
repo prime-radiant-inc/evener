@@ -201,6 +201,7 @@ const CLASS = {
   branch: requireClass(styles.branch, "spawn.module.css", "branch"),
   tileSeat: requireClass(styles.tileSeat, "spawn.module.css", "tileSeat"),
   tileText: requireClass(styles.tileText, "spawn.module.css", "tileText"),
+  tileHeadline: requireClass(styles.tileHeadline, "spawn.module.css", "tileHeadline"),
   tileCaption: requireClass(styles.tileCaption, "spawn.module.css", "tileCaption"),
   summaryRow: requireClass(styles.summaryRow, "spawn.module.css", "summaryRow"),
   accessTile: requireClass(styles.accessTile, "spawn.module.css", "accessTile"),
