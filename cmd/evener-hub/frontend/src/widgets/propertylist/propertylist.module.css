@@ -76,6 +76,14 @@
   white-space: normal;
 }
 
+/* An editable fact's value takes the rest of the row, so its control reaches
+   the row's right edge instead of shrinking to the input's intrinsic width.
+   The phone breakpoint stacks the row instead. */
+.controlValue {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 /* --- stacked ------------------------------------------------------
    Label over value, for a narrow sheet or a settings page: each value has a
    line of its own, so it wraps in full, and the rows sit further apart so

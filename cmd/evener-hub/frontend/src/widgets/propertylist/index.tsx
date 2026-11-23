@@ -88,6 +88,7 @@ const BASE_CLASS = {
   actions: requireClass(styles.actions, "propertylist.module.css", "actions"),
   controlRow: requireClass(styles.controlRow, "propertylist.module.css", "controlRow"),
   controlLabel: requireClass(styles.controlLabel, "propertylist.module.css", "controlLabel"),
+  controlValue: requireClass(styles.controlValue, "propertylist.module.css", "controlValue"),
   settingsList: requireClass(styles.settingsList, "propertylist.module.css", "settingsList"),
   settingsRow: requireClass(styles.settingsRow, "propertylist.module.css", "settingsRow"),
   settingsLabel: requireClass(styles.settingsLabel, "propertylist.module.css", "settingsLabel"),
@@ -185,6 +186,7 @@ export function PropertyList(props: PropertyListProps) {
                 row.mono && BASE_CLASS.mono,
                 row.muted && BASE_CLASS.muted,
                 (row.wrap || controlRow) && BASE_CLASS.wrap,
+                controlRow && BASE_CLASS.controlValue,
               )}
             >
               {row.value}
