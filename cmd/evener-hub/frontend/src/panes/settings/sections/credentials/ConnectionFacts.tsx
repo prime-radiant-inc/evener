@@ -129,6 +129,7 @@ export function connectionSettingsFields({
             id={id}
             value={vars[key] ?? ""}
             disabled={disabled}
+            fill
             onChange={(event) => onVariableChange(key, event.target.value)}
           />
         ),
@@ -172,6 +173,7 @@ export function connectionSettingsFields({
           placeholder="e.g. PORTKEY_KEY"
           value={apiKeyEnv}
           disabled={disabled}
+          fill
           onChange={(event) => onFieldChange("apiKeyEnv", event.target.value)}
         />
       ),
@@ -186,6 +188,7 @@ export function connectionSettingsFields({
           placeholder={credentialHeaderPlaceholder}
           value={credentialHeader}
           disabled={disabled}
+          fill
           onChange={(event) => onFieldChange("credentialHeader", event.target.value)}
         />
       ),
@@ -204,6 +207,7 @@ export function connectionSettingsFields({
                 value={codexClientVersion}
                 disabled={disabled}
                 placeholder="Registry default"
+                fill
                 onChange={(event) => onFieldChange("codexClientVersion", event.target.value)}
               />
             ),
