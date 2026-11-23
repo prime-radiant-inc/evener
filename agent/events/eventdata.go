@@ -104,6 +104,7 @@ func (RoundStartedData) eventKind() EventKind           { return EventRoundStart
 func (RoundEndedData) eventKind() EventKind             { return EventRoundEnded }
 func (ExecutionStartedData) eventKind() EventKind       { return EventExecutionStarted }
 func (ExecutionEndedData) eventKind() EventKind         { return EventExecutionEnded }
+func (HubObservationData) eventKind() EventKind         { return EventHubObservation }
 func (ExecutionFirstRecordedData) eventKind() EventKind { return EventExecutionFirstRecorded }
 
 // Compile-time assertions that every payload satisfies EventData. A new payload
@@ -166,4 +167,5 @@ var (
 	_ EventData = ExecutionStartedData{}
 	_ EventData = ExecutionEndedData{}
 	_ EventData = ExecutionFirstRecordedData{}
+	_ EventData = HubObservationData{}
 )

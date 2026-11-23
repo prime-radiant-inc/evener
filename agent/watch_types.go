@@ -227,6 +227,10 @@ type watchConfig struct {
 	hubCompletion      bool
 	hubTurnBound       bool
 	hubTurnID          string
+	// hubStatus is the status type this watch most recently learned, from a
+	// snapshot or a status notification. The next transition names it as
+	// previous_status; empty means the watch has not learned one yet.
+	hubStatus          string
 	hubSeen            map[string]bool
 	hubSuspended       bool
 	rosterRevision     uint64

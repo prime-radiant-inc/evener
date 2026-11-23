@@ -1152,3 +1152,44 @@ type TurnStartedData struct {
 	// turn already gets.
 	TurnID string `json:"turn_id,omitempty"`
 }
+
+// HubObservationData is the payload of EventHubObservation: one observation a
+// hub watch received about another session. Event discriminates the shape —
+// status, question or approval — and each shape fills only its own fields.
+//
+// This payload is rendered by the watch frame alone (agent/watch_frame.go) and
+// is never appended to a session's event stream or the model's transcript, so
+// its fields are bounded at render time rather than trusted from the source.
+type HubObservationData struct {
+	Event string `json:"event"`
+
+	// Status observations: a thread/status/changed or thread/closed
+	// notification, or the replay of the snapshot they left behind.
+	Status          string   `json:"status,omitempty"`
+	PreviousStatus  string   `json:"previous_status,omitempty"`
+	Method          string   `json:"method,omitempty"`
+	ActiveFlags     []string `json:"active_flags,omitempty"`
+	AskPending      *bool    `json:"ask_pending,omitempty"`
+	FailedToolCalls *int     `json:"failed_tool_calls,omitempty"`
+	ActiveTurnID    string   `json:"active_turn_id,omitempty"`
+	EndedTurnID     string   `json:"ended_turn_id,omitempty"`
+
+	// Question observations: the first question of a pending ask and the
+	// option labels a client can render, as the snapshot reports them. A live
+	// ask notification carries no question text, so those frames name the
+	// status and turn instead.
+	Question string   `json:"question,omitempty"`
+	Options  []string `json:"options,omitempty"`
+	Count    int      `json:"count,omitempty"`
+
+	// Approval observations: a sandbox-escalation approval card. DeniedPath is
+	// the full resolved location an approval reaches and RequestedPath the
+	// spelling when it differs; file contents never appear.
+	EscalationID   string `json:"escalation_id,omitempty"`
+	Tool           string `json:"tool,omitempty"`
+	EscalationKind string `json:"escalation_kind,omitempty"`
+	Mode           string `json:"mode,omitempty"`
+	DeniedPath     string `json:"denied_path,omitempty"`
+	RequestedPath  string `json:"requested_path,omitempty"`
+	Command        string `json:"command,omitempty"`
+}

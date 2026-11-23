@@ -27,14 +27,7 @@ func rosterTestWatch(t *testing.T) (*jobManager, string) {
 }
 
 func rosterTestEvents(t *testing.T, jm *jobManager, id string) []jobstore.WatchSendState {
-	t.Helper()
-	var got []jobstore.WatchSendState
-	for _, event := range loadJobStoreEvents(t, jm) {
-		if event.Kind == jobstore.EventWatchSendPending && event.WatchSend != nil && event.WatchSend.Key.WatchID == id {
-			got = append(got, *event.WatchSend)
-		}
-	}
-	return got
+	return hubWatchFrameEvents(t, jm, id)
 }
 
 func rosterUpdate(revision uint64, initial bool, entries ...appwire.RosterEvent) appwire.SessionWatchUpdate {

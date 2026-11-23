@@ -183,6 +183,12 @@ const (
 	// EventExecutionEnded marks an execution over, after its completion entry
 	// is recorded.
 	EventExecutionEnded EventKind = "EXECUTION_ENDED"
+	// EventHubObservation carries what a Manager's hub watch observed about
+	// another session: a status transition, a pending question, or a sandbox
+	// approval request. It never rides a session's event stream — the watch
+	// frame is its only renderer — and the kind exists so the payload stays in
+	// the sealed set with every other typed payload.
+	EventHubObservation EventKind = "HUB_OBSERVATION"
 )
 
 // SessionEvent is a single timestamped event on a session's event stream,
