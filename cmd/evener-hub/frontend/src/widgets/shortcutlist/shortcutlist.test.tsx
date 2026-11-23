@@ -91,5 +91,5 @@ test("alternative bindings, a multi-press sequence, and an unbound action each r
     ["g", "g"],
     [],
   ]);
-  expect(terms[2].firstElementChild?.className).toContain(styles.unbound);
+  expect(terms[2]?.firstElementChild?.className).toContain(styles.unbound);
 });
