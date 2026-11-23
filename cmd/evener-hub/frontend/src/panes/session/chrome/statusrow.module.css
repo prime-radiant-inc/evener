@@ -130,16 +130,19 @@
     gap: var(--space-1);
   }
 
+  /* Clip, don't unrender: this is the compact row's only spoken reading. */
   .contextMeter {
-    display: none;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
   }
 
   .contextPercent {
     display: inline;
   }
 
-  /* The effort control's narrow-pane floor lives in
-   * reasoningeffortcontrol.module.css, beside the control itself. */
 }
 
 /* Above the phone floor the effort control keeps its fixed width: shrinking
