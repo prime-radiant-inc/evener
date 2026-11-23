@@ -1,0 +1,12 @@
+/* The open-state rotation lives with the glyph, not with each consumer. The
+ * target is the svg itself - a square box, so turning it cannot widen its
+ * painted box (see index.tsx). */
+.chevron[data-open="true"] {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .chevron {
+    transition: transform var(--motion-duration-hover) var(--motion-easing-standard);
+  }
+}

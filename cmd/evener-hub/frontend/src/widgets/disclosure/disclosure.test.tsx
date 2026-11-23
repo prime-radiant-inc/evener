@@ -7,6 +7,7 @@ import { act, useState } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import { MOBILE_QUERY } from "../../shell/useIsMobile";
 import { escapeRegExp } from "../../styles/cssBlock";
+import { Chevron } from "../chevron";
 import { beginDisclosureBaseline, resetDisclosureStoreForTests, setDisclosureOpen } from "./disclosureStore";
 import { Disclosure } from "./index";
 
@@ -110,6 +111,36 @@ test("variant defaults to the filled row and quiet is reported on the disclosure
   expect(screen.getByTestId("quiet").dataset.variant).toBe("quiet");
   fireEvent.click(screen.getByText("Quiet"));
   expect((screen.getByTestId("quiet") as HTMLDetailsElement).open).toBe(true);
+});
+
+test("leading receives the widget's open state and summaryClassName lands on the summary", () => {
+  render(
+    <Disclosure
+      id="leading-row"
+      summary={<span data-testid="summary-slot" />}
+      data-testid="leading-details"
+      summaryClassName="caller-summary"
+      leading={(open) => (
+        <span data-testid="leading-slot" data-open={open ? "true" : "false"}>
+          <Chevron open={open} />
+        </span>
+      )}
+    >
+      <span data-testid="leading-body" />
+    </Disclosure>,
+  );
+  const details = screen.getByTestId("leading-details");
+  const summary = details.querySelector("summary");
+  if (summary === null) throw new Error("the disclosure rendered no summary");
+  const leading = screen.getByTestId("leading-slot");
+  expect(summary.firstElementChild).toBe(leading);
+  expect(summary.querySelectorAll("svg")).toHaveLength(1);
+  expect(leading.getAttribute("data-open")).toBe("false");
+  expect(summary.className.split(" ")).toContain("caller-summary");
+
+  fireEvent.click(summary);
+  expect(screen.getByTestId("leading-slot").getAttribute("data-open")).toBe("true");
+  expect(screen.getByTestId("leading-body")).toBeTruthy();
 });
 
 // Declaration-level (jsdom runs no cascade): the quiet variant drops the hover
@@ -365,9 +396,10 @@ test("keeps the summary at the narrow-viewport tap floor", () => {
 
 // --- A6: opening animates, subtly, and honors prefers-reduced-motion -----
 
-test("the chevron rotation and the body fade are declared with real motion", () => {
+test("the body fade is declared with real motion; the chevron's rotation lives with Chevron", () => {
   const css = motionCss();
-  expect(css).toMatch(/\.chevron\s*\{[^}]*transition:\s*transform/);
+  expect(css).not.toMatch(/\.chevron[^}]*transition:\s*transform/);
+  expect(css).not.toMatch(/rotate\(90deg\)/);
   // The body fades in by the shared reveal recipe, which owns the keyframes,
   // its tokens and its reduced-motion gate (styles/motion.contract.test.ts).
   expect(css).toMatch(/\.body\s*\{[^}]*composes:\s*bodyReveal from "\.\.\/\.\.\/styles\/motion\.module\.css"/);
@@ -378,29 +410,20 @@ test("every motion declaration uses an existing motion token - no invented durat
   const css = motionCss();
   const durations = css.match(/(?:transition|animation):[^;]*?(\d+m?s)/g);
   expect(durations).toBe(null); // no literal duration anywhere
-  // A chevron turning is the Move recipe: the hover duration, standard easing.
-  expect(css).toMatch(
-    /\.chevron\s*\{[^}]*transition:\s*transform var\(--motion-duration-hover\) var\(--motion-easing-standard\)/,
-  );
+  // The summary's hover wash is the only transition left here, and it uses the
+  // shared hover duration.
+  expect(css).toMatch(/\.summary\s*\{[^}]*transition:\s*background-color var\(--motion-duration-hover\)/);
 });
 
-test("the chevron rotation sits inside a prefers-reduced-motion: no-preference gate", () => {
+test("no transform motion is left ungated in the disclosure's own stylesheet", () => {
   const css = motionCss();
-  // The chevron/body open motion must live in the gated block, so a reader
-  // who asked for less motion gets an instant open. Interactive-response
-  // hover feedback (the app-wide --motion-duration-hover budget every widget
-  // chrome pass applies) is deliberately NOT gated here - it's not the
-  // idle-adjacent spatial motion prefers-reduced-motion targets. That's
-  // asserted generally below rather than pinned to a fixed set of
-  // properties: every `transition:` outside the gate must be a
-  // background-color response, whatever else the rule declares alongside it.
-  const gated = /@media\s*\(prefers-reduced-motion:\s*no-preference\)\s*\{([\s\S]*?)\n\}/.exec(css);
-  expect(gated).not.toBeNull();
-  expect(gated![1]).toMatch(/\.chevron\s*\{[^}]*transition:\s*transform/);
-  const outsideGate = css.replace(gated![0], "");
-  expect(outsideGate).not.toMatch(/\.chevron\s*\{[^}]*transition:\s*transform/);
-
-  const transitions = outsideGate.match(/transition:\s*[^;]+;/g) ?? [];
+  // The chevron rotation moved to widgets/chevron, which gates its transition.
+  // Disclosure's remaining transitions are hover-feedback background-color
+  // responses, which are deliberately not gated (see chevron.test.tsx for the
+  // gated transform).
+  expect(css).not.toMatch(/@media\s*\(prefers-reduced-motion:\s*no-preference\)/);
+  expect(css).not.toMatch(/transition:\s*transform/);
+  const transitions = css.match(/transition:\s*[^;]+;/g) ?? [];
   expect(transitions.length).toBeGreaterThan(0);
   for (const declaration of transitions) {
     expect(declaration).toMatch(/^transition:\s*background-color\b/);

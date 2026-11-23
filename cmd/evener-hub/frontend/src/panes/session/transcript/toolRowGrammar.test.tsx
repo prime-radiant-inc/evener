@@ -753,8 +753,10 @@ test("the chevron reports its open state for the stylesheet's rotation, and is h
   const chevron = screen.getByTestId("tool-row-chevron");
   expect(chevron.getAttribute("aria-hidden")).toBe("true");
   expect(chevron.getAttribute("data-open")).toBe("false");
+  expect(chevron.querySelector("svg")?.getAttribute("data-open")).toBe("false");
   fireEvent.click(screen.getByTestId("tool-row-trigger"));
   expect(screen.getByTestId("tool-row-chevron").getAttribute("data-open")).toBe("true");
+  expect(screen.getByTestId("tool-row-chevron").querySelector("svg")?.getAttribute("data-open")).toBe("true");
 });
 
 test("an expandable row reads as clickable - a pointer cursor and a hover state", () => {
@@ -1144,42 +1146,37 @@ test("the demoted summary line is readable text (--ink-mid), not the placeholder
 
 // --- A6: the tool disclosure animates, subtly, honoring reduced motion ----
 
-test("the chevron rotation and the body fade are declared with real motion", () => {
+test("the body fade is declared with real motion; the chevron's rotation lives in its widget", () => {
   const css = rowCss();
-  expect(css).toMatch(/\.chevron\s*>\s*svg\s*\{[^}]*transition:\s*transform/);
+  expect(css).not.toMatch(/\.chevron\s*>\s*svg/);
+  expect(css).not.toMatch(/transition:\s*transform/);
   // The body fades in by the shared reveal recipe, which owns the keyframes,
   // its tokens and its reduced-motion gate (styles/motion.contract.test.ts).
   expect(css).toMatch(/\.body\s*\{[^}]*composes:\s*bodyReveal from "\.\.\/\.\.\/\.\.\/styles\/motion\.module\.css"/);
   expect(css).not.toMatch(/@keyframes/);
 });
 
-// The chevron SPAN is 1lh tall (first-line alignment) and so not square:
-// turning IT paints ~3.5px past its 14px layout box on each side, which at
-// the trailing edge escapes the row (overflowguard, 2026-07-28). The square
-// svg turns instead - a square rotates within its own bounds.
-test("the open-state rotation turns the square svg, never the 1lh-tall span", () => {
+// The chevron SPAN is 1lh tall (first-line alignment) and so not square, and
+// the old `> svg` reach-in turned the child from outside the widget. Chevron
+// now rotates its own square svg, so the row declares no rotation at all.
+test("the row leaves the open-state rotation to the shared Chevron widget", () => {
   const css = rowCss();
-  expect(css).toMatch(/\.chevron\[data-open="true"\]\s*>\s*svg\s*\{[^}]*transform:\s*rotate\(90deg\)/);
-  expect(css).not.toMatch(/\.chevron\[data-open="true"\]\s*\{/);
+  expect(css).not.toMatch(/rotate\(90deg\)/);
+  expect(css).not.toMatch(/\.chevron\[data-open=/);
 });
 
-test("the row's motion uses only existing motion tokens - no invented duration", () => {
+test("the row declares no motion of its own, so it invents no duration", () => {
   const css = rowCss();
   expect(css.match(/(?:transition|animation):[^;]*?\d+m?s/g)).toBe(null);
-  // A chevron turning is the Move recipe: the hover duration, standard easing.
-  expect(css).toMatch(
-    /\.chevron\s*>\s*svg\s*\{[^}]*transition:\s*transform var\(--motion-duration-hover\) var\(--motion-easing-standard\)/,
-  );
+  expect(css).not.toMatch(/\btransition:/);
+  expect(css).not.toMatch(/\banimation:/);
 });
 
-test("all of the row's motion sits behind a prefers-reduced-motion gate", () => {
+test("the row declares no ungated motion of its own", () => {
   const css = rowCss();
-  const gates = css.match(/@media\s*\(prefers-reduced-motion:\s*no-preference\)\s*\{[\s\S]*?\n\}/g);
-  expect(gates).not.toBeNull();
-  let outsideGates = css;
-  for (const gate of gates ?? []) outsideGates = outsideGates.replace(gate, "");
-  expect(outsideGates).not.toMatch(/\btransition:/);
-  expect(outsideGates).not.toMatch(/\banimation:/);
+  expect(css).not.toMatch(/@media\s*\(prefers-reduced-motion/);
+  expect(css).not.toMatch(/\btransition:/);
+  expect(css).not.toMatch(/\banimation:/);
 });
 
 // --- kata xw3t: summaryLink linkifies a URL embedded in the row's own

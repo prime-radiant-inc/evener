@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Chevron } from "../../widgets/chevron";
 import { Disclosure } from "../../widgets/disclosure";
 import { ThemeFlip } from "../ThemeFlip";
 import styles from "./disclosure.module.css";
@@ -34,6 +35,18 @@ function DisclosureDemo() {
       </Disclosure>
       <Disclosure id="gallery-disclosure-rule-closed" summary="5 actions" variant="rule">
         <p className={styles.body}>A rule disclosure, collapsed.</p>
+      </Disclosure>
+      <Disclosure
+        id="gallery-disclosure-leading"
+        summary="Run · 3 steps"
+        summaryClassName={styles.leadingSummary}
+        leading={(open) => <Chevron open={open} />}
+        defaultOpen
+      >
+        <p className={styles.body}>
+          leading supplies the glyph and receives the widget's open state; summaryClassName carries the caller's own
+          summary layout.
+        </p>
       </Disclosure>
       <Disclosure id="gallery-disclosure-ignore-baseline" summary="Shared notes updated · 1.2K chars" ignoreBaseline>
         <p className={styles.body}>

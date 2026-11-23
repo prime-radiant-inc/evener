@@ -41,38 +41,52 @@
 </style>
 </head>
 <body data-font-size="m">
-<!-- ToolRunGroup.tsx's render inside the wrapper TurnBlock.tsx gives a run
-     that is a whole card on its own:
+<!-- ToolRunGroup.tsx's render through widgets/disclosure's Disclosure, inside
+     the wrapper TurnBlock.tsx gives a run that is a whole card on its own:
 
        <div class="toolRunSegment" data-tool-card="only">
-         <details class="group" open>
-           <summary class="summary"><span class="chevron">…</span><span class="label">…</span></summary>
-           <div class="body">{rows}</div>
+         <details class="disclosure-details" open data-variant="default">
+           <summary class="disclosure-summary summary">
+             <svg class="chevron" … data-open="true"></svg>
+             <span class="label">…</span>
+           </summary>
+           <div class="disclosure-body">
+             <div class="body">{rows}</div>
+           </div>
          </details>
        </div>
 
-     The body is mounted only while the run is open. -->
+     The details, summary, leading chevron, and body wrapper are the real
+     Disclosure structure the transcript renders. `disclosure-*` are that
+     module's class names after this case prefixes them (case.json's
+     cssClassPrefixes), so its .body and .summary can load next to
+     toolrungroup.module.css's without colliding. The body is mounted only
+     while the run is open. -->
 <main class="fixtures">
   <div class="toolRunSegment" data-tool-card="only">
-    <details class="group" id="closed" data-testid="tool-run">
-      <summary class="summary" id="closed-summary"><span class="chevron" aria-hidden="true" data-open="false"></span><span class="label">Read 2 files</span></summary>
+    <details class="disclosure-details" id="closed" data-testid="tool-run" data-variant="default">
+      <summary class="disclosure-summary summary" id="closed-summary"><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" data-open="false" style="display: block;"><path d="M6 3.5 L10.5 8 L6 12.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg><span class="label">Read 2 files</span></summary>
     </details>
   </div>
   <div class="toolRunSegment" data-tool-card="only">
-    <details class="group" id="open" data-testid="tool-run" open>
-      <summary class="summary" id="open-summary"><span class="chevron" aria-hidden="true" data-open="true"></span><span class="label">Read 2 files</span></summary>
-      <div class="body">
-        <div class="standInRow">Read a.go</div>
-        <div class="standInRow">Read b.go <button type="button" class="standInOpen" id="open-control" aria-label="Open b.go beside"></button></div>
+    <details class="disclosure-details" id="open" data-testid="tool-run" data-variant="default" open>
+      <summary class="disclosure-summary summary" id="open-summary"><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" data-open="true" style="display: block;"><path d="M6 3.5 L10.5 8 L6 12.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg><span class="label">Read 2 files</span></summary>
+      <div class="disclosure-body">
+        <div class="body">
+          <div class="standInRow">Read a.go</div>
+          <div class="standInRow">Read b.go <button type="button" class="standInOpen" id="open-control" aria-label="Open b.go beside"></button></div>
+        </div>
       </div>
     </details>
   </div>
   <div class="toolRunSegment" data-tool-card="only">
-    <details class="group" id="banded" data-testid="tool-run" open>
-      <summary class="summary"><span class="chevron" aria-hidden="true" data-open="true"></span><span class="label">Read 2 files</span></summary>
-      <div class="body">
-        <div class="standInRow">Read a.go</div>
-        <div class="standInRow">Read b.go<div class="standInBand" id="band">evidence</div></div>
+    <details class="disclosure-details" id="banded" data-testid="tool-run" data-variant="default" open>
+      <summary class="disclosure-summary summary"><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" data-open="true" style="display: block;"><path d="M6 3.5 L10.5 8 L6 12.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg><span class="label">Read 2 files</span></summary>
+      <div class="disclosure-body">
+        <div class="body">
+          <div class="standInRow">Read a.go</div>
+          <div class="standInRow">Read b.go<div class="standInBand" id="band">evidence</div></div>
+        </div>
       </div>
     </details>
   </div>
@@ -93,13 +107,17 @@ window.measure = () => {
   const banded = document.getElementById("banded");
   const b = band.getBoundingClientRect();
   const g = banded.getBoundingClientRect();
+  const openSummary = document.getElementById("open-summary");
+  const firstRow = document.querySelector("#open > .disclosure-body > .body > .standInRow");
+  const firstRowGap = firstRow.getBoundingClientRect().top - openSummary.getBoundingClientRect().bottom;
   return {
     cardRadius: radius(document.getElementById("closed")),
     controlHeight: o.height,
     controlBottomReachesControl: owns(control, bottomHit),
     controlBottomHit: name(bottomHit),
     closedSummaryCornerPainted: cornerOwned(document.getElementById("closed-summary")),
-    openSummaryRadius: radius(document.getElementById("open-summary")),
+    openSummaryRadius: radius(openSummary),
+    firstRowGap,
     bandReachesCardEdge: Math.abs(b.bottom - (g.bottom - 1)) <= 0.5 && Math.abs(b.left - (g.left + 1)) <= 0.5,
     bandCornerPainted: cornerOwned(band),
   };
