@@ -772,7 +772,6 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 		var provisionalItems []appwire.ThreadItem
 		var commentaryParts []string
 		var quietTexts []string
-		firstTextPart := -1
 		var toolCallIDs []string
 		// lastAssistantText feeds EchoesAssistantText: a communicate tool call
 		// whose message echoes the assistant text already shown in this turn is
@@ -791,9 +790,6 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 				if part.Text != "" {
 					if turn.QuietYield {
 						if trimmed := strings.TrimSpace(part.Text); trimmed != "" {
-							if firstTextPart < 0 {
-								firstTextPart = i
-							}
 							quietTexts = append(quietTexts, trimmed)
 						}
 						continue
@@ -877,7 +873,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 			}
 		}
 		if turn.QuietYield {
-			if item, qpart, ok := quietYieldAssistantItem(turnID, turnIndex, firstTextPart, turn, quietTexts); ok {
+			if item, qpart, ok := quietYieldAssistantItem(turnID, turnIndex, turn, quietTexts); ok {
 				items = append(items, item)
 				recordPart(parts, qpart)
 			}
@@ -1146,7 +1142,6 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, re
 	var lastAssistantText string
 	var commentaryParts []string
 	var quietTexts []string
-	firstTextPart := -1
 	var toolCallIDs []string
 	var hasCommunicate bool
 	var possiblyQuietIDs []string
@@ -1161,9 +1156,6 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, re
 		if runStart >= 0 && run.Len() > 0 {
 			if turn.QuietYield {
 				if trimmed := strings.TrimSpace(run.String()); trimmed != "" {
-					if firstTextPart < 0 {
-						firstTextPart = runStart
-					}
 					quietTexts = append(quietTexts, trimmed)
 				}
 				run.Reset()
@@ -1257,7 +1249,7 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, re
 	}
 	flushRun()
 	if turn.QuietYield {
-		if item, qpart, ok := quietYieldAssistantItem(turnID, turnIndex, firstTextPart, turn, quietTexts); ok {
+		if item, qpart, ok := quietYieldAssistantItem(turnID, turnIndex, turn, quietTexts); ok {
 			items = append(items, item)
 			recordPart(parts, qpart)
 		}
@@ -1275,17 +1267,17 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, re
 	return items
 }
 
-func quietYieldAssistantItem(turnID string, turnIndex, firstTextPart int, turn schema.Turn, textParts []string) (appwire.ThreadItem, int, bool) {
+func quietYieldAssistantItem(turnID string, turnIndex int, turn schema.Turn, textParts []string) (appwire.ThreadItem, int, bool) {
 	fullText := strings.Join(textParts, "\n\n")
 	note := schema.NormalizeQuietNote(fullText)
 	commentary := ""
 	if fullText != "" && fullText != note {
 		commentary = fullText
 	}
-	part := firstTextPart
-	if part < 0 {
-		part = len(turn.Message.Content)
-	}
+	// Synthetic assistant quiet-yield notice always lands after all loop-emitted
+	// content parts so item positions stay strictly ascending for transcriptindex
+	// binary search even when text preceded thinking.
+	part := len(turn.Message.Content)
 	item, ok := quietYieldSystemItem(turnID, turnIndex, part, turn, "", note, commentary, turn.Authorship)
 	return item, part, ok
 }

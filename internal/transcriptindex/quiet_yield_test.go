@@ -725,6 +725,15 @@ func TestBareTextQuietYieldAssistantParity(t *testing.T) {
 				Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "Single line note"}},
 			}}, 5)),
 			entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_2", Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}}, 6)),
+			entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_3", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("order")}, 7)),
+			entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_3", RoundID: "r_bare_3", Authorship: author, Kind: schema.TurnAssistant, QuietYield: true, Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentText, Text: "Text before thought"},
+					{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "trailing-thought"}},
+				},
+			}}, 8)),
+			entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_3", Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}}, 9)),
 		},
 	}
 
@@ -760,6 +769,11 @@ func TestBareTextQuietYieldAssistantParity(t *testing.T) {
 	if !reflect.DeepEqual(coldWin.Candidates, ref) {
 		t.Fatalf("cold diverges from reference:\ncold: %s\nref:  %s", dump(coldWin.Candidates), dump(ref))
 	}
+	for i, c := range coldWin.Candidates {
+		if _, found, err := cold.findItem(c.Position); err != nil || !found {
+			t.Fatalf("candidate %d (%s) at position %+v not found by binary search (found=%v err=%v)", i, c.Item.ID, c.Position, found, err)
+		}
+	}
 	var reasonings, quiets []appwire.ThreadItem
 	for _, c := range coldWin.Candidates {
 		switch {
@@ -771,11 +785,11 @@ func TestBareTextQuietYieldAssistantParity(t *testing.T) {
 			quiets = append(quiets, c.Item)
 		}
 	}
-	if len(reasonings) != 1 || reasonings[0].Text != "quiet-thought" {
-		t.Fatalf("reasonings=%+v, want quiet-thought", reasonings)
+	if len(reasonings) != 2 || reasonings[0].Text != "quiet-thought" || reasonings[1].Text != "trailing-thought" {
+		t.Fatalf("reasonings=%+v, want [quiet-thought, trailing-thought]", reasonings)
 	}
-	if len(quiets) != 2 {
-		t.Fatalf("quiets=%+v, want 2", quiets)
+	if len(quiets) != 3 {
+		t.Fatalf("quiets=%+v, want 3", quiets)
 	}
 	if quiets[0].RoundID != "r_bare_1" || quiets[0].Text != schema.NormalizeQuietNote(multiline) {
 		t.Fatalf("first quiet=%+v, want RoundID=r_bare_1 normalized multiline", quiets[0])
@@ -785,5 +799,8 @@ func TestBareTextQuietYieldAssistantParity(t *testing.T) {
 	}
 	if quiets[1].RoundID != "r_bare_2" || quiets[1].Text != "Single line note" || len(quiets[1].Raw) != 0 {
 		t.Fatalf("second quiet=%+v, want RoundID=r_bare_2 Text=\"Single line note\" empty Raw", quiets[1])
+	}
+	if quiets[2].RoundID != "r_bare_3" || quiets[2].Text != "Text before thought" || len(quiets[2].Raw) != 0 {
+		t.Fatalf("third quiet=%+v, want RoundID=r_bare_3 Text=\"Text before thought\" empty Raw", quiets[2])
 	}
 }
