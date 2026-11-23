@@ -299,6 +299,9 @@ parameter-list inference.
 top-level `max_completion_tokens` or `max_output_tokens`, a server's
 `limits.max_output_tokens`, or the OpenAI listing's `max_output_tokens` /
 `output_token_limit`.
+A catalog cap at or above the window is junk and clears at resolution; a
+live cap equal to the window is the endpoint's own statement and stays,
+while a cap above the window clears from every layer.
 
 The same per-model block states two wire-shaping facts, applied through the
 live layer on every protocol though only the two OpenAI-shaped listings report

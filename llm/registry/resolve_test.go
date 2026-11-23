@@ -1466,6 +1466,23 @@ func TestResolve_LiveInputModalitiesReachCaps(t *testing.T) {
 	}
 }
 
+// An OpenAI-compatible server may advertise an output cap equal to its
+// context window: the live listing is the serving endpoint's own statement
+// of its limits, so the resolved row keeps the advertised cap. Only catalog
+// spellings are junk at equality; every layer loses a cap above the window.
+func TestResolve_LiveEqualWindowOutputCapStays(t *testing.T) {
+	t.Parallel()
+	r := fixtureLoad(t, nil, "")
+	r.ApplyLive("openrouter", []Model{{
+		ID:   "Inkling-2-Mini",
+		Caps: Caps{ContextWindow: new(262144), MaxOutputTokens: new(262144)},
+	}})
+	res := mustResolve(t, r, "openrouter/Inkling-2-Mini")
+	if res.Caps.MaxOutputTokens == nil || *res.Caps.MaxOutputTokens != 262144 || res.Provenance["MaxOutputTokens"] != "live" {
+		t.Fatalf("an advertised live cap equal to the window must stay: %v (%s)", res.Caps.MaxOutputTokens, res.Provenance["MaxOutputTokens"])
+	}
+}
+
 // A live listing's tools verdict reaches the resolved row, including the
 // override of a catalog fact. This guards the live-layer plumbing the gateway
 // reader depends on; it passes before the capabilities.tools parse because

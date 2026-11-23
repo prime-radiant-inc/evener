@@ -172,11 +172,17 @@ func TestDerive_MaxOutputTokensJunkCap(t *testing.T) {
 	if caps.MaxOutputTokens == nil || *caps.MaxOutputTokens != 2000 {
 		t.Fatal("a user-layer cap is kept as written")
 	}
+	caps = Caps{ContextWindow: new(262144), MaxOutputTokens: new(262144)}
+	prov = map[string]string{"MaxOutputTokens": "live"}
+	derive(&caps, &m, deriveInput{Protocol: ProtocolOpenAIChat}, prov)
+	if caps.MaxOutputTokens == nil || *caps.MaxOutputTokens != 262144 {
+		t.Fatal("a live cap equal to the window is the endpoint's own statement and stays")
+	}
 	caps = Caps{ContextWindow: new(1000), MaxOutputTokens: new(2000)}
 	prov = map[string]string{"MaxOutputTokens": "live"}
 	derive(&caps, &m, deriveInput{Protocol: ProtocolOpenAIChat}, prov)
 	if caps.MaxOutputTokens != nil {
-		t.Fatal("a live cap ≥ window is cleared")
+		t.Fatal("a live cap above the window is cleared")
 	}
 }
 
