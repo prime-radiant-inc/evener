@@ -909,26 +909,32 @@ test("phone Overview enters its selected category and contains sequential keyboa
 });
 
 test("phone Overview reopening during its exit returns focus to its selected category", async () => {
-  const user = userEvent.setup();
   connectionStore.getState().connect(activityClient());
   installFocusedScope(ref);
   const opener = document.body.appendChild(document.createElement("button"));
   opener.textContent = "Open Overview";
   opener.addEventListener("click", () => activitySidebarStore.getState().openWith("about", opener));
   try {
-    opener.focus();
     opener.click();
     mount(true);
     const sidebar = await screen.findByTestId("activity-sidebar");
     const strip = screen.getByRole("radiogroup");
     const about = screen.getByRole("radio", { name: "About" });
     await waitFor(() => expect(document.activeElement).toBe(about));
-    await user.keyboard("{Escape}");
-    await waitFor(() => expect(document.activeElement).toBe(opener), { timeout: 1_500 });
+    // Close and reopen in separate synchronous commits. No timer or frame can
+    // run between them, so the exit animation cannot finish and the aside
+    // stays mounted: the reopen must re-arm entry focus on this same strip
+    // rather than mount a fresh one. AboutTab's rapid-reopen test uses the
+    // same no-yield pattern.
+    act(() => {
+      fireEvent.keyDown(window, { key: "Escape" });
+    });
     expect(activitySidebarStore.getState().open).toBe(false);
-    // The exit animation keeps the aside mounted. Reopening the same session
-    // before it finishes must queue entry focus again on the same strip.
-    await user.keyboard("{Enter}");
+    expect(sidebar.isConnected).toBe(true);
+    opener.focus();
+    act(() => {
+      fireEvent.click(opener);
+    });
     expect(activitySidebarStore.getState().open).toBe(true);
     expect(screen.getByTestId("activity-sidebar")).toBe(sidebar);
     expect(screen.getByRole("radiogroup")).toBe(strip);
