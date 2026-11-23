@@ -13,6 +13,13 @@ const CLASS = {
 
 interface DisclosureCommonProps {
   summary: ReactNode;
+  /** The disclosure's own glyph, when it must lead the summary text instead of
+   * trailing it. It receives the widget's open state, and supplying it replaces
+   * the built-in trailing chevron: one triangle, turned by the widget, with no
+   * caller descendant selector. */
+  leading?: (open: boolean) => ReactNode;
+  /** Caller layout for the widget's summary (card-row geometry and the like). */
+  summaryClassName?: string;
   children: ReactNode;
   /** "quiet" drops the hover fill, the open-state wash, and the summary's
    * inline inset: chevron and summary text in the content column, the body
@@ -57,6 +64,8 @@ interface DisclosureViewProps extends DisclosureCommonProps {
 
 function DisclosureView({
   summary,
+  leading,
+  summaryClassName,
   children,
   variant = "default",
   disabled = false,
@@ -68,7 +77,7 @@ function DisclosureView({
     <details className={CLASS.details} open={open} data-testid={testId} data-variant={variant}>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; see ToolCallItem.tsx */}
       <summary
-        className={CLASS.summary}
+        className={summaryClassName ? `${CLASS.summary} ${summaryClassName}` : CLASS.summary}
         aria-disabled={disabled || undefined}
         tabIndex={disabled ? -1 : undefined}
         onClick={(event) => {
@@ -76,10 +85,11 @@ function DisclosureView({
           if (!disabled) requestToggle();
         }}
       >
+        {leading?.(open)}
         {summary}
-        {variant !== "rule" && (
-          <span className={CLASS.chevron} aria-hidden="true" data-open={open ? "true" : "false"}>
-            <Chevron />
+        {variant !== "rule" && !leading && (
+          <span className={CLASS.chevron} aria-hidden="true">
+            <Chevron open={open} />
           </span>
         )}
       </summary>
