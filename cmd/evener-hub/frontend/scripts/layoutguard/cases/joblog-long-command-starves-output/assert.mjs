@@ -5,7 +5,8 @@
 // @tanstack/virtual-core renders no range at all (outerSize === 0). The reader
 // then sees the command and no output, forever.
 //
-// The measured facts are the two boxes' client heights inside the log column.
+// The measured facts are the two boxes' client heights inside the log column,
+// plus the command block's computed overflow-y.
 // The bounds are stated as shares of the column rather than as the command
 // block's own cap, so the case keeps its meaning if the value is tuned: the
 // output keeps at least half, the command never takes more than half. They are
@@ -82,7 +83,14 @@ export default function assert({ viewportHeight, documentHeight, long, short }) 
   }
 
   // The long command is taller than its block, so the rest stays reachable by
-  // scrolling inside the block rather than being clipped away.
+  // scrolling inside the block rather than being clipped away. A capped block
+  // with overflow-y:hidden keeps the same box sizes, so the dimension check
+  // alone would pass while the overflow is clipped: require a scroller.
+  if (long.commandOverflowY !== "auto" && long.commandOverflowY !== "scroll") {
+    failures.push(
+      `the long command's block is overflow-y:${long.commandOverflowY} - its overflow must scroll, not clip`,
+    );
+  }
   if (!(long.commandScrollHeight > long.commandClientHeight + TOLERANCE_PX)) {
     failures.push(
       `the long command is not scrollable inside its block (client ${long.commandClientHeight}px, scroll ${long.commandScrollHeight}px) - its overflow must stay reachable`,

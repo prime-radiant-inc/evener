@@ -123,6 +123,7 @@ window.measure = () => {
       logClientHeight: log.clientHeight,
       commandClientHeight: command.clientHeight,
       commandScrollHeight: command.scrollHeight,
+      commandOverflowY: getComputedStyle(command).overflowY,
       listClientHeight: list.clientHeight,
       sizerHeight: height(scope.querySelector("[data-sizer]")),
     };
