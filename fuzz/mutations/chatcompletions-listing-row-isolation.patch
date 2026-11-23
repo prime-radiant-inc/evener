@@ -1,0 +1,32 @@
+diff --git a/llm/providers/chatcompletions/models.go b/llm/providers/chatcompletions/models.go
+--- a/llm/providers/chatcompletions/models.go
++++ b/llm/providers/chatcompletions/models.go
+@@ -204,26 +204,16 @@ func (p *Protocol) ListModels(ctx context.Context, res registry.Resolved) ([]regi
+ 		if err := json.Unmarshal(r.Body, &payload); err != nil {
+ 			return nil, fmt.Errorf("models.list: %w", err)
+ 		}
+-		// Rows decode independently: a row whose shape the reader cannot
+-		// read is dropped, so one alien row cannot fail the healthy ones.
+-		// Only a listing with no usable row at all fails, and it fails
+-		// with the row's own decode error.
+-		var rowErr error
++		// Mutated: one undecodable row fails the whole listing again.
+ 		for _, raw := range payload.Data {
+ 			var e modelEntry
+ 			if err := json.Unmarshal(raw, &e); err != nil {
+-				if rowErr == nil {
+-					rowErr = err
+-				}
+-				continue
++				return nil, fmt.Errorf("models.list: %w", err)
+ 			}
+ 			if e.ID != "" {
+ 				rows = append(rows, e.row())
+ 			}
+ 		}
+-		if rowErr != nil && len(rows) == 0 {
+-			return nil, fmt.Errorf("models.list: %w", rowErr)
+-		}
+ 		sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
+ 		return nil, nil
+ 	})
