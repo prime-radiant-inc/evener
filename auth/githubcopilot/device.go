@@ -60,7 +60,7 @@ func RequestDeviceCode(ctx context.Context, client *http.Client, cfg Config) (De
 	if payload.DeviceCode == "" || payload.UserCode == "" || payload.VerificationURL == "" || payload.ExpiresIn <= 0 {
 		return DeviceCode{}, fmt.Errorf("%w: missing device authorization fields", ErrMalformedResponse)
 	}
-	interval := max(time.Duration(payload.Interval)*time.Second, deviceInterval)
+	interval := positiveInterval(time.Duration(payload.Interval) * time.Second)
 	return DeviceCode{
 		DeviceCode: payload.DeviceCode, UserCode: payload.UserCode,
 		VerificationURL: payload.VerificationURL, Interval: interval,
@@ -73,7 +73,7 @@ func RequestDeviceCode(ctx context.Context, client *http.Client, cfg Config) (De
 // both return PollExpired.
 func PollDeviceOnce(ctx context.Context, client *http.Client, cfg Config, dc DeviceCode) (TokenSet, PollState, time.Duration, error) {
 	cfg = mergeConfigDefaults(cfg)
-	interval := max(dc.Interval, deviceInterval)
+	interval := positiveInterval(dc.Interval)
 	if !dc.Expiry.IsZero() && !nowFunc().Before(dc.Expiry) {
 		return TokenSet{}, PollExpired, interval, nil
 	}
@@ -102,4 +102,13 @@ func PollDeviceOnce(ctx context.Context, client *http.Client, cfg Config, dc Dev
 	default:
 		return TokenSet{}, PollPending, interval, fmt.Errorf("github device authorization failed: %s", payload.Error)
 	}
+}
+
+// positiveInterval keeps the server's own interval, however short, and falls
+// back to the default only when it is missing or non-positive.
+func positiveInterval(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return deviceInterval
+	}
+	return interval
 }

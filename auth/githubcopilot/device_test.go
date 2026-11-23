@@ -194,19 +194,36 @@ func TestRequestDeviceCodeReturnsDisplayFields(t *testing.T) {
 	}
 }
 
-func TestRequestDeviceCodeDefaultsMissingInterval(t *testing.T) {
+// TestRequestDeviceCodeIntervalDefaults pins the device code's own interval:
+// a positive server interval is preserved even when it is shorter than five
+// seconds, while a missing or non-positive interval falls back to the default.
+func TestRequestDeviceCodeIntervalDefaults(t *testing.T) {
 	at := time.Date(2026, 11, 22, 2, 0, 0, 0, time.UTC)
 	swapNow(t, at)
-	server := rawResponseServer(t, 0, `{"device_code":"device-code-1","user_code":"ABCD-1234","verification_uri":"https://github.com/login/device","expires_in":600}`)
-	dc, err := RequestDeviceCode(context.Background(), server.Client(), newTestConfig(server))
-	if err != nil {
-		t.Fatalf("RequestDeviceCode() error = %v", err)
+	cases := map[string]struct {
+		interval string
+		want     time.Duration
+	}{
+		"missing":          {"", 5 * time.Second},
+		"zero":             {`,"interval":0`, 5 * time.Second},
+		"non-positive":     {`,"interval":-2`, 5 * time.Second},
+		"positive short":   {`,"interval":2`, 2 * time.Second},
+		"positive default": {`,"interval":5`, 5 * time.Second},
 	}
-	if dc.Interval != 5*time.Second {
-		t.Fatalf("interval = %v, want the 5s default", dc.Interval)
-	}
-	if !dc.Expiry.Equal(at.Add(10 * time.Minute)) {
-		t.Fatalf("expiry = %v, want %v", dc.Expiry, at.Add(10*time.Minute))
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			server := rawResponseServer(t, 0, `{"device_code":"device-code-1","user_code":"ABCD-1234","verification_uri":"https://github.com/login/device","expires_in":600`+tc.interval+`}`)
+			dc, err := RequestDeviceCode(context.Background(), server.Client(), newTestConfig(server))
+			if err != nil {
+				t.Fatalf("RequestDeviceCode() error = %v", err)
+			}
+			if dc.Interval != tc.want {
+				t.Fatalf("interval = %v, want %v", dc.Interval, tc.want)
+			}
+			if !dc.Expiry.Equal(at.Add(10 * time.Minute)) {
+				t.Fatalf("expiry = %v, want %v", dc.Expiry, at.Add(10*time.Minute))
+			}
+		})
 	}
 }
 
@@ -255,6 +272,25 @@ func TestPollDeviceOncePendingAndSlowDown(t *testing.T) {
 	}
 	if form.Get("grant_type") != "urn:ietf:params:oauth:grant-type:device_code" {
 		t.Fatalf("grant_type = %q, want the device code grant", form.Get("grant_type"))
+	}
+
+	// A positive interval shorter than five seconds is preserved, and slow_down
+	// adds its five seconds to the preserved interval rather than to a default.
+	shortScript := &tokenEndpointScript{codes: []string{"authorization_pending", "slow_down"}}
+	shortServer := shortScript.server(t)
+	short := testDeviceCode(at)
+	short.Interval = 2 * time.Second
+	for i, want := range []time.Duration{2 * time.Second, 7 * time.Second} {
+		_, state, interval, err := PollDeviceOnce(context.Background(), shortServer.Client(), newTestConfig(shortServer), short)
+		if err != nil {
+			t.Fatalf("short poll %d error = %v", i, err)
+		}
+		if state != PollPending {
+			t.Fatalf("short poll %d state = %v, want PollPending", i, state)
+		}
+		if interval != want {
+			t.Fatalf("short poll %d interval = %v, want %v", i, interval, want)
+		}
 	}
 }
 

@@ -250,6 +250,9 @@ func TestShapeRequestCopilotAlwaysFullHistory(t *testing.T) {
 	if copilot.PreviousResponseID != "" || copilot.ConversationID != "" || copilot.Store != nil {
 		t.Fatalf("shaped = %+v, want full history with no store", copilot)
 	}
+	if copilot.HistoryMode != llm.HistoryModeFullHistory {
+		t.Fatalf("shaped history mode = %q, want full history", copilot.HistoryMode)
+	}
 	public := llm.ShapeRequest(req, registry.Resolved{Protocol: registry.ProtocolOpenAIResponses})
 	if public.PreviousResponseID != "resp_1" || public.ConversationID != "conv_1" {
 		t.Fatalf("public shaped = %+v, want its anchor preserved", public)

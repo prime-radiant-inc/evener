@@ -64,7 +64,7 @@ func TestWithRecordLockSerializesReadModifyWriteAcrossProcesses(t *testing.T) {
 	}
 	for _, marker := range []string{"+A", "+B"} {
 		if !strings.Contains(loaded.AccessToken, marker) {
-			t.Fatalf("access token %q lost marker %q; read-modify-write was not serialized", loaded.AccessToken, marker)
+			t.Fatalf("saved access token lost marker %q; read-modify-write was not serialized", marker)
 		}
 	}
 }

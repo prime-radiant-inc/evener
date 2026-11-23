@@ -47,8 +47,20 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadAuth() error = %v", err)
 	}
+	if loaded.Instance != record.Instance || loaded.Scheme != record.Scheme || loaded.Version != record.Version {
+		t.Fatalf("LoadAuth() identity = instance %q scheme %q version %d", loaded.Instance, loaded.Scheme, loaded.Version)
+	}
+	if loaded.AccessToken != record.AccessToken {
+		t.Fatal("LoadAuth() access_token differs from the saved record")
+	}
+	if loaded.RefreshToken != record.RefreshToken {
+		t.Fatal("LoadAuth() refresh_token differs from the saved record")
+	}
+	if loaded.CopilotToken != record.CopilotToken {
+		t.Fatal("LoadAuth() copilot_token differs from the saved record")
+	}
 	if !reflect.DeepEqual(loaded, record) {
-		t.Fatalf("LoadAuth() = %+v, want %+v", loaded, record)
+		t.Fatal("LoadAuth() differs from the saved record in a non-token field")
 	}
 }
 
@@ -125,7 +137,7 @@ func TestSaveAuthRequiresStateDir(t *testing.T) {
 	}
 }
 
-func TestSaveAuthIsAtomicAndLeavesNoTempFiles(t *testing.T) {
+func TestSaveAuthReplacesRecordAndLeavesNoTempFiles(t *testing.T) {
 	stateDir := t.TempDir()
 	record := sampleRecord()
 	if err := SaveAuth(stateDir, record.Instance, record); err != nil {
@@ -140,7 +152,7 @@ func TestSaveAuthIsAtomicAndLeavesNoTempFiles(t *testing.T) {
 		t.Fatalf("LoadAuth() error = %v", err)
 	}
 	if loaded.AccessToken != "new-access-token" {
-		t.Fatalf("access token = %q, want %q", loaded.AccessToken, "new-access-token")
+		t.Fatal("the second save did not replace the stored access token")
 	}
 	matches, err := filepath.Glob(AuthFilePath(stateDir, record.Instance) + ".tmp-*")
 	if err != nil {
