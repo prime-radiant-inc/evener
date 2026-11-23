@@ -769,6 +769,61 @@ protocol = "openai-chat"
 	}
 }
 
+// TestResolveProtocolChangeClearsInheritedEndpoints pins the partial authored
+// transport on a row that changes protocols: the previous protocol's endpoint
+// paths are cleared before the authored transport merges, so a Chat endpoint
+// never streams down the live row's Messages path. A supplied completion
+// endpoint survives, and the new protocol's default stream path applies unless
+// the same row supplies one.
+func TestResolveProtocolChangeClearsInheritedEndpoints(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		row        string
+		wantStream string
+	}{
+		{
+			name: "default stream endpoint",
+			row: `[providers.work.models."claude-haiku-5.5"]
+protocol = "openai-chat"
+endpoint = "/chat/completions"
+`,
+			wantStream: "/chat/completions",
+		},
+		{
+			name: "explicit stream endpoint",
+			row: `[providers.work.models."claude-haiku-5.5"]
+protocol = "openai-chat"
+endpoint = "/chat/completions"
+stream_endpoint = "/custom/stream"
+`,
+			wantStream: "/custom/stream",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := copilotTestRegistry(t, "[providers.work]\nbase = \"github-copilot\"\n\n"+tc.row)
+			r.ApplyLiveListing("work", LiveListing{Rows: []Model{liveClaudeRow()}, Authoritative: true})
+			res, err := r.Resolve("work/claude-haiku-5.5")
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			if res.Protocol != ProtocolOpenAIChat {
+				t.Fatalf("protocol = %q, want the user's %q", res.Protocol, ProtocolOpenAIChat)
+			}
+			if res.Transport.Endpoint != "/chat/completions" {
+				t.Fatalf("endpoint = %q, want the user's /chat/completions", res.Transport.Endpoint)
+			}
+			if res.Transport.StreamEndpoint != tc.wantStream {
+				t.Fatalf("stream endpoint = %q, want %q", res.Transport.StreamEndpoint, tc.wantStream)
+			}
+			if res.Transport.CountTokensEndpoint != EndpointUnsupported {
+				t.Fatalf("count tokens = %q, want unsupported", res.Transport.CountTokensEndpoint)
+			}
+		})
+	}
+}
+
 // TestResolveEndpointOnlyOverrideKeepsAccountTransportFacts pins that an
 // endpoint override changes only the endpoint: the account's protocol and the
 // transport facts it advertised (stream path, unsupported count tokens) stay.

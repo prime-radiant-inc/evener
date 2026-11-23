@@ -175,7 +175,7 @@ type serveDeps struct {
 	resolveMeta      func(string, string, bool) (schema.SessionMeta, error)
 	newClient        func(string, io.Writer) (*llm.Client, func() error, error)
 	attachAPILogger  func(*llm.Client, string, io.Writer, bool) (func(string) error, func() error, error)
-	buildProfile     func(context.Context, *llm.Client, cmdutil.ModelRef, string) (*provider.Profile, *agent.StartupModelListing, error)
+	buildProfile     func(context.Context, *llm.Client, cmdutil.ModelRef, string, bool) (*provider.Profile, *agent.StartupModelListing, error)
 	applyCheap       func(*provider.Profile, string, *llm.Client) (*provider.Profile, error)
 	newSession       func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error)
 	restoreSession   func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, schema.SessionMeta, agent.RestoreSessionConfig) (*agent.Session, error)
@@ -633,7 +633,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if resuming {
 		profileCtx = llm.WithAPILogContext(ctx, resumedMeta.ID)
 	}
-	profile, startupListing, err := deps.buildProfile(profileCtx, client, modelRef, *lf.outputSchema)
+	profile, startupListing, err := deps.buildProfile(profileCtx, client, modelRef, *lf.outputSchema, resuming)
 	if err != nil {
 		return err
 	}
@@ -1294,8 +1294,8 @@ func printServeEnvVars(w io.Writer) {
 // same facts. outputSchemaJSON and EVENER_ALLOWED_DECISIONS are applied in
 // this app layer so callers see the same communicate-tool schema regardless of
 // model.
-func buildInitialProfile(ctx context.Context, client *llm.Client, modelRef cmdutil.ModelRef, outputSchemaJSON string) (*provider.Profile, *agent.StartupModelListing, error) {
-	raw, startupListing, err := resolveInitialProfile(ctx, client, modelRef)
+func buildInitialProfile(ctx context.Context, client *llm.Client, modelRef cmdutil.ModelRef, outputSchemaJSON string, resuming bool) (*provider.Profile, *agent.StartupModelListing, error) {
+	raw, startupListing, err := resolveInitialProfile(ctx, client, modelRef, resuming)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1321,7 +1321,7 @@ func buildInitialProfile(ctx context.Context, client *llm.Client, modelRef cmdut
 // the catalog-only gate would reject a model the provider itself advertises.
 // On exactly that rejection, consult the instance's live listing once and
 // resolve again; every other failure is returned unchanged.
-func resolveInitialProfile(ctx context.Context, client *llm.Client, modelRef cmdutil.ModelRef) (*provider.Profile, *agent.StartupModelListing, error) {
+func resolveInitialProfile(ctx context.Context, client *llm.Client, modelRef cmdutil.ModelRef, resuming bool) (*provider.Profile, *agent.StartupModelListing, error) {
 	// An account-owned roster is the whole catalog: list it once, then judge
 	// the launch against that same listing. The listing is handed to the
 	// session as the primed startup roster, so construction and the cheap
@@ -1335,6 +1335,19 @@ func resolveInitialProfile(ctx context.Context, client *llm.Client, modelRef cmd
 		listing, listErr := client.Models(listCtx, instance)
 		cancel()
 		if listErr != nil {
+			// A resumed session already owns the profile its metadata saved,
+			// so an unreadable account roster must not keep it from starting.
+			// A cancelled caller owns the outcome instead of the fallback.
+			if err := ctx.Err(); err != nil {
+				return nil, nil, err
+			}
+			if resuming {
+				profile, err := cmdutil.ResolveProfile(client, modelRef.Qualified())
+				if err != nil {
+					return nil, nil, err
+				}
+				return profile, nil, nil
+			}
 			return nil, nil, fmt.Errorf("%s: the account's model list could not be read: %w", instance, listErr)
 		}
 		profile, err := cmdutil.ResolveProfile(client, modelRef.Qualified())

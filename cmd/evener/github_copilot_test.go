@@ -388,3 +388,110 @@ func TestGitHubCopilotDefaultStateRootAndFlagValidation(t *testing.T) {
 		}
 	}
 }
+
+// TestGitHubCopilotNormalizesInstanceNames pins the registry spelling of the
+// instance login, status, and logout act on: a mixed-case flag must read and
+// write the lowercase record the registry loads, not a second file a
+// case-insensitive filesystem cannot tell apart.
+func TestGitHubCopilotNormalizesInstanceNames(t *testing.T) {
+	_, server := newCopilotGitHubScript(t)
+	useScriptedGitHubCopilot(t, server)
+	stateDir := t.TempDir()
+
+	for attempt := 0; attempt < 2; attempt++ {
+		var stdout, stderr bytes.Buffer
+		if err := runGitHubCopilot([]string{"login", "--state-dir", stateDir, "--instance", "GitHub-Copilot"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+			t.Fatalf("login %d error = %v (%s)", attempt+1, err, stderr.String())
+		}
+		fields := parseCopilotFields(t, stdout.String())
+		if fields["state"] != "signed-in" || fields["source"] != "oauth" {
+			t.Fatalf("login %d status = %v, want the signed-in record", attempt+1, fields)
+		}
+	}
+
+	record, err := githubcopilot.LoadAuth(stateDir, "github-copilot")
+	if err != nil {
+		t.Fatalf("LoadAuth(github-copilot) error = %v", err)
+	}
+	if record.Instance != "github-copilot" {
+		t.Fatalf("record instance = %q, want the registry spelling", record.Instance)
+	}
+	entries, err := os.ReadDir(filepath.Dir(githubcopilot.AuthFilePath(stateDir, "github-copilot")))
+	if err != nil {
+		t.Fatalf("read auth directory: %v", err)
+	}
+	var records []string
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".json") {
+			records = append(records, entry.Name())
+		}
+	}
+	if len(records) != 1 || records[0] != "github-copilot.json" {
+		t.Fatalf("records = %v, want only github-copilot.json", records)
+	}
+
+	var statusOut, statusErr bytes.Buffer
+	if err := runGitHubCopilot([]string{"status", "--state-dir", stateDir, "--instance", "GitHub-Copilot"}, strings.NewReader(""), &statusOut, &statusErr); err != nil {
+		t.Fatalf("status error = %v (%s)", err, statusErr.String())
+	}
+	if fields := parseCopilotFields(t, statusOut.String()); fields["state"] != "signed-in" || fields["account_id"] != "4242" {
+		t.Fatalf("status = %v, want the normalized record's account", fields)
+	}
+
+	var logoutOut, logoutErr bytes.Buffer
+	if err := runGitHubCopilot([]string{"logout", "--state-dir", stateDir, "--instance", "GitHub-Copilot"}, strings.NewReader(""), &logoutOut, &logoutErr); err != nil {
+		t.Fatalf("logout error = %v (%s)", err, logoutErr.String())
+	}
+	fields := parseCopilotFields(t, logoutOut.String())
+	if fields["deleted"] != "true" || fields["state"] != "signed-out" {
+		t.Fatalf("logout = %v, want the normalized record deleted", fields)
+	}
+	if _, err := os.Stat(githubcopilot.AuthFilePath(stateDir, "github-copilot")); !os.IsNotExist(err) {
+		t.Fatalf("normalized record survived logout (stat error = %v)", err)
+	}
+}
+
+// TestGitHubCopilotRejectsInvalidInstanceNamesBeforeCredentials pins the
+// registry's instance-name rule on the Copilot commands: a name that cannot
+// identify a registry instance is refused before the auth service reads or
+// writes any credential.
+func TestGitHubCopilotRejectsInvalidInstanceNamesBeforeCredentials(t *testing.T) {
+	_, server := newCopilotGitHubScript(t)
+	useScriptedGitHubCopilot(t, server)
+	stateDir := t.TempDir()
+	authDir := filepath.Dir(githubcopilot.AuthFilePath(stateDir, "github-copilot"))
+
+	previous := gitHubCopilotServiceFactory
+	gitHubCopilotServiceFactory = func() *githubcopilot.Service {
+		t.Fatal("an invalid instance name reached the credential service")
+		return nil
+	}
+	for _, name := range []string{"bad/name", "bad name", "-leading"} {
+		for _, command := range []string{"login", "status", "logout"} {
+			var stdout, stderr bytes.Buffer
+			err := runGitHubCopilot([]string{command, "--state-dir", stateDir, "--instance", name}, strings.NewReader(""), &stdout, &stderr)
+			if !errors.Is(err, errInvalidInstanceName) {
+				gitHubCopilotServiceFactory = previous
+				t.Fatalf("%s --instance %q error = %v, want errInvalidInstanceName", command, name, err)
+			}
+		}
+	}
+	gitHubCopilotServiceFactory = previous
+	t.Cleanup(func() { gitHubCopilotServiceFactory = previous })
+	if _, err := os.Stat(authDir); !os.IsNotExist(err) {
+		t.Fatalf("an invalid name touched the credential directory (stat error = %v)", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := runGitHubCopilot([]string{"login", "--state-dir", stateDir}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("default login error = %v (%s)", err, stderr.String())
+	}
+	var invalidOut, invalidErr bytes.Buffer
+	err := runGitHubCopilot([]string{"logout", "--state-dir", stateDir, "--instance", "bad/name"}, strings.NewReader(""), &invalidOut, &invalidErr)
+	if !errors.Is(err, errInvalidInstanceName) {
+		t.Fatalf("logout with an invalid name error = %v, want errInvalidInstanceName", err)
+	}
+	if _, err := githubcopilot.LoadAuth(stateDir, "github-copilot"); err != nil {
+		t.Fatalf("an invalid logout removed the default record: %v", err)
+	}
+}

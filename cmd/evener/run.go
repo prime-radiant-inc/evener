@@ -335,7 +335,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	if meta != nil {
 		profileCtx = llm.WithAPILogContext(ctx, meta.ID)
 	}
-	profile, startupListing, err := buildInitialProfile(profileCtx, client, modelRef, cfg.outputSchema)
+	profile, startupListing, err := buildInitialProfile(profileCtx, client, modelRef, cfg.outputSchema, meta != nil)
 	if err != nil {
 		return err
 	}
