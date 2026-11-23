@@ -1549,6 +1549,11 @@ func (s *NavigationService) Start(ctx context.Context) {
 			if _, keepGoing := s.waitUntil(ctx, s.now().Add(s.retryAfter)); !keepGoing {
 				return
 			}
+			// A pending invalidation still needs its forced refresh here: with
+			// no boundary this branch parked and continued without consuming it,
+			// so a source hint whose rebuild had no fingerprint delta never
+			// published. refreshPending keeps the existing failure pacing.
+			s.refreshPending(ctx)
 			continue
 		}
 		// A failed forced refresh paces its retry: park no longer than the
