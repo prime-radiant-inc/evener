@@ -169,11 +169,11 @@ func historyTurnFailure(history []schema.Turn) (schema.Turn, bool) {
 // without user input. Child activity is excluded because it is projected on
 // the child session, while its eventual notification is included once queued.
 func (s *Session) sessionWorkPending() bool {
-	return s.sessionWorkPendingWithClientMutation(s.hasRunnableClientMutationStart)
+	return s.nonMutationWorkPending() || s.hasRunnableClientMutationStart()
 }
 
-func (s *Session) sessionWorkPendingWithClientMutation(hasClientMutationStart func() bool) bool {
-	return s.pendingQueueDepth() > 0 || hasClientMutationStart() || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingDelegateAttentionArmRetry() || s.hasPendingDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) || s.peekNotifications() > 0
+func (s *Session) nonMutationWorkPending() bool {
+	return s.pendingQueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingDelegateAttentionArmRetry() || s.hasPendingDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) || s.peekNotifications() > 0
 }
 
 func (s *Session) hasPendingDelegateAttention() bool {
@@ -266,17 +266,13 @@ func (s *Session) hasPendingDelegateUpdateAttention() bool {
 // autonomy: nothing will move until the user acts, and amber is what surfaces
 // that stall.
 func (s *Session) autonomyInFlight() bool {
-	return s.autonomyInFlightWith(s.hasRunnableClientMutationStart)
-}
-
-func (s *Session) autonomyInFlightWith(hasClientMutationStart func() bool) bool {
 	// Children first: a child's finalize tail delivers its report before it
 	// stops reading as working, so a child read as idle has already delivered
 	// whatever the pending-work read after it then sees.
 	if s.hasWorkingSubagent() {
 		return true
 	}
-	return s.sessionWorkPendingWithClientMutation(hasClientMutationStart)
+	return s.sessionWorkPending()
 }
 
 // hasWakeableWork reports whether anything can wake a resting session. Used by
@@ -305,7 +301,7 @@ func (s *Session) hasWakeableWork() bool {
 			return true
 		}
 	}
-	return s.hasRunnableUserSteering() || s.autonomyInFlightWith(s.hasWakeableClientMutationStart) || s.HasPendingAsk()
+	return s.hasRunnableUserSteering() || s.nonMutationWorkPending() || s.hasWakeableClientMutationStart() || s.HasPendingAsk()
 }
 
 // hasOneShotWakeableWork reports whether anything can wake a one-shot
