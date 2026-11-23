@@ -863,6 +863,18 @@ func (r *Registry) listingProtocol(rec *record) string {
 	return rec.head.Protocol
 }
 
+// listsThroughConfiguredTransport reports whether the instance's model listing
+// must resolve the provider's configured shape rather than its default row's
+// generation transport. The Copilot account roster assigns each id its own
+// generation protocol (Claude rows speak Messages), so a Claude default would
+// otherwise send the /models fetch down /v1/messages and parse the answer with
+// the Anthropic listing parser, losing every advertised route and the
+// picker/policy filter. The configured transport is the one destination the
+// account's listing and every credential probe actually serve.
+func listsThroughConfiguredTransport(rec *record) bool {
+	return rec.head.Transport.Auth == AuthOAuthGitHubCopilot
+}
+
 // authHeaderKey resolves which credential-header key carries the named
 // auth header's value: header names are case-insensitive on the wire, so
 // an author may write any case. The exact-case key wins — a present-but-

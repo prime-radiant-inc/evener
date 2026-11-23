@@ -295,6 +295,59 @@ func TestCopilotRecordWatcherAdoptsExternalLoginAndLogout(t *testing.T) {
 	}
 }
 
+// TestCopilotRecordWatcherObservesExternalLoginWithoutUserLayer pins the
+// observation rule when EVENER_PROVIDERS_CONFIG disables the user layer: there
+// is no providers.toml to watch, but the Copilot record still moves under the
+// hub, so an external login and logout must reload the registry and announce
+// the auth change.
+func TestCopilotRecordWatcherObservesExternalLoginWithoutUserLayer(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	store := newTestCredentialsStore(t)
+	reg := newTestRegistry(t, stateDir, "", store, nil)
+	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{
+		Registry: reg, HubStateRoot: stateDir, CredsStore: store,
+		ProvidersConfigPath: "", NoUserLayer: true,
+	})
+	defer hub.Close()
+	// The record watcher is the one surface this mode keeps: even though the
+	// controller is constructed, the instance CRUD/list handlers stay
+	// unregistered exactly as they were when the controller did not exist.
+	client := dialHubRPCInitialized(t, hub)
+	for _, method := range []string{appwire.MethodEvenerInstanceList, appwire.MethodEvenerInstanceCreate} {
+		err := client.Request(context.Background(), method, appwire.EmptyParams{}, nil)
+		requireWireError(t, err, appwire.CodeMethodNotFound)
+	}
+	// Startup observations belong to the process, not to this client.
+	web.notices.OnCommitted(func(noticeCommitted) {})
+	web.notices.watchRead(context.Background())
+	broadcaster := newRecordingBroadcaster()
+	web.notices.OnCommitted(func(change noticeCommitted) { dispatchNoticeCommitted(broadcaster, change) })
+
+	cli := newCopilotCLI(t)
+	cli.login(t, stateDir, "github-copilot", "gh-1001")
+	web.notices.watchRead(context.Background())
+	if got := authUpdatedCount(broadcaster); got != 1 {
+		t.Fatalf("external login broadcasts = %d, want one", got)
+	}
+	if !reg.Get().HasInstance("github-copilot") {
+		t.Fatal("the external login did not add the Copilot instance")
+	}
+	// Still absent after the reload: observing the record must not expose the
+	// handlers this mode never registered.
+	err := client.Request(context.Background(), appwire.MethodEvenerInstanceList, appwire.EmptyParams{}, nil)
+	requireWireError(t, err, appwire.CodeMethodNotFound)
+
+	cli.logout(t, stateDir, "github-copilot")
+	web.notices.watchRead(context.Background())
+	if got := authUpdatedCount(broadcaster); got != 2 {
+		t.Fatalf("external logout broadcasts = %d, want two", got)
+	}
+	if reg.Get().HasInstance("github-copilot") {
+		t.Fatal("the external logout left the Copilot instance listed")
+	}
+}
+
 func TestCopilotRecordWatcherInvalidatesOnlyTheSwitchedAccountsLiveRows(t *testing.T) {
 	t.Parallel()
 	f := newInstancesFixture(t, nil)

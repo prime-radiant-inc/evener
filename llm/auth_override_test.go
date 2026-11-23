@@ -54,21 +54,19 @@ func TestScopedAuthenticatorsAreSchemeSpecific(t *testing.T) {
 	}
 }
 
-// TestAuthenticatorOverrideCannotCrossOAuthSchemes pins that the legacy
-// single-authenticator override cannot answer for either record-backed OAuth
-// scheme or for a bearer transport. Those schemes require an explicit
-// per-scheme binding so a Codex scope can never authenticate a Copilot or
-// bearer request.
-func TestAuthenticatorOverrideCannotCrossOAuthSchemes(t *testing.T) {
+// TestAuthenticatorOverrideBindsTheCodexScheme pins the library contract:
+// WithAuthenticatorOverride names the Codex transport, so its authenticator
+// answers for that scheme and for no other.
+func TestAuthenticatorOverrideBindsTheCodexScheme(t *testing.T) {
 	t.Parallel()
-	generic := &recordingAuthenticator{}
-	ctx := WithAuthenticatorOverride(context.Background(), generic)
-	for _, scheme := range []string{registry.AuthOAuthOpenAICodex, registry.AuthOAuthGitHubCopilot} {
-		if got := AuthenticatorOverrideFor(ctx, scheme); got != nil {
-			t.Fatalf("%s override = %v, want nil without a scheme-specific binding", scheme, got)
-		}
+	codex := &recordingAuthenticator{}
+	ctx := WithAuthenticatorOverride(context.Background(), codex)
+	if got := AuthenticatorOverrideFor(ctx, registry.AuthOAuthOpenAICodex); got != codex {
+		t.Fatalf("codex scheme override = %v, want the Codex-bound authenticator", got)
 	}
-	if got := AuthenticatorOverrideFor(ctx, registry.AuthBearer); got != nil {
-		t.Fatalf("bearer scheme override = %v, want nil: the generic override must not answer for another scheme", got)
+	for _, scheme := range []string{registry.AuthOAuthGitHubCopilot, registry.AuthBearer} {
+		if got := AuthenticatorOverrideFor(ctx, scheme); got != nil {
+			t.Fatalf("%s override = %v, want nil: a Codex-bound authenticator must not answer for another scheme", scheme, got)
+		}
 	}
 }
