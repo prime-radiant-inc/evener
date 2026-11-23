@@ -435,6 +435,80 @@ func TestDelegateAttentionWake_PermanentClosedAncestorEscalatesToRootOnce(t *tes
 	}
 }
 
+// TestDelegateAttention_EscalationSurfacesAndRetriesSourceResolutionFailure
+// pins the failure between the root transfer and the source row's removal: the
+// source resolution append fails, escalation must report that error instead of
+// success, and the retry must drop the row without copying the message to the
+// root a second time.
+func TestDelegateAttention_EscalationSurfacesAndRetriesSourceResolutionFailure(t *testing.T) {
+	fenced := newFencedGrandchildAttention(t)
+	root := fenced.root
+	fenced.closeParent(t)
+
+	plans := root.delegateController.permanentlyFencedDelegateAttention()
+	if len(plans) != 1 {
+		t.Fatalf("fenced escalation plans = %d, want exactly one", len(plans))
+	}
+	plan := plans[0]
+	rootPath := transcriptPath(fenced.fixture.stateDir, fenced.fixture.meta.ID)
+	rootCopies := func() int {
+		t.Helper()
+		fold, err := readDelegateAttentionFold(rootPath, fenced.fixture.meta.ID)
+		if err != nil {
+			t.Fatalf("read root attention fold: %v", err)
+		}
+		count := 0
+		for _, id := range fold.order {
+			if id == fenced.attentionID {
+				count++
+			}
+		}
+		return count
+	}
+	queuedRows := func() int {
+		t.Helper()
+		root.delegateController.mu.Lock()
+		defer root.delegateController.mu.Unlock()
+		return len(root.delegateController.durable[fenced.grandchildDelegateID].PendingAttention)
+	}
+
+	resolutionErr := errors.New("test: source resolution append failure")
+	root.delegateController.mu.Lock()
+	root.delegateController.appendFault = func(events []delegatestore.Event) error {
+		for _, event := range events {
+			if event.Kind == delegatestore.EventDelegateAttentionResolved && event.DelegateID == fenced.grandchildDelegateID {
+				return resolutionErr
+			}
+		}
+		return nil
+	}
+	root.delegateController.mu.Unlock()
+
+	if err := root.escalateOneUnreachableDelegateAttention(plan, readDelegateAttentionFold); !errors.Is(err, resolutionErr) {
+		t.Fatalf("escalation error = %v, want the source resolution append failure", err)
+	}
+	if got := queuedRows(); got != 1 {
+		t.Fatalf("source queued rows after the failed resolution = %d, want 1", got)
+	}
+	if got := rootCopies(); got != 1 {
+		t.Fatalf("root transferred copies after the failed resolution = %d, want 1", got)
+	}
+
+	root.delegateController.mu.Lock()
+	root.delegateController.appendFault = nil
+	root.delegateController.mu.Unlock()
+
+	if err := root.escalateOneUnreachableDelegateAttention(plan, readDelegateAttentionFold); err != nil {
+		t.Fatalf("retry escalation: %v", err)
+	}
+	if got := queuedRows(); got != 0 {
+		t.Fatalf("source queued rows after the retry = %d, want 0", got)
+	}
+	if got := rootCopies(); got != 1 {
+		t.Fatalf("root transferred copies after the retry = %d, want exactly one", got)
+	}
+}
+
 // TestDelegateAttention_ColdRestoreEscalatesFencedDescendantOnce covers
 // the cold variant: restart with a permanently closed ancestor and an idle
 // descendant holding pending attention. Bootstrap must transfer the original

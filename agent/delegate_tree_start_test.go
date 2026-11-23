@@ -839,6 +839,95 @@ func TestDelegateControllerAttentionCommitBindsSelectedPendingTranscriptEntry(t 
 	}
 }
 
+// TestDelegateControllerAttentionCommitClearsTransientStateOnlyWhenQueueEmpties
+// pins the CommitStart side of the queue/transient invariant: the batch that
+// consumes the selected attention and drops the queue's last row must also drop
+// the process-local scheduling entry, while a still-owed row keeps it.
+func TestDelegateControllerAttentionCommitClearsTransientStateOnlyWhenQueueEmpties(t *testing.T) {
+	const (
+		sessionID  = "child-dlg_target"
+		delegateID = "dlg_target"
+	)
+	queuedRows := func(c *delegateTreeController) int {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return len(c.durable[delegateID].PendingAttention)
+	}
+	transientState := func(c *delegateTreeController) *delegateAttentionState {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.attention[delegateID]
+	}
+	commitSelected := func(t *testing.T, c *delegateTreeController, runtime *Session, attentionID string, beforeCommit func()) error {
+		t.Helper()
+		reservation, err := c.ReserveAttention(runtime, attentionID)
+		if err != nil {
+			return err
+		}
+		if err := runtime.acceptDelegateAttention(reservation); err != nil {
+			return err
+		}
+		c.mu.Lock()
+		c.attentionStateLocked(delegateID).driveTurn = 7
+		c.mu.Unlock()
+		if beforeCommit != nil {
+			beforeCommit()
+		}
+		_, err = c.CommitStart(reservation)
+		return err
+	}
+
+	t.Run("draining the last row clears the entry", func(t *testing.T) {
+		const attentionID = "attention-drain"
+		c, runtime, _ := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, attentionID)
+		if err := commitSelected(t, c, runtime, attentionID, nil); err != nil {
+			t.Fatalf("CommitStart: %v", err)
+		}
+		if got := queuedRows(c); got != 0 {
+			t.Fatalf("queued rows after commit = %d, want 0", got)
+		}
+		if state := transientState(c); state != nil {
+			t.Fatalf("transient attention state survived an emptied queue: %#v", state)
+		}
+	})
+
+	t.Run("a remaining row keeps the entry", func(t *testing.T) {
+		c, runtime, _ := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, "attention-kept", "attention-later")
+		if err := commitSelected(t, c, runtime, "attention-kept", nil); err != nil {
+			t.Fatalf("CommitStart: %v", err)
+		}
+		if got := queuedRows(c); got != 1 {
+			t.Fatalf("queued rows after commit = %d, want the one remaining row", got)
+		}
+		state := transientState(c)
+		if state == nil || state.driveTurn != 7 {
+			t.Fatalf("transient attention state after a kept row = %#v, want driveTurn 7", state)
+		}
+	})
+
+	t.Run("a failed append keeps the entry", func(t *testing.T) {
+		const attentionID = "attention-append-failure"
+		c, runtime, _ := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, attentionID)
+		err := commitSelected(t, c, runtime, attentionID, func() {
+			c.mu.Lock()
+			c.appendFault = func([]delegatestore.Event) error {
+				return errors.New("test: attention start append failure")
+			}
+			c.mu.Unlock()
+		})
+		if err == nil {
+			t.Fatal("CommitStart succeeded after the injected append failure")
+		}
+		if got := queuedRows(c); got != 1 {
+			t.Fatalf("queued rows after the failed append = %d, want the unresolved row", got)
+		}
+		state := transientState(c)
+		if state == nil || state.driveTurn != 7 {
+			t.Fatalf("transient attention state after a failed append = %#v, want driveTurn 7", state)
+		}
+	})
+}
+
 func TestDelegateControllerReservationReceiptCannotRedirectCommit(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	descriptor := delegateControllerCreateDescriptor()

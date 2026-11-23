@@ -1138,18 +1138,19 @@ func (c *delegateTreeController) permanentlyFencedDelegateAttention() []delegate
 	return plans
 }
 
-func (c *delegateTreeController) forgetDelegateAttention(delegateID string, attentionIDs ...string) {
+func (c *delegateTreeController) forgetDelegateAttention(delegateID string, attentionIDs ...string) error {
 	defer c.retirementChanged()
 	if c == nil {
-		return
+		return nil
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, attentionID := range attentionIDs {
 		if err := c.forgetDelegateAttentionLocked(delegateID, attentionID); err != nil {
-			return
+			return err
 		}
 	}
+	return nil
 }
 
 // holdAttentionRestore marks delegateID as owned by an attention wake pass:

@@ -827,6 +827,12 @@ func (c *delegateTreeController) commitStart(reservation *delegateStartReservati
 		cancel = c.releaseReservationLocked(record)
 		return delegateStartCommit{}, err
 	}
+	if record.trigger == delegatestore.TriggerAttention {
+		// The replacement rode the append that just succeeded. If it consumed
+		// the queue's last row, the transient retry state has nothing left to
+		// describe and must not leak per delegate.
+		c.clearTransientAttentionIfResolvedLocked(record.delegateID)
+	}
 	delete(c.reservations, record.token)
 	if record.done != nil {
 		close(record.done)
