@@ -7,6 +7,7 @@
 import { memo, useMemo } from "react";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
+import { CountButton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { activitySidebarStore } from "../activitybar/activitySidebarStore";
 import { ACTIVITY_TABS } from "../activitybar/activityTabs";
@@ -17,10 +18,6 @@ import { deriveScope } from "./statusScope";
 
 const CLASS = {
   chips: requireClass(styles.chips, "statusbar.module.css", "chips"),
-  chip: requireClass(styles.chip, "statusbar.module.css", "chip"),
-  chipName: requireClass(styles.chipName, "statusbar.module.css", "chipName"),
-  chipCount: requireClass(styles.chipCount, "statusbar.module.css", "chipCount"),
-  chipGlyph: requireClass(styles.chipGlyph, "statusbar.module.css", "chipGlyph"),
 };
 
 export interface ActivityChipsProps {
@@ -52,15 +49,18 @@ export const ActivityChips = memo(function ActivityChips({ sessionRef, paneId }:
   return (
     <div className={CLASS.chips}>
       {ACTIVITY_TABS.filter((tab) => tab.chipVisible(counts)).map((tab) => (
-        <button
+        <CountButton
           key={tab.id}
-          type="button"
           data-activity-tab={tab.id}
           data-pane-id={paneId}
           data-session-ref={sessionRef}
-          className={CLASS.chip}
+          glyph={tab.glyph}
+          label={tab.label}
+          count={mobile ? tab.mobileCount(counts) : tab.chipCount(counts)}
+          accessibleLabel={`${tab.chipLabel(counts)} - open Overview`}
           title={tab.chipLabel(counts)}
-          aria-label={`${tab.chipLabel(counts)} - open Overview`}
+          compact={mobile}
+          chrome="pill"
           onClick={(event) => {
             if (paneId) workspaceStore.getState().focusPane(paneId);
             // A chip is a focus-based request: it releases any held column
@@ -68,13 +68,7 @@ export const ActivityChips = memo(function ActivityChips({ sessionRef, paneId }:
             // focus does not move.
             activitySidebarStore.getState().openFor(sessionRef, tab.id, event.currentTarget, paneId);
           }}
-        >
-          <span className={CLASS.chipGlyph} aria-hidden="true">
-            {tab.glyph}
-          </span>
-          <span className={CLASS.chipName}>{tab.label}</span>
-          <span className={CLASS.chipCount}>{mobile ? tab.mobileCount(counts) : tab.chipCount(counts)}</span>
-        </button>
+        />
       ))}
     </div>
   );
