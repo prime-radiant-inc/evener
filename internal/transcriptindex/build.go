@@ -148,7 +148,6 @@ type builder struct {
 	commCalls           map[string]commState // call id -> its deferred communicate state
 	quietAssistants     map[string]quietAssistantState
 	demotedAssistants   map[uint64]bool
-	collectingDemotions bool
 	committedEntries    uint64
 	lastAssistantText   string
 	lastAssistantTurnID string
@@ -440,7 +439,7 @@ func assistantEntryHasText(entry *schema.Turn) bool {
 }
 
 func (b *builder) checkQuietDemotions(entry *schema.Turn) error {
-	if entry.Kind != schema.TurnTool && entry.Kind != schema.TurnToolResults {
+	if len(b.quietAssistants) == 0 || (entry.Kind != schema.TurnTool && entry.Kind != schema.TurnToolResults) {
 		return nil
 	}
 	for _, part := range entry.Message.Content {
@@ -451,13 +450,7 @@ func (b *builder) checkQuietDemotions(entry *schema.Turn) error {
 		if !ok || !qa.hasText || b.demotedAssistants[qa.pos.Ordinal] {
 			continue
 		}
-		if !b.collectingDemotions {
-			return errQuietDemoteRebuild{rotate: qa.pos.Ordinal < b.committedEntries}
-		}
-		if b.demotedAssistants == nil {
-			b.demotedAssistants = map[uint64]bool{}
-		}
-		b.demotedAssistants[qa.pos.Ordinal] = true
+		return errQuietDemoteRebuild{rotate: qa.pos.Ordinal < b.committedEntries}
 	}
 	return nil
 }

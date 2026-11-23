@@ -9,7 +9,7 @@ import {
 } from "./itemFailure";
 import { MEMORY_CONTEXT_EVENT_KIND } from "./memoryContext";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
-import { QUIET_YIELD_EVENT_KIND } from "./quietYield";
+import { isQuietYield } from "./quietYield";
 import { isParentSteer } from "./steeringLabels";
 import { ERROR_EVENT_KIND } from "./systemEventCopy";
 import {
@@ -341,7 +341,7 @@ function systemDecision(item: ItemModel, config: TranscriptDisplayConfigV1, vect
   if (eventKind === APPROVAL_DECISION_EVENT_KIND) return "item";
   // A quiet communicate({}) yield leaves a muted one-liner at every display
   // detail level, independent of Advanced.systemEvents (Jesse, 2026-11-23).
-  if (eventKind === QUIET_YIELD_EVENT_KIND) return "item";
+  if (isQuietYield(item)) return "item";
 
   if (eventKind === HOOK_EVENT_KIND) {
     if (config.advanced.hookExits === "all") return "item";
@@ -438,7 +438,7 @@ function eligibleDisclosure(item: ItemModel): boolean {
   if (isMemoryContextNotice(item)) return false;
   // Demoted quiet-yield commentary stays collapsed until the reader opens it,
   // even at the Full preset.
-  if (item.type === "systemMessage" && item.eventKind === QUIET_YIELD_EVENT_KIND) return false;
+  if (item.type === "systemMessage" && isQuietYield(item)) return false;
   // A visible system item may be a scaffold or a grouped diagnostic row. Keep
   // its source id available to the disclosure layer; grouping happens after
   // this projection and therefore sees only surviving rows.

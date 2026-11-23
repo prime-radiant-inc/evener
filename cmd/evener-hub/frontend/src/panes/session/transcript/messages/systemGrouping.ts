@@ -10,8 +10,8 @@ import {
   attentionWarningNotice,
   type ItemModel,
   isErrorEvent,
+  isQuietYield,
   MEMORY_CONTEXT_EVENT_KIND,
-  QUIET_YIELD_EVENT_KIND,
   systemEventWords,
   type ThreadItemEventKind,
   type TranscriptMetadataVisibility,
@@ -109,7 +109,7 @@ function joinsRun(item: ItemModel): boolean {
     item.eventKind !== "notes-context" &&
     item.eventKind !== MEMORY_CONTEXT_EVENT_KIND &&
     item.eventKind !== APPROVAL_DECISION_EVENT_KIND &&
-    item.eventKind !== QUIET_YIELD_EVENT_KIND &&
+    !isQuietYield(item) &&
     item.eventKind !== INTERRUPTED_EVENT_KIND &&
     !isErrorEvent(item) &&
     attentionWarningNotice(item) === null

@@ -176,7 +176,7 @@ export function TimelineItem({
 		case "details":
 			content = (
 				<SystemEvent
-					label={item.quietYield ? `${item.entries.length} quiet yields` : `Session details · ${item.entries.length}`}
+					label={item.summary ?? `Session details · ${item.entries.length}`}
 					expanded={expanded}
 					onToggle={toggle}
 				>

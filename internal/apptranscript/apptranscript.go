@@ -823,19 +823,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 				recordPart(parts, i)
 			}
 		}
-		if len(toolCallIDs) > 0 {
-			if reg.QuietCalls == nil {
-				reg.QuietCalls = map[string]*QuietAssistantEntry{}
-			}
-			qentry := &QuietAssistantEntry{
-				EntryIndex: turnIndex,
-				Commentary: strings.Join(commentaryParts, "\n\n"),
-				Authorship: turn.Authorship.Clone(),
-			}
-			for _, id := range toolCallIDs {
-				reg.QuietCalls[id] = qentry
-			}
-		}
+		reg.recordQuietCompanion(turnIndex, commentaryParts, toolCallIDs, turn.Authorship)
 		// Only record non-empty assistant text, mirroring the live projector's
 		// recordAssistantMessage (which returns early on empty text). A text-less
 		// ASSISTANT record must not zero LastAssistantText: doing so lets a later
@@ -856,7 +844,8 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 			if name == "" {
 				name = reg.Names[part.ToolResult.ToolCallID]
 			}
-			if IsCommunicateTool(name, turn.ResultToolName) || IsQuietCommunicate(part.ToolResult) {
+			quiet := IsQuietCommunicate(part.ToolResult)
+			if IsCommunicateTool(name, turn.ResultToolName) || quiet {
 				first := len(items)
 				// A rejected communicate (IsError=true, PrevalOnly=true) was
 				// never executed — live suppresses it entirely (no
@@ -895,7 +884,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 				// RepairJSON machinery the live path used (read-only reuse via
 				// argrepair), then extract the message — reload then renders
 				// the same text live delivered.
-				if !part.ToolResult.IsError && !IsQuietCommunicate(part.ToolResult) {
+				if !part.ToolResult.IsError && !quiet {
 					if rawArgs, ok := reg.CommRawArgs[part.ToolResult.ToolCallID]; ok && rawArgs != "" {
 						repaired := argrepair.RepairJSON([]byte(rawArgs))
 						normalized := NormalizeCommunicateArguments(repaired)
@@ -939,7 +928,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 						}
 					}
 				}
-				if IsQuietCommunicate(part.ToolResult) {
+				if quiet {
 					var commentary string
 					authorship := reg.CommAuthorship[part.ToolResult.ToolCallID]
 					if qentry := reg.QuietCalls[part.ToolResult.ToolCallID]; qentry != nil {
@@ -1148,19 +1137,7 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, re
 		}
 	}
 	flushRun()
-	if len(toolCallIDs) > 0 {
-		if reg.QuietCalls == nil {
-			reg.QuietCalls = map[string]*QuietAssistantEntry{}
-		}
-		qentry := &QuietAssistantEntry{
-			EntryIndex: turnIndex,
-			Commentary: strings.Join(commentaryParts, "\n\n"),
-			Authorship: turn.Authorship.Clone(),
-		}
-		for _, id := range toolCallIDs {
-			reg.QuietCalls[id] = qentry
-		}
-	}
+	reg.recordQuietCompanion(turnIndex, commentaryParts, toolCallIDs, turn.Authorship)
 	if !reg.SkipAssistantText && lastAssistantText != "" {
 		reg.noteAssistantText(lastAssistantText, turnID, turnIndex)
 	}
@@ -1168,6 +1145,23 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, re
 		items[i].RoundID = turn.RoundID
 	}
 	return items
+}
+
+func (r *ToolCallRegistry) recordQuietCompanion(turnIndex int, commentaryParts, toolCallIDs []string, authorship *schema.TranscriptAuthorship) {
+	if len(toolCallIDs) == 0 {
+		return
+	}
+	if r.QuietCalls == nil {
+		r.QuietCalls = map[string]*QuietAssistantEntry{}
+	}
+	qentry := &QuietAssistantEntry{
+		EntryIndex: turnIndex,
+		Commentary: strings.Join(commentaryParts, "\n\n"),
+		Authorship: authorship.Clone(),
+	}
+	for _, id := range toolCallIDs {
+		r.QuietCalls[id] = qentry
+	}
 }
 
 func (r *ToolCallRegistry) noteAssistantText(text, turnID string, entryIndex int) {

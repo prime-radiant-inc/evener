@@ -8,10 +8,14 @@ import { isPlainObject } from "./plainObject";
 
 export const QUIET_YIELD_EVENT_KIND = "quiet_yield";
 
+export function isQuietYield(item: Pick<ItemModel, "eventKind">): boolean {
+  return item.eventKind === QUIET_YIELD_EVENT_KIND;
+}
+
 /** Trimmed companion assistant commentary demoted into a quiet_yield notice,
  * or undefined when the yield carried no companion prose. */
 export function quietYieldCommentaryOf(item: Pick<ItemModel, "eventKind" | "raw">): string | undefined {
-  if (item.eventKind !== QUIET_YIELD_EVENT_KIND || !isPlainObject(item.raw)) return undefined;
+  if (!isQuietYield(item) || !isPlainObject(item.raw)) return undefined;
   const commentary = item.raw.commentary;
   if (typeof commentary !== "string") return undefined;
   const trimmed = commentary.trim();

@@ -9,6 +9,7 @@ package appoverlay
 import (
 	"cmp"
 	"fmt"
+	"maps"
 	"slices"
 	"sync"
 	"unicode/utf8"
@@ -76,7 +77,7 @@ type Overlay struct {
 	// reset discarded; unless an ASSISTANT entry covers them after all, they
 	// still end interrupted.
 	discardedRounds recentSet[struct{}]
-	quietRounds     recentSet[string]
+	quietRounds     recentSet[struct{}]
 	calls           recentSet[*call]
 	// slots holds the streams, previews and tool states by overlay key.
 	slots    map[string]*slot
@@ -147,7 +148,7 @@ func New(budget *Budget) *Overlay {
 		budget:          budget,
 		coveredRounds:   newRecentSet[struct{}](maxRememberedRounds),
 		discardedRounds: newRecentSet[struct{}](maxRememberedRounds),
-		quietRounds:     newRecentSet[string](maxRememberedRounds),
+		quietRounds:     newRecentSet[struct{}](maxRememberedRounds),
 		calls:           newRecentSet[*call](maxRememberedCalls),
 		slots:           map[string]*slot{},
 		streamKeys:      map[string]string{},
@@ -435,17 +436,9 @@ func (o *Overlay) resetStream(streamID string) []Change {
 	if o.roundID != "" && streamID == o.streamID() {
 		o.newAttempt(o.roundID, o.attempt+1)
 	}
-	discarded := false
-	for key, s := range o.slots {
-		if s.item.StreamID == streamID && (s.item.Kind == appwire.OverlayStream || s.item.Kind == appwire.OverlayPreview) {
-			delete(o.slots, key)
-			discarded = true
-		}
-	}
-	if !discarded {
-		return nil
-	}
-	return []Change{{Method: appwire.NotifyOverlayReset, Params: appwire.OverlayResetParams{StreamID: streamID}}}
+	return o.resetMatchedSlots(func(s *slot) bool {
+		return s.item.StreamID == streamID && (s.item.Kind == appwire.OverlayStream || s.item.Kind == appwire.OverlayPreview)
+	})
 }
 
 func (o *Overlay) startPreview(callID string, authorship *schema.TranscriptAuthorship) []Change {
@@ -618,33 +611,30 @@ func (o *Overlay) clearQuietCompanion(callID string) []Change {
 		roundID = c.roundID
 	}
 	if roundID != "" {
-		o.quietRounds.put(roundID, "")
+		o.quietRounds.put(roundID, struct{}{})
 	}
+	return o.resetMatchedSlots(func(s *slot) bool {
+		return (s.item.Kind == appwire.OverlayStream && s.item.RoundID == roundID && s.item.Item.Type == "agentMessage") ||
+			(s.item.Kind == appwire.OverlayPreview && s.item.CallID == callID)
+	})
+}
+
+func (o *Overlay) resetMatchedSlots(match func(*slot) bool) []Change {
 	resetStreams := map[string]bool{}
 	for key, s := range o.slots {
-		if s.item.Kind == appwire.OverlayStream && s.item.RoundID == roundID && s.item.Item.Type == "agentMessage" {
-			if s.item.StreamID != "" {
-				resetStreams[s.item.StreamID] = true
-			}
-			delete(o.slots, key)
+		if !match(s) {
+			continue
 		}
-		if s.item.Kind == appwire.OverlayPreview && s.item.CallID == callID {
-			if s.item.StreamID != "" {
-				resetStreams[s.item.StreamID] = true
-			}
-			delete(o.slots, key)
+		if s.item.StreamID != "" {
+			resetStreams[s.item.StreamID] = true
 		}
+		delete(o.slots, key)
 	}
 	if len(resetStreams) == 0 {
 		return nil
 	}
-	streamIDs := make([]string, 0, len(resetStreams))
-	for id := range resetStreams {
-		streamIDs = append(streamIDs, id)
-	}
-	slices.Sort(streamIDs)
 	var changes []Change
-	for _, streamID := range streamIDs {
+	for _, streamID := range slices.Sorted(maps.Keys(resetStreams)) {
 		changes = append(changes, Change{Method: appwire.NotifyOverlayReset, Params: appwire.OverlayResetParams{StreamID: streamID}})
 		var siblings []*slot
 		for _, s := range o.slots {

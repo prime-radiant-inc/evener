@@ -8,8 +8,8 @@ import type {
 import {
   configFingerprint,
   entryDisplayKey,
+  isQuietYield,
   projectThread,
-  QUIET_YIELD_EVENT_KIND,
   type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import type { ReactNode, RefObject } from "react";
@@ -63,7 +63,6 @@ export interface TranscriptQuietYieldGroupRow {
   readonly id: string;
   readonly entries: readonly ItemEntry[];
   readonly turns: readonly ProjectedTurn[];
-  readonly sourceTurnIndexes: readonly number[];
   readonly sourceTurnIds: readonly string[];
   readonly separatorTurn?: TurnModel;
 }
@@ -79,7 +78,7 @@ function quietYieldOnlyEntry(turn: ProjectedTurn): ItemEntry | undefined {
   if (asTurnError(turn.source.error)) return undefined;
   const entry = turn.entries[0];
   if (entry?.kind !== "item") return undefined;
-  if (entry.item.type !== "systemMessage" || entry.item.eventKind !== QUIET_YIELD_EVENT_KIND) return undefined;
+  if (entry.item.type !== "systemMessage" || !isQuietYield(entry.item)) return undefined;
   return entry;
 }
 
@@ -276,7 +275,6 @@ export function transcriptRowsForProjection(projection: TranscriptProjection): r
         id: quietYieldGroupId(entryDisplayKey(firstQuiet)),
         entries: run.map((member) => member.entry),
         turns: run.map((member) => member.row.turn),
-        sourceTurnIndexes: run.map((member) => member.row.sourceTurnIndex),
         sourceTurnIds: run.map((member) => member.row.turn.id),
         separatorTurn: end === rows.length ? lastRunTurn : undefined,
       });
@@ -340,14 +338,14 @@ export function transcriptRunDisclosureIdsForRows(rows: readonly TranscriptBodyR
   );
 }
 
+function rowSourceTurnIds(row: TranscriptBodyRow): readonly string[] {
+  return row.kind === "turn" ? [row.turn.source.id] : row.sourceTurnIds;
+}
+
 export function transcriptSourceTurnRowIndexesForRows(rows: readonly TranscriptBodyRow[]): ReadonlyMap<string, number> {
   const indexes = new Map<string, number>();
   for (const [index, row] of rows.entries()) {
-    if (row.kind === "intentGroup" || row.kind === "quietYieldGroup") {
-      for (const turnId of row.sourceTurnIds) indexes.set(turnId, index);
-    } else {
-      indexes.set(row.turn.source.id, index);
-    }
+    for (const turnId of rowSourceTurnIds(row)) indexes.set(turnId, index);
   }
   return indexes;
 }
@@ -355,11 +353,7 @@ export function transcriptSourceTurnRowIndexesForRows(rows: readonly TranscriptB
 /** The first row that renders any of a source turn: where the seen divider
  * for that turn goes, and the row a session opening at it scrolls to. */
 export function transcriptFirstRowIndexForTurn(rows: readonly TranscriptBodyRow[], turnId: string): number {
-  return rows.findIndex((row) =>
-    row.kind === "intentGroup" || row.kind === "quietYieldGroup"
-      ? row.sourceTurnIds.includes(turnId)
-      : row.turn.source.id === turnId,
-  );
+  return rows.findIndex((row) => rowSourceTurnIds(row).includes(turnId));
 }
 
 export interface TranscriptBodyProps {

@@ -60,7 +60,7 @@ import {
 	parseAskUserQuestions,
 	parseTaskListData,
 	pendingTextJoined,
-	QUIET_YIELD_EVENT_KIND,
+	isQuietYield,
 	PROMPT_EVENT_KINDS,
 	projectThread,
 	steeringLabel,
@@ -827,8 +827,6 @@ const LIFECYCLE_EVENT_KINDS = new Set([
 	// An automatic memory refresh: a routine context injection like a
 	// shared-notes snapshot, drawn by memoryContextNotice below.
 	MEMORY_CONTEXT_EVENT_KIND,
-	// A quiet communicate({}) yield: a muted one-liner across every detail level.
-	QUIET_YIELD_EVENT_KIND,
 ]);
 
 function systemFamily(eventKind: string | undefined): NoticeFamily {
@@ -838,6 +836,7 @@ function systemFamily(eventKind: string | undefined): NoticeFamily {
 	if (PRELUDE_EVENT_KINDS.has(eventKind)) return "system-prelude";
 	if (DIAGNOSTIC_EVENT_KINDS.has(eventKind)) return "diagnostic";
 	if (LIFECYCLE_EVENT_KINDS.has(eventKind)) return "lifecycle";
+	if (isQuietYield({ eventKind })) return "lifecycle";
 	if (eventKind === APPROVAL_DECISION_EVENT_KIND) return "approval";
 	return "unknown-system";
 }

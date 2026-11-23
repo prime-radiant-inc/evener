@@ -1,4 +1,4 @@
-import { ERROR_EVENT_KIND, QUIET_YIELD_EVENT_KIND } from "@evener/appwire-client";
+import { ERROR_EVENT_KIND, isQuietYield } from "@evener/appwire-client";
 import type { AttachmentRef, MobileTimelineItem } from "./projectedRows";
 
 type Notice = Extract<MobileTimelineItem, { kind: "notice" }>;
@@ -34,7 +34,7 @@ export type TimelineRow =
 			kind: "details";
 			id: string;
 			entries: Notice[];
-			quietYield?: true;
+			summary?: string;
 	  }
 	// Consecutive steps, folded into one line (spec 8.2). It keeps its first
 	// step's identity, so a reading position saved on that step still resolves.
@@ -86,8 +86,12 @@ export function timelineGap(before: TimelineRow, after?: TimelineRow): number {
 		// Intent draws one line per action where a run would fold them: the
 		// lines read as one list, so they keep the run's rhythm.
 		(item.kind === "activity" && item.summaryOnly === true && item.state === "completed") ||
-		(item.kind === "notice" && (noticeLabel(item) !== undefined || item.eventKind === QUIET_YIELD_EVENT_KIND));
+		(item.kind === "notice" && (noticeLabel(item) !== undefined || isQuietYield(item)));
 	return routine(before) || routine(after) ? 8 : 24;
+}
+
+function isQuietYieldNotice(item: MobileTimelineItem | undefined): item is Notice {
+	return item?.kind === "notice" && isQuietYield(item) && !isCriticalNotice(item);
 }
 
 // Keep technical context available without putting it between the reader and the conversation.
@@ -100,11 +104,10 @@ export function groupTimeline(items: readonly MobileTimelineItem[]): TimelineRow
 			index += 1;
 			continue;
 		}
-		if (item.kind === "notice" && item.eventKind === QUIET_YIELD_EVENT_KIND && !isCriticalNotice(item)) {
+		if (isQuietYieldNotice(item)) {
 			let end = index + 1;
 			while (end < items.length) {
-				const next = items[end];
-				if (next?.kind !== "notice" || next.eventKind !== QUIET_YIELD_EVENT_KIND || isCriticalNotice(next)) break;
+				if (!isQuietYieldNotice(items[end])) break;
 				end += 1;
 			}
 			if (end - index >= 2) {
@@ -112,7 +115,7 @@ export function groupTimeline(items: readonly MobileTimelineItem[]): TimelineRow
 					kind: "details",
 					id: `quiet-yields:${item.id}`,
 					entries: items.slice(index, end) as Notice[],
-					quietYield: true,
+					summary: `${end - index} quiet yields`,
 				});
 			} else {
 				rows.push(item);
@@ -130,7 +133,7 @@ export function groupTimeline(items: readonly MobileTimelineItem[]): TimelineRow
 			continue;
 		}
 		const previous = rows.at(-1);
-		if (previous?.kind === "details" && !previous.quietYield) previous.entries.push(item);
+		if (previous?.kind === "details" && previous.summary === undefined) previous.entries.push(item);
 		else rows.push({ kind: "details", id: `details:${item.id}`, entries: [item] });
 		index += 1;
 	}

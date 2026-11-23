@@ -23,8 +23,6 @@ import {
   type ProjectedTurn,
   parseMemoryContext,
   projectThread,
-  QUIET_YIELD_EVENT_KIND,
-  quietYieldCommentaryOf,
   steeringNotificationFragments,
   stripSystemReminder,
   type ThreadModel,
@@ -44,6 +42,7 @@ import { foldTurnEntries, intentGroupId, intentRunAt } from "../transcript/toolR
 import { markdownAsRead, messageAsShown, reasoningSummariesAsRead } from "./messageText";
 import { notificationCardsFor, notificationShownTexts } from "./notificationHits";
 import {
+  groupedSystemNoticePlacement,
   type SystemNoticePlacement,
   systemMessageTexts,
   systemNoticePlacement,
@@ -386,21 +385,10 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string, view
     // Where the words sit is read only for a matched row: grouping a notice
     // run costs a scan, and Find runs on every keystroke.
     let placement: SystemNoticePlacement | null = null;
-    if (groupId !== undefined) {
-      const commentary =
-        entry.item.eventKind === QUIET_YIELD_EVENT_KIND ? quietYieldCommentaryOf(entry.item) : undefined;
-      if (commentary !== undefined && readable(markdownAsRead(commentary)).includes(needle)) {
-        disclosures.push(entry.item.id);
-        placement = { opens: groupId, opensIgnoreBaseline: true };
-      } else {
-        placement = {
-          opens: groupId,
-          ...(entry.item.eventKind === QUIET_YIELD_EVENT_KIND ? { opensIgnoreBaseline: true } : {}),
-        };
-      }
-    }
+    if (groupId !== undefined)
+      placement = groupedSystemNoticePlacement(entry.item, groupId, (rendered) => readable(rendered).includes(needle));
     // A thought opens its own row; no other rule applies to it.
-    else if (entry.item.type === "reasoning") placement = { opens: entryDisplayKey(entry) };
+    else if (entry.item.type === "reasoning") placement = { opens: [entryDisplayKey(entry)] };
     else if (turn !== undefined && view.config !== undefined)
       placement = systemNoticePlacement(entry, turn, view.config);
     const { id, callId, roundId } = entry.item;
@@ -415,7 +403,7 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string, view
       ...(callId ? { callId } : {}),
       ...(roundId ? { roundId } : {}),
       ...(placement?.opens !== undefined || disclosures.length > 0
-        ? { opens: [...(placement?.opens !== undefined ? [placement.opens] : []), ...disclosures] }
+        ? { opens: [...(placement?.opens ?? []), ...disclosures] }
         : {}),
       ...(placement?.opensIgnoreBaseline ? { opensIgnoreBaseline: true } : {}),
       ...(opensSession?.length ? { opensSession } : {}),

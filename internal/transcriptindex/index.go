@@ -24,6 +24,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/execsupport/fsatomic"
 	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/llm"
 )
 
 const (
@@ -961,7 +962,6 @@ func (x *Index) extend(length int64) error {
 		}
 	}
 	x.builder.committedEntries = x.meta.Entries
-	x.builder.collectingDemotions = false
 	if err := x.scan(length); err != nil {
 		var demoteErr errQuietDemoteRebuild
 		if errors.As(err, &demoteErr) {
@@ -1320,24 +1320,14 @@ func liveBuildName(dir string) (string, error) {
 }
 
 func (x *Index) buildNew(length int64, incarnation string) error {
-	x.rebuilds++
-	if err := x.buildPass(length, incarnation, nil, true); err != nil {
+	demoted, err := x.discoverDemotedAssistants(length)
+	if err != nil {
 		return err
 	}
-	if len(x.builder.demotedAssistants) == 0 {
-		return nil
-	}
-	demoted := x.builder.demotedAssistants
-	if x.build != "" {
-		passOneDir := filepath.Join(x.dir, x.build)
-		if err := errors.Join(x.closeBuild(), os.RemoveAll(passOneDir)); err != nil {
-			return err
-		}
-	}
-	return x.buildPass(length, incarnation, demoted, false)
+	return x.buildPass(length, incarnation, demoted)
 }
 
-func (x *Index) buildPass(length int64, incarnation string, demoted map[uint64]bool, collectDemotions bool) error {
+func (x *Index) buildPass(length int64, incarnation string, demoted map[uint64]bool) error {
 	if err := x.closeBuild(); err != nil {
 		return err
 	}
@@ -1367,7 +1357,7 @@ func (x *Index) buildPass(length int64, incarnation string, demoted map[uint64]b
 	x.stale, x.builderStale = false, false
 	x.builder = newBuilder(x)
 	x.builder.global = map[string]string{}
-	x.builder.collectingDemotions = collectDemotions
+	x.rebuilds++
 	if demoted != nil {
 		x.builder.demotedAssistants = demoted
 	}
@@ -1408,6 +1398,87 @@ func (x *Index) buildPass(length int64, incarnation string, demoted map[uint64]b
 	x.removeOtherBuilds()
 	x.pruneSupersededSidecars(pruneCandidates)
 	return nil
+}
+
+// discoverDemotedAssistants scans transcript entries up to length read-only
+// (no table writes, string interning, fsync, or CURRENT publish) to find every
+// TurnAssistant ordinal whose companion text must be demoted because a paired
+// tool result succeeded quietly.
+func (x *Index) discoverDemotedAssistants(length int64) (map[uint64]bool, error) {
+	if length <= 0 {
+		return nil, nil
+	}
+	f, err := os.Open(x.path)
+	if err != nil {
+		return nil, fmt.Errorf("open transcript: %w", err)
+	}
+	defer f.Close() //nolint:errcheck // read-only discovery pass
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	length = min(length, info.Size())
+	bufSize := max(min(length, 1<<20), 4<<10)
+	reader := bufio.NewReaderSize(io.NewSectionReader(f, 0, length), int(bufSize))
+	var lines transcript.LineBuffer
+	seenHeader := false
+	var ordinal uint64
+	assistantByCall := map[string]uint64{}
+	var demoted map[uint64]bool
+	for {
+		line, complete, _, err := lines.ReadLine(reader, maxLineBytes)
+		if err != nil {
+			return nil, err
+		}
+		if !complete {
+			break
+		}
+		trimmed := bytes.TrimSpace(line)
+		if len(trimmed) == 0 {
+			continue
+		}
+		if !seenHeader {
+			seenHeader = true
+			continue
+		}
+		entry, err := transcript.DecodeEntry(trimmed)
+		if err == nil && entry.Turn.OriginalOrdinal == nil {
+			switch entry.Turn.Kind {
+			case schema.TurnAssistant:
+				hasText := assistantEntryHasText(&entry.Turn)
+				for _, part := range entry.Turn.Message.Content {
+					if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
+						if hasText {
+							assistantByCall[part.ToolCall.ID] = ordinal
+						} else {
+							delete(assistantByCall, part.ToolCall.ID)
+						}
+					}
+				}
+			case schema.TurnTool, schema.TurnToolResults:
+				for _, part := range entry.Turn.Message.Content {
+					if part.Kind != llm.ContentToolResult || part.ToolResult == nil {
+						continue
+					}
+					if apptranscript.IsQuietCommunicate(part.ToolResult) {
+						if assistantOrdinal, ok := assistantByCall[part.ToolResult.ToolCallID]; ok {
+							if demoted == nil {
+								demoted = map[uint64]bool{}
+							}
+							demoted[assistantOrdinal] = true
+						}
+					}
+					delete(assistantByCall, part.ToolResult.ToolCallID)
+				}
+			case schema.TurnCommunicate:
+				if entry.Turn.Communicate != nil {
+					delete(assistantByCall, entry.Turn.Communicate.CallID)
+				}
+			}
+		}
+		ordinal++
+	}
+	return demoted, nil
 }
 
 // removeOtherBuilds deletes every build but the live one. A reader in another
