@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1200, initial-scale=1">
+<title>SegmentedControl wrapping at 320px with XL text layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  /* biome-ignore lint/complexity/noImportantStyles: layoutguard measures settled geometry, so transitions must not run */
+  * { transition: none !important; animation: none !important; }
+
+  body {
+    margin: 0;
+    background: var(--surface-0);
+    color: var(--ink-hi);
+    font-family: var(--font-sans);
+  }
+
+  .fixtures { display: flex; flex-direction: column; gap: 8px; padding: 8px; }
+  .fixture { display: flex; flex-direction: column; gap: 4px; }
+  .fixtureLabel { color: var(--ink-low); font: var(--font-size-caption) var(--font-mono); }
+</style>
+</head>
+<body data-font-size="xl">
+<main class="fixtures"></main>
+
+<!-- The activity sidebar's Overview category strip, as ActivitySidebar.tsx
+     renders it: a 320px .sidebar holding .tabs, then SegmentedControl's
+     .root > .track[role=radiogroup] with one hidden thumb and five equal
+     columns. Every option carries .stacked (each tab but About has a count
+     detail) and .wrap; the label and detail spans carry .wrap too. The labels
+     are the real ACTIVITY_TABS labels and the counts are a plausible XL-text
+     load (the guard is about geometry, not copy). -->
+<template id="fixture-template">
+  <section class="fixture">
+    <div class="fixtureLabel">320px sidebar, XL text</div>
+    <aside class="sidebar" data-sidebar style="width: 320px">
+      <div class="tabs">
+        <div class="root">
+          <div
+            class="track stacked"
+            data-track
+            role="radiogroup"
+            aria-label="Overview kind"
+            aria-orientation="horizontal"
+            style="grid-template-columns: repeat(5, minmax(0, 1fr))"
+          >
+            <span aria-hidden="true" class="thumb" style="--segmented-index: 0"></span>
+            <button type="button" role="radio" aria-checked="true" aria-label="Agents, 1024 of 10690 active" class="option stacked wrap" data-option>
+              <span class="optionLabel wrap" data-label>Agents</span>
+              <span class="optionDetail wrap" data-detail>1024/10690</span>
+            </button>
+            <button type="button" role="radio" aria-checked="false" aria-label="Jobs, 2 of 201 running" class="option stacked wrap" data-option>
+              <span class="optionLabel wrap" data-label>Jobs</span>
+              <span class="optionDetail wrap" data-detail>2/201</span>
+            </button>
+            <button type="button" role="radio" aria-checked="false" aria-label="Watches, 0 of 3 armed" class="option stacked wrap" data-option>
+              <span class="optionLabel wrap" data-label>Watches</span>
+              <span class="optionDetail wrap" data-detail>0/3</span>
+            </button>
+            <button type="button" role="radio" aria-checked="false" aria-label="Tasks, 4 of 9 settled" class="option stacked wrap" data-option>
+              <span class="optionLabel wrap" data-label>Tasks</span>
+              <span class="optionDetail wrap" data-detail>4/9</span>
+            </button>
+            <button type="button" role="radio" aria-checked="false" aria-label="About" class="option stacked wrap" data-option>
+              <span class="optionLabel wrap" data-label>About</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </section>
+</template>
+
+<script>
+const template = document.querySelector("#fixture-template");
+document.querySelector(".fixtures").append(template.content.cloneNode(true));
+
+function box(element) {
+  const rect = element.getBoundingClientRect();
+  return {
+    left: rect.left,
+    right: rect.right,
+    top: rect.top,
+    bottom: rect.bottom,
+    width: rect.width,
+    height: rect.height,
+    clientWidth: element.clientWidth,
+    clientHeight: element.clientHeight,
+    scrollWidth: element.scrollWidth,
+    scrollHeight: element.scrollHeight,
+  };
+}
+
+function textBox(element) {
+  const style = getComputedStyle(element);
+  return {
+    ...box(element),
+    lineHeight: Number.parseFloat(style.lineHeight),
+    whiteSpace: style.whiteSpace,
+    textOverflow: style.textOverflow,
+    overflow: style.overflow,
+    overflowWrap: style.overflowWrap,
+  };
+}
+
+function blockChrome(element) {
+  const style = getComputedStyle(element);
+  return {
+    paddingTop: Number.parseFloat(style.paddingTop),
+    paddingBottom: Number.parseFloat(style.paddingBottom),
+    borderTopWidth: Number.parseFloat(style.borderTopWidth),
+    borderBottomWidth: Number.parseFloat(style.borderBottomWidth),
+  };
+}
+
+window.measure = () => {
+  const sidebar = document.querySelector("[data-sidebar]");
+  const track = document.querySelector("[data-track]");
+  const options = [...track.querySelectorAll("[data-option]")];
+  const firstOption = options[0];
+  const firstLabel = firstOption.querySelector("[data-label]");
+  const firstDetail = firstOption.querySelector("[data-detail]");
+  return {
+    sidebar: box(sidebar),
+    track: box(track),
+    trackChrome: blockChrome(track),
+    optionChrome: blockChrome(firstOption),
+    oneLineLabelHeight: Number.parseFloat(getComputedStyle(firstLabel).lineHeight),
+    oneLineDetailHeight: Number.parseFloat(getComputedStyle(firstDetail).lineHeight),
+    stackedGap: Number.parseFloat(getComputedStyle(firstOption).rowGap),
+    options: options.map((option) => {
+      const detail = option.querySelector("[data-detail]");
+      return {
+        option: box(option),
+        label: textBox(option.querySelector("[data-label]")),
+        detail: detail === null ? null : textBox(detail),
+      };
+    }),
+  };
+};
+</script>
+</body>
+</html>

@@ -871,6 +871,7 @@ test("activity tabs show each fraction as a detail line and About stays a single
   await screen.findByRole("button", { name: /inspect/ });
   const tabs = screen.getAllByRole("radio");
   expect(tabs).toHaveLength(5);
+  expect(tabs[0]?.className).toContain("wrap");
   for (const tab of tabs.slice(0, 4)) {
     const spans = tab.querySelectorAll("span");
     expect(spans).toHaveLength(2);
@@ -902,6 +903,42 @@ test("phone Overview enters its selected category and contains sequential keyboa
     await user.keyboard("{Escape}");
     await waitFor(() => expect(document.activeElement).toBe(opener));
     expect(activitySidebarStore.getState().open).toBe(false);
+  } finally {
+    opener.remove();
+  }
+});
+
+test("phone Overview reopening during its exit returns focus to its selected category", async () => {
+  connectionStore.getState().connect(activityClient());
+  installFocusedScope(ref);
+  const opener = document.body.appendChild(document.createElement("button"));
+  opener.textContent = "Open Overview";
+  opener.addEventListener("click", () => activitySidebarStore.getState().openWith("about", opener));
+  try {
+    opener.click();
+    mount(true);
+    const sidebar = await screen.findByTestId("activity-sidebar");
+    const strip = screen.getByRole("radiogroup");
+    const about = screen.getByRole("radio", { name: "About" });
+    await waitFor(() => expect(document.activeElement).toBe(about));
+    // Close and reopen in separate synchronous commits. No timer or frame can
+    // run between them, so the exit animation cannot finish and the aside
+    // stays mounted: the reopen must re-arm entry focus on this same strip
+    // rather than mount a fresh one. AboutTab's rapid-reopen test uses the
+    // same no-yield pattern.
+    act(() => {
+      fireEvent.keyDown(window, { key: "Escape" });
+    });
+    expect(activitySidebarStore.getState().open).toBe(false);
+    expect(sidebar.isConnected).toBe(true);
+    opener.focus();
+    act(() => {
+      fireEvent.click(opener);
+    });
+    expect(activitySidebarStore.getState().open).toBe(true);
+    expect(screen.getByTestId("activity-sidebar")).toBe(sidebar);
+    expect(screen.getByRole("radiogroup")).toBe(strip);
+    await waitFor(() => expect(document.activeElement).toBe(about), { timeout: 1_500 });
   } finally {
     opener.remove();
   }
