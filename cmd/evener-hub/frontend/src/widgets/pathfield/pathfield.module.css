@@ -27,6 +27,84 @@
   text-overflow: clip;
 }
 
+/* The prominent variant: a summary tile that is ITSELF the button, for a
+ * directory that is one of the page's primary facts rather than a form row.
+ * Composes the shared grouped surface so the tile is the control; the
+ * basename headlines, the whole path captions, and the action trails. */
+.prominentTrigger {
+  composes: grouped from "../../styles/surface.module.css";
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-ui);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--motion-duration-hover) var(--motion-easing-standard),
+    background-color var(--motion-duration-hover) var(--motion-easing-standard),
+    transform var(--motion-duration-press) var(--motion-easing-standard);
+}
+
+.prominentTrigger:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.prominentTrigger:hover:not(:disabled) {
+  border-color: var(--edge-strong);
+}
+
+.prominentTrigger:active:not(:disabled) {
+  background: var(--hover-1);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .prominentTrigger:active:not(:disabled) {
+    transform: scale(var(--press-scale-row));
+  }
+}
+
+.prominentTrigger:disabled {
+  color: var(--ink-low);
+  cursor: not-allowed;
+}
+
+.prominentSeat {
+  composes: fieldSeat from "../../styles/surface.module.css";
+  color: var(--ink-mid);
+}
+
+.prominentText {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  gap: var(--space-1);
+}
+
+.prominentHeadline {
+  font-weight: var(--font-weight-medium);
+  overflow-wrap: anywhere;
+}
+
+.prominentCaption {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  overflow-wrap: anywhere;
+}
+
+.prominentAction {
+  flex: none;
+  color: var(--ink-mid);
+}
+
 .triggerDefault {
   composes: default from "../internal/fieldTrigger.module.css";
 }

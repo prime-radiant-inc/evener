@@ -81,7 +81,7 @@ test("the desktop directory trigger announces the confirmed path", async () => {
   renderSpawn(readyClient());
   await settled();
   await setWorkingDir(user, "/tmp/project");
-  expect(screen.getByLabelText("Working directory: /tmp/project", { selector: "#spawn-cwd" })).toBe(workingDir());
+  expect(screen.getByLabelText(/^Working directory: \/tmp\/project/, { selector: "#spawn-cwd" })).toBe(workingDir());
 });
 
 // Issue #198: the attach button, model trigger, and effort control are the

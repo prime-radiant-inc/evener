@@ -44,7 +44,7 @@ test("grouped rows draw a hairline between rows that render something, and none 
 });
 
 test.each([
-  ["panes/spawn/spawn.module.css", ".directoryButton", ["grouped"]],
+  ["widgets/pathfield/pathfield.module.css", ".prominentTrigger", ["grouped"]],
   ["panes/spawn/MobileSettingRows.module.css", ".config", ["grouped", "groupedRows"]],
   ["panes/settings/settings.module.css", ".clusterRowsGrouped", ["grouped", "groupedRows"]],
   ["panes/session/session.module.css", ".intentGroupRows", ["grouped", "groupedRows"]],
