@@ -72,7 +72,6 @@
 
 import type { ThreadModel } from "@evener/appwire-client";
 import {
-  absoluteTime,
   EMPTY_TASKS_PANEL_ENTRY,
   groupTasks,
   isKnownTaskStatus,
@@ -86,6 +85,7 @@ import {
   Button,
   Disclosure,
   EmptyState,
+  formatAbsoluteTime,
   InlineNotice,
   Markdown,
   Sheet,
@@ -156,6 +156,14 @@ function triggerLabel(tasks: ThreadModel["tasks"]): string {
   return tasks ? taskAggregateLabel(tasks) : "Tasks";
 }
 
+// The task rows' absolute title keeps the task formatter's tolerant behavior:
+// a malformed wire timestamp shows as-is rather than blanking the row. The
+// formatting itself is the shared helper.
+function taskAbsoluteTime(iso: string): string {
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? formatAbsoluteTime(ms, { format: "dateTime", seconds: false }) : iso;
+}
+
 // Scopes a task row's disclosure state to this session: task ids restart at
 // 1 in every session (agent/task/task_store.go mints them per session), but
 // widgets/disclosure's store is one page-lifetime singleton shared by every
@@ -211,15 +219,15 @@ function TaskTimestamps({ task }: { task: TaskRow }) {
   const showUpdated = updatedAt && updatedAt !== task.createdAt;
   return (
     <div className={CLASS.times} data-testid="task-times">
-      <span>created {absoluteTime(task.createdAt)}</span>
+      <span>created {taskAbsoluteTime(task.createdAt)}</span>
       {showUpdated && (
         <span>
-          updated <span title={absoluteTime(updatedAt)}>{relativeTime(updatedAt)}</span>
+          updated <span title={taskAbsoluteTime(updatedAt)}>{relativeTime(updatedAt)}</span>
         </span>
       )}
       {task.status === "done" && task.completedAt && (
         <span>
-          completed <span title={absoluteTime(task.completedAt)}>{relativeTime(task.completedAt)}</span>
+          completed <span title={taskAbsoluteTime(task.completedAt)}>{relativeTime(task.completedAt)}</span>
         </span>
       )}
     </div>
@@ -291,7 +299,7 @@ function TaskRowView({ task, sessionRef, settled = false, renderTime }: TaskRowV
   const time = renderTime ? (
     renderTime(task)
   ) : task.updatedAt ? (
-    <span className={CLASS.time} data-testid="task-row-time" title={absoluteTime(task.updatedAt)}>
+    <span className={CLASS.time} data-testid="task-row-time" title={taskAbsoluteTime(task.updatedAt)}>
       {relativeTime(task.updatedAt)}
     </span>
   ) : null;

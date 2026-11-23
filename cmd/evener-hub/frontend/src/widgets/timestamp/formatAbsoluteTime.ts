@@ -1,0 +1,67 @@
+// One absolute-time formatter for the surfaces that show an instant. Four
+// shapes preserve every existing visible format:
+//
+//   adaptive    pinned "en"; time-only on the reference calendar day, then
+//               date+time with seconds (Timestamp's hover title)
+//   dateTime    pinned "en"; date+time to the minute (a task row's title)
+//   locale      the reader's locale and timezone, date+time (session details,
+//               a marketplace's "Last updated")
+//   localeTime  the reader's locale and timezone, clock time only (the
+//               launch-config "Saved at" status)
+//
+// The pinned shapes stay deterministic across environments; the locale shapes
+// exist where "when did this happen for me" is the point. Formatters are
+// module singletons because Intl construction with an options object is not
+// cached, and a hover title formats on every render of every visible
+// timestamp.
+
+export type AbsoluteTimeFormat = "adaptive" | "dateTime" | "locale" | "localeTime";
+
+export interface FormatAbsoluteTimeOptions {
+  /** Output shape; defaults to "adaptive". */
+  format?: AbsoluteTimeFormat;
+  /** Epoch-ms reference instant for `adaptive`'s same-calendar-day test.
+   * Defaults to the current clock; callers that own "now" pass it. */
+  now?: number;
+}
+
+const TIME = new Intl.DateTimeFormat("en", {
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+});
+const DATE_TIME = new Intl.DateTimeFormat("en", {
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+});
+const DATE_TIME_WITHOUT_SECONDS = new Intl.DateTimeFormat("en", {
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
+/** formatAbsoluteTime renders an epoch-ms instant in the shape `format`
+ * names; see this module's header. `value` is expected to be a finite epoch:
+ * callers own their own absence and parse-failure policy. */
+export function formatAbsoluteTime(value: number, options: FormatAbsoluteTimeOptions = {}): string {
+  const { format = "adaptive", now = Date.now() } = options;
+  switch (format) {
+    case "locale":
+      return new Date(value).toLocaleString();
+    case "localeTime":
+      return new Date(value).toLocaleTimeString();
+    case "dateTime":
+      return DATE_TIME_WITHOUT_SECONDS.format(value);
+    default:
+      return new Date(value).toDateString() === new Date(now).toDateString()
+        ? TIME.format(value)
+        : DATE_TIME.format(value);
+  }
+}

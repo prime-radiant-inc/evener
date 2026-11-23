@@ -1,6 +1,9 @@
 // Pure derivations behind the session-details panel's accounting rows. Kept
 // dependency-free of React (same convention as statusFormat.ts) so each is
 // trivially unit-testable.
+// The formatter is imported from its own module, not the widget barrel: this
+// file's node tests stay React-free, and the barrel would load every widget.
+import { formatAbsoluteTime } from "../../../widgets/timestamp/formatAbsoluteTime";
 
 // TokenPair/turnUsageTokens/SessionTokens/sessionTokens/tokenUnitLabel are
 // the platform-independent session-usage derivation, shared with native; the
@@ -16,5 +19,5 @@ export function formatTimestamp(iso: string | undefined): string | undefined {
   if (!iso) return undefined;
   const ms = Date.parse(iso);
   if (!Number.isFinite(ms)) return undefined;
-  return new Date(ms).toLocaleString();
+  return formatAbsoluteTime(ms, { format: "locale" });
 }
