@@ -64,6 +64,12 @@ test("shows every documented SegmentedControl state in both theme panes", () => 
     expect(stacked.group.className).toContain("stacked");
     expect(stacked.option.querySelectorAll("span")).toHaveLength(2);
 
+    const wrapDemo = pane.querySelector('[data-testid="segmentedcontrol-wrap-demo"]');
+    expect(wrapDemo).toBeTruthy();
+    const wrapGroup = wrapDemo?.querySelector('[role="radiogroup"]');
+    expect(wrapGroup?.querySelectorAll('[role="radio"]')).toHaveLength(5);
+    expect(wrapGroup?.querySelector('[role="radio"]')?.className).toContain("wrap");
+
     const frame320 = pane.querySelector('[data-testid="segmentedcontrol-frame-320"]');
     const frame390 = pane.querySelector('[data-testid="segmentedcontrol-frame-390"]');
     expect(frame320).toBeTruthy();

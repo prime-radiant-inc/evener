@@ -18,7 +18,6 @@ import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActiv
 import { EntityViewsProvider, sessionEntityViews } from "../../transcriptDisplay/entityViews";
 import { CloseIcon, FocusScope, IconButton, SegmentedControl } from "../../widgets";
 import { DisclosurePersistenceContext } from "../../widgets/disclosure/disclosureStore";
-import { tabbable } from "../../widgets/focusscope/tabbable";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { ScopeCrumbs } from "../statusbar/ScopeCrumbs";
 import { type ActivityTab, deriveScope } from "../statusbar/statusScope";
@@ -78,16 +77,6 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
   useEffect(() => {
     if (open && ref !== null) activitySidebarStore.getState().retainOpenView(ref);
   }, [open, ref]);
-  useEffect(() => {
-    if (!open || !mobile || ref === null) return;
-    const frame = requestAnimationFrame(() => {
-      const element = sidebar.current;
-      if (!element || !activitySidebarStore.getState().open) return;
-      const selected = element.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]');
-      (selected ?? tabbable(element)[0])?.focus();
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [open, mobile, ref]);
   const { snapshot } = useSessionActivity(open ? ref : null);
   // The watch detail resolves entity names from the evidence the session
   // transcript beside this surface already loaded. Only the Watches tab
@@ -204,6 +193,8 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
                 hideLabel
                 size="sm"
                 fullWidth
+                wrap
+                autoFocus={mobile}
                 value={tab}
                 onChange={(next) => activitySidebarStore.getState().setTab(next)}
                 options={ACTIVITY_TABS.map((spec) => ({

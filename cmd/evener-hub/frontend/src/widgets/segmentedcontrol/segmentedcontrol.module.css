@@ -117,6 +117,22 @@
   white-space: nowrap;
 }
 
+/* Wrap: the category strip keeps its equal columns but breaks the label and
+ * its count onto more lines. The option is content-height, so the track grows
+ * in block size rather than shortening either line. */
+.option.wrap {
+  block-size: auto;
+  padding-block: var(--space-1);
+}
+
+.optionLabel.wrap,
+.optionDetail.wrap {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .sm {
   block-size: 28px;
 }

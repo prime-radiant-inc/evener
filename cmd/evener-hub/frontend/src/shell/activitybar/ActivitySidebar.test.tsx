@@ -871,6 +871,7 @@ test("activity tabs show each fraction as a detail line and About stays a single
   await screen.findByRole("button", { name: /inspect/ });
   const tabs = screen.getAllByRole("radio");
   expect(tabs).toHaveLength(5);
+  expect(tabs[0]?.className).toContain("wrap");
   for (const tab of tabs.slice(0, 4)) {
     const spans = tab.querySelectorAll("span");
     expect(spans).toHaveLength(2);

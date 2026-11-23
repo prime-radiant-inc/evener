@@ -266,6 +266,60 @@ describe("selection and roving focus", () => {
     expect(onChange).toHaveBeenCalledTimes(2);
     expect(onChange).toHaveBeenLastCalledWith("chat");
   });
+
+  test("autoFocus enters the selected option rather than the group", () => {
+    render(
+      <SegmentedControl
+        label="Choice"
+        value="two"
+        options={[
+          { value: "one", label: "One" },
+          { value: "two", label: "Two" },
+        ]}
+        onChange={() => {}}
+        autoFocus
+      />,
+    );
+    expect(document.activeElement).toBe(screen.getByRole("radio", { name: "Two" }));
+    expect(document.activeElement).not.toBe(screen.getByRole("radiogroup"));
+  });
+
+  test("autoFocus falls back to the roving tab stop when the selected option is disabled", () => {
+    render(
+      <SegmentedControl
+        label="Choice"
+        value="two"
+        options={[
+          { value: "one", label: "One" },
+          { value: "two", label: "Two", disabled: true },
+        ]}
+        onChange={() => {}}
+        autoFocus
+      />,
+    );
+    expect(document.activeElement).toBe(screen.getByRole("radio", { name: "One" }));
+  });
+
+  test("leaves the reader's focus alone without autoFocus", () => {
+    const outside = document.body.appendChild(document.createElement("button"));
+    try {
+      outside.focus();
+      render(
+        <SegmentedControl
+          label="Choice"
+          value="one"
+          options={[
+            { value: "one", label: "One" },
+            { value: "two", label: "Two" },
+          ]}
+          onChange={() => {}}
+        />,
+      );
+      expect(document.activeElement).toBe(outside);
+    } finally {
+      outside.remove();
+    }
+  });
 });
 
 describe("disabled behavior and form safety", () => {
@@ -378,6 +432,28 @@ describe("stacked detail", () => {
     expect(css).toMatch(
       /\.optionDetail\s*\{[^}]*font-size:\s*min\(var\(--font-size-caption\),\s*calc\(var\(--font-size-caption\) \/ var\(--font-scale\)\)\)[^}]*font-variant-numeric:\s*tabular-nums[^}]*font-weight:\s*var\(--font-weight-regular\)/s,
     );
+  });
+});
+
+describe("wrap layout", () => {
+  const wrapped = [
+    { value: "agents", label: "Agents", detail: "18/1069" },
+    { value: "about", label: "About" },
+  ];
+
+  test("marks the option and every text line for wrapping", () => {
+    render(<SegmentedControl label="Kind" value="agents" options={wrapped} onChange={() => {}} wrap />);
+    const agents = screen.getByRole("radio", { name: "Agents" });
+    expect(agents.className).toContain("wrap");
+    expect([...agents.querySelectorAll("span")].every((span) => span.className.includes("wrap"))).toBe(true);
+    expect(screen.getByRole("radio", { name: "About" }).querySelector("span")?.className).toContain("wrap");
+  });
+
+  test("keeps the default ellipsis layout without the prop", () => {
+    render(<SegmentedControl label="Kind" value="agents" options={wrapped} onChange={() => {}} />);
+    const agents = screen.getByRole("radio", { name: "Agents" });
+    expect(agents.className).not.toContain("wrap");
+    expect(agents.querySelector("span")?.className).not.toContain("wrap");
   });
 });
 
