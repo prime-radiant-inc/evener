@@ -20,14 +20,14 @@
 // an affordance that is not mounted (the rail's toggle exists in exactly one
 // of its two states) simply renders no chip.
 
-import { ACTIONS, chordDisplayKeys, displayBindingFor, type KeySequence, serializeChord } from "@evener/appwire-client";
-import { Fragment, type ReactNode, useEffect, useRef } from "react";
+import { ACTIONS, displayBindingFor, type KeySequence } from "@evener/appwire-client";
+import { type ReactNode, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { useStore } from "zustand";
 import { keybindingsRegistry } from "../../keybindings/appRegistry";
-import { KeyHint } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { usePresence } from "../../widgets/internal/usePresence";
+import { KeySequences } from "../../widgets/shortcutlist";
 import { focusedSessionPaneId, focusedSessionRef } from "../focusedSession";
 import { installHoldHints, useHoldHintsStore } from "./holdHintsController";
 import styles from "./holdhints.module.css";
@@ -37,7 +37,6 @@ const CLASS = {
   chip: requireClass(styles.chip, "holdhints.module.css", "chip"),
   below: requireClass(styles.below, "holdhints.module.css", "below"),
   above: requireClass(styles.above, "holdhints.module.css", "above"),
-  or: requireClass(styles.or, "holdhints.module.css", "or"),
 };
 
 interface AnchorSpec {
@@ -156,15 +155,7 @@ export function HoldHints() {
         className={`${CLASS.chip} ${spec.placement === "above" ? CLASS.above : CLASS.below}`}
         style={{ left: rect.left + rect.width / 2, top: spec.placement === "above" ? rect.top : rect.bottom }}
       >
-        {sequences.map((sequence, i) => (
-          <Fragment key={serializeChord(sequence)}>
-            {i > 0 && <span className={CLASS.or}>/</span>}
-            {sequence.map((press, i) => (
-              // biome-ignore lint/suspicious/noArrayIndexKey: repeated presses in a multi-press sequence ("g g") are content-identical, position is identity, and the list is static per binding
-              <KeyHint key={`${i}:${serializeChord([press])}`} keys={chordDisplayKeys(press)} />
-            ))}
-          </Fragment>
-        ))}
+        <KeySequences sequences={sequences} orLabel="/" />
       </span>,
     );
   }

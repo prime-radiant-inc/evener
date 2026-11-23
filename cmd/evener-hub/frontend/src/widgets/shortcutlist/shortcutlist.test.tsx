@@ -58,3 +58,36 @@ test("the inline layout keeps the same terms and definitions as the table", () =
   // The two layouts are different boxes, not one restyled by its caller.
   expect(inlineList?.className).not.toBe(tableClass);
 });
+
+test("alternative bindings, a multi-press sequence, and an unbound action each render as one term", () => {
+  render(
+    <ShortcutList
+      items={[
+        {
+          sequences: [
+            [{ modifiers: ["Control"], optionalModifiers: [], key: "K" }],
+            [{ modifiers: ["Control"], optionalModifiers: [], key: "P" }],
+          ],
+          label: "open the palette",
+        },
+        {
+          sequences: [
+            [
+              { modifiers: [], optionalModifiers: [], key: "g" },
+              { modifiers: [], optionalModifiers: [], key: "g" },
+            ],
+          ],
+          label: "go to line",
+        },
+        { sequences: [], unbound: "Unbound", label: "an action with no binding" },
+      ]}
+    />,
+  );
+  const terms = screen.getAllByRole("term");
+  expect(terms.map((term) => term.textContent)).toEqual(["Ctrl+KorCtrl+P", "gg", "Unbound"]);
+  expect(terms.map((term) => [...term.querySelectorAll("kbd")].map((key) => key.textContent))).toEqual([
+    ["Ctrl", "K", "P"],
+    ["g", "g"],
+    [],
+  ]);
+});
