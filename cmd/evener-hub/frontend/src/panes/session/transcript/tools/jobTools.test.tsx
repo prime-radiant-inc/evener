@@ -293,21 +293,77 @@ test("job_status: meta line separators are decoration", () => {
 });
 
 // One delegate status vocabulary: the card's word and kind, the row's
-// StatusDot cadence, and this card's Chip all come from the same row. The
-// assertions compare the surfaces to each other and to the wire's status
-// tokens, never to a fixed phrase.
+// StatusDot cadence, and this card's Chip all come from the same row. A
+// finished delegate is idle with a settled last_outcome, and the settled word
+// is asserted directly so a chip stuck on the lifecycle word fails.
 test.each([
-  { status: "running", kind: "running", cadence: "working", tone: "alive" },
-  { status: "completed", kind: "done", cadence: "ended", tone: "neutral" },
-  { status: "idle", kind: "done", cadence: "ended", tone: "neutral" },
-  { status: "stopped", kind: "stopped", cadence: "ended", tone: "neutral" },
-  { status: "failed", kind: "failed", cadence: "failed", tone: "danger" },
-  { status: "exhausted", kind: "failed", cadence: "failed", tone: "attention" },
-  { status: "unknown", kind: "unknown", cadence: undefined, tone: "neutral" },
-] as const)("the delegate card and job_status share one status vocabulary ($status)", (expected) => {
+  {
+    label: "running",
+    lifecycle: "running",
+    outcome: undefined,
+    kind: "running",
+    cadence: "working",
+    tone: "alive",
+    word: "Running",
+  },
+  {
+    label: "completed",
+    lifecycle: "idle",
+    outcome: "completed",
+    kind: "done",
+    cadence: "ended",
+    tone: "neutral",
+    word: "Idle · reported",
+  },
+  {
+    label: "idle",
+    lifecycle: "idle",
+    outcome: undefined,
+    kind: "done",
+    cadence: "ended",
+    tone: "neutral",
+    word: "Idle",
+  },
+  {
+    label: "stopped",
+    lifecycle: "idle",
+    outcome: "stopped",
+    kind: "stopped",
+    cadence: "ended",
+    tone: "neutral",
+    word: "Stopped",
+  },
+  {
+    label: "failed",
+    lifecycle: "idle",
+    outcome: "failed",
+    kind: "failed",
+    cadence: "failed",
+    tone: "danger",
+    word: "Failed",
+  },
+  {
+    label: "exhausted",
+    lifecycle: "idle",
+    outcome: "exhausted",
+    kind: "failed",
+    cadence: "failed",
+    tone: "attention",
+    word: "Exhausted",
+  },
+  {
+    label: "unknown",
+    lifecycle: "unknown",
+    outcome: undefined,
+    kind: "unknown",
+    cadence: undefined,
+    tone: "neutral",
+    word: "Status unavailable",
+  },
+] as const)("the delegate card and job_status share one status vocabulary ($label)", (expected) => {
   const ref = "local:vocabulary";
   const delegateId = "dlg_vocabulary";
-  seedCurrentDelegate(ref, delegateId, expected.status);
+  seedCurrentDelegate(ref, delegateId, expected.lifecycle, undefined, { outcome: expected.outcome });
   const turn: TurnModel = { id: "turn_vocabulary", status: "completed", items: [] };
   const card = render(
     <ToolCallItem
@@ -316,7 +372,7 @@ test.each([
         turnId: turn.id,
         toolName: "delegate",
         status: "completed",
-        output: JSON.stringify({ delegate_id: delegateId, status: expected.status }),
+        output: JSON.stringify({ delegate_id: delegateId, status: expected.lifecycle }),
       })}
       turn={turn}
       live={false}
@@ -326,22 +382,24 @@ test.each([
   const row = within(card.container).getByTestId("subagent-row");
   const word = within(row).getByTestId("delegate-status-word");
   expect(row.dataset.kind).toBe(expected.kind);
+  expect(word.textContent).toBe(expected.word);
   const dot = card.container.querySelector("[data-state]");
   expect(dot?.getAttribute("data-state")).toBe(expected.cadence);
 
   const Body = toolRendererFor("job_status").body!;
   const raw = delegateStatusRaw({
     id: delegateId,
-    status: expected.status,
+    status: expected.lifecycle,
     running_for_ms: undefined,
     quiet_for_ms: undefined,
-    last_outcome: undefined,
+    last_outcome: expected.outcome === undefined ? undefined : { status: expected.outcome },
   });
   const statusCard = render(
     <Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />,
   );
   const chip = statusCard.container.querySelector(`[data-kind="${expected.kind}"]`);
   expect(chip).toBeTruthy();
+  expect(chip?.textContent).toBe(expected.word);
   expect(chip?.textContent).toBe(word.textContent);
   expect(chip?.className).toContain(expected.tone);
 });
