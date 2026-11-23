@@ -616,6 +616,87 @@ test("cancelling the Copilot device dialog keeps the connection draft", async ()
   expect(client.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(0);
 });
 
+function copilotProvider(): ProviderDescriptor {
+  return provider("github-copilot", "GitHub Copilot", ["oauth"], { auth: "oauth-github-copilot" });
+}
+function copilotListing(extra: Partial<InstanceEntry> = {}): InstanceListResponse {
+  const copilot = copilotProvider();
+  const row = { ...copilot.setup!, activeSource: "oauth", hasStoredOAuth: true, ...extra };
+  return { instances: [row], availableProviders: [{ ...copilot, setup: row }] };
+}
+async function openPopularCopilot(user: ReturnType<typeof userEvent.setup>): Promise<HTMLElement> {
+  const popular = (await screen.findAllByRole("list", { name: "Providers" }))[0]!;
+  await user.click(await within(popular).findByRole("button", { name: "GitHub Copilot" }));
+  return screen.findByRole("dialog", { name: "GitHub Copilot" });
+}
+function scriptCopilotDevice(client: FakeClient) {
+  client.on("evener/auth/device/start", () => ({
+    provider: "github-copilot",
+    flowId: "device",
+    userCode: "CODE",
+    verificationUrl: "https://github.com/login/device",
+    intervalSeconds: 1,
+  }));
+  client.on("evener/auth/device/poll", () => ({ provider: "github-copilot", state: "authorized" }));
+}
+
+test("the popular Copilot card offers GitHub sign-in with no API-key action and runs the ordinary model-list check", async () => {
+  const { user, client, connected } = setup({ instances: [], availableProviders: [copilotProvider()] });
+  const popular = (await screen.findAllByRole("list", { name: "Providers" }))[0]!;
+  const choice = await within(popular).findByRole("button", { name: "GitHub Copilot" });
+  expect(choice.getAttribute("data-auth-modes")).toBe("oauth");
+  await user.click(choice);
+  const card = await screen.findByRole("dialog", { name: "GitHub Copilot" });
+  expect(card.querySelector('input[type="password"]')).toBeNull();
+  expect(screen.queryByLabelText("API key")).toBeNull();
+  // Wait for the setup row to reach the card before signing in, so the flow
+  // signs in the same instance the card is showing.
+  await screen.findByText("https://github-copilot.example/v1");
+
+  scriptCopilotDevice(client);
+  client.on("evener/instance/list", () => structuredClone(copilotListing()));
+  client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+
+  vi.useFakeTimers();
+  await act(async () => {
+    fireEvent.click(within(card).getByRole("button", { name: "Sign in" }));
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  vi.useRealTimers();
+
+  await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("github-copilot"));
+  expect(client.calls.filter((call) => call.method === "evener/auth/test")).toEqual([
+    {
+      method: "evener/auth/test",
+      params: { provider: "github-copilot", expectedEndpointFingerprint: "fp-github-copilot" },
+    },
+  ]);
+});
+
+test("an unsupported Copilot model roster does not complete setup on its own", async () => {
+  const { user, client, connected } = setup({ instances: [], availableProviders: [copilotProvider()] });
+  await openPopularCopilot(user);
+  scriptCopilotDevice(client);
+  client.on("evener/instance/list", () => structuredClone(copilotListing()));
+  client.on("evener/auth/test", ({ provider }) => ({ provider, status: "unsupported", message: "" }));
+
+  vi.useFakeTimers();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  vi.useRealTimers();
+
+  await waitFor(() => expect(document.querySelector('form#provider-connection-form button[type="submit"]')).toBeNull());
+  expect(client.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(1);
+  expect(connected).not.toHaveBeenCalled();
+  expect(document.querySelector('[role="status"][data-state="success"]')).toBeNull();
+});
+
 test("provider choices expose resolved authentication capabilities and select that exact provider", async () => {
   const overridden = provider("anthropic", "Anthropic", ["apiKey"], {
     authModes: ["oauth"],

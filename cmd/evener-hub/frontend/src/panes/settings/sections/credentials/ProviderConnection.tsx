@@ -133,6 +133,11 @@ const PROVIDERS: Record<string, { label: string; keyUrl?: string; billing?: stri
     keyUrl: "https://developers.openai.com/codex",
     billing: "Codex access comes from your ChatGPT/Codex subscription. Sign in instead of pasting a key.",
   },
+  "github-copilot": {
+    label: "GitHub Copilot",
+    billing:
+      "Copilot access comes from your GitHub Copilot subscription. Sign in with GitHub instead of pasting a key.",
+  },
   google: {
     label: "Gemini",
     keyUrl: "https://aistudio.google.com/apikey",
