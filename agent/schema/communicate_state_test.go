@@ -2,7 +2,9 @@ package schema
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestCommunicateToolStateQuietNote(t *testing.T) {
@@ -81,5 +83,21 @@ func TestCommunicateArgsOutcome(t *testing.T) {
 			t.Errorf("%s: got (endTurn=%v quiet=%v ok=%v), want (%v, %v, %v)",
 				tc.name, endTurn, quiet, ok, tc.wantEndTurn, tc.wantQuiet, tc.wantOK)
 		}
+	}
+}
+
+func TestNormalizeQuietNote(t *testing.T) {
+	t.Parallel()
+	if got := NormalizeQuietNote("  waiting\non\t\tbuild\n  step 2  "); got != "waiting on build step 2" {
+		t.Fatalf("NormalizeQuietNote whitespace = %q", got)
+	}
+	exact := strings.Repeat("x", CommunicateQuietNoteMaxRunes)
+	if got := NormalizeQuietNote(exact); got != exact {
+		t.Fatalf("NormalizeQuietNote exact boundary truncated: len=%d", utf8.RuneCountInString(got))
+	}
+	over := strings.Repeat("y", CommunicateQuietNoteMaxRunes-1) + "  " + "trailing"
+	got := NormalizeQuietNote(over)
+	if utf8.RuneCountInString(got) > CommunicateQuietNoteMaxRunes || !strings.HasSuffix(got, "…") || strings.Contains(got, " …") {
+		t.Fatalf("NormalizeQuietNote over = %q (runes=%d)", got, utf8.RuneCountInString(got))
 	}
 }

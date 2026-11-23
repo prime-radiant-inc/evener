@@ -10,7 +10,6 @@ import (
 	"reflect"
 	"slices"
 	"strings"
-	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
@@ -138,7 +137,7 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 				if err := deps.canQuietlyYield(ctx); err != nil {
 					return nil, err
 				}
-				quietNote := normalizeQuietCommunicateNote(message)
+				quietNote := schema.NormalizeQuietNote(message)
 				deps.recordQuietYield()
 				inbox := drainCommunicateInbox(deps)
 				accepted := true
@@ -280,17 +279,6 @@ func drainCommunicateInbox(deps *toolDeps) []string {
 	}
 	deps.prependSteering(deferred)
 	return inbox
-}
-
-const communicateQuietNoteMaxRunes = 240
-
-func normalizeQuietCommunicateNote(message string) string {
-	collapsed := strings.Join(strings.Fields(message), " ")
-	if utf8.RuneCountInString(collapsed) <= communicateQuietNoteMaxRunes {
-		return collapsed
-	}
-	truncated := strings.TrimSuffix(truncRunes(collapsed, communicateQuietNoteMaxRunes-1), "…")
-	return strings.TrimRight(truncated, " ") + "…"
 }
 
 var errQuietYieldWithoutWake = errors.New("nothing can wake this turn. Start the work or arm a watch before yielding, or send your final reply with the result tool")

@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -73,6 +75,34 @@ func TestQuietCommunicateRetiresCallPreviewWithoutDisturbingRoundCoverage(t *tes
 	o.Recorded(toolResultsRecord(1, "t_1", "c_other"))
 	o.Recorded(toolResultsRecord(1, "t_1", "c_q"))
 	end := one(t, o.Event(events.New(events.RoundEndedData{RoundID: "r_1"})))
+	if end.Method != appwire.NotifyOverlayEnd {
+		t.Fatalf("round end = %+v, want only overlay/end", end)
+	}
+}
+
+func TestBareTextQuietParkCoversRoundStreamWithoutInterrupt(t *testing.T) {
+	t.Parallel()
+	o := newOverlay()
+	t.Cleanup(o.Close)
+
+	o.Event(events.New(events.ExecutionStartedData{TurnID: "t_1"}))
+	o.Event(events.New(events.RoundStartedData{RoundID: "r_bare"}))
+	o.Event(events.New(events.ReasoningSummaryDeltaData{Delta: "thinking"}))
+	o.Event(events.New(events.AssistantTextDeltaData{Delta: "Waiting on subagent"}))
+
+	o.Recorded(transcript.Record{
+		Recorded: true,
+		Ordinal:  0,
+		Turn: schema.Turn{
+			TurnID: "t_1", RoundID: "r_bare", Kind: schema.TurnAssistant, QuietYield: true,
+			Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "Waiting on subagent"}}},
+		},
+	})
+	none(t, o.Event(events.New(events.AssistantTextDeltaData{Delta: "late delta"})))
+	if len(o.Snapshot()) != 0 {
+		t.Fatalf("snapshot retained covered stream: %+v", o.Snapshot())
+	}
+	end := one(t, o.Event(events.New(events.RoundEndedData{RoundID: "r_bare"})))
 	if end.Method != appwire.NotifyOverlayEnd {
 		t.Fatalf("round end = %+v, want only overlay/end", end)
 	}

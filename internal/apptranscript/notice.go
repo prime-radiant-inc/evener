@@ -69,37 +69,49 @@ func IsCommunicateTool(name, recordedName string) bool {
 }
 
 // PossiblyQuietCommunicateCall reports whether call is a communicate tool call
-// whose sent arguments carry no reply message (for example `{}` or malformed
-// bytes without a message) and may therefore settle quietly. It avoids heap
-// allocations and regex repair on the hot transcript-projection path.
+// whose sent arguments select `log_quietly_and_end_turn` or carry no reply
+// message (for example `{}` or malformed bytes) and may therefore settle
+// quietly. It avoids heap allocations and regex repair on the hot projection path.
 func PossiblyQuietCommunicateCall(call *llm.ToolCallData, resultToolName string) bool {
 	if call == nil || !IsCommunicateTool(call.Name, resultToolName) {
 		return false
 	}
-	return !communicateArgsHaveMessage(call.SentArguments())
+	return communicateArgsPossiblyQuiet(call.SentArguments())
 }
 
-func communicateArgsHaveMessage(raw string) bool {
+func communicateArgsPossiblyQuiet(raw string) bool {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || raw == "{}" || raw[0] != '{' {
-		return false
+		return true
 	}
-	hasMsg, decided := scanTopLevelObjectForMessage(raw, 1)
+	hasMsg, quietNext, decided := scanTopLevelCommunicate(raw, 1)
 	if decided {
-		return hasMsg
+		return quietNext || !hasMsg
 	}
-	return CommunicateMessageFromArguments(NormalizeCommunicateArguments(json.RawMessage(raw))) != ""
+	return communicateArgsPossiblyQuietSlow(raw)
 }
 
-func scanTopLevelObjectForMessage(raw string, depth int) (hasMsg, decided bool) {
+func communicateArgsPossiblyQuietSlow(raw string) bool {
+	normalized := NormalizeCommunicateArguments(json.RawMessage(raw))
+	if _, quiet, ok := schema.CommunicateArgsOutcome(normalized); ok && quiet {
+		return true
+	}
+	return CommunicateMessageFromArguments(normalized) == ""
+}
+
+func scanTopLevelCommunicate(raw string, depth int) (hasMsg, quietNext, decided bool) {
 	if depth > 2 {
-		return false, false
+		return false, false, false
 	}
 	i := skipWS(raw, 1)
 	n := len(raw)
+	ambiguous := false
 	for i < n {
 		if raw[i] == '}' {
-			return false, true
+			if ambiguous {
+				return false, false, false
+			}
+			return hasMsg, false, true
 		}
 		var key string
 		var keyHasEsc bool
@@ -107,7 +119,7 @@ func scanTopLevelObjectForMessage(raw string, depth int) (hasMsg, decided bool) 
 			start := i + 1
 			end, esc, ok := scanJSONStringEnd(raw, i)
 			if !ok {
-				return false, true
+				return false, true, true
 			}
 			key, keyHasEsc = raw[start:end], esc
 			i = end + 1
@@ -118,57 +130,65 @@ func scanTopLevelObjectForMessage(raw string, depth int) (hasMsg, decided bool) 
 			}
 			key = raw[start:i]
 		} else {
-			return false, true
+			return false, true, true
 		}
 		if keyHasEsc {
-			return false, false
+			ambiguous = true
 		}
 		i = skipWS(raw, i)
 		if i >= n || raw[i] != ':' {
-			return false, true
+			return false, true, true
 		}
 		i = skipWS(raw, i+1)
 		if i >= n {
-			return false, true
+			return false, true, true
 		}
 		switch raw[i] {
 		case '"':
 			valStart := i + 1
 			valEnd, esc, ok := scanJSONStringEnd(raw, i)
 			if !ok {
-				return false, true
+				return false, true, true
 			}
 			i = valEnd + 1
-			if key == "message" {
+			switch {
+			case !keyHasEsc && key == "next" && depth == 1:
 				if !esc {
-					if strings.TrimSpace(raw[valStart:valEnd]) != "" {
-						return true, true
+					if strings.TrimSpace(raw[valStart:valEnd]) == schema.CommunicateNextLogQuietlyAndEndTurn {
+						return false, true, true
 					}
 				} else {
-					return false, false
+					ambiguous = true
 				}
-			} else if key == "output" && depth == 1 && strings.Contains(raw[valStart:valEnd], "message") {
-				return false, false
+			case !keyHasEsc && key == "message":
+				if !esc {
+					if strings.TrimSpace(raw[valStart:valEnd]) != "" {
+						hasMsg = true
+					}
+				} else {
+					ambiguous = true
+				}
+			case !keyHasEsc && key == "output" && depth == 1 && strings.Contains(raw[valStart:valEnd], "message"):
+				ambiguous = true
 			}
 		case '{':
 			end, ok := scanBalancedEnd(raw, i, '{', '}')
 			if !ok {
-				return false, true
+				return false, true, true
 			}
-			if key == "output" && depth == 1 {
-				nestedHas, nestedDecided := scanTopLevelObjectForMessage(raw[i:end+1], depth+1)
+			if !keyHasEsc && key == "output" && depth == 1 {
+				nestedHas, _, nestedDecided := scanTopLevelCommunicate(raw[i:end+1], depth+1)
 				if !nestedDecided {
-					return false, false
-				}
-				if nestedHas {
-					return true, true
+					ambiguous = true
+				} else if nestedHas {
+					hasMsg = true
 				}
 			}
 			i = end + 1
 		case '[':
 			end, ok := scanBalancedEnd(raw, i, '[', ']')
 			if !ok {
-				return false, true
+				return false, true, true
 			}
 			i = end + 1
 		default:
@@ -181,7 +201,7 @@ func scanTopLevelObjectForMessage(raw string, depth int) (hasMsg, decided bool) 
 			i = skipWS(raw, i+1)
 		}
 	}
-	return false, true
+	return false, true, true
 }
 
 func isASCIIWS(b byte) bool {
@@ -250,7 +270,7 @@ func AssistantCommunicateCallIDs(turn schema.Turn, forceAllQuiet bool) (hasCommu
 			continue
 		}
 		hasCommunicate = true
-		if forceAllQuiet || !communicateArgsHaveMessage(part.ToolCall.SentArguments()) {
+		if forceAllQuiet || communicateArgsPossiblyQuiet(part.ToolCall.SentArguments()) {
 			possiblyQuietIDs = append(possiblyQuietIDs, part.ToolCall.ID)
 		}
 	}
@@ -545,10 +565,17 @@ func ApprovalDecisionAnnouncement(notice schema.ApprovalDecisionNotice) NoticeAn
 }
 
 // QuietYieldAnnouncement builds the muted notice for a successful quiet
-// communicate({}) turn. When companion assistant commentary prose was emitted
-// in the same response, it rides in Raw under "commentary" so clients keep it
-// inspectable behind the muted notice instead of as an unread chat bubble.
-func QuietYieldAnnouncement(commentary string) NoticeAnnouncement {
+// communicate turn or bare-text live-work quiet park. When note is empty (such
+// as legacy empty-object records), it falls back to a neutral caption. When
+// companion assistant commentary prose was emitted in the same response (or the
+// full bare-text note was shortened), it rides in Raw under "commentary" so
+// clients keep it inspectable behind the muted notice instead of as an unread
+// chat bubble.
+func QuietYieldAnnouncement(note, commentary string) NoticeAnnouncement {
+	text := strings.TrimSpace(note)
+	if text == "" {
+		text = "Ended turn quietly"
+	}
 	var raw json.RawMessage
 	if trimmed := strings.TrimSpace(commentary); trimmed != "" {
 		raw, _ = json.Marshal(struct {
@@ -558,7 +585,7 @@ func QuietYieldAnnouncement(commentary string) NoticeAnnouncement {
 	return NoticeAnnouncement{
 		EventKind:   appwire.ThreadItemEventKindQuietYield,
 		Description: "Quiet yield",
-		Text:        "Ended turn quietly",
+		Text:        text,
 		Raw:         raw,
 	}
 }
