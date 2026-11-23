@@ -52,7 +52,15 @@ import { CommandPalette } from "./palette/CommandPalette";
 import { openPalette, paletteStore } from "./palette/paletteController";
 import { RailHost } from "./rail";
 import { liveCycleRefs } from "./rail/liveBands";
-import { isAppDrivenNavigation, navigate, observeRouteHistory, openSessionRoute, refParam, urlToPane } from "./routing";
+import {
+  isAppDrivenNavigation,
+  navigate,
+  observeRouteHistory,
+  openSessionRoute,
+  refParam,
+  sameParams,
+  urlToPane,
+} from "./routing";
 import { cycleSessionPane } from "./sessionCycle";
 import {
   consumeRoutedSessionFocus,
@@ -186,10 +194,6 @@ function usePathname(interactiveNavigation: MutableRefObject<string | null>): re
   return [pathname, historyRevision];
 }
 
-function sameRouteParams(a: unknown, b: unknown): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
-}
-
 // focusedSessionRef lives in ./focusedSession now, shared with the activity
 // surfaces: the ref of the focused pane, but ONLY when that pane IS a session
 // pane (never a session panel, a doc, settings, ...) - Mod+I's own "no-op
@@ -225,7 +229,7 @@ function routePlacementIsApplied(
     if (workspace.focusedPaneId !== main.id) return false;
     const matchingType = route.type;
     const matchingPanes = panes.filter((pane) => pane.type === matchingType);
-    return main.type === matchingType && sameRouteParams(main.params, route.params) && matchingPanes.length === 1;
+    return main.type === matchingType && sameParams(main.params, route.params) && matchingPanes.length === 1;
   }
 
   const ref = refParam(route.params);
