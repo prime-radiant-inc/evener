@@ -107,9 +107,10 @@ func (e *bareTextWithoutResultToolError) Is(target error) bool {
 
 // Retry budgets for degenerate model responses within a single input turn.
 const (
-	maxEmptyRetries        = 3
-	maxTotalEmptyResponses = 8 // prevent repeated burst-and-recover spirals
-	maxBareTextRetries     = 3
+	maxEmptyRetries           = 3
+	maxTotalEmptyResponses    = 8 // prevent repeated burst-and-recover spirals
+	maxBareTextRetries        = 3
+	maxTotalBareTextResponses = 8 // prevent repeated burst-and-recover spirals
 	// maxServerContinuations bounds one input turn's run of consecutive
 	// pause_turn responses. A pause is a legitimate protocol continuation, so it
 	// still refunds its tool round (see TestSession_PauseTurn_*), but a provider
@@ -128,12 +129,13 @@ const maxHookStopReasonRunes = 160
 
 // retryTracker counts the degenerate (empty / bare-text) model responses seen so
 // far in one input turn. consecutiveEmpty and consecutiveBareText reset once the
-// model produces tool calls; totalEmpty bounds burst-and-recover spirals across
-// the whole turn.
+// model produces tool calls; totalEmpty and totalBareText bound burst-and-recover
+// spirals across the whole turn.
 type retryTracker struct {
 	consecutiveEmpty    int
 	totalEmpty          int
 	consecutiveBareText int
+	totalBareText       int
 }
 
 // recordAbandonedEnvironmentLocked remembers an environment the swap has just
