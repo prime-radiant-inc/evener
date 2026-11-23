@@ -146,6 +146,21 @@ func writeWatchFrameIndentedBlock(b *strings.Builder, text string) {
 	}
 }
 
+// writeWatchFrameListEntry writes one entry of a frame's YAML-like list,
+// indenting a label's continuation lines under its dash. A joining separator
+// would let a label that contains it read as two entries.
+func writeWatchFrameListEntry(b *strings.Builder, label string) {
+	lines := strings.Split(lineend.Normalize(label), "\n")
+	b.WriteString("    - ")
+	b.WriteString(lines[0])
+	b.WriteString("\n")
+	for _, line := range lines[1:] {
+		b.WriteString("      ")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+}
+
 func writeWatchFrameTopField(b *strings.Builder, name, value string) {
 	value = lineend.Normalize(value)
 	b.WriteString(name)
@@ -257,7 +272,12 @@ func writeHubObservationWatchEvent(b *strings.Builder, data *hubObservationFrame
 		b.WriteString("  kind: question\n")
 		if question := data.Question; question != nil {
 			writeWatchFrameOptionalField(b, "question", limitWatchText(question.Question, watchEventExcerptMaxChars))
-			writeWatchFrameOptionalField(b, "options", strings.Join(question.Options, ", "))
+			if len(question.Options) > 0 {
+				b.WriteString("  options:\n")
+				for _, option := range question.Options {
+					writeWatchFrameListEntry(b, limitWatchText(option, watchTriggerMaxChars))
+				}
+			}
 			if question.Count > 0 {
 				writeWatchFrameOptionalField(b, "count", strconv.Itoa(question.Count))
 			}

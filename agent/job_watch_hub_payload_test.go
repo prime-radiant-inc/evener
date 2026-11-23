@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -80,8 +81,12 @@ func watchFrameEventFields(t *testing.T, frame string) map[string]string {
 		case strings.HasPrefix(line, "    ") && last != "":
 			fields[last] += "\n" + strings.TrimPrefix(line, "    ")
 		case strings.HasPrefix(line, "  "):
-			name, value, ok := strings.Cut(strings.TrimPrefix(line, "  "), ": ")
-			if !ok {
+			field := strings.TrimPrefix(line, "  ")
+			name, value, ok := strings.Cut(field, ": ")
+			if !ok && strings.HasSuffix(field, ":") {
+				// A header whose value is a list on the following lines.
+				name, value = strings.TrimSuffix(field, ":"), ""
+			} else if !ok {
 				t.Fatalf("event field %q is not name: value in frame:\n%s", line, frame)
 			}
 			fields[name], last = value, name
@@ -90,6 +95,19 @@ func watchFrameEventFields(t *testing.T, frame string) map[string]string {
 		}
 	}
 	return fields
+}
+
+// watchFrameList reads a list-valued event field into its entries, so a test
+// asserts each entry's boundary rather than splitting on a separator.
+func watchFrameList(t *testing.T, fields map[string]string, name string) []string {
+	t.Helper()
+	var entries []string
+	for line := range strings.SplitSeq(fields[name], "\n") {
+		if entry, ok := strings.CutPrefix(line, "- "); ok {
+			entries = append(entries, entry)
+		}
+	}
+	return entries
 }
 
 func lastHubFrame(t *testing.T, jm *jobManager, id string) string {
@@ -219,8 +237,10 @@ func TestHubWatchQuestionFrameCarriesSnapshotQuestion(t *testing.T) {
 			ActiveTurnID: "turn-q", AskPending: true,
 			PendingQuestion: &appwire.PendingQuestion{
 				Question: "Ship it?\nReally?",
-				Options:  []string{"yes", "no"},
-				Count:    2,
+				// One label carries the separator the old join used, so a
+				// comma-joined frame would read as three choices.
+				Options: []string{"Deploy, then monitor", "Wait"},
+				Count:   2,
 			},
 		}, appwire.ThreadStatus{Type: "awaiting"})); err != nil {
 			t.Fatal(err)
@@ -228,12 +248,15 @@ func TestHubWatchQuestionFrameCarriesSnapshotQuestion(t *testing.T) {
 		frame := lastHubFrame(t, jm, id)
 		fields := watchFrameEventFields(t, frame)
 		for name, want := range map[string]string{
-			"kind": "question", "question": "Ship it?\nReally?", "options": "yes, no",
+			"kind": "question", "question": "Ship it?\nReally?",
 			"count": "2", "active_turn_id": "turn-q", "status": "awaiting",
 		} {
 			if got := fields[name]; got != want {
 				t.Fatalf("question frame %s = %q, want %q (frame fields %v)", name, got, want, fields)
 			}
+		}
+		if got, want := watchFrameList(t, fields, "options"), []string{"Deploy, then monitor", "Wait"}; !slices.Equal(got, want) {
+			t.Fatalf("question frame options = %q, want %q (frame fields %v)", got, want, fields)
 		}
 		if got := len([]rune(frame)); got > watchFrameMaxChars {
 			t.Fatalf("question frame is %d runes, over the %d-rune cap", got, watchFrameMaxChars)
