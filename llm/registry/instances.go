@@ -1176,16 +1176,19 @@ func (r *Registry) computeInstances() {
 			continue
 		}
 		t := r.listingTransport(rec)
+		autoSelectable := true
 		if t.Auth == AuthOAuthGitHubCopilot {
 			// No record means the user never signed in. The row is listed
 			// only when `default` names it, so the explicit default reports
 			// the sign-in state instead of falling through to another
 			// provider; automatic selection skips it either way. A record
 			// that cannot launch stays listed for Settings to show and
-			// diagnose.
-			if r.copilotAuthState(id) == copilotRecordMissing && r.userDefault != id {
+			// diagnose. The one record read answers both questions.
+			state := r.copilotAuthState(id)
+			if state == copilotRecordMissing && r.userDefault != id {
 				continue
 			}
+			autoSelectable = state == copilotRecordReady
 		} else if cred, _ := r.credential(rec, t); cred.Source == "none" && t.Auth != AuthNone && t.Auth != AuthOptionalBearer {
 			continue
 		}
@@ -1193,7 +1196,7 @@ func (r *Registry) computeInstances() {
 		if !ok {
 			pos = custom // pseudo-providers: after every default_order entry
 		}
-		r.instances[id] = &instance{name: id, rec: rec, implicit: true, rank: pos, autoSelectable: r.authReadyToLaunch(id, t)}
+		r.instances[id] = &instance{name: id, rec: rec, implicit: true, rank: pos, autoSelectable: autoSelectable}
 	}
 }
 

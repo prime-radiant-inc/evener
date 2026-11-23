@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"primeradiant.com/evener/envvars"
 )
 
 const (
@@ -50,12 +52,12 @@ func DefaultConfig() Config {
 
 func mergeConfigDefaults(cfg Config) Config {
 	defaults := DefaultConfig()
-	defaults.ClientID = firstNonEmpty(cfg.ClientID, defaults.ClientID)
+	defaults.ClientID = envvars.FirstNonEmpty(cfg.ClientID, defaults.ClientID)
 	if len(cfg.Scopes) > 0 {
 		defaults.Scopes = cfg.Scopes
 	}
-	defaults.GitHubBaseURL = firstNonEmpty(cfg.GitHubBaseURL, defaults.GitHubBaseURL)
-	defaults.APIBaseURL = firstNonEmpty(cfg.APIBaseURL, defaults.APIBaseURL)
+	defaults.GitHubBaseURL = envvars.FirstNonEmpty(cfg.GitHubBaseURL, defaults.GitHubBaseURL)
+	defaults.APIBaseURL = envvars.FirstNonEmpty(cfg.APIBaseURL, defaults.APIBaseURL)
 	if cfg.HTTPTimeout != 0 {
 		defaults.HTTPTimeout = cfg.HTTPTimeout
 	}
@@ -78,13 +80,4 @@ func httpClient(client *http.Client, cfg Config) *http.Client {
 		return client
 	}
 	return &http.Client{Timeout: cfg.HTTPTimeout}
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
 }

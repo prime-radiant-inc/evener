@@ -364,16 +364,21 @@ export function DeviceCodeDialog({
         ? "Couldn't copy automatically — select the code above and copy it, then continue."
         : "Waiting for you to authorize…");
 
+  // A remote-host flow names the host, a resolved provider names itself, and
+  // without one the copy stays generic.
+  let helpText: string;
+  if (host !== undefined) {
+    helpText = `Copy this code, then open the verification URL below on any device and paste it to authorize the sign-in to ${name} on ${host}:`;
+  } else if (providerLabel === undefined) {
+    helpText = "Copy this code, then open the verification page and paste it to authorize:";
+  } else {
+    helpText = `Copy this code, then continue to ${providerLabel} and paste it to authorize:`;
+  }
+
   return (
     <Dialog open onClose={onCancel} title={host === undefined ? `Sign in to ${name}` : `Sign in to ${name} on ${host}`}>
       <div className={CLASS.body}>
-        <p className={CLASS.help}>
-          {host === undefined
-            ? providerLabel === undefined
-              ? "Copy this code, then open the verification page and paste it to authorize:"
-              : `Copy this code, then continue to ${providerLabel} and paste it to authorize:`
-            : `Copy this code, then open the verification URL below on any device and paste it to authorize the sign-in to ${name} on ${host}:`}
-        </p>
+        <p className={CLASS.help}>{helpText}</p>
         <p className={CLASS.code}>{userCode}</p>
         {/* The URL as text, not only behind the button: the sign-in happens on a
             machine that is not this one, and the user has to be able to read or

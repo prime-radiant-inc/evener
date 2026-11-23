@@ -2266,16 +2266,11 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	return nil
 }
 
-// removal is one Remove call's snapshot of what its cleanup deletes, and the
-// rollbacks that put it back when a later step fails. Every rollback runs
-// inside the locks Remove holds.
-type removal struct {
-	c      *hubInstancesController
-	name   string
-	locked registry.Instance
-	// authored is whether providers.toml carries an entry for the instance.
-	authored bool
-
+// removalCredentials is the credential material one removal captured and its
+// rollback has to put back: each layer's bytes and whether this call is
+// restoring that layer. The failed-cleanup rollback keeps a layer only when
+// the cleanup actually deleted it.
+type removalCredentials struct {
 	storedKey    string
 	hasStoredKey bool
 	oauthBytes   []byte
@@ -2286,9 +2281,22 @@ type removal struct {
 	hasRefusal   bool
 }
 
+// removal is one Remove call's snapshot of what its cleanup deletes, and the
+// rollbacks that put it back when a later step fails. Every rollback runs
+// inside the locks Remove holds.
+type removal struct {
+	c      *hubInstancesController
+	name   string
+	locked registry.Instance
+	// authored is whether providers.toml carries an entry for the instance.
+	authored bool
+
+	removalCredentials
+}
+
 // restore puts back everything the removal captured.
 func (r *removal) restore(cause, frame error, supplies removalSupply) (bool, error) {
-	return r.c.restoreFailedRemoval(r.name, r.storedKey, r.hasStoredKey, r.oauthBytes, r.hasOAuth, r.copilotBytes, r.hasCopilot, r.refusalBytes, r.hasRefusal, cause, frame, supplies)
+	return r.c.restoreFailedRemoval(r.name, r.removalCredentials, cause, frame, supplies)
 }
 
 // restoreFrame says how a failed restore is reported, and which layer the
@@ -2325,7 +2333,12 @@ func (r *removal) restoreFrame() (removalSupply, error) {
 // wraps its own result in that case.
 func (r *removal) failedCleanup(removed deletedCredentials, err error) error {
 	supplies, frame := r.restoreFrame()
-	_, restoreErr := r.c.restoreFailedRemoval(r.name, r.storedKey, r.hasStoredKey && removed.storedKey, r.oauthBytes, r.hasOAuth && removed.oauthRecord, r.copilotBytes, r.hasCopilot && removed.copilotRecord, r.refusalBytes, r.hasRefusal && removed.oauthRecord, err, frame, supplies)
+	creds := r.removalCredentials
+	creds.hasStoredKey = creds.hasStoredKey && removed.storedKey
+	creds.hasOAuth = creds.hasOAuth && removed.oauthRecord
+	creds.hasCopilot = creds.hasCopilot && removed.copilotRecord
+	creds.hasRefusal = creds.hasRefusal && removed.oauthRecord
+	_, restoreErr := r.c.restoreFailedRemoval(r.name, creds, err, frame, supplies)
 	return restoreErr
 }
 
@@ -2636,32 +2649,32 @@ func supplyOf(inst registry.Instance) removalSupply {
 // rewrites - and never reports a failure to rewrite - a credential that is
 // still where it was. A restore that puts every deleted layer back clears the
 // applied mark, because the removal is then undone.
-func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, hasStoredKey bool, oauthBytes []byte, hasOAuth bool, copilotBytes []byte, hasCopilot bool, refusalBytes []byte, hasRefusal bool, cause, frame error, supplies removalSupply) (bool, error) {
+func (c *hubInstancesController) restoreFailedRemoval(name string, creds removalCredentials, cause, frame error, supplies removalSupply) (bool, error) {
 	var problems []error
 	storedKeyRestored := true
-	if hasStoredKey {
-		if err := c.auth.setCredential(name, storedKey); err != nil {
+	if creds.hasStoredKey {
+		if err := c.auth.setCredential(name, creds.storedKey); err != nil {
 			storedKeyRestored = false
 			problems = append(problems, fmt.Errorf("%w (%w)", errStoredKeyNotRestored, err))
 		}
 	}
 	oauthRestored := true
-	if hasOAuth {
+	if creds.hasOAuth {
 		// Through the writer the auth store uses, so the record this puts back
 		// is replaced atomically: an in-place rewrite of a credential is a
 		// file a reader can catch half written, and a crash inside it leaves
 		// truncated state where this call exists to restore the whole thing.
-		if err := authopenai.WriteAuthFile(authopenai.AuthFilePath(c.auth.stateDir, name), oauthBytes); err != nil {
+		if err := authopenai.WriteAuthFile(authopenai.AuthFilePath(c.auth.stateDir, name), creds.oauthBytes); err != nil {
 			oauthRestored = false
 			problems = append(problems, fmt.Errorf("%w (%w)", errOAuthRecordNotRestored, err))
-		} else if hasRefusal {
+		} else if creds.hasRefusal {
 			// The refresh-refusal marker (#2479) is a sidecar of the record
 			// that just came back: restore it too, best effort, so the
 			// instance does not report signed-in and healthy while its
 			// refresh token is still permanently refused. It never carries
 			// the instance on its own, so a failure here is a stray leftover
 			// rather than a reason to call the restore incomplete.
-			if err := authopenai.WriteAuthFile(authopenai.RefreshRejectionPath(c.auth.stateDir, name), refusalBytes); err != nil {
+			if err := authopenai.WriteAuthFile(authopenai.RefreshRejectionPath(c.auth.stateDir, name), creds.refusalBytes); err != nil {
 				problems = append(problems, fmt.Errorf("%w (%w)", errRefusalMarkerNotRestored, err))
 			}
 		}
@@ -2669,8 +2682,8 @@ func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, ha
 	copilotRestored := true
 	copilotRestoredHere := false
 	copilotSignature := ""
-	if hasCopilot {
-		restored, signature, err := c.restoreCopilotRecord(name, copilotBytes)
+	if creds.hasCopilot {
+		restored, signature, err := c.restoreCopilotRecord(name, creds.copilotBytes)
 		copilotRestoredHere = restored
 		copilotSignature = signature
 		if err != nil {

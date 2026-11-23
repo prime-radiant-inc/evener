@@ -200,11 +200,7 @@ func (r *Registry) SnapshotLive() map[string]LiveListing {
 	defer r.liveMu.RUnlock()
 	out := make(map[string]LiveListing, len(r.live))
 	for instance, listing := range r.live {
-		rows := make([]Model, 0, len(listing.rows))
-		for _, id := range sortedKeys(listing.rows) {
-			rows = append(rows, listing.rows[id])
-		}
-		out[instance] = LiveListing{Rows: rows, Authoritative: listing.authoritative}
+		out[instance] = LiveListing{Rows: sortedLiveRows(listing.rows), Authoritative: listing.authoritative}
 	}
 	return out
 }
@@ -218,11 +214,7 @@ func (r *Registry) LiveListingFor(instance string) (LiveListing, bool) {
 	if !ok {
 		return LiveListing{}, false
 	}
-	rows := make([]Model, 0, len(listing.rows))
-	for _, id := range sortedKeys(listing.rows) {
-		rows = append(rows, listing.rows[id])
-	}
-	return LiveListing{Rows: rows, Authoritative: listing.authoritative}, true
+	return LiveListing{Rows: sortedLiveRows(listing.rows), Authoritative: listing.authoritative}, true
 }
 
 // LiveModels returns the cached live listing of an instance, sorted by id.
@@ -233,9 +225,15 @@ func (r *Registry) LiveModels(instance string) []Model {
 	if !ok {
 		return nil
 	}
-	out := make([]Model, 0, len(listing.rows))
-	for _, id := range sortedKeys(listing.rows) {
-		out = append(out, listing.rows[id])
+	return sortedLiveRows(listing.rows)
+}
+
+// sortedLiveRows renders one instance's cached rows as a fresh slice sorted by
+// id, the shape every live-listing reader publishes.
+func sortedLiveRows(rows map[string]Model) []Model {
+	out := make([]Model, 0, len(rows))
+	for _, id := range sortedKeys(rows) {
+		out = append(out, rows[id])
 	}
 	return out
 }

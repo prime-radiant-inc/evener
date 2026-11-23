@@ -16,7 +16,7 @@ import {
   WireError,
 } from "@evener/appwire-client";
 import type { EditSupersededReconcile } from "@evener/appwire-client/state/credentials";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 import { isIMECompositionKeydown, isTextEntryTarget } from "../../../../keybindings/dispatcher";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
 import {
@@ -1936,6 +1936,25 @@ function SelectedConnection({
   ];
 
   const facts = adding ? addFacts() : savedFacts();
+  // The footer's primary action. A check the host could not verify offers to
+  // continue, except for Copilot setup, whose roster requirement gives it no
+  // unverified completion; saving is the action everywhere else.
+  let primaryAction: ReactNode = null;
+  if (result?.status === "unsupported") {
+    if (!unverifiedCompletionBlocked) {
+      primaryAction = (
+        <Button variant="secondary" disabled={busy} onClick={() => leave(() => onConnected(name))}>
+          Continue without verification
+        </Button>
+      );
+    }
+  } else {
+    primaryAction = (
+      <Button type="submit" form="provider-connection-form" disabled={busy || unavailable || (adding && writesRefused)}>
+        {primaryLabel}
+      </Button>
+    );
+  }
   return (
     <Dialog
       open
@@ -1955,20 +1974,8 @@ function SelectedConnection({
             <Button disabled={busy} onClick={() => void reloadConfirmation()}>
               Reload connection
             </Button>
-          ) : result?.status === "unsupported" ? (
-            unverifiedCompletionBlocked ? null : (
-              <Button variant="secondary" disabled={busy} onClick={() => leave(() => onConnected(name))}>
-                Continue without verification
-              </Button>
-            )
           ) : (
-            <Button
-              type="submit"
-              form="provider-connection-form"
-              disabled={busy || unavailable || (adding && writesRefused)}
-            >
-              {primaryLabel}
-            </Button>
+            primaryAction
           )}
         </>
       }
