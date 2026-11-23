@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -391,9 +392,16 @@ func (s *copilotServer) seen() []string {
 
 func newCopilotClient(t *testing.T, srvURL string) *llm.Client {
 	t.Helper()
+	return newCopilotClientAt(t, srvURL, t.TempDir())
+}
+
+// newCopilotClientAt builds the client over an explicit registry state root,
+// the root its Copilot record lives under.
+func newCopilotClientAt(t *testing.T, srvURL, stateRoot string) *llm.Client {
+	t.Helper()
 	r, err := registry.Load(
 		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
-		registry.WithStateRoot(t.TempDir()),
+		registry.WithStateRoot(stateRoot),
 		registry.WithEnv(func(string) (string, bool) { return "", false }),
 		registry.WithInstances(map[string]registry.Provider{
 			"copilot": {
@@ -414,6 +422,16 @@ func newCopilotClient(t *testing.T, srvURL string) *llm.Client {
 		t.Fatalf("registry: %v", err)
 	}
 	return llm.NewClient(llm.WithRegistry(r))
+}
+
+// isolateDefaultCopilot pins the process-global Copilot authenticator to an
+// empty root, so a client that leaked to the global default could not find the
+// test machine's real record. Tests using it must not run parallel.
+func isolateDefaultCopilot(t *testing.T) {
+	t.Helper()
+	previous := DefaultCopilot.StateDir
+	DefaultCopilot.StateDir = t.TempDir()
+	t.Cleanup(func() { DefaultCopilot.StateDir = previous })
 }
 
 func completeOnce(ctx context.Context, t *testing.T, client *llm.Client) error {
@@ -572,5 +590,98 @@ func TestCopilotClientDoesNotReplayAnExposedStream(t *testing.T) {
 	}
 	if got := len(srv.seen()); got != 1 {
 		t.Fatalf("requests = %d, want 1: an exposed stream is never replayed", got)
+	}
+}
+
+// TestCopilotClientAuthenticatesFromItsRegistryStateRoot proves a client built
+// with llm.NewClient(WithRegistry(r)) authenticates against r's state root with
+// no caller-supplied scoped authenticator: two clients naming one instance in
+// separate roots each send their own record's bearer token.
+func TestCopilotClientAuthenticatesFromItsRegistryStateRoot(t *testing.T) {
+	isolateDefaultCopilot(t)
+	roots := []string{t.TempDir(), t.TempDir()}
+	saveCopilotRecord(t, roots[0], "copilot", "token-a", "refresh-a")
+	saveCopilotRecord(t, roots[1], "copilot", "token-b", "refresh-b")
+
+	var mu sync.Mutex
+	var seen []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Header.Get("Authorization"))
+		mu.Unlock()
+		writeChatCompletion(w)
+	}))
+	t.Cleanup(ts.Close)
+
+	for i, root := range roots {
+		if err := completeOnce(context.Background(), t, newCopilotClientAt(t, ts.URL, root)); err != nil {
+			t.Fatalf("client at root %d Complete: %v", i, err)
+		}
+	}
+	if want := []string{"Bearer token-a", "Bearer token-b"}; !slices.Equal(seen, want) {
+		t.Fatalf("Authorization headers = %v, want %v: each client must use its own root's record", seen, want)
+	}
+}
+
+// TestCopilotClientListsModelsFromItsRegistryStateRoot proves model listing
+// takes the same route: each client lists with the record under its own
+// registry root and no caller-supplied scoped authenticator.
+func TestCopilotClientListsModelsFromItsRegistryStateRoot(t *testing.T) {
+	isolateDefaultCopilot(t)
+	roots := []string{t.TempDir(), t.TempDir()}
+	saveCopilotRecord(t, roots[0], "copilot", "token-a", "refresh-a")
+	saveCopilotRecord(t, roots[1], "copilot", "token-b", "refresh-b")
+
+	var mu sync.Mutex
+	var seen []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Header.Get("Authorization"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"m","supported_endpoints":["/chat/completions"],"model_picker_enabled":true,"capabilities":{"family":"gpt","supports":{"tool_calls":true}}}]}`))
+	}))
+	t.Cleanup(ts.Close)
+
+	for i, root := range roots {
+		listing, err := newCopilotClientAt(t, ts.URL, root).Models(context.Background(), "copilot")
+		if err != nil {
+			t.Fatalf("client at root %d Models: %v", i, err)
+		}
+		if !listing.Live || !listing.Usable {
+			t.Fatalf("client at root %d listing = live %v usable %v, want the account roster", i, listing.Live, listing.Usable)
+		}
+	}
+	if want := []string{"Bearer token-a", "Bearer token-b"}; !slices.Equal(seen, want) {
+		t.Fatalf("Authorization headers = %v, want %v: each client must list with its own root's record", seen, want)
+	}
+}
+
+// TestCopilotClientKeepsExplicitScopedAuthenticator proves the registry binding
+// never displaces a caller's scheme-scoped authenticator.
+func TestCopilotClientKeepsExplicitScopedAuthenticator(t *testing.T) {
+	isolateDefaultCopilot(t)
+	registryRoot := t.TempDir()
+	saveCopilotRecord(t, registryRoot, "copilot", "registry-token", "refresh-registry")
+	overrideRoot := t.TempDir()
+	saveCopilotRecord(t, overrideRoot, "copilot", "override-token", "refresh-override")
+
+	var mu sync.Mutex
+	var seen []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Header.Get("Authorization"))
+		mu.Unlock()
+		writeChatCompletion(w)
+	}))
+	t.Cleanup(ts.Close)
+
+	client := newCopilotClientAt(t, ts.URL, registryRoot)
+	ctx := llm.WithScopedAuthenticator(context.Background(), registry.AuthOAuthGitHubCopilot, ScopedCopilot(overrideRoot))
+	if err := completeOnce(ctx, t, client); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if want := []string{"Bearer override-token"}; !slices.Equal(seen, want) {
+		t.Fatalf("Authorization headers = %v, want %v: the explicit scope must win", seen, want)
 	}
 }
