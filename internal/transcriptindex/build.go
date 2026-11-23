@@ -25,11 +25,11 @@ import (
 // awaiting ASSISTANT entry an in-place rewrite already moved past it.
 var errRebuild = errors.New("transcript index needs a full rebuild")
 
-type errQuietDemoteRebuild struct {
+type quietDemoteRebuildError struct {
 	rotate bool
 }
 
-func (e errQuietDemoteRebuild) Error() string { return "quiet yield demoted assistant prose" }
+func (e quietDemoteRebuildError) Error() string { return "quiet yield demoted assistant prose" }
 
 // toolName is the projection's tool-name state for one call id: the name its
 // latest tool call registered, or deleted after a communicate result.
@@ -450,7 +450,7 @@ func (b *builder) checkQuietDemotions(entry *schema.Turn) error {
 		if !ok || !qa.hasText || b.demotedAssistants[qa.pos.Ordinal] {
 			continue
 		}
-		return errQuietDemoteRebuild{rotate: qa.pos.Ordinal < b.committedEntries}
+		return quietDemoteRebuildError{rotate: qa.pos.Ordinal < b.committedEntries}
 	}
 	return nil
 }

@@ -963,8 +963,7 @@ func (x *Index) extend(length int64) error {
 	}
 	x.builder.committedEntries = x.meta.Entries
 	if err := x.scan(length); err != nil {
-		var demoteErr errQuietDemoteRebuild
-		if errors.As(err, &demoteErr) {
+		if demoteErr, ok := errors.AsType[quietDemoteRebuildError](err); ok {
 			incarnation := x.meta.Incarnation
 			if demoteErr.rotate {
 				incarnation = ""
@@ -1417,14 +1416,45 @@ func (x *Index) discoverDemotedAssistants(length int64) (map[uint64]bool, error)
 	if err != nil {
 		return nil, err
 	}
-	length = min(length, info.Size())
-	bufSize := max(min(length, 1<<20), 4<<10)
-	reader := bufio.NewReaderSize(io.NewSectionReader(f, 0, length), int(bufSize))
+	return discoverDemotedAssistantsFrom(f, min(length, info.Size()))
+}
+
+func discoverDemotedAssistantsFrom(src io.ReaderAt, length int64) (map[uint64]bool, error) {
+	if length <= 0 {
+		return nil, nil
+	}
+	// Fast raw-byte prescan: transcripts without "communicate_quiet" cannot hold
+	// any quiet tool result, so cold builds skip decoding every entry a second time.
+	bufSize := max(min(length, 64<<10), 4<<10)
+	reader := bufio.NewReaderSize(io.NewSectionReader(src, 0, length), int(bufSize))
 	var lines transcript.LineBuffer
+	hasQuiet := false
+	quietNeedle := []byte("communicate_quiet")
+	for {
+		line, complete, _, err := lines.ReadLine(reader, maxLineBytes)
+		if err != nil {
+			return nil, err
+		}
+		if !complete {
+			break
+		}
+		if bytes.Contains(line, quietNeedle) {
+			hasQuiet = true
+			break
+		}
+	}
+	if !hasQuiet {
+		return nil, nil
+	}
+	reader.Reset(io.NewSectionReader(src, 0, length))
 	seenHeader := false
 	var ordinal uint64
 	assistantByCall := map[string]uint64{}
 	var demoted map[uint64]bool
+	assistantNeedle := []byte(`"ASSISTANT"`)
+	toolNeedle := []byte(`"TOOL"`)
+	toolResultsNeedle := []byte(`"TOOL_RESULTS"`)
+	commNeedle := []byte(`"COMMUNICATE"`)
 	for {
 		line, complete, _, err := lines.ReadLine(reader, maxLineBytes)
 		if err != nil {
@@ -1439,6 +1469,13 @@ func (x *Index) discoverDemotedAssistants(length int64) (map[uint64]bool, error)
 		}
 		if !seenHeader {
 			seenHeader = true
+			continue
+		}
+		if !bytes.Contains(trimmed, assistantNeedle) &&
+			!bytes.Contains(trimmed, toolNeedle) &&
+			!bytes.Contains(trimmed, toolResultsNeedle) &&
+			!bytes.Contains(trimmed, commNeedle) {
+			ordinal++
 			continue
 		}
 		entry, err := transcript.DecodeEntry(trimmed)

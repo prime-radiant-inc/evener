@@ -1,4 +1,5 @@
 import type {
+  ItemModel,
   ProjectedEntry,
   ProjectedTurn,
   ThreadModel,
@@ -8,8 +9,10 @@ import type {
 import {
   configFingerprint,
   entryDisplayKey,
+  isParentSteer,
   isQuietYield,
   projectThread,
+  steeringNotificationFragments,
   type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import type { ReactNode, RefObject } from "react";
@@ -37,7 +40,7 @@ import styles from "../session.module.css";
 
 const ESTIMATED_TURN_HEIGHT = 96;
 type IntentEntry = Extract<ProjectedEntry, { kind: "intent" }>;
-type ItemEntry = Extract<ProjectedEntry, { kind: "item" }>;
+type QuietWakeEntry = Extract<ProjectedEntry, { kind: "item" | "critical" }>;
 
 export const TranscriptSourcePaneContext = createContext<string | undefined>(undefined);
 
@@ -61,8 +64,9 @@ export interface TranscriptIntentGroupRow {
 export interface TranscriptQuietYieldGroupRow {
   readonly kind: "quietYieldGroup";
   readonly id: string;
-  readonly entries: readonly ItemEntry[];
+  readonly entries: readonly QuietWakeEntry[];
   readonly turns: readonly ProjectedTurn[];
+  readonly quietCount: number;
   readonly sourceTurnIds: readonly string[];
   readonly separatorTurn?: TurnModel;
 }
@@ -73,13 +77,37 @@ function quietYieldGroupId(firstEntryKey: string): string {
   return `quiet-yield-group:${firstEntryKey}`;
 }
 
-function quietYieldOnlyEntry(turn: ProjectedTurn): ItemEntry | undefined {
-  if (turn.entries.length !== 1) return undefined;
+function isNotificationSteeringItem(item: ItemModel): boolean {
+  return (
+    item.type === "steering" &&
+    item.source !== "user" &&
+    item.steeringKind !== "human-note" &&
+    !isParentSteer(item.source) &&
+    (item.steeringKind === "notification" || steeringNotificationFragments(item.text ?? "") !== null)
+  );
+}
+
+function isEmptyHiddenTurn(turn: ProjectedTurn): boolean {
+  return turn.entries.length === 0 && !asTurnError(turn.source.error);
+}
+
+function quietWakeEntries(turn: ProjectedTurn): { entries: readonly QuietWakeEntry[]; quietCount: number } | undefined {
+  if (turn.entries.length === 0) return undefined;
   if (asTurnError(turn.source.error)) return undefined;
-  const entry = turn.entries[0];
-  if (entry?.kind !== "item") return undefined;
-  if (entry.item.type !== "systemMessage" || !isQuietYield(entry.item)) return undefined;
-  return entry;
+  const entries: QuietWakeEntry[] = [];
+  let quietCount = 0;
+  for (const entry of turn.entries) {
+    if (entry.kind !== "item" && entry.kind !== "critical") return undefined;
+    if (entry.item.type === "systemMessage" && isQuietYield(entry.item)) {
+      quietCount += 1;
+      entries.push(entry);
+    } else if (isNotificationSteeringItem(entry.item)) {
+      entries.push(entry);
+    } else {
+      return undefined;
+    }
+  }
+  return quietCount > 0 ? { entries, quietCount } : undefined;
 }
 
 export interface TranscriptAnchorEntry {
@@ -157,10 +185,18 @@ export function transcriptRowsForProjection(projection: TranscriptProjection): r
     for (let index = 1; index < sourceTurnIndexes.length; index += 1) {
       const previous = sourceTurnIndexes[index - 1];
       const current = sourceTurnIndexes[index];
-      if (previous === undefined || current === undefined || current !== previous + 1) {
+      if (previous === undefined || current === undefined) {
         adjacentTurns = false;
         break;
       }
+      for (let mid = previous + 1; mid < current; mid += 1) {
+        const midTurn = projection.turns[mid];
+        if (midTurn === undefined || !isEmptyHiddenTurn(midTurn)) {
+          adjacentTurns = false;
+          break;
+        }
+      }
+      if (!adjacentTurns) break;
     }
     const terminalSingleTurn = sourceTurnIndexes.length === 1 && end === flat.length;
     if (!adjacentTurns && !terminalSingleTurn) return;
@@ -249,37 +285,56 @@ export function transcriptRowsForProjection(projection: TranscriptProjection): r
   let rowIndex = 0;
   while (rowIndex < rows.length) {
     const firstRow = rows[rowIndex];
-    const firstQuiet =
-      firstRow?.kind === "turn" && firstRow.showTurnSeparator ? quietYieldOnlyEntry(firstRow.turn) : undefined;
-    if (firstRow?.kind !== "turn" || firstQuiet === undefined) {
+    const firstWake =
+      firstRow?.kind === "turn" && firstRow.showTurnSeparator ? quietWakeEntries(firstRow.turn) : undefined;
+    if (firstRow?.kind !== "turn" || firstWake === undefined) {
       if (firstRow) grouped.push(firstRow);
       rowIndex += 1;
       continue;
     }
-    const run: { row: TranscriptTurnRow; entry: ItemEntry }[] = [{ row: firstRow, entry: firstQuiet }];
+    const run: { row: TranscriptTurnRow; entries: readonly QuietWakeEntry[]; quietCount: number }[] = [
+      { row: firstRow, entries: firstWake.entries, quietCount: firstWake.quietCount },
+    ];
+    const skippedEmptyIds: string[] = [];
+    let pendingEmpty: TranscriptTurnRow[] = [];
     let end = rowIndex + 1;
+    let lastQuietEnd = rowIndex + 1;
     while (end < rows.length) {
       const candidate = rows[end];
-      const entry =
-        candidate?.kind === "turn" && candidate.showTurnSeparator ? quietYieldOnlyEntry(candidate.turn) : undefined;
-      if (candidate?.kind !== "turn" || entry === undefined) break;
-      run.push({ row: candidate, entry });
+      if (candidate?.kind !== "turn" || !candidate.showTurnSeparator) break;
+      if (isEmptyHiddenTurn(candidate.turn)) {
+        pendingEmpty.push(candidate);
+        end += 1;
+        continue;
+      }
+      const wake = quietWakeEntries(candidate.turn);
+      if (wake === undefined) break;
+      for (const empty of pendingEmpty) skippedEmptyIds.push(empty.turn.id);
+      pendingEmpty = [];
+      run.push({ row: candidate, entries: wake.entries, quietCount: wake.quietCount });
       end += 1;
+      lastQuietEnd = end;
     }
-    if (run.length < 2) {
+    const firstEntry = run[0]?.entries[0];
+    if (run.length < 2 || firstEntry === undefined) {
       grouped.push(firstRow);
+      rowIndex += 1;
     } else {
+      const entries = run.flatMap((member) => member.entries);
+      const turns = run.flatMap((member) => member.entries.map(() => member.row.turn));
+      const quietCount = run.reduce((total, member) => total + member.quietCount, 0);
       const lastRunTurn = run.at(-1)?.row.turn.source;
       grouped.push({
         kind: "quietYieldGroup",
-        id: quietYieldGroupId(entryDisplayKey(firstQuiet)),
-        entries: run.map((member) => member.entry),
-        turns: run.map((member) => member.row.turn),
-        sourceTurnIds: run.map((member) => member.row.turn.id),
-        separatorTurn: end === rows.length ? lastRunTurn : undefined,
+        id: quietYieldGroupId(entryDisplayKey(firstEntry)),
+        entries,
+        turns,
+        quietCount,
+        sourceTurnIds: [...run.map((member) => member.row.turn.id), ...skippedEmptyIds],
+        separatorTurn: lastQuietEnd === rows.length ? lastRunTurn : undefined,
       });
+      rowIndex = lastQuietEnd;
     }
-    rowIndex = end;
   }
   return grouped;
 }
@@ -531,12 +586,15 @@ export function TranscriptBody({
           <ProjectedQuietYieldGroup
             entries={row.entries}
             turns={row.turns}
+            quietCount={row.quietCount}
             rowId={row.id}
             sourceTurnIds={row.sourceTurnIds}
             separatorTurn={row.separatorTurn}
             viewAnchorIndex={index}
             showSeenDivider={showSeenDivider}
             sessionRef={sessionRef}
+            renderContext={itemRenderContext}
+            thread={model}
           />
         </div>
       );

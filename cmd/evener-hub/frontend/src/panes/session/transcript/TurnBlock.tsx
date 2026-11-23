@@ -8,7 +8,7 @@
 // get tool calls rendered correctly.
 
 import type { ItemModel, ProjectedEntry, ProjectedTurn, ThreadModel, TurnModel } from "@evener/appwire-client";
-import { displayTurnStatus, entryDisplayKey, scopedDisclosureId } from "@evener/appwire-client";
+import { displayTurnStatus, entryDisplayKey, isQuietYield, scopedDisclosureId } from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import {
   disclosureScopeForSession,
@@ -25,7 +25,6 @@ import transcriptStyles from "../session.module.css";
 import { SeenDivider } from "./flow/SeenDivider";
 import { rowRoleFor } from "./layoutRoles";
 import { TurnSeparator } from "./messages";
-import { SystemNoticeItem } from "./messages/SystemNoticeItem";
 import { ToolCallItem } from "./ToolCallItem";
 import { ToolRunGroup } from "./ToolRunGroup";
 import { TurnFailureEndCap } from "./TurnFailureEndCap";
@@ -212,31 +211,40 @@ export function ProjectedIntentGroup({
 }
 
 export interface ProjectedQuietYieldGroupProps {
-  entries: readonly Extract<ProjectedEntry, { kind: "item" }>[];
+  entries: readonly Extract<ProjectedEntry, { kind: "item" | "critical" }>[];
   turns: readonly ProjectedTurn[];
+  quietCount?: number;
   rowId: string;
   sourceTurnIds?: readonly string[];
   separatorTurn?: TurnModel;
   viewAnchorIndex?: number;
   showSeenDivider?: boolean;
   sessionRef?: string;
+  renderContext?: TranscriptRenderContextValue;
+  thread?: ThreadModel;
 }
 
 export function ProjectedQuietYieldGroup({
   entries,
   turns,
+  quietCount,
   rowId,
   sourceTurnIds = [],
   separatorTurn,
   viewAnchorIndex,
   showSeenDivider = false,
   sessionRef,
+  renderContext,
+  thread,
 }: ProjectedQuietYieldGroupProps) {
   const context = useTranscriptRenderContext();
+  const itemRenderContext = renderContext ?? context;
   const scope = disclosureScopeForSession(context, sessionRef);
   const disclosureKey = scopedDisclosureId(scope, rowId);
   const fallback = disclosureDefault(scope, rowId, false);
   const open = isDisclosureOpen(disclosureKey, fallback, { ignoreBaseline: true });
+  const count =
+    quietCount ?? entries.filter((entry) => entry.item.type === "systemMessage" && isQuietYield(entry.item)).length;
   const first = entries[0];
   const closedAnchor =
     first && viewAnchorIndex !== undefined
@@ -261,18 +269,28 @@ export function ProjectedQuietYieldGroup({
             defaultOpen={fallback}
             ignoreBaseline
             data-testid="quiet-yield-group"
-            summary={<span data-count={entries.length}>{entries.length} quiet yields</span>}
+            summary={<span data-count={count}>{count} quiet yields</span>}
           >
             <div className={CLASS.quietYieldGroupBody} data-testid="quiet-yield-group-body" data-message-body="">
-              {entries.map((entry, idx) => (
-                <div key={entryDisplayKey(entry)} {...projectedEntryAnchor(entry, viewAnchorIndex)}>
-                  <SystemNoticeItem
-                    item={entry.item}
-                    turn={turns[idx]?.source ?? { id: entry.turnId, status: "completed", items: [entry.item] }}
-                    sessionRef={sessionRef}
-                  />
-                </div>
-              ))}
+              {entries.map((entry, idx) => {
+                const ItemRenderer = itemRendererFor(entry.item.type);
+                const displayKey = entryDisplayKey(entry);
+                return (
+                  <div key={displayKey} {...projectedEntryAnchor(entry, viewAnchorIndex)}>
+                    <ItemRenderer
+                      item={entry.item}
+                      turn={turns[idx]?.source ?? { id: entry.turnId, status: "completed", items: [entry.item] }}
+                      live={false}
+                      sessionRef={sessionRef}
+                      displayKey={displayKey}
+                      projectedSummary={entry.kind === "critical" ? entry.summary : undefined}
+                      redacted={entry.kind === "critical" && entry.redacted}
+                      renderContext={itemRenderContext}
+                      thread={thread}
+                    />
+                  </div>
+                );
+              })}
             </div>
           </Disclosure>
         </div>

@@ -192,5 +192,47 @@ func TestQuietYieldProjectionAndCompanionDemotion(t *testing.T) {
 				t.Fatalf("commentary=%q, want demoted joined companion prose", got)
 			}
 		})
+
+		t.Run(name+"/quiet_note_renders_as_item_text", func(t *testing.T) {
+			t.Parallel()
+			turnID := "turn_1"
+			noteState := json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true,"communicate_quiet":true,"communicate_quiet_note":"quiet-note-sentinel"}`)
+			entries := []schema.Turn{
+				{Format: format, TurnID: turnID, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("wait"), Timestamp: ts},
+				{Format: format, TurnID: turnID, RoundID: "r1", Kind: schema.TurnAssistant, Timestamp: ts.Add(time.Second), Message: llm.Message{
+					Role: llm.RoleAssistant,
+					Content: []llm.ContentPart{
+						{Kind: llm.ContentText, Text: "companion-note-prose"},
+						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_qn", Name: "communicate", Arguments: json.RawMessage(`{}`)}},
+					},
+				}},
+				{Format: format, TurnID: turnID, RoundID: "r1", Kind: schema.TurnToolResults, Timestamp: ts.Add(2 * time.Second), Message: llm.Message{
+					Role:    llm.RoleTool,
+					Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_qn", Name: "communicate", ToolState: noteState}}},
+				}},
+			}
+			if format == schema.TurnFormatIdentity {
+				entries = append(entries, schema.Turn{Format: format, TurnID: turnID, Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}})
+			}
+			path := writeTranscriptEntries(t, entries...)
+			reg := NewToolCallRegistry()
+			turns, err := ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, id string, idx int) []appwire.ThreadItem {
+				items, _ := ProjectEntryParts(id, idx, turn, reg, nil, nil)
+				return items
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(turns) != 1 || len(turns[0].Items) != 2 {
+				t.Fatalf("turns=%+v, want 1 turn with 2 items", turns)
+			}
+			q := turns[0].Items[1]
+			if q.EventKind != appwire.ThreadItemEventKindQuietYield || q.Text != "quiet-note-sentinel" {
+				t.Fatalf("quiet item=%+v, want Text=%q", q, "quiet-note-sentinel")
+			}
+			if got := quietYieldCommentary(t, q.Raw); got != "companion-note-prose" {
+				t.Fatalf("commentary=%q, want companion-note-prose", got)
+			}
+		})
 	}
 }

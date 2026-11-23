@@ -2038,4 +2038,117 @@ describe("consecutive quiet_yield cross-turn grouping", () => {
     fireEvent.click(summary);
     expect(collapsed.open).toBe(true);
   });
+
+  test.each(["chat", "intent", "tools", "activity", "full"] as const)(
+    "folds consecutive notification-bearing quiet wakes into one collapsed group at %s preset",
+    (level) => {
+      const notificationWake = (id: string, jobId: string) => ({
+        id,
+        status: "completed" as const,
+        items: [
+          {
+            id: `steer_${id}`,
+            turnId: id,
+            type: "steering" as const,
+            steeringKind: "notification",
+            text: `<job-notification job_id="${jobId}" event="progress" job_type="shell" status="running">\nworking\n</job-notification>`,
+            status: "completed" as const,
+          },
+          {
+            id: `qy_${id}`,
+            turnId: id,
+            type: "systemMessage" as const,
+            text: "quiet-sentinel",
+            eventKind: "quiet_yield",
+          },
+        ],
+      });
+      const model: ThreadModel = {
+        ...fixture,
+        turns: [
+          {
+            id: "turn_u",
+            status: "completed",
+            items: [{ id: "u1", turnId: "turn_u", type: "userMessage", text: "watch", status: "completed" }],
+          },
+          notificationWake("turn_w1", "job_1"),
+          notificationWake("turn_w2", "job_2"),
+        ],
+      };
+      const rows = transcriptRowsForProjection(appwireClient.projectThread(model, preset(level)));
+      expect(rows.map((row) => row.kind)).toEqual(["turn", "quietYieldGroup"]);
+      const group = rows[1];
+      if (group?.kind !== "quietYieldGroup") throw new Error("expected quietYieldGroup");
+      expect(group.sourceTurnIds).toEqual(["turn_w1", "turn_w2"]);
+      expect(group.quietCount).toBe(2);
+
+      render(<TranscriptBody model={model} config={preset(level)} surface="preview" disclosureScope={`qy:${level}`} />);
+      const collapsed = screen.getByTestId("quiet-yield-group") as HTMLDetailsElement;
+      expect(collapsed.open).toBe(false);
+      expect(collapsed.querySelector("[data-count]")?.getAttribute("data-count")).toBe("2");
+      const summary = collapsed.querySelector(":scope > summary");
+      if (!summary) throw new Error("missing summary");
+      fireEvent.click(summary);
+      expect(collapsed.open).toBe(true);
+      if (level !== "chat") {
+        expect(
+          screen.getByTestId("quiet-yield-group-body").querySelectorAll('[data-testid="notification-card"]'),
+        ).toHaveLength(2);
+      }
+    },
+  );
+
+  test("keeps cross-turn intentGroup contiguous across an empty hidden-steering turn", () => {
+    const model: ThreadModel = {
+      ...fixture,
+      turns: [
+        {
+          id: "turn_1",
+          status: "completed",
+          items: [
+            {
+              id: "tool_1",
+              turnId: "turn_1",
+              type: "commandExecution",
+              text: "",
+              toolName: "shell",
+              description: "Step 1",
+              status: "completed",
+            },
+          ],
+        },
+        {
+          id: "turn_hidden",
+          status: "completed",
+          items: [
+            {
+              id: "steer_hidden",
+              turnId: "turn_hidden",
+              type: "steering",
+              steeringKind: "notification",
+              text: "tick",
+              status: "completed",
+            },
+          ],
+        },
+        {
+          id: "turn_2",
+          status: "completed",
+          items: [
+            {
+              id: "tool_2",
+              turnId: "turn_2",
+              type: "commandExecution",
+              text: "",
+              toolName: "shell",
+              description: "Step 2",
+              status: "completed",
+            },
+          ],
+        },
+      ],
+    };
+    const rows = transcriptRowsForProjection(appwireClient.projectThread(model, preset("chat")));
+    expect(rows.some((row) => row.kind === "intentGroup")).toBe(true);
+  });
 });

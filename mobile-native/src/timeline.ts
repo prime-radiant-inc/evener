@@ -90,12 +90,40 @@ export function timelineGap(before: TimelineRow, after?: TimelineRow): number {
 	return routine(before) || routine(after) ? 8 : 24;
 }
 
-function isQuietYieldNotice(item: MobileTimelineItem | undefined): item is Notice {
+function isQuietYieldNotice(item: MobileTimelineItem | undefined): boolean {
 	return item?.kind === "notice" && isQuietYield(item) && !isCriticalNotice(item);
+}
+
+function isNotificationSteeringNotice(item: MobileTimelineItem | undefined): boolean {
+	return (
+		item?.kind === "notice" &&
+		item.origin === "steering" &&
+		item.steeringKind !== "human-note" &&
+		!item.fromParent &&
+		!isCriticalNotice(item) &&
+		(item.steeringKind === "notification" || item.notifications !== undefined)
+	);
 }
 
 // Keep technical context available without putting it between the reader and the conversation.
 export function groupTimeline(items: readonly MobileTimelineItem[]): TimelineRow[] {
+	const nonQuietTurns = new Set<string>();
+	const quietTurns = new Set<string>();
+	for (const item of items) {
+		if (item.turnId === undefined) continue;
+		if (isQuietYieldNotice(item)) {
+			quietTurns.add(item.turnId);
+		} else if (!isNotificationSteeringNotice(item)) {
+			nonQuietTurns.add(item.turnId);
+		}
+	}
+	const isQuietWakeItem = (item: MobileTimelineItem | undefined): item is Notice => {
+		if (item === undefined) return false;
+		if (item.turnId !== undefined && (nonQuietTurns.has(item.turnId) || !quietTurns.has(item.turnId))) {
+			return false;
+		}
+		return isQuietYieldNotice(item) || isNotificationSteeringNotice(item);
+	};
 	const rows: TimelineRow[] = [];
 	let index = 0;
 	while (index < items.length) {
@@ -104,24 +132,27 @@ export function groupTimeline(items: readonly MobileTimelineItem[]): TimelineRow
 			index += 1;
 			continue;
 		}
-		if (isQuietYieldNotice(item)) {
+		if (isQuietWakeItem(item)) {
 			let end = index + 1;
+			let lastQuiet = isQuietYieldNotice(item) ? index : -1;
 			while (end < items.length) {
-				if (!isQuietYieldNotice(items[end])) break;
+				if (!isQuietWakeItem(items[end])) break;
+				if (isQuietYieldNotice(items[end])) lastQuiet = end;
 				end += 1;
 			}
-			if (end - index >= 2) {
+			const groupEnd = lastQuiet >= index ? lastQuiet + 1 : index;
+			const entries = items.slice(index, groupEnd) as Notice[];
+			const quietCount = entries.filter((entry) => isQuietYieldNotice(entry)).length;
+			if (quietCount >= 2) {
 				rows.push({
 					kind: "details",
 					id: `quiet-yields:${item.id}`,
-					entries: items.slice(index, end) as Notice[],
-					summary: `${end - index} quiet yields`,
+					entries,
+					summary: `${quietCount} quiet yields`,
 				});
-			} else {
-				rows.push(item);
+				index = groupEnd;
+				continue;
 			}
-			index = end;
-			continue;
 		}
 		const internal =
 			item.kind === "notice" &&

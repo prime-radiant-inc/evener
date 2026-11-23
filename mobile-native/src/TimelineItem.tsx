@@ -187,8 +187,11 @@ export function TimelineItem({
 							hubId={hubId}
 							sessionRef={sessionRef}
 							sourceTurns={sourceTurns}
+							delegates={delegates}
+							openSubagent={openSubagent}
 							errorActionFor={errorActionFor}
 							onErrorAction={onErrorAction}
+							fileContext={fileContext}
 						/>
 					))}
 				</SystemEvent>

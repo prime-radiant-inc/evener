@@ -13,10 +13,11 @@ import (
 
 // CommunicateToolState records the tool verdict independently of display output.
 type CommunicateToolState struct {
-	Accepted        *bool `json:"communicate_accepted,omitempty"`
-	EndTurn         *bool `json:"communicate_end_turn,omitempty"`
-	Quiet           *bool `json:"communicate_quiet,omitempty"`
-	BoundaryPending bool  `json:"communicate_boundary_pending,omitempty"`
+	Accepted        *bool  `json:"communicate_accepted,omitempty"`
+	EndTurn         *bool  `json:"communicate_end_turn,omitempty"`
+	Quiet           *bool  `json:"communicate_quiet,omitempty"`
+	QuietNote       string `json:"communicate_quiet_note,omitempty"`
+	BoundaryPending bool   `json:"communicate_boundary_pending,omitempty"`
 }
 
 // DecodeCommunicateToolState reads the persisted tool state.
@@ -38,6 +39,18 @@ func IsQuietCommunicateState(raw json.RawMessage) bool {
 	}
 	state, ok := DecodeCommunicateToolState(raw)
 	return ok && state.IsQuiet()
+}
+
+// QuietCommunicateNote returns the trimmed quiet note when raw records a quiet yield.
+func QuietCommunicateNote(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	state, ok := DecodeCommunicateToolState(raw)
+	if !ok || !state.IsQuiet() {
+		return ""
+	}
+	return strings.TrimSpace(state.QuietNote)
 }
 
 // TurnKind identifies the category of a Turn in the Session history.

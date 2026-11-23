@@ -71,7 +71,7 @@ export function rowText(
 		case "question":
 			return row.questions.map((question) => `${question.header}\n${question.question}`).join("\n");
 		case "details":
-			return row.entries.map((entry) => [entry.label, entry.text].filter(Boolean).join("\n")).join("\n");
+			return row.entries.map((entry) => rowText(entry, delegates, answersByRow)).join("\n");
 		case "activity": {
 			const text = stepText(row);
 			const answer = answersByRow?.get(row.id);

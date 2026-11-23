@@ -202,3 +202,58 @@ it("keeps a single quiet_yield standalone and collapses 2+ consecutive quiet_yie
 		groupTimeline([quiet("q1"), quiet("q2"), quiet("q3")])[0]?.id,
 	);
 });
+
+it("groups consecutive notification-bearing quiet wakes while keeping single wakes and action turns separate", () => {
+	const notif = (id: string, turnId: string): MobileTimelineItem => ({
+		kind: "notice",
+		id,
+		turnId,
+		origin: "steering",
+		steeringKind: "notification",
+		family: "informational",
+		tone: "info",
+		text: `<job-notification job_id="${id}" event="progress">working</job-notification>`,
+		notifications: [{ kind: "text", text: "working" }],
+	});
+	const quiet = (id: string, turnId: string): MobileTimelineItem => ({
+		kind: "notice",
+		id,
+		turnId,
+		origin: "system",
+		family: "lifecycle",
+		tone: "system",
+		eventKind: "quiet_yield",
+		text: "quiet-sentinel",
+	});
+	const action: MobileTimelineItem = {
+		kind: "activity",
+		id: "act_1",
+		turnId: "turn_action",
+		label: "shell",
+		family: "tool",
+		state: "completed",
+		detail: {},
+	};
+
+	// A single notification + quiet wake stays standalone.
+	expect(groupTimeline([notif("n0", "t0"), quiet("q0", "t0")])).toHaveLength(2);
+
+	// An action turn's trailing quiet notice stays standalone; two pure quiet wakes group together.
+	const grouped = groupTimeline([
+		action,
+		quiet("qa", "turn_action"),
+		notif("n1", "t1"),
+		quiet("q1", "t1"),
+		notif("n2", "t2"),
+		quiet("q2", "t2"),
+	]);
+	expect(grouped).toMatchObject([
+		action,
+		quiet("qa", "turn_action"),
+		{
+			kind: "details",
+			id: "quiet-yields:n1",
+			entries: [notif("n1", "t1"), quiet("q1", "t1"), notif("n2", "t2"), quiet("q2", "t2")],
+		},
+	]);
+});

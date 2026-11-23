@@ -917,14 +917,8 @@ test("quiet_yield demoted commentary is searchable standalone and inside a quiet
   ]);
 
   const model: ThreadModel = {
+    ...makeTranscriptPreviewModel(),
     ref: "ref_a",
-    threadId: "t_a",
-    name: "",
-    status: { type: "idle" },
-    modelProvider: "anthropic",
-    model: "claude",
-    askPending: false,
-    pendingEscalations: [],
     turns: [
       { id: "turn_1", status: "completed", items: [quietItem("qy_1", "turn_1")] },
       { id: "turn_2", status: "completed", items: [quietItem("qy_2", "turn_2", "quokka-grouped")] },

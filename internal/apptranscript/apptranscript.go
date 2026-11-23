@@ -844,7 +844,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 			if name == "" {
 				name = reg.Names[part.ToolResult.ToolCallID]
 			}
-			quiet := IsQuietCommunicate(part.ToolResult)
+			quiet, quietNote := quietCommunicateOutcome(part.ToolResult)
 			if IsCommunicateTool(name, turn.ResultToolName) || quiet {
 				first := len(items)
 				// A rejected communicate (IsError=true, PrevalOnly=true) was
@@ -941,7 +941,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 						}
 						reg.clearDemotedAssistantText(qentry.EntryIndex)
 					}
-					if item, ok := SystemMessage(QuietYieldAnnouncement(commentary), fmt.Sprintf("item_%s_%d_%d", appwire.ThreadItemEventKindQuietYield, turnIndex, i), turnID); ok {
+					if item, ok := SystemMessage(QuietYieldAnnouncement(quietNote, commentary), fmt.Sprintf("item_%s_%d_%d", appwire.ThreadItemEventKindQuietYield, turnIndex, i), turnID); ok {
 						item.RoundID = turn.RoundID
 						item.CallID = part.ToolResult.ToolCallID
 						item.Authorship = ProjectAuthorship(authorship)

@@ -223,4 +223,67 @@ func TestQuietYieldIndexParityColdAndIncremental(t *testing.T) {
 			t.Fatalf("historical cut diverges from pre-result state:\ncut: %s\npre: %s", dump(cutWindow.Candidates), dump(preCut.Candidates))
 		}
 	})
+
+	t.Run("quiet_note_renders_as_item_text", func(t *testing.T) {
+		t.Parallel()
+		fx := quietYieldFixture(true)
+		fx.lines[4].turn.Message.Content[1].ToolResult.ToolState = json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true,"communicate_quiet":true,"communicate_quiet_note":"index-quiet-note-sentinel"}`)
+		path := writeFixture(t, fx)
+		x := openIndex(t, path, t.TempDir())
+		w, err := x.Latest(40)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref := referenceCandidates(t, path)
+		if !reflect.DeepEqual(w.Candidates, ref) {
+			t.Fatalf("index candidates diverge from reference:\nindex: %s\nref:   %s", dump(w.Candidates), dump(ref))
+		}
+		last := w.Candidates[len(w.Candidates)-1].Item
+		if last.EventKind != appwire.ThreadItemEventKindQuietYield || last.Text != "index-quiet-note-sentinel" {
+			t.Fatalf("last item=%+v, want Text=%q", last, "index-quiet-note-sentinel")
+		}
+		if got := quietYieldRawCommentary(t, last.Raw); got != "companion-sentinel" {
+			t.Fatalf("commentary=%q, want companion-sentinel", got)
+		}
+	})
+
+	t.Run("historical_cut_fallback_replay_handles_settled_quiet_companion", func(t *testing.T) {
+		t.Parallel()
+		fx := quietYieldFixture(true)
+		fx.lines = append(fx.lines,
+			entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_2", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("next")}, 7)),
+			entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_2", RoundID: "r_3", Kind: schema.TurnAssistant, Message: llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_nameless", Name: "job_list", Arguments: json.RawMessage(`{}`)}}},
+			}}, 8)),
+			entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_2", RoundID: "r_3", Kind: schema.TurnToolResults, Message: llm.Message{
+				Role:    llm.RoleTool,
+				Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_nameless", Content: "ok"}}},
+			}}, 9)),
+		)
+		path, lines := writeHeaderOnly(t, fx)
+		for _, line := range lines[:8] {
+			appendBytes(t, path, line)
+		}
+		x := openIndex(t, path, t.TempDir())
+		preCut, err := x.Latest(40)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range lines[8:] {
+			appendBytes(t, path, line)
+		}
+		catchUp(t, x)
+		var cutWindow Window
+		if err := x.ReadAt(preCut.Length, func(s *Snapshot) error {
+			var readErr error
+			cutWindow, readErr = s.Latest(40)
+			return readErr
+		}); err != nil {
+			t.Fatalf("ReadAt fallback failed: %v", err)
+		}
+		if !reflect.DeepEqual(cutWindow.Candidates, preCut.Candidates) {
+			t.Fatalf("historical cut diverges from expected:\ncut: %s\npre: %s", dump(cutWindow.Candidates), dump(preCut.Candidates))
+		}
+	})
 }
