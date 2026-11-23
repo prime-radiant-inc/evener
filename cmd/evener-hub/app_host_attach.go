@@ -28,7 +28,7 @@ import (
 // It is a controller-LOCAL method, not a forwarded evener/host/request admin
 // call: there is no host to forward to until the attach succeeds, so it is
 // deliberately absent from the AppWire host-request catalog (see app_host_admin.go).
-func registerHostAttachHandler(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry, hosts *hostreg.Registry) {
+func registerHostAttachHandler(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry, hosts *hostreg.Registry, navigation *NavigationService) {
 	// hosts is the one live registry the server constructor resolved — in
 	// production the same *hostreg.Registry the SSH manager dials through and
 	// the host-management surface mutates, so a host added at runtime
@@ -37,8 +37,20 @@ func registerHostAttachHandler(server *appserver.Server, cfg hubcore.WebConfig, 
 	// instance to every host handler, so add and attach can never validate
 	// against divergent copies.
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostAttach, func(ctx context.Context, params appwire.HostAttachParams) (appwire.HostAttachResponse, error) {
-		return hubHostAttach(ctx, cfg, sources, hosts, params)
+		return hostAttachAndInvalidateSources(ctx, cfg, sources, hosts, navigation, params)
 	})
+}
+
+// hostAttachAndInvalidateSources serves evener/host/attach. A successful
+// response means the host is attached, so navigation readers are told the
+// source set may have changed; Ensure can return an already-live channel
+// without emitting an attach event (see navigationChangeHint.Sources).
+func hostAttachAndInvalidateSources(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, hosts *hostreg.Registry, navigation *NavigationService, params appwire.HostAttachParams) (appwire.HostAttachResponse, error) {
+	resp, err := hubHostAttach(ctx, cfg, sources, hosts, params)
+	if err == nil && navigation != nil {
+		navigation.Invalidate(navigationChangeHint{Sources: true})
+	}
+	return resp, err
 }
 
 // hostRegistryFromConfig returns the cfg's live host registry when one was

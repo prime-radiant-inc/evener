@@ -811,7 +811,7 @@ func (r *hubRuntime) wireNavigationInvalidation(web *WebServer) {
 	// list already failed changes nothing there. Without this the fleet view can
 	// keep reporting a host online after it dropped, or keep its rows metas-only
 	// after it reconnected.
-	r.sshStateInvalidatedNavigation = func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) }
+	r.sshStateInvalidatedNavigation = func() { bump(); web.navigation.Invalidate(navigationChangeHint{Sources: true}) }
 	r.pinSections.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
 	// A seen mark changes live rows' unseen flag; a mark committed by any
 	// writer, the RPC or a session deletion's scrub, invalidates navigation.

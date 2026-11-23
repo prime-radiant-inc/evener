@@ -84,7 +84,12 @@ type navigationSource interface {
 }
 
 type navigationChangeHint struct {
-	Projects          []string
+	Projects []string
+	// Sources marks a change to the source set or its liveness. It forces a
+	// manifest target even when the rebuild's fingerprint is unchanged, so a
+	// client whose cached manifest predates the hub's current one re-reads
+	// it; without the forced target a client that missed an earlier
+	// publication could stay stale indefinitely.
 	Sources           bool
 	Time              bool
 	AllLoadedProjects bool
@@ -1451,6 +1456,11 @@ func writeNavigationFingerprintUint(digest hash.Hash, value uint64) {
 // second time after the first caller has committed them.
 func (s *NavigationService) commitTargetsLocked(changes map[navigationResourceKey]bool, hint navigationChangeHint) (hubapi.NavigationMutation, error) {
 	targetSet := make(map[string]appwire.NavigationInvalidationTarget)
+	add := func(key navigationResourceKey, revision uint64) {
+		if target, ok := navigationTargetForResource(key, revision); ok {
+			targetSet[navigationTargetIdentity(target)] = target
+		}
+	}
 	for key, changed := range changes {
 		if !changed {
 			continue
@@ -1461,10 +1471,14 @@ func (s *NavigationService) commitTargetsLocked(changes map[navigationResourceKe
 			if !exists {
 				dependencyState = state
 			}
-			if target, ok := navigationTargetForResource(dependency, dependencyState.Revision); ok {
-				targetSet[navigationTargetIdentity(target)] = target
-			}
+			add(dependency, dependencyState.Revision)
 		}
+	}
+	// A source change may need a manifest re-read even when this rebuild
+	// produced no delta: see navigationChangeHint.Sources.
+	if hint.Sources {
+		manifestKey := navigationResourceKey{Kind: navigationResourceManifest}
+		add(manifestKey, s.resources[manifestKey].Revision)
 	}
 	if len(targetSet) == 0 {
 		return hubapi.NavigationMutation{GenerationID: s.generation, Targets: hubapi.NavigationArray[appwire.NavigationInvalidationTarget]{}}, nil
@@ -1535,6 +1549,11 @@ func (s *NavigationService) Start(ctx context.Context) {
 			if _, keepGoing := s.waitUntil(ctx, s.now().Add(s.retryAfter)); !keepGoing {
 				return
 			}
+			// A pending invalidation still needs its forced refresh here: with
+			// no boundary this branch parked and continued without consuming it,
+			// so a source hint whose rebuild had no fingerprint delta never
+			// published. refreshPending keeps the existing failure pacing.
+			s.refreshPending(ctx)
 			continue
 		}
 		// A failed forced refresh paces its retry: park no longer than the
