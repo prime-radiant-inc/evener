@@ -21,7 +21,7 @@
 - Default tests are deterministic and network-free. Live tests require `EVENER_GITHUB_COPILOT_E2E=1` plus the credential/client ID. Do not log tokens or response bodies carrying them.
 - Assert behavior, structured values, final URLs, and sentinels, never human-readable copy. Keep existing providers' behavior unchanged except where a shared mechanism carries an explicit Copilot opt-in.
 - Work only in the `copilot-provider` worktree. Every task is TDD, commits its listed files, and uses the commit trailer supplied by the executor's own session. Report out-of-scope issues instead of absorbing them.
-- Approved task-budget ceiling is 2,961 production lines after Jesse accepted Task 1's 242 lines, Task 2's 650 lines, a 600-line ceiling for Task 3, Task 5's reviewed 435 net lines, and Task 6's reviewed 334 raw lines. Each task also carries a local budget; stop and report any new overage rather than expanding scope.
+- Approved task-budget ceiling is 3,171 production lines after Jesse accepted Task 1's 242 lines, Task 2's 650 lines, a 600-line ceiling for Task 3, Task 5's reviewed 435 net lines, Task 6's reviewed 334 raw lines, and Task 7's reviewed 410 net lines. Each task also carries a local budget; stop and report any new overage rather than expanding scope.
 
 ## Review Focus
 
@@ -153,14 +153,14 @@
 ### Task 7: Instance Lifecycle and External CLI Change Recovery
 
 **Files:**
-- Modify: `cmd/evener-hub/app_instances.go`, `cmd/evener-hub/app_provider_reload.go`, `llm/registry/instances.go`, `llm/registry/resolve.go`
+- Modify: `cmd/evener-hub/app_instances.go`, `cmd/evener-hub/app_provider_reload.go`, `cmd/evener-hub/app_auth.go`, `cmd/evener-hub/app_rpc.go`, `llm/registry/instances.go`, `llm/registry/resolve.go`
 - Test: `cmd/evener-hub/app_instances_test.go`, `cmd/evener-hub/app_provider_reload_test.go`, `llm/registry/instances_test.go`
 
 **Interfaces:**
 - Produces: Copilot-aware rename/remove/rollback/stray-record handling and external-record change signatures containing only existence, instance, scheme, account identity, corruption state, and login health.
 - Produces: registry live-invalidation for an account switch; no token, obtained-at, or rotating-token value enters the signature.
 
-**Size budget:** 200 production lines.
+**Size budget:** 410 net production lines (439 additions, 29 removals), explicitly accepted by Jesse after canonical rename locking and exact-state adoption passed re-review.
 
 - [ ] **Step 1: Write failing lifecycle and running-hub tests.** Cover rename, destination refusal, removal rollback, corrupt records, stray-record guidance, and scheme changes without token reuse. Drive real external CLI-service login/account-switch/logout against scripted GitHub, then run the hub notice sweep; assert registry membership/default changes, account roster invalidation, and one visible notification.
 - [ ] **Step 2: Run red.** `go test ./cmd/evener-hub ./llm/registry`; confirm the new lifecycle cases fail.
