@@ -71,7 +71,7 @@ import {
   PropertyList,
   type PropertyListRow,
   Skeleton,
-  STATUS_LABEL,
+  STATE_LABELS,
   StatusDot,
   type TreeRowInfo,
 } from "../../widgets";
@@ -581,7 +581,7 @@ function sessionStatusLabel(
       text: quota.phase === "pending" ? passedQuotaResetText() : waitingForQuotaText(quota.remainingMs),
     };
   }
-  if (state === "failed") return { kind: "failed", text: STATUS_LABEL.failed };
+  if (state === "failed") return { kind: "failed", text: STATE_LABELS.failed };
   if (state === "working") return workingStatus(session, read);
   const label = humanizeState(session.state, session.ask_pending === true, session.approval_pending === true);
   return { kind: "state", text: label.charAt(0).toUpperCase() + label.slice(1) };

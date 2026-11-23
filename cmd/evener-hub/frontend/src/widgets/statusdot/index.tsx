@@ -15,10 +15,6 @@ export interface StatusDotProps {
   decorative?: boolean;
 }
 
-/** StatusDot's accessible names. Re-exported from the one table so a caller
- * that already imports this widget keeps working without a second spelling. */
-export const STATUS_LABEL = STATE_LABELS;
-
 const FAMILY_CLASS: Record<StatusFamily, string> = {
   alive: requireClass(styles.alive, "statusdot.module.css", "alive"),
   attention: requireClass(styles.attention, "statusdot.module.css", "attention"),
@@ -53,7 +49,7 @@ export function StatusDot({ state, decorative = false }: StatusDotProps) {
   if (decorative) {
     return <span aria-hidden="true" {...attrs} />;
   }
-  return <span role="img" aria-label={STATUS_LABEL[state]} {...attrs} />;
+  return <span role="img" aria-label={STATE_LABELS[state]} {...attrs} />;
 }
 
 // A subagent row's dot: the main sessions' status-dot vocabulary - a working
@@ -68,9 +64,9 @@ const SUBAGENT_DOT: Record<
   // The shared states speak the session vocabulary's own words and hues, so a
   // session-status ruling reaches the subagent dot with no second table to
   // update. Quiet is normalized to fresh before lookup.
-  fresh: { family: stateFamily("working"), label: STATUS_LABEL.working, shape: "dot", working: true },
-  attention: { family: stateFamily("needs-you"), label: STATUS_LABEL["needs-you"], shape: "dot", working: false },
-  failed: { family: stateFamily("failed"), label: STATUS_LABEL.failed, shape: "diamond", working: false },
+  fresh: { family: stateFamily("working"), label: STATE_LABELS.working, shape: "dot", working: true },
+  attention: { family: stateFamily("needs-you"), label: STATE_LABELS["needs-you"], shape: "dot", working: false },
+  failed: { family: stateFamily("failed"), label: STATE_LABELS.failed, shape: "diamond", working: false },
   // A settled row shows no dot, exactly as the main sessions' idle and
   // ended scopes show no glyph.
   idle: null,
