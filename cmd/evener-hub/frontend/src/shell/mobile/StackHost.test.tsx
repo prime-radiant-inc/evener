@@ -833,6 +833,86 @@ test("switching away from a pane and back remounts it fresh - local state does n
   expect(screen.getByRole("button", { name: /clicks: 0/ })).toBeTruthy(); // reset, not preserved
 });
 
+// --- floating top bar ----------------------------------------------------
+
+// The fluency pass: on a session-family pane, scrolling the transcript body
+// down hides the solid header and leaves its back/⋯ controls floating over
+// the content; scrolling up (or reaching the top) brings the header back.
+// Non-session panes never collapse the bar - the board keeps its header.
+test("scrolling a session pane collapses the top bar and scrolling up reveals it", async () => {
+  window.history.replaceState({}, "", "/");
+  const restoreSession = registerPaneForTests({
+    id: "session",
+    component: lazy(() =>
+      Promise.resolve({
+        default: () => (
+          <div data-testid="session-scroll" style={{ height: "100%", overflowY: "auto" }}>
+            <div style={{ height: 2400 }} />
+          </div>
+        ),
+      }),
+    ),
+    title: () => "Session",
+  });
+  try {
+    const host = await act(async () => render(<StackHost routeDeferred />));
+    await act(async () => {
+      workspaceStore.getState().openPane("session", { ref: "local:a" });
+    });
+    const bar = screen.getByTestId("topbar");
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+
+    const scroller = screen.getByTestId("session-scroll");
+    act(() => {
+      scroller.scrollTop = 200;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
+
+    act(() => {
+      scroller.scrollTop = 10;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).not.toBe("true"));
+    host.unmount();
+  } finally {
+    restoreSession();
+  }
+});
+
+test("a non-session pane keeps the top bar solid while its body scrolls", async () => {
+  window.history.replaceState({}, "", "/");
+  const restoreDoc = registerPaneForTests({
+    id: "doc",
+    component: lazy(() =>
+      Promise.resolve({
+        default: () => (
+          <div data-testid="doc-scroll" style={{ height: "100%", overflowY: "auto" }}>
+            <div style={{ height: 2400 }} />
+          </div>
+        ),
+      }),
+    ),
+    title: () => "Doc",
+  });
+  try {
+    const host = await act(async () => render(<StackHost routeDeferred />));
+    await act(async () => {
+      workspaceStore.getState().openPane("doc", { ref: "ref_doc" });
+    });
+    const bar = screen.getByTestId("topbar");
+    const scroller = screen.getByTestId("doc-scroll");
+    act(() => {
+      scroller.scrollTop = 300;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    host.unmount();
+  } finally {
+    restoreDoc();
+  }
+});
+
 // --- tree drawer trigger ------------------------------------------------
 
 test("hosts the tree drawer trigger in the top bar, regardless of which pane is focused", async () => {

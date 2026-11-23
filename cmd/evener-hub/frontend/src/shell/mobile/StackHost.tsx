@@ -83,6 +83,13 @@ const TRANSITION_CLASSES = {
   leavingOver: styles.leavingOver ?? "",
 };
 
+// Floating-header thresholds (docs/web-ui/design-system.md §12): collapse
+// once a session-family pane's body scrolls past 48px going down; reveal on
+// an 8px upward step or at the very top.
+const FLOAT_COLLAPSE_PAST = 48;
+const FLOAT_REVEAL_STEP = 8;
+const FLOAT_REVEAL_AT_TOP = 12;
+
 // Renders exactly one pane, full-screen: whichever OpenPaneRecord
 // useWorkspaceStore currently reports as focused. Uses the SAME registry
 // (paneFor) and the SAME PaneProps contract every pane component already
@@ -250,6 +257,11 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const activityOpen = useActivitySidebarStore((s) => s.open);
   const [panelOpen, setPanelOpen] = useState(false);
   const closePanel = useCallback(() => setPanelOpen(false), []);
+  // The floating top bar (docs/web-ui/design-system.md §12): true while a
+  // session-family pane's body is scrolled down, trading the solid bar for
+  // floating control capsules. The state is a paint-only class flip - the
+  // bar keeps its box and padding, so the controls never move.
+  const [topBarCollapsed, setTopBarCollapsed] = useState(false);
   // True when no real pane is focused: either nothing at all, or the
   // welcome pane (the app's "nothing open" landing screen). The mobile
   // panel auto-opens in this state (see the effect below) so the rail —
@@ -295,6 +307,33 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const chromeWasOpenRef = useRef(false);
   const endTransitionRef = useRef<(() => void) | null>(null);
   const scrollOffsetsRef = useRef<ScrollOffsets>(new Map());
+  const topBarRef = useRef<HTMLDivElement>(null);
+  // Mirror of topBarCollapsed for the scroll listener (which installs once,
+  // on mount, like the offsets listener below it): reading state there would
+  // need the effect re-armed on every flip.
+  const topBarCollapsedRef = useRef(false);
+  const lastScrollTopRef = useRef(0);
+  // The scroller's scrollHeight as of the last event. A change between
+  // events means content shifted under the reader - the transcript prepends
+  // older turns as you scroll toward the top, and appends grow it below -
+  // so the scrollTop jump that arrives with it is not a gesture.
+  const lastScrollHeightRef = useRef(0);
+  // The scroller whose scroll drove the last collapse, and the resting bar
+  // height captured at that moment - both consumed by the compensation
+  // effect below. Cleared on every focus change.
+  const collapseScrollerRef = useRef<Element | null>(null);
+  const barHeightRef = useRef(0);
+  const prevTopBarCollapsedRef = useRef(false);
+  // Mirror of focusedPane for the same reason as topBarCollapsedRef.
+  const focusedPaneRef = useRef(focusedPane);
+  focusedPaneRef.current = focusedPane;
+
+  // The resting bar height (safe-area padding included), read once on mount:
+  // the fold threshold below needs it BEFORE the first collapse, not after.
+  // jsdom measures 0, which the threshold's 48px floor already covers.
+  useLayoutEffect(() => {
+    if (topBarRef.current !== null) barHeightRef.current = topBarRef.current.offsetHeight;
+  }, []);
 
   // Installs the ONE popstate listener that feeds lastPopstateWasTrusted
   // (module-level - see its own comment above for why). A REAL browser
@@ -335,6 +374,16 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       const realBrowserNav = lastPopstateWasTrusted;
       lastPopstateWasTrusted = false;
       const attentionRestore = attentionEntryOwnsPane(focusedPane);
+      // A focus change always restores the solid top bar (docs/web-ui/
+      // design-system.md §12): the next pane starts at the top of its own
+      // scroll, and non-session panes never collapse it anyway. Clearing the
+      // collapse scroller disarms the compensation effect for reveals that
+      // are not scroll-driven (this one).
+      topBarCollapsedRef.current = false;
+      setTopBarCollapsed(false);
+      lastScrollTopRef.current = 0;
+      lastScrollHeightRef.current = 0;
+      collapseScrollerRef.current = null;
       if (!wentBackRef.current && !realBrowserNav && !attentionRestore && prev !== null) {
         backStackRef.current.push(prev);
         // The stack is mutable navigation history; publishing its revision lets
@@ -436,6 +485,67 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       if (mountedScrollOffsets === offsets) mountedScrollOffsets = null;
     };
   }, []);
+
+  // Floating top bar (docs/web-ui/design-system.md §12). A capture listener
+  // next to the offsets one above, because both watch the same scroll of the
+  // shown pane's slot. It collapses the bar only for session-family panes
+  // (session, sessionZoom, transcript) - the board and every inspector pane
+  // keep their solid header - and never for scrollers outside the slot (the
+  // drawer's own list scrolls in the panel, not here).
+  useEffect(() => {
+    const body = stackBodyRef.current;
+    if (!body) return;
+    const onScroll = (event: Event) => {
+      const target = event.target;
+      if (!(target instanceof Element) || !paneSlotRef.current?.contains(target)) return;
+      const scrollTop = target.scrollTop;
+      const heightChanged = target.scrollHeight !== lastScrollHeightRef.current;
+      lastScrollHeightRef.current = target.scrollHeight;
+      const type = focusedPaneRef.current?.type;
+      // A height change is position-neutral: resync (the lastScrollTopRef
+      // update below) and decide nothing, so a prepend can never pose as a
+      // downward gesture and a reveal can never fire off appended content.
+      if (!heightChanged && (type === "session" || type === "sessionZoom" || type === "transcript")) {
+        collapseScrollerRef.current = target;
+        // The fold must land the compensated scroll position clear of the
+        // at-top reveal band: collapsing at a scroll the compensation would
+        // clamp to 0 would bounce straight back out (st < 12 reveals).
+        const foldPast = Math.max(FLOAT_COLLAPSE_PAST, barHeightRef.current + FLOAT_REVEAL_AT_TOP);
+        let next = topBarCollapsedRef.current;
+        if (scrollTop > foldPast && scrollTop > lastScrollTopRef.current) next = true;
+        else if (scrollTop < lastScrollTopRef.current - FLOAT_REVEAL_STEP || scrollTop < FLOAT_REVEAL_AT_TOP)
+          next = false;
+        if (next !== topBarCollapsedRef.current) {
+          topBarCollapsedRef.current = next;
+          // Resting height, read while the bar still sits in the flow: the
+          // compensation effect needs what the pane is about to lose, not
+          // what the floating box measures after the flip.
+          if (next && topBarRef.current !== null) barHeightRef.current = topBarRef.current.offsetHeight;
+          setTopBarCollapsed(next);
+        }
+      }
+      lastScrollTopRef.current = scrollTop;
+    };
+    body.addEventListener("scroll", onScroll, { capture: true, passive: true });
+    return () => body.removeEventListener("scroll", onScroll, { capture: true });
+  }, []);
+
+  // The floating bar leaves the flow, so the pane's body grows by the bar's
+  // resting height. Shift the scroller by the same amount in the opposite
+  // direction, before paint, so no frame shows the content jump - and write
+  // the scroll memory first, so the shift's own scroll event reads as "no
+  // change" instead of a large step that would instantly flip the bar back.
+  useLayoutEffect(() => {
+    const prev = prevTopBarCollapsedRef.current;
+    prevTopBarCollapsedRef.current = topBarCollapsed;
+    if (prev === topBarCollapsed) return;
+    const scroller = collapseScrollerRef.current;
+    const barHeight = barHeightRef.current;
+    if (scroller === null || barHeight <= 0) return;
+    const adjusted = Math.max(0, scroller.scrollTop + (topBarCollapsed ? -barHeight : barHeight));
+    lastScrollTopRef.current = adjusted;
+    scroller.scrollTop = adjusted;
+  }, [topBarCollapsed]);
 
   // Classifies each focus change and slides it (docs/web-ui/motion.md, recipe
   // 4). A pop is a focus change a Back tap caused. A push is any other change
@@ -683,7 +793,13 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
 
   return (
     <div className={styles.host} onPointerDownCapture={clearPendingPop} onKeyDownCapture={clearPendingPop}>
-      <div className={styles.topBar} data-session={focusedSessionRef === undefined ? undefined : "true"}>
+      <div
+        ref={topBarRef}
+        data-testid="topbar"
+        className={topBarCollapsed ? `${styles.topBar} ${styles.topBarCollapsed}` : styles.topBar}
+        data-collapsed={topBarCollapsed ? "true" : undefined}
+        data-session={focusedSessionRef === undefined ? undefined : "true"}
+      >
         <div className={styles.leading}>
           {showBack ? (
             <IconButton
@@ -699,10 +815,12 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         <span className={styles.stackTitle} data-testid="topbar-title">
           {paneTitle}
         </span>
-        {focusedSessionRef !== undefined && (
-          <SessionInspectionActions sessionRef={focusedSessionRef} paneId={focusedPane?.id} />
-        )}
-        {focusedSessionRef === undefined && drawer}
+        <div className={styles.trailing}>
+          {focusedSessionRef !== undefined && (
+            <SessionInspectionActions sessionRef={focusedSessionRef} paneId={focusedPane?.id} />
+          )}
+          {focusedSessionRef === undefined && drawer}
+        </div>
       </div>
       <div ref={stackBodyRef} className={styles.stackBody} data-stacked-pane-type={focusedPane?.type}>
         {focusedPane && (
