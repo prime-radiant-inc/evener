@@ -86,7 +86,7 @@ test("alternative bindings, a multi-press sequence, and an unbound action each r
   const terms = screen.getAllByRole("term");
   expect(terms.map((term) => term.textContent)).toEqual(["Ctrl+KorCtrl+P", "gg", "Unbound"]);
   expect(terms.map((term) => [...term.querySelectorAll("kbd")].map((key) => key.textContent))).toEqual([
-    ["Ctrl", "K", "P"],
+    ["Ctrl", "K", "Ctrl", "P"],
     ["g", "g"],
     [],
   ]);
