@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { expect, test } from "vitest";
 import { ShortcutList } from "./index";
+import styles from "./shortcutlist.module.css";
 
 test("each item pairs its chord term with the action it performs, in order", () => {
   render(
@@ -90,4 +91,5 @@ test("alternative bindings, a multi-press sequence, and an unbound action each r
     ["g", "g"],
     [],
   ]);
+  expect(terms[2].firstElementChild?.className).toContain(styles.unbound);
 });

@@ -75,7 +75,7 @@ function chordSlot(item: ShortcutListItem): ReactNode {
   const sequences = item.sequences?.filter((sequence) => sequence.length > 0) ?? [];
   if (sequences.length > 0) return <KeySequences sequences={sequences} />;
   if (item.keys !== undefined && item.keys.length > 0) return <KeyHint keys={item.keys} />;
-  return item.unbound ?? null;
+  return item.unbound != null ? <span className={BASE_CLASS.unbound}>{item.unbound}</span> : null;
 }
 
 /** A list of keyboard shortcuts: each chord (a KeyHint) as the term, the
