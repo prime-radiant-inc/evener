@@ -5,6 +5,7 @@
     "styles/tokens.css",
     "styles/global.css",
     "panes/session/transcript/flow/imagegallery.module.css",
+    "widgets/internal/lightbox.module.css",
     "widgets/zoomablemedia/zoomablemedia.module.css"
   ],
   "mutation": {
