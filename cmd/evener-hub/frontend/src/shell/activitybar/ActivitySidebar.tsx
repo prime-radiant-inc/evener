@@ -16,7 +16,7 @@ import { deriveCascadePath, parseZoomParams } from "../../panes/zoom/intent";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
 import { EntityViewsProvider, sessionEntityViews } from "../../transcriptDisplay/entityViews";
-import { CloseIcon, FocusScope, IconButton, SegmentedControl } from "../../widgets";
+import { CloseIcon, FocusScope, IconButton, SegmentedControl, type SegmentedControlOption } from "../../widgets";
 import { DisclosurePersistenceContext } from "../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { ScopeCrumbs } from "../statusbar/ScopeCrumbs";
@@ -42,6 +42,39 @@ const CLASS = {
   body: requireClass(styles.body, "activitybar.module.css", "body"),
   focusBody: requireClass(styles.focusBody, "activitybar.module.css", "focusBody"),
 };
+
+function OverviewStrip({
+  mobile,
+  scopeRef,
+  value,
+  options,
+}: {
+  mobile: boolean;
+  scopeRef: string;
+  value: ActivityTab;
+  options: readonly SegmentedControlOption<ActivityTab>[];
+}) {
+  // AnimatePresence renders the exiting aside from the element captured while
+  // `open` was still true, so ActivitySidebar's prop updates cannot reach the
+  // strip until the exit finishes. Subscribing here, inside the mounted
+  // subtree, drops autoFocus to false on close and raises it again on reopen,
+  // re-arming the widget's queued entry focus without remounting the strip.
+  const open = useActivitySidebarStore((state) => state.open);
+  return (
+    <SegmentedControl<ActivityTab>
+      key={mobile ? scopeRef : undefined}
+      label="Overview kind"
+      hideLabel
+      size="sm"
+      fullWidth
+      wrap
+      autoFocus={mobile && open}
+      value={value}
+      onChange={(next) => activitySidebarStore.getState().setTab(next)}
+      options={options}
+    />
+  );
+}
 
 export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
   const open = useActivitySidebarStore((state) => state.open);
@@ -188,16 +221,10 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
               <IconButton label="Close Overview" icon={<CloseIcon />} variant="quiet" size="sm" onClick={close} />
             </div>
             <div className={CLASS.tabs}>
-              <SegmentedControl<ActivityTab>
-                key={mobile ? scope.leaf.ref : undefined}
-                label="Overview kind"
-                hideLabel
-                size="sm"
-                fullWidth
-                wrap
-                autoFocus={mobile}
+              <OverviewStrip
+                mobile={mobile}
+                scopeRef={scope.leaf.ref}
                 value={tab}
-                onChange={(next) => activitySidebarStore.getState().setTab(next)}
                 options={ACTIVITY_TABS.map((spec) => ({
                   value: spec.id,
                   label: spec.label,

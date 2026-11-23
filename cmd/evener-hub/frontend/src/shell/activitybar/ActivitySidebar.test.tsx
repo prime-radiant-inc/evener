@@ -908,6 +908,36 @@ test("phone Overview enters its selected category and contains sequential keyboa
   }
 });
 
+test("phone Overview reopening during its exit returns focus to its selected category", async () => {
+  const user = userEvent.setup();
+  connectionStore.getState().connect(activityClient());
+  installFocusedScope(ref);
+  const opener = document.body.appendChild(document.createElement("button"));
+  opener.textContent = "Open Overview";
+  opener.addEventListener("click", () => activitySidebarStore.getState().openWith("about", opener));
+  try {
+    opener.focus();
+    opener.click();
+    mount(true);
+    const sidebar = await screen.findByTestId("activity-sidebar");
+    const strip = screen.getByRole("radiogroup");
+    const about = screen.getByRole("radio", { name: "About" });
+    await waitFor(() => expect(document.activeElement).toBe(about));
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(document.activeElement).toBe(opener), { timeout: 1_500 });
+    expect(activitySidebarStore.getState().open).toBe(false);
+    // The exit animation keeps the aside mounted. Reopening the same session
+    // before it finishes must queue entry focus again on the same strip.
+    await user.keyboard("{Enter}");
+    expect(activitySidebarStore.getState().open).toBe(true);
+    expect(screen.getByTestId("activity-sidebar")).toBe(sidebar);
+    expect(screen.getByRole("radiogroup")).toBe(strip);
+    await waitFor(() => expect(document.activeElement).toBe(about), { timeout: 1_500 });
+  } finally {
+    opener.remove();
+  }
+});
+
 test("desktop Overview leaves focus with the opener and permits Tab beyond the surface", async () => {
   const user = userEvent.setup();
   connectionStore.getState().connect(activityClient());
