@@ -45,7 +45,7 @@ import {
   schemaPathKind,
 } from "@evener/appwire-client";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Button, Eyebrow, InlineNotice, useToasts } from "../../../../widgets";
+import { Button, Eyebrow, formatAbsoluteTime, InlineNotice, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EnvMapField, McpServerListField, ModelListField, PathListField } from "./collectionFields";
 import { type LaunchFormPaths, PromptCompositeField, ScalarField } from "./fields";
@@ -103,7 +103,7 @@ interface SaveStatus {
 }
 
 function formatSavedAt(): string {
-  return `Saved at ${new Date().toLocaleTimeString()}`;
+  return `Saved at ${formatAbsoluteTime(Date.now(), { format: "localeTime" })}`;
 }
 
 /** sameLayer answers whether two layers carry the same content. A re-read of
