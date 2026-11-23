@@ -235,8 +235,7 @@ function routePlacementIsApplied(
   const ref = refParam(route.params);
   if (ref === null) return false;
   const sessionRefOf = (pane: { params: unknown }): string | null => {
-    const paneRef = (pane.params as { ref?: unknown }).ref;
-    return typeof paneRef === "string" ? paneRef : null;
+    return refParam(pane.params);
   };
   if (location === null) {
     if (locationGone) return main.type === "welcome";
