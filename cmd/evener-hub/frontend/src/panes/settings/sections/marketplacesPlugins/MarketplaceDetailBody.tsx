@@ -19,6 +19,7 @@ import {
   ConfirmDialog,
   EmptyState,
   FormRow,
+  formatAbsoluteTime,
   InlineNotice,
   Input,
   Loader,
@@ -55,7 +56,7 @@ const CLASS = {
 };
 
 function lastUpdatedText(seconds: number): string {
-  return seconds > 0 ? new Date(seconds * 1000).toLocaleString() : "never";
+  return seconds > 0 ? formatAbsoluteTime(seconds * 1000, { format: "locale" }) : "never";
 }
 
 export interface MarketplaceDetailBodyProps {

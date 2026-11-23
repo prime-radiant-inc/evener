@@ -155,7 +155,7 @@ func (c *delegateTreeController) noteDelegateAttention(delegateID, attentionID s
 	defer release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.noteDelegateAttentionLocked(delegateID, attentionID)
+	return c.noteDelegateAttentionLockedForTest(delegateID, attentionID)
 }
 
 func (c *delegateTreeController) nextIdleDelegateAttention() (string, string, bool) {

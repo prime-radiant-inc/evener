@@ -3,9 +3,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { createRef, useState } from "react";
 import { expect, test, vi } from "vitest";
 import { Input } from "./index";
+import rawStyles from "./input.module.css";
 
 // A controlled-loop test harness: userEvent.type fires one keystroke at a
 // time, and a real controlled <input> only reflects each keystroke if the
@@ -109,6 +110,31 @@ test("aria-describedby passes through only when supplied", () => {
 
   rerender(<Input value="" onChange={() => {}} />);
   expect(screen.getByRole("textbox").getAttribute("aria-describedby")).toBeNull();
+});
+
+// --- ref + fill: opt-in imperative access and an opt-in width -------------
+test("forwards a ref to the underlying native input element", () => {
+  const ref = createRef<HTMLInputElement>();
+  render(<Input ref={ref} value="hi" onChange={() => {}} />);
+  expect(ref.current).toBe(screen.getByRole("textbox"));
+});
+
+test("fill adds its modifier class alongside the unchanged base class", () => {
+  const { rerender } = render(<Input value="" onChange={() => {}} fill />);
+  const classes = screen.getByRole("textbox").className.split(" ");
+  expect(classes).toContain(rawStyles.input);
+  expect(classes).toContain(rawStyles.fillWidth);
+
+  rerender(<Input value="" onChange={() => {}} />);
+  expect(screen.getByRole("textbox").className.split(" ")).not.toContain(rawStyles.fillWidth);
+});
+
+test("the fill modifier sets width 100% and min-width 0", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "input.module.css"), "utf8");
+  const rule = /\.fillWidth\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rule).toContain("width: 100%");
+  expect(rule).toContain("min-width: 0");
 });
 
 test("declares a :focus-visible rule in its CSS module, using only tokens", () => {

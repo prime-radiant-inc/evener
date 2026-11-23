@@ -10,8 +10,9 @@ import (
 
 // attentionLevel maps a normalized UI state plus its pending facts to an
 // attention level. Only an actionable condition puts a session in needs_you: a
-// pending question or approval, a warning, or a restart. A turn that merely
-// ended on needs_response is finished and rests idle (#2629).
+// pending question or approval, a warning, or a restart. A resting session
+// reporting awaiting with no pending question is finished and rests idle
+// (#2629).
 func attentionLevel(normalized string, askPending, approvalPending bool) string {
 	if hubapi.NeedsAction(normalized, askPending, approvalPending) {
 		return "needs_you"

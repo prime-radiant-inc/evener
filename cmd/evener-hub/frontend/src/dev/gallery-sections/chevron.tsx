@@ -27,15 +27,17 @@ export default function ChevronGallerySection() {
           <p className={styles.rowLabel}>size 16</p>
           <Chevron size={16} />
         </div>
-        {/* The reason the icon is square rather than a text triangle: the
-            disclosure sites turn it in CSS, and a taller-than-wide box gets
-            WIDER when turned, escaping whatever row holds it. Shown turned
-            here so a reviewer can see the box hold. */}
+        {/* The reason the icon is square rather than a text triangle: `open`
+            turns the svg itself, and a taller-than-wide box gets WIDER when
+            turned, escaping whatever row holds it. Shown open here so a
+            reviewer can see the box hold and the widget own the rotation. */}
         <div className={styles.row}>
-          <p className={styles.rowLabel}>turned 90°</p>
-          <span style={{ display: "inline-flex", transform: "rotate(90deg)" }}>
-            <Chevron direction="right" />
-          </span>
+          <p className={styles.rowLabel}>open</p>
+          <Chevron open />
+        </div>
+        <div className={styles.row}>
+          <p className={styles.rowLabel}>closed</p>
+          <Chevron open={false} />
         </div>
         {/* currentColor: the glyph takes whatever ink its consumer sets, so a
             quiet disclosure and a full-contrast control share one icon. */}

@@ -15,6 +15,10 @@ export interface ZoomableMediaProps
   /** Fill the container's height too: for a fixed-size thumbnail tile. Off,
    * the trigger is as tall as its media. */
   fill?: boolean;
+  /** Round and clip the trigger's own box. `inherit` takes the caller's tile
+   * radius (a thumbnail that fills it); `control` takes the radius ladder's
+   * control step. Off, the trigger stays square and its caller clips it. */
+  radius?: "control" | "inherit";
   /** The media itself: an image, a rendered diagram, a thumbnail and its
    * caption. */
   children: ReactNode;
@@ -33,7 +37,7 @@ const CLASS = {
  * height too (a fixed-size thumbnail tile).
  */
 export const ZoomableMedia = forwardRef<HTMLButtonElement, ZoomableMediaProps>(function ZoomableMedia(
-  { label, onOpen, fill = false, children, ...rest },
+  { label, onOpen, fill = false, radius, children, ...rest },
   ref,
 ) {
   return (
@@ -43,6 +47,7 @@ export const ZoomableMedia = forwardRef<HTMLButtonElement, ZoomableMediaProps>(f
       type="button"
       aria-label={label}
       data-fill={fill || undefined}
+      data-radius={radius}
       className={CLASS.media}
       onClick={onOpen}
     >

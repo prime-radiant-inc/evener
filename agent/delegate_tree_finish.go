@@ -316,7 +316,7 @@ func (c *delegateTreeController) releaseFinalizationLocked(live *delegateLiveSta
 	}
 	close(finalizing.released)
 	live.finalizing = nil
-	if state := c.attention[finalizing.delegateID]; state != nil && len(state.wakeIDs) != 0 {
+	if aggregate := c.durable[finalizing.delegateID]; aggregate != nil && len(aggregate.PendingAttention) != 0 {
 		if root := c.rootRuntime; root != nil {
 			go root.notify()
 		}

@@ -367,29 +367,21 @@
  * avatar-column slot geometry is composed, not restated here, so the seat's
  * arithmetic (slot + margin + column gap = one --speaker-gutter) is the same
  * one the notification head's status glyph uses. The seat alone, without the
- * rail's ambient strength: the slot's --field ground is what sets the glyph
- * back from the text, and half opacity would only fade it into that ground.
- *
- * Positioned, so the glyph paints after that ground (a positioned
- * pseudo-element that precedes it in tree order) rather than under it. */
+ * rail's ambient strength: the glyph sits bare and at full strength. */
 .rowIcon {
   composes: seat from "../../../styles/railseat.module.css";
-  position: relative;
 }
 
 /* The kind icon's slot: the row's first flex item. It carries the pull into
  * the seat column .call reserves (the column is the row's own, so the pull
- * holds at every width), paints the field seat behind the glyph, and is the
- * positioning context the failure cross (Jesse, 2026-10-20) pins to. The
- * slot's layout box stays one line tall, so the icon pins to the row's first
- * line and a second line sits tight beneath the first; the seat's overhang
- * above and below a one-line row fits inside .call's padding. A clean row
- * renders the slot with only the seat inside it, so success costs no extra
- * column. */
+ * holds at every width) and is the positioning context the failure cross
+ * (Jesse, 2026-10-20) pins to. The slot's layout box stays one line tall, so
+ * the icon pins to the row's first line and a second line sits tight beneath
+ * the first. A clean row renders the slot with only the seat inside it, so
+ * success costs no extra column. */
 .rowIconSlot {
   composes: columnPull from "../../../styles/railseat.module.css";
-  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
-  composes: fieldSeatBehind from "../../../styles/surface.module.css";
+  position: relative;
   /* ToolRow's ROW_ICON_SIZE, which it also passes to ToolIcon. The seat
    * centres that square box in its wider avatar column, and the badge anchors
    * to the GLYPH's corner rather than the seat's. Two spellings of one number
@@ -664,16 +656,6 @@
 .summaryTail .chevron {
   height: 1lh;
   align-items: center;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .chevron > svg {
-    transition: transform var(--motion-duration-hover) var(--motion-easing-standard);
-  }
-}
-
-.chevron[data-open="true"] > svg {
-  transform: rotate(90deg);
 }
 
 /* The .bodyTrigger button's chevron has no preceding text, so the default

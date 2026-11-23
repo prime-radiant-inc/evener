@@ -540,7 +540,7 @@ func TestLoadHistoricalStableActivityWithAttention_AttentionTranscriptError(t *t
 	_ = store.Close()
 
 	// The delegate needs to be closed/eligible for attention projection.
-	// delegateAttentionProjectionEligible checks if the delegate is closed
+	// delegatestore.AttentionProjectionEligible checks if the delegate is closed
 	// and has a terminal packet. Without that, the attention path won't
 	// be taken, so we just verify no panic.
 	_, _, err = loadHistoricalStableActivityWithAttention(context.Background(), stateDir, rootID, rootID)

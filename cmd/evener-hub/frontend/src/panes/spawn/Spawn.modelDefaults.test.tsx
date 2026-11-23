@@ -499,12 +499,10 @@ test.each(["desktop", "mobile"])("%s access inheritance survives an explicit mod
   const sandboxDefault = () => Array.from(sandboxSelect.options).find((entry) => entry.value === "")?.textContent;
   const unqualifiedSandboxDefault = sandboxDefault();
   const mobileOptions = async () => {
-    const row = screen.getByTestId("spawn-mobile-config").querySelector('[data-label="Access mode"] button');
+    const row = screen.getByTestId("spawn-mobile-config").querySelector('[data-label="Access mode"]');
     if (!(row instanceof HTMLElement)) throw new Error("missing access row");
     await user.click(row);
-    return within(screen.getByRole("dialog"))
-      .getAllByRole("button")
-      .filter((button) => button.hasAttribute("aria-pressed"));
+    return within(screen.getByRole("dialog")).getAllByRole("radio");
   };
   await setWorkingDir(user, "/tmp/inherited-access");
   const summary = screen.getByTestId("spawn-effective-access");
@@ -527,7 +525,9 @@ test.each(["desktop", "mobile"])("%s access inheritance survives an explicit mod
     const options = await mobileOptions();
     const inherit = options[0];
     if (!inherit) throw new Error("missing inherited access option");
-    expect(inherit.textContent).toBe(unqualifiedDefault);
+    // The checked row also carries the widget's "Selected" readout, so
+    // compare the radio's own label, not its whole text content.
+    expect(inherit.getAttribute("aria-label")).toBe(unqualifiedDefault);
     await user.click(inherit);
   }
   await waitFor(() => expect(summary.getAttribute("data-sandbox")).toBe(inheritedSandbox));

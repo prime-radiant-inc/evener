@@ -13,16 +13,23 @@ export type CardVariant = "flat" | "outlined";
  * attention hue, so it ignores variant. */
 export type CardTone = "neutral" | "attention";
 
+/** default is the surface's own inset (the flat card's roomy padding, the
+ * outlined card's tighter one); none removes it for a card whose own sections
+ * own their spacing, such as a transcript tool body. */
+export type CardPadding = "default" | "none";
+
 export interface CardProps extends Omit<HTMLAttributes<HTMLDivElement>, "children" | "className" | "style"> {
   children: ReactNode;
   variant?: CardVariant;
   tone?: CardTone;
+  padding?: CardPadding;
 }
 
 const BASE_CLASS = {
   card: requireClass(styles.card, "card.module.css", "card"),
   outlined: requireClass(styles.outlined, "card.module.css", "outlined"),
   attention: requireClass(styles.attention, "card.module.css", "attention"),
+  none: requireClass(styles.none, "card.module.css", "none"),
 };
 
 function surfaceClass(variant: CardVariant, tone: CardTone): string | undefined {
@@ -37,10 +44,13 @@ function surfaceClass(variant: CardVariant, tone: CardTone): string | undefined 
  * aria-*, data-*, tabIndex, key handlers) spread onto the element BEFORE
  * className, so a loosely-typed spread cannot replace the card's classes
  * (Button's rest-spread rule). */
-export function Card({ children, variant = "flat", tone = "neutral", ...rest }: CardProps) {
+export function Card({ children, variant = "flat", tone = "neutral", padding = "default", ...rest }: CardProps) {
   const surface = surfaceClass(variant, tone);
+  const className = [BASE_CLASS.card, surface, padding === "none" ? BASE_CLASS.none : undefined]
+    .filter((name): name is string => name !== undefined)
+    .join(" ");
   return (
-    <div {...rest} className={surface ? `${BASE_CLASS.card} ${surface}` : BASE_CLASS.card}>
+    <div {...rest} className={className}>
       {children}
     </div>
   );

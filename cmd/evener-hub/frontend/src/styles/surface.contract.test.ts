@@ -97,21 +97,12 @@ test("a tool card drawn across sibling rows is the same surface, sliced by posit
   );
 });
 
-test("the field seat is one ground at two named sizes", () => {
-  expect(surface).toMatch(
-    /\.fieldSeat,\s*\.fieldSeatBehind::before\s*\{[^}]*border-radius:\s*var\(--radius-control\)[^}]*background:\s*var\(--field\)/,
-  );
-  expect(ruleBody(surface, ".fieldSeat")).toMatch(/width:\s*var\(--field-seat-size\)/);
-  const behind = ruleBody(surface, ".fieldSeatBehind::before");
-  expect(behind).toMatch(/width:\s*var\(--field-seat-size-row\)/);
-  // Placed with insets: a transform on the slot's ground would make every
-  // tool row a stacking context.
-  expect(behind).toMatch(/top:\s*calc\(50% - var\(--field-seat-size-row\) \/ 2\)/);
-  expect(behind).not.toMatch(/transform/);
+test("the field seat is one ground for a tile's leading glyph", () => {
+  const seat = ruleBody(surface, ".fieldSeat");
+  expect(seat).toMatch(/border-radius:\s*var\(--radius-control\)/);
+  expect(seat).toMatch(/background:\s*var\(--field\)/);
+  expect(seat).toMatch(/width:\s*var\(--field-seat-size\)/);
   expect(ruleBody(read("panes/spawn/spawn.module.css"), ".tileSeat")).toMatch(
     /composes:\s*fieldSeat from "[./]*styles\/surface\.module\.css"/,
-  );
-  expect(ruleBody(read("panes/session/transcript/toolcallitem.module.css"), ".rowIconSlot")).toMatch(
-    /composes:\s*fieldSeatBehind from "[./]*styles\/surface\.module\.css"/,
   );
 });

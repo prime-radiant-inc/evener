@@ -55,7 +55,6 @@ const CLASS = {
   env: requireClass(styles.env, "delegateStatus.module.css", "env"),
   tools: requireClass(styles.tools, "delegateStatus.module.css", "tools"),
   toolsChips: requireClass(styles.toolsChips, "delegateStatus.module.css", "toolsChips"),
-  toolChip: requireClass(styles.toolChip, "delegateStatus.module.css", "toolChip"),
   footer: requireClass(styles.footer, "delegateStatus.module.css", "footer"),
   footerSpacer: requireClass(styles.footerSpacer, "delegateStatus.module.css", "footerSpacer"),
 };
@@ -373,9 +372,9 @@ export function DelegateStatusBody({ item, sessionRef }: ToolRenderProps) {
           <Eyebrow>{`Available tools (${tools.length})`}</Eyebrow>
           <div className={CLASS.toolsChips}>
             {tools.map((tool) => (
-              <span key={tool} className={CLASS.toolChip}>
+              <Chip key={tool} mono kind="tool">
                 {tool}
-              </span>
+              </Chip>
             ))}
           </div>
         </div>

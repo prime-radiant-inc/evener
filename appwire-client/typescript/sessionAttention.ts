@@ -63,9 +63,10 @@ export function attentionState(wireState: string, facts: AttentionFacts = {}): A
   if (state === "awaiting" && facts.askPending) return "question";
   if (facts.approvalPending) return "approval";
   if (state === "active") return "working";
-  // Awaiting without a question is a turn that ended on needs_response: it is
-  // finished, not blocked on a person. It rests idle unless children are still
-  // running, which keeps the session Working (#2629).
+  // Awaiting without a question, the shape an older daemon reported for a
+  // turn that ended asking for a reply, is finished, not blocked on a person.
+  // It rests idle unless children are still running, which keeps the session
+  // Working (#2629).
   if (facts.runningChildren) return "working";
   return decisive ?? "idle";
 }

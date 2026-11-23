@@ -34,3 +34,10 @@
   border-color: color-mix(in oklab, var(--attention) 55%, var(--edge));
   background: color-mix(in oklab, var(--attention) 24%, var(--surface-1));
 }
+
+/* padding="none": the caller's own sections own the inset (a transcript tool
+ * body). Compound with .card so it outranks both the flat padding above and
+ * the outlined/attention padding, independent of source order. */
+.card.none {
+  padding: 0;
+}

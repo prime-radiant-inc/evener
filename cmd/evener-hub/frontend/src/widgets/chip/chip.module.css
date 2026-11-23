@@ -10,6 +10,12 @@
   font-size: var(--font-size-caption);
 }
 
+/* Machine-text labels (tool names, ids) switch to the mono face; the
+   chip's caption size and geometry stay put. */
+.mono {
+  font-family: var(--font-mono);
+}
+
 .remove {
   display: inline-flex;
   align-items: center;

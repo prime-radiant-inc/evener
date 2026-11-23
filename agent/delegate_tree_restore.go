@@ -125,7 +125,7 @@ func (c *delegateTreeController) owedAttentionStartsFromTranscripts() ([]delegat
 	maps.Copy(runStarts, c.runStarts)
 	stateDir := c.stateDir
 	for id, aggregate := range c.durable {
-		if aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !delegateAttentionProjectionEligible(c.durable, id) {
+		if aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !delegatestore.AttentionProjectionEligible(c.durable, id) {
 			continue
 		}
 		refs = append(refs, coldDelegateAttentionRef{delegateID: id, transcriptRef: aggregate.Descriptor.TranscriptRef})
@@ -388,8 +388,9 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 		// machinery resolves it. The controller mutex is held across this
 		// check and the completion append below, so a wake cannot slip into
 		// that window twice and leak past the completed stop.
-		if state := c.attention[id]; state != nil {
-			for attentionID := range state.wakeIDs {
+		if aggregate := c.durable[id]; aggregate != nil {
+			for _, row := range aggregate.PendingAttention {
+				attentionID := row.AttentionID
 				if !slices.Contains(attention, attentionID) {
 					attention = append(attention, attentionID)
 				}
@@ -1060,7 +1061,9 @@ func (c *delegateTreeController) ReportAttentionResolved(requestSeq, evidenceVer
 	if currentRuntime != runtime {
 		return delegateMutationPlans{}, errDelegateStaleLease
 	}
-	c.forgetDelegateAttentionLocked(delegateID, attentionID)
+	if err := c.forgetDelegateAttentionLocked(delegateID, attentionID); err != nil {
+		return delegateMutationPlans{}, err
+	}
 	c.evidenceVersion++
 	return delegateMutationPlans{}, nil
 }
@@ -1083,7 +1086,9 @@ func (c *delegateTreeController) ReportAttentionConsumed(lease delegateLease, at
 		return delegateMutationPlans{}, errDelegateStaleLease
 	}
 	live.attentionIDs = append(live.attentionIDs[:index], live.attentionIDs[index+1:]...)
-	c.forgetDelegateAttentionLocked(lease.delegateID, attentionID)
+	if err := c.forgetDelegateAttentionLocked(lease.delegateID, attentionID); err != nil {
+		return delegateMutationPlans{}, err
+	}
 	c.evidenceVersion++
 	return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}, nil
 }
@@ -1121,12 +1126,13 @@ func (c *delegateTreeController) executeDelegateAttentionCleanup(plan delegateAt
 		}
 		return c.ReportAttentionStabilized(plan.lease, plan.attentionID, plan.runtime)
 	}
-	// A stop discards only attention the transcript still owes. A noted wake
-	// can outlive its item's resolution: a delegate generation consumes what
-	// its settled requests presented, and its wake stays (see
-	// clearResolvedDelegateAttention). Discarding that item again would be a
-	// conflicting resolution, so the resolver keeps a recorded resolution
-	// instead and renews its durability barrier before the wake is forgotten.
+	// A stop discards only attention the transcript still owes. A consumed item
+	// can outlive the queue row that named it: a delegate generation consumes
+	// what its settled requests presented and resolves the row (see
+	// reconcileResolvedDelegateAttention), while the stop's plan still carries
+	// the ID. Discarding that item again would be a conflicting resolution, so
+	// the resolver keeps a recorded resolution instead and renews its durability
+	// barrier before the row is forgotten.
 	disposition := plan.disposition
 	if disposition == delegateAttentionDiscarded {
 		disposition = delegateAttentionDiscardUnlessResolved

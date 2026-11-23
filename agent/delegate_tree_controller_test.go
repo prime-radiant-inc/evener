@@ -866,6 +866,9 @@ func cloneDelegateControllerState(t *testing.T, state delegatestore.State) deleg
 		if aggregate != nil && aggregate.PendingDeliveries != nil && len(aggregate.PendingDeliveries) == 0 {
 			clone[id].PendingDeliveries = []delegatestore.PendingDelivery{}
 		}
+		if aggregate != nil && aggregate.PendingAttention != nil && len(aggregate.PendingAttention) == 0 {
+			clone[id].PendingAttention = []delegatestore.PendingAttention{}
+		}
 	}
 	return clone
 }

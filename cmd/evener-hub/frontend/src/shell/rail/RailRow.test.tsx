@@ -2468,7 +2468,7 @@ describe("shared right slot (RailRow.module.css)", () => {
     expect(revealTargets).toEqual(
       expect.arrayContaining([
         '.railRow[data-row-focused="true"] .actions',
-        '.actions:has(button[aria-expanded="true"])',
+        '.actions:has([data-open="true"])',
         ".railRow:hover .actions",
       ]),
     );
@@ -2484,7 +2484,7 @@ describe("shared right slot (RailRow.module.css)", () => {
     const flipBlock = nestedRuleBlock(flipMedia, '.railRow[data-row-focused="true"] .rightSlot > :not(.actions)');
     for (const selector of [
       '.railRow[data-row-focused="true"] .rightSlot > :not(.actions)',
-      '.rightSlot:has(button[aria-expanded="true"]) > :not(.actions)',
+      '.rightSlot:has([data-open="true"]) > :not(.actions)',
       ".railRow:hover .rightSlot > :not(.actions)",
     ]) {
       expect(flipMedia).toContain(selector);

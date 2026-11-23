@@ -2803,7 +2803,7 @@ func TestDelegateResourceSupervision_SuccessExhaustionCancellationStopAndStaleSa
 	if err := final.persistSalvagedTurn("partial final draft", "gpt-5.2", "openai"); err != nil {
 		t.Fatalf("persist final salvage: %v", err)
 	}
-	final.comm.called = true
+	final.comm.phase = commBoundarySettled
 	stale := newTestSession(t)
 	stale.totalRounds = 1
 	if err := stale.persistSalvagedTurn("stale draft", "gpt-5.2", "openai"); err != nil {
@@ -4208,7 +4208,7 @@ func stableSupervisionState(root *Session, sub *subagent) string {
 			fmt.Fprintf(&b, "live{binding=%v finalizing=%v recovery=%v} ", live.binding != nil, live.finalizing != nil, live.recoveryRequired)
 		}
 		if st := c.attention[owner]; st != nil {
-			fmt.Fprintf(&b, "attention{wake=%v parked=%v restoreFailures=%d turn=%d} ", st.wakeIDs, st.parked, st.restoreFailures, st.driveTurn)
+			fmt.Fprintf(&b, "attention{wake=%v parked=%v restoreFailures=%d turn=%d} ", c.delegateAttentionWakeIDsLocked(owner), st.parked, st.restoreFailures, st.driveTurn)
 		}
 		fmt.Fprintf(&b, "reservations=%d eligible=%v delivery=%v ", len(c.reservations), c.delegateAttentionWakeEligibleLocked(owner), c.hasDeliveryWorkForOwnerLocked(owner))
 		row, ok := stableSupervisionDirectRowLocked(c, root, id)
@@ -4596,7 +4596,7 @@ func TestDelegateAttentionDriveClearsResolvedProjection(t *testing.T) {
 
 	// Unresolved transcript attention is never cleared: the fold still lists a
 	// pending ID, so the projection and its wake must survive untouched.
-	if err := controller.clearResolvedDelegateAttention(fixture.delegateID); err != nil {
+	if err := controller.reconcileResolvedDelegateAttention(fixture.delegateID); err != nil {
 		t.Fatalf("clear with pending attention: %v", err)
 	}
 	controller.mu.Lock()
@@ -4627,7 +4627,7 @@ func TestDelegateAttentionDriveClearsResolvedProjection(t *testing.T) {
 		return fold, consumed, err
 	}
 	t.Cleanup(func() { readExistingDelegateAttentionFoldCompute = compute })
-	if err := controller.clearResolvedDelegateAttention(fixture.delegateID); err != nil {
+	if err := controller.reconcileResolvedDelegateAttention(fixture.delegateID); err != nil {
 		t.Fatalf("clear with a racing open: %v", err)
 	}
 	readExistingDelegateAttentionFoldCompute = compute
@@ -4653,7 +4653,7 @@ func TestDelegateAttentionDriveClearsResolvedProjection(t *testing.T) {
 		t.Fatalf("load delegate journal: %v", err)
 	}
 	tail := events[len(events)-1]
-	if tail.Kind != delegatestore.EventDelegateAttentionChanged || tail.DelegateID != fixture.delegateID || tail.AttentionChanged == nil || tail.AttentionChanged.NeedsAttention {
+	if tail.Kind != delegatestore.EventDelegateAttentionResolved || tail.DelegateID != fixture.delegateID || tail.AttentionResolved == nil || tail.AttentionResolved.AttentionID != racedID {
 		t.Fatalf("cleared projection tail = %#v", tail)
 	}
 }
@@ -4681,7 +4681,7 @@ func TestClearResolvedDelegateAttentionDefersWhenTranscriptMissing(t *testing.T)
 	if err := os.Remove(sub.sess.TranscriptPath()); err != nil {
 		t.Fatalf("remove child transcript: %v", err)
 	}
-	if err := controller.clearResolvedDelegateAttention(fixture.delegateID); err == nil {
+	if err := controller.reconcileResolvedDelegateAttention(fixture.delegateID); err == nil {
 		t.Fatal("clear with a missing transcript returned no error")
 	}
 	controller.mu.Lock()
@@ -4737,7 +4737,7 @@ func TestClearResolvedDelegateAttentionDropsWakesAfterTheFlagWasLowered(t *testi
 		t.Fatalf("lower the flag: %v", err)
 	}
 
-	if err := controller.clearResolvedDelegateAttention(delegateID); err != nil {
+	if err := controller.reconcileResolvedDelegateAttention(delegateID); err != nil {
 		t.Fatalf("clear after the flag was lowered: %v", err)
 	}
 	controller.mu.Lock()
@@ -4758,7 +4758,7 @@ func TestClearResolvedDelegateAttentionLeavesWakesToAPendingStop(t *testing.T) {
 	controller.durable[delegateID].PendingStopSeq = 1
 	controller.mu.Unlock()
 
-	if err := controller.clearResolvedDelegateAttention(delegateID); err != nil {
+	if err := controller.reconcileResolvedDelegateAttention(delegateID); err != nil {
 		t.Fatalf("clear during a pending stop: %v", err)
 	}
 	controller.mu.Lock()
@@ -5881,13 +5881,7 @@ func TestDelegateResourceSupervision_RestartCancelledCallbackWatchBecomesLeasedA
 	// The leased half: the controller holds a published wake for the row, which
 	// is what a generation drives from.
 	controller := sub.sess.delegateController
-	controller.mu.Lock()
-	state := controller.attention[fixture.delegateID]
-	_, committed := false, false
-	if state != nil {
-		_, committed = state.committedWakeIDs[attentionID]
-	}
-	controller.mu.Unlock()
+	_, committed := controller.attentionCommittedWakeIDsForTest(fixture.delegateID)[attentionID]
 	if !committed {
 		t.Fatalf("controller committed no wake for %q: the row would wait for a drive that never comes", attentionID)
 	}
@@ -5949,13 +5943,7 @@ func TestDelegateResourceSupervision_StableAncestorReceiverTakesRestartCancellat
 	}
 	// The leased half: the receiver's controller holds a published wake for the
 	// row, which is what a generation drives from.
-	c.mu.Lock()
-	state := c.attention["dlg_parent"]
-	committed := false
-	if state != nil {
-		_, committed = state.committedWakeIDs[attentionID]
-	}
-	c.mu.Unlock()
+	_, committed := c.attentionCommittedWakeIDsForTest("dlg_parent")[attentionID]
 	if !committed {
 		t.Fatalf("controller committed no wake for %q: the row would wait for a drive that never comes", attentionID)
 	}

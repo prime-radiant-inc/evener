@@ -209,7 +209,10 @@ test("mobile-only spawn hierarchy and row scale stay gated from desktop", () => 
   expect(spawnCss).not.toContain(".mobilePromptIntro");
   expect(spawnCss).toContain(".mobileConfig");
   expect(spawnCss).toContain(`@media ${MOBILE_QUERY}`);
-  expect(rowsCss).toContain("min-height: 48px");
+  // The 48px floor now rides each rendered ListRow (MobileSettingRows.test
+  // asserts it, spawnguard measures it); this file still owns the phone gate
+  // and the trailing value's body type.
+  expect(rowsCss).toContain(`@media ${MOBILE_QUERY}`);
   expect(rowsCss).toContain("font-size: var(--font-size-body)");
   expect(paneCss).toContain(".desktopTitle");
   expect(paneCss).toContain(".mobileTitle");

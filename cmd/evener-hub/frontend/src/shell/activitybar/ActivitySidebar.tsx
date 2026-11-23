@@ -171,68 +171,65 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
           data-testid="activity-sidebar"
           aria-label="Overview"
         >
-          <FocusScope trap={mobile} autoFocus={false}>
-            <div className={CLASS.focusBody}>
-              <div className={CLASS.head}>
-                <div className={CLASS.scope}>
-                  <ScopeCrumbs
-                    path={scope.path}
-                    hierarchy
-                    onNavigate={
-                      focusedPane?.type === "sessionZoom"
-                        ? (ancestor) => {
-                            // The origin conversation never renders inside a
-                            // separated inspector's cascade, and selecting it
-                            // there is refused: its crumb routes to the
-                            // retained origin pane instead of doing nothing.
-                            const origin =
-                              cascadeOriginRef(focusedPane) === ancestor ? cascadeOrigin(focusedPane) : null;
-                            if (origin) {
-                              workspaceStore.getState().focusPane(origin.id);
-                              return;
-                            }
-                            popAgentCascade(focusedPane.id, ancestor);
+          <FocusScope className={CLASS.focusBody} trap={mobile} autoFocus={false}>
+            <div className={CLASS.head}>
+              <div className={CLASS.scope}>
+                <ScopeCrumbs
+                  path={scope.path}
+                  hierarchy
+                  onNavigate={
+                    focusedPane?.type === "sessionZoom"
+                      ? (ancestor) => {
+                          // The origin conversation never renders inside a
+                          // separated inspector's cascade, and selecting it
+                          // there is refused: its crumb routes to the
+                          // retained origin pane instead of doing nothing.
+                          const origin = cascadeOriginRef(focusedPane) === ancestor ? cascadeOrigin(focusedPane) : null;
+                          if (origin) {
+                            workspaceStore.getState().focusPane(origin.id);
+                            return;
                           }
-                        : undefined
-                    }
-                  />
-                  {!scope.ancestryKnown ? <span className={CLASS.pending}>Finding session context…</span> : null}
-                </div>
-                <IconButton label="Close Overview" icon={<CloseIcon />} variant="quiet" size="sm" onClick={close} />
-              </div>
-              <div className={CLASS.tabs}>
-                <SegmentedControl<ActivityTab>
-                  label="Overview kind"
-                  hideLabel
-                  size="sm"
-                  fullWidth
-                  value={tab}
-                  onChange={(next) => activitySidebarStore.getState().setTab(next)}
-                  options={ACTIVITY_TABS.map((spec) => ({
-                    value: spec.id,
-                    label: spec.label,
-                    detail: spec.tabDetail?.(scope.counts),
-                    accessibleLabel: spec.chipLabel(scope.counts),
-                  }))}
+                          popAgentCascade(focusedPane.id, ancestor);
+                        }
+                      : undefined
+                  }
                 />
+                {!scope.ancestryKnown ? <span className={CLASS.pending}>Finding session context…</span> : null}
               </div>
-              <DisclosurePersistenceContext.Provider value={JSON.stringify([scope.leaf.ref, tab])}>
-                <ActivityBodyClock>
-                  {(now) => (
-                    <EntityViewsProvider entities={entities} ownerRef={ref ?? undefined}>
-                      <ActivityViewport
-                        key={JSON.stringify([scope.leaf.ref, tab])}
-                        sessionRef={scope.leaf.ref}
-                        tab={tab}
-                        className={CLASS.body}
-                      >
-                        {Body === null ? null : <Body scope={scope} now={now} />}
-                      </ActivityViewport>
-                    </EntityViewsProvider>
-                  )}
-                </ActivityBodyClock>
-              </DisclosurePersistenceContext.Provider>
+              <IconButton label="Close Overview" icon={<CloseIcon />} variant="quiet" size="sm" onClick={close} />
             </div>
+            <div className={CLASS.tabs}>
+              <SegmentedControl<ActivityTab>
+                label="Overview kind"
+                hideLabel
+                size="sm"
+                fullWidth
+                value={tab}
+                onChange={(next) => activitySidebarStore.getState().setTab(next)}
+                options={ACTIVITY_TABS.map((spec) => ({
+                  value: spec.id,
+                  label: spec.label,
+                  detail: spec.tabDetail?.(scope.counts),
+                  accessibleLabel: spec.chipLabel(scope.counts),
+                }))}
+              />
+            </div>
+            <DisclosurePersistenceContext.Provider value={JSON.stringify([scope.leaf.ref, tab])}>
+              <ActivityBodyClock>
+                {(now) => (
+                  <EntityViewsProvider entities={entities} ownerRef={ref ?? undefined}>
+                    <ActivityViewport
+                      key={JSON.stringify([scope.leaf.ref, tab])}
+                      sessionRef={scope.leaf.ref}
+                      tab={tab}
+                      className={CLASS.body}
+                    >
+                      {Body === null ? null : <Body scope={scope} now={now} />}
+                    </ActivityViewport>
+                  </EntityViewsProvider>
+                )}
+              </ActivityBodyClock>
+            </DisclosurePersistenceContext.Provider>
           </FocusScope>
         </m.aside>
       ) : null}

@@ -222,7 +222,7 @@ func TestSubagentStop_ContinueFalseEndsTheRunWithNoContinuation(t *testing.T) {
 	// The child reported on an earlier turn. The hook ended THIS run, so the
 	// terminal packet must carry the hook's reason, not the stale report.
 	subSess.mu.Lock()
-	subSess.comm.called = true
+	subSess.comm.phase = commBoundarySettled
 	subSess.comm.reply = "the earlier report"
 	subSess.mu.Unlock()
 	finish := sub.buildDelegateFinish(got, nil)

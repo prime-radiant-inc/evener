@@ -85,7 +85,6 @@ const CLASS = {
   layer: requireClass(styles.layer, "InstanceSheet.module.css", "layer"),
   unconfigured: requireClass(styles.unconfigured, "InstanceSheet.module.css", "unconfigured"),
   actionRows: requireClass(styles.actionRows, "InstanceSheet.module.css", "actionRows"),
-  fullRow: requireClass(styles.fullRow, "InstanceSheet.module.css", "fullRow"),
   divider: requireClass(styles.divider, "InstanceSheet.module.css", "divider"),
   modelNote: requireClass(styles.modelNote, "InstanceSheet.module.css", "modelNote"),
   modelHeaderActions: requireClass(styles.modelHeaderActions, "InstanceSheet.module.css", "modelHeaderActions"),
@@ -980,6 +979,7 @@ export function InstanceSheet({
                             value={draft.name}
                             onChange={(event) => update({ name: event.target.value })}
                             disabled={busy}
+                            fill
                           />
                         ),
                         help: nameHelp,
@@ -998,6 +998,7 @@ export function InstanceSheet({
                             onChange={(event) => update({ baseUrl: event.target.value })}
                             placeholder="https://…"
                             disabled={busy}
+                            fill
                           />
                         ),
                         help: clearingBaseUrl ? "Resets the endpoint to the provider's default." : undefined,
@@ -1158,56 +1159,49 @@ export function InstanceSheet({
                 </>
               )}
               <div className={CLASS.actionRows}>
-                <div className={CLASS.fullRow}>
-                  <Button
-                    variant="quiet"
-                    onClick={renameGap ? refuseDuringRename : onTestCredentials}
-                    aria-disabled={testCredentialsPending}
-                    disabled={busy}
-                  >
-                    {testCredentialsPending ? "Testing credentials…" : "Test credentials"}
-                  </Button>
-                </div>
+                <Button
+                  block
+                  variant="quiet"
+                  onClick={renameGap ? refuseDuringRename : onTestCredentials}
+                  aria-disabled={testCredentialsPending}
+                  disabled={busy}
+                >
+                  {testCredentialsPending ? "Testing credentials…" : "Test credentials"}
+                </Button>
                 {safeTestResult && (
                   <InlineNotice data-state={safeTestResult.status}>
                     {safeTestResult.status}: {safeCredentialTestMessage(safeTestResult.status)}
                   </InlineNotice>
                 )}
                 {supportsApiKey && (
-                  <div className={CLASS.fullRow}>
-                    <Button variant="quiet" onClick={renameGap ? refuseDuringRename : onSetApiKey} disabled={busy}>
-                      {instance.hasStoredFile ? "Replace key" : "Set key"}
-                    </Button>
-                  </div>
+                  <Button block variant="quiet" onClick={renameGap ? refuseDuringRename : onSetApiKey} disabled={busy}>
+                    {instance.hasStoredFile ? "Replace key" : "Set key"}
+                  </Button>
                 )}
                 {supportsCredentialJson && (
-                  <div className={CLASS.fullRow}>
-                    <Button
-                      variant="quiet"
-                      onClick={renameGap ? refuseDuringRename : onSetCredentialJson}
-                      disabled={busy}
-                    >
-                      {instance.hasStoredFile ? "Replace credential JSON" : "Set credential JSON"}
-                    </Button>
-                  </div>
+                  <Button
+                    block
+                    variant="quiet"
+                    onClick={renameGap ? refuseDuringRename : onSetCredentialJson}
+                    disabled={busy}
+                  >
+                    {instance.hasStoredFile ? "Replace credential JSON" : "Set credential JSON"}
+                  </Button>
                 )}
                 {supportsOAuth && (
-                  <div className={CLASS.fullRow}>
-                    <Button variant="quiet" onClick={renameGap ? refuseDuringRename : onOAuthStart} disabled={busy}>
-                      {instance.hasStoredOAuth ? "Refresh OAuth" : "Sign in…"}
-                    </Button>
-                  </div>
+                  <Button block variant="quiet" onClick={renameGap ? refuseDuringRename : onOAuthStart} disabled={busy}>
+                    {instance.hasStoredOAuth ? "Refresh OAuth" : "Sign in…"}
+                  </Button>
                 )}
                 {!instance.isDefault && (
-                  <div className={CLASS.fullRow}>
-                    <Button
-                      variant="quiet"
-                      onClick={renameGap ? refuseDuringRename : onSetDefault}
-                      disabled={busy || writesRefused}
-                    >
-                      ★ make default
-                    </Button>
-                  </div>
+                  <Button
+                    block
+                    variant="quiet"
+                    onClick={renameGap ? refuseDuringRename : onSetDefault}
+                    disabled={busy || writesRefused}
+                  >
+                    ★ make default
+                  </Button>
                 )}
               </div>
               {showDangerZone && (
@@ -1215,37 +1209,34 @@ export function InstanceSheet({
                   <hr className={CLASS.divider} />
                   <div className={CLASS.actionRows}>
                     {showClearStoredKey && (
-                      <div className={CLASS.fullRow}>
-                        <Button
-                          variant="dangerQuiet"
-                          onClick={renameGap ? refuseDuringRename : onClearStoredKey}
-                          disabled={busy}
-                        >
-                          {supportsCredentialJson ? "Clear stored credential JSON" : "Clear stored key"}
-                        </Button>
-                      </div>
+                      <Button
+                        block
+                        variant="dangerQuiet"
+                        onClick={renameGap ? refuseDuringRename : onClearStoredKey}
+                        disabled={busy}
+                      >
+                        {supportsCredentialJson ? "Clear stored credential JSON" : "Clear stored key"}
+                      </Button>
                     )}
                     {showClear && (
-                      <div className={CLASS.fullRow}>
-                        <Button
-                          variant="dangerQuiet"
-                          onClick={renameGap ? refuseDuringRename : onClear}
-                          disabled={busy}
-                        >
-                          Clear
-                        </Button>
-                      </div>
+                      <Button
+                        block
+                        variant="dangerQuiet"
+                        onClick={renameGap ? refuseDuringRename : onClear}
+                        disabled={busy}
+                      >
+                        Clear
+                      </Button>
                     )}
                     {!fromEnvironment(instance) && (
-                      <div className={CLASS.fullRow}>
-                        <Button
-                          variant="danger"
-                          onClick={renameGap ? refuseDuringRename : onRemove}
-                          disabled={busy || writesRefused}
-                        >
-                          Remove
-                        </Button>
-                      </div>
+                      <Button
+                        block
+                        variant="danger"
+                        onClick={renameGap ? refuseDuringRename : onRemove}
+                        disabled={busy || writesRefused}
+                      >
+                        Remove
+                      </Button>
                     )}
                   </div>
                 </>

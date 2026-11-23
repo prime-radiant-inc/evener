@@ -452,6 +452,10 @@ test("pasted image renders as a thumbnail tile with dimensions, remove button, a
   const openButton = await screen.findByRole("button", { name: "View screenshot.png" });
   const thumbnail = openButton.querySelector("img") as HTMLImageElement;
   expect(thumbnail.src).toMatch(/^data:image\/png;base64,/);
+  // The trigger owns the tile's rounding: on touch the tile stops clipping so
+  // the remove control can straddle its corner, so the button rounds and
+  // clips itself through the widget API, not a tag selector in the tile CSS.
+  expect(openButton.getAttribute("data-radius")).toBe("inherit");
 
   // Assert the dimensions are displayed
   expect(screen.getByText(/4×4/)).toBeTruthy();

@@ -37,7 +37,7 @@ func TestDelegateAttentionDriveRefusalNamesTheHoldingPredicate(t *testing.T) {
 		&delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError, Message: json.RawMessage(`"seeded terminal error"`)},
 	))
 	if err == nil {
-		c.noteDelegateAttentionLocked("dlg_lane", delegateAttentionID(delegateDeliveryID("dlg_lane", 2)))
+		c.noteDelegateAttentionLockedForTest("dlg_lane", delegateAttentionID(delegateDeliveryID("dlg_lane", 2)))
 	}
 	c.mu.Unlock()
 	if err != nil {

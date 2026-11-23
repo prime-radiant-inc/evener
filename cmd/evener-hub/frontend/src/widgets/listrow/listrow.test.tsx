@@ -113,6 +113,46 @@ test("the leading slot renders before the label", () => {
   expect(screen.getByRole("button").textContent?.startsWith("dotanthropic")).toBe(true);
 });
 
+test("a caller-supplied value renders on the label line before the chevron", () => {
+  render(<ListRow label="Harness" value="evener" onSelect={() => {}} />);
+  const row = screen.getByRole("button", { name: /Harness/ });
+  const label = screen.getByText("Harness");
+  const value = screen.getByText("evener");
+  expect(row.contains(value)).toBe(true);
+  expect(label.compareDocumentPosition(value) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const chevron = row.querySelector('[aria-hidden="true"] svg');
+  expect(chevron).not.toBeNull();
+  expect(value.compareDocumentPosition(chevron?.parentElement as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+test("the value slot renders the caller's own node in the caller's typography", () => {
+  render(
+    <ListRow
+      label="Branch"
+      value={
+        <span data-testid="branch-value" style={{ fontFamily: "var(--font-mono)" }}>
+          main
+        </span>
+      }
+    />,
+  );
+
+  const value = screen.getByTestId("branch-value");
+  expect(value.style.fontFamily).toBe("var(--font-mono)");
+  expect(screen.queryByRole("button")).toBeNull();
+  expect(screen.getByText("main")).toBe(value);
+});
+
+test("the value takes a shrinkable share of the label line", () => {
+  const value = rule(".value");
+  expect(value).toContain("flex: 1 1 0");
+  expect(value).toContain("justify-content: flex-end");
+  expect(value).toContain("min-width: 0");
+  expect(value).toContain("max-width: max-content");
+  // The heading still wraps, so chips can move under a long label.
+  expect(rule(".heading")).toContain("flex-wrap: wrap");
+});
+
 test("an interactive collection row ends in a decorative drill-in chevron; a plain row does not", () => {
   const { rerender } = render(<ListRow label="superpowers" onSelect={() => {}} />);
   const chevron = () => screen.getByRole("button").querySelector('[aria-hidden="true"] svg');

@@ -107,9 +107,10 @@ func (e *bareTextWithoutResultToolError) Is(target error) bool {
 
 // Retry budgets for degenerate model responses within a single input turn.
 const (
-	maxEmptyRetries        = 3
-	maxTotalEmptyResponses = 8 // prevent repeated burst-and-recover spirals
-	maxBareTextRetries     = 3
+	maxEmptyRetries           = 3
+	maxTotalEmptyResponses    = 8 // prevent repeated burst-and-recover spirals
+	maxBareTextRetries        = 3
+	maxTotalBareTextResponses = 8 // prevent repeated burst-and-recover spirals
 	// maxServerContinuations bounds one input turn's run of consecutive
 	// pause_turn responses. A pause is a legitimate protocol continuation, so it
 	// still refunds its tool round (see TestSession_PauseTurn_*), but a provider
@@ -128,12 +129,13 @@ const maxHookStopReasonRunes = 160
 
 // retryTracker counts the degenerate (empty / bare-text) model responses seen so
 // far in one input turn. consecutiveEmpty and consecutiveBareText reset once the
-// model produces tool calls; totalEmpty bounds burst-and-recover spirals across
-// the whole turn.
+// model produces tool calls; totalEmpty and totalBareText bound burst-and-recover
+// spirals across the whole turn.
 type retryTracker struct {
 	consecutiveEmpty    int
 	totalEmpty          int
 	consecutiveBareText int
+	totalBareText       int
 }
 
 // recordAbandonedEnvironmentLocked remembers an environment the swap has just
@@ -1833,9 +1835,15 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			skipHistory = false
 		}
 
-		bareReply := len(calls) == 0 && !s.reportsToParent() && kind == EntryUserInput &&
+		bareReply := len(calls) == 0 && kind == EntryUserInput &&
 			s.usesDefaultCommunicateOutputEnvelope() && resp.Finish.Reason == llm.FinishReasonStop &&
 			!noContent && strings.TrimSpace(lastText) != "" && !s.communicated()
+		if bareReply && s.reportsToParent() {
+			outstanding, workErr := s.subagentHasDrainableWork()
+			if workErr != nil || outstanding {
+				bareReply = false
+			}
+		}
 		var bareStop hooks.StopResult
 		if bareReply {
 			bareStop = s.runReplyStopHook(ctx, lastText)
@@ -1952,10 +1960,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			}
 			return "", progressed, abortErr
 		}
-		s.mu.Lock()
-		s.comm.quietEnd = false
-		s.comm.roundVisible = false
-		s.mu.Unlock()
+		s.beginCommunicateRound()
 
 		// --- Phase: ToolExec ---
 		tPhaseStart = s.sclock().Now()
@@ -1963,7 +1968,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// Execute tool calls (possibly in parallel) and send results back.
 		s.noteParentJobActivity(jobPhaseToolRunning)
 		s.beginToolRound()
-		results, execErr := s.execToolBatch(context.WithValue(ctx, communicateEntryKindKey{}, kind), calls, profile, resp.Finish.Reason)
+		roundCtx := context.WithValue(ctx, communicateEntryKindKey{}, kind)
+		results, execErr := s.execToolBatch(roundCtx, calls, profile, resp.Finish.Reason)
 		execErr = errors.Join(execErr, sessionLifecycleFault(ctx, "exec_tools"))
 		if execErr != nil {
 			return "", progressed, execErr
@@ -2067,13 +2073,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			// A tool post-hook stop yields to a visible reply or a pending ask,
 			// never to a silent quiet yield: let batchBlocked publish and record
 			// its reason instead of settling silently.
-			s.mu.Lock()
-			if s.quietBoundaryLocked() {
-				s.comm.quietEnd = false
-			}
-			s.mu.Unlock()
+			s.clearQuietBoundaryForBatchStop()
 		}
-		done, text, deliverErr := s.deliverIfCommunicated(ctx, askedThisRound)
+		done, text, deliverErr := s.deliverIfCommunicated(roundCtx, askedThisRound)
 		if deliverErr != nil {
 			return "", progressed, deliverErr
 		}

@@ -2,6 +2,8 @@ package agent
 
 import (
 	"testing"
+
+	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
 // TestReconcileDelegateAttentionFromTranscripts_NilController covers the
@@ -32,11 +34,11 @@ func TestDelegateAttentionProjectionEligible(t *testing.T) {
 	durable := c.durable
 	c.mu.Unlock()
 	// An idle delegate should be eligible.
-	if !delegateAttentionProjectionEligible(durable, "dlg_idle") {
+	if !delegatestore.AttentionProjectionEligible(durable, "dlg_idle") {
 		t.Fatal("expected idle delegate to be eligible")
 	}
 	// Nonexistent delegate: not eligible.
-	if delegateAttentionProjectionEligible(durable, "nonexistent") {
+	if delegatestore.AttentionProjectionEligible(durable, "nonexistent") {
 		t.Fatal("expected nonexistent delegate to NOT be eligible")
 	}
 }

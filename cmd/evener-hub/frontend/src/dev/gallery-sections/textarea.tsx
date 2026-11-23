@@ -38,6 +38,14 @@ export default function TextareaGallerySection() {
             <Textarea value="No box of my own." onChange={() => {}} seamless />
           </div>
         </div>
+        {/* fill needs a host narrower than the field's native ~20 columns to
+            read: the card is that host, and the field claims all of it. */}
+        <div className={styles.row}>
+          <p className={styles.rowLabel}>fill (in a card)</p>
+          <div className={styles.card}>
+            <Textarea value="I claim the host's width." onChange={() => {}} fill rows={3} />
+          </div>
+        </div>
       </ThemeFlip>
     </section>
   );

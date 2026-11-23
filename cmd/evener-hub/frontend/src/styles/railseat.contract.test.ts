@@ -57,8 +57,8 @@ test("the seat is the avatar column: avatar-size wide, glyph centred, pinned to 
 
 test("the seat carries the rail ink; the ambient strength is a separate class", () => {
   expect(seat).toMatch(/\.seat\s*\{[^}]*color:\s*var\(--ink-mid\)/);
-  // Geometry and strength compose separately: a glyph that sits on its own
-  // ground takes the seat without receding.
+  // Geometry and strength compose separately: a bare glyph takes the seat
+  // without receding.
   expect(seat).not.toMatch(/\.seat\s*\{[^}]*opacity/);
   expect(seat).toMatch(/\.ambient\s*\{[^}]*opacity:\s*0\.5/);
 });
@@ -87,13 +87,10 @@ test("ToolRow's kind icon composes the seat without the ambient strength; its sl
   expect(toolcallitem).toMatch(
     /\.rowIcon\s*\{[^}]*composes:\s*seat from "\.\.\/\.\.\/\.\.\/styles\/railseat\.module\.css"/,
   );
-  // A tool row's glyph sits on its own --field ground inside a card, which
-  // does the receding the rail's half opacity does, so the row takes the
-  // seat's geometry and leaves the ambient strength uncomposed. Its one own
-  // declaration keeps the glyph painted above that ground; it restates no
-  // geometry and overrides nothing the seat declares.
+  // A tool row's glyph is bare inside a card, so the row takes the seat's
+  // geometry and leaves the ambient strength uncomposed: the glyph stays at
+  // full strength and restates no geometry.
   expect(toolcallitem).not.toMatch(/\.rowIcon\s*\{[^}]*composes:\s*ambient/);
-  expect(ownDeclarations(toolcallitem, "\\.rowIcon")).toBe("position: relative;");
   // The pull rides the row's own flex item (the icon's slot, which is also the
   // failure badge's positioning context): the ungated column pull, since a
   // tool row reserves its seat column in its own padding.

@@ -232,6 +232,7 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 		}
 		return err
 	}
+	reg.SetResultToolName(resultToolName)
 	if resultToolName != tool.DefaultResultToolName {
 		// The profile registry seeded the canonical communicate definition with
 		// profilePlaceholderExecutor. This session's result tool now lives under
@@ -290,8 +291,8 @@ func (s *Session) canQuietlyYield(ctx context.Context) error {
 	if leased && s.delegateController != nil {
 		switch kind {
 		case EntryDelegateAttention:
-			recorded, err := s.delegateController.recordAttentionNoAction(lease)
-			if err != nil || recorded {
+			eligible, err := s.delegateController.canRecordAttentionNoAction(lease)
+			if err != nil || eligible {
 				return err
 			}
 		case EntryNotification:
@@ -308,7 +309,7 @@ func (s *Session) canQuietlyYield(ctx context.Context) error {
 			}
 		}
 	}
-	if work, err := s.treeHasOutstandingWork(); work || err != nil {
+	if work, err := s.subagentHasDrainableWork(); work || err != nil {
 		return err
 	}
 	return errors.New("nothing can wake this turn, and you have not sent your report yet. Start the work, or send your final report with the result tool")

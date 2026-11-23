@@ -100,16 +100,6 @@
   gap: var(--space-1);
 }
 
-.toolChip {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
-  background: var(--surface-inset);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-chip);
-  padding: 0 var(--space-2);
-}
-
 /* --- Footer --- */
 .footer {
   display: flex;

@@ -120,6 +120,8 @@ export type { TextareaProps } from "./textarea";
 export { Textarea } from "./textarea";
 export type { TimestampProps } from "./timestamp";
 export { Timestamp } from "./timestamp";
+export type { AbsoluteTimeFormat, FormatAbsoluteTimeOptions } from "./timestamp/formatAbsoluteTime";
+export { formatAbsoluteTime } from "./timestamp/formatAbsoluteTime";
 export type { ToastKind } from "./toast";
 export { Toast, useToasts } from "./toast";
 export type { ToolIconKind, ToolIconProps, ToolIconTone } from "./toolicon";

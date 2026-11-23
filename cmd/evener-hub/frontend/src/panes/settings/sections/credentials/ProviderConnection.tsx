@@ -1701,6 +1701,7 @@ function SelectedConnection({
           id="connection-name"
           value={newName}
           disabled={busy}
+          fill
           onChange={(event) => {
             setNewName(event.target.value);
             setError(null);
@@ -1718,6 +1719,7 @@ function SelectedConnection({
             placeholder="https://…/v1"
             value={newBaseUrl}
             disabled={busy}
+            fill
             onChange={(event) => {
               setNewBaseUrl(event.target.value);
               setError(null);
@@ -1734,6 +1736,7 @@ function SelectedConnection({
           id={`connection-var-${key}`}
           value={addVars[key] ?? ""}
           disabled={busy}
+          fill
           onChange={(event) => {
             setAddVars((current) => ({ ...current, [key]: event.target.value }));
             setError(null);
@@ -1751,6 +1754,7 @@ function SelectedConnection({
           autoComplete="off"
           required={required}
           disabled={busy}
+          fill
           aria-describedby={missingCredential ? "provider-credential-error" : undefined}
           value={value}
           onChange={(event) => changeValue(event.target.value)}
@@ -1775,6 +1779,7 @@ function SelectedConnection({
               aria-label="Endpoint URL"
               value={endpointDraft}
               disabled={busy}
+              fill
               onChange={(event) => setEndpointDraft(event.target.value)}
             />
           </div>
@@ -1821,6 +1826,7 @@ function SelectedConnection({
                   autoComplete="off"
                   required={required}
                   disabled={busy}
+                  fill
                   aria-describedby={missingCredential ? "provider-credential-error" : undefined}
                   value={value}
                   onChange={(event) => changeValue(event.target.value)}

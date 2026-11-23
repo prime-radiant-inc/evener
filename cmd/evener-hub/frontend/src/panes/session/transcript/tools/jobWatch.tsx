@@ -41,7 +41,7 @@ import {
 } from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import { useState } from "react";
-import { Button, Chip } from "../../../../widgets";
+import { Button, Card, Chip } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EntityRef } from "../EntityRef";
 import type { ToolRenderProps } from "../toolRenderers";
@@ -50,7 +50,6 @@ import { HeadClippedOutputBody } from "./bodies";
 import styles from "./jobWatch.module.css";
 
 const CLASS = {
-  card: requireClass(styles.card, "jobWatch.module.css", "card"),
   list: requireClass(styles.list, "jobWatch.module.css", "list"),
   section: requireClass(styles.section, "jobWatch.module.css", "section"),
   note: requireClass(styles.note, "jobWatch.module.css", "note"),
@@ -776,15 +775,15 @@ function JobWatchBody(props: ToolRenderProps) {
   switch (operation) {
     case "list":
       return (
-        <div className={CLASS.card} data-testid="job-watch-body">
+        <Card variant="outlined" padding="none" data-testid="job-watch-body">
           <ListBody raw={raw} />
-        </div>
+        </Card>
       );
     case "inspect":
       return (
-        <div className={CLASS.card} data-testid="job-watch-body">
+        <Card variant="outlined" padding="none" data-testid="job-watch-body">
           <InspectBody raw={raw} />
-        </div>
+        </Card>
       );
     case "clear":
       return null;
@@ -795,13 +794,13 @@ function JobWatchBody(props: ToolRenderProps) {
       // A recognized create with only a source has no sentence to render —
       // the summary ("Watch this session") IS the rendering. Returning null
       // here instead of an empty bordered card (CreateBody also returns null
-      // for this shape, but the wrapper div would still draw the card chrome
+      // for this shape, but the wrapper would still draw the card chrome
       // around nothing — combined RoboRev review).
       if (!timer && !conditionSpec(raw, asJsonObject(parseArgs(item.argumentsJSON)))) return null;
       return (
-        <div className={CLASS.card} data-testid="job-watch-body">
+        <Card variant="outlined" padding="none" data-testid="job-watch-body">
           <CreateBody raw={raw} item={item} />
-        </div>
+        </Card>
       );
     }
   }

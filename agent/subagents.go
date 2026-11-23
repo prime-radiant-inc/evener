@@ -2640,7 +2640,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			// An explicit quiet yield parks the generation until its owned work
 			// wakes it. Both the report nudge and SubagentStop wait until the
 			// drain and any required post-drain report nudge finish.
-			outstanding, workErr := a.sess.treeHasOutstandingWork()
+			outstanding, workErr := a.sess.subagentHasDrainableWork()
 			if workErr != nil {
 				err = workErr
 				shouldNudge = false
@@ -3036,8 +3036,8 @@ func (a *subagent) finalizeRun(f subagentFinalize) {
 					a.sess.emit(warningDataFromError("rearm remaining delegate attention", armErr))
 				}
 			}
-		} else if clearErr := a.sess.delegateController.clearResolvedDelegateAttention(a.sess.owningDelegateID); clearErr != nil {
-			a.sess.emit(warningDataFromError("clear resolved delegate attention", clearErr))
+		} else if clearErr := a.sess.delegateController.reconcileResolvedDelegateAttention(a.sess.owningDelegateID); clearErr != nil {
+			a.sess.emit(warningDataFromError("reconcile resolved delegate attention", clearErr))
 		}
 	}
 	if done != nil {
@@ -3380,7 +3380,7 @@ func (inputs *delegateTerminalRunInputs) captureCommunicateReport(sess *Session)
 	}
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	settled := sess.comm.called && !sess.comm.stopBlocked
+	settled := sess.communicatedSettledLocked()
 	inputs.communicated = settled
 	if settled {
 		inputs.structuredResult = sess.comm.structured

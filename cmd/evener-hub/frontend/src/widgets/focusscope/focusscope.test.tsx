@@ -13,6 +13,15 @@ test("renders its children", () => {
   expect(screen.getByRole("button", { name: "Go" })).toBeTruthy();
 });
 
+test("applies a caller className to the scope root", () => {
+  const { container } = render(
+    <FocusScope className="focus-body">
+      <button type="button">Go</button>
+    </FocusScope>,
+  );
+  expect(container.firstElementChild?.className).toBe("focus-body");
+});
+
 test("on mount, focuses the first tabbable descendant", () => {
   render(
     <FocusScope>

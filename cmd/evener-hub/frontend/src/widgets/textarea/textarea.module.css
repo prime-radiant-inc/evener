@@ -49,6 +49,16 @@
   outline-offset: 2px;
 }
 
+/* Fill: the field claims its host's width and may shrink below its native
+ * ~20-column default, instead of the host reaching into this widget's DOM
+ * with a descendant `textarea` rule. Width only, not a box change:
+ * box-sizing is border-box app-wide, so the field's own padding and edge stay
+ * inside the claimed width. */
+.fill {
+  width: 100%;
+  min-width: 0;
+}
+
 /* Seamless: the field draws no box of its own, so a card that already draws
  * one (panes/session/composer's inputCard) reads as a single control instead
  * of a box inside a box. The focus ring goes with the box - the enclosing

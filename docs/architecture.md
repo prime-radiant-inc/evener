@@ -329,12 +329,17 @@ appenders and exactly one drainer:
   drained by `drainPendingWatchSends` (`agent/session_watch_drain.go`), the **sole** executor
   of watch-send delivery.
 
-Stable delegate attention is deliberately not a fourth durable queue. Delegate,
-quiet, observer, and shell attention is appended to the receiver transcript,
-which is its sole durable authority. A process-local set keyed by unresolved
-attention ID arms the existing notification wake; successful notification turns
-append exact consumed markers, failures leave the IDs pending, and restore folds
-the transcript to rearm without constructing a provider runtime.
+Stable child-delegate attention is a durable queue in the root delegate journal
+(`delegatestore.Aggregate.PendingAttention`). The same journal `Apply` that
+queues or resolves a row also derives `NeedsAttention`, so no second pass can
+leave a resolved row arming a wake or a lowered flag hiding a row. Delegate,
+quiet, observer, and shell attention is still appended to the receiver
+transcript as the rendered message history a request presents; the queue rows,
+not the transcript, decide what is pending. Successful notification turns
+append exact consumed markers and journal a resolved row, failures leave the
+rows queued, and restore re-arms from the journal without constructing a
+provider runtime. Root receivers, which have no delegate aggregate, keep the
+transcript rail.
 
 **Who drains where.** `drainPendingWatchSends` runs only from loop-owned boundaries:
 between tool rounds (`injectPostToolSteering`, `agent/session_tool_round.go`), at the
@@ -360,10 +365,8 @@ zero model turns; model-bound transcript attention always runs the owner turn.
 **Session lock contract.** `Session.mu` guards the session's mutable state; the full
 list and the ordered lock pairs live in the `Session` struct comment
 (`agent/session.go`). Ordered pairs, outermost first: `responseSideEffectsMu > mu`,
-`restMu > delegateDeliveryMu > mu`, `metaSaveMu > mu`, `goalUpdateMu > mu`,
-`notesUpdateMu > mu`. `drainAbandonedMu` and `childCommittedSendMu` are leaves. `restMu` serializes a rest
-transition with its `STATUS_SETTLED` emit; the rest-generation fields themselves are
-guarded by `mu`.
+`delegateDeliveryMu > mu`, `metaSaveMu > mu`, `goalUpdateMu > mu`,
+`notesUpdateMu > mu`. `drainAbandonedMu` and `childCommittedSendMu` are leaves.
 
 **The forbidden re-entry.** `responseSideEffectsMu` is held across event emits
 (`emitAssistantResponse`, the tool-call-end emit). Observation paths and the `jobManager`'s

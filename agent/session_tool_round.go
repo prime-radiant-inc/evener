@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/toolname"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -110,7 +111,8 @@ func decideNoToolCalls(noContent bool, t retryTracker, resultToolName string) no
 
 	t.consecutiveEmpty = 0
 	t.consecutiveBareText++
-	if t.consecutiveBareText <= maxBareTextRetries {
+	t.totalBareText++
+	if t.consecutiveBareText <= maxBareTextRetries && t.totalBareText <= maxTotalBareTextResponses {
 		steering := "You responded with bare text instead of a tool call. " +
 			"All user-facing messages MUST use " + resultToolName + ". " +
 			"If that bare text was meant for the user or caller, call " + resultToolName + " now with that text in message (and output when required by your schema). " +
@@ -679,14 +681,14 @@ func (s *Session) drainPostToolWatchSends(ctx context.Context) (watchSendDrainRe
 func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool) (done bool, text string, err error) {
 	s.mu.Lock()
 	quiet := s.quietBoundaryLocked()
-	delivered := s.comm.called && !quiet
+	delivered := s.comm.hasAccepted() && !quiet
 	if delivered {
 		text = s.comm.reply
 	}
-	if quiet && s.comm.stopBlocked {
+	if quiet && s.comm.phase == commBoundaryStopBlocked {
 		// This round's only boundary is a quiet yield after an earlier Stop
 		// block: leave the blocked reply without terminal acceptance.
-		s.comm = communicateResult{updated: s.comm.updated, quietEnd: true}
+		s.discardBlockedForQuietLocked()
 	}
 	s.mu.Unlock()
 	if !delivered && !quiet && !askedThisRound {
@@ -725,9 +727,7 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 		if stopResult.Blocked {
 			// Don't finish — keep looping. The next Stop dispatch in this turn
 			// is a continuation, which is what stop_hook_active reports.
-			s.mu.Lock()
-			s.comm.stopBlocked = true
-			s.mu.Unlock()
+			s.blockStopBoundary()
 			s.stopHookActive.Store(true)
 			return false, "", nil
 		}
@@ -737,20 +737,25 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 
 func (s *Session) finishReplyBoundary(ctx context.Context, state SessionState, delivered bool, text string, replacement *string) (bool, string, error) {
 	var settlePending bool
+	var quiet bool
 	if delivered {
+		settlePending = s.settleCommunicateBoundary(replacement)
+	} else {
 		s.mu.Lock()
-		settlePending = s.comm.stopPending
-		s.comm.stopPending = false
-		s.comm.stopBlocked = false
-		s.latestReport = s.comm
-		if id := s.comm.stopPendingCallID; id != "" {
-			s.execution.acceptedCommunicateCallID = id
-			s.execution.replacementReply = replacement
-		}
+		quiet = s.quietBoundaryLocked()
 		s.mu.Unlock()
 	}
 	if settlePending {
 		s.recordDelegateTerminalSeen(ctx)
+	}
+	if !delivered && quiet && s.delegateController != nil {
+		if kind, _ := ctx.Value(communicateEntryKindKey{}).(EntryKind); kind == EntryDelegateAttention {
+			if lease, leased := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); leased {
+				if _, err := s.delegateController.recordAttentionNoAction(lease); err != nil {
+					return false, "", err
+				}
+			}
+		}
 	}
 	if delivered && s.cfg.TurnEndsProcess {
 		// The model has explicitly ended the turn that ends the process. Record
@@ -809,7 +814,7 @@ func (s *Session) deliverReplyStopHookMessages(result hooks.StopResult) error {
 	return nil
 }
 
-// deliverBareReply settles a tool-free root reply. Until the Stop decision
+// deliverBareReply settles a tool-free reply. Until the Stop decision
 // allows or replaces it, the draft is not a captured reply.
 func (s *Session) deliverBareReply(ctx context.Context, text string, result hooks.StopResult) (bool, string, error) {
 	if err := s.deliverReplyStopHookMessages(result); err != nil {
@@ -830,8 +835,17 @@ func (s *Session) deliverBareReply(ctx context.Context, text string, result hook
 		return false, "", nil
 	}
 	s.mu.Lock()
-	s.comm = communicateResult{called: true, text: text, reply: text}
+	s.comm = communicateResult{
+		phase:        commBoundaryStopPending,
+		updated:      s.comm.updated,
+		text:         text,
+		reply:        text,
+		roundVisible: true,
+	}
 	s.mu.Unlock()
+	if !result.Stopped {
+		s.emitWithProvenance(events.CommunicateData{EndTurn: true, Message: text}, provenance.Clone(s.activeCausalProvenance()))
+	}
 	return s.finishReplyBoundary(ctx, SessionIdle, true, text, nil)
 }
 
@@ -840,11 +854,11 @@ func (s *Session) deliverBareReply(ctx context.Context, text string, result hook
 // already accepted and recorded.
 func (s *Session) replaceAcceptedReply(text string) {
 	s.mu.Lock()
-	if s.comm.called {
+	if s.comm.hasAccepted() {
 		s.comm.text = text
 		s.comm.reply = text
 	}
-	if s.latestReport.called {
+	if s.latestReport.hasAccepted() {
 		s.latestReport.text = text
 		s.latestReport.reply = text
 	}

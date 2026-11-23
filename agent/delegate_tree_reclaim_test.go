@@ -632,22 +632,37 @@ func TestDelegateIdleRelease_ReleasesWholeSubtreeLeafFirst(t *testing.T) {
 func claimSettledIdleSubtree(t *testing.T, tree *delegateTreeController, delegateID string, members ...*Session) *delegateRuntimeReclamationClaim {
 	t.Helper()
 	var claim *delegateRuntimeReclamationClaim
-	testwait.Until(t, "subtree of "+delegateID+" to settle with no delegate attention owed", func() bool {
+	testwait.UntilSeen(t, "subtree of "+delegateID+" to settle with no delegate attention owed", func() (bool, string) {
+		// One pass over the members, so the detail describes the reads that
+		// blocked this poll rather than a later observation of them. An input
+		// in flight holds the claim too, so it counts as unsettled here instead
+		// of being discovered by a refused claim.
+		var blocked []string
 		for _, member := range members {
 			owed, err := member.pendingDelegateAttentionIDs()
 			if err != nil {
 				t.Fatalf("pendingDelegateAttentionIDs(%s): %v", member.id, err)
 			}
-			if len(owed) != 0 || !member.idleReleasePregatesClear() {
-				return false
+			pregates := member.idleReleasePregatesClear()
+			inputs := member.inputsInFlight.Load()
+			if len(owed) == 0 && pregates && inputs == 0 {
+				continue
 			}
+			blocked = append(blocked, fmt.Sprintf("%s owed=%v pregatesClear=%v inputsInFlight=%d",
+				member.id, owed, pregates, inputs))
+		}
+		if len(blocked) != 0 {
+			return false, strings.Join(blocked, "; ")
 		}
 		var err error
 		claim, _, err = tree.ClaimIdleRuntimeRelease(delegateID)
 		if err != nil {
 			t.Fatalf("ClaimIdleRuntimeRelease: %v", err)
 		}
-		return claim != nil
+		if claim != nil {
+			return true, ""
+		}
+		return false, "every member settled, so the release claim itself was refused"
 	})
 	return claim
 }
@@ -682,33 +697,29 @@ func driveWideSubtreeIdleRelease(t *testing.T, wideChildren, limit int, parkDead
 
 	workspace := t.TempDir()
 	// The adapter scripts the parent's turn as ONE response carrying
-	// every delegate spawn; each later step is an identical finish. The
-	// spawns all fire inside the parent's first turn, so the tree's SHAPE
-	// is fixed before any follow-up call happens: the parent's post-tool
-	// call and each child's first call consume the interchangeable finish
-	// steps in whatever global order they race, and each ends its
-	// member's turn. Spawning from a finished parent is not an option
-	// (its lease is spent), and spawning one-at-a-time across turns lets
-	// the parent eat a child's finish step — the one-response spawn wave
-	// avoids both.
-	steps := []func(req llm.Request) llm.Response{
-		func(llm.Request) llm.Response {
-			calls := make([]llm.ToolCallData, wideChildren)
-			for i := range calls {
-				calls[i] = llm.ToolCallData{
-					ID:        fmt.Sprintf("call_spawn_child_%d", i),
-					Name:      "delegate",
-					Arguments: json.RawMessage(`{"prompt":"wide child sentinel task","delegation_allowance":0}`),
-					Type:      "function",
-				}
+	// every delegate spawn. The spawns all fire inside the parent's first
+	// turn, so the tree's SHAPE is fixed before any follow-up call
+	// happens. Every later turn is answered by executionAdapter's
+	// exhausted-script fallback, a terminal communicate: the parent's
+	// post-tool call and each child's first call end their member's turn
+	// in whatever global order they race, and a wake that presents a
+	// report ends it with a result tool call rather than bare text.
+	// Spawning from a finished parent is not an option (its lease is
+	// spent), and spawning one-at-a-time across turns lets the parent eat
+	// a child's finish — the one-response spawn wave avoids both.
+	adapter := &executionAdapter{}
+	adapter.script(func(context.Context) (llm.Response, error) {
+		calls := make([]llm.ToolCallData, wideChildren)
+		for i := range calls {
+			calls[i] = llm.ToolCallData{
+				ID:        fmt.Sprintf("call_spawn_child_%d", i),
+				Name:      "delegate",
+				Arguments: json.RawMessage(`{"prompt":"wide child sentinel task","delegation_allowance":0}`),
+				Type:      "function",
 			}
-			return agenttest.ToolCallResponse(calls...)
-		},
-	}
-	for range wideChildren + 1 {
-		steps = append(steps, func(llm.Request) llm.Response { return agenttest.FinalResponse("member done") })
-	}
-	adapter := newFakeAdapter("openai", steps...)
+		}
+		return agenttest.ToolCallResponse(calls...), nil
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))

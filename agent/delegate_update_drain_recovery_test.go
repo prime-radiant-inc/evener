@@ -116,3 +116,135 @@ func TestDelegateUpdateIsNotRerunWhenMarkersAndTheFollowingReadFail(t *testing.T
 		t.Fatalf("the drain ran %d model turns, want 1: the update was shown by the first", turns)
 	}
 }
+
+// TestDelegateAttention_FinishAttentionTurnResolvesConsumedQueueRows pins the
+// delegate mid-turn path: a successful turn that consumed a child update must
+// remove exactly that row from delegatestore while the generation still runs,
+// publish the NeedsAttention drop, keep later rows queued, and leave a failed
+// queue append for reconciliation without failing the turn.
+func TestDelegateAttention_FinishAttentionTurnResolvesConsumedQueueRows(t *testing.T) {
+	const (
+		sessionID  = "child-dlg_target"
+		delegateID = "dlg_target"
+	)
+	coverAttention := func(sess *Session, ids ...string) {
+		sess.attentionMu.Lock()
+		sess.attentionCoveredIDs = make(map[string]struct{}, len(ids))
+		for _, id := range ids {
+			sess.attentionCoveredIDs[id] = struct{}{}
+		}
+		sess.attentionMu.Unlock()
+	}
+	queuedRows := func(c *delegateTreeController) []string {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		aggregate := c.durable[delegateID]
+		if aggregate == nil {
+			return nil
+		}
+		ids := make([]string, 0, len(aggregate.PendingAttention))
+		for _, row := range aggregate.PendingAttention {
+			ids = append(ids, row.AttentionID)
+		}
+		return ids
+	}
+	needsAttention := func(c *delegateTreeController) bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.durable[delegateID].NeedsAttention
+	}
+
+	t.Run("draining the last row drops NeedsAttention and publishes", func(t *testing.T) {
+		const attentionID = "attention-consumed"
+		c, runtime, _ := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, attentionID)
+		runtime.owningDelegateID = delegateID
+		var published []delegateUpdatePlan
+		c.mu.Lock()
+		c.emitUpdate = func(plan delegateUpdatePlan) { published = append(published, plan) }
+		c.mu.Unlock()
+		coverAttention(runtime, attentionID)
+		if err := runtime.finishAttentionTurn(nil, nil); err != nil {
+			t.Fatalf("finishAttentionTurn: %v", err)
+		}
+		if rows := queuedRows(c); len(rows) != 0 {
+			t.Fatalf("queued rows after the consumed turn = %v, want none", rows)
+		}
+		if needsAttention(c) {
+			t.Fatal("NeedsAttention stayed true after the last row was consumed")
+		}
+		if len(published) != 1 || len(published[0].rows) != 1 || published[0].rows[0].id != delegateID || published[0].rows[0].needsAttention {
+			t.Fatalf("published delegate updates = %#v, want one row with NeedsAttention false", published)
+		}
+	})
+
+	t.Run("a later row stays queued", func(t *testing.T) {
+		c, runtime, _ := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, "attention-consumed", "attention-later")
+		runtime.owningDelegateID = delegateID
+		var published []delegateUpdatePlan
+		c.mu.Lock()
+		c.emitUpdate = func(plan delegateUpdatePlan) { published = append(published, plan) }
+		c.mu.Unlock()
+		coverAttention(runtime, "attention-consumed")
+		if err := runtime.finishAttentionTurn(nil, nil); err != nil {
+			t.Fatalf("finishAttentionTurn: %v", err)
+		}
+		if rows := queuedRows(c); len(rows) != 1 || rows[0] != "attention-later" {
+			t.Fatalf("queued rows after the consumed turn = %v, want only attention-later", rows)
+		}
+		if !needsAttention(c) {
+			t.Fatal("NeedsAttention dropped while a later row was still queued")
+		}
+		if len(published) != 0 {
+			t.Fatalf("published delegate updates while attention is still owed = %#v, want none", published)
+		}
+	})
+
+	t.Run("a failed queue append leaves the row for reconciliation", func(t *testing.T) {
+		const attentionID = "attention-append-failure"
+		c, runtime, _ := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, attentionID)
+		runtime.owningDelegateID = delegateID
+		var faulted atomic.Bool
+		var published []delegateUpdatePlan
+		c.mu.Lock()
+		c.emitUpdate = func(plan delegateUpdatePlan) { published = append(published, plan) }
+		c.appendFault = func(events []delegatestore.Event) error {
+			for _, event := range events {
+				if event.Kind == delegatestore.EventDelegateAttentionResolved && event.DelegateID == delegateID {
+					faulted.Store(true)
+					return errors.New("test: attention resolution append failure")
+				}
+			}
+			return nil
+		}
+		c.mu.Unlock()
+		coverAttention(runtime, attentionID)
+		if err := runtime.finishAttentionTurn(nil, nil); err != nil {
+			t.Fatalf("finishAttentionTurn failed on a queue append error: %v", err)
+		}
+		if !faulted.Load() {
+			t.Fatal("finishAttentionTurn did not attempt to remove the consumed row")
+		}
+		if rows := queuedRows(c); len(rows) != 1 || rows[0] != attentionID {
+			t.Fatalf("queued rows after the failed append = %v, want the consumed row retained", rows)
+		}
+		if !needsAttention(c) {
+			t.Fatal("NeedsAttention dropped although the queue append failed")
+		}
+
+		c.mu.Lock()
+		c.appendFault = nil
+		c.mu.Unlock()
+		if err := c.reconcileResolvedDelegateAttention(delegateID); err != nil {
+			t.Fatalf("reconcile resolved attention: %v", err)
+		}
+		if rows := queuedRows(c); len(rows) != 0 {
+			t.Fatalf("queued rows after reconciliation = %v, want none", rows)
+		}
+		if needsAttention(c) {
+			t.Fatal("NeedsAttention stayed true after reconciliation")
+		}
+		if len(published) != 1 || published[0].rows[0].needsAttention {
+			t.Fatalf("published delegate updates after reconciliation = %#v, want one clear update", published)
+		}
+	})
+}
