@@ -46,6 +46,8 @@ clearing, and OAuth sections; those belong to the sheet, not the card.
    resolved connection, and requests the provider's **model list only**. It does
    not send your prompt or make a generation request. A returned list does not
    prove generation access, quota, billing status, or a model's tool capability.
+   For a GitHub Copilot subscription the list is the account's own roster, and
+   setup completes only when that roster offers at least one usable model.
    A transient read failure is retried automatically while the dialog is open,
    without saving the credential again. If another client replaces this
    connection's stored credential on the hub while the check is running, the
@@ -76,11 +78,16 @@ Start. A successful credential save survives a later model-list failure; the
 dialog retries the read by itself, and a manual **Retry check** remains
 available. Cancel retires that flow's retries and does not start a session.
 
-**Subscriptions are not API keys.** Claude, ChatGPT, and Gemini subscriptions
-do not automatically include separately billed API access. OpenAI API keys and
-**OpenAI Codex** sign-in are separate connections. For the latter, choose its
-sign-in route and follow the device or browser/redirect instructions instead of
-pasting an API key. Availability depends on your account and provider terms.
+**Subscriptions are not API keys.** Claude, ChatGPT, Gemini, and GitHub Copilot
+subscriptions do not automatically include separately billed API access.
+OpenAI API keys and **OpenAI Codex** sign-in are separate connections, and
+**GitHub Copilot** sign-in is its own connection. For either sign-in, choose
+that provider's route and follow the device prompt instead of pasting an API
+key. The web client and the native client both offer that route through the
+provider's sign-in action, and both use the same device-only Copilot flow: they
+show GitHub's verification code and URL, then wait for the authorization. A
+Copilot connection refuses a stored API key. Availability depends on your
+account and provider terms.
 
 ## Other access routes
 
@@ -122,6 +129,22 @@ evener openai status
 
 Complete the browser or device flow privately. These commands use the `openai-codex` instance by default, not the API-key `openai` instance. On a headless host, `EVENER_LOGIN_HEADLESS=1 evener openai login` requests the device flow. Status checks local login state; it does not prove quota or model generation.
 
+For GitHub Copilot subscription access, the sibling commands always use the
+device flow on a github.com account:
+
+```sh
+evener github-copilot login
+evener github-copilot status
+evener github-copilot logout
+```
+
+`login` prints the verification URL and user code and exits when GitHub
+authorizes it. Each command accepts `--instance` (default `github-copilot`)
+and `--state-dir`; `--dir` is a working-directory hint. `status` reads local
+state only. `logout` deletes the local record and does not revoke access in
+your GitHub account. A running hub adopts a login, logout, or account switch
+made here without a restart.
+
 For API-key access, the browser's masked form is the simplest way to store a key without shell history. A service can instead receive the provider's supported variable from its secret manager. Restart the service after changing that environment. Do not type a literal secret into `--credential-header` or another command argument.
 
 Inspect what resolves without making a generation request:
@@ -151,6 +174,9 @@ destination and active source, repair access or endpoint configuration, and
 retry. Changed destinations require review rather than silently reusing inherited
 access. If a provider cannot check model-list access, **Continue without
 verification** is an explicit unverified route, not a success badge.
+For a GitHub Copilot connection, an empty or unsupported account roster fails
+the check and there is no unverified route; signing in again, or with an
+account whose plan offers a supported model, restores the connection.
 
 **Change provider** returns to discovery; it does not carry your secret to a
 different provider. **Cancel** returns to the originating screen without choosing
