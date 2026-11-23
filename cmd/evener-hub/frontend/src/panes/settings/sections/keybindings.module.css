@@ -19,15 +19,6 @@
   line-height: var(--line-height-body);
 }
 
-.status p {
-  margin: 0;
-}
-
-.warningList {
-  margin: var(--space-1) 0 0;
-  padding-left: var(--space-4);
-}
-
 .list {
   list-style: none;
   margin: 0;
