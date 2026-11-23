@@ -544,7 +544,8 @@ interface HostSheetProps {
  * own dialogs open over it.
  */
 // hostFacts: the host's last-known facts for its sheet, each value wrapping
-// and tagged with data-field so tests find a fact without reading its label.
+// and the row tagged with data-field so tests find a fact without reading its
+// label.
 function hostFacts(row: HostRow): PropertyListRow[] {
   const platform = [row.os, row.arch].filter(Boolean).join("/");
   const facts: [string, string, string | undefined, boolean][] = [
@@ -559,7 +560,8 @@ function hostFacts(row: HostRow): PropertyListRow[] {
       label,
       mono,
       wrap: true,
-      value: <span data-field={field}>{value}</span>,
+      value,
+      rowProps: { "data-field": field },
     }));
 }
 

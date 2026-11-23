@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>connection-facts-control-phone layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  body {
+    margin: 0;
+    background: var(--surface-1);
+    font-family: var(--font-sans);
+  }
+  /* The New connection form's facts list, at a phone body width. The media
+     query under test is the real one in propertylist.module.css. */
+  .page {
+    box-sizing: border-box;
+    width: 390px;
+    padding: var(--space-4);
+  }
+</style>
+</head>
+<body data-font-size="m">
+<div class="page" id="page">
+  <dl class="list" id="facts">
+    <div class="row controlRow" id="control-row">
+      <dt class="label eyebrowLabel controlLabel"><label for="connection-name">Name</label></dt>
+      <dd class="value wrap controlValue">
+        <input class="input fillWidth" id="connection-name" value="work">
+      </dd>
+    </div>
+    <div class="row controlRow" id="credential-row">
+      <dt class="label eyebrowLabel controlLabel"><label for="provider-credential">API key</label></dt>
+      <dd class="value wrap controlValue">
+        <input
+          class="input fillWidth"
+          id="provider-credential"
+          type="password"
+          value="secret"
+          aria-describedby="provider-credential-help"
+        >
+        <span class="help valueHelp" id="provider-credential-help">
+          Optional. Leave it empty to use the key this host resolves.
+        </span>
+      </dd>
+    </div>
+    <div class="row" id="readonly-row">
+      <dt class="label eyebrowLabel">Base provider</dt>
+      <dd class="value wrap">openai</dd>
+    </div>
+  </dl>
+</div>
+<script>
+window.measure = () => {
+  const box = (el) => {
+    const r = el.getBoundingClientRect();
+    return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+  };
+  const row = document.querySelector("#control-row");
+  const label = document.querySelector("#control-row .controlLabel");
+  const input = document.querySelector("#connection-name");
+  const credentialRow = document.querySelector("#credential-row");
+  const credentialLabel = document.querySelector("#credential-row .controlLabel");
+  const credentialInput = document.querySelector("#provider-credential");
+  const help = document.querySelector("#provider-credential-help");
+  const readonlyRow = document.querySelector("#readonly-row");
+  const readonlyLabel = document.querySelector("#readonly-row .label");
+  const readonlyValue = document.querySelector("#readonly-row .value");
+  return {
+    viewportWidth: window.innerWidth,
+    row: box(row),
+    label: box(label),
+    input: box(input),
+    credentialRow: box(credentialRow),
+    credentialLabel: box(credentialLabel),
+    credentialInput: box(credentialInput),
+    help: box(help),
+    readonlyRow: box(readonlyRow),
+    readonlyLabel: box(readonlyLabel),
+    readonlyValue: box(readonlyValue),
+    rowScrollWidth: row.scrollWidth,
+    rowClientWidth: row.clientWidth,
+    credentialRowScrollWidth: credentialRow.scrollWidth,
+    credentialRowClientWidth: credentialRow.clientWidth,
+    readonlyRowScrollWidth: readonlyRow.scrollWidth,
+    readonlyRowClientWidth: readonlyRow.clientWidth,
+  };
+};
+</script>
+</body>
+</html>

@@ -1,12 +1,14 @@
 // At a phone width the settings row is one column: the label, the control,
-// and the help must stack in that order. The credential-header help is always
-// present, so a help cell that keeps grid-column: 2 grows an implicit second
-// column beside the control instead of stacking under it.
+// and the help must stack in that order and fit the viewport. The help lives
+// inside .settingsValue now (a flex column under the control), so the failure
+// this guards is the row keeping its two-column grid: the control would sit
+// beside the label and the help would run past the row.
 const TOLERANCE = 1;
 
 export default function assert(m) {
   const failures = [];
   const aligned = (a, b) => Math.abs(a - b) <= TOLERANCE;
+  const tracks = m.rowColumns.trim().split(/\s+/).filter(Boolean);
 
   if (m.row.right > m.viewportWidth + TOLERANCE) {
     failures.push(
@@ -15,8 +17,11 @@ export default function assert(m) {
   }
   if (m.rowScrollWidth > m.rowClientWidth + TOLERANCE) {
     failures.push(
-      `the settings row scrolls horizontally (scrollWidth ${m.rowScrollWidth}px in clientWidth ${m.rowClientWidth}px) - the help is not in the single column`,
+      `the settings row scrolls horizontally (scrollWidth ${m.rowScrollWidth}px in clientWidth ${m.rowClientWidth}px) - the row is not one column`,
     );
+  }
+  if (tracks.length !== 1) {
+    failures.push(`the settings row has ${tracks.length} tracks (${m.rowColumns}), expected one at a phone width`);
   }
   if (!aligned(m.input.left, m.label.left)) {
     failures.push(
@@ -33,16 +38,16 @@ export default function assert(m) {
       `the help starts ${(m.help.left - m.label.left).toFixed(1)}px from the label's left edge instead of stacking in its column`,
     );
   }
-  if (m.help.top < m.field.bottom - TOLERANCE) {
+  if (m.help.top < m.input.bottom - TOLERANCE) {
     failures.push(
-      `the help sits beside the control (help top ${m.help.top.toFixed(1)}px, field bottom ${m.field.bottom.toFixed(1)}px) instead of below it`,
+      `the help sits beside the control (help top ${m.help.top.toFixed(1)}px, input bottom ${m.input.bottom.toFixed(1)}px) instead of below it`,
     );
   }
   if (m.help.right > m.row.right + TOLERANCE) {
     failures.push(`the help runs ${(m.help.right - m.row.right).toFixed(1)}px past the row's right edge`);
   }
-  if (m.helpGridColumn !== "1") {
-    failures.push(`the help grid-column is ${m.helpGridColumn}, expected 1 in the one-column phone row`);
+  if (m.value.right > m.row.right + TOLERANCE) {
+    failures.push(`the value cell runs ${(m.value.right - m.row.right).toFixed(1)}px past the row's right edge`);
   }
   if (m.input.width <= 0) {
     failures.push("the control has no visible width");

@@ -971,7 +971,6 @@ export function InstanceSheet({
                     data-testid="connection-facts"
                     rows={[
                       {
-                        key: "name",
                         label: "Name",
                         htmlFor: `${ids}-name`,
                         value: (
@@ -986,12 +985,10 @@ export function InstanceSheet({
                         help: nameHelp,
                       },
                       {
-                        key: "base-provider",
                         label: "Base provider",
                         value: <span data-testid="base-provider">{instance.providerId}</span>,
                       },
                       {
-                        key: "base-url",
                         label: "Base URL",
                         htmlFor: `${ids}-baseurl`,
                         value: (

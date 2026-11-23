@@ -136,3 +136,59 @@ test("a stacked row's help follows its value as a further definition of the same
   expect(topRuleBlock(CSS, ".help")).toContain("color: var(--ink-mid)");
   expect(topRuleBlock(CSS, ".help")).toContain("font-size: var(--font-size-caption)");
 });
+
+test("rowProps tag a row's wrapper and a muted row's value stays secondary", () => {
+  render(
+    <PropertyList
+      rows={[
+        { label: "cwd", value: "/tmp/run", rowProps: { "data-field": "cwd" } },
+        { label: "isolation", value: "worktree", muted: true },
+      ]}
+    />,
+  );
+  expect(document.querySelector('[data-field="cwd"] dd')?.textContent).toBe("/tmp/run");
+  const [plain, muted] = screen.getAllByRole("definition");
+  expect(classesOf(muted!).length).toBe(classesOf(plain!).length + 1);
+  expect(topRuleBlock(CSS, ".muted")).toContain("color: var(--ink-mid)");
+});
+
+test("an inline row labels its control and carries help, notice and an action", () => {
+  render(
+    <PropertyList
+      rows={[
+        {
+          label: "Endpoint",
+          htmlFor: "endpoint",
+          value: <input id="endpoint" />,
+          help: "Where requests go.",
+          notice: <span>Access refused.</span>,
+          actions: <button type="button">Edit</button>,
+        },
+      ]}
+    />,
+  );
+  expect(screen.getByLabelText("Endpoint").id).toBe("endpoint");
+  expect(screen.getByText("Where requests go.").id).toBe("endpoint-help");
+  expect(screen.getByText("Access refused.")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy();
+  expect(topRuleBlock(CSS, ".rowWithActions")).toContain("minmax(0, 1fr) auto");
+});
+
+test("settings rows put the label beside the control and the help under it", () => {
+  render(
+    <PropertyList
+      layout="settings"
+      rows={[
+        {
+          label: "Protocol",
+          htmlFor: "protocol",
+          value: <input id="protocol" />,
+          help: "Which wire format the provider speaks.",
+        },
+      ]}
+    />,
+  );
+  expect(screen.getByLabelText("Protocol").tagName).toBe("INPUT");
+  expect(screen.getByText("Which wire format the provider speaks.").id).toBe("protocol-help");
+  expect(topRuleBlock(CSS, ".settingsRow")).toContain("grid-template-columns: 104px minmax(0, 1fr)");
+});
