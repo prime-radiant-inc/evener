@@ -91,3 +91,19 @@ test("says a human's Allow or Deny in the tool's short action, else keeps the da
     },
   );
 });
+
+test("keeps clean quiet_yield as one line and folds demoted commentary behind its label", () => {
+  expect(systemEventWords({ eventKind: "quiet_yield", text: "quiet-label", raw: undefined })).toEqual({
+    text: "quiet-label",
+  });
+  expect(systemEventWords({ eventKind: "quiet_yield", text: "quiet-label", raw: { commentary: "   " } })).toEqual({
+    text: "quiet-label",
+  });
+  expect(
+    systemEventWords({
+      eventKind: "quiet_yield",
+      text: "quiet-label",
+      raw: { commentary: "  commentary-sentinel  " },
+    }),
+  ).toEqual({ text: "commentary-sentinel", label: "quiet-label", rendersMarkdown: true });
+});

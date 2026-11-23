@@ -60,6 +60,7 @@ import {
 	parseAskUserQuestions,
 	parseTaskListData,
 	pendingTextJoined,
+	isQuietYield,
 	PROMPT_EVENT_KINDS,
 	projectThread,
 	steeringLabel,
@@ -835,6 +836,7 @@ function systemFamily(eventKind: string | undefined): NoticeFamily {
 	if (PRELUDE_EVENT_KINDS.has(eventKind)) return "system-prelude";
 	if (DIAGNOSTIC_EVENT_KINDS.has(eventKind)) return "diagnostic";
 	if (LIFECYCLE_EVENT_KINDS.has(eventKind)) return "lifecycle";
+	if (isQuietYield({ eventKind })) return "lifecycle";
 	if (eventKind === APPROVAL_DECISION_EVENT_KIND) return "approval";
 	return "unknown-system";
 }

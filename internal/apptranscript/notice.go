@@ -1,6 +1,7 @@
 package apptranscript
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -67,6 +68,202 @@ func IsCommunicateTool(name, recordedName string) bool {
 	return name == "communicate" || name != "" && name == recordedName
 }
 
+// PossiblyQuietCommunicateCall reports whether call is a communicate tool call
+// whose sent arguments carry no reply message (for example `{}` or malformed
+// bytes without a message) and may therefore settle quietly. It avoids heap
+// allocations and regex repair on the hot transcript-projection path.
+func PossiblyQuietCommunicateCall(call *llm.ToolCallData, resultToolName string) bool {
+	if call == nil || !IsCommunicateTool(call.Name, resultToolName) {
+		return false
+	}
+	return !communicateArgsHaveMessage(call.SentArguments())
+}
+
+func communicateArgsHaveMessage(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "{}" || raw[0] != '{' {
+		return false
+	}
+	hasMsg, decided := scanTopLevelObjectForMessage(raw, 1)
+	if decided {
+		return hasMsg
+	}
+	return CommunicateMessageFromArguments(NormalizeCommunicateArguments(json.RawMessage(raw))) != ""
+}
+
+func scanTopLevelObjectForMessage(raw string, depth int) (hasMsg, decided bool) {
+	if depth > 2 {
+		return false, false
+	}
+	i := skipWS(raw, 1)
+	n := len(raw)
+	for i < n {
+		if raw[i] == '}' {
+			return false, true
+		}
+		var key string
+		var keyHasEsc bool
+		if raw[i] == '"' {
+			start := i + 1
+			end, esc, ok := scanJSONStringEnd(raw, i)
+			if !ok {
+				return false, true
+			}
+			key, keyHasEsc = raw[start:end], esc
+			i = end + 1
+		} else if isIdentStart(raw[i]) {
+			start := i
+			for i < n && isIdentPart(raw[i]) {
+				i++
+			}
+			key = raw[start:i]
+		} else {
+			return false, true
+		}
+		if keyHasEsc {
+			return false, false
+		}
+		i = skipWS(raw, i)
+		if i >= n || raw[i] != ':' {
+			return false, true
+		}
+		i = skipWS(raw, i+1)
+		if i >= n {
+			return false, true
+		}
+		switch raw[i] {
+		case '"':
+			valStart := i + 1
+			valEnd, esc, ok := scanJSONStringEnd(raw, i)
+			if !ok {
+				return false, true
+			}
+			i = valEnd + 1
+			if key == "message" {
+				if !esc {
+					if strings.TrimSpace(raw[valStart:valEnd]) != "" {
+						return true, true
+					}
+				} else {
+					return false, false
+				}
+			} else if key == "output" && depth == 1 && strings.Contains(raw[valStart:valEnd], "message") {
+				return false, false
+			}
+		case '{':
+			end, ok := scanBalancedEnd(raw, i, '{', '}')
+			if !ok {
+				return false, true
+			}
+			if key == "output" && depth == 1 {
+				nestedHas, nestedDecided := scanTopLevelObjectForMessage(raw[i:end+1], depth+1)
+				if !nestedDecided {
+					return false, false
+				}
+				if nestedHas {
+					return true, true
+				}
+			}
+			i = end + 1
+		case '[':
+			end, ok := scanBalancedEnd(raw, i, '[', ']')
+			if !ok {
+				return false, true
+			}
+			i = end + 1
+		default:
+			for i < n && raw[i] != ',' && raw[i] != '}' && !isASCIIWS(raw[i]) {
+				i++
+			}
+		}
+		i = skipWS(raw, i)
+		if i < n && raw[i] == ',' {
+			i = skipWS(raw, i+1)
+		}
+	}
+	return false, true
+}
+
+func isASCIIWS(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
+}
+
+func skipWS(s string, i int) int {
+	for i < len(s) && isASCIIWS(s[i]) {
+		i++
+	}
+	return i
+}
+
+func isIdentStart(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '_'
+}
+
+func isIdentPart(b byte) bool {
+	return isIdentStart(b) || (b >= '0' && b <= '9')
+}
+
+func scanJSONStringEnd(s string, quoteAt int) (end int, hasEsc, ok bool) {
+	for i := quoteAt + 1; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			hasEsc = true
+			i++
+		case '"':
+			return i, hasEsc, true
+		}
+	}
+	return len(s), hasEsc, false
+}
+
+func scanBalancedEnd(s string, start int, open, closeCh byte) (int, bool) {
+	depth := 0
+	for i := start; i < len(s); i++ {
+		switch s[i] {
+		case '"':
+			end, _, ok := scanJSONStringEnd(s, i)
+			if !ok {
+				return len(s), false
+			}
+			i = end
+		case open:
+			depth++
+		case closeCh:
+			depth--
+			if depth == 0 {
+				return i, true
+			}
+		}
+	}
+	return len(s), false
+}
+
+// assistantCommunicateScan checks a TurnAssistant entry for any communicate
+// call and returns the IDs that may settle quietly without allocating when
+// no communicate call is present.
+func AssistantCommunicateCallIDs(turn schema.Turn, forceAllQuiet bool) (hasCommunicate bool, possiblyQuietIDs []string) {
+	if turn.Kind != schema.TurnAssistant {
+		return false, nil
+	}
+	for _, part := range turn.Message.Content {
+		if part.Kind != llm.ContentToolCall || part.ToolCall == nil || !IsCommunicateTool(part.ToolCall.Name, turn.ResultToolName) {
+			continue
+		}
+		hasCommunicate = true
+		if forceAllQuiet || !communicateArgsHaveMessage(part.ToolCall.SentArguments()) {
+			possiblyQuietIDs = append(possiblyQuietIDs, part.ToolCall.ID)
+		}
+	}
+	return hasCommunicate, possiblyQuietIDs
+}
+
+// PossiblyQuietCommunicateCallIDs returns the tool call IDs in a TurnAssistant
+// entry that may settle quietly, in content order.
+func PossiblyQuietCommunicateCallIDs(turn schema.Turn) []string {
+	_, ids := AssistantCommunicateCallIDs(turn, false)
+	return ids
+}
+
 // IsQuietCommunicate reports typed evidence of a successful quiet yield.
 func IsQuietCommunicate(result *llm.ToolResultData) bool {
 	return result != nil && !result.IsError && IsQuietCommunicateState(result.ToolState)
@@ -75,6 +272,9 @@ func IsQuietCommunicate(result *llm.ToolResultData) bool {
 // IsQuietCommunicateState decodes the typed result state shared by replay
 // and the live tool-call end event.
 func IsQuietCommunicateState(raw json.RawMessage) bool {
+	if len(raw) == 0 || !bytes.Contains(raw, []byte("communicate_quiet")) {
+		return false
+	}
 	return schema.IsQuietCommunicateState(raw)
 }
 
@@ -342,4 +542,23 @@ func ApprovalDecisionAnnouncement(notice schema.ApprovalDecisionNotice) NoticeAn
 		}(notice),
 	})
 	return NoticeAnnouncement{EventKind: appwire.ThreadItemEventKindApprovalDecision, Description: "Approval", Text: text, Raw: raw}
+}
+
+// QuietYieldAnnouncement builds the muted notice for a successful quiet
+// communicate({}) turn. When companion assistant commentary prose was emitted
+// in the same response, it rides in Raw under "commentary" so clients keep it
+// inspectable behind the muted notice instead of as an unread chat bubble.
+func QuietYieldAnnouncement(commentary string) NoticeAnnouncement {
+	var raw json.RawMessage
+	if trimmed := strings.TrimSpace(commentary); trimmed != "" {
+		raw, _ = json.Marshal(struct {
+			Commentary string `json:"commentary"`
+		}{Commentary: trimmed})
+	}
+	return NoticeAnnouncement{
+		EventKind:   appwire.ThreadItemEventKindQuietYield,
+		Description: "Quiet yield",
+		Text:        "Ended turn quietly",
+		Raw:         raw,
+	}
 }

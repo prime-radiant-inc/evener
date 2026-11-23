@@ -9,9 +9,11 @@ import {
   type ItemModel,
   isErrorEvent,
   isInformationalWarning,
+  isQuietYield,
   MEMORY_CONTEXT_EVENT_KIND,
   type ProjectedEntry,
   type ProjectedTurn,
+  systemEventWords,
   type TranscriptDisplayConfigV1,
   type TurnModel,
   type WarningWords,
@@ -78,6 +80,11 @@ export function systemMessageTexts(
     const summary = roundTimingsSummary(item.raw);
     return [summary === undefined ? noticeText(item) : roundTimingsHeadline(summary)];
   }
+  if (isQuietYield(item)) {
+    const words = systemEventWords(item);
+    const label = words.label ?? words.text;
+    return words.rendersMarkdown ? [label, markdownAsRead(words.text)] : [label];
+  }
   return [noticeText(item)];
 }
 
@@ -86,7 +93,7 @@ export function systemMessageTexts(
  * caller keeps its own placement. */
 export interface SystemNoticePlacement {
   readonly key?: string;
-  readonly opens?: string;
+  readonly opens?: readonly string[];
   readonly opensIgnoreBaseline?: boolean;
 }
 
@@ -106,10 +113,31 @@ export function systemNoticePlacement(
     const leaderEntry = turn.entries.find(
       (candidate) => candidate.kind !== "intent" && candidate.item.id === leader.id,
     );
-    return { key: leaderEntry === undefined ? leader.id : entryDisplayKey(leaderEntry), opens: leader.id };
+    return { key: leaderEntry === undefined ? leader.id : entryDisplayKey(leaderEntry), opens: [leader.id] };
+  }
+  if (isQuietYield(item) && systemEventWords(item).rendersMarkdown) {
+    return { opens: [item.id], opensIgnoreBaseline: true };
   }
   if (isScaffoldItem(item)) {
-    return { opens: item.id, ...(item.eventKind === "notes-context" ? { opensIgnoreBaseline: true } : {}) };
+    return { opens: [item.id], ...(item.eventKind === "notes-context" ? { opensIgnoreBaseline: true } : {}) };
   }
   return {};
+}
+
+/** Placement for an item rendered inside a cross-turn group disclosure. */
+export function groupedSystemNoticePlacement(
+  item: ItemModel,
+  groupId: string,
+  matchesText: (rendered: string) => boolean,
+  ignoreGroupBaseline = false,
+): SystemNoticePlacement {
+  if (isScaffoldItem(item)) {
+    return { opens: [groupId, item.id], ...(ignoreGroupBaseline ? { opensIgnoreBaseline: true } : {}) };
+  }
+  if (!isQuietYield(item)) return { opens: [groupId], ...(ignoreGroupBaseline ? { opensIgnoreBaseline: true } : {}) };
+  const words = systemEventWords(item);
+  if (words.rendersMarkdown && matchesText(markdownAsRead(words.text))) {
+    return { opens: [groupId, item.id], opensIgnoreBaseline: true };
+  }
+  return { opens: [groupId], opensIgnoreBaseline: true };
 }

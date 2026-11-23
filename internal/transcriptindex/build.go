@@ -25,6 +25,17 @@ import (
 // awaiting ASSISTANT entry an in-place rewrite already moved past it.
 var errRebuild = errors.New("transcript index needs a full rebuild")
 
+// unexpectedQuietRebuildError triggers a rebuild with forceProvisional when a
+// PreToolUse hook blanked a non-empty communicate call so TurnToolResults
+// settled quietly after its assistant prose had already been committed.
+type unexpectedQuietRebuildError struct {
+	callID string
+}
+
+func (e unexpectedQuietRebuildError) Error() string {
+	return fmt.Sprintf("transcript index needs rebuild for hook-blanked quiet call %q", e.callID)
+}
+
 // toolName is the projection's tool-name state for one call id: the name its
 // latest tool call registered, or deleted after a communicate result.
 type toolName struct {
@@ -40,6 +51,23 @@ type commState struct {
 	rawArgs string
 	pos     contributor
 	turnID  string
+}
+
+type deliveredComm struct {
+	pos    contributor
+	turnID string
+}
+
+type provisionalQuietState struct {
+	pendingQuiet  map[string]bool
+	allCallIDs    []string
+	delivered     []deliveredComm
+	hasText       bool
+	hasAuthorship bool
+	flushed       bool
+	settledQuiet  bool
+	pos           contributor
+	turnID        string
 }
 
 // builder applies entries, in file order, to the index's records.
@@ -132,10 +160,14 @@ type builder struct {
 	// (existence/parts). meta.CommCalls/LastAssistant* separately persist
 	// this whole struct's values, for restoreBuilder to reconstruct it
 	// without a rebuild.
-	commCalls           map[string]commState // call id -> its deferred communicate state
-	lastAssistantText   string
-	lastAssistantTurnID string
-	lastAssistantPos    contributor
+	commCalls              map[string]commState // call id -> its deferred communicate state
+	provisionalByCall      map[string]*provisionalQuietState
+	provisional            []*provisionalQuietState
+	forceProvisional       map[uint64]bool
+	ignoredUnexpectedQuiet map[string]bool
+	lastAssistantText      string
+	lastAssistantTurnID    string
+	lastAssistantPos       contributor
 	// lastAssistantKnown is true once the sticky value above is
 	// authoritative: always, for a full build (correct from its first
 	// entry — "no text yet" is the ground truth, not an unknown), and for
@@ -155,6 +187,7 @@ type builder struct {
 	seedBuf     map[string]string
 	regNames    map[string]string
 	regCommArgs map[string]string
+	regForce    map[int]bool
 	// itemBuf, turnBuf and updateBuf are the fixed-size encode scratch of the
 	// hot loop: the encode*Into functions fill them, and the table layer
 	// copies their bytes out synchronously, so reuse is safe.
@@ -166,7 +199,8 @@ type builder struct {
 func newBuilder(x *Index) builder {
 	return builder{
 		x: x, calls: map[string]uint64{}, names: map[string]toolName{}, open: map[string]uint64{}, models: map[string]strRef{},
-		commCalls: map[string]commState{}, seedBuf: map[string]string{}, regNames: map[string]string{}, regCommArgs: map[string]string{},
+		commCalls: map[string]commState{}, provisionalByCall: map[string]*provisionalQuietState{},
+		seedBuf: map[string]string{}, regNames: map[string]string{}, regCommArgs: map[string]string{},
 		failures: transcript.NewFailureCounter(0),
 	}
 }
@@ -232,6 +266,9 @@ func (b *builder) applyLegacy(ordinal uint64, offset int64, length uint32, entry
 		b.calls = map[string]uint64{}
 		b.names = map[string]toolName{}
 	}
+	if err := b.checkUnexpectedQuiet(entry); err != nil {
+		return err
+	}
 	seed, err := b.seed(entry)
 	if err != nil {
 		return err
@@ -239,8 +276,13 @@ func (b *builder) applyLegacy(ordinal uint64, offset int64, length uint32, entry
 	reg := &apptranscript.ToolCallRegistry{
 		Names:               b.registryNames(seed),
 		CommRawArgs:         b.registryCommArgs(),
+		ForceProvisional:    b.registryForceProvisional(),
 		LastAssistantText:   b.lastAssistantText,
 		LastAssistantTurnID: b.lastAssistantTurnID,
+	}
+	provList, err := b.seedRegistryProvisional(reg, entry)
+	if err != nil {
+		return err
 	}
 	items, parts := apptranscript.ProjectEntryParts(turnID, entryIndex, *entry, reg, apptranscript.AddressedImageProjector, apptranscript.ToolResultOutputImages)
 	b.recordNames(entry, seed)
@@ -267,8 +309,8 @@ func (b *builder) applyLegacy(ordinal uint64, offset int64, length uint32, entry
 			}
 		}
 		var context strRef
-		if callID, ok := communicateResultCallID(entry, parts[i], seed); ok {
-			if context, err = b.communicateContext(callID); err != nil {
+		if callID, needsProv, ok := b.resultContextTarget(entry, item, seed); ok {
+			if context, err = b.communicateContext(callID, needsProv, provList); err != nil {
 				return err
 			}
 		}
@@ -307,29 +349,71 @@ func (b *builder) registryCommArgs() map[string]string {
 	return b.regCommArgs
 }
 
-// communicateResultCallID reports the call id a TOOL/TOOL_RESULTS entry's
-// content part projects a communicate item for (a rejected or healed
-// communicate result), matching the name resolution apptranscript.ProjectTurn
-// itself applies (an explicit Name, or the seed's resolution of a blank one).
-func communicateResultCallID(entry *schema.Turn, part int, seed map[string]string) (string, bool) {
+func (b *builder) registryForceProvisional() map[int]bool {
+	if len(b.forceProvisional) == 0 {
+		return nil
+	}
+	if b.regForce == nil {
+		b.regForce = make(map[int]bool, len(b.forceProvisional))
+	} else {
+		clear(b.regForce)
+	}
+	for ord := range b.forceProvisional {
+		b.regForce[int(ord)+1] = true
+	}
+	return b.regForce
+}
+
+func (b *builder) checkUnexpectedQuiet(entry *schema.Turn) error {
 	if entry.Kind != schema.TurnTool && entry.Kind != schema.TurnToolResults {
-		return "", false
+		return nil
 	}
-	if part < 0 || part >= len(entry.Message.Content) {
-		return "", false
+	for _, part := range entry.Message.Content {
+		if part.Kind == llm.ContentToolResult && part.ToolResult != nil && apptranscript.IsQuietCommunicate(part.ToolResult) {
+			id := part.ToolResult.ToolCallID
+			if b.provisionalByCall[id] == nil && !b.ignoredUnexpectedQuiet[id] {
+				return unexpectedQuietRebuildError{callID: id}
+			}
+		}
 	}
-	content := entry.Message.Content[part]
-	if content.Kind != llm.ContentToolResult || content.ToolResult == nil {
-		return "", false
+	return nil
+}
+
+// resultContextTarget reports whether item produced by entry needs a
+// Context contributor list for window.projectWithContext: a flushed provisional
+// agentMessage, a quiet_yield notice, or a communicate tool result.
+func (b *builder) resultContextTarget(entry *schema.Turn, item appwire.ThreadItem, seed map[string]string) (callID string, needsProvisional bool, ok bool) {
+	if entry.Kind == schema.TurnCompletion {
+		if item.Type == "agentMessage" && item.CallID == "" {
+			return "", true, true
+		}
+		return "", false, false
 	}
-	name := content.ToolResult.Name
-	if name == "" {
-		name = seed[content.ToolResult.ToolCallID]
+	if entry.Kind != schema.TurnTool && entry.Kind != schema.TurnToolResults {
+		return "", false, false
 	}
-	if !apptranscript.IsCommunicateTool(name, entry.ResultToolName) {
-		return "", false
+	if item.Type == "agentMessage" && item.CallID == "" {
+		return "", true, true
 	}
-	return content.ToolResult.ToolCallID, true
+	if item.EventKind == appwire.ThreadItemEventKindQuietYield {
+		return item.CallID, true, true
+	}
+	if item.CallID == "" {
+		return "", false, false
+	}
+	for _, content := range entry.Message.Content {
+		if content.Kind != llm.ContentToolResult || content.ToolResult == nil || content.ToolResult.ToolCallID != item.CallID {
+			continue
+		}
+		name := content.ToolResult.Name
+		if name == "" {
+			name = seed[content.ToolResult.ToolCallID]
+		}
+		if apptranscript.IsCommunicateTool(name, entry.ResultToolName) || apptranscript.IsQuietCommunicate(content.ToolResult) {
+			return item.CallID, false, true
+		}
+	}
+	return "", false, false
 }
 
 // communicateContext builds the Context an item at communicateResultCallID
@@ -338,7 +422,7 @@ func communicateResultCallID(entry *schema.Turn, part int, seed map[string]strin
 // LastAssistantText (needed only by the healed-communicate echo check, but
 // harmless to include for a rejected one too) — sorted in file order, so a
 // reader replays them in the order they actually happened.
-func (b *builder) communicateContext(callID string) (strRef, error) {
+func (b *builder) communicateContext(callID string, needsProvisional bool, provList []*provisionalQuietState) (strRef, error) {
 	var list []contextEntry
 	seen := map[int64]bool{}
 	add := func(pos contributor, turnID string) error {
@@ -353,9 +437,30 @@ func (b *builder) communicateContext(callID string) (strRef, error) {
 		list = append(list, contextEntry{contributor: pos, TurnID: ref})
 		return nil
 	}
-	if state, ok := b.commCalls[callID]; ok {
-		if err := add(state.pos, state.turnID); err != nil {
-			return strRef{}, err
+	if callID != "" {
+		if state, ok := b.commCalls[callID]; ok {
+			if err := add(state.pos, state.turnID); err != nil {
+				return strRef{}, err
+			}
+		}
+		if q, ok := b.provisionalByCall[callID]; ok && (q.hasText || q.hasAuthorship) {
+			if err := add(q.pos, q.turnID); err != nil {
+				return strRef{}, err
+			}
+		}
+	}
+	if needsProvisional {
+		for _, q := range provList {
+			if q.hasText || q.hasAuthorship {
+				if err := add(q.pos, q.turnID); err != nil {
+					return strRef{}, err
+				}
+				for _, d := range q.delivered {
+					if err := add(d.pos, d.turnID); err != nil {
+						return strRef{}, err
+					}
+				}
+			}
 		}
 	}
 	if b.lastAssistantKnown {
@@ -400,6 +505,135 @@ func agentMessageText(items []appwire.ThreadItem) string {
 	return lastText
 }
 
+func flushedAgentMessageText(items []appwire.ThreadItem) string {
+	var lastText string
+	for _, item := range items {
+		if item.Type == "agentMessage" && item.CallID == "" {
+			lastText = strings.TrimSpace(item.Text)
+		}
+	}
+	return lastText
+}
+
+func assistantEntryHasText(entry *schema.Turn) bool {
+	for _, part := range entry.Message.Content {
+		if part.Kind == llm.ContentText && part.Text != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *builder) hasProvisionalAtOrdinal(ordinal uint64) bool {
+	for _, q := range b.provisional {
+		if q.pos.Ordinal == ordinal && q.hasText {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *builder) hasUnflushedProvisionalForTurn(turnID string) bool {
+	for _, q := range b.provisional {
+		if q.turnID == turnID && q.hasText && !q.flushed {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *builder) seedRegistryProvisional(reg *apptranscript.ToolCallRegistry, entry *schema.Turn) ([]*provisionalQuietState, error) {
+	if len(b.provisional) == 0 && len(b.provisionalByCall) == 0 {
+		return nil, nil
+	}
+	var selected []*provisionalQuietState
+	seen := map[uint64]bool{}
+	switch entry.Kind {
+	case schema.TurnTool, schema.TurnToolResults:
+		for _, part := range entry.Message.Content {
+			if part.Kind != llm.ContentToolResult || part.ToolResult == nil {
+				continue
+			}
+			if q := b.provisionalByCall[part.ToolResult.ToolCallID]; q != nil && !seen[q.pos.Ordinal] {
+				seen[q.pos.Ordinal] = true
+				selected = append(selected, q)
+			}
+		}
+	case schema.TurnCompletion:
+		for _, q := range b.provisional {
+			if q.turnID == entry.TurnID && q.hasText && !q.flushed && !seen[q.pos.Ordinal] {
+				seen[q.pos.Ordinal] = true
+				selected = append(selected, q)
+			}
+		}
+	default:
+		return nil, nil
+	}
+	if len(selected) == 0 {
+		return nil, nil
+	}
+	sort.Slice(selected, func(i, j int) bool { return selected[i].pos.Ordinal < selected[j].pos.Ordinal })
+	for _, q := range selected {
+		assistantEntry, err := b.x.readEntry(q.pos.Offset, q.pos.Length)
+		if err != nil {
+			return nil, err
+		}
+		tmpReg := &apptranscript.ToolCallRegistry{ForceProvisional: map[int]bool{int(q.pos.Ordinal) + 1: true}}
+		apptranscript.ProjectEntryParts(q.turnID, int(q.pos.Ordinal)+1, *assistantEntry, tmpReg, nil, apptranscript.ToolResultOutputImages)
+		for _, d := range q.delivered {
+			delEntry, err := b.x.readEntry(d.pos.Offset, d.pos.Length)
+			if err != nil {
+				return nil, err
+			}
+			apptranscript.ProjectEntryParts(d.turnID, int(d.pos.Ordinal)+1, *delEntry, tmpReg, nil, nil)
+		}
+		for _, id := range q.allCallIDs {
+			if auth, ok := tmpReg.CommAuthorship[id]; ok {
+				if reg.CommAuthorship == nil {
+					reg.CommAuthorship = map[string]*schema.TranscriptAuthorship{}
+				}
+				if _, exists := reg.CommAuthorship[id]; !exists {
+					reg.CommAuthorship[id] = auth
+				}
+			}
+		}
+		for _, id := range q.allCallIDs {
+			if qentry := tmpReg.QuietCalls[id]; qentry != nil {
+				qentry.PendingQuiet = maps.Clone(q.pendingQuiet)
+				qentry.Flushed = q.flushed
+				if reg.QuietCalls == nil {
+					reg.QuietCalls = map[string]*apptranscript.QuietAssistantEntry{}
+				}
+				for _, cid := range q.allCallIDs {
+					reg.QuietCalls[cid] = qentry
+				}
+				if len(qentry.ProvisionalItems) > 0 && len(qentry.PendingQuiet) > 0 && !qentry.Flushed {
+					reg.Provisional = append(reg.Provisional, qentry)
+				}
+				break
+			}
+		}
+	}
+	return selected, nil
+}
+
+func (b *builder) pruneProvisional() {
+	if len(b.provisional) == 0 {
+		return
+	}
+	active := map[*provisionalQuietState]bool{}
+	for _, q := range b.provisionalByCall {
+		active[q] = true
+	}
+	kept := b.provisional[:0]
+	for _, q := range b.provisional {
+		if active[q] || (q.settledQuiet && q.hasText) {
+			kept = append(kept, q)
+		}
+	}
+	b.provisional = kept
+}
+
 // recordCommState applies the entry's effects on the deferred-communicate
 // state ProjectTurn's ToolCallRegistry threads — the same effects
 // recordNames applies to tool names, kept separate because unlike names this
@@ -408,10 +642,39 @@ func agentMessageText(items []appwire.ThreadItem) string {
 // communicateContext above still sees the state as it stood when this entry
 // was projected.
 func (b *builder) recordCommState(entry *schema.Turn, turnID string, seed map[string]string, c contributor, items []appwire.ThreadItem) {
-	if entry.Kind == schema.TurnAssistant {
+	switch entry.Kind {
+	case schema.TurnAssistant:
+		hasCommunicate, quietIDs := apptranscript.AssistantCommunicateCallIDs(*entry, b.forceProvisional[c.Ordinal])
 		for _, part := range entry.Message.Content {
 			if deferredCommCall(entry, part) {
 				b.commCalls[part.ToolCall.ID] = commState{rawArgs: part.ToolCall.SentArguments(), pos: c, turnID: turnID}
+			}
+		}
+		if hasCommunicate && len(quietIDs) > 0 {
+			hasText := assistantEntryHasText(entry)
+			hasAuthorship := entry.Authorship != nil
+			var allCallIDs []string
+			for _, part := range entry.Message.Content {
+				if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
+					allCallIDs = append(allCallIDs, part.ToolCall.ID)
+				}
+			}
+			pending := make(map[string]bool, len(quietIDs))
+			for _, id := range quietIDs {
+				pending[id] = true
+			}
+			q := &provisionalQuietState{
+				pendingQuiet:  pending,
+				allCallIDs:    allCallIDs,
+				hasText:       hasText,
+				hasAuthorship: hasAuthorship,
+				flushed:       !hasText,
+				pos:           c,
+				turnID:        turnID,
+			}
+			b.provisional = append(b.provisional, q)
+			for _, id := range allCallIDs {
+				b.provisionalByCall[id] = q
 			}
 		}
 		// Mirrors ProjectTurn: only a non-empty text updates the sticky
@@ -420,21 +683,68 @@ func (b *builder) recordCommState(entry *schema.Turn, turnID string, seed map[st
 		if lastText := agentMessageText(items); lastText != "" {
 			b.lastAssistantText, b.lastAssistantTurnID, b.lastAssistantPos, b.lastAssistantKnown = lastText, turnID, c, true
 		}
-		return
-	}
-	if entry.Kind != schema.TurnTool && entry.Kind != schema.TurnToolResults {
-		return
-	}
-	for _, part := range entry.Message.Content {
-		if part.Kind != llm.ContentToolResult || part.ToolResult == nil {
-			continue
+	case schema.TurnTool, schema.TurnToolResults:
+		for _, part := range entry.Message.Content {
+			if part.Kind == llm.ContentToolResult && part.ToolResult != nil && apptranscript.IsQuietCommunicate(part.ToolResult) {
+				if q := b.provisionalByCall[part.ToolResult.ToolCallID]; q != nil {
+					q.flushed = true
+					q.settledQuiet = true
+					delete(q.pendingQuiet, part.ToolResult.ToolCallID)
+				}
+			}
 		}
-		name := part.ToolResult.Name
-		if name == "" {
-			name = seed[part.ToolResult.ToolCallID]
+		var lastFlushedQ *provisionalQuietState
+		for _, part := range entry.Message.Content {
+			if part.Kind != llm.ContentToolResult || part.ToolResult == nil {
+				continue
+			}
+			id := part.ToolResult.ToolCallID
+			if !apptranscript.IsQuietCommunicate(part.ToolResult) {
+				if q := b.provisionalByCall[id]; q != nil && !q.flushed {
+					delete(q.pendingQuiet, id)
+					if len(q.pendingQuiet) == 0 {
+						q.flushed = true
+						if q.hasText && (lastFlushedQ == nil || q.pos.Ordinal > lastFlushedQ.pos.Ordinal) {
+							lastFlushedQ = q
+						}
+					}
+				}
+			}
+			name := part.ToolResult.Name
+			if name == "" {
+				name = seed[id]
+			}
+			if apptranscript.IsCommunicateTool(name, entry.ResultToolName) || apptranscript.IsQuietCommunicate(part.ToolResult) {
+				delete(b.commCalls, id)
+			}
+			delete(b.provisionalByCall, id)
 		}
-		if apptranscript.IsCommunicateTool(name, entry.ResultToolName) || apptranscript.IsQuietCommunicate(part.ToolResult) {
-			delete(b.commCalls, part.ToolResult.ToolCallID)
+		if lastFlushedQ != nil {
+			if lastText := flushedAgentMessageText(items); lastText != "" {
+				b.lastAssistantText, b.lastAssistantTurnID, b.lastAssistantPos, b.lastAssistantKnown = lastText, lastFlushedQ.turnID, lastFlushedQ.pos, true
+			}
+		}
+		b.pruneProvisional()
+	case schema.TurnCompletion:
+		var lastFlushedQ *provisionalQuietState
+		kept := b.provisional[:0]
+		for _, q := range b.provisional {
+			if q.turnID == turnID {
+				if q.hasText && !q.flushed && (lastFlushedQ == nil || q.pos.Ordinal > lastFlushedQ.pos.Ordinal) {
+					lastFlushedQ = q
+				}
+				for _, id := range q.allCallIDs {
+					delete(b.provisionalByCall, id)
+				}
+				continue
+			}
+			kept = append(kept, q)
+		}
+		b.provisional = kept
+		if lastFlushedQ != nil {
+			if lastText := flushedAgentMessageText(items); lastText != "" {
+				b.lastAssistantText, b.lastAssistantTurnID, b.lastAssistantPos, b.lastAssistantKnown = lastText, lastFlushedQ.turnID, lastFlushedQ.pos, true
+			}
 		}
 	}
 }
@@ -484,6 +794,11 @@ func (b *builder) applyIdentity(ordinal uint64, offset int64, length uint32, ent
 		if err != nil {
 			return err
 		}
+		if !echoes && entry.Communicate != nil && entry.Communicate.Message != "" {
+			if q := b.provisionalByCall[entry.Communicate.CallID]; q != nil {
+				q.delivered = append(q.delivered, deliveredComm{pos: c, turnID: entry.TurnID})
+			}
+		}
 		if !echoes {
 			if err := b.appendItems(slot, entry, c, nil, nil); err != nil {
 				return err
@@ -492,8 +807,12 @@ func (b *builder) applyIdentity(ordinal uint64, offset int64, length uint32, ent
 			return err
 		}
 	default:
-		if err := b.appendItems(slot, entry, c, nil, nil); err != nil {
-			return err
+		if entry.Kind != schema.TurnCompletion || b.hasUnflushedProvisionalForTurn(turnID) {
+			if err := b.appendItems(slot, entry, c, nil, nil); err != nil {
+				return err
+			}
+		} else {
+			b.recordCommState(entry, turnID, nil, c, nil)
 		}
 	}
 	if entry.Kind == schema.TurnCompletion {
@@ -711,9 +1030,17 @@ func (b *builder) interruptAwaitedCalls(summary turnRecord, completion contribut
 // item absorb (when set) does not take. seed names the entry's nameless tool
 // results.
 func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, seed map[string]string, absorb func(appwire.ThreadItem) (bool, error)) error {
+	if err := b.checkUnexpectedQuiet(entry); err != nil {
+		return err
+	}
 	reg := &apptranscript.ToolCallRegistry{
 		Names: b.registryNames(seed), CommRawArgs: b.registryCommArgs(),
+		ForceProvisional:  b.registryForceProvisional(),
 		LastAssistantText: b.lastAssistantText, LastAssistantTurnID: b.lastAssistantTurnID,
+	}
+	provList, err := b.seedRegistryProvisional(reg, entry)
+	if err != nil {
+		return err
 	}
 	items, parts := apptranscript.ProjectEntryParts(entry.TurnID, int(c.Ordinal)+1, *entry, reg, apptranscript.AddressedImageProjector, apptranscript.ToolResultOutputImages)
 	summary, err := b.load(slot)
@@ -732,9 +1059,9 @@ func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, se
 			}
 		}
 		var context strRef
-		if callID, ok := communicateResultCallID(entry, parts[i], seed); ok {
+		if callID, needsProv, ok := b.resultContextTarget(entry, item, seed); ok {
 			var err error
-			if context, err = b.communicateContext(callID); err != nil {
+			if context, err = b.communicateContext(callID, needsProv, provList); err != nil {
 				return err
 			}
 		}
@@ -881,7 +1208,7 @@ func (b *builder) attachCommunicationEcho(summary turnRecord, entry *schema.Turn
 // echoesAwaiting reports whether a COMMUNICATE entry's message repeats the
 // last text run of its turn's awaiting ASSISTANT entry, which already shows it.
 func (b *builder) echoesAwaiting(summary turnRecord, entry *schema.Turn) (bool, error) {
-	if entry.Communicate == nil || summary.AwaitingLength == 0 {
+	if entry.Communicate == nil || summary.AwaitingLength == 0 || b.hasProvisionalAtOrdinal(summary.AwaitingOrdinal) {
 		return false, nil
 	}
 	awaiting, err := b.awaitingEntry(summary)

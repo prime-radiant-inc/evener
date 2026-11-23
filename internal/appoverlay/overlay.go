@@ -288,6 +288,9 @@ func (o *Overlay) Recorded(rec transcript.Record) {
 				c := o.call(part.ToolResult.ToolCallID)
 				c.covered = true
 				delete(o.slots, c.toolKey)
+				if apptranscript.IsQuietCommunicate(part.ToolResult) {
+					delete(o.slots, previewKey(part.ToolResult.ToolCallID))
+				}
 			}
 		}
 	case schema.TurnCommunicate:
@@ -483,6 +486,35 @@ func (o *Overlay) resetPreview(callID string) []Change {
 	return o.resetStream(preview.item.StreamID)
 }
 
+// retireQuietPreview removes one settled quiet communicate call's preview
+// while notifying live clients to drop it and preserving any surviving sibling
+// previews or streams on the same stream attempt.
+func (o *Overlay) retireQuietPreview(callID string) []Change {
+	key := previewKey(callID)
+	preview, ok := o.slots[key]
+	if !ok {
+		return nil
+	}
+	delete(o.slots, key)
+	streamID := preview.item.StreamID
+	if streamID == "" {
+		return nil
+	}
+	var siblings []*slot
+	for _, s := range o.slots {
+		if s.item.StreamID == streamID && (s.item.Kind == appwire.OverlayStream || s.item.Kind == appwire.OverlayPreview) {
+			siblings = append(siblings, s)
+		}
+	}
+	slices.SortFunc(siblings, func(a, b *slot) int { return cmp.Compare(a.order, b.order) })
+	changes := make([]Change, 0, 1+len(siblings))
+	changes = append(changes, Change{Method: appwire.NotifyOverlayReset, Params: appwire.OverlayResetParams{StreamID: streamID}})
+	for _, s := range siblings {
+		changes = append(changes, o.upsert(s)...)
+	}
+	return changes
+}
+
 // appendText appends to the text of the stream or preview at key.
 func (o *Overlay) appendText(key, text string) []Change {
 	s, ok := o.slots[key]
@@ -563,7 +595,13 @@ func (o *Overlay) appendOutput(callID, text string) []Change {
 }
 
 func (o *Overlay) endTool(data events.ToolCallEndData) []Change {
-	if isResultTool(data.ToolName, data.IsResultTool) || data.Error == "" && apptranscript.IsQuietCommunicateState(data.ToolState) {
+	if data.Error == "" && apptranscript.IsQuietCommunicateState(data.ToolState) {
+		if c, ok := o.toolCall(data.CallID); ok {
+			c.covered = true
+		}
+		return o.retireQuietPreview(data.CallID)
+	}
+	if isResultTool(data.ToolName, data.IsResultTool) {
 		return nil
 	}
 	c, ok := o.toolCall(data.CallID)

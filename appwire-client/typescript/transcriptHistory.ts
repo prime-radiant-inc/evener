@@ -8,6 +8,7 @@ import { historyFallback, historyReplacesWindow, historyServingFacts } from "./h
 import type { HistoryState, ItemModel, OlderFrontier, QuotaRetryOutputBaseline, ThreadModel, TurnModel } from "./model";
 import { comparePositions, SYSTEM_PRELUDE_TURN_ID } from "./model";
 import { frontierFromCursor, olderFrontierOf, withOlderFrontier } from "./olderFrontier";
+import { isQuietYield } from "./quietYield";
 
 export { comparePositions } from "./model";
 export { frontierFromCursor, olderFrontierOf, olderHistoryExhausted, withOlderFrontier } from "./olderFrontier";
@@ -543,7 +544,7 @@ export function pruneCoveredOverlay(
     for (const item of turn.items) {
       if (unrecordedNotices.size > 0) unrecordedNotices.delete(itemIdentity(item));
       if (item.roundId) rounds.add(item.roundId);
-      if (item.type === "agentMessage" && item.callId) communicated.add(item.callId);
+      if ((item.type === "agentMessage" || isQuietYield(item)) && item.callId) communicated.add(item.callId);
       if (item.completedAtEntry && item.transcriptKey) completed.add(item.transcriptKey);
     }
   }

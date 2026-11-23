@@ -1931,14 +1931,15 @@ func TestRootBareTextFallbackProjection(t *testing.T) {
 
 func TestRootBareTextFallbackQuietProjection(t *testing.T) {
 	for _, tc := range []struct {
-		raw, state string
-		wantItems  int
+		raw, state    string
+		wantType      string
+		wantEventKind appwire.ThreadItemEventKind
 	}{
-		{`{}`, `{"communicate_accepted":true,"communicate_end_turn":true,"communicate_quiet":true}`, 0},
-		{`{}`, ``, 0},
-		{`{"end_turn":true,"message":" ","output":{"message":""}}`, ``, 0},
-		{`not valid JSON`, ``, 1},
-		{`not valid JSON`, `{"communicate_quiet":true}`, 0},
+		{`{}`, `{"communicate_accepted":true,"communicate_end_turn":true,"communicate_quiet":true}`, "systemMessage", appwire.ThreadItemEventKindQuietYield},
+		{`{}`, ``, "", ""},
+		{`{"end_turn":true,"message":" ","output":{"message":""}}`, ``, "", ""},
+		{`not valid JSON`, ``, "agentMessage", ""},
+		{`not valid JSON`, `{"communicate_quiet":true}`, "systemMessage", appwire.ThreadItemEventKindQuietYield},
 	} {
 		reg := NewToolCallRegistry()
 		ProjectTurn("turn", 1, schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Content: []llm.ContentPart{{
@@ -1947,8 +1948,17 @@ func TestRootBareTextFallbackQuietProjection(t *testing.T) {
 		items := ProjectTurn("turn", 2, schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call", Name: "communicate", ToolState: json.RawMessage(tc.state)},
 		}}}}, reg, nil, nil)
-		if len(items) != tc.wantItems || len(items) == 1 && (items[0].Type != "agentMessage" || items[0].Text != tc.raw) {
-			t.Errorf("args=%q state=%q: items=%+v, want %d", tc.raw, tc.state, items, tc.wantItems)
+		if tc.wantType == "" {
+			if len(items) != 0 {
+				t.Errorf("args=%q state=%q: items=%+v, want 0", tc.raw, tc.state, items)
+			}
+			continue
+		}
+		if len(items) != 1 || items[0].Type != tc.wantType || items[0].EventKind != tc.wantEventKind {
+			t.Errorf("args=%q state=%q: items=%+v, want type=%q eventKind=%q", tc.raw, tc.state, items, tc.wantType, tc.wantEventKind)
+		}
+		if tc.wantType == "agentMessage" && items[0].Text != tc.raw {
+			t.Errorf("args=%q state=%q: text=%q, want %q", tc.raw, tc.state, items[0].Text, tc.raw)
 		}
 	}
 }

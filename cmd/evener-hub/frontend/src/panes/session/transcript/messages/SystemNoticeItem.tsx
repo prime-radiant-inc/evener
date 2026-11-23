@@ -32,6 +32,7 @@ import {
   formatCharCount,
   formatDurationMs,
   isErrorEvent,
+  isQuietYield,
   MEMORY_CONTEXT_EVENT_KIND,
   scopedDisclosureId,
   systemEventWords,
@@ -235,6 +236,31 @@ function FailureLine({ item, turn }: { item: ItemModel; turn: TurnModel }) {
   );
 }
 
+function QuietYieldLine({ item, sessionRef }: { item: ItemModel; sessionRef?: string }) {
+  const words = systemEventWords(item);
+  const summary = words.label ?? words.text;
+  const context = useTranscriptRenderContext();
+  const disclosureScope = disclosureScopeForSession(context, sessionRef);
+  const disclosureKey = scopedDisclosureId(disclosureScope, item.id);
+  if (!words.rendersMarkdown) {
+    return <NoticeLine text={summary} />;
+  }
+  return (
+    <Disclosure
+      variant="quiet"
+      id={disclosureKey}
+      defaultOpen={false}
+      ignoreBaseline
+      data-testid="system-notice-quiet-yield"
+      summary={<span>{summary}</span>}
+    >
+      <div className={CLASS.scaffoldBody} data-testid="system-notice-quiet-yield-body" data-message-body="">
+        <Markdown source={words.text} />
+      </div>
+    </Disclosure>
+  );
+}
+
 function SystemLine({
   item,
   turn,
@@ -261,6 +287,7 @@ function SystemLine({
   if (isScaffoldItem(item)) return <ScaffoldDisclosure item={item} sessionRef={sessionRef} />;
   if (isRoundTimingsItem(item)) return <RoundTimingsLine item={item} />;
   if (item.eventKind === APPROVAL_DECISION_EVENT_KIND) return <ApprovalDecisionLine item={item} />;
+  if (isQuietYield(item)) return <QuietYieldLine item={item} sessionRef={sessionRef} />;
   return <NoticeLine text={noticeText(item)} fallback={!systemEventWords(item).text} />;
 }
 
