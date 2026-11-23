@@ -5737,3 +5737,33 @@ func TestInstances_RemoveLeavesANewerCopilotLoginForTheWatcher(t *testing.T) {
 		t.Fatal("the sweep did not observe the newer external login")
 	}
 }
+
+// A login that lands after the restore wrote its bytes and released the record
+// lock is the user's newer account, not the hub's rollback. The adoption must
+// be the record the hub restored, known under the lock, so the next sweep sees
+// the newer login and announces it.
+func TestInstances_RemoveDoesNotAdoptALoginAfterItsRestore(t *testing.T) {
+	f := newFlakyReloadFixture(t, "", func(load int) bool { return load == 4 })
+	f.ctl.refreshProviderFile() // the startup observation this sweep follows
+	seedCopilotRecord(t, f, "github-copilot", "account-1")
+	newer := healthyCopilotRecordForTest("github-copilot", "account-2")
+	f.ctl.afterCopilotRestore = func() {
+		if err := githubcopilot.SaveAuth(f.stateDir, "github-copilot", newer); err != nil {
+			t.Errorf("SaveAuth(login after the restore): %v", err)
+		}
+	}
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "github-copilot"}); err == nil {
+		t.Fatal("Remove = nil, want the scripted reload failure")
+	}
+	record, err := githubcopilot.LoadAuth(f.stateDir, "github-copilot")
+	if err != nil {
+		t.Fatalf("the login that landed after the restore was lost: %v", err)
+	}
+	if record.AccountID != "account-2" {
+		t.Fatalf("account = %q, want the login that landed after the restore", record.AccountID)
+	}
+	if !f.ctl.refreshProviderFile() {
+		t.Fatal("the sweep adopted a login that landed after the restore")
+	}
+}

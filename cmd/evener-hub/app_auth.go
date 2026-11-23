@@ -63,7 +63,7 @@ type hubAuthController struct {
 	// wrote as already observed, so the notice sweep does not announce the
 	// login RPC's own write a second time. The server wires it to the
 	// instances controller, which owns the observation.
-	copilotRecordAdopted func()
+	copilotRecordAdopted func(instance string, record githubcopilot.AuthRecord)
 
 	credentialTestLoader credentialProbeLoader
 	credentialTests      map[string]*credentialTestCall
@@ -1437,7 +1437,7 @@ func (c *hubAuthController) pollCopilotDevice(ctx context.Context, provider, flo
 		return err
 	})
 	if applied && c.copilotRecordAdopted != nil {
-		c.copilotRecordAdopted()
+		c.copilotRecordAdopted(provider, record)
 	}
 	defer func() {
 		var status appwire.AuthStatusResponse

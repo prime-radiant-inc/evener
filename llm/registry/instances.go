@@ -3,6 +3,7 @@ package registry
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -1350,26 +1351,48 @@ func (r *Registry) HasInstance(name string) bool {
 // without any, which has neither.
 func (r *Registry) StateRoot() string { return r.stateRoot }
 
-// copilotRecordSignature is the hub's view of one Copilot record: existence,
-// the scheme and instance that filed it, the stable GitHub account, corruption,
-// and login health. Token values, obtained-at, and expiry rotate under an
-// unchanged account and roster, so they never enter it.
-func copilotRecordSignature(stateRoot, name string, now time.Time) string {
-	if stateRoot == "" {
-		return "missing"
-	}
-	record, err := githubcopilot.LoadAuth(stateRoot, name)
-	switch {
-	case errors.Is(err, githubcopilot.ErrAuthNotFound):
-		return "missing"
-	case err != nil:
-		return "corrupt"
-	}
+// CopilotSignature is the hub's view of one Copilot record value: the scheme
+// and instance that filed it, the stable GitHub account, and login health.
+// Token values, obtained-at, and expiry rotate under an unchanged account and
+// roster, so they never enter it.
+func CopilotSignature(record githubcopilot.AuthRecord, now time.Time) string {
 	health := "ready"
 	if record.NeedsLogin(now) {
 		health = "login-required"
 	}
 	return fmt.Sprintf("record\x01%s\x01%s\x01%s\x01%s", record.Instance, record.Scheme, record.AccountID, health)
+}
+
+// CopilotRawSignature is CopilotSignature for a record's raw bytes as the
+// record filed under instance: "corrupt" when the bytes do not parse or fail
+// that instance's validation. A caller that has just written the bytes under
+// the record lock can adopt exactly the record it wrote, rather than whatever
+// another writer lands after the lock is released.
+func CopilotRawSignature(instance string, raw []byte, now time.Time) string {
+	var record githubcopilot.AuthRecord
+	if err := json.Unmarshal(raw, &record); err != nil {
+		return "corrupt"
+	}
+	if err := record.Validate(); err != nil || record.Instance != instance {
+		return "corrupt"
+	}
+	return CopilotSignature(record, now)
+}
+
+// copilotRecordSignature is the on-disk view of one Copilot record: existence,
+// corruption, or the record's mint-free signature.
+func copilotRecordSignature(stateRoot, name string, now time.Time) string {
+	if stateRoot == "" {
+		return "missing"
+	}
+	raw, err := os.ReadFile(githubcopilot.AuthFilePath(stateRoot, name))
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return "missing"
+	case err != nil:
+		return "corrupt"
+	}
+	return CopilotRawSignature(name, raw, now)
 }
 
 // CopilotAuthSignature reports each Copilot record under the state root by

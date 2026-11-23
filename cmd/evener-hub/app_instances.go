@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/auth/githubcopilot"
@@ -81,6 +82,11 @@ type hubInstancesController struct {
 	// restore, before the record lock. A test plants a newer login inside that
 	// window deterministically. Nil in production.
 	beforeCopilotRestore func()
+	// afterCopilotRestore, when set, runs after a Copilot record restore has
+	// written its bytes and released the record lock, before the rollback
+	// adopts them. A test lands a login inside that window deterministically.
+	// Nil in production.
+	afterCopilotRestore func()
 
 	commitMu    sync.Mutex
 	onCommitted func(instanceCommitted)
@@ -143,31 +149,35 @@ func (c *hubInstancesController) write(l *registry.Layer) error {
 		// The RPC announces local writes. Acknowledge exactly
 		// the writer's canonical bytes so the watcher only adopts later edits.
 		c.providerFileSignature = providerConfigSignature(raw)
-		c.rememberCopilotAuthSignature()
 	}
 	return err
 }
 
-// rememberCopilotAuthSignature adopts the records on disk as already
+// setCopilotAuthSignature records one instance's observation as already
 // announced, so the notice watcher does not echo a write this hub just made.
-// Called with mu held.
-func (c *hubInstancesController) rememberCopilotAuthSignature() {
-	if c.reg == nil {
-		return
+// A caller passes the signature of the bytes it wrote, not a fresh snapshot:
+// a login that lands after that write must stay visible to the sweep. Called
+// with mu held.
+func (c *hubInstancesController) setCopilotAuthSignature(name, signature string) {
+	if c.copilotAuthSignature == nil {
+		c.copilotAuthSignature = make(map[string]string)
 	}
-	if reg := c.reg.Get(); reg != nil {
-		c.copilotAuthSignature = reg.CopilotAuthSignature()
-	}
+	c.copilotAuthSignature[name] = signature
 }
 
-// adoptCopilotAuthSignature adopts the records on disk as already announced on
-// behalf of a writer outside this controller, such as the hub's own device
-// login. It takes mu itself; rememberCopilotAuthSignature expects the caller
-// to hold it.
-func (c *hubInstancesController) adoptCopilotAuthSignature() {
+// forgetCopilotAuthSignature records that one instance's record is gone from
+// the announced observation. Called with mu held.
+func (c *hubInstancesController) forgetCopilotAuthSignature(name string) {
+	delete(c.copilotAuthSignature, name)
+}
+
+// adoptCopilotAuthSignature adopts the exact record this hub's device login
+// wrote, for that one instance. It takes mu itself; the mutation paths update
+// their own instance with setCopilotAuthSignature while holding mu.
+func (c *hubInstancesController) adoptCopilotAuthSignature(instance string, record githubcopilot.AuthRecord) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.rememberCopilotAuthSignature()
+	c.setCopilotAuthSignature(instance, registry.CopilotSignature(record, time.Now()))
 }
 
 // lockForWrite takes mu exclusively and clears the applied-write record, so
@@ -1901,7 +1911,6 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 	if err := c.moveCopilotRecord(oldName, newName); err != nil {
 		problems = append(problems, err)
 	}
-	c.rememberCopilotAuthSignature()
 	if len(problems) > 0 {
 		// The rename reached the file, so it is as persisted as one that ended
 		// cleanly: renamePersistedError is what the RPC handler reads to hand
@@ -1967,13 +1976,19 @@ func (c *hubInstancesController) moveCopilotRecordLocked(oldName, newName string
 	} else if !errors.Is(err, githubcopilot.ErrAuthNotFound) {
 		return fmt.Errorf("Copilot OAuth record for %q not read: %w", newName, err)
 	}
+	sourceSignature := registry.CopilotSignature(record, time.Now())
 	record.Instance = newName
 	if err := githubcopilot.SaveAuth(c.auth.stateDir, newName, record); err != nil {
 		return fmt.Errorf("Copilot OAuth record not copied: %w", err)
 	}
+	c.setCopilotAuthSignature(newName, registry.CopilotSignature(record, time.Now()))
 	if err := githubcopilot.DeleteAuth(c.auth.stateDir, oldName); err != nil {
+		// The source file is still the record this move read, so keep it
+		// announced as that record.
+		c.setCopilotAuthSignature(oldName, sourceSignature)
 		return fmt.Errorf("Copilot OAuth record for %q left behind: %w", oldName, err)
 	}
+	c.forgetCopilotAuthSignature(oldName)
 	return nil
 }
 
@@ -2507,15 +2522,17 @@ func (c *hubInstancesController) captureCopilotFile(name string) ([]byte, bool, 
 	return nil, false, fmt.Errorf("remove %s: read the Copilot OAuth record to preserve it: %w", name, err)
 }
 
-// restoreCopilotRecord puts the captured bytes back under the record lock and
-// reports whether it wrote them. A record that exists again is a login newer
-// than the capture and wins; writing over it would discard the account the
-// user just signed in with, and that login is not this hub's write to adopt.
-func (c *hubInstancesController) restoreCopilotRecord(name string, raw []byte) (bool, error) {
+// restoreCopilotRecord puts the captured bytes back under the record lock,
+// reports whether it wrote them, and signs those exact bytes while the lock is
+// still held. A record that exists again is a login newer than the capture and
+// wins; writing over it would discard the account the user just signed in
+// with, and that login is not this hub's write to adopt.
+func (c *hubInstancesController) restoreCopilotRecord(name string, raw []byte) (bool, string, error) {
 	if c.beforeCopilotRestore != nil {
 		c.beforeCopilotRestore()
 	}
 	restored := false
+	signature := ""
 	err := githubcopilot.WithRecordLock(c.auth.stateDir, name, func() error {
 		path := githubcopilot.AuthFilePath(c.auth.stateDir, name)
 		_, err := os.Stat(path)
@@ -2529,9 +2546,10 @@ func (c *hubInstancesController) restoreCopilotRecord(name string, raw []byte) (
 			return err
 		}
 		restored = true
+		signature = registry.CopilotRawSignature(name, raw, time.Now())
 		return nil
 	})
-	return restored, err
+	return restored, signature, err
 }
 
 // captureRefreshRejectionFile reads the refresh-refusal marker (#2479) beside
@@ -2650,19 +2668,26 @@ func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, ha
 	}
 	copilotRestored := true
 	copilotRestoredHere := false
+	copilotSignature := ""
 	if hasCopilot {
-		restored, err := c.restoreCopilotRecord(name, copilotBytes)
+		restored, signature, err := c.restoreCopilotRecord(name, copilotBytes)
 		copilotRestoredHere = restored
+		copilotSignature = signature
 		if err != nil {
 			copilotRestored = false
 			problems = append(problems, fmt.Errorf("%w (%w)", errCopilotRecordNotRestored, err))
 		}
+		if c.afterCopilotRestore != nil {
+			c.afterCopilotRestore()
+		}
 	}
 	if copilotRestoredHere {
-		// These are the hub's own captured bytes, so adopt them: the next
-		// sweep must not report the restore as an external login. A newer
-		// login the restore preserved above is not adopted.
-		c.rememberCopilotAuthSignature()
+		// The hub's own captured bytes are back, signed under the record
+		// lock, so adopt exactly that record: the next sweep must not report
+		// the restore as an external login. A login that landed after the
+		// lock was released is a different observation, and a newer login the
+		// restore preserved is not adopted at all.
+		c.setCopilotAuthSignature(name, copilotSignature)
 	}
 	var carried bool
 	switch supplies {
@@ -2763,8 +2788,8 @@ func (c *hubInstancesController) removeCredentialsAndCopilot(name string, copilo
 	deleted.copilotRecord = removedCopilot
 	if removedCopilot {
 		c.applied.markApplied()
+		c.forgetCopilotAuthSignature(name)
 	}
-	c.rememberCopilotAuthSignature()
 	// No probe that dialed the deleted credential may settle. The rejection
 	// itself stays until Remove knows the removal stands: a later failure
 	// puts the credential back.
