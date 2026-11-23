@@ -263,6 +263,7 @@
 
 .rawBody {
   composes: verbatim from "../../../../styles/text.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
   composes: verbatimWrap from "../../../../styles/text.module.css";
   display: block;
   width: 100%;
