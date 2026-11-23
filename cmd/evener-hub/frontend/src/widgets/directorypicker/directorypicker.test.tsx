@@ -6,8 +6,14 @@ import { expect, test, vi } from "vitest";
 import { readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import { DirectoryIcon as FromBarrel } from "..";
 import { appendPopout } from "../internal/popoutTestUtils";
+import { requireClass } from "../internal/requireClass";
 import rawStyles from "./directorypicker.module.css";
 import { DirectoryIcon, DirectoryPicker, type DirectoryPickerProps } from "./index";
+
+const pickerClass = {
+  panel: requireClass(rawStyles.panel, "directorypicker.module.css", "panel"),
+  body: requireClass(rawStyles.body, "directorypicker.module.css", "body"),
+};
 
 function setup(overrides: Partial<DirectoryPickerProps> = {}, onCommit: () => void = () => {}) {
   const props: DirectoryPickerProps = {
@@ -55,8 +61,8 @@ test("its folder glyph is exported from the widget barrel", () => {
 test("the picker's body keeps its own scrolling inside the shared Dialog", async () => {
   setup();
   const dialog = await screen.findByRole("dialog", { name: "Choose directory" });
-  expect(dialog.classList.contains(rawStyles.panel)).toBe(true);
-  expect(dialog.querySelector(`:scope > .${rawStyles.body}`)).toBeTruthy();
+  expect(dialog.classList.contains(pickerClass.panel)).toBe(true);
+  expect(dialog.querySelector(`:scope > .${pickerClass.body}`)).toBeTruthy();
 
   const css = readModuleCss(import.meta.url, "directorypicker.module.css");
   expect(topRuleBlock(css, ".body")).toContain("overflow: auto");

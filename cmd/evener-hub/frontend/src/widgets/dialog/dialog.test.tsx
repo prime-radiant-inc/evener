@@ -7,9 +7,16 @@ import { expect, test, vi } from "vitest";
 import { MOBILE_QUERY } from "../../shell/useIsMobile";
 import { escapeRegExp } from "../../styles/cssBlock";
 import { CloseIcon as FromBarrel } from "..";
+import { requireClass } from "../internal/requireClass";
 import { CloseIcon } from "./CloseIcon";
 import rawStyles from "./dialog.module.css";
 import { Dialog } from "./index";
+
+const dialogClass = {
+  panel: requireClass(rawStyles.panel, "dialog.module.css", "panel"),
+  body: requireClass(rawStyles.body, "dialog.module.css", "body"),
+  dialogVariant: requireClass(rawStyles.dialogVariant, "dialog.module.css", "dialogVariant"),
+};
 
 test("its close glyph is exported from the widget barrel", () => {
   expect(FromBarrel).toBe(CloseIcon);
@@ -440,10 +447,10 @@ test("panelClassName and bodyClassName append to the shared panel and body class
   );
   const panel = screen.getByRole("dialog");
   expect(panel.classList.contains("demoPanel")).toBe(true);
-  expect(panel.classList.contains(rawStyles.dialogVariant)).toBe(true);
+  expect(panel.classList.contains(dialogClass.dialogVariant)).toBe(true);
   const body = screen.getByText("Body");
   expect(body.classList.contains("demoBody")).toBe(true);
-  expect(body.classList.contains(rawStyles.body)).toBe(true);
+  expect(body.classList.contains(dialogClass.body)).toBe(true);
 
   rerender(
     <Dialog open onClose={vi.fn()} title="t" panelClassName="demoPanel" motion="none">
@@ -452,8 +459,8 @@ test("panelClassName and bodyClassName append to the shared panel and body class
   );
   const nonePanel = screen.getByRole("dialog");
   expect(nonePanel.classList.contains("demoPanel")).toBe(true);
-  expect(nonePanel.classList.contains(rawStyles.panel)).toBe(true);
-  expect(nonePanel.classList.contains(rawStyles.dialogVariant)).toBe(false);
+  expect(nonePanel.classList.contains(dialogClass.panel)).toBe(true);
+  expect(nonePanel.classList.contains(dialogClass.dialogVariant)).toBe(false);
 });
 
 // Beautiful UI chrome bands (design doc §6): the header and footer sit on an
