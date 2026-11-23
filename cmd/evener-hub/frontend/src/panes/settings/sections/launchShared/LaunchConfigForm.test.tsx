@@ -408,6 +408,7 @@ describe("failed save", () => {
     );
     await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
     await waitFor(() => expect(saveStatus().getAttribute("data-state")).toBe("error"));
+    expect(saveStatus().getAttribute("aria-live")).toBe("polite");
     expect(saveStatus().textContent).toContain("disk full");
     expect(toastKinds()).toEqual(["error"]);
   });

@@ -20,12 +20,11 @@
 import type { DaemonBlocker, DaemonIdentity, DaemonResident, DaemonRetireResponse } from "@evener/appwire-client";
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useCallback, useEffect, useState } from "react";
-import { usePaneDocument } from "../../../shell/paneDocument";
-import { useVisibleInterval } from "../../../shell/useVisibleInterval";
 import { daemonResidentsStore, residentRowKey, useDaemonResidentsStore } from "../../../stores/daemonResidents";
 import { Button, ConfirmDialog, EmptyState, InlineNotice, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./hubResidents.module.css";
+import { useSettingsPoll } from "./useSettingsPoll";
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -140,8 +139,7 @@ export function HubResidents() {
   useEffect(() => {
     void daemonResidentsStore.getState().refresh();
   }, []);
-  const ownerDocument = usePaneDocument();
-  useVisibleInterval(() => void daemonResidentsStore.getState().refresh(), POLL_INTERVAL_MS, true, ownerDocument);
+  useSettingsPoll(POLL_INTERVAL_MS, () => void daemonResidentsStore.getState().refresh());
 
   // Prune per-row retire results and action errors against the latest list.
   // A refusal is NOT superseded by a fresh snapshot: the list's lifecycle

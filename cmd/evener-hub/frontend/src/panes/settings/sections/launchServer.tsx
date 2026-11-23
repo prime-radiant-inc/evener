@@ -4,7 +4,7 @@
 // 3-state contract, a load failure has no distinct recoverable state, just a
 // permanent failure message (parity-m7-settings.md §9).
 
-import type { LaunchConfigDiagnostic, LaunchConfigLayer, LaunchOption } from "@evener/appwire-client";
+import type { LaunchConfigDiagnostic, LaunchConfigLayer } from "@evener/appwire-client";
 import { friendlyErrorMessage, LOCAL_HOST } from "@evener/appwire-client";
 import { useState } from "react";
 import { launchConfigStoreForHost } from "../../../stores/launchConfig";
@@ -13,7 +13,7 @@ import { requireClass } from "../../../widgets/internal/requireClass";
 import { Diagnostics } from "./diagnostics";
 import { HostScopedSurface } from "./hostScopedSurface";
 import styles from "./launchServer.module.css";
-import type { LaunchFormPaths } from "./launchShared/fields";
+import { type LoadState, launchFormPaths } from "./launchShared/fields";
 import { LaunchConfigForm } from "./launchShared/LaunchConfigForm";
 import { useHostScopedLoad, useLaunchConfigRefresh } from "./useConnectedEffect";
 
@@ -21,11 +21,6 @@ const CLASS = {
   root: requireClass(styles.root, "launchServer.module.css", "root"),
   help: requireClass(styles.help, "launchServer.module.css", "help"),
 };
-
-type LoadState =
-  | { phase: "loading" }
-  | { phase: "error"; message: string }
-  | { phase: "ready"; options: LaunchOption[]; current: LaunchConfigLayer };
 
 export interface LaunchServerSectionProps {
   /** Unused - kept so this component's signature matches every other
@@ -49,18 +44,9 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
   // for the local hub, a per-host instance (over evener/host/request) for a
   // remote one. Resolved per render; the instance is stable per host.
   const store = launchConfigStoreForHost(host);
-  // The browse-assisted path fields the shared form renders (path scalars, the
-  // prompt file sub-fields, and pathList add rows) list THIS host's filesystem,
-  // not the controller's: same store, same seam as the validate/save calls
-  // above (component 07b). evener/paths/complete and evener/path/validate are
-  // both on the proxy allow-list.
-  const paths: LaunchFormPaths = {
-    directory: {
-      validatePath: (path, kind) => store.getState().validatePath(path, kind),
-      createDirectory: (path) => store.getState().createDirectory(path),
-    },
-    complete: (prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles),
-  };
+  // Browse-assisted path fields list THIS host's filesystem: same store and
+  // proxy allow-list as the validate/save calls above (component 07b).
+  const paths = launchFormPaths(store);
   const [load, setLoad] = useState<LoadState>({ phase: "loading" });
   // A re-read of content this pane is ALREADY showing that failed. Kept apart
   // from `load` because it is not a load failure: the form (and the draft in it)

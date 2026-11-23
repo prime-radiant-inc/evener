@@ -30,6 +30,7 @@ import {
   emptyChoiceLabel,
   type LaunchConfigLayer,
   type LaunchConfigLayerName,
+  type LaunchConfigStore,
   type LaunchOption,
   PROMPT_COMPOSITE_SPECS,
   resolvedDefaultLabel,
@@ -101,6 +102,25 @@ export const controllerLaunchFormPaths: LaunchFormPaths = {
   directory: directoryActions,
   complete: (prefix, includeFiles) => extensionsStore.getState().completePaths(prefix, includeFiles),
 };
+
+/** Binds the form's path picker to one launch-config gateway, so a
+ * host-scoped pane browses ITS host's filesystem (component 07b). */
+export function launchFormPaths(store: LaunchConfigStore): LaunchFormPaths {
+  return {
+    directory: {
+      validatePath: (path, kind) => store.getState().validatePath(path, kind),
+      createDirectory: (path) => store.getState().createDirectory(path),
+    },
+    complete: (prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles),
+  };
+}
+
+/** The load state both launch-config panes narrow on. `globalDefaults` is the
+ * project pane's read-only global layer; session defaults never fills it. */
+export type LoadState =
+  | { phase: "loading" }
+  | { phase: "error"; message: string }
+  | { phase: "ready"; options: LaunchOption[]; current: LaunchConfigLayer; globalDefaults?: LaunchConfigLayer };
 
 /** A path field: PathField in a FormRow, so the row's label, help, error, and
  * default hint all behave exactly as the plain-Input rows around it do. The
