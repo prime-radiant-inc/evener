@@ -47,6 +47,7 @@ import {
   registerConversationHostVisibility,
   restrictConversationHandoff,
 } from "../../stores/conversationClaimHandoff";
+import { useTopNotesExpanded } from "../../stores/topNotes";
 import { Chevron, IconButton } from "../../widgets";
 import { ActivitySidebar } from "../activitybar/ActivitySidebar";
 import { useActivitySidebarStore } from "../activitybar/activitySidebarStore";
@@ -764,6 +765,20 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const panelPaneTypes = new Set(["sessionTasks", "sessionDetails"]);
   const isPanelPane = focusedPane !== null && panelPaneTypes.has(focusedPane.type);
   const focusedSessionRef = focusedPane?.type === "session" ? (refParam(focusedPane.params) ?? undefined) : undefined;
+  // The focused session's notes card attaches to the solid bar's seam
+  // (topnotespanel.module.css), so its expansion must restore a floating
+  // bar: the reveal is chrome, not a scroll gesture, and the capsules would
+  // otherwise sit over the card's header row. The empty string is the
+  // no-focused-session key - the store holds no such ref, so it reads false.
+  const focusedNotesExpanded = useTopNotesExpanded(focusedSessionRef ?? "");
+  useEffect(() => {
+    if (!focusedNotesExpanded || !topBarCollapsedRef.current) return;
+    topBarCollapsedRef.current = false;
+    setTopBarCollapsed(false);
+    // Unlike a focus change, the reader stays in this pane, so the collapse
+    // scroller stays armed: the compensation effect keeps the reading
+    // position stable when the pane's layout regains the bar's height.
+  }, [focusedNotesExpanded]);
   const livePaneIds = useMemo(() => new Set(panes.map((pane) => pane.id)), [panes]);
   const retainedParentRef = focusedPane?.type === "session" ? conversationOpenParentRef(focusedPane) : undefined;
   const retainedParentAvailable =

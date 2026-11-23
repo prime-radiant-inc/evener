@@ -1456,8 +1456,8 @@ over it.
 
 Below the 899px boundary the phone layout is the product, on phones, tablets,
 and the iPhone Duo's interior. The transcript owns the screen: at rest the
-persistent chrome is the StackHost bar, the whiteboard's one quiet line, and
-the floating composer — around 126px of an 844px viewport, 15%. The fluency
+persistent chrome is the StackHost bar, the session notes' one quiet line, and
+the floating composer — around 105px of an 844px viewport, 12%. The fluency
 pass (Jesse 2026-11-22, artifact `evener-fluent-prototype-v8a`; evolution
 spec `docs/superpowers/specs/2026-11-22-mobile-fluency-evolution.md`) adds no
 tokens: it removes backgrounds and borders that carry no information.
@@ -1467,9 +1467,12 @@ Desktop's DockHost layout is unchanged by this pass.
 session-family pane (session, sessionZoom, transcript), scrolling down past
 48px makes the solid bar transparent and floats its Back and trailing
 controls as blur capsules over the content, clear of the platform status bar
-(`top: calc(env(safe-area-inset-top) + 6px)`); scrolling up 8px or reaching
-the top restores the solid bar. The title fades; the controls stay. The board
-keeps a sticky header always — its search and groups are how you navigate.
+(`top: calc(env(safe-area-inset-top) + 6px)`); scrolling up 8px, reaching
+the top, or expanding the session notes card restores the solid bar — the
+card attaches to the bar's seam, so its reveal is chrome, not a scroll
+gesture, and the capsules must not sit over the card's header row. The
+title fades; the controls stay. The board keeps a sticky header always —
+its search and groups are how you navigate.
 
 **The composer is one floating pill.** No outer rectangle, no border-top, no
 hint row. The outer container is transparent; the pill itself is
@@ -1478,10 +1481,14 @@ centered with a comfortable max-width. The transcript's scroll carries
 bottom padding so the last turn slides under the pill instead of stopping
 above a boxed footer.
 
-**The whiteboard is one quiet line at the head of the scroll**, not a bar:
-an em-dash-framed `Whiteboard · N notes · N links` line that expands to the
-note, agent note, and links on tap, and compacts its padding when the header
-collapses. It belongs to the reading surface, not the chrome.
+**Session notes (the whiteboard) are one quiet line above the
+transcript**, not a bar: a centered, em-dash-framed `Notes · N notes ·
+N links` count in caption ink, with no card chrome. The card exists only
+while expanded, and then it attaches to the solid bar's seam; the
+first-priority content rides the trigger's accessible name, so a screen
+reader still hears the note the line no longer previews. Collapsed, the
+line belongs to the reading surface — it keeps the body's own top spacing
+below the bar, and on touch it grows to the 44px tap floor.
 
 **One entry to the inspectors.** The header's ⋯ control opens a bottom sheet
 holding the session facts — model, context meter, effort, work time, queue —

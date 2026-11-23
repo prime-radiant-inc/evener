@@ -24,6 +24,7 @@ import {
   activityDetailsThread,
   activitySummary,
 } from "../../stores/sessionActivityTestUtils";
+import { topNotesStore } from "../../stores/topNotes";
 import { initTranscriptDisplay, resetTranscriptDisplayStoreForTests } from "../../stores/transcriptDisplay";
 import { readModuleCss } from "../../styles/cssBlock";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
@@ -377,6 +378,7 @@ beforeEach(() => {
   resetActivitySidebarStoreForTests();
   resetConnectionStoreForTests();
   resetChromeStoreForTests();
+  topNotesStore.getState().resetForTests();
   setLastPopstateWasTrustedForTests(false);
 });
 
@@ -910,6 +912,50 @@ test("a non-session pane keeps the top bar solid while its body scrolls", async 
     host.unmount();
   } finally {
     restoreDoc();
+  }
+});
+
+// The focused session's notes card attaches to the solid bar's seam
+// (topnotespanel.module.css): expanding it is a reveal, not a scroll
+// gesture, so a floating bar must restore itself first - its capsules
+// would otherwise sit over the card's header row. Collapsing the notes
+// leaves the bar solid; the next scroll decides it.
+test("expanding the focused session's notes restores a floating top bar", async () => {
+  window.history.replaceState({}, "", "/");
+  const restoreSession = registerPaneForTests({
+    id: "session",
+    component: lazy(() =>
+      Promise.resolve({
+        default: () => (
+          <div data-testid="session-scroll" style={{ height: "100%", overflowY: "auto" }}>
+            <div style={{ height: 2400 }} />
+          </div>
+        ),
+      }),
+    ),
+    title: () => "Session",
+  });
+  try {
+    const host = await act(async () => render(<StackHost routeDeferred />));
+    await act(async () => {
+      workspaceStore.getState().openPane("session", { ref: "local:a" });
+    });
+    const bar = screen.getByTestId("topbar");
+    const scroller = screen.getByTestId("session-scroll");
+    act(() => {
+      scroller.scrollTop = 200;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
+
+    act(() => {
+      topNotesStore.getState().setExpanded("local:a", true);
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).not.toBe("true"));
+    host.unmount();
+  } finally {
+    topNotesStore.getState().resetForTests();
+    restoreSession();
   }
 });
 

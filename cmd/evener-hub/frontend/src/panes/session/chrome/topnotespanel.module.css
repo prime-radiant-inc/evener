@@ -1,15 +1,23 @@
+/* The whiteboard's resting state is one quiet line on the reading surface
+ * (docs/web-ui/design-system.md section 12): a centered, em-dash-framed
+ * count of what the notes hold, in caption ink, with no card chrome. The
+ * card exists only while expanded - and only then attaches to the header. */
+
 .topNotesPanel {
   display: flex;
   flex-direction: column;
-  /* Attached to the header in standalone session panes: the negative margin
-   * below cancels the body's top padding so there is no gap below the
-   * header; the top is square (no radius, no top border) and reads as a
-   * continuation of the header, whose own border-bottom is the single seam.
-   * Inside cascade columns the body is flush (bodyNoScroll) with no padding
-   * to cancel, so that margin rule lives in a session-scoped override below
-   * and stays 0 there. Only the bottom corners are rounded. The raised lift
-   * is the intentional separation from the transcript - a soft ambient
-   * rather than a hard bar. */
+}
+
+/* Expanded, the panel is a card attached to the header in standalone session
+ * panes: the negative margin below cancels the body's top padding so there is
+ * no gap below the header; the top is square (no radius, no top border) and
+ * reads as a continuation of the header, whose own border-bottom is the single
+ * seam. Inside cascade columns the body is flush (bodyNoScroll) with no
+ * padding to cancel, so that margin rule lives in a session-scoped override
+ * below and stays 0 there. Only the bottom corners are rounded. The raised
+ * lift is the intentional separation from the transcript - a soft ambient
+ * rather than a hard bar. */
+.topNotesPanel[data-expanded="true"] {
   position: relative;
   z-index: var(--z-raised);
   border: 1px solid var(--edge);
@@ -27,23 +35,58 @@
 
 /* Only the padded standalone session body contributes a top inset to cancel;
  * the cascade's flush body (bodyNoScroll + column .content) has none, so the
- * panel must not pull above its scrollport there. */
-:global([data-pane-scaffold^="session:"]) .topNotesPanel {
+ * card must not pull above its scrollport there. Collapsed, the line keeps
+ * the body's own top padding like any other scroll content: it belongs to the
+ * reading surface, not the header. */
+:global([data-pane-scaffold^="session:"]) .topNotesPanel[data-expanded="true"] {
   margin-top: calc(-1 * var(--space-5));
 }
 
 /* Disclosure's summary owns the flex layout, hover and open washes, cursor,
- * color, and focus ring; these rows add only the notes bar's geometry and the
- * top-aligned preview that the card attaches to its header.
+ * color, and focus ring; these rows add only the notes bar's geometry: the
+ * quiet line's alignment and the card the expanded state attaches to its
+ * header.
  * No edge of its own: the card root draws the boundary, so a bottom border
  * here would double the card's own bottom edge in the collapsed state. The
  * header/body divider belongs to the expanded header only. */
 .summary {
-  align-items: flex-start;
+  align-items: center;
+  padding: var(--space-1) var(--space-2);
   min-height: 28px;
-  padding: var(--space-1) var(--space-3);
+  /* The hover wash is Disclosure's; the rounded control shape keeps that
+   * wash a soft pill on the reading surface rather than a square slab. */
+  border-radius: var(--radius-control);
   font-size: var(--font-size-caption);
   user-select: none;
+}
+
+/* Collapsed, the chevron hides: the em-dash-framed line is itself the
+ * disclosure affordance (aria-expanded still announces the state to screen
+ * readers), and a dangling chevron would unbalance the centered line. The
+ * expanded header keeps it. */
+.summary .chevron {
+  display: none;
+}
+
+/* The line centers on the reading surface: the row spans the transcript's
+ * width, so the counts sit mid-stream like a quiet divider, not
+ * left-anchored like a heading. */
+.summary .summaryLeft {
+  justify-content: center;
+}
+
+.summaryLine {
+  color: var(--ink-low);
+  line-height: var(--line-height-ui);
+}
+
+/* Tap floor (tokens.css's --tap-min): the quiet line is thin at rest, but it
+ * is the only way into the notes - on touch it grows to the 44px target and
+ * the content centers within it. */
+@media (max-width: 899px), (any-pointer: coarse) {
+  .summary {
+    min-height: var(--tap-min);
+  }
 }
 
 .summaryLeft {
@@ -65,34 +108,6 @@
   flex-shrink: 0;
 }
 
-.sourceIcon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 14px;
-  height: 14px;
-  margin-top: 2px;
-  color: var(--ink-mid);
-  flex-shrink: 0;
-}
-
-.clampedText {
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  line-height: var(--line-height-ui);
-  word-break: break-word;
-  color: var(--ink-hi);
-  white-space: pre-line;
-}
-
-.placeholder {
-  color: var(--ink-low);
-  line-height: var(--line-height-ui);
-}
-
 .expandedHeader {
   height: 28px;
   min-height: 28px;
@@ -112,7 +127,7 @@
 }
 
 @media (max-width: 899px) {
-  :global([data-pane-scaffold^="session:"]) .topNotesPanel {
+  :global([data-pane-scaffold^="session:"]) .topNotesPanel[data-expanded="true"] {
     margin-top: calc(-1 * var(--space-4));
   }
 }

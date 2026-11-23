@@ -92,7 +92,11 @@ test("returns null if canReadSharedNotes is false", () => {
   expect(result.current).toBeUndefined();
 });
 
-test("collapsed default shows first priority: human note with person icon", () => {
+// The collapsed whiteboard is one quiet line on the reading surface
+// (docs/web-ui/design-system.md section 12): counts, not content, with the
+// first-priority content carried by the accessible name so a screen reader
+// still hears the note the line no longer previews.
+test("collapsed default counts what the whiteboard holds and names the first-priority content", () => {
   const model = makeModel({
     humanNote: "First line of human note\nSecond line",
     agentNote: "Agent note",
@@ -101,12 +105,11 @@ test("collapsed default shows first priority: human note with person icon", () =
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
   expect(panelSummary()).toBeTruthy();
-  expect(screen.getByTestId("top-notes-icon-person")).toBeTruthy();
-  expect(screen.queryByTestId("top-notes-icon-skill")).toBeNull();
-  expect(screen.getByText(/First line of human note/)).toBeTruthy();
+  expect(screen.getByText("— Notes · 2 notes · 1 link —")).toBeTruthy();
+  expect(panelSummary().getAttribute("aria-label")).toContain("First line of human note");
 });
 
-test("collapsed default shows second priority: agent note with skill icon when human note is empty", () => {
+test("collapsed default names the agent note when the human note is empty", () => {
   const model = makeModel({
     humanNote: "",
     agentNote: "First line of agent note\nSecond line",
@@ -114,12 +117,11 @@ test("collapsed default shows second priority: agent note with skill icon when h
   });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
-  expect(screen.getByTestId("top-notes-icon-skill")).toBeTruthy();
-  expect(screen.queryByTestId("top-notes-icon-person")).toBeNull();
-  expect(screen.getByText(/First line of agent note/)).toBeTruthy();
+  expect(screen.getByText("— Notes · 1 note · 1 link —")).toBeTruthy();
+  expect(panelSummary().getAttribute("aria-label")).toContain("First line of agent note");
 });
 
-test("collapsed default shows third priority: links with globe icon when notes are empty", () => {
+test("collapsed default counts links alone when notes are empty", () => {
   const model = makeModel({
     humanNote: "",
     agentNote: "",
@@ -130,8 +132,7 @@ test("collapsed default shows third priority: links with globe icon when notes a
   });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
-  expect(screen.getByTestId("top-notes-icon-globe")).toBeTruthy();
-  expect(screen.getByText(/2 links/)).toBeTruthy();
+  expect(screen.getByText("— Notes · 2 links —")).toBeTruthy();
 });
 
 test("collapsed default shows empty placeholder when no notes or links exist", () => {
@@ -143,9 +144,7 @@ test("collapsed default shows empty placeholder when no notes or links exist", (
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
   expect(summaryPlaceholderReason()).toBe("empty");
-  expect(screen.queryByTestId("top-notes-icon-person")).toBeNull();
-  expect(screen.queryByTestId("top-notes-icon-skill")).toBeNull();
-  expect(screen.queryByTestId("top-notes-icon-globe")).toBeNull();
+  expect(screen.getByText("— Add a note… —")).toBeTruthy();
 });
 
 test("collapsed summary treats a whitespace-only note as empty", () => {
@@ -157,8 +156,6 @@ test("collapsed summary treats a whitespace-only note as empty", () => {
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
   expect(summaryPlaceholderReason()).toBe("empty");
-  expect(screen.queryByTestId("top-notes-icon-person")).toBeNull();
-  expect(screen.queryByTestId("top-notes-icon-skill")).toBeNull();
 });
 
 test("clicking the collapsed summary expands the panel, clicking header collapses it", async () => {
@@ -271,14 +268,17 @@ test("read-only sessions show a view-only empty state instead of a write invitat
   expect(screen.queryByRole("textbox", { name: "Human note" })).toBeNull();
 });
 
-test("the summary's accessible name tracks the collapsed preview and becomes an action label when expanded", async () => {
+test("the summary's accessible name carries the quiet line's content and becomes an action label when expanded", async () => {
   const user = userEvent.setup();
   const model = makeModel({ humanNote: "Saved note" });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
   const summary = panelSummary();
 
-  // Collapsed, the visible preview is the name: no label overrides it.
-  expect(summary.hasAttribute("aria-label")).toBe(false);
+  // Collapsed, the visible line counts quietly on purpose; the accessible
+  // name carries the first-priority content instead of the visible counts.
+  const collapsedName = summary.getAttribute("aria-label");
+  expect(collapsedName).not.toBeNull();
+  expect(collapsedName).not.toBe(summary.textContent);
 
   await user.click(summary);
 
@@ -289,23 +289,25 @@ test("the summary's accessible name tracks the collapsed preview and becomes an 
   expect(expandedName).not.toBe(summary.textContent);
 });
 
-test("collapsed summary shows unsaved draft edits immediately, in phrasing content", async () => {
+test("collapsed summary shows unsaved draft edits immediately, on the trigger's name", async () => {
   const user = userEvent.setup();
   const model = makeModel({ humanNote: "Saved note" });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
   // Type without committing: model.humanNote stays "Saved note" until the
-  // 10s blur-save lands, but the summary must mirror the editor's draft the
-  // moment the panel collapses.
+  // 10s blur-save lands, but the collapsed line must mirror the editor's
+  // draft the moment the panel collapses. The counts stay counts; the draft
+  // rides the trigger's accessible name.
   await user.click(panelSummary());
   const textarea = screen.getByRole("textbox", { name: "Human note" }) as HTMLTextAreaElement;
   await user.type(textarea, " plus edits");
 
   await user.click(panelSummary());
-  const summaryText = screen.getByText("Saved note plus edits");
-  // A summary admits only phrasing content, so the clamped summary text is a
-  // span, not a div.
-  expect(summaryText.tagName).toBe("SPAN");
+  const line = screen.getByText("— Notes · 1 note —");
+  // A summary admits only phrasing content, so the quiet line is a span,
+  // not a div.
+  expect(line.tagName).toBe("SPAN");
+  expect(panelSummary().getAttribute("aria-label")).toContain("Saved note plus edits");
 });
 
 test("a focus request made before the panel mounts is served on mount", async () => {
@@ -365,9 +367,9 @@ test("collapsed summary follows model updates after the draft record goes clean"
   await user.click(panelSummary());
 
   // Another client saves a new note while the panel is collapsed. The
-  // summary must show it, not the stale clean record.
+  // collapsed line must carry it, not the stale clean record.
   view.rerender(<TopNotesPanel sessionRef={model.ref} model={{ ...model, humanNote: "Updated by another tab" }} />);
-  expect(screen.getByText("Updated by another tab")).toBeTruthy();
+  expect(panelSummary().getAttribute("aria-label")).toContain("Updated by another tab");
 });
 
 test("a session that turns read-only shows the saved note, not the stranded draft", async () => {
@@ -380,10 +382,12 @@ test("a session that turns read-only shows the saved note, not the stranded draf
   await user.click(panelSummary());
 
   // The session ends with the edit unsaved: the read-only body shows the
-  // saved note, so the summary must agree with what expanding will show.
+  // saved note, so the collapsed line must agree with what expanding will
+  // show: the saved note, not the stranded draft.
   view.rerender(<TopNotesPanel sessionRef={model.ref} model={{ ...model, status: { type: "ended" } }} />);
-  expect(screen.queryByText("Saved note never saved")).toBeNull();
-  expect(screen.getByText("Saved note")).toBeTruthy();
+  const label = panelSummary().getAttribute("aria-label") ?? "";
+  expect(label).toContain("Saved note");
+  expect(label).not.toContain("never saved");
 });
 
 test("a focus request never lands on another session's editor after pane reuse", async () => {
@@ -549,8 +553,8 @@ test("no state carries an affordance hint", async () => {
   const model = makeModel({ humanNote: "Saved note" });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
-  // Collapsed: the bar carries no "Click to expand" invite - the disclosure
-  // affordance is the chevron and the row itself.
+  // Collapsed: the line carries no "Click to expand" invite - the disclosure
+  // affordance is the row itself.
   expect(screen.queryByText("Click to expand")).toBeNull();
   expect(panelSummary().getAttribute("aria-describedby")).toBeNull();
 
@@ -561,31 +565,58 @@ test("no state carries an affordance hint", async () => {
   expect(panelSummary().getAttribute("aria-describedby")).toBeNull();
 });
 
-test("the panel is an inset card with a boundary that cannot clip", () => {
-  // In standalone session panes the card attaches to the header: it cancels
-  // the body's top padding and reads as a continuation of the header's
-  // hairline, so the top is square and the seam is a single line. Cascade
-  // columns render the same panel inside a flush body (bodyNoScroll) with
-  // no padding to cancel — there the margin stays 0 and is scoped to
-  // session bodies only, while a separate geometry guard asserts the
-  // trigger remains visible inside each column's scrollport.
+test("collapsed is a quiet line; the card chrome exists only while expanded", () => {
+  // Collapsed, the whiteboard is one quiet line on the reading surface
+  // (section 12): no border, no shadow, no card background. Expanded in
+  // standalone session panes the card attaches to the header: it cancels the
+  // body's top padding and reads as a continuation of the header's hairline,
+  // so the top is square and the seam is a single line. Cascade columns render
+  // the same panel inside a flush body (bodyNoScroll) with no padding to
+  // cancel — there the margin stays 0 and is scoped to session bodies only,
+  // while a separate geometry guard asserts the trigger remains visible inside
+  // each column's scrollport.
   const css = readModuleCss(import.meta.url, "topnotespanel.module.css");
+  // Collapsed: quiet. The line rides the body's own top padding like any
+  // other scroll content - no card, no chrome.
   const root = topRuleBlock(css, ".topNotesPanel");
-  expect(root).toContain("border: 1px solid var(--edge)");
-  expect(root).toContain("border-top: none");
-  expect(root).toContain("border-radius: 0 0 var(--radius-panel)");
-  expect(root).not.toContain("--shadow-overlay");
-  expect(root).toContain("box-shadow:");
-  expect(root).toContain("var(--shadow-raised)");
-  // The attach-to-header margin must not apply everywhere: only session
-  // bodies have padding to cancel, so it is scoped to [data-pane-scaffold^="session:"]
-  // and the cascade column's trigger geometry is asserted by the browser guard.
-  expect(css).toContain(':global([data-pane-scaffold^="session:"]) .topNotesPanel');
+  expect(root).not.toContain("border");
+  expect(root).not.toContain("box-shadow");
+  expect(root).not.toContain("background");
+
+  // Expanded: the card. A real border, not --shadow-overlay's ring: the ring
+  // is a spread box-shadow, which paints outside the border box and is shaved
+  // wherever a clipping ancestor cuts the card's edge.
+  const card = topRuleBlock(css, '.topNotesPanel[data-expanded="true"]');
+  expect(card).toContain("border: 1px solid var(--edge)");
+  expect(card).toContain("border-top: none");
+  expect(card).toContain("border-radius: 0 0 var(--radius-panel)");
+  expect(card).not.toContain("--shadow-overlay");
+  expect(card).toContain("box-shadow:");
+  expect(card).toContain("var(--shadow-raised)");
+  expect(card).toContain("overflow: hidden");
+  expect(card).toContain("background: var(--surface-2)");
+
+  // The attach-to-header margin belongs to the expanded card only - collapsed,
+  // the line keeps the body's own padding. And it must not apply everywhere:
+  // only session bodies have padding to cancel, so it is scoped to
+  // [data-pane-scaffold^="session:"]; the cascade column's trigger geometry is
+  // asserted by the browser guard.
+  expect(css).toContain(':global([data-pane-scaffold^="session:"]) .topNotesPanel[data-expanded="true"]');
   expect(css).toContain("margin-top: calc(-1 * var(--space-5))");
 
-  // The collapsed trigger must not add a bottom edge of its own: the card
-  // already draws that edge, and a second one doubles it.
-  expect(topRuleBlock(css, ".summary")).not.toMatch(/border-bottom/);
+  // The collapsed line is quiet and centered: this module adds no background
+  // or edge of its own (Disclosure's summary owns the washes; the expanded
+  // card draws that edge, and a second one doubles it), the line itself is
+  // low ink, and the chevron stays hidden so the counts sit mid-stream.
+  const summary = topRuleBlock(css, ".summary");
+  expect(summary).not.toMatch(/border-bottom/);
+  expect(summary).not.toMatch(/background/);
+  expect(topRuleBlock(css, ".summaryLine")).toContain("color: var(--ink-low)");
+  expect(topRuleBlock(css, ".summary .chevron")).toContain("display: none");
+  expect(css).toContain("justify-content: center");
+  // The quiet line is still the only way into the notes: on touch it grows to
+  // the 44px tap floor rather than staying a thin caption row.
+  expect(css).toContain("min-height: var(--tap-min)");
 
   // The shared Disclosure's summary owns the inset focus ring for both states
   // (widgets/disclosure's own test asserts it); this card must not restate it.
@@ -771,9 +802,10 @@ test("an outside press keeps the draft and schedules the save it implies", async
   await user.click(outside);
 
   // Collapsing is not a save (docs/web-ui/shared-notes.md), and the edit is
-  // still there to reopen.
+  // still there to reopen: the counts stay counts, the draft rides the
+  // trigger's accessible name.
   expect(topNotesStore.getState().isExpanded(model.ref)).toBe(false);
-  expect(screen.getByText("Saved note plus edits")).toBeTruthy();
+  expect(panelSummary().getAttribute("aria-label")).toContain("Saved note plus edits");
   // Nothing has been written yet; the debounce is still running.
   expect(setNote).not.toHaveBeenCalled();
   expect(result.current?.dirty).toBe(true);

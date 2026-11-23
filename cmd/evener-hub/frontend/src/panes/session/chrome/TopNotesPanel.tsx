@@ -3,7 +3,7 @@ import { canReadSharedNotes, canWriteSharedNotes } from "@evener/appwire-client"
 import { useEffect, useRef } from "react";
 import { syncHumanNote, useHumanNoteDraft } from "../../../stores/humanNoteDrafts";
 import { topNotesStore, usePendingTopNotesFocus, useTopNotesExpanded } from "../../../stores/topNotes";
-import { Chevron, Disclosure, Eyebrow, ToolIcon } from "../../../widgets";
+import { Chevron, Disclosure, Eyebrow } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { useDismissOnOutsidePress } from "../../../widgets/internal/useDismissOnOutsidePress";
 import { useOwnedDocument } from "../../../widgets/internal/useOwnedDocument";
@@ -14,10 +14,8 @@ const CLASS = {
   topNotesPanel: requireClass(styles.topNotesPanel, "topnotespanel.module.css", "topNotesPanel"),
   summary: requireClass(styles.summary, "topnotespanel.module.css", "summary"),
   summaryLeft: requireClass(styles.summaryLeft, "topnotespanel.module.css", "summaryLeft"),
+  summaryLine: requireClass(styles.summaryLine, "topnotespanel.module.css", "summaryLine"),
   chevron: requireClass(styles.chevron, "topnotespanel.module.css", "chevron"),
-  sourceIcon: requireClass(styles.sourceIcon, "topnotespanel.module.css", "sourceIcon"),
-  clampedText: requireClass(styles.clampedText, "topnotespanel.module.css", "clampedText"),
-  placeholder: requireClass(styles.placeholder, "topnotespanel.module.css", "placeholder"),
   expandedHeader: requireClass(styles.expandedHeader, "topnotespanel.module.css", "expandedHeader"),
   expandedBody: requireClass(styles.expandedBody, "topnotespanel.module.css", "expandedBody"),
 };
@@ -135,18 +133,14 @@ export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanel
   const hasAgentNote = hasNoteText(model.agentNote);
   const hasUrls = model.sessionUrls.length > 0;
 
-  let sourceIconKind: "person" | "skill" | "globe" | null = null;
   let summaryText = "";
   let isPlaceholder = false;
 
   if (hasHumanNote) {
-    sourceIconKind = "person";
     summaryText = humanNote;
   } else if (hasAgentNote) {
-    sourceIconKind = "skill";
     summaryText = model.agentNote;
   } else if (hasUrls) {
-    sourceIconKind = "globe";
     summaryText = `${model.sessionUrls.length} ${model.sessionUrls.length === 1 ? "link" : "links"}`;
   } else {
     isPlaceholder = true;
@@ -154,6 +148,23 @@ export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanel
     // the empty bar must not invite typing it can't accept.
     summaryText = canWrite ? "Add a note…" : "No notes yet";
   }
+
+  // The collapsed whiteboard is one quiet line (docs/web-ui/design-system.md
+  // section 12): counts of what it holds, not a preview of the content. The
+  // first-priority content rides the accessible name instead, so a screen
+  // reader still hears the note the line no longer shows.
+  const noteCount = (hasHumanNote ? 1 : 0) + (hasAgentNote ? 1 : 0);
+  const lineText = isPlaceholder
+    ? summaryText
+    : [
+        "Notes",
+        noteCount > 0 ? `${noteCount} ${noteCount === 1 ? "note" : "notes"}` : null,
+        model.sessionUrls.length > 0
+          ? `${model.sessionUrls.length} ${model.sessionUrls.length === 1 ? "link" : "links"}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
 
   const toggle = () => {
     topNotesStore.getState().toggle(sessionRef);
@@ -190,14 +201,18 @@ export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanel
     <div
       ref={rootRef}
       className={CLASS.topNotesPanel}
+      data-expanded={expanded ? "true" : undefined}
       data-notes-panel-ref={sessionRef}
       data-testid="top-notes-panel"
       onKeyDown={handleKeyDown}
     >
-      {/* Collapsed, the visible preview IS the accessible name (the note text,
-          the link count, or the placeholder); expanded, the visible heading
-          does not say what activating the row does, so that state carries an
-          explicit action label instead. */}
+      {/* One disclosure trigger both states share (the collapsed quiet line
+          and the expanded header row): same widget, same toggle, same
+          chevron - only the resting style and content differ. Collapsed, the
+          visible counts are quiet on purpose; the accessible name carries the
+          first-priority content (the note text, or the link count) so a screen
+          reader still hears what the line stands for. A placeholder's visible
+          text already says everything there is. */}
       <Disclosure
         open={expanded}
         onOpenChange={toggle}
@@ -206,23 +221,12 @@ export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanel
             {expanded ? (
               <Eyebrow as="span">Session notes</Eyebrow>
             ) : (
-              <>
-                {sourceIconKind && (
-                  <span
-                    className={CLASS.sourceIcon}
-                    data-testid={`top-notes-icon-${sourceIconKind}`}
-                    aria-hidden="true"
-                  >
-                    <ToolIcon kind={sourceIconKind} size={14} />
-                  </span>
-                )}
-                <span
-                  className={isPlaceholder ? CLASS.placeholder : CLASS.clampedText}
-                  data-reason={isPlaceholder ? (canWrite ? "empty" : "read-only") : undefined}
-                >
-                  {summaryText}
-                </span>
-              </>
+              <span
+                className={CLASS.summaryLine}
+                data-reason={isPlaceholder ? (canWrite ? "empty" : "read-only") : undefined}
+              >
+                {`— ${lineText} —`}
+              </span>
             )}
           </span>
         }
@@ -232,7 +236,9 @@ export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanel
           </span>
         )}
         summaryClassName={expanded ? CLASS.expandedHeader : CLASS.summary}
-        summaryAriaLabel={(open) => (open ? "Collapse session notes" : undefined)}
+        summaryAriaLabel={(open) =>
+          open ? "Collapse session notes" : isPlaceholder ? undefined : `Session notes: ${summaryText}`
+        }
       >
         <div className={CLASS.expandedBody} data-testid="top-notes-expanded-content">
           <NotesPanelBody sessionRef={sessionRef} model={model} sourcePaneId={sourcePaneId} editorRef={editorRef} />
