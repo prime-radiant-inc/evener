@@ -116,12 +116,10 @@
  * children in a centred column both overflowed this box and clipped into a
  * visible seam across it (kata edhz, measured at y=78 inside an 80px tile). */
 .imageTile {
+  composes: frame from "../../../widgets/internal/lightbox.module.css";
   position: relative;
   width: 80px;
   height: 80px;
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-control);
-  overflow: hidden;
   background: var(--surface-inset);
   transition: border-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
@@ -148,13 +146,7 @@
 }
 
 .lightboxImage {
-  display: block;
-  max-width: 100%;
-  /* Dialog's size="large" already caps the panel at almost the full
-   * viewport; this leaves room for its header chrome, matching what
-   * imagegallery.module.css's own lightbox image does. */
-  max-height: 85vh;
-  margin: 0 auto;
+  composes: image from "../../../widgets/internal/lightbox.module.css";
 }
 
 .dimensionsOverlay {

@@ -6,6 +6,7 @@
     "styles/tokens.css",
     "widgets/internal/quietTrigger.module.css",
     "panes/session/composer/composer.module.css",
+    "widgets/internal/lightbox.module.css",
     "panes/session/chrome/sessionchrome.module.css",
     "panes/session/chrome/statusrow.module.css",
     "panes/session/chrome/modelswitch.module.css",

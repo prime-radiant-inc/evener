@@ -13,11 +13,7 @@
 }
 
 .lightboxImg {
-  display: block;
-  max-width: 100%;
-  max-height: 80vh;
-  height: auto;
-  margin: 0 auto;
+  composes: image from "../../widgets/internal/lightbox.module.css";
 }
 
 .notice {

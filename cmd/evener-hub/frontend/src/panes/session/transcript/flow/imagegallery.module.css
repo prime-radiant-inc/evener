@@ -7,15 +7,13 @@
 
 /* The thumbnail's frame; the ZoomableMedia inside it is the control. */
 .thumb {
+  composes: frame from "../../../../widgets/internal/lightbox.module.css";
   /* flex:none + min-width:0 pin the frame to thumbImg's own 96px regardless
      of caption length - a flex item's default min-width:auto would otherwise
      let a long unbroken caption stretch it past the thumbnail grid. */
   flex: none;
   width: 96px;
   min-width: 0;
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-control);
-  overflow: hidden;
   background: var(--surface-2);
 }
 
@@ -54,13 +52,7 @@
 }
 
 .lightboxImg {
-  display: block;
-  max-width: 100%;
-  /* Dialog's size="large" (kata b4xf) already caps the panel itself at
-   * almost the full viewport; this just lets the image use most of that,
-   * leaving room for the panel's header/caption/nav chrome. */
-  max-height: 85vh;
-  margin: 0 auto;
+  composes: image from "../../../../widgets/internal/lightbox.module.css";
 }
 
 .lightboxCaption {
