@@ -12,15 +12,13 @@
  * has one) right after it on the summary's line rather than inside the
  * summary - a summary is one control and must not nest another. */
 .collapsible {
+  composes: textSecondary from "../../../../styles/text.module.css";
   /* The expanded card below sizes itself against this row (100cqi). */
   container-type: inline-size;
   display: flex;
   align-items: flex-start;
   gap: var(--space-2);
   padding: var(--space-1) 0;
-  font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
-  color: var(--ink-mid);
 }
 
 /* Content-sized, so the Open control after it follows the head text instead
@@ -63,13 +61,11 @@
  * whose whole error is its ending - mockups 24-delegate-complete §C): the
  * head grammar with no disclosure to open, so it renders as a static line. */
 .staticHead {
+  composes: textSecondary from "../../../../styles/text.module.css";
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
   gap: var(--space-2);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
-  color: var(--ink-mid);
 }
 
 /* The static head's status glyph in the rail beside its first line - the same seat
@@ -237,13 +233,11 @@
  * A <pre> keeps the note on its own line; the UA's monospace default and
  * margin are overridden back to the excerpt block's sans treatment. */
 .prose {
+  composes: textSecondary from "../../../../styles/text.module.css";
   display: block;
   width: 100%;
   min-width: 0;
   margin: var(--space-2) 0 0;
-  font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
-  color: var(--ink-mid);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -268,14 +262,11 @@
 }
 
 .rawBody {
+  composes: verbatim from "../../../../styles/text.module.css";
+  composes: verbatimWrap from "../../../../styles/text.module.css";
   display: block;
   width: 100%;
   max-width: 100%;
   min-width: 0;
   margin: var(--space-1) 0 0;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
-  white-space: pre-wrap;
-  word-break: break-word;
 }

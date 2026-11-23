@@ -33,7 +33,6 @@ import {
   type NotificationTone,
   type ParsedNotification,
   parseAnsiLines,
-  scopedDisclosureId,
 } from "@evener/appwire-client";
 import { Fragment, type ReactNode } from "react";
 import { useEntityOwnerRef, useEntityViews } from "../../../../transcriptDisplay/entityViews";
@@ -44,7 +43,7 @@ import {
 } from "../../../../transcriptDisplay/renderContext";
 import { Card, Chip, Disclosure, Markdown, MarkdownBubble, ToolIcon, type ToolIconKind } from "../../../../widgets";
 import { AnsiLineContent } from "../../../../widgets/codeblock/ansiLine";
-import { disclosureDefault, isDisclosureOpen, setDisclosureOpen } from "../../../../widgets/disclosure/disclosureStore";
+import { setDisclosureOpen } from "../../../../widgets/disclosure/disclosureStore";
 import { FailureGlyph } from "../../../../widgets/failureglyph";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EntityRef } from "../EntityRef";
@@ -65,6 +64,7 @@ import {
   structuredRowLabel,
   structuredValueText,
 } from "./notificationText";
+import { useTranscriptDisclosure } from "./useTranscriptDisclosure";
 
 const CLASS = {
   collapsible: requireClass(styles.collapsible, "notificationcard.module.css", "collapsible"),
@@ -161,15 +161,15 @@ function Field({ label, value, testId }: { label: string; value: ReactNode; test
 // highlights the word. A closed fold is aria-hidden, which is what keeps Find's
 // marking out of words a reader cannot see (<details>'s closed body is hidden
 // to assistive tech and to marking alike).
-function RawNotification({ id, text }: { id: string; text: string }) {
-  const open = isDisclosureOpen(id, false);
+function RawNotification({ scope, id, text }: { scope: string; id: string; text: string }) {
+  const { key, open } = useTranscriptDisclosure({ scope, id, defaultOpen: false });
   return (
     <details
       className={CLASS.raw}
       data-testid="notification-raw-disclosure"
       open={open}
       onToggle={(event) => {
-        if (event.currentTarget.open !== open) setDisclosureOpen(id, event.currentTarget.open);
+        if (event.currentTarget.open !== open) setDisclosureOpen(key, event.currentTarget.open);
       }}
     >
       <summary className={CLASS.summary}>Raw notification</summary>
@@ -335,15 +335,15 @@ export function NotificationCard({
   const entities = useEntityViews();
   const contextOwner = useEntityOwnerRef();
   const entityOwner = sessionRef ?? contextOwner;
-  const { config } = context;
   const disclosureScope = disclosureScopeForSession(context, sessionRef);
   // The card's own identity and its raw frame's, both scoped to this view:
   // Find opens the same keys (notificationText's identity rule).
   const scopedNotificationId = notificationDisclosureId(notification, sessionRef, disclosureId);
-  const disclosureKey = scopedDisclosureId(disclosureScope, scopedNotificationId);
-  const rawKey = scopedDisclosureId(disclosureScope, rawDisclosureId(scopedNotificationId));
-  const disclosureFallback =
-    expandDetailsByDefault(config) || disclosureDefault(disclosureScope, scopedNotificationId, false);
+  const disclosure = useTranscriptDisclosure({
+    scope: disclosureScope,
+    id: scopedNotificationId,
+    defaultOpen: expandDetailsByDefault(context.config),
+  });
   // Only warning earns a Chip; success + neutral recede with no chip at all
   // (the done glyph is the same neutral as any other card). Error announces
   // itself with the red FailureGlyph in the head's rail seat instead - a
@@ -488,8 +488,8 @@ export function NotificationCard({
       <div className={CLASS.disclosure}>
         <Disclosure
           variant="quiet"
-          id={disclosureKey}
-          defaultOpen={disclosureFallback}
+          id={disclosure.key}
+          defaultOpen={disclosure.fallback}
           summary={
             <>
               {statusIcon(true)}
@@ -537,7 +537,13 @@ export function NotificationCard({
                 {notification.concerns.length > 0 && (
                   <div className={CLASS.concerns}>Concerns: {notification.concerns.join("; ")}</div>
                 )}
-                {notification.type !== "delegate" && <RawNotification id={rawKey} text={notification.rawText} />}
+                {notification.type !== "delegate" && (
+                  <RawNotification
+                    scope={disclosureScope}
+                    id={rawDisclosureId(scopedNotificationId)}
+                    text={notification.rawText}
+                  />
+                )}
               </div>
             </Card>
           </div>

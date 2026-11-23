@@ -59,7 +59,7 @@
 // Expanded-trace anatomy adapted from Beautiful UI's Thinking component (beautifului.dev, MIT © 2026 Shane Levine) — see LICENSES/beautiful-ui.txt.
 
 import type { ItemModel, TurnModel } from "@evener/appwire-client";
-import { formatDurationMs, formatTokenCount, isLiveCurrentReasoning, scopedDisclosureId } from "@evener/appwire-client";
+import { formatDurationMs, formatTokenCount, isLiveCurrentReasoning } from "@evener/appwire-client";
 import { memo, type ReactNode } from "react";
 import {
   disclosureScopeForSession,
@@ -67,7 +67,6 @@ import {
   useTranscriptRenderContext,
 } from "../../../../transcriptDisplay/renderContext";
 import { Disclosure, Loader, Markdown, ToolIcon } from "../../../../widgets";
-import { disclosureDefault, isDisclosureOpen } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
 import {
@@ -77,6 +76,7 @@ import {
   thoughtDurationMs,
 } from "./reasoningFormat";
 import styles from "./thinkblock.module.css";
+import { useTranscriptDisclosure } from "./useTranscriptDisclosure";
 
 const CLASS = {
   block: requireClass(styles.block, "thinkblock.module.css", "block"),
@@ -462,16 +462,11 @@ export const ThinkBlock = memo(function ThinkBlock({
   projectedSummary,
 }: ItemRenderProps) {
   const context = useTranscriptRenderContext();
-  const { config } = context;
-  const disclosureScope = disclosureScopeForSession(context, sessionRef);
-  const disclosureId = displayKey ?? item.id;
-  const disclosureKey = scopedDisclosureId(disclosureScope, disclosureId);
-  const disclosureFallback = thinkingOpenByDefault(config) || disclosureDefault(disclosureScope, disclosureId, false);
-  // isDisclosureOpen IS a custom hook (it wraps zustand's useStore - see
-  // disclosureStore's own note), so it must be called unconditionally before
-  // any early return: an entry that toggles contentFree on a mounted row would
-  // otherwise change the hook order between renders.
-  const open = isDisclosureOpen(disclosureKey, disclosureFallback);
+  const disclosure = useTranscriptDisclosure({
+    scope: disclosureScopeForSession(context, sessionRef),
+    id: displayKey ?? item.id,
+    defaultOpen: thinkingOpenByDefault(context.config),
+  });
   // The compact family: the reasoning content flag is off. Every thinking row
   // is an unfoldable disclosure (collapsed by default at non-full levels, open
   // when "Thinking open by default" is on). Chat filters these entries in the
@@ -486,8 +481,8 @@ export const ThinkBlock = memo(function ThinkBlock({
       <CompactThinkBlock
         paragraphs={paragraphs}
         isLive={isLive}
-        disclosureKey={disclosureKey}
-        defaultOpen={disclosureFallback}
+        disclosureKey={disclosure.key}
+        defaultOpen={disclosure.fallback}
       />
     );
   }
@@ -499,8 +494,8 @@ export const ThinkBlock = memo(function ThinkBlock({
       <RedactedThinkBlock
         item={item}
         summary={projectedSummary ?? "Thought not shown"}
-        disclosureKey={disclosureKey}
-        defaultOpen={disclosureFallback}
+        disclosureKey={disclosure.key}
+        defaultOpen={disclosure.fallback}
       />
     );
   }
@@ -525,9 +520,9 @@ export const ThinkBlock = memo(function ThinkBlock({
   return (
     <div className={CLASS.block} data-testid="think-block" data-live="false">
       <ThoughtDisclosure
-        disclosureKey={disclosureKey}
-        defaultOpen={disclosureFallback}
-        summary={<ThoughtLabel durationMs={durationMs} preview={open ? "" : preview} />}
+        disclosureKey={disclosure.key}
+        defaultOpen={disclosure.fallback}
+        summary={<ThoughtLabel durationMs={durationMs} preview={disclosure.open ? "" : preview} />}
         paragraphs={paragraphs}
       />
     </div>

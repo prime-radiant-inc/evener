@@ -33,7 +33,6 @@ import {
   formatDurationMs,
   isErrorEvent,
   MEMORY_CONTEXT_EVENT_KIND,
-  scopedDisclosureId,
   systemEventWords,
 } from "@evener/appwire-client";
 import type { ReactNode } from "react";
@@ -43,7 +42,6 @@ import {
   useTranscriptRenderContext,
 } from "../../../../transcriptDisplay/renderContext";
 import { Disclosure, FailureGlyph, Markdown } from "../../../../widgets";
-import { disclosureDefault } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { SYSTEM_PROMPT_ITEM_ID } from "../transcriptVisibility";
 import { FAILURE_FALLBACK_LABEL, failureText } from "../turnFailure";
@@ -62,6 +60,7 @@ import {
   shouldGroup,
 } from "./systemGrouping";
 import styles from "./systemnoticeitem.module.css";
+import { useTranscriptDisclosure } from "./useTranscriptDisclosure";
 import { WarningBlock } from "./WarningItem";
 
 const CLASS = {
@@ -287,15 +286,17 @@ function SystemGroup({
   // plus the run's first item id - the run's stable identity across renders -
   // so an expanded group survives a remount without cross-session collision.
   const context = useTranscriptRenderContext();
-  const { config } = context;
   const disclosureScope = disclosureScopeForSession(context, sessionRef);
-  const disclosureKey = scopedDisclosureId(disclosureScope, firstItem.id);
-  const disclosureFallback = expandDetailsByDefault(config) || disclosureDefault(disclosureScope, firstItem.id, false);
+  const disclosure = useTranscriptDisclosure({
+    scope: disclosureScope,
+    id: firstItem.id,
+    defaultOpen: expandDetailsByDefault(context.config),
+  });
   return (
     <Disclosure
       variant="quiet"
-      id={disclosureKey}
-      defaultOpen={disclosureFallback}
+      id={disclosure.key}
+      defaultOpen={disclosure.fallback}
       data-testid="system-notice-group"
       summary={
         <span data-count={count}>

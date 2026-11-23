@@ -23,7 +23,7 @@ import {
   memoryContextStateLabel,
   parseMemoryContext,
 } from "@evener/appwire-client";
-import { EmptyState, Markdown } from "../../../../widgets";
+import { Chip, EmptyState, Markdown } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./memorycontextitem.module.css";
 import { SteeringDivider } from "./SteeringDivider";
@@ -31,8 +31,6 @@ import { SteeringDivider } from "./SteeringDivider";
 const CLASS = {
   body: requireClass(styles.body, "memorycontextitem.module.css", "body"),
   meta: requireClass(styles.meta, "memorycontextitem.module.css", "meta"),
-  state: requireClass(styles.state, "memorycontextitem.module.css", "state"),
-  truncated: requireClass(styles.truncated, "memorycontextitem.module.css", "truncated"),
   content: requireClass(styles.content, "memorycontextitem.module.css", "content"),
   fallback: requireClass(styles.fallback, "memorycontextitem.module.css", "fallback"),
   source: requireClass(styles.source, "memorycontextitem.module.css", "source"),
@@ -83,9 +81,9 @@ export function MemoryContextBody({
       >
         <span data-testid="memory-context-scope-state">{meta}</span>
         {observation.truncated && (
-          <span className={CLASS.truncated} data-testid="memory-context-truncated">
+          <Chip variant="quiet" data-testid="memory-context-truncated">
             truncated
-          </span>
+          </Chip>
         )}
       </div>
       {hasContent ? (
@@ -114,9 +112,9 @@ export function MemoryContextDisclosure({ item, sessionRef }: { item: ItemModel;
   // too, so the summary never implies a successful read.
   const qualifier =
     observation && (observation.state === "unavailable" || observation.state === "revoked") ? (
-      <span className={CLASS.state} data-testid="memory-context-state" data-state={observation.state}>
+      <Chip variant="quiet" data-testid="memory-context-state" data-state={observation.state}>
         {memoryContextStateLabel(observation.state)}
-      </span>
+      </Chip>
     ) : undefined;
   return (
     <SteeringDivider

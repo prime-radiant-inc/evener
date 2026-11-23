@@ -1,13 +1,16 @@
-import type { ReactNode } from "react";
+import type { HTMLAttributes, ReactNode } from "react";
 import { CloseIcon } from "../dialog/CloseIcon";
 import { requireClass } from "../internal/requireClass";
 import styles from "./chip.module.css";
 
 export type ChipTone = "neutral" | "attention" | "alive" | "danger";
+export type ChipVariant = "solid" | "quiet";
 
-export interface ChipProps {
+export interface ChipProps extends Omit<HTMLAttributes<HTMLSpanElement>, "children"> {
   children: ReactNode;
   tone?: ChipTone;
+  /** "quiet" drops the fill and tone ink for a state marker inside a row. */
+  variant?: ChipVariant;
   onRemove?: () => void;
   /** What the chip marks, rendered as `data-kind` so callers and tests can
    * tell one chip from another without reading its label. */
@@ -40,10 +43,11 @@ function removeLabelFor(children: ReactNode): string {
 
 /** A small labeled pill, optionally removable. tone maps to the four
  * semantic families (chip is pre-allowlisted in token-contract.test.ts). */
-export function Chip({ children, tone = "neutral", onRemove, kind, mono = false }: ChipProps) {
-  const monoClass = mono ? ` ${BASE_CLASS.mono}` : "";
+export function Chip(props: ChipProps) {
+  const { children, tone = "neutral", variant = "solid", onRemove, kind, mono = false, className, ...rest } = props;
+  const classes = `${BASE_CLASS.chip} ${TONE_CLASS[tone]}${mono ? ` ${BASE_CLASS.mono}` : ""}${className ? ` ${className}` : ""}`;
   return (
-    <span className={`${BASE_CLASS.chip} ${TONE_CLASS[tone]}${monoClass}`} data-kind={kind}>
+    <span {...rest} className={classes} data-kind={kind} data-variant={variant}>
       {children}
       {onRemove !== undefined && (
         <button type="button" className={BASE_CLASS.remove} aria-label={removeLabelFor(children)} onClick={onRemove}>
