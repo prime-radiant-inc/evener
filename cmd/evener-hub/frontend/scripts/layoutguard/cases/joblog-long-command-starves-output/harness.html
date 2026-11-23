@@ -69,7 +69,7 @@ const HTML = `
       </div>
       <div class="body" data-pane-body data-pane-scaffold="transcript:job:local:fixture">
         <div class="log-body" data-log>
-          <span class="log-joblogNote" data-log-status>Command failed · Exit code 2</span>
+          <span class="log-joblogNote">Command failed · Exit code 2</span>
           <div class="log-joblogCommand" data-command>
             <div class="code-root">
               <div class="code-codeArea">
@@ -81,7 +81,7 @@ const HTML = `
           <!-- No whitespace inside the log host: .joblog is white-space: pre-wrap, so an
                indented text node here renders as a real 20px line box and shifts every
                measurement below it. React renders these three nodes with no text between. -->
-          <div class="log-joblog" data-list-host><div class="list-root" data-list><div class="list-sizer" data-sizer style="height: 80px"></div></div></div>
+          <div class="log-joblog"><div class="list-root" data-list><div class="list-sizer" data-sizer style="height: 80px"></div></div></div>
         </div>
       </div>
     </div>
@@ -118,19 +118,12 @@ window.measure = () => {
     const list = scope.querySelector("[data-list]");
     const height = (element) => element.getBoundingClientRect().height;
     return {
-      paneHeight: height(scope),
-      headerHeight: height(scope.querySelector(".header")),
       bodyClientHeight: body.clientHeight,
       bodyScrollHeight: body.scrollHeight,
-      bodyPaddingTop: Number.parseFloat(getComputedStyle(body).paddingTop),
-      bodyPaddingBottom: Number.parseFloat(getComputedStyle(body).paddingBottom),
       logClientHeight: log.clientHeight,
-      logScrollHeight: log.scrollHeight,
-      statusHeight: height(scope.querySelector("[data-log-status]")),
       commandClientHeight: command.clientHeight,
       commandScrollHeight: command.scrollHeight,
       listClientHeight: list.clientHeight,
-      listScrollHeight: list.scrollHeight,
       sizerHeight: height(scope.querySelector("[data-sizer]")),
     };
   };
