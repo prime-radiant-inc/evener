@@ -10,7 +10,7 @@ import { pressRowExpr } from "./pressRow.mjs";
 import { retainsNewerReadingPoint } from "./releaseRetained.mjs";
 import { attentionJourney } from "./attention.mjs";
 import { isHistoryReadMethod } from "../lib/historyMethods.mjs";
-import { readerWheelDelta } from "./nativeWheel.mjs";
+import { readerWheelDelta, repositionReader } from "./nativeWheel.mjs";
 
 const fixture = JSON.parse(readFileSync(0, "utf8"));
 const driver = new Driver(fixture);
@@ -277,7 +277,7 @@ async function settledReadingContinuity(before, portExpr, label) {
   })()`, `${label}, actual source reading position finishes restoration`);
 }
 
-async function nativeReaderWheel(portExpr, deltaY) {
+async function nativeReaderWheel(portExpr, deltaY, { timeoutMs } = {}) {
   const point = await wait(`(() => {
     const port = ${portExpr};
     if (!port || port.clientWidth <= 0 || port.clientHeight <= 0) return null;
@@ -299,17 +299,17 @@ async function nativeReaderWheel(portExpr, deltaY) {
     return { x:r.x + r.width / 2, y:r.y + r.height / 2, scrollTop:port.scrollTop, eventIndex:window.__cascadeReaderWheels.length,
       portBox:box(port), intendedAtMeasure:port.contains(target), viewport:innerWidth,
       hitSurface:target?.closest('[data-pane-scaffold]')?.dataset.paneScaffold };
-  })()`, "native wheel midpoint actually hits its intended reader");
+  })()`, "native wheel midpoint actually hits its intended reader", { timeoutMs });
   const delta = typeof deltaY === "function" ? deltaY(point) : deltaY;
   const observation = { kind:"wheel-target", point };
   readingPoints.push(observation);
   await driver.send("Input.dispatchMouseEvent", { type:"mouseMoved", x:point.x, y:point.y });
   await driver.send("Input.dispatchMouseEvent", { type:"mouseWheel", deltaX:0, deltaY:delta, x:point.x, y:point.y });
-  const observed = await wait(`window.__cascadeReaderWheels[${point.eventIndex}]`, "native wheel event reaches the page");
+  const observed = await wait(`window.__cascadeReaderWheels[${point.eventIndex}]`, "native wheel event reaches the page", { timeoutMs });
   observation.observed = observed;
   assert.equal(observed.trusted, true, "reader movement uses genuine native wheel input");
   assert.equal(observed.intended, true, "native wheel targets its intended reader");
-  await wait(`(${portExpr})?.scrollTop !== ${point.scrollTop}`, "native wheel actually moves its intended reader");
+  await wait(`(${portExpr})?.scrollTop !== ${point.scrollTop}`, "native wheel actually moves its intended reader", { timeoutMs });
 }
 
 // The interruption and reflow measurements need a reading point inside a tall
@@ -320,24 +320,15 @@ function insideUsefulTallEntry(point) {
 }
 
 async function readInsideTallEntry(portExpr, label) {
-  // The virtualizer can reset a preserved scroll offset to the top while it
-  // re-measures after a reflow, swallowing a wheel that lands during the reset.
-  // Each attempt re-reads the settled position and dispatches a fresh native
-  // wheel, so a swallowed gesture costs one attempt rather than the whole
-  // precondition. Three attempts keep the same ceiling as one wait.
-  for (let attempt = 1; ; attempt++) {
-    await nativeReaderWheel(portExpr, readerWheelDelta);
-    try {
-      return await wait(`(() => {
-        const point = ${readingPointExpr(portExpr)};
-        window.__cascadeReadingAttempt = { label:${q(label)}, attempt:${attempt}, point };
-        ${insideUsefulTallEntry.toString()}
-        return point?.useful && insideUsefulTallEntry(point) ? point : null;
-      })()`, `${label}, native wheel selects useful content inside a tall entry`, { timeoutMs: 5000 });
-    } catch (error) {
-      if (attempt === 3) throw error;
-    }
-  }
+  return repositionReader({
+    wheel: (timeoutMs) => nativeReaderWheel(portExpr, readerWheelDelta, { timeoutMs }),
+    tallEntry: (timeoutMs, attempt) => wait(`(() => {
+      const point = ${readingPointExpr(portExpr)};
+      window.__cascadeReadingAttempt = { label:${q(label)}, attempt:${attempt}, point };
+      ${insideUsefulTallEntry.toString()}
+      return point?.useful && insideUsefulTallEntry(point) ? point : null;
+    })()`, `${label}, native wheel selects useful content inside a tall entry`, { timeoutMs }),
+  });
 }
 
 async function widthOnlyReflow(portExpr, width, height, label) {
