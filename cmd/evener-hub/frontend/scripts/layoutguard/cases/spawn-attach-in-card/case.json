@@ -13,6 +13,7 @@
     "panes/session/chrome/modelswitch.module.css",
     "widgets/select/select.module.css",
     "styles/surface.module.css",
+    "styles/sendbutton.module.css",
     "panes/spawn/spawn.module.css"
   ],
   "viewport": {

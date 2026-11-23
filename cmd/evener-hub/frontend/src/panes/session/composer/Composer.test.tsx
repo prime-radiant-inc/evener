@@ -571,10 +571,14 @@ test("the composer region fills pane height and bottom-anchors the replacement s
 // The 559px boundary matches the status row's own first compression threshold (statusrow.module.css).
 test("the Send and Stop words collapse to glyphs below the compact pane threshold", () => {
   const css = readModuleCss(import.meta.url, "composer.module.css");
+  const shared = readModuleCss(import.meta.url, "../../../styles/sendbutton.module.css");
   expect(topRuleBlock(css, ".composer")).toMatch(/container-type:\s*inline-size/);
-  expect(css).toMatch(
-    /@container \(max-width: 559px\)[\s\S]*?\.submitLabel,\s*\.stopLabelStack\s*\{[^}]*display:\s*none/,
-  );
+  const sendWord = /composes:\s*sendWord from "\.\.\/\.\.\/\.\.\/styles\/sendbutton\.module\.css"/;
+  expect(topRuleBlock(css, ".submitLabel")).toMatch(sendWord);
+  expect(topRuleBlock(css, ".stopLabelStack")).toMatch(sendWord);
+  expect(topRuleBlock(css, ".stopLabelStack")).toMatch(/display:\s*grid/);
+  expect(css).toMatch(/\.stopLabelStack > span\s*\{[^}]*grid-area:\s*1 \/ 1/);
+  expect(shared).toMatch(/@container \(max-width: 559px\)[\s\S]*?\.sendWord\s*\{[^}]*display:\s*none/);
   // The floor reaches coarse pointers as well as phone widths: a 951pt
   // landscape Duo is past the 899px phone boundary while its composer pane
   // still folds the words away, so the icon-only action keeps 44px there.

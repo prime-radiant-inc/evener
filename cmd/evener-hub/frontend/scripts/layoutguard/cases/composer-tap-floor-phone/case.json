@@ -5,6 +5,7 @@
     "styles/global.css",
     "styles/tokens.css",
     "widgets/internal/quietTrigger.module.css",
+    "styles/sendbutton.module.css",
     "panes/session/composer/composer.module.css",
     "panes/session/chrome/sessionchrome.module.css",
     "panes/session/chrome/statusrow.module.css",
