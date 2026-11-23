@@ -42,7 +42,7 @@ import {
 } from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import { useState } from "react";
-import { Button, Card, Chip } from "../../../../widgets";
+import { Button, Card, Chip, Disclosure } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { formatMonthDay } from "../../../../widgets/timestamp/formatAbsoluteTime";
 import { EntityRef } from "../EntityRef";
@@ -245,14 +245,13 @@ function CreateBody({ raw, item }: { raw: JsonObject; item: ItemModel }) {
 
 function WatchListRow({ row }: { row: WatchRow }) {
   const [open, setOpen] = useState(false);
-  // Rows are real buttons (mockup §C: tappable rows opening the watch's
-  // details) — but only when they CAN expand. Expanding shows the row's own
-  // detail sentence inline — the same humanized grammar as the inspect body,
-  // minus deliveries/created which list raw does not carry. A row with no
-  // detail sentence (an ended/pending/missing row, or a watching row whose
-  // condition parses to nothing) renders as a plain div: a focusable button
-  // with a no-op onClick is a control that does nothing (RoboRev PR #954
-  // combined review).
+  // Expandable rows are Disclosures (mockup §C: tappable rows opening the
+  // watch's details). Expanding shows the row's own detail sentence inline —
+  // the same humanized grammar as the inspect body, minus deliveries/created
+  // which list raw does not carry. A row with no detail sentence (an
+  // ended/pending/missing row, or a watching row whose condition parses to
+  // nothing) renders as a plain div: a focusable disclosure with no body is a
+  // control that does nothing (RoboRev PR #954 combined review).
   const detail = row.watching ? rowDetailPhrase(row) : undefined;
   const chip = watchRowStateWord(row);
   // No per-row wrapper div: rows are direct children of the list container
@@ -272,29 +271,26 @@ function WatchListRow({ row }: { row: WatchRow }) {
     );
   }
   return (
-    <>
-      <button
-        type="button"
-        className={CLASS.row}
-        data-testid="job-watch-row"
-        aria-expanded={open}
-        onClick={() => {
-          setOpen((previous) => !previous);
-        }}
-      >
-        <Chip>{chip}</Chip>
-        {/* The surrounding button is the disclosure, whose expanded detail carries the same watch information as the card. Keep this nested trigger out of the tab order and let its clicks reach that control. No native title either: the hover card is the one floating surface on the id. */}
-        <span className={CLASS.rowId}>
-          <EntityRef id={row.id} embedded />
-        </span>
-        <span className={CLASS.rowCondition}>{rowConditionPhrase(row)}</span>
-      </button>
-      {open ? (
-        <div className={CLASS.section} data-testid="job-watch-row-detail">
-          <div className={CLASS.trigger}>{detail}</div>
-        </div>
-      ) : null}
-    </>
+    <Disclosure
+      open={open}
+      onOpenChange={setOpen}
+      data-testid="job-watch-row"
+      summaryClassName={CLASS.row}
+      summary={
+        <>
+          <Chip>{chip}</Chip>
+          {/* The summary is the disclosure, whose expanded detail carries the same watch information as the card. Keep this nested trigger out of the tab order and let its clicks reach that control. No native title either: the hover card is the one floating surface on the id. */}
+          <span className={CLASS.rowId}>
+            <EntityRef id={row.id} embedded />
+          </span>
+          <span className={CLASS.rowCondition}>{rowConditionPhrase(row)}</span>
+        </>
+      }
+    >
+      <div className={CLASS.section} data-testid="job-watch-row-detail">
+        <div className={CLASS.trigger}>{detail}</div>
+      </div>
+    </Disclosure>
   );
 }
 
