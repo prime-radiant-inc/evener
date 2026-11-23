@@ -754,4 +754,33 @@ describe("waitPage hard cap", () => {
     expect(settled).toBe(true);
     await expect(waited).resolves.toBeInstanceOf(Error);
   });
+
+  test("a capped wait ends at its slice when a poll reply stalls", async () => {
+    vi.useFakeTimers();
+    const d = newDriver();
+    let sends = 0;
+    d.page = {
+      send: () => {
+        sends += 1;
+        return new Promise((resolve) =>
+          setTimeout(() => resolve({ result: { result: { value: null } } }), 30000),
+        );
+      },
+    };
+    let settled = false;
+    const waited = d.waitPage("null", { timeoutMs: 100, hardTimeoutMs: 100, label: "stalled poll" }).then(
+      () => {
+        settled = true;
+        return null;
+      },
+      (error) => {
+        settled = true;
+        return error;
+      },
+    );
+    await vi.advanceTimersByTimeAsync(250);
+    expect(settled).toBe(true);
+    await expect(waited).resolves.toBeInstanceOf(Error);
+    expect(sends).toBe(1);
+  });
 });

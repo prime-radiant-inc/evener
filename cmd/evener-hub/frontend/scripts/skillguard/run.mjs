@@ -794,7 +794,9 @@ export class Driver {
     // the budget decides only how long silence is tolerated (see budgets.mjs).
     // A caller that must fit several stages into one budget passes
     // hardTimeoutMs: an absolute cap on this wait that the load-derived
-    // widening may not exceed. Every other wait keeps the scaled tripwire.
+    // widening may not exceed. A capped wait also bounds each poll and stops
+    // at the slice, so a stalled evaluate cannot outlast it. Every other wait
+    // keeps the scaled tripwire.
     const hardMs = Number.isFinite(hardTimeoutMs) && hardTimeoutMs > 0 ? hardTimeoutMs : null;
     const budgetMs = hardMs === null ? this.reactions.deadline(timeoutMs) : Math.min(this.reactions.deadline(timeoutMs), hardMs);
     let deadline = startedAt + budgetMs;
@@ -822,12 +824,22 @@ export class Driver {
     let failureStartedAt = null;
     let lastEvaluateError = null;
     for (;;) {
+      // A capped wait must end at its slice: do not start a poll the slice
+      // cannot pay for, and bound the one in flight to what remains. Uncapped
+      // waits keep the load-scaled budget and the default CDP tripwire.
+      const canPoll = hardMs === null || Date.now() < deadline;
       let errored = false;
-      const value = await evaluate(this.send, exprSource).catch((error) => {
-        errored = true;
-        lastEvaluateError = error instanceof Error ? error.message : String(error);
-        return null;
-      });
+      const poll = () =>
+        hardMs === null
+          ? evaluate(this.send, exprSource)
+          : evaluate(this.send, exprSource, { timeoutMs: Math.max(1, deadline - Date.now()) });
+      const value = canPoll
+        ? await poll().catch((error) => {
+            errored = true;
+            lastEvaluateError = error instanceof Error ? error.message : String(error);
+            return null;
+          })
+        : null;
       const now = Date.now();
       if (errored) {
         failedPolls += 1;
@@ -845,7 +857,7 @@ export class Driver {
         failureStartedAt = null;
       }
       readAt = now;
-      const held = !errored && value !== null && value !== undefined && value !== false;
+      const held = canPoll && !errored && value !== null && value !== undefined && value !== false;
       if (held) {
         if (settleMs <= 0) return settled(value);
         if (heldSince === null) {
@@ -856,14 +868,16 @@ export class Driver {
           }
         }
         if (now - heldSince >= settleMs) return settled(value);
-      } else if (!errored) {
+      } else if (!errored && canPoll) {
         heldSince = null;
       }
-      if (now > deadline) {
+      if (!canPoll || (hardMs === null ? now > deadline : now >= deadline)) {
         // Toasts auto-dismiss; capture whatever the app is complaining about
         // at the moment of the timeout, and keep the LAST toast a composer
-        // action produced around for the waits that outlive it.
-        const toast = await evaluate(this.send, this.toastExpr()).catch(() => "");
+        // action produced around for the waits that outlive it. A capped wait
+        // has spent its slice, so a fresh read could stall another tripwire;
+        // the cached toast is its diagnostic instead.
+        const toast = hardMs === null ? await evaluate(this.send, this.toastExpr()).catch(() => "") : this.lastToast;
         const seen = toast || this.lastToast ? `; toast: ${toast || this.lastToast}` : "";
         const pollFailures =
           failedPolls > 0
