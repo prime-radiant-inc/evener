@@ -302,6 +302,12 @@ var eventKindSpecs = []eventKindSpec{
 		clone:   func(dst, src *Event) { clonePointee(&dst.AttentionResolved, &src.AttentionResolved) },
 		apply:   applyAttentionResolved,
 	},
+	{
+		kind:    EventDelegateAttentionHeld,
+		present: func(event *Event) bool { return event.AttentionHeld != nil },
+		clone:   func(dst, src *Event) { clonePointee(&dst.AttentionHeld, &src.AttentionHeld) },
+		apply:   applyAttentionHeld,
+	},
 }
 
 func eventKindSpecFor(kind EventKind) (eventKindSpec, bool) {
@@ -380,6 +386,12 @@ func applyRunStarted(state State, event Event) error {
 	// just ended never carry into the resumed run (the spec's per-generation
 	// discipline).
 	aggregate.LatestIntent = ""
+	if payload.Trigger != TriggerAttention {
+		// An explicit send is a newer event than any stop that quieted a row:
+		// its generation presents the delegate's pending attention, so every
+		// hold this delegate carried ends with the send.
+		releaseAttentionHolds(aggregate, 0)
+	}
 	// The start itself settles the projection the queue derives: a generation
 	// that carries no rows presents what the transcript already resolved, so a
 	// stale boolean from a pre-queue journal cannot outlive its start.
@@ -648,7 +660,8 @@ func applyAttentionHoldReleased(state State, event Event) error {
 
 // applyAttentionQueued adds or updates one pending attention row. The row's
 // identity keys it: queuing an existing id marks it committed, but never
-// duplicates it.
+// duplicates it. A committed row is a fresh wake, which is newer evidence than
+// every stop that quieted a row, so it clears the delegate's holds.
 func applyAttentionQueued(state State, event Event) error {
 	payload := event.AttentionQueued
 	if payload.AttentionID == "" {
@@ -666,8 +679,49 @@ func applyAttentionQueued(state State, event Event) error {
 			Committed:   payload.Committed,
 		})
 	}
+	if payload.Committed {
+		releaseAttentionHolds(aggregate, 0)
+	}
 	recomputeNeedsAttention(state, event.DelegateID)
 	return nil
+}
+
+// applyAttentionHeld stamps or releases the user-stop quiet on a delegate's
+// pending rows. A row outside the queue is a no-op: the stop raced a
+// resolution, and a hold on nothing must not resurrect it.
+func applyAttentionHeld(state State, event Event) error {
+	payload := event.AttentionHeld
+	aggregate, err := requireAggregate(state, event.DelegateID)
+	if err != nil {
+		return err
+	}
+	if payload.Generation == 0 {
+		return fmt.Errorf("delegate %q attention hold names no generation", event.DelegateID)
+	}
+	if payload.AttentionID != "" {
+		if row := pendingAttentionRow(aggregate, payload.AttentionID); row != nil && row.HeldThrough < payload.Generation {
+			row.HeldThrough = payload.Generation
+		}
+	} else if payload.Generation > aggregate.AttentionHoldReleasedGeneration {
+		aggregate.AttentionHoldReleasedGeneration = payload.Generation
+		releaseAttentionHolds(aggregate, payload.Generation)
+	}
+	recomputeNeedsAttention(state, event.DelegateID)
+	return nil
+}
+
+// releaseAttentionHolds clears every hold at or below through; through zero
+// clears them all.
+func releaseAttentionHolds(aggregate *Aggregate, through uint64) {
+	for i := range aggregate.PendingAttention {
+		row := &aggregate.PendingAttention[i]
+		if row.HeldThrough == 0 {
+			continue
+		}
+		if through == 0 || row.HeldThrough <= through {
+			row.HeldThrough = 0
+		}
+	}
 }
 
 // applyAttentionResolved removes one attention row by identity, whatever its
@@ -712,17 +766,33 @@ func removePendingAttention(aggregate *Aggregate, attentionID string) {
 
 // recomputeNeedsAttention is the one projection of a delegate's pending
 // attention queue. Every arm that changes PendingAttention — the queue's own
-// three events and every lifecycle arm that ends eligibility — calls it, so
-// the exported NeedsAttention flag can never disagree with the queue and the
-// lifecycle state it is read with. Delegatestore cannot see the parent chain
-// of the whole tree from one aggregate, so the walk lives here beside the flag
-// it decides.
+// events, the hold events and every lifecycle arm that ends eligibility —
+// calls it, so the exported NeedsAttention flag can never disagree with the
+// queue and the lifecycle state it is read with. Only an unheld row is
+// runnable work: a stop-held row stays queued for a later release but raises
+// no wake, so a delegate whose every row is quiet reads idle. Delegatestore
+// cannot see the parent chain of the whole tree from one aggregate, so the
+// walk lives here beside the flag it decides.
 func recomputeNeedsAttention(state State, delegateID string) {
 	aggregate := state[delegateID]
 	if aggregate == nil {
 		return
 	}
-	aggregate.NeedsAttention = len(aggregate.PendingAttention) != 0 && AttentionProjectionEligible(state, delegateID)
+	aggregate.NeedsAttention = hasUnheldPendingAttention(aggregate) && AttentionProjectionEligible(state, delegateID)
+}
+
+// hasUnheldPendingAttention reports whether aggregate holds a row an automatic
+// drive may select. A stop-held row is queued but quiet.
+func hasUnheldPendingAttention(aggregate *Aggregate) bool {
+	if aggregate == nil {
+		return false
+	}
+	for _, row := range aggregate.PendingAttention {
+		if row.HeldThrough == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // AttentionProjectionEligible reports whether a delegate can still present

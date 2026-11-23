@@ -21,6 +21,7 @@ const (
 	EventDelegateAttentionHoldReleased EventKind = "delegate_attention_hold_released"
 	EventDelegateAttentionQueued       EventKind = "delegate_attention_queued"
 	EventDelegateAttentionResolved     EventKind = "delegate_attention_resolved"
+	EventDelegateAttentionHeld         EventKind = "delegate_attention_held"
 )
 
 type Event struct {
@@ -43,6 +44,7 @@ type Event struct {
 	AttentionHoldReleased *AttentionHoldReleased    `json:"attention_hold_released,omitempty"`
 	AttentionQueued       *AttentionQueued          `json:"attention_queued,omitempty"`
 	AttentionResolved     *AttentionResolved        `json:"attention_resolved,omitempty"`
+	AttentionHeld         *AttentionHeld            `json:"attention_held,omitempty"`
 }
 
 type DelegateCreated struct {
@@ -146,6 +148,17 @@ type AttentionQueued struct {
 // journal replay of a resolution stays valid.
 type AttentionResolved struct {
 	AttentionID string `json:"attention_id"`
+}
+
+// AttentionHeld quiets one pending attention row, or every row at or below a
+// generation, after a user stop. With AttentionID set the fold stamps that
+// row's HeldThrough at max(HeldThrough, Generation). With it empty the fold
+// releases every hold through Generation and advances the release floor: a
+// newer event ends the quiet. The hold lives in the same aggregate as the row,
+// so a held row and the NeedsAttention projection cannot drift apart.
+type AttentionHeld struct {
+	AttentionID string `json:"attention_id,omitempty"`
+	Generation  uint64 `json:"generation"`
 }
 
 type versionRecord struct {

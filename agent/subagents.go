@@ -2959,45 +2959,20 @@ func (a *subagent) finalizeRun(f subagentFinalize) {
 	if f.restoreParentDriveNotify != nil && a.sess.peekNotifications() > 0 {
 		a.sess.notify()
 	}
-	// The unpresented trigger is reopened BEFORE the generation is announced:
-	// the announce's release wakes the parent's drive, and a drive that wins
-	// that wake can accept another pending row and re-latch the trigger before
-	// the tail below could read it — reopening the live generation's own
-	// trigger as a duplicate while the failed run's trigger stays consumed.
-	// Before the release no drive can reserve this delegate, so the latch the
-	// reopen reads is exactly the failed run's own. FinishGeneration has
-	// already journaled the outcome, so the stop and close guards inside the
-	// reopen still see this run's settled state.
-	if f.stableRun && f.attentionRun && (f.attentionUnpresented || !attentionRunPresentedItsReport(f.err)) {
-		// The presentation turn died before its request could carry the
-		// report, and the accept that started it consumed the row. Reopen
-		// it so the re-arm below wakes a drive that presents it instead of
-		// letting the consumed marker strand the report silently. A
-		// deliberately stopped child, a closing receiver and a closing
-		// tree are not reopened: their teardowns own the discard, and a
-		// fresh row would race it (reopenLatchedDelegateAttention guards).
-		// A user's stop owns the quiet on the drive's read too: the stopped
-		// generation's commit left the delegate armed for every other
-		// pending row, and that stale armed wake drives without any re-arm,
-		// so the reopened report would ride the next generation it starts.
-		// Hold it from the automatic drives; the rows the stop never touched
-		// keep their presentation, and the arm that later presents them —
-		// or any fresh arm — releases the hold. A row a hook stop reopened
-		// owes the same quiet: re-arming it at once relaunches SubagentStart,
-		// and a hook that keeps refusing would repeat launches, warnings and
-		// durable records without ever presenting the report.
-		//
-		// The quiet is an input to the reopen, not a follow-up to it: the
-		// append that publishes the row takes no note of a hold installed
-		// afterwards, so a drive selecting in that window would consume a
-		// marker for a request whose projection holds the row out.
+	// An unpresented accepted trigger is settled BEFORE the generation is
+	// announced: the announce's release wakes the parent's drive, and a drive
+	// that wins that wake could latch another row before this tail ran. The
+	// store is the authority, so settling is one atomic Apply: a user or hook
+	// stop stamps a durable hold on the row (a stopped delegate retires cleanly
+	// instead of relaunching), and a plain transient failure leaves it unheld
+	// and pending for the next drive. A row a settled request already presented
+	// was consumed by the turn's exit rule, so nothing is left to settle.
+	if f.stableRun && f.attentionRun {
 		quietAt := uint64(0)
 		if userStopped || f.attentionUnpresented {
 			quietAt = f.lease.generation
 		}
-		if _, reopenErr := a.sess.reopenLatchedDelegateAttention(quietAt); reopenErr != nil {
-			a.sess.emit(warningDataFromError("reopen unpresented delegate attention", reopenErr))
-		}
+		a.sess.settleUnpresentedDelegateTrigger(quietAt)
 	}
 	if f.stableRun && a.sess.delegateController != nil {
 		if hook := a.sess.cfg.testOnly.subagentBeforeGenerationAnnounced; hook != nil {
@@ -3016,28 +2991,13 @@ func (a *subagent) finalizeRun(f subagentFinalize) {
 		if pending, pendingErr := a.sess.pendingDelegateAttentionIDs(); pendingErr != nil {
 			a.sess.emit(warningDataFromError("inspect remaining delegate attention", pendingErr))
 		} else if len(pending) != 0 {
-			// A run the user stopped owns the quiet on the drive's read as
-			// well as this tail's write: the reopen above held its report out
-			// of the stale armed wake the stopped generation's commit left
-			// behind, which still drives for the rows the stop never touched,
-			// so the report stays pending and recoverable through a wake from
-			// a new event — a later attention row, a restart reconcile or an
-			// explicit send — never the stale armed one. Re-arming here would
-			// at once drive the generation the user just cancelled.
-			// A row this tail reopened because a hook stopped the launch is
-			// left pending too: re-arming it calls armDelegateAttention, which
-			// releases the hold, so a hook that keeps refusing would relaunch
-			// forever.
-			// The skip applies only when this tail actually reopened the row for
-			// a hook stop. A hook-stopped launch that was not attention-triggered
-			// never runs that reopen, so its remaining row still needs the arm.
-			if !userStopped && (!f.attentionUnpresented || !f.attentionRun) {
-				if armErr := a.sess.armDelegateAttention(pending[0]); armErr != nil {
-					a.sess.emit(warningDataFromError("rearm remaining delegate attention", armErr))
-				}
+			// pendingDelegateAttentionIDs returns only UNHELD rows, so a row a
+			// user or hook stop just held is not re-armed here: the stop's quiet
+			// stands until a fresh wake or an explicit send clears it. Every row
+			// the stop never touched still presents through the ordinary arm.
+			if armErr := a.sess.armDelegateAttention(pending[0]); armErr != nil {
+				a.sess.emit(warningDataFromError("rearm remaining delegate attention", armErr))
 			}
-		} else if clearErr := a.sess.delegateController.reconcileResolvedDelegateAttention(a.sess.owningDelegateID); clearErr != nil {
-			a.sess.emit(warningDataFromError("reconcile resolved delegate attention", clearErr))
 		}
 	}
 	if done != nil {
@@ -3063,25 +3023,6 @@ func (a *subagent) finalizeRun(f subagentFinalize) {
 			a.sess.scheduleIdleRuntimeRelease(f.lease.generation)
 		}
 	}
-}
-
-// attentionRunPresentedItsReport reports whether an attention-triggered run's
-// outcome proves the model request already carried the report it owed: the
-// model-behavior failures and budget exhaustion happen after the call ran.
-// Every other failure can land before the first request, where the consumed
-// row would otherwise be lost with nothing left to present. The verdict is
-// the run-end taxonomy classifyRunEnd owns, read from its own projections: a
-// run settles ordinarily exactly when it ended nil or on a model-behavior
-// sentinel, and the exhausted status is the budget exhaustion.
-//
-// The 2026-11-09 lifecycle ruling settles the trade this deliberately makes
-// (issue #5674): a report may be presented twice in a narrow window rather
-// than lost. Do not move an unlisted error class into "presented" to reduce
-// duplication; that needs a presented-marker durable across tool rounds and
-// restarts, not a wider verdict here.
-func attentionRunPresentedItsReport(err error) bool {
-	end := classifyRunEnd(err, false)
-	return end.mode == delegateSettlementOrdinary || end.status == SubagentExhausted
 }
 
 // announceFinishedGeneration is a stable run's last step for its finished

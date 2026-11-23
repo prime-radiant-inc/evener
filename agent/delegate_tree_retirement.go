@@ -75,16 +75,23 @@ func (c *delegateTreeController) retirementEvidence() ([]RetirementBlocker, []*S
 			blockers = append(blockers, RetirementBlocker{Category: "delegate", SessionID: c.rootSessionID, DelegateID: id})
 			continue
 		}
-		// Resident or cold, a delegate's transcript decides whether attention is
-		// still owed: a closed delegate's wakes no longer say so.
-		fold, err := readExistingDelegateAttentionFold(path, sessionID)
-		if err != nil || len(fold.pendingIDs()) != 0 {
+		// Resident or cold, the delegate's store queue decides whether
+		// attention is still owed: only an unheld row can be presented, and a
+		// stop-held row must never block retirement.
+		if c.delegateOwesUnheldAttentionLocked(id) {
 			blockers = append(blockers, RetirementBlocker{Category: "delegate", SessionID: c.rootSessionID, DelegateID: id})
 		}
 		if exact[id] == nil {
 			meta, err := schema.LoadSessionMeta(c.stateDir, d.ChildSessionID)
 			info, statErr := os.Stat(path)
 			if err != nil || meta.ID != d.ChildSessionID || statErr != nil || !info.Mode().IsRegular() {
+				blockers = append(blockers, RetirementBlocker{Category: "delegate", SessionID: c.rootSessionID, DelegateID: id})
+				continue
+			}
+			// The store queue no longer proves the transcript readable, and a
+			// present-but-corrupt transcript cannot be restored: block here
+			// rather than fail the next restore.
+			if _, foldErr := readExistingDelegateAttentionFold(path, d.ChildSessionID); foldErr != nil {
 				blockers = append(blockers, RetirementBlocker{Category: "delegate", SessionID: c.rootSessionID, DelegateID: id})
 				continue
 			}
@@ -217,6 +224,15 @@ func (c *delegateTreeController) retirementOwnerScanLocked(members map[string]st
 	return blockers, sessions, exact, descriptors, ids
 }
 
+// delegateOwesUnheldAttentionLocked reports whether the delegate's durable
+// queue still holds a row a generation could present. A stop-held row is
+// deliberately quiet: it must neither re-drive the delegate nor block its
+// tree's retirement until a fresh wake or an explicit send releases it.
+// Callers must hold c.mu.
+func (c *delegateTreeController) delegateOwesUnheldAttentionLocked(delegateID string) bool {
+	return len(c.delegateAttentionUnheldIDsLocked(delegateID)) != 0
+}
+
 // retirementWakeBlockersLocked is the non-blocking read's in-memory proxy for
 // noted attention. That read deliberately skips the transcript folds the full
 // read performs, so a resumable delegate's wake stays a cautious blocker even
@@ -226,13 +242,12 @@ func (c *delegateTreeController) retirementOwnerScanLocked(members map[string]st
 func (c *delegateTreeController) retirementWakeBlockersLocked() []RetirementBlocker {
 	var blockers []RetirementBlocker
 	for id, aggregate := range c.durable {
-		if aggregate == nil || len(aggregate.PendingAttention) == 0 {
+		if aggregate == nil || !aggregate.Resumable {
 			continue
 		}
-		if !aggregate.Resumable {
-			continue
+		if c.delegateOwesUnheldAttentionLocked(id) {
+			blockers = append(blockers, RetirementBlocker{Category: "delegate", SessionID: c.rootSessionID, DelegateID: id})
 		}
-		blockers = append(blockers, RetirementBlocker{Category: "delegate", SessionID: c.rootSessionID, DelegateID: id})
 	}
 	return blockers
 }

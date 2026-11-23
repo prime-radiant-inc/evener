@@ -21,11 +21,10 @@ func TestDelegateCloseStopAdmissionWaitUsesStopJoinBudget(t *testing.T) {
 	blocker := make(chan struct{})
 	c.mu.Lock()
 	c.reservations[1] = &delegateStartRecord{
-		token:             1,
-		delegateID:        targetID,
-		trigger:           delegatestore.TriggerAttention,
-		attentionAdmitted: true,
-		done:              blocker,
+		token:      1,
+		delegateID: targetID,
+		trigger:    delegatestore.TriggerAttention,
+		done:       blocker,
 	}
 	c.mu.Unlock()
 	defer close(blocker)

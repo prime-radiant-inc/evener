@@ -42,7 +42,15 @@ func attentionTestState(t *testing.T, events ...Event) State {
 		t.Fatalf("Fold: %v", err)
 	}
 	for id, aggregate := range state {
-		if want := len(aggregate.PendingAttention) != 0 && AttentionProjectionEligible(state, id); aggregate.NeedsAttention != want {
+		want := false
+		for _, row := range aggregate.PendingAttention {
+			if row.HeldThrough == 0 {
+				want = true
+				break
+			}
+		}
+		want = want && AttentionProjectionEligible(state, id)
+		if aggregate.NeedsAttention != want {
 			t.Fatalf("delegate %s NeedsAttention=%t, queue holds %d rows, eligible=%t", id, aggregate.NeedsAttention, len(aggregate.PendingAttention), AttentionProjectionEligible(state, id))
 		}
 	}

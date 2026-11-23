@@ -234,8 +234,8 @@ func TestDelegateAttention_FinishAttentionTurnResolvesConsumedQueueRows(t *testi
 		c.mu.Lock()
 		c.appendFault = nil
 		c.mu.Unlock()
-		if err := c.reconcileResolvedDelegateAttention(delegateID); err != nil {
-			t.Fatalf("reconcile resolved attention: %v", err)
+		if err := c.forgetDelegateAttention(delegateID, attentionID); err != nil {
+			t.Fatalf("retry the resolved row: %v", err)
 		}
 		if rows := queuedRows(c); len(rows) != 0 {
 			t.Fatalf("queued rows after reconciliation = %v, want none", rows)

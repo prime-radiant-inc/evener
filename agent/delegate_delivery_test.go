@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sync"
 	"testing"
 
@@ -405,12 +406,12 @@ func TestDelegateRequeueWhileReceiverProcessingHoldsTheHead(t *testing.T) {
 	}
 }
 
-// A transient refusal must not abort the attention start whose reservation
+// A transient refusal must not abort the attention start whose admission
 // deferred the delivery. The kept claim is delivery work a start must ignore:
-// counting it makes CommitStart release the reservation with target_busy after
-// acceptDelegateAttention already consumed generation N, warning the user and
-// blocking ReserveAttention until the owner's queue is flushed. This runs the
-// real start flow rather than inserting and deleting a reservation by hand.
+// counting it makes CommitStart fail with target_busy and abort a reservation
+// the gap-stop must be able to discard cleanly, warning the user and blocking
+// ReserveAttention until the owner's queue is flushed. This runs the real start
+// flow rather than inserting and deleting a reservation by hand.
 func TestDelegateControllerTransientRefusalDoesNotBlockAttentionStart(t *testing.T) {
 	fixture := newColdDelegateFixture(t, "")
 	root := restoreSupervisionRoot(t, fixture, nil)
@@ -428,9 +429,6 @@ func TestDelegateControllerTransientRefusalDoesNotBlockAttentionStart(t *testing
 	reservation, err := c.ReserveAttention(owner, attentionID)
 	if err != nil {
 		t.Fatalf("ReserveAttention: %v", err)
-	}
-	if err := owner.acceptDelegateAttention(reservation); err != nil {
-		t.Fatalf("accept attention: %v", err)
 	}
 
 	// The child's report arrives during the start and is refused transiently.
@@ -471,9 +469,11 @@ func TestDelegateControllerTransientRefusalDoesNotBlockAttentionStart(t *testing
 	if err != nil {
 		t.Fatalf("owner attention: %v", err)
 	}
-	want := delegateAttentionID(delegateDeliveryID("dlg_child", 1))
-	if len(pending) != 1 || pending[0] != want {
-		t.Fatalf("owner pending attention = %v, want %q", pending, want)
+	// The committed attention row stays durably queued until a settled
+	// request presents it, and the refusal's own delivery row joins it.
+	want := []string{"attention:start-window", delegateAttentionID(delegateDeliveryID("dlg_child", 1))}
+	if !slices.Equal(pending, want) {
+		t.Fatalf("owner pending attention = %v, want %v", pending, want)
 	}
 }
 

@@ -93,9 +93,6 @@ func TestDelegateAttentionWake_CommitStartRechecksAncestorFence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReserveAttention with open ancestor: %v", err)
 	}
-	if err := child.acceptDelegateAttention(reservation); err != nil {
-		t.Fatalf("accept attention before ancestor closes: %v", err)
-	}
 	c.mu.Lock()
 	closureStarted := make(chan struct{})
 	closureDone := make(chan error, 1)
@@ -130,12 +127,11 @@ func TestDelegateAttentionWake_CommitStartRechecksAncestorFence(t *testing.T) {
 	if parentResumable {
 		t.Fatal("ancestor closure did not commit after accepted attention start")
 	}
-	fold, err := readDelegateAttentionFold(transcriptPath(c.stateDir, "child-dlg_child"), "child-dlg_child")
-	if err != nil {
-		t.Fatalf("read accepted attention marker: %v", err)
-	}
-	if fold.resumeGenerations[attentionID] != started.lease.generation {
-		t.Fatalf("accepted marker generation = %d, want %d", fold.resumeGenerations[attentionID], started.lease.generation)
+	c.mu.Lock()
+	rows := append([]delegatestore.PendingAttention(nil), c.durable["dlg_child"].PendingAttention...)
+	c.mu.Unlock()
+	if len(rows) != 1 || rows[0].AttentionID != attentionID || rows[0].HeldThrough != 0 {
+		t.Fatalf("accepted attention rows = %#v, want the committed row still durably queued and unheld until it is presented", rows)
 	}
 }
 
@@ -205,9 +201,6 @@ func TestDelegateAttentionWake_StoppingAncestorParksAttentionForLaterDelivery(t 
 		t.Fatalf("ReserveAttention after ancestor resumed: %v", err)
 	}
 	attachDelegateAttentionTranscriptForTest(t, c, child, "dlg_child", attentionID)
-	if err := child.acceptDelegateAttention(reservation); err != nil {
-		t.Fatalf("accept attention after ancestor resumed: %v", err)
-	}
 	if _, err := c.CommitStart(reservation); err != nil {
 		t.Fatalf("CommitStart after ancestor resumed: %v", err)
 	}
@@ -721,9 +714,6 @@ func TestDelegateAttentionWake_AncestorStopFenceParksUncoveredChild(t *testing.T
 		t.Fatalf("ReserveAttention after ancestor stop completed: %v", err)
 	}
 	attachDelegateAttentionTranscriptForTest(t, c, child, "dlg_child", attentionID)
-	if err := child.acceptDelegateAttention(reservation); err != nil {
-		t.Fatalf("accept attention after ancestor stop completed: %v", err)
-	}
 	if _, err := c.CommitStart(reservation); err != nil {
 		t.Fatalf("CommitStart after ancestor stop completed: %v", err)
 	}

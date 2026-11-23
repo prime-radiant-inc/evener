@@ -90,7 +90,6 @@ type delegateOwedAttentionStart struct {
 	parentID    string
 	attentionID string
 	generation  uint64
-	pendingIDs  []string
 	// turns are the durable turns behind the trigger and the pending items,
 	// read by the same scan that found the generation, so recovery needs no
 	// transcript read after the start commits.
@@ -196,7 +195,6 @@ func (c *delegateTreeController) owedAttentionStartsFromTranscripts() ([]delegat
 				parentID:    parents[ref.delegateID],
 				attentionID: resume.attentionID,
 				generation:  resume.generation,
-				pendingIDs:  fold.pendingIDs(),
 				turns:       fold.pendingTurns(resume.attentionID),
 			})
 		}
@@ -352,7 +350,7 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 		wakeAfterUnlock = func() error {
 			var wakeErrs []error
 			for _, wake := range deliveryWakes {
-				wakeErrs = append(wakeErrs, c.wakeDeliveryReceiverAt(wake.receiver, wake.attentionIDs, wake.wakeGeneration))
+				wakeErrs = append(wakeErrs, c.wakeDeliveryReceiverAt(wake.receiver, wake.attentionIDs))
 			}
 			return errors.Join(wakeErrs...)
 		}
@@ -524,14 +522,6 @@ func (c *delegateTreeController) reconcileRecoveryRequiredStopLocked() (delegate
 type delegateDeliveryWake struct {
 	receiver     delegateDeliveryReceiver
 	attentionIDs []string
-	// wakeGeneration is the newest settled generation the acknowledgments
-	// grouped into this wake superseded, sampled when each delivery's claim was
-	// created, not when each wake was journaled. The callback releases against
-	// this sample rather than reading the generation again after the
-	// acknowledgment landed: a stop that settles in between is newer evidence
-	// than this delivery, and re-sampling would let the older delivery clear that
-	// newer quiet.
-	wakeGeneration uint64
 }
 
 // acknowledgeRetryableStopDeliveriesLocked retries the durable acknowledgment
@@ -556,7 +546,6 @@ func (c *delegateTreeController) acknowledgeRetryableStopDeliveriesLocked(stop *
 	var lost []events.WarningData
 	liveOrder := make([]*Session, 0)
 	liveIDs := make(map[*Session][]string)
-	liveGenerations := make(map[*Session]uint64)
 	cold := false
 	buildPlans := func() delegateMutationPlans {
 		plans := c.deliveryAckPlansLocked(
@@ -570,9 +559,8 @@ func (c *delegateTreeController) acknowledgeRetryableStopDeliveriesLocked(stop *
 		wakes := make([]delegateDeliveryWake, 0, len(liveOrder)+1)
 		for _, receiver := range liveOrder {
 			wakes = append(wakes, delegateDeliveryWake{
-				receiver:       receiver,
-				attentionIDs:   liveIDs[receiver],
-				wakeGeneration: liveGenerations[receiver],
+				receiver:     receiver,
+				attentionIDs: liveIDs[receiver],
 			})
 		}
 		if cold {
@@ -669,9 +657,6 @@ func (c *delegateTreeController) acknowledgeRetryableStopDeliveriesLocked(stop *
 					liveOrder = append(liveOrder, receiver)
 				}
 				liveIDs[receiver] = append(liveIDs[receiver], delegateAttentionID(token.deliveryID))
-				if ack.wakeGeneration > liveGenerations[receiver] {
-					liveGenerations[receiver] = ack.wakeGeneration
-				}
 			case coldDelegateDeliveryReceiver:
 				cold = true
 			}
@@ -769,10 +754,9 @@ func (c *delegateTreeController) reportDelegateWakeError(err error) {
 	}
 }
 
-// wakeDeliveryReceiverAt posts the wake for attentionIDs, releasing the
-// receiver's automatic-drive holds against the generation the acknowledgment's
-// release superseded.
-func (c *delegateTreeController) wakeDeliveryReceiverAt(receiver delegateDeliveryReceiver, attentionIDs []string, wakeGeneration uint64) error {
+// wakeDeliveryReceiverAt posts the wake for attentionIDs. The committed queue
+// events it journals clear every user-stop hold in the same store Apply.
+func (c *delegateTreeController) wakeDeliveryReceiverAt(receiver delegateDeliveryReceiver, attentionIDs []string) error {
 	switch receiver := receiver.(type) {
 	case *Session:
 		if receiver == nil {
@@ -781,22 +765,6 @@ func (c *delegateTreeController) wakeDeliveryReceiverAt(receiver delegateDeliver
 		if receiver.isRootDelegateAttentionReceiver() {
 			return receiver.armDelegateAttentions(attentionIDs)
 		}
-		// A committed delivery is a wake from a new event in its own
-		// right: the child's report may present a row a user's stop
-		// held out of the automatic drives, so the holds end with it
-		// exactly as a successful arm ends them — and they end BEFORE
-		// the arm below notifies, because the notify func drives the
-		// receiver synchronously: a hold still in place at the drive's
-		// list read would present the delivered row alone and leave
-		// the stopped report for a later generation.
-		//
-		// The generation was sampled when the delivery's claim was created, not
-		// when the wake funnel journaled this acknowledgment's release: the
-		// owner's settled generation then, which is the newest quiet the delivery
-		// supersedes. Sampling it here would read the generation after the
-		// acknowledgment landed, so a stop that settled in that interval would be
-		// cleared by a delivery older than it.
-		receiver.releaseAutomaticDriveHolds(delegateHoldReleaseDelivery, wakeGeneration)
 		// A non-root receiver gets the same durable arm the root gets
 		// (#6330): armDelegateAttentions opens the receiver's attention
 		// in the controller, waits out a racing attention start, and
@@ -1126,13 +1094,12 @@ func (c *delegateTreeController) executeDelegateAttentionCleanup(plan delegateAt
 		}
 		return c.ReportAttentionStabilized(plan.lease, plan.attentionID, plan.runtime)
 	}
-	// A stop discards only attention the transcript still owes. A consumed item
-	// can outlive the queue row that named it: a delegate generation consumes
-	// what its settled requests presented and resolves the row (see
-	// reconcileResolvedDelegateAttention), while the stop's plan still carries
-	// the ID. Discarding that item again would be a conflicting resolution, so
-	// the resolver keeps a recorded resolution instead and renews its durability
-	// barrier before the row is forgotten.
+	// A stop discards only attention the queue still owes. A consumed item can
+	// outlive the plan that named it: a delegate generation consumes what its
+	// settled requests presented and removes the row in one atomic Apply, while
+	// the stop's plan still carries the ID. Discarding that item again would be
+	// a conflicting resolution, so the resolver keeps a recorded resolution
+	// instead and renews its durability barrier before the row is forgotten.
 	disposition := plan.disposition
 	if disposition == delegateAttentionDiscarded {
 		disposition = delegateAttentionDiscardUnlessResolved

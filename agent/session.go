@@ -1410,25 +1410,21 @@ type Session struct {
 	// Reset at each turn start. Guarded by attentionMu.
 	attentionCausesMergedIDs map[string]struct{}
 	// attentionAcceptedID is the trigger of an accepted attention generation
-	// that no settled request has presented yet. The accept resolves the
-	// trigger as consumed first, so only this latch tells a fold to keep its
-	// turn; promoteStagedAttentionCoverage clears it. Guarded by attentionMu.
+	// that no settled request has presented yet. The row stays in
+	// delegatestore until it is presented and consumed, so this latch only
+	// records which row the generation carries; promoteStagedAttentionCoverage
+	// moves it to attentionPresentedTrigger. Guarded by attentionMu.
 	attentionAcceptedID string
 	// attentionAcceptedCause is the cause of attentionAcceptedID, kept for the
 	// request that presents it (promoteStagedAttentionCoverage). Guarded by
 	// attentionMu.
 	attentionAcceptedCause *provenance.Causal
-	// attentionAutomaticDriveHolds names pending rows a user's stop quieted
-	// from automatic drives, each stamped with the settled generation whose
-	// quiet it carries: the stopped generation's commit left the delegate
-	// armed for every other pending row, and that stale armed wake drives
-	// without a re-arm, so the drive's own reads keep a held row out of its
-	// claim and its riders while the rows the stop never touched still
-	// present. A wake releases only the holds at or below the generation it
-	// supersedes, so a stop that settles after an arm keeps its quiet. The
-	// map is in-memory on purpose: a restart reconciles wakes from the
-	// durable fold, which cannot hold a quiet. Guarded by attentionMu.
-	attentionAutomaticDriveHolds map[string]uint64
+	// attentionPresentedTrigger is the accepted trigger a settled full-history
+	// request carried to the model and the turn's exit rule has not consumed
+	// yet. The row's durable hold and pending status live in delegatestore;
+	// this latch only keeps the exit rule from replaying a report the model
+	// already read. Guarded by attentionMu.
+	attentionPresentedTrigger string
 
 	// turnNameRetryMu guards turnNameRetry alone. The paced wake it schedules
 	// runs while the session goroutine is mid-stand-down, so it must not queue

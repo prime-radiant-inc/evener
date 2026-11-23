@@ -201,7 +201,7 @@ func TestLeavingThePendingSetClearsParkedAndCountedState(t *testing.T) {
 		c.recordDelegateAttentionRestoreFailure(id)
 	}
 	c.forgetDelegateAttention("dlg_forgotten", "delegate:dlg_forgotten")
-	c.replaceDelegateAttentionForTest("dlg_replaced", []string{"delegate:dlg_replaced-again"})
+	c.forgetDelegateAttention("dlg_replaced", "delegate:dlg_replaced")
 	for _, id := range []string{"dlg_forgotten", "dlg_replaced"} {
 		if attentionParkedOf(c, id) {
 			t.Errorf("%s still parked after leaving the pending set", id)

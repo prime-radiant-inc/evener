@@ -140,7 +140,8 @@ func TestDelegateAttentionWarningEpisodeEndsWhenTheAttentionIsNoLongerOwed(t *te
 	sess.warnDelegateAttentionFailed(delegateAttentionRestoreLabel, "d1", busy) // still owed: same episode
 	controller.forgetDelegateAttention("d1", "a1")
 	sess.forgetSettledDelegateAttentionWarnings()
-	controller.replaceDelegateAttentionForTest("d1", []string{"a2"})
+	controller.forgetDelegateAttention("d1", "a1")
+	controller.seedAttentionRowForTest("d1", "a2", true)
 	sess.warnDelegateAttentionFailed(delegateAttentionRestoreLabel, "d1", busy) // owed again: a new episode
 	sess.delegateController = nil
 	sess.Close()

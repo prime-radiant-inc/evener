@@ -131,7 +131,7 @@ func (s *Session) admitOwedDelegateAttentionStart(owed delegateOwedAttentionStar
 	if err != nil {
 		return nil, fmt.Errorf("restore owner runtime: %w", err)
 	}
-	reservation, err := s.delegateController.reserveOwedAttentionStart(owed.delegateID, owed.attentionID, owed.generation, owed.pendingIDs)
+	reservation, err := s.delegateController.reserveOwedAttentionStart(owed.delegateID, owed.attentionID, owed.generation)
 	if err != nil {
 		return nil, fmt.Errorf("reserve owed generation: %w", err)
 	}

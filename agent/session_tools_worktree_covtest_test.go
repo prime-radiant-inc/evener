@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -637,25 +636,4 @@ func TestCovResetDelegateAttentionRetry(t *testing.T) {
 		t.Fatalf("generation = %d, want 5", s.stableAttentionRetry.generation)
 	}
 	s.attentionMu.Unlock()
-}
-
-// TestCovAcceptDelegateAttention_NilReservation covers
-// acceptDelegateAttention.
-func TestCovAcceptDelegateAttention_NilReservation2(t *testing.T) {
-	t.Parallel()
-	s := &Session{}
-	err := s.acceptDelegateAttention(nil)
-	if err == nil {
-		t.Fatal("nil reservation should return error")
-	}
-}
-
-// TestCovAcceptDelegateAttention_NoController covers with no controller.
-func TestCovAcceptDelegateAttention_NoController2(t *testing.T) {
-	t.Parallel()
-	s := &Session{}
-	err := s.acceptDelegateAttention(nil)
-	if err == nil || !errors.Is(err, errDelegateStaleLease) {
-		t.Fatalf("no controller: %v", err)
-	}
 }

@@ -100,7 +100,7 @@ func (c *delegateTreeController) StopSubtree(actor delegateActor, targetID strin
 				c.mu.Unlock()
 				return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, err
 			}
-			if blocker := c.attentionStartBlockerLocked(targetID, false); blocker != nil {
+			if blocker := c.attentionStartBlockerLocked(targetID); blocker != nil {
 				c.mu.Unlock()
 				<-blocker
 				continue
@@ -137,7 +137,7 @@ func (c *delegateTreeController) StopSubtreeAndDrive(ctx context.Context, actor 
 				c.mu.Unlock()
 				return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, err
 			}
-			if blocker := c.attentionStartBlockerLocked(targetID, false); blocker != nil {
+			if blocker := c.attentionStartBlockerLocked(targetID); blocker != nil {
 				c.mu.Unlock()
 				if waitErr := waitAttentionStartAdmission(ctx, blocker); waitErr != nil {
 					return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, errors.Join(errDelegateStopNotAdmitted, waitErr)
@@ -193,11 +193,11 @@ func (c *delegateTreeController) StopSubtreeAndDrive(ctx context.Context, actor 
 	return result, cancelPlan, plans, nil
 }
 
-func (c *delegateTreeController) attentionStartBlockerLocked(targetID string, acceptedOnly bool) <-chan struct{} {
+func (c *delegateTreeController) attentionStartBlockerLocked(targetID string) <-chan struct{} {
 	members := c.subtreeMembersLocked(targetID)
 	tokens := make([]uint64, 0)
 	for token, record := range c.reservations {
-		if record == nil || record.trigger != delegatestore.TriggerAttention || record.done == nil || acceptedOnly && !record.attentionAdmitted {
+		if record == nil || record.trigger != delegatestore.TriggerAttention || record.done == nil {
 			continue
 		}
 		if _, covered := members[record.delegateID]; covered {
@@ -612,7 +612,7 @@ func (c *delegateTreeController) CloseResumability(actor delegateActor, delegate
 			c.mu.Unlock()
 			return delegateMutationPlans{}, errDelegateTargetBusy
 		}
-		if blocker := c.attentionStartBlockerLocked(delegateID, true); blocker != nil {
+		if blocker := c.attentionStartBlockerLocked(delegateID); blocker != nil {
 			c.mu.Unlock()
 			<-blocker
 			c.mu.Lock()
@@ -775,7 +775,7 @@ func (c *delegateTreeController) stopSubtreeForClose(ctx context.Context, target
 	for {
 		c.mu.Lock()
 		if c.stop == nil {
-			if blocker := c.attentionStartBlockerLocked(targetID, false); blocker != nil {
+			if blocker := c.attentionStartBlockerLocked(targetID); blocker != nil {
 				c.mu.Unlock()
 				if admitCtx == nil {
 					admitCtx, cancelAdmit = closeStopJoinContext(ctx)

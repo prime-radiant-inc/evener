@@ -3451,12 +3451,11 @@ func TestRetirementSafetyColdJobWatchContent(t *testing.T) {
 	if _, err := root2.ProcessInput(context.Background(), "drain-original-crash-attention", nil); err != nil {
 		t.Fatal(err)
 	}
-	settledAttn, err := readExistingDelegateAttentionFold(transcriptPath, d.ChildSessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pending := settledAttn.pendingIDs(); len(pending) != 0 {
-		t.Fatalf("settled delegate still owes original shell attention: %v", pending)
+	// The store queue is the authority; the transcript keeps the steering
+	// turns as rendered history.
+	settledAttn := pendingAttentionRowsForTest(t, tree2, d.DelegateID)
+	if len(settledAttn) != 0 {
+		t.Fatalf("settled delegate still owes original shell attention: %#v", settledAttn)
 	}
 	if err := root2.reclaimDelegateRuntimeCapacity(tree2.maxRetainedTerminal); err != nil {
 		t.Fatal(err)

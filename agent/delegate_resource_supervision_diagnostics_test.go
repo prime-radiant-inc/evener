@@ -1,8 +1,8 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
-	"os"
 	"reflect"
 	"runtime"
 	"sort"
@@ -45,7 +45,7 @@ func TestStableSupervisionFailureSnapshotCapturesPendingAttention(t *testing.T) 
 	if !reflect.DeepEqual(snapshot["blocking_predicates"], []string{"pending_attention_ids"}) {
 		t.Fatalf("snapshot blocking predicates = %#v, want only durable pending attention", snapshot["blocking_predicates"])
 	}
-	for _, key := range []string{"arm_retry_ids", "attention_reservations", "controller_finalizing", "running", "driving", "subagent_finalizing", "done_present", "attention_resolutions", "attention_resume_generations", "settlement_claims", "pending_notifications", "notify_callback"} {
+	for _, key := range []string{"arm_retry_ids", "attention_reservations", "controller_finalizing", "running", "driving", "subagent_finalizing", "done_present", "attention_resolutions", "settlement_claims", "pending_notifications", "notify_callback"} {
 		if _, ok := snapshot[key]; !ok {
 			t.Errorf("snapshot omitted %q", key)
 		}
@@ -112,60 +112,6 @@ func TestStableSupervisionFailureSnapshotCapturesPendingAttention(t *testing.T) 
 	})
 }
 
-// Dropping a populated reservation, or flattening its admission flags, must
-// lose evidence here even though the previous warm run is already quiescent.
-func TestStableSupervisionFailureSnapshotCapturesAttentionReservation(t *testing.T) {
-	t.Parallel()
-	fixture := newColdDelegateFixture(t, "")
-	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
-		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("no action")} },
-	})
-	root := restoreSupervisionRoot(t, fixture, nil)
-	sub := warmStableSupervisionDelegate(t, root, fixture)
-	waitForStableSupervisionRun(t, root, fixture.childID)
-	const attentionID = "attention:diagnostic-reservation"
-	if appended, err := sub.sess.appendDelegateNotificationDurably(attentionID, "reservation-sentinel"); err != nil || !appended {
-		t.Fatalf("append reserved attention = %t, %v", appended, err)
-	}
-	reservation, err := root.delegateController.ReserveAttention(sub.sess, attentionID)
-	if err != nil {
-		t.Fatalf("reserve attention: %v", err)
-	}
-	snapshot := uncontendedStableSupervisionSnapshot(t, root, sub, fixture.adapter)
-	wantReservation := []map[string]any{{"generation": uint64(2), "attention_id": attentionID, "admitted": false, "resolution_ready": false}}
-	if !reflect.DeepEqual(snapshot["attention_reservations"], wantReservation) || !reflect.DeepEqual(snapshot["pending_attention_ids"], []string{attentionID}) {
-		t.Fatalf("unaccepted reservation diagnostics = %#v", snapshot)
-	}
-	if !reflect.DeepEqual(snapshot["blocking_predicates"], []string{"pending_attention_ids", "attention_reservations"}) {
-		t.Fatalf("unaccepted reservation blockers = %#v", snapshot["blocking_predicates"])
-	}
-	if err := sub.sess.acceptDelegateAttention(reservation); err != nil {
-		t.Fatalf("accept attention: %v", err)
-	}
-	snapshot = uncontendedStableSupervisionSnapshot(t, root, sub, fixture.adapter)
-	wantReservation = []map[string]any{{"generation": uint64(2), "attention_id": attentionID, "admitted": true, "resolution_ready": true}}
-	if !reflect.DeepEqual(snapshot["attention_reservations"], wantReservation) || !reflect.DeepEqual(snapshot["blocking_predicates"], []string{"attention_reservations"}) {
-		t.Fatalf("accepted reservation diagnostics = %#v", snapshot)
-	}
-	if !reflect.DeepEqual(snapshot["attention_resolutions"], map[string]delegateAttentionResolution{attentionID: delegateAttentionConsumed}) ||
-		!reflect.DeepEqual(snapshot["attention_resume_generations"], map[string]uint64{attentionID: 2}) {
-		t.Fatalf("accepted reservation transcript identity = %#v", snapshot)
-	}
-	started, err := root.delegateController.CommitStart(reservation)
-	if err != nil {
-		t.Fatalf("commit attention: %v", err)
-	}
-	if err := root.launchAcceptedDelegateAttention(sub, started); err != nil {
-		t.Fatalf("launch attention: %v", err)
-	}
-	waitForStableSupervisionRun(t, root, fixture.childID, fixture.adapter)
-	snapshot = uncontendedStableSupervisionSnapshot(t, root, sub, fixture.adapter)
-	if !reflect.DeepEqual(snapshot["attention_reservations"], []map[string]any{}) || !reflect.DeepEqual(snapshot["blocking_predicates"], []string{}) || snapshot["generation"] != uint64(2) {
-		t.Fatalf("settled reservation diagnostics = %#v", snapshot)
-	}
-}
-
 // The no-action path keeps its real ordinary settlement claim until
 // FinishNoAction, so the observer sees populated evidence rather than a mock.
 func TestStableSupervisionFailureSnapshotCapturesSettlementClaim(t *testing.T) {
@@ -215,7 +161,6 @@ func TestStableSupervisionFailureSnapshotCapturesSettlementClaim(t *testing.T) {
 		t.Fatalf("no-action settlement evidence = %#v", snapshot)
 	}
 	if !reflect.DeepEqual(snapshot["attention_resolutions"], map[string]delegateAttentionResolution{attentionID: delegateAttentionConsumed}) ||
-		!reflect.DeepEqual(snapshot["attention_resume_generations"], map[string]uint64{attentionID: 2}) ||
 		!reflect.DeepEqual(snapshot["blocking_predicates"], []string{"subagent_finalizing", "current_run_open", "completion_channel"}) {
 		t.Fatalf("settlement transcript or blockers = %#v", snapshot)
 	}
@@ -245,42 +190,22 @@ func TestStableSupervisionFailureSnapshotCapturesArmRetryIDs(t *testing.T) {
 			t.Fatalf("append retry attention %q = %t, %v", id, appended, err)
 		}
 	}
-	// Make the real filesystem read fail without changing or truncating the
-	// writer's bytes. The fake clock keeps both admitted retries observable.
-	path := transcriptPath(root.stateDir, fixture.childID)
-	backup := path + ".diagnostic-arm-backup"
-	if err := os.Rename(path, backup); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(path, 0o700); err != nil {
-		if restoreErr := os.Rename(backup, path); restoreErr != nil {
-			t.Errorf("restore transcript: %v", restoreErr)
-		}
-		t.Fatal(err)
-	}
-	restore := func() {
-		t.Helper()
-		if err := os.Remove(path); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Rename(backup, path); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// Restore before root.Close even when an assertion fails during forcing.
-	restored := false
-	t.Cleanup(func() {
-		if !restored {
-			restore()
-		}
-	})
+	// Fail the first arm of each row through the session's arm-fault seam. The
+	// store write path is what an arm needs now, so the fault stands in for a
+	// refused controller admission and both retries stay observable on the fake
+	// clock; the paced retry re-arms past the fault.
+	injectedArmErr := errors.New("injected arm refusal")
+	sub.sess.mu.Lock()
+	sub.sess.cfg.testOnly.delegateAttentionArmFault = func() error { return injectedArmErr }
+	sub.sess.mu.Unlock()
 	for _, id := range []string{"attention:diagnostic-z", "attention:diagnostic-a"} {
-		if err := sub.sess.armDelegateAttention(id); err == nil {
-			t.Fatalf("arm %q against directory transcript succeeded", id)
+		if err := sub.sess.armDelegateAttention(id); !errors.Is(err, injectedArmErr) {
+			t.Fatalf("arm %q error = %v, want the injected refusal", id, err)
 		}
 	}
-	restore()
-	restored = true
+	sub.sess.mu.Lock()
+	sub.sess.cfg.testOnly.delegateAttentionArmFault = nil
+	sub.sess.mu.Unlock()
 	snapshot := uncontendedStableSupervisionSnapshot(t, root, sub, fixture.adapter)
 	if !reflect.DeepEqual(snapshot["arm_retry_ids"], []string{"attention:diagnostic-a", "attention:diagnostic-z"}) ||
 		!reflect.DeepEqual(snapshot["pending_attention_ids"], []string{"attention:diagnostic-z", "attention:diagnostic-a"}) ||
@@ -445,17 +370,25 @@ func stableSupervisionFailureSnapshot(root *Session, sub *subagent, adapter *fak
 	fold, err := readDelegateAttentionFold(transcriptPath(root.stateDir, sess.id), sess.id)
 	if err != nil {
 		snapshot["attention_fold_error"] = err.Error()
-	} else {
-		snapshot["pending_attention_ids"] = fold.pendingIDs()
-		snapshot["attention_resolutions"] = fold.resolutions
-		snapshot["attention_resume_generations"] = fold.resumeGenerations
 	}
+	// Pending status and consumption are store facts now. The transcript only
+	// orders the IDs it rendered, so a queued ID missing from that order is
+	// still pending: report it from the store, and read a transcript ID the
+	// store no longer queues as consumed. Both keys need the queue read, which
+	// happens under the controller try-lock below.
+	var queued map[string]struct{}
+	var pending []string
 	c := root.delegateController
 	if c.mu.TryLock() {
 		if aggregate := c.durable[sess.owningDelegateID]; aggregate != nil {
 			snapshot["generation"], snapshot["phase"] = aggregate.Generation, aggregate.Phase
 			snapshot["current_run_open"], snapshot["needs_attention"] = aggregate.CurrentRunOpen, aggregate.NeedsAttention
 			snapshot["pending_deliveries"] = len(aggregate.PendingDeliveries)
+			queued = make(map[string]struct{}, len(aggregate.PendingAttention))
+			for _, row := range aggregate.PendingAttention {
+				queued[row.AttentionID] = struct{}{}
+				pending = append(pending, row.AttentionID)
+			}
 		}
 		if live := c.live[sess.owningDelegateID]; live != nil {
 			snapshot["controller_finalizing"] = live.finalizing != nil
@@ -473,7 +406,7 @@ func stableSupervisionFailureSnapshot(root *Session, sub *subagent, adapter *fak
 		reservations := []map[string]any{}
 		for _, record := range c.reservations {
 			if record.delegateID == sess.owningDelegateID && record.trigger == delegatestore.TriggerAttention && record.runtime == sess && record.attentionID != "" {
-				reservations = append(reservations, map[string]any{"generation": record.generation, "attention_id": record.attentionID, "admitted": record.attentionAdmitted, "resolution_ready": record.attentionResolutionReady})
+				reservations = append(reservations, map[string]any{"generation": record.generation, "attention_id": record.attentionID})
 			}
 		}
 		snapshot["attention_reservations"] = reservations
@@ -485,6 +418,16 @@ func stableSupervisionFailureSnapshot(root *Session, sub *subagent, adapter *fak
 		}
 		snapshot["settlement_claims"] = claims
 		c.mu.Unlock()
+		if err == nil {
+			resolutions := map[string]delegateAttentionResolution{}
+			for _, id := range fold.order {
+				if _, still := queued[id]; !still {
+					resolutions[id] = delegateAttentionConsumed
+				}
+			}
+			snapshot["pending_attention_ids"] = pending
+			snapshot["attention_resolutions"] = resolutions
+		}
 	} else {
 		snapshot["controller_lock_busy"] = true
 	}

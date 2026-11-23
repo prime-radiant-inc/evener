@@ -46,27 +46,14 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 	if s == nil || sub == nil || sub.sess == nil || sub.sess.owningDelegateID == "" || s.delegateController == nil || sub.sess.delegateController != s.delegateController {
 		return false
 	}
-	var ids []string
-	if retryID := s.delegateController.reservedAttentionID(sub.sess); retryID != "" {
-		ids = []string{retryID}
-	} else {
-		var err error
-		ids, err = sub.sess.automaticDelegateAttentionIDs()
-		if err != nil {
-			s.emit(warningDataFromError("inspect delegate attention", err))
-			return true
-		}
+	ids, err := sub.sess.automaticDelegateAttentionIDs()
+	if err != nil {
+		s.emit(warningDataFromError("inspect delegate attention", err))
+		return true
 	}
 	if len(ids) == 0 {
-		// The transcript holds no unresolved attention, but the controller may
-		// still owe a wake whose resolution outran its run (a durable accept
-		// followed by a declined commit). Reconcile the projection so the last
-		// journal event is not left at needs_attention:true forever. This
-		// reconciliation launches no run, so it never claims the wake: return
-		// false and let the notification drive proceed as it did before.
-		if err := s.delegateController.reconcileResolvedDelegateAttention(sub.sess.owningDelegateID); err != nil {
-			s.emit(warningDataFromError("reconcile resolved delegate attention", err))
-		}
+		// The durable queue holds no unheld row, so this delegate owes no
+		// attention a drive could present. Let the notification drive proceed.
 		return false
 	}
 	if observer := s.cfg.testOnly.delegateAttentionBeforeDriveClaim; observer != nil {
@@ -74,8 +61,8 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 	}
 	// Claim the child for the WHOLE start, not just for this check. Everything
 	// between here and launchAcceptedDelegateAttention is durable work
-	// (ReserveAttention, acceptDelegateAttention's transcript append,
-	// CommitStart, the delegate update emit), and the run goroutine only sets
+	// (ReserveAttention, CommitStart, the delegate update emit), and the run
+	// goroutine only sets
 	// running at the far end of it. Without the claim a wake-edge drive landing
 	// in that gap reads an idle child: the reservation is already consumed and
 	// the attention is no longer pending, so driveDelegateAttention itself
@@ -143,36 +130,25 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 	if closed {
 		return true
 	}
-	// The first read precedes the child claim. Another drive may consume and
+	// The first read precedes the child claim. Another drive may present and
 	// finish that attention generation before this drive takes the claim, so
-	// select again while the claim fences every competing drive. A reservation
-	// already held for this runtime must still retry its exact accepted marker.
-	if retryID := s.delegateController.reservedAttentionID(sub.sess); retryID != "" {
-		ids = []string{retryID}
-	} else {
-		pending, err := sub.sess.automaticDelegateAttentionIDs()
-		if err != nil {
-			s.emit(warningDataFromError("inspect delegate attention", err))
-			return true
-		}
-		if len(pending) == 0 {
-			if err := s.delegateController.reconcileResolvedDelegateAttention(sub.sess.owningDelegateID); err != nil {
-				s.emit(warningDataFromError("reconcile resolved delegate attention", err))
-			}
-			return false
-		}
-		ids = pending
+	// select again while the claim fences every competing drive. The durable
+	// queue is the authority: a row another generation consumed is simply
+	// gone.
+	pending, err := sub.sess.automaticDelegateAttentionIDs()
+	if err != nil {
+		s.emit(warningDataFromError("inspect delegate attention", err))
+		return true
 	}
+	if len(pending) == 0 {
+		return false
+	}
+	ids = pending
 	reservation, err := s.delegateController.ReserveAttention(sub.sess, ids[0])
 	if err != nil {
 		if !errors.Is(err, errDelegateTargetBusy) && !errors.Is(err, errTreeAtCapacity) {
 			s.emit(warningDataFromError("reserve delegate attention", err))
 		}
-		s.delegateController.retryDelegateAttentionLater()
-		return true
-	}
-	if err := sub.sess.acceptDelegateAttention(reservation); err != nil {
-		s.emit(warningDataFromError("accept delegate attention", err))
 		s.delegateController.retryDelegateAttentionLater()
 		return true
 	}
@@ -186,12 +162,10 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 	if fault != nil {
 		// A test seam, nil in production: its error stands in for a commit the
 		// controller refused, so the recovery arms below can be pinned without
-		// racing a real refusal. A busy refusal releases the reservation, so
-		// the seam aborts the start on that error class to mirror the release
-		// a real busy commit performed before the arm below reads it.
-		if commitErr = fault(); commitErr != nil && errors.Is(commitErr, errDelegateTargetBusy) {
-			_ = s.delegateController.AbortStart(reservation)
-		}
+		// racing a real refusal. The common failure branch below aborts the
+		// start, which is a no-op for a reservation the refusal already
+		// released.
+		commitErr = fault()
 	}
 	var started delegateStartCommit
 	if commitErr == nil {
@@ -199,14 +173,11 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 	}
 	if commitErr != nil {
 		s.emit(warningDataFromError("commit delegate attention", commitErr))
-		// A busy commit released the reservation, so nothing retries this
-		// start: without the reopen the consume marker acceptDelegateAttention
-		// already wrote would strand the report forever. A failed journal append
-		// keeps the reservation, so the sticky retry re-presents it and the
-		// reopen is left to that retry's own failure.
-		if errors.Is(commitErr, errDelegateTargetBusy) {
-			s.reopenFailedDelegateAttention(sub, ids[0], false)
-		}
+		// The trigger was never consumed, so there is nothing to reopen: the
+		// row is still durably queued and the next drive selects it again. A
+		// busy commit already released the reservation; an append failure kept
+		// it, so abort it here either way.
+		_ = s.delegateController.AbortStart(reservation)
 		s.delegateController.retryDelegateAttentionLater()
 		return true
 	}
@@ -214,6 +185,10 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 		observer(sub)
 	}
 	s.delegateController.emitDelegateUpdate(started.plan)
+	// The generation carries ids[0]. Latch it so the fold keeps its turn and
+	// the exit rule can name it; the row itself stays durably queued until a
+	// settled request presents it.
+	sub.sess.holdAcceptedTrigger(ids[0])
 	launchErr := s.launchAcceptedDelegateAttention(sub, started)
 	launched = launchErr == nil
 	if launchErr == nil {
@@ -235,57 +210,12 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 		}
 		s.releaseFinishedGeneration(started.lease, sub.sess)
 		s.emit(warningDataFromError("launch delegate attention", errors.Join(launchErr, finishErr)))
-		// The committed start closed and the launch refused, so this
-		// generation will never present the report it consumed. The committed
-		// start already replaced the durable queue with the accept's
-		// post-consume pending list, resolving this row when the report was its
-		// only pending item. Reopening the row must therefore queue it again,
-		// or no in-process drive ever selects the delegate again.
-		s.reopenFailedDelegateAttention(sub, ids[0], true)
+		// The run never started, so no request presented the trigger. Drop the
+		// latch and leave the row durably queued for the next drive.
+		sub.sess.clearAcceptedDelegateTrigger()
 		s.delegateController.retryDelegateAttentionLater()
 	}
 	return true
-}
-
-// reopenFailedDelegateAttention restores a report a presentation start
-// consumed and then abandoned. A closing owner, a closing tree and a
-// deliberately stopped child are left to their teardown: those paths already
-// discard pending attention, and a report re-delivered into a tearing-down
-// tree would only race the discard.
-//
-// armWake re-arms the reopened row's wake in the controller. The launch-refusal
-// arm needs it: its committed start replaced the durable queue with the accept's
-// post-consume pending list and resolved the consumed row. The busy-commit arm
-// does not: its failed commit never replaced the queue, so the delegate is still
-// selected and the driven presentation reads the reopened transcript row.
-func (s *Session) reopenFailedDelegateAttention(sub *subagent, attentionID string, armWake bool) {
-	if s == nil || sub == nil || sub.sess == nil || attentionID == "" {
-		return
-	}
-	if s.childStopGated(sub.sess.id) {
-		return
-	}
-	if s.delegateController.attentionReopenRefused(sub.sess.owningDelegateID) {
-		return
-	}
-	s.mu.Lock()
-	closed := s.closingOrClosedLocked()
-	s.mu.Unlock()
-	if closed {
-		return
-	}
-	// A drive retry reopens a row whose presentation failed with no user stop
-	// behind it, so nothing quiets the reopened row: it presents at once.
-	reopenID, err := sub.sess.reopenConsumedDelegateAttention(attentionID, 0)
-	if err != nil {
-		s.emit(warningDataFromError("reopen unpresented delegate attention", err))
-		return
-	}
-	if armWake && reopenID != "" {
-		if err := s.delegateController.rearmReopenedDelegateAttention(sub.sess.owningDelegateID, reopenID); err != nil {
-			s.emit(warningDataFromError("rearm reopened delegate attention", err))
-		}
-	}
 }
 
 func (s *Session) launchAcceptedDelegateAttention(sub *subagent, started delegateStartCommit) error {
@@ -370,20 +300,6 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 		err = errors.New("delegate attention runtime is unavailable")
 		finishRestore(nil, err)
 		return nil, err
-	}
-	if restored {
-		// The idle release may have reclaimed the runtime that held a user
-		// stop's quiet in memory; a freshly built session rebuilds that
-		// quiet from the durable outcome and the fold BEFORE the candidate
-		// joins the tree, so a drive landing in the admit-to-attach window
-		// below reads the automatic list with the hold already in place
-		// instead of presenting the stopped reopen riding the stale armed
-		// wake. The candidate is disposable — a resident winner discards it,
-		// derived holds and all — so a pass that only found the runtime
-		// resident never rebuilds a hold on quiet its in-memory state never
-		// lost. The call is a no-op for every restored runtime that owes no
-		// such stop.
-		sub.sess.deriveHeldDelegateAttentionFromOutcome()
 	}
 	var installation *delegateIdleRuntimeInstallation
 	if mode == delegateRuntimeAttachIdle {
