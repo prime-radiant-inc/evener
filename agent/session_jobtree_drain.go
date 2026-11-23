@@ -285,6 +285,16 @@ func (s *Session) ManagedJobsFinalizedForTest() bool {
 // neither Close() on an unreadable store nor spin on it forever, so the loop
 // surfaces the failure instead.
 func (s *Session) treeHasOutstandingWork() (bool, error) {
+	return s.treeHasOutstandingWorkWith(s.pendingRootDelegateAttention)
+}
+
+// treeHasOutstandingWorkAtBoundary matches treeHasOutstandingWork except that
+// covered root attention IDs already presented in this active turn are excluded.
+func (s *Session) treeHasOutstandingWorkAtBoundary() (bool, error) {
+	return s.treeHasOutstandingWorkWith(s.pendingUncoveredRootDelegateAttention)
+}
+
+func (s *Session) treeHasOutstandingWorkWith(rootAttention func() bool) (bool, error) {
 	if s.jobManager != nil {
 		n, err := s.jobManager.outstandingDrainJobCount()
 		if err != nil {
@@ -294,7 +304,7 @@ func (s *Session) treeHasOutstandingWork() (bool, error) {
 			return true, nil
 		}
 	}
-	return s.treeHasOutstandingWorkBesidesOwnJobs()
+	return s.treeHasOutstandingWorkBesidesOwnJobsWith(rootAttention)
 }
 
 // subagentHasDrainableWork reports whether a subagent has live owned work or an
@@ -353,6 +363,10 @@ func (s *Session) subagentHasDrainableWork() (bool, error) {
 // background shell, so without this split the announcement would name a false
 // reason to the model.
 func (s *Session) treeHasOutstandingWorkBesidesOwnJobs() (bool, error) {
+	return s.treeHasOutstandingWorkBesidesOwnJobsWith(s.pendingRootDelegateAttention)
+}
+
+func (s *Session) treeHasOutstandingWorkBesidesOwnJobsWith(rootAttention func() bool) (bool, error) {
 	if s.jobManager != nil && s.jobManager.hasPendingWatchSends() {
 		return true, nil
 	}
@@ -364,7 +378,7 @@ func (s *Session) treeHasOutstandingWorkBesidesOwnJobs() (bool, error) {
 	}
 	// A Stop's park defers pending attention to re-engagement, so it must
 	// not hold a drain open either.
-	if s.pendingRootDelegateAttention() {
+	if rootAttention() {
 		return true, nil
 	}
 	if s.hasPendingDelegateAttentionArmRetry() {

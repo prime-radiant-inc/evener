@@ -8,6 +8,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -96,7 +97,9 @@ func TestRootBareTextFallback(t *testing.T) {
 		{name: "natural stop", text: "Root answer", finish: llm.FinishReasonStop, kind: EntryUserInput, wantFallback: true},
 		{name: "truncated", text: "Partial answer", finish: llm.FinishReasonLength, kind: EntryUserInput},
 		{name: "empty", finish: llm.FinishReasonStop, kind: EntryUserInput},
-		{name: "notification", text: "Acknowledgement", finish: llm.FinishReasonStop, kind: EntryNotification, wantQuiet: true},
+		{name: "idle root notification delivers reply", text: "Final notification answer", finish: llm.FinishReasonStop, kind: EntryNotification, wantFallback: true},
+		{name: "root notification with live owned job parks quietly", text: "Waiting on remaining job", finish: llm.FinishReasonStop, kind: EntryNotification, liveJob: true, wantQuiet: true},
+		{name: "typed root notification steers", text: "Untyped notification answer", finish: llm.FinishReasonStop, kind: EntryNotification, profile: structured},
 		{name: "goal continuation", text: "Continuation prose", finish: llm.FinishReasonStop, kind: EntryContinuation},
 		{name: "idle subagent", text: "Idle subagent answer", finish: llm.FinishReasonStop, kind: EntryUserInput, parent: true, wantFallback: true},
 		{name: "root with live owned job", text: "Waiting on job", finish: llm.FinishReasonStop, kind: EntryUserInput, liveJob: true, wantQuiet: true},
@@ -272,7 +275,7 @@ func TestRootBareTextFallback(t *testing.T) {
 			},
 			func(llm.Request) llm.Response {
 				calls++
-				return bareTextResponse("Noted: background job completed", llm.FinishReasonStop)
+				return bareTextResponse("Background job completed: summary", llm.FinishReasonStop)
 			},
 		))
 		t.Cleanup(env.releaseJob)
@@ -289,32 +292,32 @@ func TestRootBareTextFallback(t *testing.T) {
 		})
 
 		got2, err := s.ProcessInputKind(ctx, "", nil, EntryNotification)
-		if err != nil || calls != 3 || got2 != "" || !s.quietlyYielded() || s.State() != SessionIdle {
-			t.Fatalf("turn 2: reply=%q calls=%d quiet=%t state=%v err=%v", got2, calls, s.quietlyYielded(), s.State(), err)
+		if err != nil || calls != 3 || got2 != "Background job completed: summary" || s.quietlyYielded() || !s.communicated() || s.State() != SessionIdle {
+			t.Fatalf("turn 2: reply=%q calls=%d quiet=%t communicated=%t state=%v err=%v", got2, calls, s.quietlyYielded(), s.communicated(), s.State(), err)
 		}
 		s.Close()
 		<-evDone
 		evMu.Lock()
 		commEvs := communicateEventsIn(*evs)
 		evMu.Unlock()
-		if len(commEvs) != 0 {
-			t.Fatalf("EventCommunicate = %+v, want none after bare-text quiet park", commEvs)
+		if len(commEvs) != 1 || !commEvs[0].EndTurn || commEvs[0].Message != "Background job completed: summary" {
+			t.Fatalf("EventCommunicate = %+v, want 1 EndTurn=\"Background job completed: summary\"", commEvs)
 		}
 		turns := transcriptTurnsOf(t, s)
-		sawQuietTurn := false
+		sawAcceptedTurn := false
 		for _, turn := range turns {
 			if turn.Kind == schema.TurnSteering && turn.SteeringKind == events.SteeringKindNoToolCalls {
 				t.Fatalf("notification bare text unexpectedly triggered SteeringKindNoToolCalls steering")
 			}
-			if turn.Kind == schema.TurnAssistant && turn.AcceptedReply {
-				t.Fatalf("unexpected accepted TurnAssistant on notification wake: %q", lastAgentText(turn.Message))
-			}
 			if turn.Kind == schema.TurnAssistant && turn.QuietYield {
-				sawQuietTurn = true
+				t.Fatalf("unexpected QuietYield on final-notification bare reply: %q", lastAgentText(turn.Message))
+			}
+			if turn.Kind == schema.TurnAssistant && turn.AcceptedReply && lastAgentText(turn.Message) == "Background job completed: summary" {
+				sawAcceptedTurn = true
 			}
 		}
-		if !sawQuietTurn {
-			t.Fatal("notification bare text did not set QuietYield=true")
+		if !sawAcceptedTurn {
+			t.Fatal("final-notification bare text did not set AcceptedReply=true")
 		}
 	})
 }
@@ -793,6 +796,153 @@ func TestRootBareTextFallbackHookContextFailureIsNotTerminal(t *testing.T) {
 	}
 	if !draft {
 		t.Fatal("failed draft was not recorded")
+	}
+}
+
+func TestRootBareTextFallbackAfterSubagentReport(t *testing.T) {
+	t.Parallel()
+	adapter := newMessagingAdapter("SUM_CHILD")
+	childEntered, releaseChild := make(chan struct{}), make(chan struct{})
+	var closeRelease atomic.Bool
+	release := func() {
+		if closeRelease.CompareAndSwap(false, true) {
+			close(releaseChild)
+		}
+	}
+	t.Cleanup(release)
+	adapter.script("root",
+		func(llm.Request) llm.Response {
+			return delegateToolResponse("spawn-1", "SUM_CHILD: compute sum")
+		},
+		func(llm.Request) llm.Response {
+			return quietYieldResponse("quiet-wait", `{"message":"Waiting on subagent","next":"log_quietly_and_end_turn"}`)
+		},
+		func(llm.Request) llm.Response {
+			return bareTextResponse("SUB_SUM=78", llm.FinishReasonStop)
+		},
+	)
+	adapter.script("SUM_CHILD", func(llm.Request) llm.Response {
+		close(childEntered)
+		<-releaseChild
+		return agenttest.FinalResponse("SUB_SUM=78")
+	})
+	s := newMessagingRoot(t, adapter, func(c *SessionConfig) {
+		*c = minimalTestSessionConfig(t)
+		c.StateDir = t.TempDir()
+		c.MaxSubagentDepth = 1
+	})
+	evs, evMu, evDone := collectEvents(s)
+	defer func() {
+		release()
+		s.Close()
+		<-evDone
+	}()
+
+	ctx := tripwireCtx(t)
+	select {
+	case <-func() <-chan struct{} {
+		ch := make(chan struct{})
+		go func() {
+			defer close(ch)
+			if out, err := s.ProcessInput(ctx, "Compute sum", nil); err != nil || out != "" || !s.quietlyYielded() {
+				t.Errorf("initial turn = (%q, %v) quiet=%t, want quiet yield", out, err, s.quietlyYielded())
+			}
+		}()
+		return ch
+	}():
+	case <-ctx.Done():
+		t.Fatal("initial root turn timed out")
+	}
+	select {
+	case <-childEntered:
+	case <-ctx.Done():
+		t.Fatal("subagent never started")
+	}
+	release()
+	testwait.Until(t, "subagent completion attention ready for root notification turn", func() bool {
+		return !s.hasWorkingSubagent() && s.pendingRootDelegateAttention()
+	})
+
+	got, err := s.ProcessInputKind(ctx, "", nil, EntryNotification)
+	if err != nil {
+		t.Fatalf("notification ProcessInputKind: %v", err)
+	}
+	if got != "SUB_SUM=78" || s.quietlyYielded() || !s.communicated() || len(adapter.requestsFor("root")) != 3 {
+		t.Fatalf("notification outcome got=%q quiet=%t communicated=%t rootReqs=%d, want SUB_SUM=78 / false / true / 3",
+			got, s.quietlyYielded(), s.communicated(), len(adapter.requestsFor("root")))
+	}
+
+	s.Close()
+	<-evDone
+	evMu.Lock()
+	commEvs := communicateEventsIn(*evs)
+	evMu.Unlock()
+	if len(commEvs) != 1 || !commEvs[0].EndTurn || commEvs[0].Message != "SUB_SUM=78" {
+		t.Fatalf("EventCommunicate = %+v, want 1 EndTurn=\"SUB_SUM=78\"", commEvs)
+	}
+
+	var acceptedAssistants, quietAssistants, noToolSteers int
+	for _, turn := range transcriptTurnsOf(t, s) {
+		switch turn.Kind {
+		case schema.TurnAssistant:
+			if turn.QuietYield {
+				quietAssistants++
+			}
+			if turn.AcceptedReply && lastAgentText(turn.Message) == "SUB_SUM=78" {
+				acceptedAssistants++
+			}
+		case schema.TurnSteering:
+			if turn.SteeringKind == events.SteeringKindNoToolCalls {
+				noToolSteers++
+			}
+		}
+	}
+	if acceptedAssistants != 1 || quietAssistants != 0 || noToolSteers != 0 {
+		t.Fatalf("transcript acceptedAssistants=%d quietAssistants=%d noToolSteers=%d, want 1/0/0",
+			acceptedAssistants, quietAssistants, noToolSteers)
+	}
+}
+
+func TestRootBareTextFallbackArmedWatchSteers(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	s := newSession(t, withStateDir(t.TempDir()), withSteps(
+		func(llm.Request) llm.Response {
+			calls.Add(1)
+			return bareTextResponse("Checking watch status", llm.FinishReasonStop)
+		},
+		func(llm.Request) llm.Response {
+			calls.Add(1)
+			return agenttest.FinalResponse("Done")
+		},
+	))
+	if _, err := s.jobManager.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, Source: "self", AfterSeconds: 3600}); err != nil {
+		t.Fatal(err)
+	}
+	enqueueCompletedJobNotification(t, s, "watch-wake-job")
+
+	got, err := s.ProcessInputKind(tripwireCtx(t), "", nil, EntryNotification)
+	if err != nil {
+		t.Fatalf("ProcessInputKind: %v", err)
+	}
+	if got != "Done" || calls.Load() != 2 || s.quietlyYielded() {
+		t.Fatalf("got=%q calls=%d quiet=%t, want Done / 2 / false", got, calls.Load(), s.quietlyYielded())
+	}
+	var quietAssistants, noToolSteers int
+	for _, turn := range transcriptTurnsOf(t, s) {
+		switch turn.Kind {
+		case schema.TurnAssistant:
+			if turn.QuietYield {
+				quietAssistants++
+			}
+		case schema.TurnSteering:
+			if turn.SteeringKind == events.SteeringKindNoToolCalls {
+				noToolSteers++
+			}
+		}
+	}
+	if quietAssistants != 0 || noToolSteers != 1 {
+		t.Fatalf("quietAssistants=%d noToolSteers=%d, want 0/1", quietAssistants, noToolSteers)
 	}
 }
 

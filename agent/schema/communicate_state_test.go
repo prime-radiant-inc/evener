@@ -58,3 +58,28 @@ func TestTurnQuietYieldJSONRoundTrip(t *testing.T) {
 		t.Fatalf("QuietYield = false after round-trip, raw=%s", data)
 	}
 }
+
+func TestCommunicateArgsOutcome(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name                   string
+		raw                    string
+		wantEndTurn, wantQuiet bool
+		wantOK                 bool
+	}{
+		{name: "empty", raw: ``, wantOK: false},
+		{name: "malformed", raw: `{not json`, wantOK: false},
+		{name: "omitted_defaults_send_and_end_turn", raw: `{"message":"hi"}`, wantEndTurn: true, wantOK: true},
+		{name: "explicit_send_and_end_turn", raw: `{"message":"hi","next":"send_and_end_turn"}`, wantEndTurn: true, wantOK: true},
+		{name: "send_and_continue", raw: `{"message":"hi","next":"send_and_continue"}`, wantOK: true},
+		{name: "log_quietly_and_end_turn", raw: `{"message":"waiting","next":"log_quietly_and_end_turn"}`, wantQuiet: true, wantOK: true},
+		{name: "legacy_end_turn_true", raw: `{"end_turn":true}`, wantEndTurn: true, wantOK: true},
+		{name: "legacy_end_turn_false", raw: `{"end_turn":false}`, wantOK: true},
+	} {
+		endTurn, quiet, ok := CommunicateArgsOutcome(json.RawMessage(tc.raw))
+		if endTurn != tc.wantEndTurn || quiet != tc.wantQuiet || ok != tc.wantOK {
+			t.Errorf("%s: got (endTurn=%v quiet=%v ok=%v), want (%v, %v, %v)",
+				tc.name, endTurn, quiet, ok, tc.wantEndTurn, tc.wantQuiet, tc.wantOK)
+		}
+	}
+}

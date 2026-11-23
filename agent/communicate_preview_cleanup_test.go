@@ -344,6 +344,15 @@ func TestCommunicatePreviewSuppressesAndResetsQuietYield(t *testing.T) {
 			wantResetPreEnd: true,
 		},
 		{
+			name:            "trailing_next_split_past_closed_message_resets_at_end",
+			kind:            EntryNotification,
+			chunks:          []string{`{"message":"waiting on job"`, `,"next":"log_`, `quietly_and_end_turn"}`},
+			wantStarts:      1,
+			wantResets:      1,
+			wantComms:       0,
+			wantResetPreEnd: true,
+		},
+		{
 			name:       "loud_message_mentioning_log_quietly_is_not_suppressed",
 			kind:       EntryUserInput,
 			chunks:     []string{`{"message":"Use \"next\":\"log_quietly_and_end_turn\" when waiting",`, `"next":"send_and_end_turn"}`},
@@ -361,7 +370,11 @@ func TestCommunicatePreviewSuppressesAndResetsQuietYield(t *testing.T) {
 				for _, chunk := range tc.chunks {
 					st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &llm.ToolCallData{ID: "preview-quiet", Arguments: json.RawMessage(chunk)}})
 				}
-				call := llm.ToolCallData{ID: "preview-quiet", Name: "communicate", Arguments: json.RawMessage(fullArgs)}
+				endArgs := json.RawMessage(fullArgs)
+				if tc.name == "trailing_next_split_past_closed_message_resets_at_end" {
+					endArgs = nil
+				}
+				call := llm.ToolCallData{ID: "preview-quiet", Name: "communicate", Arguments: endArgs}
 				st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
 				finish := llm.FinishReason{Reason: llm.FinishReasonToolCalls}
 				st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &finish})

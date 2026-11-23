@@ -1835,26 +1835,25 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			skipHistory = false
 		}
 
-		bareReply := len(calls) == 0 && kind == EntryUserInput &&
-			s.usesDefaultCommunicateOutputEnvelope() && resp.Finish.Reason == llm.FinishReasonStop &&
+		roundCtx := context.WithValue(ctx, communicateEntryKindKey{}, kind)
+		bareTextStop := len(calls) == 0 && resp.Finish.Reason == llm.FinishReasonStop &&
 			!noContent && strings.TrimSpace(lastText) != "" && !s.communicated()
-		if bareReply {
-			var outstanding bool
-			var workErr error
+		var bareReply, bareQuiet bool
+		if bareTextStop {
 			if s.reportsToParent() {
-				outstanding, workErr = s.subagentHasDrainableWork()
+				drainable, workErr := s.subagentHasDrainableWork()
+				bareReply = s.usesDefaultCommunicateOutputEnvelope() && kind == EntryUserInput &&
+					workErr == nil && !drainable
+				bareQuiet = !bareReply && ((workErr == nil && drainable) ||
+					(kind == EntryDelegateAttention && s.canQuietlyYield(roundCtx) == nil))
 			} else {
-				outstanding, workErr = s.treeHasOutstandingWork()
-			}
-			if workErr != nil || outstanding {
-				bareReply = false
+				outstanding, workErr := s.treeHasOutstandingWorkAtBoundary()
+				bareReply = s.usesDefaultCommunicateOutputEnvelope() && workErr == nil &&
+					(kind == EntryUserInput && !outstanding ||
+						kind == EntryNotification && !s.hasWakeableWorkAtBoundary())
+				bareQuiet = !bareReply && workErr == nil && outstanding
 			}
 		}
-		roundCtx := context.WithValue(ctx, communicateEntryKindKey{}, kind)
-		bareQuiet := !bareReply && len(calls) == 0 &&
-			resp.Finish.Reason == llm.FinishReasonStop &&
-			!noContent && strings.TrimSpace(lastText) != "" && !s.communicated() &&
-			s.canQuietlyYield(roundCtx) == nil
 		var bareStop hooks.StopResult
 		if bareReply {
 			bareStop = s.runReplyStopHook(ctx, lastText)

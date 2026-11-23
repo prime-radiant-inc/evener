@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -839,9 +840,9 @@ const DefaultResultToolName = "communicate"
 
 // CommunicateNext values select what happens after a communicate call.
 const (
-	CommunicateNextSendAndEndTurn       = "send_and_end_turn"
-	CommunicateNextSendAndContinue      = "send_and_continue"
-	CommunicateNextLogQuietlyAndEndTurn = "log_quietly_and_end_turn"
+	CommunicateNextSendAndEndTurn       = schema.CommunicateNextSendAndEndTurn
+	CommunicateNextSendAndContinue      = schema.CommunicateNextSendAndContinue
+	CommunicateNextLogQuietlyAndEndTurn = schema.CommunicateNextLogQuietlyAndEndTurn
 )
 
 func DefCommunicate() llm.ToolDefinition {
@@ -870,7 +871,7 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 				},
 				"next": map[string]any{
 					"type":        "string",
-					"enum":        []string{CommunicateNextSendAndEndTurn, CommunicateNextSendAndContinue, CommunicateNextLogQuietlyAndEndTurn},
+					"enum":        slices.Clone(schema.CommunicateNextValues),
 					"default":     CommunicateNextSendAndEndTurn,
 					"description": "What happens after this message: `send_and_end_turn` (default) delivers `message` as your final reply and ends this turn; `send_and_continue` delivers `message` as a progress update and continues working in the next round; `log_quietly_and_end_turn` records `message` as a muted one-line transcript note without waking anyone and ends this turn while waiting on live work or after a notification or watch frame that needs no reply.",
 				},

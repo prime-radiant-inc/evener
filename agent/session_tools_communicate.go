@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -107,9 +108,7 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 					next = s
 				}
 			}
-			switch next {
-			case tool.CommunicateNextSendAndEndTurn, tool.CommunicateNextSendAndContinue, tool.CommunicateNextLogQuietlyAndEndTurn:
-			default:
+			if !slices.Contains(schema.CommunicateNextValues, next) {
 				return nil, fmt.Errorf("unknown communicate next value %q", next)
 			}
 			message := ""
@@ -290,8 +289,8 @@ func normalizeQuietCommunicateNote(message string) string {
 	if utf8.RuneCountInString(collapsed) <= communicateQuietNoteMaxRunes {
 		return collapsed
 	}
-	runes := []rune(collapsed)
-	return strings.TrimRight(string(runes[:communicateQuietNoteMaxRunes-1]), " ") + "…"
+	truncated := strings.TrimSuffix(truncRunes(collapsed, communicateQuietNoteMaxRunes-1), "…")
+	return strings.TrimRight(truncated, " ") + "…"
 }
 
 var errQuietYieldWithoutWake = errors.New("nothing can wake this turn. Start the work or arm a watch before yielding, or send your final reply with the result tool")

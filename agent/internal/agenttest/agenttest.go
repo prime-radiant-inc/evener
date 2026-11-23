@@ -164,6 +164,12 @@ func EmptyResponse() llm.Response {
 	return llm.Response{Message: llm.Message{Role: llm.RoleAssistant}}
 }
 
+const (
+	communicateNextSendAndEndTurn       = "send_and_end_turn"
+	communicateNextSendAndContinue      = "send_and_continue"
+	communicateNextLogQuietlyAndEndTurn = "log_quietly_and_end_turn"
+)
+
 // CommunicateCall builds a tool call to the communicate tool carrying message.
 func CommunicateCall(id, message string) llm.ToolCallData {
 	return CommunicateCallArgs(id, map[string]any{"message": message})
@@ -179,15 +185,15 @@ func CommunicateCallArgs(id string, args map[string]any) llm.ToolCallData {
 		message = strings.TrimSpace(fmt.Sprint(v))
 	}
 
-	next := "send_and_end_turn"
+	next := communicateNextSendAndEndTurn
 	if v, ok := args["next"].(string); ok && strings.TrimSpace(v) != "" {
 		next = strings.TrimSpace(v)
 	} else if v, ok := args["end_turn"].(bool); ok && !v {
-		next = "send_and_continue"
+		next = communicateNextSendAndContinue
 	}
 
 	var output map[string]any
-	if next != "log_quietly_and_end_turn" {
+	if next != communicateNextLogQuietlyAndEndTurn {
 		output = map[string]any{
 			"message":   "",
 			"data":      map[string]any{},
@@ -205,10 +211,8 @@ func CommunicateCallArgs(id string, args map[string]any) llm.ToolCallData {
 
 	normalized["message"] = message
 	normalized["next"] = next
-	if _, explicitOutput := args["output"]; explicitOutput || next == "send_and_end_turn" {
-		if output != nil {
-			normalized["output"] = output
-		}
+	if _, explicitOutput := args["output"]; output != nil && (explicitOutput || next == communicateNextSendAndEndTurn) {
+		normalized["output"] = output
 	}
 
 	raw, _ := json.Marshal(normalized)
@@ -234,9 +238,9 @@ func ToolCallResponse(calls ...llm.ToolCallData) llm.Response {
 // CommunicateResponse builds an assistant response that calls the communicate
 // tool with the given message and turn-ending flag mapped to next.
 func CommunicateResponse(endTurn bool, message string) llm.Response {
-	next := "send_and_end_turn"
+	next := communicateNextSendAndEndTurn
 	if !endTurn {
-		next = "send_and_continue"
+		next = communicateNextSendAndContinue
 	}
 	payload := map[string]any{
 		"message": message,

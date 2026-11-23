@@ -11,6 +11,51 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+// CommunicateNext values select what happens after a communicate call.
+const (
+	CommunicateNextSendAndEndTurn       = "send_and_end_turn"
+	CommunicateNextSendAndContinue      = "send_and_continue"
+	CommunicateNextLogQuietlyAndEndTurn = "log_quietly_and_end_turn"
+)
+
+// CommunicateNextValues lists all valid values of the communicate next enum.
+var CommunicateNextValues = []string{
+	CommunicateNextSendAndEndTurn,
+	CommunicateNextSendAndContinue,
+	CommunicateNextLogQuietlyAndEndTurn,
+}
+
+// CommunicateArgsOutcome classifies a communicate tool call's arguments,
+// resolving next (defaulting omitted/empty to send_and_end_turn) and
+// historical end_turn values. ok is false when raw is empty or malformed JSON.
+func CommunicateArgsOutcome(raw json.RawMessage) (endTurn, quiet, ok bool) {
+	if len(raw) == 0 {
+		return false, false, false
+	}
+	var args struct {
+		Next    string `json:"next"`
+		EndTurn *bool  `json:"end_turn"`
+	}
+	if json.Unmarshal(raw, &args) != nil {
+		return false, false, false
+	}
+	switch strings.TrimSpace(args.Next) {
+	case CommunicateNextLogQuietlyAndEndTurn:
+		return false, true, true
+	case CommunicateNextSendAndContinue:
+		return false, false, true
+	case CommunicateNextSendAndEndTurn:
+		return true, false, true
+	case "":
+		if args.EndTurn != nil {
+			return *args.EndTurn, false, true
+		}
+		return true, false, true
+	default:
+		return false, false, true
+	}
+}
+
 // CommunicateToolState records the tool verdict independently of display output.
 type CommunicateToolState struct {
 	Accepted        *bool  `json:"communicate_accepted,omitempty"`

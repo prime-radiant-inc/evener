@@ -12,7 +12,6 @@ import (
 
 	"primeradiant.com/evener/agent/argrepair"
 	"primeradiant.com/evener/agent/events"
-	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/internal/apptranscript"
@@ -443,12 +442,12 @@ func communicateResultEndTurn(paired pairedToolResult) (endTurn *bool, recorded 
 	}
 	if legacy.EndTurn == nil {
 		switch strings.TrimSpace(legacy.Next) {
-		case tool.CommunicateNextLogQuietlyAndEndTurn:
+		case schema.CommunicateNextLogQuietlyAndEndTurn:
 			return nil, true
-		case tool.CommunicateNextSendAndEndTurn:
+		case schema.CommunicateNextSendAndEndTurn:
 			v := true
 			legacy.EndTurn = &v
-		case tool.CommunicateNextSendAndContinue:
+		case schema.CommunicateNextSendAndContinue:
 			v := false
 			legacy.EndTurn = &v
 		}
@@ -469,13 +468,11 @@ func communicateCallArguments(call *llm.ToolCallData) json.RawMessage {
 }
 
 func quietCommunicateArguments(raw json.RawMessage) bool {
-	var args struct {
-		Next string `json:"next"`
+	endTurn, quiet, ok := schema.CommunicateArgsOutcome(raw)
+	if !ok {
+		return false
 	}
-	if len(raw) > 0 && json.Unmarshal(raw, &args) == nil && strings.TrimSpace(args.Next) == tool.CommunicateNextLogQuietlyAndEndTurn {
-		return true
-	}
-	return callArgsEndTurn(raw) && apptranscript.CommunicateArgumentsWithoutMessage(raw)
+	return quiet || (endTurn && apptranscript.CommunicateArgumentsWithoutMessage(raw))
 }
 
 // formatOutcome renders a result-tool call's arguments as the outcome hint.

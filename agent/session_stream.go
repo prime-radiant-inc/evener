@@ -444,7 +444,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 		}
 		s.emit(events.ReasoningSummaryDeltaData{Delta: delta})
 	}
-	emitCommunicatePreview := func(callID string) {
+	emitCommunicatePreview := func(callID string, final bool) {
 		if communicatePreviewSuppressed[callID] {
 			return
 		}
@@ -455,14 +455,13 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 		// Decode incrementally: this runs once per streamed argument delta, and
 		// re-deriving the whole message each time is quadratic in its length.
 		decoder := communicatePreviewDecoders[callID]
-		wasFound := decoder != nil && decoder.found
 		wasClosed := decoder != nil && decoder.closed
 		if decoder == nil {
 			decoder = &communicatePreviewDecoder{field: "message"}
 			communicatePreviewDecoders[callID] = decoder
 		}
 		message, ok := decoder.message(args)
-		if (!wasFound || !decoder.found || decoder.closed || !wasClosed) && isQuietCommunicatePreviewArgs(args) {
+		if (!decoder.found || (decoder.closed && !wasClosed) || final) && isQuietCommunicatePreviewArgs(args) {
 			communicatePreviewSuppressed[callID] = true
 			if communicatePreviewStarted[callID] {
 				s.emit(events.CommunicatePreviewResetData{CallID: callID})
@@ -542,7 +541,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 				noteContent()
 			}
 			if toolNames[ev.ToolCall.ID] == s.resultToolName() {
-				emitCommunicatePreview(ev.ToolCall.ID)
+				emitCommunicatePreview(ev.ToolCall.ID, false)
 			}
 		case llm.StreamEventToolCallEnd:
 			s.noteParentJobActivity(jobPhaseModelStreaming)
@@ -569,7 +568,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 				noteContent()
 			}
 			if toolNames[ev.ToolCall.ID] == s.resultToolName() {
-				emitCommunicatePreview(ev.ToolCall.ID)
+				emitCommunicatePreview(ev.ToolCall.ID, true)
 			}
 		case llm.StreamEventFinish:
 			finished = true

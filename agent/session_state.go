@@ -173,7 +173,11 @@ func (s *Session) sessionWorkPending() bool {
 }
 
 func (s *Session) nonMutationWorkPending() bool {
-	return s.pendingQueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingDelegateAttentionArmRetry() || s.hasPendingDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) || s.peekNotifications() > 0
+	return s.nonMutationWorkPendingWith(s.pendingRootDelegateAttention)
+}
+
+func (s *Session) nonMutationWorkPendingWith(rootAttention func() bool) bool {
+	return s.pendingQueueDepth() > 0 || s.hasPendingDelegateDeliveries() || rootAttention() || s.hasPendingDelegateAttentionArmRetry() || s.hasPendingDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) || s.peekNotifications() > 0
 }
 
 func (s *Session) hasPendingDelegateAttention() bool {
@@ -266,13 +270,17 @@ func (s *Session) hasPendingDelegateUpdateAttention() bool {
 // autonomy: nothing will move until the user acts, and amber is what surfaces
 // that stall.
 func (s *Session) autonomyInFlight() bool {
+	return s.autonomyInFlightWith(s.pendingRootDelegateAttention)
+}
+
+func (s *Session) autonomyInFlightWith(rootAttention func() bool) bool {
 	// Children first: a child's finalize tail delivers its report before it
 	// stops reading as working, so a child read as idle has already delivered
 	// whatever the pending-work read after it then sees.
 	if s.hasWorkingSubagent() {
 		return true
 	}
-	return s.nonMutationWorkPending() || s.hasWakeableClientMutationStart()
+	return s.nonMutationWorkPendingWith(rootAttention) || s.hasWakeableClientMutationStart()
 }
 
 // hasWakeableWork reports whether anything can wake a resting session. Used by
@@ -283,6 +291,16 @@ func (s *Session) autonomyInFlight() bool {
 // overcount on purpose because refusing too little is safe. See the spec for
 // the full source list.
 func (s *Session) hasWakeableWork() bool {
+	return s.hasWakeableWorkWith(s.pendingRootDelegateAttention)
+}
+
+// hasWakeableWorkAtBoundary matches hasWakeableWork while excluding covered
+// root attention IDs already presented in this active turn.
+func (s *Session) hasWakeableWorkAtBoundary() bool {
+	return s.hasWakeableWorkWith(s.pendingUncoveredRootDelegateAttention)
+}
+
+func (s *Session) hasWakeableWorkWith(rootAttention func() bool) bool {
 	if len(sessionRunningJobIDs(s)) > 0 {
 		return true
 	}
@@ -301,7 +319,7 @@ func (s *Session) hasWakeableWork() bool {
 			return true
 		}
 	}
-	return s.hasRunnableUserSteering() || s.autonomyInFlight() || s.HasPendingAsk()
+	return s.hasRunnableUserSteering() || s.autonomyInFlightWith(rootAttention) || s.HasPendingAsk()
 }
 
 // hasOneShotWakeableWork reports whether anything can wake a one-shot
