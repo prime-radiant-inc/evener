@@ -395,3 +395,33 @@ test("the phone fluency surfaces carry ladder radii, never a pill surface", () =
     )?.[0],
   ).toContain("var(--radius-control)");
 });
+
+// The rail's New-session action is the session list's floating action: a
+// trailing row inside the scroll body that pins to the scroll owner's
+// bottom-right corner while rows scroll under it. Sticky - not fixed, not JS
+// scroll listeners - is the contract because the rail's two scroll modes
+// have different scrollers: rail-owned scroll scrolls .body itself, while
+// parent-owned scroll (the phone drawer's sheet, the tablet band's column)
+// scrolls a host ancestor, and a sticky trailing row pins against whichever
+// of the two owns the scrolling - one rule, every surface the rail renders
+// in. The z token is the one the tablet band's floating chrome uses, so
+// tree rows pass under the pinned action - and the strip is transparent to
+// pointers except where the button opts back in: a full-width pinned row
+// that ate pointer events would block the whole row beneath it, not just
+// the patch under the button (the session overlay dock's pass-through
+// idiom).
+test("the rail's New-session action is a sticky bottom-right floating row above the tree rows", () => {
+  const srcRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  const css = readFileSync(join(srcRoot, "shell/rail/Rail.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, " ");
+  const rule = css.match(/\.newSessionRow\s*\{([^}]*)\}/)?.[1];
+  expect(rule, "Rail.module.css must carry the floating action's sticky row").toBeDefined();
+  expect(rule).toMatch(/position:\s*sticky/);
+  expect(rule).toMatch(/bottom:\s*var\(--space-2\)/);
+  expect(rule).toMatch(/display:\s*flex/);
+  expect(rule).toMatch(/justify-content:\s*flex-end/);
+  expect(rule).toMatch(/z-index:\s*var\(--z-raised\)/);
+  expect(rule).toMatch(/pointer-events:\s*none/);
+  const optIn = css.match(/\.newSessionRow\s*>\s*\*\s*\{([^}]*)\}/)?.[1];
+  expect(optIn, "the floating row's children must opt back into pointer events").toBeDefined();
+  expect(optIn).toMatch(/pointer-events:\s*auto/);
+});

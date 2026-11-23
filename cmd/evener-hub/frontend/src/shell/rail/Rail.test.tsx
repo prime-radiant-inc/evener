@@ -38,6 +38,7 @@ import { connectionStore, resetConnectionStoreForTests } from "../../stores/conn
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import buttonStyles from "../../widgets/button/button.module.css";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import { toastKinds } from "../../widgets/toast/toastTestUtils";
 import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
@@ -913,6 +914,37 @@ describe("resource-backed Rail", () => {
     const rule = css.match(/\.parentScrollBody\s*\{([^}]*)\}/)?.[1];
     expect(rule).toContain("padding-bottom: calc(var(--space-2) + var(--dock-clearance))");
   });
+
+  // The session list's New-session action is a floating action, not header
+  // chrome: it rides inside the scroll body - the div the list scrolls in,
+  // whichever surface owns the scrolling - so its row can pin to the scroll
+  // owner's bottom while rows pass under it. It is the rail's one filled
+  // primary, the list's primary verb one ladder step above the rows it
+  // floats over.
+  test("the New-session action floats as the body's last row, not in the header", () => {
+    installState([sectionResource("live", [summary({ title: "Live resource" })])]);
+    const { container } = render(<Rail />);
+
+    const button = screen.getByRole("button", { name: "New session" });
+    // Location: the scroll body owns it as its last row - the sticky row
+    // only pins against the scroll owner from inside the scrolling content -
+    // and the header no longer carries it.
+    const body = container.querySelector(`.${railStyles.body}`);
+    expect(body?.contains(button)).toBe(true);
+    expect(body?.lastElementChild?.className.split(/\s+/)).toContain(railStyles.newSessionRow);
+    expect(container.querySelector(`.${railStyles.header}`)?.contains(button)).toBe(false);
+    // Treatment: the accent-filled primary (the composer's Send shape
+    // language), icon-only - the aria-label is its whole accessible name, so
+    // no text label rides in the button.
+    expect(button.classList.contains(buttonStyles.primary ?? "")).toBe(true);
+    expect(button.classList.contains(buttonStyles.secondary ?? "")).toBe(false);
+    expect(button.textContent).toBe("");
+
+    fireEvent.click(button);
+    expect(`${window.location.pathname}${window.location.search}`).toBe("/new");
+    window.history.replaceState({}, "", "/");
+  });
+
   test("shows the settled empty state in v2 mode", () => {
     const empty = emptyManifest();
     installState([], empty);
@@ -922,8 +954,8 @@ describe("resource-backed Rail", () => {
     expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
     expect(screen.getByText(/no sessions yet/i)).toBeTruthy();
   });
-  // The empty state sits directly under the rail's own "+ New session" button,
-  // so it cannot answer "how do I start one?" with the command line.
+  // The empty state shares the body with the rail's own floating New-session
+  // action, so it cannot answer "how do I start one?" with the command line.
   test("the rail's empty state does not send people to the command line", () => {
     installState([], emptyManifest());
 

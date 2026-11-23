@@ -219,8 +219,8 @@
 
 /* --- block ---------------------------------------------------------
  * Opt-in full-width layout for a button that is its row's whole control
- * (a sheet's stacked actions, the rail's New session). It replaces the
- * caller's one-purpose grid/flex wrapper; width is the only thing those
+ * (a sheet's stacked actions). It replaces the caller's one-purpose
+ * grid/flex wrapper; width is the only thing those
  * wrappers changed, so the variant, size, height, and centered label all
  * stay. A link is inline text and ignores it, like wrap. */
 .block {

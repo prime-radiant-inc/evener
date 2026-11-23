@@ -708,8 +708,14 @@ function measureShell() {
       primary: newSession?.classList.contains(buttonStyles.primary ?? "") ?? false,
       secondary: newSession?.classList.contains(buttonStyles.secondary ?? "") ?? false,
     },
+    // Filled primaries outside the rail's floating New-session action: the
+    // list's own primary verb is rail chrome and does not count against the
+    // task surface's one-primary budget.
     primaryButtons: [...document.querySelectorAll<HTMLButtonElement>("button")].filter(
-      (button) => button.getClientRects().length > 0 && button.classList.contains(buttonStyles.primary ?? ""),
+      (button) =>
+        button.getClientRects().length > 0 &&
+        button !== newSession &&
+        button.classList.contains(buttonStyles.primary ?? ""),
     ).length,
     leaks: leakingElements(window.innerHeight),
     chain,

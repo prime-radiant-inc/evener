@@ -83,3 +83,58 @@ measure is the
 real rail's hover-quiet fade-out after a dismissal - with no pointer on the
 row and no treeitem focus, that styling returns focus to `body` on its own,
 independently of `preventScroll`.
+
+## The rail's floating New-session action is the rail's own filled primary
+(`assertResult()`'s `railNewSession`/`primaryButtons` checks, the
+`measureShell()` harness)
+
+The group changed with the design ruling it pins: the rail's New-session
+control moved out of the header into a floating action pinned to the scroll
+owner's bottom-right, and it is now deliberately the list's primary verb - an
+accent-filled `Button variant="primary"`, one ladder step above the rows it
+floats over - where it used to be the secondary chrome whose subordination
+kept "at most one filled primary on screen" true. The assertions flipped
+with it: the control must now carry Button's primary class (and not the
+secondary one), and `primaryButtons` - collected in `shellguard-entry.tsx` -
+excludes the rail's own floating action, so the one-primary budget now
+guards filled primaries OUTSIDE the rail chrome (the task surface's own
+verbs) instead of the whole shell.
+
+**Mutation performed:** ran the flipped guard against the pre-change
+implementation (the secondary "+ New session" header button) with
+`node scripts/shellguard/run.mjs` - the design regression the new
+assertions must catch.
+
+**Result before restore:** FAIL, two new lines:
+
+```
+shellguard FAIL: the rail's New session action lost its accent-filled primary treatment
+shellguard FAIL: the rail's New session action is a bordered secondary, not the list's floating primary
+```
+
+**Result after the move:** PASS - the same run over the floating action
+reports no rail failures, and the witness places the sticky row
+(`div._newSessionRow_...`, `position: sticky`) pinned at the rail body's
+bottom, its bottom edge one `--space-2` above the scroll owner's fold.
+
+**Verified:** 2026-11-23. **Expect:** fail.
+
+### The session hover card group catches a floating strip that eats pointer events
+
+The first post-move run of the same guard caught a real defect in the move
+itself: the floating action's row is a full-width sticky strip, and it
+swallowed hover across the whole band, so the session context card could not
+reveal from a row underneath it:
+
+```
+shellguard FAIL: session hover card 1400px 200 dark: timed out after 15000ms waiting for session context card revealed ... "hit":"<div class=\"_newSessionRow_...\">...</div>"
+```
+
+The witness's `hit` naming the strip rather than the hovered row's title is
+the catch. `Rail.module.css`'s `.newSessionRow` now passes pointer events
+through the strip except where its children opt back in (the session
+overlay dock's idiom), the re-run's hover-card journeys pass, and
+`display-gates.test.ts`'s CSS contract pins the pass-through so it cannot
+silently regress.
+
+**Verified:** 2026-11-23. **Expect:** fail.

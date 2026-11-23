@@ -104,7 +104,11 @@ afterEach(() => {
 test('clicking "New session" navigates to /new and opens the spawn pane', async () => {
   const user = userEvent.setup();
   render(<AppShell client={new FakeClient("ready")} />);
-  const button = await screen.findByRole("button", { name: "New session" });
+  // Scoped to the rail: the shell also carries a second "New session"
+  // control on the Welcome pane, so the rail's own floating action is the
+  // one this shell-level navigation test exercises (the Welcome pane's
+  // button keeps its own click-through coverage in Welcome.test.tsx).
+  const button = await rail().findByRole("button", { name: "New session" });
 
   await user.click(button);
 

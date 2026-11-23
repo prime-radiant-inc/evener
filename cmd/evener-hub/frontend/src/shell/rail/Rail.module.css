@@ -47,19 +47,15 @@
   }
 }
 
-/* The sidebar owns its own chrome: a header zone stacking the brand row, the
- * needs-you chip (only when there is one) and the secondary "+ New session"
- * button - a column so none of it steals a full-width top bar's worth of the
- * workspace's vertical space. No rule under it: the header and the tree share
- * the rail's one surface, and the first section's eyebrow does the dividing. */
+/* The sidebar owns its own chrome: a header zone stacking the brand row and
+ * the needs-you chip (only when there is one) - a column so none of it steals
+ * a full-width top bar's worth of the workspace's vertical space. No rule
+ * under it: the header and the tree share the rail's one surface, and the
+ * first section's eyebrow does the dividing. */
 .header {
   flex: none;
   display: flex;
   flex-direction: column;
-  /* Two groups: the identity block (brand row, plus the needs-you chip when
-   * one exists) and the New-session action, one run apart. The gap stays wider
-   * than .identity's own, so the chip reads as part of the row above it. */
-  gap: var(--rhythm-item);
   padding: var(--space-3) var(--space-4) var(--space-2);
   /* Lets the brand row answer the rail's own width (the narrow rule under
    * .mark), not the window's. */
@@ -67,7 +63,7 @@
 }
 
 /* The brand row and its chip read as one identity block, so a chip hugs the
- * row it belongs to instead of floating midway to the button. */
+ * row it belongs to. */
 .identity {
   display: flex;
   flex-direction: column;
@@ -174,6 +170,39 @@
    * dvh), so pad the last row - the Archived sessions disclosure - clear of
    * the home indicator, keeping the base .body padding. */
   padding-bottom: calc(var(--space-2) + var(--dock-clearance));
+}
+
+/* The session list's floating New-session action. The row rides as the
+ * body's LAST child, so `position: sticky` pins it to the bottom of
+ * whichever box owns the scrolling in the mode at hand: the body itself on
+ * the docked rail (.body above), or the host - the phone drawer's sheet
+ * body, the tablet band's column - when the parent owns the scroll and the
+ * body grows with its content. Rows scroll under the pinned action;
+ * --z-raised, the one the tablet band's other floating chrome uses, holds
+ * them beneath it. The button is the list's primary verb, one ladder step
+ * above the rows it floats over: accent-filled, control-radius, icon-only -
+ * the same accent-fill shape language as the composer's Send. No shadow: the
+ * opaque accent fill separates it from the rows the way the header's mark
+ * tile needs no shadow. The right padding keeps the action on the rows' own
+ * right edge (--space-2 in).
+ *
+ * The strip spans the body's full width, so it must not eat pointer events
+ * across the rows it floats over: only the patch under the button may
+ * capture, and the row beneath stays hoverable and clickable everywhere
+ * else. pointer-events: none on the strip with the children opting back in
+ * is the same pass-through the session overlay dock uses. */
+.newSessionRow {
+  position: sticky;
+  bottom: var(--space-2);
+  z-index: var(--z-raised);
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 var(--space-2);
+  pointer-events: none;
+}
+
+.newSessionRow > * {
+  pointer-events: auto;
 }
 
 .section {

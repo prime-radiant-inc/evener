@@ -1,7 +1,7 @@
 // The rail's drawn icons, on the app's 16x16 icon grid (the same grammar
 // as widgets/chevron, openbutton's OpenIcon and TreeDrawer's
 // SessionsIcon). Gear/Search/Sidebar lead the header; TuneIcon is the rail
-// body's organize-by control.
+// body's organize-by control; PlusIcon is its floating New-session action.
 //
 // They replace the text glyphs the header used to render. global.css subsets
 // Inter to Latin, so those code points came from whatever system fallback
@@ -63,6 +63,19 @@ export function TuneIcon() {
     <svg {...ICON} aria-hidden="true">
       <path d="M2.25 4.25h11.5M2.25 8h11.5M2.25 11.75h11.5" {...STROKE} />
       <path d="M10.75 4.25h.01M5.25 8h.01M9.25 11.75h.01" {...STROKE} strokeWidth={2.5} />
+    </svg>
+  );
+}
+
+// The session list's one create verb, drawn for the floating New-session
+// action: two crossing strokes, the cross-platform "add" mark, on the same
+// grid and stroke as the header's chrome so the floating action stays in the
+// rail's own icon language.
+export function PlusIcon() {
+  return (
+    <svg {...ICON} aria-hidden="true">
+      <path d="M8 3v10" {...STROKE} />
+      <path d="M3 8h10" {...STROKE} />
     </svg>
   );
 }

@@ -68,7 +68,7 @@ import styles from "./Rail.module.css";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 import { RailRow, type RailRowActions } from "./RailRow";
 import { ARCHIVED_SECTION_KEY, LIVE_SECTION_KEY, PROJECTS_SECTION_KEY, TEST_RUNS_SECTION_KEY } from "./railExpansion";
-import { GearIcon, SearchIcon, SidebarIcon, TuneIcon } from "./railIcons";
+import { GearIcon, PlusIcon, SearchIcon, SidebarIcon, TuneIcon } from "./railIcons";
 import {
   archivedCount,
   archivedProjectNodes,
@@ -122,6 +122,7 @@ const CLASS = {
   section: requireClass(styles.section, "Rail.module.css", "section"),
   organizeRow: requireClass(styles.organizeRow, "Rail.module.css", "organizeRow"),
   organizePanel: requireClass(styles.organizePanel, "Rail.module.css", "organizePanel"),
+  newSessionRow: requireClass(styles.newSessionRow, "Rail.module.css", "newSessionRow"),
 };
 
 interface RailSectionProps {
@@ -1076,9 +1077,6 @@ function NavigationRail({
             </span>
           )}
         </div>
-        <Button block variant="secondary" data-testid="rail-new-session" onClick={() => navigate("/new")}>
-          + New session
-        </Button>
       </div>
       {/* The rail's clock (railNow.tsx): rows derive their relative stamps from
           it. It wraps the tree only - the header and the dialogs render no
@@ -1099,7 +1097,7 @@ function NavigationRail({
             />
           )}
           {!loading && !displayed && !loadError && manifest && (
-            <EmptyState title="No sessions yet" hint="Start one with the button above." />
+            <EmptyState title="No sessions yet" hint="Start one with the button below." />
           )}
           {displayed && (
             <>
@@ -1177,6 +1175,25 @@ function NavigationRail({
               )}
             </>
           )}
+          {/* The session list's floating New-session action. Last child of
+              the scroll body in both scroll modes, so its sticky row pins to
+              whichever box owns the scrolling - the body itself on the
+              docked rail, the host (the drawer's sheet body, the tablet
+              column) when the parent owns it - while rows pass under it. */}
+          <div className={CLASS.newSessionRow}>
+            <Button
+              variant="primary"
+              size="md"
+              data-testid="rail-new-session"
+              aria-label="New session"
+              icon={<PlusIcon />}
+              onClick={() => navigate("/new")}
+            >
+              {/* Icon-only: the glyph plus the aria-label is the whole
+                  control; Button's required children renders nothing. */}
+              {null}
+            </Button>
+          </div>
         </div>
       </RailTickProvider>
       {pinSectionDialogs.dialogs}

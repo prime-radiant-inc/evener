@@ -446,11 +446,10 @@ right as one cluster with no gap between them, so the app's name and its global 
 share a line. The mark is decorative (`aria-hidden`); the wordmark names the product. The
 wordmark never truncates: the row is sized to fit at the 200px sidebar minimum, where the
 mark's gap to the wordmark tightens. A needs-you chip sits in the same identity block under
-that row, a pill led by a decorative needs-you `StatusDot`, and the New-session button
-follows a run (8px) below. No rule closes the header: it shares the rail's one surface
-with the tree, and the first section's eyebrow does the dividing. The rail names the
-product once; it does not also print the hub's advertised server name, which is the
-constant `evener-hub` on every hub.
+that row, a pill led by a decorative needs-you `StatusDot`. No rule closes the header: it
+shares the rail's one surface with the tree, and the first section's eyebrow does the
+dividing. The rail names the product once; it does not also print the hub's advertised
+server name, which is the constant `evener-hub` on every hub.
 
 **Rail rows.** Rows sit one `--space-2` in from both rail edges, so a row is a rounded
 pill (`--radius-control`) rather than an edge-to-edge band. Hover is the `--hover-1` wash
@@ -487,10 +486,15 @@ idle keeps one line. The same line names the row's host where Live spans hosts a
 row is away from this hub, or the host is offline. Rows outside Live keep the one-line
 face; their only second line is the usage-limit wait.
 
-The rail's New-session control is a `Button variant="secondary"`, and the shell keeps at most
-one filled primary on screen: the rail is chrome, so its CTA must not outrank the current
-task's primary action. `scripts/shellguard` (`run.mjs`'s `railNewSession`/`primaryButtons`
-probes) fails if the rail CTA turns primary or the shell route shows two.
+The rail's New-session control is the session list's floating action: an icon-only
+`Button variant="primary"` (a plus glyph named by its `aria-label`) in a right-aligned row
+pinned sticky to the scroll owner's bottom-right corner, so it holds its place while rows
+scroll under it in every surface the rail renders; the docked rail, the tablet column and
+the phone drawer share the one rule. It is the list's primary verb, one ladder step above
+the rows it floats over, wearing the same accent-filled shape as the composer's Send. The
+task surface still keeps at most one filled primary of its own: `scripts/shellguard`
+(`run.mjs`'s `railNewSession`/`primaryButtons` probes) fails if the floating action loses
+its primary treatment or the shell route shows two filled primaries outside it.
 
 Ancestor spines share this compact renderer, not the rail's status authority.
 The rail retains navigation-summary arbitration, including running jobs and

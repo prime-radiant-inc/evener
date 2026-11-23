@@ -34,8 +34,8 @@ export interface ButtonProps
    * Ignored by variant="link", which already wraps with its prose. */
   wrap?: boolean;
   /** Fill the width of the container instead of sizing to the label: for a
-   * button that IS its row - a sheet's stacked action, the rail's New
-   * session. The variant, size, height, and centered label are unchanged.
+   * button that IS its row - a sheet's stacked action. The variant, size,
+   * height, and centered label are unchanged.
    * Ignored by variant="link", which is inline text. */
   block?: boolean;
 }
