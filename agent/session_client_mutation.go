@@ -1572,6 +1572,50 @@ func (s *Session) hasRunnableClientMutationStart() bool {
 	return runnable
 }
 
+func isActiveIncorporatedPendingMutation(snapshot *clientMutationSnapshot, pending appwire.PendingMutation) bool {
+	return pending.ExecutionState == "incorporated" &&
+		pending.TurnID != "" &&
+		snapshot.ActiveTurnID == pending.TurnID
+}
+
+// hasWakeableClientMutationStart reports whether the durable store holds other
+// runnable client-mutation input beyond the currently executing turn's own
+// incorporated entry (such as an accepted follow-up start or a reclaimable
+// queue head). Unlike runnableClientMutationStartTurnIn, which must treat an
+// active incorporated turn as runnable for crash recovery, hasWakeableWork
+// excludes it so a running turn cannot satisfy its own quiet-yield guard.
+func (s *Session) hasWakeableClientMutationStart() bool {
+	if s == nil || s.clientMutations == nil {
+		return false
+	}
+	wakeable := false
+	s.clientMutations.read(func(snapshot *clientMutationSnapshot) {
+		wakeable = s.hasWakeableClientMutationStartIn(snapshot)
+	})
+	return wakeable
+}
+
+func (s *Session) hasWakeableClientMutationStartIn(snapshot *clientMutationSnapshot) bool {
+	if snapshot.InterruptFence == nil {
+		for _, id := range s.claimableClientMutationStartIDs(snapshot) {
+			pending := snapshot.PendingExecutions[id]
+			if pending.TurnID == "" || isActiveIncorporatedPendingMutation(snapshot, pending) {
+				continue
+			}
+			return true
+		}
+	}
+	if !snapshot.QueueHeld && len(snapshot.InputQueue) > 0 {
+		record := snapshot.Journal[snapshot.InputQueue[0].ClientMutationID]
+		if record.Method == clientMutationMethodQueue &&
+			record.StableTurnID != "" &&
+			snapshot.ActiveTurnID == record.StableTurnID {
+			return true
+		}
+	}
+	return false
+}
+
 // wakeRunnableInputAfterResidency wakes the input paths when admission
 // reopening leaves accepted work runnable.
 //
