@@ -5629,3 +5629,111 @@ func TestInstances_RemoveRestoresACorruptCopilotRecordWhenTheConfigWriteFails(t 
 		t.Fatal("the record is still the untouched symlink; the rollback never rewrote the bytes it deleted")
 	}
 }
+
+// The rename's destination snapshot runs before the record move, so an
+// external login that completes in that window is on disk when the move runs.
+// The move takes the destination's record lock and re-checks it: the newer
+// login survives, the source record stays as the leftover, and the persisted
+// rename reports it instead of overwriting the account.
+func TestInstances_EditRenameKeepsALoginThatArrivesAtTheDestination(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	seedCopilotRecord(t, f, "github-copilot", "account-1")
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	lockErr := make(chan error, 1)
+	newer := healthyCopilotRecordForTest("copilot-work", "account-2")
+	go func() {
+		lockErr <- githubcopilot.WithRecordLock(f.stateDir, "copilot-work", func() error {
+			close(locked)
+			<-release
+			return githubcopilot.SaveAuth(f.stateDir, "copilot-work", newer)
+		})
+	}()
+	<-locked
+	// The rename is past its destination snapshot, which saw no record, and
+	// parks here until the destination login has landed.
+	arrived := make(chan struct{})
+	f.ctl.beforeCopilotMove = func() { close(arrived) }
+	done := make(chan error, 1)
+	go func() {
+		done <- f.ctl.Edit(appwire.InstanceEditParams{Name: "github-copilot", NewName: "copilot-work"})
+	}()
+	<-arrived
+	select {
+	case err := <-done:
+		t.Fatalf("the rename finished before the destination login: %v", err)
+	default:
+	}
+	close(release)
+	err := <-done
+	if heldErr := <-lockErr; heldErr != nil {
+		t.Fatalf("land the destination login: %v", heldErr)
+	}
+	var persisted renamePersistedError
+	if !errors.As(err, &persisted) {
+		t.Fatalf("Edit(rename) = %v, want a persisted rename reporting the leftover", err)
+	}
+	record, loadErr := githubcopilot.LoadAuth(f.stateDir, "copilot-work")
+	if loadErr != nil {
+		t.Fatalf("the destination login did not survive the rename: %v", loadErr)
+	}
+	if record.AccountID != "account-2" {
+		t.Fatalf("destination account = %q, want the login that arrived after the rename's snapshot", record.AccountID)
+	}
+	if _, loadErr := githubcopilot.LoadAuth(f.stateDir, "github-copilot"); loadErr != nil {
+		t.Fatalf("the source record must stay behind as the reported leftover: %v", loadErr)
+	}
+	authoredEntry(t, f.tomlPath, "copilot-work")
+}
+
+// A removal that fails after deleting the Copilot record puts the hub's own
+// captured bytes back. That restore is the hub's write, so the sweep must
+// adopt it rather than announcing the record as an external login.
+func TestInstances_RemoveAdoptsItsOwnCopilotRecordRestore(t *testing.T) {
+	f := newFlakyReloadFixture(t, "", func(load int) bool { return load == 4 })
+	f.ctl.refreshProviderFile() // the startup observation this sweep follows
+	seedCopilotRecord(t, f, "github-copilot", "account-1")
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "github-copilot"}); err == nil {
+		t.Fatal("Remove = nil, want the scripted reload failure")
+	}
+	record, err := githubcopilot.LoadAuth(f.stateDir, "github-copilot")
+	if err != nil {
+		t.Fatalf("the Copilot record was not restored: %v", err)
+	}
+	if record.AccountID != "account-1" {
+		t.Fatalf("restored account = %q, want the captured record", record.AccountID)
+	}
+	if f.ctl.refreshProviderFile() {
+		t.Fatal("the sweep re-announced the hub's own restored record")
+	}
+}
+
+// The restore keeps a newer login that landed while the removal was failing,
+// because overwriting it would discard the account the user just signed in
+// with. That record is not the hub's write, so the sweep must still observe it.
+func TestInstances_RemoveLeavesANewerCopilotLoginForTheWatcher(t *testing.T) {
+	f := newFlakyReloadFixture(t, "", func(load int) bool { return load == 4 })
+	f.ctl.refreshProviderFile() // the startup observation this sweep follows
+	seedCopilotRecord(t, f, "github-copilot", "account-1")
+	newer := healthyCopilotRecordForTest("github-copilot", "account-2")
+	f.ctl.beforeCopilotRestore = func() {
+		if err := githubcopilot.SaveAuth(f.stateDir, "github-copilot", newer); err != nil {
+			t.Errorf("SaveAuth(newer login): %v", err)
+		}
+	}
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "github-copilot"}); err == nil {
+		t.Fatal("Remove = nil, want the scripted reload failure")
+	}
+	record, err := githubcopilot.LoadAuth(f.stateDir, "github-copilot")
+	if err != nil {
+		t.Fatalf("the newer login was lost: %v", err)
+	}
+	if record.AccountID != "account-2" {
+		t.Fatalf("account = %q, want the newer login the restore preserved", record.AccountID)
+	}
+	if !f.ctl.refreshProviderFile() {
+		t.Fatal("the sweep did not observe the newer external login")
+	}
+}

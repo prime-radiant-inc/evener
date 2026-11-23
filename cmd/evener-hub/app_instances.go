@@ -72,6 +72,15 @@ type hubInstancesController struct {
 	// taken. A race test holds a post-mutation listing until a racing write
 	// completes. Nil in production.
 	beforeList func()
+	// beforeCopilotMove, when set, runs at the start of a Copilot record move,
+	// after the rename's destination snapshot and before the record locks. A
+	// test lands an external login inside that window deterministically. Nil
+	// in production.
+	beforeCopilotMove func()
+	// beforeCopilotRestore, when set, runs at the start of a Copilot record
+	// restore, before the record lock. A test plants a newer login inside that
+	// window deterministically. Nil in production.
+	beforeCopilotRestore func()
 
 	commitMu    sync.Mutex
 	onCommitted func(instanceCommitted)
@@ -1905,12 +1914,17 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 
 // moveCopilotRecord moves a signed-in Copilot account with the instance name.
 // The record validates its instance field, so the move rewrites it, under the
-// record's lifecycle lock and only while the generation read before the lock
-// still matches: a login that landed in between is newer than this rename and
-// must not be overwritten by it.
+// source record's lifecycle lock and only while the generation read before the
+// lock still matches: a login that landed in between is newer than this rename
+// and must not be overwritten by it. The destination lock makes the move's own
+// absence check final, so a login that landed after the rename's up-front
+// snapshot is seen and kept rather than overwritten.
 func (c *hubInstancesController) moveCopilotRecord(oldName, newName string) error {
 	if c.auth.stateDir == "" {
 		return nil
+	}
+	if c.beforeCopilotMove != nil {
+		c.beforeCopilotMove()
 	}
 	expected, err := githubcopilot.LoadAuth(c.auth.stateDir, oldName)
 	if errors.Is(err, githubcopilot.ErrAuthNotFound) {
@@ -1919,26 +1933,48 @@ func (c *hubInstancesController) moveCopilotRecord(oldName, newName string) erro
 	if err != nil {
 		return fmt.Errorf("Copilot OAuth record not read: %w", err)
 	}
-	return githubcopilot.WithRecordLock(c.auth.stateDir, oldName, func() error {
-		record, err := githubcopilot.LoadAuth(c.auth.stateDir, oldName)
-		if errors.Is(err, githubcopilot.ErrAuthNotFound) {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("Copilot OAuth record not read: %w", err)
-		}
-		if !record.SameGeneration(expected) {
-			return fmt.Errorf("Copilot OAuth record changed during the rename; log in again under %q", newName)
-		}
-		record.Instance = newName
-		if err := githubcopilot.SaveAuth(c.auth.stateDir, newName, record); err != nil {
-			return fmt.Errorf("Copilot OAuth record not copied: %w", err)
-		}
-		if err := githubcopilot.DeleteAuth(c.auth.stateDir, oldName); err != nil {
-			return fmt.Errorf("Copilot OAuth record for %q left behind: %w", oldName, err)
-		}
-		return nil
+	// Both locks are taken in canonical path order so opposite renames (A to B
+	// and B to A) cannot deadlock on each other's destination.
+	first, second := oldName, newName
+	if githubcopilot.AuthFilePath(c.auth.stateDir, second) < githubcopilot.AuthFilePath(c.auth.stateDir, first) {
+		first, second = second, first
+	}
+	return githubcopilot.WithRecordLock(c.auth.stateDir, first, func() error {
+		return githubcopilot.WithRecordLock(c.auth.stateDir, second, func() error {
+			return c.moveCopilotRecordLocked(oldName, newName, expected)
+		})
 	})
+}
+
+// moveCopilotRecordLocked is the source and destination locks' body: re-read
+// the source at the generation the move decided on, require the destination to
+// be empty, then save and delete. A destination record that appeared since the
+// rename's snapshot is a newer login, so the move leaves both records where
+// they are and reports the source as the leftover.
+func (c *hubInstancesController) moveCopilotRecordLocked(oldName, newName string, expected githubcopilot.AuthRecord) error {
+	record, err := githubcopilot.LoadAuth(c.auth.stateDir, oldName)
+	if errors.Is(err, githubcopilot.ErrAuthNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("Copilot OAuth record not read: %w", err)
+	}
+	if !record.SameGeneration(expected) {
+		return fmt.Errorf("Copilot OAuth record changed during the rename; log in again under %q", newName)
+	}
+	if _, err := githubcopilot.LoadAuth(c.auth.stateDir, newName); err == nil {
+		return fmt.Errorf("Copilot OAuth record for %q already exists; it was left in place", newName)
+	} else if !errors.Is(err, githubcopilot.ErrAuthNotFound) {
+		return fmt.Errorf("Copilot OAuth record for %q not read: %w", newName, err)
+	}
+	record.Instance = newName
+	if err := githubcopilot.SaveAuth(c.auth.stateDir, newName, record); err != nil {
+		return fmt.Errorf("Copilot OAuth record not copied: %w", err)
+	}
+	if err := githubcopilot.DeleteAuth(c.auth.stateDir, oldName); err != nil {
+		return fmt.Errorf("Copilot OAuth record for %q left behind: %w", oldName, err)
+	}
+	return nil
 }
 
 // keylessScheme reports whether an auth scheme resolves without a credential, so
@@ -2471,11 +2507,16 @@ func (c *hubInstancesController) captureCopilotFile(name string) ([]byte, bool, 
 	return nil, false, fmt.Errorf("remove %s: read the Copilot OAuth record to preserve it: %w", name, err)
 }
 
-// restoreCopilotRecord puts the captured bytes back under the record lock. A
-// record that exists again is a login newer than the capture and wins; writing
-// over it would discard the account the user just signed in with.
-func (c *hubInstancesController) restoreCopilotRecord(name string, raw []byte) error {
-	return githubcopilot.WithRecordLock(c.auth.stateDir, name, func() error {
+// restoreCopilotRecord puts the captured bytes back under the record lock and
+// reports whether it wrote them. A record that exists again is a login newer
+// than the capture and wins; writing over it would discard the account the
+// user just signed in with, and that login is not this hub's write to adopt.
+func (c *hubInstancesController) restoreCopilotRecord(name string, raw []byte) (bool, error) {
+	if c.beforeCopilotRestore != nil {
+		c.beforeCopilotRestore()
+	}
+	restored := false
+	err := githubcopilot.WithRecordLock(c.auth.stateDir, name, func() error {
 		path := githubcopilot.AuthFilePath(c.auth.stateDir, name)
 		_, err := os.Stat(path)
 		switch {
@@ -2484,8 +2525,13 @@ func (c *hubInstancesController) restoreCopilotRecord(name string, raw []byte) e
 		case !errors.Is(err, os.ErrNotExist):
 			return err
 		}
-		return fsatomic.Write(path, raw, 0o600)
+		if err := fsatomic.Write(path, raw, 0o600); err != nil {
+			return err
+		}
+		restored = true
+		return nil
 	})
+	return restored, err
 }
 
 // captureRefreshRejectionFile reads the refresh-refusal marker (#2479) beside
@@ -2603,11 +2649,20 @@ func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, ha
 		}
 	}
 	copilotRestored := true
+	copilotRestoredHere := false
 	if hasCopilot {
-		if err := c.restoreCopilotRecord(name, copilotBytes); err != nil {
+		restored, err := c.restoreCopilotRecord(name, copilotBytes)
+		copilotRestoredHere = restored
+		if err != nil {
 			copilotRestored = false
 			problems = append(problems, fmt.Errorf("%w (%w)", errCopilotRecordNotRestored, err))
 		}
+	}
+	if copilotRestoredHere {
+		// These are the hub's own captured bytes, so adopt them: the next
+		// sweep must not report the restore as an external login. A newer
+		// login the restore preserved above is not adopted.
+		c.rememberCopilotAuthSignature()
 	}
 	var carried bool
 	switch supplies {
