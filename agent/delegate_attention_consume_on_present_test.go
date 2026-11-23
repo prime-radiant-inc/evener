@@ -5,9 +5,12 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -384,6 +387,88 @@ func TestDelegateAttentionHeldRowSurvivesColdRestoreAndReleases(t *testing.T) {
 	}
 	if !needsAttentionForTest(t, restored, delegateID) {
 		t.Fatal("NeedsAttention was not raised by the fresh wake")
+	}
+}
+
+// A stop holds a coordinator's report in delegatestore, and a compaction that
+// runs while the hold stands keeps only unheld rows, cutting the report's turn
+// from resident history. A committed send clears the holds, so its generation
+// must present the report: the send restores the missing turn from the
+// transcript, in arrival order, before its first request is built.
+func TestCommittedSendRestoresAHeldReportCompactedOutOfResidentHistory(t *testing.T) {
+	t.Parallel()
+	fixture := newColdDelegateFixture(t, "")
+	var requests atomic.Int32
+	var sawReport, reportFirst, firstRequest atomic.Bool
+	handle := func(req llm.Request) llm.Response {
+		if !requestMessagesContainText(req.Messages, "new instruction") {
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
+		}
+		requests.Add(1)
+		if !firstRequest.CompareAndSwap(false, true) {
+			return agenttest.FinalResponse("send report")
+		}
+		reportAt, instructionAt := -1, -1
+		for i, message := range req.Messages {
+			switch {
+			case strings.Contains(message.Text(), "HELD_REPORT"):
+				reportAt = i
+			case strings.Contains(message.Text(), "new instruction"):
+				instructionAt = i
+			}
+		}
+		sawReport.Store(reportAt >= 0)
+		reportFirst.Store(reportAt >= 0 && instructionAt >= 0 && reportAt < instructionAt)
+		return agenttest.FinalResponse("send report")
+	}
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
+		handle, handle, handle,
+	})
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmDelegateUnservedRoot(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	const attentionID = "delegate:dlg_held/report/1"
+	if appended, err := sub.sess.appendDelegateNotificationDurably(attentionID, "HELD_REPORT: the drain cursor is in the jobs journal"); err != nil || !appended {
+		t.Fatalf("append the held report = appended:%t err:%v", appended, err)
+	}
+	// The finalize tail of a generation a user stop interrupted before its
+	// first settled request leaves exactly this state: the accepted trigger
+	// latched, then held at the stop's generation and released from the latch.
+	sub.sess.holdAcceptedTrigger(attentionID)
+	sub.sess.settleUnpresentedDelegateTrigger(2)
+	if rows := pendingAttentionRowsForTest(t, root.delegateController, fixture.delegateID); len(rows) != 1 || rows[0].HeldThrough != 2 {
+		t.Fatalf("pending rows after the stop = %#v, want the report held", rows)
+	}
+	// A compaction while the hold stands keeps only unheld rows, so it cuts the
+	// held report's steering turn from the resident history.
+	compactAfterAttention(t, sub.sess)
+	sub.sess.mu.Lock()
+	resident := false
+	for _, turn := range sub.sess.history {
+		if turn.AttentionID == attentionID {
+			resident = true
+		}
+	}
+	sub.sess.mu.Unlock()
+	if resident {
+		t.Fatal("the held report's turn survived compaction, so the restore path is untested")
+	}
+
+	sendAndAcknowledge(t, root, fixture.delegateID, "new instruction: continue")
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	if !sawReport.Load() {
+		t.Fatal("the send's first model request omitted the held report its commit released")
+	}
+	if !reportFirst.Load() {
+		t.Fatal("the send's first model request presented the restored report after the new instruction")
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("the send made %d model requests, want exactly one", got)
+	}
+	if rows := pendingAttentionRowsForTest(t, root.delegateController, fixture.delegateID); len(rows) != 0 {
+		t.Fatalf("pending rows after the send = %#v, want the report consumed", rows)
 	}
 }
 

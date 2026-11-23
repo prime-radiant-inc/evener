@@ -396,8 +396,12 @@ func (c *delegateTreeController) delegateAttentionWillRaiseLocked(delegateID str
 
 // appendAttentionResolvedLocked removes ids from delegateID's durable queue in
 // one journal batch. An identity the queue no longer holds appends nothing, so
-// overlapping resolvers cannot duplicate an event.
-func (c *delegateTreeController) appendAttentionResolvedLocked(delegateID string, ids map[string]struct{}) error {
+// overlapping resolvers cannot duplicate an event. A successful batch also
+// forgets the resolved ids' causes, so a later full-history turn cannot adopt
+// lineage for attention that is already spent. keepCauses is for a transfer: the
+// id is resolved here but the root receives the same identity, so its receiving
+// turn still needs the cause.
+func (c *delegateTreeController) appendAttentionResolvedLocked(delegateID string, ids map[string]struct{}, keepCauses bool) error {
 	aggregate := c.durable[delegateID]
 	if aggregate == nil || len(ids) == 0 {
 		return nil
@@ -423,6 +427,9 @@ func (c *delegateTreeController) appendAttentionResolvedLocked(delegateID string
 	if _, err := c.appendLocked(events...); err != nil {
 		return err
 	}
+	if !keepCauses {
+		c.attentionCauses.forget(ordered...)
+	}
 	c.clearTransientAttentionIfResolvedLocked(delegateID)
 	return nil
 }
@@ -447,7 +454,7 @@ func (c *delegateTreeController) forgetDelegateAttentionLocked(delegateID, atten
 	if c == nil || delegateID == "" || attentionID == "" {
 		return nil
 	}
-	return c.appendAttentionResolvedLocked(delegateID, map[string]struct{}{attentionID: {}})
+	return c.appendAttentionResolvedLocked(delegateID, map[string]struct{}{attentionID: {}}, false)
 }
 
 // attentionStateLocked returns delegateID's attention bookkeeping, creating it
@@ -1042,6 +1049,17 @@ func (c *delegateTreeController) permanentlyFencedDelegateAttention() []delegate
 }
 
 func (c *delegateTreeController) forgetDelegateAttention(delegateID string, attentionIDs ...string) error {
+	return c.forgetDelegateAttentionCauses(false, delegateID, attentionIDs...)
+}
+
+// forgetTransferredDelegateAttention resolves a row whose message has been
+// handed to the root under the same attention identity. The cause stays in the
+// registry for the root's receiving turn; the root's own resolution forgets it.
+func (c *delegateTreeController) forgetTransferredDelegateAttention(delegateID, attentionID string) error {
+	return c.forgetDelegateAttentionCauses(true, delegateID, attentionID)
+}
+
+func (c *delegateTreeController) forgetDelegateAttentionCauses(keepCauses bool, delegateID string, attentionIDs ...string) error {
 	defer c.retirementChanged()
 	if c == nil {
 		return nil
@@ -1057,7 +1075,7 @@ func (c *delegateTreeController) forgetDelegateAttention(delegateID string, atte
 			ids[attentionID] = struct{}{}
 		}
 	}
-	err := c.appendAttentionResolvedLocked(delegateID, ids)
+	err := c.appendAttentionResolvedLocked(delegateID, ids, keepCauses)
 	var plan delegateUpdatePlan
 	publish := false
 	if err == nil && wasNeeding {

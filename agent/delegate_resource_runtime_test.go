@@ -1306,12 +1306,20 @@ func TestDelegateResourceRuntime_StableStopActiveCompletionReportsCancelledByReq
 	invocation := <-result
 	assertStableStopCompleted(t, invocation, harness.fixture.delegateID, delegateLifecycleRunning, "cancelled_by_request")
 	assertStableStopDurableCompletion(t, harness.root.delegateController, harness.fixture.delegateID)
-	pending, err := readPendingDelegateAttention(transcriptPath(harness.fixture.stateDir, harness.fixture.childID), harness.fixture.childID)
-	if err != nil {
-		t.Fatalf("read attention after stable stop: %v", err)
+	aggregate := harness.root.delegateController.durable[harness.fixture.delegateID]
+	if aggregate == nil {
+		t.Fatal("stable stop dropped the delegate from the journal")
 	}
-	if len(pending) != 0 {
-		t.Fatalf("pending attention after stable stop = %#v", pending)
+	if _, resolved := aggregate.ResolvedAttention["attention-before-stop"]; !resolved {
+		t.Fatal("stable stop did not record the discarded attention's resolution in delegatestore")
+	}
+	for _, row := range aggregate.PendingAttention {
+		if row.AttentionID == "attention-before-stop" {
+			t.Fatal("stable stop left the discarded attention pending in delegatestore")
+		}
+	}
+	if aggregate.NeedsAttention {
+		t.Fatal("stable stop left the delegate needing attention")
 	}
 }
 

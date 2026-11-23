@@ -196,7 +196,7 @@ func TestTimingBudgetRunnerBoundTestsStayUnnamed(t *testing.T) {
 		{name: "TestModuleRunnerEnumerationHonorsTheCallersBuildFlags"},
 		{name: "TestModuleRunnerCapturesTheTimingRowsItAlreadyRan"},
 		// Kept: one representative per former class, so an emptied map fails.
-		{name: "TestAcceptedDelegateAttentionTriggerFoldsAwayOncePresented", wantIn: true},
+		{name: "TestDelegateUpdateArrivingMidTurnIsNotRerunWhenTheMarkerCannotBeWritten", wantIn: true},
 		{name: "TestHostDeployFilesystemSafety", wantIn: true},
 		{name: "TestSessionActivityReportCaptureBudgetPreservesPageContinuation", wantIn: true},
 		{name: "TestDaemonRetirementProcessDirectPositiveExits", wantIn: true},

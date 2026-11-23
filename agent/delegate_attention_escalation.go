@@ -82,7 +82,7 @@ func (s *Session) escalateOneUnreachableDelegateAttention(plan delegateFencedAtt
 		// The root's transcript turn above is the hand-over; the source row is
 		// resolved in delegatestore alone, so no source transcript marker is
 		// written and a cold source needs no writer.
-		if err := s.delegateController.forgetDelegateAttention(plan.delegateID, attentionID); err != nil {
+		if err := s.delegateController.forgetTransferredDelegateAttention(plan.delegateID, attentionID); err != nil {
 			return err
 		}
 	}

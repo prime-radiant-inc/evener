@@ -1075,12 +1075,20 @@ func TestDelegateWatch_StopFencesAndDrainsBothReceiptClasses(t *testing.T) {
 		if stopPending {
 			t.Fatal("restored stop remained pending after stable watch cleanup")
 		}
-		fold, err := readDelegateAttentionFold(receiverPath, receiverID)
-		if err != nil {
-			t.Fatalf("fold stopped receiver attention: %v", err)
+		aggregate := fresh.delegateController.durable["dlg_receiver"]
+		if aggregate == nil {
+			t.Fatal("restored stop dropped the receiver from the journal")
 		}
-		if fold.resolutions[attentionID] != delegateAttentionDiscarded {
-			t.Fatalf("stopped receiver resolution = %q, want %q", fold.resolutions[attentionID], delegateAttentionDiscarded)
+		if _, resolved := aggregate.ResolvedAttention[attentionID]; !resolved {
+			t.Fatalf("stopped receiver attention %q was not resolved in delegatestore", attentionID)
+		}
+		for _, row := range aggregate.PendingAttention {
+			if row.AttentionID == attentionID {
+				t.Fatalf("stopped receiver attention %q stayed pending in delegatestore", attentionID)
+			}
+		}
+		if aggregate.NeedsAttention {
+			t.Fatal("stopped receiver still needs attention")
 		}
 		repaired, err := jobstore.Open(filepath.Join(jobsDir(fixture.controller.stateDir, fixture.source.ID()), "jobs.jsonl"))
 		if err != nil {

@@ -27,7 +27,7 @@ func TestResolvingAttentionUpdatesQueueAndProjectionAtomically(t *testing.T) {
 
 	// The resolution is one journaled event, applied by the store's single
 	// Apply boundary. Nothing between the two reads can run a separate clear.
-	if err := c.appendAttentionResolvedLocked("dlg_atomic", map[string]struct{}{"att_atomic": {}}); err != nil {
+	if err := c.appendAttentionResolvedLocked("dlg_atomic", map[string]struct{}{"att_atomic": {}}, false); err != nil {
 		t.Fatalf("resolve attention: %v", err)
 	}
 

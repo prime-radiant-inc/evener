@@ -1023,6 +1023,25 @@ func (s *Session) retainPendingAttentionTurnsLocked(fold delegateAttentionFold, 
 	return s.restoreAttentionTurns(turns, resident)
 }
 
+// restorePendingDelegateAttentionTurns puts back the turns of the delegate's
+// unheld pending rows that the resident history lost to a compaction, in
+// transcript arrival order. A committed send is a newer event than the stop
+// that held those rows: its start clears every hold in the same store Apply, so
+// the generation must present them even though the compaction kept only the
+// rows unheld when it ran. Called before the send's first request is built.
+func (s *Session) restorePendingDelegateAttentionTurns() error {
+	if s == nil || s.delegateController == nil || s.owningDelegateID == "" {
+		return nil
+	}
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	turns, err := s.pendingAttentionTurnsLocked()
+	if err != nil || len(turns) == 0 {
+		return err
+	}
+	return s.restoreAttentionTurns(turns, s.residentAttentionTurnIDsLocked())
+}
+
 // restoreAttentionTurns puts turns, in arrival order, back into the resumed
 // history, each anchored by the turns that follow it, which a compaction
 // marker after them would otherwise have cut. A turn whose attention identity
