@@ -138,12 +138,6 @@
   align-items: center;
 }
 
-/* Stretches the New-session Button to the rail's full width without touching
- * the widget's own computed className (Button owns its class list). */
-.newSession {
-  display: grid;
-}
-
 .needsYou {
   display: flex;
   max-width: 100%;
