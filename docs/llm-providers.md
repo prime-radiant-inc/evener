@@ -296,8 +296,9 @@ explicit `capabilities.reasoning` verdict overrides it and a usable
 `client_compat.pi.thinkingLevelMap` may raise it, the way either raises a
 parameter-list inference.
 `MaxOutputTokens` reads the row's `top_provider.max_completion_tokens`, the
-top-level `max_completion_tokens` or `max_output_tokens`, or a server's
-`limits.max_output_tokens`.
+top-level `max_completion_tokens` or `max_output_tokens`, a server's
+`limits.max_output_tokens`, or the OpenAI listing's `max_output_tokens` /
+`output_token_limit`.
 
 The same per-model block states two wire-shaping facts, applied through the
 live layer on every protocol though only the two OpenAI-shaped listings report
