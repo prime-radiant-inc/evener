@@ -3395,6 +3395,14 @@ func (s *Session) envRuntimeDrifted() bool {
 	return s.envTracker != nil && s.envTracker.RuntimeDrifted(s.envRuntimeSnapshot(envctx.Snapshot{}))
 }
 
+// communicateContractDrifted reports whether a restored legacy session has not yet
+// received the active communicate contract superseding its frozen prompt.
+func (s *Session) communicateContractDrifted() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.envTracker != nil && s.envTracker.CommunicateContractDrifted(s.communicateContractLine())
+}
+
 // armEnvContext owes the next request a fresh environment block.
 func (s *Session) armEnvContext() { s.envContextPending.Store(true) }
 

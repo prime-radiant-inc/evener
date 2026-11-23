@@ -1851,7 +1851,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				replied := kind == EntryNotification && s.rootDeliveredReplySinceLastUserInput()
 				oneShotDraining := kind == EntryNotification && s.hasAcceptedTerminalCommunicate()
 				bareReply = s.usesDefaultCommunicateOutputEnvelope() && workErr == nil &&
-					(kind == EntryUserInput && !outstanding ||
+					(kind == EntryUserInput && (round == 0 || !outstanding) ||
 						kind == EntryNotification && !s.hasWakeableWorkAtBoundary() && !replied && !oneShotDraining)
 				bareQuiet = !bareReply && workErr == nil &&
 					(outstanding || (oneShotDraining && !s.hasWakeableWorkAtBoundary()))

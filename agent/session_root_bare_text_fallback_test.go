@@ -102,7 +102,7 @@ func TestRootBareTextFallback(t *testing.T) {
 		{name: "typed root notification steers", text: "Untyped notification answer", finish: llm.FinishReasonStop, kind: EntryNotification, profile: structured},
 		{name: "goal continuation", text: "Continuation prose", finish: llm.FinishReasonStop, kind: EntryContinuation},
 		{name: "idle subagent", text: "Idle subagent answer", finish: llm.FinishReasonStop, kind: EntryUserInput, parent: true, wantFallback: true},
-		{name: "root with live owned job", text: "Waiting on job", finish: llm.FinishReasonStop, kind: EntryUserInput, liveJob: true, wantQuiet: true},
+		{name: "root user input round 0 with prior live job", text: "Direct answer", finish: llm.FinishReasonStop, kind: EntryUserInput, liveJob: true, wantFallback: true},
 		{name: "typed root with live owned job", text: "Waiting on job", finish: llm.FinishReasonStop, kind: EntryUserInput, profile: structured, liveJob: true, wantQuiet: true},
 		{name: "subagent with live owned job", text: "Waiting on job", finish: llm.FinishReasonStop, kind: EntryUserInput, parent: true, liveJob: true, wantQuiet: true},
 		{name: "subagent with output schema", text: "Unstructured answer", finish: llm.FinishReasonStop, kind: EntryUserInput, profile: structured, parent: true},
@@ -1091,6 +1091,99 @@ func TestRootBareTextFallbackInteractivePostReplyNotificationSteers(t *testing.T
 			t.Fatalf("interactive post-reply reminder was misparked as QuietYield")
 		}
 	}
+}
+
+func TestRootBareTextFallbackUserInputRound0WithEarlierBackgroundJob(t *testing.T) {
+	t.Parallel()
+	t.Run("round_0_unrelated_user_input_delivers_reply", func(t *testing.T) {
+		t.Parallel()
+		env := newHeldJobEnvironment(t.TempDir())
+		t.Cleanup(env.releaseJob)
+		adapter := newFakeAdapter("openai",
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{
+					ID:        "bg-shell",
+					Name:      "shell",
+					Arguments: json.RawMessage(`{"command":"go test","mode":"background"}`),
+				})
+			},
+			func(llm.Request) llm.Response {
+				return quietYieldResponse("quiet-1", `{"message":"waiting on background shell","next":"log_quietly_and_end_turn"}`)
+			},
+			func(llm.Request) llm.Response {
+				return bareTextResponse("4", llm.FinishReasonStop)
+			},
+		)
+		s := newSession(t, withEnv(env), withAdapter(adapter), withStateDir(t.TempDir()))
+		evs, evMu, evDone := collectEvents(s)
+		ctx := tripwireCtx(t)
+
+		if out, err := s.ProcessInput(ctx, "Start long build", nil); err != nil || out != "" || !s.quietlyYielded() {
+			t.Fatalf("turn 1 = (%q, %v) quiet=%t, want quiet yield", out, err, s.quietlyYielded())
+		}
+		got, err := s.ProcessInput(ctx, "What is 2+2?", nil)
+		if err != nil || got != "4" || !s.communicated() || s.quietlyYielded() || len(adapter.Requests()) != 3 {
+			t.Fatalf("turn 2 got=%q communicated=%t quiet=%t reqs=%d err=%v, want \"4\" / true / false / 3 / nil",
+				got, s.communicated(), s.quietlyYielded(), len(adapter.Requests()), err)
+		}
+		s.Close()
+		<-evDone
+		evMu.Lock()
+		commEvs := communicateEventsIn(*evs)
+		evMu.Unlock()
+		if len(commEvs) != 1 || !commEvs[0].EndTurn || commEvs[0].Message != "4" {
+			t.Fatalf("EventCommunicate = %+v, want [EndTurn=\"4\"]", commEvs)
+		}
+		var sawAccepted, sawQuiet bool
+		for _, turn := range transcriptTurnsOf(t, s) {
+			if turn.Kind == schema.TurnAssistant {
+				if turn.AcceptedReply && lastAgentText(turn.Message) == "4" {
+					sawAccepted = true
+				}
+				if turn.QuietYield && lastAgentText(turn.Message) == "4" {
+					sawQuiet = true
+				}
+			}
+		}
+		if !sawAccepted || sawQuiet {
+			t.Fatalf("turn 2 assistant flags sawAccepted=%t sawQuiet=%t, want true/false", sawAccepted, sawQuiet)
+		}
+	})
+
+	t.Run("round_1_after_starting_job_parks_quietly", func(t *testing.T) {
+		t.Parallel()
+		env := newHeldJobEnvironment(t.TempDir())
+		t.Cleanup(env.releaseJob)
+		adapter := newFakeAdapter("openai",
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{
+					ID:        "bg-shell",
+					Name:      "shell",
+					Arguments: json.RawMessage(`{"command":"go test","mode":"background"}`),
+				})
+			},
+			func(llm.Request) llm.Response {
+				return bareTextResponse("Waiting for background shell to finish", llm.FinishReasonStop)
+			},
+		)
+		s := newSession(t, withEnv(env), withAdapter(adapter), withStateDir(t.TempDir()))
+		evs, evMu, evDone := collectEvents(s)
+		ctx := tripwireCtx(t)
+
+		got, err := s.ProcessInput(ctx, "Start long build", nil)
+		if err != nil || got != "" || !s.quietlyYielded() || s.communicated() || len(adapter.Requests()) != 2 {
+			t.Fatalf("got=%q quiet=%t communicated=%t reqs=%d err=%v, want \"\" / true / false / 2 / nil",
+				got, s.quietlyYielded(), s.communicated(), len(adapter.Requests()), err)
+		}
+		s.Close()
+		<-evDone
+		evMu.Lock()
+		commEvs := communicateEventsIn(*evs)
+		evMu.Unlock()
+		if len(commEvs) != 0 {
+			t.Fatalf("EventCommunicate = %+v, want none on round-1 quiet park", commEvs)
+		}
+	})
 }
 
 func TestQuietYieldRenamedResultToolHasNoProjectedToolCard(t *testing.T) {

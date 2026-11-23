@@ -242,11 +242,12 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// restatement of it. Only such a fold sets the flag, so a fold that kept the
 	// block still deduplicates, and every other entry kind owns its own append
 	// site — the turn's last message stays what that path left it. Round 0
-	// also picks up any unemitted runtime drift (e.g. a restored legacy prompt
-	// woken by a notification or delegate attention).
+	// also picks up an unemitted communicate-contract diff for restored legacy
+	// prompts woken by non-user-input turns without injecting unrelated runtime
+	// diffs (such as an idle SetModel before an attention wake).
 	foldRemoved := s.envContextFoldRemoved.Swap(false)
 	mcpRecovered := s.envContextMCPConnected.Swap(false)
-	if foldRemoved || (round == 0 && s.envRuntimeDrifted()) || (mcpRecovered && s.envContextDue()) {
+	if foldRemoved || (round == 0 && s.communicateContractDrifted()) || (mcpRecovered && s.envContextDue()) {
 		if err := s.maybeAppendEnvironmentContextBeforeTrailingSteering(); err != nil {
 			return nil, "", nil, llm.Request{}, nil, "", err
 		}

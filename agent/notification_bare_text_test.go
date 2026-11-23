@@ -18,7 +18,7 @@ func TestNotificationQuietYieldAndBareTextRetry(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()
 
-	bareTextResponse := func(text string) llm.Response {
+	bareStopResponse := func(text string) llm.Response {
 		return llm.Response{
 			Provider: "openai",
 			Model:    "gpt-5.4",
@@ -70,7 +70,7 @@ func TestNotificationQuietYieldAndBareTextRetry(t *testing.T) {
 
 	// Notification wake bare text on an untyped root with zero wakeable work delivers a visible final reply.
 	adapterBare := newFakeAdapter("openai", func(llm.Request) llm.Response {
-		return bareTextResponse("Final answer after wake.")
+		return bareStopResponse("Final answer after wake.")
 	})
 	sessBare := newSession(t, withAdapter(adapterBare), withStateDir(t.TempDir()))
 	enqueueCompletedJobNotification(t, sessBare, "job_bare_first")
@@ -98,7 +98,7 @@ func TestNotificationQuietYieldAndBareTextRetry(t *testing.T) {
 	}, func(llm.Request) llm.Response {
 		return quietYieldResponse("quiet-held", `{"message":"waiting on held job","next":"log_quietly_and_end_turn"}`)
 	}, func(llm.Request) llm.Response {
-		return bareTextResponse("Still waiting on running job.")
+		return bareStopResponse("Still waiting on running job.")
 	})
 	sessHeld := newSession(t, withEnv(envHeld), withAdapter(adapterHeld), withStateDir(t.TempDir()))
 	if _, err := sessHeld.ProcessInput(ctx, "start background job", nil); err != nil {

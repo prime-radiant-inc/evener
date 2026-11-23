@@ -88,6 +88,11 @@ func (t *Tracker) RuntimeDrifted(cur Snapshot) bool {
 	return (&Tracker{st: State{Last: cur, HasSent: true}, base: t.base, fullInventory: t.fullInventory}).RenderDiff(cur) != ""
 }
 
+// CommunicateContractDrifted reports whether cur differs from the contract base.
+func (t *Tracker) CommunicateContractDrifted(cur string) bool {
+	return t != nil && cur != "" && t.base.CommunicateContract != cur
+}
+
 // ReplayBlock folds one durable environment block into the tracker state.
 // Blocks are diffs, so callers replay them in transcript order starting from
 // the effective history boundary. This closes the write-before-metadata crash window
