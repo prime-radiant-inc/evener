@@ -254,6 +254,7 @@ test("rows group by status: the collapsed settled group first, then in progress,
   await waitFor(() => expect(screen.getAllByTestId("task-row")).toHaveLength(2));
   const liveGroups = screen.getAllByTestId("task-group-live");
   expect(liveGroups.map((group) => group.getAttribute("data-status"))).toEqual(["in_progress", "open"]);
+  expect(within(liveGroups[0]!).getByRole("heading", { level: 4 })).toBeTruthy();
   const settled = screen.getByTestId("task-settled-group");
   expect(settled.textContent).toContain("1");
   // The folded-away settled group sits above the current work, not at the bottom.

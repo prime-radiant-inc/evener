@@ -3,9 +3,9 @@ import { requireClass } from "../internal/requireClass";
 import styles from "./eyebrow.module.css";
 
 export interface EyebrowProps {
-  /** "h3" when the label heads a section a reader navigates by heading;
+  /** "h3"/"h4" when the label heads a section a reader navigates by heading;
    * "span" when it sits inline beside other text. */
-  as?: "div" | "span" | "h3";
+  as?: "div" | "span" | "h3" | "h4";
   children: ReactNode;
 }
 

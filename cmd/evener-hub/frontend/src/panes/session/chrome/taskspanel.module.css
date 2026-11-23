@@ -36,16 +36,6 @@
   color: var(--ink-hi);
 }
 
-.groupHead {
-  margin: var(--space-3) 0 var(--space-1);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
-  color: var(--ink-mid);
-  padding-bottom: var(--space-1);
-  border-bottom: 1px solid var(--edge);
-}
-
 .groupCount {
   color: var(--ink-low);
 }
