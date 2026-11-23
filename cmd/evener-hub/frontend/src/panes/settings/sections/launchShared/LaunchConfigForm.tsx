@@ -429,21 +429,15 @@ export function LaunchConfigForm({
         <Button type="button" onClick={() => void handleSubmit()} disabled={busy}>
           Save launch defaults
         </Button>
-        {status?.kind === "error" ? (
-          <InlineNotice
-            tone="danger"
-            live="status"
-            aria-live="polite"
-            data-testid="launch-config-status"
-            data-state="error"
-          >
-            {status.text}
-          </InlineNotice>
-        ) : (
-          <p className={CLASS.status} aria-live="polite" data-testid="launch-config-status" data-state={status?.kind}>
-            {status?.text}
-          </p>
-        )}
+        <div className={CLASS.status} aria-live="polite" data-testid="launch-config-status" data-state={status?.kind}>
+          {status?.kind === "error" ? (
+            <InlineNotice tone="danger" live="off">
+              {status.text}
+            </InlineNotice>
+          ) : (
+            status?.text
+          )}
+        </div>
       </div>
     </div>
   );

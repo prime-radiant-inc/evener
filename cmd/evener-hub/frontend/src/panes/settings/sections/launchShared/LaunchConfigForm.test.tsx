@@ -406,10 +406,17 @@ describe("failed save", () => {
         <Toast />
       </>,
     );
+    // The polite region is mounted before the failure; the error must land in
+    // that same node, because a region created with its content already inside
+    // may never be announced.
+    const region = saveStatus();
+    expect(region.getAttribute("aria-live")).toBe("polite");
     await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
     await waitFor(() => expect(saveStatus().getAttribute("data-state")).toBe("error"));
-    expect(saveStatus().getAttribute("aria-live")).toBe("polite");
-    expect(saveStatus().textContent).toContain("disk full");
+    expect(saveStatus()).toBe(region);
+    expect(region.isConnected).toBe(true);
+    expect(region.getAttribute("aria-live")).toBe("polite");
+    expect(region.textContent).toContain("disk full");
     expect(toastKinds()).toEqual(["error"]);
   });
 
