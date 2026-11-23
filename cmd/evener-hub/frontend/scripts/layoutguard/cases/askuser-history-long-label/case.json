@@ -1,0 +1,21 @@
+{
+  "name": "askuser-history-long-label",
+  "description": "read-only ask_user history at phone width: an unbroken model-authored option label wraps inside the neutral card instead of escaping through the flex label line",
+  "viewport": {
+    "width": 390,
+    "height": 844,
+    "deviceScaleFactor": 2,
+    "mobile": true
+  },
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/card/card.module.css",
+    "panes/session/transcript/tools/askuser.module.css"
+  ],
+  "mutation": {
+    "declaration": "askuser.module.css: .label { min-width: 0 } - removing it restores the flex item's min-content minimum and lets the unbroken label escape the card",
+    "verified": "2026-11-23",
+    "expect": "fail"
+  }
+}

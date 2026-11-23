@@ -41,6 +41,7 @@
 - Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/askUser.test.tsx`
 - Modify: `cmd/evener-hub/frontend/scripts/layoutguard/cases/askdock-mobile-tall-crush/harness.html`
 - Modify: `cmd/evener-hub/frontend/scripts/layoutguard/cases/askdock-mobile-tall-crush/case.json`
+- Create: `cmd/evener-hub/frontend/scripts/layoutguard/cases/askuser-history-long-label/{case.json,harness.html,assert.mjs}`
 - Modify: `docs/web-ui/design-system.md`
 
 **Interfaces:**
@@ -93,7 +94,7 @@ Expected: PASS, including all unchanged interaction, recovery, focus, and tab te
 
 In `askUser.tsx` and `askuser.module.css`, keep the read-only `Card` and controls-free rendering while applying the same strong prose question, label-line/detail stack, and quiet recommendation treatment. Do not add live attention or answer controls.
 
-Update `askdock-mobile-tall-crush/harness.html` to mirror the new neutral card, cue, and option markup. Keep its real-browser measurements for label/detail separation, unbroken-token wrapping, transcript scrolling, and unchanged pane allocation. Update `case.json`'s description and mutation note to describe the grid/copy-stack layout while retaining the existing `overflow-wrap` mutation oracle.
+Update `askdock-mobile-tall-crush/harness.html` to mirror the new neutral card, cue, and option markup. Keep its real-browser measurements for label/detail separation, unbroken-token wrapping, transcript scrolling, and unchanged pane allocation. Update `case.json`'s description and mutation note to describe the grid/copy-stack layout while retaining the existing `overflow-wrap` mutation oracle. Add `askuser-history-long-label` to prove the read-only flex label also wraps an unbroken token inside its card.
 
 - [x] **Step 8: Update the evergreen design contract**
 
@@ -107,6 +108,7 @@ Run from `cmd/evener-hub/frontend`:
 npm test -- src/panes/session/composer/askDock/AskQuestionCard.test.tsx src/panes/session/composer/askDock/AskDock.test.tsx src/panes/session/transcript/tools/askUser.test.tsx
 npm run typecheck
 npm run layoutguard -- askdock-mobile-tall-crush
+npm run layoutguard -- askuser-history-long-label
 ```
 
 Expected: every command exits zero; layoutguard reports no overlap, horizontal escape, internal dock scroll, or pane-allocation change.
