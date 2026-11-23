@@ -18,8 +18,7 @@ import {
 } from "../../../stores/humanNoteDrafts";
 import { beginUrlRemoval, endUrlRemoval, usePendingUrlRemovals } from "../../../stores/pendingUrlRemovals";
 import { threadsStore } from "../../../stores/threads";
-import { Button, EmptyState, InlineNotice, Textarea, useToasts } from "../../../widgets";
-import { isWebHref } from "../../../widgets/contextcard";
+import { Button, EmptyState, InlineNotice, isWebHref, Textarea, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { FileOpenBesideButton } from "../transcript/fileOpenBeside";
 import styles from "./notespanel.module.css";
