@@ -2914,12 +2914,14 @@ function SpawnForm({
               variant="prominent"
               kind="dir"
               value={cwd}
-              onChange={setCwd}
+              onChange={(path) => {
+                setCwd(path);
+                commitLastWorkingDir(path);
+              }}
               complete={complete}
               listRecents={listRecents}
               fallbackDir={pickerFallbackDir}
               directory={{ validatePath, createDirectory }}
-              onPanelClose={commitLastWorkingDir}
               ariaLabel="Working directory"
               placeholder="Choose a folder"
             />

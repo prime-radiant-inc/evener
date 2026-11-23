@@ -600,6 +600,7 @@ test("only confirming a directory updates the launch defaults", async () => {
 
 test("Escape discards directory browsing while preserving the prompt and launch directory", async () => {
   const user = setupUser();
+  localStorage.setItem(LAST_WORKING_DIR_KEY, "/home/me/lastone");
   window.history.pushState({}, "", "/new?dir=%2Ftmp%2Fproject");
   const fake = readyClient((f) => f.on("evener/paths/complete", () => ({ data: ["/tmp/project/src"] })));
   renderSpawn(fake);
@@ -616,6 +617,9 @@ test("Escape discards directory browsing while preserving the prompt and launch 
     "my important draft text",
   );
   expectWorkingDir("/tmp/project");
+  // Dismissal is not confirmation: the browse history keeps the last folder
+  // the user actually picked, not the prefilled path the cancelled panel held.
+  expect(localStorage.getItem(LAST_WORKING_DIR_KEY)).toBe("/home/me/lastone");
 });
 
 // The read side of that same global (spec 3.4): with no ?dir= prefill and no
