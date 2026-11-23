@@ -20,7 +20,17 @@ import {
 } from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import { disclosureScopeForSession, useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
-import { Chip, type ChipTone, CopyButton, Disclosure, Eyebrow, InlineNotice, Markdown } from "../../../../widgets";
+import {
+  Chip,
+  type ChipTone,
+  CopyButton,
+  Disclosure,
+  Eyebrow,
+  InlineNotice,
+  Markdown,
+  PropertyList,
+  type PropertyListRow,
+} from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EntityRef } from "../EntityRef";
 import { OpenTranscriptButton } from "../openTranscript";
@@ -43,12 +53,6 @@ const CLASS = {
   mandateBody: requireClass(styles.mandateBody, "delegateStatus.module.css", "mandateBody"),
   diagnostic: requireClass(styles.diagnostic, "delegateStatus.module.css", "diagnostic"),
   env: requireClass(styles.env, "delegateStatus.module.css", "env"),
-  envRows: requireClass(styles.envRows, "delegateStatus.module.css", "envRows"),
-  envRow: requireClass(styles.envRow, "delegateStatus.module.css", "envRow"),
-  envK: requireClass(styles.envK, "delegateStatus.module.css", "envK"),
-  envV: requireClass(styles.envV, "delegateStatus.module.css", "envV"),
-  envVmono: requireClass(styles.envVmono, "delegateStatus.module.css", "envVmono"),
-  envVmuted: requireClass(styles.envVmuted, "delegateStatus.module.css", "envVmuted"),
   tools: requireClass(styles.tools, "delegateStatus.module.css", "tools"),
   toolsChips: requireClass(styles.toolsChips, "delegateStatus.module.css", "toolsChips"),
   toolChip: requireClass(styles.toolChip, "delegateStatus.module.css", "toolChip"),
@@ -215,31 +219,15 @@ function configSegments(state: DelegateStatusState): MetaSegment[] {
   return segs;
 }
 
-interface EnvRow {
-  key: string;
-  value: string;
-  mono?: boolean;
-  muted?: boolean;
-}
-
-function environmentRows(state: DelegateStatusState): EnvRow[] {
-  const rows: EnvRow[] = [];
-  if (state.cwd) rows.push({ key: "cwd", value: state.cwd, mono: true });
-  if (state.isolation) rows.push({ key: "isolation", value: state.isolation, muted: true });
-  if (state.sandbox_mode) rows.push({ key: "sandbox", value: state.sandbox_mode, mono: true });
+function environmentRows(state: DelegateStatusState): PropertyListRow[] {
+  const rows: PropertyListRow[] = [];
+  if (state.cwd) rows.push({ label: "cwd", value: state.cwd, mono: true });
+  if (state.isolation) rows.push({ label: "isolation", value: state.isolation, muted: true });
+  if (state.sandbox_mode) rows.push({ label: "sandbox", value: state.sandbox_mode, mono: true });
   if (state.sandbox_network !== undefined) {
-    rows.push({ key: "network", value: state.sandbox_network ? "enabled" : "disabled" });
+    rows.push({ label: "network", value: state.sandbox_network ? "enabled" : "disabled" });
   }
   return rows;
-}
-
-function envValueClass(row: EnvRow): string {
-  // Always include envV for the shared truncation rules (overflow, ellipsis,
-  // nowrap); envVmono layers on the mono font/size, envVmuted the muted color.
-  const classes = [CLASS.envV];
-  if (row.mono) classes.push(CLASS.envVmono);
-  if (row.muted) classes.push(CLASS.envVmuted);
-  return classes.join(" ");
 }
 
 function MetaLine({ segments }: { segments: MetaSegment[] }) {
@@ -260,19 +248,12 @@ function MetaLine({ segments }: { segments: MetaSegment[] }) {
   );
 }
 
-function EnvTable({ rows }: { rows: EnvRow[] }) {
+function EnvTable({ rows }: { rows: PropertyListRow[] }) {
   if (rows.length === 0) return null;
   return (
     <div className={CLASS.env}>
       <Eyebrow>Environment</Eyebrow>
-      <div className={CLASS.envRows}>
-        {rows.map((row) => (
-          <div key={row.key} className={CLASS.envRow}>
-            <span className={CLASS.envK}>{row.key}</span>
-            <span className={envValueClass(row)}>{row.value}</span>
-          </div>
-        ))}
-      </div>
+      <PropertyList rows={rows} />
     </div>
   );
 }

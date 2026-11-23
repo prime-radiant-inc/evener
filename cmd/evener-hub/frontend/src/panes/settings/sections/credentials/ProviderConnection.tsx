@@ -1694,7 +1694,6 @@ function SelectedConnection({
 
   const addFacts = (): ConnectionFact[] => [
     {
-      key: "name",
       label: "Name",
       htmlFor: "connection-name",
       value: (
@@ -1710,7 +1709,6 @@ function SelectedConnection({
       ),
     },
     {
-      key: "endpoint",
       label: "Endpoint URL",
       htmlFor: "connection-endpoint",
       value: (
@@ -1729,7 +1727,6 @@ function SelectedConnection({
       ),
     },
     ...addVarRows.map(({ key, label }) => ({
-      key,
       label,
       htmlFor: `connection-var-${key}`,
       value: (
@@ -1745,7 +1742,6 @@ function SelectedConnection({
       ),
     })),
     {
-      key: "credential",
       label: json ? "Credential JSON" : "API key",
       htmlFor: "provider-credential",
       value: (
@@ -1770,7 +1766,6 @@ function SelectedConnection({
   ];
   const savedFacts = (): ConnectionFact[] => [
     {
-      key: "endpoint",
       label: "Endpoint",
       value:
         editing === "endpoint" ? (
@@ -1816,7 +1811,6 @@ function SelectedConnection({
     ...(storedMode
       ? [
           {
-            key: "credential",
             label: json ? "Credential JSON" : "API key",
             htmlFor: editing === "key" ? "provider-credential" : undefined,
             value:
@@ -1916,7 +1910,6 @@ function SelectedConnection({
         ]
       : []),
     {
-      key: "status",
       label: "Status",
       value: (
         <span role="status" data-state={result?.status === "success" ? "success" : undefined}>

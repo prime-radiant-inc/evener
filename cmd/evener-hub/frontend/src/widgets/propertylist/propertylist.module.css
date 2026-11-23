@@ -21,6 +21,21 @@
   color: var(--ink-mid);
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
+  /* A single-token label (DEEPSEEK_BASE_URL) has no soft wrap point, so it
+     wraps anywhere rather than running past its column into the value. */
+  overflow-wrap: anywhere;
+}
+
+/* A row with a trailing action cell keeps the label, value and action in
+   aligned columns instead of letting the action ride the value's baseline. */
+.rowWithActions {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) auto;
+  align-items: start;
+}
+
+.rowWithActions .label {
+  width: auto;
 }
 
 /* The eyebrow recipe (design-system §2) on a fact row's label: the
@@ -47,6 +62,10 @@
 
 .mono {
   font-family: var(--font-mono);
+}
+
+.muted {
+  color: var(--ink-mid);
 }
 
 /* A value the reader is confirming shows in full: it wraps, breaking a long
@@ -88,4 +107,68 @@
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   line-height: var(--line-height-body);
+}
+
+/* Help sits under its value inside the same definition (or value cell), so it
+   stays with the fact it explains when the row stacks on a phone. */
+.valueHelp {
+  display: block;
+  margin-top: var(--space-1);
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin: 0;
+}
+
+/* --- settings -----------------------------------------------------
+   Label and control on the row's first line, optional help under the
+   control. The connection editor's grid: a fixed 104px label column that
+   stacks on a phone rather than squeezing the control. */
+.settingsList {
+  gap: var(--space-3);
+}
+
+.settingsRow {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.settingsLabel {
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--ink-mid);
+  overflow-wrap: anywhere;
+}
+
+.settingsValue {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* A control fills its cell instead of keeping the input's intrinsic width,
+   which overflows the 1fr track on a narrow sheet. */
+.value input,
+.value select,
+.settingsValue input,
+.settingsValue select {
+  width: 100%;
+  min-width: 0;
+}
+
+@media (max-width: 480px) {
+  .rowWithActions,
+  .settingsRow {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
