@@ -114,9 +114,13 @@ test("body renders the question text, options with detail, and the recommended m
   render(<Body item={item({ toolName: "ask_user", argumentsJSON: askUserArgs(ONE_QUESTION) })} live={false} />);
 
   expect(screen.getByText("Should I deploy this to production now?")).toBeTruthy();
-  expect(screen.getByText("Yes")).toBeTruthy();
-  expect(screen.getByText("Ship it")).toBeTruthy();
   expect(screen.getByText("No")).toBeTruthy();
+  const label = screen.getByText("Yes");
+  const detail = screen.getByText("Ship it");
+  const labelLine = label.parentElement;
+  const copy = labelLine?.parentElement;
+  expect(copy?.contains(labelLine)).toBe(true);
+  expect(detail.parentElement).toBe(copy);
   const options = screen.getAllByRole("listitem");
   expect(options.map((option) => option.dataset.recommended)).toEqual(["true", undefined]);
 });
