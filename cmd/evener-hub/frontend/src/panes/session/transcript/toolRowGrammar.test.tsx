@@ -160,6 +160,10 @@ test("a non-expandable clamped row keeps its whole summary in the DOM with no na
   const head = screen.getByTestId("tool-row-summary-head");
   const tail = screen.getByTestId("tool-row-summary-tail");
   expect((head.textContent ?? "") + (tail.textContent ?? "")).toBe(summary);
+  // The 60% cut lands inside the job id. The walk leaves the id whole on one
+  // side instead of splitting it across the head and tail.
+  const id = "job_034RuaCB8iWz0J1XBOUm1A_mftMIW5WFX2e";
+  expect((head.textContent ?? "").includes(id) || (tail.textContent ?? "").includes(id)).toBe(true);
   expect(screen.getByTestId("tool-row-summary").getAttribute("title")).toBe(null);
 });
 
@@ -1224,7 +1228,7 @@ test("no summaryLink means the summary renders exactly as before - every descrip
 });
 
 // The clamped state middle-truncates on raw character position (ToolRow's
-// own middleSplit) and can cut a URL mid-way, or split it across the two
+// own cut) and can cut a URL mid-way, or split it across the two
 // independently-ellipsis-clamped head/tail spans - there is no sound "which
 // half is clickable" answer there, so the collapsed+intent state stays
 // plain text; opening the row (one click, the same chevron already on the

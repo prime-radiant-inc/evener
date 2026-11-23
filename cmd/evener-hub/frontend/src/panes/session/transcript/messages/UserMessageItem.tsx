@@ -24,15 +24,13 @@ import { EntityText } from "../EntityText";
 import { ImageGallery } from "../flow/ImageGallery";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
 import { MessageTimestamp } from "./MessageTimestamp";
+import { SpeakerHeader } from "./SpeakerHeader";
 import styles from "./usermessageitem.module.css";
 
 const CLASS = {
   message: requireClass(styles.message, "usermessageitem.module.css", "message"),
   avatar: requireClass(styles.avatar, "usermessageitem.module.css", "avatar"),
   content: requireClass(styles.content, "usermessageitem.module.css", "content"),
-  header: requireClass(styles.header, "usermessageitem.module.css", "header"),
-  name: requireClass(styles.name, "usermessageitem.module.css", "name"),
-  time: requireClass(styles.time, "usermessageitem.module.css", "time"),
   actions: requireClass(styles.actions, "usermessageitem.module.css", "actions"),
   body: requireClass(styles.body, "usermessageitem.module.css", "body"),
   text: requireClass(styles.text, "usermessageitem.module.css", "text"),
@@ -128,6 +126,10 @@ export function UserMessageView({
 }) {
   // Missing or invalid server timestamps stay absent rather than showing a guess.
   const time = Date.parse(timeIso ?? item.startedAt ?? "");
+  // The meta slot is exactly one of the provisional caption or the item time -
+  // never both, and never a placeholder.
+  const timestamp = Number.isFinite(time) ? <MessageTimestamp value={time} /> : undefined;
+  const meta = provisional !== undefined ? provisional : timestamp;
   return (
     <div
       className={provisional === undefined ? CLASS.message : `${CLASS.message} ${CLASS.provisional}`}
@@ -140,21 +142,11 @@ export function UserMessageView({
         <SpeakerAvatar speaker={speaker} />
       </span>
       <div className={CLASS.content}>
-        <div className={CLASS.header}>
-          <span className={CLASS.name}>
-            {item.actor?.kind === "manager" ? `Manager · ${item.actor.managerRef ?? ""}` : name}
-          </span>
-          {provisional !== undefined ? (
-            <span className={CLASS.time}>{provisional}</span>
-          ) : (
-            Number.isFinite(time) && (
-              <span className={CLASS.time}>
-                <MessageTimestamp value={time} />
-              </span>
-            )
-          )}
-          {actions !== undefined && <div className={CLASS.actions}>{actions}</div>}
-        </div>
+        <SpeakerHeader
+          name={item.actor?.kind === "manager" ? `Manager · ${item.actor.managerRef ?? ""}` : name}
+          meta={meta}
+          actions={actions !== undefined ? <div className={CLASS.actions}>{actions}</div> : undefined}
+        />
         <div className={CLASS.body} data-testid="user-bubble" data-message-body="">
           <div className={CLASS.text}>{entityText ? <EntityText text={item.text} /> : item.text}</div>
           {provisional !== undefined && <span className={CLASS.railmark} aria-hidden="true" />}

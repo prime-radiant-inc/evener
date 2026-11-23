@@ -26,8 +26,9 @@ import {
   askUserSummary,
   parseAskUserQuestions,
 } from "@evener/appwire-client";
-import { Card, Eyebrow } from "../../../../widgets";
+import { Card } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { AskOptionCopy } from "../../AskOptionCopy";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import styles from "./askuser.module.css";
@@ -38,8 +39,7 @@ const CLASS = {
   question: requireClass(styles.question, "askuser.module.css", "question"),
   options: requireClass(styles.options, "askuser.module.css", "options"),
   option: requireClass(styles.option, "askuser.module.css", "option"),
-  label: requireClass(styles.label, "askuser.module.css", "label"),
-  detail: requireClass(styles.detail, "askuser.module.css", "detail"),
+
   note: requireClass(styles.note, "askuser.module.css", "note"),
   footer: requireClass(styles.footer, "askuser.module.css", "footer"),
   fallback: requireClass(styles.fallback, "askuser.module.css", "fallback"),
@@ -73,9 +73,7 @@ function QuestionCard({ q }: { q: AskUserQuestion }) {
         <ul className={CLASS.options}>
           {q.options.map((opt) => (
             <li key={opt.label} className={CLASS.option} data-recommended={opt.recommended ? "true" : undefined}>
-              <span className={CLASS.label}>{opt.label}</span>
-              <span className={CLASS.detail}>{opt.detail}</span>
-              {opt.recommended && <Eyebrow as="span">Recommended</Eyebrow>}
+              <AskOptionCopy label={opt.label} detail={opt.detail} recommended={opt.recommended} />
             </li>
           ))}
         </ul>

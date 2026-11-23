@@ -691,8 +691,8 @@ export function DockHost() {
       // the legacy cascade-retention rule (it keeps its route role and its
       // restored neighbors), so the boot re-apply and every later placement
       // of the same route agree.
-      const ref = (routedPrimary.params as { ref?: unknown }).ref;
-      if (typeof ref === "string") openTopLevelSession(ref);
+      const ref = refParam(routedPrimary.params);
+      if (ref !== null) openTopLevelSession(ref);
     }
     for (const pane of routedSecondary) {
       workspaceStore.getState().openPane(pane.type, pane.params, {
