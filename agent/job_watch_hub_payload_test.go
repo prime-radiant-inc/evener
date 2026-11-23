@@ -212,30 +212,62 @@ func TestHubWatchClosedFrameCarriesStatusAndMethod(t *testing.T) {
 // asked, so the wake does not force a full session read.
 func TestHubWatchQuestionFrameCarriesSnapshotQuestion(t *testing.T) {
 	t.Parallel()
-	jm, id := hubPayloadWatch(t, []string{"question"})
-	if err := jm.onHubObservation(id, hubSnapshot(appwire.EvenerThread{
-		ActiveTurnID: "turn-q", AskPending: true,
-		PendingQuestion: &appwire.PendingQuestion{
-			Question: "Ship it?\nReally?",
-			Options:  []string{"yes", "no"},
-			Count:    2,
-		},
-	}, appwire.ThreadStatus{Type: "awaiting"})); err != nil {
-		t.Fatal(err)
-	}
-	frame := lastHubFrame(t, jm, id)
-	fields := watchFrameEventFields(t, frame)
-	for name, want := range map[string]string{
-		"kind": "question", "question": "Ship it?\nReally?", "options": "yes, no",
-		"count": "2", "active_turn_id": "turn-q", "status": "awaiting",
-	} {
-		if got := fields[name]; got != want {
-			t.Fatalf("question frame %s = %q, want %q (frame fields %v)", name, got, want, fields)
+	t.Run("running ask names its active turn", func(t *testing.T) {
+		t.Parallel()
+		jm, id := hubPayloadWatch(t, []string{"question"})
+		if err := jm.onHubObservation(id, hubSnapshot(appwire.EvenerThread{
+			ActiveTurnID: "turn-q", AskPending: true,
+			PendingQuestion: &appwire.PendingQuestion{
+				Question: "Ship it?\nReally?",
+				Options:  []string{"yes", "no"},
+				Count:    2,
+			},
+		}, appwire.ThreadStatus{Type: "awaiting"})); err != nil {
+			t.Fatal(err)
 		}
-	}
-	if got := len([]rune(frame)); got > watchFrameMaxChars {
-		t.Fatalf("question frame is %d runes, over the %d-rune cap", got, watchFrameMaxChars)
-	}
+		frame := lastHubFrame(t, jm, id)
+		fields := watchFrameEventFields(t, frame)
+		for name, want := range map[string]string{
+			"kind": "question", "question": "Ship it?\nReally?", "options": "yes, no",
+			"count": "2", "active_turn_id": "turn-q", "status": "awaiting",
+		} {
+			if got := fields[name]; got != want {
+				t.Fatalf("question frame %s = %q, want %q (frame fields %v)", name, got, want, fields)
+			}
+		}
+		if got := len([]rune(frame)); got > watchFrameMaxChars {
+			t.Fatalf("question frame is %d runes, over the %d-rune cap", got, watchFrameMaxChars)
+		}
+	})
+	// A settled ask has no active turn in the snapshot: the question's own turn
+	// is the ended turn the daemon reports live, and the frame must still name
+	// the turn the Manager has to read to answer.
+	t.Run("settled ask names the question's turn", func(t *testing.T) {
+		t.Parallel()
+		jm, id := hubPayloadWatch(t, []string{"question"})
+		if err := jm.onHubObservation(id, hubSnapshot(appwire.EvenerThread{
+			AskPending: true,
+			PendingQuestion: &appwire.PendingQuestion{
+				Question: "Ship it?",
+				Count:    1,
+				TurnID:   "turn-ask",
+			},
+		}, appwire.ThreadStatus{Type: "awaiting"})); err != nil {
+			t.Fatal(err)
+		}
+		fields := watchFrameEventFields(t, lastHubFrame(t, jm, id))
+		for name, want := range map[string]string{
+			"kind": "question", "question": "Ship it?", "count": "1",
+			"status": "awaiting", "ended_turn_id": "turn-ask",
+		} {
+			if got := fields[name]; got != want {
+				t.Fatalf("settled question frame %s = %q, want %q (frame fields %v)", name, got, want, fields)
+			}
+		}
+		if got := fields["active_turn_id"]; got != "" {
+			t.Fatalf("settled question frame active_turn_id = %q, want none", got)
+		}
+	})
 }
 
 func TestHubWatchQuestionFrameBoundsQuestionText(t *testing.T) {
@@ -268,26 +300,58 @@ func TestHubWatchQuestionFrameBoundsQuestionText(t *testing.T) {
 // least name the status and turn it belongs to.
 func TestHubWatchLiveQuestionFrameCarriesTurnContext(t *testing.T) {
 	t.Parallel()
-	jm, id := hubPayloadWatch(t, []string{"question"})
 	askPending := true
-	update := hubNotification("question-1", appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
-		ThreadID: "worker", Ref: "local:worker",
-		Status: appwire.ThreadStatus{Type: "awaiting"}, AskPending: &askPending, ActiveTurnID: "turn-live",
-	})
-	// The hub sends one status-changed notification and labels the derived
-	// question observation itself.
-	update.Event = "question"
-	if err := jm.onHubObservation(id, update); err != nil {
-		t.Fatal(err)
-	}
-	fields := watchFrameEventFields(t, lastHubFrame(t, jm, id))
-	for name, want := range map[string]string{
-		"kind": "question", "status": "awaiting", "active_turn_id": "turn-live",
-	} {
-		if got := fields[name]; got != want {
-			t.Fatalf("live question frame %s = %q, want %q (frame fields %v)", name, got, want, fields)
+	t.Run("active ask names the running turn", func(t *testing.T) {
+		t.Parallel()
+		jm, id := hubPayloadWatch(t, []string{"question"})
+		update := hubNotification("question-1", appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
+			ThreadID: "worker", Ref: "local:worker",
+			Status: appwire.ThreadStatus{Type: "awaiting"}, AskPending: &askPending, ActiveTurnID: "turn-live",
+		})
+		// The hub sends one status-changed notification and labels the derived
+		// question observation itself.
+		update.Event = "question"
+		if err := jm.onHubObservation(id, update); err != nil {
+			t.Fatal(err)
 		}
-	}
+		fields := watchFrameEventFields(t, lastHubFrame(t, jm, id))
+		for name, want := range map[string]string{
+			"kind": "question", "status": "awaiting", "active_turn_id": "turn-live",
+		} {
+			if got := fields[name]; got != want {
+				t.Fatalf("live question frame %s = %q, want %q (frame fields %v)", name, got, want, fields)
+			}
+		}
+		if got := fields["ended_turn_id"]; got != "" {
+			t.Fatalf("live active question frame ended_turn_id = %q, want none", got)
+		}
+	})
+	// A turn that ends on ask_user settles into awaiting with the active turn
+	// cleared, so the ask is identified only by the turn the daemon ended.
+	t.Run("settled ask names the ended turn", func(t *testing.T) {
+		t.Parallel()
+		jm, id := hubPayloadWatch(t, []string{"question"})
+		update := hubNotification("question-1", appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
+			ThreadID: "worker", Ref: "local:worker",
+			Status: appwire.ThreadStatus{Type: "awaiting"}, AskPending: &askPending,
+			EndedTurnID: "turn-ask",
+		})
+		update.Event = "question"
+		if err := jm.onHubObservation(id, update); err != nil {
+			t.Fatal(err)
+		}
+		fields := watchFrameEventFields(t, lastHubFrame(t, jm, id))
+		for name, want := range map[string]string{
+			"kind": "question", "status": "awaiting", "ended_turn_id": "turn-ask",
+		} {
+			if got := fields[name]; got != want {
+				t.Fatalf("settled question frame %s = %q, want %q (frame fields %v)", name, got, want, fields)
+			}
+		}
+		if got := fields["active_turn_id"]; got != "" {
+			t.Fatalf("settled question frame active_turn_id = %q, want none", got)
+		}
+	})
 }
 
 // TestHubWatchApprovalFrameCarriesEscalation pins that both the snapshot

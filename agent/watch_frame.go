@@ -265,6 +265,7 @@ func writeHubObservationWatchEvent(b *strings.Builder, data *hubObservationFrame
 		if data.Status != nil {
 			writeWatchFrameOptionalField(b, "status", data.Status.Status.Type)
 			writeWatchFrameOptionalField(b, "active_turn_id", data.Status.ActiveTurnID)
+			writeWatchFrameOptionalField(b, "ended_turn_id", data.Status.EndedTurnID)
 		}
 	case "approval":
 		b.WriteString("event:\n")

@@ -524,18 +524,29 @@ func (jm *jobManager) onHubObservationPayload(watchID string, update appwire.Ses
 		jm.mu.Unlock()
 		if update.Snapshot.Thread.Evener.AskPending {
 			question := update.Metadata
-			question.EntryID = "question:" + update.Snapshot.Thread.Evener.ActiveTurnID
+			pending := update.Snapshot.Thread.Evener.PendingQuestion
+			// A settled ask has no active turn: its own turn, when the daemon
+			// reported one, is the ended turn the live status notification
+			// names, and it identifies the entry too.
+			turnID := update.Snapshot.Thread.Evener.ActiveTurnID
+			if turnID == "" && pending != nil {
+				turnID = pending.TurnID
+			}
+			question.EntryID = "question:" + turnID
 			payload := hubObservationFrame{
 				Event: "question",
 				Status: &appwire.ThreadStatusChangedParams{
 					Status:       read.Thread.Status,
 					ActiveTurnID: read.Thread.Evener.ActiveTurnID,
 				},
+				Question: pending,
 			}
-			if pending := update.Snapshot.Thread.Evener.PendingQuestion; pending != nil {
+			if pending != nil {
 				identity := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d", pending.Question, pending.Count)))
 				question.EntryID += ":" + hex.EncodeToString(identity[:])
-				payload.Question = pending
+				if payload.Status.ActiveTurnID == "" {
+					payload.Status.EndedTurnID = pending.TurnID
+				}
 			}
 			question.CausalKnown = true
 			if err := jm.onHubObservationPayload(watchID, appwire.SessionWatchUpdate{Metadata: question, Event: "question"}, false, nil, &payload); err != nil {
