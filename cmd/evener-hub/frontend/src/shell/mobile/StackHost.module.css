@@ -194,7 +194,10 @@
 
 .boardColumn {
   flex: none;
-  width: clamp(280px, 36vw, 380px);
+  /* --board-width carries the user's dragged width (the boardWidth pref,
+   * painted by the resize handle); absent, the guide's auto hinge clamp
+   * sizes the column. */
+  width: var(--board-width, clamp(280px, 36vw, 380px));
   border-right: 1px solid var(--edge);
   min-height: 0;
   display: flex;

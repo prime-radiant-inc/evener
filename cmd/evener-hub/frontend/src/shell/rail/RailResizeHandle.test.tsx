@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { SIDEBAR_WIDTH_DEFAULT, SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_MIN } from "../../stores/prefs";
+import { clampBoardWidth, SIDEBAR_WIDTH_DEFAULT, SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_MIN } from "../../stores/prefs";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 
 // jsdom implements neither the Pointer Capture API nor any layout, so the two
@@ -256,4 +256,86 @@ test("double-click resets to the default width", () => {
   render(<Harness initialWidth={SIDEBAR_WIDTH_MAX} />);
   fireEvent.doubleClick(handle());
   expect(committedWidth()).toBe(SIDEBAR_WIDTH_DEFAULT);
+});
+
+// The tablet split's board column shares this handle (StackHost): the same
+// drag, the same keyboard, the same separator contract, parameterized by the
+// surface. Every parameterized prop defaults to the desktop rail's exact
+// behavior above, so these tests pin the parameterization itself: the painted
+// property, the surface's own clamp and ceiling, and the reset-to-auto hook
+// the rail does not use.
+const BOARD_WIDTH_PROPERTY = "--board-width";
+
+function SplitHarness({ onReset }: { onReset?: () => void }) {
+  const columnRef = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState<number | null>(null);
+  return (
+    <div data-testid="split-column" ref={columnRef}>
+      <span data-testid="committed">{width === null ? "auto" : width}</span>
+      <RailResizeHandle
+        testId="split-resize-handle"
+        property={BOARD_WIDTH_PROPERTY}
+        width={width}
+        clamp={clampBoardWidth}
+        ariaMax={448}
+        onReset={onReset}
+        onCommit={setWidth}
+        railRef={columnRef}
+      />
+    </div>
+  );
+}
+
+describe("shared with the tablet split", () => {
+  const splitHandle = () => screen.getByTestId("split-resize-handle");
+  const splitPainted = () => screen.getByTestId("split-column").style.getPropertyValue(BOARD_WIDTH_PROPERTY);
+
+  test("carries its own test id, not the rail's", () => {
+    render(<SplitHarness />);
+    expect(screen.queryByTestId("rail-resize-handle")).toBeNull();
+    expect(splitHandle().getAttribute("role")).toBe("separator");
+  });
+
+  test("paints and commits the parameterized property, leaving the rail property alone", () => {
+    render(<SplitHarness />);
+    fireEvent.pointerDown(splitHandle(), { button: 0, pointerId: 11, clientX: 0 });
+    fireEvent.pointerMove(splitHandle(), { pointerId: 11, clientX: 380 });
+    fireEvent.pointerUp(splitHandle(), { pointerId: 11, clientX: 380 });
+    expect(splitPainted()).toBe("380px");
+    expect(screen.getByTestId("split-column").style.getPropertyValue(RAIL_WIDTH_PROPERTY)).toBe("");
+    expect(screen.getByTestId("committed").textContent).toBe("380");
+  });
+
+  test("an auto (null) width reports no aria-valuenow until a drag paints one", () => {
+    render(<SplitHarness />);
+    expect(splitHandle().getAttribute("aria-valuenow")).toBe(null);
+    fireEvent.pointerDown(splitHandle(), { button: 0, pointerId: 12, clientX: 0 });
+    fireEvent.pointerMove(splitHandle(), { pointerId: 12, clientX: 340 });
+    expect(splitHandle().getAttribute("aria-valuenow")).toBe("340");
+    fireEvent.pointerUp(splitHandle(), { pointerId: 12, clientX: 340 });
+  });
+
+  test("aria-valuemax follows the surface's own ceiling and End steps to it", () => {
+    render(<SplitHarness />);
+    expect(splitHandle().getAttribute("aria-valuemax")).toBe("448");
+    fireEvent.keyDown(splitHandle(), { key: "End" });
+    expect(screen.getByTestId("committed").textContent).toBe("448");
+  });
+
+  test("with onReset, a double-click clears the painted property and reports auto without committing a number", () => {
+    const onReset = vi.fn();
+    render(<SplitHarness onReset={onReset} />);
+    fireEvent.pointerDown(splitHandle(), { button: 0, pointerId: 13, clientX: 0 });
+    fireEvent.pointerMove(splitHandle(), { pointerId: 13, clientX: 380 });
+    fireEvent.pointerUp(splitHandle(), { pointerId: 13, clientX: 380 });
+    expect(splitPainted()).toBe("380px");
+    fireEvent.doubleClick(splitHandle());
+    expect(splitPainted()).toBe("");
+    // The reset owns only the painted property and the onReset call: the
+    // surface's onReset handler performs the auto transition, and onCommit
+    // is deliberately not invoked - committed still shows the last dragged
+    // width the reset cleared.
+    expect(screen.getByTestId("committed").textContent).toBe("380");
+    expect(onReset).toHaveBeenCalledTimes(1);
+  });
 });

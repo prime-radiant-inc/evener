@@ -1512,7 +1512,15 @@ the tablet: StackHost keeps its phone anatomy, but the rail leaves the drawer
 and becomes a persistent board column `clamp(280px, 36vw, 380px)` wide (the
 Duo interior's 840px resolves to 302px) with a 1px divider and the
 conversation flexing beside it. The column scrolls as one region, the same
-parent-owns-scroll contract as the drawer sheet. The collapse control is one
+parent-owns-scroll contract as the drawer sheet. That clamp is the default,
+not a law: the divider drags like the desktop rail's edge — the same
+separator, live-painting the width through the drag and committing once on
+release, with arrow-key steps and the same reset gesture — and the dragged
+width persists per-surface as the `boardWidth` pref, never moving the
+desktop rail's own `sidebarWidth`. A double-click returns the column to the
+auto clamp; the drag's ceiling is the viewport's own, so the conversation
+beside it never goes phone-narrow, and its floor is the rail's measured
+content floor. The collapse control is one
 glyph riding the interior seam of the divider — hugging the divider's
 conversation lip while the board is visible, the conversation's leading edge
 while hidden — rotating 180° to indicate direction; never two collapse
@@ -1526,7 +1534,9 @@ Verification for changes to any of this: screenshots at 390×844 (phone),
 rest within the budget stated above (bar 61px + pill 60px = 121px at phone
 width); transcript content scrolling under the composer
 pill; header collapse only on session-family scroll; `node scripts/ds-audit.mjs`
-counts no higher than before.
+counts no higher than before; the tablet divider's drag commits its width,
+the width survives a reload, and a double-click returns it to the auto
+clamp.
 
 
 ## Source Serif 4 license notice

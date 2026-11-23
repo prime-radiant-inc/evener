@@ -37,7 +37,17 @@
 // restored anywhere. A reload lands wherever the URL says (see the URL-
 // sync effect below), the same as any other fresh navigation - there is no
 // separate "last mobile screen" memory to restore independently of that.
-import { type ReactNode, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type ReactNode,
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { SessionInspectionActions } from "../../panes/session/chrome/SessionInspectionActions";
 import { returnFromAgentCascade } from "../../panes/zoom/actions";
 import { isCascadeReturnedOrigin } from "../../panes/zoom/inspectionOrigin";
@@ -47,6 +57,7 @@ import {
   registerConversationHostVisibility,
   restrictConversationHandoff,
 } from "../../stores/conversationClaimHandoff";
+import { boardWidthMax, clampBoardWidth, prefsStore, usePrefsStore } from "../../stores/prefs";
 import { useTopNotesExpanded } from "../../stores/topNotes";
 import { Chevron, IconButton } from "../../widgets";
 import { ActivitySidebar } from "../activitybar/ActivitySidebar";
@@ -56,6 +67,7 @@ import { ConversationHandoffBoundary } from "../ConversationHandoffBoundary";
 import { useChromeStore } from "../chromeStore";
 import { paneFor } from "../paneRegistry";
 import { PaneVisibilityContext } from "../paneVisibility";
+import { RailResizeHandle } from "../rail/RailResizeHandle";
 import { navigate, paneToURL, refParam, urlToPane } from "../routing";
 import { openSessionByRef } from "../sessionPlacement";
 import { isSinglePaneRoute } from "../singlePane";
@@ -91,6 +103,11 @@ const TRANSITION_CLASSES = {
 const FLOAT_COLLAPSE_PAST = 48;
 const FLOAT_REVEAL_STEP = 8;
 const FLOAT_REVEAL_AT_TOP = 12;
+
+// The custom property StackHost.module.css's .boardColumn width reads: set
+// inline from the boardWidth pref (a dragged width), absent for the guide's
+// auto hinge clamp. Painted imperatively by the drag, same as the rail.
+const BOARD_WIDTH_PROPERTY = "--board-width";
 
 // Renders exactly one pane, full-screen: whichever OpenPaneRecord
 // useWorkspaceStore currently reports as focused. Uses the SAME registry
@@ -270,6 +287,11 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const tabletSplit = tabletBand && !singlePane;
   const [boardCollapsed, setBoardCollapsed] = useState(false);
   const boardVisible = tabletSplit && !boardCollapsed;
+  // The user's dragged column width, or null for the auto clamp. A
+  // surface-scoped pref, not the desktop rail's sidebarWidth: dragging the
+  // tablet column must never move the desktop rail (stores/prefs.ts).
+  const boardWidth = usePrefsStore((s) => s.boardWidth);
+  const boardColumnRef = useRef<HTMLDivElement>(null);
   // The floating top bar (docs/web-ui/design-system.md §12): true while a
   // session-family pane's body is scrolled down, trading the solid bar for
   // floating control capsules. The state is a paint-only class flip - the
@@ -887,8 +909,29 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       {tabletSplit ? (
         <div className={styles.split} data-board={boardVisible ? "visible" : "collapsed"}>
           {boardVisible && (
-            <aside className={styles.boardColumn} data-testid="board-column">
+            <aside
+              ref={boardColumnRef}
+              className={styles.boardColumn}
+              data-testid="board-column"
+              style={boardWidth === null ? undefined : ({ [BOARD_WIDTH_PROPERTY]: `${boardWidth}px` } as CSSProperties)}
+            >
               {railSlot}
+              {/* The divider drags like the desktop rail's edge (§12): the
+                  same separator, live-painting the width with no per-frame
+                  store writes, committing on release; a double-click
+                  returns the column to the auto clamp. The ceiling is the
+                  viewport's, not the desktop's static max, so a drag can
+                  never leave the conversation phone-narrow. */}
+              <RailResizeHandle
+                testId="board-resize-handle"
+                property={BOARD_WIDTH_PROPERTY}
+                width={boardWidth}
+                clamp={clampBoardWidth}
+                ariaMax={boardWidthMax()}
+                onReset={() => prefsStore.getState().setBoardWidth(null)}
+                onCommit={(width) => prefsStore.getState().setBoardWidth(width)}
+                railRef={boardColumnRef}
+              />
             </aside>
           )}
           <div className={styles.paneColumn} data-testid="pane-column">

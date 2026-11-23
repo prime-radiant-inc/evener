@@ -1,8 +1,11 @@
-// The docked rail's drag-to-resize handle: a role=separator strip on the
-// rail's right edge, over the border it appears to grab. Desktop only —
-// RailHost renders it (and the width it reports) exclusively on the non-mobile
-// path, because the mobile Rail fills TreeDrawer's sheet and has no edge to
-// drag (Rail.module.css's own <=899px block owns that width).
+// The drag-to-resize handle: a role=separator strip on the right edge of
+// whatever it is given, over the border it appears to grab. Two surfaces
+// render it: the desktop's docked rail (RailHost, painting --rail-width from
+// the sidebarWidth pref) and the tablet split's board column (StackHost,
+// painting --board-width from the boardWidth pref, where a reset returns
+// the column to its auto clamp rather than a default number). Every
+// parameterized prop defaults to the rail's exact behavior, so the rail's
+// own tests are the default path's contract.
 //
 // TWO WRITE PATHS, deliberately:
 //   - during a drag, each pointermove sets the --rail-width custom property
@@ -35,19 +38,44 @@ const KEY_STEP_COARSE = 64;
 
 export interface RailResizeHandleProps {
   // The persisted width, and where a released drag / keyboard step lands.
-  width: number;
+  // The split's column may be auto (null): no aria-valuenow until a drag or
+  // step paints one, and a keyboard step bases itself on the element's
+  // measured width instead.
+  width: number | null;
   onCommit: (width: number) => void;
   // The element being resized: the drag paints its --rail-width directly.
   railRef: RefObject<HTMLDivElement | null>;
+  // The custom property the drag paints. Defaults to the rail's own.
+  property?: string;
+  // The width clamp for this surface. Defaults to the rail's own.
+  clamp?: (value: number) => number;
+  // This surface's aria-valuemax (the split's ceiling is the viewport, not
+  // the static sidebar max). Defaults to the rail's own.
+  ariaMax?: number;
+  // Present when a double-click resets to a non-number state: the split's
+  // auto clamp. Absent, the double-click restores SIDEBAR_WIDTH_DEFAULT.
+  onReset?: () => void;
+  // The test id, so two surfaces' handles never share one. Defaults to the
+  // rail's own.
+  testId?: string;
 }
 
-export function RailResizeHandle({ width, onCommit, railRef }: RailResizeHandleProps) {
+export function RailResizeHandle({
+  width,
+  onCommit,
+  railRef,
+  property = RAIL_WIDTH_PROPERTY,
+  clamp = clampSidebarWidth,
+  ariaMax = SIDEBAR_WIDTH_MAX,
+  onReset,
+  testId = "rail-resize-handle",
+}: RailResizeHandleProps) {
   // Non-null only mid-drag; the live value aria-valuenow reports.
   const [dragWidth, setDragWidth] = useState<number | null>(null);
   const shownWidth = dragWidth ?? width;
 
   function paint(value: number): void {
-    railRef.current?.style.setProperty(RAIL_WIDTH_PROPERTY, `${value}px`);
+    railRef.current?.style.setProperty(property, `${value}px`);
   }
 
   function handlePointerDown(event: PointerEvent<HTMLDivElement>): void {
@@ -61,7 +89,7 @@ export function RailResizeHandle({ width, onCommit, railRef }: RailResizeHandleP
     // way for a pane's own handlers to swallow the drag.
     event.currentTarget.setPointerCapture(event.pointerId);
     event.preventDefault(); // suppress the text-selection drag the gesture would otherwise start
-    setDragWidth(clampSidebarWidth(rail.getBoundingClientRect().width));
+    setDragWidth(clamp(rail.getBoundingClientRect().width));
   }
 
   function handlePointerMove(event: PointerEvent<HTMLDivElement>): void {
@@ -72,7 +100,7 @@ export function RailResizeHandle({ width, onCommit, railRef }: RailResizeHandleP
     // captured start offset, so the handle tracks the pointer exactly even if
     // something else (a font-size pref change, a scrollbar) shifts the rail
     // mid-drag.
-    const next = clampSidebarWidth(event.clientX - rail.getBoundingClientRect().left);
+    const next = clamp(event.clientX - rail.getBoundingClientRect().left);
     setDragWidth(next);
     paint(next);
   }
@@ -84,8 +112,15 @@ export function RailResizeHandle({ width, onCommit, railRef }: RailResizeHandleP
     onCommit(dragWidth);
   }
 
+  // An auto (null) width bases a step on the element's measured width - the
+  // same reading a drag's pointerdown takes - so the first step moves from
+  // where the column actually is.
+  function stepBase(): number {
+    return shownWidth ?? clamp(railRef.current?.getBoundingClientRect().width ?? SIDEBAR_WIDTH_DEFAULT);
+  }
+
   function step(delta: number): void {
-    const next = clampSidebarWidth(shownWidth + delta);
+    const next = clamp(stepBase() + delta);
     paint(next);
     onCommit(next);
   }
@@ -105,10 +140,10 @@ export function RailResizeHandle({ width, onCommit, railRef }: RailResizeHandleP
         step(coarse);
         break;
       case "Home":
-        step(sidebarWidthMin() - shownWidth);
+        step(sidebarWidthMin() - stepBase());
         break;
       case "End":
-        step(SIDEBAR_WIDTH_MAX - shownWidth);
+        step(ariaMax - stepBase());
         break;
       default:
         return; // every other key keeps its default behaviour (Tab moves on, etc.)
@@ -126,13 +161,13 @@ export function RailResizeHandle({ width, onCommit, railRef }: RailResizeHandleP
     // div is the only option.
     // biome-ignore lint/a11y/useSemanticElements: see the comment directly above
     <div
-      data-testid="rail-resize-handle"
+      data-testid={testId}
       role="separator"
       aria-orientation="vertical"
       aria-label="Resize sidebar"
-      aria-valuenow={shownWidth}
+      aria-valuenow={shownWidth ?? undefined}
       aria-valuemin={sidebarWidthMin()}
-      aria-valuemax={SIDEBAR_WIDTH_MAX}
+      aria-valuemax={ariaMax}
       tabIndex={0}
       className={CLASS.resizeHandle}
       onPointerDown={handlePointerDown}
@@ -141,8 +176,13 @@ export function RailResizeHandle({ width, onCommit, railRef }: RailResizeHandleP
       onPointerCancel={endDrag}
       onKeyDown={handleKeyDown}
       onDoubleClick={() => {
-        paint(SIDEBAR_WIDTH_DEFAULT);
-        onCommit(SIDEBAR_WIDTH_DEFAULT);
+        if (onReset) {
+          railRef.current?.style.removeProperty(property);
+          onReset();
+        } else {
+          paint(SIDEBAR_WIDTH_DEFAULT);
+          onCommit(SIDEBAR_WIDTH_DEFAULT);
+        }
       }}
     />
   );

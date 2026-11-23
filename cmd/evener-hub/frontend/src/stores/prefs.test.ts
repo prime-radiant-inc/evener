@@ -3,6 +3,8 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import {
+  boardWidthMax,
+  clampBoardWidth,
   clampSidebarWidth,
   hasTranscriptDisplayLocal,
   initPrefs,
@@ -501,6 +503,81 @@ describe("sidebarWidth", () => {
     resetPrefsStoreForTests();
     expect(prefsStore.getState().sidebarWidth).toBe(SIDEBAR_WIDTH_MIN_TOUCH);
     vi.unstubAllGlobals();
+  });
+});
+
+// The tablet split's board column width. Deliberately its OWN pref, not
+// sidebarWidth: the desktop rail's dragged width is the user's explicit
+// choice for that surface, and the tablet's auto default is the guide's
+// hinge-aware clamp (design-system.md §12) - sharing one key would either
+// move the desktop rail when the tablet column is dragged, or silently kill
+// the hinge math for every browser that ever dragged a desktop rail.
+// null is ABSENCE (never written as a literal), the same contract theme's
+// "system" keeps: null means the split sizes itself.
+describe("boardWidth", () => {
+  test("defaults to null - the split's auto width - with nothing persisted", () => {
+    expect(prefsStore.getState().boardWidth).toBe(null);
+  });
+
+  test("setBoardWidth persists a clamped whole number and updates state", () => {
+    prefsStore.getState().setBoardWidth(320);
+    expect(localStorage.getItem(KEY("boardWidth"))).toBe("320");
+    expect(prefsStore.getState().boardWidth).toBe(320);
+  });
+
+  test("setBoardWidth rounds a fractional drag position to a whole pixel", () => {
+    prefsStore.getState().setBoardWidth(301.6);
+    expect(prefsStore.getState().boardWidth).toBe(302);
+  });
+
+  test("setBoardWidth(null) is absence: the key is removed and the split reads auto", () => {
+    prefsStore.getState().setBoardWidth(320);
+    prefsStore.getState().setBoardWidth(null);
+    expect(localStorage.getItem(KEY("boardWidth"))).toBe(null);
+    expect(prefsStore.getState().boardWidth).toBe(null);
+  });
+
+  test("round-trips a persisted width across a fresh load", () => {
+    prefsStore.getState().setBoardWidth(360);
+    resetPrefsStoreForTests();
+    expect(prefsStore.getState().boardWidth).toBe(360);
+  });
+
+  test("clamps to the rail's own content floor and the static sidebar max", () => {
+    // jsdom has no matchMedia, so sidebarWidthMin() reads as the
+    // fine-pointer floor; its window is 1024px wide, so the dynamic
+    // ceiling (innerWidth - the conversation floor) sits above the static
+    // max and never binds here.
+    prefsStore.getState().setBoardWidth(10);
+    expect(prefsStore.getState().boardWidth).toBe(SIDEBAR_WIDTH_MIN);
+    prefsStore.getState().setBoardWidth(5000);
+    expect(prefsStore.getState().boardWidth).toBe(SIDEBAR_WIDTH_MAX);
+  });
+
+  // The drag must never leave the conversation narrower than a phone-class
+  // transcript: on the band's floor (768px) the column stops at 448, not at
+  // the desktop rail's 560.
+  test("the ceiling keeps a phone-narrow conversation on a 768px window", () => {
+    const original = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { value: 768, configurable: true, writable: true });
+    try {
+      expect(boardWidthMax()).toBe(448);
+      expect(clampBoardWidth(600)).toBe(448);
+      prefsStore.getState().setBoardWidth(600);
+      expect(prefsStore.getState().boardWidth).toBe(448);
+    } finally {
+      Object.defineProperty(window, "innerWidth", { value: original, configurable: true, writable: true });
+    }
+  });
+
+  test.each([
+    ["non-numeric garbage", "wide-please"],
+    ["an empty string", ""],
+    ["NaN", "NaN"],
+  ])("a corrupted stored value (%s) reads as auto, never as a wild width", (_label, stored) => {
+    localStorage.setItem(KEY("boardWidth"), stored);
+    resetPrefsStoreForTests();
+    expect(prefsStore.getState().boardWidth).toBe(null);
   });
 });
 

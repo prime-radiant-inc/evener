@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bindFilePath } from "@evener/appwire-client/docContent";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { DockviewApi } from "dockview-core";
 import { lazy, useEffect, useState } from "react";
@@ -17,6 +17,7 @@ import { recordCascadeOrigin } from "../../panes/zoom/inspectionOrigin";
 import type { SessionZoomParams } from "../../panes/zoom/intent";
 import "../../panes/zoom";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
+import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import {
   activityClient,
   activityContext,
@@ -378,6 +379,8 @@ beforeEach(() => {
   resetActivitySidebarStoreForTests();
   resetConnectionStoreForTests();
   resetChromeStoreForTests();
+  localStorage.removeItem("evener.prefs.boardWidth");
+  resetPrefsStoreForTests();
   topNotesStore.getState().resetForTests();
   setLastPopstateWasTrustedForTests(false);
 });
@@ -2266,6 +2269,7 @@ test("below the tablet band the phone anatomy is unchanged: drawer sheet, no boa
     await screen.findByText(/doc pane: phone_band /);
     expect(screen.queryByTestId("board-column")).toBeNull();
     expect(screen.queryByTestId("board-toggle")).toBeNull();
+    expect(screen.queryByTestId("board-resize-handle")).toBeNull();
     expect(screen.getByRole("button", { name: "Sessions" })).toBeTruthy();
   } finally {
     restoreViewport();
@@ -2297,4 +2301,77 @@ test("the split carries the §12 geometry: clamp width, hairline divider, slidin
   // do not double-count: the control never duplicates.
   expect((css.match(/(?:^|\n)\.boardHandle \{/g) ?? []).length).toBe(1);
   expect((css.match(/(?:^|\n)\.boardGlyph \{/g) ?? []).length).toBe(1);
+});
+
+// The split's width is the user's, not the layout's: the divider drags like
+// the desktop rail's edge, and the dragged width persists as the boardWidth
+// pref. Absent (null), the column keeps the guide's auto hinge clamp - the
+// desktop rail's own sidebarWidth never moves when the tablet column drags.
+test("the board column's width follows the boardWidth pref and falls back to the auto clamp", async () => {
+  const restoreViewport = installMobileViewport([MOBILE_QUERY, TABLET_QUERY]);
+  try {
+    render(<StackHost />);
+    const board = await screen.findByTestId("board-column");
+    expect(board.style.getPropertyValue("--board-width")).toBe("");
+    await act(async () => {
+      prefsStore.getState().setBoardWidth(320);
+    });
+    expect(board.style.getPropertyValue("--board-width")).toBe("320px");
+    await act(async () => {
+      prefsStore.getState().setBoardWidth(null);
+    });
+    expect(board.style.getPropertyValue("--board-width")).toBe("");
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("dragging the divider commits a clamped width to the boardWidth pref", async () => {
+  const restoreViewport = installMobileViewport([MOBILE_QUERY, TABLET_QUERY]);
+  // jsdom implements neither pointer capture nor layout: capture is recorded
+  // (same stub as RailResizeHandle.test.tsx), and the all-zero rect means
+  // the drag math reads pointer clientX as the column's width directly.
+  const captured: number[] = [];
+  const proto = Element.prototype as { setPointerCapture?: unknown; releasePointerCapture?: unknown };
+  proto.setPointerCapture = function setPointerCapture(pointerId: number) {
+    captured.push(pointerId);
+  };
+  proto.releasePointerCapture = function releasePointerCapture() {};
+  try {
+    render(<StackHost />);
+    const handle = await screen.findByTestId("board-resize-handle");
+    // No explicit act wrapper: fireEvent acts each event on its own, so the
+    // drag's state commits between events exactly as a browser would
+    // dispatch them (one wrapping act would defer the flushes and the
+    // pointermove would read the pre-drag render).
+    fireEvent.pointerDown(handle, { button: 0, pointerId: 9, clientX: 0 });
+    fireEvent.pointerMove(handle, { pointerId: 9, clientX: 340 });
+    fireEvent.pointerUp(handle, { pointerId: 9, clientX: 340 });
+    expect(prefsStore.getState().boardWidth).toBe(340);
+    expect(captured).toEqual([9]);
+  } finally {
+    delete proto.setPointerCapture;
+    delete proto.releasePointerCapture;
+    restoreViewport();
+  }
+});
+
+test("double-clicking the divider returns the column to the auto clamp", async () => {
+  const restoreViewport = installMobileViewport([MOBILE_QUERY, TABLET_QUERY]);
+  try {
+    await act(async () => {
+      prefsStore.getState().setBoardWidth(340);
+    });
+    render(<StackHost />);
+    const handle = await screen.findByTestId("board-resize-handle");
+    const board = screen.getByTestId("board-column");
+    expect(board.style.getPropertyValue("--board-width")).toBe("340px");
+    await act(async () => {
+      fireEvent.doubleClick(handle);
+    });
+    expect(prefsStore.getState().boardWidth).toBe(null);
+    expect(board.style.getPropertyValue("--board-width")).toBe("");
+  } finally {
+    restoreViewport();
+  }
 });
