@@ -161,6 +161,7 @@ export function AskQuestionCard({
                 : resolution?.kind === "option" && resolution.labels[0] === opt.label
             }
             onChange={(e) => handleOptionChange(opt.label, e.target.checked)}
+            data-ask-control
           />{" "}
           {/* Inline bold label (ask-dialog UX rework), replacing the chip
               pill - the whole row is one continuous inline flow (see
@@ -195,6 +196,7 @@ export function AskQuestionCard({
             onChange={() => {
               if (!freeActive) activateFree();
             }}
+            data-ask-control
           />{" "}
           <span id={freeLabelId}>Something else…</span>
         </label>
@@ -244,6 +246,7 @@ export function AskQuestionCard({
           placeholder={freeActive ? "type your answer" : "note (optional)"}
           aria-labelledby={freeActive ? `${freeLabelId} ${headerId} ${textId}` : `${headerId} ${textId} ${noteLabelId}`}
           data-ask-free-input={freeActive ? "true" : undefined}
+          data-ask-control
           value={freeActive && resolution?.kind === "free" ? resolution.text : answer.note}
           onChange={(e) =>
             freeActive ? onResolutionChange({ kind: "free", text: e.target.value }) : onNoteChange(e.target.value)

@@ -317,6 +317,18 @@ test("options render inside a group whose role reflects single vs multi select",
   expect(screen.getByRole("group")).toBeTruthy();
 });
 
+// AskDock's focus queries derive from one marker rather than a type list:
+// every answer control carries data-ask-control, so the first-control and
+// first-enabled-control selectors cannot drift apart.
+test("marks every answer control with data-ask-control", () => {
+  render(<Harness q={question({ multiSelect: true })} />);
+  for (const control of screen.getAllByRole("checkbox")) {
+    expect(control.hasAttribute("data-ask-control")).toBe(true);
+  }
+  expect(screen.getByRole("radio", { name: /something else/i }).hasAttribute("data-ask-control")).toBe(true);
+  expect(screen.getByPlaceholderText(/note/i).hasAttribute("data-ask-control")).toBe(true);
+});
+
 // Touch target (UX fix, real-phone measurement): an option WITH a detail
 // line stands ~46-68px tall (label + wrapped detail), but an option with no
 // detail collapsed to ~21px - just the label's own line height, well under
