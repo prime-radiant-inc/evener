@@ -211,7 +211,7 @@ export function ProjectedIntentGroup({
 }
 
 export interface ProjectedQuietYieldGroupProps {
-  entries: readonly Extract<ProjectedEntry, { kind: "item" | "critical" }>[];
+  entries: readonly Extract<ProjectedEntry, { kind: "item" | "critical" | "thinking" }>[];
   turns: readonly ProjectedTurn[];
   quietCount?: number;
   rowId: string;
@@ -284,6 +284,8 @@ export function ProjectedQuietYieldGroup({
                       sessionRef={sessionRef}
                       displayKey={displayKey}
                       projectedSummary={entry.kind === "critical" ? entry.summary : undefined}
+                      contentFree={entry.kind === "thinking"}
+                      contentFreeLive={entry.kind === "thinking" ? entry.live : undefined}
                       redacted={entry.kind === "critical" && entry.redacted}
                       renderContext={itemRenderContext}
                       thread={thread}

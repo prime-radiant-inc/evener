@@ -9,6 +9,9 @@ import type {
 import {
   configFingerprint,
   entryDisplayKey,
+  hasFailedNotification,
+  hasItemFailure,
+  isActiveItem,
   isParentSteer,
   isQuietYield,
   projectThread,
@@ -40,7 +43,7 @@ import styles from "../session.module.css";
 
 const ESTIMATED_TURN_HEIGHT = 96;
 type IntentEntry = Extract<ProjectedEntry, { kind: "intent" }>;
-type QuietWakeEntry = Extract<ProjectedEntry, { kind: "item" | "critical" }>;
+type QuietWakeEntry = Extract<ProjectedEntry, { kind: "item" | "critical" | "thinking" }>;
 
 export const TranscriptSourcePaneContext = createContext<string | undefined>(undefined);
 
@@ -78,13 +81,26 @@ function quietYieldGroupId(firstEntryKey: string): string {
 }
 
 function isNotificationSteeringItem(item: ItemModel): boolean {
-  return (
-    item.type === "steering" &&
-    item.source !== "user" &&
-    item.steeringKind !== "human-note" &&
-    !isParentSteer(item.source) &&
-    (item.steeringKind === "notification" || steeringNotificationFragments(item.text ?? "") !== null)
-  );
+  if (
+    item.type !== "steering" ||
+    item.source === "user" ||
+    item.steeringKind === "human-note" ||
+    isParentSteer(item.source)
+  ) {
+    return false;
+  }
+  const fragments = steeringNotificationFragments(item.text ?? "");
+  if (hasFailedNotification(fragments)) return false;
+  return item.steeringKind === "notification" || fragments !== null;
+}
+
+function isSettledHealthyReasoning(
+  entry: ProjectedEntry,
+  turnStatus: string | undefined,
+): entry is Extract<ProjectedEntry, { kind: "thinking" | "item" }> {
+  if (turnStatus === "failed" || turnStatus === "interrupted" || hasItemFailure(entry.item)) return false;
+  if (entry.kind === "thinking") return !entry.live;
+  return entry.kind === "item" && entry.item.type === "reasoning" && !isActiveItem(entry.item, turnStatus);
 }
 
 function isEmptyHiddenTurn(turn: ProjectedTurn): boolean {
@@ -97,11 +113,12 @@ function quietWakeEntries(turn: ProjectedTurn): { entries: readonly QuietWakeEnt
   const entries: QuietWakeEntry[] = [];
   let quietCount = 0;
   for (const entry of turn.entries) {
-    if (entry.kind !== "item" && entry.kind !== "critical") return undefined;
-    if (entry.item.type === "systemMessage" && isQuietYield(entry.item)) {
+    if (entry.kind === "item" && entry.item.type === "systemMessage" && isQuietYield(entry.item)) {
       quietCount += 1;
       entries.push(entry);
-    } else if (isNotificationSteeringItem(entry.item)) {
+    } else if ((entry.kind === "item" || entry.kind === "critical") && isNotificationSteeringItem(entry.item)) {
+      entries.push(entry);
+    } else if (isSettledHealthyReasoning(entry, turn.source.status)) {
       entries.push(entry);
     } else {
       return undefined;

@@ -385,10 +385,11 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string, view
     // Where the words sit is read only for a matched row: grouping a notice
     // run costs a scan, and Find runs on every keystroke.
     let placement: SystemNoticePlacement | null = null;
-    if (groupId !== undefined)
+    if (entry.item.type === "reasoning") {
+      placement = { opens: groupId !== undefined ? [groupId, entryDisplayKey(entry)] : [entryDisplayKey(entry)] };
+    } else if (groupId !== undefined)
       placement = groupedSystemNoticePlacement(entry.item, groupId, (rendered) => readable(rendered).includes(needle));
     // A thought opens its own row; no other rule applies to it.
-    else if (entry.item.type === "reasoning") placement = { opens: [entryDisplayKey(entry)] };
     else if (turn !== undefined && view.config !== undefined)
       placement = systemNoticePlacement(entry, turn, view.config);
     const { id, callId, roundId } = entry.item;

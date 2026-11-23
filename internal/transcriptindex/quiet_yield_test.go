@@ -224,29 +224,6 @@ func TestQuietYieldIndexParityColdAndIncremental(t *testing.T) {
 		}
 	})
 
-	t.Run("quiet_note_renders_as_item_text", func(t *testing.T) {
-		t.Parallel()
-		fx := quietYieldFixture(true)
-		fx.lines[4].turn.Message.Content[1].ToolResult.ToolState = json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true,"communicate_quiet":true,"communicate_quiet_note":"index-quiet-note-sentinel"}`)
-		path := writeFixture(t, fx)
-		x := openIndex(t, path, t.TempDir())
-		w, err := x.Latest(40)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ref := referenceCandidates(t, path)
-		if !reflect.DeepEqual(w.Candidates, ref) {
-			t.Fatalf("index candidates diverge from reference:\nindex: %s\nref:   %s", dump(w.Candidates), dump(ref))
-		}
-		last := w.Candidates[len(w.Candidates)-1].Item
-		if last.EventKind != appwire.ThreadItemEventKindQuietYield || last.Text != "index-quiet-note-sentinel" {
-			t.Fatalf("last item=%+v, want Text=%q", last, "index-quiet-note-sentinel")
-		}
-		if got := quietYieldRawCommentary(t, last.Raw); got != "companion-sentinel" {
-			t.Fatalf("commentary=%q, want companion-sentinel", got)
-		}
-	})
-
 	t.Run("historical_cut_fallback_replay_handles_settled_quiet_companion", func(t *testing.T) {
 		t.Parallel()
 		fx := quietYieldFixture(true)

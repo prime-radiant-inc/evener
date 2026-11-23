@@ -1153,6 +1153,17 @@ export function isNotificationRemnant(text: string): boolean {
   return NOTIFICATION_MARKUP.test(text);
 }
 
+/** True when any parsed notification fragment reports a failed job, failed delegate, or failure tone. */
+export function hasFailedNotification(fragments: readonly SteeringFragment[] | null | undefined): boolean {
+  return Boolean(
+    fragments?.some(
+      (fragment) =>
+        fragment.kind === "notification" &&
+        (fragment.notification.outcome === "failed" || fragment.notification.tone === "error"),
+    ),
+  );
+}
+
 export function parseSteeringNotifications(text: string): SteeringFragment[] {
   const stripped = stripSystemReminder(text);
   const blockFragments = splitNotificationBlocks(stripped);

@@ -2,6 +2,7 @@ import type { ThreadModel } from "@evener/appwire-client";
 import * as appwireClient from "@evener/appwire-client";
 import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { notificationWireItem } from "@evener/appwire-client/testing/notificationWireFixtures";
 import {
   subagentOutcomesDelegatesResponse,
   subagentWireStep,
@@ -2151,4 +2152,155 @@ describe("consecutive quiet_yield cross-turn grouping", () => {
     const rows = transcriptRowsForProjection(appwireClient.projectThread(model, preset("chat")));
     expect(rows.some((row) => row.kind === "intentGroup")).toBe(true);
   });
+
+  test.each(["intent", "tools", "activity", "full"] as const)(
+    "breaks quietYieldGroup on a failed job notification while grouping routine wakes at %s preset",
+    (level) => {
+      const completedNotif = notificationWireItem("job-shell-completed");
+      const failedNotif = notificationWireItem("job-shell-failed");
+      const watchNotif = notificationWireItem("job-watch-send");
+      const wake = (id: string, notif: typeof completedNotif, suffix: string) => ({
+        id,
+        status: "completed" as const,
+        items: [
+          {
+            id: `steer_${id}_${suffix}`,
+            turnId: id,
+            type: "steering" as const,
+            steeringKind: notif.steeringKind,
+            text: notif.text ?? "",
+            status: "completed" as const,
+          },
+          {
+            id: `qy_${id}_${suffix}`,
+            turnId: id,
+            type: "systemMessage" as const,
+            text: "quiet-sentinel",
+            eventKind: "quiet_yield",
+          },
+        ],
+      });
+      const model: ThreadModel = {
+        ...fixture,
+        turns: [
+          {
+            id: "turn_u",
+            status: "completed",
+            items: [{ id: "u1", turnId: "turn_u", type: "userMessage", text: "watch", status: "completed" }],
+          },
+          wake("turn_fail", failedNotif, "f"),
+          wake("turn_ok1", completedNotif, "1"),
+          wake("turn_ok2", watchNotif, "2"),
+        ],
+      };
+      const rows = transcriptRowsForProjection(appwireClient.projectThread(model, preset(level)));
+      expect(rows.map((row) => row.kind)).toEqual(["turn", "turn", "quietYieldGroup"]);
+      const group = rows[2];
+      if (group?.kind !== "quietYieldGroup") throw new Error("expected quietYieldGroup");
+      expect(group.sourceTurnIds).toEqual(["turn_ok1", "turn_ok2"]);
+      expect(group.quietCount).toBe(2);
+    },
+  );
+
+  test.each(["intent", "tools", "activity", "full"] as const)(
+    "folds settled healthy reasoning into quietYieldGroup while breaking on live or failed reasoning at %s preset",
+    (level) => {
+      const settledWake = (id: string, thought: string) => ({
+        id,
+        status: "completed" as const,
+        items: [
+          {
+            id: `reason_${id}`,
+            turnId: id,
+            type: "reasoning" as const,
+            text: "",
+            reasoningSummaries: [[thought]],
+            status: "completed" as const,
+          },
+          {
+            id: `qy_${id}`,
+            turnId: id,
+            type: "systemMessage" as const,
+            text: "quiet-sentinel",
+            eventKind: "quiet_yield",
+          },
+        ],
+      });
+      const model: ThreadModel = {
+        ...fixture,
+        turns: [
+          {
+            id: "turn_u",
+            status: "completed",
+            items: [{ id: "u1", turnId: "turn_u", type: "userMessage", text: "watch", status: "completed" }],
+          },
+          settledWake("turn_r1", "thought-wake-1"),
+          settledWake("turn_r2", "thought-wake-2"),
+        ],
+      };
+      const rows = transcriptRowsForProjection(appwireClient.projectThread(model, preset(level)));
+      expect(rows.map((row) => row.kind)).toEqual(["turn", "quietYieldGroup"]);
+      const group = rows[1];
+      if (group?.kind !== "quietYieldGroup") throw new Error("expected quietYieldGroup");
+      expect(group.sourceTurnIds).toEqual(["turn_r1", "turn_r2"]);
+      expect(group.quietCount).toBe(2);
+
+      render(
+        <TranscriptBody model={model} config={preset(level)} surface="preview" disclosureScope={`qyr:${level}`} />,
+      );
+      const collapsed = screen.getByTestId("quiet-yield-group") as HTMLDetailsElement;
+      expect(collapsed.open).toBe(false);
+      const summary = collapsed.querySelector(":scope > summary");
+      if (!summary) throw new Error("missing summary");
+      fireEvent.click(summary);
+      expect(collapsed.open).toBe(true);
+      const body = screen.getByTestId("quiet-yield-group-body");
+      expect(body.children.length).toBe(4);
+
+      // Failed or live reasoning breaks the quiet group.
+      const brokenModel: ThreadModel = {
+        ...fixture,
+        turns: [
+          ...model.turns,
+          {
+            id: "turn_failed_r",
+            status: "failed",
+            items: [
+              {
+                id: "reason_fail",
+                turnId: "turn_failed_r",
+                type: "reasoning",
+                text: "",
+                reasoningSummaries: [["failed-thought"]],
+                status: "failed",
+              },
+            ],
+          },
+          {
+            id: "turn_live_r",
+            status: "inProgress",
+            items: [
+              {
+                id: "qy_pre",
+                turnId: "turn_live_r",
+                type: "systemMessage",
+                text: "quiet-sentinel",
+                eventKind: "quiet_yield",
+              },
+              {
+                id: "reason_live",
+                turnId: "turn_live_r",
+                type: "reasoning",
+                text: "",
+                reasoningSummaries: [["live-thought"]],
+                status: "inProgress",
+              },
+            ],
+          },
+        ],
+      };
+      const brokenRows = transcriptRowsForProjection(appwireClient.projectThread(brokenModel, preset(level)));
+      expect(brokenRows.map((row) => row.kind)).toEqual(["turn", "quietYieldGroup", "turn", "turn"]);
+    },
+  );
 });

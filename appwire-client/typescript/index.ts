@@ -690,6 +690,7 @@ export {
 export {
   decodeNotificationEntities,
   escapeNotificationEntities,
+  hasFailedNotification,
   isNotificationRemnant,
   isValidTranscriptRef,
   type NotificationOutcome,

@@ -78,17 +78,6 @@ func IsQuietCommunicateState(raw json.RawMessage) bool {
 	return schema.IsQuietCommunicateState(raw)
 }
 
-func quietCommunicateOutcome(result *llm.ToolResultData) (quiet bool, note string) {
-	if result == nil || result.IsError || len(result.ToolState) == 0 {
-		return false, ""
-	}
-	state, ok := schema.DecodeCommunicateToolState(result.ToolState)
-	if !ok || !state.IsQuiet() {
-		return false, ""
-	}
-	return true, strings.TrimSpace(state.QuietNote)
-}
-
 func markAcceptedAssistantReply(items []appwire.ThreadItem, turnID string, entry schema.Turn) {
 	if entry.Kind != schema.TurnAssistant || !entry.AcceptedReply {
 		return
@@ -359,11 +348,7 @@ func ApprovalDecisionAnnouncement(notice schema.ApprovalDecisionNotice) NoticeAn
 // communicate({}) turn. When companion assistant commentary prose was emitted
 // in the same response, it rides in Raw under "commentary" so clients keep it
 // inspectable behind the muted notice instead of as an unread chat bubble.
-func QuietYieldAnnouncement(note, commentary string) NoticeAnnouncement {
-	text := strings.TrimSpace(note)
-	if text == "" {
-		text = "Ended turn quietly"
-	}
+func QuietYieldAnnouncement(commentary string) NoticeAnnouncement {
 	var raw json.RawMessage
 	if trimmed := strings.TrimSpace(commentary); trimmed != "" {
 		raw, _ = json.Marshal(struct {
@@ -373,7 +358,7 @@ func QuietYieldAnnouncement(note, commentary string) NoticeAnnouncement {
 	return NoticeAnnouncement{
 		EventKind:   appwire.ThreadItemEventKindQuietYield,
 		Description: "Quiet yield",
-		Text:        text,
+		Text:        "Ended turn quietly",
 		Raw:         raw,
 	}
 }

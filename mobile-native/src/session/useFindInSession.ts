@@ -3,12 +3,14 @@ import type { FlatList } from "react-native";
 import type { MobileConversation } from "../projectedRows";
 import { ReaderRestoreAttempts, readerKey } from "../readerPosition";
 import { atEnd, type useLiveEndFollow } from "./liveEndFollow";
-import { type FindState, findMatches, selectedMatch, stepMatch } from "./findInSession";
+import { type FindState, findMatches, openDisclosuresForFindMatch, selectedMatch, stepMatch } from "./findInSession";
 import type { TimelineRow } from "../timeline";
 
 /** What Find reads from its screen: the list and its reading position, the
  * connection and the store's older-history paging. */
 export interface FindInSessionInputs {
+	hubId?: string;
+	sessionRef?: string;
 	find: FindState | null;
 	setFind(find: FindState | null): void;
 	timelineRows: readonly TimelineRow[];
@@ -37,6 +39,8 @@ export interface FindInSessionInputs {
  * between them, seeking older history when none is left, and bringing the
  * current match into view. */
 export function useFindInSession({
+	hubId = "",
+	sessionRef = "",
 	find,
 	setFind,
 	timelineRows,
@@ -172,5 +176,16 @@ export function useFindInSession({
 		if (findCurrent !== null) scrollToFindMatch(findCurrent);
 		return cancelFindRetry;
 	}, [findKey]);
+	useEffect(() => {
+		if (findCurrent === null) return;
+		openDisclosuresForFindMatch(
+			hubId,
+			sessionRef,
+			timelineRows[findCurrent],
+			findQuery,
+			conversation?.delegates,
+			answersByRow,
+		);
+	}, [answersByRow, conversation?.delegates, findCurrent, findQuery, hubId, sessionRef, timelineRows]);
 	return { findHits, findKey, findCurrent, stepFind, findJumping, findAttempts, findRetryFrame, retryFindMatch };
 }

@@ -6,13 +6,17 @@ import {
 	composeStepWords,
 	type EvenerDelegateInfo,
 	findMatches as findSharedMatches,
+	findNeedle,
 	type MatchPosition,
 	matchPosition,
 	type SteeringFragment,
 	stepMatch,
+	textMatchesFind,
 } from "@evener/appwire-client";
+import { setDisclosureOpenAll } from "../nativeDisclosure";
 import { readerKey } from "../readerPosition";
-import type { RunStep, TimelineRow } from "../timeline";
+import { noticeLabel, type RunStep, type TimelineRow } from "../timeline";
+import { rowDisclosureIds } from "./disclosureKeys";
 import { notificationLine, notificationText } from "./notificationLine";
 /** Find in session while it's open: what you typed, the current match's
  * reader key, whether older history is being searched, and whether that
@@ -95,6 +99,56 @@ export function findMatches(
 	answersByRow?: ReadonlyMap<string, string>,
 ): number[] {
 	return findSharedMatches(rows, query, (row) => rowText(row, delegates, answersByRow));
+}
+
+function openRowDisclosures(
+	hubId: string,
+	sessionRef: string,
+	row: TimelineRow,
+	needle: string,
+	delegates: readonly EvenerDelegateInfo[] | undefined,
+	answersByRow: ReadonlyMap<string, string> | undefined,
+): void {
+	if (row.kind === "details") {
+		setDisclosureOpenAll(rowDisclosureIds(hubId, sessionRef, row), true);
+		for (const entry of row.entries) {
+			if (textMatchesFind(rowText(entry, delegates, answersByRow), needle)) {
+				openRowDisclosures(hubId, sessionRef, entry, needle, delegates, answersByRow);
+			}
+		}
+		return;
+	}
+	if (row.kind !== "notice") return;
+	if (noticeLabel(row) !== undefined && textMatchesFind(row.text, needle)) {
+		setDisclosureOpenAll(rowDisclosureIds(hubId, sessionRef, row), true);
+	}
+	if (row.notifications) {
+		const baseId = rowDisclosureIds(hubId, sessionRef, row)[0];
+		if (!baseId) return;
+		row.notifications.forEach((fragment, index) => {
+			if (fragment.kind !== "notification") return;
+			const line = notificationLine(fragment.notification, delegates);
+			if (line.output && textMatchesFind(line.output, needle)) {
+				setDisclosureOpenAll([`${baseId}:${index}`], true);
+			}
+		});
+	}
+}
+
+/** Opens any collapsed group/notice disclosures that hold the active Find match. */
+export function openDisclosuresForFindMatch(
+	hubId: string,
+	sessionRef: string,
+	row: TimelineRow | undefined,
+	query: string,
+	delegates?: readonly EvenerDelegateInfo[],
+	answersByRow?: ReadonlyMap<string, string>,
+): void {
+	if (row === undefined || !hubId || !sessionRef) return;
+	const needle = findNeedle(query);
+	if (needle === "") return;
+	if (!textMatchesFind(rowText(row, delegates, answersByRow), needle)) return;
+	openRowDisclosures(hubId, sessionRef, row, needle, delegates, answersByRow);
 }
 
 export { type MatchPosition, matchPosition, stepMatch };

@@ -1,7 +1,13 @@
-import { ERROR_EVENT_KIND, isQuietYield } from "@evener/appwire-client";
+import {
+	ERROR_EVENT_KIND,
+	hasFailedNotification,
+	isQuietYield,
+	steeringNotificationFragments,
+} from "@evener/appwire-client";
 import type { AttachmentRef, MobileTimelineItem } from "./projectedRows";
 
 type Notice = Extract<MobileTimelineItem, { kind: "notice" }>;
+export type DetailsEntry = Notice | Extract<MobileTimelineItem, { kind: "activity" }>;
 
 // A labelled notice folds to its label until opened: a daemon steer
 // (steeringNotice) or a compaction's summary (systemNotice).
@@ -33,7 +39,7 @@ export type TimelineRow =
 	| {
 			kind: "details";
 			id: string;
-			entries: Notice[];
+			entries: DetailsEntry[];
 			summary?: string;
 	  }
 	// Consecutive steps, folded into one line (spec 8.2). It keeps its first
@@ -95,14 +101,22 @@ function isQuietYieldNotice(item: MobileTimelineItem | undefined): boolean {
 }
 
 function isNotificationSteeringNotice(item: MobileTimelineItem | undefined): boolean {
-	return (
-		item?.kind === "notice" &&
-		item.origin === "steering" &&
-		item.steeringKind !== "human-note" &&
-		!item.fromParent &&
-		!isCriticalNotice(item) &&
-		(item.steeringKind === "notification" || item.notifications !== undefined)
-	);
+	if (
+		item?.kind !== "notice" ||
+		item.origin !== "steering" ||
+		item.steeringKind === "human-note" ||
+		item.fromParent ||
+		isCriticalNotice(item)
+	) {
+		return false;
+	}
+	const fragments = item.notifications ?? steeringNotificationFragments(item.text);
+	if (hasFailedNotification(fragments)) return false;
+	return item.steeringKind === "notification" || fragments !== null;
+}
+
+function isSettledReasoningActivity(item: MobileTimelineItem | undefined): boolean {
+	return item?.kind === "activity" && item.family === "reasoning" && item.state === "completed";
 }
 
 // Keep technical context available without putting it between the reader and the conversation.
@@ -113,16 +127,16 @@ export function groupTimeline(items: readonly MobileTimelineItem[]): TimelineRow
 		if (item.turnId === undefined) continue;
 		if (isQuietYieldNotice(item)) {
 			quietTurns.add(item.turnId);
-		} else if (!isNotificationSteeringNotice(item)) {
+		} else if (!isNotificationSteeringNotice(item) && !isSettledReasoningActivity(item)) {
 			nonQuietTurns.add(item.turnId);
 		}
 	}
-	const isQuietWakeItem = (item: MobileTimelineItem | undefined): item is Notice => {
+	const isQuietWakeItem = (item: MobileTimelineItem | undefined): item is DetailsEntry => {
 		if (item === undefined) return false;
 		if (item.turnId !== undefined && (nonQuietTurns.has(item.turnId) || !quietTurns.has(item.turnId))) {
 			return false;
 		}
-		return isQuietYieldNotice(item) || isNotificationSteeringNotice(item);
+		return isQuietYieldNotice(item) || isNotificationSteeringNotice(item) || isSettledReasoningActivity(item);
 	};
 	const rows: TimelineRow[] = [];
 	let index = 0;
@@ -141,7 +155,7 @@ export function groupTimeline(items: readonly MobileTimelineItem[]): TimelineRow
 				end += 1;
 			}
 			const groupEnd = lastQuiet >= index ? lastQuiet + 1 : index;
-			const entries = items.slice(index, groupEnd) as Notice[];
+			const entries = items.slice(index, groupEnd) as DetailsEntry[];
 			const quietCount = entries.filter((entry) => isQuietYieldNotice(entry)).length;
 			if (quietCount >= 2) {
 				rows.push({
