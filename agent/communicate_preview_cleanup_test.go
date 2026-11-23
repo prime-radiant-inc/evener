@@ -58,6 +58,11 @@ func TestProcessInputRetryDiscardsFailedPreviewAndCommitsFinalOnce(t *testing.T)
 	if !maps.Equal(lifecycle.resets, map[string]int{"failed-call": 1, "final-call": 1}) {
 		t.Fatalf("preview reset counts=%v; events=%v", lifecycle.resets, evs)
 	}
+	for _, ev := range evs {
+		if ev.Kind == events.EventCommunicatePreviewReset && ev.Data.(events.CommunicatePreviewResetData).Quiet {
+			t.Fatalf("stream-error/retry reset had Quiet=true: %+v", ev.Data)
+		}
+	}
 	if len(lifecycle.active) != 0 {
 		t.Fatalf("active previews after completion=%v; events=%v", lifecycle.active, evs)
 	}
@@ -112,6 +117,11 @@ func TestCallModelRetryResetsReusedPreviewCallIDGeneration(t *testing.T) {
 	}
 	if !maps.Equal(lifecycle.resets, map[string]int{"reused-call": 1}) {
 		t.Fatalf("preview reset counts=%v; events=%v", lifecycle.resets, evs)
+	}
+	for _, ev := range evs {
+		if ev.Kind == events.EventCommunicatePreviewReset && ev.Data.(events.CommunicatePreviewResetData).Quiet {
+			t.Fatalf("retry reset had Quiet=true: %+v", ev.Data)
+		}
 	}
 }
 
@@ -325,6 +335,7 @@ func TestCommunicatePreviewSuppressesAndResetsQuietYield(t *testing.T) {
 		wantComms        int
 		wantResetPreEnd  bool
 		wantResetPreComm bool
+		wantResetQuiet   bool
 	}{
 		{
 			name:       "next_before_message_quiet_yield_emits_no_preview",
@@ -350,6 +361,7 @@ func TestCommunicatePreviewSuppressesAndResetsQuietYield(t *testing.T) {
 			wantResets:      1,
 			wantComms:       0,
 			wantResetPreEnd: true,
+			wantResetQuiet:  true,
 		},
 		{
 			name:            "trailing_next_split_past_closed_message_resets_at_end",
@@ -359,6 +371,7 @@ func TestCommunicatePreviewSuppressesAndResetsQuietYield(t *testing.T) {
 			wantResets:      1,
 			wantComms:       0,
 			wantResetPreEnd: true,
+			wantResetQuiet:  true,
 		},
 		{
 			name:       "loud_message_mentioning_log_quietly_is_not_suppressed",
@@ -403,6 +416,7 @@ func TestCommunicatePreviewSuppressesAndResetsQuietYield(t *testing.T) {
 
 			var starts, resets, comms int
 			var sawResetBeforeToolEnd, sawResetBeforeComm bool
+			var resetEvents []events.CommunicatePreviewResetData
 			sawToolEnd, sawComm := false, false
 			for _, ev := range evs {
 				switch ev.Kind {
@@ -410,6 +424,7 @@ func TestCommunicatePreviewSuppressesAndResetsQuietYield(t *testing.T) {
 					starts++
 				case events.EventCommunicatePreviewReset:
 					resets++
+					resetEvents = append(resetEvents, ev.Data.(events.CommunicatePreviewResetData))
 					if !sawToolEnd {
 						sawResetBeforeToolEnd = true
 					}
@@ -432,6 +447,11 @@ func TestCommunicatePreviewSuppressesAndResetsQuietYield(t *testing.T) {
 			}
 			if tc.wantComms > 0 && sawResetBeforeComm != tc.wantResetPreComm {
 				t.Fatalf("sawResetBeforeComm=%v, want %v", sawResetBeforeComm, tc.wantResetPreComm)
+			}
+			for _, rd := range resetEvents {
+				if rd.Quiet != tc.wantResetQuiet {
+					t.Fatalf("reset event Quiet=%v, want %v (event=%+v)", rd.Quiet, tc.wantResetQuiet, rd)
+				}
 			}
 			lifecycle := inspectPreviewLifecycle(evs)
 			if len(lifecycle.active) != 0 {

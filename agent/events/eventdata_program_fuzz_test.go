@@ -58,7 +58,7 @@ func eventDataProgramCases(text string, n int, flag bool) []eventDataProgramCase
 		{AssistantTextResetData{}, EventAssistantTextReset},
 		{CommunicatePreviewStartData{CallID: text}, EventCommunicatePreviewStart},
 		{CommunicatePreviewDeltaData{CallID: text, Delta: text}, EventCommunicatePreviewDelta},
-		{CommunicatePreviewResetData{CallID: text}, EventCommunicatePreviewReset},
+		{CommunicatePreviewResetData{CallID: text, Quiet: flag}, EventCommunicatePreviewReset},
 		{ReasoningSummaryDeltaData{Delta: text, SummaryIndex: n}, EventReasoningSummaryDelta},
 		{ToolCallStartData{ToolName: text, CallID: text, ArgumentsJSON: text}, EventToolCallStart},
 		{ToolCallOutputDeltaData{ToolName: text, CallID: text, Delta: text}, EventToolCallOutputDelta},

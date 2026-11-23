@@ -246,6 +246,9 @@ func (o *Overlay) Event(ev events.SessionEvent) []Change {
 	case events.CommunicatePreviewDeltaData:
 		return o.appendText(o.callPreviewKey(data.CallID), data.Delta)
 	case events.CommunicatePreviewResetData:
+		if data.Quiet {
+			return o.retireQuietPreview(data.CallID)
+		}
 		return o.resetPreview(data.CallID)
 	case events.ToolCallStartData:
 		return o.startTool(ev, data)

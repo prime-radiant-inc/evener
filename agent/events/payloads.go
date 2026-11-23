@@ -133,9 +133,12 @@ type CommunicatePreviewDeltaData struct {
 	Delta  string `json:"delta"`
 }
 
-// CommunicatePreviewResetData discards a failed provisional communicate item.
+// CommunicatePreviewResetData discards a provisional communicate item.
+// Quiet is true when the call turned out to be a quiet yield and only that
+// preview should be retired without discarding the attempt's other live work.
 type CommunicatePreviewResetData struct {
 	CallID string `json:"call_id"`
+	Quiet  bool   `json:"quiet,omitempty"`
 }
 
 // ModelRetryData is the payload for an EventModelRetry event: a model call
