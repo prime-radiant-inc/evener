@@ -135,32 +135,6 @@ test("busy defaults to false: buttons are enabled", () => {
   expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
 });
 
-test("confirmDisabled disables only the confirm button and blocks its action", async () => {
-  const user = userEvent.setup();
-  const onConfirm = vi.fn();
-  const onCancel = vi.fn();
-  render(
-    <ConfirmDialog
-      open
-      title="Rename section"
-      confirmLabel="Rename"
-      confirmDisabled
-      onConfirm={onConfirm}
-      onCancel={onCancel}
-    >
-      Body
-    </ConfirmDialog>,
-  );
-  const confirm = screen.getByRole("button", { name: "Rename" }) as HTMLButtonElement;
-  const cancel = screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement;
-  expect(confirm.disabled).toBe(true);
-  expect(cancel.disabled).toBe(false);
-  await user.click(confirm);
-  expect(onConfirm).not.toHaveBeenCalled();
-  await user.click(cancel);
-  expect(onCancel).toHaveBeenCalledOnce();
-});
-
 test("pendingLabel replaces the confirm label only while busy", () => {
   const { rerender } = render(
     <ConfirmDialog

@@ -21,8 +21,6 @@ export interface ConfirmDialogProps {
   /** Disables both buttons - set while the caller's own async onConfirm is
    * in flight, to block a double-submit. Default false. */
   busy?: boolean;
-  /** Disables the confirm button alone; Cancel stays enabled. */
-  confirmDisabled?: boolean;
   /** Replaces the confirm label while `busy`. */
   pendingLabel?: string;
   onConfirm: () => void;
@@ -56,7 +54,6 @@ export function ConfirmDialog({
   cancelLabel = "Cancel",
   destructive = true,
   busy = false,
-  confirmDisabled,
   pendingLabel,
   onConfirm,
   onCancel,
@@ -71,7 +68,7 @@ export function ConfirmDialog({
           <Button variant="quiet" onClick={onCancel} disabled={busy}>
             {cancelLabel}
           </Button>
-          <Button variant={destructive ? "danger" : "primary"} onClick={onConfirm} disabled={busy || confirmDisabled}>
+          <Button variant={destructive ? "danger" : "primary"} onClick={onConfirm} disabled={busy}>
             {busy && pendingLabel ? pendingLabel : confirmLabel}
           </Button>
         </>
