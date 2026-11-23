@@ -26,6 +26,45 @@
   border-top: 1px solid var(--edge);
 }
 
+/* --- the summary tiles -----------------------------------------------
+ * The two tiles under a page's primary task - a directory that is itself a
+ * button and a status card that is not - share one inner layout: a row with
+ * a field seat, a text column that takes the slack, a medium headline, and a
+ * caption. Consumers compose these and add only their own surface, padding,
+ * and interaction, so the pair cannot drift apart. */
+.summaryTile {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-ui);
+  text-align: left;
+}
+
+.summaryText {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  gap: var(--space-1);
+}
+
+.summaryHeadline {
+  font-weight: var(--font-weight-medium);
+  overflow-wrap: anywhere;
+}
+
+.summaryCaption {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  overflow-wrap: anywhere;
+}
+
 /* --- the tool card --------------------------------------------------
  * A run of tool rows reads as ONE grouped surface with hairline dividers.
  * Where one element holds the rows it composes .grouped and .groupedRows.

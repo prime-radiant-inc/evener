@@ -7,7 +7,6 @@
 import type { HarnessDescriptor, LaunchConfigLayer, LaunchOption, ModelListResponse } from "@evener/appwire-client";
 import {
   type AdvancedValues,
-  basename,
   collectAdvancedOverrides,
   effortDefaultLabel,
   effortLabel,
@@ -58,8 +57,6 @@ import {
   ConfirmDialog,
   chordLabel,
   Dialog,
-  DirectoryIcon,
-  DirectoryPicker,
   Disclosure,
   Dropzone,
   FormRow,
@@ -69,6 +66,7 @@ import {
   type ModelCatalog,
   type ModelCatalogEntry,
   PaneScaffold,
+  PathField,
   PromptCard,
   Select,
   SendIcon,
@@ -201,11 +199,10 @@ const CLASS = {
   chordHints: requireClass(styles.chordHints, "spawn.module.css", "chordHints"),
   cfgDir: requireClass(styles.cfgDir, "spawn.module.css", "cfgDir"),
   branch: requireClass(styles.branch, "spawn.module.css", "branch"),
-  directoryButton: requireClass(styles.directoryButton, "spawn.module.css", "directoryButton"),
   tileSeat: requireClass(styles.tileSeat, "spawn.module.css", "tileSeat"),
   tileText: requireClass(styles.tileText, "spawn.module.css", "tileText"),
+  tileHeadline: requireClass(styles.tileHeadline, "spawn.module.css", "tileHeadline"),
   tileCaption: requireClass(styles.tileCaption, "spawn.module.css", "tileCaption"),
-  directoryAction: requireClass(styles.directoryAction, "spawn.module.css", "directoryAction"),
   summaryRow: requireClass(styles.summaryRow, "spawn.module.css", "summaryRow"),
   accessTile: requireClass(styles.accessTile, "spawn.module.css", "accessTile"),
   summaryPending: requireClass(styles.summaryPending, "spawn.module.css", "summaryPending"),
@@ -523,7 +520,6 @@ function SpawnForm({
       revoke();
     };
   }, [draft, submittedSource, harness, cwd]);
-  const [directoryOpen, setDirectoryOpen] = useState(false);
   // Scoped by cwd AND host so neither a draft switch nor a host switch can show
   // the previous project's/host's branch while the new evener/git/head request
   // is in flight - or indefinitely after it fails (resolveHeadBranch fails soft
@@ -2914,32 +2910,30 @@ function SpawnForm({
             access control. */}
         <div className={CLASS.summaryRow}>
           <div className={CLASS.cfgDir}>
-            <button
-              type="button"
+            <PathField
               id="spawn-cwd"
-              className={CLASS.directoryButton}
-              data-state={cwd ? "chosen" : "unset"}
-              aria-label={`Working directory: ${cwd || "Choose a folder"}`}
-              aria-haspopup="dialog"
-              aria-expanded={directoryOpen}
-              onClick={() => setDirectoryOpen(true)}
-            >
-              <span className={CLASS.tileSeat} aria-hidden="true">
-                <DirectoryIcon />
+              variant="prominent"
+              kind="dir"
+              value={cwd}
+              onChange={(path) => {
+                setCwd(path);
+                commitLastWorkingDir(path);
+              }}
+              complete={complete}
+              listRecents={listRecents}
+              fallbackDir={pickerFallbackDir}
+              directory={{ validatePath, createDirectory }}
+              ariaLabel="Working directory"
+              placeholder="Choose a folder"
+            />
+            {/* Git info is a property of that directory (HEAD there), so it
+                stays beside the directory tile. PathField's prominent variant
+                has no detail slot to carry it inside the trigger. */}
+            {branch !== "" && (
+              <span className={CLASS.branch} data-testid="spawn-branch">
+                {branch}
               </span>
-              <span className={CLASS.tileText}>
-                <strong>{cwd ? basename(cwd) || "/" : "Working directory"}</strong>
-                <span className={CLASS.tileCaption}>{cwd || "Choose a folder"}</span>
-                {/* Git info is a property of that directory (HEAD there), so
-                    it rides inside the directory's own tile. */}
-                {branch !== "" && (
-                  <span className={CLASS.branch} data-testid="spawn-branch">
-                    {branch}
-                  </span>
-                )}
-              </span>
-              <span className={CLASS.directoryAction}>Change…</span>
-            </button>
+            )}
           </div>
           {/* A live region: a changed access mode re-announces what the
               session will be allowed to do. */}
@@ -2960,7 +2954,9 @@ function SpawnForm({
                 {resolveStatus === "ready" ? (
                   <>
                     <span className={CLASS.tileCaption}>Effective access</span>
-                    <strong>{effectiveAccess?.label ?? (effectiveSandbox || "inherited")}</strong>
+                    <strong className={CLASS.tileHeadline}>
+                      {effectiveAccess?.label ?? (effectiveSandbox || "inherited")}
+                    </strong>
                     <span className={CLASS.tileCaption}>
                       {advancedSandboxOverride ? "Set by the Advanced sandbox override." : "Set by Access mode."}
                       {effectiveAccessDescription ? ` ${effectiveAccessDescription}` : ""}
@@ -2980,23 +2976,6 @@ function SpawnForm({
             </div>
           </Card>
         </div>
-        {directoryOpen && (
-          <DirectoryPicker
-            key={cwd}
-            value={cwd}
-            fallbackDir={pickerFallbackDir}
-            complete={complete}
-            listRecents={listRecents}
-            validatePath={validatePath}
-            createDirectory={createDirectory}
-            onClose={() => setDirectoryOpen(false)}
-            onPick={(path) => {
-              setCwd(path);
-              commitLastWorkingDir(path);
-              setDirectoryOpen(false);
-            }}
-          />
-        )}
         {connectingProvider !== null && providerSetupIsLocal && (
           <ConnectProviderDialogBoundary
             key={dialogChunkVersion}
