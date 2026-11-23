@@ -783,40 +783,6 @@ func TestDelegateAttention_RecoveryRetainedRuntimePreservesFailedToolCount(t *te
 	}
 }
 
-func TestDelegateAttention_ColdResolutionValidatesBatchBeforeAppend(t *testing.T) {
-	t.Parallel()
-	stateDir := t.TempDir()
-	const (
-		sessionID   = "cold-resolution"
-		attentionID = "attention-present"
-	)
-	path := transcriptPath(stateDir, sessionID)
-	writer, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	attention := schema.NewTurn(schema.TurnSteering, llm.User("pending attention"))
-	attention.AttentionID = attentionID
-	if err := writer.AppendDurable(attention); err != nil {
-		t.Fatalf("append attention: %v", err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatalf("close transcript: %v", err)
-	}
-
-	err = appendColdAttentionResolution(path, sessionID, []string{attentionID, "attention-missing"}, delegateAttentionDiscarded)
-	if err == nil {
-		t.Fatal("cold resolution accepted a batch containing an unknown attention ID")
-	}
-	fold, err := readDelegateAttentionFold(path, sessionID)
-	if err != nil {
-		t.Fatalf("read attention after rejected batch: %v", err)
-	}
-	if pending := fold.pendingIDs(); !reflect.DeepEqual(pending, []string{attentionID}) {
-		t.Fatalf("rejected batch partially resolved attention: %#v", pending)
-	}
-}
-
 func TestDelegateAttention_ColdNotificationRetryReestablishesDurabilityBeforeSourceAck(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
@@ -853,50 +819,6 @@ func TestDelegateAttention_ColdNotificationRetryReestablishesDurabilityBeforeSou
 	}
 	if got := fs.successfulSyncsAfterFailure(); got == 0 {
 		t.Fatal("existing cold notification was accepted without a renewed durability barrier")
-	}
-}
-
-func TestDelegateAttention_ColdResolutionRetryReestablishesDurabilityBeforeStopAck(t *testing.T) {
-	t.Parallel()
-	stateDir := t.TempDir()
-	const (
-		sessionID   = "cold-resolution-durability"
-		attentionID = "attention-durability"
-	)
-	path := transcriptPath(stateDir, sessionID)
-	fs := newAttentionAmbiguousSyncFS()
-	writer, err := transcript.NewWriterWithFS(fs, path, transcript.Header{SessionID: sessionID})
-	if err != nil {
-		t.Fatalf("create transcript: %v", err)
-	}
-	attention := schema.NewTurn(schema.TurnSteering, llm.User("pending attention"))
-	attention.AttentionID = attentionID
-	if err := writer.AppendDurable(attention); err != nil {
-		t.Fatalf("append attention: %v", err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatalf("close initial transcript: %v", err)
-	}
-	open := func(path, expectedSessionID string) (*transcript.Writer, []transcript.Entry, error) {
-		return transcript.OpenWriterForSessionWithFS(fs, path, expectedSessionID)
-	}
-
-	fs.failNextAmbiguousDurability(2)
-	if err := appendColdAttentionResolutionForGenerationWithOpen(path, sessionID, []string{attentionID}, delegateAttentionDiscarded, 0, open); err == nil {
-		t.Fatal("ambiguous cold resolution append unexpectedly succeeded")
-	}
-	fold, err := readDelegateAttentionFold(path, sessionID)
-	if err != nil {
-		t.Fatalf("read ambiguous resolution: %v", err)
-	}
-	if got := fold.resolutions[attentionID]; got != delegateAttentionDiscarded {
-		t.Fatalf("fault fixture resolution = %q, want readable discard", got)
-	}
-	if err := appendColdAttentionResolutionForGenerationWithOpen(path, sessionID, []string{attentionID}, delegateAttentionDiscarded, 0, open); err != nil {
-		t.Fatalf("retry existing cold resolution: %v", err)
-	}
-	if got := fs.successfulSyncsAfterFailure(); got == 0 {
-		t.Fatal("existing cold resolution was accepted without a renewed durability barrier")
 	}
 }
 
@@ -5700,9 +5622,7 @@ func TestDelegateAttention_ConsumedEntryIsNeverEscalated(t *testing.T) {
 	childPath := transcriptPath(c.stateDir, "child-dlg_child")
 	writeEmptyAttentionTranscript(t, parentPath, "child-dlg_parent")
 	writeDelegateAttentionTranscript(t, childPath, "child-dlg_child", attentionID)
-	if err := appendColdAttentionResolution(childPath, "child-dlg_child", []string{attentionID}, delegateAttentionConsumed); err != nil {
-		t.Fatalf("append consumed resolution: %v", err)
-	}
+	appendColdAttentionResolutionMarker(t, childPath, "child-dlg_child", attentionID, delegateAttentionConsumed, 0)
 	writeEmptyAttentionTranscript(t, transcriptPath(c.stateDir, "root-session"), "root-session")
 	copyDelegateJournalForBootstrap(t, c, journalPath)
 

@@ -113,6 +113,7 @@ func TestDelegateAttentionReserveCommitGapStopAbortsWithoutLeaking(t *testing.T)
 		sessionID   = "child-dlg_gap"
 		delegateID  = "dlg_target"
 		attentionID = "attention-gap"
+		freshID     = "delegate:fresh-after-stop"
 	)
 	c, runtime, _ := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, attentionID)
 	runtime.owningDelegateID = delegateID
@@ -134,38 +135,43 @@ func TestDelegateAttentionReserveCommitGapStopAbortsWithoutLeaking(t *testing.T)
 	}
 	executeDelegateCancelPlan(cancelPlan)
 
-	// The canceled reservation makes the commit refuse and clean itself up.
+	// While the reservation still blocks stop cleanup, nothing has consumed the
+	// row: it is durably queued and unheld, and no generation has launched.
+	c.mu.Lock()
+	reservations := len(c.reservations)
+	blocker := c.attentionStartBlockerLocked(delegateID)
+	stillQueued := false
+	for _, row := range c.durable[delegateID].PendingAttention {
+		if row.AttentionID == attentionID && row.HeldThrough == 0 {
+			stillQueued = true
+		}
+	}
+	generation := c.durable[delegateID].Generation
+	c.mu.Unlock()
+	if reservations != 1 || blocker == nil {
+		t.Fatalf("gap reservations = %d blocker=%v, want the start still blocking stop cleanup", reservations, blocker)
+	}
+	if !stillQueued {
+		t.Fatal("the discarded row left the durable queue before the reservation was released")
+	}
+	if generation != 0 {
+		t.Fatalf("delegate committed generation %d in the reserve-to-commit gap, want none", generation)
+	}
+
+	// The canceled reservation makes the commit refuse and release itself; the
+	// drive's failure path aborts it again as a no-op.
 	if _, err := c.CommitStart(reservation); !errors.Is(err, errDelegateTargetBusy) {
 		t.Fatalf("CommitStart after the stop = %v, want target busy", err)
 	}
-	if len(c.reservations) != 0 {
-		t.Fatalf("reservations after the aborted commit = %d, want the gap stop to release every one", len(c.reservations))
+	if err := c.AbortStart(reservation); !errors.Is(err, errDelegateTargetBusy) {
+		t.Fatalf("AbortStart after the refused commit = %v, want a released no-op", err)
 	}
-	rows := pendingAttentionRowsForTest(t, c, delegateID)
-	if len(rows) != 1 || rows[0].AttentionID != attentionID || rows[0].HeldThrough != 0 {
-		t.Fatalf("pending rows after the gap stop = %#v, want the untouched unheld row", rows)
-	}
-	if got := acceptedTriggerForTest(t, runtime); got != "" {
-		t.Fatalf("accepted latch = %q after the aborted commit, want empty", got)
-	}
+
+	// Join the stop's reconcile driver before reading the post-discard state:
+	// only then is the discard final and the queue stable.
 	c.mu.Lock()
-	blocker := c.attentionStartBlockerLocked(delegateID)
-	_, stillQueued := c.delegateAttentionWakeIDsLocked(delegateID)[attentionID]
-	generation := c.durable[delegateID].Generation
 	driver := c.stopDriver
 	c.mu.Unlock()
-	if blocker != nil {
-		t.Fatal("the aborted reservation still blocks attention starts")
-	}
-	if !stillQueued {
-		t.Fatal("the discarded row left the durable queue: nothing was consumed, so nothing may be lost")
-	}
-	if generation != 0 {
-		t.Fatalf("delegate committed generation %d, want the gap stop to launch none", generation)
-	}
-	if needsAttentionForTest(t, c, delegateID) {
-		t.Fatal("NeedsAttention stayed true under the pending stop")
-	}
 	if driver == nil {
 		t.Fatal("the admitted stop started no reconcile driver")
 	}
@@ -174,14 +180,58 @@ func TestDelegateAttentionReserveCommitGapStopAbortsWithoutLeaking(t *testing.T)
 	case <-time.After(5 * time.Second): // TRIPWIRE: an idle target reconciles immediately; only a stuck drain reaches this
 		t.Fatal("the gap stop's reconcile driver did not drain")
 	}
-	// Nothing pins the queue once the stop settles: a fresh wake reserves and
-	// aborts cleanly.
-	fresh, err := c.ReserveAttention(runtime, attentionID)
+
+	// The stop discarded the never-consumed row in the journal alone, with no
+	// generation behind it and nothing left runnable.
+	c.mu.Lock()
+	aggregate := c.durable[delegateID]
+	_, resolved := aggregate.ResolvedAttention[attentionID]
+	pending := aggregateHasPendingAttention(aggregate, attentionID)
+	needsAttention := aggregate.NeedsAttention
+	generation = aggregate.Generation
+	c.mu.Unlock()
+	if !resolved {
+		t.Fatalf("discarded gap row %q was not resolved in the journal", attentionID)
+	}
+	if pending {
+		t.Fatalf("discarded gap row %q is still pending", attentionID)
+	}
+	if needsAttention {
+		t.Fatal("NeedsAttention stayed true after the only row was discarded")
+	}
+	if generation != 0 {
+		t.Fatalf("delegate committed generation %d, want the gap stop to launch none", generation)
+	}
+	if got := acceptedTriggerForTest(t, runtime); got != "" {
+		t.Fatalf("accepted latch = %q after the aborted commit, want empty", got)
+	}
+
+	// Nothing pins the queue once the stop settles, and the discarded ID cannot
+	// be reserved again: it is no longer an unheld pending row.
+	if stale, err := c.ReserveAttention(runtime, attentionID); !errors.Is(err, errDelegateTargetBusy) || stale != nil {
+		t.Fatalf("stale reserve of the discarded row = %#v, %v; want target busy", stale, err)
+	}
+
+	// A report queued after the stop reserves and starts normally.
+	c.mu.Lock()
+	_, err = c.appendLocked(attentionQueuedEvent(delegateID, freshID, true))
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("queue the fresh report: %v", err)
+	}
+	fresh, err := c.ReserveAttention(runtime, freshID)
 	if err != nil {
 		t.Fatalf("fresh wake after the gap stop: %v", err)
 	}
-	if err := c.AbortStart(fresh); err != nil {
-		t.Fatalf("abort the fresh wake: %v", err)
+	started, err := c.CommitStart(fresh)
+	if err != nil {
+		t.Fatalf("commit the fresh wake: %v", err)
+	}
+	if started.lease.generation != 1 {
+		t.Fatalf("fresh wake generation = %d, want 1", started.lease.generation)
+	}
+	if rows := pendingAttentionRowsForTest(t, c, delegateID); len(rows) != 1 || rows[0].AttentionID != freshID || rows[0].HeldThrough != 0 {
+		t.Fatalf("pending rows after the fresh start = %#v, want only the unheld fresh report", rows)
 	}
 }
 
@@ -597,6 +647,52 @@ func TestPendingAttentionTurnsKeepTranscriptArrivalOrder(t *testing.T) {
 	}
 	if !slices.Equal(got, []string{updateID, reportID}) {
 		t.Fatalf("pending attention turns = %v, want the update %q before the report %q", got, updateID, reportID)
+	}
+}
+
+// The restore of compacted-out attention turns keeps transcript arrival order
+// too: the caller's ids are id-sorted, so the delivery sorts before the earlier
+// update, yet the update must be restored before the resident delivery.
+func TestRetainPendingAttentionTurnsKeepTranscriptArrivalOrder(t *testing.T) {
+	t.Parallel()
+	const (
+		sessionID  = "child-dlg_retain_order"
+		delegateID = "dlg_target"
+	)
+	updateID := delegateAttentionID(delegatestore.UpdateDeliveryID(delegateID, 1))
+	reportID := delegateAttentionID(delegateDeliveryID(delegateID, 1))
+	ids := []string{reportID, updateID}
+	if !sort.StringsAreSorted(ids) {
+		t.Fatalf("test setup: %v is not the drive's id-sorted selection", ids)
+	}
+	_, runtime, _ := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, updateID, reportID)
+	runtime.owningDelegateID = delegateID
+	runtime.attentionMu.Lock()
+	fold, err := runtime.delegateAttentionFoldLocked()
+	runtime.attentionMu.Unlock()
+	if err != nil {
+		t.Fatalf("delegateAttentionFoldLocked: %v", err)
+	}
+	// A compaction kept the later delivery resident and cut the earlier update.
+	if err := runtime.retainDelegateAttentionTurn(fold.turns[reportID]); err != nil {
+		t.Fatalf("retain the resident delivery: %v", err)
+	}
+	runtime.attentionMu.Lock()
+	err = runtime.retainPendingAttentionTurnsLocked(fold, ids)
+	runtime.attentionMu.Unlock()
+	if err != nil {
+		t.Fatalf("retainPendingAttentionTurnsLocked: %v", err)
+	}
+	runtime.mu.Lock()
+	got := make([]string, 0, len(runtime.history))
+	for _, turn := range runtime.history {
+		if turn.AttentionID != "" {
+			got = append(got, turn.AttentionID)
+		}
+	}
+	runtime.mu.Unlock()
+	if !slices.Equal(got, []string{updateID, reportID}) {
+		t.Fatalf("restored resident turns = %v, want the update %q before the report %q", got, updateID, reportID)
 	}
 }
 

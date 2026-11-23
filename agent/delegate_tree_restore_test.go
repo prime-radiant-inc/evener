@@ -143,34 +143,23 @@ func appendColdAttentionRow(t *testing.T, path, sessionID, attentionID, content 
 
 func appendColdConsumedClaim(t *testing.T, path, sessionID, attentionID string, generation uint64) {
 	t.Helper()
-	if err := appendColdAttentionResolutionForGenerationWithOpen(path, sessionID, []string{attentionID}, delegateAttentionConsumed, generation, transcript.OpenWriterForSession); err != nil {
-		t.Fatalf("append cold consumed claim %q: %v", attentionID, err)
-	}
+	appendColdAttentionResolutionMarker(t, path, sessionID, attentionID, delegateAttentionConsumed, generation)
 }
 
-func TestDelegateColdAttentionResolutionIsDurableAndIdempotent(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "attention.transcript.jsonl")
-	writeDelegateAttentionTranscript(t, path, "child-attention", "attention-idempotent")
-	for i := range 2 {
-		if err := appendColdAttentionResolution(path, "child-attention", []string{"attention-idempotent"}, delegateAttentionDiscarded); err != nil {
-			t.Fatalf("append resolution %d: %v", i, err)
-		}
-	}
-	writer, entries, err := transcript.OpenWriterForSession(path, "child-attention")
+// appendColdAttentionResolutionMarker seeds a legacy on-disk resolution marker.
+// Production no longer writes them; the read side still honors them.
+func appendColdAttentionResolutionMarker(t *testing.T, path, sessionID, attentionID string, disposition delegateAttentionResolution, generation uint64) {
+	t.Helper()
+	writer, _, err := transcript.OpenWriterForSession(path, sessionID)
 	if err != nil {
-		t.Fatalf("OpenWriterForSession: %v", err)
+		t.Fatalf("open cold attention transcript %q: %v", sessionID, err)
+	}
+	if err := writer.AppendDurable(delegateAttentionResolutionTurnForGeneration(attentionID, disposition, generation)); err != nil {
+		_ = writer.Close()
+		t.Fatalf("append cold attention resolution %q: %v", attentionID, err)
 	}
 	if err := writer.Close(); err != nil {
-		t.Fatalf("Close writer: %v", err)
-	}
-	resolutions := 0
-	for _, entry := range entries {
-		if entry.Turn.AttentionResolution != nil {
-			resolutions++
-		}
-	}
-	if resolutions != 1 {
-		t.Fatalf("durable resolution count = %d, want 1", resolutions)
+		t.Fatalf("close cold attention transcript %q: %v", sessionID, err)
 	}
 }
 
@@ -825,9 +814,7 @@ func writeDelegateAttentionTranscriptState(t *testing.T, path, sessionID, attent
 	t.Helper()
 	writeDelegateAttentionTranscript(t, path, sessionID, attentionID)
 	if resolved {
-		if err := appendColdAttentionResolution(path, sessionID, []string{attentionID}, delegateAttentionDiscarded); err != nil {
-			t.Fatalf("append cold attention resolution: %v", err)
-		}
+		appendColdAttentionResolutionMarker(t, path, sessionID, attentionID, delegateAttentionDiscarded, 0)
 	}
 }
 

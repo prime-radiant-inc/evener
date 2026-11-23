@@ -243,6 +243,12 @@ func (c *delegateTreeController) ReserveAttention(runtime *Session, attentionID 
 	if c.laneHandoffCoversLocked(delegateID) {
 		return nil, errDelegateTargetBusy
 	}
+	// The drive picked attentionID before taking this lock; a stop admitted
+	// since may have discarded or held the row. Reserve only a row the journal
+	// still lists unheld, so a stale selection cannot pin a dead identity.
+	if _, queued := c.delegateAttentionUnheldIDsLocked(delegateID)[attentionID]; !queued {
+		return nil, errDelegateTargetBusy
+	}
 	return c.reserveAttentionStartLocked(aggregate, attentionID, aggregate.Generation+1, runtime)
 }
 

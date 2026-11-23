@@ -480,60 +480,6 @@ func appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, 
 	return true, nil
 }
 
-func appendColdAttentionResolutionForGenerationWithOpen(path, expectedSessionID string, ids []string, disposition delegateAttentionResolution, resumeGeneration uint64, open delegateAttentionWriterOpener) (err error) {
-	if expectedSessionID == "" {
-		return errors.New("cold attention resolution session ID is empty")
-	}
-	if open == nil {
-		return errors.New("cold attention resolution writer opener is nil")
-	}
-	// The discard-unless-resolved mode takes its concrete resolution from the
-	// transcript it is about to write, so its one fold read is the writer's own
-	// (below). Every other request keeps the cheap preflight refusal before a
-	// writer is opened.
-	if disposition == delegateAttentionDiscardUnlessResolved {
-		if err := validateDiscardUnlessResolvedShape(disposition, ids, resumeGeneration); err != nil {
-			return err
-		}
-	} else {
-		preflight, err := readDelegateAttentionFold(path, expectedSessionID)
-		if err != nil {
-			return err
-		}
-		if err := validateDelegateAttentionResolutions(preflight, ids, disposition, resumeGeneration); err != nil {
-			return err
-		}
-	}
-	if len(ids) == 0 {
-		return nil
-	}
-	writer, entries, err := open(path, expectedSessionID)
-	if err != nil {
-		return err
-	}
-	defer func() { err = errors.Join(err, writer.Close()) }()
-	fold, err := foldDelegateAttention(entries)
-	if err != nil {
-		return err
-	}
-	disposition, resumeGeneration, err = discardUnlessResolvedResolution(fold, ids, disposition, resumeGeneration)
-	if err != nil {
-		return err
-	}
-	allResolved := true
-	for _, attentionID := range ids {
-		if fold.resolutions[attentionID] != disposition || fold.resumeGenerations[attentionID] != resumeGeneration {
-			allResolved = false
-			break
-		}
-	}
-	if allResolved {
-		return writer.EstablishDurability()
-	}
-	// A cold writer has no session: each resolution is a delivery turn.
-	return appendDelegateAttentionResolutions(writer, transcript.PlaceDelivery, "", fold, ids, disposition, resumeGeneration)
-}
-
 func delegateAttentionResolutionTurn(attentionID string, disposition delegateAttentionResolution) schema.Turn {
 	return delegateAttentionResolutionTurnForGeneration(attentionID, disposition, 0)
 }
@@ -1008,15 +954,7 @@ func (s *Session) automaticDelegateAttentionIDs() ([]string, error) {
 // attentionMu.
 func (s *Session) retainPendingAttentionTurnsLocked(fold delegateAttentionFold, ids []string) error {
 	resident := s.residentAttentionTurnIDsLocked()
-	turns := make([]schema.Turn, 0, len(ids))
-	for _, attentionID := range ids {
-		turn, ok := fold.turns[attentionID]
-		if !ok {
-			continue
-		}
-		turns = append(turns, turn)
-	}
-	return s.restoreAttentionTurns(turns, resident)
+	return s.restoreAttentionTurns(fold.turnsForArriving(ids), resident)
 }
 
 // restorePendingDelegateAttentionTurns puts back the turns of the delegate's
