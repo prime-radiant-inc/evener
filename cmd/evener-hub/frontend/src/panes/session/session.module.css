@@ -8,6 +8,12 @@
   flex-direction: column;
   height: 100%;
   min-height: 0;
+  /* The bottom reserve the phone's floating composer occupies over the
+   * transcript (docs/web-ui/design-system.md §12): 0 wherever the footer
+   * is in flow, the overlaying chrome's height under the phone's media gate.
+   * Read by the end inset row's height and the attention dock's offset so
+   * one value keeps the two in step. */
+  --floating-composer-reserve: 0px;
 }
 
 /* A dormant/empty transcript still floats the same attention control above
@@ -28,6 +34,25 @@
 
 .attentionDock > * {
   max-width: 100%;
+}
+
+/* The end inset row (TranscriptBody): the scrollable reserve that lets the
+ * last turn scroll clear of the floating composer. Zero on desktop - the
+ * footer is in flow there and the pane body already ends above it. */
+.transcriptEndInset {
+  height: var(--floating-composer-reserve);
+}
+
+@media (max-width: 899px) {
+  .contentColumn {
+    --floating-composer-reserve: calc(150px + var(--dock-clearance));
+  }
+
+  /* The attention dock floats above the transcript's trailing edge; lift it
+   * clear of the composer pill the transcript now runs under. */
+  .attentionDock {
+    bottom: calc(var(--space-3) + var(--floating-composer-reserve));
+  }
 }
 
 /* The pane's transcript viewport (Session.tsx's transcriptContent): a flex

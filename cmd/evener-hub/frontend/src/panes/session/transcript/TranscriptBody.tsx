@@ -45,6 +45,15 @@ import "./tools";
 import styles from "../session.module.css";
 
 const ESTIMATED_TURN_HEIGHT = 96;
+
+// The end inset row: the phone's floating composer overlays the transcript's
+// bottom edge (PaneScaffold's footer overlay), so the scroll content carries
+// its own trailing reserve - the last turn scrolls out from under the pill
+// instead of stopping behind it. Rendered on every surface as a row (panes
+// never ask which host is showing); session.module.css measures it to the
+// reserved height only under the phone's media gate, 0 everywhere else.
+const END_INSET_ROW_ID = "transcript-end-inset";
+const ESTIMATED_END_INSET_HEIGHT = 150;
 type IntentEntry = Extract<ProjectedEntry, { kind: "intent" }>;
 type QuietWakeEntry = Extract<ProjectedEntry, { kind: "item" | "critical" | "thinking" }>;
 
@@ -578,6 +587,16 @@ export function TranscriptBody({
     [itemRenderFingerprint],
   );
   const displayViewport = useStore(transcriptDisplayStore, (state) => state.viewport);
+  // The end inset is the list's last row after the trailing row when one is
+  // present (one synthetic row past every transcript row, keyed by its own
+  // stable id so the list's append-following and measurement treat it like
+  // any other row). An EMPTY transcript keeps zero rows: the reserve is for
+  // sliding the last turn clear of the composer, and there is no turn to
+  // slide - while the zero-row special cases (the placement fallbacks and the
+  // empty-state paths) must keep seeing a rowless list.
+  const endInsetIndex =
+    rows.length === 0 && trailingRow === undefined ? -1 : rows.length + (trailingRow === undefined ? 0 : 1);
+  const isEndInsetIndex = (index: number) => index === endInsetIndex;
   const viewRegistration = useTranscriptViewRegistration({
     enabled: surface !== "preview",
     id: viewId ?? `${surface}:${sessionRef ?? disclosureScope}`,
@@ -589,9 +608,12 @@ export function TranscriptBody({
     followingBottom,
     listRef,
     anchorEntries: preparedView?.anchorEntries ?? transcriptAnchorEntriesForRows(rows),
-    // Include the synthetic trailing row: following-bottom view restores
-    // target renderedRowCount - 1, which is the trailing row when present.
-    renderedRowCount: rows.length + (trailingRow === undefined ? 0 : 1),
+    // Include the synthetic rows: the trailing row when present, and the end
+    // inset row always. Following-bottom view restores target
+    // renderedRowCount - 1 - the inset row - which lands the last turn clear
+    // of the floating composer on the phone and is a no-op at its desktop
+    // height of 0.
+    renderedRowCount: endInsetIndex + 1,
     canRestoreFocus: () => sourcePaneId === undefined || workspaceStore.getState().focusedPaneId === sourcePaneId,
     focusFallback: () => focusFallbackRef.current?.focus(),
     announce: onAnnounceViewChange,
@@ -688,11 +710,24 @@ export function TranscriptBody({
         anchorToEnd={!viewRegistration.hasRetainedPlacement()}
         followEnd={!holdsPlace}
         readingPoint={readingPoint}
-        count={rows.length + (trailingRow === undefined ? 0 : 1)}
-        estimateSize={() => ESTIMATED_TURN_HEIGHT}
-        getItemKey={(index) => (isTrailingRowIndex(index) && trailingRow ? trailingRow.id : rowAt(index).id)}
+        count={endInsetIndex + 1}
+        estimateSize={(index) => (isEndInsetIndex(index) ? ESTIMATED_END_INSET_HEIGHT : ESTIMATED_TURN_HEIGHT)}
+        getItemKey={(index) =>
+          isEndInsetIndex(index)
+            ? END_INSET_ROW_ID
+            : isTrailingRowIndex(index) && trailingRow
+              ? trailingRow.id
+              : rowAt(index).id
+        }
         renderRow={(index) =>
-          isTrailingRowIndex(index) && trailingRow ? (
+          isEndInsetIndex(index) ? (
+            <div
+              data-testid="transcript-end-inset"
+              data-row-id={END_INSET_ROW_ID}
+              aria-hidden="true"
+              className={styles.transcriptEndInset}
+            />
+          ) : isTrailingRowIndex(index) && trailingRow ? (
             <div data-testid="transcript-row" data-row-id={trailingRow.id}>
               {trailingRow.content}
             </div>

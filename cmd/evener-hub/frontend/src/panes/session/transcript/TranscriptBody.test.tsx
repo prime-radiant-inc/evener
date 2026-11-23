@@ -1332,10 +1332,12 @@ describe("trailingRow scroll coordination", () => {
           />,
         ),
       );
-      // One turn row + the synthetic trailing row: following-bottom view
-      // restores scroll to renderedRowCount - 1, so the count must cover the
-      // trailing row or a pending ask's dock restores one row short.
-      expect(capturedCounts.at(-1)).toBe(2);
+      // One turn row + the synthetic trailing row + the end inset row: the
+      // inset is always last (the floating-composer reserve on the phone), so
+      // following-bottom view's restore target of renderedRowCount - 1 lands
+      // on it - showing the last turn clear of the composer - and the count
+      // must cover both synthetic rows or the dock restores one row short.
+      expect(capturedCounts.at(-1)).toBe(3);
     } finally {
       spy.mockRestore();
     }
@@ -1634,7 +1636,9 @@ describe("retained transcript placement", () => {
       loadOlder: async () => {},
       viewId,
       keepViewRemount: keepRemount,
-      renderedRowCount: loaded && !empty ? 1 : 0,
+      // One turn row plus the end inset row (the floating-composer reserve),
+      // mirroring ConversationBody's count; an empty transcript keeps zero.
+      renderedRowCount: loaded && !empty ? 2 : 0,
     });
     return currentModel ? (
       <TranscriptBody
@@ -1727,8 +1731,11 @@ describe("retained transcript placement", () => {
     expect(port().scrollTop).toBe(0);
     rowHeight = 4368;
     await resized();
-    expect((port().firstElementChild as HTMLElement).style.height).toBe("4368px");
-    expect(port().scrollTop).toBe(1856);
+    // The end inset row is the list's second row here and measures at the
+    // seam's row height like any other row: the sizer carries both, and the
+    // normalized 0.5 restore lands at half of the two-row extent.
+    expect((port().firstElementChild as HTMLElement).style.height).toBe("8736px");
+    expect(port().scrollTop).toBe(4040);
   });
 
   test("an actually empty transcript consumes its normalized fallback without waiting for nonexistent rows", async () => {
@@ -1795,7 +1802,9 @@ describe("retained transcript placement", () => {
     rowHeight = 4368;
     await act(async () => rerender(<Harness session="local:new-session" />));
     await resized();
-    expect(port().scrollTop).toBe(3712);
+    // Two rows (one turn + the end inset) at the seam height: latest sits
+    // one port above the sizer end.
+    expect(port().scrollTop).toBe(8080);
   });
 
   test.each([false, true])(
@@ -1810,9 +1819,10 @@ describe("retained transcript placement", () => {
       const scrollingElement = port();
       await resized();
       expect(listRef.current?.isMeasurementReady?.()).toBe(true);
-      expect(scrollingElement.scrollHeight).toBe(4368);
+      // One turn row + the end inset row, both at the seam's row height.
+      expect(scrollingElement.scrollHeight).toBe(8736);
       expect(scrollingElement.clientHeight).toBe(656);
-      expect(scrollingElement.scrollTop).toBe(3712);
+      expect(scrollingElement.scrollTop).toBe(8080);
 
       readBack(3292);
       const captured = captureTranscriptViews();
@@ -1840,7 +1850,7 @@ describe("retained transcript placement", () => {
       await resized();
       expect(port()).toBe(scrollingElement);
       expect(listRef.current?.isMeasurementReady?.()).toBe(true);
-      expect(scrollingElement.scrollTop).toBe(3712);
+      expect(scrollingElement.scrollTop).toBe(8080);
       readBack(3000);
       expect(captureTranscriptViews().get("retained-pane")).toMatchObject({
         anchorOffset: -3000,
@@ -1851,7 +1861,7 @@ describe("retained transcript placement", () => {
       await resized();
       expect(port()).toBe(scrollingElement);
       expect(listRef.current?.isMeasurementReady?.()).toBe(true);
-      expect(scrollingElement.scrollTop).toBe(3712);
+      expect(scrollingElement.scrollTop).toBe(8080);
     },
   );
 
@@ -1860,7 +1870,8 @@ describe("retained transcript placement", () => {
     const { rerender } = await act(async () => render(<Harness key="outgoing" listRef={listRef} />));
     await resized();
     expect(listRef.current?.isMeasurementReady?.()).toBe(true);
-    expect(port().scrollTop).toBe(3712);
+    // One turn row + the end inset row at the seam height, latest at the end.
+    expect(port().scrollTop).toBe(8080);
     readBack(3292);
     await act(async () => prepareTranscriptViewRemount(captureTranscriptViews(), "desktop"));
     // Registration is the only incoming restore. Do not replay a transition's
@@ -1878,7 +1889,8 @@ describe("retained transcript placement", () => {
     await act(async () => rerender(<p>Closed pane</p>));
     await act(async () => rerender(<Harness />));
     await resized();
-    expect(port().scrollTop).toBe(3712);
+    // Latest again spans both rows (turn + end inset) at the seam height.
+    expect(port().scrollTop).toBe(8080);
   });
 
   test("two exact views keep distinct positions through same-view content reload", async () => {

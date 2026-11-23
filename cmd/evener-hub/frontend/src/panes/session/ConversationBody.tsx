@@ -437,9 +437,15 @@ function LiveConversationBody({
     cancelOlder,
     viewKey: configFingerprint(displayConfig),
     anchorEntries,
-    // The trailing row is a real virtual row, so every end-targeted scroll
-    // path must count it or it lands one row short.
-    renderedRowCount: renderRows.length + (trailingRow !== undefined ? 1 : 0),
+    // The synthetic rows are real virtual rows, so every end-targeted scroll
+    // path must count them or it lands short: the trailing row when present,
+    // and the end inset row whenever any content exists (the phone's
+    // floating-composer reserve, always the list's last row - an empty
+    // transcript keeps zero rows).
+    renderedRowCount:
+      renderRows.length +
+      (trailingRow !== undefined ? 1 : 0) +
+      (renderRows.length > 0 || trailingRow !== undefined ? 1 : 0),
     sourceTurnRowIndexes,
     // An ask batch completing changes no turn/item shape: without this
     // signal a scrolled-away reader would get no new-content pill.
