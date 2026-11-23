@@ -120,6 +120,7 @@
   position: relative;
   width: 80px;
   height: 80px;
+  overflow: hidden;
   background: var(--surface-inset);
   transition: border-color var(--motion-duration-hover) var(--motion-easing-standard);
 }

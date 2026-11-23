@@ -1,8 +1,7 @@
-/* The tile frame and the Dialog size="large" lightbox image shared by the composer's AttachmentTile and the transcript's ImageGallery (P5-F01's CSS half); 85vh is the height two of the three lightboxes already used (M1-F04). */
+/* The tile frame's edge and corner (each caller keeps its own overflow clip) and the Dialog size="large" lightbox image shared by AttachmentTile and ImageGallery (P5-F01's CSS half); 85vh is the height two of the three lightboxes already used (M1-F04). */
 .frame {
   border: 1px solid var(--edge);
   border-radius: var(--radius-control);
-  overflow: hidden;
 }
 .image {
   display: block;
