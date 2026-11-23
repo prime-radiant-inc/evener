@@ -34,7 +34,7 @@ import {
   slashCommandInvocation,
   withPluginSelection,
 } from "@evener/appwire-client";
-import { type JSX, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type JSX, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { useStore } from "zustand";
 import { useClient } from "../../shell/clientContext";
@@ -106,7 +106,7 @@ import {
 import { MobileSettingRows } from "./MobileSettingRows";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
 import { preflightDir } from "./preflight";
-import { type SpawnHostOption, SpawnHostSelection } from "./SpawnHostSelection";
+import { SpawnHostSelection } from "./SpawnHostSelection";
 import styles from "./spawn.module.css";
 import {
   getGlobalLastWorkingDir,
@@ -466,24 +466,12 @@ function SpawnForm({
   // the round-eight preselection and offline fallback unchanged.
   const displaySource = displaySources.find((candidate) => candidate.id === source);
   const displayHostChoice = sources.length > 0 ? hostChoice : (displaySource?.id ?? hostChoice);
-  const displayRemoteHosts = displaySources.filter((candidate) => candidate.id !== "local");
   // The one host list is shared by the quiet-row disclosure and the phone
   // Sheet. The manifest labels every source, including the hub itself
-  // ("<hostname> (hub)"), so the picker renders that label rather than
-  // deriving one from the browser's address.
-  const hostSelectionOptions = useMemo<SpawnHostOption[]>(
-    () =>
-      displayRemoteHosts.length > 0
-        ? displaySources.map((candidate) => ({
-            id: candidate.id,
-            label: candidate.label,
-            online: candidate.online,
-          }))
-        : [],
-    [displaySources, displayRemoteHosts.length],
-  );
+  // ("<hostname> (hub)"), so the picker renders those rows directly.
+  const showHostPicker = displaySources.some((candidate) => candidate.id !== "local");
   const displayHostLabel =
-    hostSelectionOptions.find((option) => option.id === displayHostChoice)?.label ?? displayHostChoice;
+    displaySources.find((candidate) => candidate.id === displayHostChoice)?.label ?? displayHostChoice;
   const cwd = draft.cwd;
   const setCwd = selectSpawnDirectory;
   // Entering onboarding records the draft's own scope; the fallback below is
@@ -2876,7 +2864,7 @@ function SpawnForm({
             the working directory: the folder list, recents, and validation all
             come from the selected machine (hostRequest), so the form reads
             pick-the-machine first, then the folder on it. */}
-        {displayRemoteHosts.length > 0 && (
+        {showHostPicker && (
           <div className={`${CLASS.quietRows} ${CLASS.desktopOnly}`}>
             <div className={CLASS.quietRow} data-testid="spawn-host-desktop" ref={hostDisclosureRef}>
               <Disclosure
@@ -2892,7 +2880,7 @@ function SpawnForm({
                 }
               >
                 <SpawnHostSelection
-                  options={hostSelectionOptions}
+                  options={displaySources}
                   value={displayHostChoice}
                   connecting={connectingHosts}
                   onSelect={(id) => {
@@ -3033,7 +3021,7 @@ function SpawnForm({
             fallbackDir={pickerFallbackDir}
             onCwdPanelClose={commitLastWorkingDir}
             branch={branch}
-            hostOptions={hostSelectionOptions}
+            hostOptions={showHostPicker ? displaySources : []}
             hostValue={displayHostChoice}
             hostLabel={displayHostLabel}
             connectingHosts={connectingHosts}
