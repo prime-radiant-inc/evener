@@ -2,6 +2,7 @@
 // navigation store remains untouched; an operation is removed only after the
 // caller has reloaded the affected navigation resources.
 import type { RailPinSection, RailProject, RailSession } from "./railNodes";
+import { isNestedSessionKind } from "./sessionKind";
 
 export interface RailPinSummary {
   id: string;
@@ -52,7 +53,6 @@ export interface ApplyPendingOptions {
   pinSources?: PinSourceIndex;
 }
 
-const NON_TOP_LEVEL_KINDS = new Set(["fork", "subagent"]);
 const identity = (node: Pick<RailSession, "row_id" | "ref">) => `${node.row_id}\0${node.ref}`;
 
 function mapNodes(nodes: readonly RailSession[], fn: (node: RailSession) => RailSession | null): RailSession[] {
@@ -85,7 +85,7 @@ export function buildPinSourceIndex(resources: RailResources, options?: PinSourc
   const rowsByIdentity = new Map<string, RailSession>();
   const add = (rows: readonly RailSession[]) => {
     for (const row of rows) {
-      if (!NON_TOP_LEVEL_KINDS.has(row.kind)) rowsByIdentity.set(identity(row), row);
+      if (!isNestedSessionKind(row.kind)) rowsByIdentity.set(identity(row), row);
     }
   };
   const addProjects = (projects: readonly RailProject[]) => {
@@ -129,7 +129,7 @@ function applySessionPin(
   pinSources: PinSourceIndex,
 ): RailResources {
   const source =
-    op.source.ref === op.ref && !NON_TOP_LEVEL_KINDS.has(op.source.kind)
+    op.source.ref === op.ref && !isNestedSessionKind(op.source.kind)
       ? pinSources.rowsByIdentity.get(identity(op.source))
       : undefined;
   if (!source) return resources;
