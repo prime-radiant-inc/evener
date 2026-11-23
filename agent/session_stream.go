@@ -465,7 +465,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 		if (!wasFound || (decoder.closed && !wasClosed) || final) && isQuietCommunicatePreviewArgs(args) {
 			communicatePreviewSuppressed[callID] = true
 			if communicatePreviewStarted[callID] {
-				s.emit(events.CommunicatePreviewResetData{CallID: callID})
+				s.emit(events.CommunicatePreviewResetData{CallID: callID, Quiet: true})
 				delete(communicatePreviewStarted, callID)
 				delete(communicateText, callID)
 				communicatePreviewOrder = slices.DeleteFunc(communicatePreviewOrder, func(id string) bool {
