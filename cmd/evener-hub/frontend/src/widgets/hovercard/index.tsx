@@ -1,16 +1,13 @@
 import { type ReactNode, useEffect } from "react";
 import { requireClass } from "../internal/requireClass";
-import { LONG_PRESS_MS, useLongPress } from "../internal/useLongPress";
+import { useLongPress } from "../internal/useLongPress";
 import type { SideAnchor } from "./computePosition";
 import { describeChild, FloatingBubblePortal, useFloatingBubble } from "./floatingBubble";
 import styles from "./hovercard.module.css";
 import { isHoverless, POINTER_CLICK_WINDOW_MS } from "./useFloatingLabel";
 
-export { LONG_PRESS_MS, POINTER_CLICK_WINDOW_MS };
-
-/** How far a finger may drift during a press before it stops counting as a
- * long press - a drag is a scroll, not a hold. */
-const LONG_PRESS_SLOP_PX = 10;
+export { LONG_PRESS_MS } from "../internal/useLongPress";
+export { POINTER_CLICK_WINDOW_MS };
 
 export interface HoverCardProps {
   label: ReactNode;
@@ -59,9 +56,7 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled, bloc
   const ownerDocument = bubbleContainer.ownerDocument;
   const longPress = useLongPress({
     onLongPress: showImmediately,
-    holdMs: LONG_PRESS_MS,
-    slopPx: LONG_PRESS_SLOP_PX,
-    enabled: Boolean(longPressEnabled && isHoverless()),
+    enabled: Boolean(longPressEnabled),
     cancelOnPointerLeave: true,
     cancelOnViewportChange: true,
     capturePointer: false,
@@ -106,6 +101,11 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled, bloc
       className={block ? `${CLASS.wrapper} ${CLASS.block}` : CLASS.wrapper}
       {...triggerProps}
       {...longPress.handlers}
+      onPointerDown={(event) => {
+        // The device capability can change without a render, so decide at press time.
+        if (!longPressEnabled || !isHoverless()) return;
+        longPress.handlers.onPointerDown(event);
+      }}
       onClickCapture={(event) => {
         if (!longPressEnabled || !isHoverless()) return;
         // The lifted long press swallows exactly one click in the capture phase;

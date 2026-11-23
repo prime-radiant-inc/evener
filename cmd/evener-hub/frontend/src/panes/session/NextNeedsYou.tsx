@@ -125,7 +125,6 @@ function OwnedNextNeedsYou({
 
   const longPress = useLongPress({
     onLongPress: openList,
-    slopPx: 10,
     enabled: !listOpen,
     cancelOnVisibilityHidden: true,
   });

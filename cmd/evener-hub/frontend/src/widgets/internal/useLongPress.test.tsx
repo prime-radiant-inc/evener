@@ -121,18 +121,6 @@ test("unmount clears a pending hold", () => {
   expect(onLongPress).not.toHaveBeenCalled();
 });
 
-test("holdMs carries a caller's own threshold", () => {
-  vi.useFakeTimers();
-  const onLongPress = vi.fn();
-  render(<PressTarget holdMs={120} onLongPress={onLongPress} />);
-
-  fireEvent.pointerDown(target(), { button: 0, clientX: 10, clientY: 10, pointerId: 7 });
-  act(() => vi.advanceTimersByTime(119));
-  expect(onLongPress).not.toHaveBeenCalled();
-  act(() => vi.advanceTimersByTime(1));
-  expect(onLongPress).toHaveBeenCalledTimes(1);
-});
-
 test.each(["scroll", "resize"] as const)("cancelOnViewportChange ends a pending hold on %s", (event) => {
   vi.useFakeTimers();
   const onLongPress = vi.fn();

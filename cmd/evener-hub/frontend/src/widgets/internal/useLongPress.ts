@@ -1,4 +1,4 @@
-// A pointer hold: movement past slopPx cancels it, and a completed hold's trailing click is consumed.
+// A pointer hold: movement past the slop cancels it, and a completed hold's trailing click is consumed.
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useCallback, useEffect, useRef } from "react";
 import { POINTER_CLICK_WINDOW_MS } from "../hovercard/useFloatingLabel";
@@ -7,10 +7,11 @@ import { watchViewport } from "./viewportWatch";
 /** How long a finger must rest before the hold fires. */
 export const LONG_PRESS_MS = 500;
 
+/** How far a finger may drift during a press before it stops counting as a hold. */
+const LONG_PRESS_SLOP_PX = 10;
+
 export interface LongPressOptions {
   onLongPress: () => void;
-  holdMs?: number;
-  slopPx?: number;
   enabled?: boolean;
   cancelOnVisibilityHidden?: boolean;
   /** End the press when the pointer leaves its trigger, as a lift would. */
@@ -37,8 +38,6 @@ export interface LongPress {
 
 export function useLongPress({
   onLongPress,
-  holdMs = LONG_PRESS_MS,
-  slopPx = 10,
   enabled = true,
   cancelOnVisibilityHidden = false,
   cancelOnPointerLeave = false,
@@ -55,8 +54,6 @@ export function useLongPress({
   const gestureCleanup = useRef<(() => void) | null>(null);
   const gestureDocument = useRef<Document | null>(null);
   const visibilityCleanup = useRef<(() => void) | null>(null);
-  const onLongPressRef = useRef(onLongPress);
-  onLongPressRef.current = onLongPress;
   const clearHoldTimer = useCallback(() => {
     clearTimeout(holdTimer.current);
     holdTimer.current = undefined;
@@ -99,15 +96,19 @@ export function useLongPress({
 
   const abort = useCallback(() => {
     completed.current = false;
+    suppressClick.current = false;
+    backstop(false);
     cancelHold();
-  }, [cancelHold]);
+  }, [backstop, cancelHold]);
   const armGesture = useCallback(
     (doc: Document) => {
       const owns = (event: PointerEvent) => press.current?.pointerId === event.pointerId;
       const onMove = (event: PointerEvent) => {
         if (!owns(event) || completed.current) return;
         const start = press.current;
-        if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > slopPx) cancelHold();
+        if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > LONG_PRESS_SLOP_PX) {
+          cancelHold();
+        }
       };
       const onUp = (event: PointerEvent) => {
         if (!owns(event)) return;
@@ -129,7 +130,7 @@ export function useLongPress({
         stopViewport?.();
       };
     },
-    [abort, backstop, cancelHold, cancelOnViewportChange, slopPx],
+    [abort, backstop, cancelHold, cancelOnViewportChange],
   );
 
   const handlePointerDown = useCallback(
@@ -153,8 +154,8 @@ export function useLongPress({
         clearHoldTimer();
         completed.current = true;
         suppressClick.current = true;
-        onLongPressRef.current();
-      }, holdMs);
+        onLongPress();
+      }, LONG_PRESS_MS);
       if (!cancelOnVisibilityHidden) return;
       // A hidden page loses the pointer, so the pending hold ends like an early release.
       const onVisibilityChange = () => {
@@ -164,7 +165,7 @@ export function useLongPress({
       doc.addEventListener("visibilitychange", onVisibilityChange);
       visibilityCleanup.current = () => doc.removeEventListener("visibilitychange", onVisibilityChange);
     },
-    [abort, armGesture, backstop, cancelOnVisibilityHidden, capturePointer, clearHoldTimer, enabled, holdMs],
+    [abort, armGesture, backstop, cancelOnVisibilityHidden, capturePointer, clearHoldTimer, enabled, onLongPress],
   );
 
   const handleLostPointerCapture = useCallback(() => {
@@ -191,12 +192,6 @@ export function useLongPress({
     },
     [abort],
   );
-
-  const cancel = useCallback(() => {
-    suppressClick.current = false;
-    backstop(false);
-    abort();
-  }, [abort, backstop]);
 
   const clearClickSuppression = useCallback(() => {
     suppressClick.current = false;
@@ -240,7 +235,7 @@ export function useLongPress({
       onLostPointerCapture: handleLostPointerCapture,
       onPointerLeave: handlePointerLeave,
     },
-    cancel,
+    cancel: abort,
     clearClickSuppression,
     consumeClick,
   };
