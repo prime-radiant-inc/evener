@@ -39,7 +39,7 @@ import { useActivitySidebarOpenFor } from "../../../shell/activitybar/activitySi
 import { useClient } from "../../../shell/clientContext";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
 import { assignSessionPin, deleteSession, setArchived, unpinSession } from "../../../shell/rail/actions";
-import { isConfirmedCrashedSession } from "../../../shell/rail/sessionKind";
+import { isConfirmedCrashedSession, isTopLevelSession } from "../../../shell/rail/sessionKind";
 import { navigate, paneToURL, refParam } from "../../../shell/routing";
 import { SessionMenu, type SessionMenuProps, type SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
 import { cadenceStateFor } from "../../../shell/sessionStatus";
@@ -144,7 +144,7 @@ export function SessionChrome({
     : (locationResource?.data as NavigationSessionLocation | undefined);
   const navigationSession = location?.session;
   const fallbackSession = navigationSession ?? navigationSummaryFor(sessionRef, navigation);
-  const eligibleFallback = fallbackSession && !["subagent", "fork"].includes(fallbackSession.kind);
+  const eligibleFallback = fallbackSession && isTopLevelSession(fallbackSession);
   const validIdentity =
     typeof fallbackSession?.host_id === "string" &&
     fallbackSession.host_id.trim() !== "" &&

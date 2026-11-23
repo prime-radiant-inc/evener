@@ -14,8 +14,8 @@
 // button's only accessible name, and the a11y lint reads the attribute off the
 // element rather than through a spread.
 
-const ICON = { viewBox: "0 0 16 16", width: 16, height: 16 } as const;
-const STROKE = {
+export const ICON = { viewBox: "0 0 16 16", width: 16, height: 16 } as const;
+export const STROKE = {
   fill: "none",
   stroke: "currentColor",
   strokeWidth: 1.5,

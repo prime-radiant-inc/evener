@@ -82,6 +82,7 @@ import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
 import { cadenceStateFor, SIGNAL_STATES } from "../sessionStatus";
 import styles from "./RailRow.module.css";
 import { type RailActivityRead, type RailStatus, useSessionActivityRead, workingStatus } from "./railActivity";
+import { ICON, STROKE } from "./railIcons";
 import {
   activeWatchCount,
   type BandRailNode,
@@ -966,9 +967,9 @@ function BandRow({ node, info }: { node: BandRailNode; info: TreeRowInfo }) {
 // once, and each caller passes its own module's class and its own test id.
 export function WatchGlyph({ className, testId }: { className: string; testId: string }) {
   return (
-    <svg data-testid={testId} className={className} viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-      <circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" strokeWidth="1.5" />
-      <path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    <svg data-testid={testId} className={className} {...ICON} aria-hidden="true" focusable="false">
+      <circle cx="8" cy="8" r="6.25" {...STROKE} />
+      <path d="M8 4.5V8l2.5 1.5" {...STROKE} />
     </svg>
   );
 }
@@ -980,9 +981,9 @@ export function WatchGlyph({ className, testId }: { className: string; testId: s
 // WatchGlyph: the label beside it is the row's accessible name.
 function HostGlyph({ className, testId }: { className: string; testId: string }) {
   return (
-    <svg data-testid={testId} className={className} viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-      <rect x="2" y="2.75" width="12" height="4.5" rx="1.25" fill="none" stroke="currentColor" strokeWidth="1.5" />
-      <rect x="2" y="8.75" width="12" height="4.5" rx="1.25" fill="none" stroke="currentColor" strokeWidth="1.5" />
+    <svg data-testid={testId} className={className} {...ICON} aria-hidden="true" focusable="false">
+      <rect x="2" y="2.75" width="12" height="4.5" rx="1.25" {...STROKE} />
+      <rect x="2" y="8.75" width="12" height="4.5" rx="1.25" {...STROKE} />
       <path d="M4.75 5h.01M4.75 11h.01" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
     </svg>
   );

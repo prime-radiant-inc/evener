@@ -1,7 +1,17 @@
 import type { NavigationSessionSummary, Source } from "@evener/appwire-client";
 import { errorText, LOCAL_HOST } from "@evener/appwire-client";
 import { keyID, LIVE_BAND_ORDER } from "@evener/appwire-client/state/navigation";
-import { type CSSProperties, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  memo,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   archivedListKey,
   loadMoreArchivedList,
@@ -124,6 +134,43 @@ interface RailSectionProps {
   actions: RailRowActions;
   isRowSelected: (node: RailNode) => boolean | undefined;
   projectRetryCallback: (key: string) => () => void;
+}
+
+interface RailSectionShellProps extends Omit<RailSectionProps, "title"> {
+  label: string;
+  action?: ReactNode;
+  eyebrow?: boolean;
+}
+
+// The section frame shared by the rail's disclosure sections: the heading
+// (optionally an eyebrow, optionally carrying a menu action) and the tree it
+// folds.
+function RailSectionShell({
+  label,
+  action,
+  eyebrow,
+  nodes,
+  open,
+  onToggleOpen,
+  actions,
+  projectRetryCallback,
+  isRowSelected,
+  ...tree
+}: RailSectionShellProps) {
+  const renderRow = useMemo(() => renderRailRow(actions, projectRetryCallback), [actions, projectRetryCallback]);
+  return (
+    <section className={CLASS.section}>
+      <DisclosureHeading
+        level={3}
+        label={label}
+        eyebrow={eyebrow}
+        action={action}
+        open={open}
+        onOpenChange={onToggleOpen}
+      />
+      {open && <RailTree nodes={nodes} renderRow={renderRow} isSelected={isRowSelected} {...tree} />}
+    </section>
+  );
 }
 
 // The rail's organize-by switcher: an icon-only quiet trigger opening the
@@ -288,33 +335,9 @@ function EvenerMark() {
   );
 }
 
-function RailSection({
-  title,
-  nodes,
-  open,
-  onToggleOpen,
-  onToggle,
-  onActivate,
-  actions,
-  isRowSelected,
-  projectRetryCallback,
-}: RailSectionProps) {
-  const renderRow = useMemo(() => renderRailRow(actions, projectRetryCallback), [actions, projectRetryCallback]);
+function RailSection({ title, nodes, open, onToggleOpen, ...rest }: RailSectionProps) {
   if (nodes.length === 0) return null;
-  return (
-    <section className={CLASS.section}>
-      <DisclosureHeading level={3} label={title} eyebrow open={open} onOpenChange={onToggleOpen} />
-      {open && (
-        <RailTree
-          nodes={nodes}
-          onToggle={onToggle}
-          onActivate={onActivate}
-          renderRow={renderRow}
-          isSelected={isRowSelected}
-        />
-      )}
-    </section>
-  );
+  return <RailSectionShell label={title} eyebrow nodes={nodes} open={open} onToggleOpen={onToggleOpen} {...rest} />;
 }
 interface PinnedRailSectionProps extends Omit<RailSectionProps, "title" | "nodes"> {
   section: RailPinSection;
@@ -322,89 +345,39 @@ interface PinnedRailSectionProps extends Omit<RailSectionProps, "title" | "nodes
   onDelete: () => void;
   projectRetryCallback: (key: string) => () => void;
 }
-function PinnedRailSection({
-  section,
-  open,
-  onToggleOpen,
-  onRename,
-  onDelete,
-  onToggle,
-  onActivate,
-  actions,
-  isRowSelected,
-  projectRetryCallback,
-}: PinnedRailSectionProps) {
-  const renderRow = useMemo(() => renderRailRow(actions, projectRetryCallback), [actions, projectRetryCallback]);
+function PinnedRailSection({ section, open, onToggleOpen, onRename, onDelete, ...rest }: PinnedRailSectionProps) {
   return (
-    <section className={CLASS.section}>
-      <DisclosureHeading
-        level={3}
-        label={section.name}
-        open={open}
-        onOpenChange={onToggleOpen}
-        action={
-          <Menu
-            variant="quiet"
-            icon="⋯"
-            label={`Actions for ${section.name}`}
-            items={[
-              { id: "rename", label: "Rename", onSelect: onRename },
-              { id: "delete", label: "Delete", onSelect: onDelete },
-            ]}
-          />
-        }
-      />
-      {open && (
-        <RailTree
-          nodes={[
-            ...sessionNodes(section.sessions ?? []),
-            ...pinSectionOverflowNode(
-              `pinsection:${section.id}`,
-              section.id,
-              section.remaining ?? 0,
-              section.offset ?? section.sessions.length,
-              section.limit ?? 50,
-            ),
+    <RailSectionShell
+      label={section.name}
+      action={
+        <Menu
+          variant="quiet"
+          icon="⋯"
+          label={`Actions for ${section.name}`}
+          items={[
+            { id: "rename", label: "Rename", onSelect: onRename },
+            { id: "delete", label: "Delete", onSelect: onDelete },
           ]}
-          onToggle={onToggle}
-          onActivate={onActivate}
-          renderRow={renderRow}
-          isSelected={isRowSelected}
         />
-      )}
-    </section>
-  );
-}
-interface ArchivedSectionProps extends Omit<RailSectionProps, "title"> {
-  count: number;
-  projectRetryCallback: (key: string) => () => void;
-}
-function ArchivedSection({
-  count,
-  open,
-  onToggleOpen,
-  nodes,
-  onToggle,
-  onActivate,
-  actions,
-  isRowSelected,
-  projectRetryCallback,
-}: ArchivedSectionProps) {
-  const renderRow = useMemo(() => renderRailRow(actions, projectRetryCallback), [actions, projectRetryCallback]);
-  const label = `Archived sessions (${count})`;
-  return (
-    <section className={CLASS.section}>
-      <DisclosureHeading level={3} label={label} eyebrow open={open} onOpenChange={onToggleOpen} />
-      {open && (
-        <RailTree
-          nodes={nodes}
-          onToggle={onToggle}
-          onActivate={onActivate}
-          renderRow={renderRow}
-          isSelected={isRowSelected}
-        />
-      )}
-    </section>
+      }
+      nodes={
+        open
+          ? [
+              ...sessionNodes(section.sessions ?? []),
+              ...pinSectionOverflowNode(
+                `pinsection:${section.id}`,
+                section.id,
+                section.remaining ?? 0,
+                section.offset ?? section.sessions.length,
+                section.limit ?? 50,
+              ),
+            ]
+          : []
+      }
+      open={open}
+      onToggleOpen={onToggleOpen}
+      {...rest}
+    />
   );
 }
 
@@ -1189,8 +1162,9 @@ function NavigationRail({
                 projectRetryCallback={projectRetryCallback}
               />
               {archivedNodes.length > 0 && (
-                <ArchivedSection
-                  count={archivedCount(resources.archivedProjects, unarchived)}
+                <RailSectionShell
+                  label={`Archived sessions (${archivedCount(resources.archivedProjects, unarchived)})`}
+                  eyebrow
                   open={archivedOpen}
                   onToggleOpen={() => toggleSection(ARCHIVED_SECTION_KEY, false)}
                   nodes={archivedNodes}
