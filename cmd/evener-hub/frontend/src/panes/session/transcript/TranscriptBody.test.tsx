@@ -2508,4 +2508,113 @@ describe("consecutive quiet_yield cross-turn grouping", () => {
     expect(group.sourceTurnIds).toEqual(["turn_rt1", "turn_rt2"]);
     expect(group.quietCount).toBe(2);
   });
+
+  test("renders each wake's TurnSeparator inside an expanded quietYieldGroup even when followed by another turn, while keeping collapsed one-line", async () => {
+    const config = makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, { tokenCounts: true });
+    const makeModel = (withFollowingTurn: boolean): ThreadModel => ({
+      ...fixture,
+      turns: [
+        {
+          id: "turn_u",
+          status: "completed",
+          usage: { inputTokens: 10, outputTokens: 2 },
+          items: [{ id: "u1", turnId: "turn_u", type: "userMessage", text: "watch", status: "completed" }],
+        },
+        {
+          id: "turn_w1",
+          status: "completed",
+          usage: { inputTokens: 111, outputTokens: 11 },
+          items: [
+            {
+              id: "r_w1",
+              turnId: "turn_w1",
+              type: "reasoning",
+              text: "",
+              reasoningSummaries: [["thought-w1"]],
+              status: "completed",
+            },
+            { id: "qy_w1", turnId: "turn_w1", type: "systemMessage", text: "quiet-sentinel", eventKind: "quiet_yield" },
+          ],
+        },
+        {
+          id: "turn_w2",
+          status: "completed",
+          usage: { inputTokens: 222, outputTokens: 22 },
+          items: [
+            { id: "qy_w2", turnId: "turn_w2", type: "systemMessage", text: "quiet-sentinel", eventKind: "quiet_yield" },
+          ],
+        },
+        ...(withFollowingTurn
+          ? [
+              {
+                id: "turn_next",
+                status: "completed" as const,
+                usage: { inputTokens: 333, outputTokens: 33 },
+                items: [
+                  {
+                    id: "a_next",
+                    turnId: "turn_next",
+                    type: "agentMessage" as const,
+                    text: "next",
+                    status: "completed" as const,
+                  },
+                ],
+              },
+            ]
+          : []),
+      ],
+    });
+
+    const rendered = await act(async () =>
+      render(
+        <TranscriptBody
+          model={makeModel(true)}
+          config={config}
+          surface="readOnly"
+          disclosureScope="qy:turn-separators-followed"
+        />,
+      ),
+    );
+    const group = screen.getByTestId("quiet-yield-group") as HTMLDetailsElement;
+    const groupRow = group.closest('[data-testid="transcript-row"]');
+    expect(group.open).toBe(false);
+    expect(groupRow?.querySelectorAll('[data-testid="turn-separator"]')).toHaveLength(0);
+
+    const groupSummary = group.querySelector(":scope > summary");
+    if (!groupSummary) throw new Error("missing group summary");
+    await act(async () => {
+      fireEvent.click(groupSummary);
+    });
+    expect(group.open).toBe(true);
+    const groupBody = screen.getByTestId("quiet-yield-group-body");
+    const bodySeparators = [...groupBody.querySelectorAll('[data-testid="turn-separator"]')];
+    expect(bodySeparators).toHaveLength(2);
+    expect(bodySeparators[0]?.textContent).toContain("111");
+    expect(bodySeparators[1]?.textContent).toContain("222");
+    // Reasoning entry r_w1 is NOT the last entry of turn_w1, so separator sits with qy_w1 rather than r_w1.
+    expect(bodySeparators[0]?.closest("[data-view-anchor-id]")?.getAttribute("data-view-anchor-id")).toBe("qy_w1");
+    expect(bodySeparators[1]?.closest("[data-view-anchor-id]")?.getAttribute("data-view-anchor-id")).toBe("qy_w2");
+
+    // Trailing group: collapsed shows trailing separator once; expanded renders per-wake separators without duplicating the trailing one.
+    await act(async () => {
+      resetDisclosureStoreForTests();
+      rendered.rerender(
+        <TranscriptBody
+          model={makeModel(false)}
+          config={config}
+          surface="readOnly"
+          disclosureScope="qy:turn-separators-trailing"
+        />,
+      );
+    });
+    const trailingGroup = screen.getByTestId("quiet-yield-group") as HTMLDetailsElement;
+    const trailingRow = trailingGroup.closest('[data-testid="transcript-row"]');
+    expect(trailingRow?.querySelectorAll('[data-testid="turn-separator"]')).toHaveLength(1);
+    const trailingSummary = trailingGroup.querySelector(":scope > summary");
+    if (!trailingSummary) throw new Error("missing trailing summary");
+    await act(async () => {
+      fireEvent.click(trailingSummary);
+    });
+    expect(trailingRow?.querySelectorAll('[data-testid="turn-separator"]')).toHaveLength(2);
+  });
 });

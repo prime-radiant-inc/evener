@@ -4,11 +4,13 @@ import { describe, expect, it } from "vitest";
 import type { TimelineRow } from "../timeline";
 import {
 	findMatches,
+	findMatchTargets,
 	matchLabel,
 	matchPosition,
 	rowText,
 	selectedMatch,
 	selectedRowIndex,
+	selectedTargetIndex,
 	stepMatch,
 } from "./findInSession";
 
@@ -335,5 +337,50 @@ describe("finding words in a delegate or job notification", () => {
 		expect(selectedRowIndex(extended, "quiet-yields:qy_1", new Map())).toBe(1);
 		expect(selectedMatch(extended, hits, "quiet-yields:qy_1", new Map())).toBe(1);
 		expect(stepMatch(hits, selectedMatch(extended, hits, "quiet-yields:qy_1", new Map()), -1)).toBe(0);
+	});
+
+	it("exposes per-member FindMatchTargets inside quiet-yields groups so Previous steps within the group before paging", () => {
+		const q = (id: string, turnId: string, text: string): Extract<TimelineRow, { kind: "notice" }> => ({
+			kind: "notice",
+			id,
+			turnId,
+			origin: "system",
+			family: "lifecycle",
+			tone: "system",
+			eventKind: "quiet_yield",
+			label: "Ended turn quietly",
+			text,
+			rendersMarkdown: true,
+		});
+		const w1 = q("qy_m1", "t1", "quokka-repeat alpha");
+		const w2 = q("qy_m2", "t2", "quokka-repeat beta");
+		const w3 = q("qy_m3", "t3", "quokka-repeat gamma");
+		const nonMatch = q("qy_other", "t2b", "plain");
+		const initialRows: TimelineRow[] = [
+			{ kind: "details", id: "quiet-yields:qy_m2", entries: [w2, nonMatch, w3], summary: "3 quiet yields" },
+		];
+		const targets = findMatchTargets(initialRows, "quokka-repeat");
+		expect(targets.map((target) => ({ key: target.key, rowIndex: target.rowIndex }))).toEqual([
+			{ key: "qy_m2", rowIndex: 0 },
+			{ key: "qy_m3", rowIndex: 0 },
+		]);
+		const targetIndexes = targets.map((_, index) => index);
+		expect(selectedTargetIndex(initialRows, targets, "qy_m3", new Map())).toBe(1);
+		expect(stepMatch(targetIndexes, 1, -1)).toBe(0);
+		expect(selectedTargetIndex(initialRows, targets, "quiet-yields:qy_m2", new Map())).toBe(0);
+
+		const extendedRows: TimelineRow[] = [
+			{ kind: "details", id: "quiet-yields:qy_m1", entries: [w1, w2, nonMatch, w3], summary: "4 quiet yields" },
+		];
+		const extendedTargets = findMatchTargets(extendedRows, "quokka-repeat");
+		expect(extendedTargets.map((target) => target.key)).toEqual(["qy_m1", "qy_m2", "qy_m3"]);
+		expect(selectedTargetIndex(extendedRows, extendedTargets, "qy_m2", new Map())).toBe(1);
+		expect(
+			stepMatch(
+				extendedTargets.map((_, index) => index),
+				1,
+				-1,
+			),
+		).toBe(0);
 	});
 });

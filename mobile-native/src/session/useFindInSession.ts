@@ -3,7 +3,13 @@ import type { FlatList } from "react-native";
 import type { MobileConversation } from "../projectedRows";
 import { ReaderRestoreAttempts, readerKey } from "../readerPosition";
 import { atEnd, type useLiveEndFollow } from "./liveEndFollow";
-import { type FindState, findMatches, openDisclosuresForFindMatch, selectedMatch, stepMatch } from "./findInSession";
+import {
+	type FindState,
+	findMatchTargets,
+	openDisclosuresForFindMatch,
+	selectedTargetIndex,
+	stepMatch,
+} from "./findInSession";
 import type { TimelineRow } from "../timeline";
 
 /** What Find reads from its screen: the list and its reading position, the
@@ -65,24 +71,28 @@ export function useFindInSession({
 	captureSuppressed,
 }: FindInSessionInputs) {
 	const findQuery = find?.query ?? "";
-	const findHits = useMemo(
-		() => findMatches(timelineRows, findQuery, conversation?.delegates, answersByRow),
+	const matchTargets = useMemo(
+		() => findMatchTargets(timelineRows, findQuery, conversation?.delegates, answersByRow),
 		[timelineRows, findQuery, conversation?.delegates, answersByRow],
 	);
+	const findHits = useMemo(() => matchTargets.map((_, index) => index), [matchTargets]);
 	// A selected row the transcript stopped showing hands its place to the
 	// question row whose recap now carries it (hideAnswerMessages' stand-in):
 	// the answer is still on screen, so the selection must not evaporate and
 	// send Find paging past the match it was showing.
 	const selectedKey = find?.key ?? null;
-	const findCurrent = selectedMatch(timelineRows, findHits, selectedKey, answerStandIns);
-	const findKey = findCurrent === null ? null : readerKey(timelineRows[findCurrent]);
+	const findCurrent = selectedTargetIndex(timelineRows, matchTargets, selectedKey, answerStandIns);
+	const activeTarget = findCurrent === null ? null : (matchTargets[findCurrent] ?? null);
+	const activeRowIndex = activeTarget?.rowIndex ?? null;
+	const findKey = activeRowIndex === null ? null : readerKey(timelineRows[activeRowIndex]);
 	function stepFind(direction: 1 | -1) {
 		if (!find) return;
 		const next = stepMatch(findHits, findCurrent, direction);
-		if (next !== null)
+		const target = next === null ? undefined : matchTargets[next];
+		if (target)
 			setFind({
 				...find,
-				key: readerKey(timelineRows[next]),
+				key: target.key,
 				seeking: false,
 				exhausted: false,
 			});
@@ -100,8 +110,9 @@ export function useFindInSession({
 		// have, while a saved key naming nothing here means the boundary is not
 		// loaded yet, which is the case this branch reloads.
 		const next = find.key !== null && findCurrent === null ? null : stepMatch(findHits, findCurrent, -1);
-		if (next !== null) {
-			setFind({ ...find, key: readerKey(timelineRows[next]), seeking: false });
+		const target = next === null ? undefined : matchTargets[next];
+		if (target) {
+			setFind({ ...find, key: target.key, seeking: false });
 			return;
 		}
 		if (loadingOlder) return;
@@ -148,9 +159,9 @@ export function useFindInSession({
 	const findJumping = useRef(false);
 	const findAttempts = useRef(new ReaderRestoreAttempts());
 	const findRetryFrame = useRef<number | null>(null);
-	const findCurrentNow = useRef(findCurrent);
+	const findCurrentNow = useRef(activeRowIndex);
 	useEffect(() => {
-		findCurrentNow.current = findCurrent;
+		findCurrentNow.current = activeRowIndex;
 	});
 	function cancelFindRetry() {
 		if (findRetryFrame.current !== null) cancelAnimationFrame(findRetryFrame.current);
@@ -169,23 +180,25 @@ export function useFindInSession({
 		timeline.current?.scrollToIndex({ index, viewPosition: 0.3, animated: true });
 		findJumping.current = false;
 	}
+	const activeTargetKey = activeTarget?.key ?? null;
 	// biome-ignore lint/correctness/useExhaustiveDependencies: only a new current match scrolls; rows prepending above it keep it in view.
 	useEffect(() => {
 		cancelFindRetry();
 		findAttempts.current.reset();
-		if (findCurrent !== null) scrollToFindMatch(findCurrent);
+		if (activeRowIndex !== null) scrollToFindMatch(activeRowIndex);
 		return cancelFindRetry;
-	}, [findKey]);
+	}, [activeTargetKey]);
 	useEffect(() => {
-		if (findCurrent === null) return;
+		if (activeTarget === null) return;
 		openDisclosuresForFindMatch(
 			hubId,
 			sessionRef,
-			timelineRows[findCurrent],
+			timelineRows[activeTarget.rowIndex],
 			findQuery,
 			conversation?.delegates,
 			answersByRow,
+			activeTarget.entry,
 		);
-	}, [answersByRow, conversation?.delegates, findCurrent, findQuery, hubId, sessionRef, timelineRows]);
+	}, [activeTarget, answersByRow, conversation?.delegates, findQuery, hubId, sessionRef, timelineRows]);
 	return { findHits, findKey, findCurrent, stepFind, findJumping, findAttempts, findRetryFrame, retryFindMatch };
 }

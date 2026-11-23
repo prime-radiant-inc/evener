@@ -274,11 +274,13 @@ export function ProjectedQuietYieldGroup({
               {entries.map((entry, idx) => {
                 const ItemRenderer = itemRendererFor(entry.item.type);
                 const displayKey = entryDisplayKey(entry);
+                const turn = turns[idx]?.source;
+                const isTurnEnd = turn !== undefined && turns[idx + 1]?.id !== turns[idx]?.id;
                 return (
                   <div key={displayKey} {...projectedEntryAnchor(entry, viewAnchorIndex)}>
                     <ItemRenderer
                       item={entry.item}
-                      turn={turns[idx]?.source ?? { id: entry.turnId, status: "completed", items: [entry.item] }}
+                      turn={turn ?? { id: entry.turnId, status: "completed", items: [entry.item] }}
                       live={false}
                       sessionRef={sessionRef}
                       displayKey={displayKey}
@@ -289,13 +291,14 @@ export function ProjectedQuietYieldGroup({
                       renderContext={itemRenderContext}
                       thread={thread}
                     />
+                    {isTurnEnd && <TurnSeparator turn={turn} />}
                   </div>
                 );
               })}
             </div>
           </Disclosure>
         </div>
-        {separatorTurn && <TurnSeparator turn={separatorTurn} />}
+        {!open && separatorTurn && <TurnSeparator turn={separatorTurn} />}
       </div>
     </>
   );

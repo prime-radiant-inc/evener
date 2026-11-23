@@ -103,6 +103,40 @@ export function findMatches(
 	return findSharedMatches(rows, query, (row) => rowText(row, delegates, answersByRow));
 }
 
+export interface FindMatchTarget {
+	key: string;
+	rowIndex: number;
+	entry?: TimelineRow;
+}
+
+/** Addressable match targets in `rows`, oldest first. Quiet-yield groups emit
+ * one target per matching wake entry so Find steps between wakes inside the
+ * group before asking for older history. */
+export function findMatchTargets(
+	rows: readonly TimelineRow[],
+	query: string,
+	delegates?: readonly EvenerDelegateInfo[],
+	answersByRow?: ReadonlyMap<string, string>,
+): FindMatchTarget[] {
+	const needle = findNeedle(query);
+	if (needle === "") return [];
+	const targets: FindMatchTarget[] = [];
+	rows.forEach((row, rowIndex) => {
+		if (row.kind === "details" && row.id.startsWith("quiet-yields:")) {
+			for (const entry of row.entries) {
+				if (textMatchesFind(rowText(entry, delegates, answersByRow), needle)) {
+					targets.push({ key: readerKey(entry), rowIndex, entry });
+				}
+			}
+			return;
+		}
+		if (textMatchesFind(rowText(row, delegates, answersByRow), needle)) {
+			targets.push({ key: readerKey(row), rowIndex });
+		}
+	});
+	return targets;
+}
+
 function openRowDisclosures(
 	hubId: string,
 	sessionRef: string,
@@ -151,10 +185,17 @@ export function openDisclosuresForFindMatch(
 	query: string,
 	delegates?: readonly EvenerDelegateInfo[],
 	answersByRow?: ReadonlyMap<string, string>,
+	activeEntry?: TimelineRow,
 ): void {
 	if (row === undefined || !hubId || !sessionRef) return;
 	const needle = findNeedle(query);
 	if (needle === "") return;
+	if (activeEntry !== undefined && row.kind === "details") {
+		if (!textMatchesFind(rowText(activeEntry, delegates, answersByRow), needle)) return;
+		setDisclosureOpenAll(rowDisclosureIds(hubId, sessionRef, row), true);
+		openRowDisclosures(hubId, sessionRef, activeEntry, needle, delegates, answersByRow);
+		return;
+	}
 	if (!textMatchesFind(rowText(row, delegates, answersByRow), needle)) return;
 	openRowDisclosures(hubId, sessionRef, row, needle, delegates, answersByRow);
 }
@@ -180,20 +221,54 @@ export function selectedRowIndex(
 	return index < 0 ? null : index;
 }
 
+function unwrapDetailsKey(key: string): string {
+	if (key.startsWith("quiet-yields:")) return key.slice("quiet-yields:".length);
+	if (key.startsWith("details:")) return key.slice("details:".length);
+	return key;
+}
+
 function rowMatchesSelectedKey(row: TimelineRow, key: string): boolean {
 	if (readerKey(row) === key) return true;
 	if (row.kind === "details") {
-		const targetKey = key.startsWith("quiet-yields:")
-			? key.slice("quiet-yields:".length)
-			: key.startsWith("details:")
-				? key.slice("details:".length)
-				: key;
+		const targetKey = unwrapDetailsKey(key);
 		return row.entries.some(
 			(entry) =>
 				readerKey(entry) === key || entry.id === key || readerKey(entry) === targetKey || entry.id === targetKey,
 		);
 	}
 	return false;
+}
+
+/** Resolves `selectedKey` among member-level `targets`, preserving selection
+ * across stand-ins, legacy group keys (`quiet-yields:<id>`), and rows
+ * holding multiple hits. */
+export function selectedTargetIndex(
+	rows: readonly TimelineRow[],
+	targets: readonly FindMatchTarget[],
+	selectedKey: string | null,
+	standIns: ReadonlyMap<string, string>,
+): number | null {
+	if (selectedKey === null) return null;
+	const key = standIns.get(selectedKey) ?? selectedKey;
+	const exact = targets.findIndex((target) => target.key === key);
+	if (exact >= 0) return exact;
+	const targetKey = unwrapDetailsKey(key);
+	if (targetKey !== key) {
+		const byMember = targets.findIndex((target) => target.key === targetKey || target.entry?.id === targetKey);
+		if (byMember >= 0) return byMember;
+	}
+	const rowIndex = selectedRowIndex(rows, selectedKey, standIns);
+	if (rowIndex === null) return null;
+	let inRow = -1;
+	targets.forEach((target, index) => {
+		if (target.rowIndex === rowIndex) inRow = index;
+	});
+	if (inRow >= 0) return inRow;
+	let atOrBefore = -1;
+	targets.forEach((target, index) => {
+		if (target.rowIndex <= rowIndex) atOrBefore = index;
+	});
+	return atOrBefore >= 0 ? atOrBefore : targets.length > 0 ? 0 : null;
 }
 
 /** Where Find's selection sits among the matches: the selected row when it

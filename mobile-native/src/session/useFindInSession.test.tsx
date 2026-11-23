@@ -1,4 +1,5 @@
 import { isDisclosureOpenIn } from "@evener/appwire-client";
+import { useState } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MobileConversation } from "../projectedRows";
@@ -411,5 +412,123 @@ describe("useFindInSession disclosure opening for quiet yields", () => {
 		expect(isRowOpen(extendedGroup)).toBe(true);
 		expect(isRowOpen(q1)).toBe(true);
 		expect(hasRenderedProse(tree, "quokka-ext-selected")).toBe(true);
+	});
+
+	it("steps Previous across matching quiet wakes inside one quiet-yields group and settles onto a prepended match without extra paging", () => {
+		const makeQuiet = (id: string, turnId: string, text: string): Extract<TimelineRow, { kind: "notice" }> => ({
+			kind: "notice",
+			id,
+			turnId,
+			origin: "system",
+			family: "lifecycle",
+			tone: "system",
+			eventKind: "quiet_yield",
+			label: "Ended turn quietly",
+			text,
+			rendersMarkdown: true,
+		});
+		const w1 = makeQuiet("qy_page_1", "t1", "quokka-repeat first");
+		const w2 = makeQuiet("qy_page_2", "t2", "quokka-repeat second");
+		const w3 = makeQuiet("qy_page_3", "t3", "quokka-repeat third");
+		const initialGroup: TimelineRow = {
+			kind: "details",
+			id: "quiet-yields:qy_page_2",
+			entries: [w2, w3],
+			summary: "2 quiet yields",
+		};
+		const extendedGroup: TimelineRow = {
+			kind: "details",
+			id: "quiet-yields:qy_page_1",
+			entries: [w1, w2, w3],
+			summary: "3 quiet yields",
+		};
+
+		let latestResult!: ReturnType<typeof useFindInSession>;
+		let setRowsState!: (rows: readonly TimelineRow[]) => void;
+		let setOlderPageState!: (page: string | null) => void;
+		const findOlderSpy = vi.fn();
+
+		function SteppingHarness() {
+			const [rows, setRows] = useState<readonly TimelineRow[]>([initialGroup]);
+			const [olderPage, setOlderPage] = useState<string | null>("cursor-older");
+			const [find, setFind] = useState<FindState | null>({
+				query: "quokka-repeat",
+				key: null,
+				seeking: true,
+				exhausted: false,
+			});
+			setRowsState = setRows;
+			setOlderPageState = setOlderPage;
+			const conversation = {
+				ref: SESSION_REF,
+				turns: [],
+				items: [],
+			} as unknown as MobileConversation;
+			latestResult = useFindInSession({
+				hubId: HUB_ID,
+				sessionRef: SESSION_REF,
+				find,
+				setFind,
+				timelineRows: rows,
+				answersByRow: new Map(),
+				answerStandIns: new Map(),
+				conversation,
+				focused: true,
+				status: "open",
+				loadingOlder: false,
+				olderPage,
+				service: {},
+				connected: true,
+				olderHistory: { permanent: false },
+				isCurrentReader: () => true,
+				findOlder: findOlderSpy,
+				follow: { state: { current: { following: false } }, dispatch: () => {} } as never,
+				timeline: { current: { scrollToIndex: () => {} } } as never,
+				listOffset: { current: 0 },
+				readerContentHeight: { current: 0 },
+				readerViewportHeight: { current: 0 },
+				listUnderBar: {},
+				captureSuppressed: { current: false },
+			});
+			return (
+				<>
+					{rows.map((row) => (
+						<TimelineItem key={row.id} item={row} hubId={HUB_ID} sessionRef={SESSION_REF} />
+					))}
+				</>
+			);
+		}
+
+		let tree!: ReactTestRenderer;
+		act(() => {
+			tree = render(<SteppingHarness />);
+		});
+		expect(latestResult.findHits).toHaveLength(2);
+		expect(latestResult.findCurrent).toBe(1);
+		expect(findOlderSpy).not.toHaveBeenCalled();
+
+		// Previous inside the group moves from w3 (2 of 2) to w2 (1 of 2) without paging.
+		act(() => {
+			latestResult.stepFind(-1);
+		});
+		expect(latestResult.findCurrent).toBe(0);
+		expect(findOlderSpy).not.toHaveBeenCalled();
+
+		// Previous from w2 triggers older paging once, then settles onto w1 (1 of 3) and opens w1's disclosure.
+		act(() => {
+			latestResult.stepFind(-1);
+		});
+		expect(findOlderSpy).toHaveBeenCalledTimes(1);
+
+		act(() => {
+			setOlderPageState("cursor-even-older");
+			setRowsState([extendedGroup]);
+		});
+		expect(latestResult.findHits).toHaveLength(3);
+		expect(latestResult.findCurrent).toBe(0);
+		expect(findOlderSpy).toHaveBeenCalledTimes(1);
+		expect(isRowOpen(extendedGroup)).toBe(true);
+		expect(isRowOpen(w1)).toBe(true);
+		expect(hasRenderedProse(tree, "quokka-repeat first")).toBe(true);
 	});
 });
