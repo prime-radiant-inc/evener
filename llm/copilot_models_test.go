@@ -144,3 +144,58 @@ func TestCopilotRosterMergedModalitiesStayTextOnly(t *testing.T) {
 		t.Fatalf("claude-haiku-5.5 lost its advertised, live-proven image input: %+v", haiku.Caps.InputModalities)
 	}
 }
+
+// TestCopilotRosterParserFollowsAuthScheme pins that a user protocol override
+// retargets generation only: the account's listing is still parsed by the
+// Copilot roster parser, so its picker/policy filter and per-row routing
+// survive, and the configured models URL is the fetch destination.
+func TestCopilotRosterParserFollowsAuthScheme(t *testing.T) {
+	t.Parallel()
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(copilotRefreshRoster))
+	}))
+	t.Cleanup(srv.Close)
+
+	cfgPath := filepath.Join(t.TempDir(), "providers.toml")
+	cfg := "[providers.work]\nbase = \"github-copilot\"\nprotocol = \"openai-responses\"\nmodels_endpoint = \"/configured/models\"\nbase_url = \"" + srv.URL + "/v1\"\n"
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := registry.Load(
+		registry.WithConfigPath(cfgPath), registry.WithStateRoot(t.TempDir()),
+		registry.WithOffline(true), registry.WithoutCache(),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	c := NewClient(WithRegistry(r))
+	ctx := WithScopedAuthenticator(context.Background(), registry.AuthOAuthGitHubCopilot, copilotTestAuthenticator{})
+	listing, err := c.Models(ctx, "work")
+	if err != nil {
+		t.Fatalf("listing: %v", err)
+	}
+	if !listing.Live || !listing.Usable {
+		t.Fatalf("listing = live %v usable %v, want a usable account listing", listing.Live, listing.Usable)
+	}
+	if gotPath != "/v1/configured/models" {
+		t.Fatalf("listing path = %q, want the configured /v1/configured/models", gotPath)
+	}
+	for _, hidden := range []string{"picker-hidden", "policy-disabled", "embedding-only"} {
+		if slices.Contains(modelIDs(listing.Models), hidden) {
+			t.Fatalf("listing offered %q: the account's picker/policy filter was lost", hidden)
+		}
+	}
+	for _, row := range listing.Models {
+		if row.ModelID != "claude-haiku-5.5" {
+			continue
+		}
+		if row.Protocol != registry.ProtocolAnthropic {
+			t.Fatalf("claude row protocol = %q, want the account's %q", row.Protocol, registry.ProtocolAnthropic)
+		}
+		return
+	}
+	t.Fatalf("listing ids = %v, want claude-haiku-5.5", modelIDs(listing.Models))
+}

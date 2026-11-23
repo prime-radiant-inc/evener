@@ -665,9 +665,17 @@ func (c *Client) listLive(ctx context.Context, instance string) ([]registry.Mode
 	if err != nil {
 		return nil, false, &ConfigurationError{Message: err.Error()}
 	}
-	p, ok := ProtocolFor(res.Protocol)
+	// A Copilot instance's roster is parsed by the Chat Completions listing
+	// parser whatever generation protocol the user configured: the transport's
+	// auth scheme owns the account's picker/policy filter and per-row routing,
+	// and the parser reads the resolved transport's own models URL.
+	listingProtocol := res.Protocol
+	if res.Transport.Auth == registry.AuthOAuthGitHubCopilot {
+		listingProtocol = registry.ProtocolOpenAIChat
+	}
+	p, ok := ProtocolFor(listingProtocol)
 	if !ok {
-		return nil, false, &ConfigurationError{Message: fmt.Sprintf("%s: protocol %q is not registered", instance, res.Protocol)}
+		return nil, false, &ConfigurationError{Message: fmt.Sprintf("%s: protocol %q is not registered", instance, listingProtocol)}
 	}
 	opCtx, op := c.beginProviderOperation(ctx)
 	rows, err := p.ListModels(opCtx, res)

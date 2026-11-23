@@ -8,6 +8,7 @@ import (
 
 	"primeradiant.com/evener/auth/githubcopilot"
 	"primeradiant.com/evener/envvars/userdirs"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // gitHubCopilotInstance is the instance managed when no --instance names another.
@@ -65,9 +66,12 @@ func parseGitHubCopilotFlags(command, summary string, args []string, stderr io.W
 			return "", "", err
 		}
 	}
-	name := ""
-	if name = strings.TrimSpace(*instance); name == "" {
+	name := strings.ToLower(strings.TrimSpace(*instance))
+	if name == "" {
 		name = gitHubCopilotInstance
+	}
+	if !registry.ValidInstanceName(name) {
+		return "", "", fmt.Errorf("%w %q (lowercase, no slash)", errInvalidInstanceName, name)
 	}
 	return resolvedStateDir, name, nil
 }

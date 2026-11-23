@@ -1334,9 +1334,11 @@ func (r *Registry) applyGlobRow(c *Caps, row *Model, gr Model, tag, g, rowProto 
 func applyRowScalars(row *Model, src Model, tag string, prov map[string]string) {
 	if src.Protocol != "" {
 		// An authored protocol retargets the wire: the previous protocol's
-		// endpoints do not survive as the new protocol's path unless this
-		// same layer also states a transport.
-		if src.Protocol != row.Protocol && src.Transport == nil && row.Transport != nil {
+		// endpoints do not survive as the new protocol's path. Clear them
+		// before this layer's transport merges, whether or not it states one:
+		// a partial override supplies only the paths it names, and the new
+		// protocol's defaults fill the rest.
+		if src.Protocol != row.Protocol && row.Transport != nil {
 			c := cloneTransport(*row.Transport)
 			clearProtocolTransport(&c)
 			row.Transport = &c
