@@ -309,7 +309,7 @@ func (s *Session) canQuietlyYield(ctx context.Context) error {
 			}
 		}
 	}
-	if work, err := s.treeHasOutstandingWork(); work || err != nil {
+	if work, err := s.subagentHasDrainableWork(); work || err != nil {
 		return err
 	}
 	return errors.New("nothing can wake this turn, and you have not sent your report yet. Start the work, or send your final report with the result tool")

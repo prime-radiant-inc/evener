@@ -1835,9 +1835,15 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			skipHistory = false
 		}
 
-		bareReply := len(calls) == 0 && !s.reportsToParent() && kind == EntryUserInput &&
+		bareReply := len(calls) == 0 && kind == EntryUserInput &&
 			s.usesDefaultCommunicateOutputEnvelope() && resp.Finish.Reason == llm.FinishReasonStop &&
 			!noContent && strings.TrimSpace(lastText) != "" && !s.communicated()
+		if bareReply && s.reportsToParent() {
+			outstanding, workErr := s.subagentHasDrainableWork()
+			if workErr != nil || outstanding {
+				bareReply = false
+			}
+		}
 		var bareStop hooks.StopResult
 		if bareReply {
 			bareStop = s.runReplyStopHook(ctx, lastText)

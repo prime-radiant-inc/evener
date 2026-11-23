@@ -2640,7 +2640,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			// An explicit quiet yield parks the generation until its owned work
 			// wakes it. Both the report nudge and SubagentStop wait until the
 			// drain and any required post-drain report nudge finish.
-			outstanding, workErr := a.sess.treeHasOutstandingWork()
+			outstanding, workErr := a.sess.subagentHasDrainableWork()
 			if workErr != nil {
 				err = workErr
 				shouldNudge = false
