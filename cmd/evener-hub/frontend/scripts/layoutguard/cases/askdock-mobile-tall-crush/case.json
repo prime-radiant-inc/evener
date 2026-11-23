@@ -4,6 +4,7 @@
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
+    "styles/surface.module.css",
     "widgets/card/card.module.css",
     "widgets/statusdot/statusdot.module.css",
     "panes/session/askoptioncopy.module.css",

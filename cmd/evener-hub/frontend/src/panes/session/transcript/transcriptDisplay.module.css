@@ -12,9 +12,7 @@
 }
 
 .advancedPanel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+  composes: stack3 from "../../../styles/surface.module.css";
 }
 
 .fieldsets {
