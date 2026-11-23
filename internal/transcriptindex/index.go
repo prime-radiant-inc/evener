@@ -274,13 +274,19 @@ type persistedCommCall struct {
 	TurnID       string `json:"turn_id"`
 }
 
+type persistedDelivered struct {
+	persistedPos
+	TurnID string `json:"turn_id"`
+}
+
 type persistedProvisionalQuiet struct {
-	PendingQuiet  []string `json:"pending_quiet,omitempty"`
-	AllCallIDs    []string `json:"all_call_ids"`
-	HasText       bool     `json:"has_text,omitempty"`
-	HasAuthorship bool     `json:"has_authorship,omitempty"`
-	Flushed       bool     `json:"flushed,omitempty"`
-	SettledQuiet  bool     `json:"settled_quiet,omitempty"`
+	PendingQuiet  []string             `json:"pending_quiet,omitempty"`
+	AllCallIDs    []string             `json:"all_call_ids"`
+	Delivered     []persistedDelivered `json:"delivered,omitempty"`
+	HasText       bool                 `json:"has_text,omitempty"`
+	HasAuthorship bool                 `json:"has_authorship,omitempty"`
+	Flushed       bool                 `json:"flushed,omitempty"`
+	SettledQuiet  bool                 `json:"settled_quiet,omitempty"`
 	persistedPos
 	TurnID string `json:"turn_id"`
 }
@@ -823,6 +829,11 @@ func (x *Index) adopt(m meta) error {
 		if err := validatePersistedPos(m, c.persistedPos); err != nil {
 			return err
 		}
+		for _, d := range c.Delivered {
+			if err := validatePersistedPos(m, d.persistedPos); err != nil {
+				return err
+			}
+		}
 	}
 	if err := validatePersistedPos(m, m.LastAssistantPos); err != nil {
 		return err
@@ -1176,9 +1187,14 @@ func restoreDeferredState(b *builder, m meta, below uint64) {
 			for _, id := range c.PendingQuiet {
 				pending[id] = true
 			}
+			var delivered []deliveredComm
+			for _, d := range c.Delivered {
+				delivered = append(delivered, deliveredComm{pos: d.contributor(), turnID: d.TurnID})
+			}
 			q := &provisionalQuietState{
 				pendingQuiet:  pending,
 				allCallIDs:    append([]string(nil), c.AllCallIDs...),
+				delivered:     delivered,
 				hasText:       c.HasText,
 				hasAuthorship: c.HasAuthorship,
 				flushed:       c.Flushed,
@@ -1750,9 +1766,14 @@ func persistProvisionalQuiet(items []*provisionalQuietState) []persistedProvisio
 			pending = append(pending, id)
 		}
 		sort.Strings(pending)
+		var delivered []persistedDelivered
+		for _, d := range q.delivered {
+			delivered = append(delivered, persistedDelivered{persistedPos: posOf(d.pos), TurnID: d.turnID})
+		}
 		list = append(list, persistedProvisionalQuiet{
 			PendingQuiet:  pending,
 			AllCallIDs:    append([]string(nil), q.allCallIDs...),
+			Delivered:     delivered,
 			HasText:       q.hasText,
 			HasAuthorship: q.hasAuthorship,
 			Flushed:       q.flushed,

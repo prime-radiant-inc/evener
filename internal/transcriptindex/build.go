@@ -53,9 +53,15 @@ type commState struct {
 	turnID  string
 }
 
+type deliveredComm struct {
+	pos    contributor
+	turnID string
+}
+
 type provisionalQuietState struct {
 	pendingQuiet  map[string]bool
 	allCallIDs    []string
+	delivered     []deliveredComm
 	hasText       bool
 	hasAuthorship bool
 	flushed       bool
@@ -449,6 +455,11 @@ func (b *builder) communicateContext(callID string, needsProvisional bool, provL
 				if err := add(q.pos, q.turnID); err != nil {
 					return strRef{}, err
 				}
+				for _, d := range q.delivered {
+					if err := add(d.pos, d.turnID); err != nil {
+						return strRef{}, err
+					}
+				}
 			}
 		}
 	}
@@ -569,6 +580,13 @@ func (b *builder) seedRegistryProvisional(reg *apptranscript.ToolCallRegistry, e
 		}
 		tmpReg := &apptranscript.ToolCallRegistry{ForceProvisional: map[int]bool{int(q.pos.Ordinal) + 1: true}}
 		apptranscript.ProjectEntryParts(q.turnID, int(q.pos.Ordinal)+1, *assistantEntry, tmpReg, nil, apptranscript.ToolResultOutputImages)
+		for _, d := range q.delivered {
+			delEntry, err := b.x.readEntry(d.pos.Offset, d.pos.Length)
+			if err != nil {
+				return nil, err
+			}
+			apptranscript.ProjectEntryParts(d.turnID, int(d.pos.Ordinal)+1, *delEntry, tmpReg, nil, nil)
+		}
 		for _, id := range q.allCallIDs {
 			if auth, ok := tmpReg.CommAuthorship[id]; ok {
 				if reg.CommAuthorship == nil {
@@ -771,15 +789,15 @@ func (b *builder) applyIdentity(ordinal uint64, offset int64, length uint32, ent
 		// its visible message is suppressed as an assistant-text echo.
 		if entry.Communicate != nil {
 			delete(b.commCalls, entry.Communicate.CallID)
-			if q := b.provisionalByCall[entry.Communicate.CallID]; q != nil {
-				delete(q.pendingQuiet, entry.Communicate.CallID)
-			}
-			delete(b.provisionalByCall, entry.Communicate.CallID)
-			b.pruneProvisional()
 		}
 		echoes, err := b.echoesAwaiting(summary, entry)
 		if err != nil {
 			return err
+		}
+		if !echoes && entry.Communicate != nil && entry.Communicate.Message != "" {
+			if q := b.provisionalByCall[entry.Communicate.CallID]; q != nil {
+				q.delivered = append(q.delivered, deliveredComm{pos: c, turnID: entry.TurnID})
+			}
 		}
 		if !echoes {
 			if err := b.appendItems(slot, entry, c, nil, nil); err != nil {

@@ -458,5 +458,63 @@ func TestQuietYieldProjectionAndCompanionDemotion(t *testing.T) {
 				})
 			}
 		})
+
+		t.Run("preToolUse_supplied_message_on_blank_communicate_preserves_distinct_and_dedupes_matching_prose", func(t *testing.T) {
+			t.Parallel()
+			for _, tc := range []struct {
+				name      string
+				prose     string
+				hookReply string
+				wantTexts []string
+			}{
+				{name: "distinct", prose: "Distinct companion prose", hookReply: "Hook supplied reply", wantTexts: []string{"Hook supplied reply", "Distinct companion prose"}},
+				{name: "matching", prose: "Same hook reply", hookReply: "Same hook reply", wantTexts: []string{"Same hook reply"}},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					t.Parallel()
+					turnID := "turn_hook_supplied"
+					deliveredState := json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true}`)
+					entries := []schema.Turn{
+						{Format: schema.TurnFormatIdentity, TurnID: turnID, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("go"), Timestamp: ts},
+						{Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: "r1", Authorship: author.Clone(), Kind: schema.TurnAssistant, Timestamp: ts.Add(time.Second), Message: llm.Message{
+							Role: llm.RoleAssistant,
+							Content: []llm.ContentPart{
+								{Kind: llm.ContentText, Text: tc.prose},
+								{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_q", Name: "communicate", Arguments: json.RawMessage(`{}`)}},
+							},
+						}},
+						{Format: schema.TurnFormatIdentity, TurnID: turnID, Kind: schema.TurnCommunicate, Timestamp: ts.Add(1500 * time.Millisecond), Communicate: &schema.CommunicateInfo{CallID: "call_q", EndTurn: true, Message: tc.hookReply}},
+						{Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: "r1", Kind: schema.TurnToolResults, Timestamp: ts.Add(2 * time.Second), Message: llm.Message{
+							Role:    llm.RoleTool,
+							Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_q", Name: "communicate", Content: `{"accepted":true,"end_turn":true}`, ToolState: deliveredState}}},
+						}},
+						{Format: schema.TurnFormatIdentity, TurnID: turnID, Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}},
+					}
+					path := writeTranscriptEntries(t, entries...)
+					reg := NewToolCallRegistry()
+					turns, err := ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, id string, idx int) []appwire.ThreadItem {
+						items, _ := ProjectEntryParts(id, idx, turn, reg, nil, nil)
+						return items
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					var got []string
+					for _, it := range turns[0].Items {
+						if it.Type == "agentMessage" {
+							got = append(got, it.Text)
+						}
+					}
+					if len(got) != len(tc.wantTexts) {
+						t.Fatalf("agentMessages=%q, want %q", got, tc.wantTexts)
+					}
+					for i := range got {
+						if got[i] != tc.wantTexts[i] {
+							t.Fatalf("agentMessages[%d]=%q, want %q (all=%q)", i, got[i], tc.wantTexts[i], got)
+						}
+					}
+				})
+			}
+		})
 	})
 }

@@ -535,3 +535,92 @@ func TestQuietYieldPreToolUseBlankedMessageDemotesProse(t *testing.T) {
 		}
 	}
 }
+
+func TestQuietYieldPreToolUseSuppliedMessageOnBlankCommunicate(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		endTurn   bool
+		prose     string
+		hookReply string
+		toolState json.RawMessage
+		wantMsgs  []string
+	}{
+		{
+			name: "distinct", endTurn: false,
+			prose: "Distinct companion prose", hookReply: "Hook supplied reply",
+			toolState: json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":false}`),
+			wantMsgs:  []string{"Hook supplied reply", "Distinct companion prose"},
+		},
+		{
+			name: "matching", endTurn: false,
+			prose: "Same hook reply", hookReply: "Same hook reply",
+			toolState: json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":false}`),
+			wantMsgs:  []string{"Same hook reply"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fx := fixture{
+				name: "hook-supplied-" + tc.name,
+				lines: []fixtureLine{
+					entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_1", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("go")}, 1)),
+					entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_1", RoundID: "r1", Kind: schema.TurnAssistant, Message: llm.Message{
+						Role: llm.RoleAssistant,
+						Content: []llm.ContentPart{
+							{Kind: llm.ContentText, Text: tc.prose},
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_q", Name: "communicate", Arguments: json.RawMessage(`{}`)}},
+						},
+					}}, 2)),
+					entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_1", Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: "call_q", EndTurn: tc.endTurn, Message: tc.hookReply}}, 3)),
+					entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_1", RoundID: "r1", Kind: schema.TurnToolResults, Message: llm.Message{
+						Role:    llm.RoleTool,
+						Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_q", Name: "communicate", Content: `{"accepted":true}`, ToolState: tc.toolState}}},
+					}}, 4)),
+					entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_1", Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}}, 5)),
+				},
+			}
+			coldPath := writeFixture(t, fx)
+			cold := openIndex(t, coldPath, t.TempDir())
+			coldWin, err := cold.Latest(40)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ref := referenceCandidates(t, coldPath)
+			if !reflect.DeepEqual(coldWin.Candidates, ref) {
+				t.Fatalf("cold diverges from reference:\ncold: %s\nref:  %s", dump(coldWin.Candidates), dump(ref))
+			}
+			var got []string
+			for _, c := range coldWin.Candidates {
+				if c.Item.Type == "agentMessage" {
+					got = append(got, c.Item.Text)
+				}
+			}
+			if !reflect.DeepEqual(got, tc.wantMsgs) {
+				t.Fatalf("cold agentMessages=%q, want %q", got, tc.wantMsgs)
+			}
+			// Incremental catchup split after TurnCommunicate (with reopen).
+			incPath, lines := writeHeaderOnly(t, fx)
+			for _, line := range lines[:3] {
+				appendBytes(t, incPath, line)
+			}
+			dir := t.TempDir()
+			inc := openIndex(t, incPath, dir)
+			if err := inc.Close(); err != nil {
+				t.Fatal(err)
+			}
+			inc = openIndex(t, incPath, dir)
+			for _, line := range lines[3:] {
+				appendBytes(t, incPath, line)
+			}
+			catchUp(t, inc)
+			incWin, err := inc.Latest(40)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(incWin.Candidates, coldWin.Candidates) {
+				t.Fatalf("incremental diverges from cold:\ninc:  %s\ncold: %s", dump(incWin.Candidates), dump(coldWin.Candidates))
+			}
+		})
+	}
+}

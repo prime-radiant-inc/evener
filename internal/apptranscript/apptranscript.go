@@ -38,6 +38,7 @@ type QuietAssistantEntry struct {
 	Commentary        string
 	Authorship        *schema.TranscriptAuthorship
 	ProvisionalItems  []appwire.ThreadItem
+	DeliveredTexts    []string
 	LastAssistantText string
 	PendingQuiet      map[string]bool
 	Flushed           bool
@@ -505,10 +506,6 @@ func ProjectEntryParts(turnID string, entryIndex int, turn schema.Turn, reg *Too
 		if reg != nil && turn.Communicate != nil {
 			delete(reg.CommRawArgs, turn.Communicate.CallID)
 			delete(reg.CommAuthorship, turn.Communicate.CallID)
-			if qentry := reg.QuietCalls[turn.Communicate.CallID]; qentry != nil {
-				delete(qentry.PendingQuiet, turn.Communicate.CallID)
-			}
-			delete(reg.QuietCalls, turn.Communicate.CallID)
 		}
 		if item, ok := CommunicateItem(turnID, entryIndex, turn); ok {
 			// A delivery whose message repeats the assistant text already shown
@@ -516,6 +513,11 @@ func ProjectEntryParts(turnID string, entryIndex int, turn schema.Turn, reg *Too
 			// same echo (build.go's echoesAwaiting).
 			if reg != nil && item.Text != "" && turnID == reg.LastAssistantTurnID && EchoesAssistantText(reg.LastAssistantText, item.Text) {
 				return nil, nil
+			}
+			if reg != nil && turn.Communicate != nil && item.Text != "" {
+				if qentry := reg.QuietCalls[turn.Communicate.CallID]; qentry != nil {
+					qentry.DeliveredTexts = append(qentry.DeliveredTexts, item.Text)
+				}
 			}
 			return []appwire.ThreadItem{item}, []int{0}
 		}
@@ -1271,12 +1273,28 @@ func (r *ToolCallRegistry) flushProvisionalEntry(qentry *QuietAssistantEntry, tu
 		return nil
 	}
 	qentry.Flushed = true
-	out := make([]appwire.ThreadItem, len(qentry.ProvisionalItems))
-	for i, item := range qentry.ProvisionalItems {
+	deliveredLast := false
+	if qentry.LastAssistantText != "" {
+		for _, msg := range qentry.DeliveredTexts {
+			if EchoesAssistantText(msg, qentry.LastAssistantText) {
+				deliveredLast = true
+				break
+			}
+		}
+	}
+	items := qentry.ProvisionalItems
+	if deliveredLast {
+		items = items[:len(items)-1]
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]appwire.ThreadItem, len(items))
+	for i, item := range items {
 		item.TurnID = turnID
 		out[i] = item
 	}
-	if qentry.LastAssistantText != "" {
+	if !deliveredLast && qentry.LastAssistantText != "" {
 		r.noteAssistantText(qentry.LastAssistantText, turnID, qentry.EntryIndex)
 	}
 	return out
