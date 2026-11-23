@@ -1453,26 +1453,46 @@ func (s *Session) flushAwaitingDelegateAttentionResolutions() error {
 // settleUnpresentedDelegateTrigger settles the accepted trigger a child
 // generation latched but never presented. It runs once, from the finalize tail
 // after the turn's own exit rule declined to act. A user or hook stop (quietAt
-// names its settled generation) stamps a durable hold on the row in the same
-// store Apply that recomputes NeedsAttention, so the stopped delegate retires
+// names its settled generation) carries its durable hold in the generation's
+// finish batch (holdAttentionID names the row), so the stopped delegate retires
 // cleanly and the row presents only when a fresh wake or an explicit send
 // clears the hold. A plain transient failure leaves the row unheld and pending
-// for the next drive.
-func (s *Session) settleUnpresentedDelegateTrigger(quietAt uint64) {
+// for the next drive. If the finish batch itself failed, the latch stays: the
+// ordinary drive must not accept the stopped row again before settlement
+// recovery retries that batch, which carries the hold with the outcome.
+// Callers that settled the row outside a finish batch pass an empty
+// holdAttentionID, and the hold is stamped here directly.
+func (s *Session) settleUnpresentedDelegateTrigger(quietAt uint64, holdAttentionID string, finishBatchLanded bool) {
 	if s == nil || s.delegateController == nil || s.owningDelegateID == "" {
 		return
 	}
 	s.attentionMu.Lock()
 	trigger := s.attentionAcceptedID
+	if trigger != "" && holdAttentionID != "" && !finishBatchLanded {
+		s.attentionMu.Unlock()
+		return
+	}
 	s.attentionAcceptedID = ""
 	s.attentionAcceptedCause = nil
 	s.attentionMu.Unlock()
-	if trigger == "" || quietAt == 0 {
+	if trigger == "" || quietAt == 0 || holdAttentionID != "" {
 		return
 	}
 	if err := s.delegateController.holdDelegateAttention(s.owningDelegateID, trigger, quietAt); err != nil {
 		s.warnDelegateAttentionFailed(delegateAttentionResolveLabel, s.owningDelegateID, err)
 	}
+}
+
+// acceptedDelegateAttentionTriggerID returns the accepted trigger the current
+// generation has not presented yet, or "" when there is none. The finalize tail
+// hands it to the finish batch so a stop's hold is durable with the outcome.
+func (s *Session) acceptedDelegateAttentionTriggerID() string {
+	if s == nil {
+		return ""
+	}
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	return s.attentionAcceptedID
 }
 
 // finishRootDelegateAttentionTurn consumes the exact selected IDs only after a

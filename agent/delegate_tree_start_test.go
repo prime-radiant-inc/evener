@@ -925,3 +925,75 @@ func TestDelegateControllerCommittedStartFailureAppendFailureIsNotAStopWin(t *te
 		t.Fatalf("live state = %#v, want recoveryRequired after a failed append", live)
 	}
 }
+
+// A recovered legacy owed generation whose identity a pre-queue journal never
+// carried is queued in the same batch that commits its start. The journal then
+// governs its later resolution, hold, or transient-failure retry even though
+// the transcript still holds the old consumed marker.
+func TestOwedLegacyCommitQueuesItsAttentionRowInTheStartBatch(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_owed", "")
+	reservation, err := c.reserveOwedAttentionStart("dlg_owed", "att_legacy", 1)
+	if err != nil {
+		t.Fatalf("reserveOwedAttentionStart: %v", err)
+	}
+	c.mu.Lock()
+	record, recordErr := c.reservationRecordLocked(reservation)
+	queuesOnCommit := record != nil && record.queueAttentionOnCommit
+	c.mu.Unlock()
+	if recordErr != nil || !queuesOnCommit {
+		t.Fatalf("owed reservation queues on commit = %t (%v), want the missing legacy row queued in the start batch", queuesOnCommit, recordErr)
+	}
+	if _, err := c.CommitStart(reservation); err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	rows := pendingAttentionRowsForTest(t, c, "dlg_owed")
+	if len(rows) != 1 || rows[0].AttentionID != "att_legacy" || rows[0].HeldThrough != 0 {
+		t.Fatalf("pending rows after the owed commit = %#v, want the legacy row queued unheld", rows)
+	}
+	if !needsAttentionForTest(t, c, "dlg_owed") {
+		t.Fatal("NeedsAttention = false, want the committed legacy row to be runnable")
+	}
+
+	// A first request that fails before settling keeps the row pending and
+	// unheld, so the ordinary drive retries it.
+	sess := &Session{delegateController: c, owningDelegateID: "dlg_owed"}
+	sess.holdAcceptedTrigger("att_legacy")
+	sess.settleUnpresentedDelegateTrigger(0, "", true)
+	rows = pendingAttentionRowsForTest(t, c, "dlg_owed")
+	if len(rows) != 1 || rows[0].AttentionID != "att_legacy" || rows[0].HeldThrough != 0 {
+		t.Fatalf("pending rows after a pre-settlement failure = %#v, want the legacy row unheld for retry", rows)
+	}
+}
+
+// An owed identity the journal already carries is not queued a second time:
+// the commit batch leaves the existing row as it was.
+func TestOwedLegacyCommitDoesNotRequeueAPendingRow(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_owed", "")
+	c.mu.Lock()
+	if _, err := c.appendLocked(attentionQueuedEvent("dlg_owed", "att_legacy", true)); err != nil {
+		c.mu.Unlock()
+		t.Fatalf("queue the existing legacy row: %v", err)
+	}
+	c.mu.Unlock()
+	reservation, err := c.reserveOwedAttentionStart("dlg_owed", "att_legacy", 1)
+	if err != nil {
+		t.Fatalf("reserveOwedAttentionStart: %v", err)
+	}
+	c.mu.Lock()
+	record, recordErr := c.reservationRecordLocked(reservation)
+	queuesOnCommit := record != nil && record.queueAttentionOnCommit
+	c.mu.Unlock()
+	if recordErr != nil || queuesOnCommit {
+		t.Fatalf("owed reservation queues on commit = %t (%v), want no duplicate event for a row the journal holds", queuesOnCommit, recordErr)
+	}
+	if _, err := c.CommitStart(reservation); err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	if rows := pendingAttentionRowsForTest(t, c, "dlg_owed"); len(rows) != 1 || rows[0].AttentionID != "att_legacy" {
+		t.Fatalf("pending rows after the owed commit = %#v, want the single existing row", rows)
+	}
+}

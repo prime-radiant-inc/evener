@@ -1306,7 +1306,9 @@ func TestDelegateResourceRuntime_StableStopActiveCompletionReportsCancelledByReq
 	invocation := <-result
 	assertStableStopCompleted(t, invocation, harness.fixture.delegateID, delegateLifecycleRunning, "cancelled_by_request")
 	assertStableStopDurableCompletion(t, harness.root.delegateController, harness.fixture.delegateID)
+	harness.root.delegateController.mu.Lock()
 	aggregate := harness.root.delegateController.durable[harness.fixture.delegateID]
+	harness.root.delegateController.mu.Unlock()
 	if aggregate == nil {
 		t.Fatal("stable stop dropped the delegate from the journal")
 	}

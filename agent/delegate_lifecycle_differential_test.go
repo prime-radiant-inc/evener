@@ -975,7 +975,7 @@ func (h *delegateLifecycleHarness) opNoActionFinish() string {
 	if !h.model.noActionEligible(true) {
 		h.t.Fatal("lifecycle differential: no-action: production prepared but model ineligible")
 	}
-	if _, finishErr := h.c.FinishNoAction(claim); finishErr != nil {
+	if _, finishErr := h.c.FinishNoAction(claim, ""); finishErr != nil {
 		// Production prepared the eligible no-action finish but could not
 		// execute it: the durable store selected completed_no_action while
 		// the finish path refused — the #580 no-action-selection defect class.

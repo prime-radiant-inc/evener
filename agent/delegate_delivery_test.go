@@ -1378,3 +1378,78 @@ func TestDelegateControllerStopBeforeDeliveryReceiptDefersAdmission(t *testing.T
 		t.Fatalf("BeginDelivery during stop = token:%#v admitted:%t err:%v", token, admitted, err)
 	}
 }
+
+// A delivery acknowledged after it was deferred behind the owner's in-flight
+// turn must not release a stop hold the owner took after the claim sampled its
+// settled generation. The report the user stopped stays held, while the
+// deferred row itself is queued unheld and reaches the owner.
+func TestDeferredDeliveryAckKeepsANewerStopHold(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 2, 1)
+	seedDelegateControllerIdle(t, c, "dlg_owner", "")
+	// The owner starts its first turn before the child's report is claimed, so
+	// the claim samples settled generation 0 and the delivery is deferred.
+	ownerLease, _ := startDelegateDeliveryGeneration(t, c, "dlg_owner", false)
+	if ownerLease.generation != 1 {
+		t.Fatalf("owner generation = %d, want 1", ownerLease.generation)
+	}
+	if err := c.AttachRuntime(ownerLease, &Session{}); err != nil {
+		t.Fatalf("AttachRuntime owner: %v", err)
+	}
+	seedDelegateControllerIdle(t, c, "dlg_target", "dlg_owner")
+	seedDelegateControllerDelivery(t, c, "dlg_target")
+	seedDelegateControllerDelivery(t, c, "dlg_target")
+	deliveryPlans := c.ReplayDeliveries()
+	if len(deliveryPlans) != 1 {
+		t.Fatalf("deferred delivery plans = %#v, want one", deliveryPlans)
+	}
+	plan := deliveryPlans[0]
+	if plan.ownerDelegateID == "" {
+		t.Fatalf("nested delivery owner = %q, want the parent delegate", plan.ownerDelegateID)
+	}
+	ownerID := plan.ownerDelegateID
+	// The claim was created while the owner was idle at generation 0; that
+	// sample is the only generation its acknowledgment may release.
+	c.mu.Lock()
+	claim := c.deliveryClaims[plan.deliveryID]
+	sampled, hasSampled := uint64(0), false
+	if claim != nil {
+		sampled, hasSampled = claim.settledGeneration, claim.hasSettledGeneration
+	}
+	c.mu.Unlock()
+	if claim == nil || !hasSampled || sampled != 0 {
+		t.Fatalf("claim settled generation = %d (sampled %t), want 0 sampled before the owner's first turn", sampled, hasSampled)
+	}
+	heldID := "report-before-stop"
+	c.mu.Lock()
+	if _, err := c.appendLocked(
+		attentionQueuedEvent(ownerID, heldID, true),
+		attentionHeldEvent(ownerID, heldID, ownerLease.generation),
+	); err != nil {
+		c.mu.Unlock()
+		t.Fatalf("queue and hold the stopped report: %v", err)
+	}
+	c.mu.Unlock()
+
+	token, admitted, err := c.BeginDelivery(plan)
+	if err != nil || !admitted {
+		t.Fatalf("BeginDelivery = token:%#v admitted:%t err:%v", token, admitted, err)
+	}
+	if _, err := c.CompleteDelivery(token, true); err != nil {
+		t.Fatalf("CompleteDelivery: %v", err)
+	}
+	rows := make(map[string]delegatestore.PendingAttention)
+	for _, row := range pendingAttentionRowsForTest(t, c, ownerID) {
+		rows[row.AttentionID] = row
+	}
+	if got := rows[heldID].HeldThrough; got != ownerLease.generation {
+		t.Fatalf("%s held through %d after the deferred ack, want the stop hold at %d kept", heldID, got, ownerLease.generation)
+	}
+	deferredID := delegateAttentionID(plan.deliveryID)
+	if row, ok := rows[deferredID]; !ok || row.HeldThrough != 0 {
+		t.Fatalf("deferred row %q = %#v, want it queued unheld", deferredID, row)
+	}
+	if !needsAttentionForTest(t, c, ownerID) {
+		t.Fatal("NeedsAttention = false, want the deferred unheld row to reach the owner")
+	}
+}

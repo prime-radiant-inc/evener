@@ -2919,6 +2919,7 @@ func (a *subagent) finalizeRun(f subagentFinalize) {
 	}
 	done := a.done
 	a.endEmitted = true
+	stopRequestedBeforeFinish := a.userStopRequested
 	a.mu.Unlock()
 	if hook := a.sess.cfg.testOnly.subagentAfterFinalStatePublish; hook != nil {
 		hook(a)
@@ -2927,6 +2928,8 @@ func (a *subagent) finalizeRun(f subagentFinalize) {
 	// result to the parent and any waiting send) wait until the tail's end:
 	// see announceFinishedGeneration.
 	var announcements delegateMutationPlans
+	var finishErr error
+	var finishBatchErr error
 	if f.stableRun && a.sess.delegateController != nil {
 		f.finish.endedAt = finalizeTime
 		// The report this finish queues carries this run's lineage, whatever
@@ -2934,12 +2937,20 @@ func (a *subagent) finalizeRun(f subagentFinalize) {
 		// has no plan to register it from.
 		f.finish.cause = delegateCause{sessionID: a.sess.id, lineage: a.runProvenance}
 		var plans delegateMutationPlans
-		var finishErr error
+		if f.attentionRun && (stopRequestedBeforeFinish || f.attentionUnpresented) {
+			// The stop that just settled this run is newer evidence than the
+			// unpresented trigger. Carry the row into the finish batch so the
+			// hold is durable with the outcome that explains it.
+			f.finish.holdAttentionID = a.sess.acceptedDelegateAttentionTriggerID()
+		}
 		if f.noActionClaim != nil {
-			plans, finishErr = a.sess.delegateController.FinishNoAction(f.noActionClaim)
+			plans, finishErr = a.sess.delegateController.FinishNoAction(f.noActionClaim, f.finish.holdAttentionID)
 		} else {
 			plans, finishErr = a.sess.delegateController.FinishGeneration(f.lease, f.finish)
 		}
+		// The batch that carries the outcome and its hold landed when only the
+		// plan execution afterwards failed; the latch can clear in that case.
+		finishBatchErr = finishErr
 		announcements = delegateMutationPlans{updates: plans.updates, deliveries: plans.deliveries}
 		plans.updates, plans.deliveries = nil, nil
 		if executeErr := a.sess.executeDelegateMutationPlans(plans); finishErr == nil {
@@ -2972,7 +2983,7 @@ func (a *subagent) finalizeRun(f subagentFinalize) {
 		if userStopped || f.attentionUnpresented {
 			quietAt = f.lease.generation
 		}
-		a.sess.settleUnpresentedDelegateTrigger(quietAt)
+		a.sess.settleUnpresentedDelegateTrigger(quietAt, f.finish.holdAttentionID, finishBatchErr == nil)
 	}
 	// Attention a settled request presented whose resolution append failed is
 	// retried before the generation is announced: the announce wakes the

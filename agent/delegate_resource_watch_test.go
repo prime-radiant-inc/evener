@@ -1075,7 +1075,9 @@ func TestDelegateWatch_StopFencesAndDrainsBothReceiptClasses(t *testing.T) {
 		if stopPending {
 			t.Fatal("restored stop remained pending after stable watch cleanup")
 		}
+		fresh.delegateController.mu.Lock()
 		aggregate := fresh.delegateController.durable["dlg_receiver"]
+		fresh.delegateController.mu.Unlock()
 		if aggregate == nil {
 			t.Fatal("restored stop dropped the receiver from the journal")
 		}

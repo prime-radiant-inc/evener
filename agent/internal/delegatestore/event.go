@@ -137,9 +137,16 @@ type AttentionHoldReleased struct {
 // AttentionID, so a replay or a repeated arm adds nothing.
 //
 // Committed marks the wake as published.
+//
+// ReleaseHoldsThrough bounds that release: nil clears every hold, the fresh
+// wake's unconditional supersession of every stop. A non-nil value clears only
+// holds at or below it, the settled generation the acknowledgment's claim
+// sampled when it was created. A stop that settled after the claim stamped a
+// newer generation, and its hold must outlive this older wake.
 type AttentionQueued struct {
-	AttentionID string `json:"attention_id"`
-	Committed   bool   `json:"committed,omitempty"`
+	AttentionID         string  `json:"attention_id"`
+	Committed           bool    `json:"committed,omitempty"`
+	ReleaseHoldsThrough *uint64 `json:"release_holds_through,omitempty"`
 }
 
 // AttentionResolved removes one attention row from the queue, consumed or

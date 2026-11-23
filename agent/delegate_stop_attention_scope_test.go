@@ -42,8 +42,14 @@ func TestDelegateStopDrainScopesAttentionToMembers(t *testing.T) {
 	if err := c.drainStopForClose(context.Background(), stop); err != nil {
 		t.Fatalf("stop read attention outside its subtree: %v", err)
 	}
+	c.mu.Lock()
+	aggregates := make(map[string]*delegatestore.Aggregate, 3)
+	for _, id := range []string{"dlg_target", "dlg_child", "dlg_unrelated"} {
+		aggregates[id] = c.durable[id]
+	}
+	c.mu.Unlock()
 	for _, input := range []struct{ id, attentionID string }{{"dlg_target", "target-attention"}, {"dlg_child", "child-attention"}} {
-		aggregate := c.durable[input.id]
+		aggregate := aggregates[input.id]
 		if aggregate == nil {
 			t.Fatalf("stop dropped delegate %q from the journal", input.id)
 		}
@@ -62,7 +68,7 @@ func TestDelegateStopDrainScopesAttentionToMembers(t *testing.T) {
 	if c.stop != nil {
 		t.Fatal("stop did not complete")
 	}
-	if a := c.durable["dlg_unrelated"]; a.Phase != delegatestore.PhaseIdle || !a.Resumable {
+	if a := aggregates["dlg_unrelated"]; a == nil || a.Phase != delegatestore.PhaseIdle || !a.Resumable {
 		t.Fatal("stop changed unrelated delegate status")
 	}
 	got, err := os.ReadFile(unrelatedPath)

@@ -655,6 +655,13 @@ func (c *delegateTreeController) reduceGenerationFinishIntent(intent finishInten
 		return finishDecision{err: errDelegateTargetBusy}
 	}
 	events = delegateFinishMetadataEvents(events, lease, finish, outcome, reason)
+	if finish.holdAttentionID != "" {
+		// The finish that quieted the run and the hold it implies are one batch:
+		// a stop's outcome, or a hook-stopped attention launch that completes
+		// without reaching the model. A journal that accepted the finish cannot
+		// leave the unpresented trigger runnable for the next drive.
+		events = append(events, attentionHeldEvent(lease.delegateID, finish.holdAttentionID, lease.generation))
+	}
 
 	closure := outcome == delegatestore.OutcomeExhausted && finish.exhaustionResumable != nil && !*finish.exhaustionResumable
 	return finishDecision{
@@ -707,8 +714,14 @@ func (c *delegateTreeController) reduceStoppedGenerationFinishIntent(intent fini
 		endedAt = c.now()
 	}
 	event, deliveryID := stoppedGenerationFinishEvent(lease, intent.finish.packet, endedAt)
+	events := []delegatestore.Event{event}
+	if intent.finish.holdAttentionID != "" {
+		// The recovery stops reduce through this site too; the hold travels with
+		// the stopped outcome so the row cannot be relaunched between them.
+		events = append(events, attentionHeldEvent(lease.delegateID, intent.finish.holdAttentionID, lease.generation))
+	}
 	return finishDecision{
-		events:            []delegatestore.Event{event},
+		events:            events,
 		latch:             intent.latch,
 		releaseGeneration: true,
 		lease:             lease,

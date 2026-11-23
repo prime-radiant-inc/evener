@@ -61,6 +61,12 @@ type delegateDeliveryAdmission struct {
 	cold       bool
 	inline     bool
 	retryable  bool
+	// settledGeneration is the owner's settled generation sampled when the
+	// claim behind this admission was created. Its acknowledgment releases only
+	// the holds at or below it: a stop that settled a newer generation while the
+	// delivery was deferred keeps the hold it stamped.
+	settledGeneration    uint64
+	hasSettledGeneration bool
 	// callerCommitted marks an inline admission whose result the caller
 	// already persisted in its own tool round. Its store acknowledgment can
 	// still be retried after the reply is gone; nothing is lost.
@@ -93,6 +99,13 @@ type delegateDeliveryClaim struct {
 	ownerID    string
 	waiter     *delegateInlineWaiter
 	cold       bool
+	// settledGeneration is the owner's settled generation at claim creation.
+	// A deferred claim can wait a whole owner turn before its acknowledgment
+	// lands, and a stop inside that window stamps a hold on a row this wake must
+	// not release. hasSettledGeneration is false when no owner aggregate exists
+	// (the root receiver), whose acknowledgment releases every hold as before.
+	settledGeneration    uint64
+	hasSettledGeneration bool
 	// held marks a plan its receiver deferred to its next round because it
 	// was mid-turn.
 	held bool
@@ -285,17 +298,19 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (_ del
 	}
 	delete(c.deliveryClaims, plan.deliveryID)
 	cold := claim.cold
-	admit := func(claimToken delegateDeliveryClaimToken) *delegateDeliveryAdmission {
+	admit := func(source *delegateDeliveryClaim, claimToken delegateDeliveryClaimToken) *delegateDeliveryAdmission {
 		c.nextToken++
 		inline := plan.waiter != nil || plan.callerCommitted
 		receipt := &delegateDeliveryAdmission{
-			token:           delegateDeliveryToken{processID: c.nextToken, deliveryID: claimToken.deliveryID},
-			delegateID:      plan.delegateID,
-			ownerID:         plan.ownerDelegateID,
-			claim:           claimToken,
-			cold:            cold,
-			inline:          inline,
-			callerCommitted: plan.callerCommitted,
+			token:                delegateDeliveryToken{processID: c.nextToken, deliveryID: claimToken.deliveryID},
+			delegateID:           plan.delegateID,
+			ownerID:              plan.ownerDelegateID,
+			claim:                claimToken,
+			cold:                 cold,
+			inline:               inline,
+			callerCommitted:      plan.callerCommitted,
+			settledGeneration:    source.settledGeneration,
+			hasSettledGeneration: source.hasSettledGeneration,
 		}
 		c.deliveries[receipt.token.processID] = receipt
 		return receipt
@@ -305,13 +320,13 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (_ del
 		// The held head is admitted under the receiver's own claim token, so
 		// a retry of it is planned as that delivery's. The deliveries behind
 		// it were never planned, so each gets a claim token of its own.
-		admit(plan.heldClaim.token).heldClaim = plan.heldClaim
+		admit(plan.heldClaim, plan.heldClaim.token).heldClaim = plan.heldClaim
 		for _, behind := range plan.carried[1:] {
 			c.nextToken++
-			admit(delegateDeliveryClaimToken{processID: c.nextToken, deliveryID: behind.DeliveryID})
+			admit(claim, delegateDeliveryClaimToken{processID: c.nextToken, deliveryID: behind.DeliveryID})
 		}
 	}
-	token := admit(plan.claim).token
+	token := admit(claim, plan.claim).token
 	c.evidenceVersion++
 	return token, true, nil
 }
@@ -326,6 +341,27 @@ func (c *delegateTreeController) deliveryStoppedLocked(delegateID, ownerID strin
 		return true
 	}
 	return c.stopCoversLocked(delegateID) || c.stopCoversLocked(ownerID)
+}
+
+// ownerSettledGenerationLocked returns the owner's last settled generation: the
+// open run's generation is not settled yet, so the sample is the one before it.
+// This is the release cap a delivery acknowledgment may carry. An owner with no
+// aggregate (the root receiver) has no journal holds to bound.
+func (c *delegateTreeController) ownerSettledGenerationLocked(ownerID string) (uint64, bool) {
+	if ownerID == "" {
+		return 0, false
+	}
+	aggregate := c.durable[ownerID]
+	if aggregate == nil {
+		return 0, false
+	}
+	if !aggregate.CurrentRunOpen {
+		return aggregate.Generation, true
+	}
+	if aggregate.Generation == 0 {
+		return 0, true
+	}
+	return aggregate.Generation - 1, true
 }
 
 // restoreHeldClaimLocked gives a held delivery a reply took over back to its
@@ -421,7 +457,15 @@ func (c *delegateTreeController) completeDeliveryAckLocked(token delegateDeliver
 	if !receipt.inline && receipt.ownerID != "" && !c.delegateAttentionCommittedLocked(receipt.ownerID, attentionID) {
 		// The queue event and the acknowledgment ride one batch, so the wake the
 		// receipt publishes is durable with the delivery that published it.
-		events = append(events, attentionQueuedEvent(receipt.ownerID, attentionID, true))
+		queued := attentionQueuedEvent(receipt.ownerID, attentionID, true)
+		if receipt.hasSettledGeneration {
+			// Bound the release to the settled generation the claim sampled: a
+			// stop that quieted a row after this delivery was deferred stamped a
+			// newer generation, and that hold must outlive this older wake.
+			through := receipt.settledGeneration
+			queued.AttentionQueued.ReleaseHoldsThrough = &through
+		}
+		events = append(events, queued)
 		ownerChanged = c.delegateAttentionWillRaiseLocked(receipt.ownerID)
 		committedWake = true
 	}
@@ -432,9 +476,10 @@ func (c *delegateTreeController) completeDeliveryAckLocked(token delegateDeliver
 			DeliveryID: token.deliveryID,
 		},
 	})
-	// The wake this acknowledgment publishes supersedes any user-stop hold in
-	// the same store Apply: a committed queue event clears every held row, so
-	// no delivery branch can publish a wake that omits the release.
+	// The wake this acknowledgment publishes supersedes the user-stop holds its
+	// claim sampled in the same store Apply. A fresh receipt has no sample and
+	// releases every hold; a deferred one releases only what its claim-time
+	// generation covers, so a stop that landed while it waited keeps its hold.
 	_, err := c.appendLocked(events...)
 	if err != nil {
 		receipt.retryable = true
@@ -868,12 +913,15 @@ func (c *delegateTreeController) newHeadDeliveryPlanLocked(delegateID, deliveryI
 	if head.Packet.Kind != delegatestore.PacketUpdate {
 		waiter = c.claimDelegateWaiterLocked(delegateID, head.Generation)
 	}
+	settledGeneration, hasSettledGeneration := c.ownerSettledGenerationLocked(head.OwnerDelegateID)
 	claim := &delegateDeliveryClaim{
-		token:      claimToken,
-		delegateID: delegateID,
-		ownerID:    head.OwnerDelegateID,
-		waiter:     waiter,
-		cold:       cold,
+		token:                claimToken,
+		delegateID:           delegateID,
+		ownerID:              head.OwnerDelegateID,
+		waiter:               waiter,
+		cold:                 cold,
+		settledGeneration:    settledGeneration,
+		hasSettledGeneration: hasSettledGeneration,
 	}
 	c.deliveryClaims[deliveryID] = claim
 	if len(carried) > 0 {

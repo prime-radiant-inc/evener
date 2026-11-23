@@ -293,8 +293,14 @@ var eventKindSpecs = []eventKindSpec{
 	{
 		kind:    EventDelegateAttentionQueued,
 		present: func(event *Event) bool { return event.AttentionQueued != nil },
-		clone:   func(dst, src *Event) { clonePointee(&dst.AttentionQueued, &src.AttentionQueued) },
-		apply:   applyAttentionQueued,
+		clone: func(dst, src *Event) {
+			clonePointee(&dst.AttentionQueued, &src.AttentionQueued)
+			if dst.AttentionQueued != nil && dst.AttentionQueued.ReleaseHoldsThrough != nil {
+				through := *dst.AttentionQueued.ReleaseHoldsThrough
+				dst.AttentionQueued.ReleaseHoldsThrough = &through
+			}
+		},
+		apply: applyAttentionQueued,
 	},
 	{
 		kind:    EventDelegateAttentionResolved,
@@ -684,7 +690,11 @@ func applyAttentionQueued(state State, event Event) error {
 	// resolution).
 	delete(aggregate.ResolvedAttention, payload.AttentionID)
 	if payload.Committed {
-		releaseAttentionHolds(aggregate)
+		if payload.ReleaseHoldsThrough == nil {
+			releaseAttentionHolds(aggregate)
+		} else {
+			releaseAttentionHoldsThrough(aggregate, *payload.ReleaseHoldsThrough)
+		}
 	}
 	recomputeNeedsAttention(state, event.DelegateID)
 	return nil
@@ -717,6 +727,19 @@ func releaseAttentionHolds(aggregate *Aggregate) {
 	for i := range aggregate.PendingAttention {
 		row := &aggregate.PendingAttention[i]
 		row.HeldThrough = 0
+	}
+}
+
+// releaseAttentionHoldsThrough clears the holds an older wake supersedes: a
+// row held at or below the claim-time settled generation. A newer stop's hold
+// stands, so a deferred delivery acknowledged after that stop cannot present
+// the row the stop withheld.
+func releaseAttentionHoldsThrough(aggregate *Aggregate, through uint64) {
+	for i := range aggregate.PendingAttention {
+		row := &aggregate.PendingAttention[i]
+		if row.HeldThrough != 0 && row.HeldThrough <= through {
+			row.HeldThrough = 0
+		}
 	}
 }
 

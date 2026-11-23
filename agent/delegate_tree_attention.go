@@ -319,6 +319,20 @@ func attentionQueuedEvent(delegateID, attentionID string, committed bool) delega
 	}
 }
 
+// attentionHeldEvent builds the durable stop quiet for one queued row. The
+// caller appends it in the same batch as the evidence that explains it, so the
+// row can never become runnable again between the two.
+func attentionHeldEvent(delegateID, attentionID string, generation uint64) delegatestore.Event {
+	return delegatestore.Event{
+		Kind:       delegatestore.EventDelegateAttentionHeld,
+		DelegateID: delegateID,
+		AttentionHeld: &delegatestore.AttentionHeld{
+			AttentionID: attentionID,
+			Generation:  generation,
+		},
+	}
+}
+
 // ensureDelegateAttentionQueuedIfUnresolved puts a durably appended child
 // attention message into the delegate's queue without publishing its wake; the
 // arm that publishes the wake commits the row (Committed true and the hold

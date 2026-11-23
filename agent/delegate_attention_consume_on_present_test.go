@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"slices"
@@ -316,7 +317,7 @@ func TestDelegateAttentionPresentedProviderFailureConsumesTrigger(t *testing.T) 
 		c, runtime, _ := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, attentionID)
 		runtime.owningDelegateID = delegateID
 		acceptAttentionForTest(t, runtime, mustReserveAttentionForTest(t, c, runtime, attentionID))
-		runtime.settleUnpresentedDelegateTrigger(0)
+		runtime.settleUnpresentedDelegateTrigger(0, "", true)
 		rows := pendingAttentionRowsForTest(t, c, delegateID)
 		if len(rows) != 1 || rows[0].AttentionID != attentionID || rows[0].HeldThrough != 0 {
 			t.Fatalf("pending rows after an unpresented transient failure = %#v, want the row unheld for retry", rows)
@@ -340,7 +341,7 @@ func TestDelegateAttentionHeldRowSurvivesColdRestoreAndReleases(t *testing.T) {
 	journalPath := filepath.Join(c.stateDir, "delegate-events.jsonl")
 	runtime.owningDelegateID = delegateID
 	acceptAttentionForTest(t, runtime, mustReserveAttentionForTest(t, c, runtime, attentionID))
-	runtime.settleUnpresentedDelegateTrigger(1)
+	runtime.settleUnpresentedDelegateTrigger(1, "", true)
 	rows := pendingAttentionRowsForTest(t, c, delegateID)
 	if len(rows) != 1 || rows[0].HeldThrough != 1 {
 		t.Fatalf("pending rows after the stop = %#v, want the row held at generation 1", rows)
@@ -437,7 +438,7 @@ func TestCommittedSendRestoresAHeldReportCompactedOutOfResidentHistory(t *testin
 	// first settled request leaves exactly this state: the accepted trigger
 	// latched, then held at the stop's generation and released from the latch.
 	sub.sess.holdAcceptedTrigger(attentionID)
-	sub.sess.settleUnpresentedDelegateTrigger(2)
+	sub.sess.settleUnpresentedDelegateTrigger(2, "", true)
 	if rows := pendingAttentionRowsForTest(t, root.delegateController, fixture.delegateID); len(rows) != 1 || rows[0].HeldThrough != 2 {
 		t.Fatalf("pending rows after the stop = %#v, want the report held", rows)
 	}
@@ -573,6 +574,146 @@ func TestPendingAttentionTurnsKeepTranscriptArrivalOrder(t *testing.T) {
 	}
 }
 
+// A stop that settles an attention generation before its first request
+// presented carries the unpresented trigger's hold in the same durable batch as
+// the stopped outcome. A journal that accepted the outcome therefore cannot
+// leave the row unheld and runnable for the ordinary drive.
+func TestStopFinishCarriesTheUnpresentedHoldAtomically(t *testing.T) {
+	t.Parallel()
+	const (
+		sessionID   = "child-dlg_atomic_hold"
+		delegateID  = "dlg_target"
+		attentionID = "attention-atomic-hold"
+	)
+	c, runtime, _ := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, attentionID)
+	runtime.owningDelegateID = delegateID
+	reservation := mustReserveAttentionForTest(t, c, runtime, attentionID)
+	acceptAttentionForTest(t, runtime, reservation)
+	started, err := c.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	var sawOutcomeAndHold atomic.Bool
+	c.mu.Lock()
+	c.appendFault = func(events []delegatestore.Event) error {
+		outcome, hold := false, false
+		for _, event := range events {
+			if event.RunFinished != nil {
+				outcome = true
+			}
+			if event.AttentionHeld != nil && event.AttentionHeld.AttentionID == attentionID {
+				hold = true
+			}
+		}
+		if outcome && hold {
+			sawOutcomeAndHold.Store(true)
+		}
+		return nil
+	}
+	c.mu.Unlock()
+	t.Cleanup(func() {
+		c.mu.Lock()
+		c.appendFault = nil
+		c.mu.Unlock()
+	})
+	if _, err := c.FinishGeneration(started.lease, delegateFinish{
+		outcome:         delegatestore.OutcomeStopped,
+		disposition:     delegatestore.DispositionTerminalError,
+		holdAttentionID: attentionID,
+	}); err != nil {
+		t.Fatalf("FinishGeneration: %v", err)
+	}
+	if !sawOutcomeAndHold.Load() {
+		t.Fatal("the stop finish batch did not carry the held trigger with its outcome")
+	}
+	rows := pendingAttentionRowsForTest(t, c, delegateID)
+	if len(rows) != 1 || rows[0].AttentionID != attentionID || rows[0].HeldThrough != started.lease.generation {
+		t.Fatalf("pending rows after the stop finish = %#v, want the trigger held at generation %d", rows, started.lease.generation)
+	}
+	if needsAttentionForTest(t, c, delegateID) {
+		t.Fatal("NeedsAttention stayed true after the finish batch held its only row")
+	}
+}
+
+// A SubagentStart hook stops an attention launch before it reaches the model,
+// so the run finishes Completed while its accepted trigger was never presented.
+// The hold must ride that finish too, or the drive relaunches the row into the
+// same hook forever.
+func TestCompletedFinishStillCarriesAnUnpresentedHold(t *testing.T) {
+	t.Parallel()
+	const (
+		sessionID   = "child-dlg_completed_hold"
+		delegateID  = "dlg_target"
+		attentionID = "attention-completed-hold"
+	)
+	c, runtime, _ := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, attentionID)
+	runtime.owningDelegateID = delegateID
+	reservation := mustReserveAttentionForTest(t, c, runtime, attentionID)
+	acceptAttentionForTest(t, runtime, reservation)
+	started, err := c.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	if _, err := c.FinishGeneration(started.lease, delegateFinish{
+		outcome:     delegatestore.OutcomeCompleted,
+		disposition: delegatestore.DispositionReported,
+		packet: &delegatestore.TerminalPacket{
+			Kind:    delegatestore.PacketReported,
+			Message: json.RawMessage(`"done"`),
+		},
+		holdAttentionID: attentionID,
+	}); err != nil {
+		t.Fatalf("FinishGeneration: %v", err)
+	}
+	rows := pendingAttentionRowsForTest(t, c, delegateID)
+	if len(rows) != 1 || rows[0].AttentionID != attentionID || rows[0].HeldThrough != started.lease.generation {
+		t.Fatalf("pending rows after the completed finish = %#v, want the trigger held at generation %d", rows, started.lease.generation)
+	}
+	if needsAttentionForTest(t, c, delegateID) {
+		t.Fatal("NeedsAttention stayed true after the completed finish batch held its only row")
+	}
+}
+
+// When the finish batch itself fails, the accepted trigger stays latched: the
+// ordinary drive must not accept the stopped row again before settlement
+// recovery retries the batch that carries the hold. Other unheld rows remain
+// eligible, so the failure withholds only this trigger.
+func TestFailedStopFinishBatchKeepsTheAcceptedTriggerLatched(t *testing.T) {
+	t.Parallel()
+	const (
+		sessionID   = "child-dlg_failed_stop_batch"
+		delegateID  = "dlg_target"
+		attentionID = "attention-failed-stop-batch"
+		otherID     = "attention-other-pending"
+	)
+	c, runtime, _ := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, attentionID)
+	runtime.owningDelegateID = delegateID
+	acceptAttentionForTest(t, runtime, mustReserveAttentionForTest(t, c, runtime, attentionID))
+	c.mu.Lock()
+	if _, err := c.appendLocked(attentionQueuedEvent(delegateID, otherID, true)); err != nil {
+		c.mu.Unlock()
+		t.Fatalf("queue the other pending row: %v", err)
+	}
+	c.mu.Unlock()
+
+	runtime.settleUnpresentedDelegateTrigger(1, attentionID, false)
+	if got := runtime.acceptedDelegateAttentionTriggerID(); got != attentionID {
+		t.Fatalf("accepted trigger after a failed finish batch = %q, want %q kept latched", got, attentionID)
+	}
+	pending, err := runtime.pendingDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("pending attention ids: %v", err)
+	}
+	if !slices.Contains(pending, otherID) {
+		t.Fatalf("pending attention = %v, want the unrelated unheld row %q still eligible", pending, otherID)
+	}
+
+	runtime.settleUnpresentedDelegateTrigger(1, attentionID, true)
+	if got := runtime.acceptedDelegateAttentionTriggerID(); got != "" {
+		t.Fatalf("accepted trigger after the finish batch landed = %q, want cleared", got)
+	}
+}
+
 func mustReserveAttentionForTest(t *testing.T, c *delegateTreeController, sess *Session, attentionID string) *delegateStartReservation {
 	t.Helper()
 	reservation, err := c.ReserveAttention(sess, attentionID)
@@ -598,7 +739,7 @@ func TestHeldDelegateAttentionStaysOutOfTheFinalizationDrain(t *testing.T) {
 	c, runtime, _ := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, attentionID)
 	runtime.owningDelegateID = delegateID
 	acceptAttentionForTest(t, runtime, mustReserveAttentionForTest(t, c, runtime, attentionID))
-	runtime.settleUnpresentedDelegateTrigger(1)
+	runtime.settleUnpresentedDelegateTrigger(1, "", true)
 
 	if rows := pendingAttentionRowsForTest(t, c, delegateID); len(rows) != 1 || rows[0].HeldThrough == 0 {
 		t.Fatalf("pending rows after the stop = %#v, want one held row", rows)

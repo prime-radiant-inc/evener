@@ -45,8 +45,14 @@ type delegateStartRecord struct {
 	worktreePath   string
 	runtime        *Session
 	attentionID    string
-	waiter         *delegateInlineWaiter
-	done           chan struct{}
+	// queueAttentionOnCommit marks a recovered legacy owed attention claim
+	// whose identity a pre-queue journal never carried. The start commit queues
+	// it in the same batch that opens the generation, so the journal governs
+	// its later resolution, hold, or transient-failure retry even though the
+	// transcript still carries the old consumed marker.
+	queueAttentionOnCommit bool
+	waiter                 *delegateInlineWaiter
+	done                   chan struct{}
 }
 
 type delegateStartCommit struct {
@@ -73,6 +79,11 @@ type delegateFinish struct {
 	// report this finish queues. It rides the finish rather than the delivery
 	// plan because a report queued behind an undelivered head gets no plan.
 	cause delegateCause
+	// holdAttentionID is the accepted trigger this run never presented. A stop
+	// finish holds it in the same atomic batch that records the outcome, so a
+	// journal that accepts the outcome cannot leave the row unheld for the next
+	// drive to relaunch. Empty means no hold belongs to this finish.
+	holdAttentionID string
 }
 
 type delegateCommittedStartFailureDisposition uint8
@@ -264,7 +275,26 @@ func (c *delegateTreeController) reserveOwedAttentionStart(delegateID, attention
 	if c.hasDeliveryWorkForOwnerLocked(delegateID) {
 		return nil, errDelegateTargetBusy
 	}
-	return c.reserveAttentionStartLocked(aggregate, attentionID, generation, nil)
+	reservation, err := c.reserveAttentionStartLocked(aggregate, attentionID, generation, nil)
+	if err != nil {
+		return nil, err
+	}
+	if record, recordErr := c.reservationRecordLocked(reservation); recordErr == nil && record != nil {
+		record.queueAttentionOnCommit = !aggregateHasPendingAttention(aggregate, attentionID)
+	}
+	return reservation, nil
+}
+
+func aggregateHasPendingAttention(aggregate *delegatestore.Aggregate, attentionID string) bool {
+	if aggregate == nil {
+		return false
+	}
+	for _, row := range aggregate.PendingAttention {
+		if row.AttentionID == attentionID {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *delegateTreeController) reserveAttentionStartLocked(aggregate *delegatestore.Aggregate, attentionID string, generation uint64, runtime *Session) (*delegateStartReservation, error) {
@@ -722,6 +752,9 @@ func (c *delegateTreeController) commitStart(reservation *delegateStartReservati
 		record.trigger,
 		startedAt,
 	))
+	if record.queueAttentionOnCommit && record.attentionID != "" {
+		events = append(events, attentionQueuedEvent(record.delegateID, record.attentionID, true))
+	}
 	if record.create {
 		events = append([]delegatestore.Event{{
 			Kind:       delegatestore.EventDelegateCreated,

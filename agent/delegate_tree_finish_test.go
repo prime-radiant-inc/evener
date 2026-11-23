@@ -554,7 +554,7 @@ func TestDelegateControllerFinishNoActionRequiresExactEligibleClaim(t *testing.T
 	if !prepared {
 		t.Fatal("prepareNoAction rejected exact eligible claim")
 	}
-	plans, err := c.FinishNoAction(claim)
+	plans, err := c.FinishNoAction(claim, "")
 	if err != nil {
 		t.Fatalf("FinishNoAction: %v", err)
 	}
@@ -578,7 +578,7 @@ func TestDelegateControllerFinishNoActionRejectsMissingStaleMismatchedAndUnready
 	t.Run("missing preparation", func(t *testing.T) {
 		c, _ := newDelegateControllerTestHarness(t, 1, 1)
 		claim := eligibleDelegateNoActionClaim(t, c, "dlg_target")
-		if _, err := c.FinishNoAction(claim); !errors.Is(err, errDelegateTargetBusy) {
+		if _, err := c.FinishNoAction(claim, ""); !errors.Is(err, errDelegateTargetBusy) {
 			t.Fatalf("FinishNoAction without preparation error = %v, want busy", err)
 		}
 	})
@@ -589,12 +589,12 @@ func TestDelegateControllerFinishNoActionRejectsMissingStaleMismatchedAndUnready
 		if prepared, err := c.prepareNoAction(claim, delegateFinish{}); err != nil || !prepared {
 			t.Fatalf("prepareNoAction = %t, %v", prepared, err)
 		}
-		if _, err := c.FinishNoAction(nil); !errors.Is(err, errDelegateStaleLease) {
+		if _, err := c.FinishNoAction(nil, ""); !errors.Is(err, errDelegateStaleLease) {
 			t.Fatalf("FinishNoAction(nil) error = %v, want stale lease", err)
 		}
 		forged := *claim
 		forged.lease.generation++
-		if _, err := c.FinishNoAction(&forged); !errors.Is(err, errDelegateStaleLease) {
+		if _, err := c.FinishNoAction(&forged, ""); !errors.Is(err, errDelegateStaleLease) {
 			t.Fatalf("FinishNoAction(mismatched) error = %v, want stale lease", err)
 		}
 	})
@@ -606,7 +606,7 @@ func TestDelegateControllerFinishNoActionRejectsMissingStaleMismatchedAndUnready
 			t.Fatalf("prepareNoAction = %t, %v", prepared, err)
 		}
 		claim.ready = make(chan struct{})
-		if _, err := c.FinishNoAction(claim); !errors.Is(err, errDelegateTargetBusy) {
+		if _, err := c.FinishNoAction(claim, ""); !errors.Is(err, errDelegateTargetBusy) {
 			t.Fatalf("FinishNoAction(unready) error = %v, want busy", err)
 		}
 	})
@@ -639,7 +639,7 @@ func TestDelegateControllerFinishNoActionRejectsReportRequiredTerminalAndPrepare
 		if prepared, err := c.prepareNoAction(claim, delegateFinish{}); err != nil || prepared {
 			t.Fatalf("prepareNoAction(report required) = %t, %v, want false/nil", prepared, err)
 		}
-		if _, err := c.FinishNoAction(claim); !errors.Is(err, errDelegateTargetBusy) {
+		if _, err := c.FinishNoAction(claim, ""); !errors.Is(err, errDelegateTargetBusy) {
 			t.Fatalf("FinishNoAction(report required) error = %v, want busy", err)
 		}
 	})
@@ -655,7 +655,7 @@ func TestDelegateControllerFinishNoActionRejectsReportRequiredTerminalAndPrepare
 		if prepared, err := c.prepareNoAction(claim, delegateFinish{}); err != nil || prepared {
 			t.Fatalf("prepareNoAction(terminal) = %t, %v, want false/nil", prepared, err)
 		}
-		if _, err := c.FinishNoAction(claim); !errors.Is(err, errDelegateTargetBusy) {
+		if _, err := c.FinishNoAction(claim, ""); !errors.Is(err, errDelegateTargetBusy) {
 			t.Fatalf("FinishNoAction(terminal) error = %v, want busy", err)
 		}
 	})
@@ -679,7 +679,7 @@ func TestDelegateControllerFinishNoActionRejectsReportRequiredTerminalAndPrepare
 		if prepared, err := c.prepareNoAction(claim, delegateFinish{}); err != nil || prepared {
 			t.Fatalf("prepareNoAction(prepared terminal) = %t, %v, want false/nil", prepared, err)
 		}
-		if _, err := c.FinishNoAction(claim); !errors.Is(err, errDelegateTargetBusy) {
+		if _, err := c.FinishNoAction(claim, ""); !errors.Is(err, errDelegateTargetBusy) {
 			t.Fatalf("FinishNoAction(prepared terminal) error = %v, want busy", err)
 		}
 	})
@@ -710,7 +710,7 @@ func TestDelegateControllerFinishNoActionStopUsesRetainedFallback(t *testing.T) 
 	fallback.packet.Metadata[0] = 'X'
 	appendDelegateControllerStopRequest(t, c, "dlg_target")
 
-	plans, err := c.FinishNoAction(claim)
+	plans, err := c.FinishNoAction(claim, "")
 	if err != nil {
 		t.Fatalf("FinishNoAction under stop: %v", err)
 	}
@@ -802,7 +802,7 @@ func TestDelegateControllerFinishNoActionAppendFailureRetainsRecoveryState(t *te
 	if err := c.store.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
 	}
-	if _, err := c.FinishNoAction(claim); err == nil {
+	if _, err := c.FinishNoAction(claim, ""); err == nil {
 		t.Fatal("FinishNoAction succeeded after store close")
 	}
 	c.mu.Lock()

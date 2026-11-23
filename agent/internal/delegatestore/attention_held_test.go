@@ -72,6 +72,49 @@ func TestAttentionHeldReleasesOnFreshWake(t *testing.T) {
 	}
 }
 
+// TestAttentionQueuedBoundedReleaseKeepsANewerHold pins the deferred-delivery
+// release: an acknowledgment whose claim sampled settled generation 1 releases
+// only the holds at or below 1. A stop that settled generation 2 while the
+// acknowledgment was deferred keeps its hold, so the stopped report stays out
+// while the newly queued deferred row enters unheld.
+func TestAttentionQueuedBoundedReleaseKeepsANewerHold(t *testing.T) {
+	t.Parallel()
+	through := uint64(1)
+	state := attentionTestState(t,
+		createdEvent("dlg_hold", ""),
+		attentionQueuedEvent("dlg_hold", "att_old", true),
+		attentionQueuedEvent("dlg_hold", "att_new", true),
+		attentionHeldEvent("dlg_hold", "att_old", 1),
+		attentionHeldEvent("dlg_hold", "att_new", 2),
+		Event{
+			Kind:       EventDelegateAttentionQueued,
+			DelegateID: "dlg_hold",
+			AttentionQueued: &AttentionQueued{
+				AttentionID:         "att_deferred",
+				Committed:           true,
+				ReleaseHoldsThrough: &through,
+			},
+		},
+	)
+	aggregate := state["dlg_hold"]
+	holds := make(map[string]uint64, len(aggregate.PendingAttention))
+	for _, row := range aggregate.PendingAttention {
+		holds[row.AttentionID] = row.HeldThrough
+	}
+	if holds["att_old"] != 0 {
+		t.Fatalf("att_old held through %d after a release through 1, want released", holds["att_old"])
+	}
+	if holds["att_new"] != 2 {
+		t.Fatalf("att_new held through %d after a release through 1, want the newer hold kept at 2", holds["att_new"])
+	}
+	if holds["att_deferred"] != 0 {
+		t.Fatalf("att_deferred held through %d, want the newly queued row unheld", holds["att_deferred"])
+	}
+	if !aggregate.NeedsAttention {
+		t.Fatal("NeedsAttention = false, want the newly queued unheld row to raise it")
+	}
+}
+
 // TestAttentionHeldDoesNotResurrectResolvedRow pins that a hold racing a
 // resolution is a no-op: it never re-adds a row the queue no longer holds.
 func TestAttentionHeldDoesNotResurrectResolvedRow(t *testing.T) {
