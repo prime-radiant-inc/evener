@@ -1391,8 +1391,10 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 // pollCopilotDevice polls one Copilot device flow. The device code owns the
 // pace and the expiry; NextPollAt is the hub's only extra state, so a poll
 // before it is answered locally and a slow_down moves it out. The authorized
-// poll completes the login through the service's own save path, under the same
-// credential and endpoint fences as the Codex flow.
+// poll prepares the login's record before the credential section - its account
+// and session requests must not hold credMu - then saves it through the
+// service's own locked write under the same credential and endpoint fences as
+// the Codex flow.
 func (c *hubAuthController) pollCopilotDevice(ctx context.Context, provider, flowID string, flow deviceFlow, params appwire.AuthDevicePollParams) (resp appwire.AuthDevicePollResponse, err error) {
 	now := c.now()
 	if !now.Before(flow.Copilot.Expiry) {
@@ -1414,6 +1416,10 @@ func (c *hubAuthController) pollCopilotDevice(ctx context.Context, provider, flo
 		c.setDeviceFlowNextPoll(flowID, flow.Copilot.DeviceCode, interval, now)
 		return appwire.AuthDevicePollResponse{State: "pending"}, nil
 	}
+	record, err := c.copilotService.PrepareLogin(ctx, provider, tokens)
+	if err != nil {
+		return appwire.AuthDevicePollResponse{}, err
+	}
 	key, _ := resolveEndpointFingerprintKey(c.stateDir)
 	applied, err := c.credentialWrite(provider, func() error {
 		if err := c.requiresCopilot(provider); err != nil {
@@ -1422,7 +1428,7 @@ func (c *hubAuthController) pollCopilotDevice(ctx context.Context, provider, flo
 		if err := c.verifyFlowEndpoint(provider, flow.EndpointFingerprint, key); err != nil {
 			return err
 		}
-		_, err := c.copilotService.CompleteLogin(ctx, c.stateDir, provider, tokens)
+		_, err := c.copilotService.SavePreparedLogin(c.stateDir, provider, record)
 		return err
 	})
 	defer func() {

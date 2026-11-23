@@ -324,6 +324,51 @@ func TestCompleteLoginPersistsAnAuthorizedTokenSet(t *testing.T) {
 	}
 }
 
+// TestPrepareLoginDefersTheSaveToTheLockedWrite pins the split the hub uses to
+// keep network requests out of its credential lock: preparation resolves the
+// record without touching disk, and the locked save writes it.
+func TestPrepareLoginDefersTheSaveToTheLockedWrite(t *testing.T) {
+	at := time.Date(2026, 11, 22, 2, 0, 0, 0, time.UTC)
+	swapNow(t, at)
+	gh, server := newScriptedGitHub(t)
+	svc := newServiceForTest(server)
+	stateDir := t.TempDir()
+
+	record, err := svc.PrepareLogin(context.Background(), "work", TokenSet{
+		AccessToken: "login-access", TokenType: "bearer", Scope: "read:user",
+	})
+	if err != nil {
+		t.Fatalf("PrepareLogin() error = %v", err)
+	}
+	if record.Instance != "work" || record.AccessToken != "login-access" {
+		t.Fatal("prepared record did not carry the authorized token set")
+	}
+	if record.CopilotToken != "copilot-1" || record.AccountID != "4242" {
+		t.Fatal("prepared record did not carry the exchanged session and account")
+	}
+	if _, err := LoadAuth(stateDir, "work"); !errors.Is(err, ErrAuthNotFound) {
+		t.Fatalf("LoadAuth() after preparation = %v, want ErrAuthNotFound: preparation must not save", err)
+	}
+
+	status, err := svc.SavePreparedLogin(stateDir, "work", record)
+	if err != nil {
+		t.Fatalf("SavePreparedLogin() error = %v", err)
+	}
+	if !status.SignedIn || status.AccountID != "4242" {
+		t.Fatalf("status = %+v, want the saved record", status)
+	}
+	stored, err := LoadAuth(stateDir, "work")
+	if err != nil {
+		t.Fatalf("LoadAuth() after save: %v", err)
+	}
+	if stored.CopilotToken != "copilot-1" || stored.AccountID != "4242" {
+		t.Fatal("saved record did not carry the prepared session and account")
+	}
+	if gh.exchangeCount() != 1 {
+		t.Fatalf("session exchanges = %d, want 1", gh.exchangeCount())
+	}
+}
+
 func TestLoginWithDeviceStopsAtCodeExpiry(t *testing.T) {
 	at := time.Date(2026, 11, 22, 2, 0, 0, 0, time.UTC)
 	clock := swapNow(t, at)

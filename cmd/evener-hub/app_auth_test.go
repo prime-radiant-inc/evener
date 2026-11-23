@@ -53,12 +53,14 @@ func writeCopilotOAuthRecord(t *testing.T, stateDir, instance, email string) git
 // Requests are counted by path, which is how a test proves a poll stayed
 // local.
 type copilotDeviceTransport struct {
-	mu      sync.Mutex
-	calls   map[string]int
-	device  string
-	polls   []string
-	user    string
-	session string
+	mu          sync.Mutex
+	calls       map[string]int
+	device      string
+	polls       []string
+	user        string
+	session     string
+	userEntered chan struct{}
+	userRelease chan struct{}
 }
 
 func newCopilotDeviceTransport() *copilotDeviceTransport {
@@ -78,6 +80,7 @@ func (t *copilotDeviceTransport) RoundTrip(req *http.Request) (*http.Response, e
 	t.calls[req.URL.Path]++
 	call := t.calls[req.URL.Path]
 	body := ""
+	var entered, release chan struct{}
 	switch req.URL.Path {
 	case "/login/device/code":
 		body = t.device
@@ -85,6 +88,7 @@ func (t *copilotDeviceTransport) RoundTrip(req *http.Request) (*http.Response, e
 		index := min(call-1, len(t.polls)-1)
 		body = t.polls[index]
 	case "/user":
+		entered, release = t.userEntered, t.userRelease
 		body = t.user
 	case "/copilot_internal/v2/token":
 		body = t.session
@@ -93,6 +97,12 @@ func (t *copilotDeviceTransport) RoundTrip(req *http.Request) (*http.Response, e
 		return nil, fmt.Errorf("unexpected Copilot request path %q", req.URL.Path)
 	}
 	t.mu.Unlock()
+	if entered != nil {
+		close(entered)
+	}
+	if release != nil {
+		<-release
+	}
 	return &http.Response{
 		StatusCode: http.StatusOK, Status: "200 OK",
 		Header:  http.Header{"Content-Type": {"application/json"}},
@@ -105,6 +115,18 @@ func (t *copilotDeviceTransport) callCount(path string) int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.calls[path]
+}
+
+// blockAccountPreparation parks the account request until release runs and
+// returns the channel that reports it arrived.
+func (t *copilotDeviceTransport) blockAccountPreparation() (entered <-chan struct{}, release func()) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	enteredCh := make(chan struct{})
+	releaseCh := make(chan struct{})
+	t.userEntered, t.userRelease = enteredCh, releaseCh
+	var once sync.Once
+	return enteredCh, func() { once.Do(func() { close(releaseCh) }) }
 }
 
 // newCopilotDeviceTestController builds a hermetic controller over providers
@@ -371,6 +393,78 @@ func TestAuth_CopilotDevicePollPendingThenAuthorized(t *testing.T) {
 	}
 	if commits[0].OriginClientID != "client-7" || commits[0].Status.ActiveSource != "oauth" {
 		t.Fatalf("commit notification = %+v, want the poll's origin and OAuth status", commits[0])
+	}
+}
+
+// TestAuth_CopilotDevicePollPreparesOutsideTheCredentialLock pins where the
+// Copilot login's account and session requests run: before the credential
+// write's critical section, so a slow GitHub response cannot block every other
+// credential writer. An unrelated write must complete while the account
+// request is parked.
+func TestAuth_CopilotDevicePollPreparesOutsideTheCredentialLock(t *testing.T) {
+	ctrl, transport, now := newCopilotDeviceTestController(t, copilotDeviceInstanceToml)
+	transport.polls = []string{`{"access_token":"github-access-token","token_type":"bearer","scope":"read:user"}`}
+	entered, release := transport.blockAccountPreparation()
+	defer release()
+	flowID := startCopilotDeviceFlow(t, ctrl, "work")
+	*now = now.Add(5 * time.Second)
+
+	polled := make(chan appwire.AuthDevicePollResponse, 1)
+	pollErr := make(chan error, 1)
+	go func() {
+		resp, err := ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "work", FlowID: flowID})
+		if err != nil {
+			pollErr <- err
+			return
+		}
+		polled <- resp
+	}()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the Copilot account request never started")
+	}
+
+	// The login is parked in its account request. An unrelated credential
+	// write must not wait behind that network I/O.
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := ctrl.credentialWrite("other", func() error { return nil })
+		writeDone <- err
+	}()
+	blocked := false
+	select {
+	case err := <-writeDone:
+		if err != nil {
+			t.Fatalf("unrelated credential write = %v, want it to complete while Copilot preparation is in flight", err)
+		}
+	case <-time.After(5 * time.Second):
+		blocked = true
+	}
+
+	// Release the parked preparation, then let both it and any write that
+	// waited behind it finish before the fixture is torn down.
+	release()
+	if blocked {
+		select {
+		case <-writeDone:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the credential write never finished after preparation was released")
+		}
+	}
+	var resp appwire.AuthDevicePollResponse
+	select {
+	case err := <-pollErr:
+		t.Fatalf("DevicePoll: %v", err)
+	case resp = <-polled:
+	case <-time.After(10 * time.Second):
+		t.Fatal("DevicePoll never finished after the account request was released")
+	}
+	if blocked {
+		t.Fatal("an unrelated credential write was blocked by Copilot login preparation")
+	}
+	if resp.State != "authorized" {
+		t.Fatalf("DevicePoll = %+v, want authorized after preparation released", resp)
 	}
 }
 
