@@ -40,6 +40,11 @@
 .why {
   font-size: var(--font-size-caption);
   color: var(--ink-mid);
+  /* The why line renders through the Markdown widget, whose root sets its
+   * own color and family and would otherwise shadow this host's muted
+   * caption treatment with the reading-surface defaults. */
+  --markdown-ink: var(--ink-mid);
+  --markdown-font: var(--font-sans);
 }
 
 .optionGroup {

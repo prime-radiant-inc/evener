@@ -26,7 +26,7 @@ import {
   askUserSummary,
   parseAskUserQuestions,
 } from "@evener/appwire-client";
-import { Card, Eyebrow } from "../../../../widgets";
+import { Card, Eyebrow, Markdown } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
@@ -67,8 +67,15 @@ function QuestionCard({ q }: { q: AskUserQuestion }) {
   return (
     <Card variant="outlined" data-testid="ask-user-question">
       <div className={CLASS.content}>
+        {/* Model-authored prose (question, why, if_unanswered) renders
+            through the shared Markdown widget, the same treatment as the
+            composer's interactive card (askDock/AskQuestionCard). Option
+            label and detail stay plain: the label is the answer value the
+            reply echoes back verbatim, and the label/detail spans host
+            phrasing content only, which cannot take the widget's block
+            root. */}
         <div className={CLASS.question} data-slot="question">
-          {q.question}
+          <Markdown source={q.question} />
         </div>
         <ul className={CLASS.options}>
           {q.options.map((opt) => (
@@ -86,12 +93,15 @@ function QuestionCard({ q }: { q: AskUserQuestion }) {
         )}
         {q.why && (
           <div className={CLASS.note} data-note="why">
-            {q.why}
+            <Markdown source={q.why} />
           </div>
         )}
         {q.ifUnanswered && (
           <div className={CLASS.note} data-note="if-unanswered">
-            If unanswered: {q.ifUnanswered}
+            {/* The prefix rides inside the source: the widget's root is a
+                block element, so a plain sibling prefix would break onto
+                its own line. */}
+            <Markdown source={`If unanswered: ${q.ifUnanswered}`} />
           </div>
         )}
       </div>

@@ -121,6 +121,34 @@ test("body renders the question text, options with detail, and the recommended m
   expect(options.map((option) => option.dataset.recommended)).toEqual(["true", undefined]);
 });
 
+// The question body is model-authored markdown and renders through the
+// shared Markdown widget, the same as the composer's interactive card.
+test("body renders the question text as markdown", () => {
+  const d = toolRendererFor("ask_user");
+  const Body = d.body!;
+  const questions = [{ ...ONE_QUESTION[0], question: "Deploy `agent/deploy.go:81` now?" }];
+  render(<Body item={item({ toolName: "ask_user", argumentsJSON: askUserArgs(questions) })} live={false} />);
+  expect(screen.getByText("agent/deploy.go:81").tagName).toBe("CODE");
+});
+
+// The why and if_unanswered notes are model-authored prose too, so they
+// take the same markdown pipeline as the question body.
+test("body renders the why and if_unanswered notes as markdown", () => {
+  const d = toolRendererFor("ask_user");
+  const Body = d.body!;
+  const questions = [
+    {
+      ...ONE_QUESTION[0],
+      why: "Changes `agent/deploy.go:81` behavior",
+      if_unanswered: "assume the `make deploy` default",
+    },
+  ];
+  render(<Body item={item({ toolName: "ask_user", argumentsJSON: askUserArgs(questions) })} live={false} />);
+  const card = screen.getByTestId("ask-user-question");
+  expect(card.querySelector('[data-note="why"] code')?.textContent).toBe("agent/deploy.go:81");
+  expect(card.querySelector('[data-note="if-unanswered"] code')?.textContent).toBe("make deploy");
+});
+
 test("body notes the answer happens in the composer (this wave is read-only)", () => {
   const d = toolRendererFor("ask_user");
   const Body = d.body!;
@@ -142,8 +170,11 @@ test("body shows why/if_unanswered notes when present", () => {
   const questions = [{ ...ONE_QUESTION[0], why: "affects the release", if_unanswered: "assume yes" }];
   render(<Body item={item({ toolName: "ask_user", argumentsJSON: askUserArgs(questions) })} live={false} />);
   const card = screen.getByTestId("ask-user-question");
-  expect(card.querySelector('[data-note="why"]')?.textContent).toBe("affects the release");
-  expect(card.querySelector('[data-note="if-unanswered"]')?.textContent).toContain("assume yes");
+  // Markdown serialization ends with a newline after the closing block tag
+  // - the same trim convention markdown.test.tsx and ThinkBlock.test.tsx
+  // use.
+  expect(card.querySelector('[data-note="why"]')?.textContent?.trim()).toBe("affects the release");
+  expect(card.querySelector('[data-note="if-unanswered"]')?.textContent?.trim()).toBe("If unanswered: assume yes");
   expect(card.querySelector('[data-note="multi-select"]')).toBeNull();
 });
 
@@ -169,7 +200,10 @@ test("body renders multiple question cards in order", () => {
     },
   ];
   render(<Body item={item({ toolName: "ask_user", argumentsJSON: askUserArgs(questions) })} live={false} />);
-  expect(questionCards().map((card) => card.querySelector('[data-slot="question"]')?.textContent)).toEqual([
+  // The question renders through the Markdown widget, whose serialized
+  // output ends with a newline after the closing block tag - the same
+  // trim convention markdown.test.tsx and ThinkBlock.test.tsx use.
+  expect(questionCards().map((card) => card.querySelector('[data-slot="question"]')?.textContent?.trim())).toEqual([
     "question one",
     "question two",
   ]);
@@ -244,7 +278,7 @@ test("body skips a malformed individual question (missing required fields) rathe
     { header: "Bad" /* missing question/options */ },
   ];
   render(<Body item={item({ toolName: "ask_user", argumentsJSON: askUserArgs(questions) })} live={false} />);
-  expect(questionCards().map((card) => card.querySelector('[data-slot="question"]')?.textContent)).toEqual([
+  expect(questionCards().map((card) => card.querySelector('[data-slot="question"]')?.textContent?.trim())).toEqual([
     "a real question",
   ]);
 });

@@ -25,7 +25,7 @@
 
 import type { AskQuestionRef, AskResolution } from "@evener/appwire-client";
 import { useEffect, useId, useRef } from "react";
-import { VisuallyHidden } from "../../../../widgets";
+import { Markdown, VisuallyHidden } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import type { AskAnswerState } from "./askDockStore";
 import styles from "./askquestioncard.module.css";
@@ -210,10 +210,22 @@ export function AskQuestionCard({
           {question.header}
         </span>
       </div>
+      {/* Model-authored prose (question and why) renders through the
+          shared sanitized Markdown widget. Option label and detail stay
+          plain: the label is the answer value the reply echoes back
+          verbatim, and the detail sits inside a <label>, whose
+          phrasing-only content model cannot host the widget's block root.
+          The textId wrapper stays: it names the option group and the
+          shared text field, and the widget's root composes with this
+          host's prose sizing. */}
       <div className={CLASS.questionText} id={textId}>
-        {question.question}
+        <Markdown source={question.question} />
       </div>
-      {question.why && <div className={CLASS.why}>{question.why}</div>}
+      {question.why && (
+        <div className={CLASS.why}>
+          <Markdown source={question.why} />
+        </div>
+      )}
 
       {multiSelect ? (
         <fieldset className={CLASS.optionGroup} aria-labelledby={optionsLabelledBy}>

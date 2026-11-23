@@ -60,6 +60,23 @@ test("renders the question number, header, and question text", () => {
   expect(screen.getByText("Should I deploy this to production now?")).toBeTruthy();
 });
 
+// The question body is model-authored markdown, so it renders through the
+// shared Markdown widget rather than as literal source. The option rows
+// stay plain text: option labels are answer values the reply echoes back
+// verbatim.
+test("renders the question text as markdown", () => {
+  render(<Harness q={question({ question: "Deploy `agent/deploy.go:81` now?" })} />);
+  const code = screen.getByText("agent/deploy.go:81");
+  expect(code.tagName).toBe("CODE");
+});
+
+// The why line is model-authored prose too (the question's one-line
+// context), so it takes the same markdown pipeline as the question body.
+test("renders the why line as markdown", () => {
+  render(<Harness q={question({ why: "Changes `agent/deploy.go:81` behavior" })} />);
+  expect(screen.getByText("agent/deploy.go:81").tagName).toBe("CODE");
+});
+
 test("renders each option's label and detail, tagging only the recommended one", () => {
   render(<Harness q={question()} />);
   expect(screen.getByText("Yes")).toBeTruthy();
