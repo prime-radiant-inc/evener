@@ -24,7 +24,7 @@ export function AskOptionCopy({ label, detail, recommended = false }: AskOptionC
         <span className={CLASS.name}>{label}</span>
         {recommended && (
           <span className={CLASS.recommended} data-slot="recommended">
-            Recommended
+            · recommended
           </span>
         )}
       </span>

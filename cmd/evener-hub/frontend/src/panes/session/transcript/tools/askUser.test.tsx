@@ -123,6 +123,17 @@ test("body renders the question text, options with detail, and the recommended m
   expect(detail.parentElement).toBe(copy);
   const options = screen.getAllByRole("listitem");
   expect(options.map((option) => option.dataset.recommended)).toEqual(["true", undefined]);
+  // P6-R08: the read-only card uses the live dock's inline suffix - the
+  // marker belongs to the recommended option's label line, and only that
+  // option carries it.
+  const markers = [...document.querySelectorAll('[data-slot="recommended"]')];
+  expect(markers).toHaveLength(1);
+  expect(options[0]?.querySelector('[data-slot="recommended"]')).toBe(markers[0]);
+  expect(options[1]?.querySelector('[data-slot="recommended"]')).toBeNull();
+  expect(label.nextElementSibling).toBe(markers[0]);
+  // Still a read-only history card, not a second answer surface.
+  expect(screen.queryAllByRole("radio")).toHaveLength(0);
+  expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
 });
 
 test("body notes the answer happens in the composer (this wave is read-only)", () => {
