@@ -71,8 +71,6 @@ import {
   FormRow,
   IconButton,
   InlineNotice,
-  ListPicker,
-  type ListPickerOption,
   Loader,
   type ModelCatalog,
   type ModelCatalogEntry,
@@ -112,8 +110,8 @@ import {
 } from "./accessMode";
 import { MobileSettingRows } from "./MobileSettingRows";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
-import pluginSelectionStyles from "./pluginSelection.module.css";
 import { preflightDir } from "./preflight";
+import { type SpawnHostOption, SpawnHostSelection } from "./SpawnHostSelection";
 import styles from "./spawn.module.css";
 import {
   getGlobalLastWorkingDir,
@@ -219,6 +217,9 @@ const CLASS = {
   summaryPending: requireClass(styles.summaryPending, "spawn.module.css", "summaryPending"),
   quietRows: requireClass(styles.quietRows, "spawn.module.css", "quietRows"),
   quietRow: requireClass(styles.quietRow, "spawn.module.css", "quietRow"),
+  desktopOnly: requireClass(styles.desktopOnly, "spawn.module.css", "desktopOnly"),
+  quietSummary: requireClass(styles.quietSummary, "spawn.module.css", "quietSummary"),
+  quietSummaryAction: requireClass(styles.quietSummaryAction, "spawn.module.css", "quietSummaryAction"),
   attachments: requireClass(styles.attachments, "spawn.module.css", "attachments"),
   leading: requireClass(styles.leading, "spawn.module.css", "leading"),
   modelTrigger: requireClass(styles.modelTrigger, "spawn.module.css", "modelTrigger"),
@@ -230,9 +231,6 @@ const CLASS = {
   promptSubtitle: requireClass(styles.promptSubtitle, "spawn.module.css", "promptSubtitle"),
   promptAnchor: requireClass(styles.promptAnchor, "spawn.module.css", "promptAnchor"),
   submitLabel: requireClass(styles.submitLabel, "spawn.module.css", "submitLabel"),
-  pluginDesktop: requireClass(pluginSelectionStyles.desktopSurface, "pluginSelection.module.css", "desktopSurface"),
-  pluginSummary: requireClass(pluginSelectionStyles.summary, "pluginSelection.module.css", "summary"),
-  pluginSummaryAction: requireClass(pluginSelectionStyles.summaryAction, "pluginSelection.module.css", "summaryAction"),
 };
 
 // The local source is the hub the browser is connected to, so it is named by
@@ -532,6 +530,7 @@ function SpawnForm({
     };
   }, [draft, submittedSource, harness, cwd]);
   const [directoryOpen, setDirectoryOpen] = useState(false);
+  const [hostPickerOpen, setHostPickerOpen] = useState(false);
   // Scoped by cwd AND host so neither a draft switch nor a host switch can show
   // the previous project's/host's branch while the new evener/git/head request
   // is in flight - or indefinitely after it fails (resolveHeadBranch fails soft
@@ -833,40 +832,15 @@ function SpawnForm({
   // label, which is the honest UI reflection of `busyRef` once React catches
   // up - this ref is only the guard of record.
   const busyRef = draft.busyRef;
-  const hostOptions: ListPickerOption[] = displaySources.map((candidate) => {
-    const label = displaySourceLabel(candidate);
-    if (!candidate.online) {
-      return {
-        id: candidate.id,
-        label,
-        meta: "Offline",
-        action: (
-          <Button
-            variant="quiet"
-            size="xs"
-            type="button"
-            aria-label={connectingHosts.has(candidate.id) ? `Connecting ${label}…` : `Connect ${label}`}
-            disabled={connectingHosts.has(candidate.id)}
-            onClick={() => connectHost(candidate.id)}
-          >
-            {connectingHosts.has(candidate.id) ? "Connecting…" : "Connect"}
-          </Button>
-        ),
-      };
-    }
-    return {
-      id: candidate.id,
-      label,
-      onSelect: () => {
-        if (busyRef.current) return;
-        // Selecting a host is never itself an attach request: an online row is
-        // already attached (a dial would only be redundant), and an offline
-        // row is not selectable, so the Connect control on its row is the
-        // single path that reaches an offline host.
-        setSource(candidate.id);
-      },
-    };
-  });
+  // The one host list is shared by the quiet-row disclosure here and the phone
+  // Sheet; both render SpawnHostSelection with these same options.
+  const hostSelectionOptions: SpawnHostOption[] = displaySources.map((candidate) => ({
+    id: candidate.id,
+    label: displaySourceLabel(candidate),
+    online: candidate.online,
+  }));
+  const displayHostSource = displaySources.find((candidate) => candidate.id === displayHostChoice);
+  const displayHostLabel = displayHostSource ? displaySourceLabel(displayHostSource) : displayHostChoice;
   // The two edges of a launch attempt. busyRef is the synchronous re-entrancy
   // guard, busy and busyStartedAt are the draft state the Start button renders;
   // every exit from an attempt (success, refusal, thrown error) hands Start
@@ -2884,33 +2858,52 @@ function SpawnForm({
 
         {/* Host picker (Component 06b): rendered only when the manifest lists a
             non-local source, so the common single-host form is byte-for-byte
-            unchanged. Every source lives in one dropdown: online hosts are
-            selectable, and an offline host is listed in the same place with
-            its own Connect action, so the reader can see it exists and reach
-            it without a second control. The last row opens the hosts settings
-            for a host the hub does not list yet. The row sits ABOVE the
-            working directory: the folder list, recents, and validation all
+            unchanged. It is a quiet-row Disclosure, the same control the
+            Plugins-for-this-session setting uses. The expanded body is the one
+            host list: online hosts are choices, an offline host keeps its own
+            Connect action in that list, and the last row opens the hosts
+            settings for a host the hub does not list yet. The row sits ABOVE
+            the working directory: the folder list, recents, and validation all
             come from the selected machine (hostRequest), so the form reads
             pick-the-machine first, then the folder on it. */}
         {displayRemoteHosts.length > 0 && (
-          <FormRow label="Host" htmlFor="spawn-host">
-            <ListPicker
-              id="spawn-host"
-              label="Host"
-              value={displayHostChoice}
-              options={hostOptions}
-              // A submit snapshots this choice (handleSpawn's closure carries
-              // the submittedSource/remoteLaunch that thread/start and
-              // saveDefaults receive) and then awaits the local directory
-              // preflight, so a change mid-submit would silently diverge from
-              // what actually launches and from which defaults are saved.
-              // Disabled while busy; the guard in each online row's onSelect
-              // also covers the same-tick window before that attribute commits
-              // (kata 61v2's busyRef discipline).
-              disabled={busy}
-              footer={{ label: "Connect host", onSelect: () => navigate("/settings/hosts") }}
-            />
-          </FormRow>
+          <div className={`${CLASS.quietRows} ${CLASS.desktopOnly}`}>
+            <div className={CLASS.quietRow} data-testid="spawn-host-desktop">
+              <Disclosure
+                open={hostPickerOpen}
+                onOpenChange={setHostPickerOpen}
+                data-testid="spawn-host-disclosure"
+                disabled={busy}
+                summary={
+                  <div className={CLASS.quietSummary} data-testid="spawn-host-summary">
+                    <strong>Host</strong>
+                    <span data-testid="spawn-host-value">{displayHostLabel}</span>
+                  </div>
+                }
+              >
+                <SpawnHostSelection
+                  options={hostSelectionOptions}
+                  value={displayHostChoice}
+                  connecting={connectingHosts}
+                  onSelect={(id) => {
+                    if (busyRef.current) return;
+                    // Selecting a host is never itself an attach request: an
+                    // online row is already attached (a dial would only be
+                    // redundant), and an offline row is not selectable, so the
+                    // Connect control on its row is the single path that
+                    // reaches an offline host.
+                    setHostPickerOpen(false);
+                    setSource(id);
+                  }}
+                  onConnect={connectHost}
+                  onConnectHost={() => {
+                    setHostPickerOpen(false);
+                    navigate("/settings/hosts");
+                  }}
+                />
+              </Disclosure>
+            </div>
+          </div>
         )}
 
         {/* The two facts a session starts from, as a pair of summary tiles
@@ -3036,6 +3029,16 @@ function SpawnForm({
             fallbackDir={pickerFallbackDir}
             onCwdPanelClose={commitLastWorkingDir}
             branch={branch}
+            hostOptions={displayRemoteHosts.length > 0 ? hostSelectionOptions : []}
+            hostValue={displayHostChoice}
+            hostLabel={displayHostLabel}
+            connectingHosts={connectingHosts}
+            onHostSelect={(id) => {
+              if (busyRef.current) return;
+              setSource(id);
+            }}
+            onHostConnect={connectHost}
+            onConnectHost={() => navigate("/settings/hosts")}
             accessMode={accessMode}
             accessOptions={accessOptions}
             onAccessChange={setAccessMode}
@@ -3051,10 +3054,10 @@ function SpawnForm({
 
         <div className={CLASS.quietRows}>
           {pluginSelectionSupported && (
-            <div className={`${CLASS.pluginDesktop} ${CLASS.quietRow}`} data-testid="spawn-plugin-desktop">
+            <div className={`${CLASS.desktopOnly} ${CLASS.quietRow}`} data-testid="spawn-plugin-desktop">
               {previewResponse === null && (
                 <div
-                  className={CLASS.pluginSummary}
+                  className={CLASS.quietSummary}
                   data-testid="spawn-plugin-summary"
                   data-state={pluginPreview.state.status}
                   role="status"
@@ -3066,7 +3069,7 @@ function SpawnForm({
                       <span title={pluginPreview.state.message}>
                         Couldn't inspect plugins: {pluginPreview.state.message}
                       </span>
-                      <div className={CLASS.pluginSummaryAction}>
+                      <div className={CLASS.quietSummaryAction}>
                         <Button variant="quiet" size="xs" type="button" onClick={pluginPreview.retry}>
                           Retry
                         </Button>
@@ -3081,7 +3084,7 @@ function SpawnForm({
                   data-testid="spawn-plugin-disclosure"
                   summary={
                     <div
-                      className={CLASS.pluginSummary}
+                      className={CLASS.quietSummary}
                       data-testid="spawn-plugin-summary"
                       data-state={pluginPreview.state.status}
                     >

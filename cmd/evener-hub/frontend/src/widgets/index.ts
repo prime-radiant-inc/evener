@@ -64,8 +64,6 @@ export type { InputProps } from "./input";
 export { Input } from "./input";
 export type { KeyHintProps } from "./keyhint";
 export { chordLabel, KeyHint } from "./keyhint";
-export type { ListPickerActionRow, ListPickerChoice, ListPickerOption, ListPickerProps } from "./listpicker";
-export { ListPicker } from "./listpicker";
 export type { ListRowProps, ListRowVariant } from "./listrow";
 export { ListRow } from "./listrow";
 export type { LoaderProps } from "./loader";

@@ -24,6 +24,7 @@ import {
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./MobileSettingRows.module.css";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
+import { type SpawnHostOption, SpawnHostSelection } from "./SpawnHostSelection";
 
 export interface MobilePickerOption {
   value: string;
@@ -43,6 +44,14 @@ export interface MobileSettingRowsProps {
   createDirectory: DirectoryPickerProps["createDirectory"];
   onCwdPanelClose: (value: string) => void;
   branch: string;
+  /** The host list to offer, empty when the manifest has no non-local source. */
+  hostOptions: readonly SpawnHostOption[];
+  hostValue: string;
+  hostLabel: string;
+  connectingHosts: ReadonlySet<string>;
+  onHostSelect: (id: string) => void;
+  onHostConnect: (id: string) => void;
+  onConnectHost: () => void;
   accessMode: string;
   accessOptions: MobilePickerOption[];
   onAccessChange: (value: string) => void;
@@ -57,7 +66,7 @@ export interface MobileSettingRowsProps {
   onPluginRetry: () => void;
 }
 
-type PickerName = "Harness" | "Working directory" | "Access mode" | "Plugins";
+type PickerName = "Host" | "Harness" | "Working directory" | "Access mode" | "Plugins";
 
 const CLASS = {
   config: requireClass(styles.config, "MobileSettingRows.module.css", "config"),
@@ -193,6 +202,13 @@ export function MobileSettingRows({
   createDirectory,
   onCwdPanelClose,
   branch,
+  hostOptions,
+  hostValue,
+  hostLabel,
+  connectingHosts,
+  onHostSelect,
+  onHostConnect,
+  onConnectHost,
   accessMode,
   accessOptions,
   onAccessChange,
@@ -246,6 +262,14 @@ export function MobileSettingRows({
   return (
     <>
       <div className={CLASS.config} data-testid="mobile-spawn-config">
+        {hostOptions.length > 0 && (
+          <MobileSettingRow
+            label="Host"
+            value={hostLabel}
+            onClick={() => open("Host")}
+            expanded={openPicker === "Host"}
+          />
+        )}
         <MobileSettingRow
           label="Harness"
           value={harnessLabel}
@@ -292,6 +316,27 @@ export function MobileSettingRows({
         >
           Couldn't inspect plugins
         </InlineNotice>
+      )}
+
+      {hostOptions.length > 0 && (
+        <Sheet open={openPicker === "Host"} side="bottom" onClose={closePicker} title="Host">
+          <div className={CLASS.sheetBody}>
+            <SpawnHostSelection
+              options={hostOptions}
+              value={hostValue}
+              connecting={connectingHosts}
+              onSelect={(id) => {
+                onHostSelect(id);
+                closePicker();
+              }}
+              onConnect={onHostConnect}
+              onConnectHost={() => {
+                onConnectHost();
+                closePicker();
+              }}
+            />
+          </div>
+        </Sheet>
       )}
 
       <OptionSheet

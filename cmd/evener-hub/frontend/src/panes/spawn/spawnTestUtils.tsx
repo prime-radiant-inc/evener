@@ -87,25 +87,28 @@ export function localHostLabel(): string {
   return `${window.location.hostname || "this host"} (hub)`;
 }
 
-/** The closed host picker's trigger, named by the field and its current host. */
-export function hostTrigger(): HTMLButtonElement {
-  return screen.getByRole("button", { name: /^Host:/ }) as HTMLButtonElement;
+/** The host picker's quiet disclosure row, the same control the plugin row uses. */
+export function hostTrigger(): HTMLElement {
+  const summary = screen.getByTestId("spawn-host-summary").closest("summary");
+  if (!(summary instanceof HTMLElement)) throw new Error("host disclosure summary is missing");
+  return summary;
 }
 
-/** The host the picker currently displays, e.g. "Host: buildbox". */
+/** The host the disclosure currently displays, e.g. "Host: buildbox". */
 export function selectedHost(): string {
-  return hostTrigger().getAttribute("aria-label") ?? "";
+  return `Host: ${screen.getByTestId("spawn-host-value").textContent ?? ""}`;
 }
 
-/** Opens the host picker's one dropdown and returns its panel. */
+/** Opens the host disclosure's one host list and returns it. */
 export function openHostPicker(): HTMLElement {
   fireEvent.click(hostTrigger());
   return screen.getByRole("group", { name: "Host options" });
 }
 
-/** Chooses an online host through the dropdown, by the row's visible label.
- * Async so the host-switch discovery it starts is flushed before the test's
- * next assertion, exactly as the old native select's user-event step was. */
+/** Chooses an online host through the disclosure's host list, by the row's
+ * visible label. Async so the host-switch discovery it starts is flushed before
+ * the test's next assertion, exactly as the old native select's user-event step
+ * was. */
 export async function chooseHost(label: string): Promise<void> {
   const panel = openHostPicker();
   fireEvent.click(within(panel).getByRole("button", { name: label }));

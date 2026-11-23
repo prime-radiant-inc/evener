@@ -1504,11 +1504,11 @@ test("the host picker is locked while a submit is in flight", async () => {
   renderSpawn(fake);
   await settled();
 
-  await waitFor(() => expect(hostTrigger().disabled).toBe(false));
+  await waitFor(() => expect(hostTrigger().getAttribute("aria-disabled")).toBeNull());
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
 
-  expect(hostTrigger().disabled).toBe(true);
+  expect(hostTrigger().getAttribute("aria-disabled")).toBe("true");
   expect(selectedHost()).toBe("Host: buildbox");
   const startedOn = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
   expect(startedOn.source).toBe("buildbox");

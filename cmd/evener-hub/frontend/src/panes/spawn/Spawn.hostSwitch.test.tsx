@@ -99,7 +99,6 @@ test("host picker lists every source in one dropdown, with Connect on offline ho
   renderSpawn(readyClient());
   await settled();
 
-  expect(hostTrigger().disabled).toBe(false);
   expect(selectedHost()).toBe(`Host: ${localHostLabel()}`);
   expect(screen.queryByRole("group", { name: "Host options" })).toBeNull();
 
@@ -346,7 +345,7 @@ test("no host picker renders when the manifest has only local", async () => {
   renderSpawn(readyClient());
   await settled();
 
-  expect(screen.queryByRole("button", { name: /^Host:/ })).toBeNull();
+  expect(screen.queryByTestId("spawn-host-summary")).toBeNull();
 });
 
 test("choosing a non-local host sends source and persists it in the draft", async () => {

@@ -24,6 +24,13 @@ function props(overrides: Partial<MobileSettingRowsProps> = {}): MobileSettingRo
     createDirectory: async () => {},
     onCwdPanelClose: vi.fn(),
     branch: "main",
+    hostOptions: [],
+    hostValue: "local",
+    hostLabel: "this host (hub)",
+    connectingHosts: new Set(),
+    onHostSelect: vi.fn(),
+    onHostConnect: vi.fn(),
+    onConnectHost: vi.fn(),
     accessMode: "",
     accessOptions: [
       { value: "", label: "(default)" },
@@ -108,6 +115,48 @@ test("no model row and no model sheet - the prompt card owns that setting now", 
   expect(screen.queryByRole("button", { name: /^Model:/ })).toBeNull();
   expect(screen.queryByRole("dialog", { name: "Choose model" })).toBeNull();
   expect(screen.queryByText("Use default")).toBeNull();
+});
+
+test("the host row opens the one host list in a sheet", async () => {
+  const user = userEvent.setup();
+  const onHostSelect = vi.fn();
+  const onHostConnect = vi.fn();
+  const onConnectHost = vi.fn();
+  renderRows({
+    hostOptions: [
+      { id: "local", label: "magic-kingdom (hub)", online: true },
+      { id: "buildbox", label: "buildbox", online: true },
+      { id: "offline-host", label: "offline-host", online: false },
+    ],
+    hostValue: "local",
+    hostLabel: "magic-kingdom (hub)",
+    onHostSelect,
+    onHostConnect,
+    onConnectHost,
+  });
+
+  const labels = within(screen.getByTestId("mobile-spawn-config"))
+    .getAllByTestId("mobile-spawn-row")
+    .map((row) => row.getAttribute("data-label"));
+  expect(labels[0]).toBe("Host");
+
+  const rowButton = screen.getByRole("button", { name: "Host: magic-kingdom (hub)" });
+  await user.click(rowButton);
+  const dialog = await screen.findByRole("dialog", { name: "Host" });
+  const group = within(dialog).getByRole("group", { name: "Host options" });
+  await user.click(within(group).getByRole("button", { name: "Connect offline-host" }));
+  expect(onHostConnect).toHaveBeenCalledWith("offline-host");
+  expect(screen.getByRole("dialog", { name: "Host" })).toBe(dialog);
+
+  await user.click(within(group).getByRole("button", { name: "buildbox" }));
+  expect(onHostSelect).toHaveBeenCalledWith("buildbox");
+  expect(screen.queryByRole("dialog", { name: "Host" })).toBeNull();
+
+  await user.click(screen.getByRole("button", { name: "Host: magic-kingdom (hub)" }));
+  const reopened = await screen.findByRole("dialog", { name: "Host" });
+  await user.click(within(reopened).getByRole("button", { name: "Connect host" }));
+  expect(onConnectHost).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole("dialog", { name: "Host" })).toBeNull();
 });
 
 test("option sheets commit a selection and return focus to the row", async () => {
