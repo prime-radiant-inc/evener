@@ -17,12 +17,12 @@ import {
   formatElapsed,
   scopedDisclosureId,
   splitMandate,
+  stableDelegateDisplayStatus,
 } from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import { disclosureScopeForSession, useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
 import {
   Chip,
-  type ChipTone,
   CopyButton,
   Disclosure,
   Eyebrow,
@@ -37,7 +37,8 @@ import { OpenTranscriptButton } from "../openTranscript";
 import type { ToolRenderProps } from "../toolRenderers";
 import { HeadClippedOutputBody } from "./bodies";
 import styles from "./delegateStatus.module.css";
-import { classifyJobStatus } from "./subagentModuleStore";
+import { classifyJobStatus, DELEGATE_STATUS, delegateStatusKey, type SubagentRowKind } from "./subagentModuleStore";
+import { ToolMeta } from "./toolMeta";
 
 const CLASS = {
   card: requireClass(styles.card, "delegateStatus.module.css", "card"),
@@ -46,7 +47,6 @@ const CLASS = {
   headSpacer: requireClass(styles.headSpacer, "delegateStatus.module.css", "headSpacer"),
   meta: requireClass(styles.meta, "delegateStatus.module.css", "meta"),
   metaSeg: requireClass(styles.metaSeg, "delegateStatus.module.css", "metaSeg"),
-  metaSep: requireClass(styles.metaSep, "delegateStatus.module.css", "metaSep"),
   metaK: requireClass(styles.metaK, "delegateStatus.module.css", "metaK"),
   metaV: requireClass(styles.metaV, "delegateStatus.module.css", "metaV"),
   mandate: requireClass(styles.mandate, "delegateStatus.module.css", "mandate"),
@@ -150,40 +150,19 @@ function isDelegateStatus(raw: unknown): raw is DelegateStatusState {
   return true;
 }
 
-// Map a delegate's status to a Chip tone, reusing
-// classifyJobStatus's status vocabulary so failed→danger (not neutral).
-// An idle delegate whose last run failed should still show danger —
-// the lifecycle is idle, but the outcome is the most recent fact.
-// A running delegate always shows alive regardless of last_outcome —
-// the live lifecycle is the primary signal, not a past outcome.
-//
-// "exhausted" is NOT classified as "failed" here: a budget exhaustion is
-// a soft stop, not a hard error. classifyJobStatus maps it to "failed"
-// for the activity rail (where it's a terminal state), but the delegate
-// status card distinguishes the two: exhausted→attention (amber, "ran
-// out of budget"), failed→danger (red, "something went wrong").
 function isExhausted(status: string | undefined): boolean {
   return status === "exhausted";
 }
 
-function statusToTone(state: DelegateStatusState): ChipTone {
-  if (state.status === "idle") {
-    // Idle lifecycle: show the last run's outcome, not "running".
-    if (state.last_outcome?.status) {
-      if (isExhausted(state.last_outcome.status)) return "attention";
-      const kind = classifyJobStatus(state.last_outcome.status);
-      if (kind === "failed") return "danger";
-    }
-    return "neutral";
-  }
-  const kind = classifyJobStatus(state.status);
-  if (kind === "running") return "alive";
-  if (kind === "failed") return "danger";
-  return "neutral";
-}
-
-function statusLabel(state: DelegateStatusState): string {
-  return state.status ?? "unknown";
+// A terminal delegate's last outcome outranks its idle lifecycle, as on the card.
+function statusInfo(state: DelegateStatusState) {
+  const stable = {
+    status: state.status,
+    outcome: state.last_outcome?.status,
+    terminal: state.status !== "running",
+  };
+  const kind: SubagentRowKind = classifyJobStatus(stableDelegateDisplayStatus(stable) ?? state.status);
+  return { kind, ...DELEGATE_STATUS[delegateStatusKey(kind, stable)] };
 }
 
 interface MetaSegment {
@@ -230,20 +209,18 @@ function environmentRows(state: DelegateStatusState): PropertyListRow[] {
 }
 
 function MetaLine({ segments }: { segments: MetaSegment[] }) {
-  if (segments.length === 0) return null;
   return (
-    <div className={CLASS.meta}>
-      {segments.map((seg, i) => (
-        <span key={seg.key} className={CLASS.metaSeg}>
-          {i > 0 && (
-            <span className={CLASS.metaSep} aria-hidden="true">
-              ·
-            </span>
-          )}
-          <span className={CLASS.metaK}>{seg.key}</span> <span className={CLASS.metaV}>{seg.value}</span>
-        </span>
-      ))}
-    </div>
+    <ToolMeta
+      className={CLASS.meta}
+      segments={segments.map((seg) => ({
+        key: seg.key,
+        content: (
+          <span className={CLASS.metaSeg}>
+            <span className={CLASS.metaK}>{seg.key}</span> <span className={CLASS.metaV}>{seg.value}</span>
+          </span>
+        ),
+      }))}
+    />
   );
 }
 
@@ -275,8 +252,7 @@ export function DelegateStatusBody({ item, sessionRef }: ToolRenderProps) {
   // Normalize all fields to their declared types so rendering can't throw on
   // malformed persisted data (e.g. model: {} from a legacy transcript).
   const state = normalizeDelegateStatus(item.raw as Record<string, unknown>);
-  const tone = statusToTone(state);
-  const label = statusLabel(state);
+  const status = statusInfo(state);
   const mandate = splitMandate(state.task);
   const lifecycle = lifecycleSegments(state);
   const config = configSegments(state);
@@ -307,7 +283,9 @@ export function DelegateStatusBody({ item, sessionRef }: ToolRenderProps) {
           <EntityRef id={state.id ?? ""} triggerOnly />
         </span>
         <span className={CLASS.headSpacer} />
-        <Chip tone={tone}>{label}</Chip>
+        <Chip kind={status.kind} tone={status.chipTone}>
+          {status.label}
+        </Chip>
       </div>
 
       {/* Lifecycle meta: inline ·-separated segments */}

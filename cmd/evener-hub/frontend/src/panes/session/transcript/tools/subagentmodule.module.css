@@ -78,10 +78,6 @@
 .statsSep {
   color: var(--edge-strong);
 }
-.statsSpring {
-  flex: 1 1 auto;
-  margin-left: auto;
-}
 .clock {
   flex: none;
   color: var(--ink-mid);
