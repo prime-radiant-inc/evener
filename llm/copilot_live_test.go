@@ -266,18 +266,9 @@ func TestGitHubCopilotLiveProbe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListModels through the Chat Completions protocol: %v", err)
 	}
-	rosterIDs := make([]string, 0, len(roster))
-	for _, m := range roster {
-		rosterIDs = append(rosterIDs, m.ID)
-	}
 	listedIDs := make([]string, 0, len(listed))
 	for _, m := range listed {
 		listedIDs = append(listedIDs, m.ID)
-	}
-	sort.Strings(rosterIDs)
-	sort.Strings(listedIDs)
-	if !slices.Equal(rosterIDs, listedIDs) {
-		t.Fatalf("ListModels ids differ from the roster: listed %v roster %v", listedIDs, rosterIDs)
 	}
 	t.Logf("Copilot advertised %d models through the real Chat Completions listing", len(listed))
 
@@ -286,6 +277,7 @@ func TestGitHubCopilotLiveProbe(t *testing.T) {
 		logCopilotRosterDiagnostics(t, roster)
 		t.Fatal("no advertised family/protocol combination supports a tool loop")
 	}
+	requireCopilotRunsListed(t, runs, listedIDs)
 	probeCtx = llm.WithScopedAuthenticator(probeCtx, registry.AuthOAuthGitHubCopilot, tokenauth.ScopedCopilot(stateDir))
 	for _, run := range runs {
 		t.Run(run.family+"/"+run.scenario.Name, func(t *testing.T) {
@@ -381,15 +373,11 @@ func TestGitHubCopilotShippedLiveGate(t *testing.T) {
 			t.Fatalf("enabled scenario %q is not covered by the live roster; every enabled scenario is mandatory", scenario.Name)
 		}
 	}
-	listed := make(map[string]bool, len(listing.Models))
+	listedIDs := make([]string, 0, len(listing.Models))
 	for _, row := range listing.Models {
-		listed[row.ModelID] = true
+		listedIDs = append(listedIDs, row.ModelID)
 	}
-	for _, run := range runs {
-		if !listed[run.model.ID] {
-			t.Fatalf("scenario %q selects live model %q, which the shipped listing did not offer", run.scenario.Name, run.model.ID)
-		}
-	}
+	requireCopilotRunsListed(t, runs, listedIDs)
 	for _, run := range runs {
 		t.Run(run.family+"/"+run.scenario.Name, func(t *testing.T) {
 			runCopilotShippedScenario(gateCtx, t, client, run, recorder)
@@ -969,6 +957,26 @@ func copilotLiveScenarioRan(runs []copilotLiveRun, scenario copilotLiveScenario)
 		}
 	}
 	return false
+}
+
+// requireCopilotRunsListed proves the live model listing offers every model a
+// selected run will drive. The raw roster also carries rows the listing
+// deliberately hides (unsupported, non-picker, embedding), so the contract is
+// one-way: a run the probe plans must be visible, not every roster row.
+func requireCopilotRunsListed(t *testing.T, runs []copilotLiveRun, listedIDs []string) {
+	t.Helper()
+	listed := make(map[string]bool, len(listedIDs))
+	for _, id := range listedIDs {
+		listed[id] = true
+	}
+	for _, run := range runs {
+		if run.MissingPin {
+			continue
+		}
+		if !listed[run.model.ID] {
+			t.Fatalf("scenario %q selects live model %q, which the live listing did not offer", run.scenario.Name, run.model.ID)
+		}
+	}
 }
 
 // copilotAdvertisesEndpoint applies the approved roster-metadata fallback: a
