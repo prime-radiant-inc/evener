@@ -506,6 +506,29 @@ func TestListModelsReadsBoolReasoningVerdict(t *testing.T) {
 	}
 }
 
+// TestListModelsObjectSilentAboutEffortsKeepsLadder pins the mixed-spelling
+// row: a row may spell its ladder in supported_reasoning_levels while the
+// reasoning object states only mandatory or default facts. An
+// efforts-silent object must not wipe the ladder the levels spelled; only
+// an object that publishes its own supported_efforts replaces it.
+func TestListModelsObjectSilentAboutEffortsKeepsLadder(t *testing.T) {
+	t.Parallel()
+	c := listRow(t, `{"id":"levels-plus-object","supported_reasoning_levels":["low","high"],"reasoning":{"mandatory":false}}`)
+	if got, want := c.EffortValues, []string{"low", "high"}; !slices.Equal(got, want) {
+		t.Fatalf("EffortValues = %v, want %v from the levels", got, want)
+	}
+	if c.Reasoning == nil || !*c.Reasoning {
+		t.Fatalf("Reasoning = %v, want true", c.Reasoning)
+	}
+	if c.ThinkingAlwaysOn != nil {
+		t.Fatalf("ThinkingAlwaysOn = %v, want unset when mandatory is false", c.ThinkingAlwaysOn)
+	}
+	c = listRow(t, `{"id":"object-owns-efforts","supported_reasoning_levels":["low","high"],"reasoning":{"supported_efforts":["minimal"]}}`)
+	if got, want := c.EffortValues, []string{"minimal"}; !slices.Equal(got, want) {
+		t.Fatalf("EffortValues = %v, want %v: the object that publishes efforts is the later spelling", got, want)
+	}
+}
+
 // TestListModelsIsolatesUndecodableRows pins the listing's row isolation:
 // a row whose shape the reader cannot decode is dropped while its siblings
 // load, so one alien row cannot fail the whole live refresh the way the

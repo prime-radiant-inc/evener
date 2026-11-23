@@ -290,6 +290,11 @@ from a provider-wide parameter list. A model whose listing carries no map at
 all keeps whatever ladder its curated row supplies, and an uncatalogued one
 resolves with none, so the request builder sends no effort name it cannot
 vouch for.
+The boolean verdict is a fact of the row itself: within the row it is the
+last word, but the gateway's own per-model facts still apply after it, so an
+explicit `capabilities.reasoning` verdict overrides it and a usable
+`client_compat.pi.thinkingLevelMap` may raise it, the way either raises a
+parameter-list inference.
 `MaxOutputTokens` reads the row's `top_provider.max_completion_tokens`, the
 top-level `max_completion_tokens` or `max_output_tokens`, or a server's
 `limits.max_output_tokens`.

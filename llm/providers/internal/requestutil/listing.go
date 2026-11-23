@@ -116,11 +116,15 @@ func NormalizeDefaultReasoningEffort(s string) string {
 // order the listings spell them: the effort ladder and its default in the
 // Codex backend's supported_reasoning_levels / default_reasoning_level,
 // then OpenRouter's reasoning object, then a plain boolean verdict. A
-// usable ladder is itself evidence the model tunes effort; the explicit
-// verdict is the row's own statement about the model, so it wins in both
-// directions and a false one carries no ladder, whatever levels the row
-// also lists. Both /models readers share this so a row's facts cannot
-// resolve differently by protocol.
+// usable ladder is itself evidence the model tunes effort. Within the row's
+// own spellings the explicit verdict is the last word, and a false one
+// carries no ladder, whatever levels the row also lists; an object that
+// states no supported_efforts of its own leaves a ladder the levels
+// spelled alone. The gateway's per-model facts (ApplyGatewayFacts) apply
+// after this fold: an explicit capabilities.reasoning verdict overrides the
+// row's, and a usable client_compat map may raise the verdict the way it
+// raises a parameter-list inference. Both /models readers share this so a
+// row's facts cannot resolve differently by protocol.
 func ApplyListedReasoningFacts(caps *registry.Caps, r ListedReasoning, levels []string, defaultEffort string) {
 	if efforts := NormalizeReasoningEfforts(levels); len(efforts) > 0 {
 		caps.EffortValues = efforts
@@ -134,7 +138,9 @@ func ApplyListedReasoningFacts(caps *registry.Caps, r ListedReasoning, levels []
 		if r.Mandatory != nil && *r.Mandatory {
 			caps.ThinkingAlwaysOn = new(true)
 		}
-		caps.EffortValues = DedupStrings(r.SupportedEfforts)
+		if r.SupportedEfforts != nil {
+			caps.EffortValues = DedupStrings(r.SupportedEfforts)
+		}
 	}
 	if v := r.Verdict; v != nil {
 		caps.Reasoning = v
