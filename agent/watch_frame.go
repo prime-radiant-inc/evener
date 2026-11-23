@@ -7,6 +7,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/lineend"
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/appwire"
 )
 
 func watchNotification(jobID, reason string) jobNotification {
@@ -65,6 +66,14 @@ func (jm *jobManager) watchNotificationWithDelivery(cfg *watchConfig, jobID, rea
 }
 
 func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger string, deliveryID string, ev events.SessionEvent, p *provenance.Causal) string {
+	return jm.buildWatchFrameWithObservation(cfg, jobID, trigger, deliveryID, ev, p, nil)
+}
+
+// buildWatchFrameWithObservation renders the frame, replacing the event block
+// with the observation a hub watch decoded about the watched session. The
+// observation lives only in memory; the frame keeps carrying it the way it
+// carries any other event payload.
+func (jm *jobManager) buildWatchFrameWithObservation(cfg *watchConfig, jobID string, trigger string, deliveryID string, ev events.SessionEvent, p *provenance.Causal, observation *hubObservationFrame) string {
 	if cfg == nil || cfg.send == nil {
 		return ""
 	}
@@ -97,7 +106,11 @@ func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger st
 		writeWatchFrameTopField(&b, "note", limitWatchText(cfg.note, watchMessageMaxChars))
 	}
 	writeWatchFrameProvenance(&b, p)
-	writeWatchFrameEvent(&b, ev)
+	if observation != nil {
+		writeHubObservationWatchEvent(&b, observation)
+	} else {
+		writeWatchFrameEvent(&b, ev)
+	}
 
 	if !isWatchSessionTarget(jobID) && cfg.send.IncludeExcerpt {
 		excerpt, _, truncated, err := jm.readOutput(jobID, watchExcerptTailBytes)
@@ -170,8 +183,6 @@ func writeWatchFrameEvent(b *strings.Builder, ev events.SessionEvent) {
 	switch data := ev.Data.(type) {
 	case events.CommunicateData:
 		writeCommunicateWatchEvent(b, data)
-	case events.HubObservationData:
-		writeHubObservationWatchEvent(b, data)
 	case events.AssistantTextEndData:
 		writeAssistantMessageWatchEvent(b, data)
 	case events.ToolCallEndData:
@@ -181,74 +192,101 @@ func writeWatchFrameEvent(b *strings.Builder, ev events.SessionEvent) {
 	}
 }
 
-// hubQuestionTextMaxChars bounds a question's text in a frame. It is the same
-// excerpt budget the communicate block uses: context for the wake, not the
-// payload the watcher acts on.
-const hubQuestionTextMaxChars = 1000
+// hubObservationFrame is what a hub watch observed about the watched session,
+// decoded from the observation update and carried on the in-memory delivery.
+// It is not a session-event kind: nothing about it is appended to a session's
+// event log, and the durable watch state keeps only the rendered frame.
+type hubObservationFrame struct {
+	// Event is the watch selector the observation matched: "status",
+	// "question", or "approval".
+	Event string
+	// PreviousStatus is the status the watch last learned, filled in under the
+	// watch lock at delivery time.
+	PreviousStatus string
+	// Status is the thread/status/changed params of a live status or question
+	// observation, when the notification carried them.
+	Status *appwire.ThreadStatusChangedParams
+	// Closed marks a thread/closed observation; Method names the notification
+	// that reported it.
+	Closed bool
+	Method string
+	// Question and Approval are the pending items a snapshot replay carried.
+	Question *appwire.PendingQuestion
+	Approval *appwire.SandboxEscalationRequested
+}
+
+// statusType is the status this observation reports, empty when it reports
+// none.
+func (frame *hubObservationFrame) statusType() string {
+	switch {
+	case frame.Closed:
+		return appwire.ThreadStatusClosed
+	case frame.Status != nil:
+		return frame.Status.Status.Type
+	}
+	return ""
+}
 
 // writeHubObservationWatchEvent renders what a hub watch observed about the
 // watched session. Each shape names its event kind first and then only the
 // fields the observation actually carried, so an older hub's notification or a
 // snapshot that omitted a field renders nothing rather than a fabricated value.
-func writeHubObservationWatchEvent(b *strings.Builder, data events.HubObservationData) {
+func writeHubObservationWatchEvent(b *strings.Builder, data *hubObservationFrame) {
 	switch data.Event {
 	case "status":
 		b.WriteString("event:\n")
 		b.WriteString("  kind: status\n")
-		writeWatchFrameOptionalField(b, "status", data.Status)
-		writeWatchFrameOptionalField(b, "previous_status", data.PreviousStatus)
-		writeWatchFrameOptionalField(b, "method", data.Method)
-		if len(data.ActiveFlags) > 0 {
-			writeWatchFrameOptionalField(b, "active_flags", strings.Join(data.ActiveFlags, ", "))
+		switch {
+		case data.Closed:
+			writeWatchFrameOptionalField(b, "status", appwire.ThreadStatusClosed)
+			writeWatchFrameOptionalField(b, "previous_status", data.PreviousStatus)
+			writeWatchFrameOptionalField(b, "method", data.Method)
+		case data.Status != nil:
+			writeWatchFrameOptionalField(b, "status", data.Status.Status.Type)
+			writeWatchFrameOptionalField(b, "previous_status", data.PreviousStatus)
+			writeWatchFrameOptionalField(b, "active_flags", strings.Join(data.Status.Status.ActiveFlags, ", "))
+			if data.Status.AskPending != nil {
+				writeWatchFrameBoolField(b, "ask_pending", *data.Status.AskPending)
+			}
+			if data.Status.FailedToolCalls != nil {
+				writeWatchFrameOptionalField(b, "failed_tool_calls", strconv.Itoa(*data.Status.FailedToolCalls))
+			}
+			writeWatchFrameOptionalField(b, "active_turn_id", data.Status.ActiveTurnID)
+			writeWatchFrameOptionalField(b, "ended_turn_id", data.Status.EndedTurnID)
+		default:
+			writeWatchFrameOptionalField(b, "previous_status", data.PreviousStatus)
 		}
-		if data.AskPending != nil {
-			writeWatchFrameBoolField(b, "ask_pending", *data.AskPending)
-		}
-		if data.FailedToolCalls != nil {
-			b.WriteString("  failed_tool_calls: ")
-			b.WriteString(strconv.Itoa(*data.FailedToolCalls))
-			b.WriteString("\n")
-		}
-		writeWatchFrameOptionalField(b, "active_turn_id", data.ActiveTurnID)
-		writeWatchFrameOptionalField(b, "ended_turn_id", data.EndedTurnID)
 	case "question":
 		b.WriteString("event:\n")
 		b.WriteString("  kind: question\n")
-		if data.Question != "" {
-			writeWatchFrameTextField(b, "question", limitWatchText(data.Question, hubQuestionTextMaxChars))
-		}
-		if len(data.Options) > 0 {
-			options := make([]string, 0, len(data.Options))
-			for _, option := range data.Options {
-				options = append(options, limitWatchText(option, watchTriggerMaxChars))
+		if question := data.Question; question != nil {
+			writeWatchFrameOptionalField(b, "question", limitWatchText(question.Question, watchEventExcerptMaxChars))
+			writeWatchFrameOptionalField(b, "options", strings.Join(question.Options, ", "))
+			if question.Count > 0 {
+				writeWatchFrameOptionalField(b, "count", strconv.Itoa(question.Count))
 			}
-			writeWatchFrameOptionalField(b, "options", strings.Join(options, ", "))
 		}
-		if data.Count > 0 {
-			b.WriteString("  count: ")
-			b.WriteString(strconv.Itoa(data.Count))
-			b.WriteString("\n")
+		if data.Status != nil {
+			writeWatchFrameOptionalField(b, "status", data.Status.Status.Type)
+			writeWatchFrameOptionalField(b, "active_turn_id", data.Status.ActiveTurnID)
 		}
-		writeWatchFrameOptionalField(b, "status", data.Status)
-		writeWatchFrameOptionalField(b, "active_turn_id", data.ActiveTurnID)
 	case "approval":
 		b.WriteString("event:\n")
 		b.WriteString("  kind: approval\n")
-		writeWatchFrameOptionalField(b, "escalation_id", data.EscalationID)
-		writeWatchFrameOptionalField(b, "tool", data.Tool)
-		writeWatchFrameOptionalField(b, "kind_detail", data.EscalationKind)
-		writeWatchFrameOptionalField(b, "mode", data.Mode)
-		writeWatchFrameOptionalField(b, "path", data.DeniedPath)
-		writeWatchFrameOptionalField(b, "requested_path", data.RequestedPath)
-		writeWatchFrameOptionalField(b, "command", data.Command)
+		if request := data.Approval; request != nil {
+			writeWatchFrameOptionalField(b, "escalation_id", request.EscalationID)
+			writeWatchFrameOptionalField(b, "tool", request.Tool)
+			writeWatchFrameOptionalField(b, "kind_detail", request.Kind)
+			writeWatchFrameOptionalField(b, "mode", request.Mode)
+			writeWatchFrameOptionalField(b, "path", request.DeniedPath)
+			writeWatchFrameOptionalField(b, "requested_path", request.RequestedPath)
+			writeWatchFrameOptionalField(b, "command", request.Command)
+		}
 	}
 }
 
 func writeCommunicateWatchEvent(b *strings.Builder, data events.CommunicateData) {
-	// maxMessageChars caps the event-payload excerpt; tighter than the frame's own
-	// message cap because this is context, not the primary message.
-	const maxMessageChars = 1000
-	message := limitWatchText(data.Message, maxMessageChars)
+	message := limitWatchText(data.Message, watchEventExcerptMaxChars)
 	truncated := message != data.Message
 	b.WriteString("event:\n")
 	b.WriteString("  kind: communicate\n")

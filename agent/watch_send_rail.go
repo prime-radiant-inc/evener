@@ -33,7 +33,7 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 		generation = d.cfg.generation
 		note = d.cfg.note
 	}
-	d.frame = jm.buildWatchFrame(&watchConfig{
+	d.frame = jm.buildWatchFrameWithObservation(&watchConfig{
 		watchID:    watchID,
 		generation: generation,
 		note:       note,
@@ -42,7 +42,7 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 		Kind:      d.eventKind,
 		SessionID: jm.sessionID,
 		Data:      d.eventData,
-	}, d.triggerProvenance)
+	}, d.triggerProvenance, d.hubObservation)
 	if d.rosterPayload != "" {
 		d.frame += d.rosterPayload
 	} else {

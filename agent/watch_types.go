@@ -36,6 +36,10 @@ const (
 	maxWatchProgressIntervalMS = 3600000
 	watchFrameMaxChars         = 4096
 	watchMessageMaxChars       = 2048
+	// watchEventExcerptMaxChars bounds an event-block excerpt in a frame: a
+	// communicate message or a pending question's text. Tighter than the frame's
+	// message cap because this is context for the wake, not the payload.
+	watchEventExcerptMaxChars  = 1000
 	watchTriggerMaxChars       = 1024
 	watchExcerptTailBytes      = 4096
 	watchExcerptMaxChars       = 4096
@@ -494,6 +498,10 @@ type watchSendDelivery struct {
 	provenance *provenance.Causal
 	eventKind  events.EventKind
 	eventData  events.EventData
+	// hubObservation is what a hub watch observed about the watched session,
+	// rendered into the frame in place of an event payload. It is in-memory
+	// only: the durable WatchSendState keeps the rendered frame, never this.
+	hubObservation *hubObservationFrame
 	// endNotice marks the teardown frame a watch sends when it ends without ever
 	// having fired, so the durable state says what the trigger prose only implies.
 	endNotice bool

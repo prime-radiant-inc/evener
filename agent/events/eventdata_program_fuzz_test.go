@@ -105,6 +105,5 @@ func eventDataProgramCases(text string, n int, flag bool) []eventDataProgramCase
 		{ExecutionStartedData{TurnID: text}, EventExecutionStarted},
 		{ExecutionFirstRecordedData{TurnID: text}, EventExecutionFirstRecorded},
 		{ExecutionEndedData{TurnID: text, Status: text}, EventExecutionEnded},
-		{HubObservationData{Event: text, Status: text, PreviousStatus: text, Method: text, ActiveFlags: []string{text}, AskPending: &flag, FailedToolCalls: &n, ActiveTurnID: text, EndedTurnID: text, Question: text, Options: []string{text}, Count: n, EscalationID: text, Tool: text, EscalationKind: text, Mode: text, DeniedPath: text, RequestedPath: text, Command: text}, EventHubObservation},
 	}
 }
