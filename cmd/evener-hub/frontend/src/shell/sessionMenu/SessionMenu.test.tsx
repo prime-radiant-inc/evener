@@ -273,6 +273,20 @@ test("pinned session offers Unpin; archived offers Unarchive", async () => {
   expect(actions.onToggleArchive).toHaveBeenCalledTimes(1);
 });
 
+test("a pending Unpin does not block Archive", async () => {
+  const user = userEvent.setup();
+  const actions = renderMenu(
+    { session: navigationSession({ pin_section_id: "sec_1" }) },
+    { onUnpin: vi.fn(() => new Promise<void>(() => {})) },
+  );
+  await openMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Unpin" }));
+  expect(actions.onUnpin).toHaveBeenCalledTimes(1);
+  await openMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Archive" }));
+  expect(actions.onToggleArchive).toHaveBeenCalledTimes(1);
+});
+
 test("Pin this session… opens the PinSectionPicker; assigning calls onPin and closes", async () => {
   const user = userEvent.setup();
   const actions = renderMenu({ session: navigationSession() });

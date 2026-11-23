@@ -184,12 +184,12 @@ export function SessionMenu({
   if (organizationEligible) {
     organizeItems.push(
       sessionModel?.pin_section_id
-        ? { id: "unpin", label: "Unpin", onSelect: () => void run(actions.onUnpin, () => undefined) }
+        ? { id: "unpin", label: "Unpin", onSelect: () => void actions.onUnpin().catch(() => undefined) }
         : { id: "pin", label: "Pin this session…", onSelect: () => setPickerOpen(true) },
       {
         id: "archive",
         label: sessionModel?.tier === "archived" ? "Unarchive" : "Archive",
-        onSelect: () => void run(actions.onToggleArchive, () => undefined),
+        onSelect: () => void actions.onToggleArchive().catch(() => undefined),
       },
     );
   }
