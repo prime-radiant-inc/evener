@@ -34,6 +34,9 @@ export interface PendingAttachment {
   pending: boolean;
 }
 
+/** The one refusal every guarded press shows while a staged image encodes. */
+const PENDING_ATTACHMENT_REFUSAL = "Image attachment is still processing";
+
 // Markers identify text references and may change when recovery merges around
 // a literal marker. Encode continuations instead own this stable item token.
 const operationTokens = new WeakMap<PendingAttachment, symbol>();
@@ -116,6 +119,9 @@ export interface UseAttachmentsResult {
   /** True while any item is still mid-encode - gates submit (parity §A: "a
    * staged attachment is still mid-encode" blocks send/steer alike). */
   hasPending: boolean;
+  /** Why submitting or restoring now must be refused - the shared message for
+   * a staged item that is still mid-encode - or undefined when none is. */
+  refusalReason(): string | undefined;
   /** Validates + stages every file, synchronously splicing one "[image N]"
    * marker per accepted file into the composer text, replacing the selection,
    * then re-encodes each to PNG asynchronously. Every rejection reason from
@@ -438,6 +444,9 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
       .map((item) => ({ marker: item.marker, mediaType: item.mediaType, data: item.data, name: item.name }));
   };
 
+  const refusalReason = (): string | undefined =>
+    store.getState().items.some((item) => item.pending) ? PENDING_ATTACHMENT_REFUSAL : undefined;
+
   return {
     get items() {
       return store.getState().items;
@@ -446,8 +455,9 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
     renumberOff,
     reset,
     get hasPending() {
-      return store.getState().items.some((item) => item.pending);
+      return refusalReason() !== undefined;
     },
+    refusalReason,
     ingestFiles,
     removeItem,
     toInputAttachments,
@@ -460,5 +470,5 @@ export function useAttachments(editor: TextEditor, backingStore?: AttachmentStor
   const store = backingStore ?? localStore;
   const items = useStore(store, (state) => state.items);
   const operations = useMemo(() => createAttachmentOperations(editor, store), [editor, store]);
-  return { ...operations, items, hasPending: items.some((item) => item.pending) };
+  return { ...operations, items };
 }

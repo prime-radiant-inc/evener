@@ -350,6 +350,7 @@ test("ingesting an image synchronously splices its marker into the editor text a
   expect(result.current.items).toHaveLength(1);
   expect(result.current.items[0]).toMatchObject({ marker: 1, pending: true, name: "a.png" });
   expect(result.current.hasPending).toBe(true);
+  expect(result.current.refusalReason()).toBeDefined();
   await act(async () => {
     await Promise.all(decodes);
   });
@@ -367,6 +368,7 @@ test("after the async re-encode resolves, the item flips to settled with data/wi
   expect(result.current.items[0]).toMatchObject({ marker: 1, pending: false, width: 8, height: 4 });
   expect(typeof result.current.items[0]?.data).toBe("string");
   expect(result.current.hasPending).toBe(false);
+  expect(result.current.refusalReason()).toBeUndefined();
 });
 
 test("two files in the same ingest call get sequential markers spliced side by side", async () => {

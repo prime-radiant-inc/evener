@@ -75,6 +75,7 @@ const ROW_ICON_SIZE = 14;
 // A row with no intent is a single line: summary, then affordances, then
 // the chevron if there is something to expand.
 import { type ComponentProps, Fragment, type ReactNode, useId, useMemo } from "react";
+import { MIDDLE_TRUNCATION_HEAD_SHARE, walkTruncationCut } from "../../../transcriptDisplay/middleTruncate";
 import { Chevron, FailureGlyph, ToolIcon, type ToolIconKind } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { EntityRef } from "./EntityRef";
@@ -356,7 +357,7 @@ function spanContaining(spans: EntitySpan[], cut: number): EntitySpan | undefine
  * middle truncation. */
 function middleTruncationCut(measure: SummaryMeasure): number {
   const { total, spans } = measure;
-  let cut = Math.ceil(total * 0.6);
+  let cut = Math.ceil(total * MIDDLE_TRUNCATION_HEAD_SHARE);
   const straddled = spanContaining(spans, cut);
   if (straddled) {
     const preferStart = cut - straddled.start <= straddled.end - cut && straddled.start > 0;
@@ -371,28 +372,7 @@ function middleTruncationCut(measure: SummaryMeasure): number {
  * walk enters an id, back to that id's start - so no character the browser
  * would collapse sits at a span edge and no id is ever split. */
 function walkOffWhitespace(measure: SummaryMeasure, cut: number): number {
-  const { chars, total, spans } = measure;
-  const isSpace = (index: number) => /\s/.test(chars[index] ?? "");
-  let position = cut;
-  while (position > 0 && position < total) {
-    const inside = spanContaining(spans, position);
-    if (inside) {
-      position = inside.start;
-      continue;
-    }
-    if (isSpace(position - 1) || isSpace(position)) {
-      position -= 1;
-      continue;
-    }
-    break;
-  }
-  return position;
-}
-
-/** The collapsed line's middle-truncation cut over atomic segments: ~60% of the
- * code points, never inside an id and never adjacent to whitespace. */
-function middleSplit(measure: SummaryMeasure): number {
-  return walkOffWhitespace(measure, middleTruncationCut(measure));
+  return walkTruncationCut(measure.chars, cut, (position) => spanContaining(measure.spans, position)?.start);
 }
 
 /** Splits the segment list at a code-point boundary, preserving order. The cut
@@ -633,7 +613,7 @@ export function ToolRow({
     if (!needsClampedSummary && anchorCut === undefined) return undefined;
     const measure = measureSummary(summary, segments);
     return {
-      clampCut: needsClampedSummary ? middleSplit(measure) : undefined,
+      clampCut: needsClampedSummary ? walkOffWhitespace(measure, middleTruncationCut(measure)) : undefined,
       anchor: anchorCut === undefined ? undefined : seatAnchor(segments, measure, anchorCut),
     };
   }, [anchorCut, needsClampedSummary, segments, summary]);
