@@ -223,7 +223,7 @@
  * capsule (the same recipe as the collapsed top bar's) over the pane's own
  * content, so it never occludes a single rail control. IconButton takes no
  * className, so this wrapper owns the ride. */
-.boardToggle {
+.boardHandle {
   position: absolute;
   top: var(--space-2);
   left: 0;
@@ -237,7 +237,7 @@
   box-shadow: var(--shadow-card);
 }
 
-.split[data-board="visible"] .boardToggle {
+.split[data-board="visible"] .boardHandle {
   transform: translateX(calc(clamp(280px, 36vw, 380px) + var(--space-2)));
 }
 
@@ -251,7 +251,7 @@
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .boardToggle,
+  .boardHandle,
   .boardGlyph {
     transition: transform var(--motion-duration-spatial) var(--motion-easing-standard);
   }

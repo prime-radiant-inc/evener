@@ -899,7 +899,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
               is visible, the conversation's leading edge while collapsed -
               and rotates 180° to announce the expand, so the control never
               duplicates and the icon never changes. */}
-          <div className={styles.boardToggle}>
+          <div className={styles.boardHandle}>
             <IconButton
               data-testid="board-toggle"
               label="Board"

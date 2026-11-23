@@ -1523,7 +1523,8 @@ two-pane.
 
 Verification for changes to any of this: screenshots at 390×844 (phone),
 768×1024 (tablet portrait, inside the band), 840×600 (Duo interior); chrome at
-rest within the 105px budget; transcript content scrolling under the composer
+rest within the budget stated above (bar 61px + pill 60px = 121px at phone
+width); transcript content scrolling under the composer
 pill; header collapse only on session-family scroll; `node scripts/ds-audit.mjs`
 counts no higher than before.
 

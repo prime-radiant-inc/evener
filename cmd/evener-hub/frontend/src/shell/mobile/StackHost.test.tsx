@@ -2287,7 +2287,7 @@ test("the split carries the §12 geometry: clamp width, hairline divider, slidin
   expect(paneRule).toContain("min-width: 0");
   // The toggle rides the interior seam: 8px off the divider while the board
   // is visible, 8px off the screen's leading edge while collapsed.
-  const visibleRule = css.match(/\.split\[data-board="visible"\] \.boardToggle \{([^}]*)\}/)?.[1] ?? "";
+  const visibleRule = css.match(/\.split\[data-board="visible"\] \.boardHandle \{([^}]*)\}/)?.[1] ?? "";
   expect(visibleRule).toContain("clamp(280px, 36vw, 380px)");
   // The same glyph rotates 180° to announce the expand - the control never
   // duplicates and the direction never changes icon.
@@ -2295,6 +2295,6 @@ test("the split carries the §12 geometry: clamp width, hairline divider, slidin
   expect(collapsedGlyph).toContain("rotate(180deg)");
   // One base rule each - line-anchored, so the data-board-scoped rules above
   // do not double-count: the control never duplicates.
-  expect((css.match(/(?:^|\n)\.boardToggle \{/g) ?? []).length).toBe(1);
+  expect((css.match(/(?:^|\n)\.boardHandle \{/g) ?? []).length).toBe(1);
   expect((css.match(/(?:^|\n)\.boardGlyph \{/g) ?? []).length).toBe(1);
 });

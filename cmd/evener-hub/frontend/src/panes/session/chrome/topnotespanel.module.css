@@ -60,6 +60,37 @@
   user-select: none;
 }
 
+/* The two spans' base rules precede the summary-scoped rules below: both
+ * spans render under either trigger state (the collapsed summary or the
+ * expanded header row), so their unscoped geometry is the base and the
+ * .summary-scoped rules only restyle the collapsed line - this ordering
+ * keeps specificity ascending (biome's noDescendingSpecificity) and does
+ * not change the cascade. */
+.summaryLeft {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  min-width: 0;
+  flex: 1;
+}
+
+.chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  color: var(--ink-low);
+  flex-shrink: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .chevron {
+    transition: transform var(--motion-duration-hover) var(--motion-easing-standard);
+  }
+}
+
 /* Collapsed, the chevron hides: the em-dash-framed line is itself the
  * disclosure affordance (aria-expanded still announces the state to screen
  * readers), and a dangling chevron would unbalance the centered line. The
@@ -87,25 +118,6 @@
   .summary {
     min-height: var(--tap-min);
   }
-}
-
-.summaryLeft {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-  min-width: 0;
-  flex: 1;
-}
-
-.chevron {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  margin-top: 1px;
-  color: var(--ink-low);
-  flex-shrink: 0;
 }
 
 .expandedHeader {
