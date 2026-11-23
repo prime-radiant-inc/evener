@@ -1,8 +1,9 @@
 import { resolveEffectiveConfig, type ViewportClass } from "@evener/appwire-client";
 import type { RefObject } from "react";
 import { useRef } from "react";
+import { ResponsiveModal } from "../../../shell/rail/ResponsiveModal";
 import { transcriptDisplayStore, useTranscriptDisplayStore } from "../../../stores/transcriptDisplay";
-import { Button, Dialog, Sheet } from "../../../widgets";
+import { Button } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { TranscriptDetailEditor } from "./TranscriptDetailEditor";
 import styles from "./transcriptDisplay.module.css";
@@ -179,13 +180,17 @@ export function TranscriptDetailControl({ open, onClose, layout, onEditHubDefaul
     />
   );
 
-  return isMobile ? (
-    <Sheet open={open} side="bottom" size="wide" onClose={onClose} title="Verbosity" footer={footer}>
+  return (
+    <ResponsiveModal
+      open={open}
+      onClose={onClose}
+      title="Verbosity"
+      footer={footer}
+      mobile={isMobile}
+      sheetSize="wide"
+      showDialogFooter={false}
+    >
       {panel}
-    </Sheet>
-  ) : (
-    <Dialog open={open} onClose={onClose} title="Verbosity">
-      {panel}
-    </Dialog>
+    </ResponsiveModal>
   );
 }

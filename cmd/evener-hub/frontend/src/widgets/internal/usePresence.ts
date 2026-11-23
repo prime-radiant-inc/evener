@@ -146,3 +146,13 @@ export function usePresence(
 
   return { mounted: open || mounted, phase: open ? "open" : "closing" };
 }
+
+/**
+ * What a leaving layer shows: the value it held when it closed. A caller that
+ * clears its own state on close must not see the layer empty out mid-exit.
+ */
+export function useShownWhileClosing<T>(open: boolean, value: T): T {
+  const shownRef = useRef(value);
+  if (open) shownRef.current = value;
+  return shownRef.current;
+}

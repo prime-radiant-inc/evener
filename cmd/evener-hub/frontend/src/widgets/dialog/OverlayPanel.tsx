@@ -1,7 +1,7 @@
 import { type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode, useId, useRef } from "react";
 import { LayerFocusScope } from "../focusscope";
 import { requireClass } from "../internal/requireClass";
-import { usePresence } from "../internal/usePresence";
+import { usePresence, useShownWhileClosing } from "../internal/usePresence";
 import { CloseIcon } from "./CloseIcon";
 import styles from "./dialog.module.css";
 
@@ -84,9 +84,7 @@ export function OverlayPanel({
   // While the layer leaves it renders what it showed when it closed: a caller
   // that clears its own state on close must not see its dialog empty out
   // mid-exit.
-  const shownRef = useRef({ title, children, footer, handle });
-  if (open) shownRef.current = { title, children, footer, handle };
-  const shown = shownRef.current;
+  const shown = useShownWhileClosing(open, { title, children, footer, handle });
   // Radix-style pointer-down-outside semantics: the gesture that decides
   // whether this counts as "outside the panel" is where the PRESS
   // started, not where it ends. scrimPressStartedOnScrimRef records that

@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { createRoot } from "react-dom/client";
 import { expect, test, vi } from "vitest";
+import { Dialog } from "../dialog";
 import { appendPopout } from "../internal/popoutTestUtils";
 import { Popover } from "./index";
 
@@ -310,4 +311,29 @@ test("an open panel follows its trigger into another document", async () => {
     frame.remove();
     host.remove();
   }
+});
+
+// Escape belongs to the popover, not to whatever encloses it: an enclosing
+// overlay must not also close, and no ancestor sees a press the popover
+// consumed.
+test("Escape closes the popover and stops there", () => {
+  const onClose = vi.fn();
+  const onDialogClose = vi.fn();
+  const onAncestorKeyDown = vi.fn();
+  render(
+    <Dialog open onClose={onDialogClose} title="t">
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: test-only event-bubbling probe, not a rendered widget */}
+      <div onKeyDown={onAncestorKeyDown}>
+        <Popover open onClose={onClose} trigger={<button type="button">open</button>} data-testid="panel">
+          <div>panel body</div>
+        </Popover>
+      </div>
+    </Dialog>,
+  );
+
+  fireEvent.keyDown(screen.getByTestId("panel"), { key: "Escape" });
+
+  expect(onClose).toHaveBeenCalledOnce();
+  expect(onAncestorKeyDown).not.toHaveBeenCalled();
+  expect(onDialogClose).not.toHaveBeenCalled();
 });
