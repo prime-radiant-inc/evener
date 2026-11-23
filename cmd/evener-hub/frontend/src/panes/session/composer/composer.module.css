@@ -250,8 +250,12 @@
 
 .stopLabelStack {
   composes: sendWord from "../../../styles/sendbutton.module.css";
-  /* Send's hidden sizing label and Stop's word share one grid area, so the
-   * danger/primary wording cannot resize their shared slot. */
+}
+
+/* Send's hidden sizing label and Stop's word share one grid area, so the
+ * danger/primary wording cannot resize their shared slot. :where() keeps this
+ * at zero specificity so the shared 559px hide still wins here. */
+:where(.stopLabelStack) {
   display: grid;
 }
 

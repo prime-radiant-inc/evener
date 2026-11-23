@@ -576,7 +576,8 @@ test("the Send and Stop words collapse to glyphs below the compact pane threshol
   const sendWord = /composes:\s*sendWord from "\.\.\/\.\.\/\.\.\/styles\/sendbutton\.module\.css"/;
   expect(topRuleBlock(css, ".submitLabel")).toMatch(sendWord);
   expect(topRuleBlock(css, ".stopLabelStack")).toMatch(sendWord);
-  expect(topRuleBlock(css, ".stopLabelStack")).toMatch(/display:\s*grid/);
+  expect(topRuleBlock(css, ".stopLabelStack")).not.toMatch(/display:/);
+  expect(topRuleBlock(css, ":where(.stopLabelStack)")).toMatch(/display:\s*grid/);
   expect(css).toMatch(/\.stopLabelStack > span\s*\{[^}]*grid-area:\s*1 \/ 1/);
   expect(shared).toMatch(/@container \(max-width: 559px\)[\s\S]*?\.sendWord\s*\{[^}]*display:\s*none/);
   // The floor reaches coarse pointers as well as phone widths: a 951pt
