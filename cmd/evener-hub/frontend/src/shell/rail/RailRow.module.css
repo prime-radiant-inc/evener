@@ -41,7 +41,7 @@
     min-height: var(--tap-min);
   }
 
-  .sessionTitle button.label {
+  .label.sessionTitleButton {
     min-width: var(--tap-min);
     min-height: var(--tap-min);
   }
@@ -258,16 +258,10 @@
   font-size: var(--font-size-ui);
 }
 
-/* The HoverCard wrapper is an inline block, so this outer flex item owns
- * shrinking and forwards the available width to it. The title keeps the same
- * ellipsis contract it had before the rich hover surface replaced `title`. */
-.sessionTitle {
-  min-width: 0;
-  overflow: hidden;
-}
-
-.sessionTitle > span,
-.sessionTitle .label {
+/* The session title's trigger button: reset the browser's button chrome so it
+ * reads as the row's title, and own the width HoverCard's block wrapper gives
+ * it. The .label rule above supplies the ellipsis contract. */
+.sessionTitleButton {
   display: block;
   width: 100%;
   min-width: 0;

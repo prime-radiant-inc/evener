@@ -19,6 +19,25 @@ test("it is exported from the widget barrel", () => {
   expect(FromBarrel).toBe(HoverCard);
 });
 
+test("the block presentation is opt-in and lands on the wrapper", () => {
+  render(
+    <HoverCard label={<div>Tests passed in 14 seconds</div>} block>
+      <button type="button">job_01HZX7P9</button>
+    </HoverCard>,
+  );
+  const blockTrigger = screen.getByRole("button", { name: "job_01HZX7P9" });
+  expect(blockTrigger.parentElement?.className.split(" ")).toContain("block");
+
+  cleanup();
+  render(
+    <HoverCard label={<div>Tests passed in 14 seconds</div>}>
+      <button type="button">job_01HZX7P9</button>
+    </HoverCard>,
+  );
+  const plainTrigger = screen.getByRole("button", { name: "job_01HZX7P9" });
+  expect(plainTrigger.parentElement?.className.split(" ")).not.toContain("block");
+});
+
 test("the plain-node gallery child keeps the automatic description association", () => {
   vi.useFakeTimers();
   render(

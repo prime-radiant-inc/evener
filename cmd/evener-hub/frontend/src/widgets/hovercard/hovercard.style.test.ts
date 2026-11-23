@@ -44,6 +44,14 @@ test("the bubble floats in and out by the shared overlay recipe", () => {
   expect(CSS).not.toMatch(/animation|@keyframes/);
 });
 
+test("the block presentation owns the caller's line width and clipping", () => {
+  const block = topRuleBlock(CSS, ".block");
+  expect(block).toMatch(/display:\s*block/);
+  expect(block).toMatch(/width:\s*100%/);
+  expect(block).toMatch(/min-width:\s*0/);
+  expect(block).toMatch(/overflow:\s*hidden/);
+});
+
 test("hoverless devices hide ordinary cards but retain explicitly long-press-enabled cards", () => {
   const hoverless = mediaBlock(CSS, "hover: none");
   expect(hoverless).toMatch(/\.bubble:not\(\[data-long-press-enabled="true"\]\)\s*\{/);

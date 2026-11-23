@@ -22,6 +22,10 @@ export interface HoverCardProps {
   children: ReactNode | ((association: HoverCardAssociation) => ReactNode);
   focusTarget?: () => HTMLElement | null;
   longPressEnabled?: boolean;
+  /** Lay the wrapper out as a full-width block instead of shrink-wrapping the
+   * trigger, so a flex or grid caller can own the width and clip the trigger
+   * without wrapping the card in a span of its own. */
+  block?: boolean;
   /** Optional side placement, measured by the caller, default placement is unchanged. */
   sideAnchor?: () => SideAnchor | null;
 }
@@ -32,6 +36,7 @@ export interface HoverCardAssociation {
 
 const CLASS = {
   wrapper: requireClass(styles.wrapper, "hovercard.module.css", "wrapper"),
+  block: requireClass(styles.block, "hovercard.module.css", "block"),
   bubble: requireClass(styles.bubble, "hovercard.module.css", "bubble"),
 };
 
@@ -41,7 +46,7 @@ const CLASS = {
  * nothing (nothing would dismiss it), so `longPressEnabled` turns the trigger
  * into a long press: a plain tap activates the control the trigger wraps, and
  * the one click a lifted long press still sends is swallowed. */
-export function HoverCard({ label, children, focusTarget, longPressEnabled, sideAnchor }: HoverCardProps) {
+export function HoverCard({ label, children, focusTarget, longPressEnabled, block, sideAnchor }: HoverCardProps) {
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const longPressStartRef = useRef<{ x: number; y: number; pointerId: number } | null>(null);
   const swallowClickRef = useRef(false);
@@ -175,7 +180,7 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled, side
     // biome-ignore lint/a11y/noStaticElementInteractions: interaction semantics belong to the child trigger
     <span
       ref={wrapperRef}
-      className={CLASS.wrapper}
+      className={block ? `${CLASS.wrapper} ${CLASS.block}` : CLASS.wrapper}
       {...triggerProps}
       onPointerDown={(event) => {
         if (!longPressEnabled || !isHoverless() || event.button !== 0) return;

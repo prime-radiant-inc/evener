@@ -2,6 +2,17 @@
   display: inline-block;
 }
 
+/* The block presentation: a caller in a flex or grid line (the rail's session
+ * title, for example) gets the full width and the clipping from the widget
+ * rather than wrapping the card in its own span and reaching in with a
+ * descendant selector. */
+.block {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
 /* A floating layer of the design system, not an oversized tooltip: the card
  * rides the same ground as popover/menu/dialog (--surface-1 with the
  * --shadow-overlay ring-and-shadow), while the tooltip keeps its inverted
