@@ -409,7 +409,7 @@ func serveTestClient(t *testing.T) *llm.Client {
 // a custom instance name (e.g. "work" defined in providers.toml) to a profile
 // whose ID matches the instance name, not the provider id behind it.
 func TestBuildInitialProfile_ConfigPath(t *testing.T) {
-	profile, _, err := buildInitialProfile(context.Background(), serveTestClient(t), cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "", false)
+	profile, _, err := buildInitialProfile(context.Background(), serveTestClient(t), cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "", profileLaunch{})
 	if err != nil {
 		t.Fatalf("buildInitialProfile: %v", err)
 	}
@@ -421,7 +421,7 @@ func TestBuildInitialProfile_ConfigPath(t *testing.T) {
 // TestBuildInitialProfile_ConfigPathInvalidOutputSchema verifies that an invalid
 // --output-schema returns an error.
 func TestBuildInitialProfile_ConfigPathInvalidOutputSchema(t *testing.T) {
-	_, _, err := buildInitialProfile(context.Background(), serveTestClient(t), cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "{not json", false)
+	_, _, err := buildInitialProfile(context.Background(), serveTestClient(t), cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "{not json", profileLaunch{})
 	if err == nil {
 		t.Fatal("expected error for invalid --output-schema JSON")
 	}
@@ -433,7 +433,7 @@ func TestBuildInitialProfile_ConfigPathInvalidOutputSchema(t *testing.T) {
 // TestBuildInitialProfile_UnknownInstanceError verifies that an unknown
 // instance name returns the expected error.
 func TestBuildInitialProfile_UnknownInstanceError(t *testing.T) {
-	_, _, err := buildInitialProfile(context.Background(), serveTestClient(t), cmdutil.ModelRef{Provider: "unknown", Model: "gpt-4o"}, "", false)
+	_, _, err := buildInitialProfile(context.Background(), serveTestClient(t), cmdutil.ModelRef{Provider: "unknown", Model: "gpt-4o"}, "", profileLaunch{})
 	if err == nil {
 		t.Fatal("expected error for unknown instance name")
 	}
@@ -445,7 +445,7 @@ func TestBuildInitialProfile_UnknownInstanceError(t *testing.T) {
 // TestBuildInitialProfile_CuratedInstance verifies that a curated implicit id
 // resolves the same way a configured instance does.
 func TestBuildInitialProfile_CuratedInstance(t *testing.T) {
-	profile, _, err := buildInitialProfile(context.Background(), serveTestClient(t), cmdutil.ModelRef{Provider: "openai", Model: "gpt-5"}, "", false)
+	profile, _, err := buildInitialProfile(context.Background(), serveTestClient(t), cmdutil.ModelRef{Provider: "openai", Model: "gpt-5"}, "", profileLaunch{})
 	if err != nil {
 		t.Fatalf("buildInitialProfile: %v", err)
 	}
@@ -2175,7 +2175,7 @@ func TestBuildInitialProfileAuthoritativeAbsentModel(t *testing.T) {
 	client, ctx, hits := serveCopilotClient(t, `{"data":[
 	 {"id":"claude-haiku-5.5","supported_endpoints":["/v1/messages"],"capabilities":{"family":"claude"}}
 	]}`)
-	_, _, err := buildInitialProfile(ctx, client, cmdutil.ModelRef{Provider: "work", Model: "gpt-5.6-sol"}, "", false)
+	_, _, err := buildInitialProfile(ctx, client, cmdutil.ModelRef{Provider: "work", Model: "gpt-5.6-sol"}, "", profileLaunch{})
 	var absent *llm.ModelNotAvailableError
 	if !errors.As(err, &absent) {
 		t.Fatalf("error = %v, want a typed available-models error", err)
@@ -2195,7 +2195,7 @@ func TestBuildInitialProfileAuthoritativePresentModel(t *testing.T) {
 	client, ctx, hits := serveCopilotClient(t, `{"data":[
 	 {"id":"gpt-5.6-sol","supported_endpoints":["/responses"],"capabilities":{"family":"gpt","supports":{"tool_calls":true}}}
 	]}`)
-	profile, primed, err := buildInitialProfile(ctx, client, cmdutil.ModelRef{Provider: "work", Model: "gpt-5.6-sol"}, "", false)
+	profile, primed, err := buildInitialProfile(ctx, client, cmdutil.ModelRef{Provider: "work", Model: "gpt-5.6-sol"}, "", profileLaunch{})
 	if err != nil {
 		t.Fatalf("buildInitialProfile: %v", err)
 	}
@@ -2221,7 +2221,7 @@ func TestBuildInitialProfileResumeFallsBackWhenRosterUnreadable(t *testing.T) {
 	client, ctx, hits := serveCopilotClientStatus(t, `{"message":"boom"}`, http.StatusInternalServerError)
 	ref := cmdutil.ModelRef{Provider: "work", Model: "gpt-5.6-sol"}
 
-	profile, primed, err := buildInitialProfile(ctx, client, ref, "", true)
+	profile, primed, err := buildInitialProfile(ctx, client, ref, "", profileLaunch{resuming: true})
 	if err != nil {
 		t.Fatalf("resume with an unreadable roster: %v", err)
 	}
@@ -2235,13 +2235,13 @@ func TestBuildInitialProfileResumeFallsBackWhenRosterUnreadable(t *testing.T) {
 		t.Fatalf("listing fetches = %d, want 1", *hits)
 	}
 
-	if _, _, err := buildInitialProfile(ctx, client, ref, "", false); err == nil {
+	if _, _, err := buildInitialProfile(ctx, client, ref, "", profileLaunch{}); err == nil {
 		t.Fatal("a fresh launch started without reading the account roster")
 	}
 
 	cancelled, cancel := context.WithCancel(ctx)
 	cancel()
-	profile, primed, err = buildInitialProfile(cancelled, client, ref, "", true)
+	profile, primed, err = buildInitialProfile(cancelled, client, ref, "", profileLaunch{resuming: true})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled resume error = %v, want context.Canceled", err)
 	}
@@ -2250,16 +2250,46 @@ func TestBuildInitialProfileResumeFallsBackWhenRosterUnreadable(t *testing.T) {
 	}
 }
 
-// TestBuildInitialProfileResumeKeepsRosterMembershipRejection pins that the
-// saved-profile fallback covers only an unreadable roster: a successful
-// listing that omits the saved model still refuses the launch with the
-// available-models error.
-func TestBuildInitialProfileResumeKeepsRosterMembershipRejection(t *testing.T) {
-	client, ctx, _ := serveCopilotClient(t, `{"data":[
+// TestBuildInitialProfileRosterMembership pins the three roster policies: a
+// fresh launch and an explicit new model selection during resume are both
+// refused when the account roster omits the model, while an ordinary resume
+// reopens the saved profile with the fetched roster so the user can switch.
+func TestBuildInitialProfileRosterMembership(t *testing.T) {
+	const roster = `{"data":[
 	 {"id":"claude-haiku-5.5","supported_endpoints":["/v1/messages"],"capabilities":{"family":"claude"}}
-	]}`)
-	_, _, err := buildInitialProfile(ctx, client, cmdutil.ModelRef{Provider: "work", Model: "gpt-5.6-sol"}, "", true)
-	if _, ok := errors.AsType[*llm.ModelNotAvailableError](err); !ok {
-		t.Fatalf("error = %v, want the available-models refusal", err)
+	]}`
+	ref := cmdutil.ModelRef{Provider: "work", Model: "gpt-5.6-sol"}
+	cases := []struct {
+		name    string
+		launch  profileLaunch
+		refused bool
+	}{
+		{name: "fresh launch", launch: profileLaunch{}, refused: true},
+		{name: "explicit resume selection", launch: profileLaunch{resuming: true, selectedModel: true}, refused: true},
+		{name: "ordinary resume", launch: profileLaunch{resuming: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client, ctx, hits := serveCopilotClient(t, roster)
+			profile, primed, err := buildInitialProfile(ctx, client, ref, "", tc.launch)
+			if tc.refused {
+				if _, ok := errors.AsType[*llm.ModelNotAvailableError](err); !ok {
+					t.Fatalf("error = %v, want the available-models refusal", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ordinary resume with a roster that dropped the saved model: %v", err)
+			}
+			if profile == nil || profile.ID() != "work" || profile.Model() != "gpt-5.6-sol" {
+				t.Fatalf("profile = %+v, want the saved work/gpt-5.6-sol", profile)
+			}
+			if primed == nil || primed.Instance != "work" || !primed.Listing.Usable || !listingHasModel(primed.Listing.Models, "claude-haiku-5.5") {
+				t.Fatalf("primed = %+v, want the fetched work roster", primed)
+			}
+			if *hits != 1 {
+				t.Fatalf("listing fetches = %d, want 1", *hits)
+			}
+		})
 	}
 }

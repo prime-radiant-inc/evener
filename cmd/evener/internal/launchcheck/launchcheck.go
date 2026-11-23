@@ -342,6 +342,11 @@ func validateLaunchCheckModel(ref cmdutil.ModelRef) error {
 		}
 	}
 	listing, err := client.Models(ctx, ref.Provider)
+	if client.ListingProvesUnavailable(ref.Provider, listing) {
+		// The account answered and offers nothing Evener can dispatch: a
+		// registry row the roster omits is not this subscription's model.
+		return fmt.Errorf("model %s is not available from provider %s", ref.Qualified(), ref.Provider)
+	}
 	if err != nil || !listing.Usable {
 		// No live evidence either way: a registry refusal stands, and an
 		// accepted reference passes.
