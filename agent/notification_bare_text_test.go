@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -30,7 +31,7 @@ func TestNotificationQuietYieldAndBareTextRetry(t *testing.T) {
 	var case1Step atomic.Int32
 	adapter1 := newFakeAdapter("openai", func(req llm.Request) llm.Response {
 		case1Step.Add(1)
-		return quietYieldResponse("quiet-1", `{}`)
+		return quietYieldResponse("quiet-1", `{"message":"no action needed","next":"log_quietly_and_end_turn"}`)
 	})
 	sess1 := newSession(t, withProfile(NewOpenAIProfile("gpt-5.4")), withAdapter(adapter1), withDir(dir), withStateDir(t.TempDir()))
 	enqueueCompletedJobNotification(t, sess1, "job_notif_1")
@@ -53,7 +54,7 @@ func TestNotificationQuietYieldAndBareTextRetry(t *testing.T) {
 					st.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.ErrorFromHTTPStatus("openai", 413, "context length exceeded", nil, nil)})
 					return
 				}
-				resp := quietYieldResponse("quiet-413", `{}`)
+				resp := quietYieldResponse("quiet-413", `{"message":"no action needed","next":"log_quietly_and_end_turn"}`)
 				st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &resp.Finish, Usage: &resp.Usage, Response: &resp})
 			},
 		},
@@ -67,24 +68,30 @@ func TestNotificationQuietYieldAndBareTextRetry(t *testing.T) {
 		t.Fatalf("Case 1b model calls = %d, want 2 (1 context-length recovery + 1 quiet yield)", case1bCalls.Load())
 	}
 
-	// Bare text retries even when it is the first response to a wake.
+	// Notification wake bare text with FinishReasonStop parks quietly automatically.
 	adapterBare := newFakeAdapter("openai", func(llm.Request) llm.Response {
 		return bareTextResponse("Acknowledged in prose.")
-	}, func(llm.Request) llm.Response {
-		return quietYieldResponse("quiet-after-bare", `{}`)
 	})
 	sessBare := newSession(t, withAdapter(adapterBare), withStateDir(t.TempDir()))
 	enqueueCompletedJobNotification(t, sessBare, "job_bare_first")
 	if _, err := sessBare.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
 		t.Fatal(err)
 	}
-	if got := len(adapterBare.Requests()); got != 2 {
-		t.Fatalf("provider requests = %d, want bare-text retry and quiet yield", got)
+	if got := len(adapterBare.Requests()); got != 1 || !sessBare.quietlyYielded() || sessBare.communicated() {
+		t.Fatalf("requests=%d quiet=%t communicated=%t, want 1/true/false", len(adapterBare.Requests()), sessBare.quietlyYielded(), sessBare.communicated())
 	}
-	requireQuietToolResult(t, sessBare, "quiet-after-bare")
+	var sawBareQuietTurn bool
+	for _, turn := range transcriptTurnsOf(t, sessBare) {
+		if turn.Kind == schema.TurnAssistant && turn.QuietYield {
+			sawBareQuietTurn = true
+		}
+	}
+	if !sawBareQuietTurn {
+		t.Fatal("notification bare-text park did not persist QuietYield=true")
+	}
 
-	// Case 2: Notification wake executes a tool on round 0, then emits bare text on round 1 ->
-	// must NOT finishIdle; must steer via handleNoToolCalls and complete on communicate in round 2.
+	// Case 2: Notification wake executes a tool on round 0, then gets cut off with FinishReasonLength
+	// on bare text -> must NOT quiet-park; must steer via handleNoToolCalls and complete on communicate.
 	var case2Step atomic.Int32
 	markerPath := filepath.Join(dir, "step1.txt")
 	adapter2 := newFakeAdapter("openai", func(req llm.Request) llm.Response {
@@ -97,7 +104,12 @@ func TestNotificationQuietYieldAndBareTextRetry(t *testing.T) {
 		return agenttest.ToolCallResponse(llm.ToolCallData{ID: "w1", Name: "write_file", Arguments: args})
 	}, func(req llm.Request) llm.Response {
 		case2Step.Add(1)
-		return bareTextResponse("Mid-work bare text after running a tool.")
+		return llm.Response{
+			Provider: "openai",
+			Model:    "gpt-5.4",
+			Message:  llm.Assistant("Truncated prose after running a tool."),
+			Finish:   llm.FinishReason{Reason: llm.FinishReasonLength},
+		}
 	}, func(req llm.Request) llm.Response {
 		case2Step.Add(1)
 		return agenttest.FinalResponse("Completed wake work.")

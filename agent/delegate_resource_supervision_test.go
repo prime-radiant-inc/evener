@@ -69,8 +69,8 @@ func TestDelegateTerminalCommunicateMarksGenerationEvidence(t *testing.T) {
 	_ = registerCommunicateTool(reg, newToolDeps(runtime))
 	ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
 	if _, err := reg.Get("communicate").Exec(ctx, nil, map[string]any{
-		"message":  "reported result",
-		"end_turn": true,
+		"message": "reported result",
+		"next":    "send_and_end_turn",
 	}); err != nil {
 		t.Fatalf("communicate: %v", err)
 	}
@@ -93,7 +93,9 @@ func TestDelegateResourceSupervision_AttentionQuietYieldRecordsExplicitNoAction(
 	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
-		func(llm.Request) llm.Response { return quietYieldResponse("attention-quiet", `{}`) },
+		func(llm.Request) llm.Response {
+			return quietYieldResponse("attention-quiet", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
+		},
 	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
@@ -124,7 +126,7 @@ func TestDelegateResourceSupervision_AttentionFollowUpRequiresReport(t *testing.
 			if err := root.subagents.get(fixture.childID).sess.Enqueue(context.Background(), "queued follow-up work"); err != nil {
 				t.Fatal(err)
 			}
-			return quietYieldResponse("attention-quiet", `{}`)
+			return quietYieldResponse("attention-quiet", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 		},
 		bare, bare, bare, bare,
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("follow-up report") },
@@ -226,7 +228,7 @@ func TestDelegateResourceSupervision_CommittedAttentionStartRefusesASecondTurn(t
 			if err := root.subagents.get(fixture.childID).sess.Enqueue(context.Background(), "queued follow-up work"); err != nil {
 				t.Fatal(err)
 			}
-			return quietYieldResponse("attention-quiet", `{}`)
+			return quietYieldResponse("attention-quiet", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 		},
 		bare, bare, bare, bare,
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("follow-up report") },
@@ -666,7 +668,7 @@ func TestDelegateResourceSupervision_NotificationDriveIsAnUnleasedInputTurn(t *t
 	// The drive quietly acknowledges the ordinary completion in one round.
 	adapter.mu.Lock()
 	adapter.streamScript = func(st *llm.ChanStream) {
-		resp := quietYieldResponse("drive-quiet", `{}`)
+		resp := quietYieldResponse("drive-quiet", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 		st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &resp.Finish, Usage: &resp.Usage, Response: &resp})
 	}
 	adapter.mu.Unlock()
@@ -845,7 +847,7 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedAt
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response {
-			return quietYieldResponse("attention-quiet", `{}`)
+			return quietYieldResponse("attention-quiet", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 		},
 	})
 	root := restoreSupervisionRoot(t, fixture, nil)
@@ -931,7 +933,7 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesBoth(t *t
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response {
-			return quietYieldResponse("attention-quiet", `{}`)
+			return quietYieldResponse("attention-quiet", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 		},
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("drained notification") },
 	})
@@ -1154,7 +1156,7 @@ func TestDelegateResourceSupervision_AttentionGoalContinuationRequiresReport(t *
 			if err != nil || started {
 				t.Errorf("SetGoal during attention = started:%t err:%v, want deferred", started, err)
 			}
-			return quietYieldResponse("attention-quiet", `{}`)
+			return quietYieldResponse("attention-quiet", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 		},
 		bare, bare, bare, bare,
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("continuation report") },
@@ -1193,10 +1195,10 @@ func TestDelegateResourceSupervision_AttentionNotificationRemainsNoAction(t *tes
 				JobID:  "system-only",
 				Status: jobNotificationEventWatch,
 			})
-			return quietYieldResponse("attention-quiet", `{}`)
+			return quietYieldResponse("attention-quiet", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 		},
 		func(llm.Request) llm.Response {
-			return quietYieldResponse("notification-quiet", `{}`)
+			return quietYieldResponse("notification-quiet", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 		},
 	})
 	root = restoreSupervisionRoot(t, fixture, nil)
@@ -1225,7 +1227,9 @@ func TestDelegateResourceSupervision_QuietShellAttentionCompletesNoActionWithout
 	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
-		func(llm.Request) llm.Response { return quietYieldResponse("attention-quiet", `{}`) },
+		func(llm.Request) llm.Response {
+			return quietYieldResponse("attention-quiet", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
+		},
 	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
@@ -1375,7 +1379,7 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 				return agenttest.CommunicateResponse(false, "work before notification")
 			},
 			func(llm.Request) llm.Response {
-				return quietYieldResponse("dead-wait", `{}`)
+				return quietYieldResponse("dead-wait", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 			},
 			notReportingYet, notReportingYet, notReportingYet, notReportingYet,
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered") },
@@ -1444,7 +1448,9 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 		}
 		fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
-			func(llm.Request) llm.Response { return quietYieldResponse("attention-quiet", `{}`) },
+			func(llm.Request) llm.Response {
+				return quietYieldResponse("attention-quiet", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
+			},
 			bare, bare, bare, bare,
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered after hook") },
 		})
@@ -1460,7 +1466,9 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 		fixture := newColdDelegateFixture(t, "")
 		fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
-			func(llm.Request) llm.Response { return quietYieldResponse("attention-quiet", `{}`) },
+			func(llm.Request) llm.Response {
+				return quietYieldResponse("attention-quiet", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
+			},
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered after context") },
 		})
 		root := restoreSupervisionRoot(t, fixture, nil)
@@ -1485,7 +1493,7 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 				return agenttest.CommunicateResponse(false, "handoff")
 			},
 			func(llm.Request) llm.Response {
-				return quietYieldResponse("dead-wait", `{}`)
+				return quietYieldResponse("dead-wait", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 			},
 			notReportingYet, notReportingYet, notReportingYet, notReportingYet,
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered") },
@@ -1536,7 +1544,9 @@ func TestDelegateResourceSupervision_PostAcknowledgementAttentionBeforeRelease(t
 			fixture := newColdDelegateFixture(t, "")
 			fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 				func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
-				func(llm.Request) llm.Response { return quietYieldResponse("attention-quiet", `{}`) },
+				func(llm.Request) llm.Response {
+					return quietYieldResponse("attention-quiet", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
+				},
 			})
 			for range tc.bareContinuations {
 				fixture.adapter.appendSteps(func(llm.Request) llm.Response {
@@ -4304,7 +4314,7 @@ func TestWaitForStableSupervisionRunOutlastsDeferredAttentionDrive(t *testing.T)
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response {
-			return quietYieldResponse("attention-quiet", `{}`)
+			return quietYieldResponse("attention-quiet", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 		},
 	})
 	root := restoreSupervisionRoot(t, fixture, nil)
@@ -4341,7 +4351,7 @@ func TestSupervisionRootDrivesAttentionTheChildDropped(t *testing.T) {
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response {
-			return quietYieldResponse("attention-quiet", `{}`)
+			return quietYieldResponse("attention-quiet", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 		},
 	})
 	root := restoreSupervisionRoot(t, fixture, nil)
@@ -4411,7 +4421,7 @@ func TestDelegateResourceSupervision_AttentionRefusedOnAHeldGuardIsRedriven(t *t
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("second result") },
 		func(llm.Request) llm.Response {
-			return quietYieldResponse("attention-quiet", `{}`)
+			return quietYieldResponse("attention-quiet", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 		},
 	})
 	root := restoreSupervisionRoot(t, fixture, nil)
@@ -4460,7 +4470,7 @@ func TestDelegateResourceSupervision_AttentionRedriveThatLosesStops(t *testing.T
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("second result") },
 		func(llm.Request) llm.Response {
-			return quietYieldResponse("attention-quiet", `{}`)
+			return quietYieldResponse("attention-quiet", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 		},
 	})
 	root := restoreSupervisionRoot(t, fixture, nil)
@@ -4518,10 +4528,10 @@ func TestDelegateResourceSupervision_AttentionRefusedOnANotificationTurnIsRedriv
 		func(llm.Request) llm.Response {
 			close(inTurn)
 			<-endTurn
-			return quietYieldResponse("drive-ack", `{}`)
+			return quietYieldResponse("drive-ack", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 		},
 		func(llm.Request) llm.Response {
-			return quietYieldResponse("attention-quiet", `{}`)
+			return quietYieldResponse("attention-quiet", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 		},
 	})
 	root := restoreSupervisionRoot(t, fixture, nil)

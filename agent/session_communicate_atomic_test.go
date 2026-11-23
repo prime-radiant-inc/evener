@@ -88,7 +88,7 @@ func execCommunicateCall(t *testing.T, sess *Session, id string, args map[string
 // so callers pass the empty envelope for "no structured output"); under a
 // custom schema output is passed through verbatim.
 func communicateArgsFor(custom map[string]any, message string, value any) map[string]any {
-	args := map[string]any{"message": message, "end_turn": true}
+	args := map[string]any{"message": message, "next": "send_and_end_turn"}
 	if custom == nil {
 		if envelope, ok := value.(map[string]any); ok {
 			args["output"] = envelope
@@ -330,8 +330,8 @@ func TestCommunicate_CrossShapeCompetingCallsNeverMix(t *testing.T) {
 			t.Parallel()
 			sess := newCompetingCommunicateSession(t, schema)
 
-			nullArgs := map[string]any{"message": "N", "end_turn": true, "output": nullValue}
-			objectArgs := map[string]any{"message": "O", "end_turn": true, "output": objectValue}
+			nullArgs := map[string]any{"message": "N", "next": "send_and_end_turn", "output": nullValue}
+			objectArgs := map[string]any{"message": "O", "next": "send_and_end_turn", "output": objectValue}
 
 			firstID, firstArgs, firstMsg := "callN", nullArgs, "N"
 			secondID, secondArgs := "callO", objectArgs
@@ -387,9 +387,9 @@ func TestCommunicate_ConcurrentTerminalCaptureIsAtomic(t *testing.T) {
 		wg.Go(func() {
 			<-start
 			args := map[string]any{
-				"message":  strconv.Itoa(i),
-				"end_turn": true,
-				"output":   map[string]any{"call": strconv.Itoa(i)},
+				"message": strconv.Itoa(i),
+				"next":    "send_and_end_turn",
+				"output":  map[string]any{"call": strconv.Itoa(i)},
 			}
 			res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
 				ID:        "c" + strconv.Itoa(i),

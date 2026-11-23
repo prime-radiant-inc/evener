@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"unicode/utf16"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/llm"
 )
 
@@ -335,6 +337,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 	toolNames := map[string]string{}
 	communicateText := map[string]string{}
 	communicatePreviewStarted := map[string]bool{}
+	communicatePreviewSuppressed := map[string]bool{}
 	communicatePreviewDecoders := map[string]*communicatePreviewDecoder{}
 	var communicatePreviewOrder []string
 	streamedAssistant := false
@@ -442,6 +445,9 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 		s.emit(events.ReasoningSummaryDeltaData{Delta: delta})
 	}
 	emitCommunicatePreview := func(callID string) {
+		if communicatePreviewSuppressed[callID] {
+			return
+		}
 		args := ""
 		if b := toolArgs[callID]; b != nil {
 			args = b.String()
@@ -449,11 +455,25 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 		// Decode incrementally: this runs once per streamed argument delta, and
 		// re-deriving the whole message each time is quadratic in its length.
 		decoder := communicatePreviewDecoders[callID]
+		wasFound := decoder != nil && decoder.found
+		wasClosed := decoder != nil && decoder.closed
 		if decoder == nil {
 			decoder = &communicatePreviewDecoder{field: "message"}
 			communicatePreviewDecoders[callID] = decoder
 		}
 		message, ok := decoder.message(args)
+		if (!wasFound || !decoder.found || decoder.closed || !wasClosed) && isQuietCommunicatePreviewArgs(args) {
+			communicatePreviewSuppressed[callID] = true
+			if communicatePreviewStarted[callID] {
+				s.emit(events.CommunicatePreviewResetData{CallID: callID})
+				delete(communicatePreviewStarted, callID)
+				delete(communicateText, callID)
+				communicatePreviewOrder = slices.DeleteFunc(communicatePreviewOrder, func(id string) bool {
+					return id == callID
+				})
+			}
+			return
+		}
 		if !ok || message == "" {
 			return
 		}
@@ -545,6 +565,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 				// offsets are only valid while the text it read is a prefix of the
 				// current text, so drop it and decode the final text from scratch.
 				delete(communicatePreviewDecoders, ev.ToolCall.ID)
+				delete(communicatePreviewSuppressed, ev.ToolCall.ID)
 				noteContent()
 			}
 			if toolNames[ev.ToolCall.ID] == s.resultToolName() {
@@ -594,6 +615,15 @@ func salvagedContentBytes(r *llm.Response) int {
 		n += len(tc.Arguments)
 	}
 	return n
+}
+
+func isQuietCommunicatePreviewArgs(raw string) bool {
+	for _, field := range partialJSONStringFields(raw) {
+		if field.Key == "next" {
+			return strings.TrimSpace(field.Value) == tool.CommunicateNextLogQuietlyAndEndTurn
+		}
+	}
+	return false
 }
 
 // partialJSONStringField pulls ONE named string field out of possibly-truncated

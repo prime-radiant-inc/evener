@@ -95,7 +95,7 @@ func requireResultToolShape(t *testing.T, sess *Session, name string) {
 		t.Fatalf("result tool %q not registered", name)
 	}
 	props, _ := reg.Definition.Parameters["properties"].(map[string]any)
-	for _, want := range []string{"message", "end_turn"} {
+	for _, want := range []string{"message", "next"} {
 		if _, ok := props[want]; !ok {
 			t.Fatalf("result tool %q lacks communicate's %q parameter: %v", name, want, props)
 		}

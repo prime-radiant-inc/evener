@@ -18,14 +18,14 @@ import (
 // `argument "output" has the wrong type or value` — even though the call
 // followed the documented envelope and the executor treats a missing
 // output.message as an empty string.
-const issue627OutputArgs = `{"end_turn":true,"message":"ADVERSARIAL TEST-QUALITY REVIEW — final report","output":{"artifacts":[],"data":{"command":"go test ./agent","must_fix":["inject testOnly.sandboxProber"]}}}`
+const issue627OutputArgs = `{"next":"send_and_end_turn","message":"ADVERSARIAL TEST-QUALITY REVIEW — final report","output":{"artifacts":[],"data":{"command":"go test ./agent","must_fix":["inject testOnly.sandboxProber"]}}}`
 
 // issue627ArgsMap is the same shape as a parsed argument map, for tests that
 // call repair.ExplainSchemaError directly.
 func issue627ArgsMap() map[string]any {
 	return map[string]any{
-		"end_turn": true,
-		"message":  "final report",
+		"next":    "send_and_end_turn",
+		"message": "final report",
 		"output": map[string]any{
 			"artifacts": []any{},
 			"data":      map[string]any{"command": "go test"},
@@ -157,7 +157,7 @@ func TestPrepareToolCall_CustomOutputSchemaNotSilentlyFilled(t *testing.T) {
 	rt := reg.Get("communicate")
 
 	call := llm.ToolCallData{ID: "issue627-custom-plain", Name: "communicate",
-		Arguments: json.RawMessage(`{"end_turn":true,"message":"report","output":{"detail":"x"}}`)}
+		Arguments: json.RawMessage(`{"next":"send_and_end_turn","message":"report","output":{"detail":"x"}}`)}
 	res := prepareToolCall(call, rt, []string{"communicate"}, "communicate", "communicate", "")
 	if res.PrevalErr == "" {
 		t.Fatalf("custom output schema was silently healed (missing required summary): changes %+v", res.Changes)
@@ -228,7 +228,7 @@ func TestPrepareToolCall_SameShapeNonResultToolNotFilled(t *testing.T) {
 	rt := reg.Get("submit_report")
 
 	call := llm.ToolCallData{ID: "r2-identity", Name: "submit_report",
-		Arguments: json.RawMessage(`{"end_turn":true,"message":"m","output":{"data":{"a":1}}}`)}
+		Arguments: json.RawMessage(`{"next":"send_and_end_turn","message":"m","output":{"data":{"a":1}}}`)}
 	// The session's result tool is communicate, not submit_report.
 	res := prepareToolCall(call, rt, []string{"submit_report"}, "submit_report", "communicate", "")
 	if res.PrevalErr != "" || len(res.Changes) != 0 || string(res.Call.Arguments) != string(call.Arguments) {
@@ -262,7 +262,7 @@ func TestPrepareToolCall_SupersetEnvelopeNotFilled(t *testing.T) {
 	rt := reg.Get("communicate")
 
 	call := llm.ToolCallData{ID: "r2-superset", Name: "communicate",
-		Arguments: json.RawMessage(`{"end_turn":true,"message":"m","output":{"data":{"a":1}}}`)}
+		Arguments: json.RawMessage(`{"next":"send_and_end_turn","message":"m","output":{"data":{"a":1}}}`)}
 	res := prepareToolCall(call, rt, []string{"communicate"}, "communicate", "communicate", "")
 	if res.PrevalErr == "" {
 		t.Fatalf("superset envelope was silently filled: changes %+v args %s", res.Changes, res.Call.Arguments)
@@ -274,7 +274,7 @@ func TestPrepareToolCall_SupersetEnvelopeNotFilled(t *testing.T) {
 
 // TestPrepareToolCall_FillNotRecordedWhenValidationStillFails pins the
 // telemetry contract: the fill is committed only when validation passes. A
-// call that still fails after filling (here: end_turn has the wrong type) must report
+// call that still fails after filling (here: next has the wrong type) must report
 // zero changes, so no ToolCallRepaired event claims arguments bytes that were
 // never applied.
 func TestPrepareToolCall_FillNotRecordedWhenValidationStillFails(t *testing.T) {
@@ -282,10 +282,10 @@ func TestPrepareToolCall_FillNotRecordedWhenValidationStillFails(t *testing.T) {
 	_, rt := registerCommunicateForIssue627(t)
 
 	call := llm.ToolCallData{ID: "r2-phantom", Name: "communicate",
-		Arguments: json.RawMessage(`{"end_turn":{"invalid":true},"message":"m","output":{"data":{"a":1}}}`)}
+		Arguments: json.RawMessage(`{"next":{"invalid":true},"message":"m","output":{"data":{"a":1}}}`)}
 	res := prepareToolCall(call, rt, []string{"communicate"}, "communicate", "communicate", "")
 	if res.PrevalErr == "" {
-		t.Fatal("expected validation failure for invalid end_turn")
+		t.Fatal("expected validation failure for invalid next")
 	}
 	if len(res.Changes) != 0 {
 		t.Fatalf("phantom ToolCallRepaired changes recorded for a call that failed validation: %+v", res.Changes)

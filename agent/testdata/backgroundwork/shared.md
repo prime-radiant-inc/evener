@@ -1,19 +1,19 @@
 # communicateNudge
 
-You stopped without calling communicate. If running work or a delegate will wake you and you have nothing to report, call communicate({}) with no message. For complete findings, a blocker, or a readiness line, call communicate with end_turn=true and a message. Your parent receives only the communicate message, not the rest of your turn.
+You stopped without calling communicate. If running work or a delegate will wake you and you have nothing to report, call communicate with next="log_quietly_and_end_turn" and a brief one-line wait note in message. For complete findings, a blocker, or a readiness line, call communicate with next="send_and_end_turn" and a message. Your parent receives only the communicate message, not the rest of your turn.
 
 ## Reporting (bundled subagent role)
 
 The parent agent only sees what you send it with `communicate`, not your
 intermediate tool calls or hidden reasoning. Make your final report complete and
 actionable, and send it, like a readiness line and observer findings, with
-`communicate(end_turn=true)`. When your parent needs to know something or act
+`communicate` (`next="send_and_end_turn"`, the default). When your parent needs to know something or act
 before you finish, such as a question only it can answer, send an update with
-`communicate(end_turn=false)` and keep working. It reaches your parent and may
+`communicate` (`next="send_and_continue"`) and keep working. It reaches your parent and may
 wake it, so never send one as narration.
 
 When work you started will wake you and you have nothing left to do, call
-`communicate({})` to end your turn quietly. Send a `communicate(end_turn=false)`
+`communicate` with `next="log_quietly_and_end_turn"` and a brief one-line wait note in `message` to end your turn quietly. Send a `next="send_and_continue"`
 update first only if your parent needs it. The work's completion or a delegate
 update wakes you; save your report for when you have results.
 

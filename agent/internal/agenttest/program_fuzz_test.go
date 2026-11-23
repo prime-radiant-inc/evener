@@ -117,14 +117,18 @@ func FuzzAgenttestAdaptersProgram(f *testing.F) {
 		if got := EmptyResponse(); got.Text() != "" || len(got.Message.Content) != 0 {
 			t.Fatalf("EmptyResponse = %#v", got)
 		}
+		wantNext := "send_and_end_turn"
+		if !flag {
+			wantNext = "send_and_continue"
+		}
 		call := CommunicateCallArgs("call-"+model, map[string]any{
-			"message":  "  " + text + "  ",
-			"end_turn": flag,
-			"output":   map[string]any{"artifacts": []string{text}},
+			"message": "  " + text + "  ",
+			"next":    wantNext,
+			"output":  map[string]any{"artifacts": []string{text}},
 		})
-		assertAgenttestCommunicateCall(t, call, strings.TrimSpace(text), flag)
+		assertAgenttestCommunicateCall(t, call, strings.TrimSpace(text), wantNext)
 		fallbackCall := CommunicateCallArgs("fallback", map[string]any{"message": nil, "output": map[string]any{"message": text}})
-		assertAgenttestCommunicateCall(t, fallbackCall, text, true)
+		assertAgenttestCommunicateCall(t, fallbackCall, text, "send_and_end_turn")
 		if got := CommunicateCall("simple", text); got.Name != "communicate" || got.ID != "simple" {
 			t.Fatalf("CommunicateCall = %#v", got)
 		}
@@ -159,22 +163,22 @@ func assertAgenttestRequestCopy(t *testing.T, requests []llm.Request, fresh func
 	}
 }
 
-func assertAgenttestCommunicateCall(t *testing.T, call llm.ToolCallData, wantMessage string, wantEndTurn bool) {
+func assertAgenttestCommunicateCall(t *testing.T, call llm.ToolCallData, wantMessage, wantNext string) {
 	t.Helper()
 	if call.Name != "communicate" || call.Type != "function" {
 		t.Fatalf("communicate call envelope = %#v", call)
 	}
 	var args struct {
 		Message string         `json:"message"`
-		EndTurn bool           `json:"end_turn"`
+		Next    string         `json:"next"`
 		Output  map[string]any `json:"output"`
 	}
 	if err := json.Unmarshal(call.Arguments, &args); err != nil {
 		t.Fatalf("communicate arguments: %v", err)
 	}
 	wantMessage = agenttestJSONRoundTripString(t, wantMessage)
-	if args.Message != wantMessage || args.EndTurn != wantEndTurn || args.Output == nil {
-		t.Fatalf("communicate args = %#v, want message=%q endTurn=%v output", args, wantMessage, wantEndTurn)
+	if args.Message != wantMessage || args.Next != wantNext || args.Output == nil {
+		t.Fatalf("communicate args = %#v, want message=%q next=%q output", args, wantMessage, wantNext)
 	}
 }
 

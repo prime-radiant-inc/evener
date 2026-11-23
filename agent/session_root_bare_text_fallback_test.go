@@ -91,14 +91,17 @@ func TestRootBareTextFallback(t *testing.T) {
 		parent       bool
 		liveJob      bool
 		wantFallback bool
+		wantQuiet    bool
 	}{
 		{name: "natural stop", text: "Root answer", finish: llm.FinishReasonStop, kind: EntryUserInput, wantFallback: true},
 		{name: "truncated", text: "Partial answer", finish: llm.FinishReasonLength, kind: EntryUserInput},
 		{name: "empty", finish: llm.FinishReasonStop, kind: EntryUserInput},
-		{name: "notification", text: "Acknowledgement", finish: llm.FinishReasonStop, kind: EntryNotification},
+		{name: "notification", text: "Acknowledgement", finish: llm.FinishReasonStop, kind: EntryNotification, wantQuiet: true},
 		{name: "goal continuation", text: "Continuation prose", finish: llm.FinishReasonStop, kind: EntryContinuation},
 		{name: "idle subagent", text: "Idle subagent answer", finish: llm.FinishReasonStop, kind: EntryUserInput, parent: true, wantFallback: true},
-		{name: "subagent with live owned job", text: "Waiting on job", finish: llm.FinishReasonStop, kind: EntryUserInput, parent: true, liveJob: true},
+		{name: "root with live owned job", text: "Waiting on job", finish: llm.FinishReasonStop, kind: EntryUserInput, liveJob: true, wantQuiet: true},
+		{name: "typed root with live owned job", text: "Waiting on job", finish: llm.FinishReasonStop, kind: EntryUserInput, profile: structured, liveJob: true, wantQuiet: true},
+		{name: "subagent with live owned job", text: "Waiting on job", finish: llm.FinishReasonStop, kind: EntryUserInput, parent: true, liveJob: true, wantQuiet: true},
 		{name: "subagent with output schema", text: "Unstructured answer", finish: llm.FinishReasonStop, kind: EntryUserInput, profile: structured, parent: true},
 		{name: "explicit default envelope", text: "Untyped answer", finish: llm.FinishReasonStop, kind: EntryUserInput, profile: boundDefault},
 		{name: "output schema", text: "Untyped answer", finish: llm.FinishReasonStop, kind: EntryUserInput, profile: structured},
@@ -161,6 +164,30 @@ func TestRootBareTextFallback(t *testing.T) {
 				evMu.Unlock()
 				if len(commEvs) != 1 || !commEvs[0].EndTurn || commEvs[0].Message != tc.text {
 					t.Fatalf("EventCommunicate = %+v, want 1 EndTurn=%q", commEvs, tc.text)
+				}
+				return
+			}
+			if tc.wantQuiet {
+				if err != nil || got != "" || calls != 1 || s.State() != SessionIdle || !s.quietlyYielded() || s.communicated() {
+					t.Fatalf("quiet park reply=%q calls=%d state=%v quiet=%t communicated=%t err=%v",
+						got, calls, s.State(), s.quietlyYielded(), s.communicated(), err)
+				}
+				s.Close()
+				<-evDone
+				evMu.Lock()
+				commEvs := communicateEventsIn(*evs)
+				evMu.Unlock()
+				if len(commEvs) != 0 {
+					t.Fatalf("bare-text quiet park emitted EventCommunicate: %+v", commEvs)
+				}
+				var sawQuietTurn bool
+				for _, turn := range transcriptTurnsOf(t, s) {
+					if turn.Kind == schema.TurnAssistant && turn.QuietYield {
+						sawQuietTurn = true
+					}
+				}
+				if !sawQuietTurn {
+					t.Fatal("bare-text quiet park did not persist QuietYield=true on TurnAssistant")
 				}
 				return
 			}
@@ -241,15 +268,11 @@ func TestRootBareTextFallback(t *testing.T) {
 			},
 			func(llm.Request) llm.Response {
 				calls++
-				return quietYieldResponse("quiet-wait", `{}`)
+				return quietYieldResponse("quiet-wait", `{"message":"waiting on go test","next":"log_quietly_and_end_turn"}`)
 			},
 			func(llm.Request) llm.Response {
 				calls++
 				return bareTextResponse("Noted: background job completed", llm.FinishReasonStop)
-			},
-			func(llm.Request) llm.Response {
-				calls++
-				return agenttest.FinalResponse("Background job finished cleanly")
 			},
 		))
 		t.Cleanup(env.releaseJob)
@@ -266,29 +289,32 @@ func TestRootBareTextFallback(t *testing.T) {
 		})
 
 		got2, err := s.ProcessInputKind(ctx, "", nil, EntryNotification)
-		if err != nil || calls != 4 || got2 != "Background job finished cleanly" || s.State() != SessionIdle {
-			t.Fatalf("turn 2: reply=%q calls=%d state=%v err=%v", got2, calls, s.State(), err)
+		if err != nil || calls != 3 || got2 != "" || !s.quietlyYielded() || s.State() != SessionIdle {
+			t.Fatalf("turn 2: reply=%q calls=%d quiet=%t state=%v err=%v", got2, calls, s.quietlyYielded(), s.State(), err)
 		}
 		s.Close()
 		<-evDone
 		evMu.Lock()
 		commEvs := communicateEventsIn(*evs)
 		evMu.Unlock()
-		if len(commEvs) != 1 || commEvs[0].Message != "Background job finished cleanly" || !commEvs[0].EndTurn {
-			t.Fatalf("EventCommunicate = %+v, want only the explicit notification reply", commEvs)
+		if len(commEvs) != 0 {
+			t.Fatalf("EventCommunicate = %+v, want none after bare-text quiet park", commEvs)
 		}
 		turns := transcriptTurnsOf(t, s)
-		sawNoToolSteer := false
+		sawQuietTurn := false
 		for _, turn := range turns {
 			if turn.Kind == schema.TurnSteering && turn.SteeringKind == events.SteeringKindNoToolCalls {
-				sawNoToolSteer = true
+				t.Fatalf("notification bare text unexpectedly triggered SteeringKindNoToolCalls steering")
 			}
 			if turn.Kind == schema.TurnAssistant && turn.AcceptedReply {
 				t.Fatalf("unexpected accepted TurnAssistant on notification wake: %q", lastAgentText(turn.Message))
 			}
+			if turn.Kind == schema.TurnAssistant && turn.QuietYield {
+				sawQuietTurn = true
+			}
 		}
-		if !sawNoToolSteer {
-			t.Fatal("notification bare text did not trigger SteeringKindNoToolCalls steering")
+		if !sawQuietTurn {
+			t.Fatal("notification bare text did not set QuietYield=true")
 		}
 	})
 }
@@ -315,7 +341,7 @@ func TestRootBareTextFallbackNotifiesCommunicateWatches(t *testing.T) {
 			},
 			func(llm.Request) llm.Response {
 				rootTurnCount++
-				return quietYieldResponse("ack-obs-ready", `{}`)
+				return quietYieldResponse("ack-obs-ready", `{"message":"observer ready","next":"log_quietly_and_end_turn"}`)
 			},
 			func(llm.Request) llm.Response {
 				rootTurnCount++
@@ -343,7 +369,7 @@ func TestRootBareTextFallbackNotifiesCommunicateWatches(t *testing.T) {
 				case observerFrameReq <- req:
 				default:
 				}
-				return quietYieldResponse("obs-ack", `{}`)
+				return quietYieldResponse("obs-ack", `{"message":"noted","next":"log_quietly_and_end_turn"}`)
 			},
 		)
 		root := newMessagingRoot(t, adapter, nil)
@@ -447,7 +473,7 @@ func TestRootBareTextFallbackNotifiesCommunicateWatches(t *testing.T) {
 			func(req llm.Request) llm.Response {
 				calls++
 				watchReq = req
-				return quietYieldResponse("ack-self-watch", `{}`)
+				return quietYieldResponse("ack-self-watch", `{"message":"noted","next":"log_quietly_and_end_turn"}`)
 			},
 		))
 		watchRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -500,7 +526,7 @@ func TestRootBareTextFallbackNotifiesCommunicateWatches(t *testing.T) {
 				return bareTextResponse("Root bare answer", llm.FinishReasonStop)
 			},
 			func(llm.Request) llm.Response {
-				return quietYieldResponse("ack-self-watch", `{}`)
+				return quietYieldResponse("ack-self-watch", `{"message":"noted","next":"log_quietly_and_end_turn"}`)
 			},
 		))
 		installWatchBelowValidation(t, s.jobManager, watchArgs{
@@ -773,7 +799,7 @@ func TestRootBareTextFallbackHookContextFailureIsNotTerminal(t *testing.T) {
 func TestQuietYieldRenamedResultToolHasNoProjectedToolCard(t *testing.T) {
 	const name = "respond"
 	s := newSession(t, withConfig(SessionConfig{ResultToolName: name}), withSteps(func(llm.Request) llm.Response {
-		call := rawCommunicateCall("quiet", `{}`)
+		call := rawCommunicateCall("quiet", `{"message":"waiting on watch","next":"log_quietly_and_end_turn"}`)
 		call.Name = name
 		return agenttest.ToolCallResponse(call)
 	}), withStateDir(t.TempDir()))

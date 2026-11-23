@@ -176,7 +176,7 @@ func TestDelegateControllerPostUpdateRefusals(t *testing.T) {
 	}
 }
 
-// A delegate's communicate(end_turn=false) is an update its parent receives.
+// A delegate's communicate(next="send_and_continue") is an update its parent receives.
 // It stays in the delegate's own transcript, lands in an idle root's
 // transcript as delegate attention with the update frame, and wakes the root.
 // The root's next notification turn presents it and consumes it, and the
@@ -284,7 +284,7 @@ func TestDelegateUpdateNotDeliveredStillSucceeds(t *testing.T) {
 			if refusal == nil {
 				t.Fatal("the controller accepted an update it should refuse")
 			}
-			out, err := reg.Get("communicate").Exec(ctx, nil, map[string]any{"message": "need the schema", "end_turn": false})
+			out, err := reg.Get("communicate").Exec(ctx, nil, map[string]any{"message": "need the schema", "next": "send_and_continue"})
 			if err != nil {
 				t.Fatalf("communicate: %v", err)
 			}
@@ -1424,7 +1424,9 @@ func TestDelegateDrainTurnWithoutAReportKeepsTheEarlierReport(t *testing.T) {
 		turn     func(llm.Request) llm.Response
 		attempts int
 	}{
-		"quiet yield":    {func(llm.Request) llm.Response { return quietYieldResponse("drain-no-action", `{}`) }, 1},
+		"quiet yield": {func(llm.Request) llm.Response {
+			return quietYieldResponse("drain-no-action", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
+		}, 1},
 		"bare text":      {bareTextDrainTurn, maxBareTextRetries + 1},
 		"empty response": {emptyResponse, maxEmptyRetries + 1},
 	} {

@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
@@ -44,12 +47,17 @@ func requireQuietToolResult(t *testing.T, s *Session, id string) {
 	t.Helper()
 	res := communicateToolResult(t, s, id)
 	var state struct {
-		Accepted bool `json:"communicate_accepted"`
-		EndTurn  bool `json:"communicate_end_turn"`
-		Quiet    bool `json:"communicate_quiet"`
+		Accepted  bool   `json:"communicate_accepted"`
+		EndTurn   bool   `json:"communicate_end_turn"`
+		Quiet     bool   `json:"communicate_quiet"`
+		QuietNote string `json:"communicate_quiet_note"`
 	}
-	if err := json.Unmarshal(res.ToolState, &state); err != nil || res.IsError || !state.Accepted || !state.EndTurn || !state.Quiet {
+	if err := json.Unmarshal(res.ToolState, &state); err != nil || res.IsError || !state.Accepted || !state.EndTurn || !state.Quiet || state.QuietNote == "" {
 		t.Fatalf("quiet tool result: IsError=%v, state=%+v, decode=%v", res.IsError, state, err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(fmt.Sprint(res.Content)), &out); err != nil || out["next"] != tool.CommunicateNextLogQuietlyAndEndTurn || out["quiet"] != true {
+		t.Fatalf("quiet tool output = %v, decode=%v, want next=%q quiet=true", res.Content, err, tool.CommunicateNextLogQuietlyAndEndTurn)
 	}
 }
 
@@ -67,14 +75,17 @@ func TestCommunicateSchemaIsUniformAcrossRoles(t *testing.T) {
 			}
 			found = true
 			props, _ := def.Parameters["properties"].(map[string]any)
-			if len(props) != 3 || props["message"] == nil || props["end_turn"] == nil || props["output"] == nil {
-				t.Fatalf("advertised properties = %#v, want only message, end_turn, output", props)
+			if len(props) != 3 || props["message"] == nil || props["next"] == nil || props["output"] == nil {
+				t.Fatalf("advertised properties = %#v, want only message, next, output", props)
 			}
-			for key, want := range map[string]string{"message": "string", "end_turn": "boolean", "output": "object"} {
+			for key, want := range map[string]string{"message": "string", "next": "string", "output": "object"} {
 				prop, _ := props[key].(map[string]any)
-				if prop["type"] != want || (key == "end_turn" && prop["default"] != true) {
-					t.Fatalf("property %s = %#v, want type %s and end_turn default true", key, prop, want)
+				if prop["type"] != want || (key == "next" && prop["default"] != tool.CommunicateNextSendAndEndTurn) {
+					t.Fatalf("property %s = %#v, want type %s and next default %q", key, prop, want, tool.CommunicateNextSendAndEndTurn)
 				}
+			}
+			if req, _ := def.Parameters["required"].([]string); len(req) != 1 || req[0] != "message" {
+				t.Fatalf("required = %#v, want [message]", def.Parameters["required"])
 			}
 		}
 		if !found {
@@ -96,14 +107,17 @@ func TestCommunicateQuietYieldRoot(t *testing.T) {
 		wantError bool
 	}{
 		{name: "final reply defaults to ending", args: `{"message":"done"}`, kind: EntryUserInput},
-		{name: "no wake source", args: `{}`, kind: EntryUserInput, wantError: true},
-		{name: "self timer", args: `{}`, kind: EntryUserInput, watch: true, wantQuiet: true},
-		{name: "one-shot self timer refused", args: `{}`, kind: EntryUserInput, watch: true, oneShot: true, wantError: true},
-		{name: "managed shell", args: `{}`, kind: EntryUserInput, job: true, wantQuiet: true},
-		{name: "one-shot managed shell accepted", args: `{}`, kind: EntryUserInput, job: true, oneShot: true, wantQuiet: true},
-		{name: "legacy empty output", args: `{"message":"","output":{"message":"","data":{},"artifacts":[]}}`, kind: EntryUserInput, job: true, wantQuiet: true},
-		{name: "last notification", args: `{}`, kind: EntryNotification, wantQuiet: true},
-		{name: "message required for updates", args: `{"end_turn":false}`, kind: EntryUserInput, wantError: true},
+		{name: "empty object rejected", args: `{}`, kind: EntryUserInput, job: true, wantError: true},
+		{name: "quiet empty message rejected", args: `{"message":"   ","next":"log_quietly_and_end_turn"}`, kind: EntryUserInput, job: true, wantError: true},
+		{name: "quiet with output rejected", args: `{"message":"waiting on job","next":"log_quietly_and_end_turn","output":{"data":{"answer":1}}}`, kind: EntryUserInput, job: true, wantError: true},
+		{name: "unknown next rejected", args: `{"message":"done","next":"unknown_mode"}`, kind: EntryUserInput, wantError: true},
+		{name: "no wake source", args: `{"message":"waiting on nothing","next":"log_quietly_and_end_turn"}`, kind: EntryUserInput, wantError: true},
+		{name: "self timer", args: `{"message":"waiting on timer","next":"log_quietly_and_end_turn"}`, kind: EntryUserInput, watch: true, wantQuiet: true},
+		{name: "one-shot self timer refused", args: `{"message":"waiting on timer","next":"log_quietly_and_end_turn"}`, kind: EntryUserInput, watch: true, oneShot: true, wantError: true},
+		{name: "managed shell", args: `{"message":"waiting on go test","next":"log_quietly_and_end_turn"}`, kind: EntryUserInput, job: true, wantQuiet: true},
+		{name: "one-shot managed shell accepted", args: `{"message":"waiting on go test","next":"log_quietly_and_end_turn"}`, kind: EntryUserInput, job: true, oneShot: true, wantQuiet: true},
+		{name: "last notification", args: `{"message":"no action needed","next":"log_quietly_and_end_turn"}`, kind: EntryNotification, wantQuiet: true},
+		{name: "message required for updates", args: `{"message":"   ","next":"send_and_continue"}`, kind: EntryUserInput, wantError: true},
 		{name: "message required for structured reply", args: `{"output":{"data":{"answer":1}}}`, kind: EntryUserInput, wantError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -188,7 +202,7 @@ func TestCommunicateQuietYieldRoot(t *testing.T) {
 func TestCommunicateQuietYieldKeepsPendingQuestionAndGatesNotifications(t *testing.T) {
 	t.Parallel()
 	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response {
-		return agenttest.ToolCallResponse(askUserCall("ask", askUserArgsValid()), rawCommunicateCall("quiet", `{}`))
+		return agenttest.ToolCallResponse(askUserCall("ask", askUserArgsValid()), rawCommunicateCall("quiet", `{"message":"waiting for user answer","next":"log_quietly_and_end_turn"}`))
 	}, func(llm.Request) llm.Response {
 		return agenttest.FinalResponse("unexpected extra request")
 	})
@@ -234,7 +248,7 @@ func TestCommunicateCustomSchemaUsesPresenceNotTruthiness(t *testing.T) {
 			t.Parallel()
 			profile := WithCommunicateOutputSchema(NewOpenAIProfile("gpt-5.2"), map[string]any{"type": tc.typ})
 			adapter := newFakeAdapter("openai", func(llm.Request) llm.Response {
-				return quietYieldResponse("progress", `{"message":"working","end_turn":false}`)
+				return quietYieldResponse("progress", `{"message":"working","next":"send_and_continue"}`)
 			}, func(llm.Request) llm.Response {
 				return quietYieldResponse("structured-only", `{"output":`+tc.value+`}`)
 			}, func(llm.Request) llm.Response {
@@ -267,10 +281,12 @@ func TestCommunicateExplicitDefaultOutputSchema(t *testing.T) {
 	}{
 		{name: "final without output", args: `{"message":"done"}`, wantError: true},
 		{name: "copied binding rejects final without output", args: `{"message":"done"}`, wantError: true, copyBinding: true},
-		{name: "progress without output", args: `{"message":"working","end_turn":false}`},
-		{name: "quiet notification", args: `{}`, wantQuiet: true},
+		{name: "progress without output", args: `{"message":"working","next":"send_and_continue"}`},
+		{name: "quiet notification", args: `{"message":"no action needed","next":"log_quietly_and_end_turn"}`, wantQuiet: true},
+		{name: "quiet with empty output object rejected under bound schema", args: `{"message":"no action needed","next":"log_quietly_and_end_turn","output":{}}`, wantError: true},
+		{name: "empty object rejected under bound schema", args: `{}`, wantError: true},
 		{name: "final with empty object", args: `{"message":"done","output":{}}`, wantFinal: true, wantOutput: `{}`},
-		{name: "output-only message", args: `{"output":{"message":"nested"}}`, wantFinal: true, wantOutput: `{"message":"nested"}`},
+		{name: "missing top-level message rejected under bound schema", args: `{"output":{"message":"nested"}}`, wantError: true},
 		{name: "blank top-level message uses output.message", args: `{"message":"   ","output":{"message":"nested report","data":{"ok":true}}}`, wantFinal: true, wantOutput: `{"data":{"ok":true},"message":"nested report"}`},
 		{name: "blank top-level and blank output.message rejected", args: `{"message":"   ","output":{"message":"   "}}`, wantError: true},
 		{name: "output encoded as string", args: `{"message":"done","output":"{}"}`, wantError: true},
@@ -305,7 +321,8 @@ func TestCommunicateOptionalOutputEmitsNoRepairNotice(t *testing.T) {
 		args string
 	}{
 		{name: "message only", args: `{"message":"done"}`},
-		{name: "progress without output", args: `{"message":"working","end_turn":false}`},
+		{name: "progress without output", args: `{"message":"working","next":"send_and_continue"}`},
+		{name: "quiet log note", args: `{"message":"no action needed","next":"log_quietly_and_end_turn"}`},
 		{name: "partial default output", args: `{"message":"done","output":{"data":{"sum":1000}}}`},
 		{name: "empty default output", args: `{"message":"done","output":{}}`},
 	} {
@@ -313,6 +330,9 @@ func TestCommunicateOptionalOutputEmitsNoRepairNotice(t *testing.T) {
 			t.Parallel()
 			s := newSession(t, withStateDir(t.TempDir()))
 			repairedCh := drainRepairedEvents(s)
+			if strings.Contains(tc.args, "log_quietly_and_end_turn") {
+				enqueueCompletedJobNotification(t, s, "notify-repair")
+			}
 			res := s.execTool(t.Context(), rawCommunicateCall("valid-"+tc.name, tc.args), "")
 			if res.IsError {
 				t.Fatalf("execTool(%s) failed: %s", tc.args, res.FullOutput)
@@ -344,7 +364,7 @@ func TestCommunicateQuietYieldPreservesInFlightClientSteering(t *testing.T) {
 				t.Errorf("AcceptClientMutationSteer: %v", err)
 			}
 		}
-		return quietYieldResponse("quiet-yield", `{}`)
+		return quietYieldResponse("quiet-yield", `{"message":"waiting on shell","next":"log_quietly_and_end_turn"}`)
 	}, func(req llm.Request) llm.Response {
 		if requestContainsText(req, "STEER_DURING_QUIET_SENTINEL") {
 			close(steerDelivered)
@@ -378,7 +398,7 @@ func TestCommunicateQuietYieldAfterBlockedStopHookDoesNotAcceptBlockedReply(t *t
 		}, func(llm.Request) llm.Response {
 			return quietYieldResponse("early-reply", `{"message":"done too soon"}`)
 		}, func(llm.Request) llm.Response {
-			return quietYieldResponse("quiet-wait", `{}`)
+			return quietYieldResponse("quiet-wait", `{"message":"waiting on running job","next":"log_quietly_and_end_turn"}`)
 		})
 		s := newSession(t, withEnv(env), withAdapter(adapter), withStateDir(t.TempDir()), withConfig(SessionConfig{TurnEndsProcess: true}))
 		t.Cleanup(env.releaseJob)
@@ -418,7 +438,7 @@ func TestCommunicateQuietYieldAfterBlockedStopHookDoesNotAcceptBlockedReply(t *t
 		adapter := newFakeAdapter("openai", func(llm.Request) llm.Response {
 			return quietYieldResponse("first-winner", `{"message":"first reply"}`)
 		}, func(llm.Request) llm.Response {
-			return quietYieldResponse("dead-quiet", `{}`)
+			return quietYieldResponse("dead-quiet", `{"message":"waiting","next":"log_quietly_and_end_turn"}`)
 		}, func(llm.Request) llm.Response {
 			return quietYieldResponse("second-loser", `{"message":"second reply"}`)
 		})
@@ -456,13 +476,56 @@ func TestCommunicateQuietYieldAfterBlockedStopHookDoesNotAcceptBlockedReply(t *t
 	})
 }
 
+func TestCommunicateQuietNoteNormalizationAndBound(t *testing.T) {
+	t.Parallel()
+	longMessage := "Waiting on:\n\t  " + strings.Repeat("x", 260)
+	for _, tc := range []struct {
+		name    string
+		message string
+		want    string
+		bound   bool
+	}{
+		{
+			name:    "collapses_whitespace_and_newlines",
+			message: "  waiting\non\t\tbuild\n  step 2  ",
+			want:    "waiting on build step 2",
+		},
+		{
+			name:    "truncates_over_240_runes_with_ellipsis",
+			message: longMessage,
+			bound:   true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := newSession(t, withStateDir(t.TempDir()))
+			enqueueCompletedJobNotification(t, s, "note-job")
+			ctx := context.WithValue(t.Context(), communicateEntryKindKey{}, EntryNotification)
+			args, _ := json.Marshal(map[string]any{"message": tc.message, "next": tool.CommunicateNextLogQuietlyAndEndTurn})
+			res := s.execTool(ctx, rawCommunicateCall("quiet-note", string(args)), "")
+			if res.IsError {
+				t.Fatalf("execTool quiet note failed: %s", res.FullOutput)
+			}
+			got := schema.QuietCommunicateNote(res.ToolState)
+			if !tc.bound && got != tc.want {
+				t.Fatalf("QuietCommunicateNote = %q, want %q", got, tc.want)
+			}
+			if tc.bound && (utf8.RuneCountInString(got) > 240 || !strings.HasSuffix(got, "…") || strings.ContainsAny(got, "\n\t")) {
+				t.Fatalf("bounded QuietCommunicateNote = %q (runes=%d), want <= 240 runes single-line ending with ellipsis", got, utf8.RuneCountInString(got))
+			}
+		})
+	}
+}
+
 func TestCommunicateQuietYieldHubClientMutations(t *testing.T) {
 	t.Parallel()
 
 	t.Run("turn_start_without_other_work_rejects_quiet_yield", func(t *testing.T) {
 		t.Parallel()
 		adapter := newFakeAdapter("openai",
-			func(llm.Request) llm.Response { return quietYieldResponse("quiet-start", `{}`) },
+			func(llm.Request) llm.Response {
+				return quietYieldResponse("quiet-start", `{"message":"waiting","next":"log_quietly_and_end_turn"}`)
+			},
 			func(llm.Request) llm.Response { return quietYieldResponse("reply-start", `{"message":"addressed"}`) },
 		)
 		s := newSession(t, withAdapter(adapter), withStateDir(t.TempDir()))
@@ -491,7 +554,9 @@ func TestCommunicateQuietYieldHubClientMutations(t *testing.T) {
 	t.Run("turn_queue_without_other_work_rejects_quiet_yield", func(t *testing.T) {
 		t.Parallel()
 		adapter := newFakeAdapter("openai",
-			func(llm.Request) llm.Response { return quietYieldResponse("quiet-queue", `{}`) },
+			func(llm.Request) llm.Response {
+				return quietYieldResponse("quiet-queue", `{"message":"waiting","next":"log_quietly_and_end_turn"}`)
+			},
 			func(llm.Request) llm.Response { return quietYieldResponse("reply-queue", `{"message":"addressed"}`) },
 		)
 		s := newSession(t, withAdapter(adapter), withStateDir(t.TempDir()))
@@ -532,7 +597,7 @@ func TestCommunicateQuietYieldHubClientMutations(t *testing.T) {
 						t.Errorf("AcceptClientMutationQueue: %v", err)
 					}
 				}
-				return quietYieldResponse("quiet-start-with-queue", `{}`)
+				return quietYieldResponse("quiet-start-with-queue", `{"message":"handling queued follow-up","next":"log_quietly_and_end_turn"}`)
 			},
 			func(req llm.Request) llm.Response {
 				if !requestContainsText(req, "QUEUED_FOLLOWUP_SENTINEL") {
@@ -561,7 +626,9 @@ func TestCommunicateQuietYieldHubClientMutations(t *testing.T) {
 	t.Run("turn_queue_with_pending_queued_input_allows_quiet_yield", func(t *testing.T) {
 		t.Parallel()
 		adapter := newFakeAdapter("openai",
-			func(llm.Request) llm.Response { return quietYieldResponse("quiet-queue-with-second", `{}`) },
+			func(llm.Request) llm.Response {
+				return quietYieldResponse("quiet-queue-with-second", `{"message":"handling second queued","next":"log_quietly_and_end_turn"}`)
+			},
 			func(req llm.Request) llm.Response {
 				if !requestContainsText(req, "SECOND_QUEUED_SENTINEL") {
 					t.Errorf("second queued turn did not receive expected text")
@@ -599,7 +666,9 @@ func TestCommunicateQuietYieldHubClientMutations(t *testing.T) {
 			func(llm.Request) llm.Response {
 				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "bg-shell", Name: "shell", Arguments: json.RawMessage(`{"command":"go test","mode":"background"}`)})
 			},
-			func(llm.Request) llm.Response { return quietYieldResponse("quiet-start-with-job", `{}`) },
+			func(llm.Request) llm.Response {
+				return quietYieldResponse("quiet-start-with-job", `{"message":"waiting on go test","next":"log_quietly_and_end_turn"}`)
+			},
 		)
 		s := newSession(t, withEnv(env), withAdapter(adapter), withStateDir(t.TempDir()))
 		t.Cleanup(env.releaseJob)
@@ -654,7 +723,7 @@ func TestCommunicateQuietYieldHubClientMutations(t *testing.T) {
 								t.Errorf("AcceptClientMutationStart follow-up: %v", err)
 							}
 						}
-						return quietYieldResponse("quiet-recovered", `{}`)
+						return quietYieldResponse("quiet-recovered", `{"message":"waiting on follow-up","next":"log_quietly_and_end_turn"}`)
 					},
 					func(llm.Request) llm.Response {
 						return quietYieldResponse("reply-recovered", `{"message":"recovered reply"}`)
@@ -751,7 +820,7 @@ func TestQuietYieldAttentionNoActionNotLatchedWhenRoundStoppedByHook(t *testing.
 			}
 			adapter := newFakeAdapter("openai", func(llm.Request) llm.Response {
 				return agenttest.ToolCallResponse(
-					rawCommunicateCall("quiet-0", `{}`),
+					rawCommunicateCall("quiet-0", `{"message":"no action needed","next":"log_quietly_and_end_turn"}`),
 					llm.ToolCallData{
 						ID:        "read-0",
 						Name:      "read_file",
@@ -821,7 +890,7 @@ func TestQuietYieldAttentionNoActionNotLatchedAlongsideVisibleCommunicate(t *tes
 			var lease delegateLease
 			var secondRoundSnap delegateCompletionSnapshot
 			adapter := newFakeAdapter("openai", func(llm.Request) llm.Response {
-				quietCall := rawCommunicateCall("quiet-0", `{}`)
+				quietCall := rawCommunicateCall("quiet-0", `{"message":"no action needed","next":"log_quietly_and_end_turn"}`)
 				visibleCall := rawCommunicateCall("visible-0", `{"message":"real reply"}`)
 				if tc.quietFirst {
 					return agenttest.ToolCallResponse(quietCall, visibleCall)

@@ -490,8 +490,8 @@ func (a *retirementAdapter) Complete(ctx context.Context, req llm.Request) (llm.
 	// re-prompted until the round cap (agent/communicate_test_helpers_test.go's
 	// communicateResponse is the canonical shape).
 	args, _ := json.Marshal(map[string]any{
-		"message":  "ok",
-		"end_turn": true,
+		"message": "ok",
+		"next":    "send_and_end_turn",
 		"output": map[string]any{
 			"message":   "",
 			"data":      map[string]any{},

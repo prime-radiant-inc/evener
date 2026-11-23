@@ -72,7 +72,7 @@ States: `idle`, `active`, `awaiting`, `closed`. `closed` is terminal.
 the human answers, or to `idle` when autonomous work takes over.
 
 The daemon enters `awaiting` when an `ask_user` question is pending. A final
-reply or quiet `communicate({})` rests `idle`. `WireState` may raise a resting
+reply or quiet `log_quietly_and_end_turn` yield (or automatic bare-text quiet park) rests `idle`. `WireState` may raise a resting
 state to `active` when the session owns work that can start its next turn
 without user input.
 

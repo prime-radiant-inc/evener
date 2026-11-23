@@ -361,7 +361,7 @@ func repetitionNudgeText(count int, resultToolName string) string {
 	if strings.TrimSpace(resultToolName) == "" {
 		resultToolName = DefaultResultToolName
 	}
-	return fmt.Sprintf(repetitionNudgePrefix+"%d times in a row. Repeating it will not change the answer — use the result you already have, or change your approach. If you are repeating it to wait for something, end your turn with %s: the completion wakes you, and to wake on a condition you set a job_watch with output_match.", count, resultToolName)
+	return fmt.Sprintf(repetitionNudgePrefix+"%d times in a row. Repeating it will not change the answer — use the result you already have, or change your approach. If you are repeating it to wait for something, end your turn with %s (next=\"log_quietly_and_end_turn\" and a brief wait note): the completion wakes you, and to wake on a condition you set a job_watch with output_match.", count, resultToolName)
 }
 
 // IsBreakerNudge reports whether text is the breaker's intervention text —

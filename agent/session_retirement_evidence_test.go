@@ -3609,8 +3609,12 @@ func TestRetirementWatchFiredRepeating(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
 	adapter := newFakeAdapter("openai",
-		func(llm.Request) llm.Response { return quietYieldResponse("first-repeat-ack", `{}`) },
-		func(llm.Request) llm.Response { return quietYieldResponse("second-repeat-ack", `{}`) },
+		func(llm.Request) llm.Response {
+			return quietYieldResponse("first-repeat-ack", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
+		},
+		func(llm.Request) llm.Response {
+			return quietYieldResponse("second-repeat-ack", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
+		},
 	)
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}), withAdapter(adapter))
 	c := retirementEvidenceController(t, root)

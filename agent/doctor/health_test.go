@@ -730,6 +730,15 @@ func TestCallArgsEndTurn(t *testing.T) {
 	if callArgsEndTurn(json.RawMessage(`{"end_turn":false}`)) {
 		t.Error("callArgsEndTurn(false) = true, want false")
 	}
+	if !callArgsEndTurn(json.RawMessage(`{"message":"done","next":"send_and_end_turn"}`)) {
+		t.Error("callArgsEndTurn(next=send_and_end_turn) = false, want true")
+	}
+	if callArgsEndTurn(json.RawMessage(`{"message":"working","next":"send_and_continue"}`)) {
+		t.Error("callArgsEndTurn(next=send_and_continue) = true, want false")
+	}
+	if callArgsEndTurn(json.RawMessage(`{"message":"waiting on job","next":"log_quietly_and_end_turn"}`)) {
+		t.Error("callArgsEndTurn(next=log_quietly_and_end_turn) = true, want false")
+	}
 }
 
 // A steering turn with no recorded kind is counted under the unknown kind.
@@ -940,7 +949,11 @@ func TestTranscriptHealth_UnifiesProviderWireAndCanonicalToolNames(t *testing.T)
 func finalReplyThenQuietEntries() []transcript.Entry {
 	return []transcript.Entry{
 		{Turn: schema.NewTurn(schema.TurnAssistant, llm.Message{Content: []llm.ContentPart{healthToolCall("answer", "communicate", `{"message":"Server up","end_turn":true,"output":{"decision":"approve"}}`)}})},
-		{Turn: schema.NewTurn(schema.TurnAssistant, llm.Message{Content: []llm.ContentPart{healthToolCall("quiet", "communicate", `{}`), healthToolCall("quiet-explicit", "communicate", `{"end_turn":true}`)}})},
+		{Turn: schema.NewTurn(schema.TurnAssistant, llm.Message{Content: []llm.ContentPart{
+			healthToolCall("quiet", "communicate", `{}`),
+			healthToolCall("quiet-explicit", "communicate", `{"end_turn":true}`),
+			healthToolCall("quiet-next", "communicate", `{"message":"waiting on build","next":"log_quietly_and_end_turn"}`),
+		}})},
 	}
 }
 

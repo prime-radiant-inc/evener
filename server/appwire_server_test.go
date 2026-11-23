@@ -413,7 +413,7 @@ func TestServerAppWireThreadReadShowsRecordedCompletionsInHistory(t *testing.T) 
 }
 
 func TestServerAppWireThreadReadUsesCommunicateAsAssistantMessage(t *testing.T) {
-	call := llm.ToolCallData{ID: "call_1", Name: "communicate", Arguments: json.RawMessage(`{"message":"done","end_turn":true}`)}
+	call := llm.ToolCallData{ID: "call_1", Name: "communicate", Arguments: json.RawMessage(`{"message":"done","next":"send_and_end_turn"}`)}
 	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_1",
 		schema.NewTurn(schema.TurnUserInput, llm.User("hello")),
 		schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}},

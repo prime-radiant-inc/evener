@@ -210,9 +210,9 @@ func rootAttentionFold(t *testing.T, root *Session) delegateAttentionFold {
 }
 
 // updateResponse is a delegate's model turn that sends message to its parent
-// as an update: communicate(end_turn=false).
+// as an update: communicate(next="send_and_continue").
 func updateResponse(id, message string) llm.Response {
-	return agenttest.ToolCallResponse(communicateCallArgs(id, map[string]any{"message": message, "end_turn": false}))
+	return agenttest.ToolCallResponse(communicateCallArgs(id, map[string]any{"message": message, "next": "send_and_continue"}))
 }
 
 // delegateSendResponse is a model turn that sends message to delegateID and

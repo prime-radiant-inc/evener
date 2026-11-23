@@ -669,9 +669,9 @@ func (a *skillBrowserAdapter) scriptBackgroundStream(ctx context.Context, st *ll
 // short, distinct message that never repeats the streamed payload.
 func sendScriptedCommunicate(st *llm.ChanStream) {
 	args, _ := json.Marshal(map[string]any{
-		"message":  backgroundTurnDone,
-		"end_turn": true,
-		"output":   map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}},
+		"message": backgroundTurnDone,
+		"next":    "send_and_end_turn",
+		"output":  map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}},
 	})
 	call := llm.ToolCallData{
 		ID:        fmt.Sprintf("background_communicate_%d", serveTestCommunicateSeq.Add(1)),

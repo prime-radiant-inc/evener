@@ -295,7 +295,7 @@ func sltcNewSession(t *testing.T, quiet, maxTurns bool) *Session {
 		Provider: "openai",
 		Responder: func(llm.Request) llm.Response {
 			if quiet {
-				return quietYieldResponse("quiet-ack", `{}`)
+				return quietYieldResponse("quiet-ack", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 			}
 			return agenttest.FinalResponse("done")
 		},

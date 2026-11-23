@@ -352,12 +352,12 @@ func TestRepetitionNudgeText_StatesActualCount(t *testing.T) {
 		if !strings.Contains(got, c.want) {
 			t.Errorf("repetitionNudgeText(%d, \"\") = %q, want it to contain %q", c.count, got, c.want)
 		}
-		if !strings.Contains(got, "end your turn with communicate:") {
+		if !strings.Contains(got, "end your turn with communicate") || !strings.Contains(got, "log_quietly_and_end_turn") {
 			t.Errorf("repetitionNudgeText(%d, \"\") = %q, want default tool communicate", c.count, got)
 		}
 	}
 	custom := repetitionNudgeText(2, "report_done")
-	if !strings.Contains(custom, "end your turn with report_done:") {
+	if !strings.Contains(custom, "end your turn with report_done") || !strings.Contains(custom, "log_quietly_and_end_turn") {
 		t.Errorf("repetitionNudgeText(2, \"report_done\") = %q, want custom tool name", custom)
 	}
 	// Two different counts must not produce the same text — otherwise a long

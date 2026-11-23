@@ -143,10 +143,10 @@ func TestAgentNotesAndURLToolsKeepTranscriptRowWhileSuppressingModelSelfEcho(t *
 		}
 	}, func(_ llm.Request) llm.Response {
 		args, _ := json.Marshal(map[string]any{
-			"message":  "done",
-			"end_turn": true,
-			"output":   map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}},
-			"intent":   "finishing turn",
+			"message": "done",
+			"next":    "send_and_end_turn",
+			"output":  map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}},
+			"intent":  "finishing turn",
 		})
 		return llm.Response{
 			Message: llm.Message{

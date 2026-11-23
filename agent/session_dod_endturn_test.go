@@ -18,8 +18,8 @@ func TestSession_EndTurnQuestionAllowsNextInput(t *testing.T) {
 
 	f := newFakeAdapter("openai", askAwaitingResponse, func(req llm.Request) llm.Response {
 		return agenttest.ToolCallResponse(communicateCallArgs("msg2", map[string]any{
-			"end_turn": true,
-			"message":  "Done writing Go code.",
+			"next":    "send_and_end_turn",
+			"message": "Done writing Go code.",
 		}))
 	})
 	c.Register(f)

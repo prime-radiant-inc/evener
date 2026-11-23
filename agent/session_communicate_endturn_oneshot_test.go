@@ -46,8 +46,8 @@ func endTurnWarningWithRunningJob(t *testing.T, s *Session) (warning, jobID stri
 	})
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, communicateCallArgs("end-turn-warning", map[string]any{
-		"message":  "done for now",
-		"end_turn": true,
+		"message": "done for now",
+		"next":    "send_and_end_turn",
 	}))
 	if res.IsError {
 		t.Fatalf("communicate error: %s", res.Output)
@@ -150,8 +150,8 @@ func TestCommunicate_EndTurnWarnsForLiveDetachedProcess(t *testing.T) {
 	})
 
 	communicate := s.reg.ExecuteCall(context.Background(), s.env, communicateCallArgs("detached-warning", map[string]any{
-		"message":  "done for now",
-		"end_turn": true,
+		"message": "done for now",
+		"next":    "send_and_end_turn",
 	}))
 	if communicate.IsError {
 		t.Fatalf("communicate error: %s", communicate.Output)
@@ -198,8 +198,8 @@ func TestCommunicate_EndTurnDoesNotWarnForExitedDetachedProcess(t *testing.T) {
 	<-done
 
 	communicate := s.reg.ExecuteCall(context.Background(), s.env, communicateCallArgs("detached-exited", map[string]any{
-		"message":  "done for now",
-		"end_turn": true,
+		"message": "done for now",
+		"next":    "send_and_end_turn",
 	}))
 	if communicate.IsError {
 		t.Fatalf("communicate error: %s", communicate.Output)

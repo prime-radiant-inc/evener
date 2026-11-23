@@ -402,7 +402,7 @@ serving root session and its boot generation is root-qualified. Root replacement
 invalidates that observation identity. A completion-enabled watch observes child
 `communicate` events: completion is certified by the accepted terminal
 communicate itself — its recorded acceptance ending the delegate's turn — never
-by a quiet yield (`communicate({})`). Watching a child does not
+by a quiet yield (`next="log_quietly_and_end_turn"` or automatic bare-text quiet park). Watching a child does not
 make it eligible for sandbox approval: approval remains root-only, and ordinary
 delegated controls are unchanged.
 

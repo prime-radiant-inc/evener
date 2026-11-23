@@ -73,8 +73,7 @@ func TestE2E_ManagerQuestionContinuation(t *testing.T) {
 				managerCall.RespondToolCall("communicate", communicateArgs("await question"))
 			}
 			progress := communicateArgs("CONTINUATION-PROGRESS")
-			progress["end_turn"] = false
-			delete(progress, "end_reason")
+			progress["next"] = "send_and_continue"
 			workerCall.RespondToolCall("communicate", progress)
 			for {
 				call, err := provider.Next(ctx.Done())

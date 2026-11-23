@@ -184,8 +184,8 @@ func TestSessionGoogleInteractions_DeepMultiTurnNotificationRolloverRegression(t
 	dir := t.TempDir()
 	script := &scriptedInteractions{t: t}
 	script.enqueueSSE(interactionsFunctionCallSSE("gemini-4-carbon", "int_rollover", "call_comm", "communicate", map[string]any{
-		"message":  "rollover settled",
-		"end_turn": true,
+		"message": "rollover settled",
+		"next":    "send_and_end_turn",
 		"output": map[string]any{
 			"message":   "",
 			"data":      map[string]any{},
@@ -456,8 +456,8 @@ func TestSessionGoogleInteractions_PreCutoverSignedToolCallRestoreAndFallback(t 
 
 	script := &scriptedInteractions{t: t}
 	script.enqueueSSE(interactionsFunctionCallSSE(model, "int_restored", "call_comm", "communicate", map[string]any{
-		"message":  "restored turn settled",
-		"end_turn": true,
+		"message": "restored turn settled",
+		"next":    "send_and_end_turn",
 		"output": map[string]any{
 			"message":   "",
 			"data":      map[string]any{},

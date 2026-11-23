@@ -5,14 +5,15 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/llm"
 )
 
 func communicateWithStructured(message string, output map[string]any) llm.Response {
 	args, _ := json.Marshal(map[string]any{
-		"message":  message,
-		"end_turn": true,
-		"output":   output,
+		"message": message,
+		"next":    tool.CommunicateNextSendAndEndTurn,
+		"output":  output,
 	})
 	return llm.Response{Message: llm.Message{
 		Role: llm.RoleAssistant,

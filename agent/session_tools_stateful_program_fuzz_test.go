@@ -294,9 +294,13 @@ func stpExercisePinnedContracts(t *testing.T, s *Session, env *agenttest.DenyEnv
 }
 
 func stpCommunicateArgs(message string, endTurn bool) map[string]any {
+	next := tool.CommunicateNextSendAndEndTurn
+	if !endTurn {
+		next = tool.CommunicateNextSendAndContinue
+	}
 	return map[string]any{
-		"message":  message,
-		"end_turn": endTurn,
+		"message": message,
+		"next":    next,
 		"output": map[string]any{
 			"message":   "structured " + message,
 			"data":      map[string]any{"kind": message},

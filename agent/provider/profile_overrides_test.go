@@ -53,20 +53,27 @@ func TestWithCommunicateOutputSchema(t *testing.T) {
 		if out["description"] != "custom" {
 			t.Errorf("output.description = %v", out["description"])
 		}
+		if !slices.Contains(toStringSlice(params["required"]), "message") {
+			t.Error("message must remain required at top level")
+		}
 		if slices.Contains(toStringSlice(params["required"]), "output") {
 			t.Error("output must stay absent from top-level required so progress updates and quiet yields validate")
 		}
 		compiled := compileToolParameters(t, params)
 		for _, args := range []map[string]any{
-			{},
-			{"message": "progress", "end_turn": false},
+			{"message": "waiting on job", "next": "log_quietly_and_end_turn"},
+			{"message": "progress", "next": "send_and_continue"},
+			{"message": "done", "next": "send_and_end_turn", "output": "ok"},
 			{"message": "done", "output": "ok"},
 		} {
 			if err := compiled.Validate(args); err != nil {
 				t.Errorf("valid call %v rejected: %v", args, err)
 			}
 		}
-		if err := compiled.Validate(map[string]any{"output": 1}); err == nil {
+		if err := compiled.Validate(map[string]any{}); err == nil {
+			t.Error("empty {} must be rejected when message is required")
+		}
+		if err := compiled.Validate(map[string]any{"message": "done", "output": 1}); err == nil {
 			t.Error("an output that violates the supplied schema must be rejected")
 		}
 	})
@@ -192,18 +199,24 @@ func TestWithAllowedDecisions(t *testing.T) {
 		if out["description"] != "Structured output." {
 			t.Errorf("output.description = %q", out["description"])
 		}
+		if !slices.Contains(toStringSlice(params["required"]), "message") {
+			t.Error("message must remain required at top level")
+		}
 		if slices.Contains(toStringSlice(params["required"]), "output") {
 			t.Error("output must stay absent from top-level required so progress updates and quiet yields validate")
 		}
 		compiled := compileToolParameters(t, params)
 		for _, args := range []map[string]any{
-			{},
-			{"message": "progress", "end_turn": false},
+			{"message": "waiting on job", "next": "log_quietly_and_end_turn"},
+			{"message": "progress", "next": "send_and_continue"},
 			{"message": "done", "output": map[string]any{"decision": "continue"}},
 		} {
 			if err := compiled.Validate(args); err != nil {
 				t.Errorf("valid call %v rejected: %v", args, err)
 			}
+		}
+		if err := compiled.Validate(map[string]any{}); err == nil {
+			t.Error("empty {} must be rejected when message is required")
 		}
 		if err := compiled.Validate(map[string]any{"message": "done", "output": map[string]any{"message": "x"}}); err == nil {
 			t.Error("an output without the required decision must be rejected when output is supplied")

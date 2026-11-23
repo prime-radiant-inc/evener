@@ -13,10 +13,11 @@ import (
 
 // CommunicateToolState records the tool verdict independently of display output.
 type CommunicateToolState struct {
-	Accepted        *bool `json:"communicate_accepted,omitempty"`
-	EndTurn         *bool `json:"communicate_end_turn,omitempty"`
-	Quiet           *bool `json:"communicate_quiet,omitempty"`
-	BoundaryPending bool  `json:"communicate_boundary_pending,omitempty"`
+	Accepted        *bool  `json:"communicate_accepted,omitempty"`
+	EndTurn         *bool  `json:"communicate_end_turn,omitempty"`
+	Quiet           *bool  `json:"communicate_quiet,omitempty"`
+	QuietNote       string `json:"communicate_quiet_note,omitempty"`
+	BoundaryPending bool   `json:"communicate_boundary_pending,omitempty"`
 }
 
 // DecodeCommunicateToolState reads the persisted tool state.
@@ -38,6 +39,19 @@ func IsQuietCommunicateState(raw json.RawMessage) bool {
 	}
 	state, ok := DecodeCommunicateToolState(raw)
 	return ok && state.IsQuiet()
+}
+
+// QuietCommunicateNote returns the normalized quiet note when raw records a
+// quiet yield, or "" otherwise.
+func QuietCommunicateNote(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	state, ok := DecodeCommunicateToolState(raw)
+	if !ok || !state.IsQuiet() {
+		return ""
+	}
+	return strings.TrimSpace(state.QuietNote)
 }
 
 // TurnKind identifies the category of a Turn in the Session history.
@@ -542,6 +556,9 @@ type Turn struct {
 	// OwningTurnID identifies the logical turn that owns an ordinary steering
 	// entry. It differs from StableTurnID, which identifies the client mutation.
 	OwningTurnID string `json:"owning_turn_id,omitempty"`
+	// QuietYield identifies a bare assistant response that parked the turn
+	// quietly while wakeable work remained live or after a wake needing no reply.
+	QuietYield bool `json:"quiet_yield,omitempty"`
 	// ResponseContextBoundary names the context boundary the request that
 	// produced this assistant turn was planned against: the latest checkpoint
 	// or summary turn at planning time, or "none" when history held none. It is

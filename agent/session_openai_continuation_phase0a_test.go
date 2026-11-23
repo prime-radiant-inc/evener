@@ -54,8 +54,8 @@ func TestSession_OpenAIResponsesContinuationOffUsesFullHistory(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher, _ := w.(http.Flusher)
 		args := mustJSON(t, map[string]any{
-			"message":  "continued with full history",
-			"end_turn": true,
+			"message": "continued with full history",
+			"next":    "send_and_end_turn",
 			"output": map[string]any{
 				"message":   "",
 				"data":      map[string]any{},

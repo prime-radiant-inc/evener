@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -145,7 +146,12 @@ func TestCommunicatePreviewDecoderChunkInvariance(t *testing.T) {
 func TestCommunicatePreviewSurvivesArgumentReplacementAtToolCallEnd(t *testing.T) {
 	t.Parallel()
 
-	finalCall := communicateCall("c1", "hello world")
+	finalCall := llm.ToolCallData{
+		ID:        "c1",
+		Name:      "communicate",
+		Arguments: json.RawMessage(`{"next":"send_and_end_turn","message":"hello world"}`),
+		Type:      "function",
+	}
 	// The streamed prefix stops mid-message, and the final arguments do not
 	// extend it at all: they lead with another field, so the message body starts
 	// at a different offset in the final text than it did while streaming.

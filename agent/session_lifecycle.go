@@ -1838,12 +1838,23 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		bareReply := len(calls) == 0 && kind == EntryUserInput &&
 			s.usesDefaultCommunicateOutputEnvelope() && resp.Finish.Reason == llm.FinishReasonStop &&
 			!noContent && strings.TrimSpace(lastText) != "" && !s.communicated()
-		if bareReply && s.reportsToParent() {
-			outstanding, workErr := s.subagentHasDrainableWork()
+		if bareReply {
+			var outstanding bool
+			var workErr error
+			if s.reportsToParent() {
+				outstanding, workErr = s.subagentHasDrainableWork()
+			} else {
+				outstanding, workErr = s.treeHasOutstandingWork()
+			}
 			if workErr != nil || outstanding {
 				bareReply = false
 			}
 		}
+		roundCtx := context.WithValue(ctx, communicateEntryKindKey{}, kind)
+		bareQuiet := !bareReply && len(calls) == 0 &&
+			resp.Finish.Reason == llm.FinishReasonStop &&
+			!noContent && strings.TrimSpace(lastText) != "" && !s.communicated() &&
+			s.canQuietlyYield(roundCtx) == nil
 		var bareStop hooks.StopResult
 		if bareReply {
 			bareStop = s.runReplyStopHook(ctx, lastText)
@@ -1862,7 +1873,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			stopErr = s.deliverReplyStopHookContext(bareStop.ModelContext)
 			bareStop.ModelContext = nil
 		}
-		if abortErr := errors.Join(s.emitAssistantResponse(ctx, resp, modelResp, txt, skipHistory, attempt, acceptedBareReply && stopErr == nil), sessionLifecycleFault(ctx, "emit_assistant"), stopErr); abortErr != nil {
+		if abortErr := errors.Join(s.emitAssistantResponse(ctx, resp, modelResp, txt, skipHistory, attempt, acceptedBareReply && stopErr == nil, bareQuiet), sessionLifecycleFault(ctx, "emit_assistant"), stopErr); abortErr != nil {
 			return "", progressed, abortErr
 		}
 		if googleTerminalSettlement {
@@ -1930,6 +1941,17 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			}
 			continue
 		}
+		if bareQuiet {
+			s.beginCommunicateRound()
+			s.recordQuietYield()
+			done, reply, err := s.deliverIfCommunicated(roundCtx, false)
+			if err != nil {
+				return "", progressed, err
+			}
+			if done {
+				return reply, progressed, nil
+			}
+		}
 		if len(calls) == 0 {
 			route := routeNoToolCalls(kind, s.hasAcceptedTerminalCommunicate())
 			if route == finishIdle {
@@ -1968,7 +1990,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// Execute tool calls (possibly in parallel) and send results back.
 		s.noteParentJobActivity(jobPhaseToolRunning)
 		s.beginToolRound()
-		roundCtx := context.WithValue(ctx, communicateEntryKindKey{}, kind)
 		results, execErr := s.execToolBatch(roundCtx, calls, profile, resp.Finish.Reason)
 		execErr = errors.Join(execErr, sessionLifecycleFault(ctx, "exec_tools"))
 		if execErr != nil {

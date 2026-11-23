@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
@@ -240,15 +239,12 @@ func TestSubagentBareTextFallback(t *testing.T) {
 		}
 	})
 
-	t.Run("live_owned_background_job_rejected_then_quiet_yields", func(t *testing.T) {
+	t.Run("subagent_live_owned_work", func(t *testing.T) {
 		t.Parallel()
 		env := newHeldJobEnvironment(t.TempDir())
 		t.Cleanup(env.releaseJob)
-
-		var step atomic.Int32
 		adapter := newFakeAdapter("openai",
 			func(llm.Request) llm.Response {
-				step.Store(1)
 				return agenttest.ToolCallResponse(llm.ToolCallData{
 					ID:        "bg-shell",
 					Name:      "shell",
@@ -257,19 +253,12 @@ func TestSubagentBareTextFallback(t *testing.T) {
 				})
 			},
 			func(llm.Request) llm.Response {
-				step.Store(2)
 				return bareTextResponse("Waiting for background shell...", llm.FinishReasonStop)
 			},
 			func(llm.Request) llm.Response {
-				step.Store(3)
-				return quietYieldResponse("quiet-wait", `{}`)
-			},
-			func(llm.Request) llm.Response {
-				step.Store(4)
 				return bareTextResponse("Prose acknowledgment on notification wake", llm.FinishReasonStop)
 			},
 			func(llm.Request) llm.Response {
-				step.Store(5)
 				return agenttest.FinalResponse("Verified after job completed")
 			},
 		)
@@ -293,25 +282,34 @@ func TestSubagentBareTextFallback(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatal("child background shell did not start")
 		}
-		// Wait until the subagent has entered its quiet-yield drain (step 3 executed
-		// and session returned to idle before drain notification).
-		testwait.Until(t, "subagent to reject bare text and enter quiet drain", func() bool {
-			return step.Load() >= 3 && child.sess.quietlyYielded()
+		// Bare text while live work runs must park quietly automatically (zero
+		// premature report to parent, zero no-tool-calls spin) until job wakes.
+		testwait.Until(t, "subagent bare text to park quietly while background job runs", func() bool {
+			return len(adapter.Requests()) >= 2 && child.sess.quietlyYielded()
 		})
-		if noTool, _, _, _, _, _ := countSubagentTranscriptTurns(t, child.sess); noTool != 1 {
-			t.Fatal("bare text while owned background job was live did not receive no-tool-calls steering")
+		if noTool, _, _, _, accAsst, _ := countSubagentTranscriptTurns(t, child.sess); noTool != 0 || accAsst != 0 {
+			t.Fatalf("while live job running: noTool=%d accAsst=%d, want 0/0", noTool, accAsst)
+		}
+		var sawQuietTurn bool
+		for _, turn := range transcriptTurnsOf(t, child.sess) {
+			if turn.Kind == schema.TurnAssistant && turn.QuietYield {
+				sawQuietTurn = true
+			}
+		}
+		if !sawQuietTurn {
+			t.Fatal("bare-text quiet park did not record TurnAssistant.QuietYield=true")
 		}
 		// Release the background shell so the drain runs EntryNotification.
 		env.releaseJob()
 		waitForLiveSubagentRun(t, child)
 
-		if got := len(adapter.Requests()); got != 5 {
-			t.Fatalf("provider requests = %d, want 5", got)
+		if got := len(adapter.Requests()); got != 4 {
+			t.Fatalf("provider requests = %d, want 4", got)
 		}
 		assertReportedDelegatePacket(t, parent, res.DelegateID, "Verified after job completed")
 		noTool, nudges, _, _, _, _ := countSubagentTranscriptTurns(t, child.sess)
-		if noTool != 2 || nudges != 0 {
-			t.Fatalf("noToolSteers = %d (want 2), delegateNudges = %d (want 0)", noTool, nudges)
+		if noTool != 1 || nudges != 0 {
+			t.Fatalf("noToolSteers = %d (want 1 after job completed), delegateNudges = %d (want 0)", noTool, nudges)
 		}
 	})
 
@@ -359,14 +357,11 @@ func TestSubagentBareTextFallback(t *testing.T) {
 		}
 	})
 
-	t.Run("entry_delegate_attention_rejected", func(t *testing.T) {
+	t.Run("entry_delegate_attention_bare_text_parks_quietly", func(t *testing.T) {
 		t.Parallel()
 		adapter := newFakeAdapter("openai",
 			func(llm.Request) llm.Response {
 				return bareTextResponse("Attention prose", llm.FinishReasonStop)
-			},
-			func(llm.Request) llm.Response {
-				return quietYieldResponse("attn-quiet", `{}`)
 			},
 		)
 		s, c, lease := newAttentionDelegateTestSession(t, t.TempDir(), adapter)
@@ -375,16 +370,24 @@ func TestSubagentBareTextFallback(t *testing.T) {
 			t.Fatalf("processOneInput: %v", err)
 		}
 		noTool, _, _, _, _, _ := countSubagentTranscriptTurns(t, s)
-		if noTool != 1 || len(adapter.Requests()) != 2 {
-			t.Fatalf("noTool=%d requests=%d, want 1 and 2", noTool, len(adapter.Requests()))
+		if noTool != 0 || len(adapter.Requests()) != 1 || !s.quietlyYielded() {
+			t.Fatalf("noTool=%d requests=%d quietlyYielded=%v, want 0/1/true", noTool, len(adapter.Requests()), s.quietlyYielded())
 		}
-		requireQuietToolResult(t, s, "attn-quiet")
 		decision, err := c.completionDecision(lease)
 		if err != nil {
 			t.Fatalf("completionDecision: %v", err)
 		}
 		if decision != delegateCompletionFinishNoAction {
 			t.Fatalf("completionDecision = %v, want delegateCompletionFinishNoAction", decision)
+		}
+		var sawQuietTurn bool
+		for _, turn := range transcriptTurnsOf(t, s) {
+			if turn.Kind == schema.TurnAssistant && turn.QuietYield {
+				sawQuietTurn = true
+			}
+		}
+		if !sawQuietTurn {
+			t.Fatal("attention bare-text quiet park did not record TurnAssistant.QuietYield=true")
 		}
 	})
 
@@ -593,7 +596,10 @@ func TestSubagentBareTextFallback(t *testing.T) {
 			},
 			func(req llm.Request) llm.Response {
 				step3Req = req
-				return bareTextResponse("Reported after reading persisted shell attention", llm.FinishReasonStop)
+				return bareTextResponse("Bare prose on notification wake", llm.FinishReasonStop)
+			},
+			func(llm.Request) llm.Response {
+				return agenttest.FinalResponse("Reported after reading persisted shell attention")
 			},
 		)
 		parent := newSession(t, withEnv(env), withAdapter(adapter), withStateDir(t.TempDir()))
@@ -640,17 +646,26 @@ func TestSubagentBareTextFallback(t *testing.T) {
 		close(releaseStep2)
 
 		waitForLiveSubagentRun(t, child)
-		if got := len(adapter.Requests()); got != 3 {
-			t.Fatalf("provider requests = %d, want 3 (shell -> rejected unpresented bare text -> accepted bare text after presentation)", got)
+		if got := len(adapter.Requests()); got != 4 {
+			t.Fatalf("provider requests = %d, want 4 (shell -> quiet-parked unpresented bare text -> notification bare text steered -> explicit final report)", got)
 		}
 		if !requestContainsText(step3Req, "child shell complete") {
 			t.Fatalf("step 3 request did not present persisted shell attention: %+v", step3Req.Messages)
 		}
 		assertReportedDelegatePacket(t, parent, res.DelegateID, "Reported after reading persisted shell attention")
-		noTool, nudges, commTurns, accComm, accAsst, accTexts := countSubagentTranscriptTurns(t, child.sess)
-		if noTool != 1 || nudges != 0 || commTurns != 0 || accComm != 0 || accAsst != 1 || len(accTexts) != 1 || accTexts[0] != "Reported after reading persisted shell attention" {
-			t.Fatalf("transcript counts = noTool:%d nudges:%d comm:%d accComm:%d accAsst:%d texts:%q",
-				noTool, nudges, commTurns, accComm, accAsst, accTexts)
+		noTool, nudges, commTurns, accComm, accAsst, _ := countSubagentTranscriptTurns(t, child.sess)
+		if noTool != 1 || nudges != 0 || commTurns != 1 || accComm != 0 || accAsst != 0 {
+			t.Fatalf("transcript counts = noTool:%d nudges:%d comm:%d accComm:%d accAsst:%d, want 1/0/1/0/0",
+				noTool, nudges, commTurns, accComm, accAsst)
+		}
+		var sawQuietTurn bool
+		for _, turn := range transcriptTurnsOf(t, child.sess) {
+			if turn.Kind == schema.TurnAssistant && turn.QuietYield {
+				sawQuietTurn = true
+			}
+		}
+		if !sawQuietTurn {
+			t.Fatal("step 2 unpresented bare text did not record TurnAssistant.QuietYield=true")
 		}
 	})
 
@@ -674,7 +689,7 @@ func TestSubagentBareTextFallback(t *testing.T) {
 			func(llm.Request) llm.Response {
 				close(inQuietYieldReq)
 				<-releaseQuietYieldReq
-				return quietYieldResponse("quiet-after-persisted-shell", `{}`)
+				return quietYieldResponse("quiet-after-persisted-shell", `{"message":"waiting on shell","next":"log_quietly_and_end_turn"}`)
 			},
 			func(req llm.Request) llm.Response {
 				drainReq = req

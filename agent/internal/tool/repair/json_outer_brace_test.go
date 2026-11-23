@@ -8,7 +8,7 @@ import (
 
 func TestRepairJSON_MissingOuterBrace(t *testing.T) {
 	for _, in := range []string{
-		`{"end_turn":true,"message":"OK","output":{"artifacts":[],"data":{},"message":""}`,
+		`{"next":"send_and_end_turn","message":"OK","output":{"artifacts":[],"data":{},"message":""}`,
 		`{"s":"done"`, `{"n":12`, `{"b":false`, `{"v":null`, `{"a":[]`, `{"o":{}`,
 		" \n{\"a\":1\t\n", `{"s":"} [ \\"`, `{"s":"\uD800"`,
 	} {

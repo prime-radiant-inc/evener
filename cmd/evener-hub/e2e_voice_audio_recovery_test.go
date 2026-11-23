@@ -26,7 +26,7 @@ func TestE2E_VoiceRecoveryRetiresUnplayedReplyBeforeFreshUpdate(t *testing.T) {
 	f.device.send(`{"type":"interrupt","generation":1,"playedSamples":{}}`)
 	paused := voiceJourneyEvent(t, f.device, "stop")
 	args := communicateArgs(unavailable)
-	args["end_turn"] = false
+	args["next"] = "send_and_continue"
 	request.RespondToolCall("communicate", args)
 	held := f.next(t)
 	start := voiceJourneyEvent(t, f.device, "speech_start")

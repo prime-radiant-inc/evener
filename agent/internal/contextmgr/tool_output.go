@@ -28,6 +28,7 @@ func findToolCallArgs(history []schema.Turn, toolCallID string) json.RawMessage 
 func parseCommunicateArgs(args json.RawMessage) (endTurn bool, message string) {
 	var payload struct {
 		Message string `json:"message"`
+		Next    string `json:"next"`
 		EndTurn *bool  `json:"end_turn"`
 		Output  *struct {
 			Message string `json:"message"`
@@ -39,6 +40,9 @@ func parseCommunicateArgs(args json.RawMessage) (endTurn bool, message string) {
 	message = strings.TrimSpace(payload.Message)
 	if message == "" && payload.Output != nil {
 		message = strings.TrimSpace(payload.Output.Message)
+	}
+	if next := strings.TrimSpace(payload.Next); next != "" {
+		return next == "send_and_end_turn", message
 	}
 	if payload.EndTurn == nil {
 		return true, message
