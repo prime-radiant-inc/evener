@@ -1839,7 +1839,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			s.usesDefaultCommunicateOutputEnvelope() && resp.Finish.Reason == llm.FinishReasonStop &&
 			!noContent && strings.TrimSpace(lastText) != "" && !s.communicated()
 		if bareReply && s.reportsToParent() {
-			outstanding, workErr := s.treeHasOutstandingWork()
+			outstanding, workErr := s.subagentHasDrainableWork()
 			if workErr != nil || outstanding {
 				bareReply = false
 			}

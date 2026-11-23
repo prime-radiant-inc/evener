@@ -569,6 +569,90 @@ func TestSubagentBareTextFallback(t *testing.T) {
 		}
 	})
 
+	t.Run("persisted_shell_attention_blocks_bare_text_and_allows_quiet_yield", func(t *testing.T) {
+		t.Parallel()
+		env := newHeldJobEnvironment(t.TempDir())
+		t.Cleanup(env.releaseJob)
+
+		shellFinishedBeforeBareReply := make(chan struct{})
+		releaseStep2 := make(chan struct{})
+		adapter := newFakeAdapter("openai",
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{
+					ID:        "bg-shell",
+					Name:      "shell",
+					Arguments: json.RawMessage(`{"command":"go test","mode":"background"}`),
+					Type:      "function",
+				})
+			},
+			func(llm.Request) llm.Response {
+				close(shellFinishedBeforeBareReply)
+				<-releaseStep2
+				return bareTextResponse("Premature bare text before reading completed shell", llm.FinishReasonStop)
+			},
+			func(llm.Request) llm.Response {
+				return quietYieldResponse("quiet-after-persisted-shell", `{}`)
+			},
+			func(llm.Request) llm.Response {
+				return agenttest.FinalResponse("Reported after draining persisted shell attention")
+			},
+		)
+		parent := newSession(t, withEnv(env), withAdapter(adapter), withStateDir(t.TempDir()))
+		res := parent.createDelegate(tripwireCtx(t), delegateArgs{Task: "run shell and report"})
+		if res.Err != nil {
+			t.Fatalf("createDelegate: %v", res.Err)
+		}
+		_, childID, err := decodeRef(res.TranscriptRef)
+		if err != nil {
+			t.Fatalf("decodeRef: %v", err)
+		}
+		child := parent.subagents.get(childID)
+		if child == nil {
+			t.Fatalf("subagent %s not found", childID)
+		}
+
+		ctx := tripwireCtx(t)
+		select {
+		case <-env.started:
+		case <-ctx.Done():
+			t.Fatal("child background shell did not start")
+		}
+		select {
+		case <-shellFinishedBeforeBareReply:
+		case <-ctx.Done():
+			t.Fatal("child did not reach step 2")
+		}
+		// Release the background shell mid-round and wait until persistStableShellAttention
+		// removes it from jm.running (so treeHasOutstandingWork alone is false) while its
+		// unpresented attention row is durable in the child's transcript.
+		env.releaseJob()
+		testwait.Until(t, "shell finished into persisted stable attention with empty running map", func() bool {
+			outstanding, err := child.sess.treeHasOutstandingWork()
+			if err != nil || outstanding {
+				return false
+			}
+			ids, err := child.sess.automaticDelegateAttentionIDs()
+			return err == nil && len(ids) == 1
+		})
+		// Verify subagentHasDrainableWork sees the unpresented shell attention,
+		// while marking it covered on the active turn excludes it.
+		drainable, err := child.sess.subagentHasDrainableWork()
+		if err != nil || !drainable {
+			t.Fatalf("subagentHasDrainableWork() = %v, %v; want true, nil for unpresented shell attention", drainable, err)
+		}
+		close(releaseStep2)
+
+		waitForLiveSubagentRun(t, child)
+		if got := len(adapter.Requests()); got != 4 {
+			t.Fatalf("provider requests = %d, want 4 (shell -> rejected bare text -> quiet yield -> final report)", got)
+		}
+		assertReportedDelegatePacket(t, parent, res.DelegateID, "Reported after draining persisted shell attention")
+		noTool, nudges, _, _, _, _ := countSubagentTranscriptTurns(t, child.sess)
+		if noTool != 1 || nudges != 0 {
+			t.Fatalf("noToolSteers = %d (want 1), delegateNudges = %d (want 0)", noTool, nudges)
+		}
+	})
+
 	t.Run("direct_nil_store_subagent_is_eligible", func(t *testing.T) {
 		t.Parallel()
 		s := newSession(t, withSteps(func(llm.Request) llm.Response {
