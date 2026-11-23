@@ -15,12 +15,20 @@ export interface DialogProps {
    * image lightbox, kata b4xf), where the content itself, not a settings
    * form or a confirmation prompt, is the point. */
   size?: "default" | "large";
+  /** Extra class appended to the panel, after the size variant. */
+  panelClassName?: string;
+  /** Extra class appended to the body, after the shared body class. */
+  bodyClassName?: string;
+  /** "none" drops the float motion and the size geometry, for a caller that
+   * owns the panel's geometry and mounts it outright (DirectoryPicker).
+   * Default "float". */
+  motion?: "float" | "none";
 }
 
 const BASE_PANEL_CLASS = requireClass(styles.panel, "dialog.module.css", "panel");
 const SIZE_CLASS: Record<NonNullable<DialogProps["size"]>, string> = {
-  default: `${BASE_PANEL_CLASS} ${requireClass(styles.dialogVariant, "dialog.module.css", "dialogVariant")}`,
-  large: `${BASE_PANEL_CLASS} ${requireClass(styles.dialogVariantLarge, "dialog.module.css", "dialogVariantLarge")}`,
+  default: requireClass(styles.dialogVariant, "dialog.module.css", "dialogVariant"),
+  large: requireClass(styles.dialogVariantLarge, "dialog.module.css", "dialogVariantLarge"),
 };
 
 /**
@@ -32,17 +40,8 @@ const SIZE_CLASS: Record<NonNullable<DialogProps["size"]>, string> = {
  * centered floating dialog, just a different cap on how big it's allowed
  * to grow.
  */
-export function Dialog({ open, onClose, title, children, footer, size = "default" }: DialogProps) {
-  return (
-    <OverlayPanel
-      open={open}
-      onClose={onClose}
-      title={title}
-      footer={footer}
-      panelClassName={SIZE_CLASS[size]}
-      motion="float"
-    >
-      {children}
-    </OverlayPanel>
-  );
+export function Dialog(props: DialogProps) {
+  const { size = "default", panelClassName, motion = "float", ...rest } = props;
+  const panel = `${BASE_PANEL_CLASS}${motion === "float" ? ` ${SIZE_CLASS[size]}` : ""}${panelClassName ? ` ${panelClassName}` : ""}`;
+  return <OverlayPanel {...rest} panelClassName={panel} motion={motion} />;
 }

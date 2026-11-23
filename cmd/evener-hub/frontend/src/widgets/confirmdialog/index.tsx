@@ -5,8 +5,8 @@ import { Dialog } from "../dialog";
 export interface ConfirmDialogProps {
   open: boolean;
   title: string;
-  /** Body copy explaining the consequence - mirrors Dialog's own `children`
-   * naming. */
+  /** Body content: the consequence copy, or a form the confirm acts on -
+   * mirrors Dialog's own `children` naming. */
   children: ReactNode;
   /** The destructive (or otherwise consequential) verb, e.g. "Remove",
    * "Clear", "Install". */
@@ -21,6 +21,10 @@ export interface ConfirmDialogProps {
   /** Disables both buttons - set while the caller's own async onConfirm is
    * in flight, to block a double-submit. Default false. */
   busy?: boolean;
+  /** Disables the confirm button alone; Cancel stays enabled. */
+  confirmDisabled?: boolean;
+  /** Replaces the confirm label while `busy`. */
+  pendingLabel?: string;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -52,6 +56,8 @@ export function ConfirmDialog({
   cancelLabel = "Cancel",
   destructive = true,
   busy = false,
+  confirmDisabled,
+  pendingLabel,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
@@ -65,8 +71,8 @@ export function ConfirmDialog({
           <Button variant="quiet" onClick={onCancel} disabled={busy}>
             {cancelLabel}
           </Button>
-          <Button variant={destructive ? "danger" : "primary"} onClick={onConfirm} disabled={busy}>
-            {confirmLabel}
+          <Button variant={destructive ? "danger" : "primary"} onClick={onConfirm} disabled={busy || confirmDisabled}>
+            {busy && pendingLabel ? pendingLabel : confirmLabel}
           </Button>
         </>
       }

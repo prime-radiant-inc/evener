@@ -3,8 +3,10 @@ import userEvent from "@testing-library/user-event";
 import { Profiler } from "react";
 import { createPortal } from "react-dom";
 import { expect, test, vi } from "vitest";
+import { readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import { DirectoryIcon as FromBarrel } from "..";
 import { appendPopout } from "../internal/popoutTestUtils";
+import rawStyles from "./directorypicker.module.css";
 import { DirectoryIcon, DirectoryPicker, type DirectoryPickerProps } from "./index";
 
 function setup(overrides: Partial<DirectoryPickerProps> = {}, onCommit: () => void = () => {}) {
@@ -45,6 +47,21 @@ function setupPendingInitialValidation() {
 
 test("its folder glyph is exported from the widget barrel", () => {
   expect(FromBarrel).toBe(DirectoryIcon);
+});
+
+// The picker keeps its own scrollport: its body class lands on the shared
+// Dialog body, and the columns still scroll inside it rather than the panel
+// scrolling as a whole.
+test("the picker's body keeps its own scrolling inside the shared Dialog", async () => {
+  setup();
+  const dialog = await screen.findByRole("dialog", { name: "Choose directory" });
+  expect(dialog.classList.contains(rawStyles.panel)).toBe(true);
+  expect(dialog.querySelector(`:scope > .${rawStyles.body}`)).toBeTruthy();
+
+  const css = readModuleCss(import.meta.url, "directorypicker.module.css");
+  expect(topRuleBlock(css, ".body")).toContain("overflow: auto");
+  expect(topRuleBlock(css, ".recents")).toContain("overflow-y: auto");
+  expect(topRuleBlock(css, ".browse")).toContain("overflow-y: auto");
 });
 
 test("navigation and recent folders stay draft until explicitly selected", async () => {
