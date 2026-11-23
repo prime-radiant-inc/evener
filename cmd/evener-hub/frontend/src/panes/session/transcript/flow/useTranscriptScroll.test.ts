@@ -5222,17 +5222,21 @@ describe("registered transcript view preservation", () => {
     }
   });
 
-  test("restores focus to the summary that replaces a focused row control", async () => {
+  test("restores focus to the summary of a remounted disclosure", async () => {
     const list = await renderRegistrationList();
     try {
       const anchor = document.createElement("div");
       anchor.dataset.viewAnchorId = "watch-1";
       anchor.dataset.viewAnchorSourceIndex = "4";
-      const rowButton = document.createElement("button");
-      anchor.append(rowButton);
+      const disclosure = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = "job_watch";
+      disclosure.append(summary);
+      anchor.append(disclosure);
       list.el.append(anchor);
       const focusFallback = vi.fn();
-      rowButton.focus();
+      summary.focus();
+      expect(document.activeElement).toBe(summary);
 
       const positions: ViewAnchorPosition[] = [
         { id: "watch-1", sourceIndex: 4, index: 0, offset: 18, height: 40, isMessage: false },
@@ -5242,7 +5246,7 @@ describe("registered transcript view preservation", () => {
         ({ viewKey }) =>
           useTranscriptViewRegistration({
             enabled: true,
-            id: "summary-pane",
+            id: "remounted-summary-pane",
             layout: "desktop",
             viewKey,
             listRef: list.ref,
@@ -5251,27 +5255,26 @@ describe("registered transcript view preservation", () => {
             renderedRowCount: 2,
             focusFallback,
           }),
-        { initialProps: { viewKey: "wide" } },
+        { initialProps: { viewKey: "desktop" } },
       );
       await act(async () => list.commit(result.current));
 
       act(() => {
         transitionTranscriptViews(() => {
-          rowButton.remove();
-          const details = document.createElement("details");
-          const summary = document.createElement("summary");
-          summary.textContent = "job_watch";
-          details.append(summary);
-          anchor.append(details);
-          rerender({ viewKey: "narrow" });
+          const remounted = document.createElement("details");
+          const remountedSummary = document.createElement("summary");
+          remountedSummary.textContent = "job_watch";
+          remounted.append(remountedSummary);
+          anchor.replaceChildren(remounted);
+          rerender({ viewKey: "phone" });
         }, "Transcript display changed");
       });
       await act(async () => list.commit(result.current));
       act(() => result.current.restoreAfterMeasurement());
 
-      const summary = anchor.querySelector("summary");
-      expect(summary).not.toBeNull();
-      expect(document.activeElement).toBe(summary);
+      const remountedSummary = anchor.querySelector("summary");
+      expect(remountedSummary).not.toBeNull();
+      expect(document.activeElement).toBe(remountedSummary);
       expect(focusFallback).not.toHaveBeenCalled();
       list.el.remove();
     } finally {

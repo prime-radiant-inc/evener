@@ -222,16 +222,6 @@ function isFocusableDescendant(element: HTMLElement): boolean {
   return element.matches("button, summary, a[href], input, select, textarea, [tabindex]");
 }
 
-// A responsive remount can turn the focused control into a disclosure: a job
-// watch row's button becomes the <details> of a Disclosure, whose native
-// summary takes the same place and keeps Enter working. The captured
-// descendant path then lands on the <details> itself, so look through it.
-function nativeDisclosureControl(element: HTMLElement): HTMLElement | undefined {
-  if (element.tagName !== "DETAILS") return undefined;
-  const summary = element.querySelector(":scope > summary");
-  return summary instanceof HTMLElement ? summary : undefined;
-}
-
 function sourceIndexFromDataset(element: HTMLElement): number | undefined {
   const value = Number(element.dataset.viewAnchorSourceIndex);
   return Number.isSafeInteger(value) ? value : undefined;
@@ -384,11 +374,9 @@ function focusAnchor(anchor: HTMLElement, metadata: CapturedFocusMetadata): bool
     if (metadata.element.ownerDocument.activeElement === metadata.element) return true;
   }
   const descendant = descendantAtPath(anchor, metadata.descendantPath);
-  const replacement = descendant && nativeDisclosureControl(descendant);
-  const target = replacement ?? (descendant && isFocusableDescendant(descendant) ? descendant : undefined);
-  if (target) {
-    target.focus();
-    if (target.ownerDocument.activeElement === target) return true;
+  if (descendant && isFocusableDescendant(descendant)) {
+    descendant.focus();
+    if (descendant.ownerDocument.activeElement === descendant) return true;
   }
   // Production anchors are divs. Make only this programmatic fallback
   // focusable; tab order remains unchanged because -1 is not tabbable.
