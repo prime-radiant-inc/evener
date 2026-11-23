@@ -114,10 +114,10 @@ func jdrExercisePendingAndRender(t *testing.T, s *Session) {
 		t.Fatal("concrete watched alias")
 	}
 
-	if got := jm.buildWatchFrame(nil, "", "", "", events.SessionEvent{}, nil); got != "" {
+	if got := jm.buildWatchFrameForTest(nil, "", "", "", events.SessionEvent{}, nil); got != "" {
 		t.Fatal(got)
 	}
-	frame := jm.buildWatchFrame(cfg, "missing", "a\r\nb", "delivery", events.SessionEvent{}, nil)
+	frame := jm.buildWatchFrameForTest(cfg, "missing", "a\r\nb", "delivery", events.SessionEvent{}, nil)
 	if !strings.Contains(frame, "output_read_error") {
 		t.Fatalf("missing read error: %q", frame)
 	}
@@ -139,7 +139,7 @@ func jdrExercisePendingAndRender(t *testing.T, s *Session) {
 	if _, err := jm.appendJobOutput(outputRec.JobID, outputRun.output, []byte(strings.Repeat("x", watchExcerptTailBytes+100))); err != nil {
 		t.Fatal(err)
 	}
-	truncatedFrame := jm.buildWatchFrame(cfg, outputRec.JobID, "output", "delivery-output", events.SessionEvent{}, nil)
+	truncatedFrame := jm.buildWatchFrameForTest(cfg, outputRec.JobID, "output", "delivery-output", events.SessionEvent{}, nil)
 	if !strings.Contains(truncatedFrame, "[excerpt truncated]") && !strings.HasSuffix(truncatedFrame, watchTruncatedIndicator) {
 		t.Fatalf("missing truncated marker: %q", truncatedFrame)
 	}

@@ -464,24 +464,26 @@ func hubObservationIdentity(m appwire.SessionObservationMetadata) string {
 	return m.InstanceID + "/" + m.GenerationID + "/" + m.EntryID
 }
 
-// onHubObservation accepts evidence from the bound serving generation. Turn
-// identity, not the serving boot, selects recorded completion evidence. The
-// terminal send is persisted with the watch's clear, then its wake token is
-// queued, and only then does the live ended row appear.
-func (jm *jobManager) onHubObservation(watchID string, update appwire.SessionWatchUpdate) error {
-	return jm.onHubObservationEvidence(watchID, update, false)
-}
-
-// recorded means the evidence came from an already validated snapshot. Its
-// execution provenance need not name the current serving boot, so do not fill
-// missing provenance with the subscription's identity.
-func (jm *jobManager) onHubObservationEvidence(watchID string, update appwire.SessionWatchUpdate, recorded bool) error {
-	return jm.onHubObservationLookup(watchID, update, recorded, nil)
-}
-
 type hubAnswerLookup func(ref, instance, generation, ancestor, candidate string) (bool, error)
 
+// onHubObservationLookup accepts evidence from the bound serving generation.
+// Turn identity, not the serving boot, selects recorded completion evidence.
+// The terminal send is persisted with the watch's clear, then its wake token is
+// queued, and only then does the live ended row appear. recorded means the
+// evidence came from an already validated snapshot: its execution provenance
+// need not name the current serving boot, so missing provenance is not filled
+// with the subscription's identity.
 func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.SessionWatchUpdate, recorded bool, lookup hubAnswerLookup) error {
+	return jm.onHubObservationPayload(watchID, update, recorded, lookup, nil)
+}
+
+// onHubObservationPayload is the observation rail's single delivery path.
+// observation carries the frame payload a snapshot replay has already decoded
+// for the update it synthesizes; a live notification decodes its own.
+func (jm *jobManager) onHubObservationPayload(watchID string, update appwire.SessionWatchUpdate, recorded bool, lookup hubAnswerLookup, observation *hubObservationFrame) error {
+	if observation == nil {
+		observation = hubObservationFrameFor(update)
+	}
 	jm.mu.Lock()
 	_, cfg, ok := jm.watchConfigByIDLocked(watchID)
 	if !ok || cfg.hubRef == "" {
@@ -512,17 +514,42 @@ func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.Sess
 			}
 			cfg.hubTurnBound = cfg.hubTurnID != ""
 		}
+		// Seed the tracked status from the authoritative snapshot and refresh
+		// it on every resync, so the first live transition carries the status
+		// it replaced.
+		if status := read.Thread.Status.Type; status != "" {
+			cfg.hubStatus = status
+		}
 		cfg.hubSuspended = false
 		jm.mu.Unlock()
 		if update.Snapshot.Thread.Evener.AskPending {
 			question := update.Metadata
-			question.EntryID = "question:" + update.Snapshot.Thread.Evener.ActiveTurnID
-			if pending := update.Snapshot.Thread.Evener.PendingQuestion; pending != nil {
+			pending := update.Snapshot.Thread.Evener.PendingQuestion
+			// A settled ask has no active turn: its own turn, when the daemon
+			// reported one, is the ended turn the live status notification
+			// names, and it identifies the entry too.
+			turnID := update.Snapshot.Thread.Evener.ActiveTurnID
+			if turnID == "" && pending != nil {
+				turnID = pending.TurnID
+			}
+			question.EntryID = "question:" + turnID
+			payload := hubObservationFrame{
+				Event: "question",
+				Status: &appwire.ThreadStatusChangedParams{
+					Status:       read.Thread.Status,
+					ActiveTurnID: read.Thread.Evener.ActiveTurnID,
+				},
+				Question: pending,
+			}
+			if pending != nil {
 				identity := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d", pending.Question, pending.Count)))
 				question.EntryID += ":" + hex.EncodeToString(identity[:])
+				if payload.Status.ActiveTurnID == "" {
+					payload.Status.EndedTurnID = pending.TurnID
+				}
 			}
 			question.CausalKnown = true
-			if err := jm.onHubObservation(watchID, appwire.SessionWatchUpdate{Metadata: question, Event: "question"}); err != nil {
+			if err := jm.onHubObservationPayload(watchID, appwire.SessionWatchUpdate{Metadata: question, Event: "question"}, false, nil, &payload); err != nil {
 				return err
 			}
 		}
@@ -530,7 +557,9 @@ func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.Sess
 			approval := update.Metadata
 			approval.EntryID = "approval:" + escalation.EscalationID
 			approval.CausalKnown = true
-			if err := jm.onHubObservation(watchID, appwire.SessionWatchUpdate{Metadata: approval, Event: "approval"}); err != nil {
+			pending := escalation
+			payload := hubObservationFrame{Event: "approval", Approval: &pending}
+			if err := jm.onHubObservationPayload(watchID, appwire.SessionWatchUpdate{Metadata: approval, Event: "approval"}, false, nil, &payload); err != nil {
 				return err
 			}
 		}
@@ -550,7 +579,7 @@ func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.Sess
 					meta.TurnID = turn.ID
 				}
 				u := appwire.SessionWatchUpdate{Metadata: meta, Event: "communicate"}
-				if err := jm.onHubObservationLookup(watchID, u, true, lookup); err != nil {
+				if err := jm.onHubObservationPayload(watchID, u, true, lookup, nil); err != nil {
 					return err
 				}
 			}
@@ -633,6 +662,18 @@ func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.Sess
 		jm.mu.Unlock()
 		return nil
 	}
+	// The tracked status advances before the every-Nth throttle: a suppressed
+	// status still moves it, so the next delivered frame names the transition
+	// the session actually made. On shutdown the daemon emits
+	// thread/status/changed(closed) immediately before thread/closed; the pair
+	// is one transition, and the close frame owns it, so the baseline holds
+	// through the status half and advances when the close arrives.
+	if observation != nil && observation.Event == "status" {
+		observation.PreviousStatus = cfg.hubStatus
+		if next := observation.statusType(); next != "" && (next != appwire.ThreadStatusClosed || observation.Closed) {
+			cfg.hubStatus = next
+		}
+	}
 	// every throttles matching observations the way the ordinary path's
 	// every-Nth trigger does: each Nth selected observation delivers, the rest
 	// count silently and are not condition fires, as on the ordinary path. A
@@ -667,6 +708,7 @@ func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.Sess
 	}
 	root := events.SessionEvent{SessionID: jm.sessionID, Kind: events.EventCommunicate, Provenance: m.Causal}
 	delivery := jm.watchSendSnapshot(cfg, identity, trigger, root).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, m.Causal))
+	delivery.hubObservation = observation
 	if m.CausalKnown && !complete {
 		delivery = jm.conditionFireSendLocked(delivery)
 	}
@@ -686,6 +728,48 @@ func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.Sess
 		return nil
 	}
 	jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
+	return nil
+}
+
+// hubObservationFrameFor decodes what this observation reported about the
+// watched session. It runs before the watch lock is taken: notification params
+// are untrusted input, and the tracked previous status is filled in later under
+// the lock. A nil or malformed notification, which an older hub or a test
+// without one produces, yields a frame naming only the event kind it can prove;
+// a communicate or unknown observation yields nil, since it renders its own
+// event payload.
+func hubObservationFrameFor(update appwire.SessionWatchUpdate) *hubObservationFrame {
+	notification := update.Notification
+	statusParams := func() *appwire.ThreadStatusChangedParams {
+		if notification == nil || notification.Method != appwire.NotifyThreadStatusChanged {
+			return nil
+		}
+		var params appwire.ThreadStatusChangedParams
+		if json.Unmarshal(notification.Params, &params) != nil {
+			return nil
+		}
+		return &params
+	}
+	switch update.Event {
+	case "status":
+		if notification == nil {
+			return &hubObservationFrame{Event: "status"}
+		}
+		if notification.Method == appwire.NotifyThreadClosed {
+			return &hubObservationFrame{Event: "status", Closed: true, Method: appwire.NotifyThreadClosed}
+		}
+		return &hubObservationFrame{Event: "status", Status: statusParams()}
+	case "question":
+		return &hubObservationFrame{Event: "question", Status: statusParams()}
+	case "approval":
+		if notification != nil && notification.Method == appwire.NotifyEvenerSandboxEscalationRequested {
+			var request appwire.SandboxEscalationRequested
+			if json.Unmarshal(notification.Params, &request) == nil {
+				return &hubObservationFrame{Event: "approval", Approval: &request}
+			}
+		}
+		return &hubObservationFrame{Event: "approval"}
+	}
 	return nil
 }
 
