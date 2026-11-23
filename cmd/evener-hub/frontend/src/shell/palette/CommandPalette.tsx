@@ -37,6 +37,7 @@ import {
   EmptyState,
   Eyebrow,
   InlineNotice,
+  Input,
   ShortcutList,
   type ShortcutListItem,
   Skeleton,
@@ -79,7 +80,6 @@ const CLASS = {
   palette: requireClass(styles.palette, "commandpalette.module.css", "palette"),
   pill: requireClass(styles.pill, "commandpalette.module.css", "pill"),
   pillBack: requireClass(styles.pillBack, "commandpalette.module.css", "pillBack"),
-  input: requireClass(styles.input, "commandpalette.module.css", "input"),
   error: requireClass(styles.error, "commandpalette.module.css", "error"),
   results: requireClass(styles.results, "commandpalette.module.css", "results"),
   sectionHeader: requireClass(styles.sectionHeader, "commandpalette.module.css", "sectionHeader"),
@@ -818,12 +818,11 @@ function PaletteBody({
           </button>
         </div>
       )}
-      <input
+      <Input
         ref={inputRef}
-        // biome-ignore lint/a11y/noAutofocus: a command palette's whole purpose is an immediately-typable input on open
         autoFocus
-        className={CLASS.input}
-        type="text"
+        fill
+        padding="roomy"
         role="combobox"
         aria-label="Command palette"
         aria-expanded="true"

@@ -40,3 +40,14 @@
   width: 100%;
   min-width: 0;
 }
+
+/* Opt-in: the roomier field the command palette uses. It reproduces that
+ * field's pre-widget metrics: symmetric --space-3 padding, an intrinsic height
+ * (the 32px single-line control is too short for it), border-box sizing under
+ * fill, and the body size floored at the phone's 16px control size. */
+.input.roomy {
+  height: auto;
+  box-sizing: border-box;
+  padding: var(--space-3);
+  font-size: max(var(--font-size-control), var(--font-size-body));
+}
