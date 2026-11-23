@@ -246,6 +246,10 @@ listing makes the visible ID set **live IDs + exact curated-overlay rows +
 exact user-config rows**; snapshot/cache-only IDs disappear. If the endpoint
 is unsupported, errors, times out, or returns no usable chat rows, the visible
 set falls back to **snapshot/cache + curated overlay + user config**. The
+rows of a chat listing decode independently: a row whose shape the reader
+cannot decode is dropped while its siblings load, so one alien row cannot
+fail the refresh, and a body whose every row fails to decode counts as no
+usable rows and takes the same fallback. The
 original fetch error remains available to diagnostics while callers such as
 the hub picker can still display the fallback. A successful response remains
 a live endpoint and credential signal even when every row is unusable and the
@@ -265,20 +269,30 @@ the list itself. `Tools` comes from OpenRouter's `supported_parameters` or a
 gateway's per-model `capabilities.tools` verdict; an explicit verdict wins
 over the parameter-list inference in both directions. `Reasoning` and
 `EffortValues` come from OpenRouter's `supported_parameters` /
-`reasoning.supported_efforts`, the Codex backend's
-`supported_reasoning_levels`, or a gateway's own per-model facts: a
-`capabilities.reasoning` verdict, and the `client_compat.pi.thinkingLevelMap`
-ladder (lunaroute's shape), where a level mapped to a string is supported, a
+`reasoning.supported_efforts`, the `supported_reasoning_levels` an
+OpenAI-compatible chat row may publish in the Codex backend's spelling
+(effort objects or plain strings, `ultra` — the client's delegation preset —
+dropped) with its `default_reasoning_level` becoming the row's
+`DefaultEffort`, a plain top-level `reasoning` boolean verdict, or a
+gateway's own per-model facts: a `capabilities.reasoning` verdict, and the
+`client_compat.pi.thinkingLevelMap` ladder (lunaroute's shape), where a
+level mapped to a string is supported, a
 null is not, and levels sharing a wire value are advertised once. The ladder
 is ordered as the picker shows it, with an off level first when `off` maps to
 `none`. A published map with no usable level is the gateway stating that the
 model takes no effort control, so it clears any inherited ladder; a
-`capabilities.reasoning: false` verdict states no ladder at all. A usable
+`capabilities.reasoning: false` verdict states no ladder at all. A boolean
+`reasoning` verdict is recorded in both directions too — `true` marks a
+reasoning model, `false` a non-reasoning one that carries no ladder — and a
+shape the reader cannot read states nothing. A usable
 ladder is itself evidence the model tunes effort and raises a verdict inferred
 from a provider-wide parameter list. A model whose listing carries no map at
 all keeps whatever ladder its curated row supplies, and an uncatalogued one
 resolves with none, so the request builder sends no effort name it cannot
 vouch for.
+`MaxOutputTokens` reads the row's `top_provider.max_completion_tokens`, the
+top-level `max_completion_tokens` or `max_output_tokens`, or a server's
+`limits.max_output_tokens`.
 
 The same per-model block states two wire-shaping facts, applied through the
 live layer on every protocol though only the two OpenAI-shaped listings report
