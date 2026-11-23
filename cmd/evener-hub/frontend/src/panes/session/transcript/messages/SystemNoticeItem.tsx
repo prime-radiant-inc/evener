@@ -62,6 +62,7 @@ import {
   shouldGroup,
 } from "./systemGrouping";
 import styles from "./systemnoticeitem.module.css";
+import { useTranscriptDisclosure } from "./useTranscriptDisclosure";
 import { WarningBlock } from "./WarningItem";
 
 const CLASS = {
@@ -116,7 +117,6 @@ function scaffoldLabel(item: ItemModel): string {
 // and stay folded at every level until explicitly opened.
 function ScaffoldDisclosure({ item, sessionRef }: { item: ItemModel; sessionRef?: string }) {
   const context = useTranscriptRenderContext();
-  const { config } = context;
   const disclosureScope = disclosureScopeForSession(context, sessionRef);
   // Open/closed state lives in the shared disclosureStore keyed by session ref
   // plus item id, so an expanded scaffold survives a remount without colliding
@@ -124,7 +124,7 @@ function ScaffoldDisclosure({ item, sessionRef }: { item: ItemModel; sessionRef?
   const disclosureKey = scopedDisclosureId(disclosureScope, item.id);
   const isNotesSnapshot = item.eventKind === "notes-context";
   const disclosureFallback =
-    !isNotesSnapshot && (expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false));
+    !isNotesSnapshot && (expandDetailsByDefault(context.config) || disclosureDefault(disclosureScope, item.id, false));
   return (
     <Disclosure
       variant="quiet"
@@ -287,15 +287,16 @@ function SystemGroup({
   // plus the run's first item id - the run's stable identity across renders -
   // so an expanded group survives a remount without cross-session collision.
   const context = useTranscriptRenderContext();
-  const { config } = context;
-  const disclosureScope = disclosureScopeForSession(context, sessionRef);
-  const disclosureKey = scopedDisclosureId(disclosureScope, firstItem.id);
-  const disclosureFallback = expandDetailsByDefault(config) || disclosureDefault(disclosureScope, firstItem.id, false);
+  const disclosure = useTranscriptDisclosure({
+    scope: disclosureScopeForSession(context, sessionRef),
+    id: firstItem.id,
+    defaultOpen: expandDetailsByDefault(context.config),
+  });
   return (
     <Disclosure
       variant="quiet"
-      id={disclosureKey}
-      defaultOpen={disclosureFallback}
+      id={disclosure.key}
+      defaultOpen={disclosure.fallback}
       data-testid="system-notice-group"
       summary={
         <span data-count={count}>

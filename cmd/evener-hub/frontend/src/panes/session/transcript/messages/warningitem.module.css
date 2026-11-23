@@ -10,9 +10,7 @@
 }
 
 .message {
-  font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
-  color: var(--ink-mid);
+  composes: textSecondary from "../../../../styles/text.module.css";
 }
 
 .hint {

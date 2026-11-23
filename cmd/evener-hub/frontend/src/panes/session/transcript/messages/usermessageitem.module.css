@@ -95,9 +95,7 @@
 /* The header's meta slot: caption size, --ink-low, and rendered only when
  * the item carries a startedAt - never a placeholder. */
 .time {
-  font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
-  color: var(--ink-mid);
+  composes: textSecondary from "../../../../styles/text.module.css";
 }
 
 .actions {

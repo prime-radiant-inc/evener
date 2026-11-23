@@ -5,6 +5,7 @@
     "styles/global.css",
     "styles/tokens.css",
     "styles/motion.module.css",
+    "styles/text.module.css",
     "panes/session/transcript/turnblock.module.css",
     "panes/session/transcript/messages/agentmessageitem.module.css",
     "widgets/speakeravatar/speakeravatar.module.css",
@@ -16,10 +17,7 @@
     "deviceScaleFactor": 1,
     "mobile": false
   },
-  "widthMatrix": [
-    { "width": 1112, "window": 1440 },
-    { "width": 1592, "window": 1920 }
-  ],
+  "widthMatrix": [{ "width": 1112, "window": 1440 }, { "width": 1592, "window": 1920 }],
   "mutation": {
     "declaration": "tokens.css: body { --session-measure: 44rem } set to 76rem (the pre-2026-09-06 literal)",
     "verified": "2026-09-06",

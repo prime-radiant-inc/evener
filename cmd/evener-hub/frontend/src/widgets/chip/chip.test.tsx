@@ -114,3 +114,34 @@ test("marks its kind as data-kind when one is given", () => {
   rerender(<Chip>backend</Chip>);
   expect(container.firstElementChild?.hasAttribute("data-kind")).toBe(false);
 });
+
+test("defaults to the solid variant", () => {
+  const { container } = render(<Chip>backend</Chip>);
+  expect(container.firstElementChild?.getAttribute("data-variant")).toBe("solid");
+});
+
+test("variant quiet marks the chip quiet", () => {
+  const { container } = render(<Chip variant="quiet">current</Chip>);
+  expect(container.firstElementChild?.getAttribute("data-variant")).toBe("quiet");
+});
+
+test("the quiet variant declares a fill-free rule for its variant attribute", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "chip.module.css"), "utf8");
+  expect(css).toMatch(/\.chip\[data-variant="quiet"\]\s*\{[^}]*background:\s*transparent/);
+});
+
+test("forwards a caller className after its own classes", () => {
+  const { container } = render(<Chip className="caller-class">backend</Chip>);
+  expect(container.firstElementChild!.classList.contains("caller-class")).toBe(true);
+  expect(container.firstElementChild!.classList.contains(styles.neutral)).toBe(true);
+});
+
+test("forwards data-* attributes to its span", () => {
+  render(
+    <Chip data-testid="state-chip" data-state="revoked">
+      revoked
+    </Chip>,
+  );
+  expect(screen.getByTestId("state-chip").dataset.state).toBe("revoked");
+});

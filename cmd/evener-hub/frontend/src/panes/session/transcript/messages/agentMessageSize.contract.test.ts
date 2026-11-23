@@ -32,9 +32,12 @@ test("prose typography stays with Markdown/StreamingText: the .message wrapper d
   expect(uncommented).not.toMatch(/\.message\s*\{[^}]*[;{\s]font-size\s*:/);
 });
 
-test("the speaker header's name is body-size like the prose it introduces; only the meta drops to the ui size", () => {
+test("the speaker header's name is body-size like the prose it introduces; the meta composes the ui-size recipe", () => {
   expect(uncommented).toMatch(/\.name\s*\{[^}]*font-size:\s*var\(--font-size-body\);/);
   // ui, not caption: the model label and clock are read, not glanced past
-  // (typography-spacing-critique-2026-09-06 finding 7).
-  expect(uncommented).toMatch(/\.meta\s*\{[^}]*font-size:\s*var\(--font-size-ui\);/);
+  // (typography-spacing-critique-2026-09-06 finding 7). The size itself is
+  // pinned once in text.contract.test.ts; this site pins the composition.
+  expect(uncommented).toMatch(
+    /\.meta\s*\{[^}]*composes:\s*textSecondary from "\.\.\/\.\.\/\.\.\/\.\.\/styles\/text\.module\.css";/,
+  );
 });

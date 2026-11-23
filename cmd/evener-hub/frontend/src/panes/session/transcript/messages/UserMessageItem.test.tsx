@@ -146,11 +146,14 @@ test("the slack-lean layout is token-backed and has no prose card treatment", ()
   expect(css).toMatch(/\.header\s*\{[\s\S]*display:\s*flex;[\s\S]*align-items:\s*baseline;/);
   // Speaker name at body size / semibold / --ink-hi (spec decision 1, weight
   // raised by typography-spacing-critique-2026-09-06 R3 so the header is a
-  // landmark); clock time at ui size / --ink-mid (readable, not sub-AA).
+  // landmark); clock time composes the shared ui-size / --ink-mid recipe
+  // (pinned once in text.contract.test.ts), readable, not sub-AA.
   expect(css).toMatch(
     /\.name\s*\{[\s\S]*font-size:\s*var\(--font-size-body\);[\s\S]*font-weight:\s*var\(--font-weight-semibold\);[\s\S]*color:\s*var\(--ink-hi\);/,
   );
-  expect(css).toMatch(/\.time\s*\{[\s\S]*font-size:\s*var\(--font-size-ui\);[\s\S]*color:\s*var\(--ink-mid\);/);
+  expect(css).toMatch(
+    /\.time\s*\{[\s\S]*composes:\s*textSecondary from "\.\.\/\.\.\/\.\.\/\.\.\/styles\/text\.module\.css";/,
+  );
   // Text at --ink-hi (spec decision 5 - the header now carries the
   // boundary-scannability the old --ink-mid demotion was buying).
   expect(css).toMatch(/\.text\s*\{[\s\S]*color:\s*var\(--ink-hi\);/);

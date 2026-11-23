@@ -118,9 +118,7 @@
 /* Meta is "{model label} · {clock time}", each part only when defined; the
  * element itself only renders when at least one part exists. */
 .meta {
-  font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
-  color: var(--ink-mid);
+  composes: textSecondary from "../../../../styles/text.module.css";
 }
 
 /* The mid-exchange fragment's relative time is a margin note, not a caption
