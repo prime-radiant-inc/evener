@@ -80,11 +80,9 @@ export function seedSources(
 // The working directory is changed through an explicit-confirmation picker.
 export const LAST_WORKING_DIR_KEY = "evener-hub.spawn-defaults.global.last-working-dir";
 
-/** The local source's display name: the address the browser reached this hub
- * at, plus the hub marker. Kept in one place so tests name what the pane
- * actually renders. */
+/** The label the test manifests seed for their local source. */
 export function localHostLabel(): string {
-  return `${window.location.hostname || "this host"} (hub)`;
+  return "Local";
 }
 
 /** The host picker's quiet disclosure row, the same control the plugin row uses. */

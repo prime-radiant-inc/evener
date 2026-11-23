@@ -1,13 +1,10 @@
+import type { HostFacts } from "@evener/appwire-client/state/navigation";
 import { Button, Card, ListRow } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./SpawnHostSelection.module.css";
 
 /** One launch source as the host list renders it. */
-export interface SpawnHostOption {
-  id: string;
-  label: string;
-  online: boolean;
-}
+export type SpawnHostOption = HostFacts;
 
 export interface SpawnHostSelectionProps {
   options: readonly SpawnHostOption[];

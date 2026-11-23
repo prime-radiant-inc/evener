@@ -4,13 +4,7 @@
 // directory picker commits once, so browsing does not churn
 // directory-dependent configuration.
 
-import type {
-  HarnessDescriptor,
-  LaunchConfigLayer,
-  LaunchOption,
-  ModelListResponse,
-  Source,
-} from "@evener/appwire-client";
+import type { HarnessDescriptor, LaunchConfigLayer, LaunchOption, ModelListResponse } from "@evener/appwire-client";
 import {
   type AdvancedValues,
   basename,
@@ -40,7 +34,7 @@ import {
   slashCommandInvocation,
   withPluginSelection,
 } from "@evener/appwire-client";
-import { type JSX, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type JSX, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { useStore } from "zustand";
 import { useClient } from "../../shell/clientContext";
@@ -232,14 +226,6 @@ const CLASS = {
   promptAnchor: requireClass(styles.promptAnchor, "spawn.module.css", "promptAnchor"),
   submitLabel: requireClass(styles.submitLabel, "spawn.module.css", "submitLabel"),
 };
-
-// The local source is the hub the browser is connected to, so it is named by
-// the address the reader used ("magic-kingdom" over the tailnet) rather than
-// the wire's contextual "this host".
-function displaySourceLabel(candidate: Source): string {
-  if (candidate.kind !== "local") return candidate.label;
-  return `${window.location.hostname || "this host"} (hub)`;
-}
 
 // kata xgk8: the empty-value label Model shows when the hub has confirmed it
 // has no default to fall back to - never "(default)", which reads exactly
@@ -480,6 +466,23 @@ function SpawnForm({
   const displaySource = displaySources.find((candidate) => candidate.id === source);
   const displayHostChoice = sources.length > 0 ? hostChoice : (displaySource?.id ?? hostChoice);
   const displayRemoteHosts = displaySources.filter((candidate) => candidate.id !== "local");
+  // The one host list is shared by the quiet-row disclosure and the phone
+  // Sheet. The manifest labels every source, including the hub itself
+  // ("<hostname> (hub)"), so the picker renders that label rather than
+  // deriving one from the browser's address.
+  const hostSelectionOptions = useMemo<SpawnHostOption[]>(
+    () =>
+      displayRemoteHosts.length > 0
+        ? displaySources.map((candidate) => ({
+            id: candidate.id,
+            label: candidate.label,
+            online: candidate.online,
+          }))
+        : [],
+    [displaySources, displayRemoteHosts.length],
+  );
+  const displayHostLabel =
+    hostSelectionOptions.find((option) => option.id === displayHostChoice)?.label ?? displayHostChoice;
   const cwd = draft.cwd;
   const setCwd = selectSpawnDirectory;
   // Entering onboarding records the draft's own scope; the fallback below is
@@ -832,15 +835,17 @@ function SpawnForm({
   // label, which is the honest UI reflection of `busyRef` once React catches
   // up - this ref is only the guard of record.
   const busyRef = draft.busyRef;
-  // The one host list is shared by the quiet-row disclosure here and the phone
-  // Sheet; both render SpawnHostSelection with these same options.
-  const hostSelectionOptions: SpawnHostOption[] = displaySources.map((candidate) => ({
-    id: candidate.id,
-    label: displaySourceLabel(candidate),
-    online: candidate.online,
-  }));
-  const displayHostSource = displaySources.find((candidate) => candidate.id === displayHostChoice);
-  const displayHostLabel = displayHostSource ? displaySourceLabel(displayHostSource) : displayHostChoice;
+  // Selecting a host is never itself an attach request: an online row is
+  // already attached (a dial would only be redundant), and an offline row is
+  // not selectable, so the Connect control on its row is the single path that
+  // reaches an offline host. Both host surfaces share this action.
+  function selectHost(id: string): void {
+    if (busyRef.current) return;
+    setSource(id);
+  }
+  function openHostsSettings(): void {
+    navigate("/settings/hosts");
+  }
   // The two edges of a launch attempt. busyRef is the synchronous re-entrancy
   // guard, busy and busyStartedAt are the draft state the Start button renders;
   // every exit from an attempt (success, refusal, thrown error) hands Start
@@ -2886,19 +2891,13 @@ function SpawnForm({
                   value={displayHostChoice}
                   connecting={connectingHosts}
                   onSelect={(id) => {
-                    if (busyRef.current) return;
-                    // Selecting a host is never itself an attach request: an
-                    // online row is already attached (a dial would only be
-                    // redundant), and an offline row is not selectable, so the
-                    // Connect control on its row is the single path that
-                    // reaches an offline host.
                     setHostPickerOpen(false);
-                    setSource(id);
+                    selectHost(id);
                   }}
                   onConnect={connectHost}
                   onConnectHost={() => {
                     setHostPickerOpen(false);
-                    navigate("/settings/hosts");
+                    openHostsSettings();
                   }}
                 />
               </Disclosure>
@@ -3029,16 +3028,13 @@ function SpawnForm({
             fallbackDir={pickerFallbackDir}
             onCwdPanelClose={commitLastWorkingDir}
             branch={branch}
-            hostOptions={displayRemoteHosts.length > 0 ? hostSelectionOptions : []}
+            hostOptions={hostSelectionOptions}
             hostValue={displayHostChoice}
             hostLabel={displayHostLabel}
             connectingHosts={connectingHosts}
-            onHostSelect={(id) => {
-              if (busyRef.current) return;
-              setSource(id);
-            }}
+            onHostSelect={selectHost}
             onHostConnect={connectHost}
-            onConnectHost={() => navigate("/settings/hosts")}
+            onConnectHost={openHostsSettings}
             accessMode={accessMode}
             accessOptions={accessOptions}
             onAccessChange={setAccessMode}
