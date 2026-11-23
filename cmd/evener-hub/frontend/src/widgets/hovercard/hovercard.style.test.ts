@@ -44,10 +44,12 @@ test("the bubble floats in and out by the shared overlay recipe", () => {
   expect(CSS).not.toMatch(/animation|@keyframes/);
 });
 
-test("the block presentation owns the caller's line width and clipping", () => {
+test("the block presentation clips without claiming the caller's width", () => {
   const block = topRuleBlock(CSS, ".block");
   expect(block).toMatch(/display:\s*block/);
-  expect(block).toMatch(/width:\s*100%/);
+  // No width claim: in a flex line (the rail's session title) the wrapper must
+  // size to its trigger, or the hover target and the trailing chevron shift.
+  expect(block).not.toMatch(/(?:^|\s)(?:width|inline-size):/);
   expect(block).toMatch(/min-width:\s*0/);
   expect(block).toMatch(/overflow:\s*hidden/);
 });
