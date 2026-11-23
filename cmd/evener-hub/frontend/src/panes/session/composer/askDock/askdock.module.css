@@ -51,7 +51,9 @@
   color: var(--ink-mid);
   background: var(--surface-1);
   border: 1px solid var(--edge);
-  border-radius: var(--radius-pill);
+  /* Control radius: a tab is a button, not a capsule (Jesse 2026-11-23:
+   * the pill is control geometry, never a surface shape). */
+  border-radius: var(--radius-control);
   padding: var(--space-1) var(--space-3);
   overflow-wrap: anywhere;
 }
