@@ -1518,7 +1518,7 @@ cover, not a second two-pane.
 
 Verification for changes to any of this: screenshots at 390×844 (phone),
 768×1024 and 1024×768 (tablet), 840×600 (Duo interior); chrome at rest
-within the 126px budget; transcript content scrolling under the composer
+within the 105px budget; transcript content scrolling under the composer
 pill; header collapse only on session-family scroll; `node scripts/ds-audit.mjs`
 counts no higher than before.
 

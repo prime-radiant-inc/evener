@@ -411,16 +411,24 @@ test("a session without a Back destination uses Sessions as its only leading nav
   await openSessionsPanel(user);
 });
 
-test("a focused session's top bar orders Find before Overview", async () => {
+test("a focused session's top bar holds one Overview entry, not the desktop pair", async () => {
+  const restoreViewport = installMobileViewport();
   workspaceStore.getState().openPane("session", { ref: "local:header-order" });
-  render(<StackHost />);
-  const title = await screen.findByTestId("topbar-title");
-  const topBar = title.parentElement;
-  if (!topBar) throw new Error("session top bar is missing");
+  try {
+    render(<StackHost />);
+    const title = await screen.findByTestId("topbar-title");
+    const topBar = title.parentElement;
+    if (!topBar) throw new Error("session top bar is missing");
 
-  const find = await within(topBar).findByRole("button", { name: "Find in session" });
-  const overview = within(topBar).getByRole("button", { name: "Overview" });
-  expect(find.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    // The desktop pair folds into the one sheet entry
+    // (SessionInspectionActions' mobile variant): no standalone Find
+    // button, exactly one Overview trigger.
+    expect(within(topBar).queryByRole("button", { name: "Find in session" })).toBeNull();
+    expect(within(topBar).getAllByRole("button", { name: "Overview" })).toHaveLength(1);
+  } finally {
+    cleanup();
+    restoreViewport();
+  }
 });
 
 test("a session with a retained parent keeps Back instead of Sessions", async () => {
@@ -546,6 +554,13 @@ test.each(["Close", "Escape"])(
         </ClientProvider>,
       );
       await user.click(await screen.findByRole("button", { name: "Overview" }));
+      // The phone folds the inspectors into the Overview sheet
+      // (design-system.md section 12): the shared sidebar opens through its
+      // agents row, not straight from the trigger.
+      const sheet = await screen.findByRole("dialog", { name: "Overview" });
+      const agentsRow = sheet.querySelector('[data-activity-tab="agents"]');
+      if (!(agentsRow instanceof HTMLElement)) throw new Error("agents row missing from the overview sheet");
+      await user.click(agentsRow);
       await user.click(await screen.findByRole("button", { name: /Open child/ }));
       const sidebar = await screen.findByTestId("activity-sidebar");
       // Drilling changes the inspected scope. The new scope's selected

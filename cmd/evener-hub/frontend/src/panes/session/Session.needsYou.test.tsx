@@ -925,11 +925,9 @@ test("the mobile stack host offers attention navigation over its focused session
 });
 
 // The phone layout keeps one bottom surface: the composer's own control
-// row. The pane's status strip is gone there, and activity chips use their
-// own line above the card when content expands it.
-test("a mobile session pane gives activity chips their own line outside the composer form", async ({
-  onTestFinished,
-}) => {
+// row. The pane's status strip is gone there, and the activity counts live
+// in the top bar's Overview sheet, never in a composer line.
+test("a mobile session pane keeps the composer free of activity chips", async ({ onTestFinished }) => {
   vi.mocked(ComposerModule.Composer).mockRestore();
   onTestFinished(() => {
     vi.restoreAllMocks();
@@ -962,10 +960,11 @@ test("a mobile session pane gives activity chips their own line outside the comp
   // No footer strip under the composer on a phone.
   expect(screen.queryByTestId("statusbar")).toBeNull();
 
-  // Content engages the full control row. The activity line remains outside
-  // the form rather than becoming another editor control.
+  // Content engages the full control row. The activity counts stay out of
+  // the composer entirely (design-system.md section 12): no line, no chip,
+  // the Overview sheet owns them.
   const form = screen.getByTestId("composer-form");
   expect(form.querySelector('[data-testid="composer-attach"]')).toBeTruthy();
   expect(form.querySelector("[data-activity-tab]")).toBeNull();
-  expect(screen.getByTestId("composer-activity-line").querySelector("[data-activity-tab]")).toBeTruthy();
+  expect(screen.queryByTestId("composer-activity-line")).toBeNull();
 });

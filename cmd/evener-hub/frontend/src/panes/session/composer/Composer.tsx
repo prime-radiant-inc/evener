@@ -48,7 +48,6 @@ import {
 } from "react";
 import { activitySidebarStore } from "../../../shell/activitybar/activitySidebarStore";
 import type { SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
-import { ActivityChips } from "../../../shell/statusbar/ActivityChips";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { useMountAutofocus } from "../../../shell/useMountAutofocus";
 import {
@@ -124,10 +123,6 @@ export interface ComposerProps {
   focused?: boolean;
   // The seat may suppress mount autofocus for a navigation or restore intent.
   mountAutofocus?: boolean;
-  // The seat's own chrome already renders this conversation's activity counts
-  // (a cascade column below its conversation footer), so the phone row must
-  // not mount a second set of chips beside the status chrome.
-  ownsActivityCounts?: boolean;
   source: ComposerSourceState;
   submission?: ComposerSubmission;
   // An in-progress IME composition, reported for the floating attention
@@ -146,7 +141,6 @@ const CLASS = {
   editorSlot: requireClass(styles.editorSlot, "composer.module.css", "editorSlot"),
   menuSlot: requireClass(styles.menuSlot, "composer.module.css", "menuSlot"),
   chromeSlot: requireClass(styles.chromeSlot, "composer.module.css", "chromeSlot"),
-  activityRow: requireClass(styles.activityRow, "composer.module.css", "activityRow"),
   steerSlot: requireClass(styles.steerSlot, "composer.module.css", "steerSlot"),
   formAnchor: requireClass(styles.formAnchor, "composer.module.css", "formAnchor"),
   submitLabel: requireClass(styles.submitLabel, "composer.module.css", "submitLabel"),
@@ -197,7 +191,6 @@ function ComposerWithSubmission({
   paneId,
   focused = false,
   mountAutofocus = true,
-  ownsActivityCounts = false,
   source,
   submission,
   onEditingChange,
@@ -1021,11 +1014,6 @@ function ComposerWithSubmission({
   // slot never sheds, so Stop stays reachable while a turn runs.
   const controlsCollapsed = (isMobile || landscapePhoneLayout) && resting;
 
-  // The phone's activity counts are a glance line above the card. A folded
-  // resting card is the phone's smallest surface, so it shows no line; content
-  // returns the counts above the expanded card without moving its controls.
-  const showActivityLine = isMobile && !ownsActivityCounts && !folded && (!ended || showFollowUpCard);
-
   function handleTextChange(value: SkillEditorValue, caret: number): void {
     editSkillNames(value.skillNames);
     updateSelectionMeta(value);
@@ -1405,13 +1393,6 @@ function ComposerWithSubmission({
         >
           This will discard the current composer contents.
         </ConfirmDialog>
-      )}
-      {/* Content returns the phone's activity counts ABOVE the card, so the
-          card and its persistent controls never move upward when it expands. */}
-      {showActivityLine && (
-        <div className={CLASS.activityRow} data-testid="composer-activity-line">
-          <ActivityChips sessionRef={ref} paneId={paneId} />
-        </div>
       )}
       {(!ended || showFollowUpCard) && (
         // data-composer is the hold-hints overlay's anchor (shell/holdhints):

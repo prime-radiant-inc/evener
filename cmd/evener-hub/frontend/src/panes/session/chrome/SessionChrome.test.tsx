@@ -463,6 +463,61 @@ test("header Overview toggles the session's sidebar and selected state", async (
   expect(overview.getAttribute("aria-pressed")).toBe("false");
 });
 
+// The phone header folds the desktop's Find/Overview pair into ONE entry
+// (design-system.md section 12): an Overview trigger opening a bottom sheet
+// that holds the session facts, the Find action, the activity counts, and
+// the links - one entry to every inspector, and nothing in the composer.
+test("a phone folds the inspection entries into one Overview sheet", async ({ onTestFinished }) => {
+  onTestFinished(installMobileViewport());
+  const user = userEvent.setup();
+  const asked = renderHook(() => useFindRequest("ref_phone_sheet", "pane_phone_sheet"));
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_phone_sheet", {
+      evener: {
+        ref: "ref_phone_sheet",
+        capabilities: CAPABILITIES,
+        queue: { revision: 0 },
+        sessionUrls: [{ id: "u1", url: "https://example.com/docs", label: "Example", addedBy: "human", addedAt: 7 }],
+      },
+    }),
+  );
+  await threadsStore.getState().ensureThread("ref_phone_sheet");
+  renderUI(
+    <ClientProvider client={fake}>
+      <SessionInspectionActions sessionRef="ref_phone_sheet" paneId="pane_phone_sheet" />
+    </ClientProvider>,
+  );
+
+  // One entry, not the desktop pair: no standalone Find button.
+  expect(screen.queryByRole("button", { name: "Find in session" })).toBeNull();
+  const entry = screen.getByRole("button", { name: "Overview" });
+  expect(entry.getAttribute("aria-pressed")).toBe("false");
+
+  await user.click(entry);
+  const sheet = await screen.findByRole("dialog", { name: "Overview" });
+
+  // The session facts ride the same details body the Details pane shows.
+  expect(within(sheet).getByTestId("session-details-model")).toBeTruthy();
+  // The links list, destination visible beside the label.
+  expect(within(sheet).getByTestId("overview-sheet-link-u1").textContent).toContain("https://example.com/docs");
+
+  // Find rides inside the sheet and still targets the owning pane.
+  await user.click(within(sheet).getByRole("button", { name: "Find in session" }));
+  expect(asked.result.current?.target).toBe("pane_phone_sheet");
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Overview" })).toBeNull());
+
+  // An activity row opens the shared sidebar on its tab, and the sheet
+  // closes behind it.
+  await user.click(entry);
+  const reopened = await screen.findByRole("dialog", { name: "Overview" });
+  const jobsRow = reopened.querySelector('[data-activity-tab="jobs"]');
+  if (!(jobsRow instanceof HTMLElement)) throw new Error("jobs row missing from the overview sheet");
+  await user.click(jobsRow);
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref: "ref_phone_sheet", tab: "jobs" });
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Overview" })).toBeNull());
+});
+
 test("an ordinary session's composer leaves Find and Overview to the header but keeps Verbosity", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();

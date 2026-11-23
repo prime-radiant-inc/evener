@@ -725,7 +725,10 @@ test("a phone composer restores status chrome and its activity line with content
 
   act(() => replaceEditorText(screen.getByRole("textbox", { name: "Message" }), "draft"));
   expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
-  expect(screen.getByTestId("composer-activity-line").querySelector("[data-activity-tab]")).toBeTruthy();
+  // The engaged row carries no activity counts either (design-system.md
+  // section 12): the top bar's Overview sheet owns them, so the composer
+  // never grows an activity line, engaged or not.
+  expect(screen.queryByTestId("composer-activity-line")).toBeNull();
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
   expect(form.querySelector("[data-activity-tab]")).toBeNull();
   expect(screen.queryByTestId("session-chrome-menu")).toBeNull();
@@ -767,37 +770,10 @@ test("a phone composer leaves inspection actions to the top bar at rest and with
   }
 });
 
-// A cascade column's chrome renders the conversation's activity controls
-// below the footer (CascadeColumn's ScopeActivityControls), so its seat
-// declares that ownership and the phone composer renders no second activity
-// line above its card.
-test("a composer whose seat owns the activity counts never mounts chips", async ({ onTestFinished }) => {
-  onTestFinished(installMobileViewport());
-  const fake = connectReadyFakeClient();
-  fake.on("thread/read", () => readResponse("ref_owned_counts"));
-  await threadsStore.getState().ensureThread("ref_owned_counts");
-  render(
-    <ClientProvider client={fake}>
-      <Composer
-        ref="ref_owned_counts"
-        source={createTestComposerSource("ref_owned_counts")}
-        focused={false}
-        ownsActivityCounts
-      />
-    </ClientProvider>,
-  );
-  await screen.findByRole("textbox", { name: "Message" });
-  await flushPendingTurnsProjectionForTests();
-  await settleActivityDiscovery("ref_owned_counts");
-
-  // The content-expanded row keeps the status chrome and attach, but no chips.
-  act(() => replaceEditorText(screen.getByRole("textbox", { name: "Message" }), "draft"));
-  expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
-  expect(screen.getByTestId("composer-attach")).toBeTruthy();
-  expect(document.querySelector('[data-testid="composer-form"] [data-activity-tab]')).toBeNull();
-  expect(screen.queryByTestId("composer-activity-line")).toBeNull();
-  await settleActivityDiscovery("ref_owned_counts");
-});
+// The phone's activity counts live in the top bar's Overview sheet
+// (design-system.md section 12), so no seat - not a cascade column's, not
+// an ordinary pane's - renders a composer activity line. The sheet's
+// behavior is SessionChrome.test.tsx's "one Overview sheet" test.
 
 // A press on a row control can blur the focused editor to body without
 // moving focus, and the press's focus transfer lands only a task after its

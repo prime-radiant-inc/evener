@@ -1164,19 +1164,13 @@ test("same-session pane headers open Overview from their own instance", async ({
   expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref });
 });
 
-test("mobile gives the session's activity chips an above-card line, with no footer strip", async ({
-  onTestFinished,
-}) => {
+test("a phone keeps the composer as the only bottom surface, with no activity line", async ({ onTestFinished }) => {
   vi.mocked(ComposerModule.Composer).mockRestore();
   vi.mocked(StatusBarModule.StatusBar).mockRestore();
   onTestFinished(stubSessionSlots);
   onTestFinished(installMobileViewport());
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("local:mobile", { cwd: "/work/mobile" }));
-  fake.on("evener/thread/activity/read", ({ ref, scope }) => ({
-    ...activitySummary(ref, scope),
-    jobs: { known: true, active: 1, total: 3, completed: 2, failed: 0 },
-  }));
   render(
     <ClientProvider client={fake}>
       <Session params={{ ref: "local:mobile" }} paneId="mobile-pane" focused />
@@ -1195,16 +1189,11 @@ test("mobile gives the session's activity chips an above-card line, with no foot
   await user.type(editor, "draft");
   const form = screen.getByTestId("composer-form");
   await waitFor(() => expect(form.querySelector('[data-testid="composer-attach"]')).toBeTruthy());
-  // The activity counts keep their own line above the card, outside the form.
+  // The activity counts live in the top bar's Overview sheet, not the
+  // composer (design-system.md section 12): engaged or not, the phone's one
+  // bottom surface carries no activity line.
   expect(form.querySelector("[data-activity-tab]")).toBeNull();
-  const activityLine = screen.getByTestId("composer-activity-line");
-  expect(activityLine.querySelector("[data-activity-tab]")).toBeTruthy();
-  expect(activityLine.compareDocumentPosition(form) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
-
-  // Re-engaged, a chip is the phone's one-tap way into the Overview list.
-  await user.click(editor);
-  await user.click(await screen.findByRole("button", { name: /Jobs, 1 of 3 running/ }));
-  expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "jobs" });
+  expect(screen.queryByTestId("composer-activity-line")).toBeNull();
 });
 
 test.each(["closed", "ended", "notLoaded"] as const)(
