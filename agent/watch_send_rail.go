@@ -33,7 +33,7 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 		generation = d.cfg.generation
 		note = d.cfg.note
 	}
-	d.frame = jm.buildWatchFrameWithObservation(&watchConfig{
+	d.frame = jm.buildWatchFrame(&watchConfig{
 		watchID:    watchID,
 		generation: generation,
 		note:       note,

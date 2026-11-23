@@ -65,15 +65,11 @@ func (jm *jobManager) watchNotificationWithDelivery(cfg *watchConfig, jobID, rea
 	return n
 }
 
-func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger string, deliveryID string, ev events.SessionEvent, p *provenance.Causal) string {
-	return jm.buildWatchFrameWithObservation(cfg, jobID, trigger, deliveryID, ev, p, nil)
-}
-
-// buildWatchFrameWithObservation renders the frame, replacing the event block
-// with the observation a hub watch decoded about the watched session. The
-// observation lives only in memory; the frame keeps carrying it the way it
-// carries any other event payload.
-func (jm *jobManager) buildWatchFrameWithObservation(cfg *watchConfig, jobID string, trigger string, deliveryID string, ev events.SessionEvent, p *provenance.Causal, observation *hubObservationFrame) string {
+// buildWatchFrame renders the frame, replacing the event block with the
+// observation a hub watch decoded about the watched session. The observation
+// lives only in memory; the frame keeps carrying it the way it carries any
+// other event payload.
+func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger string, deliveryID string, ev events.SessionEvent, p *provenance.Causal, observation *hubObservationFrame) string {
 	if cfg == nil || cfg.send == nil {
 		return ""
 	}

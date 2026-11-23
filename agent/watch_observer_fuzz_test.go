@@ -163,7 +163,7 @@ func FuzzWobsBuildWatchFrame(f *testing.F) {
 		p := wobs_drawProvenance(r)
 
 		build := func(struct{}) string {
-			return jm.buildWatchFrame(cfg, jobID, trigger, deliveryID, ev, p)
+			return jm.buildWatchFrameForTest(cfg, jobID, trigger, deliveryID, ev, p)
 		}
 		oracle.Deterministic(t, build, struct{}{}, func(a, b string) bool { return a == b })
 

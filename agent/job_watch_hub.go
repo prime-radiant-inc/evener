@@ -464,23 +464,15 @@ func hubObservationIdentity(m appwire.SessionObservationMetadata) string {
 	return m.InstanceID + "/" + m.GenerationID + "/" + m.EntryID
 }
 
-// onHubObservation accepts evidence from the bound serving generation. Turn
-// identity, not the serving boot, selects recorded completion evidence. The
-// terminal send is persisted with the watch's clear, then its wake token is
-// queued, and only then does the live ended row appear.
-func (jm *jobManager) onHubObservation(watchID string, update appwire.SessionWatchUpdate) error {
-	return jm.onHubObservationEvidence(watchID, update, false)
-}
-
-// recorded means the evidence came from an already validated snapshot. Its
-// execution provenance need not name the current serving boot, so do not fill
-// missing provenance with the subscription's identity.
-func (jm *jobManager) onHubObservationEvidence(watchID string, update appwire.SessionWatchUpdate, recorded bool) error {
-	return jm.onHubObservationLookup(watchID, update, recorded, nil)
-}
-
 type hubAnswerLookup func(ref, instance, generation, ancestor, candidate string) (bool, error)
 
+// onHubObservationLookup accepts evidence from the bound serving generation.
+// Turn identity, not the serving boot, selects recorded completion evidence.
+// The terminal send is persisted with the watch's clear, then its wake token is
+// queued, and only then does the live ended row appear. recorded means the
+// evidence came from an already validated snapshot: its execution provenance
+// need not name the current serving boot, so missing provenance is not filled
+// with the subscription's identity.
 func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.SessionWatchUpdate, recorded bool, lookup hubAnswerLookup) error {
 	return jm.onHubObservationPayload(watchID, update, recorded, lookup, nil)
 }
@@ -661,10 +653,13 @@ func (jm *jobManager) onHubObservationPayload(watchID string, update appwire.Ses
 	}
 	// The tracked status advances before the every-Nth throttle: a suppressed
 	// status still moves it, so the next delivered frame names the transition
-	// the session actually made.
+	// the session actually made. On shutdown the daemon emits
+	// thread/status/changed(closed) immediately before thread/closed; the pair
+	// is one transition, and the close frame owns it, so the baseline holds
+	// through the status half and advances when the close arrives.
 	if observation != nil && observation.Event == "status" {
 		observation.PreviousStatus = cfg.hubStatus
-		if next := observation.statusType(); next != "" {
+		if next := observation.statusType(); next != "" && (next != appwire.ThreadStatusClosed || observation.Closed) {
 			cfg.hubStatus = next
 		}
 	}

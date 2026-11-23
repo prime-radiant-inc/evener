@@ -1,11 +1,11 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
-	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -94,7 +94,7 @@ func watchFrameEventFields(t *testing.T, frame string) map[string]string {
 
 func lastHubFrame(t *testing.T, jm *jobManager, id string) string {
 	t.Helper()
-	frames := hubWatchFrameEvents(t, jm, id)
+	frames := hubWatchPendingSends(t, jm, id)
 	if len(frames) == 0 {
 		t.Fatalf("watch %s delivered no frame", id)
 	}
@@ -152,21 +152,59 @@ func TestHubWatchStatusFrameCarriesTransition(t *testing.T) {
 
 func TestHubWatchClosedFrameCarriesStatusAndMethod(t *testing.T) {
 	t.Parallel()
-	jm, id := hubPayloadWatch(t, []string{"status"})
-	if err := jm.onHubObservation(id, hubSnapshot(appwire.EvenerThread{}, appwire.ThreadStatus{Type: "active"})); err != nil {
-		t.Fatal(err)
-	}
-	if err := jm.onHubObservation(id, hubNotification("closed-1", appwire.NotifyThreadClosed, appwire.ThreadClosedParams{ThreadID: "worker", Ref: "local:worker"})); err != nil {
-		t.Fatal(err)
-	}
-	fields := watchFrameEventFields(t, lastHubFrame(t, jm, id))
-	for name, want := range map[string]string{
-		"kind": "status", "status": "closed", "previous_status": "active", "method": appwire.NotifyThreadClosed,
-	} {
-		if got := fields[name]; got != want {
-			t.Fatalf("closed frame %s = %q, want %q (frame fields %v)", name, got, want, fields)
+	t.Run("close names the status it ended", func(t *testing.T) {
+		t.Parallel()
+		jm, id := hubPayloadWatch(t, []string{"status"})
+		if err := jm.onHubObservation(id, hubSnapshot(appwire.EvenerThread{}, appwire.ThreadStatus{Type: "active"})); err != nil {
+			t.Fatal(err)
 		}
-	}
+		if err := jm.onHubObservation(id, hubNotification("closed-1", appwire.NotifyThreadClosed, appwire.ThreadClosedParams{ThreadID: "worker", Ref: "local:worker"})); err != nil {
+			t.Fatal(err)
+		}
+		fields := watchFrameEventFields(t, lastHubFrame(t, jm, id))
+		for name, want := range map[string]string{
+			"kind": "status", "status": "closed", "previous_status": "active", "method": appwire.NotifyThreadClosed,
+		} {
+			if got := fields[name]; got != want {
+				t.Fatalf("closed frame %s = %q, want %q (frame fields %v)", name, got, want, fields)
+			}
+		}
+	})
+	// On shutdown the daemon emits thread/status/changed(closed) immediately
+	// before thread/closed. The pair is one transition: a throttled status half
+	// must not turn the delivered close into a closed-to-closed frame.
+	t.Run("every-Nth shutdown sequence keeps the pre-close status", func(t *testing.T) {
+		t.Parallel()
+		jm := newTestJM(t)
+		watch, err := jm.configureHubWatchContext(context.Background(), "local:worker", "worker-instance", "7@worker", "local:manager", []string{"status"}, false, "", 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := watch.WatchID
+		if err := jm.onHubObservation(id, hubSnapshot(appwire.EvenerThread{}, appwire.ThreadStatus{Type: appwire.ThreadStatusIdle})); err != nil {
+			t.Fatal(err)
+		}
+		if err := jm.onHubObservation(id, hubNotification("status-closed", appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
+			ThreadID: "worker", Ref: "local:worker", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed},
+		})); err != nil {
+			t.Fatal(err)
+		}
+		if err := jm.onHubObservation(id, hubNotification("closed-1", appwire.NotifyThreadClosed, appwire.ThreadClosedParams{ThreadID: "worker", Ref: "local:worker"})); err != nil {
+			t.Fatal(err)
+		}
+		sends := hubWatchPendingSends(t, jm, id)
+		if len(sends) != 1 {
+			t.Fatalf("delivered %d frames, want 1: the every-Nth status half must be throttled", len(sends))
+		}
+		fields := watchFrameEventFields(t, sends[0].Frame)
+		for name, want := range map[string]string{
+			"kind": "status", "status": appwire.ThreadStatusClosed, "previous_status": appwire.ThreadStatusIdle, "method": appwire.NotifyThreadClosed,
+		} {
+			if got := fields[name]; got != want {
+				t.Fatalf("closed frame %s = %q, want %q (frame fields %v)", name, got, want, fields)
+			}
+		}
+	})
 }
 
 // TestHubWatchQuestionFrameCarriesSnapshotQuestion pins that a question
@@ -330,16 +368,4 @@ func TestHubWatchObservationDegradesWithoutNotification(t *testing.T) {
 			}
 		})
 	}
-}
-
-// hubWatchFrameEvents returns the pending watch-send states recorded for id.
-func hubWatchFrameEvents(t *testing.T, jm *jobManager, id string) []jobstore.WatchSendState {
-	t.Helper()
-	var got []jobstore.WatchSendState
-	for _, event := range loadJobStoreEvents(t, jm) {
-		if event.Kind == jobstore.EventWatchSendPending && event.WatchSend != nil && event.WatchSend.Key.WatchID == id {
-			got = append(got, *event.WatchSend)
-		}
-	}
-	return got
 }
