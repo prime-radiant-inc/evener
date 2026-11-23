@@ -1,9 +1,11 @@
 // The keyboard primary action every interactive card shares: Enter with the
-// platform modifier (Meta/Ctrl) invokes the card's one action. AskDock's ask
-// batch and the sandbox escalation card both carry this chord; keeping it in
-// one place keeps the guards identical - an IME composition's confirm Enter
-// is text input, never activation, and a chord the card consumed must not
-// also reach a window-level binding.
+// platform modifier (Meta/Ctrl) invokes the card's one action - unless the
+// event comes from a focused link, whose Enter the browser keeps
+// (Ctrl/Cmd+Enter is the platform's open-in-new-tab chord). AskDock's ask
+// batch and the sandbox escalation card both carry this chord; keeping it
+// in one place keeps the guards identical - an IME composition's confirm
+// Enter is text input, never activation, and a chord the card consumed
+// must not also reach a window-level binding.
 import { type KeyboardEvent as ReactKeyboardEvent, useCallback } from "react";
 import { isIMECompositionKeydown } from "./dispatcher";
 
@@ -26,6 +28,12 @@ export function useCardPrimaryAction({ onPrimary, enabled, isBareEnterPrimary }:
   return useCallback(
     (event: ReactKeyboardEvent) => {
       if (event.key !== "Enter" || isIMECompositionKeydown(event.nativeEvent)) return;
+      // A focused link's Enter belongs to the browser: Ctrl/Cmd+Enter opens
+      // the link in a new tab, and a card whose prose carries a link (ask
+      // questions render markdown) must not convert that into its primary
+      // action. Card prose can also put focus inside a link's subtree, so
+      // the check walks ancestors, not just the target itself.
+      if ((event.target as HTMLElement | null)?.closest?.("a") != null) return;
       if (!isPrimaryActionKey(event) && !(isBareEnterPrimary?.(event) ?? false)) return;
       event.preventDefault();
       event.stopPropagation();

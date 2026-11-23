@@ -633,6 +633,37 @@ test("Mod+Enter with ctrlKey also invokes the primary action", async () => {
   expect(record?.payload).toMatchObject({ ref: "ref_a" });
 });
 
+// The question prose renders markdown, so its links are focusable: the
+// platform chord on a focused link opens the link, and the batch's
+// Mod+Enter-anywhere submit must not convert it into an answer send -
+// submitting would ship the preselected recommendation before the reader
+// opened the material the question links to.
+test("Mod+Enter on a focused link in the question prose opens the link, not the answer", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
+  startTurn(fake, "ref_a", "turn_1");
+  ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1", [
+    {
+      header: "Deploy?",
+      question: "Ship now, per [the runbook](https://example.com/runbook)?",
+      options: [{ label: "Yes", detail: "" }],
+    },
+  ]);
+  render(<AskDock ref="ref_a" />);
+
+  const link = screen.getByRole("link", { name: "the runbook" });
+  link.focus();
+  // fireEvent returns false when a handler prevented the default action;
+  // the browser must keep the link activation.
+  const defaultPreserved = fireEvent.keyDown(link, { key: "Enter", ctrlKey: true });
+
+  expect(defaultPreserved).toBe(true);
+  expect(fake.calls.some((c) => c.method === "turn/start")).toBe(false);
+  const { outbox } = await readMutationPersistence("ref_a");
+  expect(outbox).toHaveLength(0);
+});
+
 test("Mod+Enter advances rather than sends when another question is still unanswered", async () => {
   const user = userEvent.setup();
   const fake = connectReadyFakeClient();
