@@ -1,5 +1,6 @@
-import { type KeyboardEvent, type ReactNode, useId, useRef } from "react";
+import { type ReactNode, useId, useRef } from "react";
 import { requireClass } from "../internal/requireClass";
+import { firstEnabledIndex, useRovingRadio } from "../internal/rovingRadio";
 import { ListRow } from "../listrow";
 import styles from "./radiogroup.module.css";
 
@@ -52,34 +53,6 @@ const CLASS = {
 
 function indexOfValue(options: RadioGroupOption[], value: string): number {
   return options.findIndex((option) => option.value === value);
-}
-
-function firstEnabledIndex(options: RadioGroupOption[]): number {
-  return options.findIndex((option) => !option.disabled);
-}
-
-function lastEnabledIndex(options: RadioGroupOption[]): number {
-  for (let i = options.length - 1; i >= 0; i--) {
-    const option = options[i];
-    if (option && !option.disabled) return i;
-  }
-  return -1;
-}
-
-// Next enabled index stepping by `delta` (+1/-1) from `from`, wrapping
-// around the ends - mirrors Menu's own stepEnabledIndex (see
-// widgets/menu/index.tsx). Returns `from` unchanged if every option is
-// disabled.
-function stepEnabledIndex(options: RadioGroupOption[], from: number, delta: 1 | -1): number {
-  const n = options.length;
-  if (n === 0) return -1;
-  let i = from;
-  for (let step = 0; step < n; step++) {
-    i = (i + delta + n) % n;
-    const option = options[i];
-    if (option && !option.disabled) return i;
-  }
-  return from;
 }
 
 /**
@@ -135,30 +108,7 @@ export function RadioGroup({
     optionRefs.current[index]?.focus();
   }
 
-  function handleKeyDown(event: KeyboardEvent<HTMLElement>, index: number) {
-    switch (event.key) {
-      case "ArrowRight":
-      case "ArrowDown":
-        event.preventDefault();
-        focusAndChoose(stepEnabledIndex(options, index, 1));
-        break;
-      case "ArrowLeft":
-      case "ArrowUp":
-        event.preventDefault();
-        focusAndChoose(stepEnabledIndex(options, index, -1));
-        break;
-      case "Home":
-        event.preventDefault();
-        focusAndChoose(firstEnabledIndex(options));
-        break;
-      case "End":
-        event.preventDefault();
-        focusAndChoose(lastEnabledIndex(options));
-        break;
-      default:
-        break;
-    }
-  }
+  const handleKeyDown = useRovingRadio({ items: options, onMove: focusAndChoose });
 
   return (
     <div className={CLASS.root}>

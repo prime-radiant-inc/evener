@@ -489,6 +489,44 @@ test("a plain Enter (no modifier) does not approve - only Mod+Enter does", async
   expect(onApprove).not.toHaveBeenCalled();
 });
 
+// An IME composition's confirm keystroke also fires as "Enter": it is text
+// input, never activation, so it must not approve the card. AskDock has
+// carried this guard (isIMECompositionKeydown) since PR #884; the shared
+// useCardPrimaryAction extends it here too.
+test("an IME-confirm Enter does not approve", async () => {
+  const onApprove = vi.fn();
+  render(<SandboxEscalationCard escalation={requested()} onApprove={onApprove} onDeny={() => {}} resolved={false} />);
+
+  fireEvent.keyDown(screen.getByRole("button", { name: /allow/i }), {
+    key: "Enter",
+    metaKey: true,
+    isComposing: true,
+  });
+  expect(onApprove).not.toHaveBeenCalled();
+});
+
+test("an IME commit reported only through keyCode 229 (no isComposing) does not approve", async () => {
+  const onApprove = vi.fn();
+  render(<SandboxEscalationCard escalation={requested()} onApprove={onApprove} onDeny={() => {}} resolved={false} />);
+
+  fireEvent.keyDown(screen.getByRole("button", { name: /allow/i }), { key: "Enter", metaKey: true, keyCode: 229 });
+  expect(onApprove).not.toHaveBeenCalled();
+});
+
+test("a consumed Mod+Enter does not propagate to window-level listeners", async () => {
+  render(<SandboxEscalationCard escalation={requested()} onApprove={() => {}} onDeny={() => {}} resolved={false} />);
+
+  const seen: string[] = [];
+  const listener = (event: KeyboardEvent) => seen.push(event.key);
+  window.addEventListener("keydown", listener);
+  try {
+    fireEvent.keyDown(screen.getByRole("button", { name: /allow/i }), { key: "Enter", metaKey: true });
+    expect(seen).toEqual([]);
+  } finally {
+    window.removeEventListener("keydown", listener);
+  }
+});
+
 // Denial must never be one accidental keypress away: Escape is deliberately
 // NOT wired to Deny - it stays mouse/tab-reachable only.
 test("Escape does not deny - denial is never a single accidental keypress", async () => {

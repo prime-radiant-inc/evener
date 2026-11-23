@@ -154,6 +154,7 @@ export function AskQuestionCard({
                 : resolution?.kind === "option" && resolution.labels[0] === opt.label
             }
             onChange={(e) => handleOptionChange(opt.label, e.target.checked)}
+            data-ask-control
           />
           <AskOptionCopy label={opt.label} detail={opt.detail} recommended={opt.recommended} />
         </label>
@@ -176,6 +177,7 @@ export function AskQuestionCard({
           onChange={() => {
             if (!freeActive) activateFree();
           }}
+          data-ask-control
         />
         <span className={CLASS.optionCopy}>
           <span className={CLASS.optionLead}>
@@ -229,6 +231,7 @@ export function AskQuestionCard({
           onChange={(e) =>
             freeActive ? onResolutionChange({ kind: "free", text: e.target.value }) : onNoteChange(e.target.value)
           }
+          data-ask-control
         />
       </div>
     </div>

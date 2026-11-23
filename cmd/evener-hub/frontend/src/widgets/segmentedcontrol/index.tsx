@@ -1,5 +1,6 @@
-import { type CSSProperties, type KeyboardEvent, useEffect, useId, useRef } from "react";
+import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, useEffect, useId, useRef } from "react";
 import { requireClass } from "../internal/requireClass";
+import { firstEnabledIndex, useRovingRadio } from "../internal/rovingRadio";
 import styles from "./segmentedcontrol.module.css";
 
 export interface SegmentedControlOption<T extends string = string> {
@@ -65,32 +66,6 @@ function hasDetail<T extends string>(option: SegmentedControlOption<T>): boolean
   return option.detail !== undefined && option.detail.trim() !== "";
 }
 
-function firstEnabledIndex<T extends string>(options: readonly SegmentedControlOption<T>[]): number {
-  return options.findIndex((option) => !option.disabled);
-}
-
-function lastEnabledIndex<T extends string>(options: readonly SegmentedControlOption<T>[]): number {
-  for (let index = options.length - 1; index >= 0; index--) {
-    if (!options[index]?.disabled) return index;
-  }
-  return -1;
-}
-
-function stepEnabledIndex<T extends string>(
-  options: readonly SegmentedControlOption<T>[],
-  from: number,
-  delta: 1 | -1,
-): number {
-  const count = options.length;
-  if (count === 0) return -1;
-  let index = from;
-  for (let step = 0; step < count; step++) {
-    index = (index + delta + count) % count;
-    if (!options[index]?.disabled) return index;
-  }
-  return -1;
-}
-
 export function SegmentedControl<T extends string = string>({
   label,
   hideLabel = false,
@@ -148,30 +123,10 @@ export function SegmentedControl<T extends string = string>({
     optionRefs.current[index]?.focus();
   }
 
-  function handleKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+  const moveFocus = useRovingRadio({ items: options, onMove: focusAndChoose });
+  function handleKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>, index: number) {
     if (disabled || options[index]?.disabled) return;
-    switch (event.key) {
-      case "ArrowRight":
-      case "ArrowDown":
-        event.preventDefault();
-        focusAndChoose(stepEnabledIndex(options, index, 1));
-        break;
-      case "ArrowLeft":
-      case "ArrowUp":
-        event.preventDefault();
-        focusAndChoose(stepEnabledIndex(options, index, -1));
-        break;
-      case "Home":
-        event.preventDefault();
-        focusAndChoose(firstEnabledIndex(options));
-        break;
-      case "End":
-        event.preventDefault();
-        focusAndChoose(lastEnabledIndex(options));
-        break;
-      default:
-        break;
-    }
+    moveFocus(event, index);
   }
 
   return (
