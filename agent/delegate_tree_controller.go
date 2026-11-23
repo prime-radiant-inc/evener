@@ -153,15 +153,8 @@ type delegateTreeController struct {
 	closing         bool
 	reconcileOrder  []delegateLease
 	runStarts       map[delegateLease]delegatestore.RunTrigger
-	// runOutcomes is each generation's own settled outcome, indexed beside
-	// runStarts. The delegate aggregate keeps only the newest, which is not
-	// enough to answer whether an individual reopened row was quieted by its own
-	// stop: several rows can be unreleased at once after successive stops, and a
-	// later generation's outcome says nothing about an earlier row. A restore
-	// therefore asks this index the row's own generation.
-	runOutcomes   map[delegateLease]delegatestore.Outcome
-	owedAdmission bool
-	emitUpdate    func(delegateUpdatePlan)
+	owedAdmission   bool
+	emitUpdate      func(delegateUpdatePlan)
 	// appendFault, when set, fails appendLocked's durable append before it
 	// reaches the store. Tests inject a chosen append error; nil in
 	// production.
@@ -534,7 +527,6 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		releasing:           make(map[string]*Session),
 		reconcileOrder:      delegateOpenRunOrder(events, durable),
 		runStarts:           runStarts,
-		runOutcomes:         delegateRunOutcomeIndex(events),
 		owedAdmission:       true,
 	}
 	for _, event := range events {
@@ -550,23 +542,6 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 
 func rootDelegateActor(rootSessionID string) delegateActor {
 	return delegateActor{rootSessionID: rootSessionID}
-}
-
-// delegateRunOutcomeIndex is each generation's own settled outcome, folded from
-// the same journal the aggregate comes from. The aggregate keeps only the
-// newest, and a cold restore that asked it which rows a stop quieted would apply
-// one generation's answer to every row: after two successive stops it would
-// rebuild the later quiet and present the earlier report on a stale wake that
-// never released it. Every row's own generation is the thing consulted, so this
-// index answers per row.
-func delegateRunOutcomeIndex(events []delegatestore.Event) map[delegateLease]delegatestore.Outcome {
-	index := make(map[delegateLease]delegatestore.Outcome)
-	for _, event := range events {
-		if event.RunFinished != nil {
-			index[delegateLease{delegateID: event.DelegateID, generation: event.RunFinished.Generation}] = event.RunFinished.Outcome
-		}
-	}
-	return index
 }
 
 func (c *delegateTreeController) appendLocked(events ...delegatestore.Event) ([]delegatestore.Event, error) {
@@ -588,9 +563,6 @@ func (c *delegateTreeController) appendLocked(events ...delegatestore.Event) ([]
 	for _, event := range appended {
 		if event.RunStarted != nil {
 			c.runStarts[delegateLease{delegateID: event.DelegateID, generation: event.RunStarted.Generation}] = event.RunStarted.Trigger
-		}
-		if event.RunFinished != nil {
-			c.runOutcomes[delegateLease{delegateID: event.DelegateID, generation: event.RunFinished.Generation}] = event.RunFinished.Outcome
 		}
 		if event.Created != nil {
 			c.noteActivityAdmissionLocked(event)

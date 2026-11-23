@@ -53,16 +53,9 @@ func acceptedTriggerForTest(t *testing.T, sess *Session) string {
 	return sess.attentionAcceptedID
 }
 
-func presentedTriggerForTest(t *testing.T, sess *Session) string {
-	t.Helper()
-	sess.attentionMu.Lock()
-	defer sess.attentionMu.Unlock()
-	return sess.attentionPresentedTrigger
-}
-
 // presentAttentionForTest drives the exact production promotion step: the
-// accepted latch rides one settled non-delta request, which moves it to the
-// presented slot and clears the accepted latch.
+// accepted latch rides one settled non-delta request, which marks it covered
+// and clears the accepted latch.
 func presentAttentionForTest(t *testing.T, sess *Session, attentionID string) {
 	t.Helper()
 	sess.attentionMu.Lock()
@@ -71,8 +64,11 @@ func presentAttentionForTest(t *testing.T, sess *Session, attentionID string) {
 	sess.attentionStagedIDs = map[string]struct{}{attentionID: {}}
 	sess.attentionMu.Unlock()
 	sess.promoteStagedAttentionCoverage(llm.Request{})
-	if got := presentedTriggerForTest(t, sess); got != attentionID {
-		t.Fatalf("presented trigger = %q, want %q", got, attentionID)
+	sess.attentionMu.Lock()
+	_, covered := sess.attentionCoveredIDs[attentionID]
+	sess.attentionMu.Unlock()
+	if !covered {
+		t.Fatalf("attention %q was not marked covered by its settled request", attentionID)
 	}
 	if got := acceptedTriggerForTest(t, sess); got != "" {
 		t.Fatalf("accepted latch = %q after presentation, want empty", got)
@@ -261,8 +257,8 @@ func TestDelegateAttentionPresentedUserStopConsumesOnlyThePresentedRow(t *testin
 	if needsAttentionForTest(t, c, delegateID) {
 		t.Fatal("NeedsAttention stayed true after the last presented row was consumed")
 	}
-	if got := presentedTriggerForTest(t, runtime); got != "" {
-		t.Fatalf("presented slot = %q after the stop consumed it, want empty", got)
+	if got := acceptedTriggerForTest(t, runtime); got != "" {
+		t.Fatalf("accepted latch = %q after the stop consumed the presented row, want empty", got)
 	}
 }
 

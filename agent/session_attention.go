@@ -948,13 +948,21 @@ func (s *Session) automaticDelegateAttentionIDs() ([]string, error) {
 // last compaction marker, so a row recorded before that marker has no turn in
 // history even though the store still lists it pending; the drive would claim
 // the row and attach a request with no report. ids is the caller's selectable
-// list, in arrival order, so held and covered rows stay out. A resident turn
+// list, in arrival order, so held rows stay out; a row already in
+// attentionCoveredIDs was presented by a settled request of this turn, and
+// restoring it would re-inject a report the model already read. A resident turn
 // keeps the position it already has, but still anchors a restored row that
 // arrived before it, or a later row would read as current. The caller holds
 // attentionMu.
 func (s *Session) retainPendingAttentionTurnsLocked(fold delegateAttentionFold, ids []string) error {
 	resident := s.residentAttentionTurnIDsLocked()
-	return s.restoreAttentionTurns(fold.turnsForArriving(ids), resident)
+	uncovered := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if _, covered := s.attentionCoveredIDs[id]; !covered {
+			uncovered = append(uncovered, id)
+		}
+	}
+	return s.restoreAttentionTurns(fold.turnsForArriving(uncovered), resident)
 }
 
 // restorePendingDelegateAttentionTurns puts back the turns of the delegate's
@@ -1251,9 +1259,8 @@ func (s *Session) beginRootDelegateAttentionTurn() []string {
 // Every child transition is ONE atomic delegatestore Apply, so
 // NeedsAttention and the queue can never diverge:
 //
-//   - A successful turn forgets every row its settled requests presented,
-//     including the accepted trigger the presentation moved to
-//     attentionPresentedTrigger.
+//   - A successful turn forgets every row its settled requests presented; a
+//     presented trigger stays in attentionCoveredIDs until the turn exits.
 //   - A presented-then-aborted generation (mid-round stop, hook stop,
 //     tool-round exhaustion, provider failure) forgets what its settled
 //     requests presented: the model read the report, so a successor must not
@@ -1272,21 +1279,15 @@ func (s *Session) finishAttentionTurn(ids []string, turnErr error) error {
 	var resolvedIDs []string
 	defer s.settleFoldedCoveredAttention(&resolvedIDs)
 	s.attentionMu.Lock()
-	presented := s.attentionPresentedTrigger
-	s.attentionPresentedTrigger = ""
 	if turnErr == nil {
-		// The trigger's turn and its latch are spent by a successful turn even
-		// when a delta request settled it.
-		if s.attentionAcceptedID == presented || presented == "" {
-			s.attentionAcceptedID = ""
-			s.attentionAcceptedCause = nil
-		}
+		// The trigger's latch is spent by a successful turn even when a delta
+		// request settled it; a presented trigger already rides
+		// attentionCoveredIDs.
+		s.attentionAcceptedID = ""
+		s.attentionAcceptedCause = nil
 	}
 	s.attentionMu.Unlock()
 	covered := s.unionCoveredAttention(ids)
-	if presented != "" {
-		covered = appendUniqueStrings(covered, presented)
-	}
 	if len(covered) == 0 {
 		return nil
 	}
@@ -1726,12 +1727,11 @@ func (s *Session) promoteStagedAttentionCoverage(settled llm.Request) {
 	if _, presented := staged[s.attentionAcceptedID]; presented && s.attentionAcceptedID != "" {
 		// A settled full-history request carried the accepted trigger to the
 		// model. The row stays durably queued until the turn's exit rule
-		// consumes it (finishAttentionTurn, or the finalize tail on an abort);
-		// the latch only records that it was presented. It stays in the covered
-		// set so a mid-turn compaction treats it as already presented instead
-		// of restoring its still-queued row as fresh steering.
+		// consumes it (finishAttentionTurn, or the finalize tail on an abort).
+		// It stays in the covered set so a mid-turn compaction treats it as
+		// already presented instead of restoring its still-queued row as fresh
+		// steering; that set is what the exit rule consumes.
 		presentedID = s.attentionAcceptedID
-		s.attentionPresentedTrigger = s.attentionAcceptedID
 		s.attentionAcceptedID = ""
 		acceptedCause, s.attentionAcceptedCause = s.attentionAcceptedCause, nil
 	}

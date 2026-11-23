@@ -1412,19 +1412,12 @@ type Session struct {
 	// attentionAcceptedID is the trigger of an accepted attention generation
 	// that no settled request has presented yet. The row stays in
 	// delegatestore until it is presented and consumed, so this latch only
-	// records which row the generation carries; promoteStagedAttentionCoverage
-	// moves it to attentionPresentedTrigger. Guarded by attentionMu.
+	// records which row the generation carries. Guarded by attentionMu.
 	attentionAcceptedID string
 	// attentionAcceptedCause is the cause of attentionAcceptedID, kept for the
 	// request that presents it (promoteStagedAttentionCoverage). Guarded by
 	// attentionMu.
 	attentionAcceptedCause *provenance.Causal
-	// attentionPresentedTrigger is the accepted trigger a settled full-history
-	// request carried to the model and the turn's exit rule has not consumed
-	// yet. The row's durable hold and pending status live in delegatestore;
-	// this latch only keeps the exit rule from replaying a report the model
-	// already read. Guarded by attentionMu.
-	attentionPresentedTrigger string
 	// attentionAwaitingResolution names the rows a settled request of an
 	// earlier turn presented whose journal resolution append failed. The model
 	// already read them, so they must not trigger another model request; a

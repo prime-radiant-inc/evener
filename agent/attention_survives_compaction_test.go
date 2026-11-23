@@ -736,6 +736,83 @@ func TestPresentedTriggerStaysCoveredAcrossMidTurnCompaction(t *testing.T) {
 	}
 }
 
+// A coordinator that presented report A in a settled request while report B is
+// still queued uncovered can compact mid-turn. The automatic drive's restore
+// must not bring A back: A is already covered and is resolved at turn exit,
+// while B must be restored for the next request.
+func TestRetainPendingAttentionTurnsSkipsCoveredTrigger(t *testing.T) {
+	t.Parallel()
+	const (
+		delegateID = "dlg_coordinator"
+		aID        = "delegate:dlg_worker/report/1"
+		bID        = "delegate:dlg_worker/report/2"
+		aText      = `<delegate-notification delegate_id="dlg_worker" kind="report">COVERED_REPORT_A</delegate-notification>`
+		bText      = `<delegate-notification delegate_id="dlg_worker" kind="report">UNCOVERED_REPORT_B</delegate-notification>`
+	)
+	sess, _ := newCompactableSession(t)
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, controller, delegateID, "")
+	controller.mu.Lock()
+	controller.live[delegateID].binding.runtime = sess
+	controller.mu.Unlock()
+	sess.delegateController = controller
+	sess.owningDelegateID = delegateID
+	if _, err := sess.appendDelegateNotificationDurably(aID, aText); err != nil {
+		t.Fatalf("append report A: %v", err)
+	}
+	seedNumberedSessionHistory(t, sess, 12)
+	if _, err := sess.appendDelegateNotificationDurably(bID, bText); err != nil {
+		t.Fatalf("append report B: %v", err)
+	}
+	sess.beginAttentionCoverageRounds()
+	defer sess.endAttentionCoverageRounds()
+	sess.attentionMu.Lock()
+	sess.attentionCoveredIDs = map[string]struct{}{aID: {}}
+	sess.attentionMu.Unlock()
+
+	// Mid-turn compaction folds A in (already presented) and restores B, which
+	// no settled request has presented.
+	if err := sess.requestForceCompact(""); err != nil {
+		t.Fatal(err)
+	}
+	sess.applyPendingForceCompact(context.Background())
+	if indexOfTurnText(currentHistory(t, sess), aText) >= 0 {
+		t.Fatal("test setup: compaction kept the covered report A in resident history")
+	}
+	if indexOfTurnText(currentHistory(t, sess), bText) < 0 {
+		t.Fatal("test setup: compaction did not restore uncovered report B")
+	}
+
+	ids, err := sess.automaticDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("automaticDelegateAttentionIDs: %v", err)
+	}
+	if !slices.Equal(ids, []string{aID, bID}) {
+		t.Fatalf("selectable attention ids = %v, want both queued reports", ids)
+	}
+	if indexOfTurnText(currentHistory(t, sess), aText) >= 0 {
+		t.Fatal("the automatic drive restored the already-presented report A as fresh steering")
+	}
+	if indexOfTurnText(currentHistory(t, sess), bText) < 0 {
+		t.Fatal("the automatic drive dropped uncovered report B")
+	}
+
+	// Turn exit consumes the presented row A; B stays durably queued.
+	if err := sess.finishAttentionTurn(nil, nil); err != nil {
+		t.Fatalf("finishAttentionTurn: %v", err)
+	}
+	rows := pendingAttentionRowsForTest(t, controller, delegateID)
+	if len(rows) != 1 || rows[0].AttentionID != bID {
+		t.Fatalf("pending rows after turn exit = %#v, want only report B", rows)
+	}
+	controller.mu.Lock()
+	_, resolvedA := controller.durable[delegateID].ResolvedAttention[aID]
+	controller.mu.Unlock()
+	if !resolvedA {
+		t.Fatal("turn exit did not resolve the presented report A in delegatestore")
+	}
+}
+
 // The release floor: a quiet stands only while the durable release floor is
 // below the row's own settled generation.
 

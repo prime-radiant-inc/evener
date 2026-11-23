@@ -1769,14 +1769,12 @@ func TestRetirementEvidenceSnapshotsUnheldAttentionUnderLock(t *testing.T) {
 	// under -race before the snapshot is taken under the lock.
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	const raceDelegates = 32
-	for i := 0; i < raceDelegates; i++ {
+	for i := range raceDelegates {
 		seedDelegateControllerRunning(t, c, fmt.Sprintf("dlg_race_%d", i), "")
 	}
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for {
 			select {
 			case <-stop:
@@ -1785,8 +1783,8 @@ func TestRetirementEvidenceSnapshotsUnheldAttentionUnderLock(t *testing.T) {
 				_, _, _ = c.retirementEvidence()
 			}
 		}
-	}()
-	for i := 0; i < raceDelegates; i++ {
+	})
+	for i := range raceDelegates {
 		lease := delegateLease{delegateID: fmt.Sprintf("dlg_race_%d", i), generation: 1}
 		if _, err := c.FinishGeneration(lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "completed"}); err != nil {
 			close(stop)
