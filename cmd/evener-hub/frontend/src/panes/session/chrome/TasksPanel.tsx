@@ -161,7 +161,7 @@ function triggerLabel(tasks: ThreadModel["tasks"]): string {
 // formatting itself is the shared helper.
 function taskAbsoluteTime(iso: string): string {
   const ms = Date.parse(iso);
-  return Number.isFinite(ms) ? formatAbsoluteTime(ms, { format: "dateTime", seconds: false }) : iso;
+  return Number.isFinite(ms) ? formatAbsoluteTime(ms, { format: "dateTime" }) : iso;
 }
 
 // Scopes a task row's disclosure state to this session: task ids restart at
