@@ -645,13 +645,12 @@ test("a clean quiet_yield notice renders in agent-message prose tokens with no d
     const match = css.match(new RegExp(`\\.${selector}\\s*\\{([^}]*)\\}`));
     return match?.[1] ?? "";
   };
-  for (const selector of ["quietYield", "quietYieldSummary"] as const) {
-    const body = rule(selector);
-    expect(body).toMatch(/font-family:\s*var\(--font-prose\)/);
-    expect(body).toMatch(/font-size:\s*var\(--font-size-prose\)/);
-    expect(body).toMatch(/line-height:\s*var\(--line-height-prose\)/);
-    expect(body).toMatch(/color:\s*var\(--ink-low\)/);
-  }
+  const summaryBody = rule("quietYieldSummary");
+  expect(summaryBody).toMatch(/font-family:\s*var\(--font-prose\)/);
+  expect(summaryBody).toMatch(/font-size:\s*var\(--font-size-prose\)/);
+  expect(summaryBody).toMatch(/line-height:\s*var\(--line-height-prose\)/);
+  expect(summaryBody).toMatch(/color:\s*var\(--ink-low\)/);
+  expect(rule("quietYield")).toMatch(/composes:\s*quietYieldSummary;/);
   expect(rule("quietYield")).toMatch(/padding:\s*var\(--rhythm-line\)\s+0/);
   expect(rule("line")).toMatch(/font-family:\s*var\(--font-sans\)/);
   expect(rule("line")).toMatch(/font-size:\s*var\(--font-size-caption\)/);
