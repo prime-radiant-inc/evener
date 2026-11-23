@@ -84,8 +84,11 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
   useEffect(
     () => () => {
       if (returnFrame.current !== null) cancelAnimationFrame(returnFrame.current);
+      // The dock is desktop-only: its teardown (the swap into StackHost) ends
+      // the inspection rather than reopening it as the phone's blocking Overview.
+      if (!mobile) activitySidebarStore.getState().close();
     },
-    [],
+    [mobile],
   );
   const close = useCallback(() => {
     const focusInside = sidebar.current?.contains(document.activeElement);

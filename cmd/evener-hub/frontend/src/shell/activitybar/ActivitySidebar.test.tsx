@@ -912,6 +912,23 @@ test("phone Overview enters its selected category and contains sequential keyboa
   }
 });
 
+test("the desktop dock ends its inspection when the phone host takes over", async () => {
+  connectionStore.getState().connect(activityClient());
+  installFocusedScope(ref);
+  activitySidebarStore.getState().openWith("agents");
+  const desktop = mount();
+  await screen.findByTestId("activity-sidebar");
+  // AppShell tears the desktop surface down at the breakpoint; StackHost then
+  // mounts the phone surface in its place.
+  desktop.unmount();
+  mount(true);
+  expect(activitySidebarStore.getState().open).toBe(false);
+  expect(screen.queryByTestId("activity-sidebar")).toBeNull();
+  // No dialog claims the whole phone screen, so the reader's attention
+  // control is not blocked by an Overview the dock left open.
+  expect(document.querySelector('[aria-modal="true"]')).toBeNull();
+});
+
 test("phone Overview reopening during its exit returns focus to its selected category", async () => {
   connectionStore.getState().connect(activityClient());
   installFocusedScope(ref);
