@@ -86,6 +86,8 @@ const BASE_CLASS = {
   help: requireClass(styles.help, "propertylist.module.css", "help"),
   valueHelp: requireClass(styles.valueHelp, "propertylist.module.css", "valueHelp"),
   actions: requireClass(styles.actions, "propertylist.module.css", "actions"),
+  controlRow: requireClass(styles.controlRow, "propertylist.module.css", "controlRow"),
+  controlLabel: requireClass(styles.controlLabel, "propertylist.module.css", "controlLabel"),
   settingsList: requireClass(styles.settingsList, "propertylist.module.css", "settingsList"),
   settingsRow: requireClass(styles.settingsRow, "propertylist.module.css", "settingsRow"),
   settingsLabel: requireClass(styles.settingsLabel, "propertylist.module.css", "settingsLabel"),
@@ -137,21 +139,13 @@ export function PropertyList(props: PropertyListProps) {
               ) : (
                 <span className={BASE_CLASS.settingsLabel}>{row.label}</span>
               )}
-              <span
-                className={classes(
-                  BASE_CLASS.settingsValue,
-                  row.mono && BASE_CLASS.mono,
-                  row.muted && BASE_CLASS.muted,
-                )}
-              >
+              <span className={BASE_CLASS.settingsValue}>
                 {row.value}
                 {row.help !== undefined && (
                   <span className={classes(BASE_CLASS.help, BASE_CLASS.valueHelp)} id={helpId}>
                     {row.help}
                   </span>
                 )}
-                {row.notice}
-                {row.actions}
               </span>
             </div>
           );
@@ -161,34 +155,50 @@ export function PropertyList(props: PropertyListProps) {
   }
   return (
     <dl className={BASE_CLASS.list}>
-      {props.rows.map((row) => (
-        <div
-          {...row.rowProps}
-          className={classes(BASE_CLASS.row, row.actions !== undefined && BASE_CLASS.rowWithActions)}
-          key={row.label}
-        >
-          <dt className={classes(BASE_CLASS.label, props.eyebrowLabels && BASE_CLASS.eyebrowLabel)}>
-            {row.htmlFor !== undefined ? <label htmlFor={row.htmlFor}>{row.label}</label> : row.label}
-          </dt>
-          <dd
+      {props.rows.map((row) => {
+        // An editable fact stacks below its label on a phone instead of
+        // sharing the row with the fixed label column; a read-only fact keeps
+        // the compact side-by-side layout.
+        const controlRow = row.htmlFor !== undefined && row.actions === undefined;
+        return (
+          <div
+            {...row.rowProps}
             className={classes(
-              BASE_CLASS.value,
-              row.mono && BASE_CLASS.mono,
-              row.muted && BASE_CLASS.muted,
-              row.wrap && BASE_CLASS.wrap,
+              BASE_CLASS.row,
+              row.actions !== undefined && BASE_CLASS.rowWithActions,
+              controlRow && BASE_CLASS.controlRow,
             )}
+            key={row.label}
           >
-            {row.value}
-            {row.help !== undefined && (
-              <span className={classes(BASE_CLASS.help, BASE_CLASS.valueHelp)} id={helpIdFor(row.htmlFor)}>
-                {row.help}
-              </span>
-            )}
-            {row.notice}
-          </dd>
-          {row.actions !== undefined && <dd className={BASE_CLASS.actions}>{row.actions}</dd>}
-        </div>
-      ))}
+            <dt
+              className={classes(
+                BASE_CLASS.label,
+                props.eyebrowLabels && BASE_CLASS.eyebrowLabel,
+                controlRow && BASE_CLASS.controlLabel,
+              )}
+            >
+              {row.htmlFor !== undefined ? <label htmlFor={row.htmlFor}>{row.label}</label> : row.label}
+            </dt>
+            <dd
+              className={classes(
+                BASE_CLASS.value,
+                row.mono && BASE_CLASS.mono,
+                row.muted && BASE_CLASS.muted,
+                (row.wrap || controlRow) && BASE_CLASS.wrap,
+              )}
+            >
+              {row.value}
+              {row.help !== undefined && (
+                <span className={classes(BASE_CLASS.help, BASE_CLASS.valueHelp)} id={helpIdFor(row.htmlFor)}>
+                  {row.help}
+                </span>
+              )}
+              {row.notice}
+            </dd>
+            {row.actions !== undefined && <dd className={BASE_CLASS.actions}>{row.actions}</dd>}
+          </div>
+        );
+      })}
     </dl>
   );
 }

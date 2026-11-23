@@ -156,19 +156,20 @@
   min-width: 0;
 }
 
-/* A control fills its cell instead of keeping the input's intrinsic width,
-   which overflows the 1fr track on a narrow sheet. */
-.value input,
-.value select,
-.settingsValue input,
-.settingsValue select {
-  width: 100%;
-  min-width: 0;
-}
-
 @media (max-width: 480px) {
   .rowWithActions,
   .settingsRow {
     grid-template-columns: minmax(0, 1fr);
+  }
+  /* An editable fact stacks below its label instead of sharing the row with
+     the fixed label column; its control fills the resulting width. A
+     read-only fact keeps the compact side-by-side layout. */
+  .controlRow {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-1);
+  }
+  .controlLabel {
+    width: auto;
   }
 }
