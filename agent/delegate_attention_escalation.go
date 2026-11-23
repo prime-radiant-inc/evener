@@ -93,6 +93,7 @@ func (s *Session) escalateOneUnreachableDelegateAttention(plan delegateFencedAtt
 const (
 	delegateAttentionRestoreLabel  = "restore delegate attention"
 	delegateAttentionEscalateLabel = "escalate unreachable delegate attention"
+	delegateAttentionResolveLabel  = "resolve delegate attention"
 	// delegateAttentionDriveLabel names the wake the refusal warning reports:
 	// the drive that would start the delegate's consumption generation, or
 	// the eligibility check that keeps it out of the drive's selection.

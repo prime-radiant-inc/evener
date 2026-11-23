@@ -1144,13 +1144,30 @@ func (c *delegateTreeController) forgetDelegateAttention(delegateID string, atte
 		return nil
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	wasNeeding := false
+	if aggregate := c.durable[delegateID]; aggregate != nil {
+		wasNeeding = aggregate.NeedsAttention
+	}
+	ids := make(map[string]struct{}, len(attentionIDs))
 	for _, attentionID := range attentionIDs {
-		if err := c.forgetDelegateAttentionLocked(delegateID, attentionID); err != nil {
-			return err
+		if attentionID != "" {
+			ids[attentionID] = struct{}{}
 		}
 	}
-	return nil
+	err := c.appendAttentionResolvedLocked(delegateID, ids)
+	var plan delegateUpdatePlan
+	publish := false
+	if err == nil && wasNeeding {
+		if aggregate := c.durable[delegateID]; aggregate != nil && !aggregate.NeedsAttention {
+			plan = c.capturedPlanLocked(delegateID)
+			publish = true
+		}
+	}
+	c.mu.Unlock()
+	if publish {
+		c.emitDelegateUpdate(plan)
+	}
+	return err
 }
 
 // holdAttentionRestore marks delegateID as owned by an attention wake pass:

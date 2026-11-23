@@ -2017,11 +2017,20 @@ func (s *Session) finishAttentionTurn(ids []string, turnErr error) error {
 	if len(covered) == 0 {
 		return nil
 	}
-	// The delegate's queue rows stay; see reconcileResolvedDelegateAttention.
 	if err := s.resolveAttentionDurably(covered, delegateAttentionConsumed); err != nil {
 		return err
 	}
 	resolvedIDs = covered
+	if s.delegateController != nil && s.owningDelegateID != "" {
+		// The transcript consume is the durable authority for this turn. The
+		// queue rows it consumed must leave in the same turn, while the
+		// generation still runs, or the root keeps counting them as owed work.
+		// A failed journal append leaves them for
+		// reconcileResolvedDelegateAttention and never fails the turn.
+		if err := s.delegateController.forgetDelegateAttention(s.owningDelegateID, covered...); err != nil {
+			s.warnDelegateAttentionFailed(delegateAttentionResolveLabel, s.owningDelegateID, err)
+		}
+	}
 	return nil
 }
 
