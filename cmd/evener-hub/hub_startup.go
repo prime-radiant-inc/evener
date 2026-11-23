@@ -101,11 +101,16 @@ func publishEndpoint(web *WebServer, endpoint EndpointConfig, configIdentity, hu
 }
 
 // announceHub tells the operator where the hub is listening and how to sign in.
-func announceHub(stderr io.Writer, record hubendpoint.Record, runDir, hubStateRoot, authToken string) {
+func announceHub(
+	stderr io.Writer,
+	record hubendpoint.Record,
+	runDir, hubStateRoot, authToken string,
+	hostname func() (string, error),
+) {
 	log := componentlog.NewWriter("hub", stderr)
 	log.Info(fmt.Sprintf("evener-hub %s listening on %s (run_dir=%s)", Version, record.BoundAddr, runDir))
 	log.Info(fmt.Sprintf("configured listener: %s (%s)", record.RequestedListenAddr, record.ListenSource))
-	if origin, originErr := browserLoginOrigin(record, hubHostname); originErr == nil {
+	if origin, originErr := browserLoginOrigin(record, hostname); originErr == nil {
 		log.Info(fmt.Sprintf("Browser address: %s (local: %s)", origin, record.LocalURL))
 		if isTerminalWriter(stderr) {
 			link := hubedge.AuthURLFor(origin, authToken)
@@ -621,18 +626,13 @@ func (r *hubRuntime) onSSHEvent(ev sshconn.Event) {
 // that were waiting for it. The returned cleanup drains the AppWire RPC server
 // and then shuts the host operations down; it must run before connectHosts's
 // cleanup closes the SSH channels.
-func (r *hubRuntime) buildWeb(appwireTrace *appserver.WebSocketTrace) (*WebServer, func()) {
+func (r *hubRuntime) buildWeb(appwireTrace *appserver.WebSocketTrace, localHostName string) (*WebServer, func()) {
 	cfg := r.cfg
 	sshManager := r.sshManager
 	r.scratchReconcile = newScratchReconciler(r.past, r.archive, r.roster)
-	// A hostname failure is non-fatal: the local source falls back to "this
-	// host" in the picker. Use the hubHostname seam so a test or operator that
-	// overrides it names the hub the same way in the login origin and the
-	// picker.
-	hostName, _ := hubHostname()
 	web := newWebServer(hubcore.WebConfig{
 		HubAddr:                   r.boundAddr,
-		LocalHostName:             hostName,
+		LocalHostName:             localHostName,
 		AuthToken:                 r.authToken,
 		PublicURL:                 cfg.PublicURL,
 		HubStateRoot:              cfg.HubStateRoot,
