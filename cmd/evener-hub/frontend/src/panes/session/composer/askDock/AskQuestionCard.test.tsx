@@ -45,7 +45,6 @@ function Harness({ q, initial = UNTOUCHED }: { q: AskQuestionRef; initial?: AskA
     <AskQuestionCard
       disabled={false}
       question={q}
-      number={1}
       answer={answer}
       onResolutionChange={(resolution) => setAnswer((prev) => ({ ...prev, resolution }))}
       onNoteChange={(note) => setAnswer((prev) => ({ ...prev, note }))}
@@ -53,9 +52,8 @@ function Harness({ q, initial = UNTOUCHED }: { q: AskQuestionRef; initial?: AskA
   );
 }
 
-test("renders the question number, header, and question text", () => {
+test("renders the question header and text", () => {
   render(<Harness q={question()} />);
-  expect(screen.getByText("1.")).toBeTruthy();
   expect(screen.getByText("Deploy?")).toBeTruthy();
   expect(screen.getByText("Should I deploy this to production now?")).toBeTruthy();
 });
@@ -70,32 +68,24 @@ test("renders each option's label and detail, tagging only the recommended one",
   expect(markers[0]?.closest("label")).toBe(screen.getByRole("radio", { name: "Yes" }).closest("label"));
 });
 
-// Option labels are inline bold text, not pills (ask-dialog UX rework): the
-// whole label is ordinary wrapping text inside the option row, so an
-// arbitrarily long VALID label wraps onto as many lines as it needs instead
-// of being crushed inside a fixed-height chip. jsdom does not lay out text;
-// the stylesheet assertions below pin the bold presentation contract, and
-// layoutguard's askdock-mobile-tall-crush case owns the real geometry.
-test("option labels render as bold inline text, keeping the full label available", () => {
+// The option's identity and its explanation form separate lines in one copy
+// stack. Long labels still wrap in full; layoutguard owns the real geometry.
+test("option labels and details form separate lines in a wrapping copy stack", () => {
   const label = `${"A valid option label that remains available to the user ".repeat(19)}A valid option label that remains available to the user`;
-  render(
-    <Harness
-      q={question({
-        options: [{ label, detail: "The detail remains separate from the label." }],
-      })}
-    />,
-  );
+  const detail = "The detail remains separate from the label.";
+  render(<Harness q={question({ options: [{ label, detail }] })} />);
 
-  const radio = screen.getByRole("radio", { name: label });
-  const labelEl = radio.nextElementSibling;
-  expect(labelEl?.textContent).toBe(label);
+  const labelEl = screen.getByText(label);
+  const detailEl = screen.getByText(detail);
+  const labelLine = labelEl.parentElement;
+  const copy = labelLine?.parentElement;
+  expect(copy?.contains(labelLine)).toBe(true);
+  expect(detailEl.parentElement).toBe(copy);
 
   const css = cardCss();
   const rule = css.match(/\.optionName\s*\{([^}]*)\}/);
   expect(rule, "askquestioncard.module.css must declare an .optionName rule").not.toBeNull();
   expect(rule![1]).toMatch(/font-weight:\s*var\(--font-weight-semibold\)/);
-  // The pill treatment is gone entirely - no chip wrapper class remains.
-  expect(css).not.toContain(".optionChip");
 });
 
 // Recommended gets its own visual treatment (ask-dialog UX rework): an
@@ -174,7 +164,6 @@ test("clicking a regular option (single-select) resolves to that option alone", 
     <AskQuestionCard
       disabled={false}
       question={question()}
-      number={1}
       answer={UNTOUCHED}
       onResolutionChange={onResolutionChange}
       onNoteChange={() => {}}
@@ -238,7 +227,6 @@ test("while Something else is active, the shared text field edits the free resol
     <AskQuestionCard
       disabled={false}
       question={question()}
-      number={1}
       answer={{ resolution: { kind: "free", text: "" }, note: "" }}
       onResolutionChange={onResolutionChange}
       onNoteChange={onNoteChange}
@@ -280,7 +268,6 @@ test("the note field is visible with no disclosure toggle and calls onNoteChange
     <AskQuestionCard
       disabled={false}
       question={question()}
-      number={1}
       answer={UNTOUCHED}
       onResolutionChange={() => {}}
       onNoteChange={onNoteChange}

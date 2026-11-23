@@ -26,7 +26,7 @@ import {
   askUserSummary,
   parseAskUserQuestions,
 } from "@evener/appwire-client";
-import { Card, Eyebrow } from "../../../../widgets";
+import { Card } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
@@ -38,7 +38,10 @@ const CLASS = {
   question: requireClass(styles.question, "askuser.module.css", "question"),
   options: requireClass(styles.options, "askuser.module.css", "options"),
   option: requireClass(styles.option, "askuser.module.css", "option"),
+  optionCopy: requireClass(styles.optionCopy, "askuser.module.css", "optionCopy"),
+  optionLead: requireClass(styles.optionLead, "askuser.module.css", "optionLead"),
   label: requireClass(styles.label, "askuser.module.css", "label"),
+  recommended: requireClass(styles.recommended, "askuser.module.css", "recommended"),
   detail: requireClass(styles.detail, "askuser.module.css", "detail"),
   note: requireClass(styles.note, "askuser.module.css", "note"),
   footer: requireClass(styles.footer, "askuser.module.css", "footer"),
@@ -73,9 +76,13 @@ function QuestionCard({ q }: { q: AskUserQuestion }) {
         <ul className={CLASS.options}>
           {q.options.map((opt) => (
             <li key={opt.label} className={CLASS.option} data-recommended={opt.recommended ? "true" : undefined}>
-              <span className={CLASS.label}>{opt.label}</span>
-              <span className={CLASS.detail}>{opt.detail}</span>
-              {opt.recommended && <Eyebrow as="span">Recommended</Eyebrow>}
+              <span className={CLASS.optionCopy}>
+                <span className={CLASS.optionLead}>
+                  <span className={CLASS.label}>{opt.label}</span>
+                  {opt.recommended && <span className={CLASS.recommended}>Recommended</span>}
+                </span>
+                {opt.detail && <span className={CLASS.detail}>{opt.detail}</span>}
+              </span>
             </li>
           ))}
         </ul>

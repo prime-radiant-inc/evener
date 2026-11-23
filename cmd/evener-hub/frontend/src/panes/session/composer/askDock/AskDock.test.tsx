@@ -154,7 +154,7 @@ test("the dock sizes to its content as a transcript row, with no internal scroll
   expect(body).not.toContain("flex:");
 });
 
-test("renders the pending question's header and question text once acked", async () => {
+test("renders the pending question in a neutral outlined frame once acked", async () => {
   const fake = connectReadyFakeClient();
   await hydrateWithOneAsk(fake);
 
@@ -162,6 +162,7 @@ test("renders the pending question's header and question text once acked", async
 
   expect(screen.getByText("Deploy?")).toBeTruthy();
   expect(screen.getByText("Ship now?")).toBeTruthy();
+  expect(document.querySelector("[data-ask-batch]")?.className).toContain("outlined");
 });
 
 test("a question acked after the dock is already mounted appears without remounting the whole dock", async () => {

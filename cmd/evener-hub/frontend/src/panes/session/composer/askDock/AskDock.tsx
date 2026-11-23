@@ -72,7 +72,7 @@
 import type { AskBatch, AskResolution } from "@evener/appwire-client";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { isIMECompositionKeydown } from "../../../../keybindings/dispatcher";
-import { Button, Card, useToasts, VisuallyHidden } from "../../../../widgets";
+import { Button, Card, StatusDot, useToasts, VisuallyHidden } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { requestComposerFocus } from "../composerFocus";
 import { AskQuestionCard } from "./AskQuestionCard";
@@ -87,7 +87,7 @@ import styles from "./askdock.module.css";
 
 const CLASS = {
   dock: requireClass(styles.dock, "askdock.module.css", "dock"),
-  anchor: requireClass(styles.anchor, "askdock.module.css", "anchor"),
+  attentionCue: requireClass(styles.attentionCue, "askdock.module.css", "attentionCue"),
   batch: requireClass(styles.batch, "askdock.module.css", "batch"),
   tabs: requireClass(styles.tabs, "askdock.module.css", "tabs"),
   tab: requireClass(styles.tab, "askdock.module.css", "tab"),
@@ -277,12 +277,11 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
     selectTab(next, true);
   }
 
-  function renderCard(question: AskBatch["questions"][number], index: number) {
+  function renderCard(question: AskBatch["questions"][number]) {
     return (
       <AskQuestionCard
         key={question.key}
         question={question}
-        number={index + 1}
         answer={answerFor(answers, question.key)}
         disabled={batch.sending}
         onResolutionChange={(resolution: AskResolution | null) =>
@@ -303,11 +302,17 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
     // bubbling up from the batch's own controls (radios, the free-text
     // input); the card is a container, not itself interactive.
     <Card
-      tone="attention"
+      variant="outlined"
       onKeyDown={handleBatchKeyDown}
       data-ask-batch={batch.id}
       tabIndex={batch.sending ? -1 : undefined}
     >
+      {/* Visual caption only: the external announcements component owns the
+          live-region transitions for this virtualized row. */}
+      <div className={CLASS.attentionCue}>
+        <StatusDot state="needs-you" decorative />
+        <span>Question</span>
+      </div>
       <div className={CLASS.batch}>
         {total > 1 && (
           // key="tabs"/key="panel" on both siblings: when a late ask_user call
@@ -367,10 +372,10 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
           on the screen at all. */}
         {total > 1 ? (
           <div key="panel" role="tabpanel" id={panelId} aria-labelledby={tabId(activeIndex)}>
-            {activeQuestion !== undefined && renderCard(activeQuestion, activeIndex)}
+            {activeQuestion !== undefined && renderCard(activeQuestion)}
           </div>
         ) : (
-          <div key="panel">{batch.questions.map((question, index) => renderCard(question, index))}</div>
+          <div key="panel">{batch.questions.map((question) => renderCard(question))}</div>
         )}
         <div className={CLASS.batchFooter}>
           {/* Visual count only - NOT a live region (virtualized remounts would
@@ -379,7 +384,7 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
             {answeredCount} of {total} {total === 1 ? "question" : "questions"} answered
           </span>
           {/* Accent primary, same pattern as sandboxEscalation's Allow button
-            (attention owns the container above, accent owns the one
+            (the small cue owns attention, accent owns the one
             action that resolves it) - Button's own primary variant is the
             token-contract-ungated --accent, so this needs no allowlisting.
             Label follows advanceTarget so the button never claims
@@ -624,11 +629,6 @@ export function AskDock({ ref: sessionRef, paneId }: AskDockProps) {
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: catches Alt+PageUp/Down bubbling up from any control inside any batch - the div is a layout container, not itself interactive, same precedent as the batch-level Enter handler above
     <div className={CLASS.dock} ref={dockRef} data-ask-response-dock onKeyDown={handleDockKeyDown}>
-      {/* Visual caption only - NOT a live region. The row is virtualized, so
-          an aria-live region here would re-insert and re-announce on every
-          scroll-away/scroll-back remount; the one live region for this
-          surface is AskDockAnnouncements, mounted outside the virtual list. */}
-      <div className={CLASS.anchor}>Answer the agent’s questions.</div>
       {batches.map((batch) => (
         <AskBatchCard key={batch.id} sessionRef={sessionRef} batch={batch} answers={answers} onSend={handleSend} />
       ))}
