@@ -6,7 +6,7 @@ import {
   summaryEntityView,
 } from "../../panes/session/transcript/entityView.testFixture";
 import { HoverCard } from "../../widgets/hovercard";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./tooltip.module.css";
 
 // The entity-card demo renders EntityRef itself with the shared test fixtures,
@@ -69,11 +69,8 @@ function HoverCardDemo() {
 
 export default function HoverCardGallerySection() {
   return (
-    <section>
-      <h2>HoverCard</h2>
-      <ThemeFlip>
-        <HoverCardDemo />
-      </ThemeFlip>
-    </section>
+    <GallerySection title="HoverCard">
+      <HoverCardDemo />
+    </GallerySection>
   );
 }

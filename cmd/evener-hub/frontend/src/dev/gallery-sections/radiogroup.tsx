@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { RadioGroup, type RadioGroupOption } from "../../widgets/radiogroup";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./radiogroup.module.css";
 
 const THEME_OPTIONS: RadioGroupOption[] = [
@@ -32,30 +32,27 @@ function LiveListRadioGroup() {
 
 export default function RadioGroupGallerySection() {
   return (
-    <section>
-      <h2>RadioGroup</h2>
-      <ThemeFlip>
-        <div className={styles.row}>
-          <LiveRadioGroup />
-          <LiveListRadioGroup />
-          <RadioGroup
-            label="Loud for (one option disabled)"
-            value="asks"
-            onChange={() => {}}
-            options={LOUD_SCOPE_OPTIONS}
-          />
-          <RadioGroup
-            label="Transcript width"
-            value="reading"
-            onChange={() => {}}
-            options={[
-              { value: "reading", label: "Reading" },
-              { value: "wide", label: "Wide" },
-            ]}
-            description="Reading keeps lines near 90 characters. Wide uses more of the window."
-          />
-        </div>
-      </ThemeFlip>
-    </section>
+    <GallerySection title="RadioGroup">
+      <div className={styles.row}>
+        <LiveRadioGroup />
+        <LiveListRadioGroup />
+        <RadioGroup
+          label="Loud for (one option disabled)"
+          value="asks"
+          onChange={() => {}}
+          options={LOUD_SCOPE_OPTIONS}
+        />
+        <RadioGroup
+          label="Transcript width"
+          value="reading"
+          onChange={() => {}}
+          options={[
+            { value: "reading", label: "Reading" },
+            { value: "wide", label: "Wide" },
+          ]}
+          description="Reading keeps lines near 90 characters. Wide uses more of the window."
+        />
+      </div>
+    </GallerySection>
   );
 }

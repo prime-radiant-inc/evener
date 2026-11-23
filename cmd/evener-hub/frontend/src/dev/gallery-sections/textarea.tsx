@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Textarea } from "../../widgets/textarea";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./textarea.module.css";
 
 function LiveTextarea() {
@@ -10,43 +10,40 @@ function LiveTextarea() {
 
 export default function TextareaGallerySection() {
   return (
-    <section>
-      <h2>Textarea</h2>
-      <ThemeFlip>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>fixed rows</p>
-          <Textarea value="Two rows, always." onChange={() => {}} />
-        </div>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>autoGrow</p>
-          <LiveTextarea />
-        </div>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>monospace</p>
-          <Textarea value={'# AGENTS.md\n{"region": "us-east-1"}'} onChange={() => {}} monospace rows={3} />
-        </div>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>disabled</p>
-          <Textarea value="Read only." onChange={() => {}} disabled />
-        </div>
-        {/* seamless draws no box of its own, so it only reads correctly inside
+    <GallerySection title="Textarea">
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>fixed rows</p>
+        <Textarea value="Two rows, always." onChange={() => {}} />
+      </div>
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>autoGrow</p>
+        <LiveTextarea />
+      </div>
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>monospace</p>
+        <Textarea value={'# AGENTS.md\n{"region": "us-east-1"}'} onChange={() => {}} monospace rows={3} />
+      </div>
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>disabled</p>
+        <Textarea value="Read only." onChange={() => {}} disabled />
+      </div>
+      {/* seamless draws no box of its own, so it only reads correctly inside
             a card that draws one - the wrapper here stands in for the
             composer's inputCard. */}
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>seamless (in a card)</p>
-          <div className={styles.card}>
-            <Textarea value="No box of my own." onChange={() => {}} seamless />
-          </div>
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>seamless (in a card)</p>
+        <div className={styles.card}>
+          <Textarea value="No box of my own." onChange={() => {}} seamless />
         </div>
-        {/* fill needs a host narrower than the field's native ~20 columns to
+      </div>
+      {/* fill needs a host narrower than the field's native ~20 columns to
             read: the card is that host, and the field claims all of it. */}
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>fill (in a card)</p>
-          <div className={styles.card}>
-            <Textarea value="I claim the host's width." onChange={() => {}} fill rows={3} />
-          </div>
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>fill (in a card)</p>
+        <div className={styles.card}>
+          <Textarea value="I claim the host's width." onChange={() => {}} fill rows={3} />
         </div>
-      </ThemeFlip>
-    </section>
+      </div>
+    </GallerySection>
   );
 }

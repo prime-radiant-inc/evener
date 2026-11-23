@@ -1,5 +1,5 @@
 import { KeyHint } from "../../widgets/keyhint";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./keyhint.module.css";
 
 // "Mod" resolves against the reviewing browser's actual platform (⌘ on
@@ -15,19 +15,16 @@ const SAMPLES: { label: string; keys: string[] }[] = [
 
 export default function KeyHintGallerySection() {
   return (
-    <section>
-      <h2>KeyHint</h2>
-      <ThemeFlip>
-        {SAMPLES.map(({ label, keys }) => (
-          <div className={styles.row} key={label}>
-            <p className={styles.rowLabel}>{label}</p>
-            <KeyHint keys={keys} />
-            {/* compact next to the bordered form, so the two are comparable at
+    <GallerySection title="KeyHint">
+      {SAMPLES.map(({ label, keys }) => (
+        <div className={styles.row} key={label}>
+          <p className={styles.rowLabel}>{label}</p>
+          <KeyHint keys={keys} />
+          {/* compact next to the bordered form, so the two are comparable at
                 a glance - this is the form a hint inside a button uses. */}
-            <KeyHint keys={keys} compact />
-          </div>
-        ))}
-      </ThemeFlip>
-    </section>
+          <KeyHint keys={keys} compact />
+        </div>
+      ))}
+    </GallerySection>
   );
 }

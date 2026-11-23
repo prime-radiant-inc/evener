@@ -1,6 +1,6 @@
 import { ToolIcon, type ToolIconKind } from "../../widgets/toolicon";
+import { GallerySection } from "../GallerySection";
 import styles from "../gallery-section.module.css";
-import { ThemeFlip } from "../ThemeFlip";
 
 const KINDS: { kind: ToolIconKind; label: string }[] = [
   { kind: "terminal", label: "terminal (shell)" },
@@ -29,36 +29,33 @@ const KINDS: { kind: ToolIconKind; label: string }[] = [
 
 export default function ToolIconGallerySection() {
   return (
-    <section>
-      <h2>ToolIcon</h2>
-      <ThemeFlip>
-        {KINDS.map(({ kind, label }) => (
-          <div className={styles.row} key={kind}>
-            <p className={styles.rowLabel}>{label}</p>
-            <ToolIcon kind={kind} />
-          </div>
-        ))}
-        {/* currentColor: the glyph takes whatever ink its consumer sets - the
+    <GallerySection title="ToolIcon">
+      {KINDS.map(({ kind, label }) => (
+        <div className={styles.row} key={kind}>
+          <p className={styles.rowLabel}>{label}</p>
+          <ToolIcon kind={kind} />
+        </div>
+      ))}
+      {/* currentColor: the glyph takes whatever ink its consumer sets - the
             transcript rows render it in --ink-mid against both themes. */}
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>inherits ink</p>
-          <span style={{ display: "inline-flex", color: "var(--ink-low)" }}>
-            <ToolIcon kind="terminal" />
-          </span>
-        </div>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>size 16</p>
-          <ToolIcon kind="wrench" size={16} />
-        </div>
-        {/* tone: the activity sidebar's state glyphs - working, needs you,
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>inherits ink</p>
+        <span style={{ display: "inline-flex", color: "var(--ink-low)" }}>
+          <ToolIcon kind="terminal" />
+        </span>
+      </div>
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>size 16</p>
+        <ToolIcon kind="wrench" size={16} />
+      </div>
+      {/* tone: the activity sidebar's state glyphs - working, needs you,
             failed. */}
-        {(["alive", "attention", "danger"] as const).map((tone) => (
-          <div className={styles.row} key={tone}>
-            <p className={styles.rowLabel}>tone {tone}</p>
-            <ToolIcon kind="delegate" tone={tone} />
-          </div>
-        ))}
-      </ThemeFlip>
-    </section>
+      {(["alive", "attention", "danger"] as const).map((tone) => (
+        <div className={styles.row} key={tone}>
+          <p className={styles.rowLabel}>tone {tone}</p>
+          <ToolIcon kind="delegate" tone={tone} />
+        </div>
+      ))}
+    </GallerySection>
   );
 }
