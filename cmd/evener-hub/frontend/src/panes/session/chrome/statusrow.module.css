@@ -47,10 +47,11 @@
 
 /* The model and vision-model switches hug their labels but may both shrink when
  * the status row runs narrow. The effort control is the other direct span in
- * this run and stays fixed-width; excluding it keeps its existing sizing. Both
- * popover wrappers need min-width: 0, otherwise the newly added vision trigger
- * keeps its min-content width and squeezes the active-model trigger to zero. */
-.identity > span:not(.effortTrigger) {
+ * this run and keeps its own sizing from reasoningeffortcontrol.module.css.
+ * Both popover wrappers need min-width: 0, otherwise the newly added vision
+ * trigger keeps its min-content width and squeezes the active-model trigger to
+ * zero. */
+.identity > span:not([data-effort-control]) {
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
@@ -63,8 +64,7 @@
 }
 
 .item,
-.context,
-.effortTrigger {
+.context {
   flex: none;
 }
 
@@ -88,10 +88,6 @@
 
 .queue {
   margin-left: 0;
-  color: var(--ink-low);
-}
-
-.separator {
   color: var(--ink-low);
 }
 
@@ -142,25 +138,15 @@
     display: inline;
   }
 
-  /* The two model triggers share this narrow identity run. The effort control
-   * must keep its separator plus the 44px native select: shrinking the wrapper
-   * lets .identity clip the select even though its unclipped rect still
-   * measures a full tap target. It must not reserve the readout's full
-   * intrinsic width either - "none (provider default)" can otherwise squeeze
-   * the model trigger to zero. The specificity-matched floor keeps the tap
-   * target, the readout ellipsizes, and the model names yield. */
-  .identity > .effortTrigger {
-    flex: 0 1 auto;
-    min-width: calc(var(--tap-min, 0px) + 1ch);
-  }
+  /* The effort control's narrow-pane floor lives in
+   * reasoningeffortcontrol.module.css, beside the control itself. */
 }
 
-/* The effort control's wrapper: it carries the row's separator and keeps the
- * control one direct child of the identity run. Select's quiet variant owns
- * the pill face, the transparent native <select>, the readout and the tap
- * floor (widgets/select composes widgets/internal/quietTrigger.module.css). */
-.effortTrigger {
-  display: inline-flex;
-  align-items: center;
-  min-width: 0;
+/* Above the phone floor the effort control keeps its fixed width: shrinking
+ * the wrapper lets .identity clip the select even though its unclipped rect
+ * still measures a full tap target. */
+@container (min-width: 400px) {
+  .identity > [data-effort-control] {
+    flex: none;
+  }
 }

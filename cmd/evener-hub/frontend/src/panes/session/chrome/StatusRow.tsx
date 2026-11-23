@@ -15,18 +15,12 @@
 //   - raw ↑/↓ token counts. The details sheet carries the exact figures.
 
 import type { ThreadModel } from "@evener/appwire-client";
-import {
-  effortDefaultLabel,
-  effortLabel,
-  effortOptionLevels,
-  effortReadout,
-  sessionActionError,
-  sessionEffortLevels,
-} from "@evener/appwire-client";
+import { sessionActionError, sessionEffortLevels } from "@evener/appwire-client";
 import { threadsStore } from "../../../stores/threads";
-import { Meter, Select, useToasts, VisuallyHidden } from "../../../widgets";
+import { Meter, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { ModelSwitch } from "./ModelSwitch";
+import { ReasoningEffortControl } from "./ReasoningEffortControl";
 import {
   assumedWindowMark,
   contextTone,
@@ -59,38 +53,15 @@ const CLASS = {
   queue: requireClass(styles.queue, "statusrow.module.css", "queue"),
   queueFull: requireClass(styles.queueFull, "statusrow.module.css", "queueFull"),
   queueCompact: requireClass(styles.queueCompact, "statusrow.module.css", "queueCompact"),
-  separator: requireClass(styles.separator, "statusrow.module.css", "separator"),
-  effortTrigger: requireClass(styles.effortTrigger, "statusrow.module.css", "effortTrigger"),
 };
 
-// ReasoningEffortControl renders the reasoning-effort switcher with Select's
-// quiet variant, matching the model switcher beside it: the current value IS
-// the visible control, no bordered <select> box competing with it in a row
-// that has to stay one 12px line. It is still a REAL native <select>
-// underneath, laid over the readout at zero opacity - so it keeps every
-// behavior a box would have (tab order, arrow keys, type-ahead, the
-// platform's own dropdown, ariaLabel naming the control).
-//
-// The effective ladder is the model's own named levels, or - when it reasons
-// but names none - the sessionEffortLevels fallback: the wire really can emit
-// supportsReasoning:true with an empty ladder (the daemon's Profile sets
-// p.reasoning and p.effortLevels from independent conditions,
-// agent/provider/profile.go:454 vs :442; the reducer coerces the absent ladder
-// to [], reducer.ts:263). A model that does not reason at all gets no control.
-//
-// none-vs-(default): an unset effort ("") means "the session default applies"
-// and is a real leading option, never the first ladder level a bare value-""
-// select would display. Its tier is the daemon's own resolution
-// (model.defaultReasoningEffort): the closed readout shows that tier, the
-// effort the session actually runs at, and the open list labels the option
-// "<tier> (default)" so following the default stays distinct from pinning
-// the same tier. An unset "none" instead reuses that tier's own label, since
-// both options name one choice to a reader. With no resolution (an older
-// daemon, an unresolved row) both read a plain "(default)". "none" is an
-// explicit off the user chose (llm/types.go ReasoningEffortNone): it displays
-// as "none (off)" and is offered as its own option when the model's ladder
-// lists it (or when the session already runs at it).
-function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; model: ThreadModel }) {
+// The session's effort picker: the model's own ladder, or the fallback when it
+// reasons but names none. The wire really can emit supportsReasoning:true with
+// an empty ladder (the daemon's Profile sets p.reasoning and p.effortLevels
+// from independent conditions, agent/provider/profile.go:454 vs :442; the
+// reducer coerces the absent ladder to [], reducer.ts:263). A model that does
+// not reason at all gets no control.
+function SessionEffortControl({ sessionRef, model }: { sessionRef: string; model: ThreadModel }) {
   const toasts = useToasts();
 
   async function handleChange(level: string) {
@@ -104,28 +75,16 @@ function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; mod
   const levels = sessionEffortLevels(model.reasoningEffortLevels, model.supportsReasoning);
   if (levels.length === 0) return null;
 
-  const current = model.reasoningEffort ?? "";
-  const options = effortOptionLevels(levels, current).map((level) => ({
-    value: level,
-    label: level === "" ? effortDefaultLabel(model.defaultReasoningEffort, levels) : effortLabel(level, levels),
-  }));
-
   return (
-    <span className={CLASS.effortTrigger} data-testid="status-row-effort">
-      <span className={CLASS.separator} aria-hidden="true">
-        ·
-      </span>
-      <Select
-        variant="quiet"
-        id="status-row-reasoning-effort"
-        ariaLabel="Reasoning effort"
-        value={current}
-        options={options}
-        readout={effortReadout(current, levels, model.defaultReasoningEffort)}
-        onChange={(e) => void handleChange(e.target.value)}
-        valueTestId="status-row-effort-value"
-      />
-    </span>
+    <ReasoningEffortControl
+      levels={levels}
+      current={model.reasoningEffort ?? ""}
+      defaultLevel={model.defaultReasoningEffort}
+      onChange={(level) => void handleChange(level)}
+      testId="status-row-effort"
+      id="status-row-reasoning-effort"
+      ariaLabel="Reasoning effort"
+    />
   );
 }
 
@@ -148,32 +107,26 @@ export function StatusRow({ sessionRef, model, now, align = "start" }: StatusRow
     <div className={align === "end" ? `${CLASS.row} ${CLASS.rowEnd}` : CLASS.row} data-testid="status-row">
       <span className={CLASS.identity} data-testid="status-row-identity">
         <ModelSwitch sessionRef={sessionRef} model={model} shrink />
-        <ReasoningEffortControl sessionRef={sessionRef} model={model} />
+        <SessionEffortControl sessionRef={sessionRef} model={model} />
       </span>
       {hasContext && (
-        <>
-          <VisuallyHidden>
-            <meter
-              aria-label={contextLabel}
-              min={0}
-              value={Math.min(status.ceiling, Math.max(0, model.contextUsed))}
+        <span className={CLASS.context} data-testid="status-row-context" title={contextLabel}>
+          <span className={CLASS.contextMeter} data-testid="status-row-context-meter">
+            <Meter
+              label={contextLabel}
+              value={model.contextUsed}
               max={status.ceiling}
+              tone={contextTone(status.pressure)}
             />
-          </VisuallyHidden>
-          <span className={CLASS.context} data-testid="status-row-context" aria-hidden="true" title={contextLabel}>
-            <span className={CLASS.contextMeter} data-testid="status-row-context-meter">
-              <Meter
-                label={contextLabel}
-                value={model.contextUsed}
-                max={status.ceiling}
-                tone={contextTone(status.pressure)}
-              />
-            </span>
-            <span className={`${CLASS.contextPercent} ${CLASS.figure}`} data-testid="status-row-context-percent">
-              {`${contextPercent}%`}
-            </span>
           </span>
-        </>
+          <span
+            className={`${CLASS.contextPercent} ${CLASS.figure}`}
+            data-testid="status-row-context-percent"
+            aria-hidden="true"
+          >
+            {`${contextPercent}%`}
+          </span>
+        </span>
       )}
       {/* An unmeasured zero renders NOTHING, never formatWorkDuration's "1s":
           that clamp exists so a real sub-second duration doesn't read "0s", so

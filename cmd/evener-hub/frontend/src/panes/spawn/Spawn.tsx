@@ -8,9 +8,6 @@ import type { HarnessDescriptor, LaunchConfigLayer, LaunchOption, ModelListRespo
 import {
   type AdvancedValues,
   collectAdvancedOverrides,
-  effortDefaultLabel,
-  effortLabel,
-  effortReadout,
   errorText,
   FALLBACK_EFFORT_LEVELS,
   findBuiltinArgument,
@@ -81,6 +78,7 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { mergeCatalogEntry, mergeCatalogSnapshot } from "../../widgets/modelCatalog/scopedCatalog";
 import { ModelSwitchTrigger } from "../session/chrome/ModelSwitchTrigger";
+import { ReasoningEffortControl } from "../session/chrome/ReasoningEffortControl";
 import { AttachmentTile } from "../session/composer/AttachmentTile";
 import { AttachImageControl } from "../session/composer/attachments/AttachImageControl";
 import { imageFilesFromClipboard } from "../session/composer/attachments/clipboard";
@@ -215,8 +213,6 @@ const CLASS = {
   attachments: requireClass(styles.attachments, "spawn.module.css", "attachments"),
   leading: requireClass(styles.leading, "spawn.module.css", "leading"),
   modelTrigger: requireClass(styles.modelTrigger, "spawn.module.css", "modelTrigger"),
-  effortTrigger: requireClass(styles.effortTrigger, "spawn.module.css", "effortTrigger"),
-  effortSeparator: requireClass(styles.effortSeparator, "spawn.module.css", "effortSeparator"),
   mobileConfig: requireClass(styles.mobileConfig, "spawn.module.css", "mobileConfig"),
   promptIntro: requireClass(styles.promptIntro, "spawn.module.css", "promptIntro"),
   promptHeading: requireClass(styles.promptHeading, "spawn.module.css", "promptHeading"),
@@ -1992,30 +1988,11 @@ function SpawnForm({
   );
   const effortLevels = knownEffortLevels ?? FALLBACK_EFFORT_LEVELS;
   const effortDisabled = !usesEvenerModels || (knownEffortLevels !== null && knownEffortLevels.length === 0);
-  // An effort the ladder doesn't name but state still holds. Only the FALLBACK
-  // ladder produces one: the reset effect below deliberately skips when the
-  // catalog knows nothing about the model, because clobbering a sticky default
-  // on a guessed ladder loses the user's setting.
-  //
-  // Such a value must still be OFFERED. A native select handed a value with no
-  // matching <option> renders its first one instead, so the field would read
-  // "(default)" while thread/start receives the preserved level -- the select
-  // must never show one effort and submit another.
-  const preservedEffort =
-    reasoningEffort !== "" && reasoningEffort !== "none" && !effortLevels.includes(reasoningEffort)
-      ? reasoningEffort
-      : null;
   // The effort a session started now would inherit, once launch/resolve has
   // landed with one: the open list names it on the empty option's
   // "(default)", and the closed readout shows it as the effort itself.
   const resolvedEffortDefault =
     typeof resolvedDefaults?.reasoningEffort === "string" ? resolvedDefaults.reasoningEffort.trim() : "";
-  const effortOptions = [
-    { value: "", label: effortDefaultLabel(resolvedEffortDefault, effortLevels) },
-    ...effortLevels.filter((level) => level !== "none").map((level) => ({ value: level, label: level })),
-    ...(preservedEffort === null ? [] : [{ value: preservedEffort, label: preservedEffort }]),
-    { value: "none", label: effortLabel("none", effortLevels) },
-  ];
   // The preview includes explicit access overrides. Only name it as the
   // inherited default when no sandbox override contributed to that preview.
   const sandboxOverride = mergeAccessModeSandbox(advancedOverrides, accessMode)?.sandbox?.trim();
@@ -2744,42 +2721,23 @@ function SpawnForm({
                       valueTestId="spawn-model-value"
                     />
                   </span>
-                  {/* Select's quiet variant, the same closed-state trigger
-                      StatusRow's effort control uses: the current value IS the
-                      visible control - a real native <select> laid over its own
-                      readout at zero opacity - so the row stays one quiet line
-                      instead of growing a bordered box. The readout names the
-                      effort the select holds; an unset effort whose resolved
-                      default is known shows that tier ("high"), the effort a
-                      session started now would run at, while the open list
-                      keeps "high (default)" so following the default stays
-                      distinct from pinning it. Same ladder contract the removed
-                      FormRow select kept: the selected model's own
-                      levels, the fallback ladder when the catalog can't say,
-                      and a disabled control when the model cannot reason at all
-                      (effortDisabled) rather than no control - pre-launch the
-                      setting is still discoverable beside the model it belongs
-                      to. */}
-                  <span
-                    className={CLASS.effortTrigger}
-                    data-testid="spawn-effort"
-                    data-disabled={effortDisabled ? "true" : undefined}
-                  >
-                    <span className={CLASS.effortSeparator} aria-hidden="true">
-                      ·
-                    </span>
-                    <Select
-                      variant="quiet"
-                      id="spawn-reasoning-effort"
-                      ariaLabel="Prompt reasoning effort"
-                      value={reasoningEffort}
-                      options={effortOptions}
-                      readout={effortReadout(reasoningEffort, effortLevels, resolvedEffortDefault)}
-                      onChange={(e) => handleEffortChange(e.target.value)}
-                      disabled={effortDisabled}
-                      valueTestId="spawn-effort-value"
-                    />
-                  </span>
+                  {/* The selected model's ladder, the fallback when the catalog
+                      can't say, and a disabled control when the model cannot
+                      reason at all (effortDisabled) rather than no control -
+                      pre-launch the setting is still discoverable beside the
+                      model it belongs to. The card always offers an explicit
+                      off, even when the ladder does not name "none". */}
+                  <ReasoningEffortControl
+                    levels={effortLevels}
+                    current={reasoningEffort}
+                    defaultLevel={resolvedEffortDefault}
+                    onChange={handleEffortChange}
+                    testId="spawn-effort"
+                    id="spawn-reasoning-effort"
+                    ariaLabel="Prompt reasoning effort"
+                    disabled={effortDisabled}
+                    offerNone
+                  />
                 </div>
               }
               actions={

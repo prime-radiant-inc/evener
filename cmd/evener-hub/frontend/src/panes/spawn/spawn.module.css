@@ -74,29 +74,6 @@
   .leading {
     gap: 0;
   }
-
-  /* Same floor as the status row: keep the separator plus the 44px native
-   * select, but let a long readout ellipsize instead of reserving its full
-   * intrinsic width and squeezing the model trigger to zero. The selector must
-   * outrank the base .effortTrigger { min-width: 0 } below. */
-  .leading > .effortTrigger {
-    flex: 0 1 auto;
-    min-width: calc(var(--tap-min, 0px) + 1ch);
-  }
-}
-
-/* The effort control's wrapper: it carries the separator and keeps the
- * control one direct child of the leading row. Select's quiet variant owns
- * the pill face, the transparent native <select>, the readout and the tap
- * floor (widgets/select composes widgets/internal/quietTrigger.module.css). */
-.effortTrigger {
-  display: inline-flex;
-  align-items: center;
-  min-width: 0;
-}
-
-.effortSeparator {
-  color: var(--ink-low);
 }
 
 .mobileConfig {
