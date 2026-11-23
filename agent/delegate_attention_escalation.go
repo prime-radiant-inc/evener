@@ -68,7 +68,9 @@ func (s *Session) escalateOneUnreachableDelegateAttention(plan delegateFencedAtt
 		if _, resolved := fold.resolutions[attentionID]; resolved || !exists {
 			// Already durably resolved (or never durable): only the stale
 			// process-local wake remains.
-			s.delegateController.forgetDelegateAttention(plan.delegateID, attentionID)
+			if err := s.delegateController.forgetDelegateAttention(plan.delegateID, attentionID); err != nil {
+				return err
+			}
 			continue
 		}
 		if _, err := s.appendDelegateAttentionMessageDurably(attentionID, message); err != nil {
@@ -80,7 +82,9 @@ func (s *Session) escalateOneUnreachableDelegateAttention(plan delegateFencedAtt
 		if err := s.delegateController.resolveDelegateAttentionDurably(plan.runtime, plan.transcriptRef, []string{attentionID}, delegateAttentionDiscarded); err != nil {
 			return err
 		}
-		s.delegateController.forgetDelegateAttention(plan.delegateID, attentionID)
+		if err := s.delegateController.forgetDelegateAttention(plan.delegateID, attentionID); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -89,6 +93,7 @@ func (s *Session) escalateOneUnreachableDelegateAttention(plan delegateFencedAtt
 const (
 	delegateAttentionRestoreLabel  = "restore delegate attention"
 	delegateAttentionEscalateLabel = "escalate unreachable delegate attention"
+	delegateAttentionResolveLabel  = "resolve delegate attention"
 	// delegateAttentionDriveLabel names the wake the refusal warning reports:
 	// the drive that would start the delegate's consumption generation, or
 	// the eligibility check that keeps it out of the drive's selection.

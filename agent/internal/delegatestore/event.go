@@ -19,6 +19,8 @@ const (
 	EventDelegateUpdatePosted          EventKind = "delegate_update_posted"
 	EventDelegateIntentStated          EventKind = "delegate_intent_stated"
 	EventDelegateAttentionHoldReleased EventKind = "delegate_attention_hold_released"
+	EventDelegateAttentionQueued       EventKind = "delegate_attention_queued"
+	EventDelegateAttentionResolved     EventKind = "delegate_attention_resolved"
 )
 
 type Event struct {
@@ -39,6 +41,8 @@ type Event struct {
 	UpdatePosted          *UpdatePosted             `json:"update_posted,omitempty"`
 	IntentStated          *IntentStated             `json:"intent_stated,omitempty"`
 	AttentionHoldReleased *AttentionHoldReleased    `json:"attention_hold_released,omitempty"`
+	AttentionQueued       *AttentionQueued          `json:"attention_queued,omitempty"`
+	AttentionResolved     *AttentionResolved        `json:"attention_resolved,omitempty"`
 }
 
 type DelegateCreated struct {
@@ -124,6 +128,24 @@ type IntentStated struct {
 // by a wake or an ack. The fold accepts any nonzero sample at or below it.
 type AttentionHoldReleased struct {
 	Generation uint64 `json:"generation"`
+}
+
+// AttentionQueued adds an owed attention row to a delegate's durable queue, or
+// updates the row already queued under the same identity. It is idempotent by
+// AttentionID, so a replay or a repeated arm adds nothing.
+//
+// Committed marks the wake as published.
+type AttentionQueued struct {
+	AttentionID string `json:"attention_id"`
+	Committed   bool   `json:"committed,omitempty"`
+}
+
+// AttentionResolved removes one attention row from the queue, consumed or
+// discarded. Removal is by identity and out of order: the row need not be the
+// queue head, and resolving a row that is already gone is a no-op so a
+// journal replay of a resolution stays valid.
+type AttentionResolved struct {
+	AttentionID string `json:"attention_id"`
 }
 
 type versionRecord struct {

@@ -442,16 +442,14 @@ func (c *delegateTreeController) completeDeliveryAckLocked(token delegateDeliver
 	}
 	events := make([]delegatestore.Event, 0, 2)
 	ownerChanged := false
+	committedWake := false
 	attentionID := delegateAttentionID(token.deliveryID)
-	if !receipt.inline && receipt.ownerID != "" {
-		openEvent, err := c.delegateAttentionOpenEventLocked(receipt.ownerID)
-		if err != nil {
-			return delegateDeliveryAck{}, err
-		}
-		if openEvent != nil {
-			events = append(events, *openEvent)
-			ownerChanged = true
-		}
+	if !receipt.inline && receipt.ownerID != "" && !c.delegateAttentionCommittedLocked(receipt.ownerID, attentionID) {
+		// The queue event and the acknowledgment ride one batch, so the wake the
+		// receipt publishes is durable with the delivery that published it.
+		events = append(events, attentionQueuedEvent(receipt.ownerID, attentionID, true))
+		ownerChanged = c.delegateAttentionWillRaiseLocked(receipt.ownerID)
+		committedWake = true
 	}
 	events = append(events, delegatestore.Event{
 		Kind:       delegatestore.EventDelegateDeliveryAcknowledged,
@@ -485,11 +483,11 @@ func (c *delegateTreeController) completeDeliveryAckLocked(token delegateDeliver
 		}
 		return delegateDeliveryAck{}, err
 	}
-	if !receipt.inline && receipt.ownerID != "" {
-		c.noteDelegateAttentionLocked(receipt.ownerID, attentionID)
-	}
 	delete(c.deliveries, token.processID)
 	untrackStopLocked(c, func(s *delegateStopState) map[delegateDeliveryToken]struct{} { return s.deliveries }, token)
+	if committedWake {
+		c.resetDelegateAttentionAttemptsLocked(receipt.ownerID)
+	}
 	c.evidenceVersion++
 	return delegateDeliveryAck{
 		planned:        true,

@@ -196,7 +196,7 @@ func (c *delegateTreeController) retirementOwnerScanLocked(members map[string]st
 			continue
 		}
 		descriptors[id] = a.Descriptor
-		if a.CurrentRunOpen || a.Phase != delegatestore.PhaseIdle && a.Phase != delegatestore.PhaseClosed || len(a.PendingDeliveries) != 0 || a.PendingStopSeq != 0 || a.NeedsAttention || a.PreparedTerminal != nil {
+		if a.CurrentRunOpen || a.Phase != delegatestore.PhaseIdle && a.Phase != delegatestore.PhaseClosed || len(a.PendingDeliveries) != 0 || a.PendingStopSeq != 0 || a.PreparedTerminal != nil {
 			block(id)
 		}
 		if live := c.live[id]; live != nil {
@@ -225,11 +225,11 @@ func (c *delegateTreeController) retirementOwnerScanLocked(members map[string]st
 // PhaseClosed requires !Resumable. Callers must hold c.mu.
 func (c *delegateTreeController) retirementWakeBlockersLocked() []RetirementBlocker {
 	var blockers []RetirementBlocker
-	for id, state := range c.attention {
-		if state == nil || len(state.wakeIDs) == 0 {
+	for id, aggregate := range c.durable {
+		if aggregate == nil || len(aggregate.PendingAttention) == 0 {
 			continue
 		}
-		if aggregate := c.durable[id]; aggregate == nil || !aggregate.Resumable {
+		if !aggregate.Resumable {
 			continue
 		}
 		blockers = append(blockers, RetirementBlocker{Category: "delegate", SessionID: c.rootSessionID, DelegateID: id})

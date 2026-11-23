@@ -889,12 +889,10 @@ func (l *sharedDescendantLane) attentionDiagnostics() delegateAttentionDiagnosti
 	}
 	diag.blockingStartWork = controller.hasDeliveryWorkForOwnerBlockingStartLocked(l.fixture.delegateID)
 	diag.hasReservation = controller.hasAttentionStartReservationLocked(l.fixture.delegateID)
-	if state := controller.attention[l.fixture.delegateID]; state != nil {
-		for wakeID := range state.wakeIDs {
-			diag.notedWakes = append(diag.notedWakes, wakeID)
-		}
-		slices.Sort(diag.notedWakes)
+	for wakeID := range controller.delegateAttentionWakeIDsLocked(l.fixture.delegateID) {
+		diag.notedWakes = append(diag.notedWakes, wakeID)
 	}
+	slices.Sort(diag.notedWakes)
 	ownerLive := controller.live[l.fixture.delegateID]
 	diag.ownerLivePresent = ownerLive != nil
 	diag.ownerRuntimeSet = ownerLive != nil && ownerLive.runtime != nil
@@ -4048,10 +4046,7 @@ func TestDelegateAttentionUserStopHoldSurvivesIdleReleaseRestore(t *testing.T) {
 	// the row ahead of the release below.
 	premiseTree := lane.root.delegateController
 	premiseTree.mu.Lock()
-	secondWakeArmed := false
-	if state := premiseTree.attention[lane.fixture.delegateID]; state != nil {
-		_, secondWakeArmed = state.wakeIDs[secondRowID]
-	}
+	_, secondWakeArmed := premiseTree.delegateAttentionWakeIDsLocked(lane.fixture.delegateID)[secondRowID]
 	premiseTree.mu.Unlock()
 	if !secondWakeArmed {
 		premiseTree.noteDelegateAttention(lane.fixture.delegateID, secondRowID)
@@ -4201,11 +4196,7 @@ func TestDelegateAttentionUserStopHoldSurvivesIdleReleaseRestore(t *testing.T) {
 		if live != nil {
 			liveState = fmt.Sprintf("runtime=%t", live.runtime != nil)
 		}
-		attention := tree.attention[lane.fixture.delegateID]
-		wakeIDs := ""
-		if attention != nil {
-			wakeIDs = fmt.Sprintf("%v", attention.wakeIDs)
-		}
+		wakeIDs := fmt.Sprintf("%v", tree.delegateAttentionWakeIDsLocked(lane.fixture.delegateID))
 		tree.mu.Unlock()
 		return fmt.Sprintf("requests=%v pending=%d (%v) pendErr=%v delegateBusy=%t drainAbandoned=%t wakeIDs=%s live=%s warnings=%v rootAttention=%s live: %s",
 			summaries, len(pending), pending, pendErr, delegateBusy,

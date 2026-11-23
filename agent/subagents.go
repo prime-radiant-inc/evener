@@ -3036,8 +3036,8 @@ func (a *subagent) finalizeRun(f subagentFinalize) {
 					a.sess.emit(warningDataFromError("rearm remaining delegate attention", armErr))
 				}
 			}
-		} else if clearErr := a.sess.delegateController.clearResolvedDelegateAttention(a.sess.owningDelegateID); clearErr != nil {
-			a.sess.emit(warningDataFromError("clear resolved delegate attention", clearErr))
+		} else if clearErr := a.sess.delegateController.reconcileResolvedDelegateAttention(a.sess.owningDelegateID); clearErr != nil {
+			a.sess.emit(warningDataFromError("reconcile resolved delegate attention", clearErr))
 		}
 	}
 	if done != nil {

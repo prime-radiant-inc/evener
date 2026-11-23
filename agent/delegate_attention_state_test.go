@@ -27,8 +27,8 @@ func TestReconcileDelegateAttentionDropsStateForDelegatesThatOweNothing(t *testi
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if state := c.attention["dlg_stale"]; state != nil {
-		t.Fatalf("a delegate that owes no attention kept attention state: wakeIDs=%v failures=%d parked=%v turn=%d",
-			state.wakeIDs, state.restoreFailures, state.parked, state.driveTurn)
+		t.Fatalf("a delegate that owes no attention kept attention state: rows=%v failures=%d parked=%v turn=%d",
+			c.durable["dlg_stale"].PendingAttention, state.restoreFailures, state.parked, state.driveTurn)
 	}
 }
 
@@ -66,7 +66,9 @@ func TestReconcileDelegateAttentionPreservesStateForDelegatesThatStillOwe(t *tes
 	if state.driveTurn != 7 {
 		t.Fatalf("reconcile reset the drive turn of a still-owed delegate: got %d, want 7", state.driveTurn)
 	}
-	if _, owed := state.wakeIDs[attentionID]; !owed {
-		t.Fatalf("reconcile did not rebuild the owed attention id: %v", state.wakeIDs)
+	if got := c.delegateAttentionWakeIDsLocked("dlg_owed"); len(got) == 0 {
+		t.Fatalf("reconcile did not rebuild the owed attention id: %v", got)
+	} else if _, owed := got[attentionID]; !owed {
+		t.Fatalf("reconcile did not rebuild the owed attention id: %v", got)
 	}
 }
