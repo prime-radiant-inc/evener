@@ -157,7 +157,8 @@ export function ModelCatalogPanel({
   const rows = useMemo(() => buildPickerRows(catalog, query), [catalog, query]);
   const picks = useMemo(() => pickableModelRows(rows), [rows]);
   const pickKeys = useMemo(() => picks.map((row) => row.key), [picks]);
-  const { listboxId, activeIndex, activeDescendantKey, setActiveKey, handleNavigationKey } = useListbox(pickKeys);
+  const { listboxId, activeIndex, activeDescendantKey, activeKeyDropped, setActiveKey, handleNavigationKey } =
+    useListbox(pickKeys);
   // The current model can appear TWICE (once under Recent, once under its
   // provider group), but a single-select listbox may have exactly one
   // aria-selected option - so the marker goes on the first occurrence only.
@@ -204,6 +205,16 @@ export function ModelCatalogPanel({
     firstMatchQueryRef.current = null;
     setActiveKey(picks[0]?.key);
   }, [typed, picks, setActiveKey]);
+
+  // A background catalog refresh re-keys rows (their keys carry the row's
+  // position), so the row the user is on can stop resolving even though the
+  // list still shows it. Re-activate the first match rather than leave Enter
+  // with no highlight; a key that still resolves is the user's chosen row and
+  // is left alone.
+  useEffect(() => {
+    if (typed === null || !activeKeyDropped || picks.length === 0) return;
+    setActiveKey(picks[0]?.key);
+  }, [typed, activeKeyDropped, picks, setActiveKey]);
 
   function pickAt(index: number): boolean {
     const row = picks[index];

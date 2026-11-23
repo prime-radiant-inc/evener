@@ -30,6 +30,10 @@ export interface UseListboxResult {
   /** The active key only while it resolves to a listed row - the value an
    * aria-activedescendant may name. */
   activeDescendantKey: string | undefined;
+  /** True while the stored key no longer names a listed row: the row it was
+   * set to was re-keyed or removed by a refresh, so the caller should activate
+   * a replacement. The key itself stays private. */
+  activeKeyDropped: boolean;
   setActiveKey: (key: string | undefined) => void;
   /** ArrowDown/ArrowUp/Home/End, with the same clamp and preventDefault rules
    * both pickers had. Returns true when the key was consumed; Enter and every
@@ -42,6 +46,7 @@ export function useListbox(keys: readonly string[]): UseListboxResult {
   const [activeKey, setActiveKey] = useState<string | undefined>(undefined);
   const activeIndex = activeKey === undefined ? -1 : keys.indexOf(activeKey);
   const activeDescendantKey = activeIndex >= 0 ? keys[activeIndex] : undefined;
+  const activeKeyDropped = activeKey !== undefined && activeIndex < 0;
 
   // Keep the highlighted row visible inside the list's own scroll container -
   // both for the current value on open and for keyboard walks past the fold.
@@ -80,5 +85,5 @@ export function useListbox(keys: readonly string[]): UseListboxResult {
     }
   }
 
-  return { listboxId, activeIndex, activeDescendantKey, setActiveKey, handleNavigationKey };
+  return { listboxId, activeIndex, activeDescendantKey, activeKeyDropped, setActiveKey, handleNavigationKey };
 }

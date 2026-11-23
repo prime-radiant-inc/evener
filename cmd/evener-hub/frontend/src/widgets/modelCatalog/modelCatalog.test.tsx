@@ -577,6 +577,42 @@ describe("keyboard", () => {
     expect(onChange).toHaveBeenCalledWith("anthropic/claude-haiku-4-5");
   });
 
+  // Row keys carry the row's position, so a background catalog refresh (here:
+  // the same model also arriving under Recent) re-keys the row the user is on
+  // even though the query and its match are unchanged. Enter must still pick
+  // the first match instead of finding a stale highlight and doing nothing.
+  test("a refresh that re-keys the active row keeps Enter on the first match", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <ModelCatalog value="" onChange={onChange} loadCatalog={vi.fn().mockResolvedValue(CATALOG)} />,
+    );
+
+    const combo = await openPicker(user);
+    await user.type(combo, "sonnet");
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
+    await waitFor(() => {
+      const id = combo.getAttribute("aria-activedescendant");
+      expect(id ? document.getElementById(id)?.textContent : null).toContain("Claude Sonnet 4.5");
+    });
+
+    rerender(
+      <ModelCatalog
+        value=""
+        onChange={onChange}
+        loadCatalog={vi.fn().mockResolvedValue({ models: [SONNET, HAIKU, GPT5], recent: [SONNET] })}
+      />,
+    );
+    // The Recent copy appears above the provider group: a shifted key set.
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+    await waitFor(() => {
+      const id = combo.getAttribute("aria-activedescendant");
+      expect(id ? document.getElementById(id)?.textContent : null).toContain("Claude Sonnet 4.5");
+    });
+    await user.keyboard("{Enter}");
+    expect(onChange).toHaveBeenCalledWith("anthropic/claude-sonnet-4-5");
+  });
+
   test("Escape closes the picker without changing the value", async () => {
     const user = userEvent.setup();
     const { onChange } = renderPicker({ value: "openai/gpt-5" });
