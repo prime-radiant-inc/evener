@@ -16,6 +16,21 @@
   gap: var(--space-1);
 }
 
+/* --- list layout (a Sheet's single-choice list) --------------------- */
+
+/* Each option is a full-width ListRow, stacked with no gaps: the row owns
+ * its 48px floor, focus ring and single-target shape. */
+.listOptions {
+  display: flex;
+  flex-direction: column;
+}
+
+/* The checked option's trailing readout, in the group's typography. */
+.selectedMark {
+  color: var(--accent);
+  font-size: var(--font-size-caption);
+}
+
 .option {
   display: inline-flex;
   align-items: center;

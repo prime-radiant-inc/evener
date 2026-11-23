@@ -19,6 +19,17 @@ function LiveRadioGroup() {
   return <RadioGroup label="Color theme" value={value} onChange={setValue} options={THEME_OPTIONS} />;
 }
 
+// The list variant: each option is a full-width ListRow radio with a trailing
+// selected mark, as the phone's setting sheets use it.
+function LiveListRadioGroup() {
+  const [value, setValue] = useState("dark");
+  return (
+    <div style={{ width: "min(100%, 22rem)" }}>
+      <RadioGroup variant="list" label="Color theme (list)" value={value} onChange={setValue} options={THEME_OPTIONS} />
+    </div>
+  );
+}
+
 export default function RadioGroupGallerySection() {
   return (
     <section>
@@ -26,6 +37,7 @@ export default function RadioGroupGallerySection() {
       <ThemeFlip>
         <div className={styles.row}>
           <LiveRadioGroup />
+          <LiveListRadioGroup />
           <RadioGroup
             label="Loud for (one option disabled)"
             value="asks"

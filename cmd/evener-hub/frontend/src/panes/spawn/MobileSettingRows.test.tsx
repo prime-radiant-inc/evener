@@ -1,6 +1,6 @@
 import type { PluginPreviewResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
 import { readModuleCss } from "../../styles/cssBlock";
@@ -54,9 +54,43 @@ test("renders all Treatment A rows in order with full-row controls", () => {
     "Access mode",
     "Plugins",
   ]);
-  expect(within(rows[0]!).getByRole("button", { name: /harness/i })).toBeTruthy();
+  expect(rows[0]!.tagName).toBe("BUTTON");
+  expect(rows[0]!.getAttribute("aria-haspopup")).toBe("dialog");
   // Branch is a read-only readout, not a picker.
-  expect(within(rows[2]!).queryByRole("button")).toBeNull();
+  expect(rows[2]!.tagName).not.toBe("BUTTON");
+});
+
+test("a picker row exposes its value and its disclosure state", async () => {
+  const user = userEvent.setup();
+  renderRows();
+
+  const row = screen.getByRole("button", { name: "Harness: evener" });
+  expect(row.getAttribute("data-label")).toBe("Harness");
+  expect(row.getAttribute("aria-expanded")).toBe("false");
+
+  await user.click(row);
+  await screen.findByRole("dialog", { name: "Choose harness" });
+  expect(row.getAttribute("aria-expanded")).toBe("true");
+
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(row.getAttribute("aria-expanded")).toBe("false"));
+});
+
+test("every mobile setting row keeps the 48px tap floor", () => {
+  renderRows();
+
+  const rows = within(screen.getByTestId("mobile-spawn-config")).getAllByTestId("mobile-spawn-row");
+  for (const row of rows) expect((row as HTMLElement).style.minHeight).toBe("48px");
+});
+
+test("a long working-directory path wraps in full", () => {
+  const cwd = "/tmp/a-very-long-directory-name/another-long-directory-name/the-final-project";
+  renderRows({ cwd });
+
+  const row = screen.getByRole("button", { name: `Working directory: ${cwd}` });
+  const value = within(row).getByText(cwd);
+  expect(value.style.whiteSpace).toBe("normal");
+  expect(value.style.overflowWrap).toBe("anywhere");
 });
 
 // Issue #198: choosing a model is one act, so it uses one control everywhere -
@@ -82,14 +116,98 @@ test("option sheets commit a selection and return focus to the row", async () =>
   renderRows({ onHarnessChange });
 
   const rowButton = screen.getByRole("button", { name: "Harness: evener" });
-  const row = rowButton.parentElement!;
   await user.click(rowButton);
   const dialog = await screen.findByRole("dialog", { name: "Choose harness" });
-  await user.click(within(dialog).getByRole("button", { name: "external" }));
+  expect(within(dialog).getByRole("radiogroup", { name: "Harness" })).toBeTruthy();
+  await user.click(within(dialog).getByRole("radio", { name: "external" }));
 
   expect(onHarnessChange).toHaveBeenCalledWith("external");
   expect(screen.queryByRole("dialog", { name: "Choose harness" })).toBeNull();
-  expect(document.activeElement).toBe(within(row).getByRole("button"));
+  expect(document.activeElement).toBe(rowButton);
+});
+
+test("the option sheet marks exactly the checked radio", async () => {
+  const user = userEvent.setup();
+  const onAccessChange = vi.fn();
+  renderRows({ onAccessChange });
+
+  await user.click(screen.getByRole("button", { name: "Access mode: (default)" }));
+  const dialog = await screen.findByRole("dialog", { name: "Choose access mode" });
+  const checked = within(dialog).getByRole("radio", { name: "(default)" });
+  const unchecked = within(dialog).getByRole("radio", { name: "workspace write" });
+  expect(checked.getAttribute("aria-checked")).toBe("true");
+  expect(checked.querySelector("[data-selected-mark]")).not.toBeNull();
+  expect(unchecked.getAttribute("aria-checked")).toBe("false");
+  expect(unchecked.querySelector("[data-selected-mark]")).toBeNull();
+
+  await user.click(unchecked);
+  expect(onAccessChange).toHaveBeenCalledWith("workspace-write");
+});
+
+test("arrow keys preview the access choice without committing; Enter commits it", async () => {
+  const user = userEvent.setup();
+  const onAccessChange = vi.fn();
+  renderRows({
+    onAccessChange,
+    accessOptions: [
+      { value: "", label: "(default)" },
+      { value: "read-only", label: "read-only" },
+      { value: "workspace-write", label: "workspace write" },
+    ],
+  });
+
+  const trigger = screen.getByRole("button", { name: "Access mode: (default)" });
+  await user.click(trigger);
+  const dialog = await screen.findByRole("dialog", { name: "Choose access mode" });
+  within(dialog).getByRole("radio", { name: "(default)" }).focus();
+
+  await user.keyboard("{ArrowDown}");
+  expect(within(dialog).getByRole("radio", { name: "read-only" }).getAttribute("aria-checked")).toBe("true");
+  await user.keyboard("{ArrowDown}");
+  expect(within(dialog).getByRole("radio", { name: "workspace write" }).getAttribute("aria-checked")).toBe("true");
+
+  expect(onAccessChange).not.toHaveBeenCalled();
+  expect(screen.getByRole("dialog", { name: "Choose access mode" })).toBe(dialog);
+  expect(document.activeElement).toBe(within(dialog).getByRole("radio", { name: "workspace write" }));
+
+  await user.keyboard("{Enter}");
+
+  expect(onAccessChange).toHaveBeenCalledWith("workspace-write");
+  expect(screen.queryByRole("dialog", { name: "Choose access mode" })).toBeNull();
+  expect(document.activeElement).toBe(trigger);
+});
+
+test("Escape after an arrow preview discards the uncommitted access choice", async () => {
+  const user = userEvent.setup();
+  const onAccessChange = vi.fn();
+  renderRows({
+    onAccessChange,
+    accessOptions: [
+      { value: "", label: "(default)" },
+      { value: "read-only", label: "read-only" },
+      { value: "workspace-write", label: "workspace write" },
+    ],
+  });
+
+  const trigger = screen.getByRole("button", { name: "Access mode: (default)" });
+  await user.click(trigger);
+  let dialog = await screen.findByRole("dialog", { name: "Choose access mode" });
+  within(dialog).getByRole("radio", { name: "(default)" }).focus();
+  await user.keyboard("{ArrowDown}");
+  expect(within(dialog).getByRole("radio", { name: "read-only" }).getAttribute("aria-checked")).toBe("true");
+
+  await user.keyboard("{Escape}");
+
+  expect(screen.queryByRole("dialog", { name: "Choose access mode" })).toBeNull();
+  expect(trigger.getAttribute("aria-label")).toBe("Access mode: (default)");
+  expect(onAccessChange).not.toHaveBeenCalled();
+
+  await user.click(trigger);
+  dialog = await screen.findByRole("dialog", { name: "Choose access mode" });
+  await waitFor(() =>
+    expect(within(dialog).getByRole("radio", { name: "(default)" }).getAttribute("aria-checked")).toBe("true"),
+  );
+  expect(within(dialog).getByRole("radio", { name: "read-only" }).getAttribute("aria-checked")).toBe("false");
 });
 
 test("browsing a directory and cancelling preserves the session directory", async () => {
@@ -98,7 +216,6 @@ test("browsing a directory and cancelling preserves the session directory", asyn
   renderRows({ onCwdChange, complete: async () => ["/tmp/project/child"] });
 
   const rowButton = screen.getByRole("button", { name: "Working directory: /tmp/project" });
-  const row = rowButton.parentElement!;
   await user.click(rowButton);
   const dialog = await screen.findByRole("dialog", { name: "Choose directory" });
   await user.click(await within(dialog).findByText("child"));
@@ -106,7 +223,7 @@ test("browsing a directory and cancelling preserves the session directory", asyn
   await user.keyboard("{Escape}");
 
   expect(screen.queryByRole("dialog", { name: "Choose directory" })).toBeNull();
-  expect(document.activeElement).toBe(within(row).getByRole("button"));
+  expect(document.activeElement).toBe(rowButton);
 });
 
 test("selecting a recent working directory stamps the committed value, not the previous cwd", async () => {
@@ -502,7 +619,7 @@ test("plugin preview error allows only safe removal from the last preview and ex
 
   const pluginRow = screen.getByTestId("mobile-spawn-config").querySelector('[data-label="Plugins"]') as HTMLElement;
   expect(pluginRow.dataset.state).toBe("error");
-  await user.click(within(pluginRow).getByRole("button"));
+  await user.click(pluginRow);
   const dialog = await screen.findByRole("dialog", { name: "Plugins for this session" });
   expect((within(dialog).getByRole("switch", { name: "alpha" }) as HTMLButtonElement).disabled).toBe(false);
   expect((within(dialog).getByRole("switch", { name: "beta" }) as HTMLButtonElement).disabled).toBe(true);
@@ -516,11 +633,10 @@ test("plugin preview error allows only safe removal from the last preview and ex
   expect(screen.queryByText("0 of 0")).toBeNull();
 });
 
-test("mobile setting rows keep the approved 48px body-text baseline", () => {
+test("the mobile setting value keeps the approved body-text baseline", () => {
   const css = readModuleCss(import.meta.url, "MobileSettingRows.module.css");
-  const rowRule = css.match(/\.rowButton,\s*\.readOnly\s*\{([\s\S]*?)\n\}/)?.[1];
+  const valueRule = css.match(/\.rowValue\s*\{([\s\S]*?)\n\}/)?.[1];
 
-  expect(rowRule).toContain("min-height: 48px");
-  expect(rowRule).toContain("font-size: var(--font-size-body)");
-  expect(rowRule).not.toContain("font-size: var(--font-size-ui)");
+  expect(valueRule).toContain("font-size: var(--font-size-body)");
+  expect(valueRule).not.toContain("font-size: var(--font-size-ui)");
 });
