@@ -27,11 +27,13 @@ import {
 } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
+import { requireClass } from "../../widgets/internal/requireClass";
 import { ClientProvider } from "../clientContext";
 import { conversationPaneLifetime } from "../paneLifetime";
 import { installFocusedScope } from "../statusbar/scopeTestUtils";
 import { currentSessionRef, type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { ActivitySidebar } from "./ActivitySidebar";
+import styles from "./activitybar.module.css";
 import { ActivityBoundaryObserver } from "./activityPagingTestUtils";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitySidebarStore";
 import { ActivitySidebar as ActivitySidebarUnderTest } from "./activitySidebarTestUtils";
@@ -352,6 +354,20 @@ test("the Overview slides in by its own width and leaves again", async () => {
   expect(aside.style.transform).toMatch(/translateX\(100%\)/);
   act(() => activitySidebarStore.getState().close());
   await waitFor(() => expect(screen.queryByTestId("activity-sidebar")).toBeNull());
+});
+
+// S2-F08: the focus scope IS the flex body. The aside used to style
+// FocusScope's unstyled wrapper with `.sidebar > div`; if a wrapper comes
+// back, the body loses its flex fill silently.
+test("the sidebar's focus scope is its flex body, not a wrapper around it", async () => {
+  connectionStore.getState().connect(activityClient());
+  installFocusedScope(ref);
+  activitySidebarStore.getState().openWith("about");
+  mount();
+  const sidebar = await screen.findByTestId("activity-sidebar");
+  const root = sidebar.firstElementChild;
+  expect(root?.classList.contains(requireClass(styles.focusBody, "activitybar.module.css", "focusBody"))).toBe(true);
+  expect(root?.getAttribute("tabindex")).toBe("-1");
 });
 
 test("Escape dismisses only an unclaimed sidebar gesture", async () => {
