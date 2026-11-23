@@ -5,9 +5,13 @@ import { createRoot } from "react-dom/client";
 import { afterEach, expect, test, vi } from "vitest";
 import { HoverCard as FromBarrel } from "..";
 import { appendPopout } from "../internal/popoutTestUtils";
+import { requireClass } from "../internal/requireClass";
 import { HoverCard, LONG_PRESS_MS } from ".";
+import styles from "./hovercard.module.css";
 import { installHoverlessMatchMedia } from "./hovercardTestUtils";
 import { POINTER_CLICK_WINDOW_MS, SHOW_DELAY_MS } from "./useFloatingLabel";
+
+const BLOCK = requireClass(styles.block, "hovercard.module.css", "block");
 
 afterEach(() => {
   cleanup();
@@ -26,7 +30,7 @@ test("the block presentation is opt-in and lands on the wrapper", () => {
     </HoverCard>,
   );
   const blockTrigger = screen.getByRole("button", { name: "job_01HZX7P9" });
-  expect(blockTrigger.parentElement?.className.split(" ")).toContain("block");
+  expect(blockTrigger.parentElement?.className.split(" ")).toContain(BLOCK);
 
   cleanup();
   render(
@@ -35,7 +39,7 @@ test("the block presentation is opt-in and lands on the wrapper", () => {
     </HoverCard>,
   );
   const plainTrigger = screen.getByRole("button", { name: "job_01HZX7P9" });
-  expect(plainTrigger.parentElement?.className.split(" ")).not.toContain("block");
+  expect(plainTrigger.parentElement?.className.split(" ")).not.toContain(BLOCK);
 });
 
 test("the plain-node gallery child keeps the automatic description association", () => {
