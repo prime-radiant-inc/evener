@@ -176,6 +176,7 @@ func ShapeRequest(req Request, res registry.Resolved) Request {
 	// history with no server-side storage.
 	if res.Transport.Auth == registry.AuthOAuthGitHubCopilot {
 		req.PreviousResponseID, req.ConversationID, req.Store = "", "", nil
+		req.HistoryMode = HistoryModeFullHistory
 	}
 	// A target receives only tool-result media its row can see; direct client
 	// callers go through this shaping too, so the estimate and the wire agree

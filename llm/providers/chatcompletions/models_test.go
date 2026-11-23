@@ -3,6 +3,7 @@ package chatcompletions
 import (
 	"context"
 	"errors"
+	"net/http"
 	"slices"
 	"testing"
 
@@ -450,6 +451,13 @@ const copilotRoster = `{"data":[
  {"id":"embedding-only","supported_endpoints":["/embeddings"],"capabilities":{"family":"gpt"}}
 ]}`
 
+// withCopilotAuth returns res as the subscription roster's transport: the
+// listing policy is selected by the auth scheme, not by the payload's shape.
+func withCopilotAuth(res registry.Resolved) registry.Resolved {
+	res.Transport.Auth = registry.AuthOAuthGitHubCopilot
+	return res
+}
+
 // TestListModelsRoutesAccountRoster pins the subscription roster's routing:
 // the account states which wire endpoints each id serves, so Claude goes to
 // Messages, GPT prefers Responses, chat-only rows stay on Chat, absent
@@ -458,7 +466,8 @@ const copilotRoster = `{"data":[
 func TestListModelsRoutesAccountRoster(t *testing.T) {
 	t.Parallel()
 	srv, _ := server(t, 200, copilotRoster)
-	rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil))
+	ctx := llm.WithScopedAuthenticator(context.Background(), registry.AuthOAuthGitHubCopilot, copilotTestAuthenticator{})
+	rows, err := (&Protocol{Client: srv.Client()}).ListModels(ctx, withCopilotAuth(liveRes(srv, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -514,4 +523,98 @@ func TestListModelsRoutesAccountRoster(t *testing.T) {
 			t.Fatalf("%s must stay text-only until its own live image proof: %+v", id, unproven.Caps.InputModalities)
 		}
 	}
+}
+
+// TestListModelsCopilotPolicyComesFromAuthScheme pins the policy selector: a
+// Copilot row with no optional metadata still gets Copilot treatment, so its
+// advertised prices are not published as live cost and its absent endpoint
+// metadata falls back to Chat. The same payload on a non-Copilot
+// OpenAI-compatible endpoint keeps the gateway's price, vision, and protocol
+// behavior without any Copilot filtering.
+func TestListModelsCopilotPolicyComesFromAuthScheme(t *testing.T) {
+	t.Parallel()
+	const priced = `{"id":"no-metadata-priced","pricing":{"prompt":"0.000001","completion":"0.000002"}}`
+	copilot := listRowsWith(t, withCopilotAuth, priced)
+	if len(copilot) != 1 {
+		t.Fatalf("copilot rows = %+v, want the no-metadata row", copilot)
+	}
+	if copilot[0].Caps.Cost != nil {
+		t.Fatalf("copilot row published dollar prices: %+v", copilot[0].Caps.Cost)
+	}
+	if copilot[0].Protocol != registry.ProtocolOpenAIChat {
+		t.Fatalf("copilot row protocol = %q, want Chat fallback", copilot[0].Protocol)
+	}
+
+	const gatewayShaped = `{"id":"gateway-shaped","supported_endpoints":["/responses","/chat/completions"],"model_picker_enabled":false,"capabilities":{"family":"gpt","vision":true},"policy":{"state":"disabled"},"pricing":{"prompt":"0.000001","completion":"0.000002"}}`
+	gateway := listRowsWith(t, nil, gatewayShaped)
+	if len(gateway) != 1 {
+		t.Fatalf("non-copilot rows = %+v, want the row kept without Copilot filtering", gateway)
+	}
+	row := gateway[0]
+	if row.Caps.Cost == nil || row.Caps.Cost.Input != 1 || row.Caps.Cost.Output != 2 {
+		t.Fatalf("non-copilot cost = %+v, want the gateway's dollar prices", row.Caps.Cost)
+	}
+	if !row.Caps.AcceptsModality("image") {
+		t.Fatalf("non-copilot vision = %+v, want the gateway's vision capability", row.Caps.InputModalities)
+	}
+	if row.Protocol != "" || row.Transport != nil {
+		t.Fatalf("non-copilot protocol = %q transport = %+v, want the gateway default with no routing", row.Protocol, row.Transport)
+	}
+
+	copilotShaped := listRowsWith(t, withCopilotAuth, gatewayShaped)
+	if len(copilotShaped) != 0 {
+		t.Fatalf("copilot rows = %+v, want the picker-hidden, policy-disabled row dropped", copilotShaped)
+	}
+}
+
+// TestListModelsDropsExplicitlyEmptySupportedEndpoints pins endpoint presence:
+// an absent supported_endpoints is absent metadata and falls back to Chat, an
+// explicitly empty list advertises no supported protocol and drops the row,
+// and a nonempty list with no Evener-supported path drops it too. A
+// non-Copilot endpoint keeps its rows whatever the field says.
+func TestListModelsDropsExplicitlyEmptySupportedEndpoints(t *testing.T) {
+	t.Parallel()
+	const (
+		empty       = `{"id":"empty-endpoints","supported_endpoints":[]}`
+		absent      = `{"id":"absent-endpoints"}`
+		unsupported = `{"id":"unsupported-endpoints","supported_endpoints":["/embeddings"]}`
+	)
+	if rows := listRowsWith(t, withCopilotAuth, empty); len(rows) != 0 {
+		t.Fatalf("copilot rows = %+v, want an explicitly empty endpoint list dropped", rows)
+	}
+	rows := listRowsWith(t, withCopilotAuth, absent)
+	if len(rows) != 1 || rows[0].Protocol != registry.ProtocolOpenAIChat {
+		t.Fatalf("copilot rows = %+v, want absent metadata to keep the Chat fallback", rows)
+	}
+	if rows := listRowsWith(t, withCopilotAuth, unsupported); len(rows) != 0 {
+		t.Fatalf("copilot rows = %+v, want a list with no supported path dropped", rows)
+	}
+	if rows := listRowsWith(t, nil, empty); len(rows) != 1 || rows[0].Protocol != "" {
+		t.Fatalf("non-copilot rows = %+v, want the row kept without Copilot routing", rows)
+	}
+}
+
+// listRowsWith runs the live /models reader against one-row bodies, applying
+// resMutate to the resolved transport when it is non-nil.
+func listRowsWith(t *testing.T, resMutate func(registry.Resolved) registry.Resolved, row string) []registry.Model {
+	t.Helper()
+	srv, _ := server(t, 200, `{"data":[`+row+`]}`)
+	res := liveRes(srv, nil)
+	if resMutate != nil {
+		res = resMutate(res)
+	}
+	ctx := llm.WithScopedAuthenticator(context.Background(), registry.AuthOAuthGitHubCopilot, copilotTestAuthenticator{})
+	rows, err := (&Protocol{Client: srv.Client()}).ListModels(ctx, res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rows
+}
+
+// copilotTestAuthenticator stands in for a stored Copilot session: the listing
+// policy tests select the transport scheme, not the credential.
+type copilotTestAuthenticator struct{}
+
+func (copilotTestAuthenticator) Apply(context.Context, *http.Request, registry.Resolved) error {
+	return nil
 }

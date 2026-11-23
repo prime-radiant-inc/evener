@@ -183,6 +183,10 @@ type deviceFlow struct {
 	// NextPollAt is the earliest Copilot poll that may reach GitHub; the
 	// device code's interval owns the pace.
 	NextPollAt time.Time
+	// CopilotPolling marks the one outbound Copilot completion in flight. A
+	// concurrent poll is answered locally as pending; the owner performs the
+	// provider poll, account/session preparation, save, and commit once.
+	CopilotPolling bool
 	// EndpointFingerprint is the endpoint the instance resolved to when the
 	// flow was created, as on hubAuthFlow.
 	EndpointFingerprint string
@@ -1395,11 +1399,13 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 
 // pollCopilotDevice polls one Copilot device flow. The device code owns the
 // pace and the expiry; NextPollAt is the hub's only extra state, so a poll
-// before it is answered locally and a slow_down moves it out. The authorized
-// poll prepares the login's record before the credential section - its account
-// and session requests must not hold credMu - then saves it through the
-// service's own locked write under the same credential and endpoint fences as
-// the Codex flow.
+// before it is answered locally and a slow_down moves it out. One caller owns
+// the outbound completion: a concurrent poll is answered locally as pending,
+// so the provider is asked once and one commit is visible. The authorized poll
+// prepares the login's record before the credential section - its account and
+// session requests must not hold credMu - then saves it through the service's
+// own locked write under the same credential and endpoint fences as the Codex
+// flow.
 func (c *hubAuthController) pollCopilotDevice(ctx context.Context, provider, flowID string, flow deviceFlow, params appwire.AuthDevicePollParams) (resp appwire.AuthDevicePollResponse, err error) {
 	now := c.now()
 	if !now.Before(flow.Copilot.Expiry) {
@@ -1409,6 +1415,11 @@ func (c *hubAuthController) pollCopilotDevice(ctx context.Context, provider, flo
 	if now.Before(flow.NextPollAt) {
 		return appwire.AuthDevicePollResponse{State: "pending"}, nil
 	}
+	flow, ok := c.claimCopilotPoll(flowID, flow.Copilot.DeviceCode, now)
+	if !ok {
+		return appwire.AuthDevicePollResponse{State: "pending"}, nil
+	}
+	defer c.releaseCopilotPoll(flowID, flow.Copilot.DeviceCode)
 	tokens, state, interval, err := githubcopilot.PollDeviceOnce(ctx, c.client, c.copilotCfg, flow.Copilot)
 	if err != nil {
 		return appwire.AuthDevicePollResponse{}, err
@@ -1456,6 +1467,38 @@ func (c *hubAuthController) pollCopilotDevice(ctx context.Context, provider, flo
 	c.dropDeviceFlow(flowID)
 	status, err := c.statusAfterWrite(provider, applied, c.copilotInstanceStatusByName)
 	return appwire.AuthDevicePollResponse{State: "authorized", Status: &status}, err
+}
+
+// claimCopilotPoll reserves the flow's one outbound completion. It reports
+// false when the flow is gone, another caller owns the poll, or the live flow's
+// pace still says wait; every one of those is a local pending answer, and a
+// failed owner releases the claim so a later poll can retry.
+func (c *hubAuthController) claimCopilotPoll(flowID, deviceCode string, now time.Time) (deviceFlow, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	flow, ok := c.deviceFlows[flowID]
+	if !ok || flow.Copilot.DeviceCode != deviceCode {
+		return deviceFlow{}, false
+	}
+	if flow.CopilotPolling || now.Before(flow.NextPollAt) {
+		return deviceFlow{}, false
+	}
+	flow.CopilotPolling = true
+	c.deviceFlows[flowID] = flow
+	return flow, true
+}
+
+// releaseCopilotPoll clears the in-flight claim on the live flow, if it is
+// still there. A completion that dropped the flow has already released it.
+func (c *hubAuthController) releaseCopilotPoll(flowID, deviceCode string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	flow, ok := c.deviceFlows[flowID]
+	if !ok || flow.Copilot.DeviceCode != deviceCode {
+		return
+	}
+	flow.CopilotPolling = false
+	c.deviceFlows[flowID] = flow
 }
 
 // setDeviceFlowNextPoll records a pending poll's pace on the live flow.

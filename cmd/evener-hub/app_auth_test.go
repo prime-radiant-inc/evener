@@ -53,14 +53,15 @@ func writeCopilotOAuthRecord(t *testing.T, stateDir, instance, email string) git
 // Requests are counted by path, which is how a test proves a poll stayed
 // local.
 type copilotDeviceTransport struct {
-	mu          sync.Mutex
-	calls       map[string]int
-	device      string
-	polls       []string
-	user        string
-	session     string
-	userEntered chan struct{}
-	userRelease chan struct{}
+	mu            sync.Mutex
+	calls         map[string]int
+	device        string
+	polls         []string
+	user          string
+	session       string
+	userEntered   chan struct{}
+	userRelease   chan struct{}
+	userEnterOnce *sync.Once
 }
 
 func newCopilotDeviceTransport() *copilotDeviceTransport {
@@ -81,6 +82,7 @@ func (t *copilotDeviceTransport) RoundTrip(req *http.Request) (*http.Response, e
 	call := t.calls[req.URL.Path]
 	body := ""
 	var entered, release chan struct{}
+	var enterOnce *sync.Once
 	switch req.URL.Path {
 	case "/login/device/code":
 		body = t.device
@@ -88,7 +90,7 @@ func (t *copilotDeviceTransport) RoundTrip(req *http.Request) (*http.Response, e
 		index := min(call-1, len(t.polls)-1)
 		body = t.polls[index]
 	case "/user":
-		entered, release = t.userEntered, t.userRelease
+		entered, release, enterOnce = t.userEntered, t.userRelease, t.userEnterOnce
 		body = t.user
 	case "/copilot_internal/v2/token":
 		body = t.session
@@ -98,7 +100,7 @@ func (t *copilotDeviceTransport) RoundTrip(req *http.Request) (*http.Response, e
 	}
 	t.mu.Unlock()
 	if entered != nil {
-		close(entered)
+		enterOnce.Do(func() { close(entered) })
 	}
 	if release != nil {
 		<-release
@@ -125,6 +127,7 @@ func (t *copilotDeviceTransport) blockAccountPreparation() (entered <-chan struc
 	enteredCh := make(chan struct{})
 	releaseCh := make(chan struct{})
 	t.userEntered, t.userRelease = enteredCh, releaseCh
+	t.userEnterOnce = &sync.Once{}
 	var once sync.Once
 	return enteredCh, func() { once.Do(func() { close(releaseCh) }) }
 }
@@ -466,6 +469,116 @@ func TestAuth_CopilotDevicePollPreparesOutsideTheCredentialLock(t *testing.T) {
 	if resp.State != "authorized" {
 		t.Fatalf("DevicePoll = %+v, want authorized after preparation released", resp)
 	}
+}
+
+// TestAuth_CopilotDevicePollConcurrentCompletion pins single-flight completion:
+// two callers that both pass NextPollAt share one provider poll and one visible
+// commit. Only one caller runs the authorized account/session/save work; the
+// other is answered locally as pending while that work is in flight. A failed
+// attempt releases the claim, so the flow is not wedged as permanently busy.
+func TestAuth_CopilotDevicePollConcurrentCompletion(t *testing.T) {
+	t.Run("one provider completion and one commit", func(t *testing.T) {
+		ctrl, transport, now := newCopilotDeviceTestController(t, copilotDeviceInstanceToml)
+		transport.polls = []string{`{"access_token":"github-access-token","token_type":"bearer","scope":"read:user"}`}
+		entered, release := transport.blockAccountPreparation()
+		defer release()
+		var mu sync.Mutex
+		var commits []authCommitted
+		ctrl.OnCommitted(func(change authCommitted) {
+			mu.Lock()
+			commits = append(commits, change)
+			mu.Unlock()
+		})
+		flowID := startCopilotDeviceFlow(t, ctrl, "work")
+		*now = now.Add(5 * time.Second)
+
+		type pollResult struct {
+			resp appwire.AuthDevicePollResponse
+			err  error
+		}
+		poll := func() <-chan pollResult {
+			result := make(chan pollResult, 1)
+			go func() {
+				resp, err := ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "work", FlowID: flowID})
+				result <- pollResult{resp: resp, err: err}
+			}()
+			return result
+		}
+		first := poll()
+		select {
+		case <-entered:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the Copilot account request never started")
+		}
+
+		second := poll()
+		secondAnswered := false
+		select {
+		case got := <-second:
+			secondAnswered = true
+			if got.err != nil {
+				t.Fatalf("concurrent DevicePoll: %v", got.err)
+			}
+			if got.resp.State != "pending" {
+				t.Fatalf("concurrent DevicePoll = %+v, want a local pending answer", got.resp)
+			}
+		case <-time.After(2 * time.Second):
+		}
+
+		release()
+		got := <-first
+		if got.err != nil {
+			t.Fatalf("winning DevicePoll: %v", got.err)
+		}
+		if got.resp.State != "authorized" || got.resp.Status == nil {
+			t.Fatalf("winning DevicePoll = %+v, want authorized with a status", got.resp)
+		}
+		if !secondAnswered {
+			t.Fatal("a concurrent poll waited for the first completion: it must answer locally without a second provider poll")
+		}
+		if calls := transport.callCount("/login/oauth/access_token"); calls != 1 {
+			t.Fatalf("provider polls = %d, want one shared completion", calls)
+		}
+		if calls := transport.callCount("/user"); calls != 1 {
+			t.Fatalf("account preparations = %d, want exactly one", calls)
+		}
+		if calls := transport.callCount("/copilot_internal/v2/token"); calls != 1 {
+			t.Fatalf("session exchanges = %d, want exactly one", calls)
+		}
+		mu.Lock()
+		gotCommits := len(commits)
+		mu.Unlock()
+		if gotCommits != 1 {
+			t.Fatalf("commit notifications = %d, want exactly one", gotCommits)
+		}
+		record, err := githubcopilot.LoadAuth(ctrl.stateDir, "work")
+		if err != nil {
+			t.Fatalf("LoadAuth(work): %v", err)
+		}
+		if record.AccessToken != "github-access-token" || record.CopilotToken != "copilot-session-token" {
+			t.Fatal("saved record did not carry the single completion's tokens")
+		}
+	})
+
+	t.Run("an error releases the poll claim", func(t *testing.T) {
+		ctrl, transport, now := newCopilotDeviceTestController(t, copilotDeviceInstanceToml)
+		transport.polls = []string{`{}`, `{"error":"authorization_pending"}`}
+		flowID := startCopilotDeviceFlow(t, ctrl, "work")
+		*now = now.Add(5 * time.Second)
+		if _, err := ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "work", FlowID: flowID}); err == nil {
+			t.Fatal("first poll error = nil, want the malformed token response to fail")
+		}
+		resp, err := ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "work", FlowID: flowID})
+		if err != nil {
+			t.Fatalf("retry after a failed completion: %v", err)
+		}
+		if resp.State != "pending" {
+			t.Fatalf("retry after a failed completion = %+v, want pending", resp)
+		}
+		if calls := transport.callCount("/login/oauth/access_token"); calls != 2 {
+			t.Fatalf("provider polls = %d, want 2: a failed attempt must release the flow", calls)
+		}
+	})
 }
 
 // TestAuthTestCredentialsBindsTheProbeRegistrysCopilotScope is the Copilot

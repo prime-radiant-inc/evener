@@ -61,8 +61,9 @@ func AuthFilePath(stateDir, instance string) string {
 }
 
 // LoadAuth reads and validates the record for instance. A missing record is
-// ErrAuthNotFound; unreadable, malformed, mis-schemed, mis-instanced, or
-// incomplete records wrap ErrAuthCorrupt.
+// ErrAuthNotFound; a record that cannot be read returns the read error
+// unwrapped, while malformed, mis-schemed, mis-instanced, or incomplete
+// records wrap ErrAuthCorrupt.
 func LoadAuth(stateDir, instance string) (AuthRecord, error) {
 	path := AuthFilePath(stateDir, instance)
 	if path == "" {

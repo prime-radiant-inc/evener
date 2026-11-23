@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -71,13 +70,6 @@ type copilotLiveModel struct {
 
 const copilotProbeStateDirEnv = "EVENER_GITHUB_COPILOT_PROBE_STATE_DIR"
 
-// copilotProbeBootstrapDirEnv names the test-only directory holding Pi's
-// identity token response (token.json) and current Copilot session
-// response (session.json). The live probe converts them into its own
-// scheme-bound record; the files themselves are never used as production
-// credentials.
-const copilotProbeBootstrapDirEnv = "EVENER_GITHUB_COPILOT_PROBE_BOOTSTRAP_DIR"
-
 // copilotProbeStateDir returns the probe's state directory: the operator's
 // session-scratch directory when EVENER_GITHUB_COPILOT_PROBE_STATE_DIR is set,
 // else a throwaway t.TempDir(). A set directory is created owner-only so the
@@ -107,72 +99,10 @@ func copilotProbeCanReuseRecord(stateDir, instance string, now time.Time) bool {
 	return err == nil && !record.NeedsLogin(now)
 }
 
-type copilotProbeBootstrapToken struct {
-	AccessToken string `json:"access_token"`
-}
-
-type copilotProbeBootstrapSession struct {
-	Token     string `json:"token"`
-	ExpiresAt int64  `json:"expires_at"`
-}
-
-// readCopilotProbeBootstrapRecord converts the scratch GitHub token response
-// and Copilot session response into one validated scheme-bound record. It never
-// returns or logs the token values.
-func readCopilotProbeBootstrapRecord(dir, instance string, now time.Time) (githubcopilot.AuthRecord, error) {
-	read := func(name string, out any) error {
-		data, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			return fmt.Errorf("read %s: %w", name, err)
-		}
-		if err := json.Unmarshal(data, out); err != nil {
-			return fmt.Errorf("parse %s: %w", name, err)
-		}
-		return nil
-	}
-	var token copilotProbeBootstrapToken
-	if err := read("token.json", &token); err != nil {
-		return githubcopilot.AuthRecord{}, err
-	}
-	var session copilotProbeBootstrapSession
-	if err := read("session.json", &session); err != nil {
-		return githubcopilot.AuthRecord{}, err
-	}
-	if strings.TrimSpace(token.AccessToken) == "" || strings.TrimSpace(session.Token) == "" || session.ExpiresAt <= now.Unix() {
-		return githubcopilot.AuthRecord{}, errors.New("scratch Copilot credentials are incomplete or expired")
-	}
-	record := githubcopilot.AuthRecord{
-		Instance: instance, Scheme: githubcopilot.AuthScheme, Version: 1,
-		AccessToken: token.AccessToken, TokenType: "bearer", ObtainedAt: now,
-		CopilotToken: session.Token, CopilotExpiry: time.Unix(session.ExpiresAt, 0),
-	}
-	return record, nil
-}
-
-// bootstrapCopilotProbeRecord resolves the scratch record's account identity
-// and persists the scheme-bound record into the probe state directory.
-func bootstrapCopilotProbeRecord(ctx context.Context, t *testing.T, cfg githubcopilot.Config, stateDir, instance, bootstrapDir string) {
-	t.Helper()
-	record, err := readCopilotProbeBootstrapRecord(bootstrapDir, instance, time.Now())
-	if err != nil {
-		t.Fatalf("bootstrap scratch Copilot credentials: %v", err)
-	}
-	account, err := githubcopilot.FetchAccount(ctx, &http.Client{Timeout: cfg.HTTPTimeout}, cfg, record.AccessToken)
-	if err != nil {
-		t.Fatalf("bootstrap GitHub account lookup: %v", err)
-	}
-	record.AccountID, record.Email = account.ID, account.Email
-	if err := githubcopilot.SaveAuth(stateDir, instance, record); err != nil {
-		t.Fatalf("bootstrap probe record: %v", err)
-	}
-	t.Logf("bootstrapped a Copilot record for account %s from scratch credentials", account.ID)
-}
-
 // copilotProbeLogin obtains a usable Copilot record in stateDir - reusing a
-// live one, converting the scratch bootstrap credentials, or running the
-// shipped device login - and then forces one shipped session renewal so the
-// exchange runs rather than a cached session serving the gate. Tokens, device
-// codes, and record contents never reach the log.
+// live one or running the shipped device login - and then forces one shipped
+// session renewal so the exchange runs rather than a cached session serving the
+// gate. Tokens, device codes, and record contents never reach the log.
 func copilotProbeLogin(ctx context.Context, t *testing.T, stateDir string) {
 	t.Helper()
 	const instance = "github-copilot"
@@ -181,16 +111,13 @@ func copilotProbeLogin(ctx context.Context, t *testing.T, stateDir string) {
 		cfg.ClientID = id
 	}
 	service := githubcopilot.NewService(cfg, nil)
-	switch bootstrapDir := strings.TrimSpace(os.Getenv(copilotProbeBootstrapDirEnv)); {
-	case copilotProbeCanReuseRecord(stateDir, instance, time.Now()):
+	if copilotProbeCanReuseRecord(stateDir, instance, time.Now()) {
 		status, err := service.Status(stateDir, instance)
 		if err != nil {
 			t.Fatalf("status of stored record: %v", err)
 		}
 		t.Logf("reusing the stored Copilot record for account %s", status.AccountID)
-	case bootstrapDir != "":
-		bootstrapCopilotProbeRecord(ctx, t, cfg, stateDir, instance, bootstrapDir)
-	default:
+	} else {
 		t.Log("no reusable stored Copilot record; starting device login")
 		status, err := service.LoginWithDevice(ctx, stateDir, instance, func(dc githubcopilot.DeviceCode) {
 			// The device prompt is the only output a human needs; tokens and device
@@ -522,71 +449,6 @@ func TestCopilotProbeReusesOnlyRefreshableRecord(t *testing.T) {
 	}
 	if copilotProbeCanReuseRecord(dir, instance, now) {
 		t.Fatal("corrupt record reported reusable")
-	}
-}
-
-// TestCopilotProbeBootstrapReadsScratchRecord pins the test-only bootstrap: the
-// Pi-identity GitHub token response and Copilot session response become one
-// scheme-bound record without either token being parsed from anywhere else.
-func TestCopilotProbeBootstrapReadsScratchRecord(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, 11, 22, 7, 0, 0, 0, time.UTC)
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "token.json"),
-		[]byte(`{"access_token":"github-bootstrap","token_type":"bearer","scope":""}`), 0o600); err != nil {
-		t.Fatalf("write token.json: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "session.json"),
-		[]byte(fmt.Sprintf(`{"token":"copilot-bootstrap","expires_at":%d}`, now.Add(30*time.Minute).Unix())), 0o600); err != nil {
-		t.Fatalf("write session.json: %v", err)
-	}
-	record, err := readCopilotProbeBootstrapRecord(dir, "github-copilot", now)
-	if err != nil {
-		t.Fatalf("readCopilotProbeBootstrapRecord() error = %v", err)
-	}
-	if record.AccessToken != "github-bootstrap" || record.CopilotToken != "copilot-bootstrap" {
-		t.Fatal("bootstrap record did not carry the scratch GitHub and Copilot tokens")
-	}
-	if record.Scheme != githubcopilot.AuthScheme || record.Instance != "github-copilot" || record.Version != 1 {
-		t.Fatalf("bootstrap record identity = scheme %q instance %q version %d", record.Scheme, record.Instance, record.Version)
-	}
-	if !record.CopilotExpiry.Equal(now.Add(30*time.Minute)) || !record.ObtainedAt.Equal(now) {
-		t.Fatalf("bootstrap times = session %v obtained %v", record.CopilotExpiry, record.ObtainedAt)
-	}
-	if record.RefreshToken != "" || record.RefreshRejected {
-		t.Fatal("bootstrap record invented GitHub refresh state")
-	}
-}
-
-func TestCopilotProbeBootstrapRejectsExpiredOrIncompleteFiles(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, 11, 22, 7, 0, 0, 0, time.UTC)
-	cases := map[string]map[string]string{
-		"expired session": {
-			"token.json":   `{"access_token":"github-bootstrap"}`,
-			"session.json": fmt.Sprintf(`{"token":"copilot-bootstrap","expires_at":%d}`, now.Add(-time.Minute).Unix()),
-		},
-		"missing github token": {
-			"token.json":   `{}`,
-			"session.json": fmt.Sprintf(`{"token":"copilot-bootstrap","expires_at":%d}`, now.Add(30*time.Minute).Unix()),
-		},
-		"missing session token": {
-			"token.json":   `{"access_token":"github-bootstrap"}`,
-			"session.json": fmt.Sprintf(`{"expires_at":%d}`, now.Add(30*time.Minute).Unix()),
-		},
-	}
-	for name, files := range cases {
-		t.Run(name, func(t *testing.T) {
-			dir := t.TempDir()
-			for file, body := range files {
-				if err := os.WriteFile(filepath.Join(dir, file), []byte(body), 0o600); err != nil {
-					t.Fatalf("write %s: %v", file, err)
-				}
-			}
-			if _, err := readCopilotProbeBootstrapRecord(dir, "github-copilot", now); err == nil {
-				t.Fatal("bootstrap accepted invalid scratch credentials")
-			}
-		})
 	}
 }
 
@@ -1059,6 +921,9 @@ func requireCopilotLiveToolLoop(t *testing.T, scenario copilotLiveScenario, fami
 	if strings.TrimSpace(second.Text()) == "" {
 		t.Fatal("final response after the tool result was empty")
 	}
+	if !strings.Contains(second.Text(), "SECRET-CODE-7") {
+		t.Fatal("final response did not repeat the tool result SECRET-CODE-7: the continuation did not consume it")
+	}
 
 	sent := recorder.snapshot()[before:]
 	if len(sent) != 2 {
@@ -1071,6 +936,9 @@ func requireCopilotLiveToolLoop(t *testing.T, scenario copilotLiveScenario, fami
 		t.Fatalf("tool-result request X-Initiator = %q, want agent", sent[1].Initiator)
 	}
 	for _, req := range sent {
+		if req.Path != scenario.Endpoint {
+			t.Fatalf("request path = %q, want the selected scenario endpoint %q", req.Path, scenario.Endpoint)
+		}
 		if req.InteractionID != interactionID {
 			t.Fatalf("X-Interaction-Id = %q, want %q", req.InteractionID, interactionID)
 		}

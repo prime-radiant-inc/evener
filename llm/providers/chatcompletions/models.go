@@ -29,7 +29,7 @@ type modelEntry struct {
 	MaxCompletionTokens int                             `json:"max_completion_tokens"`
 	MaxOutputTokens     int                             `json:"max_output_tokens"`
 	SupportedParameters []string                        `json:"supported_parameters"`
-	SupportedEndpoints  []string                        `json:"supported_endpoints"`
+	SupportedEndpoints  *[]string                       `json:"supported_endpoints"`
 	ModelPickerEnabled  *bool                           `json:"model_picker_enabled"`
 	Architecture        requestutil.GatewayArchitecture `json:"architecture"`
 	Capabilities        accountCapabilities             `json:"capabilities"`
@@ -77,15 +77,9 @@ func provenImageModel(id string) bool {
 	return strings.EqualFold(strings.TrimSpace(id), "claude-haiku-5.5")
 }
 
-// accountRow reports whether the row publishes the subscription roster's
-// shape. Those rows carry endpoint routing and are the ones whose advertised
-// prices are not billed as live dollar prices.
-func (m modelEntry) accountRow() bool {
-	return len(m.SupportedEndpoints) > 0 || m.Capabilities.Family != "" || m.Policy.State != ""
-}
-
-// dropped reports roster rows the account asks Evener not to offer: a row the
-// picker excludes and a policy-disabled row. Absent metadata is neutral.
+// dropped reports subscription-roster rows the account asks Evener not to
+// offer: a row the picker excludes and a policy-disabled row. Absent metadata
+// is neutral. The caller applies this only to the Copilot roster.
 func (m modelEntry) dropped() bool {
 	if m.ModelPickerEnabled != nil && !*m.ModelPickerEnabled {
 		return true
@@ -93,9 +87,19 @@ func (m modelEntry) dropped() bool {
 	return strings.EqualFold(strings.TrimSpace(m.Policy.State), "disabled")
 }
 
+// endpoints returns the advertised endpoint list, or nil when the field is
+// absent. Presence matters on the Copilot roster: absent metadata falls back to
+// Chat, while an explicitly empty list advertises no supported protocol.
+func (m modelEntry) endpoints() []string {
+	if m.SupportedEndpoints == nil {
+		return nil
+	}
+	return *m.SupportedEndpoints
+}
+
 // advertisesEndpoint reports whether the roster advertises path for this row.
 func (m modelEntry) advertisesEndpoint(path string) bool {
-	for _, e := range m.SupportedEndpoints {
+	for _, e := range m.endpoints() {
 		if strings.EqualFold(strings.TrimSpace(e), path) {
 			return true
 		}
@@ -103,18 +107,23 @@ func (m modelEntry) advertisesEndpoint(path string) bool {
 	return false
 }
 
-// route picks the wire protocol the account advertises for the row. Claude
-// rows prefer the live-proven Messages path, every other row prefers
+// route picks the wire protocol the Copilot account advertises for the row.
+// Claude rows prefer the live-proven Messages path, every other row prefers
 // Responses when advertised and otherwise Chat, and a row with no endpoint
-// metadata keeps the OpenAI-compatible default. A row that lists endpoints
-// but none Evener speaks is unusable and is dropped by the caller.
+// metadata keeps the OpenAI-compatible default. An explicitly empty endpoint
+// list, or a list with no path Evener speaks, is unusable and is dropped by
+// the caller.
 func (m modelEntry) route() (string, bool) {
 	family := strings.ToLower(strings.TrimSpace(m.Capabilities.Family))
 	if strings.Contains(family, "claude") && m.advertisesEndpoint("/v1/messages") {
 		return registry.ProtocolAnthropic, true
 	}
-	if len(m.SupportedEndpoints) == 0 {
+	endpoints := m.endpoints()
+	if endpoints == nil {
 		return registry.ProtocolOpenAIChat, true
+	}
+	if len(endpoints) == 0 {
+		return "", false
 	}
 	if m.advertisesEndpoint("/responses") {
 		return registry.ProtocolOpenAIResponses, true
@@ -154,7 +163,10 @@ func advertises(params []string, names ...string) bool {
 }
 
 // row keeps only advertised facts (registry.ApplyLive keeps only those).
-func (m modelEntry) row() registry.Model {
+// copilot selects the subscription roster's policy: its advertised prices are
+// not billed as live dollars and only the live-proven image row may accept
+// images.
+func (m modelEntry) row(copilot bool) registry.Model {
 	caps := registry.Caps{}
 	if w := requestutil.FirstPositiveInt(m.ContextLength, m.ContextWindow, m.Capabilities.Limits.MaxPromptTokens); w > 0 {
 		caps.ContextWindow = new(w)
@@ -193,7 +205,7 @@ func (m modelEntry) row() registry.Model {
 	// architecture.input_modalities all advertise vision more broadly than the
 	// probe found working, so the modalities are settled only after all of
 	// that parsing: nothing but the proven row may accept images there.
-	if m.accountRow() {
+	if copilot {
 		wantsImages := false
 		for _, modality := range caps.InputModalities {
 			if strings.EqualFold(strings.TrimSpace(modality), "image") {
@@ -211,7 +223,7 @@ func (m modelEntry) row() registry.Model {
 	}
 	// An account roster's prices are not the dollars a live request bills, so
 	// they are never published as live cost.
-	if !m.accountRow() {
+	if !copilot {
 		if in, ok := perTokenCostToPerMillion(m.Pricing.Prompt); ok {
 			if out, ok := perTokenCostToPerMillion(m.Pricing.Completion); ok {
 				caps.Cost = &registry.Cost{Input: in, Output: out}
@@ -221,13 +233,15 @@ func (m modelEntry) row() registry.Model {
 	model := registry.Model{ID: m.ID, Caps: caps}
 	model.Family = strings.TrimSpace(m.Capabilities.Family)
 	model.Surface = surfaceForFamily(model.Family)
-	if proto, ok := m.route(); ok {
-		model.Protocol = proto
-		if proto == registry.ProtocolAnthropic {
-			model.Transport = &registry.Transport{
-				Endpoint:            "/v1/messages",
-				StreamEndpoint:      "/v1/messages",
-				CountTokensEndpoint: registry.EndpointUnsupported,
+	if copilot {
+		if proto, ok := m.route(); ok {
+			model.Protocol = proto
+			if proto == registry.ProtocolAnthropic {
+				model.Transport = &registry.Transport{
+					Endpoint:            "/v1/messages",
+					StreamEndpoint:      "/v1/messages",
+					CountTokensEndpoint: registry.EndpointUnsupported,
+				}
 			}
 		}
 	}
@@ -248,13 +262,24 @@ func (p *Protocol) ListModels(ctx context.Context, res registry.Resolved) ([]reg
 		if err := json.Unmarshal(r.Body, &payload); err != nil {
 			return nil, fmt.Errorf("models.list: %w", err)
 		}
+		// The Copilot subscription roster is selected by its transport auth
+		// scheme, never by a row's payload shape: an OpenAI-compatible gateway
+		// may publish the same endpoint, family, policy, pricing and vision
+		// fields and must keep its own behavior.
+		copilot := res.Transport.Auth == registry.AuthOAuthGitHubCopilot
 		for _, e := range payload.Data {
-			if e.ID != "" && !e.dropped() {
+			if e.ID == "" {
+				continue
+			}
+			if copilot {
+				if e.dropped() {
+					continue
+				}
 				if _, ok := e.route(); !ok {
 					continue
 				}
-				rows = append(rows, e.row())
 			}
+			rows = append(rows, e.row(copilot))
 		}
 		sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
 		return nil, nil

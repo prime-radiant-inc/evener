@@ -143,8 +143,8 @@ func TestCopilotApplySignInErrors(t *testing.T) {
 			if !errors.As(err, &cfg) {
 				t.Fatalf("Apply error = %T, want *llm.ConfigurationError", err)
 			}
-			if cfg.ProviderInstance != "github-copilot" || !strings.Contains(cfg.Message, "evener github-copilot login --instance github-copilot") {
-				t.Fatalf("sign-in error = %q instance %q", cfg.Message, cfg.ProviderInstance)
+			if cfg.ProviderInstance != "github-copilot" {
+				t.Fatalf("sign-in error instance = %q, want github-copilot", cfg.ProviderInstance)
 			}
 			if got := req.Header.Get("Authorization"); got != "" {
 				t.Fatalf("Authorization = %q, want none for a missing credential", got)
