@@ -173,7 +173,9 @@ func TestStableSupervisionFailureSnapshotCapturesSettlementClaim(t *testing.T) {
 	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
-		func(llm.Request) llm.Response { return quietYieldResponse("attention-no-action", `{}`) },
+		func(llm.Request) llm.Response {
+			return quietYieldResponse("attention-no-action", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
+		},
 	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
@@ -230,7 +232,9 @@ func TestStableSupervisionFailureSnapshotCapturesArmRetryIDs(t *testing.T) {
 	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
-		func(llm.Request) llm.Response { return quietYieldResponse("attention-no-action", `{}`) },
+		func(llm.Request) llm.Response {
+			return quietYieldResponse("attention-no-action", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
+		},
 	})
 	clock := agenttest.NewFakeClockAt(time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC))
 	root := restoreSupervisionRoot(t, fixture, clock)
@@ -304,7 +308,7 @@ func TestStableSupervisionFailureSnapshotCapturesNotificationPayload(t *testing.
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response {
-			return quietYieldResponse("quiet-ack", `{}`)
+			return quietYieldResponse("quiet-ack", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 		},
 	})
 	root := restoreSupervisionRoot(t, fixture, nil)

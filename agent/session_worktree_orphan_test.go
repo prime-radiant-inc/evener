@@ -978,7 +978,7 @@ func takeSharedDescendantAnnounceHold(laneName string) chan struct{} {
 }
 
 func quietWorktreeAttentionResponse(llm.Request) llm.Response {
-	return quietYieldResponse("ack-worktree-attention", `{}`)
+	return quietYieldResponse("ack-worktree-attention", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 }
 
 // spawnSharedDescendantLane builds that tree: a cold fixture delegate with an
@@ -3031,7 +3031,7 @@ func TestDelegateAttentionUserStopHoldsReopenedRowFromStaleArmedWake(t *testing.
 		requestsMu.Unlock()
 		wedgeOnce.Do(func() { close(entered) })
 		<-release
-		return quietYieldResponse("ack-attention", `{}`)
+		return quietYieldResponse("ack-attention", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 	}
 	// The parked-tail pin (the busy-commit test's form): unpinned, a
 	// fixture run finishing after this test's rows land resolves every
@@ -3287,7 +3287,7 @@ func TestDelegateAttentionHeldUpdateDoesNotLoopTheFinalizationDrain(t *testing.T
 	wedge := func(req llm.Request) llm.Response {
 		wedgeOnce.Do(func() { close(entered) })
 		<-release
-		return quietYieldResponse("ack-attention", `{}`)
+		return quietYieldResponse("ack-attention", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 	}
 	// Seed the loaded-runner interleave this test pins: hold the retained
 	// child's announce until the test's own window. The fixture's send comes
@@ -3647,7 +3647,7 @@ func TestDelegateAttentionResidentDrivePassDoesNotRebuildReleasedStopHold(t *tes
 	wedge := func(req llm.Request) llm.Response {
 		wedgeOnce.Do(func() { close(entered) })
 		<-release
-		return quietYieldResponse("ack-attention", `{}`)
+		return quietYieldResponse("ack-attention", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 	}
 	// Seed the announce hold the scripted presentation step requires — the
 	// window it closes and the coverage race it prevents are stated at
@@ -3960,7 +3960,7 @@ func TestDelegateAttentionUserStopHoldSurvivesIdleReleaseRestore(t *testing.T) {
 		requestsMu.Unlock()
 		wedgeOnce.Do(func() { close(entered) })
 		<-release
-		return quietYieldResponse("ack-attention", `{}`)
+		return quietYieldResponse("ack-attention", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 	}
 	// The parked-tail pin (the busy-commit test's form): unpinned, a
 	// fixture run finishing after this test's rows land resolves every

@@ -270,6 +270,11 @@ func findOutcome(entries []transcript.Entry, resultTool string) (hint string, de
 		if e.Turn.AcceptedReply {
 			return "end_turn=true", true
 		}
+		if e.Turn.QuietYield {
+			quietExecution = true
+			quietTurnID = e.Turn.TurnID
+			continue
+		}
 		args, endTurn, callDecided, recordedQuiet := outcomeCall(i, e.Turn, resultTool, results, quietExecution)
 		if callDecided {
 			if endTurn != nil {
@@ -424,15 +429,28 @@ func communicateResultEndTurn(paired pairedToolResult) (endTurn *bool, recorded 
 		raw, _ = json.Marshal(content)
 	}
 	var legacy struct {
-		Accepted *bool `json:"accepted"`
-		EndTurn  *bool `json:"end_turn"`
-		Quiet    *bool `json:"quiet"`
+		Accepted *bool  `json:"accepted"`
+		EndTurn  *bool  `json:"end_turn"`
+		Next     string `json:"next"`
+		Quiet    *bool  `json:"quiet"`
 	}
 	if json.Unmarshal(raw, &legacy) != nil {
 		return nil, recorded
 	}
 	if legacy.Quiet != nil && *legacy.Quiet {
 		return nil, true
+	}
+	if legacy.EndTurn == nil {
+		switch strings.TrimSpace(legacy.Next) {
+		case schema.CommunicateNextLogQuietlyAndEndTurn:
+			return nil, true
+		case schema.CommunicateNextSendAndEndTurn:
+			v := true
+			legacy.EndTurn = &v
+		case schema.CommunicateNextSendAndContinue:
+			v := false
+			legacy.EndTurn = &v
+		}
 	}
 	if legacy.Accepted != nil && *legacy.Accepted && legacy.EndTurn != nil {
 		return legacy.EndTurn, true
@@ -450,7 +468,11 @@ func communicateCallArguments(call *llm.ToolCallData) json.RawMessage {
 }
 
 func quietCommunicateArguments(raw json.RawMessage) bool {
-	return callArgsEndTurn(raw) && apptranscript.CommunicateArgumentsWithoutMessage(raw)
+	endTurn, quiet, ok := schema.CommunicateArgsOutcome(raw)
+	if !ok {
+		return false
+	}
+	return quiet || (endTurn && apptranscript.CommunicateArgumentsWithoutMessage(raw))
 }
 
 // formatOutcome renders a result-tool call's arguments as the outcome hint.

@@ -96,6 +96,10 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		res.PrevalErr = errText
 		return res
 	}
+	if errText := retiredResultToolShapeError(t.Definition.Name, resultToolName, args); errText != "" {
+		res.PrevalErr = errText
+		return res
+	}
 
 	if err := rejectUnavailableDelegateSandboxControls(t.Definition.Name, t.Definition.Parameters, args); err != nil {
 		res.PrevalErr = err.Error()
@@ -267,11 +271,18 @@ func repairDefaultCommunicateEnvelope(envelope, args map[string]any) ([]repair.C
 
 	var changes []repair.Change
 	promoted := false
+	quietNext, _ := args["next"].(string)
+	quietMode := strings.TrimSpace(quietNext) == tool.CommunicateNextLogQuietlyAndEndTurn
 	if raw, present := args["output"]; present {
 		switch encoded := raw.(type) {
 		case nil:
-			args["output"] = map[string]any{}
-			changes = append(changes, repair.Change{Kind: repair.ChangeSynthesize, Field: "output", Detail: "synthesized default envelope"})
+			if quietMode {
+				delete(args, "output")
+				changes = append(changes, repair.Change{Kind: repair.ChangeNormalizeDefault, Field: "output", Detail: "removed neutral null output"})
+			} else {
+				args["output"] = map[string]any{}
+				changes = append(changes, repair.Change{Kind: repair.ChangeSynthesize, Field: "output", Detail: "synthesized default envelope"})
+			}
 		case string:
 			decoded, err := decodeDefaultCommunicateOutputString(encoded)
 			if err != nil {
@@ -283,11 +294,13 @@ func repairDefaultCommunicateEnvelope(envelope, args map[string]any) ([]repair.C
 		}
 	}
 
-	if _, present := args["message"]; !present {
-		if output, ok := args["output"].(map[string]any); ok {
-			if message, ok := output["message"].(string); ok && strings.TrimSpace(message) != "" {
-				args["message"] = message
-				changes = append(changes, repair.Change{Kind: repair.ChangeCopy, Field: "message", Detail: "copied output.message"})
+	if !quietMode {
+		if _, present := args["message"]; !present {
+			if output, ok := args["output"].(map[string]any); ok {
+				if message, ok := output["message"].(string); ok && strings.TrimSpace(message) != "" {
+					args["message"] = message
+					changes = append(changes, repair.Change{Kind: repair.ChangeCopy, Field: "message", Detail: "copied output.message"})
+				}
 			}
 		}
 	}
@@ -593,6 +606,19 @@ func retiredTaskListShapeError(toolName string, args map[string]any) string {
 	}
 	return fmt.Sprintf("invalid_request: task_list no longer takes %s; the call was not applied. Use {\"add\": [...]} to add tasks, {\"update\": [{\"id\": N, ...}]} to change them (omit status to leave it unchanged), or {} to view the list — all in one call.",
 		strings.Join(retired, ", "))
+}
+
+// retiredResultToolShapeError prevents argument repair from silently dropping
+// the retired end_turn field (which would turn end_turn=false into send_and_end_turn).
+func retiredResultToolShapeError(toolName, resultToolName string, args map[string]any) string {
+	if toolName != resultToolName {
+		return ""
+	}
+	if _, supplied := args["end_turn"]; !supplied {
+		return ""
+	}
+	return fmt.Sprintf("invalid_request: %s no longer takes end_turn; the call was not applied. Pass next=%q (default) to deliver and finish, next=%q for an update while keeping working, or next=%q with a brief wait/ack note to yield quietly.",
+		toolName, tool.CommunicateNextSendAndEndTurn, tool.CommunicateNextSendAndContinue, tool.CommunicateNextLogQuietlyAndEndTurn)
 }
 
 // changeStrings encodes changes as "kind:field:detail" for the telemetry event.

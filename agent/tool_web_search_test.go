@@ -342,14 +342,14 @@ func TestWebSearch_ExpandHistoryOmitsGoogleGroundingAndLegacyToolPairs(t *testin
 				return agenttest.ToolCallResponse(llm.ToolCallData{
 					ID:        "res-ws-1",
 					Name:      "web_search",
-					Arguments: json.RawMessage(`{"message":"final result","end_turn":true,"output":{"message":"","data":{},"artifacts":[]}}`),
+					Arguments: json.RawMessage(`{"message":"final result","next":"send_and_end_turn","output":{"message":"","data":{},"artifacts":[]}}`),
 				})
 			},
 			func(req llm.Request) llm.Response {
 				return agenttest.ToolCallResponse(llm.ToolCallData{
 					ID:        "res-ws-2",
 					Name:      "web_search",
-					Arguments: json.RawMessage(`{"message":"second result","end_turn":true,"output":{"message":"","data":{},"artifacts":[]}}`),
+					Arguments: json.RawMessage(`{"message":"second result","next":"send_and_end_turn","output":{"message":"","data":{},"artifacts":[]}}`),
 				})
 			},
 		)
@@ -389,7 +389,7 @@ func TestWebSearch_ExpandHistoryOmitsGoogleGroundingAndLegacyToolPairs(t *testin
 		for _, m := range reqs[1].Messages {
 			for _, p := range m.Content {
 				if p.Kind == llm.ContentToolCall && p.ToolCall != nil && p.ToolCall.ID == "res-ws-1" {
-					if string(p.ToolCall.Arguments) == `{"message":"final result","end_turn":true,"output":{"message":"","data":{},"artifacts":[]}}` {
+					if string(p.ToolCall.Arguments) == `{"message":"final result","next":"send_and_end_turn","output":{"message":"","data":{},"artifacts":[]}}` {
 						preservedCall = true
 					}
 				}

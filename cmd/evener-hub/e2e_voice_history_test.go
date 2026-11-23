@@ -31,7 +31,7 @@ func TestE2E_VoiceSpeechReachesOlderHistoryPages(t *testing.T) {
 			}
 			f.admit(t, "PAGED-INPUT-163", false)
 			message := communicateArgs("PAGED-FIRST-167")
-			message["end_turn"] = false
+			message["next"] = "send_and_continue"
 			f.next(t).RespondToolCall("communicate", message)
 			if !reconnect {
 				start := voiceJourneyEvent(t, f.device, "speech_start")
@@ -43,7 +43,7 @@ func TestE2E_VoiceSpeechReachesOlderHistoryPages(t *testing.T) {
 				// Withhold only the device's completion, not the manager's work.
 			}
 			message = communicateArgs("PAGED-UNSAID-173")
-			message["end_turn"] = false
+			message["next"] = "send_and_continue"
 			f.next(t).RespondToolCall("communicate", message)
 			for range 2*appwire.TranscriptItemPageLimit + 1 {
 				f.next(t).RespondToolCall("read_file", map[string]any{"file_path": filepath.Join(f.stack.workDir, "NOTES.md"), "intent": "Reading the fixture to advance real history"})
@@ -126,7 +126,7 @@ func TestE2E_VoiceHistorySnapshotAdvanceKeepsCursor(t *testing.T) {
 	before := appwire.ClonePointer(bridge.speechCursor)
 	f.admit(t, "SNAPSHOT-INPUT-181", false)
 	message := communicateArgs("SNAPSHOT-FIRST-191")
-	message["end_turn"] = false
+	message["next"] = "send_and_continue"
 	f.next(t).RespondToolCall("communicate", message)
 	for range appwire.TranscriptItemPageLimit + 1 {
 		f.next(t).RespondToolCall("read_file", map[string]any{"file_path": filepath.Join(f.stack.workDir, "NOTES.md"), "intent": "Reading the fixture to advance real history"})

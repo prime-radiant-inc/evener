@@ -793,8 +793,16 @@ func TestFormatOutcome(t *testing.T) {
 	}
 	plain := formatOutcome(json.RawMessage(`{"end_turn":true}`))
 	decided := formatOutcome(json.RawMessage(`{"end_turn":true,"output":{"decision":"approve-sentinel"}}`))
+	nextFinal := formatOutcome(json.RawMessage(`{"message":"done","next":"send_and_end_turn","output":{"decision":"approve-sentinel"}}`))
+	nextContinue := formatOutcome(json.RawMessage(`{"message":"working","next":"send_and_continue"}`))
 	if !strings.Contains(decided, "approve-sentinel") || !strings.HasPrefix(decided, plain) {
 		t.Errorf("formatOutcome(decision) = %q, want %q plus the decision", decided, plain)
+	}
+	if nextFinal != "end_turn=true decision=approve-sentinel" {
+		t.Errorf("nextFinal = %q, want end_turn=true decision=approve-sentinel", nextFinal)
+	}
+	if nextContinue != "end_turn=false" {
+		t.Errorf("nextContinue = %q, want end_turn=false", nextContinue)
 	}
 }
 
@@ -815,6 +823,26 @@ func TestListSessionsReportsASessionWithACorruptJournalUnreadable(t *testing.T) 
 				t.Fatalf("sessions = %d, unreadable = %+v; want the session listed unreadable", len(res.Sessions), res.Unreadable)
 			}
 		})
+	}
+}
+
+func TestOutcomeHintPassesThroughBareTextQuietYield(t *testing.T) {
+	t.Parallel()
+	acceptedState := json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true}`)
+	prior := communicateCall(true, "approve")
+	accepted := healthToolResult(prior.ToolCall.ID, "communicate", nil, false)
+	accepted.ToolResult.ToolState = acceptedState
+	entries := []transcript.Entry{
+		{Turn: schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_1", Kind: schema.TurnUserInput, Message: llm.User("ship it")}},
+		{Turn: schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_1", Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{prior}}}},
+		{Turn: schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_1", Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{accepted}}}},
+		{Turn: schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_1", Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}}},
+		{Turn: schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_2", Kind: schema.TurnSteering, SteeringKind: events.SteeringKindNotification, Message: llm.User("job finished")}},
+		{Turn: schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_2", Kind: schema.TurnAssistant, QuietYield: true, Message: llm.Assistant("Noted in prose.")}},
+		{Turn: schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_2", Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}}},
+	}
+	if got := outcomeHint(transcriptDoc{Entries: entries}, "communicate"); got != "end_turn=true decision=approve" {
+		t.Fatalf("outcomeHint across bare-text QuietYield = %q, want %q", got, "end_turn=true decision=approve")
 	}
 }
 

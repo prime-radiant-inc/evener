@@ -35,7 +35,7 @@ func TestThreadReadProvenanceCoversPostCutReply(t *testing.T) {
 		if requests == 2 {
 			text = beta
 		}
-		args, err := json.Marshal(map[string]any{"message": text, "end_turn": true, "output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}}})
+		args, err := json.Marshal(map[string]any{"message": text, "next": "send_and_end_turn", "output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}}})
 		if err != nil {
 			t.Fatal(err)
 		}

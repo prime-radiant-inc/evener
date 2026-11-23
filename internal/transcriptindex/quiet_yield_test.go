@@ -624,3 +624,183 @@ func TestQuietYieldPreToolUseSuppliedMessageOnBlankCommunicate(t *testing.T) {
 		})
 	}
 }
+
+func TestQuietYieldNextEnumNoteAndZeroIncarnationRotation(t *testing.T) {
+	t.Parallel()
+	const waitNote = "Waiting on CI job_123"
+	quietState := json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true,"communicate_quiet":true,"communicate_quiet_note":"Waiting on CI job_123"}`)
+	author := &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "root-session"}}
+	fx := fixture{
+		name: "quiet-next-enum-note",
+		lines: []fixtureLine{
+			entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_1", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("go")}, 1)),
+			entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_1", RoundID: "r_1", Authorship: author, Kind: schema.TurnAssistant, Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "quiet-thought"}},
+					{Kind: llm.ContentText, Text: "companion-prose"},
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+						ID:        "call_q",
+						Name:      "communicate",
+						Arguments: json.RawMessage(`{"message":"Waiting on CI job_123","next":"log_quietly_and_end_turn"}`),
+					}},
+				},
+			}}, 2)),
+			entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_1", RoundID: "r_1", Kind: schema.TurnToolResults, Message: llm.Message{
+				Role:    llm.RoleTool,
+				Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_q", Name: "communicate", ToolState: quietState}}},
+			}}, 3)),
+			entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_1", Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}}, 4)),
+		},
+	}
+
+	path, lines := writeHeaderOnly(t, fx)
+	for _, line := range lines[:2] {
+		appendBytes(t, path, line)
+	}
+	x := openIndex(t, path, t.TempDir())
+	before, err := x.Latest(40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range before.Candidates {
+		if c.Item.Type == "agentMessage" && c.Item.Text == "companion-prose" {
+			t.Fatalf("companion prose leaked before TurnToolResults: %+v", c.Item)
+		}
+	}
+	for _, line := range lines[2:] {
+		appendBytes(t, path, line)
+	}
+	catchUp(t, x)
+	after, changes, err := x.LatestSince(40, appwire.SnapshotIdentity{Incarnation: before.Incarnation, Length: before.Length})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Incarnation != before.Incarnation || changes == nil {
+		t.Fatalf("Incarnation rotated (%q -> %q) or changes nil=%v", before.Incarnation, after.Incarnation, changes == nil)
+	}
+	ref := referenceCandidates(t, path)
+	if !reflect.DeepEqual(after.Candidates, ref) {
+		t.Fatalf("index diverges from reference:\nindex: %s\nref:   %s", dump(after.Candidates), dump(ref))
+	}
+	var quiets int
+	for _, c := range after.Candidates {
+		if c.Item.Type == "agentMessage" {
+			t.Fatalf("unexpected agentMessage after quiet settle: %+v", c.Item)
+		}
+		if c.Item.EventKind == appwire.ThreadItemEventKindQuietYield {
+			quiets++
+			if c.Item.Text != waitNote {
+				t.Fatalf("quiet item Text=%q, want %q", c.Item.Text, waitNote)
+			}
+			if got := quietYieldRawCommentary(t, c.Item.Raw); got != "companion-prose" {
+				t.Fatalf("commentary=%q, want companion-prose", got)
+			}
+		}
+	}
+	if quiets != 1 {
+		t.Fatalf("quiets=%d, want 1", quiets)
+	}
+}
+
+func TestBareTextQuietYieldAssistantParity(t *testing.T) {
+	t.Parallel()
+	const multiline = "Waiting on child\nSecond detail line"
+	author := &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "root-session"}}
+	fx := fixture{
+		name: "bare-text-quiet-assistant",
+		lines: []fixtureLine{
+			entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_1", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("go")}, 1)),
+			entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_1", RoundID: "r_bare_1", Authorship: author, Kind: schema.TurnAssistant, QuietYield: true, Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "quiet-thought"}},
+					{Kind: llm.ContentText, Text: multiline},
+				},
+			}}, 2)),
+			entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_1", Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}}, 3)),
+			entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_2", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("next")}, 4)),
+			entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_2", RoundID: "r_bare_2", Authorship: author, Kind: schema.TurnAssistant, QuietYield: true, Message: llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "Single line note"}},
+			}}, 5)),
+			entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_2", Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}}, 6)),
+			entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_3", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("order")}, 7)),
+			entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_3", RoundID: "r_bare_3", Authorship: author, Kind: schema.TurnAssistant, QuietYield: true, Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentText, Text: "Text before thought"},
+					{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "trailing-thought"}},
+				},
+			}}, 8)),
+			entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_3", Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}}, 9)),
+		},
+	}
+
+	path, lines := writeHeaderOnly(t, fx)
+	for _, line := range lines[:3] {
+		appendBytes(t, path, line)
+	}
+	x := openIndex(t, path, t.TempDir())
+	before, err := x.Latest(40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range lines[3:] {
+		appendBytes(t, path, line)
+	}
+	catchUp(t, x)
+	after, changes, err := x.LatestSince(40, appwire.SnapshotIdentity{Incarnation: before.Incarnation, Length: before.Length})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Incarnation != before.Incarnation || changes == nil {
+		t.Fatalf("Incarnation rotated (%q -> %q) or changes nil=%v", before.Incarnation, after.Incarnation, changes == nil)
+	}
+	ref := referenceCandidates(t, path)
+	if !reflect.DeepEqual(after.Candidates, ref) {
+		t.Fatalf("incremental diverges from reference:\nindex: %s\nref:   %s", dump(after.Candidates), dump(ref))
+	}
+	cold := openIndex(t, path, t.TempDir())
+	coldWin, err := cold.Latest(40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(coldWin.Candidates, ref) {
+		t.Fatalf("cold diverges from reference:\ncold: %s\nref:  %s", dump(coldWin.Candidates), dump(ref))
+	}
+	for i, c := range coldWin.Candidates {
+		if _, found, err := cold.findItem(c.Position); err != nil || !found {
+			t.Fatalf("candidate %d (%s) at position %+v not found by binary search (found=%v err=%v)", i, c.Item.ID, c.Position, found, err)
+		}
+	}
+	var reasonings, quiets []appwire.ThreadItem
+	for _, c := range coldWin.Candidates {
+		switch {
+		case c.Item.Type == "agentMessage":
+			t.Fatalf("QuietYield TurnAssistant emitted agentMessage: %+v", c.Item)
+		case c.Item.Type == "reasoning":
+			reasonings = append(reasonings, c.Item)
+		case c.Item.EventKind == appwire.ThreadItemEventKindQuietYield:
+			quiets = append(quiets, c.Item)
+		}
+	}
+	if len(reasonings) != 2 || reasonings[0].Text != "quiet-thought" || reasonings[1].Text != "trailing-thought" {
+		t.Fatalf("reasonings=%+v, want [quiet-thought, trailing-thought]", reasonings)
+	}
+	if len(quiets) != 3 {
+		t.Fatalf("quiets=%+v, want 3", quiets)
+	}
+	if quiets[0].RoundID != "r_bare_1" || quiets[0].Text != schema.NormalizeQuietNote(multiline) {
+		t.Fatalf("first quiet=%+v, want RoundID=r_bare_1 normalized multiline", quiets[0])
+	}
+	if got := quietYieldRawCommentary(t, quiets[0].Raw); got != multiline {
+		t.Fatalf("first commentary=%q, want %q", got, multiline)
+	}
+	if quiets[1].RoundID != "r_bare_2" || quiets[1].Text != "Single line note" || len(quiets[1].Raw) != 0 {
+		t.Fatalf("second quiet=%+v, want RoundID=r_bare_2 Text=\"Single line note\" empty Raw", quiets[1])
+	}
+	if quiets[2].RoundID != "r_bare_3" || quiets[2].Text != "Text before thought" || len(quiets[2].Raw) != 0 {
+		t.Fatalf("third quiet=%+v, want RoundID=r_bare_3 Text=\"Text before thought\" empty Raw", quiets[2])
+	}
+}

@@ -400,7 +400,7 @@ func TestVoicePresentationActualStartAndSteerRequests(t *testing.T) {
 			if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{ClientMutationID: "steer-831", Input: []appwire.InputItem{{Type: "text", Text: "steer-831", VoicePresentation: steer}}}); err != nil {
 				t.Fatal(err)
 			}
-			call := communicateCallArgs("first", map[string]any{"message": "opaque-output-719", "end_turn": false})
+			call := communicateCallArgs("first", map[string]any{"message": "opaque-output-719", "next": "send_and_continue"})
 			return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}
 		},
 		func(req llm.Request) llm.Response {

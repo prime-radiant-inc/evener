@@ -393,7 +393,7 @@ func TestNotificationTurnAcknowledgesDurableCompletionQuietly(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response {
-		return quietYieldResponse("job-quiet", `{}`)
+		return quietYieldResponse("job-quiet", `{"message":"no action needed","next":"log_quietly_and_end_turn"}`)
 	})
 	c.Register(adapter)
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})

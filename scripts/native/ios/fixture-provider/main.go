@@ -85,13 +85,13 @@ func run(ctx context.Context, readyFile string) error {
 		// The fixture answers as the agent's user-facing message: a
 		// bare-text reply bypasses the result tool, and the daemon steers
 		// each such round ("keep working") until the bare-text budget fails
-		// the session mid-journey. The communicate call with end_turn is
+		// the session mid-journey. The communicate call with send_and_end_turn is
 		// the product's path for exactly this text, so the turn completes
 		// once and the markers render through the ordinary message
 		// pipeline.
 		call.RespondToolCall("communicate", map[string]any{
-			"message":  qualificationFixture,
-			"end_turn": true,
+			"message": qualificationFixture,
+			"next":    "send_and_end_turn",
 		})
 	}
 }

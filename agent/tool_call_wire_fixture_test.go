@@ -783,11 +783,11 @@ func TestToolCallWireFixtures(t *testing.T) {
 		},
 		{
 			id: "call_communicate", tool: "communicate",
-			note: "A final report to the parent: end_turn ends the turn, and the step's words read it as done. The output envelope is required by the tool's schema.",
+			note: "A final report to the parent: next=\"send_and_end_turn\" (default) ends the turn, and the step's words read it as done. The output envelope is optional unless a schema requires it.",
 			args: map[string]any{
-				"message":  "The settle race is fixed.",
-				"end_turn": true,
-				"output":   map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}},
+				"message": "The settle race is fixed.",
+				"next":    "send_and_end_turn",
+				"output":  map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}},
 			},
 		},
 	}

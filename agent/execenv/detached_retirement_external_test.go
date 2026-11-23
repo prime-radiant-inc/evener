@@ -115,7 +115,7 @@ func TestDetachedShellRetirementClaimDoesNotSignal(t *testing.T) {
 	client := llm.NewClient()
 	var calls atomic.Int32
 	adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
-		call := llm.ToolCallData{ID: "detached-proof-complete", Name: "communicate", Type: "function", Arguments: []byte(`{"message":"launch settled","end_turn":true,"output":{"message":"","data":{},"artifacts":[]}}`)}
+		call := llm.ToolCallData{ID: "detached-proof-complete", Name: "communicate", Type: "function", Arguments: []byte(`{"message":"launch settled","next":"send_and_end_turn","output":{"message":"","data":{},"artifacts":[]}}`)}
 		if calls.Add(1) == 1 {
 			args, _ := json.Marshal(map[string]string{"command": detachedObservedCommand, "mode": "detached"})
 			call = llm.ToolCallData{ID: "original-observed-detached", Name: "shell", Type: "function", Arguments: args}

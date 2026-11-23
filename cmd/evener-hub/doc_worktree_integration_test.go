@@ -95,8 +95,8 @@ func (a *worktreeDocumentAdapter) Complete(ctx context.Context, req llm.Request)
 		a.end = false
 		a.mu.Unlock()
 		return activityRelayTool("communicate", map[string]any{
-			"message":  "worktree step complete",
-			"end_turn": true,
+			"message": "worktree step complete",
+			"next":    "send_and_end_turn",
 			"output": map[string]any{
 				"message":   "",
 				"data":      map[string]any{},

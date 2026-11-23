@@ -238,8 +238,8 @@ func TestSession_OpenAIResponsesContinuationRegistryClientV2AnchorCutover(t *tes
 				w.Header().Set("Content-Type", "text/event-stream")
 				flusher, _ := w.(http.Flusher)
 				args := mustJSON(t, map[string]any{
-					"message":  "real openai turn done",
-					"end_turn": true,
+					"message": "real openai turn done",
+					"next":    "send_and_end_turn",
 					"output": map[string]any{
 						"message":   "",
 						"data":      map[string]any{},

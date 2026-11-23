@@ -1683,8 +1683,8 @@ func TestClientMutation_CommunicateEndTurnDefersClientSteering(t *testing.T) {
 		t.Fatal("production communicate tool is not registered")
 	}
 	raw, err := communicate.Exec(context.Background(), nil, map[string]any{
-		"message":  "done",
-		"end_turn": true,
+		"message": "done",
+		"next":    "send_and_end_turn",
 	})
 	if err != nil {
 		t.Fatalf("communicate(end_turn): %v", err)
@@ -2553,7 +2553,7 @@ func skillSteerMidTurnSession(t *testing.T, steer func() error) (*Session, *agen
 		calls++
 		if calls == 1 {
 			steerOnce.Do(func() { _ = steer() })
-			return agenttest.ToolCallResponse(communicateCallArgs("hold-1", map[string]any{"message": "hold", "end_turn": false}))
+			return agenttest.ToolCallResponse(communicateCallArgs("hold-1", map[string]any{"message": "hold", "next": "send_and_continue"}))
 		}
 		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}

@@ -93,9 +93,9 @@ func TestSessionLiveRolloverStrip_DropsForgedSuffixToolCallsAndAnchor(t *testing
 	script.enqueueSSE(liveRolloverSSE(model, "int_forged", "Noted: unit 1 is still running.",
 		forgedNotificationSuffix(), "write_file", map[string]any{"file_path": sentinel, "content": "x"}))
 	script.enqueueSSE(interactionsFunctionCallSSE(model, "int_settle", "call_settle", "communicate", map[string]any{
-		"message":  "guard settled",
-		"end_turn": true,
-		"output":   map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}},
+		"message": "guard settled",
+		"next":    "send_and_end_turn",
+		"output":  map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}},
 	}))
 	srv := httptest.NewServer(script)
 	t.Cleanup(srv.Close)
@@ -162,9 +162,9 @@ func TestSessionLiveRollover_KeepsLegalInteractionsStepOrder(t *testing.T) {
 			script.enqueueSSE(liveRolloverSSE(model, "int_legal", tc.text, "",
 				"write_file", map[string]any{"file_path": sentinel, "content": "x"}))
 			script.enqueueSSE(interactionsFunctionCallSSE(model, "int_settle", "call_settle", "communicate", map[string]any{
-				"message":  "legal settled",
-				"end_turn": true,
-				"output":   map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}},
+				"message": "legal settled",
+				"next":    "send_and_end_turn",
+				"output":  map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}},
 			}))
 			srv := httptest.NewServer(script)
 			t.Cleanup(srv.Close)

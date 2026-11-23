@@ -512,7 +512,7 @@ func TestPostToolHooks_ContinueFalseOnQuietYieldPublishesReason(t *testing.T) {
 				if round > 0 {
 					t.Fatalf("%s continue:false must end the turn; reached request %d", event, round)
 				}
-				return quietYieldResponse("quiet-0", `{}`)
+				return quietYieldResponse("quiet-0", `{"message":"no action needed","next":"log_quietly_and_end_turn"}`)
 			})
 			warnings := collectWarnings(sess)
 			enqueueCompletedJobNotification(t, sess, "finished-job")

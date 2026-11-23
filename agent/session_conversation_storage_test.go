@@ -15,7 +15,7 @@ func TestConversationProvenance_StorageGrowthIsLinear(t *testing.T) {
 	var steps []func(llm.Request) llm.Response
 	for i := range 64 {
 		steps = append(steps, func(llm.Request) llm.Response {
-			call := communicateCallArgs(fmt.Sprintf("growth-output-%d", i), map[string]any{"message": "progress", "end_turn": i%2 == 1})
+			call := communicateCallArgs(fmt.Sprintf("growth-output-%d", i), map[string]any{"message": "progress", "next": map[bool]string{true: "send_and_end_turn", false: "send_and_continue"}[i%2 == 1]})
 			return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}
 		})
 	}

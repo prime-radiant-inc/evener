@@ -396,7 +396,7 @@ func TestConfigureWatchOutputMatchOnCallerCommunicateGivesRepairShape(t *testing
 	}
 	if !strings.Contains(err.Error(), `source="parent"`) ||
 		!strings.Contains(err.Error(), `events ["communicate"]`) ||
-		!strings.Contains(err.Error(), `communicate(end_turn=true)`) {
+		!strings.Contains(err.Error(), "`communicate` (`next=\"send_and_end_turn\"`)") {
 		t.Fatalf("error = %v, want communicate repair shape", err)
 	}
 }
@@ -1287,10 +1287,10 @@ func TestWatchRepairErrorsNameTheResultTool(t *testing.T) {
 			if tc.resultTool != "" {
 				wantTool = tc.resultTool
 			}
-			if !strings.Contains(outputMatchErr.Error(), wantTool+"(end_turn=true)") {
+			if !strings.Contains(outputMatchErr.Error(), "`"+wantTool+"` (`next=\"send_and_end_turn\"`)") {
 				t.Fatalf("output_match repair does not name %q: %s", wantTool, outputMatchErr)
 			}
-			if !strings.Contains(eventFilterErr.Error(), wantTool+"(end_turn=true)") {
+			if !strings.Contains(eventFilterErr.Error(), "`"+wantTool+"` (`next=\"send_and_end_turn\"`)") {
 				t.Fatalf("event_filter repair does not name %q: %s", wantTool, eventFilterErr)
 			}
 

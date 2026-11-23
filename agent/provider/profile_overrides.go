@@ -17,11 +17,11 @@ var (
 // WithCommunicateOutputSchema returns a cloned profile whose `communicate`
 // tool has its `output` property schema replaced wholesale by the given
 // schema. The top-level `required` list is left alone: `message`, `end_turn`,
-// and `output` all stay optional, so a progress update
-// (`end_turn=false`) and a quiet yield (`communicate({})`) validate without a
-// fabricated output object. Whenever `output` is supplied, its own schema
-// (the caller's here) validates it, and the handler requires it on a final
-// reply.
+// stays required while `next` and `output` stay optional, so a progress update
+// (`next="send_and_continue"`) and a quiet wait (`next="log_quietly_and_end_turn"`)
+// validate without a fabricated output object. Whenever `output` is supplied,
+// its own schema (the caller's here) validates it, and the handler requires it
+// on a final reply (`next="send_and_end_turn"`).
 //
 // The schema is validated against the draft 2020-12 meta-schema first: a
 // caller-supplied schema spliced into tool parameters verbatim ships on the

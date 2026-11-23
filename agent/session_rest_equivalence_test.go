@@ -21,7 +21,9 @@ func TestRestingStateLiveMatchesRestore(t *testing.T) {
 	}
 	finals := []move{
 		{name: "plain reply", step: func(llm.Request) llm.Response { return agenttest.FinalResponse("answer") }},
-		{name: "quiet wait", step: func(llm.Request) llm.Response { return quietYieldResponse("rest-wait", `{}`) }},
+		{name: "quiet wait", step: func(llm.Request) llm.Response {
+			return quietYieldResponse("rest-wait", `{"message":"waiting on timer","next":"log_quietly_and_end_turn"}`)
+		}},
 		{name: "ask_user", step: func(llm.Request) llm.Response {
 			return agenttest.ToolCallResponse(askUserCall("ask1", askUserArgsValid()))
 		}},

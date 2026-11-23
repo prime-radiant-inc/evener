@@ -166,7 +166,7 @@ func (p *quotaWaitProvider) Complete(ctx context.Context, req llm.Request) (llm.
 	p.mu.Lock()
 	if len(p.steps) == 0 {
 		p.mu.Unlock()
-		resp := parityResponse(parityCall("quota-root-ack", "communicate", map[string]any{}))
+		resp := parityResponse(parityCall("quota-root-ack", "communicate", map[string]any{"message": "waiting on work", "next": "log_quietly_and_end_turn"}))
 		resp.Provider = p.Name()
 		resp.Model = req.Model
 		return resp, nil

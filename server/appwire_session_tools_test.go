@@ -184,7 +184,7 @@ func (a *bindingProbeAdapter) Complete(_ context.Context, request llm.Request) (
 	}
 	name, args := "job_list", json.RawMessage(`{"hub":{"mode":"discovery"}}`)
 	if a.toolCalls.Add(1) > 1 {
-		name, args = "communicate", json.RawMessage(`{"message":"done","end_turn":true}`)
+		name, args = "communicate", json.RawMessage(`{"message":"done","next":"send_and_end_turn"}`)
 	}
 	call := llm.ToolCallData{ID: name, Name: name, Arguments: args, Type: "function"}
 	return llm.Response{Provider: a.Name(), Model: request.Model, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}, nil

@@ -74,8 +74,8 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 			})
 		case 3:
 			args := mustJSON(t, map[string]any{
-				"message":  "recovered",
-				"end_turn": true,
+				"message": "recovered",
+				"next":    "send_and_end_turn",
 				"output": map[string]any{
 					"message":   "",
 					"data":      map[string]any{},
@@ -85,8 +85,8 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 			writeResponsesFunctionCall(t, w, flusher, "resp_done", "call_done", "communicate", args)
 		case 4:
 			args := mustJSON(t, map[string]any{
-				"message":  "restored",
-				"end_turn": true,
+				"message": "restored",
+				"next":    "send_and_end_turn",
 				"output": map[string]any{
 					"message":   "",
 					"data":      map[string]any{},
@@ -428,8 +428,8 @@ func TestSession_OpenAIUnquotedKeyToolCallRecoversAndExecutes(t *testing.T) {
 			writeResponsesFunctionCall(t, w, flusher, "resp_unq", "call_unq", "my_strict_tool", unquotedArgs)
 		case 2:
 			args := mustJSON(t, map[string]any{
-				"message":  "done after recovery",
-				"end_turn": true,
+				"message": "done after recovery",
+				"next":    "send_and_end_turn",
 				"output": map[string]any{
 					"message":   "",
 					"data":      map[string]any{},

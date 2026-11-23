@@ -256,7 +256,7 @@ func (a *retirementGoalSettlementAdapter) Complete(_ context.Context, req llm.Re
 	case 0:
 		call = llm.ToolCallData{ID: "original-goal-completion", Name: "update_goal", Type: "function", Arguments: []byte(`{"status":"complete","intent":"completing seeded goal"}`)}
 	case 1:
-		call = llm.ToolCallData{ID: "original-goal-report", Name: "communicate", Type: "function", Arguments: []byte(`{"message":"settled","end_turn":true,"output":{"message":"","data":{},"artifacts":[]}}`)}
+		call = llm.ToolCallData{ID: "original-goal-report", Name: "communicate", Type: "function", Arguments: []byte(`{"message":"settled","next":"send_and_end_turn","output":{"message":"","data":{},"artifacts":[]}}`)}
 	default:
 		return llm.Response{}, errors.New("unexpected provider call after goal settlement")
 	}

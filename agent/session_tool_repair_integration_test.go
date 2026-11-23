@@ -387,7 +387,7 @@ func TestExecTool_RejectedCommunicateLiveVsReload(t *testing.T) {
 	// Trailing comma is unrepairable by RepairJSON (it deliberately does not fix
 	// trailing commas), so prepareToolCall sets PrevalErr → execTool returns a
 	// PrevalOnly error result without calling the communicate Exec function.
-	const malformedArgs = `{"message":"hi","end_turn":true,}`
+	const malformedArgs = `{"message":"hi","next":"send_and_end_turn",}`
 	rejectedCall := llm.ToolCallData{
 		ID:        "call_rej_comm",
 		Name:      "communicate",

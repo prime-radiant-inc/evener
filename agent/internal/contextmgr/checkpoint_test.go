@@ -154,9 +154,16 @@ func TestCheckpoint_CommunicateOnlyRecordsAcceptedReplies(t *testing.T) {
 		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2b", "communicate", "delivered", false)},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2p", "communicate", `{"message":"progress status","end_turn":false}`)},
 		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2p", "communicate", "delivered", false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2p2", "communicate", `{"message":"next progress","next":"send_and_continue"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2p2", "communicate", "delivered", false)},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2q", "communicate", `{}`)},
 		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2q", "communicate", `{"accepted":true,"end_turn":true,"quiet":true}`, false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2q2", "communicate", `{"message":"waiting on job","next":"log_quietly_and_end_turn"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2q2", "communicate", `{"accepted":true,"next":"log_quietly_and_end_turn","quiet":true}`, false)},
+		{QuietYield: true, Kind: schema.TurnAssistant, Message: llm.Assistant("Waiting quietly without tool")},
 		{AcceptedReply: true, Kind: schema.TurnAssistant, Message: llm.Assistant("OK")},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2n", "communicate", `{"message":"next accepted","next":"send_and_end_turn"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2n", "communicate", "delivered", false)},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c3", "communicate", `{"message":"unanswered reply","end_turn":true}`)},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("still working")},
 	}
@@ -169,8 +176,8 @@ func TestCheckpoint_CommunicateOnlyRecordsAcceptedReplies(t *testing.T) {
 			agents = append(agents, e.Text)
 		}
 	}
-	wantAgents := []string{"accepted reply", "default end_turn reply", "OK"}
-	if len(agents) != len(wantAgents) || agents[0] != wantAgents[0] || agents[1] != wantAgents[1] || agents[2] != wantAgents[2] {
+	wantAgents := []string{"accepted reply", "default end_turn reply", "OK", "next accepted"}
+	if len(agents) != len(wantAgents) || agents[0] != wantAgents[0] || agents[1] != wantAgents[1] || agents[2] != wantAgents[2] || agents[3] != wantAgents[3] {
 		t.Fatalf("agent conversation = %v, want %v", agents, wantAgents)
 	}
 

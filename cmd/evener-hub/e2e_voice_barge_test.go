@@ -25,7 +25,7 @@ func TestE2E_VoiceSpokenCorrectionKeepsManagerWork(t *testing.T) {
 	f.admit(t, alpha, false)
 	request := f.next(t)
 	args := communicateArgs(alphaReply)
-	args["end_turn"] = false
+	args["next"] = "send_and_continue"
 	request.RespondToolCall("communicate", args)
 	held := f.next(t)
 	start := voiceJourneyEvent(t, f.device, "speech_start")
@@ -85,7 +85,7 @@ func TestE2E_VoiceSpokenCorrectionKeepsManagerWork(t *testing.T) {
 	default:
 	}
 	args = communicateArgs(lateAlpha)
-	args["end_turn"] = false
+	args["next"] = "send_and_continue"
 	held.RespondToolCall("communicate", args)
 	freshRequest := f.next(t)
 	if !freshRequest.Contains(beta) || !freshRequest.Contains(alpha) {
@@ -114,7 +114,7 @@ func TestE2E_VoiceBargeReplacesUnacknowledgedProvider(t *testing.T) {
 			const correction = "UNACKNOWLEDGED-CORRECTION-23"
 			f.admit(t, "UNACKNOWLEDGED-INPUT-13", false)
 			args := communicateArgs(reply)
-			args["end_turn"] = false
+			args["next"] = "send_and_continue"
 			f.next(t).RespondToolCall("communicate", args)
 			held := f.next(t)
 			start := voiceJourneyEvent(t, f.device, "speech_start")

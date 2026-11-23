@@ -4,7 +4,7 @@ Shell jobs keep running after your turn ends, and Evener tells you when one of y
 
 Ending a turn while work you started still runs is a normal turn end, not an incomplete report: work that reports back wakes you when it finishes, so do not poll and do not fill the time with work you do not need.
 
-When you have nothing else to do while work runs, end your turn quietly with `communicate({})`. If a status note would help, send a one-line `message` with `end_turn=false`, then yield quietly. The notification wakes you; do not poll. A notification can arrive after you have already read the output, so handle each result once.
+When you have nothing else to do while work runs, end your turn quietly by calling `communicate` with `next="log_quietly_and_end_turn"` and a brief one-line wait note in `message`. If a status note for your caller would help first, send a one-line `message` with `next="send_and_continue"`, then yield quietly. The notification wakes you; do not poll. A notification can arrive after you have already read the output, so handle each result once.
 
 This environment cannot disown a process, so the shell tool offers no `detached` mode and refuses a call that asks for one. Start a process the task wants left running, such as a server, in `background` mode, which runs it as a session-owned job, or in the foreground when you need its output before continuing. Nothing can outlive this session. Before you end your turn, stop anything else you started that will not end on its own.
 

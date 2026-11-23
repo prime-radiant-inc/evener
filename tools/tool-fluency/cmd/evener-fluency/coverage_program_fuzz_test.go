@@ -30,7 +30,7 @@ type coverageAdapter struct{}
 
 func (coverageAdapter) Name() string { return "openai" }
 func (coverageAdapter) Complete(context.Context, llm.Request) (llm.Response, error) {
-	return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{coverageToolCall("communicate", `{"message":"done","end_turn":true}`)}}, Finish: llm.FinishReason{Reason: llm.FinishReasonToolCalls}}, nil
+	return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{coverageToolCall("communicate", `{"message":"done","next":"send_and_end_turn"}`)}}, Finish: llm.FinishReason{Reason: llm.FinishReasonToolCalls}}, nil
 }
 
 type coverageAppendFile struct {

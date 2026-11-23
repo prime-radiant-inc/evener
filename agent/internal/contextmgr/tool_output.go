@@ -26,24 +26,24 @@ func findToolCallArgs(history []schema.Turn, toolCallID string) json.RawMessage 
 }
 
 func parseCommunicateArgs(args json.RawMessage) (endTurn bool, message string) {
+	endTurn, _, ok := schema.CommunicateArgsOutcome(args)
+	if !ok {
+		return false, ""
+	}
 	var payload struct {
 		Message string `json:"message"`
-		EndTurn *bool  `json:"end_turn"`
 		Output  *struct {
 			Message string `json:"message"`
 		} `json:"output"`
 	}
-	if len(args) == 0 || json.Unmarshal(args, &payload) != nil {
+	if json.Unmarshal(args, &payload) != nil {
 		return false, ""
 	}
 	message = strings.TrimSpace(payload.Message)
 	if message == "" && payload.Output != nil {
 		message = strings.TrimSpace(payload.Output.Message)
 	}
-	if payload.EndTurn == nil {
-		return true, message
-	}
-	return *payload.EndTurn, message
+	return endTurn, message
 }
 
 func communicateArgsFromHistory(history []schema.Turn, toolCallID string) (endTurn bool, message string) {
