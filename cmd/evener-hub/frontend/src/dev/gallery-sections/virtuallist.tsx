@@ -1,7 +1,7 @@
 import { useRef } from "react";
 import { Button } from "../../widgets/button";
 import { VirtualList, type VirtualListHandle } from "../../widgets/virtuallist";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./virtuallist.module.css";
 
 const ROW_COUNT = 10_000;
@@ -37,11 +37,8 @@ function VirtualListDemo() {
 
 export default function VirtualListGallerySection() {
   return (
-    <section>
-      <h2>VirtualList</h2>
-      <ThemeFlip>
-        <VirtualListDemo />
-      </ThemeFlip>
-    </section>
+    <GallerySection title="VirtualList">
+      <VirtualListDemo />
+    </GallerySection>
   );
 }

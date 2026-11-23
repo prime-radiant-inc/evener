@@ -1,5 +1,5 @@
 import { Tooltip } from "../../widgets/tooltip";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./tooltip.module.css";
 
 // Shown in its natural closed state, not forced open, unlike this batch's
@@ -30,11 +30,8 @@ function TooltipDemo() {
 
 export default function TooltipGallerySection() {
   return (
-    <section>
-      <h2>Tooltip</h2>
-      <ThemeFlip>
-        <TooltipDemo />
-      </ThemeFlip>
-    </section>
+    <GallerySection title="Tooltip">
+      <TooltipDemo />
+    </GallerySection>
   );
 }

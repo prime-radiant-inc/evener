@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Chevron } from "../../widgets/chevron";
 import { Tree, type TreeNode } from "../../widgets/tree";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./tree.module.css";
 
 interface SessionNode extends TreeNode {
@@ -100,13 +100,10 @@ function TreeDemo() {
 
 export default function TreeGallerySection() {
   return (
-    <section>
-      <h2>Tree</h2>
-      <ThemeFlip>
-        <div className={styles.frame}>
-          <TreeDemo />
-        </div>
-      </ThemeFlip>
-    </section>
+    <GallerySection title="Tree">
+      <div className={styles.frame}>
+        <TreeDemo />
+      </div>
+    </GallerySection>
   );
 }

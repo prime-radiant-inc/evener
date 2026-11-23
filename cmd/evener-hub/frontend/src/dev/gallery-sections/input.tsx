@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Input } from "../../widgets/input";
+import { GallerySection } from "../GallerySection";
 import styles from "../gallery-section.module.css";
-import { ThemeFlip } from "../ThemeFlip";
 
 function LiveInput({ placeholder, ariaLabel }: { placeholder?: string; ariaLabel?: string }) {
   const [value, setValue] = useState("");
@@ -12,26 +12,23 @@ function LiveInput({ placeholder, ariaLabel }: { placeholder?: string; ariaLabel
 
 export default function InputGallerySection() {
   return (
-    <section>
-      <h2>Input</h2>
-      <ThemeFlip>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>empty</p>
-          <LiveInput placeholder="Search…" />
-        </div>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>aria-label, no visible label</p>
-          <LiveInput placeholder="Filter settings" ariaLabel="Filter settings" />
-        </div>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>filled</p>
-          <Input value="evener-hub" onChange={() => {}} />
-        </div>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>disabled</p>
-          <Input value="read only" onChange={() => {}} disabled />
-        </div>
-      </ThemeFlip>
-    </section>
+    <GallerySection title="Input">
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>empty</p>
+        <LiveInput placeholder="Search…" />
+      </div>
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>aria-label, no visible label</p>
+        <LiveInput placeholder="Filter settings" ariaLabel="Filter settings" />
+      </div>
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>filled</p>
+        <Input value="evener-hub" onChange={() => {}} />
+      </div>
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>disabled</p>
+        <Input value="read only" onChange={() => {}} disabled />
+      </div>
+    </GallerySection>
   );
 }

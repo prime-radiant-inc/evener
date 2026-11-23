@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Button } from "../../widgets/button";
 import { DiffTable, type DiffTableColumn, type DiffTableRow } from "../../widgets/difftable";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./difftable.module.css";
 
 const COLUMNS: DiffTableColumn[] = [
@@ -59,11 +59,8 @@ function LiveDiffTable() {
 
 export default function DiffTableGallerySection() {
   return (
-    <section>
-      <h2>DiffTable</h2>
-      <ThemeFlip>
-        <LiveDiffTable />
-      </ThemeFlip>
-    </section>
+    <GallerySection title="DiffTable">
+      <LiveDiffTable />
+    </GallerySection>
   );
 }

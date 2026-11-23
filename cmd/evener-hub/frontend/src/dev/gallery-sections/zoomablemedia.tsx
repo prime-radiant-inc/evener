@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Dialog, ZoomableMedia } from "../../widgets";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./zoomablemedia.module.css";
 
 // An inline svg stands in for the image so the gallery needs no asset.
@@ -54,11 +54,8 @@ function ZoomableMediaDemo() {
 
 export default function ZoomableMediaGallerySection() {
   return (
-    <section>
-      <h2>ZoomableMedia</h2>
-      <ThemeFlip>
-        <ZoomableMediaDemo />
-      </ThemeFlip>
-    </section>
+    <GallerySection title="ZoomableMedia">
+      <ZoomableMediaDemo />
+    </GallerySection>
   );
 }
