@@ -115,6 +115,28 @@ test("host picker lists every source in one dropdown, with Connect on offline ho
   expect(controls[controls.length - 1]).toBe(within(panel).getByRole("button", { name: "Connect host" }));
 });
 
+// Choosing a host unmounts the row that held the keyboard. Focus must land
+// back on the Host summary, not on <body> at the top of the document.
+test("choosing a host returns focus to the Host summary", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  renderSpawn(readyClient());
+  await settled();
+
+  const panel = openHostPicker();
+  const buildbox = within(panel).getByRole("button", { name: "buildbox" });
+  act(() => buildbox.focus());
+  expect(document.activeElement).toBe(buildbox);
+
+  fireEvent.click(buildbox);
+  await settled();
+
+  expect(screen.queryByRole("group", { name: "Host options" })).toBeNull();
+  expect(document.activeElement).toBe(hostTrigger());
+});
+
 // The bottom of the picker is the way to a host the hub does not list yet: it
 // hands the reader to the hosts settings, where Add host lives, without
 // changing the draft's launch target.

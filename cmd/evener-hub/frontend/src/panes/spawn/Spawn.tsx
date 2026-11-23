@@ -76,6 +76,7 @@ import {
   Switch,
   ToolIcon,
   Tooltip,
+  useFocusRehome,
   useToasts,
 } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
@@ -534,6 +535,10 @@ function SpawnForm({
   }, [draft, submittedSource, harness, cwd]);
   const [directoryOpen, setDirectoryOpen] = useState(false);
   const [hostPickerOpen, setHostPickerOpen] = useState(false);
+  // Choosing a host closes the disclosure and unmounts the row that held the
+  // keyboard. Keep focus on the Host summary instead of dropping it to <body>.
+  const hostDisclosureRef = useRef<HTMLDivElement | null>(null);
+  useFocusRehome(hostDisclosureRef);
   // Scoped by cwd AND host so neither a draft switch nor a host switch can show
   // the previous project's/host's branch while the new evener/git/head request
   // is in flight - or indefinitely after it fails (resolveHeadBranch fails soft
@@ -2873,7 +2878,7 @@ function SpawnForm({
             pick-the-machine first, then the folder on it. */}
         {displayRemoteHosts.length > 0 && (
           <div className={`${CLASS.quietRows} ${CLASS.desktopOnly}`}>
-            <div className={CLASS.quietRow} data-testid="spawn-host-desktop">
+            <div className={CLASS.quietRow} data-testid="spawn-host-desktop" ref={hostDisclosureRef}>
               <Disclosure
                 open={hostPickerOpen}
                 onOpenChange={setHostPickerOpen}
