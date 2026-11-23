@@ -6,6 +6,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import type { ReactElement } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import { LONG_PRESS_MS } from "../hovercard";
+import { POINTER_CLICK_WINDOW_MS } from "../hovercard/useFloatingLabel";
 import { type LongPressOptions, useLongPress } from "./useLongPress";
 
 function PressTarget({ onPress, ...options }: Partial<LongPressOptions> & { onPress?: () => void }): ReactElement {
@@ -117,4 +118,55 @@ test("unmount clears a pending hold", () => {
   act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
 
   expect(onLongPress).not.toHaveBeenCalled();
+});
+
+test("holdMs carries a caller's own threshold", () => {
+  vi.useFakeTimers();
+  const onLongPress = vi.fn();
+  render(<PressTarget holdMs={120} onLongPress={onLongPress} />);
+
+  fireEvent.pointerDown(target(), { button: 0, clientX: 10, clientY: 10, pointerId: 7 });
+  act(() => vi.advanceTimersByTime(119));
+  expect(onLongPress).not.toHaveBeenCalled();
+  act(() => vi.advanceTimersByTime(1));
+  expect(onLongPress).toHaveBeenCalledTimes(1);
+});
+
+test.each(["scroll", "resize"] as const)("cancelOnViewportChange ends a pending hold on %s", (event) => {
+  vi.useFakeTimers();
+  const onLongPress = vi.fn();
+  render(<PressTarget cancelOnViewportChange onLongPress={onLongPress} />);
+
+  fireEvent.pointerDown(target(), { button: 0, clientX: 10, clientY: 10, pointerId: 8 });
+  act(() => vi.advanceTimersByTime(100));
+  act(() => fireEvent(window, new Event(event)));
+  act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+
+  expect(onLongPress).not.toHaveBeenCalled();
+});
+
+test("cancelOnPointerLeave ends a pending hold", () => {
+  vi.useFakeTimers();
+  const onLongPress = vi.fn();
+  render(<PressTarget cancelOnPointerLeave onLongPress={onLongPress} />);
+
+  fireEvent.pointerDown(target(), { button: 0, clientX: 10, clientY: 10, pointerId: 9 });
+  fireEvent.pointerLeave(target(), { pointerId: 9 });
+  act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+
+  expect(onLongPress).not.toHaveBeenCalled();
+});
+
+test("a leave after the hold bounds its click suppression", () => {
+  vi.useFakeTimers();
+  const onPress = vi.fn();
+  render(<PressTarget cancelOnPointerLeave onPress={onPress} />);
+
+  fireEvent.pointerDown(target(), { button: 0, clientX: 10, clientY: 10, pointerId: 10 });
+  act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+  fireEvent.pointerLeave(target(), { pointerId: 10 });
+  act(() => vi.advanceTimersByTime(POINTER_CLICK_WINDOW_MS + 1));
+  fireEvent.click(target());
+
+  expect(onPress).toHaveBeenCalledTimes(1);
 });

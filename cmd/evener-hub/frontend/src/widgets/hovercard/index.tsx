@@ -1,17 +1,12 @@
-import { type ReactNode, useCallback, useEffect, useRef } from "react";
+import { type ReactNode, useEffect } from "react";
 import { requireClass } from "../internal/requireClass";
-import { watchViewport } from "../internal/viewportWatch";
+import { LONG_PRESS_MS, useLongPress } from "../internal/useLongPress";
 import type { SideAnchor } from "./computePosition";
 import { describeChild, FloatingBubblePortal, useFloatingBubble } from "./floatingBubble";
 import styles from "./hovercard.module.css";
 import { isHoverless, POINTER_CLICK_WINDOW_MS } from "./useFloatingLabel";
 
-export { POINTER_CLICK_WINDOW_MS };
-
-/** How long a finger must rest on a long-press-enabled trigger on a hoverless device
- * before its card opens. A shorter hold than this is a tap and activates the
- * trigger's own control. */
-export const LONG_PRESS_MS = 500;
+export { LONG_PRESS_MS, POINTER_CLICK_WINDOW_MS };
 
 /** How far a finger may drift during a press before it stops counting as a
  * long press - a drag is a scroll, not a hold. */
@@ -47,13 +42,6 @@ const CLASS = {
  * into a long press: a plain tap activates the control the trigger wraps, and
  * the one click a lifted long press still sends is swallowed. */
 export function HoverCard({ label, children, focusTarget, longPressEnabled, block, sideAnchor }: HoverCardProps) {
-  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const longPressStartRef = useRef<{ x: number; y: number; pointerId: number } | null>(null);
-  const swallowClickRef = useRef(false);
-  const swallowBackstopRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  // The gesture's window cancellation pair, disposer stored so it is taken down
-  // exactly once, by whichever path ends the gesture first.
-  const gestureListenersRef = useRef<(() => void) | null>(null);
   const {
     visible,
     mounted,
@@ -68,110 +56,45 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled, bloc
     showImmediately,
     dismiss,
   } = useFloatingBubble(focusTarget, sideAnchor);
-
-  const disposeGestureListeners = useCallback(() => {
-    const dispose = gestureListenersRef.current;
-    if (dispose === null) return;
-    gestureListenersRef.current = null;
-    dispose();
-  }, []);
-
-  const cancelLongPress = useCallback(() => {
-    clearTimeout(longPressTimerRef.current);
-    longPressTimerRef.current = undefined;
-    longPressStartRef.current = null;
-    disposeGestureListeners();
-  }, [disposeGestureListeners]);
-
-  const clearSwallowBackstop = useCallback(() => {
-    clearTimeout(swallowBackstopRef.current);
-    swallowBackstopRef.current = undefined;
-  }, []);
-
-  // A press still pending, or a swallow still armed, when the card goes must
-  // not fire later.
-  useEffect(
-    () => () => {
-      cancelLongPress();
-      clearSwallowBackstop();
-    },
-    [cancelLongPress, clearSwallowBackstop],
-  );
-
-  // The lifted press still sends one click; keep the swallow armed for it, but
-  // bound the arming so a gesture the browser ends without a click cannot leave
-  // a later click swallowed.
-  const endPress = useCallback(() => {
-    cancelLongPress();
-    if (!swallowClickRef.current) return;
-    clearSwallowBackstop();
-    swallowBackstopRef.current = setTimeout(() => {
-      swallowBackstopRef.current = undefined;
-      swallowClickRef.current = false;
-    }, POINTER_CLICK_WINDOW_MS);
-  }, [cancelLongPress, clearSwallowBackstop]);
-
-  const abortPress = useCallback(() => {
-    cancelLongPress();
-    clearSwallowBackstop();
-    swallowClickRef.current = false;
-  }, [cancelLongPress, clearSwallowBackstop]);
-
-  // A scroll anywhere (capture-phase, so a scrollable ancestor's own scroll
-  // counts) or a viewport resize cancels the press before its timer fires. The
-  // pair exists only for as long as the gesture does: an idle trigger owns none,
-  // so the count does not grow with the number of mounted cards. The
-  // pending/visible floating-label dismissal is the shared hook's own pair.
-  const armGestureListeners = useCallback(
-    (doc: Document) => {
-      if (gestureListenersRef.current !== null) return;
-      // The trigger's own window: a Dockview popout resizes and scrolls its own
-      // window, and the opener's never sees either.
-      gestureListenersRef.current = watchViewport(doc, abortPress);
-    },
-    [abortPress],
-  );
-
-  // A press can outlive a document move: Dockview relocates the mounted card
-  // while the timer runs, and the cancellation pair has to travel with it or a
-  // scroll in the destination window never ends the press.
   const ownerDocument = bubbleContainer.ownerDocument;
-  useEffect(() => {
-    if (gestureListenersRef.current === null) return;
-    disposeGestureListeners();
-    armGestureListeners(ownerDocument);
-  }, [armGestureListeners, disposeGestureListeners, ownerDocument]);
+  const longPress = useLongPress({
+    onLongPress: showImmediately,
+    holdMs: LONG_PRESS_MS,
+    slopPx: LONG_PRESS_SLOP_PX,
+    enabled: Boolean(longPressEnabled && isHoverless()),
+    cancelOnPointerLeave: true,
+    cancelOnViewportChange: true,
+    capturePointer: false,
+    ownerDocument,
+  });
+  const { cancel: cancelLongPress, clearClickSuppression } = longPress;
 
   // Turning long-press mode off mid-gesture clears the press and its listeners.
   useEffect(() => {
-    if (!longPressEnabled) abortPress();
-  }, [abortPress, longPressEnabled]);
+    if (!longPressEnabled) cancelLongPress();
+  }, [cancelLongPress, longPressEnabled]);
 
+  // The card's own outside press dismisses it and gives up the armed click too.
   useEffect(() => {
     if (!longPressEnabled || !visible || !isHoverless()) return;
     const handleOutsidePointer = (event: PointerEvent) => {
       if (wrapperRef.current?.contains(event.target as Node | null)) return;
-      swallowClickRef.current = false;
+      clearClickSuppression();
       dismiss();
     };
     ownerDocument.addEventListener("pointerdown", handleOutsidePointer, true);
     return () => ownerDocument.removeEventListener("pointerdown", handleOutsidePointer, true);
-  }, [dismiss, longPressEnabled, ownerDocument, visible, wrapperRef]);
+  }, [clearClickSuppression, dismiss, longPressEnabled, ownerDocument, visible, wrapperRef]);
 
   useEffect(() => {
-    if (!visible) swallowClickRef.current = false;
-  }, [visible]);
+    if (!visible) clearClickSuppression();
+  }, [clearClickSuppression, visible]);
 
   // A card's label is arbitrary content, so unlike the tooltip it also accepts a
   // function child: a caller rendering the trigger itself places the
   // association where it belongs instead of being cloned.
   const describedChild =
     typeof children === "function" ? children({ describedBy }) : describeChild(children, describedBy);
-
-  const ownsGesture = (event: { pointerId: number }) => {
-    const start = longPressStartRef.current;
-    return start !== null && start.pointerId === event.pointerId;
-  };
 
   return (
     // longPressEnabled delegates a hoverless *long press* to the semantic child; a
@@ -182,60 +105,13 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled, bloc
       ref={wrapperRef}
       className={block ? `${CLASS.wrapper} ${CLASS.block}` : CLASS.wrapper}
       {...triggerProps}
-      onPointerDown={(event) => {
-        if (!longPressEnabled || !isHoverless() || event.button !== 0) return;
-        // A second pointer must not take over the active gesture: not its start
-        // record, timer, listener pair or the click suppression it holds.
-        if (longPressStartRef.current !== null) return;
-        swallowClickRef.current = false;
-        clearSwallowBackstop();
-        longPressStartRef.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
-        clearTimeout(longPressTimerRef.current);
-        // The pressed element's own document: right even on the first press
-        // after mounting directly in a popout, before any render settled state.
-        armGestureListeners(event.currentTarget.ownerDocument);
-        longPressTimerRef.current = setTimeout(() => {
-          longPressTimerRef.current = undefined;
-          swallowClickRef.current = true;
-          showImmediately();
-        }, LONG_PRESS_MS);
-      }}
-      onPointerMove={(event) => {
-        const start = longPressStartRef.current;
-        if (start === null || start.pointerId !== event.pointerId) return;
-        if (longPressTimerRef.current === undefined) return;
-        if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > LONG_PRESS_SLOP_PX) cancelLongPress();
-      }}
-      onPointerUp={(event) => {
-        if (!ownsGesture(event)) return;
-        endPress();
-      }}
-      onPointerCancel={(event) => {
-        if (!ownsGesture(event)) return;
-        abortPress();
-      }}
-      // Leaving the trigger can end the gesture without a pointerup here, so
-      // this bounds an armed swallow the same way a lift does.
-      onPointerLeave={(event) => {
-        if (!ownsGesture(event)) return;
-        endPress();
-      }}
+      {...longPress.handlers}
       onClickCapture={(event) => {
         if (!longPressEnabled || !isHoverless()) return;
-        if (!swallowClickRef.current) {
-          // Any other tap is the trigger's own: let it activate, and take the
-          // card down with it so nothing lingers over the next screen.
-          if (visible) dismiss();
-          return;
-        }
-        // The lifted long press sends one click to the control the trigger
-        // wraps; swallow exactly that one, in the capture phase so a handler
-        // on the trigger itself cannot run first, and stop its default action
-        // too.
-        swallowClickRef.current = false;
-        clearSwallowBackstop();
-        event.preventDefault();
-        event.stopPropagation();
+        // The lifted long press swallows exactly one click in the capture phase;
+        // any other tap is the trigger's own and takes the card down with it.
+        if (longPress.consumeClick(event)) return;
+        if (visible) dismiss();
       }}
       onContextMenu={(event) => {
         // The hold belongs to the card, so its platform callout must not open
