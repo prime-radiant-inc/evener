@@ -39,6 +39,11 @@
   background: var(--hover-1);
 }
 
+/* DiffBlock shares this header without CodeBlock's .root hover context. */
+.header:hover {
+  background: var(--hover-1);
+}
+
 .language {
   color: var(--ink-mid);
   font-family: var(--font-sans); /* a chrome label, never mono - see Direction */
@@ -56,6 +61,7 @@
 }
 
 .root:hover .copy,
+.copy:hover,
 .copy:focus-within {
   opacity: 1;
 }
@@ -71,6 +77,10 @@
   padding-right: var(--space-6);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.preNoWrap {
+  white-space: pre;
 }
 
 /* --font-size-caption, not --font-size-body: an expanded tool body must not read

@@ -2,6 +2,7 @@
  * would otherwise square off the first and last rows. Lines truncate rather
  * than scroll (.content), so nothing reachable is clipped. */
 .root {
+  position: relative;
   overflow: hidden;
   border: 1px solid var(--edge);
   border-radius: var(--radius-pane);
@@ -13,7 +14,8 @@
 
 .line {
   display: flex;
-  padding: 0 var(--space-2);
+  /* Right inset clears the shared top-right copy control. */
+  padding: 0 var(--space-6) 0 var(--space-2);
   white-space: pre;
 }
 

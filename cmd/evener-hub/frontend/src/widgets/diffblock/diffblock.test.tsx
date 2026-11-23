@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { render } from "@testing-library/react";
-import { expect, test } from "vitest";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, expect, test, vi } from "vitest";
 import { requireClass } from "../internal/requireClass";
 import rawStyles from "./diffblock.module.css";
 import { DiffBlock } from "./index";
@@ -41,9 +42,24 @@ const SIMPLE_DIFF = [
   ' \treturn "hi"',
 ].join("\n");
 
+afterEach(() => {
+  vi.restoreAllMocks();
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+});
+
 test("renders one line per input line", () => {
   const { container } = render(<DiffBlock unified={SIMPLE_DIFF} />);
   expect(lineElements(container)).toHaveLength(9);
+});
+
+test("the copy control writes the unified diff text to the clipboard", async () => {
+  const user = userEvent.setup();
+  const writeText = vi.spyOn(navigator.clipboard, "writeText");
+  render(<DiffBlock unified={SIMPLE_DIFF} />);
+
+  await user.click(screen.getByRole("button", { name: "Copy diff" }));
+
+  expect(writeText).toHaveBeenCalledExactlyOnceWith(SIMPLE_DIFF);
 });
 
 test("classifies diff --git and index lines as header", () => {
