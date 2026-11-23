@@ -348,22 +348,15 @@ func TestRepetitionNudgeText_StatesActualCount(t *testing.T) {
 		{1000, "1000 times"},
 	}
 	for _, c := range cases {
-		got := repetitionNudgeText(c.count, "")
+		got := repetitionNudgeText(c.count)
 		if !strings.Contains(got, c.want) {
-			t.Errorf("repetitionNudgeText(%d, \"\") = %q, want it to contain %q", c.count, got, c.want)
+			t.Errorf("repetitionNudgeText(%d) = %q, want it to contain %q", c.count, got, c.want)
 		}
-		if !strings.Contains(got, "end your turn with communicate:") {
-			t.Errorf("repetitionNudgeText(%d, \"\") = %q, want default tool communicate", c.count, got)
-		}
-	}
-	custom := repetitionNudgeText(2, "report_done")
-	if !strings.Contains(custom, "end your turn with report_done:") {
-		t.Errorf("repetitionNudgeText(2, \"report_done\") = %q, want custom tool name", custom)
 	}
 	// Two different counts must not produce the same text — otherwise a long
 	// loop reads exactly like the second call did.
-	two := repetitionNudgeText(2, DefaultResultToolName)
-	seven := repetitionNudgeText(7, DefaultResultToolName)
+	two := repetitionNudgeText(2)
+	seven := repetitionNudgeText(7)
 	if two == seven {
 		t.Errorf("repetitionNudgeText(2) and repetitionNudgeText(7) must differ, both = %q", two)
 	}
@@ -379,9 +372,9 @@ func TestIsBreakerNudge(t *testing.T) {
 		want bool
 	}{
 		{"the failure nudge", failureNudgeText, true},
-		{"the repetition nudge", repetitionNudgeText(2, DefaultResultToolName), true},
-		{"a repetition nudge at a large count", repetitionNudgeText(1000, "report_done"), true},
-		{"a repetition nudge with surrounding whitespace", "  " + repetitionNudgeText(3, DefaultResultToolName) + "\n", true},
+		{"the repetition nudge", repetitionNudgeText(2), true},
+		{"a repetition nudge at a large count", repetitionNudgeText(1000), true},
+		{"a repetition nudge with surrounding whitespace", "  " + repetitionNudgeText(3) + "\n", true},
 		{"a grep truncation note", "[results truncated at 1; narrow the path or glob_filter, or raise max_results]", false},
 		{"a glob exclusion note", "0 matches; 3 dotfile/gitignored path(s) were excluded from the search", false},
 		{"a registry head-count marker", "[200 total lines; showing first 200; 5 lines omitted]", false},

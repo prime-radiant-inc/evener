@@ -53,7 +53,7 @@ func TestBreakerRepeatedIdenticalOutputsTripTheRepetitionNudge(t *testing.T) {
 	if res.IsError || res.Rejected {
 		t.Fatalf("threshold run = %+v, want a clean execution", res)
 	}
-	if !strings.Contains(res.Output, repetitionNudgeText(breakerThreshold, DefaultResultToolName)) {
+	if !strings.Contains(res.Output, repetitionNudgeText(breakerThreshold)) {
 		t.Fatalf("threshold run output = %q, want it to carry the repetition nudge", res.Output)
 	}
 }

@@ -232,7 +232,6 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 		}
 		return err
 	}
-	reg.SetResultToolName(resultToolName)
 	if resultToolName != tool.DefaultResultToolName {
 		// The profile registry seeded the canonical communicate definition with
 		// profilePlaceholderExecutor. This session's result tool now lives under

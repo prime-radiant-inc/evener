@@ -6,8 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -15,8 +13,6 @@ import (
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/events"
-	"primeradiant.com/evener/agent/execenv"
-	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	taskpkg "primeradiant.com/evener/agent/task"
@@ -444,85 +440,5 @@ func TestSteeringArrivingDuringToolResultAppendWaitsForTheRoundToFinish(t *testi
 	entries := decodeTranscriptEntries(t, fs.Fs, "/root.jsonl")
 	if len(entries) != 1 || entries[0].Turn.Kind != schema.TurnToolResults {
 		t.Fatalf("transcript before steering drain = %#v, want only the completed tool result", entries)
-	}
-}
-
-// TestBareText_TotalRetryCapAcrossToolCalls proves a single input turn cannot
-// spin forever by alternating rejected bare text and dummy tool calls: the 9th
-// bare-text response terminates with errBareTextWithoutResultTool even though
-// consecutiveBareText is only 1.
-func TestBareText_TotalRetryCapAcrossToolCalls(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	target := filepath.Join(dir, "probe.txt")
-	if err := os.WriteFile(target, []byte("ok\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	readArgs, _ := json.Marshal(map[string]any{"file_path": target})
-	var steps []func(llm.Request) llm.Response
-	for i := range 9 {
-		steps = append(steps, func(llm.Request) llm.Response {
-			// Non-empty text without FinishReasonStop is rejected bare text on EntryUserInput.
-			return llm.Response{Message: llm.Assistant("stuck bare text")}
-		})
-		if i < 8 {
-			callID := "read-" + string(rune('a'+i))
-			steps = append(steps, func(llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(llm.ToolCallData{
-					ID:        callID,
-					Name:      "read_file",
-					Arguments: readArgs,
-					Type:      "function",
-				})
-			})
-		}
-	}
-	steps = append(steps, func(llm.Request) llm.Response {
-		t.Fatal("exceeded maxTotalBareTextResponses without terminating")
-		return agenttest.FinalResponse("unreachable")
-	})
-	adapter := newFakeAdapter("openai", steps...)
-	s := newSession(t, withDir(dir), withAdapter(adapter))
-	_, err := s.ProcessInput(tripwireCtx(t), "spiral", nil)
-	if !errors.Is(err, errBareTextWithoutResultTool) {
-		t.Fatalf("err = %v, want errBareTextWithoutResultTool", err)
-	}
-	if got := len(adapter.Requests()); got != 17 {
-		t.Fatalf("requests = %d, want 17 (8 bare-text + 8 read_file + 9th bare-text)", got)
-	}
-}
-
-// TestSession_RepetitionNudgeNamesConfiguredResultTool verifies that a session
-// configured with ResultToolName threads that name into the registry's
-// tool-repetition nudge.
-func TestSession_RepetitionNudgeNamesConfiguredResultTool(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	target := filepath.Join(dir, "same.txt")
-	if err := os.WriteFile(target, []byte("same content\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	s := newSession(t, withDir(dir), withConfig(SessionConfig{
-		ResultToolName: "report_done",
-		AgentsDocPath:  filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
-	}))
-	args, _ := json.Marshal(map[string]any{"file_path": target})
-	env := execenv.NewLocalExecutionEnvironment(dir)
-	first := s.reg.ExecuteCall(context.Background(), env, llm.ToolCallData{ID: "r1", Name: "read_file", Arguments: args})
-	if first.IsError {
-		t.Fatalf("first read_file failed: %s", first.Output)
-	}
-	second := s.reg.ExecuteCall(context.Background(), env, llm.ToolCallData{ID: "r2", Name: "read_file", Arguments: args})
-	if second.IsError {
-		t.Fatalf("second read_file failed: %s", second.Output)
-	}
-	_, nudge, ok := bytes.Cut([]byte(second.Output), []byte("\n\n"))
-	if !ok || !tool.IsBreakerNudge(string(nudge)) {
-		t.Fatalf("second read_file output missing breaker repetition nudge: %q", second.Output)
-	}
-	if !bytes.Contains(nudge, []byte("report_done")) ||
-		bytes.Contains(nudge, []byte(tool.DefaultResultToolName)) ||
-		bytes.Contains(nudge, []byte("your result tool")) {
-		t.Fatalf("second read_file nudge = %q, want configured tool name report_done without default/placeholder", nudge)
 	}
 }

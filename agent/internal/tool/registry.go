@@ -570,10 +570,9 @@ type toolMiddleware func(ctx context.Context, toolName string, args map[string]a
 // Registry is a concurrency-safe collection of registered tools and the
 // middleware run before their execution.
 type Registry struct {
-	mu             sync.RWMutex
-	tools          map[string]RegisteredTool
-	middleware     []toolMiddleware
-	resultToolName string
+	mu         sync.RWMutex
+	tools      map[string]RegisteredTool
+	middleware []toolMiddleware
 
 	// breaker is this dispatch scope's record of repeated identical calls.
 	// One registry per session, so the ledger is per-session; it carries its
@@ -611,32 +610,7 @@ func (r *Registry) Clone() *Registry {
 		}
 	}
 	out.middleware = append([]toolMiddleware(nil), r.middleware...)
-	out.resultToolName = r.resultToolName
 	return out
-}
-
-// SetResultToolName records the session's configured result tool name so
-// breaker nudges name the actual result tool.
-func (r *Registry) SetResultToolName(name string) {
-	if r == nil {
-		return
-	}
-	r.mu.Lock()
-	r.resultToolName = strings.TrimSpace(name)
-	r.mu.Unlock()
-}
-
-func (r *Registry) resultToolNameOrDefault() string {
-	if r == nil {
-		return DefaultResultToolName
-	}
-	r.mu.RLock()
-	name := r.resultToolName
-	r.mu.RUnlock()
-	if name == "" {
-		return DefaultResultToolName
-	}
-	return name
 }
 
 // Use appends a middleware to the tool execution pipeline.
@@ -994,7 +968,7 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 		case repeatStreak >= breakerThreshold:
 			// Repeats on every subsequent identical result: nothing else
 			// applies pressure once repetition is never parked.
-			appendIntervention(&res, repetitionNudgeText(repeatStreak, r.resultToolNameOrDefault()))
+			appendIntervention(&res, repetitionNudgeText(repeatStreak))
 		}
 	}
 	return res

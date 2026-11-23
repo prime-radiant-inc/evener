@@ -31,21 +31,19 @@ func clampNonNeg(v int) int {
 //   - empty-budget exhaustion ⇒ emptyExhausted;
 //   - the three empty-steering variants map to consecutiveEmpty 1/2/>=3.
 func FuzzMcDecideNoToolCalls(f *testing.F) {
-	f.Add(true, 0, 0, 0, 0, "communicate")  // first empty -> variant 1
-	f.Add(true, 1, 1, 0, 0, "communicate")  // second empty -> variant 2
-	f.Add(true, 2, 2, 0, 0, "result")       // third empty -> variant >=3
-	f.Add(true, 3, 3, 0, 0, "communicate")  // empty budget exhausted
-	f.Add(true, 0, 8, 0, 8, "communicate")  // total-empty budget exhausted
-	f.Add(false, 5, 5, 0, 0, "communicate") // bare text, retry
-	f.Add(false, 0, 0, 3, 3, "result_tool") // bare text budget exhausted
-	f.Add(false, 0, 0, 0, 8, "communicate") // total-bare-text budget exhausted
+	f.Add(true, 0, 0, 0, "communicate")  // first empty -> variant 1
+	f.Add(true, 1, 1, 0, "communicate")  // second empty -> variant 2
+	f.Add(true, 2, 2, 0, "result")       // third empty -> variant >=3
+	f.Add(true, 3, 3, 0, "communicate")  // empty budget exhausted
+	f.Add(true, 0, 8, 0, "communicate")  // total-empty budget exhausted
+	f.Add(false, 5, 5, 0, "communicate") // bare text, retry
+	f.Add(false, 0, 0, 3, "result_tool") // bare text budget exhausted
 
-	f.Fuzz(func(t *testing.T, noContent bool, consecutiveEmpty, totalEmpty, consecutiveBareText, totalBareText int, resultToolName string) {
+	f.Fuzz(func(t *testing.T, noContent bool, consecutiveEmpty, totalEmpty, consecutiveBareText int, resultToolName string) {
 		in := retryTracker{
 			consecutiveEmpty:    clampNonNeg(consecutiveEmpty),
 			totalEmpty:          clampNonNeg(totalEmpty),
 			consecutiveBareText: clampNonNeg(consecutiveBareText),
-			totalBareText:       clampNonNeg(totalBareText),
 		}
 
 		dec := decideNoToolCalls(noContent, in, resultToolName)
@@ -72,9 +70,6 @@ func FuzzMcDecideNoToolCalls(f *testing.F) {
 			}
 			if dec.Tracker.consecutiveBareText != in.consecutiveBareText {
 				t.Fatalf("consecutiveBareText changed on empty path: %d -> %d", in.consecutiveBareText, dec.Tracker.consecutiveBareText)
-			}
-			if dec.Tracker.totalBareText != in.totalBareText {
-				t.Fatalf("totalBareText changed on empty path: %d -> %d", in.totalBareText, dec.Tracker.totalBareText)
 			}
 			// Empty-budget exhaustion.
 			exhausted := dec.Tracker.consecutiveEmpty > maxEmptyRetries || dec.Tracker.totalEmpty > maxTotalEmptyResponses
@@ -109,19 +104,12 @@ func FuzzMcDecideNoToolCalls(f *testing.F) {
 			if dec.Tracker.consecutiveBareText != in.consecutiveBareText+1 {
 				t.Fatalf("consecutiveBareText not incremented: %d -> %d", in.consecutiveBareText, dec.Tracker.consecutiveBareText)
 			}
-			if dec.Tracker.totalBareText != in.totalBareText+1 {
-				t.Fatalf("totalBareText not incremented: %d -> %d", in.totalBareText, dec.Tracker.totalBareText)
-			}
 			if dec.Tracker.totalEmpty != in.totalEmpty {
 				t.Fatalf("totalEmpty changed on bare-text path: %d -> %d", in.totalEmpty, dec.Tracker.totalEmpty)
 			}
-			if dec.Tracker.consecutiveBareText > maxBareTextRetries || dec.Tracker.totalBareText > maxTotalBareTextResponses {
+			if dec.Tracker.consecutiveBareText > maxBareTextRetries {
 				if dec.TerminalKind != noToolTerminalBareTextExhausted {
 					t.Fatalf("expected bareTextExhausted, got %v", dec.TerminalKind)
-				}
-			} else {
-				if !dec.Retry {
-					t.Fatalf("expected bare-text retry within budget: %+v", dec)
 				}
 			}
 		}
