@@ -569,13 +569,14 @@ func TestSubagentBareTextFallback(t *testing.T) {
 		}
 	})
 
-	t.Run("persisted_shell_attention_blocks_bare_text_and_allows_quiet_yield", func(t *testing.T) {
+	t.Run("persisted_shell_attention_blocks_bare_text_until_presented", func(t *testing.T) {
 		t.Parallel()
 		env := newHeldJobEnvironment(t.TempDir())
 		t.Cleanup(env.releaseJob)
 
 		shellFinishedBeforeBareReply := make(chan struct{})
 		releaseStep2 := make(chan struct{})
+		var step3Req llm.Request
 		adapter := newFakeAdapter("openai",
 			func(llm.Request) llm.Response {
 				return agenttest.ToolCallResponse(llm.ToolCallData{
@@ -590,11 +591,9 @@ func TestSubagentBareTextFallback(t *testing.T) {
 				<-releaseStep2
 				return bareTextResponse("Premature bare text before reading completed shell", llm.FinishReasonStop)
 			},
-			func(llm.Request) llm.Response {
-				return quietYieldResponse("quiet-after-persisted-shell", `{}`)
-			},
-			func(llm.Request) llm.Response {
-				return agenttest.FinalResponse("Reported after draining persisted shell attention")
+			func(req llm.Request) llm.Response {
+				step3Req = req
+				return bareTextResponse("Reported after reading persisted shell attention", llm.FinishReasonStop)
 			},
 		)
 		parent := newSession(t, withEnv(env), withAdapter(adapter), withStateDir(t.TempDir()))
@@ -634,8 +633,6 @@ func TestSubagentBareTextFallback(t *testing.T) {
 			ids, err := child.sess.automaticDelegateAttentionIDs()
 			return err == nil && len(ids) == 1
 		})
-		// Verify subagentHasDrainableWork sees the unpresented shell attention,
-		// while marking it covered on the active turn excludes it.
 		drainable, err := child.sess.subagentHasDrainableWork()
 		if err != nil || !drainable {
 			t.Fatalf("subagentHasDrainableWork() = %v, %v; want true, nil for unpresented shell attention", drainable, err)
@@ -643,13 +640,127 @@ func TestSubagentBareTextFallback(t *testing.T) {
 		close(releaseStep2)
 
 		waitForLiveSubagentRun(t, child)
-		if got := len(adapter.Requests()); got != 4 {
-			t.Fatalf("provider requests = %d, want 4 (shell -> rejected bare text -> quiet yield -> final report)", got)
+		if got := len(adapter.Requests()); got != 3 {
+			t.Fatalf("provider requests = %d, want 3 (shell -> rejected unpresented bare text -> accepted bare text after presentation)", got)
+		}
+		if !requestContainsText(step3Req, "child shell complete") {
+			t.Fatalf("step 3 request did not present persisted shell attention: %+v", step3Req.Messages)
+		}
+		assertReportedDelegatePacket(t, parent, res.DelegateID, "Reported after reading persisted shell attention")
+		noTool, nudges, commTurns, accComm, accAsst, accTexts := countSubagentTranscriptTurns(t, child.sess)
+		if noTool != 1 || nudges != 0 || commTurns != 0 || accComm != 0 || accAsst != 1 || len(accTexts) != 1 || accTexts[0] != "Reported after reading persisted shell attention" {
+			t.Fatalf("transcript counts = noTool:%d nudges:%d comm:%d accComm:%d accAsst:%d texts:%q",
+				noTool, nudges, commTurns, accComm, accAsst, accTexts)
+		}
+	})
+
+	t.Run("persisted_shell_attention_allows_quiet_yield_and_drains", func(t *testing.T) {
+		t.Parallel()
+		env := newHeldJobEnvironment(t.TempDir())
+		t.Cleanup(env.releaseJob)
+
+		inQuietYieldReq := make(chan struct{})
+		releaseQuietYieldReq := make(chan struct{})
+		var drainReq llm.Request
+		adapter := newFakeAdapter("openai",
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{
+					ID:        "bg-shell",
+					Name:      "shell",
+					Arguments: json.RawMessage(`{"command":"go test","mode":"background"}`),
+					Type:      "function",
+				})
+			},
+			func(llm.Request) llm.Response {
+				close(inQuietYieldReq)
+				<-releaseQuietYieldReq
+				return quietYieldResponse("quiet-after-persisted-shell", `{}`)
+			},
+			func(req llm.Request) llm.Response {
+				drainReq = req
+				return agenttest.FinalResponse("Reported after draining persisted shell attention")
+			},
+		)
+		parent := newSession(t, withEnv(env), withAdapter(adapter), withStateDir(t.TempDir()))
+		res := parent.createDelegate(tripwireCtx(t), delegateArgs{Task: "run shell and report"})
+		if res.Err != nil {
+			t.Fatalf("createDelegate: %v", res.Err)
+		}
+		_, childID, err := decodeRef(res.TranscriptRef)
+		if err != nil {
+			t.Fatalf("decodeRef: %v", err)
+		}
+		child := parent.subagents.get(childID)
+		if child == nil {
+			t.Fatalf("subagent %s not found", childID)
+		}
+
+		ctx := tripwireCtx(t)
+		select {
+		case <-env.started:
+		case <-ctx.Done():
+			t.Fatal("child background shell did not start")
+		}
+		select {
+		case <-inQuietYieldReq:
+		case <-ctx.Done():
+			t.Fatal("child did not reach quiet-yield request")
+		}
+		// Finish the shell while the quiet-yield request is in flight: step 2's
+		// request was built without the completion, and persistStableShellAttention
+		// empties jm.running before communicate({}) executes.
+		env.releaseJob()
+		testwait.Until(t, "shell finished into persisted stable attention while quiet-yield request in flight", func() bool {
+			outstanding, err := child.sess.treeHasOutstandingWork()
+			if err != nil || outstanding {
+				return false
+			}
+			ids, err := child.sess.automaticDelegateAttentionIDs()
+			return err == nil && len(ids) == 1
+		})
+		close(releaseQuietYieldReq)
+
+		waitForLiveSubagentRun(t, child)
+		if got := len(adapter.Requests()); got != 3 {
+			t.Fatalf("provider requests = %d, want 3 (shell -> quiet yield -> drain notification report)", got)
+		}
+		if !requestContainsText(drainReq, "child shell complete") {
+			t.Fatalf("drain notification request did not carry persisted shell completion: %+v", drainReq.Messages)
+		}
+		var quietAccepted bool
+		var completions int
+		for _, turn := range transcriptTurnsOf(t, child.sess) {
+			if turn.Kind == schema.TurnCompletion {
+				completions++
+			}
+			if turn.Kind != schema.TurnToolResults {
+				continue
+			}
+			for _, part := range turn.Message.Content {
+				if part.Kind != llm.ContentToolResult || part.ToolResult == nil {
+					continue
+				}
+				if part.ToolResult.ToolCallID == "quiet-after-persisted-shell" {
+					if part.ToolResult.IsError {
+						t.Fatalf("quiet yield communicate({}) returned error: %s", part.ToolResult.Content)
+					}
+					if !schema.IsQuietCommunicateState(part.ToolResult.ToolState) {
+						t.Fatalf("quiet yield communicate({}) ToolState = %s, want quiet state", string(part.ToolResult.ToolState))
+					}
+					quietAccepted = true
+				}
+			}
+		}
+		if !quietAccepted {
+			t.Fatal("missing accepted quiet communicate({}) tool result in child transcript")
+		}
+		if completions != 2 {
+			t.Fatalf("TurnCompletion entries = %d, want 2 (initial quiet yield + drain notification turn)", completions)
 		}
 		assertReportedDelegatePacket(t, parent, res.DelegateID, "Reported after draining persisted shell attention")
 		noTool, nudges, _, _, _, _ := countSubagentTranscriptTurns(t, child.sess)
-		if noTool != 1 || nudges != 0 {
-			t.Fatalf("noToolSteers = %d (want 1), delegateNudges = %d (want 0)", noTool, nudges)
+		if noTool != 0 || nudges != 0 {
+			t.Fatalf("noToolSteers = %d (want 0), delegateNudges = %d (want 0)", noTool, nudges)
 		}
 	})
 
