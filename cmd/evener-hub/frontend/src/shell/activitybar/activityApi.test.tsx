@@ -16,6 +16,7 @@ import {
   activityWatch,
 } from "../../stores/sessionActivityTestUtils";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
+import noticeStyles from "../../widgets/inlinenotice/inlinenotice.module.css";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { deriveScope } from "../statusbar/statusScope";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
@@ -40,6 +41,9 @@ afterEach(() => {
 });
 const NOW = Date.parse("2026-10-05T00:00:00Z");
 const STACK_CLASS = requireClass(styles.stack, "activitybar.module.css", "stack");
+const NOTICE_CLASS = requireClass(noticeStyles.notice, "inlinenotice.module.css", "notice");
+const noticeIn = (root: Element) =>
+  Array.from(root.querySelectorAll("div")).find((element) => element.classList.contains(NOTICE_CLASS));
 
 it.each([
   { resource: "delegates" as const, Body: AgentsTab, total: 5 },
@@ -117,6 +121,59 @@ it.each([
   expect(empty.parentElement?.classList.contains(STACK_CLASS)).toBe(true);
   expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
 });
+
+it.each([
+  { resource: "delegates" as const, Body: AgentsTab },
+  { resource: "jobs" as const, Body: JobsTab },
+  { resource: "watches" as const, Body: WatchesTab },
+])(
+  "$resource shows its silent updating notice beside the loaded-empty line until a refresh heals it",
+  async ({ resource, Body }) => {
+    const client = activityClient();
+    const methods = {
+      delegates: "evener/thread/delegates/list",
+      jobs: "evener/thread/jobs/list",
+      watches: "evener/thread/watches/list",
+    } as const;
+    let failing = false;
+    client.on(methods[resource], ({ ref, scope }) => {
+      if (failing) {
+        failing = false;
+        throw new WireError("source access is unavailable", -32014, {
+          evenerErrorInfo: "actionUnavailable",
+          retryDisposition: "automatic",
+        });
+      }
+      const context = activityContext(ref);
+      const page = { complete: true, issues: [] };
+      if (resource === "delegates") return { context, scope: scope ?? "session", delegates: [], page };
+      if (resource === "jobs") return { context, scope: scope ?? "session", jobs: [], page };
+      return { context, scope: scope ?? "session", watches: [], page };
+    });
+    connectionStore.getState().connect(client);
+    render(<Body now={NOW} scope={scope()} />);
+    const empty = await screen.findByTestId("empty-state");
+    const stack = empty.parentElement as HTMLElement;
+    expect(noticeIn(stack)).toBeUndefined();
+    expect(stack.classList.contains(STACK_CLASS)).toBe(true);
+
+    failing = true;
+    act(() =>
+      client.emitNotification(activityChangedNotification({ ref: "remote:owner", threadId: "owner" }, [resource])),
+    );
+    await waitFor(() => expect(noticeIn(stack)).toBeDefined());
+    expect(screen.getByTestId("empty-state")).toBeTruthy();
+
+    const reads = () => client.calls.filter((call) => call.method === methods[resource]).length;
+    const before = reads();
+    act(() =>
+      client.emitNotification(activityChangedNotification({ ref: "remote:owner", threadId: "owner" }, [resource])),
+    );
+    await waitFor(() => expect(reads()).toBeGreaterThan(before));
+    await waitFor(() => expect(noticeIn(stack)).toBeUndefined());
+    expect(screen.getByTestId("empty-state")).toBeTruthy();
+  },
+);
 
 const scope = () =>
   deriveScope(

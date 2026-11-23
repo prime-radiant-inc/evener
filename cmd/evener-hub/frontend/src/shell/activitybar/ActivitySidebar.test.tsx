@@ -28,9 +28,11 @@ import {
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { installSwitchableViewport } from "../appShellTestUtils";
 import { ClientProvider } from "../clientContext";
 import { conversationPaneLifetime } from "../paneLifetime";
 import { installFocusedScope } from "../statusbar/scopeTestUtils";
+import { resetMobileViewportForTests } from "../useIsMobile";
 import { currentSessionRef, type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { ActivitySidebar } from "./ActivitySidebar";
 import styles from "./activitybar.module.css";
@@ -913,20 +915,39 @@ test("phone Overview enters its selected category and contains sequential keyboa
 });
 
 test("the desktop dock ends its inspection when the phone host takes over", async () => {
+  const setMobile = installSwitchableViewport();
+  try {
+    connectionStore.getState().connect(activityClient());
+    installFocusedScope(ref);
+    activitySidebarStore.getState().openWith("agents");
+    const desktop = mount();
+    await screen.findByTestId("activity-sidebar");
+    // AppShell tears the desktop surface down once the breakpoint crosses;
+    // StackHost then mounts the phone surface in its place.
+    setMobile(true);
+    desktop.unmount();
+    mount(true);
+    expect(activitySidebarStore.getState().open).toBe(false);
+    expect(screen.queryByTestId("activity-sidebar")).toBeNull();
+    // No dialog claims the whole phone screen, so the reader's attention
+    // control is not blocked by an Overview the dock left open.
+    expect(document.querySelector('[aria-modal="true"]')).toBeNull();
+  } finally {
+    vi.unstubAllGlobals();
+    resetMobileViewportForTests();
+  }
+});
+
+test("a desktop remount keeps the dock's saved inspection", async () => {
   connectionStore.getState().connect(activityClient());
   installFocusedScope(ref);
   activitySidebarStore.getState().openWith("agents");
-  const desktop = mount();
+  const first = mount();
   await screen.findByTestId("activity-sidebar");
-  // AppShell tears the desktop surface down at the breakpoint; StackHost then
-  // mounts the phone surface in its place.
-  desktop.unmount();
-  mount(true);
-  expect(activitySidebarStore.getState().open).toBe(false);
-  expect(screen.queryByTestId("activity-sidebar")).toBeNull();
-  // No dialog claims the whole phone screen, so the reader's attention
-  // control is not blocked by an Overview the dock left open.
-  expect(document.querySelector('[aria-modal="true"]')).toBeNull();
+  first.unmount();
+  expect(activitySidebarStore.getState().open).toBe(true);
+  mount();
+  expect(await screen.findByTestId("activity-sidebar")).toBeTruthy();
 });
 
 test("phone Overview reopening during its exit returns focus to its selected category", async () => {
