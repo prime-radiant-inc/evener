@@ -6,6 +6,8 @@
 import { SymbolView } from "expo-symbols";
 import type { ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
+import { scaledType } from "../design/tokens";
+import { useReadingType } from "../display/displayContext";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 
 /** The diamond in a system event's 16pt gutter. */
@@ -25,6 +27,7 @@ export function SystemEvent({
 	hint,
 	expanded,
 	onToggle,
+	prose = false,
 	children,
 }: {
 	/** Shown in place of the text until opened. */
@@ -34,24 +37,28 @@ export function SystemEvent({
 	hint?: string;
 	expanded: boolean;
 	onToggle: () => void;
+	/** Render the event line in the agent-message prose role rather than 13pt sans. */
+	prose?: boolean;
 	/** What opens under a labelled event, when it isn't plain text. */
 	children?: ReactNode;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const reading = useReadingType();
 	const quiet = { fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow };
+	const lineStyle = prose ? { ...scaledType(reading.agentProse, scale), color: palette.inkLow } : quiet;
 	// A long label truncates to one line so its chevron stays in view; the
 	// button's accessibility label still says it in full.
 	const line = label ? (
 		<View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-			<Text allowFontScaling={allowFontScaling} numberOfLines={1} style={{ ...quiet, flexShrink: 1 }}>
+			<Text allowFontScaling={allowFontScaling} numberOfLines={1} style={{ ...lineStyle, flexShrink: 1 }}>
 				{label}
 			</Text>
 			<SymbolView name={expanded ? "chevron.down" : "chevron.right"} tintColor={palette.inkLow} size={10 * scale} />
 		</View>
 	) : (
 		<>
-			<Text allowFontScaling={allowFontScaling} numberOfLines={expanded ? undefined : 2} style={quiet}>
+			<Text allowFontScaling={allowFontScaling} numberOfLines={expanded ? undefined : 2} style={lineStyle}>
 				{text}
 			</Text>
 			{hint ? (
