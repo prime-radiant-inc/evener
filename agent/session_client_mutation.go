@@ -581,11 +581,15 @@ func (s *Session) recoveredTurnRunning(snapshot *clientMutationSnapshot) bool {
 // and run a follow-up before the turn the user spoke first. Both the claim path
 // (which takes the head as the one start it claims) and the runnable predicate
 // (which must name that same head) call this, so the two can never disagree.
+func isClaimableStartPending(pending appwire.PendingMutation) bool {
+	return pending.Method == clientMutationMethodStart &&
+		(pending.ExecutionState == "accepted" || pending.ExecutionState == "incorporated")
+}
+
 func (s *Session) claimableClientMutationStartIDs(snapshot *clientMutationSnapshot) []string {
 	startIDs := make([]string, 0, len(snapshot.PendingExecutions))
 	for id, pending := range snapshot.PendingExecutions {
-		if pending.Method != clientMutationMethodStart ||
-			(pending.ExecutionState != "accepted" && pending.ExecutionState != "incorporated") {
+		if !isClaimableStartPending(pending) {
 			continue
 		}
 		startIDs = append(startIDs, id)
@@ -768,17 +772,11 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 			claimed.StableTurnID = pending.TurnID
 			return nil
 		}
-		if len(snapshot.InputQueue) == 0 {
+		if _, ok := snapshot.queueHeadTurnID(); !ok {
 			return nil
 		}
 		entry := snapshot.InputQueue[0]
-		record, ok := snapshot.Journal[entry.ClientMutationID]
-		if !ok ||
-			record.Method != clientMutationMethodQueue ||
-			record.StableTurnID == "" ||
-			snapshot.ActiveTurnID != record.StableTurnID {
-			return nil
-		}
+		record := snapshot.Journal[entry.ClientMutationID]
 		if refusal := s.refuseOnUnhealthyTranscript(writer); refusal != nil {
 			return refusal
 		}
@@ -1572,6 +1570,36 @@ func (s *Session) hasRunnableClientMutationStart() bool {
 	return runnable
 }
 
+// hasWakeableClientMutationStart reports whether the durable store holds an
+// actionable client turn/start beyond the currently executing turn's own
+// incorporated entry (such as an accepted follow-up start). Unlike
+// hasRunnableClientMutationStart, which treats an active incorporated turn as
+// runnable for crash recovery, hasWakeableWork excludes it so a running turn
+// cannot satisfy its own quiet-yield wake guard; queued input is covered
+// separately by pendingQueueDepth.
+func (s *Session) hasWakeableClientMutationStart() bool {
+	if s == nil || s.clientMutations == nil {
+		return false
+	}
+	wakeable := false
+	s.clientMutations.read(func(snapshot *clientMutationSnapshot) {
+		if snapshot.InterruptFence != nil {
+			return
+		}
+		for _, pending := range snapshot.PendingExecutions {
+			if !isClaimableStartPending(pending) || pending.TurnID == "" {
+				continue
+			}
+			if pending.ExecutionState == "incorporated" && snapshot.ActiveTurnID == pending.TurnID {
+				continue
+			}
+			wakeable = true
+			return
+		}
+	})
+	return wakeable
+}
+
 // wakeRunnableInputAfterResidency wakes the input paths when admission
 // reopening leaves accepted work runnable.
 //
@@ -1643,28 +1671,35 @@ func (s *Session) runnableClientMutationStartTurnID() (string, bool) {
 	return turnID, runnable
 }
 
+// queueHeadTurnID reports the active turn ID owned by the queue head when it
+// is reclaimable by claimClientMutationStart.
+func (snapshot *clientMutationSnapshot) queueHeadTurnID() (string, bool) {
+	if len(snapshot.InputQueue) == 0 {
+		return "", false
+	}
+	record := snapshot.Journal[snapshot.InputQueue[0].ClientMutationID]
+	if record.Method != clientMutationMethodQueue ||
+		record.StableTurnID == "" ||
+		snapshot.ActiveTurnID != record.StableTurnID {
+		return "", false
+	}
+	return record.StableTurnID, true
+}
+
 // runnableClientMutationStartTurnIn is runnableClientMutationStartTurnID's
 // whole decision over one generation. It touches no lock and nothing outside
 // the snapshot it is handed, which is what lets the caller read a generation in
 // place.
 func (s *Session) runnableClientMutationStartTurnIn(snapshot *clientMutationSnapshot) (string, bool) {
-	startTurnID := ""
-	startClaimable := false
-	// Resolve the ordered head once, and only when no fence blocks the claim.
-	// startClaimable tracks claimability separately from the head's turn id so a
-	// start with an empty turn id still returns ("", false) exactly as before.
 	if snapshot.InterruptFence == nil {
 		if startIDs := s.claimableClientMutationStartIDs(snapshot); len(startIDs) > 0 {
-			startTurnID = snapshot.PendingExecutions[startIDs[0]].TurnID
-			startClaimable = true
+			// The start branch is settled BEFORE the queue branches, because the claim
+			// path claims the ordered start head whenever a start is claimable, fence
+			// aside. Answering from the map's order instead could name a claimable queue
+			// entry while the claim takes a start, arming cancellation for the wrong turn.
+			startTurnID := snapshot.PendingExecutions[startIDs[0]].TurnID
+			return startTurnID, startTurnID != ""
 		}
-	}
-	// The start branch is settled BEFORE the queue branches, because the claim
-	// path claims the ordered start head whenever a start is claimable, fence
-	// aside. Answering from the map's order instead could name a claimable queue
-	// entry while the claim takes a start, arming cancellation for the wrong turn.
-	if startClaimable {
-		return startTurnID, startTurnID != ""
 	}
 	for _, pending := range snapshot.PendingExecutions {
 		if pending.Method == clientMutationMethodQueue &&
@@ -1674,12 +1709,8 @@ func (s *Session) runnableClientMutationStartTurnIn(snapshot *clientMutationSnap
 			return pending.TurnID, true
 		}
 	}
-	if len(snapshot.InputQueue) > 0 {
-		record := snapshot.Journal[snapshot.InputQueue[0].ClientMutationID]
-		runnable := record.Method == clientMutationMethodQueue &&
-			record.StableTurnID != "" &&
-			snapshot.ActiveTurnID == record.StableTurnID
-		return record.StableTurnID, runnable
+	if turnID, ok := snapshot.queueHeadTurnID(); ok {
+		return turnID, true
 	}
 	return "", false
 }

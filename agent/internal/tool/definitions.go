@@ -843,9 +843,15 @@ func DefCommunicate() llm.ToolDefinition {
 func DefCommunicateNamed(name string) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
-		Name:        name,
-		Description: "Send a message to your human partner or caller. Use this tool for every message, readiness line, requested status marker, request for input, and final answer they should see. A call with no `message` and no `output` ends your turn quietly and sends nothing: use it when you have nothing to add while background work runs, or when a notification or watch frame needs nothing from you. With `end_turn=false` the `message` is a progress update: send it only when your partner needs to know something or act on it, then keep working in the following round. With `end_turn` true or omitted, the `message` is your final reply and ends the turn. Include `output` only when you hand back completed work or machine-readable results; a `result_schema` requires it on a final reply but not on a progress update or a quiet yield.",
-		Strict:      &strictFalse,
+		Name: name,
+		Description: "Send a message to your human partner or caller. Use this tool for every message, readiness line, requested status marker, request for input, and final answer they should see. " +
+			"A `{}` call (no `message` and no `output`) ends your turn quietly and sends nothing. " +
+			"Use a quiet `{}` call only while waiting on live background work or to acknowledge a notification or watch frame that needs no reply, never to skip replying to a human partner's message. " +
+			"Emit no accompanying assistant text alongside a quiet `{}` call. " +
+			"With `end_turn=false` the `message` is a progress update: send it only when your partner needs to know something or act on it, then keep working in the following round. " +
+			"With `end_turn` true or omitted, the `message` is your final reply and ends the turn. " +
+			"Include `output` only when you hand back completed work or machine-readable results; a `result_schema` requires it on a final reply but not on a progress update or a quiet yield.",
+		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,

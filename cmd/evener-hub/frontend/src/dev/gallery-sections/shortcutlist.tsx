@@ -22,6 +22,29 @@ export default function ShortcutListGallerySection() {
             { keys: ["?"], label: "all shortcuts" },
           ]}
         />
+        {/* sequences: two alternative bindings for one action, a multi-press
+            sequence, and the unbound state the cheatsheet shows. */}
+        <ShortcutList
+          items={[
+            {
+              sequences: [
+                [{ modifiers: ["Control"], optionalModifiers: [], key: "K" }],
+                [{ modifiers: ["Control"], optionalModifiers: [], key: "P" }],
+              ],
+              label: "open the command palette (two bindings)",
+            },
+            {
+              sequences: [
+                [
+                  { modifiers: [], optionalModifiers: [], key: "g" },
+                  { modifiers: [], optionalModifiers: [], key: "g" },
+                ],
+              ],
+              label: "go to line (two presses)",
+            },
+            { sequences: [], unbound: "Unbound", label: "an action with no binding" },
+          ]}
+        />
       </ThemeFlip>
     </section>
   );

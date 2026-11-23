@@ -33,122 +33,28 @@
   flex: none;
 }
 
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  border: none;
-  background: var(--surface-canvas);
-  padding: var(--space-half) var(--space-2);
-  font: inherit;
-  color: var(--ink-mid);
-  cursor: pointer;
-  border-radius: var(--radius-pill);
-  transition:
-    background-color var(--motion-duration-hover) var(--motion-easing-standard),
-    color var(--motion-duration-hover) var(--motion-easing-standard),
-    transform var(--motion-duration-press) var(--motion-easing-standard);
-}
-
-.chip:hover {
-  background: var(--hover-2);
-  color: var(--ink-hi);
-}
-
-.chip:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: 1px;
-}
-
-/* The press, as Button's. */
-@media (prefers-reduced-motion: no-preference) {
-  .chip:active:not(:disabled):not([aria-disabled="true"]) {
-    transform: scale(var(--press-scale-control));
-  }
-}
-
-.chipGlyph {
-  display: inline-flex;
-  align-items: center;
-  color: var(--ink-low);
-}
-
-.chipName {
-  white-space: nowrap;
-}
-
-.chipCount {
-  font-variant-numeric: tabular-nums;
-}
-
-@container statusbar (max-width: 600px) {
-  .chipName {
-    display: none;
-  }
-
-  .chips {
-    gap: var(--space-1);
-  }
-}
-
 /* Four three-digit fractions cannot fit one 220px pane row at caption size.
  * Keep every control and its full count by using two compact rows rather than
- * shrinking the type or making the footer scroll. */
+ * shrinking the type or making the footer scroll. The chips themselves drop
+ * their labels (600px) and then their glyphs (320px) from within
+ * CountButton's own container query. */
 @container statusbar (max-width: 320px) {
-  .chipGlyph {
-    display: none;
-  }
-
   .chips {
     display: grid;
     grid-template-columns: repeat(2, max-content);
     justify-items: end;
     gap: 0;
   }
-
-  .chip {
-    gap: 0;
-    padding-inline: 1px;
-  }
-}
-
-/* Every chip is a thumb target on a phone or any coarse pointer. */
-@media (max-width: 899px), (any-pointer: coarse) {
-  .chip {
-    min-height: var(--tap-min);
-    min-width: var(--tap-min);
-  }
 }
 
 /* A phone mounts no status bar (Session renders the strip desktop-only; the
  * composer renders these counts on their own line above the card instead), so
- * on a phone these rules address that line alone: compact padding, and the
- * glyph at every width so each tab stays identifiable without its name. The
- * chips themselves are touch targets via the shared tap-floor block above. */
+ * on a phone these rules address that line alone: the flex strip rather than
+ * the 320px grid. The chips keep their glyph and their tap floor from the
+ * widget. */
 @media (max-width: 899px) {
-  /* The phone's line keeps the flex strip rather than the 320px narrow-pane
-   * grid below. */
   .chips {
     display: flex;
-  }
-
-  .chip {
-    gap: var(--space-1);
-    padding: 0 var(--space-2);
-  }
-
-  /* The phone's line never shows the category names: four named chips (~387px)
-   * do not fit a 358px card line, and the ordered glyphs plus the count keep
-   * every tab identifiable. The chip's accessible name carries the full
-   * label. */
-  .chipName {
-    display: none;
-  }
-
-  /* The phone keeps the category glyph at every width; the 320px container
-   * rule above compacts narrow desktop panes instead. */
-  .chipGlyph {
-    display: inline-flex;
   }
 }
 

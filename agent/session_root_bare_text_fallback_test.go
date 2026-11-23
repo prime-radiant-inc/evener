@@ -89,6 +89,7 @@ func TestRootBareTextFallback(t *testing.T) {
 		kind         EntryKind
 		profile      *provider.Profile
 		parent       bool
+		liveJob      bool
 		wantFallback bool
 	}{
 		{name: "natural stop", text: "Root answer", finish: llm.FinishReasonStop, kind: EntryUserInput, wantFallback: true},
@@ -96,7 +97,9 @@ func TestRootBareTextFallback(t *testing.T) {
 		{name: "empty", finish: llm.FinishReasonStop, kind: EntryUserInput},
 		{name: "notification", text: "Acknowledgement", finish: llm.FinishReasonStop, kind: EntryNotification},
 		{name: "goal continuation", text: "Continuation prose", finish: llm.FinishReasonStop, kind: EntryContinuation},
-		{name: "subagent", text: "Unreported answer", finish: llm.FinishReasonStop, kind: EntryUserInput, parent: true},
+		{name: "idle subagent", text: "Idle subagent answer", finish: llm.FinishReasonStop, kind: EntryUserInput, parent: true, wantFallback: true},
+		{name: "subagent with live owned job", text: "Waiting on job", finish: llm.FinishReasonStop, kind: EntryUserInput, parent: true, liveJob: true},
+		{name: "subagent with output schema", text: "Unstructured answer", finish: llm.FinishReasonStop, kind: EntryUserInput, profile: structured, parent: true},
 		{name: "explicit default envelope", text: "Untyped answer", finish: llm.FinishReasonStop, kind: EntryUserInput, profile: boundDefault},
 		{name: "output schema", text: "Untyped answer", finish: llm.FinishReasonStop, kind: EntryUserInput, profile: structured},
 		{name: "allowed decisions", text: "No decision", finish: llm.FinishReasonStop, kind: EntryUserInput, profile: provider.WithAllowedDecisions(NewOpenAIProfile("gpt-5.2"), []string{"approve"})},
@@ -112,7 +115,7 @@ func TestRootBareTextFallback(t *testing.T) {
 				switch tc.name {
 				case "explicit default envelope":
 					return quietYieldResponse("recovered", `{"message":"Explicit answer","output":{}}`)
-				case "output schema", "allowed decisions":
+				case "output schema", "allowed decisions", "subagent with output schema":
 					return quietYieldResponse("recovered", `{"message":"Explicit answer","output":{"decision":"approve"}}`)
 				default:
 					return agenttest.FinalResponse("Explicit answer")
@@ -121,6 +124,25 @@ func TestRootBareTextFallback(t *testing.T) {
 			evs, evMu, evDone := collectEvents(s)
 			if tc.parent {
 				s.cfg.spawn.parentSessionID = "parent"
+			}
+			if tc.liveJob {
+				jobID := "job_live_owned"
+				s.jobManager.mu.Lock()
+				s.jobManager.running[jobID] = &runningJob{
+					rec: &jobstore.JobRecord{
+						JobID:          jobID,
+						Type:           jobstore.JobShell,
+						Status:         jobstore.StatusRunning,
+						OwnerSessionID: s.ID(),
+					},
+					done: make(chan struct{}),
+				}
+				s.jobManager.mu.Unlock()
+				t.Cleanup(func() {
+					s.jobManager.mu.Lock()
+					delete(s.jobManager.running, jobID)
+					s.jobManager.mu.Unlock()
+				})
 			}
 			input := "Question"
 			if tc.kind == EntryNotification {
@@ -145,7 +167,7 @@ func TestRootBareTextFallback(t *testing.T) {
 			if calls != 2 || err != nil || s.State() != SessionIdle {
 				t.Fatalf("ineligible reply=%q calls=%d state=%v err=%v", got, calls, s.State(), err)
 			}
-			if tc.name == "output schema" || tc.name == "allowed decisions" {
+			if tc.name == "output schema" || tc.name == "allowed decisions" || tc.name == "subagent with output schema" {
 				var reply struct{ Message, Decision string }
 				if err := json.Unmarshal([]byte(got), &reply); err != nil || reply.Message != "Explicit answer" || reply.Decision != "approve" {
 					t.Fatalf("structured reply=%q decode=%v", got, err)

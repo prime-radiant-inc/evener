@@ -650,7 +650,7 @@ export function ToolRow({
       data-open={(summaryToggle ? summaryOpen : expanded) ? "true" : "false"}
       data-testid="tool-row-chevron"
     >
-      <Chevron />
+      <Chevron open={summaryToggle ? summaryOpen : expanded} />
     </span>
   ) : null;
   // The failure mark: a cross on the kind icon's bottom-right corner, never a
@@ -851,7 +851,7 @@ export function ToolRow({
       data-open={expanded ? "true" : "false"}
       data-testid="tool-row-body-chevron"
     >
-      <Chevron />
+      <Chevron open={expanded} />
     </span>
   );
 

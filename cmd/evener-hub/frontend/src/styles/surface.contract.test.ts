@@ -44,7 +44,8 @@ test("grouped rows draw a hairline between rows that render something, and none 
 });
 
 test.each([
-  ["panes/spawn/spawn.module.css", ".directoryButton", ["grouped"]],
+  ["widgets/pathfield/pathfield.module.css", ".prominentTrigger", ["grouped", "summaryTile"]],
+  ["panes/spawn/spawn.module.css", ".accessTile", ["summaryTile"]],
   ["panes/spawn/MobileSettingRows.module.css", ".config", ["grouped", "groupedRows"]],
   ["panes/settings/settings.module.css", ".clusterRowsGrouped", ["grouped", "groupedRows"]],
   ["panes/session/session.module.css", ".intentGroupRows", ["grouped", "groupedRows"]],
@@ -56,6 +57,25 @@ test.each([
   }
   if (classes.includes("grouped")) {
     for (const declaration of SURFACE_DECLARATIONS) expect(body).not.toMatch(declaration);
+  }
+});
+
+test("the summary tiles share one row, text column, headline, and caption", () => {
+  expect(ruleBody(surface, ".summaryTile")).toMatch(/display:\s*flex/);
+  expect(ruleBody(surface, ".summaryText")).toMatch(/flex-direction:\s*column/);
+  expect(ruleBody(surface, ".summaryHeadline")).toMatch(/font-weight:\s*var\(--font-weight-medium\)/);
+  expect(ruleBody(surface, ".summaryCaption")).toMatch(/font-size:\s*var\(--font-size-caption\)/);
+  for (const [file, selector, shared] of [
+    ["widgets/pathfield/pathfield.module.css", ".prominentText", "summaryText"],
+    ["widgets/pathfield/pathfield.module.css", ".prominentHeadline", "summaryHeadline"],
+    ["widgets/pathfield/pathfield.module.css", ".prominentCaption", "summaryCaption"],
+    ["panes/spawn/spawn.module.css", ".tileText", "summaryText"],
+    ["panes/spawn/spawn.module.css", ".tileHeadline", "summaryHeadline"],
+    ["panes/spawn/spawn.module.css", ".tileCaption", "summaryCaption"],
+  ] as const) {
+    expect(ruleBody(read(file), selector)).toMatch(
+      new RegExp(`composes:\\s*${shared} from "[./]*styles/surface\\.module\\.css"`),
+    );
   }
 });
 

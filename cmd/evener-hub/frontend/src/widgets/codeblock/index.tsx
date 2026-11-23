@@ -38,11 +38,54 @@ const CLASS = {
   language: requireClass(styles.language, "codeblock.module.css", "language"),
   copy: requireClass(styles.copy, "codeblock.module.css", "copy"),
   pre: requireClass(styles.pre, "codeblock.module.css", "pre"),
+  preNoWrap: requireClass(styles.preNoWrap, "codeblock.module.css", "preNoWrap"),
   code: requireClass(styles.code, "codeblock.module.css", "code"),
   line: requireClass(styles.line, "codeblock.module.css", "line"),
   gutter: requireClass(styles.gutter, "codeblock.module.css", "gutter"),
   fold: requireClass(styles.fold, "codeblock.module.css", "fold"),
 };
+
+export const CODEBLOCK_CLASS = CLASS;
+
+/** The inset top-right chrome shared by every code/diff block (A4). */
+export function CodeBlockHeader({ language, action }: { language?: string; action?: ReactNode }) {
+  if (language === undefined && action === undefined) return null;
+  return (
+    <div className={CLASS.header}>
+      {language !== undefined && <span className={CLASS.language}>{language}</span>}
+      {action !== undefined && <span className={CLASS.copy}>{action}</span>}
+    </div>
+  );
+}
+
+/** The shared `<pre><code>` body; wrap=false keeps one source line per row. */
+export function CodeBlockPre({
+  wrap = true,
+  className,
+  children,
+}: {
+  wrap?: boolean;
+  className?: string;
+  children?: ReactNode;
+}) {
+  const preClass = wrap ? CLASS.pre : `${CLASS.pre} ${CLASS.preNoWrap}`;
+  return (
+    <pre className={className === undefined ? preClass : `${preClass} ${className}`}>
+      <code className={CLASS.code}>{children}</code>
+    </pre>
+  );
+}
+
+/** The same chassis as HTML for dangerouslySetInnerHTML consumers; the caller escapes. */
+export function codeBlockHtml({ text, language }: { text: string; language?: string }): string {
+  const header = language
+    ? `<div class="${CLASS.header}"><span class="${CLASS.language}">${language}</span></div>`
+    : "";
+  return (
+    `<div class="${CLASS.root}"><div class="${CLASS.codeArea}">${header}` +
+    `<pre class="${CLASS.pre}"><code class="${CLASS.code}">${text}</code></pre></div></div>`
+  );
+}
 
 // The reader expanded this tool result on purpose, so the window before any
 // fold is a substantial read - 100 lines, Jesse's 2026-10-11 call - not a
@@ -61,12 +104,6 @@ const TAIL_VISIBLE_LINES = 100;
  * and line-number gutter, and a copy control inset into the block's top-right
  * corner. No syntax highlighting - YAGNI this wave; add a highlighter only when
  * a real consumer needs one.
- *
- * Long lines WRAP; the block never scrolls horizontally. Tool output is prose-
- * shaped far more often than it is table-shaped, and a horizontal scroller hides
- * the ends of exactly the lines a reader opened the block for. DiffBlock keeps
- * its own scroller for the opposite reason - column alignment across lines is
- * part of a diff's meaning, and wrapping destroys it.
  */
 export function CodeBlock({
   text,
@@ -104,62 +141,51 @@ export function CodeBlock({
         </div>
       )}
       <div className={CLASS.codeArea}>
-        {/* The copy control is inset into the block's own top-right corner rather
-            than sitting in a full-width labelled row of its own: the block's
-            content is the point, and a header band spent on one word doubles the
-            block's visual weight (A4). */}
-        <div className={CLASS.header}>
-          {language !== undefined && <span className={CLASS.language}>{language}</span>}
-          <span className={CLASS.copy}>
-            <CopyButton text={copyText ?? text} label={copyLabel} />
-          </span>
-        </div>
-        <pre className={CLASS.pre}>
-          <code className={CLASS.code}>
-            {showLineNumbers
-              ? visibleLines.map((line, i) => (
-                  // tailStart + i is this line's actual displayed line number
-                  // (the gutter below), not an arbitrary position - visibleLines
-                  // is derived fresh from the text prop every render, in the
-                  // same fixed order text.split gives it.
-                  // biome-ignore lint/suspicious/noArrayIndexKey: tailStart + i is the displayed line number itself, see above
-                  <span key={i} className={CLASS.line}>
-                    <span className={CLASS.gutter} aria-hidden="true">
-                      {tailStart + i + 1}
-                    </span>
-                    <span>
-                      {ansi ? (
-                        typeof line === "string" ? (
-                          line
-                        ) : (
-                          <AnsiLineContent line={line} />
-                        )
-                      ) : (
-                        (renderLine?.(line as string, tailStart + i) ?? (line as string))
-                      )}
-                    </span>
+        <CodeBlockHeader language={language} action={<CopyButton text={copyText ?? text} label={copyLabel} />} />
+        <CodeBlockPre>
+          {showLineNumbers
+            ? visibleLines.map((line, i) => (
+                // tailStart + i is this line's actual displayed line number
+                // (the gutter below), not an arbitrary position - visibleLines
+                // is derived fresh from the text prop every render, in the
+                // same fixed order text.split gives it.
+                // biome-ignore lint/suspicious/noArrayIndexKey: tailStart + i is the displayed line number itself, see above
+                <span key={i} className={CLASS.line}>
+                  <span className={CLASS.gutter} aria-hidden="true">
+                    {tailStart + i + 1}
                   </span>
+                  <span>
+                    {ansi ? (
+                      typeof line === "string" ? (
+                        line
+                      ) : (
+                        <AnsiLineContent line={line} />
+                      )
+                    ) : (
+                      (renderLine?.(line as string, tailStart + i) ?? (line as string))
+                    )}
+                  </span>
+                </span>
+              ))
+            : ansi
+              ? visibleLines.map((line, index) => (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: tailStart + index is the stable displayed source line number
+                  <Fragment key={tailStart + index}>
+                    {index > 0 ? "\n" : null}
+                    {typeof line === "string" ? line : <AnsiLineContent line={line} />}
+                  </Fragment>
                 ))
-              : ansi
-                ? visibleLines.map((line, index) => (
+              : (visibleLines as string[]).map((line, index) => {
+                  const rendered = renderLine?.(line, tailStart + index) ?? line;
+                  return (
                     // biome-ignore lint/suspicious/noArrayIndexKey: tailStart + index is the stable displayed source line number
                     <Fragment key={tailStart + index}>
                       {index > 0 ? "\n" : null}
-                      {typeof line === "string" ? line : <AnsiLineContent line={line} />}
+                      <span>{rendered}</span>
                     </Fragment>
-                  ))
-                : (visibleLines as string[]).map((line, index) => {
-                    const rendered = renderLine?.(line, tailStart + index) ?? line;
-                    return (
-                      // biome-ignore lint/suspicious/noArrayIndexKey: tailStart + index is the stable displayed source line number
-                      <Fragment key={tailStart + index}>
-                        {index > 0 ? "\n" : null}
-                        <span>{rendered}</span>
-                      </Fragment>
-                    );
-                  })}
-          </code>
-        </pre>
+                  );
+                })}
+        </CodeBlockPre>
       </div>
       {/* isLong (not just `folded`) - once revealed, the way back to the tail
           view has to keep showing even though `folded` itself just went false. */}

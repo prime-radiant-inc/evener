@@ -1086,8 +1086,12 @@ function openRun() {
 test("a settled turn folds three quiet tool calls into one row that opens to them", () => {
   renderTools([toolItem("a", "read_file"), toolItem("b", "read_file"), toolItem("c", "read_file")]);
   expect(screen.getAllByTestId("tool-run")).toHaveLength(1);
+  const run = screen.getByTestId("tool-run");
+  expect(run.tagName).toBe("DETAILS");
+  expect(run.querySelector("summary svg")?.getAttribute("data-open")).toBe("false");
   expect(screen.queryAllByTestId("tool-row")).toHaveLength(0);
   openRun();
+  expect(screen.getByTestId("tool-run").querySelector("summary svg")?.getAttribute("data-open")).toBe("true");
   expect(screen.getAllByTestId("tool-row")).toHaveLength(3);
 });
 

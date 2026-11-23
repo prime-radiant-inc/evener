@@ -297,6 +297,50 @@ func (s *Session) treeHasOutstandingWork() (bool, error) {
 	return s.treeHasOutstandingWorkBesidesOwnJobs()
 }
 
+// subagentHasDrainableWork reports whether a subagent has live owned work or an
+// unpresented automatic delegate attention row (such as a completed owned shell
+// persisted by persistStableShellAttention or a nested delegate update/report)
+// that drainForFinalization will run a notification turn for.
+//
+// treeHasOutstandingWork runs BEFORE reading automatic delegate attention:
+// armFinalizedJob persists stable shell attention before deleting the job from
+// jm.running, so checking running/pending first and persisted attention second
+// closes the handoff window between them. Attention rows already presented in
+// the currently active turn (attentionCoverageActive && attentionCoveredIDs)
+// are excluded because the model already read them and finishAttentionTurn
+// resolves them on turn exit.
+func (s *Session) subagentHasDrainableWork() (bool, error) {
+	outstanding, err := s.treeHasOutstandingWork()
+	if err != nil || outstanding {
+		return outstanding, err
+	}
+	if s == nil || s.owningDelegateID == "" {
+		return false, nil
+	}
+	ids, err := s.automaticDelegateAttentionIDs()
+	if err != nil {
+		return false, err
+	}
+	if len(ids) == 0 {
+		return false, nil
+	}
+	keepAll := !s.communicatedUnblocked()
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	for _, id := range ids {
+		if !keepAll && !isDelegateUpdateAttentionID(id) {
+			continue
+		}
+		if s.attentionCoverageActive {
+			if _, covered := s.attentionCoveredIDs[id]; covered {
+				continue
+			}
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
 // treeHasOutstandingWorkBesidesOwnJobs is treeHasOutstandingWork with this
 // session's OWN outstanding managed jobs left out — every other signal, at every
 // level, including a descendant's managed jobs.

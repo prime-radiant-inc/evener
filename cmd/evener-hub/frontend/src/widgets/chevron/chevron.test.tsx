@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, render } from "@testing-library/react";
 import { expect, test } from "vitest";
 import { Chevron } from ".";
@@ -6,6 +9,14 @@ function svgOf(container: HTMLElement): SVGSVGElement {
   const svg = container.querySelector("svg");
   if (!svg) throw new Error("Chevron rendered no svg");
   return svg;
+}
+
+// jsdom runs no animations, so the rotation contract is asserted at the
+// declaration level. Comments are stripped FIRST: a stylesheet grep that
+// matches its own comment prose asserts nothing.
+function chevronCss(): string {
+  const path = join(dirname(fileURLToPath(import.meta.url)), "chevron.module.css");
+  return readFileSync(path, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 }
 
 // The load-bearing property, and the reason this widget exists at all.
@@ -82,4 +93,34 @@ test("the stroke inherits the consumer's ink rather than naming a colour", () =>
   const path = container.querySelector("path");
   expect(path?.getAttribute("stroke")).toBe("currentColor");
   expect(path?.getAttribute("fill")).toBe("none");
+});
+
+test("open sets data-open on the svg and leaves it absent when uncontrolled", () => {
+  const { container, rerender } = render(<Chevron open={false} />);
+  const svg = svgOf(container);
+  expect(svg.getAttribute("data-open")).toBe("false");
+  expect(svg.getAttribute("class")).toBeTruthy();
+
+  rerender(<Chevron open />);
+  expect(svgOf(container).getAttribute("data-open")).toBe("true");
+
+  rerender(<Chevron />);
+  expect(svgOf(container).hasAttribute("data-open")).toBe(false);
+});
+
+// The rotation targets the svg itself for every call site: no caller (and no
+// stylesheet) reaches through a wrapper span into `> svg`. The transition is
+// gated behind prefers-reduced-motion: no-preference, and uses the shared
+// Move recipe tokens.
+test("the widget owns the open rotation and its reduced-motion gate, on the svg itself", () => {
+  const css = chevronCss();
+  expect(css).toMatch(/\.chevron\[data-open="true"\]\s*\{[^}]*transform:\s*rotate\(90deg\)/);
+  expect(css).not.toMatch(/>\s*svg/);
+
+  const gated = /@media\s*\(prefers-reduced-motion:\s*no-preference\)\s*\{([\s\S]*?)\n\}/.exec(css);
+  expect(gated).not.toBeNull();
+  expect(gated![1]).toMatch(
+    /\.chevron\s*\{[^}]*transition:\s*transform var\(--motion-duration-hover\) var\(--motion-easing-standard\)/,
+  );
+  expect(css).not.toMatch(/(?:transition|animation):[^;]*?\d+m?s/);
 });

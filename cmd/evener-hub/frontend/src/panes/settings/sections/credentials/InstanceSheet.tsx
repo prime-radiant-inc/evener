@@ -971,7 +971,6 @@ export function InstanceSheet({
                     data-testid="connection-facts"
                     rows={[
                       {
-                        key: "name",
                         label: "Name",
                         htmlFor: `${ids}-name`,
                         value: (
@@ -980,17 +979,16 @@ export function InstanceSheet({
                             value={draft.name}
                             onChange={(event) => update({ name: event.target.value })}
                             disabled={busy}
+                            fill
                           />
                         ),
                         help: nameHelp,
                       },
                       {
-                        key: "base-provider",
                         label: "Base provider",
                         value: <span data-testid="base-provider">{instance.providerId}</span>,
                       },
                       {
-                        key: "base-url",
                         label: "Base URL",
                         htmlFor: `${ids}-baseurl`,
                         value: (
@@ -1000,6 +998,7 @@ export function InstanceSheet({
                             onChange={(event) => update({ baseUrl: event.target.value })}
                             placeholder="https://…"
                             disabled={busy}
+                            fill
                           />
                         ),
                         help: clearingBaseUrl ? "Resets the endpoint to the provider's default." : undefined,

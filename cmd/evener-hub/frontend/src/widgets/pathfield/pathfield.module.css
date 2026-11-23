@@ -27,6 +27,68 @@
   text-overflow: clip;
 }
 
+/* The prominent variant: a summary tile that is ITSELF the button, for a
+ * directory that is one of the page's primary facts rather than a form row.
+ * Composes the shared grouped surface so the tile is the control; the
+ * basename headlines, the whole path captions, and the action trails. */
+.prominentTrigger {
+  composes: grouped from "../../styles/surface.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: summaryTile from "../../styles/surface.module.css";
+  padding: var(--space-3) var(--space-4);
+  cursor: pointer;
+  transition:
+    border-color var(--motion-duration-hover) var(--motion-easing-standard),
+    background-color var(--motion-duration-hover) var(--motion-easing-standard),
+    transform var(--motion-duration-press) var(--motion-easing-standard);
+}
+
+.prominentTrigger:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.prominentTrigger:hover:not(:disabled) {
+  border-color: var(--edge-strong);
+}
+
+.prominentTrigger:active:not(:disabled) {
+  background: var(--hover-1);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .prominentTrigger:active:not(:disabled) {
+    transform: scale(var(--press-scale-row));
+  }
+}
+
+.prominentTrigger:disabled {
+  color: var(--ink-low);
+  cursor: not-allowed;
+}
+
+.prominentSeat {
+  composes: fieldSeat from "../../styles/surface.module.css";
+  color: var(--ink-mid);
+}
+
+.prominentText {
+  composes: summaryText from "../../styles/surface.module.css";
+}
+
+.prominentHeadline {
+  composes: summaryHeadline from "../../styles/surface.module.css";
+}
+
+.prominentCaption {
+  composes: summaryCaption from "../../styles/surface.module.css";
+}
+
+.prominentAction {
+  flex: none;
+  color: var(--ink-mid);
+}
+
 .triggerDefault {
   composes: default from "../internal/fieldTrigger.module.css";
 }

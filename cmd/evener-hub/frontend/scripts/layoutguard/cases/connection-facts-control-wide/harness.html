@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>connection-facts-control-wide layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  body {
+    margin: 0;
+    background: var(--surface-1);
+    font-family: var(--font-sans);
+  }
+  /* The instance sheet's facts list at a desktop body width. The flex growth
+     under test is the real .controlValue rule in propertylist.module.css. */
+  .page {
+    box-sizing: border-box;
+    width: 900px;
+    padding: var(--space-4);
+  }
+</style>
+</head>
+<body data-font-size="m">
+<div class="page" id="page">
+  <dl class="list" id="facts">
+    <div class="row controlRow" id="name-row">
+      <dt class="label eyebrowLabel controlLabel"><label for="instance-name">Name</label></dt>
+      <dd class="value wrap controlValue">
+        <input class="input fillWidth" id="instance-name" value="deepseek">
+      </dd>
+    </div>
+    <div class="row" id="readonly-row">
+      <dt class="label eyebrowLabel">Base provider</dt>
+      <dd class="value wrap">deepseek</dd>
+    </div>
+    <div class="row controlRow" id="base-url-row">
+      <dt class="label eyebrowLabel controlLabel"><label for="instance-base-url">Base URL</label></dt>
+      <dd class="value wrap controlValue">
+        <input class="input fillWidth" id="instance-base-url" value="https://api.deepseek.com/v1">
+      </dd>
+    </div>
+  </dl>
+</div>
+<script>
+window.measure = () => {
+  const box = (el) => {
+    const r = el.getBoundingClientRect();
+    return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+  };
+  const row = (id) => document.querySelector(`#${id}`);
+  return {
+    viewportWidth: window.innerWidth,
+    nameRow: box(row("name-row")),
+    nameLabel: box(document.querySelector("#name-row .controlLabel")),
+    nameInput: box(document.querySelector("#instance-name")),
+    readonlyRow: box(row("readonly-row")),
+    readonlyLabel: box(document.querySelector("#readonly-row .label")),
+    readonlyValue: box(document.querySelector("#readonly-row .value")),
+    baseUrlRow: box(row("base-url-row")),
+    baseUrlLabel: box(document.querySelector("#base-url-row .controlLabel")),
+    baseUrlInput: box(document.querySelector("#instance-base-url")),
+    nameRowScrollWidth: row("name-row").scrollWidth,
+    nameRowClientWidth: row("name-row").clientWidth,
+    readonlyRowScrollWidth: row("readonly-row").scrollWidth,
+    readonlyRowClientWidth: row("readonly-row").clientWidth,
+    baseUrlRowScrollWidth: row("base-url-row").scrollWidth,
+    baseUrlRowClientWidth: row("base-url-row").clientWidth,
+  };
+};
+</script>
+</body>
+</html>

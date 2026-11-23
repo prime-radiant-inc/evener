@@ -12,7 +12,7 @@ import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./hub.module.css";
 import { HubResidents } from "./hubResidents";
 import { HubUpdates } from "./hubUpdates";
-import { Code, FieldDim, FieldValue } from "./settingsField";
+import { Code, FieldDim } from "./settingsField";
 
 const CLASS = {
   root: requireClass(styles.root, "hub.module.css", "root"),
@@ -81,7 +81,8 @@ export function HubSection() {
           rows={[
             {
               label: "Listen address",
-              value: <FieldValue field="listen-address">{hub?.listenAddr ?? ""}</FieldValue>,
+              value: hub?.listenAddr ?? "",
+              rowProps: { "data-field": "listen-address" },
               help: (
                 <>
                   Address and port the hub HTTP server binds to. Change via <Code>addr</Code> in{" "}
@@ -92,10 +93,11 @@ export function HubSection() {
             {
               label: "Bearer token",
               value: (
-                <FieldValue field="bearer-token">
+                <>
                   {BEARER_TOKEN_MASK} {hub?.bearerTokenAge !== undefined && <FieldDim>{hub.bearerTokenAge}</FieldDim>}
-                </FieldValue>
+                </>
               ),
+              rowProps: { "data-field": "bearer-token" },
               help: (
                 <>
                   Used to authenticate the TUI or a remote browser. Stored as <Code>auth-token</Code> in the hub state
@@ -105,7 +107,8 @@ export function HubSection() {
             },
             {
               label: "Spawn timeout",
-              value: <FieldValue field="spawn-timeout">{hub?.spawnTimeout ?? ""}</FieldValue>,
+              value: hub?.spawnTimeout ?? "",
+              rowProps: { "data-field": "spawn-timeout" },
               help: "How long the hub waits for a daemon to report ready after spawn before treating it as failed.",
             },
           ]}
@@ -147,21 +150,25 @@ function OperationStoreQuarantineNotice({ quarantine }: { quarantine: SettingsOp
             ? [
                 {
                   label: "Set aside",
-                  value: <FieldValue field="aside-file">{quarantine.asideFile}</FieldValue>,
+                  value: quarantine.asideFile,
+                  rowProps: { "data-field": "aside-file" },
                 },
               ]
             : []),
           {
             label: "Store path",
-            value: <FieldValue field="quarantined-file">{quarantine.quarantinedFile ?? ""}</FieldValue>,
+            value: quarantine.quarantinedFile ?? "",
+            rowProps: { "data-field": "quarantined-file" },
           },
           {
             label: "Custody file",
-            value: <FieldValue field="custody-file">{quarantine.custodyFile ?? ""}</FieldValue>,
+            value: quarantine.custodyFile ?? "",
+            rowProps: { "data-field": "custody-file" },
           },
           {
             label: "Quarantine epoch",
-            value: <FieldValue field="quarantine-epoch">{quarantine.quarantineEpoch ?? 0}</FieldValue>,
+            value: quarantine.quarantineEpoch ?? 0,
+            rowProps: { "data-field": "quarantine-epoch" },
           },
         ]}
       />
