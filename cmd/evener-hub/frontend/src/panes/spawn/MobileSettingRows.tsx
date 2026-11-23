@@ -258,11 +258,12 @@ export function MobileSettingRows({
         : `${selectedPluginNames(pluginSelection, pluginPreview.response).length} of ${
             pluginPreview.response.plugins.length
           }`;
+  const hasHostPicker = hostOptions.length > 0;
 
   return (
     <>
       <div className={CLASS.config} data-testid="mobile-spawn-config">
-        {hostOptions.length > 0 && (
+        {hasHostPicker && (
           <MobileSettingRow
             label="Host"
             value={hostLabel}
@@ -318,7 +319,7 @@ export function MobileSettingRows({
         </InlineNotice>
       )}
 
-      {hostOptions.length > 0 && (
+      {hasHostPicker && (
         <Sheet open={openPicker === "Host"} side="bottom" onClose={closePicker} title="Host">
           <div className={CLASS.sheetBody}>
             <SpawnHostSelection
