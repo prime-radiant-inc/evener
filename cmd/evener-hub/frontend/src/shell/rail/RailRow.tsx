@@ -112,7 +112,7 @@ const CLASS = {
   titleLine: requireClass(styles.titleLine, "RailRow.module.css", "titleLine"),
   meta: requireClass(styles.meta, "RailRow.module.css", "meta"),
   label: requireClass(styles.label, "RailRow.module.css", "label"),
-  sessionTitle: requireClass(styles.sessionTitle, "RailRow.module.css", "sessionTitle"),
+  sessionTitleButton: requireClass(styles.sessionTitleButton, "RailRow.module.css", "sessionTitleButton"),
   contextCard: requireClass(styles.contextCard, "RailRow.module.css", "contextCard"),
   contextHead: requireClass(styles.contextHead, "RailRow.module.css", "contextHead"),
   contextStatus: requireClass(styles.contextStatus, "RailRow.module.css", "contextStatus"),
@@ -680,33 +680,32 @@ function SessionTitle({
     return { rowRect: row.getBoundingClientRect(), sideRight: rail.getBoundingClientRect().right };
   }, [focusTarget]);
   return (
-    <span className={CLASS.sessionTitle}>
-      <HoverCard
-        label={<SessionContextCard session={session} effectiveState={effectiveState} notStarted={notStarted} />}
-        focusTarget={focusTarget}
-        sideAnchor={sideAnchor}
-        longPressEnabled
-      >
-        {({ describedBy }) => (
-          <button
-            type="button"
-            tabIndex={-1}
-            data-testid="rail-row-title"
-            className={CLASS.label}
-            aria-describedby={describedBy}
-            onMouseDown={(event) => {
-              if (event.button !== 0) return;
-              event.preventDefault();
-              const target = focusTarget();
-              if (target === document.activeElement) return;
-              target?.focus();
-            }}
-          >
-            {session.title}
-          </button>
-        )}
-      </HoverCard>
-    </span>
+    <HoverCard
+      label={<SessionContextCard session={session} effectiveState={effectiveState} notStarted={notStarted} />}
+      focusTarget={focusTarget}
+      sideAnchor={sideAnchor}
+      longPressEnabled
+      block
+    >
+      {({ describedBy }) => (
+        <button
+          type="button"
+          tabIndex={-1}
+          data-testid="rail-row-title"
+          className={`${CLASS.label} ${CLASS.sessionTitleButton}`}
+          aria-describedby={describedBy}
+          onMouseDown={(event) => {
+            if (event.button !== 0) return;
+            event.preventDefault();
+            const target = focusTarget();
+            if (target === document.activeElement) return;
+            target?.focus();
+          }}
+        >
+          {session.title}
+        </button>
+      )}
+    </HoverCard>
   );
 }
 
