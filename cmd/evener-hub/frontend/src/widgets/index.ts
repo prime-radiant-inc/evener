@@ -24,7 +24,7 @@ export { CollectionEditor } from "./collectioneditor";
 export type { ConfirmDialogProps } from "./confirmdialog";
 export { ConfirmDialog } from "./confirmdialog";
 export type { ContextCardProps } from "./contextcard";
-export { ContextCard } from "./contextcard";
+export { ContextCard, isWebHref } from "./contextcard";
 export type { CopyButtonProps } from "./copybutton";
 export { CopyButton } from "./copybutton";
 export type { CountButtonChrome, CountButtonOrientation, CountButtonProps } from "./countbutton";
