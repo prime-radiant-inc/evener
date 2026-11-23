@@ -2451,3 +2451,154 @@ func TestInstanceMatchesItsRowInInstances(t *testing.T) {
 		}
 	}
 }
+
+// The Copilot record is the account a live listing was fetched under: a
+// different record, account, or login health is a different source, while a
+// token refresh rotates values that must not prune the cached roster.
+func TestAuthFingerprintCopilotTracksTheAccountNotRotatingTokens(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	load := func() *Registry {
+		return fixtureLoad(t, nil, "[providers.work]\nbase = \"github-copilot\"\n", WithStateRoot(state))
+	}
+	saveCopilotRecordForTest(t, state, "work", healthyCopilotRecord("work"))
+	first, ok := load().AuthFingerprint("work")
+	if !ok {
+		t.Fatal("no fingerprint for a Copilot instance with a record")
+	}
+
+	rotated := healthyCopilotRecord("work")
+	rotated.AccessToken = "rotated-github-access"
+	rotated.CopilotToken = "rotated-copilot-session"
+	rotated.ObtainedAt = rotated.ObtainedAt.Add(time.Hour)
+	rotated.CopilotExpiry = rotated.CopilotExpiry.Add(-time.Hour)
+	saveCopilotRecordForTest(t, state, "work", rotated)
+	if next, _ := load().AuthFingerprint("work"); next != first {
+		t.Fatal("a token refresh moved the identity; it rotates values the live roster did not come from")
+	}
+
+	switched := rotated
+	switched.AccountID = "account-2"
+	saveCopilotRecordForTest(t, state, "work", switched)
+	accountFP, _ := load().AuthFingerprint("work")
+	if accountFP == first {
+		t.Fatal("a different account kept the identity; its live roster is not this account's")
+	}
+
+	unusable := switched
+	unusable.RefreshRejected = true
+	saveCopilotRecordForTest(t, state, "work", unusable)
+	if healthFP, _ := load().AuthFingerprint("work"); healthFP == accountFP {
+		t.Fatal("a record that needs a fresh login kept the identity of a usable one")
+	}
+
+	writeRawCopilotRecordForTest(t, state, "work", "{not json")
+	corruptFP, _ := load().AuthFingerprint("work")
+	if corruptFP == accountFP || corruptFP == first {
+		t.Fatal("a corrupt record kept the identity of the record it cannot read")
+	}
+
+	if err := os.Remove(githubcopilot.AuthFilePath(state, "work")); err != nil {
+		t.Fatal(err)
+	}
+	if missingFP, _ := load().AuthFingerprint("work"); missingFP == corruptFP {
+		t.Fatal("a removed record kept the identity of the corrupt one")
+	}
+}
+
+// Both OAuth record namespaces are stray-record material: a record whose name
+// resolves to no instance of its own scheme is one nothing reads, whichever
+// scheme filed it. The record lock files the lifecycle leaves beside them are
+// not records and must never be reported.
+func TestStrayOAuthRecordsCoversBothRecordSchemes(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	saveCopilotRecordForTest(t, root, "github-copilot", healthyCopilotRecord("github-copilot"))
+	saveCopilotRecordForTest(t, root, "old-work", healthyCopilotRecord("old-work"))
+	codexPath := oauthRecordPath(root, "old-codex")
+	if err := os.MkdirAll(filepath.Dir(codexPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(codexPath, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		githubcopilot.AuthFilePath(root, "old-work") + ".lock",
+		codexPath + ".lock",
+	} {
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	r := fixtureLoad(t, nil, "", WithStateRoot(root))
+	got := r.StrayOAuthRecords()
+	if len(got) != 2 {
+		t.Fatalf("want the strays of both schemes, got %d: %v", len(got), got)
+	}
+	for _, subject := range []string{"old-work", "old-codex"} {
+		if !slices.ContainsFunc(got, func(notice string) bool { return strings.Contains(notice, subject) }) {
+			t.Fatalf("stray %q is unreported: %v", subject, got)
+		}
+	}
+	if slices.ContainsFunc(got, func(notice string) bool { return strings.Contains(notice, ".lock") }) {
+		t.Fatalf("a record lock file was reported as a stray record: %v", got)
+	}
+}
+
+// Neither a Copilot api_key nor a glob pinning the Copilot scheme makes the
+// hub's mint-free listing path spend a credential command: the scheme reads
+// its own record and never puts api_key on a request.
+func TestLaunchMintsCredentialCommandIgnoresTheCopilotScheme(t *testing.T) {
+	t.Parallel()
+	t.Run("provider transport", func(t *testing.T) {
+		t.Parallel()
+		r := fixtureLoad(t, nil, "[providers.work]\nbase = \"github-copilot\"\napi_key = \"$(mint)\"\n")
+		if r.LaunchMintsCredentialCommand("work") {
+			t.Fatal("the Copilot scheme sent an api_key command; its record alone authenticates the launch")
+		}
+	})
+	t.Run("glob pinned transport", func(t *testing.T) {
+		t.Parallel()
+		r := fixtureLoad(t, nil, "[providers.work]\nbase = \"openai\"\nbase_url = \"https://gw.example.test/v1\"\napi_key = \"$(mint)\"\n[providers.work.models.\"*\"]\nauth = \"oauth-github-copilot\"\n")
+		if r.LaunchMintsCredentialCommand("work") {
+			t.Fatal("a glob pinning the Copilot scheme counted as a row the api_key travels with")
+		}
+	})
+}
+
+// An instance moved to another auth scheme must not hand its Copilot record
+// to that scheme: the record stays where the Copilot scheme filed it, the new
+// scheme resolves nothing from it, and the stray scan names it so the user can
+// sign that account out.
+func TestInstances_CopilotRecordIsUnusableUnderAnotherScheme(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	saveCopilotRecordForTest(t, state, "work", healthyCopilotRecord("work"))
+	withCopilot := fixtureLoad(t, nil, "[providers.work]\nbase = \"github-copilot\"\n", WithStateRoot(state))
+	if inst, ok := withCopilot.Instance("work"); !ok || inst.CredentialSource != "oauth" {
+		t.Fatalf("fixture: work = %+v ok=%v, want the Copilot record resolving", inst, ok)
+	}
+
+	withCodex := fixtureLoad(t, nil, "[providers.work]\nbase = \"openai-codex\"\n", WithStateRoot(state))
+	inst, ok := withCodex.Instance("work")
+	if !ok {
+		t.Fatal("work disappeared after its scheme changed")
+	}
+	if inst.Auth != AuthOAuthOpenAICodex || inst.CredentialSource == "oauth" {
+		t.Fatalf("work = %+v, want the Codex scheme resolving no Copilot credential", inst)
+	}
+	presence, err := withCodex.ResolveInstancePresence("work")
+	if err != nil {
+		t.Fatalf("ResolveInstancePresence: %v", err)
+	}
+	if presence.Credential.Source == "oauth" || presence.Credential.Value != "" {
+		t.Fatalf("the Codex scheme read the Copilot record: %+v", presence.Credential)
+	}
+	if _, err := githubcopilot.LoadAuth(state, "work"); err != nil {
+		t.Fatalf("the scheme change deleted the Copilot record: %v", err)
+	}
+	if got := withCodex.StrayOAuthRecords(); len(got) != 1 || !strings.Contains(got[0], "work") {
+		t.Fatalf("strays = %v, want the now-unread Copilot record named", got)
+	}
+}

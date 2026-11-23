@@ -240,6 +240,14 @@ func (r *Registry) LiveModels(instance string) []Model {
 	return out
 }
 
+// ForgetLive drops one instance's cached live listing, so the next resolution
+// fetches it under the credential the caller has just observed.
+func (r *Registry) ForgetLive(instance string) {
+	r.liveMu.Lock()
+	defer r.liveMu.Unlock()
+	delete(r.live, instance)
+}
+
 func (r *Registry) liveRow(instance, id string) *Model {
 	r.liveMu.RLock()
 	defer r.liveMu.RUnlock()
@@ -602,7 +610,7 @@ func (r *Registry) recordMintsCommandCredential(rec *record) bool {
 	// row, and the provider head an unseen live id falls back to.
 	apiKeyEvaluates := func(t Transport) bool {
 		switch t.Auth {
-		case AuthNone, AuthOAuthOpenAICodex, AuthGCPADC:
+		case AuthNone, AuthOAuthOpenAICodex, AuthGCPADC, AuthOAuthGitHubCopilot:
 			return false
 		}
 		return !r.authorizationMode(rec, t, true).present
@@ -625,7 +633,7 @@ func (r *Registry) recordMintsCommandCredential(rec *record) bool {
 	// seen, and with no row or glob naming it, that id resolves
 	// through the provider's own transport — the same fallback
 	// ResolveInstance falls back to (spec §8.1).
-	if apiKeyEvaluates(rec.head.Transport) {
+	if !r.globCoversEveryID(rec) && apiKeyEvaluates(rec.head.Transport) {
 		return true
 	}
 	// A glob can pin that unseen row onto a scheme the api_key travels
@@ -642,15 +650,15 @@ func (r *Registry) recordMintsCommandCredential(rec *record) bool {
 // travels with: the ids a scan can name are the ones the registry
 // already holds, but a live listing may return an id no layer has ever
 // seen, and that row resolves through the globs too. Globs pinning a
-// never-send scheme (none, and the codex and adc schemes that read no
-// api_key) shape rows that stay terminal, so they cannot make a row
+// never-send scheme (none, and the codex, adc, and Copilot schemes that read
+// no api_key) shape rows that stay terminal, so they cannot make a row
 // consume the credential and do not count.
 func (r *Registry) recordGlobPinsAuth(rec *record) bool {
 	for _, rows := range r.topGlobs {
 		for pattern, m := range rows {
 			if isGlob(pattern) && m.Transport != nil && m.Transport.Auth != "" {
 				switch m.Transport.Auth {
-				case AuthNone, AuthOAuthOpenAICodex, AuthGCPADC:
+				case AuthNone, AuthOAuthOpenAICodex, AuthGCPADC, AuthOAuthGitHubCopilot:
 				default:
 					return true
 				}
@@ -660,10 +668,34 @@ func (r *Registry) recordGlobPinsAuth(rec *record) bool {
 	for pattern, m := range rec.head.Models {
 		if isGlob(pattern) && m.Transport != nil && m.Transport.Auth != "" {
 			switch m.Transport.Auth {
-			case AuthNone, AuthOAuthOpenAICodex, AuthGCPADC:
+			case AuthNone, AuthOAuthOpenAICodex, AuthGCPADC, AuthOAuthGitHubCopilot:
 			default:
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// globCoversEveryID reports whether a glob pinning an auth-bearing transport
+// names every id, top-level or provider-scoped. Such a glob decides the
+// transport of an id the scan has never seen, so the provider head's transport
+// is not that row's fallback and cannot make the api_key travel with it.
+func (r *Registry) globCoversEveryID(rec *record) bool {
+	covers := func(rows map[string]Model) bool {
+		for pattern, m := range rows {
+			if pattern == "*" && m.Transport != nil && m.Transport.Auth != "" {
+				return true
+			}
+		}
+		return false
+	}
+	if covers(rec.head.Models) {
+		return true
+	}
+	for _, rows := range r.topGlobs {
+		if covers(rows) {
+			return true
 		}
 	}
 	return false

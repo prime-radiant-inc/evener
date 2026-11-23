@@ -3,6 +3,7 @@ package registry
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -620,6 +621,10 @@ func (r *Registry) AuthFingerprint(instance string) (string, bool) {
 		// Terminal scheme with no inline material here: the record's
 		// account claims are the hub's separate fingerprint, and the
 		// source label already distinguishes "no record" from "record".
+	case AuthOAuthGitHubCopilot:
+		// The record's account and login health select whose live roster
+		// this instance fetched; a rotated token keeps the same roster.
+		_, _ = fmt.Fprintf(sum, "copilot\x01%s\x01", copilotRecordSignature(r.stateRoot, rec.name, time.Now()))
 	case AuthGCPADC:
 		// A stored credential JSON outranks the ADC file (spec §4.2) and
 		// is the material that can rotate; the ADC file itself is the
@@ -1346,29 +1351,102 @@ func (r *Registry) HasInstance(name string) bool {
 // without any, which has neither.
 func (r *Registry) StateRoot() string { return r.stateRoot }
 
-// StrayOAuthRecords lists auth/<name>.json records under the state root
-// whose <name> is not an instance on the Codex transport (spec §9.5, §14.1).
-// Nothing reads such a record, so each notice says how to remove it.
-func (r *Registry) StrayOAuthRecords() []string {
+// CopilotSignature is the hub's view of one Copilot record value: the scheme
+// and instance that filed it, the stable GitHub account, and login health.
+// Token values, obtained-at, and expiry rotate under an unchanged account and
+// roster, so they never enter it.
+func CopilotSignature(record githubcopilot.AuthRecord, now time.Time) string {
+	health := "ready"
+	if record.NeedsLogin(now) {
+		health = "login-required"
+	}
+	return fmt.Sprintf("record\x01%s\x01%s\x01%s\x01%s", record.Instance, record.Scheme, record.AccountID, health)
+}
+
+// CopilotRawSignature is CopilotSignature for a record's raw bytes as the
+// record filed under instance: "corrupt" when the bytes do not parse or fail
+// that instance's validation. A caller that has just written the bytes under
+// the record lock can adopt exactly the record it wrote, rather than whatever
+// another writer lands after the lock is released.
+func CopilotRawSignature(instance string, raw []byte, now time.Time) string {
+	var record githubcopilot.AuthRecord
+	if err := json.Unmarshal(raw, &record); err != nil {
+		return "corrupt"
+	}
+	if err := record.Validate(); err != nil || record.Instance != instance {
+		return "corrupt"
+	}
+	return CopilotSignature(record, now)
+}
+
+// copilotRecordSignature is the on-disk view of one Copilot record: existence,
+// corruption, or the record's mint-free signature.
+func copilotRecordSignature(stateRoot, name string, now time.Time) string {
+	if stateRoot == "" {
+		return "missing"
+	}
+	raw, err := os.ReadFile(githubcopilot.AuthFilePath(stateRoot, name))
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return "missing"
+	case err != nil:
+		return "corrupt"
+	}
+	return CopilotRawSignature(name, raw, now)
+}
+
+// CopilotAuthSignature reports each Copilot record under the state root by
+// instance name and mint-free signature. A sweep compares it with the previous
+// observation: an external login, logout, account switch, or corruption
+// changes an entry, while a token refresh the CLI saved in place does not.
+func (r *Registry) CopilotAuthSignature() map[string]string {
 	if r.stateRoot == "" {
 		return nil
 	}
-	dir := filepath.Join(r.stateRoot, "auth")
+	dir := filepath.Join(r.stateRoot, "auth", "github-copilot")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
 	}
-	var out []string
+	now := time.Now()
+	out := map[string]string{}
 	for _, e := range entries {
 		name, ok := strings.CutSuffix(e.Name(), ".json")
 		if !ok || e.IsDir() {
 			continue
 		}
-		if rec, found := r.recordFor(name); found && rec.head.Transport.Auth == AuthOAuthOpenAICodex {
-			continue
-		}
-		out = append(out, fmt.Sprintf("stray OAuth record %s: %q is not an instance on the Codex transport; remove it with `evener openai logout --instance %s`", filepath.Join(dir, e.Name()), name, name))
+		out[name] = copilotRecordSignature(r.stateRoot, name, now)
 	}
+	return out
+}
+
+// StrayOAuthRecords lists OAuth records under the state root whose name is not
+// an instance on the scheme that filed it (spec §9.5, §14.1): Codex records
+// live in auth/, Copilot records in auth/github-copilot/. Nothing reads such a
+// record, so each notice says how to remove it.
+func (r *Registry) StrayOAuthRecords() []string {
+	if r.stateRoot == "" {
+		return nil
+	}
+	var out []string
+	collect := func(dir, scheme, title, transport, logout string) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		for _, e := range entries {
+			name, ok := strings.CutSuffix(e.Name(), ".json")
+			if !ok || e.IsDir() {
+				continue
+			}
+			if rec, found := r.recordFor(name); found && rec.head.Transport.Auth == scheme {
+				continue
+			}
+			out = append(out, fmt.Sprintf("%s %s: %q is not an instance on the %s transport; remove it with `evener %s logout --instance %s`", title, filepath.Join(dir, e.Name()), name, transport, logout, name))
+		}
+	}
+	collect(filepath.Join(r.stateRoot, "auth"), AuthOAuthOpenAICodex, "stray OAuth record", "Codex", "openai")
+	collect(filepath.Join(r.stateRoot, "auth", "github-copilot"), AuthOAuthGitHubCopilot, "stray Copilot OAuth record", "Copilot", "github-copilot")
 	sort.Strings(out)
 	return out
 }

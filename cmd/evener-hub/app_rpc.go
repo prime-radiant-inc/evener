@@ -1204,6 +1204,10 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			providersConfigPath: cfg.ProvidersConfigPath,
 			auth:                authController,
 		}
+		// The device login writes its record through the auth controller, so
+		// the instances controller learns of that write here; otherwise the
+		// next notice sweep would announce the login RPC's own write again.
+		authController.copilotRecordAdopted = instancesController.adoptCopilotAuthSignature
 		if observeInstancesController != nil {
 			observeInstancesController(instancesController)
 		}
