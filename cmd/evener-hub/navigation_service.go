@@ -1456,6 +1456,11 @@ func writeNavigationFingerprintUint(digest hash.Hash, value uint64) {
 // second time after the first caller has committed them.
 func (s *NavigationService) commitTargetsLocked(changes map[navigationResourceKey]bool, hint navigationChangeHint) (hubapi.NavigationMutation, error) {
 	targetSet := make(map[string]appwire.NavigationInvalidationTarget)
+	add := func(key navigationResourceKey, revision uint64) {
+		if target, ok := navigationTargetForResource(key, revision); ok {
+			targetSet[navigationTargetIdentity(target)] = target
+		}
+	}
 	for key, changed := range changes {
 		if !changed {
 			continue
@@ -1466,20 +1471,14 @@ func (s *NavigationService) commitTargetsLocked(changes map[navigationResourceKe
 			if !exists {
 				dependencyState = state
 			}
-			if target, ok := navigationTargetForResource(dependency, dependencyState.Revision); ok {
-				targetSet[navigationTargetIdentity(target)] = target
-			}
+			add(dependency, dependencyState.Revision)
 		}
 	}
-	// A source change is announced even when this rebuild produced no
-	// manifest delta: the hub's projection can already carry the new online
-	// state while a client's cached manifest predates it, so the target must
-	// carry the current manifest revision and let that client re-read.
+	// A source change may need a manifest re-read even when this rebuild
+	// produced no delta: see navigationChangeHint.Sources.
 	if hint.Sources {
 		manifestKey := navigationResourceKey{Kind: navigationResourceManifest}
-		if target, ok := navigationTargetForResource(manifestKey, s.resources[manifestKey].Revision); ok {
-			targetSet[navigationTargetIdentity(target)] = target
-		}
+		add(manifestKey, s.resources[manifestKey].Revision)
 	}
 	if len(targetSet) == 0 {
 		return hubapi.NavigationMutation{GenerationID: s.generation, Targets: hubapi.NavigationArray[appwire.NavigationInvalidationTarget]{}}, nil

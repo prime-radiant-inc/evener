@@ -37,8 +37,20 @@ func registerHostAttachHandler(server *appserver.Server, cfg hubcore.WebConfig, 
 	// instance to every host handler, so add and attach can never validate
 	// against divergent copies.
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostAttach, func(ctx context.Context, params appwire.HostAttachParams) (appwire.HostAttachResponse, error) {
-		return hubHostAttach(ctx, cfg, sources, hosts, navigation, params)
+		return hostAttachAndInvalidateSources(ctx, cfg, sources, hosts, navigation, params)
 	})
+}
+
+// hostAttachAndInvalidateSources serves evener/host/attach. A successful
+// response means the host is attached, so navigation readers are told the
+// source set may have changed; Ensure can return an already-live channel
+// without emitting an attach event (see navigationChangeHint.Sources).
+func hostAttachAndInvalidateSources(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, hosts *hostreg.Registry, navigation *NavigationService, params appwire.HostAttachParams) (appwire.HostAttachResponse, error) {
+	resp, err := hubHostAttach(ctx, cfg, sources, hosts, params)
+	if err == nil && navigation != nil {
+		navigation.Invalidate(navigationChangeHint{Sources: true})
+	}
+	return resp, err
 }
 
 // hostRegistryFromConfig returns the cfg's live host registry when one was
@@ -78,7 +90,7 @@ func hostRegistryFromConfig(cfg hubcore.WebConfig) *hostreg.Registry {
 // state. It is idempotent: Ensure returns the installed channel's client when
 // the host is already attached, so a repeated Connect is safe and simply returns
 // the current facts.
-func hubHostAttach(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, hosts *hostreg.Registry, navigation *NavigationService, params appwire.HostAttachParams) (appwire.HostAttachResponse, error) {
+func hubHostAttach(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, hosts *hostreg.Registry, params appwire.HostAttachParams) (appwire.HostAttachResponse, error) {
 	name := strings.TrimSpace(params.Host)
 	if _, ok := hosts.Get(name); !ok {
 		return appwire.HostAttachResponse{}, appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
@@ -118,14 +130,6 @@ func hubHostAttach(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			return appwire.HostAttachResponse{}, cerr
 		}
 		return appwire.HostAttachResponse{}, classifyHostAttachError(sources, name, err)
-	}
-	// A successful dial is a source-state change every manifest reader must
-	// observe. Ensure can return an already-live channel without emitting an
-	// attach event, and the hub's projection may already carry the online state
-	// while a client's cached manifest predates it, so ask for a source
-	// invalidation instead of relying on an event's fingerprint delta.
-	if navigation != nil {
-		navigation.Invalidate(navigationChangeHint{Sources: true})
 	}
 	resp := appwire.HostAttachResponse{Attached: true, Host: name}
 	// The handshake seam is optional (tests and embedders may leave it unset).

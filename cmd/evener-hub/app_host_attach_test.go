@@ -52,7 +52,7 @@ func TestHostAttachDialsOnceAndReturnsFacts(t *testing.T) {
 	}
 	hosts := hostAttachRegistry(t, cfg)
 
-	resp, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, nil, appwire.HostAttachParams{Host: "alpha"})
+	resp, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, appwire.HostAttachParams{Host: "alpha"})
 	if err != nil {
 		t.Fatalf("attach: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestHostAttachIsIdempotent(t *testing.T) {
 	hosts := hostAttachRegistry(t, cfg)
 
 	for i := range 2 {
-		resp, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, nil, appwire.HostAttachParams{Host: "alpha"})
+		resp, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, appwire.HostAttachParams{Host: "alpha"})
 		if err != nil {
 			t.Fatalf("attach %d: %v", i, err)
 		}
@@ -107,7 +107,7 @@ func TestHostAttachUnknownHostIsInvalidParams(t *testing.T) {
 	}
 	hosts := hostAttachRegistry(t, cfg)
 
-	_, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, nil, appwire.HostAttachParams{Host: "ghost"})
+	_, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, appwire.HostAttachParams{Host: "ghost"})
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		t.Fatalf("unknown-host attach error %T=%v, want WireError", err, err)
@@ -126,7 +126,7 @@ func TestHostAttachWithoutDialSeamIsUnavailable(t *testing.T) {
 	cfg := hubcore.WebConfig{RemoteHosts: []hostreg.Host{{Name: "alpha", SSH: "alpha"}}}
 	hosts := hostAttachRegistry(t, cfg)
 
-	_, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, nil, appwire.HostAttachParams{Host: "alpha"})
+	_, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, appwire.HostAttachParams{Host: "alpha"})
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		t.Fatalf("seamless attach error %T=%v, want WireError", err, err)
@@ -167,7 +167,7 @@ func TestHostAttachClassifiesAttachFailureAsSessionUnavailable(t *testing.T) {
 			sources.Add(appsource.NewRemoteHubSource("alpha", nil, cfg.RemoteHostClient))
 			hosts := hostAttachRegistry(t, cfg)
 
-			_, err := hubHostAttach(context.Background(), cfg, sources, hosts, nil, appwire.HostAttachParams{Host: "alpha"})
+			_, err := hubHostAttach(context.Background(), cfg, sources, hosts, appwire.HostAttachParams{Host: "alpha"})
 			var wire appwire.WireError
 			if !errors.As(err, &wire) {
 				t.Fatalf("attach failure %T=%v, want a typed WireError", err, err)
@@ -200,7 +200,7 @@ func TestHostAttachKeepsCallerCancellationRaw(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := hubHostAttach(ctx, cfg, sources, hosts, nil, appwire.HostAttachParams{Host: "alpha"})
+	_, err := hubHostAttach(ctx, cfg, sources, hosts, appwire.HostAttachParams{Host: "alpha"})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled attach error %T=%v, want context.Canceled", err, err)
 	}
@@ -262,7 +262,7 @@ func TestHostAttachTimedOutDeployIsHubLaunchError(t *testing.T) {
 			sources.Add(appsource.NewRemoteHubSource("alpha", nil, cfg.RemoteHostClient))
 			hosts := hostAttachRegistry(t, cfg)
 
-			_, err := hubHostAttach(context.Background(), cfg, sources, hosts, nil, appwire.HostAttachParams{Host: "alpha"})
+			_, err := hubHostAttach(context.Background(), cfg, sources, hosts, appwire.HostAttachParams{Host: "alpha"})
 			var wire appwire.WireError
 			if !errors.As(err, &wire) {
 				t.Fatalf("attach failure %T=%v, want a typed WireError", err, err)
@@ -295,7 +295,7 @@ func TestHostAttachRefusesRemoteOriginatedDial(t *testing.T) {
 	hosts := hostAttachRegistry(t, cfg)
 
 	ctx := withHostRoutingOrigin(context.Background(), hostRoutingOriginBridge)
-	_, err := hubHostAttach(ctx, cfg, appsource.NewRegistry(), hosts, nil, appwire.HostAttachParams{Host: "alpha"})
+	_, err := hubHostAttach(ctx, cfg, appsource.NewRegistry(), hosts, appwire.HostAttachParams{Host: "alpha"})
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		t.Fatalf("remote-originated attach error %T=%v, want WireError", err, err)
@@ -338,7 +338,7 @@ func TestHostAttachPopulatesHostIdentityAndHandshake(t *testing.T) {
 	}
 	hosts := hostAttachRegistry(t, cfg)
 
-	resp, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, nil, appwire.HostAttachParams{Host: "alpha"})
+	resp, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, appwire.HostAttachParams{Host: "alpha"})
 	if err != nil {
 		t.Fatalf("attach: %v", err)
 	}
@@ -443,7 +443,7 @@ func TestHostAttachTerminalFailuresAreTypedWireErrors(t *testing.T) {
 			sources.Add(appsource.NewRemoteHubSource("alpha", nil, cfg.RemoteHostClient))
 			hosts := hostAttachRegistry(t, cfg)
 
-			_, err := hubHostAttach(context.Background(), cfg, sources, hosts, nil, appwire.HostAttachParams{Host: "alpha"})
+			_, err := hubHostAttach(context.Background(), cfg, sources, hosts, appwire.HostAttachParams{Host: "alpha"})
 			var wire appwire.WireError
 			if !errors.As(err, &wire) {
 				t.Fatalf("attach failure %T=%v, want a typed WireError", err, err)
@@ -482,7 +482,7 @@ func TestHostAttachKeepsHandshakeProtocolVersionWhenFactsAreEmpty(t *testing.T) 
 	}
 	hosts := hostAttachRegistry(t, cfg)
 
-	resp, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, nil, appwire.HostAttachParams{Host: "alpha"})
+	resp, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, appwire.HostAttachParams{Host: "alpha"})
 	if err != nil {
 		t.Fatalf("attach: %v", err)
 	}
@@ -515,7 +515,7 @@ func TestHostAttachKeepsSuccessfulDialWhenFactsReadFails(t *testing.T) {
 	}
 	hosts := hostAttachRegistry(t, cfg)
 
-	resp, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, nil, appwire.HostAttachParams{Host: "alpha"})
+	resp, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, appwire.HostAttachParams{Host: "alpha"})
 	if err != nil {
 		t.Fatalf("attach after a successful dial must not fail on the facts read: %v", err)
 	}
@@ -549,7 +549,7 @@ func TestHostAttachRefusesHandshakeGenerationMismatch(t *testing.T) {
 	}
 	hosts := hostAttachRegistry(t, cfg)
 
-	resp, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, nil, appwire.HostAttachParams{Host: "alpha"})
+	resp, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, appwire.HostAttachParams{Host: "alpha"})
 	if err == nil {
 		t.Fatalf("handshake-mismatch attach = %+v, want an attach failure (not Attached:true)", resp)
 	}
@@ -590,7 +590,7 @@ func TestHostAttachRefusesFactsLivenessError(t *testing.T) {
 	}
 	hosts := hostAttachRegistry(t, cfg)
 
-	resp, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, nil, appwire.HostAttachParams{Host: "alpha"})
+	resp, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, appwire.HostAttachParams{Host: "alpha"})
 	if err == nil {
 		t.Fatalf("liveness-error attach = %+v, want an attach failure (not Attached:true)", resp)
 	}
@@ -607,12 +607,8 @@ func TestHostAttachRefusesFactsLivenessError(t *testing.T) {
 	}
 }
 
-// A successful attach is a source-state change clients must be able to
-// observe. Ensure can return an already-live channel without emitting an
-// attach event, and the hub's projection may already carry the online state
-// while a client's cached manifest predates it, so the handler must ask for a
-// source invalidation and that invalidation must publish the manifest even
-// when this rebuild sees no fingerprint delta.
+// A successful attach must tell navigation readers the source set changed,
+// even when Ensure returns an already-live channel and emits no attach event.
 func TestHostAttachInvalidatesNavigationSources(t *testing.T) {
 	live := &appwire.Client{}
 	cfg := hubcore.WebConfig{
@@ -627,15 +623,8 @@ func TestHostAttachInvalidatesNavigationSources(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := hubHostAttach(t.Context(), cfg, appsource.NewRegistry(), hosts, navigation, appwire.HostAttachParams{Host: "alpha"}); err != nil {
+	if _, err := hostAttachAndInvalidateSources(t.Context(), cfg, appsource.NewRegistry(), hosts, navigation, appwire.HostAttachParams{Host: "alpha"}); err != nil {
 		t.Fatalf("attach: %v", err)
-	}
-
-	navigation.mu.Lock()
-	pending, hint := navigation.pendingInvalidation, navigation.pendingHint
-	navigation.mu.Unlock()
-	if !pending || !hint.Sources {
-		t.Fatalf("attach left no source invalidation: pending=%v hint=%+v", pending, hint)
 	}
 
 	navigation.refreshPending(t.Context())

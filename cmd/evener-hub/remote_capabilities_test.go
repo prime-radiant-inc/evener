@@ -267,7 +267,7 @@ func TestHostAttachReadsNoHubScopeSurfaces(t *testing.T) {
 			return client, nil
 		},
 	}
-	if _, err := hubHostAttach(t.Context(), cfg, sources, hosts, nil, appwire.HostAttachParams{Host: "h1"}); err != nil {
+	if _, err := hubHostAttach(t.Context(), cfg, sources, hosts, appwire.HostAttachParams{Host: "h1"}); err != nil {
 		t.Fatalf("attach: %v", err)
 	}
 
