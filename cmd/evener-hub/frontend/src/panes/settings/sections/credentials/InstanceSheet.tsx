@@ -981,6 +981,7 @@ export function InstanceSheet({
                             value={draft.name}
                             onChange={(event) => update({ name: event.target.value })}
                             disabled={busy}
+                            fill
                           />
                         ),
                         help: nameHelp,
@@ -1001,6 +1002,7 @@ export function InstanceSheet({
                             onChange={(event) => update({ baseUrl: event.target.value })}
                             placeholder="https://…"
                             disabled={busy}
+                            fill
                           />
                         ),
                         help: clearingBaseUrl ? "Resets the endpoint to the provider's default." : undefined,

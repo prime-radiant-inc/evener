@@ -32,3 +32,11 @@
   outline: var(--focus-ring);
   outline-offset: 2px;
 }
+
+/* Opt-in: fill the containing grid/flex cell instead of resting at the
+ * field's intrinsic width. A caller asks through the `fill` prop; nothing
+ * styles the widget's element by tag from outside. */
+.fillWidth {
+  width: 100%;
+  min-width: 0;
+}
