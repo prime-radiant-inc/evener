@@ -35,15 +35,10 @@ export interface SelectProps {
   /** Test hook for the quiet variant's visible readout, which is aria-hidden
    * because the select already speaks the value. */
   valueTestId?: string;
-  /** Fill the containing grid/flex cell instead of resting at the control's
-   * intrinsic width. Applies to the control face: the native select in the
-   * default variant, the trigger in the quiet one. */
-  fill?: boolean;
 }
 
 const BASE_CLASS = {
   select: requireClass(styles.select, "select.module.css", "select"),
-  fillWidth: requireClass(styles.fillWidth, "select.module.css", "fillWidth"),
   quiet: requireClass(styles.quietVariant, "select.module.css", "quietVariant"),
   quietReadout: requireClass(styles.quietReadout, "select.module.css", "quietReadout"),
   quietCaret: requireClass(styles.quietCaret, "select.module.css", "quietCaret"),
@@ -66,15 +61,12 @@ export function Select({
   ariaLabel,
   "data-testid": testId,
   valueTestId,
-  fill = false,
 }: SelectProps) {
   const nativeSelect = (
     <select
       id={id}
       name={name}
-      className={
-        variant === "quiet" ? BASE_CLASS.quietSelect : `${BASE_CLASS.select}${fill ? ` ${BASE_CLASS.fillWidth}` : ""}`
-      }
+      className={variant === "quiet" ? BASE_CLASS.quietSelect : BASE_CLASS.select}
       value={value}
       onChange={onChange}
       disabled={disabled}
@@ -93,11 +85,7 @@ export function Select({
     // the one it currently holds, kept in sync by the same controlled value.
     const currentLabel = readout ?? options.find((option) => option.value === value)?.label ?? "";
     return (
-      <span
-        className={`${BASE_CLASS.quiet}${fill ? ` ${BASE_CLASS.fillWidth}` : ""}`}
-        data-testid={testId}
-        data-disabled={disabled ? "true" : undefined}
-      >
+      <span className={BASE_CLASS.quiet} data-testid={testId} data-disabled={disabled ? "true" : undefined}>
         <span className={BASE_CLASS.quietReadout} data-testid={valueTestId} aria-hidden="true">
           {currentLabel}
         </span>

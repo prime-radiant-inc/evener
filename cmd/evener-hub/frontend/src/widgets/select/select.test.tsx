@@ -8,7 +8,6 @@ import { expect, test, vi } from "vitest";
 import { MOBILE_QUERY } from "../../shell/useIsMobile";
 import { escapeRegExp, readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import { Select } from "./index";
-import rawStyles from "./select.module.css";
 
 const OPTIONS = [
   { value: "us-east", label: "US East" },
@@ -120,40 +119,6 @@ test("is keyboard-focusable when enabled", () => {
 test("an id prop passes through for external <label htmlFor> association", () => {
   render(<Select value="us-east" options={OPTIONS} onChange={() => {}} id="region" />);
   expect(screen.getByRole("combobox").id).toBe("region");
-});
-
-// --- fill: opt-in only, and only ADDS a class -----------------------------
-test("fill adds its modifier class to the default native select", () => {
-  const { rerender } = render(<Select value="us-east" options={OPTIONS} onChange={() => {}} fill />);
-  const classes = screen.getByRole("combobox").className.split(" ");
-  expect(classes).toContain(rawStyles.select);
-  expect(classes).toContain(rawStyles.fillWidth);
-
-  rerender(<Select value="us-east" options={OPTIONS} onChange={() => {}} />);
-  expect(screen.getByRole("combobox").className.split(" ")).not.toContain(rawStyles.fillWidth);
-});
-
-test("fill widens the quiet trigger, not the transparent overlay", () => {
-  render(
-    <Select
-      variant="quiet"
-      ariaLabel="Region"
-      value="us-east"
-      options={OPTIONS}
-      onChange={() => {}}
-      fill
-      data-testid="quiet-trigger"
-    />,
-  );
-  expect(screen.getByTestId("quiet-trigger").className.split(" ")).toContain(rawStyles.fillWidth);
-  expect(screen.getByRole("combobox").className.split(" ")).not.toContain(rawStyles.fillWidth);
-});
-
-test("the fill modifier sets width 100% and min-width 0", () => {
-  const css = readModuleCss(import.meta.url, "select.module.css");
-  const rule = topRuleBlock(css, ".fillWidth");
-  expect(rule).toContain("width: 100%");
-  expect(rule).toContain("min-width: 0");
 });
 
 test("declares a :focus-visible rule in its CSS module, using only tokens", () => {

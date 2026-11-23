@@ -146,7 +146,6 @@ export function connectionSettingsFields({
           onChange={(event) => onFieldChange("protocol", event.target.value)}
           options={PROTOCOL_OPTIONS}
           disabled={disabled}
-          fill
         />
       ),
     },
@@ -161,7 +160,6 @@ export function connectionSettingsFields({
           onChange={(event) => onFieldChange("surface", event.target.value)}
           options={SURFACE_OPTIONS}
           disabled={disabled}
-          fill
         />
       ),
     },

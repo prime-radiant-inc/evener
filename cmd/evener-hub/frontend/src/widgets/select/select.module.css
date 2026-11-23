@@ -35,14 +35,6 @@
   outline-offset: 2px;
 }
 
-/* Opt-in: fill the containing grid/flex cell instead of resting at the
- * control's intrinsic width. A caller asks through the `fill` prop; nothing
- * styles the widget's element by tag from outside. */
-.fillWidth {
-  width: 100%;
-  min-width: 0;
-}
-
 /* Quiet variant: the current value IS the control. The closed face is the
  * shared quiet-trigger recipe (also composed by ModelSwitchTrigger's Popover
  * button); the containing block and tap floor below are the native-select
