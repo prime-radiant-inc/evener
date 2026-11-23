@@ -9,6 +9,4 @@
   color: var(--ink-mid);
   white-space: pre-wrap;
 }
-.verbatimWrap {
-  word-break: break-word;
-}
+.verbatimWrap { word-break: break-word; }

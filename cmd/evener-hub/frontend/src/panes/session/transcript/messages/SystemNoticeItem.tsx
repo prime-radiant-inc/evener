@@ -33,6 +33,7 @@ import {
   formatDurationMs,
   isErrorEvent,
   MEMORY_CONTEXT_EVENT_KIND,
+  scopedDisclosureId,
   systemEventWords,
 } from "@evener/appwire-client";
 import type { ReactNode } from "react";
@@ -42,6 +43,7 @@ import {
   useTranscriptRenderContext,
 } from "../../../../transcriptDisplay/renderContext";
 import { Disclosure, FailureGlyph, Markdown } from "../../../../widgets";
+import { disclosureDefault } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { SYSTEM_PROMPT_ITEM_ID } from "../transcriptVisibility";
 import { FAILURE_FALLBACK_LABEL, failureText } from "../turnFailure";
@@ -115,7 +117,6 @@ function scaffoldLabel(item: ItemModel): string {
 // and stay folded at every level until explicitly opened.
 function ScaffoldDisclosure({ item, sessionRef }: { item: ItemModel; sessionRef?: string }) {
   const context = useTranscriptRenderContext();
-  const { config } = context;
   const disclosureScope = disclosureScopeForSession(context, sessionRef);
   // Open/closed state lives in the shared disclosureStore keyed by session ref
   // plus item id, so an expanded scaffold survives a remount without colliding
@@ -123,7 +124,7 @@ function ScaffoldDisclosure({ item, sessionRef }: { item: ItemModel; sessionRef?
   const disclosureKey = scopedDisclosureId(disclosureScope, item.id);
   const isNotesSnapshot = item.eventKind === "notes-context";
   const disclosureFallback =
-    !isNotesSnapshot && (expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false));
+    !isNotesSnapshot && (expandDetailsByDefault(context.config) || disclosureDefault(disclosureScope, item.id, false));
   return (
     <Disclosure
       variant="quiet"
