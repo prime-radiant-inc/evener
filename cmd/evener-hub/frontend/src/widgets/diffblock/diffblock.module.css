@@ -14,9 +14,15 @@
 
 .line {
   display: flex;
-  /* Right inset clears the shared top-right copy control. */
-  padding: 0 var(--space-6) 0 var(--space-2);
+  padding: 0 var(--space-2);
   white-space: pre;
+}
+
+/* Only the rows the shared copy control covers reserve its phone footprint
+ * (64px = 44px target + 2*8px padding + 4px offset; -n+4 counts the header
+ * plus the first three rows). Rows below keep the plain inset. */
+.line:nth-child(-n + 4) {
+  padding-right: var(--space-9);
 }
 
 .marker {

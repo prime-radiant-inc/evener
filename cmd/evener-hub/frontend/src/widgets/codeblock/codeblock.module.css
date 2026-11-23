@@ -66,10 +66,9 @@
   opacity: 1;
 }
 
-/* Long lines WRAP; the block never scrolls horizontally - see the component's
- * own doc comment for why (and for why DiffBlock keeps its scroller). The extra
- * right padding leaves room for the inset copy control so a first line of output
- * never runs under it. */
+/* Long lines WRAP; the block never scrolls horizontally - tool output is
+ * prose-shaped far more often than table-shaped. The extra right padding
+ * leaves room for the inset copy control so a first line never runs under it. */
 .pre {
   margin: 0;
   font-family: var(--font-mono);

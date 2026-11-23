@@ -104,9 +104,6 @@ const TAIL_VISIBLE_LINES = 100;
  * and line-number gutter, and a copy control inset into the block's top-right
  * corner. No syntax highlighting - YAGNI this wave; add a highlighter only when
  * a real consumer needs one.
- *
- * Long lines WRAP; the block never scrolls horizontally (CodeBlockPre documents
- * the unwrapped variant DiagramViewer's source pane uses).
  */
 export function CodeBlock({
   text,

@@ -83,6 +83,5 @@
  * overflow, keeping one source line per row. */
 .source {
   flex: 1 1 auto;
-  box-sizing: border-box;
   overflow: auto;
 }
