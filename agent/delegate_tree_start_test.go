@@ -734,6 +734,13 @@ func TestDelegateControllerReserveAttentionRequiresResidentRuntime(t *testing.T)
 	if _, err := c.ReserveAttention(runtime, ""); !errors.Is(err, errDelegateTargetBusy) {
 		t.Fatalf("ReserveAttention empty ID error = %v, want busy", err)
 	}
+	// ReserveAttention admits only a row the durable queue holds unheld.
+	c.mu.Lock()
+	_, err := c.appendLocked(attentionQueuedEvent("dlg_target", "attention-1", true))
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("queue attention-1: %v", err)
+	}
 	reservation, err := c.ReserveAttention(runtime, "attention-1")
 	if err != nil {
 		t.Fatalf("ReserveAttention exact runtime: %v", err)

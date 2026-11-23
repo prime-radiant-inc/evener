@@ -60,6 +60,12 @@ func (c *delegateTreeController) retirementEvidence() ([]RetirementBlocker, []*S
 		members[id] = struct{}{}
 	}
 	blockers, sessions, exact, descriptors, ids := c.retirementOwnerScanLocked(members)
+	// The store queue is durable state FinishGeneration mutates under c.mu:
+	// snapshot which members still owe unheld attention before the lock drops.
+	unheldAttention := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		unheldAttention[id] = c.delegateOwesUnheldAttentionLocked(id)
+	}
 	c.mu.Unlock()
 	for _, id := range ids {
 		d, ok := descriptors[id]
@@ -78,7 +84,7 @@ func (c *delegateTreeController) retirementEvidence() ([]RetirementBlocker, []*S
 		// Resident or cold, the delegate's store queue decides whether
 		// attention is still owed: only an unheld row can be presented, and a
 		// stop-held row must never block retirement.
-		if c.delegateOwesUnheldAttentionLocked(id) {
+		if unheldAttention[id] {
 			blockers = append(blockers, RetirementBlocker{Category: "delegate", SessionID: c.rootSessionID, DelegateID: id})
 		}
 		if exact[id] == nil {

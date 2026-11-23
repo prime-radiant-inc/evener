@@ -833,3 +833,45 @@ func TestDelegateAttentionWakeEligibleLockedWithNonAttentionReservation(t *testi
 		t.Fatalf("expected false for non-attention reservation")
 	}
 }
+
+// A finalizer can read a pending row, lose the controller lock to a stop that
+// resolves or discards it, and then arm that stale identity. The arm must see
+// the journal resolution under c.mu and become a clean no-op, while a fresh
+// delivery still queues and raises NeedsAttention.
+func TestOpenDelegateAttentionIgnoresResolvedRow(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	const (
+		staleID = "attention-resolved-late"
+		freshID = "attention-fresh-after-resolved"
+	)
+	if !c.noteDelegateAttentionForTest("dlg_target", staleID) {
+		t.Fatal("seed the stale attention row")
+	}
+	if err := c.forgetDelegateAttention("dlg_target", staleID); err != nil {
+		t.Fatalf("resolve the stale attention row: %v", err)
+	}
+	added, err := c.openDelegateAttention("dlg_target", staleID)
+	if err != nil || added {
+		t.Fatalf("late arm of a resolved row = added:%t err:%v, want a no-op", added, err)
+	}
+	if rows := pendingAttentionRowsForTest(t, c, "dlg_target"); len(rows) != 0 {
+		t.Fatalf("resolved row was resurrected: %#v", rows)
+	}
+	if needsAttentionForTest(t, c, "dlg_target") {
+		t.Fatal("late arm of a resolved row raised NeedsAttention")
+	}
+
+	added, err = c.openDelegateAttention("dlg_target", freshID)
+	if err != nil || !added {
+		t.Fatalf("fresh arm = added:%t err:%v, want the row queued and its wake raised", added, err)
+	}
+	rows := pendingAttentionRowsForTest(t, c, "dlg_target")
+	if len(rows) != 1 || rows[0].AttentionID != freshID || !rows[0].Committed {
+		t.Fatalf("fresh delivery rows = %#v, want one committed %q row", rows, freshID)
+	}
+	if !needsAttentionForTest(t, c, "dlg_target") {
+		t.Fatal("fresh arm did not raise NeedsAttention")
+	}
+}

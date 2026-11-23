@@ -1722,14 +1722,16 @@ func (s *Session) promoteStagedAttentionCoverage(settled llm.Request) {
 		return
 	}
 	var acceptedCause *provenance.Causal
+	presentedID := ""
 	if _, presented := staged[s.attentionAcceptedID]; presented && s.attentionAcceptedID != "" {
 		// A settled full-history request carried the accepted trigger to the
 		// model. The row stays durably queued until the turn's exit rule
 		// consumes it (finishAttentionTurn, or the finalize tail on an abort);
-		// the latch only records that it was presented. It leaves the covered
-		// set so the exit rule names it exactly once.
+		// the latch only records that it was presented. It stays in the covered
+		// set so a mid-turn compaction treats it as already presented instead
+		// of restoring its still-queued row as fresh steering.
+		presentedID = s.attentionAcceptedID
 		s.attentionPresentedTrigger = s.attentionAcceptedID
-		delete(staged, s.attentionAcceptedID)
 		s.attentionAcceptedID = ""
 		acceptedCause, s.attentionAcceptedCause = s.attentionAcceptedCause, nil
 	}
@@ -1740,6 +1742,11 @@ func (s *Session) promoteStagedAttentionCoverage(settled llm.Request) {
 	merged := s.attentionCausesMergedIDs
 	if merged == nil {
 		merged = make(map[string]struct{}, len(staged))
+	}
+	// The presented trigger's cause joined the turn through acceptedCause above;
+	// marking it merged keeps the staged sweep below from adopting it twice.
+	if presentedID != "" {
+		merged[presentedID] = struct{}{}
 	}
 	// Each item's cause joins the turn at the first settled request that
 	// presents it; a later request of the same turn re-presenting the item
@@ -2795,6 +2802,19 @@ func (s *Session) dropUnleasedWatchAttentionTurns(ctx context.Context, turns []s
 	// The fold cursor behind this read is guarded by attentionMu: every append
 	// and resolution that moves it holds that lock, so the read is taken under
 	// it.
+	// A child delegate resolves attention in its journal, not in its transcript:
+	// a watch frame presented and settled by a leased generation leaves no
+	// TurnAttentionResolution behind. Snapshot the journal's answer before the
+	// attention lock, keeping the controller lock out of that order.
+	var journalResolved map[string]struct{}
+	if s.owningDelegateID != "" && s.delegateController != nil {
+		journalResolved = make(map[string]struct{})
+		for _, turn := range turns {
+			if isWatchNoticeAttentionID(turn.AttentionID) && s.delegateController.delegateAttentionResolved(s.owningDelegateID, turn.AttentionID) {
+				journalResolved[turn.AttentionID] = struct{}{}
+			}
+		}
+	}
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 	fold, err := s.delegateAttentionFoldLocked()
@@ -2810,7 +2830,10 @@ func (s *Session) dropUnleasedWatchAttentionTurns(ctx context.Context, turns []s
 			// so there is nothing to withhold.
 			return false
 		}
-		_, resolved := fold.resolutions[turn.AttentionID]
+		if _, resolved := fold.resolutions[turn.AttentionID]; resolved {
+			return false
+		}
+		_, resolved := journalResolved[turn.AttentionID]
 		return !resolved
 	}
 	for i, turn := range turns {

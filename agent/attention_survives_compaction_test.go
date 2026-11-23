@@ -675,6 +675,67 @@ func TestRootDelegateAttentionMidTurnFoldPreservesArrivalOrderAcrossAnchors(t *t
 	}
 }
 
+// A child delegate that resumes on a nested report presents its trigger in the
+// first settled request of the turn. A later tool round of that same turn may
+// compact; the trigger's row is still queued in delegatestore, but the fold must
+// treat it as already presented and summarize it, not restore it as fresh
+// steering. Turn exit then resolves the row in the store exactly once.
+func TestPresentedTriggerStaysCoveredAcrossMidTurnCompaction(t *testing.T) {
+	t.Parallel()
+	const (
+		delegateID  = "dlg_coordinator"
+		attentionID = "delegate:dlg_worker/report/1"
+		text        = `<delegate-notification delegate_id="dlg_worker" kind="report">PRESENTED_THEN_COMPACTED</delegate-notification>`
+	)
+	sess, _ := newCompactableSession(t)
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, controller, delegateID, "")
+	controller.mu.Lock()
+	controller.live[delegateID].binding.runtime = sess
+	controller.mu.Unlock()
+	sess.delegateController = controller
+	sess.owningDelegateID = delegateID
+	if _, err := sess.appendDelegateNotificationDurably(attentionID, text); err != nil {
+		t.Fatalf("append attention: %v", err)
+	}
+
+	sess.resetAttentionCoverage()
+	sess.beginAttentionCoverageRounds()
+	defer sess.endAttentionCoverageRounds()
+	presentAttentionForTest(t, sess, attentionID)
+	sess.attentionMu.Lock()
+	_, covered := sess.attentionCoveredIDs[attentionID]
+	_, merged := sess.attentionCausesMergedIDs[attentionID]
+	sess.attentionMu.Unlock()
+	if !covered {
+		t.Error("the presented trigger left the covered set; a mid-turn fold would restore it as fresh steering")
+	}
+	if !merged {
+		t.Error("the presented trigger's cause was not marked as adopted by its settled request")
+	}
+
+	compactAfterAttention(t, sess)
+	if indexOfTurnText(currentHistory(t, sess), text) >= 0 {
+		t.Fatal("mid-turn compaction restored the turn of an already-presented trigger")
+	}
+	if err := sess.finishAttentionTurn(nil, nil); err != nil {
+		t.Fatalf("finishAttentionTurn: %v", err)
+	}
+	if rows := pendingAttentionRowsForTest(t, controller, delegateID); len(rows) != 0 {
+		t.Fatalf("pending rows after turn exit = %#v, want the presented trigger resolved", rows)
+	}
+	controller.mu.Lock()
+	_, resolved := controller.durable[delegateID].ResolvedAttention[attentionID]
+	needs := controller.durable[delegateID].NeedsAttention
+	controller.mu.Unlock()
+	if !resolved || needs {
+		t.Fatalf("trigger resolved=%t needsAttention=%t, want resolved with no outstanding attention", resolved, needs)
+	}
+	if indexOfTurnText(currentHistory(t, sess), text) >= 0 {
+		t.Fatal("the settled trigger turn was restored back into resident history")
+	}
+}
+
 // The release floor: a quiet stands only while the durable release floor is
 // below the row's own settled generation.
 

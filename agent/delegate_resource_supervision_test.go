@@ -4975,6 +4975,51 @@ func TestDelegateResourceSupervision_UnleasedProjectionWithholdsBothWatchRowProd
 	}
 }
 
+// A child delegate settles attention in delegatestore, not in its transcript: a
+// watch frame presented and resolved by a leased generation leaves no
+// TurnAttentionResolution behind. The unleased projection must keep that settled
+// frame while still withholding a frame whose journal row is pending.
+func TestUnleasedWatchFilterKeepsJournalResolvedFrame(t *testing.T) {
+	t.Parallel()
+	sess, _ := newCompactableSession(t)
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, controller, "dlg_watch", "")
+	sess.delegateController = controller
+	sess.owningDelegateID = "dlg_watch"
+	const (
+		resolvedID   = "watch:journal-resolved:1"
+		unresolvedID = "watch:journal-pending:1"
+	)
+	for _, row := range []struct{ id, text string }{
+		{resolvedID, "resolved watch frame"},
+		{unresolvedID, "pending watch frame"},
+	} {
+		if _, err := sess.appendDelegateNotificationDurably(row.id, row.text); err != nil {
+			t.Fatalf("append watch row %q: %v", row.id, err)
+		}
+	}
+	if err := controller.forgetDelegateAttention("dlg_watch", resolvedID); err != nil {
+		t.Fatalf("resolve the settled watch row: %v", err)
+	}
+	fold, err := readDelegateAttentionFold(transcriptPath(sess.stateDir, sess.id), sess.id)
+	if err != nil {
+		t.Fatalf("read the child's attention fold: %v", err)
+	}
+	if _, legacy := fold.resolutions[resolvedID]; legacy {
+		t.Fatal("test setup: the settled watch row has a transcript resolution marker")
+	}
+	kept, droppedAt := sess.dropUnleasedWatchAttentionTurns(context.Background(), []schema.Turn{
+		{Kind: schema.TurnSteering, AttentionID: resolvedID, Message: llm.User("resolved watch frame")},
+		{Kind: schema.TurnSteering, AttentionID: unresolvedID, Message: llm.User("pending watch frame")},
+	})
+	if !slices.Equal(droppedAt, []int{1}) {
+		t.Fatalf("dropped positions = %v, want only the journal-pending watch row", droppedAt)
+	}
+	if len(kept) != 1 || kept[0].AttentionID != resolvedID {
+		t.Fatalf("kept turns = %#v, want the journal-resolved watch frame kept", kept)
+	}
+}
+
 // TestDelegateResourceSupervision_SkillRebuildWithholdsAPendingWatchRow pins the
 // skill-rebuild path: a pending watch row that lands after a request's snapshot
 // must not ride into the rebuilt request through the appended tail or through

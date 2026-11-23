@@ -296,6 +296,12 @@ func (c *delegateTreeController) openDelegateAttentionLocked(delegateID, attenti
 	if c.durable[delegateID] == nil {
 		return false, nil, delegateUpdatePlan{}, false, errDelegateNotControllable
 	}
+	// A row the journal already resolved is spent: a late arm must not resurrect
+	// a report a stop or an earlier turn discarded after this caller read the
+	// pending set outside the lock.
+	if _, resolved := c.durable[delegateID].ResolvedAttention[attentionID]; resolved {
+		return false, nil, delegateUpdatePlan{}, false, nil
+	}
 	// A row the queue holds but no wake has published is a rider a start commit
 	// copied from the transcript: it still owes the arm's own wake. Only a
 	// committed row is the duplicate. A committed row's wake also clears every
@@ -643,6 +649,24 @@ func (c *delegateTreeController) heldDelegateAttentionIDs(delegateID string) map
 		return nil
 	}
 	return held
+}
+
+// delegateAttentionResolved reports whether the delegate's journal already
+// resolved attentionID. A child settles attention in delegatestore, so a reader
+// that only sees the transcript must consult it before treating a presented row
+// as still owed.
+func (c *delegateTreeController) delegateAttentionResolved(delegateID, attentionID string) bool {
+	if c == nil || delegateID == "" || attentionID == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	aggregate := c.durable[delegateID]
+	if aggregate == nil {
+		return false
+	}
+	_, resolved := aggregate.ResolvedAttention[attentionID]
+	return resolved
 }
 
 // owesDelegateAttention reports whether delegateID still has attention the

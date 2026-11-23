@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"reflect"
@@ -1704,6 +1705,97 @@ func TestRetirementDelegateAttentionPendingBlocks(t *testing.T) {
 		t.Fatalf("settled attention blocks: %+v %v", state, err)
 	}
 	c.Abort(claim, "")
+}
+
+// retirementEvidence must answer whether a delegate owes unheld attention while
+// it still holds c.mu: FinishGeneration mutates the same durable aggregate under
+// that lock. An unheld row blocks retirement on open and closed delegates; a
+// stop-held or journal-resolved row does not.
+func TestRetirementEvidenceSnapshotsUnheldAttentionUnderLock(t *testing.T) {
+	t.Parallel()
+	root, tree, _ := newRetirementDelegateController(t)
+	defer root.Close()
+	open := retirementIdleDelegate(t, root)
+	closed := retirementIdleDelegate(t, root)
+	tree.mu.Lock()
+	tree.durable[closed.DelegateID].Phase = delegatestore.PhaseClosed
+	tree.mu.Unlock()
+	defer func() {
+		tree.mu.Lock()
+		tree.durable[closed.DelegateID].Phase = delegatestore.PhaseIdle
+		tree.mu.Unlock()
+	}()
+	blocked := func(blockers []RetirementBlocker) bool {
+		return slices.ContainsFunc(blockers, func(b RetirementBlocker) bool {
+			return b.Category == "delegate" && (b.DelegateID == open.DelegateID || b.DelegateID == closed.DelegateID)
+		})
+	}
+	attentionIDs := make(map[string]string, 2)
+	for _, d := range []delegateResult{open, closed} {
+		attentionID := "attention-retirement-" + d.DelegateID
+		sub := root.subagents.get(d.ChildSessionID)
+		if _, err := sub.sess.appendDelegateNotificationDurably(attentionID, "unheld "+d.DelegateID); err != nil {
+			t.Fatalf("append attention for %s: %v", d.DelegateID, err)
+		}
+		attentionIDs[d.DelegateID] = attentionID
+	}
+	blockers, _, err := tree.retirementEvidence()
+	if err != nil {
+		t.Fatalf("retirementEvidence: %v", err)
+	}
+	if !blocked(blockers) {
+		t.Fatalf("unheld attention on open and closed delegates did not block retirement: %+v", blockers)
+	}
+	// The stop holds one row quiet; the journal resolution spends the other.
+	tree.mu.Lock()
+	_, err = tree.appendLocked(attentionHeldEvent(open.DelegateID, attentionIDs[open.DelegateID], 1))
+	tree.mu.Unlock()
+	if err != nil {
+		t.Fatalf("hold the open delegate's row: %v", err)
+	}
+	if err := tree.forgetDelegateAttention(closed.DelegateID, attentionIDs[closed.DelegateID]); err != nil {
+		t.Fatalf("resolve the closed delegate's row: %v", err)
+	}
+	blockers, _, err = tree.retirementEvidence()
+	if err != nil {
+		t.Fatalf("retirementEvidence after settlement: %v", err)
+	}
+	if blocked(blockers) {
+		t.Fatalf("held or resolved attention still blocked retirement: %+v", blockers)
+	}
+
+	// A concurrent FinishGeneration mutates the same durable aggregate. Reading
+	// the queue without the controller lock is a data race; this phase fails
+	// under -race before the snapshot is taken under the lock.
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	const raceDelegates = 32
+	for i := 0; i < raceDelegates; i++ {
+		seedDelegateControllerRunning(t, c, fmt.Sprintf("dlg_race_%d", i), "")
+	}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_, _, _ = c.retirementEvidence()
+			}
+		}
+	}()
+	for i := 0; i < raceDelegates; i++ {
+		lease := delegateLease{delegateID: fmt.Sprintf("dlg_race_%d", i), generation: 1}
+		if _, err := c.FinishGeneration(lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "completed"}); err != nil {
+			close(stop)
+			wg.Wait()
+			t.Fatalf("FinishGeneration %d: %v", i, err)
+		}
+	}
+	close(stop)
+	wg.Wait()
 }
 
 func TestRetirementDelegateQuietSourceAndBoundRuntime(t *testing.T) {
