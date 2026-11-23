@@ -111,7 +111,8 @@ func decideNoToolCalls(noContent bool, t retryTracker, resultToolName string) no
 
 	t.consecutiveEmpty = 0
 	t.consecutiveBareText++
-	if t.consecutiveBareText <= maxBareTextRetries {
+	t.totalBareText++
+	if t.consecutiveBareText <= maxBareTextRetries && t.totalBareText <= maxTotalBareTextResponses {
 		steering := "You responded with bare text instead of a tool call. " +
 			"All user-facing messages MUST use " + resultToolName + ". " +
 			"If that bare text was meant for the user or caller, call " + resultToolName + " now with that text in message (and output when required by your schema). " +
