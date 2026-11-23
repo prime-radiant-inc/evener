@@ -171,6 +171,6 @@ test("the tall-entry gesture is retried as a unit at the call site", () => {
   expect(source).toContain(
     "wheel: (remaining) => nativeReaderWheel(portExpr, readerWheelDelta, { remaining })",
   );
-  expect(source.match(/withTimeout\(\s*driver\.send\("Input\.dispatchMouseEvent"/g) ?? []).toHaveLength(2);
+  expect(source).toContain('withTimeout(driver.send("Input.dispatchMouseEvent", params), remaining(), label)');
   expect(source).not.toContain("await nativeReaderWheel(portExpr, -900);");
 });

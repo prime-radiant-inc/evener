@@ -290,8 +290,18 @@ async function settledReadingContinuity(before, portExpr, label) {
   })()`, `${label}, actual source reading position finishes restoration`);
 }
 
+// A repositioning stage passes `remaining`, and every wait and dispatch is
+// hard-capped to the slice it returns. The standalone interruption probe
+// passes nothing and keeps the driver's load-scaled waits.
 async function nativeReaderWheel(portExpr, deltaY, { remaining } = {}) {
-  const point = await hardWait(`(() => {
+  const stageWait = remaining
+    ? (expression, label) => hardWait(expression, label, remaining)
+    : (expression, label) => wait(expression, label);
+  const dispatch = (params, label) =>
+    remaining
+      ? withTimeout(driver.send("Input.dispatchMouseEvent", params), remaining(), label)
+      : driver.send("Input.dispatchMouseEvent", params);
+  const point = await stageWait(`(() => {
     const port = ${portExpr};
     if (!port || port.clientWidth <= 0 || port.clientHeight <= 0) return null;
     const r = port.getBoundingClientRect();
@@ -312,25 +322,17 @@ async function nativeReaderWheel(portExpr, deltaY, { remaining } = {}) {
     return { x:r.x + r.width / 2, y:r.y + r.height / 2, scrollTop:port.scrollTop, eventIndex:window.__cascadeReaderWheels.length,
       portBox:box(port), intendedAtMeasure:port.contains(target), viewport:innerWidth,
       hitSurface:target?.closest('[data-pane-scaffold]')?.dataset.paneScaffold };
-  })()`, "native wheel midpoint actually hits its intended reader", remaining);
+  })()`, "native wheel midpoint actually hits its intended reader");
   const delta = typeof deltaY === "function" ? deltaY(point) : deltaY;
   const observation = { kind:"wheel-target", point };
   readingPoints.push(observation);
-  await withTimeout(
-    driver.send("Input.dispatchMouseEvent", { type:"mouseMoved", x:point.x, y:point.y }),
-    remaining(),
-    "native wheel mouseMoved",
-  );
-  await withTimeout(
-    driver.send("Input.dispatchMouseEvent", { type:"mouseWheel", deltaX:0, deltaY:delta, x:point.x, y:point.y }),
-    remaining(),
-    "native wheel dispatch",
-  );
-  const observed = await hardWait(`window.__cascadeReaderWheels[${point.eventIndex}]`, "native wheel event reaches the page", remaining);
+  await dispatch({ type:"mouseMoved", x:point.x, y:point.y }, "native wheel mouseMoved");
+  await dispatch({ type:"mouseWheel", deltaX:0, deltaY:delta, x:point.x, y:point.y }, "native wheel dispatch");
+  const observed = await stageWait(`window.__cascadeReaderWheels[${point.eventIndex}]`, "native wheel event reaches the page");
   observation.observed = observed;
   assert.equal(observed.trusted, true, "reader movement uses genuine native wheel input");
   assert.equal(observed.intended, true, "native wheel targets its intended reader");
-  await hardWait(`(${portExpr})?.scrollTop !== ${point.scrollTop}`, "native wheel actually moves its intended reader", remaining);
+  await stageWait(`(${portExpr})?.scrollTop !== ${point.scrollTop}`, "native wheel actually moves its intended reader");
 }
 
 // The interruption and reflow measurements need a reading point inside a tall
