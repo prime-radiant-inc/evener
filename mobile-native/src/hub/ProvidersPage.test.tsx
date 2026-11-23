@@ -889,6 +889,49 @@ it("starts a sign-in from behind the banner without a doomed client", async () =
 	setConnection.mockRestore();
 });
 
+it("offers a Copilot instance's device sign-in and no API-key action", async () => {
+	const fake = new FakeClient("ready");
+	const copilot: InstanceListResponse = {
+		instances: [
+			{
+				...rows.instances[0]!,
+				name: "github-copilot",
+				providerId: "github-copilot",
+				auth: "oauth-github-copilot",
+				authModes: ["oauth"],
+				activeSource: "none",
+				hasStoredOAuth: false,
+				credentialRequired: true,
+			},
+		],
+		availableProviders: [],
+	};
+	fake.on("evener/instance/list", () => copilot);
+	fake.on("evener/auth/device/start", () => ({
+		provider: "github-copilot",
+		flowId: "flow-copilot",
+		userCode: "COPILOT-1234",
+		verificationUrl: "https://github.com/login/device",
+		intervalSeconds: 5,
+	}));
+	harness.connection = screenConnection(fake as unknown as ConversationClientLike, "ready");
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
+	await act(async () => {});
+	press(tree, (label) => label.startsWith("github-copilot"));
+	await act(async () => {});
+
+	expect(hasControl(tree, "API key")).toBe(false);
+	press(tree, (label) => label === "Sign in");
+	await act(async () => {});
+	expect(fake.calls.find((call) => call.method === "evener/auth/device/start")?.params).toMatchObject({
+		provider: "github-copilot",
+	});
+	expect(renderedText(tree)).toContain("COPILOT-1234");
+});
+
 it("resumes a banner-started sign-in after a manual retry's listing read lands", async () => {
 	const oauth: InstanceListResponse = {
 		instances: [{ ...rows.instances[0]!, auth: "oauth", authModes: ["oauth"] }],

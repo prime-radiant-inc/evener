@@ -2,7 +2,7 @@ import type { InstanceEntry, InstanceListResponse, ProviderDescriptor } from "@e
 import { ErrorEndpointConflict, WireError } from "@evener/appwire-client";
 import { deferred as sharedDeferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -566,6 +566,54 @@ test("resolved setup auth modes override public defaults rather than forcing a v
   expect(screen.queryByLabelText("API key")).toBeNull();
   expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
   expect(screen.queryByRole("link", { name: "Get an API key" })).toBeNull();
+});
+
+// The Copilot subscription is the second provider whose connection is a device
+// sign-in instead of a key. Its card must offer that sign-in and no key field,
+// and the device dialog it opens must name the provider being signed in to.
+test("a Copilot subscription provider offers its device sign-in and no API-key action", async () => {
+  const copilot = provider("github-copilot", "GitHub Copilot", ["oauth"], { auth: "oauth-github-copilot" });
+  const { user, client } = setup({ instances: [], availableProviders: [copilot] });
+  await choose(user, "GitHub Copilot");
+  expect(screen.queryByLabelText("API key")).toBeNull();
+  expect(screen.queryByRole("link", { name: "Get an API key" })).toBeNull();
+  client.on("evener/auth/device/start", () => ({
+    provider: "github-copilot",
+    flowId: "device",
+    userCode: "CODE",
+    verificationUrl: "https://github.com/login/device",
+    intervalSeconds: 5,
+  }));
+  await user.click(screen.getByRole("button", { name: "Sign in" }));
+  const starts = client.calls.filter((call) => call.method === "evener/auth/device/start");
+  expect(starts).toHaveLength(1);
+  expect(starts[0]!.params).toMatchObject({ provider: "github-copilot" });
+  // The action names this test's provider, not the one Copilot's device flow
+  // used to be hardcoded to.
+  const action = within(screen.getByRole("dialog"))
+    .getAllByRole("button")
+    .find((button) => (button as HTMLButtonElement).disabled);
+  expect(action?.textContent).toContain("GitHub Copilot");
+});
+
+test("cancelling the Copilot device dialog keeps the connection draft", async () => {
+  const copilot = provider("github-copilot", "GitHub Copilot", ["oauth"], { auth: "oauth-github-copilot" });
+  const { user, client } = setup({ instances: [], availableProviders: [copilot] });
+  await choose(user, "GitHub Copilot");
+  client.on("evener/auth/device/start", () => ({
+    provider: "github-copilot",
+    flowId: "device",
+    userCode: "CODE",
+    verificationUrl: "https://github.com/login/device",
+    intervalSeconds: 5,
+  }));
+  await user.click(screen.getByRole("button", { name: "Sign in" }));
+  await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+  // Back on the card the user was filling in, with the provider choice intact.
+  expect(await screen.findByRole("dialog", { name: "GitHub Copilot" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
+  expect(client.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(0);
 });
 
 test("provider choices expose resolved authentication capabilities and select that exact provider", async () => {

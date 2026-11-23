@@ -168,28 +168,18 @@ func bootstrapCopilotProbeRecord(ctx context.Context, t *testing.T, cfg githubco
 	t.Logf("bootstrapped a Copilot record for account %s from scratch credentials", account.ID)
 }
 
-// copilotLiveProbe drives the real Copilot service, listing path, and adapters
-// against GitHub. It needs EVENER_GITHUB_COPILOT_E2E=1 plus a human completing
-// the device prompt; every other test run skips it.
-func TestGitHubCopilotLiveProbe(t *testing.T) {
-	if os.Getenv("EVENER_GITHUB_COPILOT_E2E") != "1" {
-		t.Skip("set EVENER_GITHUB_COPILOT_E2E=1 to run the live GitHub Copilot probe")
-	}
+// copilotProbeLogin obtains a usable Copilot record in stateDir - reusing a
+// live one, converting the scratch bootstrap credentials, or running the
+// shipped device login - and then forces one shipped session renewal so the
+// exchange runs rather than a cached session serving the gate. Tokens, device
+// codes, and record contents never reach the log.
+func copilotProbeLogin(ctx context.Context, t *testing.T, stateDir string) {
+	t.Helper()
 	const instance = "github-copilot"
-	stateDir := copilotProbeStateDir(t)
 	cfg := githubcopilot.DefaultConfig()
 	if id := strings.TrimSpace(os.Getenv("EVENER_GITHUB_COPILOT_CLIENT_ID")); id != "" {
 		cfg.ClientID = id
 	}
-	baseURL := "https://api.githubcopilot.com"
-	if override := strings.TrimSpace(os.Getenv("EVENER_GITHUB_COPILOT_BASE_URL")); override != "" {
-		baseURL = override
-	}
-
-	// One budget for login, refresh, listing, and every scenario keeps the probe
-	// inside `go test`'s default ten-minute timeout. Authorize promptly.
-	probeCtx, cancelProbe := context.WithTimeout(context.Background(), 9*time.Minute)
-	defer cancelProbe()
 	service := githubcopilot.NewService(cfg, nil)
 	switch bootstrapDir := strings.TrimSpace(os.Getenv(copilotProbeBootstrapDirEnv)); {
 	case copilotProbeCanReuseRecord(stateDir, instance, time.Now()):
@@ -199,10 +189,10 @@ func TestGitHubCopilotLiveProbe(t *testing.T) {
 		}
 		t.Logf("reusing the stored Copilot record for account %s", status.AccountID)
 	case bootstrapDir != "":
-		bootstrapCopilotProbeRecord(probeCtx, t, cfg, stateDir, instance, bootstrapDir)
+		bootstrapCopilotProbeRecord(ctx, t, cfg, stateDir, instance, bootstrapDir)
 	default:
 		t.Log("no reusable stored Copilot record; starting device login")
-		status, err := service.LoginWithDevice(probeCtx, stateDir, instance, func(dc githubcopilot.DeviceCode) {
+		status, err := service.LoginWithDevice(ctx, stateDir, instance, func(dc githubcopilot.DeviceCode) {
 			// The device prompt is the only output a human needs; tokens and device
 			// codes never reach the log.
 			fmt.Fprintf(os.Stdout, "\nGitHub Copilot device login: open %s and enter code %s\n\n", dc.VerificationURL, dc.UserCode)
@@ -225,7 +215,7 @@ func TestGitHubCopilotLiveProbe(t *testing.T) {
 	if err := githubcopilot.SaveAuth(stateDir, instance, record); err != nil {
 		t.Fatalf("expire Copilot session: %v", err)
 	}
-	creds, err := service.ResolveRuntimeCredentials(probeCtx, stateDir, instance)
+	creds, err := service.ResolveRuntimeCredentials(ctx, stateDir, instance)
 	if err != nil {
 		t.Fatalf("forced Copilot session renewal: %v", err)
 	}
@@ -233,6 +223,27 @@ func TestGitHubCopilotLiveProbe(t *testing.T) {
 		t.Fatal("forced session renewal returned no bearer token")
 	}
 	t.Log("forced Copilot session renewal succeeded")
+}
+
+// copilotLiveProbe drives the real Copilot service, listing path, and adapters
+// against GitHub. It needs EVENER_GITHUB_COPILOT_E2E=1 plus a human completing
+// the device prompt; every other test run skips it.
+func TestGitHubCopilotLiveProbe(t *testing.T) {
+	if os.Getenv("EVENER_GITHUB_COPILOT_E2E") != "1" {
+		t.Skip("set EVENER_GITHUB_COPILOT_E2E=1 to run the live GitHub Copilot probe")
+	}
+	const instance = "github-copilot"
+	stateDir := copilotProbeStateDir(t)
+	baseURL := "https://api.githubcopilot.com"
+	if override := strings.TrimSpace(os.Getenv("EVENER_GITHUB_COPILOT_BASE_URL")); override != "" {
+		baseURL = override
+	}
+
+	// One budget for login, refresh, listing, and every scenario keeps the probe
+	// inside `go test`'s default ten-minute timeout. Authorize promptly.
+	probeCtx, cancelProbe := context.WithTimeout(context.Background(), 9*time.Minute)
+	defer cancelProbe()
+	copilotProbeLogin(probeCtx, t, stateDir)
 
 	recorder := &copilotHeaderRecorder{base: http.DefaultTransport}
 	client := &http.Client{Transport: recorder, Timeout: 2 * time.Minute}
@@ -285,6 +296,162 @@ func TestGitHubCopilotLiveProbe(t *testing.T) {
 			runCopilotLiveScenario(probeCtx, t, run, baseURL, recorder)
 		})
 	}
+}
+
+// TestGitHubCopilotShippedLiveGate drives the shipped Copilot provider end to
+// end for the setup surface: the real registry record, the shipped scoped
+// authenticator, model selection through llm.Client's production listing, and
+// the production request path. Every enabled copilotLiveScenario is mandatory,
+// including both exact claude-haiku-5.5 image legs. Without
+// EVENER_GITHUB_COPILOT_E2E=1 it skips, so default runs stay deterministic and
+// network-free.
+func TestGitHubCopilotShippedLiveGate(t *testing.T) {
+	if os.Getenv("EVENER_GITHUB_COPILOT_E2E") != "1" {
+		t.Skip("set EVENER_GITHUB_COPILOT_E2E=1 to run the shipped GitHub Copilot live gate")
+	}
+	const instance = "github-copilot"
+	stateDir := copilotProbeStateDir(t)
+	gateCtx, cancelGate := context.WithTimeout(context.Background(), 9*time.Minute)
+	defer cancelGate()
+	copilotProbeLogin(gateCtx, t, stateDir)
+
+	baseURL := "https://api.githubcopilot.com"
+	if override := strings.TrimSpace(os.Getenv("EVENER_GITHUB_COPILOT_BASE_URL")); override != "" {
+		baseURL = override
+	}
+	reg, err := registry.Load(
+		registry.WithStateRoot(stateDir),
+		registry.WithNoUserLayer(),
+		registry.WithOffline(true),
+		registry.WithoutCache(),
+		registry.WithEnv(func(key string) (string, bool) {
+			if key == "GITHUB_COPILOT_BASE_URL" && strings.TrimSpace(os.Getenv("EVENER_GITHUB_COPILOT_BASE_URL")) != "" {
+				return baseURL, true
+			}
+			return "", false
+		}),
+	)
+	if err != nil {
+		t.Fatalf("load the real registry: %v", err)
+	}
+	if _, ok := reg.Instance(instance); !ok {
+		t.Fatalf("the real registry does not list %q although its OAuth record is ready (state root %s)", instance, reg.StateRoot())
+	}
+
+	// The shipped client, not a hand-built row: requests resolve through the
+	// registry record, and the shipped authenticator supplies the credential.
+	recorder := &copilotHeaderRecorder{base: http.DefaultTransport}
+	restore := installCopilotProtocolClient(&http.Client{Transport: recorder, Timeout: 2 * time.Minute})
+	defer restore()
+	client := llm.NewClient(llm.WithRegistry(reg), llm.WithClientStateDir(""))
+	gateCtx = llm.WithScopedAuthenticator(gateCtx, registry.AuthOAuthGitHubCopilot, tokenauth.ScopedCopilot(stateDir))
+
+	listing, err := client.Models(gateCtx, instance)
+	if err != nil {
+		t.Fatalf("live model listing through the shipped client: %v", err)
+	}
+	if !listing.Live || !listing.Usable {
+		t.Fatalf("live model listing through the shipped client: live=%v usable=%v models=%d", listing.Live, listing.Usable, len(listing.Models))
+	}
+	t.Logf("the shipped listing offered %d visible models", len(listing.Models))
+
+	// The raw roster carries the family, endpoint, and vision facts the shipped
+	// listing parser does not publish; the shipped listing above is what proved
+	// those models are the ones this account actually offers.
+	roster, err := fetchCopilotRoster(gateCtx, &http.Client{Transport: recorder, Timeout: 2 * time.Minute}, baseURL, stateDir, instance)
+	if err != nil {
+		t.Fatalf("roster fetch: %v", err)
+	}
+	if len(roster) == 0 {
+		t.Fatal("GitHub Copilot advertised no models")
+	}
+	runs := planCopilotLiveRuns(roster)
+	for _, run := range runs {
+		if run.MissingPin {
+			logCopilotRosterDiagnostics(t, roster)
+			t.Fatalf("enabled pinned scenario %q wants live model %q, but no advertised model offered it with the required endpoint, vision, tools, and streaming", run.scenario.Name, run.scenario.ModelPin)
+		}
+	}
+	for _, scenario := range copilotLiveScenarios {
+		if !scenario.Enabled {
+			continue
+		}
+		if !copilotLiveScenarioRan(runs, scenario) {
+			logCopilotRosterDiagnostics(t, roster)
+			t.Fatalf("enabled scenario %q is not covered by the live roster; every enabled scenario is mandatory", scenario.Name)
+		}
+	}
+	listed := make(map[string]bool, len(listing.Models))
+	for _, row := range listing.Models {
+		listed[row.ModelID] = true
+	}
+	for _, run := range runs {
+		if !listed[run.model.ID] {
+			t.Fatalf("scenario %q selects live model %q, which the shipped listing did not offer", run.scenario.Name, run.model.ID)
+		}
+	}
+	for _, run := range runs {
+		t.Run(run.family+"/"+run.scenario.Name, func(t *testing.T) {
+			runCopilotShippedScenario(gateCtx, t, client, run, recorder)
+		})
+	}
+}
+
+// runCopilotShippedScenario drives one scenario through the shipped client. The
+// registry picks the production-preferred route the account advertises for the
+// model; when the scenario's approved route is the model's other advertised
+// endpoint, the row is retargeted to it while the registry's transport and the
+// shipped authenticator stay in charge of the request.
+func runCopilotShippedScenario(parent context.Context, t *testing.T, client *llm.Client, run copilotLiveRun, recorder *copilotHeaderRecorder) {
+	t.Helper()
+	resolved, err := client.Resolve("github-copilot/" + run.model.ID)
+	if err != nil {
+		t.Fatalf("the shipped registry does not resolve live model %q: %v", run.model.ID, err)
+	}
+	if resolved.Transport.Auth != registry.AuthOAuthGitHubCopilot {
+		t.Fatalf("resolved transport auth = %q, want %q", resolved.Transport.Auth, registry.AuthOAuthGitHubCopilot)
+	}
+	requireCopilotLiveToolLoop(t, run.scenario, run.family, run.model.ID, recorder, func(req llm.Request) *llm.Response {
+		if resolved.Protocol == run.scenario.Protocol {
+			return streamShippedCopilotOnce(parent, t, client, req)
+		}
+		route := resolved
+		route.Protocol = run.scenario.Protocol
+		route.Model.Protocol = run.scenario.Protocol
+		route.Transport.Endpoint = run.scenario.Endpoint
+		route.Transport.StreamEndpoint = run.scenario.Endpoint
+		return streamCopilotOnce(parent, t, route, req)
+	})
+}
+
+// streamShippedCopilotOnce drives one production llm.Client stream and returns
+// its accumulated response. In-band stream errors are failures: the gate proves
+// live behavior, not a fallback.
+func streamShippedCopilotOnce(parent context.Context, t *testing.T, client *llm.Client, req llm.Request) *llm.Response {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(parent, 90*time.Second)
+	defer cancel()
+	stream, err := client.Stream(ctx, req)
+	if err != nil {
+		t.Fatalf("shipped client stream open: %v", err)
+	}
+	defer stream.Close()
+	acc := llm.NewStreamAccumulator()
+	var streamErr error
+	for ev := range stream.Events() {
+		if ev.Type == llm.StreamEventError && ev.Err != nil {
+			streamErr = ev.Err
+		}
+		acc.Process(ev)
+	}
+	if streamErr != nil {
+		t.Fatalf("shipped client stream error: %v", streamErr)
+	}
+	resp := acc.Response()
+	if resp == nil {
+		t.Fatal("shipped client stream produced no final response")
+	}
+	return resp
 }
 
 // logCopilotRosterDiagnostics prints the non-secret roster facts that explain
@@ -838,20 +1005,29 @@ func runCopilotLiveScenario(parent context.Context, t *testing.T, run copilotLiv
 		t.Skipf("%s is not enabled yet", run.scenario.Name)
 	}
 	row := copilotResolved(baseURL, run.model.ID, run.model.ID, run.scenario.Protocol, &run.model)
+	requireCopilotLiveToolLoop(t, run.scenario, run.family, run.model.ID, recorder, func(req llm.Request) *llm.Response {
+		return streamCopilotOnce(parent, t, row, req)
+	})
+}
+
+// requireCopilotLiveToolLoop proves one scenario's live tool round and its
+// continuation through whatever shipped transport `stream` drives.
+func requireCopilotLiveToolLoop(t *testing.T, scenario copilotLiveScenario, family, modelID string, recorder *copilotHeaderRecorder, stream func(llm.Request) *llm.Response) {
+	t.Helper()
 	tool := llm.ToolDefinition{
 		Name:        copilotLiveToolName,
 		Description: "Returns the secret code for this probe. Call it once and use its result.",
 		Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
 	}
 	history := []llm.Message{llm.User("Call the get_secret_code tool once, then tell me the exact code it returned.")}
-	if run.scenario.Images {
+	if scenario.Images {
 		history[0].Content = append(history[0].Content, llm.ContentPart{Kind: llm.ContentImage, Image: &llm.ImageData{Data: livePNG(t), MediaType: "image/png"}})
 	}
-	interactionID := "copilot-live-" + strings.NewReplacer("/", "-", " ", "-").Replace(run.family+"-"+run.scenario.Name)
+	interactionID := "copilot-live-" + strings.NewReplacer("/", "-", " ", "-").Replace(family+"-"+scenario.Name)
 
 	before := len(recorder.snapshot())
-	first := streamCopilotOnce(parent, t, row, llm.Request{
-		Model: run.model.ID, Provider: "github-copilot", Messages: history,
+	first := stream(llm.Request{
+		Model: modelID, Provider: "github-copilot", Messages: history,
 		Tools: []llm.ToolDefinition{tool}, MaxTokens: new(1024),
 		SessionID: interactionID, ThreadID: interactionID,
 	})
@@ -867,8 +1043,8 @@ func runCopilotLiveScenario(parent context.Context, t *testing.T, run copilotLiv
 		t.Fatalf("no streamed %s tool call: %v", copilotLiveToolName, toolCallNames(calls))
 	}
 	history = append(history, first.Message, llm.ToolResultNamed(call.ID, call.Name, "SECRET-CODE-7", false))
-	second := streamCopilotOnce(parent, t, row, llm.Request{
-		Model: run.model.ID, Provider: "github-copilot", Messages: history,
+	second := stream(llm.Request{
+		Model: modelID, Provider: "github-copilot", Messages: history,
 		Tools: []llm.ToolDefinition{tool}, MaxTokens: new(1024),
 		SessionID: interactionID, ThreadID: interactionID,
 	})
@@ -903,14 +1079,14 @@ func runCopilotLiveScenario(parent context.Context, t *testing.T, run copilotLiv
 				req.EditorVersion, req.EditorPluginVersion, req.IntegrationID)
 		}
 	}
-	if run.scenario.Images {
+	if scenario.Images {
 		for _, req := range sent {
 			if req.Vision != "true" {
 				t.Fatalf("image request Copilot-Vision-Request = %q, want true", req.Vision)
 			}
 		}
 	}
-	t.Logf("%s/%s model=%s text=%d bytes", run.family, run.scenario.Name, run.model.ID, len(second.Text()))
+	t.Logf("%s/%s model=%s text=%d bytes", family, scenario.Name, modelID, len(second.Text()))
 }
 
 // streamCopilotOnce drives one real protocol stream and returns its accumulated

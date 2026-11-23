@@ -1655,6 +1655,7 @@ function SelectedConnection({
       <DeviceCodeDialog
         key={oauth.flowId}
         name={oauth.name}
+        provider={providerLabel}
         flowId={oauth.flowId}
         userCode={oauth.userCode}
         verificationUrl={oauth.verificationUrl}
