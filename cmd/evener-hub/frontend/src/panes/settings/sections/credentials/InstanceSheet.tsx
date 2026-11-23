@@ -62,7 +62,7 @@ import {
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { ConnectionFacts, ConnectionSettingsDisclosure, connectionSettingsFields } from "./ConnectionFacts";
 import { CREDENTIAL_DOT, credentialState } from "./credentialState";
-import type { FormError } from "./formError";
+import { checkCredentialHeader, type FormError } from "./formError";
 import { InstanceModelEditor } from "./InstanceModelEditor";
 import styles from "./InstanceSheet.module.css";
 import { draftFor, type InstanceDraft, instanceEditParams, varRows } from "./instanceEdit";
@@ -94,8 +94,6 @@ const CLASS = {
   modelSummary: requireClass(styles.modelSummary, "InstanceSheet.module.css", "modelSummary"),
 };
 
-const LITERAL_HEADER_ERROR =
-  "Credential header must reference a $VARIABLE or run a $(command), never a literal secret.";
 const EMPTY_NAME_ERROR = "Name cannot be empty.";
 // The save landed, but its response was superseded, so nothing reseeded the
 // form: the toast says what the sheet is showing - the user's own draft - and
@@ -640,8 +638,9 @@ export function InstanceSheet({
       return;
     }
     if (params === null) return;
-    if (params.credentialHeader !== undefined && !params.credentialHeader.includes("$")) {
-      setFormError({ reason: "literal-header", message: LITERAL_HEADER_ERROR });
+    const headerError = checkCredentialHeader(params.credentialHeader);
+    if (headerError) {
+      setFormError(headerError);
       return;
     }
     // The endpoint the draft was seeded from travels with the save, so the hub
