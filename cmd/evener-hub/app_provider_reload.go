@@ -26,14 +26,44 @@ func (c *hubInstancesController) refreshProviderFile() bool {
 	if err != nil {
 		signature = err.Error()
 	}
-	if c.providerFileSignature == signature && !c.reg.WritesRefused() {
+	var copilot map[string]string
+	reg := c.reg.Get()
+	if reg != nil {
+		copilot = reg.CopilotAuthSignature()
+	}
+	changedAccounts := changedCopilotAccounts(c.copilotAuthSignature, copilot)
+	c.copilotAuthSignature = copilot
+	if c.providerFileSignature == signature && len(changedAccounts) == 0 && !c.reg.WritesRefused() {
 		return false
 	}
 	c.providerFileSignature = signature
 	generation := c.reg.Generation()
 	diagnostics := c.reg.Diagnostics()
+	if reg != nil {
+		for _, name := range changedAccounts {
+			reg.ForgetLive(name)
+		}
+	}
 	_ = c.reg.Reload()
 	return generation != c.reg.Generation() || !slices.Equal(diagnostics, c.reg.Diagnostics())
+}
+
+// changedCopilotAccounts names the instances whose mint-free record state
+// differs between two observations, including a record that appeared or went
+// away.
+func changedCopilotAccounts(before, after map[string]string) []string {
+	var names []string
+	for name, state := range after {
+		if old, ok := before[name]; !ok || old != state {
+			names = append(names, name)
+		}
+	}
+	for name := range before {
+		if _, ok := after[name]; !ok {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 func providerConfigSignature(raw []byte) string {

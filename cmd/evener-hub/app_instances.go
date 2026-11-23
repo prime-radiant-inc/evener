@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -22,8 +23,10 @@ import (
 	"sync"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/auth/githubcopilot"
 	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/execsupport/fsatomic"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -44,6 +47,9 @@ type hubInstancesController struct {
 	mu sync.RWMutex
 	// providerFileSignature is the last external file observation, guarded by mu.
 	providerFileSignature string
+	// copilotAuthSignature is the last Copilot record observation, guarded by
+	// mu. A hub write refreshes it so the watcher does not echo that write.
+	copilotAuthSignature map[string]string
 	// beforeCredentialLock, when set, runs after a removal's pre-lock work and
 	// just before it takes auth.credMu. A race test uses it as a barrier: the
 	// test holds the credential lock, waits for this signal, and only then
@@ -128,8 +134,21 @@ func (c *hubInstancesController) write(l *registry.Layer) error {
 		// The RPC announces local writes. Acknowledge exactly
 		// the writer's canonical bytes so the watcher only adopts later edits.
 		c.providerFileSignature = providerConfigSignature(raw)
+		c.rememberCopilotAuthSignature()
 	}
 	return err
+}
+
+// rememberCopilotAuthSignature adopts the records on disk as already
+// announced, so the notice watcher does not echo a write this hub just made.
+// Called with mu held.
+func (c *hubInstancesController) rememberCopilotAuthSignature() {
+	if c.reg == nil {
+		return
+	}
+	if reg := c.reg.Get(); reg != nil {
+		c.copilotAuthSignature = reg.CopilotAuthSignature()
+	}
 }
 
 // lockForWrite takes mu exclusively and clears the applied-write record, so
@@ -1694,6 +1713,11 @@ func (c *hubInstancesController) credentialsUnder(name string) []string {
 	if _, err := c.auth.loadAuth(c.auth.stateDir, name); !errors.Is(err, authopenai.ErrAuthNotFound) {
 		held = append(held, fmt.Sprintf("an OAuth record for %q", name))
 	}
+	if c.auth.stateDir != "" {
+		if _, err := githubcopilot.LoadAuth(c.auth.stateDir, name); !errors.Is(err, githubcopilot.ErrAuthNotFound) {
+			held = append(held, fmt.Sprintf("a Copilot OAuth record for %q", name))
+		}
+	}
 	return held
 }
 
@@ -1754,8 +1778,10 @@ var (
 
 	errStoredKeyNotRestored     = errors.New("its stored key could not be restored")
 	errOAuthRecordNotRestored   = errors.New("its OAuth record could not be restored")
+	errCopilotRecordNotRestored = errors.New("its Copilot OAuth record could not be restored")
 	errRefusalMarkerNotRestored = errors.New("its refresh-refusal marker could not be restored")
 	errStoredKeyNotCopied       = errors.New("stored key not copied")
+	errCopilotRecordChanged     = errors.New("the Copilot OAuth record changed while it was being removed")
 	errRefusalMarkerNotCopied   = errors.New("refresh-refusal marker not copied")
 )
 
@@ -1853,6 +1879,10 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 			}
 		}
 	}
+	if err := c.moveCopilotRecord(oldName, newName); err != nil {
+		problems = append(problems, err)
+	}
+	c.rememberCopilotAuthSignature()
 	if len(problems) > 0 {
 		// The rename reached the file, so it is as persisted as one that ended
 		// cleanly: renamePersistedError is what the RPC handler reads to hand
@@ -1861,6 +1891,44 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 		return renamePersistedError{fmt.Errorf("renamed %q to %q, but: %w", oldName, newName, joinedError{errs: problems, sep: "; "})}
 	}
 	return nil
+}
+
+// moveCopilotRecord moves a signed-in Copilot account with the instance name.
+// The record validates its instance field, so the move rewrites it, under the
+// record's lifecycle lock and only while the generation read before the lock
+// still matches: a login that landed in between is newer than this rename and
+// must not be overwritten by it.
+func (c *hubInstancesController) moveCopilotRecord(oldName, newName string) error {
+	if c.auth.stateDir == "" {
+		return nil
+	}
+	expected, err := githubcopilot.LoadAuth(c.auth.stateDir, oldName)
+	if errors.Is(err, githubcopilot.ErrAuthNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("Copilot OAuth record not read: %w", err)
+	}
+	return githubcopilot.WithRecordLock(c.auth.stateDir, oldName, func() error {
+		record, err := githubcopilot.LoadAuth(c.auth.stateDir, oldName)
+		if errors.Is(err, githubcopilot.ErrAuthNotFound) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("Copilot OAuth record not read: %w", err)
+		}
+		if !record.SameGeneration(expected) {
+			return fmt.Errorf("Copilot OAuth record changed during the rename; log in again under %q", newName)
+		}
+		record.Instance = newName
+		if err := githubcopilot.SaveAuth(c.auth.stateDir, newName, record); err != nil {
+			return fmt.Errorf("Copilot OAuth record not copied: %w", err)
+		}
+		if err := githubcopilot.DeleteAuth(c.auth.stateDir, oldName); err != nil {
+			return fmt.Errorf("Copilot OAuth record for %q left behind: %w", oldName, err)
+		}
+		return nil
+	})
 }
 
 // keylessScheme reports whether an auth scheme resolves without a credential, so
@@ -2091,6 +2159,10 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	if err != nil {
 		return err
 	}
+	rm.copilotBytes, rm.hasCopilot, err = c.captureCopilotFile(name)
+	if err != nil {
+		return err
+	}
 	rm.refusalBytes, rm.hasRefusal = c.captureRefreshRejectionFile(name)
 
 	// Whether the config authored this instance is read before the cleanup, so
@@ -2100,7 +2172,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	// cleanup changes nothing it observes.
 	_, rm.authored = before.Providers[name]
 
-	removed, err := c.removeCredentials(name)
+	removed, err := c.removeCredentialsAndCopilot(name, rm.copilotBytes, rm.hasCopilot)
 	if err != nil {
 		return rm.failedCleanup(removed, err)
 	}
@@ -2147,13 +2219,15 @@ type removal struct {
 	hasStoredKey bool
 	oauthBytes   []byte
 	hasOAuth     bool
+	copilotBytes []byte
+	hasCopilot   bool
 	refusalBytes []byte
 	hasRefusal   bool
 }
 
 // restore puts back everything the removal captured.
 func (r *removal) restore(cause, frame error, supplies removalSupply) (bool, error) {
-	return r.c.restoreFailedRemoval(r.name, r.storedKey, r.hasStoredKey, r.oauthBytes, r.hasOAuth, r.refusalBytes, r.hasRefusal, cause, frame, supplies)
+	return r.c.restoreFailedRemoval(r.name, r.storedKey, r.hasStoredKey, r.oauthBytes, r.hasOAuth, r.copilotBytes, r.hasCopilot, r.refusalBytes, r.hasRefusal, cause, frame, supplies)
 }
 
 // restoreFrame says how a failed restore is reported, and which layer the
@@ -2190,7 +2264,7 @@ func (r *removal) restoreFrame() (removalSupply, error) {
 // wraps its own result in that case.
 func (r *removal) failedCleanup(removed deletedCredentials, err error) error {
 	supplies, frame := r.restoreFrame()
-	_, restoreErr := r.c.restoreFailedRemoval(r.name, r.storedKey, r.hasStoredKey && removed.storedKey, r.oauthBytes, r.hasOAuth && removed.oauthRecord, r.refusalBytes, r.hasRefusal && removed.oauthRecord, err, frame, supplies)
+	_, restoreErr := r.c.restoreFailedRemoval(r.name, r.storedKey, r.hasStoredKey && removed.storedKey, r.oauthBytes, r.hasOAuth && removed.oauthRecord, r.copilotBytes, r.hasCopilot && removed.copilotRecord, r.refusalBytes, r.hasRefusal && removed.oauthRecord, err, frame, supplies)
 	return restoreErr
 }
 
@@ -2369,6 +2443,41 @@ func (c *hubInstancesController) captureOAuthFile(name string) ([]byte, bool, er
 	return nil, false, fmt.Errorf("remove %s: read OAuth state to preserve it: %w", name, err)
 }
 
+// captureCopilotFile reads the Copilot record a removal's cleanup is about to
+// delete, raw: a record the hub cannot parse is still deleted by path, and
+// only its bytes can put it back. One that exists but cannot be read refuses
+// the removal here, before anything is deleted.
+func (c *hubInstancesController) captureCopilotFile(name string) ([]byte, bool, error) {
+	if c.auth.stateDir == "" {
+		return nil, false, nil
+	}
+	raw, err := os.ReadFile(githubcopilot.AuthFilePath(c.auth.stateDir, name))
+	if err == nil {
+		return raw, true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	}
+	return nil, false, fmt.Errorf("remove %s: read the Copilot OAuth record to preserve it: %w", name, err)
+}
+
+// restoreCopilotRecord puts the captured bytes back under the record lock. A
+// record that exists again is a login newer than the capture and wins; writing
+// over it would discard the account the user just signed in with.
+func (c *hubInstancesController) restoreCopilotRecord(name string, raw []byte) error {
+	return githubcopilot.WithRecordLock(c.auth.stateDir, name, func() error {
+		path := githubcopilot.AuthFilePath(c.auth.stateDir, name)
+		_, err := os.Stat(path)
+		switch {
+		case err == nil:
+			return nil
+		case !errors.Is(err, os.ErrNotExist):
+			return err
+		}
+		return fsatomic.Write(path, raw, 0o600)
+	})
+}
+
 // captureRefreshRejectionFile reads the refresh-refusal marker (#2479) beside
 // the OAuth state file a removal's cleanup is about to delete, so a later
 // failure can write it back too. DeleteAuth clears the marker once the record
@@ -2403,16 +2512,20 @@ const (
 	supplyConfig
 	supplyStoredKey
 	supplyOAuth
+	supplyCopilotOAuth
 )
 
-// supplyOf reports which removed credential layer carries inst: the OAuth
-// record for the Codex scheme, the stored key for the "store" source, and
-// neither when the authored entry or the provider itself is what holds the
-// instance up. It mirrors credential()'s precedence - the source it reports is
-// the one that actually won.
+// supplyOf reports which removed credential layer carries inst: the Copilot
+// record for the Copilot scheme, the Codex OAuth record, the stored key for
+// the "store" source, and neither when the authored entry or the provider
+// itself is what holds the instance up. It mirrors credential()'s precedence -
+// the source it reports is the one that actually won.
 func supplyOf(inst registry.Instance) removalSupply {
 	switch inst.CredentialSource {
 	case "oauth":
+		if inst.Auth == registry.AuthOAuthGitHubCopilot {
+			return supplyCopilotOAuth
+		}
 		return supplyOAuth
 	case "store":
 		return supplyStoredKey
@@ -2449,7 +2562,7 @@ func supplyOf(inst registry.Instance) removalSupply {
 // rewrites - and never reports a failure to rewrite - a credential that is
 // still where it was. A restore that puts every deleted layer back clears the
 // applied mark, because the removal is then undone.
-func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, hasStoredKey bool, oauthBytes []byte, hasOAuth bool, refusalBytes []byte, hasRefusal bool, cause, frame error, supplies removalSupply) (bool, error) {
+func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, hasStoredKey bool, oauthBytes []byte, hasOAuth bool, copilotBytes []byte, hasCopilot bool, refusalBytes []byte, hasRefusal bool, cause, frame error, supplies removalSupply) (bool, error) {
 	var problems []error
 	storedKeyRestored := true
 	if hasStoredKey {
@@ -2479,18 +2592,27 @@ func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, ha
 			}
 		}
 	}
+	copilotRestored := true
+	if hasCopilot {
+		if err := c.restoreCopilotRecord(name, copilotBytes); err != nil {
+			copilotRestored = false
+			problems = append(problems, fmt.Errorf("%w (%w)", errCopilotRecordNotRestored, err))
+		}
+	}
 	var carried bool
 	switch supplies {
 	case supplyStoredKey:
 		carried = storedKeyRestored
 	case supplyOAuth:
 		carried = oauthRestored
+	case supplyCopilotOAuth:
+		carried = copilotRestored
 	default:
 		carried = len(problems) == 0
 	}
 	if !carried {
 		standing := fmt.Errorf("%w; %w, but %w", cause, frame, joinedError{errs: problems, sep: " and "})
-		if supplies == supplyStoredKey || supplies == supplyOAuth {
+		if supplies == supplyStoredKey || supplies == supplyOAuth || supplies == supplyCopilotOAuth {
 			return false, removeApplied(standing)
 		}
 		return false, standing
@@ -2537,6 +2659,14 @@ type removalLeftoversError struct{ joinedError }
 // in place - rewriting either would be a false alarm on a disk that is already
 // refusing writes.
 func (c *hubInstancesController) removeCredentials(name string) (deletedCredentials, error) {
+	return c.removeCredentialsAndCopilot(name, nil, false)
+}
+
+// removeCredentialsAndCopilot is removeCredentials plus the Copilot record the
+// removal captured. Only a removal that captured a record deletes one, so a
+// login that landed after the capture is not removed as if it were the account
+// the user asked to remove.
+func (c *hubInstancesController) removeCredentialsAndCopilot(name string, copilotBytes []byte, hasCopilot bool) (deletedCredentials, error) {
 	var deleted deletedCredentials
 	// A backstop for the removal flow's own up-front refusal (see
 	// requireCredentialStore): the read below must not dereference a nil store,
@@ -2561,6 +2691,15 @@ func (c *hubInstancesController) removeCredentials(name string) (deletedCredenti
 	if removedRecord {
 		c.applied.markApplied()
 	}
+	removedCopilot, err := c.deleteCopilotRecord(name, copilotBytes, hasCopilot)
+	if err != nil {
+		return deleted, fmt.Errorf("remove %s: delete the Copilot OAuth record: %w", name, err)
+	}
+	deleted.copilotRecord = removedCopilot
+	if removedCopilot {
+		c.applied.markApplied()
+	}
+	c.rememberCopilotAuthSignature()
 	// No probe that dialed the deleted credential may settle. The rejection
 	// itself stays until Remove knows the removal stands: a later failure
 	// puts the credential back.
@@ -2568,11 +2707,40 @@ func (c *hubInstancesController) removeCredentials(name string) (deletedCredenti
 	return deleted, nil
 }
 
+// deleteCopilotRecord removes the captured Copilot record when the removal
+// found one, under the record lock and only while it is still the bytes this
+// removal read: a login that landed in between is a newer account and stays.
+func (c *hubInstancesController) deleteCopilotRecord(name string, captured []byte, hasCaptured bool) (bool, error) {
+	if !hasCaptured {
+		return false, nil
+	}
+	removed := false
+	err := githubcopilot.WithRecordLock(c.auth.stateDir, name, func() error {
+		raw, err := os.ReadFile(githubcopilot.AuthFilePath(c.auth.stateDir, name))
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(raw, captured) {
+			return errCopilotRecordChanged
+		}
+		if err := githubcopilot.DeleteAuth(c.auth.stateDir, name); err != nil {
+			return err
+		}
+		removed = true
+		return nil
+	})
+	return removed, err
+}
+
 // deletedCredentials names which credential layers a removal's cleanup
 // actually removed, so a restore rewrites only those.
 type deletedCredentials struct {
-	storedKey   bool
-	oauthRecord bool
+	storedKey     bool
+	oauthRecord   bool
+	copilotRecord bool
 }
 
 // describeImplicit names what makes an implicit instance exist, so the remove

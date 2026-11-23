@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/auth/githubcopilot"
 	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
@@ -5465,5 +5466,166 @@ func TestRemoval_RestoreFrameFollowsWhatCarriesTheInstance(t *testing.T) {
 				t.Fatalf("frame = %v, want the configured frame", frame)
 			}
 		})
+	}
+}
+
+// healthyCopilotRecordForTest is one complete Copilot record with a session
+// that stays usable, so a fixture seeds a signed-in account without a login.
+func healthyCopilotRecordForTest(instance, account string) githubcopilot.AuthRecord {
+	return githubcopilot.AuthRecord{
+		Instance: instance, Scheme: githubcopilot.AuthScheme, Version: 1,
+		AccessToken: "github-access-" + instance, CopilotToken: "copilot-session-" + instance,
+		AccountID: account, ObtainedAt: time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC),
+		CopilotExpiry: time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+}
+
+// seedCopilotRecord gives an instance a signed-in Copilot account and reloads
+// so the registry derives it, the Copilot twin of seedOAuthRecord.
+func seedCopilotRecord(t *testing.T, f *instancesFixture, name, account string) {
+	t.Helper()
+	if err := githubcopilot.SaveAuth(f.stateDir, name, healthyCopilotRecordForTest(name, account)); err != nil {
+		t.Fatalf("SaveAuth(%s): %v", name, err)
+	}
+	if err := f.ctl.auth.reloadRegistry(); err != nil {
+		t.Fatalf("reloadRegistry: %v", err)
+	}
+}
+
+// A Copilot record is filed under the instance name like a Codex one, so a
+// rename has to move it and rewrite the identity the record is validated
+// against, or the account stops resolving under its new name.
+func TestInstances_EditRenamesASignedInCopilotAccount(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	seedCopilotRecord(t, f, "github-copilot", "account-1")
+	if before := entry(t, f.ctl.List(), "github-copilot"); !before.Implicit || before.ActiveSource != "oauth" {
+		t.Fatalf("fixture: github-copilot = %+v, want an implicit instance resolving the Copilot record", before)
+	}
+
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "github-copilot", NewName: "copilot-work"}); err != nil {
+		t.Fatalf("Edit: %v", err)
+	}
+	record, err := githubcopilot.LoadAuth(f.stateDir, "copilot-work")
+	if err != nil {
+		t.Fatalf("the Copilot record must move with the rename: %v", err)
+	}
+	if record.Instance != "copilot-work" {
+		t.Fatalf("record instance = %q, want the new name the record validates against", record.Instance)
+	}
+	if _, err := githubcopilot.LoadAuth(f.stateDir, "github-copilot"); !errors.Is(err, githubcopilot.ErrAuthNotFound) {
+		t.Fatalf("the old record survived the rename (LoadAuth = %v)", err)
+	}
+	resp := f.ctl.List()
+	if listedInstance(resp, "github-copilot") {
+		t.Fatal("the old row is still listed after its record moved")
+	}
+	if got := entry(t, resp, "copilot-work"); got.Implicit || got.ActiveSource != "oauth" {
+		t.Fatalf("copilot-work = %+v, want an authored instance resolving the moved record", got)
+	}
+}
+
+// A Copilot record under the destination name is a credential the rename
+// would strand: nothing reads it once the instance on that name is replaced,
+// and the user cannot tell where the account went. The refusal names what is
+// there and leaves every layer untouched.
+func TestInstances_EditRenameRefusesANameHoldingACopilotRecord(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "anthropic"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	planted := healthyCopilotRecordForTest("work2", "account-2")
+	if err := githubcopilot.SaveAuth(f.stateDir, "work2", planted); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	if err := f.ctl.auth.reloadRegistry(); err != nil {
+		t.Fatalf("reloadRegistry: %v", err)
+	}
+	if listedInstance(f.ctl.List(), "work2") {
+		t.Fatal("the planted record resolved an instance; this is not the leftover case")
+	}
+
+	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "work2"})
+	requireWireError(t, err, appwire.CodeConflict)
+	if !strings.Contains(err.Error(), "work2") {
+		t.Fatalf("Edit(rename) = %v, want the leftover named", err)
+	}
+	record, loadErr := githubcopilot.LoadAuth(f.stateDir, "work2")
+	if loadErr != nil {
+		t.Fatalf("the refused rename lost the Copilot record: %v", loadErr)
+	}
+	if !record.SameGeneration(planted) {
+		t.Fatal("the refused rename overwrote the Copilot record")
+	}
+	authoredEntry(t, f.tomlPath, "work")
+}
+
+// The Copilot record is the account, so removing a signed-in instance takes
+// it away exactly as removing a Codex account does.
+func TestInstances_RemoveDeletesASignedInCopilotAccount(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	seedCopilotRecord(t, f, "github-copilot", "account-1")
+	if before := entry(t, f.ctl.List(), "github-copilot"); before.ActiveSource != "oauth" {
+		t.Fatalf("fixture: github-copilot = %+v, want the OAuth record to resolve", before)
+	}
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "github-copilot"}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := githubcopilot.LoadAuth(f.stateDir, "github-copilot"); !errors.Is(err, githubcopilot.ErrAuthNotFound) {
+		t.Fatalf("the Copilot record survived the removal (LoadAuth = %v)", err)
+	}
+	if listedInstance(f.ctl.List(), "github-copilot") {
+		t.Fatal("github-copilot is still listed after its account was removed")
+	}
+}
+
+// A Copilot record the hub cannot parse is still deleted by path, so a
+// rollback can only restore it from the bytes it read. The fixture files the
+// record as a symlink: a restore that never ran leaves the link in place,
+// while the raw-byte rollback replaces it with the bytes it captured.
+func TestInstances_RemoveRestoresACorruptCopilotRecordWhenTheConfigWriteFails(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "github-copilot"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	corrupt := []byte("this is not a Copilot auth record\n")
+	target := filepath.Join(t.TempDir(), "copilot-record")
+	if err := os.WriteFile(target, corrupt, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	authPath := githubcopilot.AuthFilePath(f.stateDir, "work")
+	if err := os.MkdirAll(filepath.Dir(authPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.Symlink(target, authPath); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	originalDelete := f.ctl.auth.deleteAuth
+	f.ctl.auth.deleteAuth = func(dir, name string) (bool, error) {
+		if err := os.Remove(f.tomlPath); err != nil {
+			t.Errorf("Remove(%s): %v", f.tomlPath, err)
+		}
+		if err := os.Mkdir(f.tomlPath, 0o700); err != nil {
+			t.Errorf("Mkdir(%s): %v", f.tomlPath, err)
+		}
+		return originalDelete(dir, name)
+	}
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"}); err == nil {
+		t.Fatal("Remove = nil, want the config write failure")
+	}
+	restored, readErr := os.ReadFile(authPath)
+	if readErr != nil {
+		t.Fatalf("the corrupt Copilot record was not restored: %v", readErr)
+	}
+	if !bytes.Equal(restored, corrupt) {
+		t.Fatalf("Copilot record bytes = %q, want the original %q", restored, corrupt)
+	}
+	info, lstatErr := os.Lstat(authPath)
+	if lstatErr != nil {
+		t.Fatalf("Lstat: %v", lstatErr)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatal("the record is still the untouched symlink; the rollback never rewrote the bytes it deleted")
 	}
 }
