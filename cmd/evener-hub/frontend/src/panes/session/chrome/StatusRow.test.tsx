@@ -14,7 +14,6 @@ import { Toast } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import rawMeterStyles from "../../../widgets/meter/meter.module.css";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
-import visuallyHiddenStyles from "../../../widgets/visuallyhidden/visuallyhidden.module.css";
 import rawModelSwitchStyles from "./modelswitch.module.css";
 import { StatusRow } from "./StatusRow";
 import statusRowStyles from "./statusrow.module.css";
@@ -783,7 +782,7 @@ test("renders no context gauge when the thread has no context window data", () =
   expect(screen.queryByRole("meter")).toBeNull();
 });
 
-test("renders exact context counts and percentage in its accessible label and hover tooltip", () => {
+test("renders exact context counts on the meter and percentage in its hover tooltip", () => {
   render(
     <StatusRow
       sessionRef="ref_a"
@@ -792,10 +791,10 @@ test("renders exact context counts and percentage in its accessible label and ho
     />,
   );
   const meter = screen.getByRole("meter");
-  expect(meter.tagName).toBe("METER");
-  expect(meter.getAttribute("value")).toBe("12345");
-  expect(meter.getAttribute("max")).toBe("128001");
-  expect(meter.getAttribute("aria-label")).toBe("Context: 12345 of 128001 tokens used, 10 percent");
+  expect(meter.tagName).toBe("DIV");
+  expect(meter.getAttribute("aria-valuenow")).toBe("12345");
+  expect(meter.getAttribute("aria-valuemax")).toBe("128001");
+  expect(meter.getAttribute("aria-label")).toBeTruthy();
   expect(screen.getByTestId("status-row-context").getAttribute("title")).toBe(
     "Context: 12345 of 128001 tokens used, 10 percent",
   );
@@ -817,8 +816,8 @@ test("an assumed context window marks only the capacity figure as an estimate", 
     />,
   );
   const meter = screen.getByRole("meter");
-  expect(meter.getAttribute("value")).toBe("64000");
-  expect(meter.getAttribute("max")).toBe("128000");
+  expect(meter.getAttribute("aria-valuenow")).toBe("64000");
+  expect(meter.getAttribute("aria-valuemax")).toBe("128000");
   const label = meter.getAttribute("aria-label") ?? "";
   expect(label).toContain("~128000");
   expect(label).not.toContain("~64000");
@@ -863,7 +862,7 @@ test.each([
 // the same thing twice in a row that has to stay one line. The exact numbers
 // are still reachable - spoken from the meter's label, and on hover from the
 // title, following the row's "key value" tooltip convention.
-test("context has one meter semantic with wide and compact visual variants", () => {
+test("context announces through one exposed meter, with the percentage only visual", () => {
   render(
     <StatusRow
       sessionRef="ref_a"
@@ -871,25 +870,20 @@ test("context has one meter semantic with wide and compact visual variants", () 
       now={1_000_000}
     />,
   );
-  const meter = screen.getByRole("meter", { name: /64000 of 128000 tokens used, 50 percent/i });
-  expect(meter.tagName).toBe("METER");
-  const hiddenMeter = meter.parentElement;
-  expect(
-    hiddenMeter?.classList.contains(
-      requireClass(visuallyHiddenStyles.visuallyHidden, "visuallyhidden.module.css", "visuallyHidden"),
-    ),
-  ).toBe(true);
-  expect(meter.getAttribute("value")).toBe("64000");
-  expect(meter.getAttribute("max")).toBe("128000");
+  const meter = screen.getByRole("meter");
+  expect(meter.tagName).toBe("DIV");
+  expect(meter.closest('[aria-hidden="true"]')).toBeNull();
+  expect(meter.getAttribute("aria-label")).toBeTruthy();
+  expect(meter.getAttribute("aria-valuenow")).toBe("64000");
+  expect(meter.getAttribute("aria-valuemax")).toBe("128000");
   const context = screen.getByTestId("status-row-context");
   expect(context.tagName).toBe("SPAN");
-  expect(context.getAttribute("aria-hidden")).toBe("true");
-  expect(context.contains(meter)).toBe(false);
-  expect(hiddenMeter?.nextElementSibling).toBe(context);
+  expect(context.contains(meter)).toBe(true);
   expect(screen.getByTestId("status-row-context-meter").getAttribute("aria-hidden")).toBeNull();
   expect(screen.getByTestId("status-row-context-percent").textContent).toBe("50%");
-  expect(screen.getByTestId("status-row-context-percent").getAttribute("aria-hidden")).toBeNull();
+  expect(screen.getByTestId("status-row-context-percent").getAttribute("aria-hidden")).toBe("true");
   expect(screen.getAllByRole("meter")).toHaveLength(1);
+  expect(document.querySelector("meter")).toBeNull();
 });
 
 test("uses compactionThreshold as the gauge ceiling, percentage, and tone when compactionThreshold > 0", () => {
@@ -906,15 +900,12 @@ test("uses compactionThreshold as the gauge ceiling, percentage, and tone when c
       now={1_000_000}
     />,
   );
-  const hiddenMeter = screen.getByRole("meter");
-  expect(hiddenMeter.getAttribute("value")).toBe("200000");
-  expect(hiddenMeter.getAttribute("max")).toBe("250000");
-  const visualMeter = screen.getByTestId("status-row-context-meter").querySelector('[role="meter"]');
-  expect(visualMeter?.getAttribute("aria-valuenow")).toBe("200000");
-  expect(visualMeter?.getAttribute("aria-valuemax")).toBe("250000");
+  const meter = screen.getByRole("meter");
+  expect(meter.getAttribute("aria-valuenow")).toBe("200000");
+  expect(meter.getAttribute("aria-valuemax")).toBe("250000");
   expect(screen.getByTestId("status-row-context-percent").textContent).toBe("80%");
   expect(screen.getByTestId("meter-fill").classList.contains(meterToneClass.attention)).toBe(true);
-  expect(hiddenMeter.getAttribute("aria-label") ?? "").toContain("1000000");
+  expect(meter.getAttribute("aria-label") ?? "").toContain("1000000");
 
   rerender(
     <StatusRow

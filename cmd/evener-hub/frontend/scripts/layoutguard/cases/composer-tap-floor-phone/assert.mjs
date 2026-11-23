@@ -33,7 +33,7 @@ export default function assert(m) {
     }
     // .identity is the row's overflow boundary. The tap-floor assertion above
     // reads the target's unclipped rect, which stays 44px wide even when a
-    // shrunken .effortTrigger lets .identity clip it. Require the whole rect
+    // shrunken shared .control lets .identity clip it. Require the whole rect
     // inside the boundary so the visible target is really 44px.
     if (
       fixture.effort.left < fixture.identity.left - TOLERANCE ||
