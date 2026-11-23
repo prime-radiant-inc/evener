@@ -1573,6 +1573,21 @@ func TestValidateProviderCredentials_CuratedImplicitWithoutCredential(t *testing
 			}
 		})
 	}
+
+	// A signed-out Copilot launch must offer its device sign-in, not a key the
+	// transport never reads.
+	t.Run("github-copilot", func(t *testing.T) {
+		reg := newSpawnGateRegistry(t, t.TempDir(), nil, nil)
+		err := validateProviderCredentials("github-copilot", "", reg)
+		assertHubLaunchError(t, err)
+		refusal, ok := errors.AsType[*launchCredentialError](err)
+		if !ok || refusal.target != "github-copilot" || refusal.scheme != registry.AuthOAuthGitHubCopilot {
+			t.Fatalf("the refusal judges github-copilot's Copilot sign-in: %v", err)
+		}
+		if refusal.remedy != remedyCopilotLogin {
+			t.Fatalf("the refusal offers the Copilot device sign-in (remedy %v): %v", refusal.remedy, err)
+		}
+	})
 }
 
 // TestValidateProviderCredentials_UnknownInstance covers a name the registry

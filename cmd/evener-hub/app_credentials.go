@@ -33,7 +33,7 @@ type credentialProbeClient interface {
 	// not against the hub's own registry - because it is what the model-list
 	// call resolves the name through - and binds that same registry's state
 	// root to the request (see withScopedOAuthAuth), so a client loaded from a
-	// custom root reads that root's Codex record.
+	// custom root reads that root's OAuth records.
 	Registry() *registry.Registry
 }
 

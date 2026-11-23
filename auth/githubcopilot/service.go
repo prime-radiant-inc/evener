@@ -73,7 +73,7 @@ func (s *Service) LoginWithDevice(ctx context.Context, stateDir, instance string
 		dc.Interval = interval
 		switch state {
 		case PollAuthorized:
-			return s.saveLogin(ctx, stateDir, instance, tokens)
+			return s.CompleteLogin(ctx, stateDir, instance, tokens)
 		case PollExpired:
 			return AuthStatus{}, ErrDeviceExpired
 		}
@@ -83,24 +83,46 @@ func (s *Service) LoginWithDevice(ctx context.Context, stateDir, instance string
 	}
 }
 
-func (s *Service) saveLogin(ctx context.Context, stateDir, instance string, tokens TokenSet) (AuthStatus, error) {
-	if err := validateTokenSet(tokens); err != nil {
+// CompleteLogin saves the account-bound record for an already-authorized
+// GitHub token set: it prepares the record, then persists it under the record
+// lock. LoginWithDevice calls it when its poll is authorized; a caller that
+// completed authorization itself calls it with the same token set.
+func (s *Service) CompleteLogin(ctx context.Context, stateDir, instance string, tokens TokenSet) (AuthStatus, error) {
+	record, err := s.PrepareLogin(ctx, instance, tokens)
+	if err != nil {
 		return AuthStatus{}, err
+	}
+	return s.SavePreparedLogin(stateDir, instance, record)
+}
+
+// PrepareLogin resolves an already-authorized GitHub token set into the record
+// the login saves: it fetches the account, exchanges the GitHub token for a
+// Copilot session, and builds the record. It neither saves nor takes the record
+// lock, so a caller can keep this network I/O outside its own credential
+// critical section and save the record once its fences pass.
+func (s *Service) PrepareLogin(ctx context.Context, instance string, tokens TokenSet) (AuthRecord, error) {
+	if err := validateTokenSet(tokens); err != nil {
+		return AuthRecord{}, err
 	}
 	account, err := FetchAccount(ctx, s.client, s.cfg, tokens.AccessToken)
 	if err != nil {
-		return AuthStatus{}, err
+		return AuthRecord{}, err
 	}
 	session, err := ExchangeCopilotToken(ctx, s.client, s.cfg, tokens.AccessToken)
 	if err != nil {
-		return AuthStatus{}, fmt.Errorf("exchange GitHub token for a Copilot session: %w", err)
+		return AuthRecord{}, fmt.Errorf("exchange GitHub token for a Copilot session: %w", err)
 	}
-	record := AuthRecord{Instance: instance, Scheme: AuthScheme, Version: 1,
+	return AuthRecord{Instance: instance, Scheme: AuthScheme, Version: 1,
 		AccessToken: tokens.AccessToken, RefreshToken: tokens.RefreshToken,
 		TokenType: firstNonEmpty(tokens.TokenType, "Bearer"), Scope: firstNonEmpty(tokens.Scope, s.cfg.scope()),
 		ObtainedAt: nowFunc(), AccessExpiry: tokens.AccessExpiry, RefreshExpiry: tokens.RefreshExpiry,
 		CopilotToken: session.Token, CopilotExpiry: session.Expiry,
-		AccountID: account.ID, Email: account.Email}
+		AccountID: account.ID, Email: account.Email}, nil
+}
+
+// SavePreparedLogin persists a record PrepareLogin built, under the record
+// lock, and reports the saved authentication.
+func (s *Service) SavePreparedLogin(stateDir, instance string, record AuthRecord) (AuthStatus, error) {
 	beforeRecordLock()
 	if err := WithRecordLock(stateDir, instance, func() error {
 		return SaveAuth(stateDir, instance, record)

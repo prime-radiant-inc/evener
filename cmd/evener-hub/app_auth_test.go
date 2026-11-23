@@ -5,23 +5,510 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/appwire/appwiretest"
+	"primeradiant.com/evener/auth/githubcopilot"
 	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/auth/openai/oaitest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/tokenauth"
+	"primeradiant.com/evener/llm/registry"
 )
+
+const copilotDeviceInstanceToml = "[providers.work]\nbase = \"github-copilot\"\n"
+
+// writeCopilotOAuthRecord stores a launchable Copilot record for instance.
+func writeCopilotOAuthRecord(t *testing.T, stateDir, instance, email string) githubcopilot.AuthRecord {
+	t.Helper()
+	record := githubcopilot.AuthRecord{
+		Instance: instance, Scheme: githubcopilot.AuthScheme, Version: 1,
+		AccessToken: "github-access-" + instance, CopilotToken: "copilot-session-" + instance,
+		AccountID: "account-1", Email: email,
+		ObtainedAt: time.Now().Add(-time.Hour), CopilotExpiry: time.Now().Add(24 * time.Hour),
+	}
+	if err := githubcopilot.SaveAuth(stateDir, instance, record); err != nil {
+		t.Fatalf("SaveAuth(%s): %v", instance, err)
+	}
+	return record
+}
+
+// copilotDeviceTransport scripts the GitHub endpoints a Copilot device
+// sign-in uses, so the hub runs its real device-flow code without a network.
+// Requests are counted by path, which is how a test proves a poll stayed
+// local.
+type copilotDeviceTransport struct {
+	mu          sync.Mutex
+	calls       map[string]int
+	device      string
+	polls       []string
+	user        string
+	session     string
+	userEntered chan struct{}
+	userRelease chan struct{}
+}
+
+func newCopilotDeviceTransport() *copilotDeviceTransport {
+	return &copilotDeviceTransport{
+		calls: map[string]int{},
+		device: `{"device_code":"device-code-1","user_code":"USER-1",` +
+			`"verification_uri":"https://github.com/login/device","expires_in":600,"interval":5}`,
+		polls: []string{`{"error":"authorization_pending"}`},
+		user:  `{"id":42,"login":"octocat","email":"octocat@example.test"}`,
+		session: fmt.Sprintf(`{"token":"copilot-session-token","expires_at":%d}`,
+			time.Now().Add(24*time.Hour).Unix()),
+	}
+}
+
+func (t *copilotDeviceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.mu.Lock()
+	t.calls[req.URL.Path]++
+	call := t.calls[req.URL.Path]
+	body := ""
+	var entered, release chan struct{}
+	switch req.URL.Path {
+	case "/login/device/code":
+		body = t.device
+	case "/login/oauth/access_token":
+		index := min(call-1, len(t.polls)-1)
+		body = t.polls[index]
+	case "/user":
+		entered, release = t.userEntered, t.userRelease
+		body = t.user
+	case "/copilot_internal/v2/token":
+		body = t.session
+	default:
+		t.mu.Unlock()
+		return nil, fmt.Errorf("unexpected Copilot request path %q", req.URL.Path)
+	}
+	t.mu.Unlock()
+	if entered != nil {
+		close(entered)
+	}
+	if release != nil {
+		<-release
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK, Status: "200 OK",
+		Header:  http.Header{"Content-Type": {"application/json"}},
+		Body:    io.NopCloser(strings.NewReader(body)),
+		Request: req,
+	}, nil
+}
+
+func (t *copilotDeviceTransport) callCount(path string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.calls[path]
+}
+
+// blockAccountPreparation parks the account request until release runs and
+// returns the channel that reports it arrived.
+func (t *copilotDeviceTransport) blockAccountPreparation() (entered <-chan struct{}, release func()) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	enteredCh := make(chan struct{})
+	releaseCh := make(chan struct{})
+	t.userEntered, t.userRelease = enteredCh, releaseCh
+	var once sync.Once
+	return enteredCh, func() { once.Do(func() { close(releaseCh) }) }
+}
+
+// newCopilotDeviceTestController builds a hermetic controller over providers
+// whose GitHub and Copilot endpoints are the transport's, with a movable clock.
+func newCopilotDeviceTestController(t *testing.T, providers string) (*hubAuthController, *copilotDeviceTransport, *time.Time) {
+	t.Helper()
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	ctrl := newTestAuthController(t, dir, t.TempDir(), writeProvidersToml(t, dir, providers))
+	transport := newCopilotDeviceTransport()
+	ctrl.client = &http.Client{Transport: transport}
+	ctrl.copilotService = githubcopilot.NewService(ctrl.copilotCfg, ctrl.client)
+	now := time.Now()
+	ctrl.now = func() time.Time { return now }
+	return ctrl, transport, &now
+}
+
+// TestAuth_CopilotStatusReportsTheStoredRecord is the signed-in half of the
+// status read: a launchable Copilot record is an OAuth sign-in, with the
+// record's account identity and no token on the wire.
+func TestAuth_CopilotStatusReportsTheStoredRecord(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	record := writeCopilotOAuthRecord(t, stateDir, "work", "octocat@example.test")
+	ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, copilotDeviceInstanceToml))
+
+	got, err := ctrl.Status(appwire.AuthStatusParams{Provider: "work"})
+	if err != nil {
+		t.Fatalf("Status(work): %v", err)
+	}
+	if !got.Supported || !got.SignedIn || got.ActiveSource != "oauth" {
+		t.Fatalf("Status(work) = %+v, want a supported OAuth sign-in", got)
+	}
+	if want := []string{"oauth"}; !slices.Equal(got.AuthModes, want) {
+		t.Fatalf("AuthModes = %v, want %v", got.AuthModes, want)
+	}
+	if !got.HasStoredOAuth || got.Email != "octocat@example.test" || got.StoredEmail != "octocat@example.test" {
+		t.Fatalf("Status(work) = %+v, want the record's stored identity", got)
+	}
+	if got.AccountID != "account-1" {
+		t.Fatalf("AccountID = %q, want account-1", got.AccountID)
+	}
+	if got.NeedsLogin || got.NeedsRefresh || got.RefreshRejected {
+		t.Fatalf("Status(work) = %+v, want a record that needs neither a refresh nor a login", got)
+	}
+	if got.ConfigRevision == "" {
+		t.Fatal("ConfigRevision is empty: a Copilot row is fenced like every other credential")
+	}
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, token := range []struct {
+		field string
+		value string
+	}{
+		{field: "AccessToken", value: record.AccessToken},
+		{field: "CopilotToken", value: record.CopilotToken},
+	} {
+		if strings.Contains(string(encoded), token.value) {
+			t.Fatalf("status response leaked %s", token.field)
+		}
+	}
+}
+
+// TestAuth_CopilotStatusWithoutAUsableRecord is the signed-out half: a
+// missing or corrupt record is reported as the sign-in the pane must offer,
+// not as an unreadable row.
+func TestAuth_CopilotStatusWithoutAUsableRecord(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		record func(t *testing.T, stateDir string)
+	}{
+		{name: "missing"},
+		{name: "corrupt", record: func(t *testing.T, stateDir string) {
+			t.Helper()
+			path := githubcopilot.AuthFilePath(stateDir, "work")
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("not a record"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			stateDir := t.TempDir()
+			if tt.record != nil {
+				tt.record(t, stateDir)
+			}
+			ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, copilotDeviceInstanceToml))
+			got, err := ctrl.Status(appwire.AuthStatusParams{Provider: "work"})
+			if err != nil {
+				t.Fatalf("Status(work): %v", err)
+			}
+			if !got.Supported || got.SignedIn || got.ActiveSource != "none" || got.Error != "" {
+				t.Fatalf("Status(work) = %+v, want an unsigned-in OAuth row", got)
+			}
+			if want := []string{"oauth"}; !slices.Equal(got.AuthModes, want) {
+				t.Fatalf("AuthModes = %v, want %v", got.AuthModes, want)
+			}
+			if got.HasStoredOAuth {
+				t.Fatalf("HasStoredOAuth = true for a %s record", tt.name)
+			}
+		})
+	}
+}
+
+// TestAuth_CopilotLogoutRemovesTheStoredRecord pins sign-out: the record is
+// removed so the next launch needs a fresh login, a second logout reports
+// nothing removed, and a corrupt record is removed too.
+func TestAuth_CopilotLogoutRemovesTheStoredRecord(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	writeCopilotOAuthRecord(t, stateDir, "work", "octocat@example.test")
+	ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, copilotDeviceInstanceToml))
+
+	resp, err := ctrl.Logout(appwire.AuthLogoutParams{Provider: "work"})
+	if err != nil {
+		t.Fatalf("Logout(work): %v", err)
+	}
+	if !resp.Removed {
+		t.Fatal("Logout(work).Removed = false, want the stored record reported removed")
+	}
+	if resp.Status.SignedIn || resp.Status.ActiveSource != "none" {
+		t.Fatalf("post-logout status = %+v, want signed out", resp.Status)
+	}
+	if _, err := githubcopilot.LoadAuth(stateDir, "work"); !errors.Is(err, githubcopilot.ErrAuthNotFound) {
+		t.Fatalf("LoadAuth(work) err = %v, want ErrAuthNotFound", err)
+	}
+
+	again, err := ctrl.Logout(appwire.AuthLogoutParams{Provider: "work"})
+	if err != nil {
+		t.Fatalf("second Logout(work): %v", err)
+	}
+	if again.Removed {
+		t.Fatal("second Logout(work).Removed = true, want nothing removed")
+	}
+
+	path := githubcopilot.AuthFilePath(stateDir, "work")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("not a record"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	corrupt, err := ctrl.Logout(appwire.AuthLogoutParams{Provider: "work"})
+	if err != nil {
+		t.Fatalf("Logout of a corrupt record: %v", err)
+	}
+	if !corrupt.Removed {
+		t.Fatal("Logout of a corrupt record reported nothing removed: sign-out must clear it")
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("corrupt record still on disk: %v", err)
+	}
+}
+
+// TestAuth_CopilotRefusesAStoredAPIKey pins the scheme classification: a
+// Copilot instance reads its OAuth record and no stored key, so both the
+// direct set and the conditional push must refuse to store one.
+func TestAuth_CopilotRefusesAStoredAPIKey(t *testing.T) {
+	dir := t.TempDir()
+	ctrl := newTestAuthController(t, dir, t.TempDir(), writeProvidersToml(t, dir, copilotDeviceInstanceToml))
+
+	if _, err := ctrl.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "work", Value: "sk-test"}); !errors.Is(err, errAPIKeyForOAuthInstance) {
+		t.Fatalf("ApiKeySet(work) err = %v, want the OAuth-record refusal", err)
+	}
+	if _, ok := ctrl.storedKey("work"); ok {
+		t.Fatal("ApiKeySet stored a key under a Copilot instance")
+	}
+
+	resp, err := ctrl.ApiKeyConditionalSet(appwire.ApiKeyConditionalSetParams{Provider: "work", Value: "sk-test"})
+	if err != nil {
+		t.Fatalf("ApiKeyConditionalSet(work): %v", err)
+	}
+	if resp.Action != appwire.ApiKeyConditionalSetActionSkipped {
+		t.Fatalf("ApiKeyConditionalSet(work).Action = %q, want skipped", resp.Action)
+	}
+	if _, ok := ctrl.storedKey("work"); ok {
+		t.Fatal("ApiKeyConditionalSet stored a key under a Copilot instance")
+	}
+}
+
+// TestAuth_CopilotDevicePollPendingThenAuthorized drives the real device flow
+// against a scripted GitHub: the start carries the code and its real expiry,
+// a poll before NextPollAt is answered locally, pending and authorized polls
+// reach GitHub, and the authorized poll saves the record and commits once.
+func TestAuth_CopilotDevicePollPendingThenAuthorized(t *testing.T) {
+	ctrl, transport, now := newCopilotDeviceTestController(t, copilotDeviceInstanceToml)
+	transport.polls = []string{
+		`{"error":"authorization_pending"}`,
+		`{"access_token":"github-access-token","token_type":"bearer","scope":"read:user"}`,
+	}
+	var commits []authCommitted
+	ctrl.OnCommitted(func(change authCommitted) { commits = append(commits, change) })
+
+	start, err := ctrl.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "work"})
+	if err != nil {
+		t.Fatalf("DeviceStart: %v", err)
+	}
+	if start.Fallback || start.UserCode != "USER-1" || start.VerificationURL != "https://github.com/login/device" {
+		t.Fatalf("DeviceStart = %+v, want the device code", start)
+	}
+	if start.IntervalSeconds != 5 || start.ExpiresInSeconds != 600 {
+		t.Fatalf("DeviceStart timing = interval %d expiry %d, want the code's 5 and 600",
+			start.IntervalSeconds, start.ExpiresInSeconds)
+	}
+
+	poll := func(origin string) appwire.AuthDevicePollResponse {
+		t.Helper()
+		resp, err := ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{
+			Provider: "work", FlowID: start.FlowID, OriginClientId: origin,
+		})
+		if err != nil {
+			t.Fatalf("DevicePoll: %v", err)
+		}
+		return resp
+	}
+
+	if got := poll(""); got.State != "pending" {
+		t.Fatalf("poll before NextPollAt = %+v, want pending", got)
+	}
+	if calls := transport.callCount("/login/oauth/access_token"); calls != 0 {
+		t.Fatalf("poll before NextPollAt made %d GitHub calls, want 0", calls)
+	}
+
+	*now = now.Add(5 * time.Second)
+	if got := poll(""); got.State != "pending" {
+		t.Fatalf("first outbound poll = %+v, want pending", got)
+	}
+	if calls := transport.callCount("/login/oauth/access_token"); calls != 1 {
+		t.Fatalf("first outbound poll made %d GitHub calls, want 1", calls)
+	}
+
+	*now = now.Add(5 * time.Second)
+	got := poll("client-7")
+	if got.State != "authorized" || got.Status == nil {
+		t.Fatalf("authorized poll = %+v, want authorized with a status", got)
+	}
+	if !got.Status.SignedIn || got.Status.ActiveSource != "oauth" || got.Status.Email != "octocat@example.test" {
+		t.Fatalf("authorized status = %+v, want the signed-in Copilot account", got.Status)
+	}
+
+	record, err := githubcopilot.LoadAuth(ctrl.stateDir, "work")
+	if err != nil {
+		t.Fatalf("LoadAuth(work): %v", err)
+	}
+	if record.Scheme != githubcopilot.AuthScheme {
+		t.Fatalf("saved record scheme = %q, want %q", record.Scheme, githubcopilot.AuthScheme)
+	}
+	if record.AccessToken != "github-access-token" {
+		t.Fatal("saved record did not carry the device flow's GitHub access token")
+	}
+	if record.CopilotToken != "copilot-session-token" {
+		t.Fatal("saved record did not carry the exchanged Copilot session")
+	}
+	if record.AccountID != "42" || record.Email != "octocat@example.test" {
+		t.Fatal("saved record did not carry the device flow's account")
+	}
+	if len(commits) != 1 {
+		t.Fatalf("commit notifications = %d, want exactly one", len(commits))
+	}
+	if commits[0].OriginClientID != "client-7" || commits[0].Status.ActiveSource != "oauth" {
+		t.Fatalf("commit notification = %+v, want the poll's origin and OAuth status", commits[0])
+	}
+}
+
+// TestAuth_CopilotDevicePollPreparesOutsideTheCredentialLock pins where the
+// Copilot login's account and session requests run: before the credential
+// write's critical section, so a slow GitHub response cannot block every other
+// credential writer. An unrelated write must complete while the account
+// request is parked.
+func TestAuth_CopilotDevicePollPreparesOutsideTheCredentialLock(t *testing.T) {
+	ctrl, transport, now := newCopilotDeviceTestController(t, copilotDeviceInstanceToml)
+	transport.polls = []string{`{"access_token":"github-access-token","token_type":"bearer","scope":"read:user"}`}
+	entered, release := transport.blockAccountPreparation()
+	defer release()
+	flowID := startCopilotDeviceFlow(t, ctrl, "work")
+	*now = now.Add(5 * time.Second)
+
+	polled := make(chan appwire.AuthDevicePollResponse, 1)
+	pollErr := make(chan error, 1)
+	go func() {
+		resp, err := ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "work", FlowID: flowID})
+		if err != nil {
+			pollErr <- err
+			return
+		}
+		polled <- resp
+	}()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the Copilot account request never started")
+	}
+
+	// The login is parked in its account request. An unrelated credential
+	// write must not wait behind that network I/O.
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := ctrl.credentialWrite("other", func() error { return nil })
+		writeDone <- err
+	}()
+	blocked := false
+	select {
+	case err := <-writeDone:
+		if err != nil {
+			t.Fatalf("unrelated credential write = %v, want it to complete while Copilot preparation is in flight", err)
+		}
+	case <-time.After(5 * time.Second):
+		blocked = true
+	}
+
+	// Release the parked preparation, then let both it and any write that
+	// waited behind it finish before the fixture is torn down.
+	release()
+	if blocked {
+		select {
+		case <-writeDone:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the credential write never finished after preparation was released")
+		}
+	}
+	var resp appwire.AuthDevicePollResponse
+	select {
+	case err := <-pollErr:
+		t.Fatalf("DevicePoll: %v", err)
+	case resp = <-polled:
+	case <-time.After(10 * time.Second):
+		t.Fatal("DevicePoll never finished after the account request was released")
+	}
+	if blocked {
+		t.Fatal("an unrelated credential write was blocked by Copilot login preparation")
+	}
+	if resp.State != "authorized" {
+		t.Fatalf("DevicePoll = %+v, want authorized after preparation released", resp)
+	}
+}
+
+// TestAuthTestCredentialsBindsTheProbeRegistrysCopilotScope is the Copilot
+// half of the probe binding: the check must authenticate with the probe
+// client's own registry root, not a process-global Copilot record.
+func TestAuthTestCredentialsBindsTheProbeRegistrysCopilotScope(t *testing.T) {
+	clearProviderKeysFromEnvironment(t)
+	stateDir := t.TempDir()
+	writeCopilotOAuthRecord(t, stateDir, "copilot-work", "")
+	instances := map[string]registry.Provider{"copilot-work": {Base: "github-copilot"}}
+	probeReg, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(stateDir),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(instances),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	client := &credentialProbeFakeClient{reg: probeReg}
+	c := newCredentialProbeControllerAt(t, client, stateDir, instances, nil)
+	resp, err := c.TestCredentials(context.Background(), appwire.AuthTestParams{Provider: "copilot-work"})
+	if err != nil {
+		t.Fatalf("TestCredentials: %v", err)
+	}
+	// The fake serves a live but empty listing, which the Copilot setup gate
+	// reports as no usable models; the binding under test is what the probe
+	// carried, not this classification.
+	if resp.Status == "" {
+		t.Fatal("TestCredentials returned no status")
+	}
+	if got := client.callCount(); got != 1 {
+		t.Fatalf("probe calls=%d, want 1", got)
+	}
+	auth := llm.AuthenticatorOverrideFor(client.requestContext(), registry.AuthOAuthGitHubCopilot)
+	copilot, ok := auth.(*tokenauth.Copilot)
+	if !ok {
+		t.Fatalf("probe context carried %T, want a scoped *tokenauth.Copilot", auth)
+	}
+	if copilot.StateDir != stateDir {
+		t.Fatalf("scoped Copilot state dir = %q, want the probe registry's %q", copilot.StateDir, stateDir)
+	}
+}
 
 func TestHubRPCAuthStatusUsesUserScopedOpenAIAuth(t *testing.T) {
 	stateRoot := oaitest.IsolateOpenAIAuth(t)
