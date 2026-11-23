@@ -47,6 +47,7 @@ import { Button, Meter, PropertyList, Sheet, type StackedPropertyListRow } from 
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { formatTimestamp, sessionTokens, tokenUnitLabel } from "./detailsAccounting";
 import styles from "./detailspanel.module.css";
+import { PanelSection } from "./PanelSection";
 import {
   assumedWindowMark,
   contextTone,
@@ -84,8 +85,6 @@ export interface DetailsPanelHandle {
 }
 
 const CLASS = {
-  section: requireClass(styles.section, "detailspanel.module.css", "section"),
-  sectionTitle: requireClass(styles.sectionTitle, "detailspanel.module.css", "sectionTitle"),
   value: requireClass(styles.value, "detailspanel.module.css", "value"),
   meter: requireClass(styles.meter, "detailspanel.module.css", "meter"),
   dim: requireClass(styles.dim, "detailspanel.module.css", "dim"),
@@ -131,10 +130,9 @@ function Section({ title, rows }: { title: string; rows: (StackedPropertyListRow
   const present = rows.filter((row): row is StackedPropertyListRow => Boolean(row));
   if (present.length === 0) return null;
   return (
-    <section className={CLASS.section}>
-      <h3 className={CLASS.sectionTitle}>{title}</h3>
+    <PanelSection title={title}>
       <PropertyList layout="stacked" rows={present} />
-    </section>
+    </PanelSection>
   );
 }
 
