@@ -8,7 +8,9 @@
   padding: 5px var(--space-3);
   background: var(--surface-2);
   border: 1px solid var(--edge);
-  border-radius: var(--radius-pill);
+  /* Pane, the card row's own ladder step (Jesse 2026-11-23: no pill
+   * surfaces). */
+  border-radius: var(--radius-pane);
   box-shadow: var(--shadow-raised);
   font-size: var(--font-size-caption);
   line-height: var(--line-height-ui);

@@ -349,3 +349,49 @@ test("no leading rule reserves width on the phone's compact resting row", () => 
     expect(compactExclusions.length, `${selector} must exclude the compact resting row`).toBeGreaterThan(0);
   }
 });
+
+// The radius vocabulary (Jesse 2026-11-23, from the mock/real comparison:
+// "we have too many border radii"): the pill is control geometry - switch
+// tracks, badges, avatars - never a SURFACE shape. A pill surface beside the
+// square controls inside it is the collision the comparison caught (the
+// composer's Send). Fluency surfaces carry ladder values: controls take
+// --radius-control, small floating chrome takes --radius-pane, and card
+// surfaces take --radius-panel - the same value the desktop prompt card
+// already carries, so the phone composer is concentric with its own buttons
+// again (16 - 8 inset = 8).
+test("the phone fluency surfaces carry ladder radii, never a pill surface", () => {
+  const srcRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  const reads = (relative: string) => readFileSync(join(srcRoot, relative), "utf8").replace(/\/\*[\s\S]*?\*\//g, " ");
+  const pillFree = (relative: string) =>
+    expect(reads(relative), `${relative} still shapes a surface with the pill`).not.toContain("--radius-pill");
+  pillFree("widgets/promptcard/promptcard.module.css");
+  pillFree("shell/mobile/StackHost.module.css");
+  pillFree("panes/session/composer/askdock/askdock.module.css");
+  pillFree("panes/session/transcript/flow/loadolderrow.module.css");
+  pillFree("panes/session/transcript/messages/usermessageitem.module.css");
+  pillFree("shell/rail/RailResizeHandle.module.css");
+
+  // The phone's floating chrome (back/menu capsules, the board toggle) sits
+  // one ladder step above the buttons inside it: pane around control.
+  const stackHost = reads("shell/mobile/StackHost.module.css");
+  expect(stackHost.match(/\.boardHandle \{[^}]*\}/)?.[0]).toContain("var(--radius-pane)");
+  expect(stackHost.match(/\.topBarCollapsed \.trailing \{[^}]*\}/)?.[0]).toContain("var(--radius-pane)");
+  // The ask dock's answer tabs are controls, not capsules.
+  expect(reads("panes/session/composer/askdock/askdock.module.css").match(/\.tab \{[^}]*\}/)?.[0]).toContain(
+    "var(--radius-control)",
+  );
+  expect(reads("panes/session/transcript/flow/loadolderrow.module.css").match(/\.row \{[^}]*\}/)?.[0]).toContain(
+    "var(--radius-pane)",
+  );
+  // The 2px accent lines round at any radius past their own width; keeping
+  // them on the control token costs nothing visually and keeps the pill out
+  // of the fluency vocabulary.
+  expect(reads("shell/rail/RailResizeHandle.module.css").match(/\.resizeHandle::after \{[^}]*\}/)?.[0]).toContain(
+    "var(--radius-control)",
+  );
+  expect(
+    reads("panes/session/transcript/messages/usermessageitem.module.css").match(
+      /\.provisional \.railmark \{[^}]*\}/,
+    )?.[0],
+  ).toContain("var(--radius-control)");
+});

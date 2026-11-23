@@ -662,7 +662,7 @@ The radius ladder has five steps, and each has named users:
 | `--radius-control` | 8px | buttons, fields, rail and tree rows, dock tabs, menu items, tooltips, icon seats, an inset band inside a card |
 | `--radius-pane` | 12px | `Card`, the tool card, code and diff blocks, menus, dialogs, popovers, toasts, hover cards, grouped phone lists |
 | `--radius-panel` | 16px | the largest surfaces: the prompt card, the notes panel's lower corners, the bottom sheet's top corners |
-| `--radius-pill` | 999px | chips, badges, count and status pills, switch, meter and segmented-control tracks, round avatars |
+| `--radius-pill` | 999px | control geometry only — chips, badges, count pills, switch, meter and segmented-control tracks, round avatars. Never a surface shape (Jesse 2026-11-23, from the mock/real comparison: "too many border radii"): a pill surface beside the square controls inside it is the collision the composer's Send exposed. Surfaces take the ladder — `--radius-control` for controls and small chrome, `--radius-pane` for floating chrome one step above the buttons inside it, `--radius-panel` for cards. |
 
 A surface nested in another takes the next step down, so the two arcs stay concentric:
 a `--radius-control` button one `--space-2` inside the `--radius-panel` prompt card, a
@@ -1474,11 +1474,13 @@ gesture, and the capsules must not sit over the card's header row. The
 title fades; the controls stay. The board keeps a sticky header always —
 its search and groups are how you navigate.
 
-**The composer is one floating pill.** No outer rectangle, no border-top, no
-hint row. The outer container is transparent; the pill itself is
-`--field` on `--radius-pill` with a 16px backdrop blur and a soft shadow,
-centered with a comfortable max-width. The transcript's scroll carries
-bottom padding so the last turn slides under the pill instead of stopping
+**The composer is one floating card.** No outer rectangle, no border-top, no
+hint row. The outer container is transparent; the card itself is
+`--field` on `--radius-panel` — the same radius the desktop card carries —
+with a 16px backdrop blur and a soft shadow, centered with a comfortable
+max-width, and concentric with its `--radius-control` verbs (the 16px corner
+sits 8px out from their 8px corner). The transcript's scroll carries
+bottom padding so the last turn slides under the card instead of stopping
 above a boxed footer.
 
 **Session notes (the whiteboard) are one quiet line above the
@@ -1531,7 +1533,7 @@ Verification for changes to any of this: screenshots at 390×844 (phone),
 768×1024 (tablet portrait, inside the band), 840×600 (Duo interior); chrome at
 rest within the budget stated above (bar 61px + pill 60px = 121px at phone
 width); transcript content scrolling under the composer
-pill; header collapse only on session-family scroll; `node scripts/ds-audit.mjs`
+card; header collapse only on session-family scroll; `node scripts/ds-audit.mjs`
 counts no higher than before; the tablet divider's drag commits its width,
 the width survives a reload, and a double-click returns it to the 280
 default — the same value a desktop-width window's rail then shows.

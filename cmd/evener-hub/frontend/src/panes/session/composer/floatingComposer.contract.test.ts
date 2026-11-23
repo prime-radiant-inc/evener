@@ -76,8 +76,14 @@ test("the composer card becomes the floating surface on the phone, and only the 
   expect(card).toMatch(/background:\s*color-mix\(in oklab, var\(--field\)/);
   expect(card).toMatch(/backdrop-filter:\s*blur\(16px\)/);
 
-  // The folded one-row shape is the capsule; the expanded card keeps the
-  // panel radius its field needs.
-  const folded = ruleIn(phone, /\[data-composer\][^{]*\.card\[data-folded="true"\]\s*\{/);
-  expect(folded).toMatch(/border-radius:\s*var\(--radius-pill\)/);
+  // The card keeps the panel radius in every state (Jesse 2026-11-23: the
+  // pill is control geometry, never a surface shape) - the same value the
+  // desktop card carries, so the folded one-row shape is concentric with
+  // its control-radius verbs instead of colliding with them. No folded
+  // radius override exists to pin: the phone block must not re-round the
+  // card at all.
+  expect(phone, "the folded card must not re-round on the phone").not.toMatch(
+    /\[data-composer\][^{]*\.card\[data-folded="true"\]\s*\{[^}]*border-radius/,
+  );
+  expect(phone).not.toContain("--radius-pill");
 });

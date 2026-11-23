@@ -112,7 +112,10 @@
 
 .topBarCollapsed .leading:not(:empty),
 .topBarCollapsed .trailing {
-  border-radius: var(--radius-pill);
+  /* Pane (12) around the control-radius IconButtons inside: one ladder
+ * step up from the buttons, the same inset-concentric pairing every
+ * card-and-control pair keeps (Jesse 2026-11-23: no pill surfaces). */
+  border-radius: var(--radius-pane);
   background: color-mix(in oklab, var(--surface-1) 88%, transparent);
   -webkit-backdrop-filter: blur(16px);
   backdrop-filter: blur(16px);
@@ -234,7 +237,9 @@
   z-index: var(--z-raised);
   padding: var(--space-1);
   transform: translateX(var(--space-2));
-  border-radius: var(--radius-pill);
+  /* Pane around the control-radius IconButton inside - same ladder step as
+ * the collapsed bar's capsules. */
+  border-radius: var(--radius-pane);
   background: color-mix(in oklab, var(--surface-1) 88%, transparent);
   -webkit-backdrop-filter: blur(16px);
   backdrop-filter: blur(16px);

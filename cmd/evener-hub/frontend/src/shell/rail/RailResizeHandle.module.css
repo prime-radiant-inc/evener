@@ -29,7 +29,9 @@
   bottom: 0;
   right: 0;
   width: 2px;
-  border-radius: var(--radius-pill);
+  /* A 2px line rounds at any radius past its own width; the control token
+ * keeps the pill out of the surface vocabulary (Jesse 2026-11-23). */
+  border-radius: var(--radius-control);
   background: var(--accent);
   opacity: 0;
   transition: opacity var(--motion-duration-hover) var(--motion-easing-standard);
