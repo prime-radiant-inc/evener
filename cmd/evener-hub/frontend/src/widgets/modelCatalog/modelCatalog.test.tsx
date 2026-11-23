@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WireError } from "@evener/appwire-client";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, test, vi } from "vitest";
 // ModelCatalog is both the component (value) and the envelope interface (type);
@@ -124,6 +124,31 @@ test("the closed state has no separate Change-model button - the chip itself is 
   renderPicker({ value: "openai/gpt-5" });
   expect(screen.queryByRole("button", { name: "Change model" })).toBeNull();
   expect(openTrigger()).toBeTruthy();
+});
+
+// The panel's search field drives a listbox popup, so the trigger has to say
+// so and report whether the popup is open. ModelCatalog rendered neither
+// attribute before the shared trigger owned them; PathField's directory
+// trigger had both for its dialog, which is how the drift went unnoticed.
+test("the trigger announces a listbox popup and whether it is open", async () => {
+  const user = userEvent.setup();
+  renderPicker({ value: "openai/gpt-5" });
+  const trigger = openTrigger();
+  expect(trigger.getAttribute("aria-haspopup")).toBe("listbox");
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  await user.click(trigger);
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
+});
+
+// The ARIA 1.2 activedescendant pattern keeps real focus on the combobox
+// input, so a mousedown on a row must not blur it. jsdom does not move focus
+// for a plain li, so this pins the guard itself: the event is cancelled.
+test("a mousedown on an option is cancelled so the input keeps focus", async () => {
+  const user = userEvent.setup();
+  renderPicker();
+  await openPicker(user);
+  const option = await screen.findByRole("option", { name: /Claude Sonnet/ });
+  expect(fireEvent.mouseDown(option)).toBe(false);
 });
 
 test("clicking the chip trigger opens the panel as a portaled overlay, not an inline sibling that reflows", async () => {

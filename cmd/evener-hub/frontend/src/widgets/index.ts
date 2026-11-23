@@ -64,6 +64,12 @@ export type { InlineNoticeLive, InlineNoticeProps, InlineNoticeTone } from "./in
 export { InlineNotice } from "./inlinenotice";
 export type { InputProps } from "./input";
 export { Input } from "./input";
+export type {
+  PickerTriggerAriaMode,
+  PickerTriggerClassNames,
+  PickerTriggerProps,
+} from "./internal/pickerTrigger";
+export { PickerTrigger } from "./internal/pickerTrigger";
 export type { KeyHintProps } from "./keyhint";
 export { chordLabel, KeyHint } from "./keyhint";
 export type { ListRowProps, ListRowVariant } from "./listrow";

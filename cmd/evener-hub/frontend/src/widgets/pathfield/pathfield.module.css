@@ -149,17 +149,6 @@
   outline-offset: 2px;
 }
 
-/* The list scrolls INTERNALLY (the popover never grows past the viewport, and
- * scrolling here never dismisses the panel - see closeOnScroll at the
- * PathField call site). */
-.list {
-  margin: 0;
-  padding: 0;
-  max-height: min(320px, 60vh);
-  overflow-y: auto;
-  list-style: none;
-}
-
 /* Section eyebrow: "Recent projects", and the directory being listed (the
  * "you are here" affordance). Small, quiet, not an option. The directory can
  * be long, so it ellipsizes rather than widening the panel. Tracking belongs

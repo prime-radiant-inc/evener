@@ -32,13 +32,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import {
   Button,
-  Chevron,
   type ModelCatalog,
   type ModelCatalogEntry,
   ModelCatalogPanel,
+  PickerTrigger,
   Popover,
   Sheet,
-  VisuallyHidden,
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./modelswitch.module.css";
@@ -93,11 +92,11 @@ const CLASS = {
   trigger: requireClass(styles.trigger, "modelswitch.module.css", "trigger"),
   value: requireClass(styles.value, "modelswitch.module.css", "value"),
   chevron: requireClass(styles.chevron, "modelswitch.module.css", "chevron"),
+  triggerShrink: requireClass(styles.triggerShrink, "modelswitch.module.css", "triggerShrink"),
   popoverPanel: requireClass(styles.popoverPanel, "modelswitch.module.css", "popoverPanel"),
   sheetBody: requireClass(styles.sheetBody, "modelswitch.module.css", "sheetBody"),
   triggerWrapper: requireClass(styles.triggerWrapper, "modelswitch.module.css", "triggerWrapper"),
   triggerWrapperFill: requireClass(styles.triggerWrapperFill, "modelswitch.module.css", "triggerWrapperFill"),
-  triggerShrink: requireClass(styles.triggerShrink, "modelswitch.module.css", "triggerShrink"),
 };
 
 export function ModelSwitchTrigger({
@@ -275,37 +274,29 @@ export function ModelSwitchTrigger({
   // phone-only trigger slot and the status row's chip would both re-mount on
   // a viewport crossing.
   const triggerButton = (
-    <button
+    <PickerTrigger
       ref={triggerRef}
-      type="button"
-      className={shrink ? `${CLASS.trigger} ${CLASS.triggerShrink}` : CLASS.trigger}
-      data-testid={testId}
-      title={label}
+      open={open}
       onClick={() => {
         if (open) closePicker();
         else openPicker();
       }}
+      // The desktop Popover holds a combobox/listbox picker; the mobile
+      // branch opens the same catalog in a bottom Sheet, which is a dialog.
+      ariaMode={isMobile ? "dialog" : "listbox"}
+      actionLabel={actionLabel}
+      value={label}
+      variant="quiet"
+      classes={{
+        trigger: shrink ? `${CLASS.trigger} ${CLASS.triggerShrink}` : CLASS.trigger,
+        value: CLASS.value,
+        chevron: CLASS.chevron,
+      }}
       disabled={disabled}
-    >
-      {/* Plain text, not a Chip: the trigger already draws the control's
-          own hover box, and a bordered chip inside it reads as a double
-          border - the same rule widgets/pathfield's and
-          widgets/modelCatalog's triggers follow. */}
-      <span className={CLASS.value} data-testid={valueTestId}>
-        {label}
-      </span>
-      <span className={CLASS.chevron} aria-hidden="true">
-        <Chevron direction="down" />
-      </span>{" "}
-      {/* That separating space is load-bearing: the accessible name is this
-          button's children concatenated, and each child's own text is
-          trimmed first, so a space INSIDE either span would be dropped and
-          the name would run together as "…sonnet-4-5— change model". A
-          whitespace-only text node between them survives that trim and
-          renders nothing of its own (an all-whitespace anonymous flex item
-          is not laid out). */}
-      <VisuallyHidden>— {actionLabel}</VisuallyHidden>
-    </button>
+      title={label}
+      data-testid={testId}
+      valueTestId={valueTestId}
+    />
   );
 
   if (isMobile) {
