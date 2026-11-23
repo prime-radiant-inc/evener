@@ -27,6 +27,8 @@ export type { ContextCardProps } from "./contextcard";
 export { ContextCard } from "./contextcard";
 export type { CopyButtonProps } from "./copybutton";
 export { CopyButton } from "./copybutton";
+export type { CountButtonChrome, CountButtonOrientation, CountButtonProps } from "./countbutton";
+export { CountButton } from "./countbutton";
 export type { DialogProps } from "./dialog";
 export { Dialog } from "./dialog";
 export { CloseIcon } from "./dialog/CloseIcon";

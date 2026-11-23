@@ -40,6 +40,9 @@ test("four footer categories keep their owning pane and About has no chip", asyn
   const chips = screen.getAllByRole("button");
   expect(chips.map((chip) => chip.dataset.activityTab)).toEqual(["agents", "jobs", "watches", "tasks"]);
   expect(chips.every((chip) => chip.dataset.sessionRef === ref)).toBe(true);
+  expect(chips.every((chip) => chip.dataset.paneId === "pane-secondary")).toBe(true);
+  expect(chips.every((chip) => chip.dataset.chrome === "pill" && chip.dataset.orientation === "row")).toBe(true);
+  expect(chips.every((chip) => chip.dataset.compact === undefined)).toBe(true);
   expect(chips.every((chip) => chip.getAttribute("aria-label")?.endsWith(" - open Overview"))).toBe(true);
   expect(screen.queryByRole("button", { name: /About/ })).toBeNull();
   for (const tab of ["agents", "jobs", "watches", "tasks"] as const) {
@@ -333,6 +336,7 @@ test("a phone chip shows its single count and keeps the full fraction accessible
   const chip = await screen.findByRole("button", { name: /Agents, 3 of 4 active/ });
   expect(chip.textContent).toContain("3");
   expect(chip.textContent).not.toContain("3/4");
+  expect(chip.dataset.compact).toBe("true");
 });
 
 test("footer and tabs explain summary counts through paging and activity changes", async () => {
