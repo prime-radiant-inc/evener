@@ -68,6 +68,8 @@ import { WarningBlock } from "./WarningItem";
 
 const CLASS = {
   line: requireClass(styles.line, "systemnoticeitem.module.css", "line"),
+  quietYield: requireClass(styles.quietYield, "systemnoticeitem.module.css", "quietYield"),
+  quietYieldSummary: requireClass(styles.quietYieldSummary, "systemnoticeitem.module.css", "quietYieldSummary"),
   failure: requireClass(styles.failure, "systemnoticeitem.module.css", "failure"),
   failureText: requireClass(styles.failureText, "systemnoticeitem.module.css", "failureText"),
   groupBody: requireClass(styles.groupBody, "systemnoticeitem.module.css", "groupBody"),
@@ -243,7 +245,11 @@ function QuietYieldLine({ item, sessionRef }: { item: ItemModel; sessionRef?: st
   const disclosureScope = disclosureScopeForSession(context, sessionRef);
   const disclosureKey = scopedDisclosureId(disclosureScope, item.id);
   if (!words.rendersMarkdown) {
-    return <NoticeLine text={summary} />;
+    return (
+      <div className={CLASS.quietYield} data-testid="system-notice-line" data-message-body="">
+        {summary}
+      </div>
+    );
   }
   return (
     <Disclosure
@@ -252,7 +258,7 @@ function QuietYieldLine({ item, sessionRef }: { item: ItemModel; sessionRef?: st
       defaultOpen={false}
       ignoreBaseline
       data-testid="system-notice-quiet-yield"
-      summary={<span>{summary}</span>}
+      summary={<span className={CLASS.quietYieldSummary}>{summary}</span>}
     >
       <div className={CLASS.scaffoldBody} data-testid="system-notice-quiet-yield-body" data-message-body="">
         <Markdown source={words.text} />
