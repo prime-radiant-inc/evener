@@ -51,24 +51,23 @@ type ListedReasoningLevels []string
 
 func (l *ListedReasoningLevels) UnmarshalJSON(b []byte) error {
 	var entries []json.RawMessage
-	if err := json.Unmarshal(b, &entries); err != nil {
-		return nil
+	if err := json.Unmarshal(b, &entries); err == nil {
+		out := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			var name string
+			if err := json.Unmarshal(entry, &name); err == nil {
+				out = append(out, name)
+				continue
+			}
+			var obj struct {
+				Effort string `json:"effort"`
+			}
+			if err := json.Unmarshal(entry, &obj); err == nil {
+				out = append(out, obj.Effort)
+			}
+		}
+		*l = out
 	}
-	out := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		var name string
-		if err := json.Unmarshal(entry, &name); err == nil {
-			out = append(out, name)
-			continue
-		}
-		var obj struct {
-			Effort string `json:"effort"`
-		}
-		if err := json.Unmarshal(entry, &obj); err == nil {
-			out = append(out, obj.Effort)
-		}
-	}
-	*l = out
 	return nil
 }
 

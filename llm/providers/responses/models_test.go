@@ -152,8 +152,7 @@ func TestListModelsFailsWhenNoRowDecodes(t *testing.T) {
 	if err == nil {
 		t.Fatal("a listing with no decodable row must fail")
 	}
-	var typeErr *json.UnmarshalTypeError
-	if !errors.As(err, &typeErr) {
+	if _, ok := errors.AsType[*json.UnmarshalTypeError](err); !ok {
 		t.Fatalf("err = %v, want it to wrap the row's decode error", err)
 	}
 }
