@@ -31,10 +31,10 @@
         <li class="option" data-recommended="true">
           <span class="optionCopy">
             <span class="optionLead">
-              <span class="label">cherry-pick-a323417b7c9d2e4f6a8b0c1d3e5f7a9b1c3d5e7f9-onto-release/1.4</span>
-              <span class="recommended">Recommended</span>
+              <span class="optionName">cherry-pick-a323417b7c9d2e4f6a8b0c1d3e5f7a9b1c3d5e7f9-onto-release/1.4</span>
+              <span class="optionRecommended">Recommended</span>
             </span>
-            <span class="detail">The complete unbroken label must wrap inside the historical card.</span>
+            <span class="optionDetail">The complete unbroken label must wrap inside the historical card.</span>
           </span>
         </li>
       </ul>
@@ -49,7 +49,7 @@ function rectOf(element) {
 
 window.measure = function () {
   const card = document.querySelector('[data-testid="ask-user-question"]');
-  const label = document.querySelector('.label');
+  const label = document.querySelector('.optionName');
   const range = document.createRange();
   range.selectNodeContents(label);
   return {

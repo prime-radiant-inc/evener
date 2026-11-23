@@ -79,38 +79,6 @@
   accent-color: var(--accent);
 }
 
-.optionCopy {
-  min-width: 0;
-}
-
-.optionLead {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--space-1) var(--space-2);
-}
-
-.optionName {
-  min-width: 0;
-  font-weight: var(--font-weight-semibold);
-  color: var(--ink-hi);
-}
-
-/* A recommendation is ordinary selection guidance, so it uses the accent
- * ink companion rather than the question's attention cue. */
-.optionRecommended {
-  font-size: var(--font-size-caption);
-  color: var(--accent-ink);
-}
-
-.optionDetail {
-  display: block;
-  margin-top: var(--space-half);
-  font-size: var(--font-size-caption);
-  line-height: var(--line-height-ui);
-  color: var(--ink-mid);
-}
-
 .textInput {
   flex: 1;
   font-family: var(--font-sans);

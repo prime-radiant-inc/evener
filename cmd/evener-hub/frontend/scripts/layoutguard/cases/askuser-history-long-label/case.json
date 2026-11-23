@@ -11,10 +11,11 @@
     "styles/global.css",
     "styles/tokens.css",
     "widgets/card/card.module.css",
+    "panes/session/askoptioncopy.module.css",
     "panes/session/transcript/tools/askuser.module.css"
   ],
   "mutation": {
-    "declaration": "askuser.module.css: .label { min-width: 0 } - removing it restores the flex item's min-content minimum and lets the unbroken label escape the card",
+    "declaration": "askoptioncopy.module.css: .optionName { min-width: 0 } - removing it restores the flex item's min-content minimum and lets the unbroken label escape the card",
     "verified": "2026-11-23",
     "expect": "fail"
   }

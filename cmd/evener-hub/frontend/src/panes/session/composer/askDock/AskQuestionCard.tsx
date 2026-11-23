@@ -25,6 +25,8 @@ import type { AskQuestionRef, AskResolution } from "@evener/appwire-client";
 import { useEffect, useId, useRef } from "react";
 import { VisuallyHidden } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { AskOptionCopy } from "../../AskOptionCopy";
+import optionStyles from "../../askoptioncopy.module.css";
 import type { AskAnswerState } from "./askDockStore";
 import styles from "./askquestioncard.module.css";
 
@@ -36,11 +38,8 @@ const CLASS = {
   optionGroup: requireClass(styles.optionGroup, "askquestioncard.module.css", "optionGroup"),
   optionRow: requireClass(styles.optionRow, "askquestioncard.module.css", "optionRow"),
   optionControl: requireClass(styles.optionControl, "askquestioncard.module.css", "optionControl"),
-  optionCopy: requireClass(styles.optionCopy, "askquestioncard.module.css", "optionCopy"),
-  optionLead: requireClass(styles.optionLead, "askquestioncard.module.css", "optionLead"),
-  optionName: requireClass(styles.optionName, "askquestioncard.module.css", "optionName"),
-  optionRecommended: requireClass(styles.optionRecommended, "askquestioncard.module.css", "optionRecommended"),
-  optionDetail: requireClass(styles.optionDetail, "askquestioncard.module.css", "optionDetail"),
+  optionCopy: requireClass(optionStyles.optionCopy, "askoptioncopy.module.css", "optionCopy"),
+  optionLead: requireClass(optionStyles.optionLead, "askoptioncopy.module.css", "optionLead"),
   textInput: requireClass(styles.textInput, "askquestioncard.module.css", "textInput"),
   noteRow: requireClass(styles.noteRow, "askquestioncard.module.css", "noteRow"),
 };
@@ -156,17 +155,7 @@ export function AskQuestionCard({
             }
             onChange={(e) => handleOptionChange(opt.label, e.target.checked)}
           />
-          <span className={CLASS.optionCopy}>
-            <span className={CLASS.optionLead}>
-              <span className={CLASS.optionName}>{opt.label}</span>
-              {opt.recommended && (
-                <span className={CLASS.optionRecommended} data-slot="recommended">
-                  Recommended
-                </span>
-              )}
-            </span>
-            {opt.detail && <span className={CLASS.optionDetail}>{opt.detail}</span>}
-          </span>
+          <AskOptionCopy label={opt.label} detail={opt.detail} recommended={opt.recommended} />
         </label>
       ))}
 

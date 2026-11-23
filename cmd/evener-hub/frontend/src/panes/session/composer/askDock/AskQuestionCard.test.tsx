@@ -14,6 +14,10 @@ function cardCss(): string {
   return readModuleCss(import.meta.url, "askquestioncard.module.css");
 }
 
+function optionCss(): string {
+  return readModuleCss(import.meta.url, "../../askoptioncopy.module.css");
+}
+
 function question(overrides: Partial<AskQuestionRef> = {}): AskQuestionRef {
   return {
     key: "call_1:0",
@@ -82,7 +86,7 @@ test("option labels and details form separate lines in a wrapping copy stack", (
   expect(copy?.contains(labelLine)).toBe(true);
   expect(detailEl.parentElement).toBe(copy);
 
-  const css = cardCss();
+  const css = optionCss();
   const rule = css.match(/\.optionName\s*\{([^}]*)\}/);
   expect(rule, "askquestioncard.module.css must declare an .optionName rule").not.toBeNull();
   expect(rule![1]).toMatch(/font-weight:\s*var\(--font-weight-semibold\)/);
@@ -100,7 +104,7 @@ test("the recommended option carries an accent suffix right after its bold label
   expect(marker?.parentElement).toBe(yesLabel.parentElement);
   expect(yesLabel.nextElementSibling).toBe(marker);
 
-  const css = cardCss();
+  const css = optionCss();
   const rule = css.match(/\.optionRecommended\s*\{([^}]*)\}/);
   expect(rule, "askquestioncard.module.css must declare an .optionRecommended rule").not.toBeNull();
   // Canonical design-system §2: semantic text uses the AA ink companion,

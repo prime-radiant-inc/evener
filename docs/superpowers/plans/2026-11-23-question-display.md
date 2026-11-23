@@ -23,13 +23,15 @@
 - Options without details and `Something else…` must retain comfortable target sizes; the existing option-row CSS check owns this.
 - Switching between an option and free text must preserve focus and mutual exclusion; existing AskQuestionCard behavior tests own this.
 - Multi-question batches must retain numbered tabs even though single cards lose their numeric prefix; existing AskDock tab tests own this.
-- Read-only history must remain noninteractive and retain its parsing fallbacks; existing askUser renderer tests own this.
+- Read-only history must remain noninteractive and retain its parsing fallbacks; existing askUser renderer tests own this. Live and history share `AskOptionCopy`, so their wrapping rule cannot drift apart.
 
 ---
 
 ### Task 1: Neutral-frame question hierarchy
 
 **Files:**
+- Create: `cmd/evener-hub/frontend/src/panes/session/AskOptionCopy.tsx`
+- Create: `cmd/evener-hub/frontend/src/panes/session/askoptioncopy.module.css`
 - Modify: `cmd/evener-hub/frontend/src/panes/session/composer/askDock/AskDock.tsx`
 - Modify: `cmd/evener-hub/frontend/src/panes/session/composer/askDock/askdock.module.css`
 - Modify: `cmd/evener-hub/frontend/src/panes/session/composer/askDock/AskQuestionCard.tsx`
@@ -92,7 +94,7 @@ Expected: PASS, including all unchanged interaction, recovery, focus, and tab te
 
 - [x] **Step 7: Align read-only history and its fixture**
 
-In `askUser.tsx` and `askuser.module.css`, keep the read-only `Card` and controls-free rendering while applying the same strong prose question, label-line/detail stack, and quiet recommendation treatment. Do not add live attention or answer controls.
+In `askUser.tsx` and `askuser.module.css`, keep the read-only `Card` and controls-free rendering while applying the same strong prose question, label-line/detail stack, and quiet recommendation treatment. Share that stack through `AskOptionCopy` and `askoptioncopy.module.css` so live and historical labels cannot drift. Do not add live attention or answer controls.
 
 Update `askdock-mobile-tall-crush/harness.html` to mirror the new neutral card, cue, and option markup. Keep its real-browser measurements for label/detail separation, unbroken-token wrapping, transcript scrolling, and unchanged pane allocation. Update `case.json`'s description and mutation note to describe the grid/copy-stack layout while retaining the existing `overflow-wrap` mutation oracle. Add `askuser-history-long-label` to prove the read-only flex label also wraps an unbroken token inside its card.
 

@@ -28,36 +28,6 @@
   overflow-wrap: break-word;
 }
 
-.optionCopy {
-  display: block;
-}
-
-.optionLead {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--space-1) var(--space-2);
-}
-
-.label {
-  min-width: 0;
-  font-weight: var(--font-weight-semibold);
-  color: var(--ink-hi);
-}
-
-.recommended {
-  color: var(--accent-ink);
-  font-size: var(--font-size-caption);
-}
-
-.detail {
-  display: block;
-  margin-top: var(--space-half);
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-  line-height: var(--line-height-ui);
-}
-
 .note {
   font-size: var(--font-size-caption);
   color: var(--ink-mid);
