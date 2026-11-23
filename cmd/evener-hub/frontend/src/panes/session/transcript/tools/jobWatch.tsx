@@ -21,6 +21,7 @@ import {
   conditionSpec,
   endReasonPhrase,
   filterSummaryPhrase,
+  formatClockTime,
   humanizeInterval,
   humanizeSeconds,
   isRecognizedWatchResult,
@@ -43,6 +44,7 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 import { Button, Card, Chip } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { formatMonthDay } from "../../../../widgets/timestamp/formatAbsoluteTime";
 import { EntityRef } from "../EntityRef";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
@@ -390,19 +392,11 @@ function ListBody({ raw }: { raw: JsonObject }) {
   );
 }
 
-// formatCreatedDate renders the inspect created_at as an absolute clock
-// ("created Sep 6, 09:41") — the one place the mockup keeps a clock: a
-// duration since creation would go stale on every render, while the moment
-// the watch was armed stays true.
+// formatCreatedDate keeps the one mockup clock: the moment the watch was armed.
 function formatCreatedDate(createdAt: string | undefined): string | undefined {
-  if (!createdAt) return undefined;
-  const parsed = new Date(createdAt);
-  if (Number.isNaN(parsed.getTime())) return undefined;
-  const month = parsed.toLocaleString("en-US", { month: "short" });
-  const day = parsed.getDate();
-  const hours = String(parsed.getHours()).padStart(2, "0");
-  const minutes = String(parsed.getMinutes()).padStart(2, "0");
-  return `created ${month} ${day}, ${hours}:${minutes}`;
+  const clock = formatClockTime(createdAt);
+  if (createdAt === undefined || clock === undefined) return undefined;
+  return `created ${formatMonthDay(Date.parse(createdAt))}, ${clock}`;
 }
 
 function InspectBody({ raw }: { raw: JsonObject }) {

@@ -52,11 +52,6 @@
   padding-left: 0;
 }
 
-.metaSep {
-  color: var(--edge-strong);
-  user-select: none;
-}
-
 .metaK {
   color: var(--ink-low);
   font-family: var(--font-sans);

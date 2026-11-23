@@ -38,6 +38,11 @@ const DATE_TIME = new Intl.DateTimeFormat("en", {
   second: "2-digit",
   hour12: false,
 });
+const MONTH_DAY = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
+
+export function formatMonthDay(value: number): string {
+  return MONTH_DAY.format(value);
+}
 
 /** formatAbsoluteTime renders an epoch-ms instant in the shape `format`
  * names; see this module's header. `value` is expected to be a finite epoch:

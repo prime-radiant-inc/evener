@@ -1059,6 +1059,17 @@ test("the card's first line carries the lifecycle word together with turns, call
   expect(order).toEqual(["status", "turns", "calls", "clock"]);
 });
 
+test("the stats line's separators are decoration", async () => {
+  const row = renderRunningStableDelegate("separators");
+  const stats = await within(row).findByTestId("subagent-stats");
+  await waitFor(() => expect(stats.dataset.calls).toBe("3"));
+  const separators = [...stats.querySelectorAll("[data-separator]")];
+  expect(separators.length).toBeGreaterThan(0);
+  for (const separator of separators) {
+    expect(separator.getAttribute("aria-hidden")).toBe("true");
+  }
+});
+
 test("the folded latest-tool-use quote renders below the merged status line", async () => {
   const row = renderRunningStableDelegate("below");
   const stats = within(row).getByTestId("subagent-stats");
