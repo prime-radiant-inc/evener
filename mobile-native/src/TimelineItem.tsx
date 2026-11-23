@@ -187,6 +187,7 @@ export function TimelineItem({
 							hubId={hubId}
 							sessionRef={sessionRef}
 							sourceTurns={sourceTurns}
+							thinkingOpenByDefault={thinkingOpenByDefault}
 							delegates={delegates}
 							openSubagent={openSubagent}
 							errorActionFor={errorActionFor}

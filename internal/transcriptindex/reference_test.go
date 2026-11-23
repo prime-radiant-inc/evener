@@ -123,13 +123,50 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 		awaiting      *schema.Turn
 		awaitingItem  map[string]int
 		awaitingNames map[string]string
+		awaitingEntry int
+	}
+	demotedEntries := map[int]bool{}
+	refAssistantByCall := map[string]int{}
+	for i, entry := range entries {
+		if _, bad := unreadable[i]; bad || entry.OriginalOrdinal != nil {
+			continue
+		}
+		entryIndex := i + 1
+		switch entry.Kind {
+		case schema.TurnAssistant:
+			hasText := assistantEntryHasText(&entry)
+			for _, part := range entry.Message.Content {
+				if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
+					if hasText {
+						refAssistantByCall[part.ToolCall.ID] = entryIndex
+					} else {
+						delete(refAssistantByCall, part.ToolCall.ID)
+					}
+				}
+			}
+		case schema.TurnTool, schema.TurnToolResults:
+			for _, part := range entry.Message.Content {
+				if part.Kind != llm.ContentToolResult || part.ToolResult == nil {
+					continue
+				}
+				if apptranscript.IsQuietCommunicate(part.ToolResult) {
+					if idx, ok := refAssistantByCall[part.ToolResult.ToolCallID]; ok {
+						demotedEntries[idx] = true
+					}
+				}
+				delete(refAssistantByCall, part.ToolResult.ToolCallID)
+			}
+		case schema.TurnCommunicate:
+			if entry.Communicate != nil {
+				delete(refAssistantByCall, entry.Communicate.CallID)
+			}
+		}
 	}
 	var turns []*turnState
 	byID := map[string]*turnState{}
 	var grouper apptranscript.TurnGrouper
 	reg := apptranscript.NewToolCallRegistry()
 	identityReg := apptranscript.NewToolCallRegistry()
-	assistantByCall := map[string]int{}
 	add := func(s *turnState, item appwire.ThreadItem, entryIndex, part int) int {
 		item.Version = uint64(entryIndex)
 		s.items = append(s.items, item)
@@ -169,14 +206,9 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 			if entry.Model != "" {
 				s.model = entry.Model
 			}
-			if entry.Kind == schema.TurnAssistant {
-				for _, part := range entry.Message.Content {
-					if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
-						assistantByCall[part.ToolCall.ID] = entryIndex
-					}
-				}
-			}
+			reg.SkipAssistantText = entry.Kind == schema.TurnAssistant && demotedEntries[entryIndex]
 			items, parts := apptranscript.ProjectTurnParts(id, entryIndex, entry, reg, nil, apptranscript.ToolResultOutputImages)
+			reg.SkipAssistantText = false
 			for j, item := range items {
 				if apptranscript.MergesByCallID(item) {
 					if at, ok := s.calls[item.CallID]; ok {
@@ -250,6 +282,7 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 			}
 		}
 		if entry.Kind == schema.TurnCommunicate && entry.Communicate != nil && s.awaiting != nil &&
+			!demotedEntries[s.awaitingEntry] &&
 			apptranscript.EchoesAssistantText(referenceLastTextRun(s.awaiting.Message.Content), entry.Communicate.Message) {
 			reason := entry.Communicate.EndReason
 			if reason == "" && entry.Communicate.EndTurn {
@@ -268,16 +301,10 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 			}
 			continue
 		}
-		if entry.Kind == schema.TurnAssistant {
-			for _, part := range entry.Message.Content {
-				if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
-					assistantByCall[part.ToolCall.ID] = entryIndex
-				}
-			}
-		}
 		entryReg := &apptranscript.ToolCallRegistry{
-			Names:      seed,
-			QuietCalls: identityReg.QuietCalls,
+			Names:             seed,
+			QuietCalls:        identityReg.QuietCalls,
+			SkipAssistantText: entry.Kind == schema.TurnAssistant && demotedEntries[entryIndex],
 		}
 		if entry.Kind == schema.TurnCommunicate && entry.Communicate != nil {
 			delete(identityReg.QuietCalls, entry.Communicate.CallID)
@@ -315,34 +342,8 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 			}
 			if len(calls) > 0 {
 				awaiting := entry
-				s.awaiting, s.awaitingItem, s.awaitingNames = &awaiting, calls, names
+				s.awaiting, s.awaitingItem, s.awaitingNames, s.awaitingEntry = &awaiting, calls, names, entryIndex
 			}
-		}
-	}
-	demotedEntries := map[int]bool{}
-	for _, s := range turns {
-		for _, item := range s.items {
-			if item.Type == "systemMessage" && item.EventKind == appwire.ThreadItemEventKindQuietYield && item.CallID != "" {
-				if entryIndex, ok := assistantByCall[item.CallID]; ok {
-					demotedEntries[entryIndex] = true
-				}
-			}
-		}
-	}
-	if len(demotedEntries) > 0 {
-		for _, s := range turns {
-			keptItems := make([]appwire.ThreadItem, 0, len(s.items))
-			keptPositions := make([]appwire.ThreadItemPosition, 0, len(s.positions))
-			keptEntries := make([]int, 0, len(s.entryIdx))
-			for j, item := range s.items {
-				if item.Type == "agentMessage" && demotedEntries[s.entryIdx[j]] {
-					continue
-				}
-				keptItems = append(keptItems, item)
-				keptPositions = append(keptPositions, s.positions[j])
-				keptEntries = append(keptEntries, s.entryIdx[j])
-			}
-			s.items, s.positions, s.entryIdx = keptItems, keptPositions, keptEntries
 		}
 	}
 	var out []referenceTurn

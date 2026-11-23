@@ -242,7 +242,6 @@ function QuietYieldLine({ item, sessionRef }: { item: ItemModel; sessionRef?: st
   const context = useTranscriptRenderContext();
   const disclosureScope = disclosureScopeForSession(context, sessionRef);
   const disclosureKey = scopedDisclosureId(disclosureScope, item.id);
-  const defaultOpen = disclosureDefault(disclosureScope, item.id, false);
   if (!words.rendersMarkdown) {
     return <NoticeLine text={summary} />;
   }
@@ -250,7 +249,7 @@ function QuietYieldLine({ item, sessionRef }: { item: ItemModel; sessionRef?: st
     <Disclosure
       variant="quiet"
       id={disclosureKey}
-      defaultOpen={defaultOpen}
+      defaultOpen={false}
       ignoreBaseline
       data-testid="system-notice-quiet-yield"
       summary={<span>{summary}</span>}

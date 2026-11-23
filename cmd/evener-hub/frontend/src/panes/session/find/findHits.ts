@@ -337,7 +337,13 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string, view
   if (needle === "") return [];
   const version = view.version ?? mermaidRenderVersion();
   const hits: FindHit[] = [];
-  const add = (entry: ProjectedEntry, rowIndex: number, turn: ProjectedTurn | undefined, groupId?: string) => {
+  const add = (
+    entry: ProjectedEntry,
+    rowIndex: number,
+    turn: ProjectedTurn | undefined,
+    groupId?: string,
+    ignoreGroupBaseline = false,
+  ) => {
     if (entry.kind === "item" && entry.item.type === "commandExecution") {
       // A tool call's own lines are classified by where they sit (its intent
       // line, its summary line, its body).
@@ -386,9 +392,20 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string, view
     // run costs a scan, and Find runs on every keystroke.
     let placement: SystemNoticePlacement | null = null;
     if (entry.item.type === "reasoning") {
-      placement = { opens: groupId !== undefined ? [groupId, entryDisplayKey(entry)] : [entryDisplayKey(entry)] };
+      placement =
+        groupId !== undefined
+          ? {
+              opens: [groupId, entryDisplayKey(entry)],
+              ...(ignoreGroupBaseline ? { opensIgnoreBaseline: true } : {}),
+            }
+          : { opens: [entryDisplayKey(entry)] };
     } else if (groupId !== undefined)
-      placement = groupedSystemNoticePlacement(entry.item, groupId, (rendered) => readable(rendered).includes(needle));
+      placement = groupedSystemNoticePlacement(
+        entry.item,
+        groupId,
+        (rendered) => readable(rendered).includes(needle),
+        ignoreGroupBaseline,
+      );
     // A thought opens its own row; no other rule applies to it.
     else if (turn !== undefined && view.config !== undefined)
       placement = systemNoticePlacement(entry, turn, view.config);
@@ -417,7 +434,7 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string, view
     }
     if (row.kind === "quietYieldGroup") {
       for (const [idx, entry] of row.entries.entries()) {
-        add(entry, rowIndex, row.turns[idx], row.id);
+        add(entry, rowIndex, row.turns[idx], row.id, true);
       }
       return;
     }

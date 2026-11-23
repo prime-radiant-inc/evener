@@ -836,6 +836,15 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 		return items
 	case schema.TurnTool, schema.TurnToolResults:
 		var items []appwire.ThreadItem
+		// Clear any demoted companion text before scanning parts so a healed
+		// communicate in the same TurnToolResults entry does not echo-suppress it.
+		for _, part := range turn.Message.Content {
+			if part.Kind == llm.ContentToolResult && part.ToolResult != nil && IsQuietCommunicate(part.ToolResult) {
+				if qentry := reg.QuietCalls[part.ToolResult.ToolCallID]; qentry != nil {
+					reg.clearDemotedAssistantText(qentry.EntryIndex)
+				}
+			}
+		}
 		for i, part := range turn.Message.Content {
 			if part.Kind != llm.ContentToolResult || part.ToolResult == nil {
 				continue

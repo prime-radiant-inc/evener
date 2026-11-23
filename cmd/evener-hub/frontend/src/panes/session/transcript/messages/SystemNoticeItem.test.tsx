@@ -656,3 +656,25 @@ test("a quiet_yield notice with demoted commentary renders collapsed by default 
   expect(disclosure.open).toBe(true);
   expect(screen.getByTestId("system-notice-quiet-yield-body").textContent).toContain("demoted-commentary-sentinel");
 });
+
+test("a quiet_yield notice arriving after the Full baseline is active starts collapsed and preserves explicit opens", () => {
+  const { rerender } = renderTurnFull(turnWith([item("initial_1")]));
+  const quiet = item("qy_late", {
+    eventKind: "quiet_yield",
+    text: "quiet-line-sentinel",
+    raw: { commentary: "late-commentary-sentinel" },
+  });
+  rerender(
+    <TranscriptRenderProvider config={fullConfig} surface="readOnly" disclosureScope="sni:full">
+      <TurnBlock turn={turnWith([item("initial_1"), quiet])} />
+    </TranscriptRenderProvider>,
+  );
+  const disclosure = screen.getByTestId("system-notice-quiet-yield") as HTMLDetailsElement;
+  expect(disclosure.open).toBe(false);
+  expect(screen.queryByTestId("system-notice-quiet-yield-body")).toBeNull();
+
+  const summary = disclosure.querySelector(":scope > summary");
+  if (!summary) throw new Error("missing summary");
+  fireEvent.click(summary);
+  expect(disclosure.open).toBe(true);
+});

@@ -928,4 +928,64 @@ test("quiet_yield demoted commentary is searchable standalone and inside a quiet
   expect(findHits(groupedRows, "quokka-grouped", { config: TOOLS })).toEqual([
     { key: "qy_2", itemId: "qy_2", rowIndex: 0, opens: ["quiet-yield-group:qy_1", "qy_2"], opensIgnoreBaseline: true },
   ]);
+
+  const completedNotif = notificationWireItem("job-shell-completed");
+  const fullModel: ThreadModel = {
+    ...makeTranscriptPreviewModel(),
+    ref: "ref_a",
+    turns: [
+      {
+        id: "turn_w1",
+        status: "completed",
+        items: [
+          {
+            id: "r_1",
+            turnId: "turn_w1",
+            type: "reasoning",
+            text: "",
+            reasoningSummaries: [["quokka-thought"]],
+            status: "completed",
+          },
+          {
+            id: "steer_1",
+            turnId: "turn_w1",
+            type: "steering",
+            steeringKind: completedNotif.steeringKind,
+            text: completedNotif.text ?? "",
+            status: "completed",
+          },
+          quietItem("qy_w1", "turn_w1"),
+        ],
+      },
+      { id: "turn_w2", status: "completed", items: [quietItem("qy_w2", "turn_w2", "quokka-commentary")] },
+    ],
+  };
+  const FULL = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
+  const fullRows = transcriptRowsForProjection(projectThread(fullModel, FULL));
+  const fullOpts = { config: FULL, sessionRef: "ref_a" };
+  const groupId = "quiet-yield-group:r_1";
+  expect(findHits(fullRows, "quokka-thought", fullOpts)).toEqual([
+    { key: "r_1", itemId: "r_1", rowIndex: 0, opens: [groupId, "r_1"], opensIgnoreBaseline: true },
+  ]);
+  expect(findHits(fullRows, "Run the agent tests", fullOpts)).toEqual([
+    {
+      key: "steer_1",
+      itemId: "steer_1",
+      rowIndex: 0,
+      opens: [groupId, "notification:ref_a:job_7:steer_1:0"],
+      opensIgnoreBaseline: true,
+    },
+  ]);
+  expect(findHits(fullRows, "primeradiant.com/evener/agent", fullOpts)).toEqual([
+    {
+      key: "steer_1",
+      itemId: "steer_1",
+      rowIndex: 0,
+      opens: [groupId, "notification:ref_a:job_7:steer_1:0"],
+      opensIgnoreBaseline: true,
+    },
+  ]);
+  expect(findHits(fullRows, "quokka-commentary", fullOpts)).toEqual([
+    { key: "qy_w2", itemId: "qy_w2", rowIndex: 0, opens: [groupId, "qy_w2"], opensIgnoreBaseline: true },
+  ]);
 });

@@ -241,8 +241,7 @@ export function ProjectedQuietYieldGroup({
   const itemRenderContext = renderContext ?? context;
   const scope = disclosureScopeForSession(context, sessionRef);
   const disclosureKey = scopedDisclosureId(scope, rowId);
-  const fallback = disclosureDefault(scope, rowId, false);
-  const open = isDisclosureOpen(disclosureKey, fallback, { ignoreBaseline: true });
+  const open = isDisclosureOpen(disclosureKey, false, { ignoreBaseline: true });
   const count =
     quietCount ?? entries.filter((entry) => entry.item.type === "systemMessage" && isQuietYield(entry.item)).length;
   const first = entries[0];
@@ -266,7 +265,7 @@ export function ProjectedQuietYieldGroup({
           <Disclosure
             variant="quiet"
             id={disclosureKey}
-            defaultOpen={fallback}
+            defaultOpen={false}
             ignoreBaseline
             data-testid="quiet-yield-group"
             summary={<span data-count={count}>{count} quiet yields</span>}

@@ -1,7 +1,9 @@
 package apptranscript
 
 import (
+	"slices"
 	"sort"
+	"strings"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
@@ -112,6 +114,13 @@ type logicalTurnAccumulator struct {
 	// interruptAwaitedCalls), but a call announced after a later reopen is not
 	// its concern.
 	stampedCompletionAt map[string][]int
+	suppressedComms     []suppressedCommunicateEcho
+}
+
+type suppressedCommunicateEcho struct {
+	turnID     string
+	entryIndex int
+	item       appwire.ThreadItem
 }
 
 // stampedState is one stamped turn's folded completion state: the status the
@@ -311,6 +320,12 @@ func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, t
 						acc.turns[i].itemEntries = append(acc.turns[i].itemEntries, entryIndex)
 					}
 					break
+				}
+			} else if turn.Kind == schema.TurnCommunicate && turn.Communicate != nil {
+				if item, ok := CommunicateItem(turn.TurnID, entryIndex, turn); ok && item.Text != "" {
+					acc.suppressedComms = append(acc.suppressedComms, suppressedCommunicateEcho{
+						turnID: turn.TurnID, entryIndex: entryIndex, item: item,
+					})
 				}
 			}
 		}
@@ -562,17 +577,51 @@ func demoteQuietCompanionMessages(acc *logicalTurnAccumulator) {
 	if len(demotedEntries) == 0 {
 		return
 	}
+	restoresByGroup := map[int][]suppressedCommunicateEcho{}
+	for _, c := range acc.suppressedComms {
+		for i := len(acc.turns) - 1; i >= 0; i-- {
+			group := &acc.turns[i]
+			if group.turnID != c.turnID || len(group.entryIndexes) == 0 || group.entryIndexes[0] > c.entryIndex {
+				continue
+			}
+			for k, item := range slices.Backward(group.items) {
+				if group.itemEntries[k] >= c.entryIndex || item.Type != "agentMessage" {
+					continue
+				}
+				if strings.TrimSpace(item.Text) == "" {
+					continue
+				}
+				if demotedEntries[group.itemEntries[k]] && EchoesAssistantText(item.Text, c.item.Text) {
+					restoresByGroup[i] = append(restoresByGroup[i], c)
+				}
+				break
+			}
+			break
+		}
+	}
 	for i := range acc.turns {
 		group := &acc.turns[i]
-		keptItems := make([]appwire.ThreadItem, 0, len(group.items))
-		keptEntries := make([]int, 0, len(group.itemEntries))
+		restores := restoresByGroup[i]
+		restoreIdx := 0
+		keptItems := make([]appwire.ThreadItem, 0, len(group.items)+len(restores))
+		keptEntries := make([]int, 0, len(group.itemEntries)+len(restores))
 		for j, item := range group.items {
 			entryIndex := group.itemEntries[j]
+			for restoreIdx < len(restores) && restores[restoreIdx].entryIndex < entryIndex {
+				keptItems = append(keptItems, restores[restoreIdx].item)
+				keptEntries = append(keptEntries, restores[restoreIdx].entryIndex)
+				restoreIdx++
+			}
 			if item.Type == "agentMessage" && demotedEntries[entryIndex] {
 				continue
 			}
 			keptItems = append(keptItems, item)
 			keptEntries = append(keptEntries, entryIndex)
+		}
+		for restoreIdx < len(restores) {
+			keptItems = append(keptItems, restores[restoreIdx].item)
+			keptEntries = append(keptEntries, restores[restoreIdx].entryIndex)
+			restoreIdx++
 		}
 		group.items = keptItems
 		group.itemEntries = keptEntries

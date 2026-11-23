@@ -2303,4 +2303,124 @@ describe("consecutive quiet_yield cross-turn grouping", () => {
       expect(brokenRows.map((row) => row.kind)).toEqual(["turn", "quietYieldGroup", "turn", "turn"]);
     },
   );
+
+  test("keeps newly arriving quiet_yield commentary and quietYieldGroup collapsed when Full baseline is active", async () => {
+    const initialModel: ThreadModel = {
+      ...fixture,
+      turns: [
+        {
+          id: "turn_u",
+          status: "completed",
+          items: [{ id: "u1", turnId: "turn_u", type: "userMessage", text: "watch", status: "completed" }],
+        },
+      ],
+    };
+    const rendered = await act(async () =>
+      render(
+        <TranscriptBody
+          model={initialModel}
+          config={preset("full")}
+          surface="readOnly"
+          disclosureScope="qy:full-baseline"
+        />,
+      ),
+    );
+    const updatedModel: ThreadModel = {
+      ...fixture,
+      turns: [
+        ...initialModel.turns,
+        {
+          id: "turn_action_qy",
+          status: "completed",
+          items: [
+            {
+              id: "act_1",
+              turnId: "turn_action_qy",
+              type: "commandExecution",
+              text: "",
+              toolName: "shell",
+              status: "completed",
+            },
+            {
+              id: "qy_standalone",
+              turnId: "turn_action_qy",
+              type: "systemMessage",
+              text: "quiet-sentinel",
+              eventKind: "quiet_yield",
+              raw: { commentary: "standalone-full-commentary" },
+            },
+          ],
+        },
+        {
+          id: "turn_w1",
+          status: "completed",
+          items: [
+            {
+              id: "r_w1",
+              turnId: "turn_w1",
+              type: "reasoning",
+              text: "",
+              reasoningSummaries: [["thought-w1"]],
+              status: "completed",
+            },
+            { id: "qy_w1", turnId: "turn_w1", type: "systemMessage", text: "quiet-sentinel", eventKind: "quiet_yield" },
+          ],
+        },
+        {
+          id: "turn_w2",
+          status: "completed",
+          items: [
+            {
+              id: "qy_w2",
+              turnId: "turn_w2",
+              type: "systemMessage",
+              text: "quiet-sentinel",
+              eventKind: "quiet_yield",
+              raw: { commentary: "grouped-full-commentary" },
+            },
+          ],
+        },
+      ],
+    };
+    await act(async () =>
+      rendered.rerender(
+        <TranscriptBody
+          model={updatedModel}
+          config={preset("full")}
+          surface="readOnly"
+          disclosureScope="qy:full-baseline"
+        />,
+      ),
+    );
+
+    const standalone = screen.getByTestId("system-notice-quiet-yield") as HTMLDetailsElement;
+    const group = screen.getByTestId("quiet-yield-group") as HTMLDetailsElement;
+    expect(standalone.open).toBe(false);
+    expect(group.open).toBe(false);
+
+    const groupSummary = group.querySelector(":scope > summary");
+    if (!groupSummary) throw new Error("missing group summary");
+    await act(async () => {
+      fireEvent.click(groupSummary);
+    });
+    expect(group.open).toBe(true);
+    for (const notice of screen.getAllByTestId("system-notice-quiet-yield")) {
+      expect((notice as HTMLDetailsElement).open).toBe(false);
+    }
+
+    await act(async () =>
+      rendered.rerender(
+        <TranscriptBody
+          model={updatedModel}
+          config={preset("full")}
+          surface="readOnly"
+          disclosureScope="qy:full-baseline"
+        />,
+      ),
+    );
+    expect((screen.getByTestId("quiet-yield-group") as HTMLDetailsElement).open).toBe(true);
+    for (const notice of screen.getAllByTestId("system-notice-quiet-yield")) {
+      expect((notice as HTMLDetailsElement).open).toBe(false);
+    }
+  });
 });

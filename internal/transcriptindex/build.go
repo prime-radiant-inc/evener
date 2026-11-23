@@ -949,7 +949,7 @@ func (b *builder) attachCommunicationEcho(summary turnRecord, entry *schema.Turn
 // echoesAwaiting reports whether a COMMUNICATE entry's message repeats the
 // last text run of its turn's awaiting ASSISTANT entry, which already shows it.
 func (b *builder) echoesAwaiting(summary turnRecord, entry *schema.Turn) (bool, error) {
-	if entry.Communicate == nil || summary.AwaitingLength == 0 {
+	if entry.Communicate == nil || summary.AwaitingLength == 0 || b.demotedAssistants[summary.AwaitingOrdinal] {
 		return false, nil
 	}
 	awaiting, err := b.awaitingEntry(summary)

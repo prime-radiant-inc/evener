@@ -263,4 +263,92 @@ func TestQuietYieldIndexParityColdAndIncremental(t *testing.T) {
 			t.Fatalf("historical cut diverges from expected:\ncut: %s\npre: %s", dump(cutWindow.Candidates), dump(preCut.Candidates))
 		}
 	})
+
+	t.Run("explicit_communicate_update_survives_cold_incremental_and_cut", func(t *testing.T) {
+		t.Parallel()
+		updateState := json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":false}`)
+		quietState := json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true,"communicate_quiet":true}`)
+		fx := fixture{
+			name: "quiet-update-echo",
+			lines: []fixtureLine{
+				entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_1", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("go")}, 1)),
+				entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_1", RoundID: "r_1", Kind: schema.TurnAssistant, Message: llm.Message{
+					Role: llm.RoleAssistant,
+					Content: []llm.ContentPart{
+						{Kind: llm.ContentText, Text: "Working on X"},
+						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_msg", Name: "communicate", Arguments: json.RawMessage(`{"message":"Working on X","end_turn":false}`)}},
+						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_quiet", Name: "communicate", Arguments: json.RawMessage(`{}`)}},
+					},
+				}}, 2)),
+				entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_1", Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{
+					CallID: "call_msg", EndTurn: false, Message: "Working on X",
+				}}, 3)),
+				entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_1", RoundID: "r_1", Kind: schema.TurnToolResults, Message: llm.Message{
+					Role: llm.RoleTool,
+					Content: []llm.ContentPart{
+						{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_msg", Name: "communicate", Content: `{"accepted":true,"end_turn":false}`, ToolState: updateState}},
+						{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_quiet", Name: "communicate", Content: `{"accepted":true,"end_turn":true}`, ToolState: quietState}},
+					},
+				}}, 4)),
+				entryLine(at(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_1", Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}}, 5)),
+			},
+		}
+		coldPath := writeFixture(t, fx)
+		cold := openIndex(t, coldPath, t.TempDir())
+		coldWin, err := cold.Latest(40)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref := referenceCandidates(t, coldPath)
+		if !reflect.DeepEqual(coldWin.Candidates, ref) {
+			t.Fatalf("cold diverges from reference:\ncold: %s\nref:  %s", dump(coldWin.Candidates), dump(ref))
+		}
+		var msgs, quiets []appwire.ThreadItem
+		for _, cand := range coldWin.Candidates {
+			if cand.Item.Type == "agentMessage" {
+				msgs = append(msgs, cand.Item)
+			}
+			if cand.Item.EventKind == appwire.ThreadItemEventKindQuietYield {
+				quiets = append(quiets, cand.Item)
+			}
+		}
+		if len(msgs) != 1 || msgs[0].Text != "Working on X" || msgs[0].CallID != "call_msg" || msgs[0].Observation == nil || msgs[0].Observation.EndTurn {
+			t.Fatalf("agentMessages=%+v, want single Working on X update with CallID=call_msg EndTurn=false", msgs)
+		}
+		if len(quiets) != 1 || quietYieldRawCommentary(t, quiets[0].Raw) != "Working on X" {
+			t.Fatalf("quiets=%+v, want quiet_yield with commentary", quiets)
+		}
+
+		incPath, lines := writeHeaderOnly(t, fx)
+		for _, line := range lines[:3] {
+			appendBytes(t, incPath, line)
+		}
+		inc := openIndex(t, incPath, t.TempDir())
+		preCut, err := inc.Latest(40)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range lines[3:] {
+			appendBytes(t, incPath, line)
+		}
+		catchUp(t, inc)
+		incWin, err := inc.Latest(40)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(incWin.Candidates, coldWin.Candidates) {
+			t.Fatalf("incremental diverges from cold:\ninc:  %s\ncold: %s", dump(incWin.Candidates), dump(coldWin.Candidates))
+		}
+		var cutWin Window
+		if err := inc.ReadAt(preCut.Length, func(s *Snapshot) error {
+			var readErr error
+			cutWin, readErr = s.Latest(40)
+			return readErr
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(cutWin.Candidates, preCut.Candidates) {
+			t.Fatalf("historical cut before quiet result diverges from preCut:\ncut: %s\npre: %s", dump(cutWin.Candidates), dump(preCut.Candidates))
+		}
+	})
 }
