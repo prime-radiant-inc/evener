@@ -21,7 +21,7 @@
 - Default tests are deterministic and network-free. Live tests require `EVENER_GITHUB_COPILOT_E2E=1` plus the credential/client ID. Do not log tokens or response bodies carrying them.
 - Assert behavior, structured values, final URLs, and sentinels, never human-readable copy. Keep existing providers' behavior unchanged except where a shared mechanism carries an explicit Copilot opt-in.
 - Work only in the `copilot-provider` worktree. Every task is TDD, commits its listed files, and uses the commit trailer supplied by the executor's own session. Report out-of-scope issues instead of absorbing them.
-- Approved task-budget ceiling is 2,927 production lines after Jesse accepted Task 1's 242 lines, Task 2's 650 lines, a 600-line ceiling for Task 3, and Task 5's reviewed 435 net lines. Each task also carries a local budget; stop and report any new overage rather than expanding scope.
+- Approved task-budget ceiling is 2,961 production lines after Jesse accepted Task 1's 242 lines, Task 2's 650 lines, a 600-line ceiling for Task 3, Task 5's reviewed 435 net lines, and Task 6's reviewed 334 raw lines. Each task also carries a local budget; stop and report any new overage rather than expanding scope.
 
 ## Review Focus
 
@@ -135,14 +135,14 @@
 ### Task 6: Hub Copilot Device Flow, Status, Logout, and Scoped Requests
 
 **Files:**
-- Modify: `cmd/evener-hub/app_auth.go`, `cmd/evener-hub/app_live_prefetch.go`, `cmd/evener-hub/app_credentials.go`
-- Test: `cmd/evener-hub/app_auth_test.go`, `cmd/evener-hub/app_auth_modes_test.go`, `cmd/evener-hub/app_auth_device_binding_test.go`, `cmd/evener-hub/app_auth_device_sweep_test.go`, `cmd/evener-hub/app_auth_flow_endpoint_test.go`, `cmd/evener-hub/app_auth_flow_expiry_test.go`
+- Modify: `cmd/evener-hub/app_auth.go`, `cmd/evener-hub/app_live_prefetch.go`, `cmd/evener-hub/app_credentials.go`, `cmd/evener-hub/spawn.go`, `auth/githubcopilot/service.go`
+- Test: `cmd/evener-hub/app_auth_test.go`, `cmd/evener-hub/app_auth_modes_test.go`, `cmd/evener-hub/app_auth_device_binding_test.go`, `cmd/evener-hub/app_auth_device_sweep_test.go`, `cmd/evener-hub/app_auth_flow_endpoint_test.go`, `cmd/evener-hub/app_auth_flow_expiry_test.go`, `cmd/evener-hub/spawn_test.go`, `auth/githubcopilot/service_test.go`
 
 **Interfaces:**
 - Consumes: Task 2 device/service methods, Task 3 scoped authenticator, Task 5 setup usability result.
 - Produces: scheme-selected device/status/logout behavior over unchanged AppWire response types. Copilot flow state owns interval/expiry; hub state adds only `NextPollAt`.
 
-**Size budget:** 300 production lines.
+**Size budget:** 334 raw production lines (58 removals, 276 net), explicitly accepted by Jesse after shared login completion and credential-lock scope passed re-review.
 
 - [ ] **Step 1: Write failing hub tests.** Cover both OAuth schemes in `authModesFor`; Copilot device start/poll/status/logout; no redirect fallback; actual expiry; early polls answered locally; `slow_down` changing outbound timing; endpoint restart; write locking and notifications; API-key refusal; empty-roster setup refusal. Prove scheme/state-root selection on model-list and credential probes.
 - [ ] **Step 2: Run red.** `go test ./cmd/evener-hub -run 'Copilot|AuthModes|Device|Flow'`; confirm the new Copilot cases fail for the intended reason.
