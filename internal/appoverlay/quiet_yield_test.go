@@ -31,12 +31,28 @@ func TestQuietCommunicateRetiresCallPreviewWithoutDisturbingRoundCoverage(t *tes
 	none(t, o.Event(events.New(events.AssistantTextDeltaData{Delta: "late delta"})))
 
 	o.Event(events.New(events.ToolCallStartData{CallID: "c_q", ToolName: "communicate", IsResultTool: true}))
-	none(t, o.Event(events.New(events.ToolCallEndData{
+	endChanges := o.Event(events.New(events.ToolCallEndData{
 		CallID:       "c_q",
 		ToolName:     "communicate",
 		IsResultTool: true,
 		ToolState:    quietState,
-	})))
+	}))
+	var sawReset, sawOtherUpsert bool
+	for _, ch := range endChanges {
+		if ch.Method == appwire.NotifyOverlayReset {
+			if p, ok := ch.Params.(appwire.OverlayResetParams); ok && p.StreamID == "r_1/1" {
+				sawReset = true
+			}
+		}
+		if ch.Method == appwire.NotifyOverlayUpserted {
+			if item := upserted(t, ch); item.CallID == "c_other" && item.Kind == appwire.OverlayPreview {
+				sawOtherUpsert = true
+			}
+		}
+	}
+	if !sawReset || !sawOtherUpsert {
+		t.Fatalf("endChanges=%+v, want overlay/reset(r_1/1) + re-upserted c_other preview", endChanges)
+	}
 
 	var sawOther bool
 	for _, item := range o.Snapshot() {

@@ -183,7 +183,15 @@ export function selectedRowIndex(
 function rowMatchesSelectedKey(row: TimelineRow, key: string): boolean {
 	if (readerKey(row) === key) return true;
 	if (row.kind === "details") {
-		return row.entries.some((entry) => readerKey(entry) === key || entry.id === key);
+		const targetKey = key.startsWith("quiet-yields:")
+			? key.slice("quiet-yields:".length)
+			: key.startsWith("details:")
+				? key.slice("details:".length)
+				: key;
+		return row.entries.some(
+			(entry) =>
+				readerKey(entry) === key || entry.id === key || readerKey(entry) === targetKey || entry.id === targetKey,
+		);
 	}
 	return false;
 }

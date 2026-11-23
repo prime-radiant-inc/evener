@@ -363,4 +363,53 @@ describe("useFindInSession disclosure opening for quiet yields", () => {
 		expect(isRowOpen(q1)).toBe(true);
 		expect(hasRenderedProse(tree, "quokka-standalone-to-group")).toBe(true);
 	});
+
+	it("keeps selection and opens disclosures when an older page prepends onto a quiet-yields group", () => {
+		const makeQuiet = (id: string, turnId: string, text: string): Extract<TimelineRow, { kind: "notice" }> => ({
+			kind: "notice",
+			id,
+			turnId,
+			origin: "system",
+			family: "lifecycle",
+			tone: "system",
+			eventKind: "quiet_yield",
+			label: "Ended turn quietly",
+			text,
+			rendersMarkdown: true,
+		});
+		const q1 = makeQuiet("qy_ext_1", "t1", "quokka-ext-selected");
+		const q2 = makeQuiet("qy_ext_2", "t2", "other");
+		const q0 = makeQuiet("qy_ext_0", "t0", "older");
+		const find: FindState = {
+			query: "quokka-ext-selected",
+			key: "quiet-yields:qy_ext_1",
+			seeking: false,
+			exhausted: false,
+		};
+		const initialGroup: TimelineRow = {
+			kind: "details",
+			id: "quiet-yields:qy_ext_1",
+			entries: [q1, q2],
+			summary: "2 quiet yields",
+		};
+		let tree!: ReactTestRenderer;
+		act(() => {
+			tree = render(<Harness rows={[initialGroup]} initialFind={find} />);
+		});
+		expect(isRowOpen(initialGroup)).toBe(true);
+
+		const extendedGroup: TimelineRow = {
+			kind: "details",
+			id: "quiet-yields:qy_ext_0",
+			entries: [q0, q1, q2],
+			summary: "3 quiet yields",
+		};
+		act(() => {
+			nativeDisclosureStore.setState(nativeDisclosureStore.getInitialState());
+			tree.update(<Harness rows={[extendedGroup]} initialFind={find} />);
+		});
+		expect(isRowOpen(extendedGroup)).toBe(true);
+		expect(isRowOpen(q1)).toBe(true);
+		expect(hasRenderedProse(tree, "quokka-ext-selected")).toBe(true);
+	});
 });

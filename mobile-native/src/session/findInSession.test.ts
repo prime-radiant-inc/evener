@@ -303,4 +303,37 @@ describe("finding words in a delegate or job notification", () => {
 		expect(selectedMatch(foldedRows, hits, "qy_1", new Map())).toBe(0);
 		expect(matchPosition(hits, selectedMatch(foldedRows, hits, "qy_1", new Map()))).toEqual({ position: 1, count: 1 });
 	});
+
+	it("keeps selectedKey when an older page extends quiet-yields:<oldFirstId> to quiet-yields:<newFirstId>", () => {
+		const q = (id: string, turnId: string, text: string): Extract<TimelineRow, { kind: "notice" }> => ({
+			kind: "notice",
+			id,
+			turnId,
+			origin: "system",
+			family: "lifecycle",
+			tone: "system",
+			eventKind: "quiet_yield",
+			label: "Ended turn quietly",
+			text,
+			rendersMarkdown: true,
+		});
+		const priorHitRow: Extract<TimelineRow, { kind: "assistant" }> = {
+			kind: "assistant",
+			id: "m_older",
+			turnId: "t_older",
+			markdown: "quokka-earliest",
+			streaming: false,
+		};
+		const older = q("qy_0", "t0", "quokka-older");
+		const q1 = q("qy_1", "t1", "quokka-selected");
+		const q2 = q("qy_2", "t2", "other");
+		const extended: TimelineRow[] = [
+			priorHitRow,
+			{ kind: "details", id: "quiet-yields:qy_0", entries: [older, q1, q2], summary: "3 quiet yields" },
+		];
+		const hits = findMatches(extended, "quokka");
+		expect(selectedRowIndex(extended, "quiet-yields:qy_1", new Map())).toBe(1);
+		expect(selectedMatch(extended, hits, "quiet-yields:qy_1", new Map())).toBe(1);
+		expect(stepMatch(hits, selectedMatch(extended, hits, "quiet-yields:qy_1", new Map()), -1)).toBe(0);
+	});
 });
