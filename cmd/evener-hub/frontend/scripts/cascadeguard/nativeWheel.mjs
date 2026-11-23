@@ -27,10 +27,10 @@ export async function repositionReader({
   now = Date.now,
 }) {
   const deadline = now() + budgetMs;
+  const timeoutMs = () => Math.max(1, Math.min(attemptTimeoutMs, deadline - now()));
   let lastError;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     if (attempt > 1 && now() >= deadline) break;
-    const timeoutMs = () => Math.max(1, Math.min(attemptTimeoutMs, deadline - now()));
     try {
       await wheel(timeoutMs());
       return await tallEntry(timeoutMs(), attempt);
