@@ -1550,6 +1550,14 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	goalControlsCap := goalControlsRoundCap(s.cfg.MaxToolRoundsPerInput, kind)
 	roundCap := goalRoundCap(s.cfg.MaxToolRoundsPerInput, kind)
 
+	var (
+		initialLiveWork    map[string]struct{}
+		initialLiveWorkErr error
+	)
+	if kind == EntryUserInput && !s.reportsToParent() {
+		initialLiveWork, initialLiveWorkErr = s.activeLiveWorkIDs()
+	}
+
 	admittedToRounds = true
 	s.beginAttentionCoverageRounds()
 	defer s.endAttentionCoverageRounds()
@@ -1850,11 +1858,22 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				outstanding, workErr := s.treeHasOutstandingWorkAtBoundary()
 				replied := kind == EntryNotification && s.rootDeliveredReplySinceLastUserInput()
 				oneShotDraining := kind == EntryNotification && s.hasAcceptedTerminalCommunicate()
+				turnStartedLiveWork := false
+				if kind == EntryUserInput && workErr == nil {
+					turnStartedLiveWork = round > 0 && outstanding
+					if initialLiveWorkErr == nil {
+						if currentLiveWork, currentErr := s.activeLiveWorkIDs(); currentErr == nil {
+							turnStartedLiveWork = hasNewLiveWork(currentLiveWork, initialLiveWork)
+						}
+					}
+				}
 				bareReply = s.usesDefaultCommunicateOutputEnvelope() && workErr == nil &&
-					(kind == EntryUserInput && (round == 0 || !outstanding) ||
+					(kind == EntryUserInput && !turnStartedLiveWork ||
 						kind == EntryNotification && !s.hasWakeableWorkAtBoundary() && !replied && !oneShotDraining)
 				bareQuiet = !bareReply && workErr == nil &&
-					(outstanding || (oneShotDraining && !s.hasWakeableWorkAtBoundary()))
+					((kind == EntryUserInput && turnStartedLiveWork) ||
+						(kind != EntryUserInput && outstanding) ||
+						(oneShotDraining && !s.hasWakeableWorkAtBoundary()))
 			}
 		}
 		var bareStop hooks.StopResult

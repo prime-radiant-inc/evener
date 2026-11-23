@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -103,7 +104,7 @@ func TestRootBareTextFallback(t *testing.T) {
 		{name: "goal continuation", text: "Continuation prose", finish: llm.FinishReasonStop, kind: EntryContinuation},
 		{name: "idle subagent", text: "Idle subagent answer", finish: llm.FinishReasonStop, kind: EntryUserInput, parent: true, wantFallback: true},
 		{name: "root user input round 0 with prior live job", text: "Direct answer", finish: llm.FinishReasonStop, kind: EntryUserInput, liveJob: true, wantFallback: true},
-		{name: "typed root with live owned job", text: "Waiting on job", finish: llm.FinishReasonStop, kind: EntryUserInput, profile: structured, liveJob: true, wantQuiet: true},
+		{name: "typed root user input with prior live job steers", text: "Waiting on job", finish: llm.FinishReasonStop, kind: EntryUserInput, profile: structured, liveJob: true},
 		{name: "subagent with live owned job", text: "Waiting on job", finish: llm.FinishReasonStop, kind: EntryUserInput, parent: true, liveJob: true, wantQuiet: true},
 		{name: "subagent with output schema", text: "Unstructured answer", finish: llm.FinishReasonStop, kind: EntryUserInput, profile: structured, parent: true},
 		{name: "explicit default envelope", text: "Untyped answer", finish: llm.FinishReasonStop, kind: EntryUserInput, profile: boundDefault},
@@ -1182,6 +1183,183 @@ func TestRootBareTextFallbackUserInputRound0WithEarlierBackgroundJob(t *testing.
 		evMu.Unlock()
 		if len(commEvs) != 0 {
 			t.Fatalf("EventCommunicate = %+v, want none on round-1 quiet park", commEvs)
+		}
+	})
+
+	t.Run("round_1_foreground_tool_with_earlier_job_delivers_reply", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "config.txt")
+		if err := os.WriteFile(cfgPath, []byte("port=9180\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		env := newHeldJobEnvironment(dir)
+		t.Cleanup(env.releaseJob)
+		adapter := newFakeAdapter("openai",
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{
+					ID:        "bg-shell",
+					Name:      "shell",
+					Arguments: json.RawMessage(`{"command":"go test","mode":"background"}`),
+				})
+			},
+			func(llm.Request) llm.Response {
+				return quietYieldResponse("quiet-1", `{"message":"waiting on background shell","next":"log_quietly_and_end_turn"}`)
+			},
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{
+					ID:        "read-cfg",
+					Name:      "read_file",
+					Arguments: json.RawMessage(`{"file_path":` + mustJSONString(cfgPath) + `,"intent":"Reading config"}`),
+				})
+			},
+			func(llm.Request) llm.Response {
+				return bareTextResponse("Port 9180.", llm.FinishReasonStop)
+			},
+		)
+		s := newSession(t, withEnv(env), withAdapter(adapter), withStateDir(t.TempDir()))
+		evs, evMu, evDone := collectEvents(s)
+		ctx := tripwireCtx(t)
+
+		if out, err := s.ProcessInput(ctx, "Start long build", nil); err != nil || out != "" || !s.quietlyYielded() {
+			t.Fatalf("turn 1 = (%q, %v) quiet=%t, want quiet yield", out, err, s.quietlyYielded())
+		}
+		got, err := s.ProcessInput(ctx, "Which port is configured?", nil)
+		if err != nil || got != "Port 9180." || !s.communicated() || s.quietlyYielded() || len(adapter.Requests()) != 4 {
+			t.Fatalf("turn 2 got=%q communicated=%t quiet=%t reqs=%d err=%v, want \"Port 9180.\" / true / false / 4 / nil",
+				got, s.communicated(), s.quietlyYielded(), len(adapter.Requests()), err)
+		}
+		s.Close()
+		<-evDone
+		evMu.Lock()
+		commEvs := communicateEventsIn(*evs)
+		evMu.Unlock()
+		if len(commEvs) != 1 || !commEvs[0].EndTurn || commEvs[0].Message != "Port 9180." {
+			t.Fatalf("EventCommunicate = %+v, want [EndTurn=\"Port 9180.\"]", commEvs)
+		}
+		var sawAccepted, sawQuiet bool
+		for _, turn := range transcriptTurnsOf(t, s) {
+			if turn.Kind == schema.TurnAssistant && lastAgentText(turn.Message) == "Port 9180." {
+				sawAccepted = turn.AcceptedReply
+				sawQuiet = turn.QuietYield
+			}
+		}
+		if !sawAccepted || sawQuiet {
+			t.Fatalf("turn 2 assistant flags sawAccepted=%t sawQuiet=%t, want true/false", sawAccepted, sawQuiet)
+		}
+	})
+
+	t.Run("typed_root_foreground_tool_with_earlier_job_steers", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "config.txt")
+		if err := os.WriteFile(cfgPath, []byte("port=9180\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		structured, err := provider.WithCommunicateOutputSchema(NewOpenAIProfile("gpt-5.2"), map[string]any{"type": "object", "additionalProperties": true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		env := newHeldJobEnvironment(dir)
+		t.Cleanup(env.releaseJob)
+		adapter := newFakeAdapter("openai",
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{
+					ID:        "bg-shell",
+					Name:      "shell",
+					Arguments: json.RawMessage(`{"command":"go test","mode":"background"}`),
+				})
+			},
+			func(llm.Request) llm.Response {
+				return quietYieldResponse("quiet-1", `{"message":"waiting on background shell","next":"log_quietly_and_end_turn"}`)
+			},
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{
+					ID:        "read-cfg",
+					Name:      "read_file",
+					Arguments: json.RawMessage(`{"file_path":` + mustJSONString(cfgPath) + `,"intent":"Reading config"}`),
+				})
+			},
+			func(llm.Request) llm.Response {
+				return bareTextResponse("Port 9180.", llm.FinishReasonStop)
+			},
+			func(llm.Request) llm.Response {
+				return quietYieldResponse("typed-reply", `{"message":"Port 9180.","output":{"port":9180}}`)
+			},
+		)
+		s := newSession(t, withProfile(structured), withEnv(env), withAdapter(adapter), withStateDir(t.TempDir()))
+		ctx := tripwireCtx(t)
+
+		if out, err := s.ProcessInput(ctx, "Start long build", nil); err != nil || out != "" || !s.quietlyYielded() {
+			t.Fatalf("turn 1 = (%q, %v) quiet=%t, want quiet yield", out, err, s.quietlyYielded())
+		}
+		got, err := s.ProcessInput(ctx, "Which port is configured?", nil)
+		if err != nil || !strings.Contains(got, "9180") || !s.communicated() || s.quietlyYielded() || len(adapter.Requests()) != 5 {
+			t.Fatalf("turn 2 got=%q communicated=%t quiet=%t reqs=%d err=%v, want port 9180 / true / false / 5 / nil",
+				got, s.communicated(), s.quietlyYielded(), len(adapter.Requests()), err)
+		}
+		var noToolSteers int
+		for _, turn := range transcriptTurnsOf(t, s) {
+			if turn.Kind == schema.TurnSteering && turn.SteeringKind == events.SteeringKindNoToolCalls {
+				noToolSteers++
+			}
+			if turn.Kind == schema.TurnAssistant && turn.QuietYield && lastAgentText(turn.Message) == "Port 9180." {
+				t.Fatal("typed root foreground reply was wrongly parked as QuietYield")
+			}
+		}
+		if noToolSteers != 1 {
+			t.Fatalf("noToolSteers = %d, want 1", noToolSteers)
+		}
+	})
+
+	t.Run("round_1_starts_second_job_while_first_runs_parks_quietly", func(t *testing.T) {
+		t.Parallel()
+		env := newTwoShellDrainEnvironment(t.TempDir())
+		t.Cleanup(func() {
+			env.finishFirst()
+			env.finishSecond()
+		})
+		adapter := newFakeAdapter("openai",
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{
+					ID:        "bg-shell-1",
+					Name:      "shell",
+					Arguments: json.RawMessage(`{"command":"go test ./agent","mode":"background"}`),
+				})
+			},
+			func(llm.Request) llm.Response {
+				return quietYieldResponse("quiet-1", `{"message":"waiting on first shell","next":"log_quietly_and_end_turn"}`)
+			},
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{
+					ID:        "bg-shell-2",
+					Name:      "shell",
+					Arguments: json.RawMessage(`{"command":"go test ./server","mode":"background"}`),
+				})
+			},
+			func(llm.Request) llm.Response {
+				return bareTextResponse("Waiting on second job.", llm.FinishReasonStop)
+			},
+		)
+		s := newSession(t, withEnv(env), withAdapter(adapter), withStateDir(t.TempDir()))
+		evs, evMu, evDone := collectEvents(s)
+		ctx := tripwireCtx(t)
+
+		if out, err := s.ProcessInput(ctx, "Start first build", nil); err != nil || out != "" || !s.quietlyYielded() {
+			t.Fatalf("turn 1 = (%q, %v) quiet=%t, want quiet yield", out, err, s.quietlyYielded())
+		}
+		got, err := s.ProcessInput(ctx, "Start second build", nil)
+		if err != nil || got != "" || !s.quietlyYielded() || s.communicated() || len(adapter.Requests()) != 4 {
+			t.Fatalf("turn 2 got=%q quiet=%t communicated=%t reqs=%d err=%v, want \"\" / true / false / 4 / nil",
+				got, s.quietlyYielded(), s.communicated(), len(adapter.Requests()), err)
+		}
+		s.Close()
+		<-evDone
+		evMu.Lock()
+		commEvs := communicateEventsIn(*evs)
+		evMu.Unlock()
+		if len(commEvs) != 0 {
+			t.Fatalf("EventCommunicate = %+v, want none when starting second job parks quietly", commEvs)
 		}
 	})
 }

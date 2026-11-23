@@ -285,7 +285,7 @@ func TestSubagentBareTextFallback(t *testing.T) {
 		// Bare text while live work runs must park quietly automatically (zero
 		// premature report to parent, zero no-tool-calls spin) until job wakes.
 		testwait.Until(t, "subagent bare text to park quietly while background job runs", func() bool {
-			return len(adapter.Requests()) >= 2 && child.sess.quietlyYielded()
+			return len(adapter.Requests()) >= 2 && child.sess.quietlyYielded() && child.sess.drainHeld.Load()
 		})
 		if noTool, _, _, _, accAsst, _ := countSubagentTranscriptTurns(t, child.sess); noTool != 0 || accAsst != 0 {
 			t.Fatalf("while live job running: noTool=%d accAsst=%d, want 0/0", noTool, accAsst)

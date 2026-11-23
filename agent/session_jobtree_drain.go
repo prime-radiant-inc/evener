@@ -294,6 +294,56 @@ func (s *Session) treeHasOutstandingWorkAtBoundary() (bool, error) {
 	return s.treeHasOutstandingWorkWith(s.pendingUncoveredRootDelegateAttention)
 }
 
+// activeLiveWorkIDs snapshots the live managed jobs and active delegates in the
+// session subtree so user-input turns can detect new live work started mid-turn.
+func (s *Session) activeLiveWorkIDs() (map[string]struct{}, error) {
+	if s == nil {
+		return nil, nil
+	}
+	ids := make(map[string]struct{})
+	if err := s.collectActiveLiveWorkIDs(ids); err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
+func (s *Session) collectActiveLiveWorkIDs(ids map[string]struct{}) error {
+	if s == nil {
+		return nil
+	}
+	if s.jobManager != nil {
+		jobIDs, err := s.jobManager.outstandingDrainJobIDs()
+		if err != nil {
+			return err
+		}
+		for _, id := range jobIDs {
+			ids["job:"+id] = struct{}{}
+		}
+	}
+	for _, sub := range s.liveDirectSubagents() {
+		active, child := s.subagentActive(sub)
+		if child == nil || s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id) {
+			continue
+		}
+		if active || s.childDrainGracePending(child.id) || s.childDelegateRecoveryHeld(child) {
+			ids["delegate:"+child.id] = struct{}{}
+		}
+		if err := child.collectActiveLiveWorkIDs(ids); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func hasNewLiveWork(current, baseline map[string]struct{}) bool {
+	for id := range current {
+		if _, seen := baseline[id]; !seen {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Session) treeHasOutstandingWorkWith(rootAttention func() bool) (bool, error) {
 	if s.jobManager != nil {
 		n, err := s.jobManager.outstandingDrainJobCount()
