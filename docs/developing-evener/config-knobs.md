@@ -58,6 +58,7 @@ packages and test files do not count.
 | `OPENAI_API_KEY` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `auth/openai`, `cmd/evener`, `cmd/evener-hub` and 2 more |
 | `OPENAI_BASE_URL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
 | `OPENAI_CODEX_BASE_URL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
+| `GITHUB_COPILOT_BASE_URL` | public | [environment-variables.md](../environment-variables.md) | `llm/registry` |
 | `OPENAI_ORG_ID` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
 | `OPENAI_PROJECT_ID` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
 | `ANTHROPIC_API_KEY` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener`, `cmd/evener-hub`, `llm/registry` |
