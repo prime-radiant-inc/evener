@@ -7,7 +7,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { expect, onTestFinished, test, vi } from "vitest";
 import { MOBILE_QUERY } from "../../shell/useIsMobile";
 import { connectionStore } from "../../stores/connection";
-import { readModuleCss } from "../../styles/cssBlock";
+import { readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import popoverStyles from "../../widgets/popover/popover.module.css";
 import promptCardStyles from "../../widgets/promptcard/promptcard.module.css";
 import modelSwitchStyles from "../session/chrome/modelswitch.module.css";
@@ -257,10 +257,11 @@ test("the primary verb is Start, in the card's own corner, and the page is title
 // The 559px boundary matches the composer cluster's own compact threshold
 // (the status row's first container query, statusrow.module.css).
 test("the Start button's word collapses to the glyph below the compact pane threshold", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "spawn.module.css"), "utf8");
+  const css = readModuleCss(import.meta.url, "spawn.module.css");
   expect(css).toMatch(/\.form\s*\{[^}]*container-type:\s*inline-size/);
-  expect(css).toMatch(/@container \(max-width: 559px\)[\s\S]*?\.submitLabel\s*\{[^}]*display:\s*none/);
+  expect(topRuleBlock(css, ".submitLabel")).toMatch(
+    /composes:\s*sendWord from "\.\.\/\.\.\/styles\/sendbutton\.module\.css"/,
+  );
 });
 
 // Writing the prompt is what starting an agent IS, so the caret starts there

@@ -140,6 +140,8 @@ export default function assert(measurements) {
     expectDisplay(m.queueCompactDisplay, !fullQueue, "compact queue label");
     expectDisplay(m.contextMeterDisplay, barContext, "context meter");
     expectDisplay(m.contextPercentDisplay, !barContext, "context percentage");
+    // The resolver inlines composed @container rules ungated, so only the narrow hide is observable here.
+    if (m.width <= 559) expectDisplay(m.stopLabelDisplay, false, "Stop label stack");
     if (full) expectContained(m.work, m.status, "work time");
 
     // Shrink-to-fit contract: the model trigger hugs its label at every width.

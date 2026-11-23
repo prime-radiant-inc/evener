@@ -20,6 +20,8 @@
      CSS modules directly, so this one declaration supplies only its production
      xs square override without introducing the raw `.xs` module-name collision. */
   .attachmentControl { width: 24px; height: 24px; padding: 0; flex: none; }
+  /* The resolver inlines composed @container rules ungated, so this probe is off-screen. */
+  .labelProbe { position: absolute; left: -10000px; top: 0; }
   /* SessionMenu's trigger is intentionally a stand-in: menu.module.css and
      modelswitch.module.css both own a local `.trigger` class that CSS Modules
      keeps distinct in production but a raw stylesheet harness cannot. Its size
@@ -60,6 +62,7 @@
           </div>
           <div class="actions" data-submit-actions><span class="wrapper"><button class="button primary xs focusSend" data-send type="button">Send</button></span></div>
         </div>
+        <span class="stopLabelStack labelProbe" aria-hidden="true"><span>Stop</span><span class="stopMeasure">Send</span></span>
       </div>
     </div>
   </section>
@@ -164,6 +167,7 @@ window.measure = () => {
     const sessionActions = fixture.querySelector("[data-session-actions]");
     const submitActions = fixture.querySelector("[data-submit-actions]");
     const send = fixture.querySelector("[data-send]");
+    const stopLabel = fixture.querySelector(".stopLabelStack");
     const modelValue = fixture.querySelector(".value");
     const modelTrigger = fixture.querySelector(".trigger");
     return {
@@ -203,6 +207,7 @@ window.measure = () => {
       sessionActions: box(sessionActions),
       submitActions: box(submitActions),
       send: box(send),
+      stopLabelDisplay: stopLabel === null ? "missing" : getComputedStyle(stopLabel).display,
       model: {
         triggerWidth: modelTrigger.getBoundingClientRect().width,
         clientWidth: modelValue.clientWidth,
