@@ -47,7 +47,7 @@ import {
 import type { FormError } from "./formError";
 import { draftFor, type InstanceDraft, varRows } from "./instanceEdit";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
-import { CODEX_AUTH_SCHEME, type OAuthEditor, startOAuthFlow } from "./oauthFlow";
+import { CODEX_AUTH_SCHEME, COPILOT_AUTH_SCHEME, type OAuthEditor, startOAuthFlow } from "./oauthFlow";
 import styles from "./ProviderConnection.module.css";
 import { appliedSelfRead, confirmListingState, refreshListingAfterMutation } from "./reconcileListing";
 import { useEditorLifetime } from "./useEditorLifetime";
@@ -617,6 +617,9 @@ function SelectedConnection({
   // refuses edits, or a landed write still owes its confirming read.
   const mutationsBlocked = instanceEditsBlocked || confirmationOwed;
   const providerLabel = presentation?.label ?? effectiveProvider.name ?? effectiveProvider.id;
+  // Copilot setup requires a usable model roster, so its card has no
+  // unverified completion. Other providers keep that escape hatch.
+  const unverifiedCompletionBlocked = row?.auth === COPILOT_AUTH_SCHEME;
   const status = statusOf();
 
   const setPhase = useCallback((next: Phase) => {
@@ -1953,9 +1956,11 @@ function SelectedConnection({
               Reload connection
             </Button>
           ) : result?.status === "unsupported" ? (
-            <Button variant="secondary" disabled={busy} onClick={() => leave(() => onConnected(name))}>
-              Continue without verification
-            </Button>
+            unverifiedCompletionBlocked ? null : (
+              <Button variant="secondary" disabled={busy} onClick={() => leave(() => onConnected(name))}>
+                Continue without verification
+              </Button>
+            )
           ) : (
             <Button
               type="submit"

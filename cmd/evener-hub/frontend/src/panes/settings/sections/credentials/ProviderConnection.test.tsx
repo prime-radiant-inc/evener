@@ -675,7 +675,7 @@ test("the popular Copilot card offers GitHub sign-in with no API-key action and 
   ]);
 });
 
-test("an unsupported Copilot model roster does not complete setup on its own", async () => {
+test("an unsupported Copilot model roster blocks setup completion", async () => {
   const { user, client, connected } = setup({ instances: [], availableProviders: [copilotProvider()] });
   await openPopularCopilot(user);
   scriptCopilotDevice(client);
@@ -692,8 +692,17 @@ test("an unsupported Copilot model roster does not complete setup on its own", a
   vi.useRealTimers();
 
   await waitFor(() => expect(document.querySelector('form#provider-connection-form button[type="submit"]')).toBeNull());
-  expect(client.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(1);
+  // Copilot keeps no unverified completion action. If one is offered,
+  // activating it must not connect the provider either.
+  const unverified = await screen.findByRole("button", { name: "Continue without verification" }).catch(() => null);
+  if (unverified) {
+    await waitFor(() => expect((unverified as HTMLButtonElement).disabled).toBe(false));
+    await user.click(unverified);
+  }
   expect(connected).not.toHaveBeenCalled();
+  expect(unverified).toBeNull();
+
+  expect(client.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(1);
   expect(document.querySelector('[role="status"][data-state="success"]')).toBeNull();
 });
 
