@@ -46,25 +46,21 @@
 }
 
 /* --- state -> token family --------------------------------------------
- * Cadence owns the four family declarations (cadence.module.css) because it
- * owns the state -> family map; compose them here so the two status glyphs
- * cannot drift. Their `fill` is inert on this span. statusdot stays
- * allowlisted (src/styles/token-contract.test.ts) because its working ring
- * below reaches --alive on its own. Dot size and the spinner timing stay
- * local: that divergence from Cadence's 6px dot is deliberate.
+ * statusdot is allowlisted (src/styles/token-contract.test.ts) for its
+ * state prop - a status dot's whole purpose is to carry a status hue.
  */
 .alive {
-  composes: alive from "../cadence/cadence.module.css";
+  background-color: var(--alive);
 }
 
 .attention {
-  composes: attention from "../cadence/cadence.module.css";
+  background-color: var(--attention);
 }
 
 .danger {
-  composes: danger from "../cadence/cadence.module.css";
+  background-color: var(--danger);
 }
 
 .neutral {
-  composes: neutral from "../cadence/cadence.module.css";
+  background-color: var(--ink-low);
 }
