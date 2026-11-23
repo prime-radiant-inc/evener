@@ -1198,7 +1198,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	authController.providersConfigPath = cfg.ProvidersConfigPath
 	authController.noUserLayer = cfg.NoUserLayer
 	var instancesController *hubInstancesController
-	if cfg.Registry != nil && cfg.ProvidersConfigPath != "" {
+	if cfg.Registry != nil {
 		instancesController = &hubInstancesController{
 			reg:                 cfg.Registry,
 			providersConfigPath: cfg.ProvidersConfigPath,
@@ -1789,8 +1789,10 @@ func instanceRemoveError(err error) (bool, error) {
 }
 
 // registerInstanceHandlers registers the evener/instance/* CRUD handlers. When no
-// instances controller is configured (providers.toml path unset), no handlers
-// are registered — matching the original inline guard. Successful mutations
+// instances controller is configured (no registry wired), no handlers are
+// registered. A controller whose hub runs without a user layer registers them
+// too: the listing and the Copilot record observation stay live, and only the
+// providers.toml reads and writes are refused. Successful mutations
 // broadcast evener/auth/updated (see notifyInstanceUpdated) so every other
 // connected client refetches its now-stale instance list.
 func registerInstanceHandlers(server *appserver.Server, instancesController *hubInstancesController) {

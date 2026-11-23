@@ -1442,8 +1442,23 @@ func (c *hubAuthController) pollCopilotDevice(ctx context.Context, provider, flo
 		if err := c.verifyFlowEndpoint(provider, flow.EndpointFingerprint, key); err != nil {
 			return err
 		}
-		_, err := c.copilotService.SavePreparedLogin(c.stateDir, provider, record)
-		return err
+		// The save lands before the write's reload fingerprints the state
+		// root, so that reload reads the newly saved account on both sides of
+		// its identity comparison and would carry the previous account's
+		// roster onto this one. Compare the record this login replaces with
+		// the record it saved and drop the affected instance's cached roster
+		// here, before the reload runs. A same-account renewal keeps the rows:
+		// a rotated token still belongs to the same roster.
+		previous, previousErr := githubcopilot.LoadAuth(c.stateDir, provider)
+		if _, err := c.copilotService.SavePreparedLogin(c.stateDir, provider, record); err != nil {
+			return err
+		}
+		if previousErr != nil || previous.AccountID != record.AccountID {
+			if reg := c.registry(); reg != nil {
+				reg.ForgetLive(provider)
+			}
+		}
+		return nil
 	})
 	if applied && c.copilotRecordAdopted != nil {
 		c.copilotRecordAdopted(provider, record)

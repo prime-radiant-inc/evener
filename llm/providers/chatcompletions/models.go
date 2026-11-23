@@ -218,7 +218,10 @@ func (m modelEntry) row(copilot bool) registry.Model {
 		if provenImageModel(m.ID) && wantsImages {
 			caps.InputModalities = []string{"text", "image"}
 		} else {
-			caps.InputModalities = nil
+			// An explicit text-only row, never nil: a nil Cap leaves the
+			// bundled models.dev capabilities free to restore the vision an
+			// unproven row must not offer.
+			caps.InputModalities = []string{"text"}
 		}
 	}
 	// An account roster's prices are not the dollars a live request bills, so

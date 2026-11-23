@@ -133,10 +133,16 @@ func (c *hubInstancesController) committed(originClientID string, err error) {
 var observeInstancesController func(*hubInstancesController)
 
 func (c *hubInstancesController) read() (*registry.Layer, bool, error) {
+	if !c.userLayerEnabled() {
+		return nil, false, errNoUserLayer
+	}
 	return registry.ReadConfigFile(c.providersConfigPath)
 }
 
 func (c *hubInstancesController) write(l *registry.Layer) error {
+	if !c.userLayerEnabled() {
+		return errNoUserLayer
+	}
 	raw, err := registry.MarshalConfig(l)
 	if err != nil {
 		return err
@@ -152,6 +158,19 @@ func (c *hubInstancesController) write(l *registry.Layer) error {
 	}
 	return err
 }
+
+// userLayerEnabled reports whether this hub may read or write providers.toml:
+// the instance-editing surface exists only when the hub was started with a user
+// layer. A registry can be wired without one (EVENER_PROVIDERS_CONFIG present
+// and empty), which is the shape a child gets; listings and Copilot record
+// observation stay live in that mode, while file edits have no file to land in.
+func (c *hubInstancesController) userLayerEnabled() bool {
+	return c.providersConfigPath != "" && (c.auth == nil || !c.auth.noUserLayer)
+}
+
+// errNoUserLayer is the refusal a providers.toml read or write gives when the
+// hub runs without a user layer.
+var errNoUserLayer = appwire.Unavailable("instance editing is unavailable: this hub has no providers.toml user layer")
 
 // setCopilotAuthSignature records one instance's observation as already
 // announced, so the notice watcher does not echo a write this hub just made.
@@ -349,7 +368,7 @@ func (c *hubInstancesController) listLocked(key []byte, keyErr error) appwire.In
 		UserLayer:          userLayer,
 		// The wire bit is the refusal the mutators would give, asked once, so
 		// the pane cannot offer an edit this controller would reject.
-		WritesRefused: c.refuseWhenBroken() != nil,
+		WritesRefused: c.refuseWhenBroken() != nil || !c.userLayerEnabled(),
 	}
 }
 

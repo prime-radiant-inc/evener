@@ -508,7 +508,7 @@ func (r *Registry) resolveInstanceMode(name string, presence bool) (Resolved, er
 	caps.EffortValues = rankEffortLadder(caps.EffortValues)
 	transport, hostDerived, warnings := r.buildTransport(rec, Model{}, rec.head.Protocol)
 	proto := rec.head.Protocol
-	if presence {
+	if presence && !listsThroughConfiguredTransport(rec) {
 		// The launch a bare instance name makes signs through the
 		// default row's merged transport (ResolveInstanceListing,
 		// spec §8.1); the hub's automatic views must describe that
@@ -734,6 +734,12 @@ func (r *Registry) ResolveInstanceListing(name string) (Resolved, error) {
 	if !ok {
 		return Resolved{}, r.unknownInstance(name)
 	}
+	if listsThroughConfiguredTransport(rec) {
+		// The Copilot roster carries per-model generation routing, but the
+		// listing endpoint itself is the configured provider transport; a
+		// default row's Messages path is not the roster's /models URL.
+		return r.ResolveInstance(name)
+	}
 	if rec.head.DefaultModel == "" || isGlob(rec.head.DefaultModel) {
 		return r.ResolveInstance(name)
 	}
@@ -757,7 +763,7 @@ func (r *Registry) ResolveInstanceTransport(name string) (Resolved, error) {
 	if !ok {
 		return Resolved{}, r.unknownInstance(name)
 	}
-	if rec.head.DefaultModel == "" || isGlob(rec.head.DefaultModel) {
+	if rec.head.DefaultModel == "" || isGlob(rec.head.DefaultModel) || listsThroughConfiguredTransport(rec) {
 		// The model-less shape ResolveInstance builds, minus its
 		// credential stage: buildTransport merges the protocol's default
 		// endpoint paths, which the raw head transport does not carry.

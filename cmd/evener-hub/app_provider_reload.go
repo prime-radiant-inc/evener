@@ -15,16 +15,22 @@ func (c *hubInstancesController) refreshProviderFile() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.auth != nil {
-		if c.auth.noUserLayer {
-			return false
-		}
 		c.auth.credMu.Lock()
 		defer c.auth.credMu.Unlock()
 	}
-	raw, err := os.ReadFile(c.providersConfigPath)
-	signature := providerConfigSignature(raw)
-	if err != nil {
-		signature = err.Error()
+	// The provider file exists only with a user layer. The Copilot record
+	// observation and the registry reload below run either way: a hub started
+	// with EVENER_PROVIDERS_CONFIG empty still serves the account's roster and
+	// must adopt an external login or logout.
+	fileChanged := false
+	if c.userLayerEnabled() {
+		raw, err := os.ReadFile(c.providersConfigPath)
+		signature := providerConfigSignature(raw)
+		if err != nil {
+			signature = err.Error()
+		}
+		fileChanged = c.providerFileSignature != signature
+		c.providerFileSignature = signature
 	}
 	var copilot map[string]string
 	reg := c.reg.Get()
@@ -33,10 +39,9 @@ func (c *hubInstancesController) refreshProviderFile() bool {
 	}
 	changedAccounts := changedCopilotAccounts(c.copilotAuthSignature, copilot)
 	c.copilotAuthSignature = copilot
-	if c.providerFileSignature == signature && len(changedAccounts) == 0 && !c.reg.WritesRefused() {
+	if !fileChanged && len(changedAccounts) == 0 && !c.reg.WritesRefused() {
 		return false
 	}
-	c.providerFileSignature = signature
 	generation := c.reg.Generation()
 	diagnostics := c.reg.Diagnostics()
 	if reg != nil {

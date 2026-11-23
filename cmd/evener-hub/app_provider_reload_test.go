@@ -295,6 +295,63 @@ func TestCopilotRecordWatcherAdoptsExternalLoginAndLogout(t *testing.T) {
 	}
 }
 
+// TestCopilotRecordWatcherObservesExternalLoginWithoutUserLayer pins the
+// observation rule when EVENER_PROVIDERS_CONFIG disables the user layer: there
+// is no providers.toml to watch, but the Copilot record still moves under the
+// hub, so an external login and logout must reload the registry and announce
+// the auth change.
+func TestCopilotRecordWatcherObservesExternalLoginWithoutUserLayer(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	store := newTestCredentialsStore(t)
+	reg := newTestRegistry(t, stateDir, "", store, nil)
+	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{
+		Registry: reg, HubStateRoot: stateDir, CredsStore: store,
+		ProvidersConfigPath: "", NoUserLayer: true,
+	})
+	defer hub.Close()
+	// Startup observations belong to the process, not to this client.
+	web.notices.OnCommitted(func(noticeCommitted) {})
+	web.notices.watchRead(context.Background())
+	broadcaster := newRecordingBroadcaster()
+	web.notices.OnCommitted(func(change noticeCommitted) { dispatchNoticeCommitted(broadcaster, change) })
+
+	cli := newCopilotCLI(t)
+	cli.login(t, stateDir, "github-copilot", "gh-1001")
+	web.notices.watchRead(context.Background())
+	if got := authUpdatedCount(broadcaster); got != 1 {
+		t.Fatalf("external login broadcasts = %d, want one", got)
+	}
+	if !reg.Get().HasInstance("github-copilot") {
+		t.Fatal("the external login did not add the Copilot instance")
+	}
+
+	cli.logout(t, stateDir, "github-copilot")
+	web.notices.watchRead(context.Background())
+	if got := authUpdatedCount(broadcaster); got != 2 {
+		t.Fatalf("external logout broadcasts = %d, want two", got)
+	}
+	if reg.Get().HasInstance("github-copilot") {
+		t.Fatal("the external logout left the Copilot instance listed")
+	}
+}
+
+// TestInstanceEditsAreRefusedWithoutUserLayer pins the file gates: the user
+// layer setting, not the path's emptiness, decides whether the instance
+// surface may read or write providers.toml.
+func TestInstanceEditsAreRefusedWithoutUserLayer(t *testing.T) {
+	t.Parallel()
+	for _, path := range []string{"", filepath.Join(t.TempDir(), "providers.toml")} {
+		ctl := &hubInstancesController{providersConfigPath: path, auth: &hubAuthController{noUserLayer: true}}
+		if _, _, err := ctl.read(); !errors.Is(err, errNoUserLayer) {
+			t.Fatalf("read(path=%q) error = %v, want the no-user-layer refusal", path, err)
+		}
+		if err := ctl.write(&registry.Layer{}); !errors.Is(err, errNoUserLayer) {
+			t.Fatalf("write(path=%q) error = %v, want the no-user-layer refusal", path, err)
+		}
+	}
+}
+
 func TestCopilotRecordWatcherInvalidatesOnlyTheSwitchedAccountsLiveRows(t *testing.T) {
 	t.Parallel()
 	f := newInstancesFixture(t, nil)
